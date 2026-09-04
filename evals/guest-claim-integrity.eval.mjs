@@ -247,27 +247,29 @@
 //                          `wallet_exists(` call. The `exists` half is the ONLY
 //                          part of G6 not already covered by
 //                          accounts_tests.rs:1320.
-//       [G6/correspondence] each needle's fn name resolves to EXACTLY ONE
-//                          definition in the scanned tree; that definition has a
-//                          locatable, non-empty body, carries no cfg on the ITEM
-//                          and none in the body (`#[cfg` / `cfg!(`, both
-//                          spellings, both positions); and it reaches THIS key's
-//                          own `db.<table>(` at a site that is neither inside a
-//                          MACRO invocation nor rooted at anything but a real
-//                          database handle (`<ident>.db.` or a `db` this body
-//                          bound to `&ctx.db`). The REKEY half additionally
-//                          requires a WRITE_VERBS verb in the METHOD-CHAIN
-//                          SEGMENT rooted at that accessor — bounded by
-//                          isChainChar, exactly as [W/write-target] bounds its
-//                          own — because presence is not effect (rb-25).
-//       [G6/mirror]        the ONE existence-cover exception
-//                          (monster_pub's exists half is covered by monster's,
-//                          the two being a 1:1 projection) is pinned as an exact
-//                          SET, must SHARE its cover's exists needle, and must
-//                          still be NEEDED — an amnesty that outlives its
-//                          justification becomes a general one.
+//       [G6/correspondence] each REKEY entry's `rekey` needle's fn name resolves
+//                          to EXACTLY ONE definition in the scanned tree; that
+//                          definition has a locatable, non-empty body, carries
+//                          no cfg on the ITEM and none in the body (`#[cfg` /
+//                          `cfg!(`, both spellings, both positions); and it
+//                          reaches THIS key's own `db.<table>(` at a site that
+//                          is neither inside a MACRO invocation nor rooted at
+//                          anything but a real database handle (`<ident>.db.`
+//                          or a `db` this body bound to `&ctx.db`), carrying a
+//                          WRITE_VERBS verb in the METHOD-CHAIN SEGMENT rooted
+//                          at that accessor — bounded by isChainChar, exactly
+//                          as [W/write-target] bounds its own — because
+//                          presence is not effect (rb-25). The `exists` half of
+//                          this clause, and the mirror-cover exception that
+//                          existed only to excuse monster_pub from it, were
+//                          RETIRED by rb-41 (ADR-0222 amendment; ADR-0224
+//                          migrate-and-delete): the `rb41_*` Rust tests in
+//                          server-module/src/*_tests.rs run every shipped
+//                          existence predicate against real rows, which a text
+//                          scan never could (a hollowed body was MEASURED green
+//                          here, rb-25 S4).
 //   The G6 success path additionally re-runs the correspondence criterion as
-//   LIVE-TREE BORROW PROOFS L1-L5 against the SHIPPED sources and the SHIPPED
+//   LIVE-TREE BORROW PROOFS L2-L4 against the SHIPPED sources and the SHIPPED
 //   manifest (the FG75 teeth measure an in-file fixture, which lives in the same
 //   file an attacker edits). Each probe must RED, under its own tag AND with its
 //   own message fragments; the number that bit is printed, never asserted as
@@ -2402,16 +2404,21 @@ export function findIdentityColumns(treeSrcs) {
 // the helper the needle NAMES has anything to do with the column the manifest
 // entry is about, and a plain substring test cannot even prove the needle is a
 // call. Two measured consequences, both green before this block existed:
-//   BORROW     re-point `heal_cooldown.owner_identity`'s existence needle at
-//              another table's live helper and delete its own delegation: the
-//              borrowed needle is still present, so the consumption scan is
-//              satisfied while guard 11 stops fail-closing for that table;
+//   BORROW     re-point a REKEY entry's needle at another table's live helper:
+//              the borrowed needle is still present, so the consumption scan is
+//              satisfied while the entry's own table is never re-keyed (on the
+//              exists side: never counted by guard 11);
 //   SUBSTRING  the needle `et_exists(` is a plain hit inside the live
 //              `wallet_exists(` call, so a manifest can name a helper that
 //              exists nowhere and still read as consumed.
 // The pieces below close both: `containsCallOf` for the second, and the
-// [G6/correspondence] / [G6/mirror] clauses at the end of the checker for the
-// first. All three are FILE-LOCAL — nothing here is exported.
+// [G6/correspondence] clause at the end of the checker for the first — on the
+// REKEY half only. Its exists half, and the mirror-cover exception that existed
+// solely to excuse monster_pub from it, were retired by rb-41 (ADR-0222
+// amendment): the `rb41_*` Rust tests exercise every shipped existence
+// predicate against real rows, proving the disjunct is wired AND decides on its
+// own table — which a text scan could not (a hollowed body was MEASURED green).
+// Both pieces are FILE-LOCAL — nothing here is exported.
 // ---------------------------------------------------------------------------
 
 /**
@@ -2443,30 +2450,6 @@ function containsCallOf(hay, needle) {
   }
   return false;
 }
-
-// The ONE pinned exception to the EXISTS half of the correspondence rule (never
-// to the rekey half). `has_monsters(` is the existence predicate of BOTH
-// `monster` and its 1:1 public projection `monster_pub`, and it legitimately
-// reads only `db.monster(`: the projection carries no row the private table
-// does not, so asking it a second time proves nothing.
-//
-// A Map LITERAL on purpose: a plain object is read through a prototype chain a
-// co-resident eval in the same `just ci` realm can write to (the own-property
-// boundary FG72a-f pin), and a Map has no such chain. Its TEXT is then spelled
-// twice MORE on purpose — once in the [G6/mirror] P1 set pin below, once in
-// FG75r's own local WANT — because a pin that reads its literal out of the very
-// thing it pins is not a pin at all. Widening the exception therefore costs
-// three deliberate edits, reviewed as a set.
-//
-// THE SAFETY INVARIANT — the entire argument for letting this excuse ANY
-// failure kind rather than only "reaches the wrong table": the COVER key is
-// itself a REKEY entry, so the same loop strict-checks it on its own iteration,
-// regardless of map or manifest iteration order. A hard defect in the shared
-// helper — not declared, declared twice, no locatable body, an empty body, a
-// cfg-hidden body — is therefore reported against the cover no matter what the
-// excused key does. What the exception drops is exactly one question ("does
-// this predicate ALSO reach the projection"), and nothing else.
-const EXISTS_COVER = new Map([['monster_pub.owner_identity', 'monster.owner_identity']]);
 
 /**
  * Every scanned file that DECLARES `fn <name>`, one entry per declaration (so
@@ -2709,10 +2692,10 @@ const CFG_SPELLINGS = ['#[cfg', 'cfg!('];
 // DERIVED counters for the success detail. checkRekeyCompleteness resets both
 // on entry and the default export reads them straight after its FIRST live
 // call, so the numbers the detail prints are produced by the run that produced
-// the green. A hand-written "each REKEY helper proven to touch its own table"
-// keeps printing verbatim after the clause it describes has been deleted; a
-// number cannot. Only meaningful when that call returned null.
-let g6HalvesVerified = 0;
+// the green. A hand-written "each re-key helper proven to write through its own
+// table" keeps printing verbatim after the clause it describes has been deleted;
+// a number cannot. Only meaningful when that call returned null.
+let g6RekeysVerified = 0;
 let g6CallsMatched = 0;
 
 /**
@@ -2725,7 +2708,7 @@ let g6CallsMatched = 0;
  * @returns {string|null} Error string, or null on pass.
  */
 export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_MANIFEST) {
-  g6HalvesVerified = 0;
+  g6RekeysVerified = 0;
   g6CallsMatched = 0;
   for (const f of treeSrcs) {
     const desync = assertStripperSound(f.src, f.path);
@@ -2935,54 +2918,36 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
     g6CallsMatched++;
   }
 
-  // [G6/mirror] P1 — THE EXACT SET PIN. The exception is pinned as a SET, never
-  // as a membership or a shape test: the manifest carries a SECOND REKEY pair
-  // sharing one existence needle (player_quest / player_dialogue_state), and a
-  // red-team MEASURED the cheat — hollow that shared predicate, add a second row
-  // here, stay green. One row is reviewable; an extensible list is an amnesty.
-  const coverPin = [...EXISTS_COVER.entries()].map((e) => `${e[0]} => ${e[1]}`).join(' | ');
-  // The literal is spelled HERE rather than read from a shared const: a pin
-  // whose expectation is imported from the same declaration it polices moves
-  // with it, and polices nothing.
-  const WANT_COVER = 'monster_pub.owner_identity => monster.owner_identity';
-  if (EXISTS_COVER.size !== 1 || coverPin !== WANT_COVER) {
-    return (
-      `[G6/mirror] the existence-cover exception is pinned to EXACTLY [${WANT_COVER}] but ` +
-      `reads [${coverPin}] (size ${EXISTS_COVER.size}). Widening it is a deliberate edit to the ` +
-      'map, to this pin and to FG75r, reviewed as a SET — a second row excuses a second ' +
-      'predicate from ever being proven, and nothing downstream would say so'
-    );
-  }
-
-  // [G6/correspondence] — the needle must correspond to the KEY. Resolve the
-  // helper the needle names to EXACTLY ONE definition in the scanned tree, then
-  // require that definition to reach THIS key's own table accessor; the rekey
-  // half additionally requires a WRITE through it, because presence is not
-  // effect. This is a NAMING-INTEGRITY check, not a reachability proof: a
+  // [G6/correspondence] — the rekey needle must correspond to the KEY. Resolve
+  // the helper the needle names to EXACTLY ONE definition in the scanned tree,
+  // then require that definition to reach THIS key's own table accessor AND
+  // write through it, because presence is not effect. (The exists half of this
+  // check was retired by rb-41: the rb41_* Rust tests run each shipped
+  // existence predicate against real rows, ADR-0222 amendment.)
+  // This is a NAMING-INTEGRITY check, not a reachability proof: a
   // `db.<table>(` in dead code satisfies it (which is why the cfg( leg exists —
   // text behind `#[cfg(any())]` compiles into no target at all).
   /**
-   * The strict check for one half of one entry.
+   * The strict check for one REKEY entry's re-key needle.
    * @param {string} key Manifest key, `<table>.<column>`.
    * @param {string} token The `db.<table>(` accessor token.
-   * @param {'rekey'|'exists'} half Which needle is being resolved.
-   * @param {string} needle The needle itself, trailing `(` included.
-   * @returns {string|null} A tagged failure, or null when the half holds.
+   * @param {string} needle The rekey needle itself, trailing `(` included.
+   * @returns {string|null} A tagged failure, or null when the entry holds.
    */
-  const strictCorrespondence = (key, token, half, needle) => {
+  const strictCorrespondence = (key, token, needle) => {
     // The module path is discarded on purpose: `crate::economy::rekey_wallet(`
     // and `rekey_wallet(` name the same function, and the tree is scanned whole.
     const fnName = needle.slice(0, -1).split('::').pop();
     if (fnName === '') {
       return (
-        `[G6/correspondence] the ${half} needle \`${needle}\` of \`${key}\` names no function ` +
+        `[G6/correspondence] the rekey needle \`${needle}\` of \`${key}\` names no function ` +
         `once its module path is removed, so ${token} can never be proven. Fail closed`
       );
     }
     const defs = findFnDeclarations(strippedTree, fnName);
     if (defs.length === 0) {
       return (
-        `[G6/correspondence] the manifest marks \`${key}\` as REKEY via the ${half} needle ` +
+        `[G6/correspondence] the manifest marks \`${key}\` as REKEY via the rekey needle ` +
         `\`${needle}\`, but no \`fn ${fnName}\` is declared anywhere in the ${strippedTree.length} ` +
         `scanned source(s), so nothing proves it reaches ${token}. An unresolvable needle is ` +
         'FAIL-CLOSED here: "helper not found, skip this entry" is a silent hole the size of the ' +
@@ -2991,7 +2956,7 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
     }
     if (defs.length > 1) {
       return (
-        `[G6/correspondence] the ${half} needle \`${needle}\` of \`${key}\` resolves to ` +
+        `[G6/correspondence] the rekey needle \`${needle}\` of \`${key}\` resolves to ` +
         `\`fn ${fnName}\`, which is declared ${defs.length} time(s) in the scanned tree ` +
         `(${defs.map((d) => d.path).join(', ')}). Taking the FIRST hit lets a decoy declared ` +
         `earlier in the tree launder a borrow — the real definition, and its ${token}, are never ` +
@@ -3007,7 +2972,7 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
     const span = findFnBody(def.stripped, fnName);
     if (span === null) {
       return (
-        `[G6/correspondence] \`fn ${fnName}\` (the ${half} needle of \`${key}\`) is declared in ` +
+        `[G6/correspondence] \`fn ${fnName}\` (the rekey needle of \`${key}\`) is declared in ` +
         `${def.path} but its body could not be located, so ${token} cannot be proven either way. ` +
         'The DECLARATION scan is whitespace-tolerant but the body finder anchors on the two ' +
         `words with a SINGLE space between them: \`fn ${fnName}\` must be spelled \`fn\`, one ` +
@@ -3017,7 +2982,7 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
     const body = compactWs(def.stripped.slice(span.start, span.end));
     if (body === '') {
       return (
-        `[G6/correspondence] \`fn ${fnName}\` (the ${half} needle of \`${key}\`) has an EMPTY ` +
+        `[G6/correspondence] \`fn ${fnName}\` (the rekey needle of \`${key}\`) has an EMPTY ` +
         `body in ${def.path}. It reaches no table at all, ${token} least of all — it cannot be ` +
         'both implemented and empty'
       );
@@ -3031,7 +2996,7 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
     const itemCfg = CFG_SPELLINGS.find((c) => itemPrefix.indexOf(c) !== -1);
     if (itemCfg !== undefined) {
       return (
-        `[G6/correspondence] \`fn ${fnName}\` (the ${half} needle of \`${key}\`, ${def.path}) ` +
+        `[G6/correspondence] \`fn ${fnName}\` (the rekey needle of \`${key}\`, ${def.path}) ` +
         `carries a configuration attribute (\`${itemCfg}\`) on the ITEM ITSELF — between the end ` +
         'of the previous item and the `fn` keyword. A body-interior scan is blind to that, and ' +
         'it is the stronger hiding place of the two: when the predicate is false — and ' +
@@ -3043,7 +3008,7 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
     const bodyCfg = CFG_SPELLINGS.find((c) => body.indexOf(c) !== -1);
     if (bodyCfg !== undefined) {
       return (
-        `[G6/correspondence] the body of \`fn ${fnName}\` (the ${half} needle of \`${key}\`, ` +
+        `[G6/correspondence] the body of \`fn ${fnName}\` (the rekey needle of \`${key}\`, ` +
         `${def.path}) contains a configuration predicate (\`${bodyCfg}\`). This clause reads ` +
         'TEXT, so it cannot tell an accessor that compiles from one hidden behind a false ' +
         'predicate — `#[cfg(any())]` and `cfg!(any())` are both unconditionally false — and it ' +
@@ -3062,7 +3027,7 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
       const macroHit = rejected.find((r) => r.why === 'macro');
       if (macroHit !== undefined) {
         return (
-          `[G6/correspondence] every \`${token}\` in \`fn ${fnName}\` (the ${half} needle of ` +
+          `[G6/correspondence] every \`${token}\` in \`fn ${fnName}\` (the rekey needle of ` +
           `\`${key}\`, ${def.path}) sits INSIDE a macro invocation (\`${macroHit.detail}\`). A ` +
           'macro argument is a TOKEN TREE: it is name-resolved only if and where the expansion ' +
           'puts it, and `stringify!` puts it nowhere at all — so `ctx` and `db` need not even ' +
@@ -3072,7 +3037,7 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
       }
       const first = rejected[0];
       return (
-        `[G6/correspondence] every \`${token}\` in \`fn ${fnName}\` (the ${half} needle of ` +
+        `[G6/correspondence] every \`${token}\` in \`fn ${fnName}\` (the rekey needle of ` +
         `\`${key}\`, ${def.path}) has a receiver that is NOT a database handle ` +
         `(${first.detail}). The accessor counts only when it is rooted at one: ` +
         '`<ident>.db.<table>(`, or the aliased bare form when this very body binds `db` with ' +
@@ -3082,7 +3047,7 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
     }
     if (valid.length === 0) {
       return (
-        `[G6/correspondence] the manifest marks \`${key}\` as REKEY via the ${half} needle ` +
+        `[G6/correspondence] the manifest marks \`${key}\` as REKEY via the rekey needle ` +
         `\`${needle}\`, but \`fn ${fnName}\` (${def.path}) never reaches \`${token}\` — the ` +
         'accessor of the very table this entry is about. The needle names SOME live helper, so ' +
         'the consumption scan is satisfied by it; a helper that touches another table carries ' +
@@ -3091,8 +3056,7 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
         'the legitimate `let db = &ctx.db;` handle'
       );
     }
-    g6HalvesVerified++;
-    if (half !== 'rekey') return null;
+    g6RekeysVerified++;
     // WRITE_VERBS is G5's list, reused rather than re-spelled: "the verbs that
     // change rows" is ONE fact, and a second copy is a second thing to keep
     // true (FG75x pins the list itself, naming both consumers).
@@ -3142,40 +3106,8 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
     // on the `accessor =` argument, and [G6/live] forces every manifest key to
     // resolve to one of those tables, so the join is structural, not observed.
     const token = `db.${table}(`;
-    for (const half of ['rekey', 'exists']) {
-      const needle = half === 'rekey' ? policy.rekey : policy.exists;
-      const strict = strictCorrespondence(key, token, half, needle);
-      if (!(half === 'exists' && EXISTS_COVER.has(key))) {
-        if (strict !== null) return strict;
-        continue;
-      }
-      // [G6/mirror] — the excused key, policed on every run.
-      const cover = EXISTS_COVER.get(key);
-      const coverPolicy = kinds.get(cover);
-      const coverNeedle = coverPolicy?.kind === 'REKEY' ? coverPolicy.exists : undefined;
-      if (coverNeedle !== policy.exists) {
-        // P2. The shared predicate IS the safety argument: it is what makes the
-        // excused key transitively strict-checked by the cover's own iteration.
-        return (
-          `[G6/mirror] the existence half of \`${key}\` is excused on the strength of ` +
-          `\`${cover}\`, but the two no longer share an existence predicate: \`${key}\` names ` +
-          `\`${policy.exists}\` and \`${cover}\` names ` +
-          `\`${coverNeedle ?? '(no REKEY entry at all)'}\`. That shared predicate is the ENTIRE ` +
-          'safety argument for the exception — without it the excused key is waved past a check ' +
-          'nobody performs on its behalf. Re-point one of them, or delete the exception'
-        );
-      }
-      if (strict === null) {
-        // P3. Staleness. An amnesty that outlives its justification is how a
-        // one-row exception quietly becomes a general one.
-        return (
-          `[G6/mirror] the existence half of \`${key}\` is excused on the strength of ` +
-          `\`${cover}\`, but \`${key}\` now passes the strict check on its own, so the tree no ` +
-          'longer needs the exception. Delete the row from the existence-cover map (and its set ' +
-          'pin) in this file'
-        );
-      }
-    }
+    const strict = strictCorrespondence(key, token, policy.rekey);
+    if (strict !== null) return strict;
   }
 
   return null;
@@ -3320,7 +3252,7 @@ function teethTick() {
 // export, and printed there instead of a hand-written sentence. Bump it in the
 // same commit that adds or removes a tooth — a bump is a one-line, reviewable
 // diff; a silent drift is the whole bug this closes.
-const TEETH_PINNED = 351;
+const TEETH_PINNED = 345;
 
 /**
  * Assert that a checker fired the EXPECTED clause (by tag), not merely that it
@@ -3389,7 +3321,6 @@ pub(crate) fn account_has_game_data(ctx: &ReducerContext, identity: Identity) ->
         || crate::ranking::profile_exists(ctx, identity)
         || crate::npc::has_quest_or_dialogue_state(ctx, identity)
         || crate::raising::has_heal_cooldown(ctx, identity)
-        || crate::monster_mgmt::monster_rows_present(ctx, identity)
 }
 
 pub(crate) fn rekey_all(ctx: &ReducerContext, from: Identity, to: Identity) -> Result<(), String> {
@@ -3637,21 +3568,16 @@ function fakeRawBlindStrip(src) {
 // tautological: the join it is supposed to prove would be true by construction.
 //
 // Each body mirrors the TABLE ACCESS of its shipped twin
-// (server-module/src/{monster_mgmt,inventory,npc,raising,economy,ranking}.rs),
-// including the one asymmetry that forces the mirror exception to exist:
-// `rekey_monsters` writes BOTH `monster` and `monster_pub`, while `has_monsters`
-// reads `monster` ALONE — the public projection carries no row the private table
-// does not, so the existence predicate never needs to look at it.
+// (server-module/src/{monster_mgmt,inventory,npc,raising,economy,ranking}.rs).
+// The existence predicates are kept so [G6/consumed]'s fixtures keep naming
+// real helpers; since rb-41 only the re-key helpers are resolved by
+// [G6/correspondence] (the exists half lives in the rb41_* Rust tests).
 //
 // EXACTLY ONE definition per fn name: two manifest keys share `has_monsters(`
 // and two share `has_quest_or_dialogue_state(`, and a duplicate definition is
 // itself a fail-closed condition. AUTHORING CONSTRAINT for later fixtures: a
 // tree that both concatenates GOOD_TREE[0].src into a file AND lists GOOD_TREE[0]
 // in the same array declares every fn here twice.
-//
-// `monster_rows_present` is the deliberate SPARE: a second, legal
-// monster-existence predicate that `account_has_game_data` also calls, so the
-// mirror same-needle clause has something to be wrongly re-pointed at.
 // ---------------------------------------------------------------------------
 const GOOD_HELPERS = `
 pub(crate) fn rekey_monsters(ctx: &ReducerContext, from: Identity, to: Identity) -> Result<(), String> {
@@ -3669,10 +3595,6 @@ pub(crate) fn rekey_monsters(ctx: &ReducerContext, from: Identity, to: Identity)
 
 pub(crate) fn has_monsters(ctx: &ReducerContext, owner: Identity) -> bool {
     ctx.db.monster().owner_identity().filter(owner).next().is_some()
-}
-
-pub(crate) fn monster_rows_present(ctx: &ReducerContext, owner: Identity) -> bool {
-    ctx.db.monster().owner_identity().filter(owner).count() > 0
 }
 
 pub(crate) fn rekey_inventory(ctx: &ReducerContext, from: Identity, to: Identity) {
@@ -7190,36 +7112,34 @@ pub type OwnerId = id_ty!();`;
   // THE DEFECT. [G6/consumed] asks only "does this needle appear in that body",
   // by plain indexOf, and never asks WHICH table the named helper actually
   // touches. Two measured consequences:
-  //   BORROW      re-point `heal_cooldown.owner_identity`'s exists needle at
-  //               `has_monsters(` and delete `has_heal_cooldown` from
-  //               `account_has_game_data`: the needle is still present (another
-  //               table's live helper answers for it), so the eval stays GREEN
-  //               while guard 11 stops fail-closing for heal_cooldown;
+  //   BORROW      re-point a REKEY entry's needle at another table's live
+  //               helper: the needle is still present (another table's helper
+  //               answers for it), so the eval stays GREEN while that table is
+  //               never re-keyed. The exists-side twin of this cheat (guard 11
+  //               silently stops fail-closing) is caught by the rb41_* Rust
+  //               tests since rb-41, so the teeth below exercise the REKEY half
+  //               only;
   //   SUBSTRING   the needle `et_exists(` is a plain substring hit on the live
   //               `wallet_exists(` call, so a manifest can name a helper that
   //               exists nowhere and still read as consumed.
   //
-  // THE RULE THESE FIXTURES PIN, in three clauses:
+  // THE RULE THESE FIXTURES PIN, in two clauses:
   //   [G6/consumed]       the needle is matched as a CALL: an identifier
   //                       boundary on its left (its own trailing `(` is the
   //                       right boundary), and an immediately-left `.` is
   //                       REJECTED, because a method call on a receiver is not a
   //                       call of the free function the manifest names.
-  //   [G6/correspondence] the needle's fn name resolves to EXACTLY ONE
+  //   [G6/correspondence] the REKEY needle's fn name resolves to EXACTLY ONE
   //                       definition in the scanned tree, that definition has a
   //                       non-empty, cfg-free body, and the body reaches THIS
   //                       key's own table through `db.<table>(` with an
-  //                       identifier boundary on `db`. The REKEY half
-  //                       additionally requires a write verb in the chain
-  //                       segment rooted at that token — presence is not effect.
-  //   [G6/mirror]         the ONE pinned exception (monster_pub's existence is
-  //                       covered by monster's, because the public projection
-  //                       carries no row the private table does not) is a
-  //                       SET-pinned Map, must share the covered key's exists
-  //                       needle, and must still be NEEDED.
+  //                       identifier boundary on `db` AND a write verb in the
+  //                       chain segment rooted at that token — presence is not
+  //                       effect. (Rekey needles only: the exists half moved to
+  //                       the rb41_* Rust tests, ADR-0222 amendment.)
   //
-  // Three tags, not one: a shared tag would let a mirror tooth be satisfied by a
-  // correspondence failure and vice versa, and expectTag pins by tag alone. Each
+  // Two tags, not one: a shared tag would let a consumption tooth be satisfied by
+  // a correspondence failure and vice versa, and expectTag pins by tag alone. Each
   // tooth below therefore ALSO asserts a fragment that only its own clause can
   // produce — a tag-only pin cannot tell a hollowed clause from a neighbour
   // catching the same mutant.
@@ -7260,22 +7180,6 @@ pub type OwnerId = id_ty!();`;
     return { src: mut(GOOD_ACCOUNTS, from, to) };
   };
 
-  const H_HAS_MONSTERS = `pub(crate) fn has_monsters(ctx: &ReducerContext, owner: Identity) -> bool {
-    ctx.db.monster().owner_identity().filter(owner).next().is_some()
-}`;
-  const H_HAS_ITEMS = `pub(crate) fn has_items(ctx: &ReducerContext, owner: Identity) -> bool {
-    ctx.db.inventory().owner_identity().filter(owner).next().is_some()
-}`;
-  const H_PROFILE_EXISTS = `pub(crate) fn profile_exists(ctx: &ReducerContext, identity: Identity) -> bool {
-    ctx.db.profile().identity().find(identity).is_some()
-}`;
-  const H_WALLET_EXISTS = `pub(crate) fn wallet_exists(ctx: &ReducerContext, owner: Identity) -> bool {
-    ctx.db.player_wallet().owner_identity().find(owner).is_some()
-}`;
-  const H_QUEST_OR_DIALOGUE = `pub(crate) fn has_quest_or_dialogue_state(ctx: &ReducerContext, owner: Identity) -> bool {
-    ctx.db.player_quest().owner_identity().filter(owner).next().is_some()
-        || ctx.db.player_dialogue_state().owner_identity().find(owner).is_some()
-}`;
   const H_REKEY_INVENTORY = `pub(crate) fn rekey_inventory(ctx: &ReducerContext, from: Identity, to: Identity) {
     let ids: Vec<u64> = ctx.db.inventory().owner_identity().filter(from).map(|r| r.inv_id).collect();
     for id in ids {
@@ -7292,12 +7196,39 @@ pub type OwnerId = id_ty!();`;
     }
 }`;
   const H_PUB_UPDATE = '        ctx.db.monster_pub().monster_id().update(pub_row);\n';
+  const H_REKEY_WALLET = `pub(crate) fn rekey_wallet(ctx: &ReducerContext, from: Identity, to: Identity) {
+    if let Some(row) = ctx.db.player_wallet().owner_identity().find(from) {
+        grant_currency(ctx, to, row.balance);
+        ctx.db.player_wallet().owner_identity().update(zeroed_wallet(row));
+    }
+}`;
+  const H_REKEY_PROFILE = `pub(crate) fn rekey_profile(ctx: &ReducerContext, from: Identity, to: Identity) {
+    let guest = match ctx.db.profile().identity().find(from) {
+        Some(g) => g,
+        None => return,
+    };
+    let dest = get_or_init_profile(ctx, to);
+    ctx.db.profile().identity().update(carried_stats(dest, guest.rating));
+    ctx.db.profile().identity().update(tombstoned(guest));
+}`;
+  const H_REKEY_NPC = `pub(crate) fn rekey_npc_state(ctx: &ReducerContext, from: Identity, to: Identity) {
+    let pq_ids: Vec<u64> = ctx.db.player_quest().owner_identity().filter(from).map(|q| q.pq_id).collect();
+    for id in pq_ids {
+        if let Some(mut q) = ctx.db.player_quest().pq_id().find(id) {
+            q.owner_identity = to;
+            ctx.db.player_quest().pq_id().update(q);
+        }
+    }
+    if let Some(row) = ctx.db.player_dialogue_state().owner_identity().find(from) {
+        ctx.db.player_dialogue_state().owner_identity().delete(from);
+        ctx.db.player_dialogue_state().insert(carried_dialogue_state(row, to));
+    }
+}`;
 
-  // FG75/fixture — the helper library must be REAL, SINGLY-DEFINED and
-  // ASYMMETRIC before any tooth below means anything. A library that declared a
-  // name twice would red every correspondence tooth for the WRONG reason, and one
-  // whose `has_monsters` also read `monster_pub` would make FG75n and FG75p
-  // vacuous — there would be nothing left for the mirror exception to excuse.
+  // FG75/fixture — the helper library must be REAL and SINGLY-DEFINED before
+  // any tooth below means anything. A library that declared a name twice would
+  // red every correspondence tooth for the WRONG reason, and a `rekey_monsters`
+  // that did not write `monster_pub` would leave FG75m nothing to delete.
   {
     teethTick();
     const stripped = stripRustSource(GOOD_TREE[0].src);
@@ -7308,7 +7239,6 @@ pub type OwnerId = id_ty!();`;
     const NAMES = [
       'rekey_monsters',
       'has_monsters',
-      'monster_rows_present',
       'rekey_inventory',
       'has_items',
       'rekey_npc_state',
@@ -7337,22 +7267,7 @@ pub type OwnerId = id_ty!();`;
         );
       }
     }
-    const hasMonstersBody = helperBody('has_monsters');
     const rekeyMonstersBody = helperBody('rekey_monsters');
-    if (hasMonstersBody.indexOf('db.monster(') === -1) {
-      return (
-        'FG75/fixture: the fixture `has_monsters` must READ `db.monster(`, or FG75p proves ' +
-        'nothing at all'
-      );
-    }
-    if (hasMonstersBody.indexOf('db.monster_pub(') !== -1) {
-      return (
-        'FG75/fixture: the fixture `has_monsters` must NOT touch `db.monster_pub(`. That ' +
-        'asymmetry — the private table carries every row the public projection does, so the ' +
-        'existence predicate never needs the projection — is the ENTIRE reason the mirror ' +
-        'exception exists; a fixture that erases it makes FG75n and FG75p vacuous'
-      );
-    }
     if (
       rekeyMonstersBody.indexOf('db.monster(') === -1 ||
       rekeyMonstersBody.indexOf('db.monster_pub(') === -1
@@ -7361,13 +7276,6 @@ pub type OwnerId = id_ty!();`;
         'FG75/fixture: the fixture `rekey_monsters` must write BOTH `db.monster(` and ' +
         '`db.monster_pub(` — the rekey half carries no exception, and FG75m depends on the ' +
         'monster_pub write being there to delete'
-      );
-    }
-    if (compactWs(stripRustSource(GOOD_ACCOUNTS)).indexOf('monster_rows_present(') === -1) {
-      return (
-        'FG75/fixture: `account_has_game_data` must also call `monster_rows_present(`, or FG75o ' +
-        'has no legal alternative predicate to re-point the mirror at and the same-needle clause ' +
-        'ships untoothed'
       );
     }
   }
@@ -7380,51 +7288,6 @@ pub type OwnerId = id_ty!();`;
     const err = checkRekeyCompleteness(GOOD_TREE, GOOD_ACCOUNTS);
     if (err) {
       return `FG75a: the GOOD tree carrying the shared helper library was flagged: ${err}`;
-    }
-  }
-
-  // FG75b — ATTACK-1, the X10 criterion VERBATIM. `heal_cooldown.owner_identity`
-  // borrows ANOTHER table's live existence predicate and its own delegation is
-  // deleted from `account_has_game_data`. The borrowed needle IS present, so
-  // [G6/consumed] structurally cannot see this — which is why the tag is asserted
-  // NEGATIVELY as well as positively.
-  {
-    const accounts = swapAccounts(
-      'FG75b',
-      '        || crate::raising::has_heal_cooldown(ctx, identity)\n',
-      '',
-    );
-    if (Object.hasOwn(accounts, 'error')) return accounts.error;
-    const manifest = {
-      ...REKEY_MANIFEST,
-      'heal_cooldown.owner_identity': {
-        policy: 'REKEY',
-        rekey: 'rekey_heal_cooldown(',
-        exists: 'has_monsters(',
-      },
-    };
-    const err = checkRekeyCompleteness(GOOD_TREE, accounts.src, manifest);
-    const bad = expectTag(err, '[G6/correspondence]', 'FG75b');
-    if (bad) return bad;
-    if (err.indexOf('[G6/consumed]') !== -1) {
-      return (
-        'FG75b: [G6/consumed] must NOT be the clause that fires here. The borrowed needle IS ' +
-        'present in account_has_game_data — that is the whole defect — so a consumption failure ' +
-        `would mean the fixture, not the gate, is what changed: ${err}`
-      );
-    }
-    if (err.indexOf('db.heal_cooldown(') === -1) {
-      return (
-        'FG75b: the failure must name the accessor token the borrowed helper never reaches, ' +
-        'db.heal_cooldown( — a report that does not say WHICH table is unproven is not ' +
-        `actionable: ${err}`
-      );
-    }
-    if (err.indexOf('has_monsters') === -1 || err.indexOf('heal_cooldown.owner_identity') === -1) {
-      return (
-        'FG75b: the failure must name BOTH the manifest key `heal_cooldown.owner_identity` and ' +
-        `the helper it borrowed, has_monsters: ${err}`
-      );
     }
   }
 
@@ -7508,22 +7371,22 @@ pub type OwnerId = id_ty!();`;
   }
 
   // FG75f — a needle naming a fn that is declared NOWHERE in the scanned tree.
-  // The needle is wired into account_has_game_data on purpose, so [G6/consumed] is
-  // satisfied and only the definition-resolving clause can fire. Fail LOUD:
-  // "helper not found, skip this entry" is a silent hole the size of the manifest.
+  // The needle is wired into rekey_all on purpose, so [G6/consumed] is satisfied
+  // and only the definition-resolving clause can fire. Fail LOUD: "helper not
+  // found, skip this entry" is a silent hole the size of the manifest.
   {
     const accounts = swapAccounts(
       'FG75f',
-      '        || crate::raising::has_heal_cooldown(ctx, identity)\n',
-      '        || crate::raising::never_wired_helper(ctx, identity)\n',
+      '    crate::raising::rekey_heal_cooldown(ctx, from, to);\n',
+      '    crate::raising::never_wired_helper(ctx, from, to);\n',
     );
     if (Object.hasOwn(accounts, 'error')) return accounts.error;
     const manifest = {
       ...REKEY_MANIFEST,
       'heal_cooldown.owner_identity': {
         policy: 'REKEY',
-        rekey: 'rekey_heal_cooldown(',
-        exists: 'never_wired_helper(',
+        rekey: 'never_wired_helper(',
+        exists: 'has_heal_cooldown(',
       },
     };
     const err = checkRekeyCompleteness(GOOD_TREE, accounts.src, manifest);
@@ -7537,64 +7400,70 @@ pub type OwnerId = id_ty!();`;
     }
   }
 
-  // FG75g — FIRST-HIT ANCHOR FORGERY. A decoy `fn has_monsters` is declared in a
-  // file that sits BEFORE the real one in the scanned tree, with a body touching a
-  // DIFFERENT table. A resolver that takes the first definition it finds reads the
-  // decoy and the real asymmetry becomes invisible; the COUNT is the assertion.
+  // FG75g — FIRST-HIT ANCHOR FORGERY. A decoy `fn rekey_monsters` is declared in
+  // a file that sits BEFORE the real one in the scanned tree, with a body that
+  // reads a DIFFERENT table and writes nothing. A resolver that takes the first
+  // definition it finds reads the decoy and the real helper is never consulted;
+  // the COUNT is the assertion.
   {
-    const DECOY = `pub(crate) fn has_monsters(ctx: &ReducerContext, owner: Identity) -> bool {
-    ctx.db.heal_cooldown().owner_identity().find(owner).is_some()
+    const DECOY = `pub(crate) fn rekey_monsters(ctx: &ReducerContext, from: Identity, to: Identity) -> Result<(), String> {
+    let _ = to;
+    let _ = ctx.db.heal_cooldown().owner_identity().find(from);
+    Ok(())
 }
 `;
     const tree = [{ path: 'fixture/decoy.rs', src: DECOY }, GOOD_TREE[0], GOOD_TREE[1]];
     const err = checkRekeyCompleteness(tree, GOOD_ACCOUNTS);
     const bad = expectTag(err, '[G6/correspondence]', 'FG75g');
     if (bad) return bad;
-    if (err.indexOf('declared 2') === -1 || err.indexOf('has_monsters') === -1) {
+    if (err.indexOf('declared 2') === -1 || err.indexOf('rekey_monsters') === -1) {
       return (
-        'FG75g: the failure must report that `has_monsters` is `declared 2` times. A resolver ' +
+        'FG75g: the failure must report that `rekey_monsters` is `declared 2` times. A resolver ' +
         'that anchors on the FIRST definition can be steered by a decoy declared earlier in the ' +
         `tree, so the count is asserted, never the hit: ${err}`
       );
     }
   }
 
-  // FG75h — a declared helper with an EMPTY body. `fn X(..) -> bool { }` resolves,
-  // has a locatable body, and reaches no table at all; without a distinct
-  // empty-body leg the reader is told "does not touch db.profile(" about a
-  // function that does not touch ANYTHING.
+  // FG75h — a declared helper with an EMPTY body. `fn X(..) { }` resolves, has a
+  // locatable body, and reaches no table at all; without a distinct empty-body
+  // leg the reader is told "does not touch db.profile(" about a function that
+  // does not touch ANYTHING.
   {
     const swapped = swapHelper(
       'FG75h',
-      H_PROFILE_EXISTS,
-      'pub(crate) fn profile_exists(ctx: &ReducerContext, identity: Identity) -> bool { }',
+      H_REKEY_PROFILE,
+      'pub(crate) fn rekey_profile(ctx: &ReducerContext, from: Identity, to: Identity) { }',
     );
     if (Object.hasOwn(swapped, 'error')) return swapped.error;
     const err = checkRekeyCompleteness(swapped.tree, GOOD_ACCOUNTS);
     const bad = expectTag(err, '[G6/correspondence]', 'FG75h');
     if (bad) return bad;
-    if (err.indexOf('EMPTY body') === -1 || err.indexOf('profile_exists') === -1) {
+    if (err.indexOf('EMPTY body') === -1 || err.indexOf('rekey_profile') === -1) {
       return (
         'FG75h: an empty helper body must be reported as an `EMPTY body` and by NAME ' +
-        `(profile_exists), distinctly from "reaches the wrong table": ${err}`
+        `(rekey_profile), distinctly from "reaches the wrong table": ${err}`
       );
     }
   }
 
   // FG75i — a table token that NEVER COMPILES. `#[cfg(any())]` is unconditionally
   // false, so the nested fn is dead text; a scan that only asks "does the token
-  // appear in the body" is satisfied by it, and the X10 borrow cheat is restored
-  // green by adding four lines that can never run.
+  // appear in the body" is satisfied by it, and a re-key helper that moves
+  // nothing reads as one that does.
   {
     const swapped = swapHelper(
       'FG75i',
-      H_HAS_ITEMS,
-      `pub(crate) fn has_items(ctx: &ReducerContext, owner: Identity) -> bool {
+      H_REKEY_INVENTORY,
+      `pub(crate) fn rekey_inventory(ctx: &ReducerContext, from: Identity, to: Identity) {
     #[cfg(any())]
-    fn dead_probe(ctx: &ReducerContext, owner: Identity) -> bool {
-        ctx.db.inventory().owner_identity().filter(owner).next().is_some()
+    fn dead_probe(ctx: &ReducerContext, from: Identity, to: Identity) {
+        for mut row in ctx.db.inventory().owner_identity().filter(from) {
+            row.owner_identity = to;
+            ctx.db.inventory().inv_id().update(row);
+        }
     }
-    false
+    let _ = (ctx, from, to);
 }`,
     );
     if (Object.hasOwn(swapped, 'error')) return swapped.error;
@@ -7604,11 +7473,11 @@ pub type OwnerId = id_ty!();`;
     // The SPELLING is pinned, not just the word: FG75y is the same leg on the
     // `cfg!(` expression macro, and a message that named the wrong one would
     // let either tooth stand in for the other.
-    if (err.indexOf('predicate (`#[cfg`)') === -1 || err.indexOf('has_items') === -1) {
+    if (err.indexOf('predicate (`#[cfg`)') === -1 || err.indexOf('rekey_inventory') === -1) {
       return (
         'FG75i: a helper body carrying a `#[cfg(` ATTRIBUTE must be reported as that spelling, ' +
-        'and by NAME (has_items). A token inside a cfg(any()) item is text that never compiles, ' +
-        `so it can never satisfy the correspondence rule: ${err}`
+        'and by NAME (rekey_inventory). A token inside a cfg(any()) item is text that never ' +
+        `compiles, so it can never satisfy the correspondence rule: ${err}`
       );
     }
   }
@@ -7621,38 +7490,47 @@ pub type OwnerId = id_ty!();`;
   {
     const swapped = swapHelper(
       'FG75j',
-      H_WALLET_EXISTS,
-      `pub(crate) fn wallet_exists(ctx: &ReducerContext, owner: Identity) -> bool {
+      H_REKEY_WALLET,
+      `pub(crate) fn rekey_wallet(ctx: &ReducerContext, from: Identity, to: Identity) {
     let probe = wallet_probe(ctx);
-    probe.player_wallet().owner_identity().find(owner).is_some()
+    if let Some(row) = probe.player_wallet().owner_identity().find(from) {
+        grant_currency(ctx, to, row.balance);
+        probe.player_wallet().owner_identity().update(zeroed_wallet(row));
+    }
 }`,
     );
     if (Object.hasOwn(swapped, 'error')) return swapped.error;
     const err = checkRekeyCompleteness(swapped.tree, GOOD_ACCOUNTS);
     const bad = expectTag(err, '[G6/correspondence]', 'FG75j');
     if (bad) return bad;
-    if (err.indexOf('db.player_wallet(') === -1 || err.indexOf('wallet_exists') === -1) {
+    if (err.indexOf('db.player_wallet(') === -1 || err.indexOf('rekey_wallet') === -1) {
       return (
         'FG75j: the failure must name the db-rooted token `db.player_wallet(` and the helper ' +
-        `(wallet_exists) that only reaches a same-named method on another receiver: ${err}`
+        `(rekey_wallet) that only reaches a same-named method on another receiver: ${err}`
       );
     }
   }
 
   // FG75k — the token present ONLY inside a `//` comment and a string literal.
   // Proves the correspondence scan reads STRIPPED source, exactly as every other
-  // clause in this file does. `player_quest` is left intact, so the failure must
-  // be about `player_dialogue_state` ALONE — the table is resolved per KEY, not
-  // per helper.
+  // clause in this file does. `player_quest` is genuinely re-keyed, so the
+  // failure must be about `player_dialogue_state` ALONE — the table is resolved
+  // per KEY, not per helper.
   {
     const swapped = swapHelper(
       'FG75k',
-      H_QUEST_OR_DIALOGUE,
-      `pub(crate) fn has_quest_or_dialogue_state(ctx: &ReducerContext, owner: Identity) -> bool {
-    // also reads ctx.db.player_dialogue_state().owner_identity()
+      H_REKEY_NPC,
+      `pub(crate) fn rekey_npc_state(ctx: &ReducerContext, from: Identity, to: Identity) {
+    // also moves ctx.db.player_dialogue_state().owner_identity()
     let note = "ctx.db.player_dialogue_state().owner_identity()";
     let _ = note;
-    ctx.db.player_quest().owner_identity().filter(owner).next().is_some()
+    let pq_ids: Vec<u64> = ctx.db.player_quest().owner_identity().filter(from).map(|q| q.pq_id).collect();
+    for id in pq_ids {
+        if let Some(mut q) = ctx.db.player_quest().pq_id().find(id) {
+            q.owner_identity = to;
+            ctx.db.player_quest().pq_id().update(q);
+        }
+    }
 }`,
     );
     if (Object.hasOwn(swapped, 'error')) return swapped.error;
@@ -7671,7 +7549,7 @@ pub type OwnerId = id_ty!();`;
     }
     if (err.indexOf('player_quest.owner_identity') !== -1) {
       return (
-        'FG75k: `player_quest.owner_identity` is still genuinely reached by this helper, so it ' +
+        'FG75k: `player_quest.owner_identity` is still genuinely re-keyed by this helper, so it ' +
         `must NOT be the key reported — the table is resolved per KEY, not per helper: ${err}`
       );
     }
@@ -7732,204 +7610,6 @@ pub type OwnerId = id_ty!();`;
         'FG75m: the failure must name the token `db.monster_pub(` and report the missing WRITE. A ' +
         'write-verb search that scans the whole body instead of the chain segment rooted at this ' +
         `accessor is satisfied by the neighbouring monster update: ${err}`
-      );
-    }
-  }
-
-  // FG75n — a STALE exception. The fixture `has_monsters` is extended to read
-  // `monster_pub` too, so the covered key now passes the strict check on its own
-  // and the excuse is dead. An amnesty that outlives its justification is how a
-  // one-row exception quietly becomes a general one.
-  {
-    const swapped = swapHelper(
-      'FG75n',
-      H_HAS_MONSTERS,
-      `pub(crate) fn has_monsters(ctx: &ReducerContext, owner: Identity) -> bool {
-    ctx.db.monster().owner_identity().filter(owner).next().is_some()
-        || ctx.db.monster_pub().owner_identity().filter(owner).next().is_some()
-}`,
-    );
-    if (Object.hasOwn(swapped, 'error')) return swapped.error;
-    const err = checkRekeyCompleteness(swapped.tree, GOOD_ACCOUNTS);
-    const bad = expectTag(err, '[G6/mirror]', 'FG75n');
-    if (bad) return bad;
-    if (err.indexOf('no longer need') === -1) {
-      return (
-        'FG75n: a covered key that now passes the strict check must be reported as one the ' +
-        'exception NO LONGER NEEDS — that wording is the instruction to DELETE the map row: ' +
-        err
-      );
-    }
-    if (err.indexOf('monster_pub.owner_identity') === -1) {
-      return `FG75n: the stale-exception failure must NAME the excused key: ${err}`;
-    }
-  }
-
-  // FG75o — the SAME-NEEDLE clause, the load-bearing half of the mirror. The
-  // exception is sound ONLY because the cover is the SAME predicate: monster and
-  // monster_pub share `has_monsters(`, so the excused key is transitively
-  // strict-checked by the cover's own entry in the main loop. Re-point the cover
-  // at a DIFFERENT (perfectly legal, genuinely wired, genuinely monster-reading)
-  // predicate and that argument collapses — monster_pub is then excused by a
-  // check nobody performs on its behalf.
-  {
-    const manifest = {
-      ...REKEY_MANIFEST,
-      'monster.owner_identity': {
-        policy: 'REKEY',
-        rekey: 'rekey_monsters(',
-        exists: 'monster_rows_present(',
-      },
-    };
-    const err = checkRekeyCompleteness(GOOD_TREE, GOOD_ACCOUNTS, manifest);
-    const bad = expectTag(err, '[G6/mirror]', 'FG75o');
-    if (bad) return bad;
-    if (err.indexOf('share') === -1) {
-      return (
-        'FG75o: the failure must say the excused key and its cover no longer SHARE an existence ' +
-        `predicate — that shared predicate IS the safety argument for the exception: ${err}`
-      );
-    }
-    if (
-      err.indexOf('monster_pub.owner_identity') === -1 ||
-      err.indexOf('monster_rows_present(') === -1
-    ) {
-      return (
-        'FG75o: the failure must name the excused key `monster_pub.owner_identity` and the ' +
-        `predicate its cover was re-pointed at, monster_rows_present(: ${err}`
-      );
-    }
-  }
-
-  // FG75p — THE COVER IS NOT A BLANKET. `has_monsters` loses `db.monster(`
-  // entirely. `monster.owner_identity` must red — the exception excuses
-  // monster_pub, never the shared NEEDLE, and never the covering key itself.
-  // Kills: an exception implemented as "skip any key whose exists needle is
-  // has_monsters(", which is what a needle-keyed (rather than key-keyed) map
-  // degenerates into.
-  {
-    const swapped = swapHelper(
-      'FG75p',
-      H_HAS_MONSTERS,
-      `pub(crate) fn has_monsters(ctx: &ReducerContext, owner: Identity) -> bool {
-    let _ = owner;
-    false
-}`,
-    );
-    if (Object.hasOwn(swapped, 'error')) return swapped.error;
-    const err = checkRekeyCompleteness(swapped.tree, GOOD_ACCOUNTS);
-    const bad = expectTag(err, '[G6/correspondence]', 'FG75p');
-    if (bad) return bad;
-    // The NEGATIVE leg is asserted on the ACCESSOR TOKEN, not on the bare word
-    // `monster_pub`: a correspondence message is free to mention the exception in
-    // passing, but it can only quote `db.monster_pub(` when monster_pub is the key
-    // it is actually reporting.
-    if (err.indexOf('db.monster_pub(') !== -1) {
-      return (
-        'FG75p: `monster_pub.owner_identity` is the EXCUSED key and must not be the one reported ' +
-        'here; the covering key `monster.owner_identity` is the one that lost its table: ' +
-        err
-      );
-    }
-    if (err.indexOf('monster.owner_identity') === -1 || err.indexOf('db.monster(') === -1) {
-      return (
-        'FG75p: the failure must name `monster.owner_identity` and the token `db.monster(` it no ' +
-        `longer reaches — the exception covers ONE key, not the needle two keys share: ${err}`
-      );
-    }
-  }
-
-  // FG75q — AMBIENT prototype pollution against the exception map. Every eval in
-  // a `just ci` run shares ONE realm under evals/run.mjs, so a co-resident eval's
-  // `Object.prototype['inventory.owner_identity']` is readable through the chain
-  // of any plain object. A Map has no such chain; this fixture is the REGRESSION
-  // PIN that keeps it one, and that a future rewrite to an object literal read as
-  // `COVER[key]` cannot pass. The key is HOLLOWED at the same time, so an ambient
-  // excuse would be the only thing standing between the tree and a failure.
-  // The write is REAL, for FG72c's reason: an ambient defect cannot be injected
-  // through Object.create — the map under test is this module's own binding. The
-  // hygiene is therefore mechanical: refuse to clobber a pre-existing key, assign
-  // INSIDE the try, delete in `finally`, and prove in-process that the window was
-  // still open when the check ran and closed afterwards.
-  {
-    const KEY = 'inventory.owner_identity';
-    const COVER = 'monster.owner_identity';
-    const swapped = swapHelper(
-      'FG75q',
-      H_HAS_ITEMS,
-      `pub(crate) fn has_items(ctx: &ReducerContext, owner: Identity) -> bool {
-    let _ = owner;
-    false
-}`,
-    );
-    if (Object.hasOwn(swapped, 'error')) return swapped.error;
-    if (KEY in {} || Object.keys(Object.prototype).length !== 0) {
-      return (
-        `FG75q: \`${KEY}\` — or some other enumerable property — is already on Object.prototype ` +
-        `BEFORE this fixture ran (keys: [${Object.keys(Object.prototype).join(', ')}]). Refusing ` +
-        'to overwrite the state of a co-resident eval, and refusing to delete it either'
-      );
-    }
-    let bad = null;
-    try {
-      try {
-        Object.prototype[KEY] = COVER;
-      } catch (e) {
-        bad = `FG75q: could not write Object.prototype: ${e?.message ?? String(e)}`;
-      }
-      if (bad === null && !(KEY in {})) {
-        bad =
-          'FG75q: the pollution did not take, so this fixture would be testing nothing while ' +
-          'still printing green';
-      }
-      if (bad === null) {
-        const err = checkRekeyCompleteness(swapped.tree, GOOD_ACCOUNTS);
-        bad = expectTag(err, '[G6/correspondence]', 'FG75q');
-        if (bad === null && err.indexOf('inventory.owner_identity') === -1) {
-          bad =
-            'FG75q: the failure must NAME the hollowed key `inventory.owner_identity` — an ' +
-            `ambient prototype entry must not be able to excuse it: ${err}`;
-        }
-        if (bad === null && !(KEY in {})) {
-          bad = 'FG75q: the pollution window closed early — the check above ran outside it';
-        }
-      }
-    } finally {
-      Reflect.deleteProperty(Object.prototype, KEY);
-    }
-    if (KEY in {} || Object.keys(Object.prototype).length !== 0) {
-      return (
-        'FG75q: LEAKED — this fixture left an enumerable own property on Object.prototype after ' +
-        `its finally block ran (keys: [${Object.keys(Object.prototype).join(', ')}]). Every later ` +
-        'eval in this run would see it, so a leak is a HARD failure here, not a note'
-      );
-    }
-    if (bad) return bad;
-  }
-
-  // FG75r — the exception is pinned as an EXACT SET, not as a membership or a
-  // shape. MEASURED on the plan: the manifest carries a SECOND pair of REKEY keys
-  // sharing one exists needle (player_quest / player_dialogue_state), so a map
-  // that merely "looks right" admits a second row, hollows the other predicate,
-  // and passes every policing clause while the detail still says one exception.
-  // A one-row amnesty is reviewable; an extensible one is not.
-  {
-    teethTick();
-    if (!(EXISTS_COVER instanceof Map)) {
-      return (
-        'FG75r: EXISTS_COVER must be a Map. A plain object carries a prototype chain, and this ' +
-        'file already learned (FG72a-f) that an ambient key on that chain answers membership ' +
-        'questions nobody asked'
-      );
-    }
-    const rendered = [...EXISTS_COVER.entries()].map((e) => `${e[0]} => ${e[1]}`).join(' | ');
-    const WANT = 'monster_pub.owner_identity => monster.owner_identity';
-    if (EXISTS_COVER.size !== 1 || rendered !== WANT) {
-      return (
-        `FG75r: the mirror exception is pinned to EXACTLY [${WANT}] but reads [${rendered}] ` +
-        `(size ${EXISTS_COVER.size}). This is a SET pin, never a membership or a shape test: the ` +
-        'manifest has a second REKEY pair sharing one exists needle, so a second row here is a ' +
-        'silent, general amnesty. Widening it costs a deliberate edit HERE, reviewed as a set'
       );
     }
   }
@@ -8018,20 +7698,19 @@ pub type OwnerId = id_ty!();`;
   }
 
   // FG75u — A TOKEN TREE IS NOT A TABLE TOUCH. `stringify!(ctx.db.player_wallet()
-  // .owner_identity())` puts the accessor inside a macro argument, which is
-  // never name-resolved: `ctx` and `db` need not exist, no row is read, and
-  // `cargo clippy --all-targets -D warnings` is clean. MEASURED as a working
-  // restoration of the X10 borrow cheat (rb-25 red-team B1). The rejection is
-  // computed from the `ident!` + bracket SHAPE, never from a list of macro
-  // names — a blacklist of constructs is unclosable.
+  // .owner_identity()...)` puts the accessor inside a macro argument, which is
+  // never name-resolved: `ctx` and `db` need not exist, no row is read or
+  // written, and `cargo clippy --all-targets -D warnings` is clean. MEASURED as a
+  // working restoration of the X10 borrow cheat (rb-25 red-team B1). The
+  // rejection is computed from the `ident!` + bracket SHAPE, never from a list
+  // of macro names — a blacklist of constructs is unclosable.
   {
     const swapped = swapHelper(
       'FG75u',
-      H_WALLET_EXISTS,
-      `pub(crate) fn wallet_exists(ctx: &ReducerContext, owner: Identity) -> bool {
-    let _ = owner;
-    let _probe = stringify!(ctx.db.player_wallet().owner_identity());
-    false
+      H_REKEY_WALLET,
+      `pub(crate) fn rekey_wallet(ctx: &ReducerContext, from: Identity, to: Identity) {
+    let _ = (from, to);
+    let _probe = stringify!(ctx.db.player_wallet().owner_identity().update(zeroed_wallet(row)));
 }`,
     );
     if (Object.hasOwn(swapped, 'error')) return swapped.error;
@@ -8044,10 +7723,10 @@ pub type OwnerId = id_ty!();`;
         `macro (stringify!) — a token tree proves nothing about a table: ${err}`
       );
     }
-    if (err.indexOf('db.player_wallet(') === -1 || err.indexOf('wallet_exists') === -1) {
+    if (err.indexOf('db.player_wallet(') === -1 || err.indexOf('rekey_wallet') === -1) {
       return (
         'FG75u: the failure must name the token `db.player_wallet(` and the helper ' +
-        `(wallet_exists) whose only occurrence of it is a macro argument: ${err}`
+        `(rekey_wallet) whose only occurrence of it is a macro argument: ${err}`
       );
     }
   }
@@ -8063,11 +7742,13 @@ pub type OwnerId = id_ty!();`;
   {
     const swapped = swapHelper(
       'FG75v',
-      H_WALLET_EXISTS,
-      `pub(crate) fn wallet_exists(ctx: &ReducerContext, owner: Identity) -> bool {
-    let _ = ctx;
+      H_REKEY_WALLET,
+      `pub(crate) fn rekey_wallet(ctx: &ReducerContext, from: Identity, to: Identity) {
+    let _ = (ctx, to);
     let db = WalletIndex;
-    db.player_wallet().owner_identity().find(owner).is_some()
+    if let Some(row) = db.player_wallet().owner_identity().find(from) {
+        db.player_wallet().owner_identity().update(zeroed_wallet(row));
+    }
 }`,
     );
     if (Object.hasOwn(swapped, 'error')) return swapped.error;
@@ -8080,10 +7761,10 @@ pub type OwnerId = id_ty!();`;
         `"never reaches the token", which is a different defect with a different fix: ${err}`
       );
     }
-    if (err.indexOf('db.player_wallet(') === -1 || err.indexOf('wallet_exists') === -1) {
+    if (err.indexOf('db.player_wallet(') === -1 || err.indexOf('rekey_wallet') === -1) {
       return (
         'FG75v: the failure must name the token `db.player_wallet(` and the helper ' +
-        `(wallet_exists) whose db receiver is a local value: ${err}`
+        `(rekey_wallet) whose db receiver is a local value: ${err}`
       );
     }
   }
@@ -8094,22 +7775,15 @@ pub type OwnerId = id_ty!();`;
   // scan (FG75i's leg) is structurally blind to it. MEASURED (rb-25 red-team
   // FIX C): the attribute-in-body leg closed only half the cfg-hiding case.
   {
-    const swapped = swapHelper(
-      'FG75w',
-      H_PROFILE_EXISTS,
-      `#[cfg(any())]
-pub(crate) fn profile_exists(ctx: &ReducerContext, identity: Identity) -> bool {
-    ctx.db.profile().identity().find(identity).is_some()
-}`,
-    );
+    const swapped = swapHelper('FG75w', H_REKEY_PROFILE, `#[cfg(any())]\n${H_REKEY_PROFILE}`);
     if (Object.hasOwn(swapped, 'error')) return swapped.error;
     const err = checkRekeyCompleteness(swapped.tree, GOOD_ACCOUNTS);
     const bad = expectTag(err, '[G6/correspondence]', 'FG75w');
     if (bad) return bad;
-    if (err.indexOf('on the ITEM ITSELF') === -1 || err.indexOf('profile_exists') === -1) {
+    if (err.indexOf('on the ITEM ITSELF') === -1 || err.indexOf('rekey_profile') === -1) {
       return (
         'FG75w: a cfg on the DECLARATION must be reported as being on the ITEM ITSELF and by ' +
-        `NAME (profile_exists), distinctly from the body-interior cfg leg FG75i pins: ${err}`
+        `NAME (rekey_profile), distinctly from the body-interior cfg leg FG75i pins: ${err}`
       );
     }
   }
@@ -8123,23 +7797,25 @@ pub(crate) fn profile_exists(ctx: &ReducerContext, identity: Identity) -> bool {
   {
     const swapped = swapHelper(
       'FG75y',
-      H_HAS_ITEMS,
-      `pub(crate) fn has_items(ctx: &ReducerContext, owner: Identity) -> bool {
+      H_REKEY_INVENTORY,
+      `pub(crate) fn rekey_inventory(ctx: &ReducerContext, from: Identity, to: Identity) {
     if cfg!(any()) {
-        return ctx.db.inventory().owner_identity().filter(owner).next().is_some();
+        for mut row in ctx.db.inventory().owner_identity().filter(from) {
+            row.owner_identity = to;
+            ctx.db.inventory().inv_id().update(row);
+        }
     }
-    false
 }`,
     );
     if (Object.hasOwn(swapped, 'error')) return swapped.error;
     const err = checkRekeyCompleteness(swapped.tree, GOOD_ACCOUNTS);
     const bad = expectTag(err, '[G6/correspondence]', 'FG75y');
     if (bad) return bad;
-    if (err.indexOf('predicate (`cfg!(`)') === -1 || err.indexOf('has_items') === -1) {
+    if (err.indexOf('predicate (`cfg!(`)') === -1 || err.indexOf('rekey_inventory') === -1) {
       return (
         'FG75y: the `cfg!(` EXPRESSION macro must be reported as that spelling, and by NAME ' +
-        '(has_items). An attribute-only leg is green on this fixture, and the accessor is not ' +
-        `inside the macro's argument, so the macro-span leg is green on it too: ${err}`
+        '(rekey_inventory). An attribute-only leg is green on this fixture, and the accessor is ' +
+        `not inside the macro's argument, so the macro-span leg is green on it too: ${err}`
       );
     }
   }
@@ -8243,12 +7919,12 @@ export default async function guestClaimIntegrityEval() {
   // bit" keeps printing after the clause it describes has been deleted, which is
   // exactly the forgeable prose this block exists to replace.
   const borrowProofsBit = [];
-  // DERIVED counts read out of the G6 checker's own run (see g6HalvesVerified /
+  // DERIVED counts read out of the G6 checker's own run (see g6RekeysVerified /
   // g6CallsMatched). The success detail used to make these two claims in prose —
-  // "each REKEY helper proven to touch its own table" and "matched as an
+  // "each re-key helper proven to write through its own table" and "matched as an
   // identifier-bounded call" — and a literal keeps printing verbatim after the
   // clause it describes has been deleted.
-  let liveHalvesVerified = 0;
+  let liveRekeysVerified = 0;
   let liveCallsMatched = 0;
 
   // The desync self-check runs on EVERY live source: a desync anywhere in the
@@ -8281,7 +7957,7 @@ export default async function guestClaimIntegrityEval() {
     const errG6 = checkRekeyCompleteness(treeSrcs, accountsFile.src);
     // Read IMMEDIATELY: the borrow probes below re-enter the checker (and reset
     // these), and it is THIS call whose verdict the success detail reports.
-    liveHalvesVerified = g6HalvesVerified;
+    liveRekeysVerified = g6RekeysVerified;
     liveCallsMatched = g6CallsMatched;
     if (errG6) {
       failures.push(`[G6 rekey-completeness] ${errG6}`);
@@ -8339,33 +8015,17 @@ export default async function guestClaimIntegrityEval() {
         '            row.owner_identity = to;\n            ctx.db.inventory().inv_id().update(row);\n',
         '            row.owner_identity = to;\n',
       );
-      const L5 = mutateLive(
-        'L5',
-        '/monster_mgmt.rs',
-        'pub(crate) fn has_monsters(ctx: &ReducerContext, owner: Identity) -> bool {\n',
-        'pub(crate) fn has_monsters(ctx: &ReducerContext, owner: Identity) -> bool {\n' +
-          '    let _twin = ctx.db.monster_pub().owner_identity().filter(owner).next();\n',
-      );
-      for (const built of [L4, L5]) {
+      for (const built of [L4]) {
         if (Object.hasOwn(built, 'error')) failures.push(`[G6 borrow-proof] ${built.error}`);
       }
 
       // Each probe pins FRAGMENTS as well as its tag. checkRekeyCompleteness
-      // returns the FIRST failure across 8 keys x 2 halves, and L1/L2/L4 all
-      // expect [G6/correspondence] — so a tag-only assertion is satisfied by ANY
+      // returns the FIRST failure across 8 keys, and L2/L4 both expect
+      // [G6/correspondence] — so a tag-only assertion is satisfied by ANY
       // correspondence failure on ANY key, including one caused by a defect the
       // probe did not introduce. The FG75 teeth already assert this way; these
       // are the same criterion re-run against the SHIPPED tree.
       const probes = [];
-      probes.push({
-        label:
-          'L1 heal_cooldown.owner_identity.exists re-pointed at another table’s live helper ' +
-          'has_monsters( (the X10 criterion, verbatim)',
-        tag: '[G6/correspondence]',
-        wants: ['heal_cooldown.owner_identity', 'has_monsters', 'db.heal_cooldown('],
-        srcs: treeSrcs,
-        manifest: borrowed('heal_cooldown.owner_identity', 'exists', 'has_monsters('),
-      });
       probes.push({
         label: 'L2 inventory.owner_identity.rekey re-pointed at rekey_monsters(',
         tag: '[G6/correspondence]',
@@ -8391,18 +8051,6 @@ export default async function guestClaimIntegrityEval() {
           manifest: REKEY_MANIFEST,
         });
       }
-      if (Object.hasOwn(L5, 'srcs')) {
-        probes.push({
-          label:
-            'L5 the LIVE has_monsters extended to read monster_pub, which makes the mirror ' +
-            'exception stale',
-          tag: '[G6/mirror]',
-          wants: ['monster_pub.owner_identity', 'no longer need'],
-          srcs: L5.srcs,
-          manifest: REKEY_MANIFEST,
-        });
-      }
-
       for (const probe of probes) {
         let got;
         try {
@@ -8434,8 +8082,8 @@ export default async function guestClaimIntegrityEval() {
           failures.push(
             `[G6 borrow-proof] ${probe.label}: bit under ${probe.tag} but the message is missing ` +
               `the fragment(s) [${missing.join(', ')}] that identify THIS probe. The tag alone ` +
-              'cannot: the checker returns the FIRST failure across 8 keys x 2 halves, so three ' +
-              `of these probes share one tag and would satisfy each other: ${got}`,
+              'cannot: the checker returns the FIRST failure across 8 keys, so two of these ' +
+              `probes share one tag and would satisfy each other: ${got}`,
           );
           continue;
         }
@@ -8488,10 +8136,10 @@ export default async function guestClaimIntegrityEval() {
       `region, and all ${Object.keys(REKEY_MANIFEST).length} Identity columns carry a D6 policy ` +
       `(${rekeyEntries} REKEY entries, ${liveCallsMatched} needle(s) matched as ` +
       `identifier-bounded calls in rekey_all / account_has_game_data, ` +
-      `${liveHalvesVerified} REKEY manifest half/halves proven by [G6/correspondence] to reach ` +
-      `their own table across ${treeSrcs.length} scanned source(s), ` +
-      `${borrowProofsBit.length} live-tree borrow proof(s) bit, ` +
-      `${EXISTS_COVER.size} mirror-covered exception(s) pinned) ` +
+      `${liveRekeysVerified} re-key helper(s) proven by [G6/correspondence] to reach their own ` +
+      `table and write through it across ${treeSrcs.length} scanned source(s) — the exists half ` +
+      'is proven by the rb41_* Rust tests in server-module/src/*_tests.rs since rb-41 — ' +
+      `${borrowProofsBit.length} live-tree borrow proof(s) bit) ` +
       `(${teethRun} tooth assertion(s) executed)`,
   };
 }
