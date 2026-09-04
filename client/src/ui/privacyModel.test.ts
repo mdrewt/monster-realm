@@ -731,6 +731,18 @@ describe('privacyStep (PRV1-1): requesting deletion takes two explicit steps', (
         deleteStep.next.confirm,
         `delete while ${busy} is in flight must not spend the armed confirmation`,
       ).toBe('delete-armed');
+      // ...and it must not INVENT anything either. WRONG IMPL KILLED (measured by this slice's
+      // artifact red-team, which passed all five mutant teeth without this pair): a busy refusal
+      // that reports `notice: 'request-rejected'` with a `rejectMessage` the server never sent —
+      // a field this module documents as the server's message VERBATIM (:160-163).
+      expect(
+        deleteStep.next.notice,
+        `delete while ${busy} is in flight: a request that was never sent has no rejection`,
+      ).toBe('none');
+      expect(
+        deleteStep.next.rejectMessage,
+        `delete while ${busy} is in flight: no server message can exist for an unsent request`,
+      ).toBeUndefined();
 
       // `confirm: 'delete-armed'` on these two fixtures is deliberate: it proves the UNIFORM
       // invariant "no emitter's no-op spends", not the defect above. `cancel-deletion-requested`
@@ -747,6 +759,8 @@ describe('privacyStep (PRV1-1): requesting deletion takes two explicit steps', (
         cancelStep.next.confirm,
         `cancel while ${busy} busy: no-op must not spend (uniform, passes on HEAD)`,
       ).toBe('delete-armed');
+      expect(cancelStep.next.notice, `cancel while ${busy} busy: nothing to announce`).toBe('none');
+      expect(cancelStep.next.rejectMessage, `cancel while ${busy} busy`).toBeUndefined();
 
       const exportStep = privacyStep(
         stateOf({ countdown: ACTIVE_COUNTDOWN, confirm: 'delete-armed', inFlight: busy }),
@@ -757,6 +771,8 @@ describe('privacyStep (PRV1-1): requesting deletion takes two explicit steps', (
         exportStep.next.confirm,
         `export while ${busy} busy: no-op must not spend (uniform, passes on HEAD)`,
       ).toBe('delete-armed');
+      expect(exportStep.next.notice, `export while ${busy} busy: nothing to announce`).toBe('none');
+      expect(exportStep.next.rejectMessage, `export while ${busy} busy`).toBeUndefined();
     }
 
     // ... and the guard lifts once the request settles (anti-vacuity for all three).
@@ -797,6 +813,11 @@ describe('privacyStep (PRV1-1): requesting deletion takes two explicit steps', (
       deleteWhileExporting.next.confirm,
       'reducer-built: the armed confirmation must survive a busy refusal',
     ).toBe('delete-armed');
+    expect(
+      deleteWhileExporting.next.notice,
+      'reducer-built: the busy refusal announces nothing — nothing was asked',
+    ).toBe('none');
+    expect(deleteWhileExporting.next.rejectMessage, 'reducer-built').toBeUndefined();
 
     // A SECOND reducer-built path — the double-click, the most realistic manifestation of the
     // bug: `case 'delete-requested'` (:269-272) gates only on `deletePermitted`, never on
@@ -819,9 +840,7 @@ describe('privacyStep (PRV1-1): requesting deletion takes two explicit steps', (
       hasLiveConnection: true,
     });
     expect(doubleClick.effect, 'the double-click must not fire a second delete').toBe('none');
-    expect(doubleClick.next.inFlight, 'the first delete is still the one in flight').toBe(
-      'delete',
-    );
+    expect(doubleClick.next.inFlight, 'the first delete is still the one in flight').toBe('delete');
     expect(
       doubleClick.next.confirm,
       'the double-click must not silently disarm the re-armed confirmation',
@@ -1182,11 +1201,16 @@ describe('privacyModel: purity and totality', () => {
     // `confirm`: `confirm-cancelled` (disarm), `delete-requested` (arm) and `account-changed`
     // (disarm on any phase leave). Every other event that resolves to `effect: 'none'` — a
     // busy-guard refusal, a permission refusal, a settled request, a rejected request — must
-    // leave `confirm` exactly as it found it. MEASURED by this slice's red-team: this property
-    // fails on 1112/20000 random cases on HEAD (the `begin` no-op guard branch applies the
-    // caller-supplied `confirm` unconditionally) and 0/20000 on the fix.
+    // leave `confirm` exactly as it found it. MEASURED by this slice's red-team, with a
+    // throwaway 20 000-run config: the property fails on 1112 of those cases against the pre-fix
+    // implementation (`begin`'s no-op guard branch applies the caller-supplied `confirm`
+    // unconditionally) and 0 against the fix — a ~5.6% per-case hit rate, so it is discriminating
+    // rather than decorative.
     //
-    // Deterministic on purpose — a fixed seed and a fixed run count, so this gate never flakes.
+    // What SHIPS below is deliberately smaller and DETERMINISTIC — a fixed seed and a fixed run
+    // count — so this gate never flakes. At that hit rate 2000 runs is not a probabilistic bet:
+    // the seed pins the exact sample, and the anti-vacuity flag at the end of this test proves
+    // that sample really does contain the armed + busy + `delete-confirmed` case.
     const countdownArb = fc.constantFrom(
       UNKNOWN_COUNTDOWN,
       ACTIVE_COUNTDOWN,

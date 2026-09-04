@@ -236,7 +236,8 @@ function begin(
     // tell the player — inventing a rejection here would claim the server refused when it was
     // never asked — and nothing is SPENT either: an armed confirmation survives a click that was
     // refused, exactly as it survives one that could not be delivered (the branch below).
-    // Returning `state` itself, not a copy, is this module's shape for a true no-op (`:271`).
+    // Returning `state` itself, not a copy, is this module's shape for a true no-op — the same
+    // shape the `'delete-requested'` arm below uses for a dark control.
     return { next: state, effect: 'none' };
   }
   if (!hasLiveConnection) {
@@ -257,8 +258,10 @@ function begin(
 }
 
 /**
- * Pure reducer. Total (never throws), returns a FRESH state, never mutates its input, and takes
- * exactly `(state, event)` — no clock.
+ * Pure reducer. Total (never throws), never mutates its input, and takes exactly
+ * `(state, event)` — no clock. Every step that CHANGES anything returns a fresh object; a true
+ * no-op (a dark control, a refused emitter) returns the input state itself, so reference equality
+ * means "nothing happened" rather than "nothing was copied".
  */
 export function privacyStep(state: PrivacyModelState, event: PrivacyEvent): PrivacyStep {
   switch (event.kind) {
