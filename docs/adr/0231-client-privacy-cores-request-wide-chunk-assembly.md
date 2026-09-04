@@ -136,9 +136,12 @@ constant degrades a backup, never the only signal.
 ## Consequences
 
 - **`terminalAtMs` is write-only until m22-s8b.** It is converted, stored and covered by tests, but
-  no production code reads it yet: `main.ts` reads only `claimedFrom` from `StoreAccount`
-  (`main.ts:2756`). Both graphs agree the blast radius is census tests, not call sites. Stating
-  this plainly is more useful than an "end-to-end" claim the code does not support.
+  no production code reads it yet: `main.ts`'s `onClaimResult` callback, in its AUTH-51 / D15
+  claim-rejected branch, is the file's sole non-comment `store.ownAccount(identity)` read, and it
+  takes only `?.claimedFrom` (`main.ts:2777` as of 18r-b; the callback is the anchor, the number a
+  dated hint per rb-36's citation doctrine). Both graphs agree the blast radius is census tests, not
+  call sites. Stating this plainly is more useful than an "end-to-end" claim the code does not
+  support.
 - **Both pure cores have no production caller in this slice.** That is the cost of the split. It is
   bounded: they are the frozen seam s8b builds against, and landing the assembly core before the
   transport is what gets it adversarial fixtures (mixed-owner chunks, `NaN` indices, a
