@@ -54,6 +54,9 @@ use game_core::resolve_encounter;
 /// (`WILD_IDENTITY`) is accepted. A client may NOT name another player as the
 /// opponent — that would conscript their monsters into a `battle` row delivered
 /// to both named participants via the `my_battle` view (ADR-0198).
+///
+/// Deletion-gated (ADR-0236, spec para 4.7): a caller whose account is mid-grace
+/// or terminal is refused before any other state read and every write.
 #[spacetimedb::reducer]
 pub fn start_battle(
     ctx: &ReducerContext,
@@ -111,6 +114,14 @@ pub fn start_battle(
             }
         }
     }
+
+    // Deletion gate (ADR-0236 D2, spec para 4.7): a mid-grace or terminal account
+    // may not OPEN a new battle commitment. The FIRST stateful check on purpose —
+    // the gate is a DB read, so the pure caps/provenance/dedup rejects above keep
+    // their place (M8.5a for the caps, ADR-0048 for provenance) — and it runs
+    // before every other-party read and every write. Fully qualified + `?;`: both are pinned (unshadowable path, no
+    // discarded verdict).
+    crate::guards::require_not_deleting(ctx, "start_battle")?;
 
     // Check caller is not already in an ongoing battle — EITHER role (ADR-0122):
     // side-B of an ongoing PvP battle must not open a second battle.
@@ -537,6 +548,9 @@ pub fn start_wild_battle(ctx: &ReducerContext, zone_id: u32) -> Result<(), Strin
         log_reject("start_wild_battle", me, &e);
         return Err(e);
     };
+    // Deletion gate (ADR-0236 D2/D3): the same caller-only refusal as `start_battle`,
+    // right after the joined check (the challenge_pvp guard-1a precedent).
+    crate::guards::require_not_deleting(ctx, "start_wild_battle")?;
     let Some(character) = ctx.db.character().entity_id().find(player.entity_id) else {
         let e = "no character".to_string();
         log_reject("start_wild_battle", me, &e);

@@ -85,7 +85,9 @@ pub(crate) fn spend_currency(
 /// Buy `qty` units of `item_id` from shop `shop_id`.
 ///
 /// Server flow (reject-not-clamp, server-priced, atomic):
-/// 1. Verify caller is a joined player (`require_owner` before any spend).
+/// 1. Verify caller is a joined player (`require_owner` before any spend), then the
+///    deletion gate (ADR-0236, spec para 4.7) — reject a mid-grace or terminal caller
+///    before any further read.
 /// 2. Look up the `shop_item_row` for `(shop_id, item_id)` — reject if not stocked.
 /// 3. Compute total = `buy_price × qty` (server-side, checked_mul — no overflow).
 /// 4. Trade-escrow guard (TR-9, ADR-0106) — reject if the currency is locked in
@@ -110,6 +112,11 @@ pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) -> Result
         .find(me)
         .ok_or_else(|| "not joined".to_string())?;
     require_owner(ctx, "buy", p.identity)?;
+
+    // Deletion gate (ADR-0236 D2, spec para 4.7): standing is established, so a
+    // mid-grace or terminal account is refused HERE — before the stock lookup, the
+    // escrow/headroom reads and the spend. Fully qualified + `?;` (both pinned).
+    crate::guards::require_not_deleting(ctx, "buy")?;
 
     if qty == 0 {
         return Err("qty must be > 0".to_string());
@@ -170,7 +177,9 @@ pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) -> Result
 /// Sell `qty` units of `item_id` from the caller's inventory.
 ///
 /// Server flow (reject-not-clamp, server-priced, atomic):
-/// 1. Verify caller is a joined player (`require_owner` before any consume/grant).
+/// 1. Verify caller is a joined player (`require_owner` before any consume/grant),
+///    then the deletion gate (ADR-0236, spec para 4.7) — reject a mid-grace or
+///    terminal caller before any further read.
 /// 2. Look up `sell_price` from `item_row` — reject if 0 ("item cannot be sold").
 /// 3. Compute total = `sell_price × qty` (server-side, checked_mul) — an
 ///    overflow rejects here, pre-filtering the headroom check in step 5
@@ -197,6 +206,11 @@ pub fn sell(ctx: &ReducerContext, item_id: u32, qty: u32) -> Result<(), String> 
         .find(me)
         .ok_or_else(|| "not joined".to_string())?;
     require_owner(ctx, "sell", p.identity)?;
+
+    // Deletion gate (ADR-0236 D2, spec para 4.7): standing is established, so a
+    // mid-grace or terminal account is refused HERE — before the item lookup, the
+    // escrow/headroom reads and the consume. Fully qualified + `?;` (both pinned).
+    crate::guards::require_not_deleting(ctx, "sell")?;
 
     if qty == 0 {
         return Err("qty must be > 0".to_string());

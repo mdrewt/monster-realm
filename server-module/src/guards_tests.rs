@@ -2800,3 +2800,349 @@ fn m22s5_reject_reason_is_static_pii_free_and_distinct() {
         );
     }
 }
+
+// ===========================================================================
+// rb-46 (residual R-m22-s5-X12, ADR-0236 D1) — the caller-only deletion gate
+// reaches PvE battle start and the shop.
+//
+// EARS criterion encoded by this block:
+//
+//   R-m22-s5-X12  WHILE the caller's account is inside the para-4.7 deletion
+//                 gate, WHEN the caller invokes `start_battle`,
+//                 `start_wild_battle`, `buy` or `sell`, the server module SHALL
+//                 refuse the call before any write, through the ONE shared
+//                 caller-only wrapper, tagged with the refusing reducer's own
+//                 name.
+//
+// SCOPE NOTE ON THE m22-s5 CENSUS ABOVE — read this before touching it.
+// `m22s5_gated_reducer_census_is_exactly_three` stays CORRECT and is
+// deliberately left unedited by this slice: its claim is scope-LOCAL to the two
+// files it scans, trading.rs and pvp.rs. The CRATE-WIDE caller set of the
+// wrapper was never three. m22-s3b (ADR-0228 D7h) added a fourth caller,
+// ranking::set_profile_name, and rb-46 adds four more (start_battle,
+// start_wild_battle, buy, sell) for eight in total. The test below is the
+// AUTHORITATIVE per-file set for battle.rs and economy.rs; no test in this crate
+// claims a crate-wide total, and none should without scanning every reducer
+// file. If a later slice wants that total, it must add the scan, not widen a
+// scoped one.
+//
+// SUBSTRATE: the proven m22-s5 pipeline, reused and NOT re-derived (ADR-0003).
+//   * `m22s5_stripped_squashed` — comments and string payloads blanked, all
+//     whitespace squashed. Carries its own loud preconditions (no deep raw
+//     string, balanced block-comment markers, no brace CHAR literal, balanced
+//     braces) which now also run against the two new sources. Used for the SET,
+//     the whole-file bare-name count and the bypass bans.
+//   * `m22s5_comments_only_squashed` — string payloads INTACT. The ONLY view in
+//     which a reducer's log tag is visible at all; every payload-blanking view
+//     renders all four call sites byte-identical.
+//
+// RED STATE AT HEAD: no call site exists in either file, so the gated SET is
+// EMPTY and the first set assertion fails naming both missing reducers of
+// battle.rs. Everything else in this test (the anti-vacuity name checks, the
+// bypass bans) is GREEN at HEAD by design and must stay green afterwards.
+//
+// SCAN SUBSTRATE RULES honoured here, as in the m22-s5 block above: every needle
+// naming a production symbol is assembled from fragments, no raw double-quote
+// CHARACTER literal is written anywhere, and no block-comment marker is ever
+// spelled contiguously.
+// ===========================================================================
+
+/// The PvE/wild battle reducer file, for the rb-46 per-file gate census.
+const RB46_BATTLE_RS: &str = include_str!("battle.rs");
+
+/// The shop/wallet reducer file, for the rb-46 per-file gate census.
+const RB46_ECONOMY_RS: &str = include_str!("economy.rs");
+
+/// The bare reducer-attribute marker, squashed — the boundary between one
+/// reducer's declaration region and the next one's.
+fn rb46_reducer_attr() -> String {
+    ["#[spacetimedb::", "reducer]"].concat()
+}
+
+/// The four reducer names rb-46 gates, assembled from fragments.
+///
+/// Each name doubles as the log TAG its own call site must carry, which is why
+/// one list serves both the SET assertion and the tag pins.
+fn rb46_gated_names() -> [String; 4] {
+    [
+        ["start_", "battle"].concat(),
+        ["start_wild_", "battle"].concat(),
+        ["b", "uy"].concat(),
+        ["se", "ll"].concat(),
+    ]
+}
+
+/// **R-m22-s5-X12 (census)** — the gated SET, the per-file call count, the
+/// per-site log tag, and the bans that keep the census meaningful.
+///
+/// Four claims, none of which the others can stand in for:
+///
+///   1. THE SET, per file: exactly `start_battle` + `start_wild_battle` in
+///      battle.rs, exactly `buy` + `sell` in economy.rs. A count alone is
+///      satisfied by gating two arbitrary reducers; a membership check alone is
+///      satisfied by gating those two PLUS everything else. Over-gating is a
+///      real defect here, not untidiness: gating `submit_attack`, `swap_active`,
+///      `flee` or `use_battle_item` would trap a deleting player inside a battle
+///      they can no longer finish or flee, and gating a wallet helper
+///      (`grant_currency` / `spend_currency`, both in economy.rs) would
+///      force-terminate value delivery mid-battle — the PRV1-10 break ADR-0236
+///      D1 names. The third helper on that reasoning, `consume_one`, lives in
+///      inventory.rs and is therefore outside BOTH scanned files: this census
+///      cannot see it, and nothing here claims otherwise.
+///   2. THE WHOLE-FILE BARE-NAME COUNT of two per file. The set assertion reads
+///      REDUCER BODIES only, so it is blind to a gate call hoisted into a
+///      private helper, to a duplicate inside one body, and to a `..._for(ctx,
+///      other)` sibling of the wrapper. The bare NAME is the needle, so an alias
+///      binding or a wrapper around the wrapper is counted too.
+///   3. THE LOG TAG, on the string-BEARING view, with the site required to sit
+///      inside its OWN reducer's declaration region. The count alone kills a
+///      single wrong tag; the region check is what kills a SWAP (buy tagged for
+///      sell and sell tagged for buy), under which every count is still one.
+///   4. THE BYPASS BANS: no reducer in either file may reach the accounts
+///      predicate, the pure SSOT decision or the account table directly, and
+///      neither file may hide a reducer from the extractor behind a
+///      conditional-compilation attribute wrapper or a renamed attribute
+///      import. A reducer that consults the predicate itself is gated by a rule
+///      NO fence in this crate constrains: it can invert the polarity, log
+///      nothing, or run after the write, and the set assertion still reports it
+///      as gated.
+///
+/// RED AT HEAD: neither file carries a call site, so the found set is EMPTY and
+/// the SET assertion fails first, naming `start_battle` and `start_wild_battle`
+/// as missing. The bare-name count (0, must be 2) and all four tag pins (0, must
+/// be 1) are red behind it.
+///
+/// kills:
+///   - M1/M2/M3/M4, dropping any one of the four call sites — the SET assertion
+///     names the missing reducer, and the bare-name count falls to 1.
+///   - M9, gating an already-open battle reducer (`submit_attack`): reported as
+///     unexpectedly gated by the SET assertion, and the file count reads 3.
+///   - M10, gating a wallet helper (`spend_currency`): invisible to the SET (a
+///     helper is not a reducer body) but the whole-file bare-name count reads 3.
+///   - M11, an import-shadowed unqualified call: the qualified needle no longer
+///     matches, so the reducer drops out of the SET while the bare-name count
+///     still reads 2 — the two clauses disagree, which is exactly the signal.
+///   - M12, a duplicated call: the file count reads 3.
+///   - M13, deleting the call and leaving a decoy `//` comment behind it: both
+///     views strip comments first, so the decoy satisfies nothing.
+///   - M6, a wrong tag (`sell` inside `buy`): the per-tag count for `buy` reads
+///     0 and for `sell` reads 2; a full SWAP of the two tags keeps both counts
+///     at 1 and dies on the declaration-region clause instead.
+///   - a `cfg_attr`-wrapped or renamed reducer attribute, which would make a
+///     reducer INVISIBLE to the extractor (silently absent from the set) rather
+///     than a loud parse ambiguity.
+///
+/// HONEST LIMIT: source scan. It says the call is written, is qualified, is
+/// tagged and is in the right reducer; it cannot say the call runs, that nothing
+/// above it returns early, or that it runs before the write. Reachability and
+/// ordering are pinned beside each reducer (`battle_tests.rs` /
+/// `economy_tests.rs`, clauses C/D/H/I there), and polarity is proven by
+/// executing the reducers under the native host in those same files.
+#[test]
+fn rb46_gated_reducer_census_battle_and_economy() {
+    let call = m22s5_gate_call_needle();
+    let bare = m22s5_gate_bare_name();
+    let dq = double_quote();
+    let attr = rb46_reducer_attr();
+    let names = rb46_gated_names();
+
+    let bypass: [(String, &str); 5] = [
+        (
+            ["crate::accounts::is_pending_", "deletion("].concat(),
+            "the accounts-side context predicate",
+        ),
+        (
+            ["should_reject_for_", "deletion("].concat(),
+            "the pure SSOT decision",
+        ),
+        (
+            ["ctx.db.acc", "ount("].concat(),
+            "a direct account-table read",
+        ),
+        (
+            ["cfg_", "attr("].concat(),
+            "a conditional-compilation attribute wrapper (census camouflage)",
+        ),
+        (
+            ["::reducer", "as"].concat(),
+            "a renamed reducer-attribute import (census camouflage)",
+        ),
+    ];
+
+    let files: [(&str, &str, [&str; 2]); 2] = [
+        (
+            "battle.rs",
+            RB46_BATTLE_RS,
+            [names[0].as_str(), names[1].as_str()],
+        ),
+        (
+            "economy.rs",
+            RB46_ECONOMY_RS,
+            [names[2].as_str(), names[3].as_str()],
+        ),
+    ];
+
+    for (label, src, expect) in files {
+        let squashed = m22s5_stripped_squashed(label, src);
+        let bodies = m22s5_reducer_bodies(label, &squashed);
+
+        // --- anti-vacuity: both expected reducers must EXIST ----------------
+        for name in expect {
+            let declared = bodies.iter().any(|(n, _)| n.as_str() == name);
+            assert!(
+                declared,
+                "rb-46 R-m22-s5-X12 FAIL (census anti-vacuity): `{label}` declares no \
+                 reducer named `{name}`, so every claim below about it would pass over a \
+                 reducer that does not exist. Either it was renamed — in which case decide \
+                 DELIBERATELY whether the new name opens a commitment and update this list \
+                 and ADR-0236 D1 together — or the extractor stopped seeing it, which is a \
+                 scan defect to investigate rather than a list to shorten."
+            );
+        }
+
+        // --- the SET ---------------------------------------------------------
+        let found: std::collections::BTreeSet<String> = bodies
+            .iter()
+            .filter(|(_, body)| body.contains(call.as_str()))
+            .map(|(n, _)| n.clone())
+            .collect();
+        let expected: std::collections::BTreeSet<String> =
+            expect.iter().map(|n| (*n).to_string()).collect();
+        let missing: Vec<&String> = expected.difference(&found).collect();
+        let extra: Vec<&String> = found.difference(&expected).collect();
+        assert!(
+            missing.is_empty() && extra.is_empty(),
+            "rb-46 R-m22-s5-X12 FAIL (gated-reducer census): the set of `{label}` reducers \
+             carrying the deletion gate is wrong. Missing: {missing:?}. Unexpectedly gated: \
+             {extra:?}. Found: {found:?}. Expected: {expected:?}. \
+             AT HEAD the found set is EMPTY — that is the red state, and it is what this \
+             slice exists to fix. \
+             IF YOU ADDED A REDUCER that OPENS a new commitment (a battle, a purchase, a \
+             sale), gate it and add its name here. IF YOU ADDED ONE THAT DOES NOT, leave it \
+             open deliberately and say why in the slice notes. Never delete a name from the \
+             expected set to make a build green: under-gating lets a mid-grace or terminal \
+             account open new commitments the deletion cascade will then have to unwind, \
+             and over-gating traps a deleting player inside a battle they can no longer \
+             finish or flee. Only this SET assertion can tell the two apart."
+        );
+
+        // --- the whole-file bare-name count ---------------------------------
+        let n_bare = squashed.matches(bare.as_str()).count();
+        assert_eq!(
+            n_bare, 2,
+            "rb-46 R-m22-s5-X12 FAIL (call-site count): `{label}` mentions the deletion-gate \
+             wrapper {n_bare} time(s) and must mention it EXACTLY twice — once per gated \
+             reducer in this file. ZERO is the RED STATE AT HEAD. The SET assertion above \
+             reads REDUCER BODIES only, so this whole-file count is what additionally \
+             catches a gate call hoisted into a private helper (where the body-keyed set \
+             cannot attribute it), a second call duplicated inside one body, and a \
+             differently-named sibling wrapper — the needle is the BARE NAME, so an alias \
+             binding or a re-export is counted here too."
+        );
+
+        // --- the bypass bans (green at HEAD; keep them green) ----------------
+        for (needle, what) in &bypass {
+            let n = squashed.matches(needle.as_str()).count();
+            assert_eq!(
+                n, 0,
+                "rb-46 R-m22-s5-X12 FAIL (bypass ban): `{label}` reaches {what} directly {n} \
+                 time(s) and must reach it ZERO times. Every gated reducer goes through the \
+                 shared caller-only wrapper, and that is what makes the census above mean \
+                 anything: a reducer that consults the deletion predicate itself is gated by \
+                 a rule no fence in this crate constrains — it can invert the polarity, log \
+                 nothing, or run after the write, and the SET assertion would still report \
+                 it as gated. The last two needles close the extractor's camouflage class: \
+                 a conditional-compilation attribute wrapper or a renamed attribute import \
+                 makes a whole reducer INVISIBLE to the body extractor, which is a silent \
+                 absence rather than a loud parse failure. All five are ZERO at HEAD."
+            );
+        }
+    }
+
+    // --- the log tag, on the string-BEARING view -----------------------------
+    let tag_cases: [(&str, &str, &str); 4] = [
+        ("battle.rs", RB46_BATTLE_RS, names[0].as_str()),
+        ("battle.rs", RB46_BATTLE_RS, names[1].as_str()),
+        ("economy.rs", RB46_ECONOMY_RS, names[2].as_str()),
+        ("economy.rs", RB46_ECONOMY_RS, names[3].as_str()),
+    ];
+
+    for (label, src, tag) in tag_cases {
+        let squashed = m22s5_comments_only_squashed(label, src);
+
+        // Both closing forms are accepted. The INLINE form is the expected one:
+        // `fn_call_width` (60) bounds the ARGUMENT LIST, not the whole call
+        // expression (`raising.rs:680` is the in-tree counter-example — a
+        // 67-column call kept inline on 52 columns of arguments), and the widest
+        // argument list among these four sites is 24 columns. The trailing-comma
+        // form is accepted only as future-proofing against a rename long enough
+        // to push an argument list past that width.
+        let plain = [call.as_str(), "ctx,", dq.as_str(), tag, dq.as_str(), ")?;"].concat();
+        let trailing = [call.as_str(), "ctx,", dq.as_str(), tag, dq.as_str(), ",)?;"].concat();
+
+        let n =
+            squashed.matches(plain.as_str()).count() + squashed.matches(trailing.as_str()).count();
+        assert_eq!(
+            n, 1,
+            "rb-46 R-m22-s5-X12 FAIL (call-site tag): `{label}` contains {n} deletion-gate \
+             call site(s) tagged for `{tag}`; it must contain EXACTLY ONE. ZERO is the RED \
+             STATE AT HEAD. This is the only pin in this test evaluated with string payloads \
+             INTACT — every other view blanks them, which renders all four call sites \
+             byte-identical and a swapped tag invisible. One wrapper serves all four \
+             reducers, so the tag is the ONLY record of which commitment was actually \
+             refused; a wrong tag files the reject under a sibling reducer's name and the \
+             operator's log points at the wrong place. The trailing `?;` is part of the pin: \
+             a discarded result compiles, lints clean and gates nothing. Expected (squashed, \
+             the inline form rustfmt produces here): {plain:?}"
+        );
+
+        // The site must sit inside its OWN reducer's declaration region — from
+        // that reducer's declaration to the next reducer attribute in the file.
+        // The region is a SUPERSET of the body (private helpers declared between
+        // two reducers fall inside it), which is deliberate: it needs no brace
+        // matching, and brace matching is unsound on this view — string payloads
+        // survive here, and the format braces in `battle.rs`'s log lines balance
+        // only by accident (recorded at `battle_tests.rs:1414-1422`). Combined
+        // with the SET assertion above, which reads real bodies on the
+        // payload-blanked view, a call parked in a helper is still caught.
+        let site = squashed
+            .find(plain.as_str())
+            .or_else(|| squashed.find(trailing.as_str()))
+            .unwrap_or_else(|| {
+                panic!(
+                    "rb-46 R-m22-s5-X12 FAIL (call-site tag): the tagged site for `{tag}` \
+                     counted 1 in `{label}` but could not be located. This is a scan defect \
+                     — investigate the view, never relax the pin."
+                )
+            });
+
+        let decl = ["pubfn", tag, "("].concat();
+        let n_decl = squashed.matches(decl.as_str()).count();
+        assert_eq!(
+            n_decl, 1,
+            "rb-46 R-m22-s5-X12 FAIL (tag region anchor): `{label}` declares `{tag}` \
+             {n_decl} time(s) in the squashed comments-only view; it must declare it EXACTLY \
+             once. With zero the reducer was renamed or its visibility changed and the region \
+             below cannot be built; with two the region extractor takes the FIRST match, so a \
+             decoy declaration could host the tagged call while the real reducer stays \
+             ungated."
+        );
+        let decl_at = squashed
+            .find(decl.as_str())
+            .expect("rb-46: the reducer declaration counted 1 but could not be located");
+        let region_end = squashed[decl_at..]
+            .find(attr.as_str())
+            .map_or(squashed.len(), |off| decl_at + off);
+        assert!(
+            site > decl_at && site < region_end,
+            "rb-46 R-m22-s5-X12 FAIL (tag belongs to its own reducer): in `{label}` the call \
+             site tagged `{tag}` sits at squashed offset {site}, OUTSIDE that reducer's own \
+             declaration region ({decl_at}..{region_end}). This is the clause that kills a \
+             tag SWAP — two gated reducers exchanging each other's tags keeps every count in \
+             this test at one while both rejects are filed under the wrong reducer, so no \
+             count can see it. A tag is not decoration: the wrapper is shared, and the tag is \
+             the operator's only record of which commitment a deletion-gated caller was \
+             refused."
+        );
+    }
+}
