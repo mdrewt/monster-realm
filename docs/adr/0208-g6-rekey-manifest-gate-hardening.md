@@ -5,6 +5,7 @@
 **Slice:** rb-4 (residual R-m22-s0-X3; also records the rb-2 / rb-3 decisions both sibling ledgers deferred to this ADR)
 **Supersedes:** —
 **Amends:** —
+**Extended-by:** ADR-0222, ADR-0223
 **Subsystems:** ci-gates, security-authz, schema-persistence
 **Decision:** G6 reads an explicit `policy` field via one parser, asks membership of own-property Maps only, and resolves Rust type aliases (union of every `type`/`use … as` binding in the tree, fail-closed on ambiguity) before matching Identity.
 
