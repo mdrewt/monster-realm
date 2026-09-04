@@ -1016,7 +1016,8 @@ fn rb22p_stub_probe_regression() {
 //   redaction, and the owner-scoped view that is the entire client read path.
 //   PRV1-14 (the TTL reaper) is DEFERRED to S4b and deliberately ungated here.
 //
-// THE SPLIT (ADR-0225 D5): a ReducerContext is not constructible off-instance,
+// THE SPLIT (ADR-0225 D5): a ReducerContext was not constructible off-instance when
+// this was written (rb-41's native_host_tests changed that; the scans stand as written),
 // so every PURE seam below is EXECUTED and every ctx-bound shell property is a
 // SOURCE-STRUCTURE pin over PRIVACY_RS through this module's existing
 // three-stage strip pipeline. Source pins are the weaker instrument and each
@@ -3816,8 +3817,9 @@ proptest! {
 /// subject, and every unindexed scan is IMMEDIATELY bounded by the extracted
 /// own-row predicate.
 ///
-/// Source-structure, and it says so: a ReducerContext is not constructible
-/// off-instance, so the behavioural half of this criterion lives in the two
+/// Source-structure, and it says so: a ReducerContext was not constructible
+/// off-instance when this was written (rb-41's native_host_tests changed that),
+/// so the behavioural half of this criterion lives in the two
 /// predicate tests and in the serializer tests; this clause proves the READ
 /// SHAPE. Every clause is scoped through extract_squashed_fn_body — never a
 /// whole-file contains — and every count is exact, so a decoy chain in a
@@ -5000,8 +5002,9 @@ fn m22s4_cooldown_polarity_differs_from_is_deletion_due() {
 // ===========================================================================
 // X9 — the reducer wiring (the security shape).
 //
-// SOURCE-STRUCTURE ONLY, and it says so: a ReducerContext is not constructible
-// off-instance, so these clauses pin the SHAPE of the one client entry point.
+// SOURCE-STRUCTURE ONLY, and it says so: a ReducerContext was not constructible
+// off-instance when this was written (rb-41's native_host_tests changed that), so
+// these clauses pin the SHAPE of the one client entry point.
 // Every clause is scoped through the fn-body extractor, never a whole-file
 // contains, and every count is exact.
 // ===========================================================================
@@ -5738,56 +5741,6 @@ fn m22s4_no_ufcs_write_verb_in_privacy() {
              use here."
         );
     }
-}
-
-// ===========================================================================
-// NATIVE-LINK STUBS (test infrastructure, NOT assertions — implementer-added
-// and disclosed in the PR). The m22s4 registry tests read super::EXPORTERS at
-// runtime, and materializing its fn pointers makes every rows_ reader live in
-// the NATIVE test binary — so the linker now demands the SpacetimeDB host
-// syscalls, which exist only inside the wasm host. These no_mangle stubs
-// satisfy the linker; none is ever CALLED (ReducerContext is not constructible
-// off-instance, ADR-0225 D5), and each aborts the process if that ever stops
-// being true. Signatures mirror spacetimedb-bindings-sys 2.8.1 raw externs.
-// ===========================================================================
-
-#[no_mangle]
-extern "C" fn table_id_from_name(_name: *const u8, _name_len: usize, _out: *mut u32) -> u16 {
-    std::process::abort()
-}
-
-#[no_mangle]
-extern "C" fn index_id_from_name(_name_ptr: *const u8, _name_len: usize, _out: *mut u32) -> u16 {
-    std::process::abort()
-}
-
-#[no_mangle]
-extern "C" fn datastore_table_scan_bsatn(_table_id: u32, _out: *mut u32) -> u16 {
-    std::process::abort()
-}
-
-#[no_mangle]
-extern "C" fn datastore_index_scan_point_bsatn(
-    _index_id: u32,
-    _point_ptr: *const u8,
-    _point_len: usize,
-    _out: *mut u32,
-) -> u16 {
-    std::process::abort()
-}
-
-#[no_mangle]
-extern "C" fn row_iter_bsatn_advance(
-    _iter: u32,
-    _buffer_ptr: *mut u8,
-    _buffer_len_ptr: *mut usize,
-) -> i16 {
-    std::process::abort()
-}
-
-#[no_mangle]
-extern "C" fn row_iter_bsatn_close(_iter: u32) -> u16 {
-    std::process::abort()
 }
 
 // ===========================================================================

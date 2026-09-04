@@ -5,10 +5,16 @@
 //! constants, and the `use crate::schema::{Account, AccountStatus, GuestClaim}`
 //! aliases are all reachable via `use super::*` (same pattern as economy_tests).
 //!
-//! There is NO way to construct a `ReducerContext` in this crate, so the split is:
+//! When this file was written there was no known way to construct a `ReducerContext`
+//! in this crate, so the split is:
 //!   - every behavioural criterion that lands on a pure seam is an EXECUTED test;
 //!   - every ctx-bound shell property is a SOURCE SCAN over the frozen production
 //!     files (`accounts.rs`/`lib.rs`/`schema.rs`/the rekey helpers) via `include_str!`.
+//!
+//! Since rb-41 that premise is FALSE: `ReducerContext::__dummy()` plus the in-memory
+//! host in `native_host_tests.rs` run ctx-bound helpers against real rows (the
+//! `rb41_*` tests in the predicate-owning `*_tests.rs` files are the pattern). The
+//! scans below still hold; new ctx-bound behaviour should prefer a real test.
 //!
 //! SCAN HYGIENE (memory card): cross-file eval scanners concatenate every
 //! `server-module/src/**` file and do NOT strip string literals. Therefore this
@@ -7490,8 +7496,9 @@ fn rb24_schedule_table_sole_writers() {
 // section contains no block comment, no raw string, no apostrophe and no bare
 // double-quote character inside any comment.
 //
-// WHY ONE STRUCTURE TEST (T3) AND SEVEN PURE ONES: there is no way to construct
-// a `ReducerContext` in this crate, so a reducer BODY has no runtime harness at
+// WHY ONE STRUCTURE TEST (T3) AND SEVEN PURE ONES: when this was written there was
+// no way to construct a `ReducerContext` in this crate (rb-41's native_host_tests
+// changed that), so a reducer BODY had no runtime harness at
 // all. Everything that can be a pure seam is one and is EXECUTED; the two guard
 // PLACEMENTS — which are ordering properties of a reducer body — are provable
 // only over the source. ADR-0225 records that justification once.
@@ -8823,8 +8830,9 @@ fn rb34_guest_claim_rekey_delegate_reachable_only_from_rekey_all() {
 //   PRV1-8(b) a terminal identity re-registering is RESET to `new_account_row`
 //            defaults with NO pre-deletion value carried forward.
 //
-// SCOPE SPLIT, restated because it decides the shape of every test below: there
-// is no way to construct a `ReducerContext` in this crate, so every rule that
+// SCOPE SPLIT, restated because it decides the shape of every test below: when
+// these were written there was no way to construct a `ReducerContext` in this crate
+// (rb-41's native_host_tests changed that), so every rule that
 // can be a pure seam IS one and is EXECUTED; the residue that exists only as
 // wiring inside a reducer body — placement, ordering, delegation — is pinned by
 // source scan. ADR-0228 records that justification once.
@@ -14272,62 +14280,6 @@ fn rb39_machinery_alias_predicate_teeth() {
          `previous byte is not a word byte` boundary test, the occurrence inside `my_ctx.db;` \
          reds — and a gate that reds on unrelated code is one that gets weakened. Got {verdict:?}"
     );
-}
-
-// ===========================================================================
-// NATIVE-LINK STUBS (test infrastructure, NOT assertions — S9-added and
-// disclosed in the PR). `m22s9_cross_slice_contract_signatures` MATERIALIZES
-// fn pointers to two ctx-bound functions, which makes their whole call graph
-// live in the NATIVE test binary — so the linker now demands the SpacetimeDB
-// host syscalls those bodies reach (row insert / update / delete-by-eq /
-// delete-by-index-point), which exist only inside the wasm host. These
-// no_mangle stubs satisfy the linker; none is ever CALLED (`ReducerContext` is
-// not constructible off-instance, ADR-0225 D5), and each aborts the process if
-// that ever stops being true. They join the six privacy_tests.rs already
-// declares (scan / index-scan / iterator / name-lookup); the two sets are
-// disjoint, which is what keeps the single test binary linkable.
-// Signatures mirror spacetimedb-bindings-sys 2.8.1 raw externs, with the
-// repr(transparent) TableId / IndexId newtypes spelled as the u32 they wrap —
-// the shape privacy_tests.rs already uses.
-// ===========================================================================
-
-#[no_mangle]
-extern "C" fn datastore_insert_bsatn(
-    _table_id: u32,
-    _row_ptr: *mut u8,
-    _row_len_ptr: *mut usize,
-) -> u16 {
-    std::process::abort()
-}
-
-#[no_mangle]
-extern "C" fn datastore_update_bsatn(
-    _table_id: u32,
-    _index_id: u32,
-    _row_ptr: *mut u8,
-    _row_len_ptr: *mut usize,
-) -> u16 {
-    std::process::abort()
-}
-
-#[no_mangle]
-extern "C" fn datastore_delete_all_by_eq_bsatn(
-    _table_id: u32,
-    _rel_ptr: *const u8,
-    _rel_len: usize,
-    _out: *mut u32,
-) -> u16 {
-    std::process::abort()
-}
-
-#[no_mangle]
-extern "C" fn datastore_delete_by_index_scan_point_bsatn(
-    _index_id: u32,
-    _point_ptr: *const u8,
-    _point_len: usize,
-    _out: *mut u32,
-) -> u16 {
-    std::process::abort()
 }
 
 // ===========================================================================

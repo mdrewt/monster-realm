@@ -2216,3 +2216,113 @@ fn auth24_rekey_wallet_credits_before_zero_never_deletes() {
         "AUTH-24/23: rekey_wallet must NEVER delete a wallet row (credit-forward + in-place zero)."
     );
 }
+
+// ===========================================================================
+// rb-41 — R-rb-25-X9 (ADR-0222 known-limit 2, closed by the ADR-0224 native
+// host migration): the REKEY exists-predicate for the wallet table, exercised
+// against REAL rows instead of against its own source text.
+//
+// ADR-0222's guest-claim-integrity gate could only READ this predicate's
+// source, so a HOLLOWED body — one that still performs the table read but
+// returns a value decoupled from it — passed every check. The test below runs
+// the shipped predicate against the in-memory host (native_host_tests) and
+// pins its answer to the rows that actually exist, which no source scan can do.
+// ===========================================================================
+
+/// EARS R-rb-25-X9: `economy::wallet_exists` must answer from the CURRENT rows
+/// of the wallet table, for the ASKED owner — false with no row, false while
+/// only a stranger owns one, true once the owner owns one, false again once the
+/// owner's row is gone (while the stranger's row survives). The paired
+/// `accounts::account_has_game_data` assertions pin this table's disjunct of
+/// the six-way `||` chain that decides whether a guest holds game data.
+///
+/// kills:
+///   - the ADR-0222 known-limit hollow, `{ let _ = <the wallet read>; false }`:
+///     the owner-row assertion goes red while every source scan stays green.
+///   - the inverted hollow, `{ let _ = <the wallet read>; true }`: the
+///     empty-table assertion goes red.
+///   - a body that answers does-the-table-hold-ANY-row instead of
+///     does-THIS-owner-hold-one: the stranger-only assertion goes red, and so
+///     does the post-removal assertion (the stranger's row is still there).
+///   - a latched or memoised answer that never returns to false once it has
+///     seen a row: the post-removal assertion goes red.
+///   - deleting the wallet disjunct from `accounts::account_has_game_data`:
+///     the paired account assertion goes red while the direct predicate
+///     assertion stays green, naming the missing disjunct exactly.
+#[test]
+fn rb41_wallet_exists_tracks_real_wallet_rows() {
+    let fx = crate::native_host_tests::fixture();
+    let t = fx.table::<PlayerWallet>("player_wallet", "owner_identity", |r| r.owner_identity);
+    let ctx = fx.ctx();
+    let owner = Identity::from_byte_array([11u8; 32]);
+    let stranger = Identity::from_byte_array([12u8; 32]);
+
+    assert!(
+        !crate::economy::wallet_exists(&ctx, owner),
+        "wallet_exists must be false for an owner with no wallet row: the table is empty here, \
+         so a true answer means the return value is not derived from the table read"
+    );
+    assert!(
+        !crate::accounts::account_has_game_data(&ctx, owner),
+        "account_has_game_data must be false while the owner owns no row in ANY REKEY table: \
+         no row of any kind has been seeded yet"
+    );
+
+    t.seed(&PlayerWallet {
+        owner_identity: stranger,
+        balance: 0,
+    });
+    assert!(
+        !crate::economy::wallet_exists(&ctx, owner),
+        "wallet_exists must stay false when the ONLY wallet row belongs to a different owner: \
+         the predicate answers per-owner, never table-is-non-empty"
+    );
+    assert!(
+        !crate::accounts::account_has_game_data(&ctx, owner),
+        "account_has_game_data must stay false when the only seeded row belongs to a stranger: \
+         a guest claim keys on the CALLER identity, not on global table population"
+    );
+
+    t.seed(&PlayerWallet {
+        owner_identity: owner,
+        balance: 0,
+    });
+    assert!(
+        crate::economy::wallet_exists(&ctx, owner),
+        "wallet_exists must report true while the owner holds a wallet row; a body that reads \
+         the table and then returns a constant false (the ADR-0222 known-limit hollow) fails \
+         exactly here. Indexes the generated code asked the host for: {:?}",
+        fx.requested_indexes()
+    );
+    assert!(
+        crate::accounts::account_has_game_data(&ctx, owner),
+        "account_has_game_data must be true through its wallet disjunct while the owner holds a \
+         wallet row and nothing else; a deleted disjunct fails exactly here. Indexes the \
+         generated code asked the host for: {:?}",
+        fx.requested_indexes()
+    );
+
+    assert_eq!(
+        t.remove(owner),
+        1,
+        "the owner had exactly one wallet row to remove: a different count means the seeded \
+         state was not the state this test reasons about"
+    );
+    assert!(
+        !crate::economy::wallet_exists(&ctx, owner),
+        "wallet_exists must return to false once the owner's wallet row is gone: the answer \
+         tracks live rows, so it can never latch on a row that no longer exists"
+    );
+    assert!(
+        !crate::accounts::account_has_game_data(&ctx, owner),
+        "account_has_game_data must return to false once the owner's last REKEY-table row is \
+         gone: this is the state in which a guest claim is allowed to proceed"
+    );
+    assert!(
+        crate::economy::wallet_exists(&ctx, stranger),
+        "removing the owner's row must leave the stranger's row untouched: without this the \
+         negative above could be explained by an emptied table rather than by owner scoping. \
+         Indexes the generated code asked the host for: {:?}",
+        fx.requested_indexes()
+    );
+}

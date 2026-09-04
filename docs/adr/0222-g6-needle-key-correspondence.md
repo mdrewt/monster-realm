@@ -7,7 +7,7 @@
 **Amends:** —
 **Subsystems:** ci-gates, security-authz
 **Extends:** ADR-0208 (no reciprocal back-link edit — `docs/adr/0208-*` is outside this slice's declared touches)
-**Decision:** A REKEY needle must correspond to its own key's table: `[G6/correspondence]` resolves it to exactly one `fn` and requires that body to reach `db.<table>(`, writing through it on the rekey half; `[G6/mirror]` pins the one exception.
+**Decision:** A REKEY needle must name one cfg-free `fn` (both halves); the rekey half must also reach `db.<table>(` and write through it. Since rb-41 the exists half's reach is proven by `rb41_*` Rust tests; the mirror exception is retired.
 
 ---
 
@@ -84,7 +84,8 @@ which copies `owner_identity` from the private row. Its owning gate is
 
 **D6 — the oracle is the SHIPPED tree, not the fixture.** The FG75 teeth run against in-file
 fixtures, and the fixture lives in the file an attacker is already editing. So the default export
-additionally runs five LIVE-TREE borrow proofs after the real check passes: each drives the shipped
+additionally runs three LIVE-TREE borrow proofs (L2-L4; five until rb-41, which retired L1 and L5
+with the exists half's reach leg) after the real check passes: each drives the shipped
 checker over the shipped sources with a borrowed manifest or an in-memory source edit and requires it
 to red **with the expected tag and every expected message fragment**. The success summary reports
 counts DERIVED from the run, never literals — a literal survives the deletion of the code it
@@ -106,11 +107,9 @@ fact that cannot drift.
    satisfies the clause (the `cfg` legs close the compiles-into-no-target half only).
 2. **The exists half cannot see hollowing.** A predicate whose body reads its table and returns a
    constant is textually indistinguishable from a real one. MEASURED green
-   (`wallet_exists -> { let _ = ctx.db.player_wallet()…find(owner); false }`), and nothing else in
-   the repo covers it — `accounts_tests.rs` references `account_has_game_data` once, for ordering
-   only. **DEFERRED to the residual backlog** (ledger gate X9): the closure is a Rust twin
-   enumerating the six `account_has_game_data` disjuncts beside the existing `rekey_all` D6-order
-   pin, in a file outside this slice's `touches:`. rb-2's own DEFER named the same remedy.
+   (`wallet_exists -> { let _ = ctx.db.player_wallet()…find(owner); false }`), and when this ADR was
+   written nothing else in the repo covered it — `accounts_tests.rs` referenced
+   `account_has_game_data` once, for ordering only. **CLOSED by rb-41** — see the Amendment below.
 3. **The rekey half proves a write, never a DIRECTION or a COMPLETENESS.** Delete-without-reinsert
    and a `to`/`from` inversion both pass. `player_wallet` and `profile` are covered elsewhere
    (`currency-integrity` pins `zeroed_wallet(row)`, `ranking-security` pins `tombstoned_profile`);
@@ -135,3 +134,132 @@ fact that cannot drift.
 
 **Authoring constraint this creates:** a fixture that both concatenates `GOOD_TREE[0].src` into a
 file AND includes `GOOD_TREE[0]` in the same tree array now reds with "declared 2 time(s)".
+
+## Amendment (2026-09-04, rb-41 — residual R-rb-25-X9)
+
+Known limit 2 is CLOSED, and D5's `[G6/mirror]` exception goes with it. Not by hardening the
+scanner — ADR-0224 forbids that — but by migrating the exists half's REACH question ("does this
+predicate read, and decide on, its own table?") out of this eval into ordinary Rust `#[test]`s that
+run the SHIPPED predicates against REAL rows. The cut is SURGICAL, not a whole-half deletion, for a
+reason a red-team MEASURED on the plan (see "KEPT" below).
+
+**The tests.** Seven `#[test]`s, each in the `*_tests.rs` of the module owning the predicate:
+`rb41_wallet_exists_tracks_real_wallet_rows` (`economy::wallet_exists`, `economy_tests.rs`),
+`rb41_profile_exists_tracks_real_profile_rows` (`ranking::profile_exists`, `ranking_tests.rs`),
+`rb41_has_heal_cooldown_tracks_real_cooldown_rows` (`raising::has_heal_cooldown`,
+`raising_tests.rs`), `rb41_has_items_tracks_real_inventory_rows` (`inventory::has_items`, NEW
+`inventory_tests.rs`, declared from `inventory.rs`), `rb41_has_monsters_tracks_real_monster_rows`
+(`monster_mgmt::has_monsters`, NEW `monster_mgmt_tests.rs`, declared from `monster_mgmt.rs`), and
+`rb41_quest_state_tracks_real_quest_rows` + `rb41_dialogue_state_tracks_real_dialogue_rows`
+(`npc::has_quest_or_dialogue_state`, `npc_tests.rs`) — the only two-armed predicate, so one test per
+`||` arm, each registering ONLY its own table so the other arm reads an empty one.
+
+Each test walks four states — EMPTY, a STRANGER-only row, an OWN row, the OWN row removed with the
+stranger's row left behind — and asserts BOTH the predicate and `accounts::account_has_game_data` at
+every state. Rows are seeded and removed through a typed fixture handle, never through a write path.
+Two fixture rules are load-bearing (red-team F2/F3, both MEASURED): every non-identity column is
+ZERO or empty and the stranger row mirrors the owner row except for its identity, so a predicate
+that additionally inspects a payload column (`.is_some_and(|w| w.balance > 0)` — the very defect
+`economy.rs`'s own doc comment warns about) reds at the own-row step; and both identities are
+`[n; 32]` with `n >= 1`, because `Identity::__dummy()` (the context's sender) is all-zeros and an
+owner of `[0; 32]` would let a predicate that keys on `ctx.sender()` instead of `owner` pass. Limit
+2's own proposed remedy ("a Rust twin enumerating the six `account_has_game_data` disjuncts") is
+therefore delivered as BEHAVIOUR, not as a source pin: the hollow that was MEASURED green here
+(`{ let _ = <the shipped read>; false }`) reds its own predicate's test, and deleting a disjunct reds
+only the paired `account_has_game_data` assertion in that table's test while the direct predicate
+assertion stays green, naming which disjunct went. MEASURED: every test was shown RED by name
+against its own hollowed predicate (per `||` arm for npc) and against each deleted disjunct, then
+GREEN on restore; the record is `memory/projects/gates/rb-41.red-before.md` (harness memory, not
+this repo).
+
+**Why this became possible.** `spacetimedb` 2.8.1 `src/lib.rs:1043` declares
+`#[doc(hidden)] pub fn ReducerContext::__dummy() -> Self`, so a context whose `db` is the real
+accessor type can be built inside the crate: the standing premise "there is NO way to construct a
+`ReducerContext` in this crate" was STALE, not a fact. It is stated in ADR-0225 (line 91), ADR-0226
+(line 145), ADR-0227 (line 58) and ADR-0232 (line 15) and in a `content_tests.rs` comment — NOT
+edited here (outside rb-41's declared touches); this paragraph is the record that they are stale.
+The `accounts_tests.rs` header, which gave the premise as the reason for its executed-test /
+source-scan split, and the six rationale comments in `accounts_tests.rs`, `privacy_tests.rs` and
+`ranking_tests.rs` that restated it, WERE corrected in this slice (the scans they justify stand).
+
+**The native host.** NEW `server-module/src/native_host_tests.rs` is the SSOT for the design; read
+its module doc. The facts that bind other files: it is a `#[cfg(test)]` module wired from `lib.rs`,
+and it defines ONCE the ten `#[no_mangle] unsafe extern "C"` SpacetimeDB host syscalls the generated
+table code calls — replacing the aborting stubs previously split across `accounts_tests.rs` (4
+symbols) and `privacy_tests.rs` (6). Five are implemented (the two name lookups, the index point
+scan, and the row iterator's advance/close); the table scan and the four write syscalls panic loudly
+— a full-table `.iter()` is the shape this repo bans in owner-scoped readers, and tests seed through
+the fixture handle using `bsatn::to_vec`, the same encoder the real insert path uses. `row_iter_bsatn_advance` returns `-1` on the call that drains the iterator,
+because `UniqueColumn::find` asserts exhaustion after ONE `next()` (a `0`-then-`-1` protocol panics
+every `find`-based predicate — MEASURED). The fixture derives the canonical index name
+`{table}_{column}_idx_btree` itself, so a test cannot bind another table's index to its rows. Table
+and index ids are minted per name and NEVER reset, since the generated `table_id()` / `index_id()`
+memoise their first answer in a per-type `OnceLock`; a process-wide lock serialises fixtures under
+plain `cargo test` — nextest, which every `just` gate runs, gives each test its own process, so CI
+never exercises that lock. Three naming facts are load-bearing: the module name ends in `tests` (the
+`accounts_tests.rs` mod census exempts only `*tests` names), the file name ends in `_tests.rs` (what
+the cross-file eval scanners key on), and the `mod` line carries `#[cfg(test)]`. What keeps the ten
+symbols out of the published module is the COMPILER — any non-test reference to the module fails
+the publish build with E0433 (MEASURED by the security audit; `just build` was run in this slice) —
+not a gate: monster-privacy's `[SCOPE]` clause first accepts the literal `#[cfg(test)]` anywhere in
+the excluded file's RAW text, prose included, so a test file that mentions the attribute
+self-certifies (15 pre-existing `*_tests.rs` files do), and its parent-declaration branch accepts
+any such literal within 160 characters above the `mod` line, so an adjacent gated module vouches
+for its neighbour (both MEASURED; the eval is outside touches, recorded as a follow-up). The three
+rb-41 files deliberately never spell the attribute in prose, so nothing here self-certifies. This
+is the first `unsafe` code in `server-module/src`.
+
+**DELETED from `evals/guest-claim-integrity.eval.mjs`** — ADR-0224 amendment 1 makes migration mean
+deletion in the SAME slice: the ACCESSOR-REACH leg of the exists half of `[G6/correspondence]`
+(`strictCorrespondence` returns after the declaration legs when `half === 'exists'`), the whole
+`[G6/mirror]` clause and `EXISTS_COVER` (D5 existed only to excuse `monster_pub` from that leg),
+teeth FG75b/n/o/p/q/r, live-tree probes L1 and L5, and the `monster_rows_present` fixture spare.
+RE-POINTED, not deleted: the four reach-leg teeth FG75j/k/u/v moved from exists helpers to rekey
+helpers — their legs still serve the surviving half, and deleting them would silently unprove it.
+`TEETH_PINNED` re-derived 351 → 345. The success detail still derives its counts from the run
+(16 halves proven, 3 live-tree proofs bit) and names the `rb41_*` tests as the exists-side reach
+proof. Net −330 lines (+148/−478).
+
+**KEPT — and why the cut is surgical.** The exists half still resolves its needle to EXACTLY ONE
+declaration with a non-empty body carrying no `#[cfg` on the item and no `cfg!(` in the body (D2's
+first four legs), and FG75f/g/h/i/w/y stay pointed at exists helpers to prove it. A red-team
+MEASURED that these legs are ANTI-superseded by behaviour: a `#[cfg(test)]` / `#[cfg(not(test))]`
+twin of `wallet_exists`, or a body `cfg!(test) && real`, ships `false` to the wasm module while every
+`rb41_*` test stays green — a native test binary is compiled with `--cfg test` and structurally
+cannot see either shape. Today's eval reds both ("declared 2 time(s)"; "contains a configuration
+predicate (`cfg!(`)"), and the whole-half deletion first planned would have passed both. Also kept
+in full: the rekey half (D2-D4 unchanged), D1's identifier-bounded call matching, `[G6/consumed]`
+INCLUDING its exists half (the needle-in-`account_has_game_data` check that closes the needle-swap /
+bare-substring class), teeth FG75a/c/d/e/l/m/s/t/x and probes L2/L3/L4. The sentences in D2, D4 and
+D5 that describe the exists half's REACH leg read as history from here on.
+
+**Known limits, continuing the list above.** Reviewer and red-team findings, recorded as limits
+plus one review checklist item, not as new gates (ADR-0224 amendment 2 — proof-of-teeth does not
+recurse). Limits 1 and 3-8 stand unchanged; the rekey half of 3, 4 and 6 is untouched.
+
+9. **Exists-side reach is now BEHAVIOURAL, and behaviour only covers what a test names.** The seven
+   tests cover the seven REKEY tables holding an `rb41_*` twin; the eighth entry,
+   `monster_pub.owner_identity`, shares `has_monsters(` and is covered at the predicate level only.
+   A NEW REKEY entry for a table with no twin has an `exists:` needle checked for declaration
+   integrity and consumption only — nothing proves it reaches its table. Reviewer /
+   security-auditor checklist item: **a new REKEY manifest entry ships with an `rb41_*` twin.**
+10. **A manifest `exists:` needle re-pointed at another live helper, with the disjunct left in
+    place, is caught by nothing.** The behaviour is still pinned by the seven tests (the disjunct is
+    live), so this is documentation drift of the manifest, not a security property — accepted.
+11. **The host's table binding is caller-supplied.** A green run proves the predicate reads the
+    registered table through `{table}_{column}_idx_btree` with the key `owner_of` extracts from the
+    seeded row; it does not prove the schema declares that index, and the host models no
+    constraints (a duplicate unique key seeded by mistake surfaces as the bindings' own `find`
+    assertion).
+12. **`Fixture::requested_indexes()` records a name once per PROCESS** (the generated `OnceLock`
+    memo), so it is a reliable diagnostic under nextest, not under a shared-process run.
+13. **`Fixture::ctx()` is the only sanctioned route to `__dummy()`.** A direct call bypasses the
+    serialisation lock and races other fixtures under plain `cargo test`.
+14. **The tests prove the predicate, not the insert path.** Rows arrive through the fixture handle,
+    so nothing here exercises the real write syscalls, the auto_inc write-back decode, or the
+    dual-write pairing.
+
+**Consequence for future authors:** a ctx-bound helper is now testable against real rows, so a new
+existence or read predicate ships with an `rb41_*`-shaped test rather than a source pin; a text
+scan is still the right tool for what a native test binary cannot see (cfg twins), and any document
+still asserting that `ReducerContext` cannot be constructed is stale.

@@ -169,3 +169,7 @@ pub(crate) fn has_monsters(ctx: &ReducerContext, owner: Identity) -> bool {
         .next()
         .is_some()
 }
+
+#[cfg(test)]
+#[path = "monster_mgmt_tests.rs"]
+mod monster_mgmt_tests;

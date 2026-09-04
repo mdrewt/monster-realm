@@ -3187,3 +3187,120 @@ fn care_reject_still_never_burns() {
         );
     }
 }
+
+// ===========================================================================
+// rb-41 — R-rb-25-X9 (ADR-0222 known-limit 2, closed by the ADR-0224 native
+// host migration): the REKEY exists-predicate for `heal_cooldown`, exercised
+// against REAL rows instead of against its own source text.
+//
+// ADR-0222's guest-claim-integrity gate could only READ this predicate's
+// source, so a HOLLOWED body — one that still performs the table read but
+// returns a value decoupled from it — passed every check. The test below runs
+// the shipped predicate against the in-memory host (native_host_tests) and
+// pins its answer to the rows that actually exist, which no source scan can do.
+// ===========================================================================
+
+/// EARS R-rb-25-X9: `raising::has_heal_cooldown` must answer from the CURRENT
+/// rows of `heal_cooldown`, for the ASKED owner — false with no row, false
+/// while only a stranger owns one, true once the owner owns one, false again
+/// once the owner's row is gone (while the stranger's row survives). The paired
+/// `accounts::account_has_game_data` assertions pin the `heal_cooldown`
+/// disjunct of the six-way `||` chain that decides whether a guest holds game
+/// data.
+///
+/// kills:
+///   - the ADR-0222 known-limit hollow, `{ let _ = <the cooldown read>; false }`:
+///     the owner-row assertion goes red while every source scan stays green.
+///   - the inverted hollow, `{ let _ = <the cooldown read>; true }`: the
+///     empty-table assertion goes red.
+///   - a body that answers does-the-table-hold-ANY-row instead of
+///     does-THIS-owner-hold-one: the stranger-only assertion goes red, and so
+///     does the post-removal assertion (the stranger's row is still there).
+///   - a body that reads the anchor VALUE instead of row presence (for example
+///     last_heal_at_ms greater than zero): the owner row seeded below carries a
+///     zero anchor, so that reading goes red on the owner-row assertion.
+///   - a latched or memoised answer that never returns to false once it has
+///     seen a row: the post-removal assertion goes red.
+///   - deleting the `heal_cooldown` disjunct from
+///     `accounts::account_has_game_data`: the paired account assertion goes red
+///     while the direct predicate assertion stays green.
+#[test]
+fn rb41_has_heal_cooldown_tracks_real_cooldown_rows() {
+    let fx = crate::native_host_tests::fixture();
+    let t = fx.table::<HealCooldown>("heal_cooldown", "owner_identity", |r| r.owner_identity);
+    let ctx = fx.ctx();
+    let owner = Identity::from_byte_array([15u8; 32]);
+    let stranger = Identity::from_byte_array([16u8; 32]);
+
+    assert!(
+        !crate::raising::has_heal_cooldown(&ctx, owner),
+        "has_heal_cooldown must be false for an owner with no cooldown row: the table is empty \
+         here, so a true answer means the return value is not derived from the table read"
+    );
+    assert!(
+        !crate::accounts::account_has_game_data(&ctx, owner),
+        "account_has_game_data must be false while the owner owns no row in ANY REKEY table: \
+         no row of any kind has been seeded yet"
+    );
+
+    t.seed(&HealCooldown {
+        owner_identity: stranger,
+        last_heal_at_ms: 0,
+    });
+    assert!(
+        !crate::raising::has_heal_cooldown(&ctx, owner),
+        "has_heal_cooldown must stay false when the ONLY cooldown row belongs to a different \
+         owner: the predicate answers per-owner, never table-is-non-empty"
+    );
+    assert!(
+        !crate::accounts::account_has_game_data(&ctx, owner),
+        "account_has_game_data must stay false when the only seeded row belongs to a stranger: \
+         a guest claim keys on the CALLER identity, not on global table population"
+    );
+
+    // A zero anchor is a legal cooldown row (epoch = cooldown elapsed). Row
+    // PRESENCE is the whole predicate, so this row must count.
+    t.seed(&HealCooldown {
+        owner_identity: owner,
+        last_heal_at_ms: 0,
+    });
+    assert!(
+        crate::raising::has_heal_cooldown(&ctx, owner),
+        "has_heal_cooldown must report true while the owner holds a cooldown row, whatever the \
+         anchor value; a body that reads the table and then returns a constant false (the \
+         ADR-0222 known-limit hollow) fails exactly here. Indexes the generated code asked the \
+         host for: {:?}",
+        fx.requested_indexes()
+    );
+    assert!(
+        crate::accounts::account_has_game_data(&ctx, owner),
+        "account_has_game_data must be true through its heal_cooldown disjunct while the owner \
+         holds a cooldown row and nothing else; a deleted disjunct fails exactly here. Indexes \
+         the generated code asked the host for: {:?}",
+        fx.requested_indexes()
+    );
+
+    assert_eq!(
+        t.remove(owner),
+        1,
+        "the owner had exactly one cooldown row to remove: a different count means the seeded \
+         state was not the state this test reasons about"
+    );
+    assert!(
+        !crate::raising::has_heal_cooldown(&ctx, owner),
+        "has_heal_cooldown must return to false once the owner's cooldown row is gone: the \
+         answer tracks live rows, so it can never latch on a row that no longer exists"
+    );
+    assert!(
+        !crate::accounts::account_has_game_data(&ctx, owner),
+        "account_has_game_data must return to false once the owner's last REKEY-table row is \
+         gone: this is the state in which a guest claim is allowed to proceed"
+    );
+    assert!(
+        crate::raising::has_heal_cooldown(&ctx, stranger),
+        "removing the owner's row must leave the stranger's row untouched: without this the \
+         negative above could be explained by an emptied table rather than by owner scoping. \
+         Indexes the generated code asked the host for: {:?}",
+        fx.requested_indexes()
+    );
+}

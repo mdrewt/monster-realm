@@ -127,12 +127,34 @@ identifier-bounded CALLS (`et_exists(` no longer hits inside `wallet_exists(`), 
 `#[cfg`/`cfg!(` on either the item or the body) and requires that body to reach its OWN
 `db.<table>(` accessor — rooted at a real database handle, outside any macro invocation, and on the
 rekey half carrying a write verb WITHIN the method chain (`isChainChar`-bounded, the primitive
-`[W/write-target]` already uses). `[G6/mirror]` pins the single legitimate exception
+`[W/write-target]` already uses). `[G6/mirror]` pinned the single legitimate exception (retired by rb-41, below)
 (`monster_pub`, whose shared predicate `has_monsters` reads only `db.monster(`) by SET equality,
 because a second REKEY pair shares an existence needle and a membership test was measured to admit
-the amnesty. Because the FG75 teeth read an in-file fixture, five LIVE-TREE borrow proofs also run
-against the shipped sources, and every count in the pass summary — including the teeth count — is
-derived from the run rather than written as prose.
+the amnesty. Because the FG75 teeth read an in-file fixture, three (five until rb-41) LIVE-TREE
+borrow proofs also run against the shipped sources, and every count in the pass summary — including
+the teeth count — is derived from the run rather than written as prose.
+**rb-41** closed rb-25's own residual (R-rb-25-X9; ADR-0222 amended in place, no new number):
+`[G6/correspondence]`'s exists half could only READ a predicate's source, so a HOLLOWED body — one
+that still performs the table read but returns a value decoupled from it — was measured green, and
+`[G6/mirror]` existed only to excuse `monster_pub` from that check. The exists half's ACCESSOR-REACH
+leg is DELETED rather than hardened (ADR-0224: port the invariant to an ordinary test and delete the
+eval portion in the same slice), with `[G6/mirror]`, `EXISTS_COVER`, teeth FG75b/n/o/p/q/r and
+probes L1/L5; the four reach-leg teeth FG75j/k/u/v were re-pointed to rekey helpers and
+`TEETH_PINNED` re-derived 351 → 345. The exists half KEEPS its declaration legs (declared exactly
+once, non-empty, cfg-free) and their teeth, because a red-team MEASURED that a `#[cfg(not(test))]`
+twin or a `cfg!(test)` switch ships `false` to wasm while every native test stays green — a text
+scan is the only thing that can see that. `[G6/consumed]`'s exists half stays too. The reach
+question is now seven Rust `#[test]`s (`rb41_*`, each in the `*_tests.rs` of the module owning its
+predicate) running the six SHIPPED existence predicates against REAL rows — empty table, a
+stranger-only row, an own row, the own row removed with the stranger's left behind, every payload
+column zero — and asserting the predicate AND `accounts::account_has_game_data` at every state, so a
+hollowed predicate reds its own test and a deleted disjunct reds only the paired assertion. They run
+natively because `ReducerContext::__dummy()` (spacetimedb 2.8.1) plus the new `#[cfg(test)]`
+`server-module/src/native_host_tests.rs` — ONE definition of the ten `#[no_mangle]` host syscalls,
+five implemented, the table scan and four writes panicking, replacing the aborting stubs previously split across
+`accounts_tests.rs` and `privacy_tests.rs` — give a real `ReducerContext` over an in-memory row
+store; the repo-wide premise that one cannot be constructed in this crate is stale from rb-41 on,
+and a new REKEY manifest entry ships with an `rb41_*` twin (ADR-0222 limit 9).
 **rb-3** pinned that gate's OWN-PROPERTY BOUNDARY (residual R-m22-s0-X2; ADR-0208 D2): inside
 `checkRekeyCompleteness` the manifest's key space is read exactly once
 (`classifyManifest`, `Object.keys` → a `Map`) and every clause reads the Map, so a
