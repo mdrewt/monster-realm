@@ -14339,7 +14339,7 @@ extern "C" fn datastore_delete_by_index_scan_point_bsatn(
 //
 // THE SHAPE THIS SECTION GATES (plan design B): `purge_export_bundles` returns
 // the number of chunks it deleted; `complete_guest_claim` BINDS that count and
-// emits EXACTLY ONE line through the blessed OBS-1 emission point
+// emits EXACTLY ONE line through the blessed emission point
 // (`observability::mr_log`) as the TERMINAL statement before its trailing
 // `Ok(())`, carrying the retired guest hex and the count in a fragment built by
 // a PURE private helper.
@@ -14443,7 +14443,7 @@ fn rb40_frozen_emit_tail() -> String {
 /// in which the evt literal survives at all.
 ///
 /// WIDTH IS LOAD-BEARING (measured, rb-40): rustfmt's default `fn_call_width` is
-/// 60 and this call's argument list is 56 columns. FOUR more characters in the
+/// 60 and this call's argument list is 56 columns. FIVE more characters in the
 /// evt name or the builder name tips it over, rustfmt lays the call out
 /// vertically WITH A TRAILING COMMA, and both this pin and the terminal-tail pin
 /// stop matching a correct implementation. That is why the builder is

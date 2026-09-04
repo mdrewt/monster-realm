@@ -702,7 +702,7 @@ pub fn complete_guest_claim(ctx: &ReducerContext, code: String) -> Result<(), St
         .identity()
         .update(claimed_account(account, guest, now_ms(ctx)));
     // rb-40 (ADR-0235): the purge is observable — ONE line through the blessed
-    // OBS-1 emission point (ADR-0180 D6), as the TERMINAL statement: a host log
+    // emission point (ADR-0180 D6), as the TERMINAL statement: a host log
     // line survives a later rollback while the deletes do not, so nothing may
     // run after it. The evt literal is bare on purpose (a const or concat! is
     // invisible to a grep for the event name).

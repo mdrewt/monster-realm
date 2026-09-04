@@ -45,7 +45,10 @@ outside this slice's `touches:`.
    after every fallible statement means a "purged N" line can only exist for a transaction that also
    committed — the mirror image of the ADR-0185 D1 trade-off (there: commit before a fallible write could
    discard the outcome; here: emit after nothing can discard the purge). A tooth pins the emission as the
-   terminal statement and bans a `return` token anywhere in `[purge, Ok(())]`.
+   terminal statement and bans a `return` token anywhere in `[purge, Ok(())]`. "Nothing fallible follows
+   it" is a release-artifact statement: `mr_log_breadcrumb`'s reserved-key `debug_assert!` compiles out of
+   the shipped wasm (`[profile.release]` leaves `debug-assertions` at its default) and is unreachable anyway
+   from a fragment whose alphabet is lowercase hex and one decimal; the emission itself returns `()`.
 3. **The fragment is a pure function.** `fn purge_fields(guest: Identity, chunks: usize) -> String`
    renders `"guest":"<64 hex>","chunks":N` — the `heartbeat_fields` precedent (ADR-0180): a pure builder the
    unit tests can call, composed by `build_log_line` into
@@ -91,11 +94,11 @@ RED arm (compiles on the pre-fix tree, fails by name): `rb40_claim_emits_one_pur
 no `return` in `[purge, Ok(())]`, `let purged` bound once, no `#[cfg(` in the emission's item span),
 `rb40_claim_binds_the_purge_result`, `rb40_evt_and_fragment_literals_are_pinned` (strings-kept view: the exact
 call, the evt token and the fragment literal each exactly once; no reserved envelope key, no `name` /
-`auth_issuer` / `claimed_from`), `rb40_purge_fields_is_pure` (signature, privacy, no `ctx`/`.db.`/write
+`auth_issuer` / `claimed_from`), `rb40_claim_purge_fields_is_pure` (signature, privacy, no `ctx`/`.db.`/write
 verb/log segment), `rb40_no_new_bare_log_in_accounts_or_privacy` (the OBS-2 needles at zero, by name);
 `rb40p_purge_returns_the_collected_count` (sig ends `->usize`, body ends `}purged`, `let purged = ids.len();`
 once and before the loop). GREEN arm (calls the new fn — cannot compile pre-fix, lands with the fix, the rb-22
-EO-6 precedent): `rb40_purge_fields_is_exact`, `rb40_claim_purge_line_composes_into_the_envelope`.
+EO-6 precedent): `rb40_claim_purge_fields_is_exact`, `rb40_claim_purge_line_composes_into_the_envelope`.
 Re-frozen: the four `privacy_tests.rs` literals (`rb22p_frozen_body/sig/body_source/decl_source`), the two
 `accounts_tests.rs` literals, and rb-22 clause (2) — now `;letpurged=crate::privacy::purge_export_bundles(ctx,guest);`.
 
@@ -106,11 +109,16 @@ Re-frozen: the four `privacy_tests.rs` literals (`rb22p_frozen_body/sig/body_sou
    erase steps want ONE line, not thirteen — and touches every owning module. Residual R-rb40-CASCADE.
 2. **No dashboard consumes the event.** `ops/observability/**` is outside `touches:`; the line is queryable
    in Loki under the bounded `{reducer, evt}` label set, which is the shipped consumption path. R-rb40-DASH.
-3. **ADR-0220's Decision 3 still spells the old `purge_export_bundles(ctx, owner)` signature.** An `Amends:`
+3. **ADR-0220's Decision 2 still spells the old `purge_export_bundles(ctx, owner)` signature.** An `Amends:`
    marker would force a reciprocal `Amended-by:` edit inside ADR-0220 (outside the reserved-number allowance),
    so this ADR `Extends:` it and the stale prose is R-rb40-ADR0220. R-rb-22-EO-10 (the REKEY_MANIFEST reason
    text) stays open.
-4. **No LIVE behavioural proof.** The count is proven structurally (exact-body pin) and the fragment
+4. **ADR-0230's PRV1-17 evidence sentence is superseded.** ADR-0230 records "accounts.rs contains zero
+   `log::`/`mr_log` calls of its own (measured)" as PRV1-17's evidence chain. That file-level census is now
+   false; the narrower fact that holds — and is gated (`[emit/count-in-file]`) — is that the ONLY `mr_log`
+   in accounts.rs sits in `complete_guest_claim`, which PRV1-17 does not name. ADR-0230 is outside this
+   slice's ADR allowance (reserved number only); residual R-rb40-ADR0230.
+5. **No LIVE behavioural proof.** The count is proven structurally (exact-body pin) and the fragment
    behaviourally (pure fn); a live `account-e2e` phase that exports, claims and greps the host log for the
    line is outside `touches:` (`evals/`). The rb-22 EO-9 wording asked for observability, not a live rig.
 
@@ -119,8 +127,9 @@ Re-frozen: the four `privacy_tests.rs` literals (`rb22p_frozen_body/sig/body_sou
 - Every successful guest claim leaves one greppable `guest_claim_export_purge` line carrying the retired
   guest and the number of export chunks erased — and only for transactions that committed.
 - `accounts.rs` gains its first backslash-escaped quote bytes (the `format!` fragment). Measured clean
-  against every whole-crate scanner: four of the five distinct strippers are escape-aware by construction,
-  the other two never look at quotes (rb-40 plan red-team).
+  against every whole-crate scanner (plan red-team + security auditor, eight extracted stripper
+  implementations): each is either backslash-escape-aware by construction or never inspects quotes, and the
+  41-file crate concatenation strips identically at the fork base and at HEAD.
 - The OBS-2 ratchet is untouched: no bare `log::`, no `use log`, `.log-baseline` byte-identical.
 - The helper's widened return type is warning-free at the two sites that ignore it (`usize` carries no
   `must_use`; clippy runs the default lint set with `-D warnings`), so their pinned call text is unchanged.

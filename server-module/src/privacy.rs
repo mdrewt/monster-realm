@@ -24,10 +24,11 @@
 //! included, and strip comments naively — one unpaired opener here silently
 //! blanks later modules from their view. rb-40 (ADR-0235) is the worked example
 //! of that doctrine: `purge_export_bundles` REPORTS its purged count and never
-//! emits; the claim-time observation line lives in `accounts.rs`. STRENGTHENED for S4: this file carries
-//! exactly ONE double-quote pair — the `#[path]` attribute — and no other quote
-//! byte anywhere. Every constant string is `stringify!`; the quote character is
-//! the `JSON_QUOTE` unicode-escape char constant.
+//! emits; the claim-time observation line lives in `accounts.rs`. STRENGTHENED
+//! for S4: this file carries exactly ONE double-quote pair — the `#[path]`
+//! attribute — and no other quote byte anywhere. Every constant string is
+//! `stringify!`; the quote character is the `JSON_QUOTE` unicode-escape char
+//! constant.
 
 use crate::marshal::now_ms;
 use crate::playtest::{playtest_event, PlaytestEvent};
