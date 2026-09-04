@@ -10,6 +10,7 @@
 //!   - every behavioural criterion that lands on a pure seam is an EXECUTED test;
 //!   - every ctx-bound shell property is a SOURCE SCAN over the frozen production
 //!     files (`accounts.rs`/`lib.rs`/`schema.rs`/the rekey helpers) via `include_str!`.
+//!
 //! Since rb-41 that premise is FALSE: `ReducerContext::__dummy()` plus the in-memory
 //! host in `native_host_tests.rs` run ctx-bound helpers against real rows (the
 //! `rb41_*` tests in the predicate-owning `*_tests.rs` files are the pattern). The
