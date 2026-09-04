@@ -8160,8 +8160,7 @@ export default async function guestClaimIntegrityEval() {
       `identifier-bounded calls in rekey_all / account_has_game_data, ` +
       `${liveHalvesVerified} REKEY manifest half/halves proven by [G6/correspondence] to name a ` +
       'singly-declared, non-empty, cfg-free helper — the rekey halves also reaching and writing ' +
-      `their own table — across ${treeSrcs.length} scanned source(s) (table reach on the exists ` +
-      'side is proven by the rb41_* Rust tests in server-module/src/*_tests.rs since rb-41), ' +
+      `their own table — across ${treeSrcs.length} scanned source(s), ` +
       `${borrowProofsBit.length} live-tree borrow proof(s) bit) ` +
       `(${teethRun} tooth assertion(s) executed)`,
   };

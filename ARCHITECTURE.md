@@ -127,7 +127,7 @@ identifier-bounded CALLS (`et_exists(` no longer hits inside `wallet_exists(`), 
 `#[cfg`/`cfg!(` on either the item or the body) and requires that body to reach its OWN
 `db.<table>(` accessor — rooted at a real database handle, outside any macro invocation, and on the
 rekey half carrying a write verb WITHIN the method chain (`isChainChar`-bounded, the primitive
-`[W/write-target]` already uses). `[G6/mirror]` pins the single legitimate exception
+`[W/write-target]` already uses). `[G6/mirror]` pinned the single legitimate exception (retired by rb-41, below)
 (`monster_pub`, whose shared predicate `has_monsters` reads only `db.monster(`) by SET equality,
 because a second REKEY pair shares an existence needle and a membership test was measured to admit
 the amnesty. Because the FG75 teeth read an in-file fixture, three (five until rb-41) LIVE-TREE
@@ -151,7 +151,7 @@ column zero — and asserting the predicate AND `accounts::account_has_game_data
 hollowed predicate reds its own test and a deleted disjunct reds only the paired assertion. They run
 natively because `ReducerContext::__dummy()` (spacetimedb 2.8.1) plus the new `#[cfg(test)]`
 `server-module/src/native_host_tests.rs` — ONE definition of the ten `#[no_mangle]` host syscalls,
-six implemented and the four writes panicking, replacing the aborting stubs previously split across
+five implemented, the table scan and four writes panicking, replacing the aborting stubs previously split across
 `accounts_tests.rs` and `privacy_tests.rs` — give a real `ReducerContext` over an in-memory row
 store; the repo-wide premise that one cannot be constructed in this crate is stale from rb-41 on,
 and a new REKEY manifest entry ships with an `rb41_*` twin (ADR-0222 limit 9).

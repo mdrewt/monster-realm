@@ -13,12 +13,11 @@
 //! test target leaves UNDEFINED — until now the crate linked only because two
 //! test files defined aborting `#[no_mangle]` stubs for them. This module
 //! defines every one of those ten symbols ONCE (a `#[no_mangle]` symbol is
-//! one-definition-per-binary), and implements the six a read-only predicate
-//! reaches: name lookups, the index point scan, the table scan and the row
-//! iterator (the table scan is a named YAGNI exception: no shipped predicate
-//! reaches it today, but an `.iter()`-shaped reader is a legitimate future
-//! implementation and must not die in a silent abort). The four WRITE
-//! syscalls stay loudly unmodelled — tests seed rows
+//! one-definition-per-binary), and implements the five a read-only predicate
+//! reaches: the two name lookups, the index point scan and the row iterator.
+//! The table scan and the four WRITE syscalls stay loudly unmodelled — a
+//! full-table `.iter()` is the shape this repo bans in owner-scoped readers, so
+//! a predicate that reaches for one must fail here, not pass — and tests seed rows
 //! through [`Fixture::table`] instead, which sidesteps the auto_inc write-back
 //! decode, the monster dual-write pairing scan and the single-stack inventory
 //! scan (all of which read test files) without touching any of them.
@@ -65,11 +64,12 @@ struct Host {
     table_ids: HashMap<String, u32>,
     /// Canonical index name (`{table}_{col}_idx_btree`) -> id. Never reset.
     index_ids: HashMap<String, u32>,
-    /// index id -> table id, bound only for indexes a fixture registered. An
-    /// index the generated code asks about but no test registered resolves to
-    /// an id with NO table behind it, and scans over it yield no rows — which
-    /// is what lets `account_has_game_data` visit all six tables while a test
-    /// registers only its own.
+    /// index id -> table id, bound only for indexes a fixture registered.
+    /// Process-lifetime like the ids (never reset — a binding is a pure function
+    /// of two names). An index the generated code asks about but no test
+    /// registered resolves to an id with NO table behind it, and scans over it
+    /// yield no rows — which is what lets `account_has_game_data` visit all six
+    /// tables while a test registers only its own.
     index_table: HashMap<u32, u32>,
     /// table id -> live rows, reset by every [`fixture`].
     rows: HashMap<u32, Vec<(Key, Row)>>,
@@ -174,12 +174,12 @@ impl Fixture {
     /// the one table its predicate owns; the shim models no constraints, so a
     /// duplicate unique key seeded by mistake surfaces as the bindings' own
     /// `cannot return more than one row` assertion inside `find`.
-    pub(crate) fn table<R: Serialize>(
-        &self,
+    pub(crate) fn table<'a, R: Serialize>(
+        &'a self,
         table: &str,
         column: &str,
         owner_of: fn(&R) -> Identity,
-    ) -> Handle<R> {
+    ) -> Handle<'a, R> {
         let index = format!("{table}_{column}_idx_btree");
         let mut h = host();
         let table_id = h.table_id(table);
@@ -189,6 +189,7 @@ impl Fixture {
             table_id,
             owner_of,
             _rows: PhantomData,
+            _fixture: PhantomData,
         }
     }
 
@@ -201,14 +202,18 @@ impl Fixture {
 }
 
 /// A typed handle onto one registered table: seeds and removes rows without
-/// going through the (unmodelled) write syscalls.
-pub(crate) struct Handle<R> {
+/// going through the (unmodelled) write syscalls. Borrows the [`Fixture`] it
+/// came from, so `fixture().table(..)` — a temporary fixture whose lock would
+/// drop at the end of the statement — does not compile: the serialisation
+/// lock outlives every handle by construction.
+pub(crate) struct Handle<'a, R> {
     table_id: u32,
     owner_of: fn(&R) -> Identity,
     _rows: PhantomData<fn(&R)>,
+    _fixture: PhantomData<&'a Fixture>,
 }
 
-impl<R: Serialize> Handle<R> {
+impl<R: Serialize> Handle<'_, R> {
     /// Store `row` exactly as the generated insert path would encode it.
     pub(crate) fn seed(&self, row: &R) {
         let key = key_bytes((self.owner_of)(row));
@@ -249,11 +254,15 @@ unsafe fn name_at(ptr: *const u8, len: usize) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
+/// A panic that cannot unwind: it is raised inside an `extern "C"` frame, so
+/// the message prints and the whole test PROCESS aborts (nextest reports a
+/// signal, not a failed assertion, and `#[should_panic]` cannot catch it).
+/// That is the intended loudness — the old stubs aborted silently.
 fn unmodelled(symbol: &str) -> ! {
     panic!(
-        "native_host_tests: `{symbol}` is not modelled — this host serves point reads and \
-         table scans only; seed rows with `Fixture::table(..).seed(..)` and remove them with \
-         `Handle::remove(..)` instead of writing through the database handle"
+        "native_host_tests: `{symbol}` is not modelled — this host serves single-column index \
+         point reads only; seed rows with `Fixture::table(..).seed(..)` and remove them with \
+         `Handle::remove(..)` instead of writing through, or scanning, the database handle"
     )
 }
 
@@ -308,17 +317,8 @@ unsafe extern "C" fn datastore_index_scan_point_bsatn(
 }
 
 #[no_mangle]
-unsafe extern "C" fn datastore_table_scan_bsatn(table_id: u32, out: *mut u32) -> u16 {
-    let mut h = host();
-    let all: Vec<Row> = h
-        .rows_of(table_id)
-        .iter()
-        .map(|(_, row)| row.clone())
-        .collect();
-    let iter = h.open_iter(all);
-    // SAFETY: `out` points at the bindings' `MaybeUninit<RowIter>` out-param.
-    unsafe { out.write(iter) };
-    0
+unsafe extern "C" fn datastore_table_scan_bsatn(_table_id: u32, _out: *mut u32) -> u16 {
+    unmodelled("datastore_table_scan_bsatn")
 }
 
 /// The iterator protocol the bindings' `RowIter::read` expects: write as many

@@ -7,7 +7,7 @@
 **Amends:** —
 **Subsystems:** ci-gates, security-authz
 **Extends:** ADR-0208 (no reciprocal back-link edit — `docs/adr/0208-*` is outside this slice's declared touches)
-**Decision:** A REKEY needle must correspond to its own key's table: `[G6/correspondence]` resolves it to exactly one `fn` and requires that body to reach `db.<table>(`, writing through it on the rekey half; `[G6/mirror]` pins the one exception.
+**Decision:** A REKEY needle must name one cfg-free `fn` (both halves); the rekey half must also reach `db.<table>(` and write through it. Since rb-41 the exists half's reach is proven by `rb41_*` Rust tests; the mirror exception is retired.
 
 ---
 
@@ -186,10 +186,10 @@ source-scan split, and the six rationale comments in `accounts_tests.rs`, `priva
 its module doc. The facts that bind other files: it is a `#[cfg(test)]` module wired from `lib.rs`,
 and it defines ONCE the ten `#[no_mangle] unsafe extern "C"` SpacetimeDB host syscalls the generated
 table code calls — replacing the aborting stubs previously split across `accounts_tests.rs` (4
-symbols) and `privacy_tests.rs` (6). Six are implemented (the two name lookups, the index point
-scan, the table scan, and the row iterator's advance/close); the four write syscalls panic loudly,
-because tests seed through the fixture handle using `bsatn::to_vec` — the same encoder the real
-insert path uses. `row_iter_bsatn_advance` returns `-1` on the call that drains the iterator,
+symbols) and `privacy_tests.rs` (6). Five are implemented (the two name lookups, the index point
+scan, and the row iterator's advance/close); the table scan and the four write syscalls panic loudly
+— a full-table `.iter()` is the shape this repo bans in owner-scoped readers, and tests seed through
+the fixture handle using `bsatn::to_vec`, the same encoder the real insert path uses. `row_iter_bsatn_advance` returns `-1` on the call that drains the iterator,
 because `UniqueColumn::find` asserts exhaustion after ONE `next()` (a `0`-then-`-1` protocol panics
 every `find`-based predicate — MEASURED). The fixture derives the canonical index name
 `{table}_{column}_idx_btree` itself, so a test cannot bind another table's index to its rows. Table
