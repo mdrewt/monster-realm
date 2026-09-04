@@ -201,7 +201,8 @@ impl<R: Serialize> Handle<R> {
     /// Store `row` exactly as the generated insert path would encode it.
     pub(crate) fn seed(&self, row: &R) {
         let key = key_bytes((self.owner_of)(row));
-        let bytes = bsatn::to_vec(row).expect("native_host_tests: a table row always BSATN-encodes");
+        let bytes =
+            bsatn::to_vec(row).expect("native_host_tests: a table row always BSATN-encodes");
         host()
             .rows
             .entry(self.table_id)
@@ -255,7 +256,11 @@ unsafe extern "C" fn table_id_from_name(name: *const u8, name_len: usize, out: *
 }
 
 #[no_mangle]
-unsafe extern "C" fn index_id_from_name(name_ptr: *const u8, name_len: usize, out: *mut u32) -> u16 {
+unsafe extern "C" fn index_id_from_name(
+    name_ptr: *const u8,
+    name_len: usize,
+    out: *mut u32,
+) -> u16 {
     let name = unsafe { name_at(name_ptr, name_len) };
     let mut h = host();
     let id = h.index_id(&name);
@@ -294,7 +299,11 @@ unsafe extern "C" fn datastore_index_scan_point_bsatn(
 #[no_mangle]
 unsafe extern "C" fn datastore_table_scan_bsatn(table_id: u32, out: *mut u32) -> u16 {
     let mut h = host();
-    let all: Vec<Row> = h.rows_of(table_id).iter().map(|(_, row)| row.clone()).collect();
+    let all: Vec<Row> = h
+        .rows_of(table_id)
+        .iter()
+        .map(|(_, row)| row.clone())
+        .collect();
     let iter = h.open_iter(all);
     // SAFETY: `out` points at the bindings' `MaybeUninit<RowIter>` out-param.
     unsafe { out.write(iter) };
@@ -368,7 +377,11 @@ unsafe extern "C" fn row_iter_bsatn_close(iter: u32) -> u16 {
 }
 
 #[no_mangle]
-unsafe extern "C" fn datastore_insert_bsatn(_table_id: u32, _row_ptr: *mut u8, _row_len_ptr: *mut usize) -> u16 {
+unsafe extern "C" fn datastore_insert_bsatn(
+    _table_id: u32,
+    _row_ptr: *mut u8,
+    _row_len_ptr: *mut usize,
+) -> u16 {
     unmodelled("datastore_insert_bsatn")
 }
 

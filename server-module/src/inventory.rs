@@ -145,3 +145,7 @@ pub(crate) fn has_items(ctx: &ReducerContext, owner: Identity) -> bool {
         .next()
         .is_some()
 }
+
+#[cfg(test)]
+#[path = "inventory_tests.rs"]
+mod inventory_tests;

@@ -1886,3 +1886,238 @@ fn m22s3b_erase_npc_state_shape() {
          {squashed:?}"
     );
 }
+
+// ===========================================================================
+// rb-41 — R-rb-25-X9 (ADR-0222 known-limit 2, closed by the ADR-0224 native
+// host migration): the REKEY exists-predicate for the NPC pair, exercised
+// against REAL rows instead of against its own source text.
+//
+// `npc::has_quest_or_dialogue_state` is the only two-armed predicate of the
+// six: quest progress OR dialogue state. One test per arm, each registering
+// ONLY its own table so the other arm reads an empty table — that is what makes
+// each test sensitive to ITS arm alone, and what makes hollowing either arm
+// (still reading the table, returning a value decoupled from the read) red
+// exactly one of them.
+// ===========================================================================
+
+/// EARS R-rb-25-X9 (quest arm): `npc::has_quest_or_dialogue_state` must answer
+/// from the CURRENT rows of `player_quest`, for the ASKED owner — false with no
+/// row, false while only a stranger owns one, true once the owner owns one,
+/// false again once the owner's row is gone (while the stranger's row
+/// survives). Dialogue state is never seeded here, so every true below is owed
+/// to the quest arm. The paired `accounts::account_has_game_data` assertions
+/// pin the NPC disjunct of the six-way `||` chain that decides whether a guest
+/// holds game data.
+///
+/// kills:
+///   - a hollowed quest arm, `let _ = <the quest read>;` followed by a return
+///     value that only reflects dialogue state: the owner-row assertion goes
+///     red while every source scan stays green (and the dialogue-arm test
+///     below stays green, naming the broken arm).
+///   - an arm that answers does-the-table-hold-ANY-row instead of
+///     does-THIS-owner-hold-one: the stranger-only assertion goes red, and so
+///     does the post-removal assertion (the stranger's row is still there).
+///   - a latched or memoised answer that never returns to false once it has
+///     seen a row: the post-removal assertion goes red.
+///   - deleting the NPC disjunct from `accounts::account_has_game_data`: the
+///     paired account assertion goes red while the direct predicate assertion
+///     stays green.
+#[test]
+fn rb41_quest_state_tracks_real_quest_rows() {
+    let fx = crate::native_host_tests::fixture();
+    let t = fx.table::<PlayerQuestRow>(
+        "player_quest",
+        "player_quest_owner_identity_idx_btree",
+        |r| r.owner_identity,
+    );
+    let ctx = fx.ctx();
+    let owner = Identity::from_byte_array([21u8; 32]);
+    let stranger = Identity::from_byte_array([22u8; 32]);
+
+    assert!(
+        !crate::npc::has_quest_or_dialogue_state(&ctx, owner),
+        "has_quest_or_dialogue_state must be false for an owner with neither quest progress \
+         nor dialogue state: both tables are empty here"
+    );
+    assert!(
+        !crate::accounts::account_has_game_data(&ctx, owner),
+        "account_has_game_data must be false while the owner owns no row in ANY REKEY table: \
+         no row of any kind has been seeded yet"
+    );
+
+    // Payload columns are irrelevant to a presence predicate; ownership is the
+    // whole question, so they stay empty/zero on purpose.
+    t.seed(&PlayerQuestRow {
+        pq_id: 9_002,
+        owner_identity: stranger,
+        quest_id: String::new(),
+        step_index: 0,
+    });
+    assert!(
+        !crate::npc::has_quest_or_dialogue_state(&ctx, owner),
+        "has_quest_or_dialogue_state must stay false when the ONLY quest row belongs to a \
+         different owner: the quest arm answers per-owner, never table-is-non-empty"
+    );
+    assert!(
+        !crate::accounts::account_has_game_data(&ctx, owner),
+        "account_has_game_data must stay false when the only seeded row belongs to a stranger: \
+         a guest claim keys on the CALLER identity, not on global table population"
+    );
+
+    t.seed(&PlayerQuestRow {
+        pq_id: 9_001,
+        owner_identity: owner,
+        quest_id: String::new(),
+        step_index: 0,
+    });
+    assert!(
+        crate::npc::has_quest_or_dialogue_state(&ctx, owner),
+        "has_quest_or_dialogue_state must report true through its QUEST arm while the owner \
+         holds quest progress and no dialogue state at all; a quest arm that reads the table \
+         and then contributes a constant false (the ADR-0222 known-limit hollow) fails exactly \
+         here. Indexes the generated code asked the host for: {:?}",
+        fx.requested_indexes()
+    );
+    assert!(
+        crate::accounts::account_has_game_data(&ctx, owner),
+        "account_has_game_data must be true through its NPC disjunct while the owner holds \
+         quest progress and nothing else; a deleted disjunct fails exactly here. Indexes the \
+         generated code asked the host for: {:?}",
+        fx.requested_indexes()
+    );
+
+    assert_eq!(
+        t.remove(owner),
+        1,
+        "the owner had exactly one quest row to remove: a different count means the seeded \
+         state was not the state this test reasons about"
+    );
+    assert!(
+        !crate::npc::has_quest_or_dialogue_state(&ctx, owner),
+        "has_quest_or_dialogue_state must return to false once the owner's quest row is gone: \
+         the answer tracks live rows, so it can never latch on a row that no longer exists"
+    );
+    assert!(
+        !crate::accounts::account_has_game_data(&ctx, owner),
+        "account_has_game_data must return to false once the owner's last REKEY-table row is \
+         gone: this is the state in which a guest claim is allowed to proceed"
+    );
+    assert!(
+        crate::npc::has_quest_or_dialogue_state(&ctx, stranger),
+        "removing the owner's row must leave the stranger's quest row untouched: without this \
+         the negative above could be explained by an emptied table rather than by owner \
+         scoping. Indexes the generated code asked the host for: {:?}",
+        fx.requested_indexes()
+    );
+}
+
+/// EARS R-rb-25-X9 (dialogue arm): `npc::has_quest_or_dialogue_state` must
+/// answer from the CURRENT rows of `player_dialogue_state`, for the ASKED
+/// owner — false with no row, false while only a stranger owns one, true once
+/// the owner owns one, false again once the owner's row is gone (while the
+/// stranger's row survives). Quest progress is never seeded here, so every true
+/// below is owed to the dialogue arm. The paired
+/// `accounts::account_has_game_data` assertions pin the NPC disjunct of the
+/// six-way `||` chain that decides whether a guest holds game data.
+///
+/// kills:
+///   - a hollowed dialogue arm, `let _ = <the dialogue read>;` followed by a
+///     return value that only reflects quest progress: the owner-row assertion
+///     goes red while every source scan stays green (and the quest-arm test
+///     above stays green, naming the broken arm).
+///   - dropping the dialogue arm from the `||` chain entirely: same assertion.
+///   - an arm that answers does-the-table-hold-ANY-row instead of
+///     does-THIS-owner-hold-one: the stranger-only assertion goes red, and so
+///     does the post-removal assertion (the stranger's row is still there).
+///   - a latched or memoised answer that never returns to false once it has
+///     seen a row: the post-removal assertion goes red.
+///   - deleting the NPC disjunct from `accounts::account_has_game_data`: the
+///     paired account assertion goes red while the direct predicate assertion
+///     stays green.
+#[test]
+fn rb41_dialogue_state_tracks_real_dialogue_rows() {
+    let fx = crate::native_host_tests::fixture();
+    let t = fx.table::<PlayerDialogueStateRow>(
+        "player_dialogue_state",
+        "player_dialogue_state_owner_identity_idx_btree",
+        |r| r.owner_identity,
+    );
+    let ctx = fx.ctx();
+    let owner = Identity::from_byte_array([23u8; 32]);
+    let stranger = Identity::from_byte_array([24u8; 32]);
+
+    assert!(
+        !crate::npc::has_quest_or_dialogue_state(&ctx, owner),
+        "has_quest_or_dialogue_state must be false for an owner with neither dialogue state \
+         nor quest progress: both tables are empty here"
+    );
+    assert!(
+        !crate::accounts::account_has_game_data(&ctx, owner),
+        "account_has_game_data must be false while the owner owns no row in ANY REKEY table: \
+         no row of any kind has been seeded yet"
+    );
+
+    t.seed(&PlayerDialogueStateRow {
+        owner_identity: stranger,
+        flags: Vec::new(),
+        done_quests: Vec::new(),
+    });
+    assert!(
+        !crate::npc::has_quest_or_dialogue_state(&ctx, owner),
+        "has_quest_or_dialogue_state must stay false when the ONLY dialogue row belongs to a \
+         different owner: the dialogue arm answers per-owner, never table-is-non-empty"
+    );
+    assert!(
+        !crate::accounts::account_has_game_data(&ctx, owner),
+        "account_has_game_data must stay false when the only seeded row belongs to a stranger: \
+         a guest claim keys on the CALLER identity, not on global table population"
+    );
+
+    // An all-empty dialogue row is a legal row: presence, not payload, is what
+    // the predicate answers.
+    t.seed(&PlayerDialogueStateRow {
+        owner_identity: owner,
+        flags: Vec::new(),
+        done_quests: Vec::new(),
+    });
+    assert!(
+        crate::npc::has_quest_or_dialogue_state(&ctx, owner),
+        "has_quest_or_dialogue_state must report true through its DIALOGUE arm while the owner \
+         holds a dialogue row and no quest progress at all, whatever that row carries; a \
+         dialogue arm that reads the table and then contributes a constant false (the ADR-0222 \
+         known-limit hollow) fails exactly here. Indexes the generated code asked the host \
+         for: {:?}",
+        fx.requested_indexes()
+    );
+    assert!(
+        crate::accounts::account_has_game_data(&ctx, owner),
+        "account_has_game_data must be true through its NPC disjunct while the owner holds a \
+         dialogue row and nothing else; a deleted disjunct fails exactly here. Indexes the \
+         generated code asked the host for: {:?}",
+        fx.requested_indexes()
+    );
+
+    assert_eq!(
+        t.remove(owner),
+        1,
+        "the owner had exactly one dialogue row to remove: a different count means the seeded \
+         state was not the state this test reasons about"
+    );
+    assert!(
+        !crate::npc::has_quest_or_dialogue_state(&ctx, owner),
+        "has_quest_or_dialogue_state must return to false once the owner's dialogue row is \
+         gone: the answer tracks live rows, so it can never latch on a row that no longer exists"
+    );
+    assert!(
+        !crate::accounts::account_has_game_data(&ctx, owner),
+        "account_has_game_data must return to false once the owner's last REKEY-table row is \
+         gone: this is the state in which a guest claim is allowed to proceed"
+    );
+    assert!(
+        crate::npc::has_quest_or_dialogue_state(&ctx, stranger),
+        "removing the owner's row must leave the stranger's dialogue row untouched: without \
+         this the negative above could be explained by an emptied table rather than by owner \
+         scoping. Indexes the generated code asked the host for: {:?}",
+        fx.requested_indexes()
+    );
+}

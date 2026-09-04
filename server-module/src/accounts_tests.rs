@@ -5,10 +5,15 @@
 //! constants, and the `use crate::schema::{Account, AccountStatus, GuestClaim}`
 //! aliases are all reachable via `use super::*` (same pattern as economy_tests).
 //!
-//! There is NO way to construct a `ReducerContext` in this crate, so the split is:
+//! When this file was written there was no known way to construct a `ReducerContext`
+//! in this crate, so the split is:
 //!   - every behavioural criterion that lands on a pure seam is an EXECUTED test;
 //!   - every ctx-bound shell property is a SOURCE SCAN over the frozen production
 //!     files (`accounts.rs`/`lib.rs`/`schema.rs`/the rekey helpers) via `include_str!`.
+//! Since rb-41 that premise is FALSE: `ReducerContext::__dummy()` plus the in-memory
+//! host in `native_host_tests.rs` run ctx-bound helpers against real rows (the
+//! `rb41_*` tests in the predicate-owning `*_tests.rs` files are the pattern). The
+//! scans below still hold; new ctx-bound behaviour should prefer a real test.
 //!
 //! SCAN HYGIENE (memory card): cross-file eval scanners concatenate every
 //! `server-module/src/**` file and do NOT strip string literals. Therefore this
