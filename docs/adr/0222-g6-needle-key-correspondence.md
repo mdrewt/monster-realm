@@ -203,7 +203,7 @@ symbols out of the published module is the COMPILER — any non-test reference t
 the publish build with E0433 (MEASURED by the security audit; `just build` was run in this slice) —
 not a gate: monster-privacy's `[SCOPE]` clause first accepts the literal `#[cfg(test)]` anywhere in
 the excluded file's RAW text, prose included, so a test file that mentions the attribute
-self-certifies (18 pre-existing `*_tests.rs` files do), and its parent-declaration branch accepts
+self-certifies (15 pre-existing `*_tests.rs` files do), and its parent-declaration branch accepts
 any such literal within 160 characters above the `mod` line, so an adjacent gated module vouches
 for its neighbour (both MEASURED; the eval is outside touches, recorded as a follow-up). The three
 rb-41 files deliberately never spell the attribute in prose, so nothing here self-certifies. This
@@ -218,7 +218,7 @@ RE-POINTED, not deleted: the four reach-leg teeth FG75j/k/u/v moved from exists 
 helpers — their legs still serve the surviving half, and deleting them would silently unprove it.
 `TEETH_PINNED` re-derived 351 → 345. The success detail still derives its counts from the run
 (16 halves proven, 3 live-tree proofs bit) and names the `rb41_*` tests as the exists-side reach
-proof. Net −329 lines (+149/−478).
+proof. Net −330 lines (+148/−478).
 
 **KEPT — and why the cut is surgical.** The exists half still resolves its needle to EXACTLY ONE
 declaration with a non-empty body carrying no `#[cfg` on the item and no `cfg!(` in the body (D2's
