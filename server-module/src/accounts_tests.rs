@@ -4761,6 +4761,10 @@ fn rb22_nd_purge_fn() -> String {
 
 /// THE FROZEN BODY PIN (red-team counter-tooth: the exact-equality backstop).
 ///
+/// WIDENED BY rb-40 (ADR-0235): the sanctioned body now binds
+/// `let purged = ids.len();` before the move-loop and yields `purged` as its
+/// tail expression, because the claim-time observation publishes that count.
+///
 /// Derived by running the real three-stage pipeline over the sanctioned source
 /// by hand: `strip_rust_strings` (no strings here) -> `strip_rust_comments` ->
 /// `squash_ws`, which removes ALL whitespace including newlines. `privacy_tests`
@@ -4778,11 +4782,13 @@ fn rb22_frozen_purge_body() -> String {
         concat!("ctx", ".db."),
         concat!("export", "_bundle()"),
         ".owner_identity().filter(owner).map(|c|c.chunk_id).collect();",
+        "letpurged=ids.len();",
         "foridinids{",
         concat!("ctx", ".db."),
         concat!("export", "_bundle()"),
         concat!(".chunk_id().del", "ete(id);"),
         "}",
+        "purged",
     ]
     .concat()
 }
@@ -4792,10 +4798,12 @@ fn rb22_frozen_purge_body() -> String {
 /// NOTE (measured against the real helper, accounts_tests.rs:245-250): the slice
 /// starts at the `fn_needle`, so it does NOT include the visibility keyword.
 /// `pub(crate)` is therefore pinned SEPARATELY, as a prefix containment check.
+/// The trailing `-> usize` is rb-40 (ADR-0235): the helper reports how many
+/// chunks it deleted, and `complete_guest_claim` publishes that count.
 fn rb22_frozen_purge_sig() -> String {
     concat!(
         "fnpurge_export",
-        "_bundles(ctx:&ReducerContext,owner:Identity)"
+        "_bundles(ctx:&ReducerContext,owner:Identity)->usize"
     )
     .to_string()
 }
@@ -4837,8 +4845,8 @@ fn rb22_header_squash(src: &str) -> String {
 /// Nine clauses, each with its own pinned message (coarse mutants only ever prove
 /// the first assertion — every later clause needs a surgical mutant pinned by
 /// FAILURE MESSAGE):
-///   count / statement-form / four ordering anchors / reachability / guest-shadow
-///   / brace depth.
+///   count / bound-statement-form / four ordering anchors / reachability /
+///   guest-shadow / brace depth.
 ///
 /// Kills: dropping the call; a second unreviewed call; the call re-argued to `me`
 ///        (which purges the CLAIMER's chunks and leaves the guest's behind);
@@ -4865,20 +4873,26 @@ fn rb22_claim_purges_guest_export_bundles_call_site() {
          purge site."
     );
 
-    // --- (2) a bare STATEMENT with the GUEST argument ------------------------
-    // `;<call>ctx,guest);` in squashed text pins three things at once: the
-    // argument (not `me`), statement position (not an operand of a closure or an
-    // iterator adaptor), and the preceding statement terminator. The eval's
-    // [S/depth0] clause documents the two MEASURED depth-0 shapes this kills:
-    // `let _p = || purge(...)` and `std::iter::empty().for_each(|_| purge(...))`.
-    let statement = format!(";{call}ctx,guest);");
+    // --- (2) a bare BOUND STATEMENT with the GUEST argument ------------------
+    // `;letpurged=<call>ctx,guest);` in squashed text pins four things at once:
+    // the BINDING (rb-40 / ADR-0235 — the helper now returns the number of
+    // chunks it deleted, and the claim-time observation publishes that count, so
+    // an unbound call leaves the emitted line with no data dependency on the
+    // purge at all), the argument (not `me`), statement position (not an operand
+    // of a closure or an iterator adaptor), and the preceding statement
+    // terminator. The eval's [S/depth0] clause documents the two MEASURED
+    // depth-0 shapes this kills: `let _p = || purge(...)` and
+    // `std::iter::empty().for_each(|_| purge(...))`.
+    let statement = format!(";letpurged={call}ctx,guest);");
     assert!(
         body.contains(statement.as_str()),
-        "rb-22 [call/statement]: the purge call in complete_guest_claim is not the bare \
-         statement `{statement}`. Either its argument is not the retired GUEST identity \
-         (purging the claimer's own chunks instead — a no-op that leaves the orphan), or the \
-         call is an OPERAND of something else: a closure binding or an iterator adaptor is \
-         brace-depth 0, satisfies every containment and ordering clause here, and never runs."
+        "rb-22 [call/statement]: the purge call in complete_guest_claim is not the bare bound \
+         statement `{statement}`. Either its result is not BOUND (rb-40: the emitted \
+         observation would then carry no count derived from this purge), or its argument is not \
+         the retired GUEST identity (purging the claimer's own chunks instead — a no-op that \
+         leaves the orphan), or the call is an OPERAND of something else: a closure binding or \
+         an iterator adaptor is brace-depth 0, satisfies every containment and ordering clause \
+         here, and never runs."
     );
 
     // --- (3) ordering on the success path ------------------------------------
@@ -14314,4 +14328,1026 @@ extern "C" fn datastore_delete_by_index_scan_point_bsatn(
     _out: *mut u32,
 ) -> u16 {
     std::process::abort()
+}
+
+// ===========================================================================
+// rb-40 (ADR-0235) — THE CLAIM-TIME `export_bundle` PURGE IS OBSERVABLE.
+//
+// EARS E1 (spec M-residual-backlog.spec.md#rb-40, promoted residual
+// R-rb-22-EO-9): WHEN a guest pre-claim `export_bundle` chunks are purged at
+// claim time (rb-22 / ADR-0220) THE SYSTEM SHALL be observable doing so.
+//
+// THE SHAPE THIS SECTION GATES (plan design B): `purge_export_bundles` returns
+// the number of chunks it deleted; `complete_guest_claim` BINDS that count and
+// emits EXACTLY ONE line through the blessed emission point
+// (`observability::mr_log`) as the TERMINAL statement before its trailing
+// `Ok(())`, carrying the retired guest hex and the count in a fragment built by
+// a PURE private helper.
+//
+// WHY TERMINAL AND NOT MID-REDUCER (plan revision 1, two independent review
+// lenses): a SpacetimeDB host log line is written as the reducer runs and
+// SURVIVES a later panic or `Err` rollback, while the purge deletes do not — so
+// a line emitted before the last fallible statement can record `purged N` for a
+// transaction that rolled back. The strongest available form of that property in
+// a source scan is `the squashed body ENDS with the emission plus the trailing
+// Ok`, which is what the [emit/terminal] clause asserts.
+//
+// THIS ARM COMPILES ON THE PRE-FIX TREE. Every clause below is a source scan
+// over `ACCOUNTS_RS` / `M22_PRIVACY_RS` (both already `include_str!`-ed above);
+// nothing here CALLS a function this slice has yet to add, because a call to a
+// missing fn is a BUILD error, which would take all 785 tests with it and make
+// the proof-of-teeth RED indistinguishable from a broken build (the rb-22 EO-6
+// precedent). The two behavioural tests that call `purge_fields` land in
+// the same commit as the fix.
+//
+// SCAN HYGIENE (this file header rule, restated because this section adds the
+// crate first purge-observation evt needle and the first backslash-bearing
+// fragment pin to a file a dozen evals concatenate wholesale, `_tests.rs`
+// included): every needle below is assembled from `concat!` fragments or from
+// the `rb22_dq()` / `rb40_bs()` byte helpers, so this file never carries a
+// contiguous emission call site, evt token, escaped-quote pair, block comment,
+// raw string, or quote inside a char literal.
+// ===========================================================================
+
+/// A literal backslash, built from its byte (0x5C) so this section carries no
+/// backslash adjacent to a double quote — that pair unbalances a naive
+/// quote-pairing string stripper in every eval that concatenates this file, and
+/// this file has never carried one.
+fn rb40_bs() -> char {
+    char::from(92u8)
+}
+
+/// The event name, split mid-token so this file never carries the contiguous
+/// evt literal a future evt census (or a Loki label audit) would count.
+fn rb40_evt() -> String {
+    concat!("guest_claim_export", "_purge").to_string()
+}
+
+/// The squashed call form of the ONE blessed emission point (ADR-0180 D6),
+/// fully qualified. The exact-count-of-1 clauses key on this literal spelling,
+/// which is also what kills the alias cheat `use crate::observability::mr_log as
+/// note;` — G7's import ban covers only the external `log` crate, not a
+/// re-export of our own wrapper.
+fn rb40_nd_mr_log() -> String {
+    concat!("crate::observability::", "mr_", "log(").to_string()
+}
+
+/// The breadcrumb-carrying sibling of the emission point. Banned outright in
+/// accounts.rs (plan: a `cause` would duplicate the guest field and drag in the
+/// G9f/G9h trace-pair machinery for a single, causeless INFO line).
+fn rb40_nd_mr_log_breadcrumb() -> String {
+    concat!("mr_", "log_breadcrumb(").to_string()
+}
+
+/// The squashed `fn` needle for the pure fragment builder.
+fn rb40_nd_fields_fn() -> String {
+    concat!("fnpurge", "_fields(").to_string()
+}
+
+/// The squashed ARGUMENT the emission hands the fragment builder — both bound
+/// names, in order. Pinning the argument text is what makes a re-argued
+/// `purge_fields(me, purged)` (which would publish the CLAIMER hex for the
+/// GUEST purge) a visible failure rather than a green textual match.
+fn rb40_nd_fields_arg() -> String {
+    concat!("&purge", "_fields(guest,purged)").to_string()
+}
+
+/// The frozen squashed signature slice `extract_squashed_fn_sig` returns for the
+/// fragment builder. The slice starts at the `fn` needle, so the (absent)
+/// visibility keyword is not part of it and is pinned separately.
+fn rb40_frozen_fields_sig() -> String {
+    concat!("fnpurge", "_fields(guest:Identity,chunks:usize)->String").to_string()
+}
+
+/// THE TERMINAL-EMISSION PIN, in the strings-BLANKED squashed view.
+///
+/// `strip_rust_strings` blanks the delimiters too, so the evt literal vanishes
+/// entirely and the call reads `mr_log(,&...)`. That is deliberate and is the
+/// clause red-team finding 5 asks for: a `const EVT` or a `concat!` in the first
+/// argument position leaves identifier bytes where this pin requires the bare
+/// comma, so the indirection REDs here — and an indirected evt is one a grep for
+/// the event name in this module never finds.
+///
+/// The leading `;` pins statement position (an operand of a closure or an
+/// iterator adaptor is brace-depth 0 and satisfies every containment clause
+/// while never running); the trailing `Ok(())` pins that NOTHING runs after the
+/// emission.
+fn rb40_frozen_emit_tail() -> String {
+    let emit = rb40_nd_mr_log();
+    let arg = rb40_nd_fields_arg();
+    let ok = concat!("Ok", "(())");
+    format!(";{emit},{arg});{ok}")
+}
+
+/// The WHOLE emission statement in the strings-KEPT squashed view — the one view
+/// in which the evt literal survives at all.
+///
+/// WIDTH IS LOAD-BEARING (measured, rb-40): rustfmt's default `fn_call_width` is
+/// 60 and this call's argument list is 56 columns. FIVE more characters in the
+/// evt name or the builder name tips it over, rustfmt lays the call out
+/// vertically WITH A TRAILING COMMA, and both this pin and the terminal-tail pin
+/// stop matching a correct implementation. That is why the builder is
+/// `purge_fields` and not `claim_purge_fields`. If the call must grow, re-derive
+/// BOTH literals from the new layout — never relax them to tolerate the comma,
+/// which is rustfmt-controlled and would flip back on the next width change.
+fn rb40_kept_emit_call() -> String {
+    let dq = rb22_dq();
+    let emit = rb40_nd_mr_log();
+    let evt = rb40_evt();
+    let arg = rb40_nd_fields_arg();
+    format!("{emit}{dq}{evt}{dq},{arg});")
+}
+
+/// The fragment builder FORMAT STRING, as SOURCE text (escapes included), which
+/// is exactly what the strings-kept view preserves.
+///
+/// Derived by hand through the live pipeline: `strip_comments_keep_strings`
+/// copies a backslash and the byte after it verbatim, and `squash_ws` finds no
+/// whitespace inside this literal, so the source spelling IS the needle.
+fn rb40_fragment_literal() -> String {
+    let dq = rb22_dq();
+    let bs = rb40_bs();
+    format!("{bs}{dq}guest{bs}{dq}:{bs}{dq}{{guest}}{bs}{dq},{bs}{dq}chunks{bs}{dq}:{{chunks}}")
+}
+
+/// The four bare-`log` macro invocations the OBS-2 ratchet grandfathers
+/// elsewhere and forbids in NEW code. Split mid-token so this file never carries
+/// one contiguously: `observability_tests.rs` G7 walks the tree for exactly
+/// these needles, and although it excludes `_tests.rs` siblings, several evals
+/// that do NOT exclude them concatenate this file.
+fn rb40_bare_log_needles() -> [String; 4] {
+    [
+        concat!("lo", "g", "::info!").to_string(),
+        concat!("lo", "g", "::warn!").to_string(),
+        concat!("lo", "g", "::error!").to_string(),
+        concat!("lo", "g", "::log!").to_string(),
+    ]
+}
+
+/// The log crate's bare PATH token, assembled from its bytes so this file never
+/// carries it contiguously (a dozen evals concatenate this file, `_tests.rs`
+/// siblings included, and several of them scan for exactly this token).
+///
+/// Banned as a WHOLE TOKEN, which is strictly wider than the four macro
+/// spellings above: it also covers the `__private_api` module those macros
+/// expand into, the global-logger accessor, the `Log` trait's own method and the
+/// `Level` enum — plus whatever spelling nobody has thought of yet.
+/// `rb22p_scan_hygiene` (privacy_tests.rs:711) has banned this same token in
+/// privacy.rs since rb-22, which is precisely why privacy.rs was never
+/// vulnerable to the internals shape and accounts.rs was.
+fn rb40_nd_log_path() -> String {
+    concat!("lo", "g", "::").to_string()
+}
+
+/// E1 (emission): `complete_guest_claim` emits EXACTLY ONE observation of the
+/// claim-time purge, and it is the TERMINAL statement of the success path.
+///
+/// NINE clauses, each with its OWN pinned message. Coarse mutants only ever
+/// prove the FIRST assertion — `expect()` throws on first failure — so every
+/// later clause is written to be attributable by FAILURE MESSAGE under a
+/// surgical mutant of its own.
+///
+/// Kills (first killer of each, in clause order):
+///   (1) the emission dropped entirely — the pre-fix state, and the shape every
+///       other clause here is silent about;
+///   (2) a SECOND emission bolted onto the m22-s3b cascade site, which would
+///       report a claim-time purge for an account-deletion erase and double
+///       every operator count of the event;
+///   (3) the emission written through `mr_log_breadcrumb`, which adds a `cause`
+///       that duplicates the guest field and pulls the trace-pair machinery
+///       (G9f/G9h) into a causeless INFO line;
+///   (4) a cfg-test-gated emission statement: the published wasm then emits
+///       NOTHING while every source scan in this slice stays green;
+///   (5) the emission moved anywhere but last — before the purge (it would
+///       report a count that does not exist yet), before the provenance update,
+///       or inside a closure / an `if purged > 0` guard; the evt supplied
+///       through a `const` or a `concat!` instead of a bare literal; either
+///       fragment argument dropped or re-argued;
+///   (6) the four success-path statements reordered while each still occurs
+///       once;
+///   (7) the emission nested one brace deep (a conditional emission is a
+///       conditional audit record);
+///   (8) a `return Err(..)` or `return Ok(())` inserted between the purge and
+///       the trailing Ok, which makes the emission dead code or skips the
+///       provenance stamp while every POSITION-based clause above stays green;
+///   (9) a `let purged = 0;` rebind, which re-points a textually perfect
+///       emission at a constant while the purge still runs.
+#[test]
+fn rb40_claim_emits_one_purge_observation() {
+    let squashed = stripped_for_scan(ACCOUNTS_RS);
+    let body = extract_squashed_fn_body(&squashed, &nd_complete())
+        .expect("rb40 [emit/scope]: fn complete_guest_claim not found in accounts.rs");
+    let emit = rb40_nd_mr_log();
+
+    // --- (1) exactly one emission inside this reducer -----------------------
+    let n_body = m22_count_occurrences(body, &emit);
+    assert_eq!(
+        n_body, 1,
+        "rb40 [emit/count-in-fn]: complete_guest_claim must call `{emit}` EXACTLY once; found \
+         {n_body}. ZERO is the pre-fix state this slice exists to close: the claim-time purge \
+         of a retired guest export chunks (rb-22 / ADR-0220) leaves NO signal anywhere — the \
+         table is private, S4 is the only writer, and an erasure audit therefore cannot tell a \
+         purge that ran from one that never did. MORE THAN ONE is a second, unreviewed \
+         emission of the same event, which doubles every operator count of it."
+    );
+
+    // --- (2) exactly one emission in the WHOLE file -------------------------
+    // The per-body clause above is blind to a second emission bolted onto the
+    // m22-s3b cascade site (account_deletion_reaper), which purges the SAME
+    // table for a different owner: that line would carry the claim-time evt for
+    // an account-deletion erase.
+    let n_file = m22_count_occurrences(&squashed, &emit);
+    assert_eq!(
+        n_file, 1,
+        "rb40 [emit/count-in-file]: accounts.rs must name `{emit}` EXACTLY once; found \
+         {n_file}. The single sanctioned site is the claim-time emission inside \
+         complete_guest_claim. A second call at the cascade site (account_deletion_reaper also \
+         purges export_bundle, ADR-0228 D1) would publish the CLAIM event for a deletion \
+         cascade; a call anywhere else is an emission no ceremony reviewer sees. This exact \
+         count is also what kills the alias cheat `use crate::observability::mr_log as note;` \
+         — G7 bans only the external log-crate imports, never a re-export of our own wrapper."
+    );
+
+    // --- (3) never the breadcrumb form --------------------------------------
+    let breadcrumb = rb40_nd_mr_log_breadcrumb();
+    let n_bc = m22_count_occurrences(&squashed, &breadcrumb);
+    assert_eq!(
+        n_bc, 0,
+        "rb40 [emit/no-breadcrumb]: accounts.rs names `{breadcrumb}` {n_bc} time(s); zero is \
+         allowed. The purge line has no CAUSE that is not already the guest field, so a \
+         breadcrumb would duplicate the subject into a second key and put this module on the \
+         m20e trace-pair surface (G9f/G9h scan call sites for paired enter/exit literals) for \
+         a single causeless INFO line. `mr_log` is the blessed no-breadcrumb form."
+    );
+
+    // --- (4) no cfg attribute on the emission ITEM SPAN ----------------------
+    // Mirrors rb22_lib_wires_mod_privacy: the look-back is bounded to the span
+    // from the previous statement terminator, so an unrelated cfg elsewhere in
+    // the reducer can neither vouch for nor incriminate this one.
+    let at_emit = body.find(emit.as_str()).unwrap_or_else(|| {
+        panic!(
+            "rb40 [emit/offset]: `{emit}` was not found in complete_guest_claim, so every \
+             offset-based clause below has no anchor and would pass VACUOUSLY."
+        )
+    });
+    let prev_end = body[..at_emit].rfind([';', '}']).map_or(0, |i| i + 1);
+    let span = &body[prev_end..at_emit];
+    assert!(
+        !span.contains(concat!("#[cfg", "(")),
+        "rb40 [emit/cfg]: the purge emission carries a cfg attribute in its item span \
+         ({span:?}). A cfg-test gate here compiles the emission into the TEST binary only: \
+         every source scan in this slice stays GREEN while the PUBLISHED wasm emits nothing at \
+         all, which is precisely the state this slice exists to leave behind."
+    );
+
+    // --- (5) THE EMISSION IS THE TERMINAL STATEMENT -------------------------
+    let tail = rb40_frozen_emit_tail();
+    let n_chars = body.chars().count();
+    let shown: String = body.chars().skip(n_chars.saturating_sub(240)).collect();
+    assert!(
+        body.ends_with(tail.as_str()),
+        "rb40 [emit/terminal]: the squashed body of complete_guest_claim must END with \
+         `{tail}`. A SpacetimeDB host log line is written as the reducer runs and SURVIVES a \
+         later panic or Err rollback, while the purge deletes do not — so an emission with any \
+         fallible statement after it can record `purged N` for a transaction that rolled back, \
+         which is worse than no signal (an erasure audit would read a deletion that never \
+         happened). This one clause also pins the statement form (a bare statement, not a \
+         closure operand), the BARE string-literal first argument (a `const` or a `concat!` \
+         leaves identifier bytes where the blanked literal must leave a bare comma), BOTH \
+         fragment arguments, and that nothing runs after the emission. Body tail read: {shown:?}"
+    );
+
+    // --- (6) ordering on the success path ------------------------------------
+    let purge = rb22_nd_purge_call();
+    let consume = concat!("consume_claim_and", "_disarm(");
+    let update = concat!("account()", ".identity().update(");
+    let at_purge = idx(body, &purge);
+    let at_consume = idx(body, consume);
+    let at_update = idx(body, update);
+    let at_ok = body
+        .rfind(concat!("Ok", "(())"))
+        .expect("rb40 [emit/order-ok]: complete_guest_claim must end in Ok(())");
+    assert!(
+        at_purge < at_consume,
+        "rb40 [emit/order-purge-consume]: the purge (offset {at_purge}) must still precede \
+         consume_claim_and_disarm (offset {at_consume}) — rb-40 binds the purge result and \
+         must not perturb the shipped rb-22 / AUTH-34 sequence."
+    );
+    assert!(
+        at_consume < at_update,
+        "rb40 [emit/order-consume-update]: the AUTH-34 consume (offset {at_consume}) must \
+         still precede the account provenance update (offset {at_update})."
+    );
+    assert!(
+        at_update < at_emit,
+        "rb40 [emit/order-update-emit]: the provenance update (offset {at_update}) must run \
+         BEFORE the emission (offset {at_emit}). The line is a best-effort host signal that \
+         survives a rollback; the update is the last statement that can still fail, so an \
+         emission above it can report a purge for a claim that did not complete."
+    );
+    assert!(
+        at_emit < at_ok,
+        "rb40 [emit/order-emit-ok]: the emission (offset {at_emit}) must precede the trailing \
+         Ok(()) (offset {at_ok})."
+    );
+
+    // --- (7) brace depth 0 (no conditional, no closure, no nested block) -----
+    let mut depth: i32 = 0;
+    for c in body[..at_emit].chars() {
+        if c == '{' {
+            depth += 1;
+        } else if c == '}' {
+            depth -= 1;
+        }
+    }
+    assert_eq!(
+        depth, 0,
+        "rb40 [emit/depth0]: the emission sits at brace depth {depth} inside \
+         complete_guest_claim, not at the top level of the fn body. A conditional emission is a \
+         conditional audit record: an `if purged > 0` guard keeps every count, ordering and \
+         containment clause green while the ZERO-chunk claim — the exact negative an erasure \
+         audit needs to distinguish `nothing to purge` from `the purge never ran` — is silent."
+    );
+
+    // --- (8) REACHABILITY from the purge binding to the trailing Ok ----------
+    // Same token semantics as rb-22 clause (4), MEASURED: a word boundary is
+    // required on the LEFT ONLY, because squash_ws fuses `return Err(..)` into
+    // `returnErr(` and `return Ok(())` into `returnOk(())`. Requiring a
+    // right-hand boundary too would blind this clause to exactly the early-exit
+    // shapes it exists to catch, while the left-only rule still rejects an
+    // identifier such as `early_return`.
+    let region = &body[at_purge..at_ok];
+    let mut scan = 0usize;
+    while let Some(rel) = region[scan..].find("return") {
+        let at = scan + rel;
+        let is_token = at == 0 || !is_word_byte(region.as_bytes()[at - 1]);
+        assert!(
+            !is_token,
+            "rb40 [emit/reachable]: a `return` token sits between the purge binding and the \
+             trailing Ok(()). After the re-key the success path is straight-line by design \
+             (every reject is one of guards 1..11, all of which precede rekey_all), so a return \
+             here either makes the emission dead code or adds an exit that skips it — while the \
+             count, cfg, terminal, ordering and depth clauses above all stay GREEN, because \
+             every one of them reasons about POSITION and none about REACHABILITY. This widens \
+             rb-22 clause (4), whose region ends at the consume. Region text: {region:?}"
+        );
+        scan = at + "return".len();
+    }
+
+    // --- (9) the count binding is never shadowed or rebound ------------------
+    let bind = concat!("let", "purged");
+    let binds = m22_count_occurrences(body, bind);
+    assert_eq!(
+        binds, 1,
+        "rb40 [emit/no-rebind]: complete_guest_claim binds `purged` {binds} time(s); exactly \
+         ONE is allowed — the delegated-purge binding that rb40_claim_binds_the_purge_result \
+         pins statement-by-statement. A second binding, `let purged = 0;` inserted anywhere \
+         above the emission, re-points a \
+         textually PERFECT emission at a constant: the count, statement-form, ordering, depth \
+         and reachability clauses are all satisfied, the code is clippy-clean, and the line \
+         then reports zero chunks for every claim. This is the rb-22 `let guest = me;` shadow \
+         finding applied to the value that makes this line observability rather than decoration."
+    );
+}
+
+/// E1 (data dependency): the emitted count IS the purge result.
+///
+/// The emission clauses above pin WHERE the line is written; this one pins that
+/// the number in it came from the purge at all. Without the binding the line
+/// says only `control reached here`, which the rb-22 static pins already say —
+/// design B rejected exactly that fallback (plan B-double-prime).
+///
+/// Kills: the purge call left as a bare statement with a hard-coded count
+///        (`purge_fields(guest, 0)`) — the whole-file purge census still
+///        reads 2 and every rb-22 clause stays green;
+///        the call re-argued to `me`, which purges the CLAIMER chunks and
+///        reports the guest as the subject;
+///        the binding moved out of the reducer into a helper, where neither the
+///        claim ceremony reviewers nor this test can see it.
+#[test]
+fn rb40_claim_binds_the_purge_result() {
+    let squashed = stripped_for_scan(ACCOUNTS_RS);
+    let body = extract_squashed_fn_body(&squashed, &nd_complete())
+        .expect("rb40 [bind/scope]: fn complete_guest_claim not found in accounts.rs");
+    let call = rb22_nd_purge_call();
+    let binding = [";letpurged=", call.as_str(), "ctx,guest);"].concat();
+    let n = m22_count_occurrences(body, &binding);
+    assert_eq!(
+        n, 1,
+        "rb40 [bind/statement]: complete_guest_claim must contain the bare statement \
+         `{binding}` EXACTLY once; found {n}. Three things are pinned at once and each is a \
+         distinct wrong implementation: the RESULT IS BOUND (an unbound call leaves the line \
+         with no data dependency on the purge, so it reports a constant and observes nothing); \
+         the ARGUMENT is the retired GUEST identity (re-argued to `me` it purges the claimer \
+         own chunks — a no-op that leaves the orphan while the line still names the guest); and \
+         the call is a bare STATEMENT at a statement boundary, not an operand of a closure or \
+         an iterator adaptor, both of which are brace-depth 0 and never run."
+    );
+}
+
+/// E1 (the payload): the evt token and the fragment literal are pinned by value,
+/// and the fragment smuggles no reserved envelope key and no PII.
+///
+/// Read over the strings-KEPT view — the ONLY view in which literal CONTENT
+/// survives at all (`stripped_for_scan` blanks it, which is why the terminal pin
+/// above reads `mr_log(,&...)`).
+///
+/// AM6 (observability.rs:82-87) makes a reserved key a debug-time panic, but the
+/// release wasm compiles that assert out, so the static ban is what holds in
+/// production: downstream JSON parsing is last-key-wins, and a smuggled `evt`
+/// would silently forge the event type of a privacy-audit line.
+///
+/// Kills: the evt renamed or misspelled (an operator alert keyed on the name
+///        goes silent, and nothing else in the tree reds);
+///        the evt spelled twice in the file (a second, unreviewed site);
+///        the fragment reshaped — an unquoted identity (which breaks JSON as
+///        soon as an identity is not hex), a quoted count (which breaks numeric
+///        comparison in every panel), a renamed key, a reordered pair;
+///        a fragment that smuggles `evt` / `cause` / `sched` / `phase`;
+///        a fragment that adds `name` / `auth_issuer` / `claimed_from` /
+///        `display`, i.e. the PRV1-17/20 player-authored and provider fields
+///        that must never reach a log line.
+#[test]
+fn rb40_evt_and_fragment_literals_are_pinned() {
+    let kept = stripped_keep_strings(ACCOUNTS_RS);
+
+    let call = rb40_kept_emit_call();
+    let n_call = m22_count_occurrences(&kept, &call);
+    assert_eq!(
+        n_call, 1,
+        "rb40 [evt/call]: accounts.rs must contain the emission `{call}` EXACTLY once; found \
+         {n_call}. This is the strings-KEPT twin of the terminal pin: it is the only view in \
+         which the evt literal exists at all, so it is the only clause that can tell the \
+         sanctioned event name from any other."
+    );
+
+    let evt = rb40_evt();
+    let n_evt = m22_count_occurrences(&kept, &evt);
+    assert_eq!(
+        n_evt, 1,
+        "rb40 [evt/unique]: the evt token `{evt}` occurs {n_evt} time(s) in accounts.rs; \
+         exactly ONE is allowed. Zero means the event was renamed and every operator alert, \
+         dashboard query and `just logs` grep keyed on it goes silent with no other gate \
+         reddening. Two means a second site emits the same event name from a flow this slice \
+         never reviewed."
+    );
+
+    let fragment = rb40_fragment_literal();
+    let n_fragment = m22_count_occurrences(&kept, &fragment);
+    assert_eq!(
+        n_fragment, 1,
+        "rb40 [evt/fragment]: accounts.rs must carry the fragment format string `{fragment}` \
+         EXACTLY once; found {n_fragment}. The shape is the contract: the guest identity is \
+         QUOTED (Identity Display is fixed-width lowercase hex — structurally quote-free, but \
+         a bare hex value is not valid JSON as a number), the chunk count is UNQUOTED (a \
+         quoted count cannot be compared numerically in a panel or an alert), the keys are \
+         `guest` and `chunks`, and they appear in that order."
+    );
+
+    let fields_scope = extract_squashed_fn_body(&kept, &rb40_nd_fields_fn());
+    let fields_body = fields_scope.unwrap_or_else(|| {
+        panic!(
+            "rb40 [evt/fields-scope]: fn purge_fields was not found in accounts.rs (or \
+             its body is not brace-balanced), so every ban below would run over an arbitrary \
+             span and pass VACUOUSLY."
+        )
+    });
+    assert_eq!(
+        m22_count_occurrences(fields_body, &fragment),
+        1,
+        "rb40 [evt/fragment-scope]: the fragment literal must live INSIDE purge_fields. \
+         A whole-file count is satisfied by the same text sitting in a doc example or a decoy \
+         helper while the builder itself renders something else."
+    );
+
+    for (needle, why) in [
+        (
+            "evt",
+            "the envelope OWN event key (AM6). The fragment is interpolated verbatim after \
+             it, and downstream JSON parsing is last-key-wins, so a second `evt` silently \
+             forges the event type of a privacy-audit line",
+        ),
+        (
+            "cause",
+            "a reserved breadcrumb key (AM6) — a duplicate would forge a trace-pair cause",
+        ),
+        (
+            "sched",
+            "a reserved breadcrumb key (AM6) — a duplicate would forge scheduled-work \
+             attribution",
+        ),
+        (
+            "phase",
+            "a reserved breadcrumb key (AM6) — a duplicate would forge an enter/exit trace \
+             pair that the m20e G9 scanners then pair against nothing",
+        ),
+        (
+            "name",
+            "a player-authored value (PRV1-17/20 by analogy): guest_name is snapshotted from \
+             player.name and is the one field in this ceremony a user controls, so it must \
+             never reach a log line",
+        ),
+        (
+            "auth_issuer",
+            "the OAuth provider the person signed in with (spec para 3 tombstone field) — \
+             identifying, and never needed to audit an erasure",
+        ),
+        (
+            "claimed_from",
+            "the AUTH-21 provenance column. It already persists the guest-to-claimer linkage \
+             in the row; repeating it in a log line spreads the linkage to a second, \
+             longer-lived store nobody erases",
+        ),
+        (
+            "display",
+            "a display-name field family (ranking / profile), all of them player-authored",
+        ),
+    ] {
+        assert!(
+            !fields_body.contains(needle),
+            "rb40 [evt/fragment-keys]: the purge_fields body names `{needle}` — {why}. \
+             The sanctioned fragment carries exactly two keys, `guest` (the SUBJECT of the \
+             erasure, which is what an audit is keyed on) and `chunks` (the count), and \
+             nothing else. Body read: {fields_body:?}"
+        );
+    }
+}
+
+/// X1 (purity, source scan): `purge_fields` is a PURE private fn — no
+/// context, no table read, no write, no emission of its own.
+///
+/// A SOURCE SCAN and therefore compile-safe, which is why it joins the RED arm
+/// rather than the two behavioural tests that CALL the helper: on the pre-fix
+/// tree it fails LOUD on the missing declaration instead of failing the build.
+///
+/// Kills: the helper missing entirely (the pre-fix state);
+///        a second, cfg-gated or overloaded declaration, which would make the
+///        body-scoped clauses read whichever one the extractor reaches first;
+///        a renamed or re-typed signature — in particular `chunks: u32`, which
+///        would truncate a large count, and `guest: &Identity`, which would
+///        break the Copy-based call site;
+///        a `pub` helper, which puts a log-fragment builder on the crate surface;
+///        a builder that takes the context and READS a row (the account name,
+///        the claim row) to enrich the line — the exact shape PRV1-17/20 forbid,
+///        and the one that would make this fn untestable off-instance;
+///        a builder that emits a line of its own;
+///        a builder that CONSTRUCTS an Identity rather than rendering the one it
+///        was handed.
+#[test]
+fn rb40_claim_purge_fields_is_pure() {
+    let squashed = stripped_for_scan(ACCOUNTS_RS);
+    let needle = rb40_nd_fields_fn();
+
+    let n = m22_count_occurrences(&squashed, &needle);
+    assert_eq!(
+        n, 1,
+        "rb40 [fields/decl]: accounts.rs must declare `{needle}` EXACTLY once; found {n}. ZERO \
+         is the pre-fix state: with no pure fragment builder there is nothing to test by VALUE, \
+         and the whole emission collapses to a static line that observes nothing (the \
+         B-double-prime fallback this slice rejected). TWO makes every body-scoped clause below \
+         read whichever declaration the extractor reaches first, leaving the other ungated."
+    );
+
+    let sig = extract_squashed_fn_sig(&squashed, &needle)
+        .expect("rb40 [fields/sig-read]: the fragment builder signature has no opening brace");
+    assert_eq!(
+        sig,
+        rb40_frozen_fields_sig(),
+        "rb40 [fields/sig]: the fragment builder signature is not the frozen one. It takes the \
+         subject BY VALUE as `guest: Identity` (Identity is Copy, and a reference would make \
+         the call site the only place a caller could get it wrong) and the count as \
+         `chunks: usize` — the exact type `purge_export_bundles` returns, so no cast can \
+         silently truncate it — and returns an owned `String` fragment."
+    );
+
+    for (vis, what) in [
+        (
+            concat!("pubfnpurge", "_fields("),
+            "bare `pub`, which puts a log-fragment builder on the crate external surface",
+        ),
+        (
+            concat!("pub(crate)fnpurge", "_fields("),
+            "`pub(crate)`, which invites a second module to render this module audit line",
+        ),
+    ] {
+        assert!(
+            !squashed.contains(vis),
+            "rb40 [fields/vis]: purge_fields is declared {what}. It must be PRIVATE: it \
+             exists to make ONE emission in this module testable by value, and every widening \
+             of its visibility is a widening of who can shape a privacy-audit record."
+        );
+    }
+
+    let body = extract_squashed_fn_body(&squashed, &needle)
+        .expect("rb40 [fields/body-read]: the fragment builder body is not brace-balanced");
+
+    for (banned, why) in [
+        (
+            "ctx",
+            "the reducer context. A fragment builder that takes or names the context can READ \
+             a row to enrich the line (the account name, the claim row), which is the PRV1-17 \
+             shape, and it makes the builder untestable off-instance — a ReducerContext is not \
+             constructible in this crate (ADR-0225 D5), so a ctx-bound builder would have NO \
+             behavioural test at all and this slice would ship source pins only",
+        ),
+        (
+            concat!(".db", "."),
+            "a database handle. Nothing in a pure string builder legitimately reads a table",
+        ),
+        (
+            concat!(".ins", "ert("),
+            "a row insert — G5/D0 write isolation, and a fragment builder writes nothing",
+        ),
+        (concat!(".upd", "ate("), "a row update — see the insert ban"),
+        (concat!(".del", "ete("), "a row delete — see the insert ban"),
+        (
+            concat!("lo", "g"),
+            "a logging segment. The builder RENDERS a fragment; the reducer that calls it owns \
+             the emission (the same doctrine privacy.rs scan hygiene states for its helper). A \
+             builder that emits its own line makes the exactly-once emission census a lie",
+        ),
+        (
+            "warn",
+            "a logging level segment — see the logging ban; this line is INFO by design",
+        ),
+        (
+            "reject",
+            "the reject-path vocabulary. This is a success-path record, not a rejection, and \
+             the AUTH-36 no-PII rules for reject logs are scoped to log_reject argument spans",
+        ),
+        (
+            concat!("Identity", "::"),
+            "an Identity constructor. The subject arrives as a parameter the caller derived \
+             from the claim row; constructing one here would let the builder name a victim",
+        ),
+    ] {
+        assert!(
+            !body.contains(banned),
+            "rb40 [fields/pure]: the purge_fields body contains `{banned}` — {why}. Body \
+             read: {body:?}"
+        );
+    }
+
+    // --- EQUALITY, last (rb-24 clause-order convention) ----------------------
+    // In the strings-BLANKED view the whole format string collapses to nothing,
+    // so the sanctioned body is exactly the macro call and its empty parens.
+    // Containment pins were MEASURED insufficient across this crate (rb-22
+    // red-team): a dead `if false` wrapper, a shadowed binding and an appended
+    // statement all satisfy every ban above and are clippy-clean.
+    assert_eq!(
+        body,
+        concat!("format", "!()"),
+        "rb40 [fields/body]: purge_fields must be EXACTLY one format-macro expression \
+         and nothing else. Every string literal is blanked in this view, so the sanctioned \
+         body reads as the bare macro call: any extra statement, binding, conditional or \
+         helper call survives the blanking and reds here. That is what makes `pure` a checked \
+         fact rather than a description — the two behavioural tests own the fragment VALUE."
+    );
+}
+
+/// X3 (OBS-2 ratchet, no-regression): rb-40 adds NO new reach into the log crate
+/// from accounts.rs or privacy.rs — not a macro, not its internals — and neither
+/// file imports it.
+///
+/// GREEN BEFORE THE FIX AS WELL AS AFTER — deliberately. This is a
+/// no-regression tooth, not a red-to-green one: the committed `.log-baseline`
+/// gives both files 0/0/0/0 today, and the whole point is that the shipped
+/// emission routes through the blessed `observability::mr_log` wrapper instead
+/// of reopening the ratchet. It belongs to the rb40 set because it is the fast
+/// local loop for the property X3 also checks against the baseline file itself.
+///
+/// THE BAN IS ON THE CRATE PATH TOKEN, NOT ON A LIST OF SPELLINGS (rb-40
+/// artifact red-team). A macro-name scan can only ever ban the names it
+/// enumerates, and those are not the only way to emit: the crate's
+/// `__private_api` module is `pub mod` (log 0.4.33, lib.rs:1626), so the
+/// function the four macros expand into is externally callable by anyone who
+/// spells the path. The four needles are KEPT because they attribute the common
+/// shape by name; the whole-token clause is what makes the tooth total.
+///
+/// Kills: the emission written as a bare INFO macro of the log crate at the
+///        claim site, which satisfies `be observable doing so` in the loosest
+///        reading while bypassing the ONE blessed emission point (ADR-0180 D6),
+///        skipping the AM6 reserved-key assert, and forcing a `.log-baseline`
+///        edit that the X3 ledger gate pins as byte-unchanged;
+///        the same call added to privacy.rs, where the module scan-hygiene
+///        contract bans the token outright (the reducer that calls a helper owns
+///        any logging);
+///        an ALIASING import of that crate followed by a bang-call through the
+///        alias, which hides the level token from a macro-name scan while
+///        emitting exactly the same unwrapped line;
+///        a DIRECT call into the macro-expansion internals — MEASURED by the
+///        rb-40 artifact red-team, planted after the purge binding in
+///        complete_guest_claim, as a second emission channel that spells none of
+///        the four macro names, needs no import, is clippy-clean under
+///        `-D warnings` and left the whole suite green at 793/793. It hands the
+///        global logger a caller-built `format_args!`, so it also skips
+///        `guards::json_escape` and the AM6 reserved-key assert entirely —
+///        strictly worse than the shape the four needles ban, and invisible to
+///        every one of them;
+///        any future spelling of the same idea: the global-logger accessor, the
+///        `Log` trait's own method, the `Level` enum.
+///
+/// SCOPE, STATED HONESTLY: this tooth covers the two files this slice touches.
+/// The crate-wide G7 ratchet (`observability_tests.rs` `needles()` :376-383 and
+/// its `observability-log-wrapper.eval.mjs` twin, which must stay byte-identical
+/// to it) counts the same four macro spellings, so the internals shape is
+/// invisible to it in the other twenty modules. Widening that scanner — and
+/// re-deriving the `.log-baseline` under a wider needle — is outside this
+/// slice's touches and is recorded as residual R-rb40-G7PRIVATEAPI.
+#[test]
+fn rb40_no_new_bare_log_in_accounts_or_privacy() {
+    let needles = rb40_bare_log_needles();
+
+    // --- non-vacuity: the needles must FIND a planted call -------------------
+    let probe = format!("fn f() {{ {}(); }}", needles[0]);
+    let probe_squashed = stripped_for_scan(&probe);
+    assert_eq!(
+        m22_count_occurrences(&probe_squashed, &needles[0]),
+        1,
+        "rb40 [obs2/vacuity]: the bare-log needle does not match a PLANTED call after \
+         stripping, so every zero-count assertion below would prove nothing. Stripped probe: \
+         {probe_squashed:?}"
+    );
+
+    // --- non-vacuity: the crate-path token must FIND a planted internals call
+    let log_path = rb40_nd_log_path();
+    let path_probe = format!("fn f() {{ {log_path}__private_api::log(); }}");
+    let path_probe_squashed = stripped_for_scan(&path_probe);
+    assert_eq!(
+        m22_count_occurrences(&path_probe_squashed, &log_path),
+        1,
+        "rb40 [obs2/vacuity-path]: the crate-path token does not match a PLANTED call into the \
+         macro-expansion internals after stripping, so the whole-token clause below would \
+         prove nothing about the ONE shape it exists to catch — the shape a red-team measured \
+         as gate-green and clippy-clean. Stripped probe: {path_probe_squashed:?}"
+    );
+
+    for (path, src) in [("accounts.rs", ACCOUNTS_RS), ("privacy.rs", M22_PRIVACY_RS)] {
+        let squashed = stripped_for_scan(src);
+        assert!(
+            src.len() > 200,
+            "rb40 [obs2/scope]: {path} is only {} bytes — too short to be the file this scan \
+             means to check, so every ban below would pass vacuously.",
+            src.len()
+        );
+        for needle in &needles {
+            let n = m22_count_occurrences(&squashed, needle);
+            assert_eq!(
+                n, 0,
+                "rb40 [obs2/bare-log]: {path} contains {n} bare `{needle}` invocation(s); zero \
+                 is allowed. Both files carry NO row in the committed .log-baseline, so any \
+                 count here is a NEW bare emission: it bypasses the one blessed emission point \
+                 (ADR-0180 D6), skips the AM6 reserved-key assert that stops a fragment forging \
+                 the event type, and forces an edit to a baseline the X3 ledger gate pins as \
+                 byte-unchanged. The scan runs over the whitespace-SQUASHED view, so the spaced \
+                 macro-path spelling is caught too."
+            );
+        }
+        let n_path = m22_count_occurrences(&squashed, &log_path);
+        assert_eq!(
+            n_path, 0,
+            "rb40 [obs2/private-api]: {path} names the crate path token `{log_path}` {n_path} \
+             time(s); zero is allowed, and the ban is on the TOKEN rather than on any list of \
+             macro names. The crate's `__private_api` module is `pub mod` (log 0.4.33, \
+             lib.rs:1626), so the function the four macros above expand into is externally \
+             callable: a red-team MEASURED that direct call, planted in complete_guest_claim, \
+             as a second emission channel that spells none of those four names, needs no \
+             import, is clippy-clean under `-D warnings` and left the whole suite green. It \
+             hands the global logger a caller-built `format_args!`, so it bypasses \
+             `guards::json_escape` AND the AM6 reserved-key assert — the two things that stop \
+             a fragment forging the event type of a privacy-audit line. The same reasoning \
+             covers the global-logger accessor, the `Log` trait's own method and the `Level` \
+             enum. Route every emission through `observability::mr_log`."
+        );
+        let clean = strip_rust_comments(&strip_rust_strings(src));
+        for import in [
+            concat!("use ", "lo", "g"),
+            concat!("use ::", "lo", "g"),
+            concat!("extern crate ", "lo", "g"),
+        ] {
+            assert!(
+                !clean.contains(import),
+                "rb40 [obs2/import]: {path} carries `{import}`. An import is how a bare \
+                 emission hides from a macro-name scan: alias the crate INFO macro under a \
+                 local name, then bang-call the alias — the unwrapped line is identical and \
+                 every needle above reads zero. Neither file needs that crate; the blessed \
+                 wrapper is reached fully qualified, with no import at all."
+            );
+        }
+    }
+}
+
+// ===========================================================================
+// rb-40 (ADR-0235) — BEHAVIOURAL ARM. Applied WITH the fix, never before it.
+//
+// These two tests CALL `purge_fields`, so on the pre-fix tree they are a
+// BUILD error rather than a by-name RED — and a build error takes all 785 tests
+// with it, which is indistinguishable from a broken tree and proves nothing
+// about this criterion (the rb-22 EO-6 precedent; plan revision 6). The RED arm
+// lands first and is captured by name; this block lands in the same commit as
+// the implementation.
+//
+// WHY THEY EXIST AT ALL. Every other rb-40 clause is a SOURCE SCAN, and a source
+// scan can only ever say that the right TEXT is in the right place. These two
+// say what the line actually CONTAINS: the pure fragment builder is the seam
+// that makes the emission testable by value in a crate where no ReducerContext
+// can be constructed off-instance (ADR-0225 D5). They own the kills no scan
+// reaches — a builder that renders the count into the wrong shape, quotes it,
+// omits a zero, truncates a large one, or renders the identity through Debug
+// instead of Display.
+//
+// Helpers reused from the RED arm above: `rb40_evt()`, `rb22_dq()` (:4746) and
+// the `ident(u8)` fixture (:724).
+// ===========================================================================
+
+/// X1 (behavioural): `purge_fields` renders EXACTLY the sanctioned
+/// two-key fragment — the guest identity QUOTED, the chunk count BARE.
+///
+/// The identity hex is asserted three ways on purpose: the WIDTH (64), the
+/// alphabet (lowercase hex), and the exact value for the fixture identity. The
+/// third is what kills a Debug rendering, which is a different string for the
+/// same value and would put a type name and a `0x` prefix inside a JSON string
+/// position; the first two say WHY 64 lowercase hex characters is the contract
+/// (`guards.rs:54`: Identity Display is fixed-width lowercase hex, and that is
+/// exactly what makes it structurally quote-free and safe to interpolate raw).
+///
+/// Kills: a constant-returning builder (any fixture disagrees);
+///        a builder that renders the identity through `{guest:?}` (Debug), which
+///        is not 64 lowercase hex characters;
+///        a QUOTED count, which cannot be compared numerically by any alert or
+///        panel and is the single most likely `it looks the same` mutation;
+///        an UNQUOTED identity, which is invalid JSON the moment the hex begins
+///        with a non-digit;
+///        a builder that OMITS the count when it is zero — the zero-chunk claim
+///        is the exact negative an erasure audit needs, and an absent key reads
+///        downstream as `unknown`, not as `none`;
+///        a `chunks as u32` (or any narrowing) truncation of a large count;
+///        renamed or reordered keys.
+#[test]
+fn rb40_claim_purge_fields_is_exact() {
+    let dq = rb22_dq();
+    let hex = ident(7).to_string();
+
+    assert_eq!(
+        hex.len(),
+        64,
+        "rb40 [fields/hex-width]: the fixture identity renders as {} character(s); an Identity \
+         is 32 bytes and its Display is fixed-width lowercase hex, so 64 is the only correct \
+         width. A different width means the fragment is not rendering Display at all.",
+        hex.len()
+    );
+    assert!(
+        hex.chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+        "rb40 [fields/hex-alphabet]: the fixture identity renders as {hex:?}, which is not pure \
+         LOWERCASE hex. That alphabet is what makes an identity structurally quote-free and \
+         therefore safe to interpolate into a JSON string position without escaping."
+    );
+    assert_eq!(
+        hex,
+        "07".repeat(32),
+        "rb40 [fields/hex-value]: `ident(7)` is 32 bytes of 0x07, so its hex rendering is `07` \
+         thirty-two times, whichever byte order the SDK uses. A different value here means the \
+         fragment renders the identity through Debug (a type name plus a prefix) rather than \
+         Display — the same value, a different string, and one that is not a bare hex token."
+    );
+
+    let expected = format!("{dq}guest{dq}:{dq}{hex}{dq},{dq}chunks{dq}:3");
+    assert_eq!(
+        super::purge_fields(ident(7), 3),
+        expected,
+        "rb40 [fields/exact]: the fragment must be exactly two keys in this order — `guest`, \
+         the QUOTED hex of the retired guest identity (the SUBJECT an erasure audit is keyed \
+         on), then `chunks`, the BARE count of rows the purge deleted. This is the whole \
+         payload: no player-authored value, no provider, no claimer (AUTH-21 `claimed_from` \
+         already persists the guest-to-claimer linkage on the row itself)."
+    );
+
+    let zero = super::purge_fields(ident(7), 0);
+    assert_eq!(
+        zero,
+        format!("{dq}guest{dq}:{dq}{hex}{dq},{dq}chunks{dq}:0"),
+        "rb40 [fields/zero]: a ZERO count must render as `:0`, never be omitted and never be \
+         suppressed. The zero-chunk claim is the negative an erasure audit needs: it is the \
+         only way to tell `this guest had nothing to purge` from `the purge never ran`, which \
+         is precisely the ambiguity this slice exists to remove. An omitted key reads \
+         downstream as unknown, not as none."
+    );
+
+    let big = super::purge_fields(ident(7), 4_294_967_296);
+    assert!(
+        big.ends_with(format!("{dq}chunks{dq}:4294967296").as_str()),
+        "rb40 [fields/large]: a count beyond 32 bits must render as a bare decimal, unclamped \
+         and untruncated; got {big:?}. A `chunks as u32` narrowing renders this exact input as \
+         0 — a silent `nothing was deleted` for the largest erasures in the system, which are \
+         the ones an audit most needs to be right about."
+    );
+
+    let f = super::purge_fields(ident(9), 12);
+    assert!(
+        f.starts_with(dq),
+        "rb40 [fields/leading-quote]: the fragment must START at the opening quote of the first \
+         key; got {f:?}. `build_log_line` splices it verbatim after a comma, so any leading \
+         byte other than a quote produces malformed JSON in every emitted line."
+    );
+    assert!(
+        f.ends_with('2'),
+        "rb40 [fields/trailing-digit]: the fragment must END on the last digit of the count; \
+         got {f:?}. A trailing comma, brace or quote would either break the envelope or hide a \
+         third key that the AM6 reserved-key scan never sees."
+    );
+    assert_eq!(
+        f.matches(dq).count(),
+        6,
+        "rb40 [fields/quote-census]: the fragment must carry EXACTLY six double quotes — two \
+         for the `guest` key, two for its hex value, two for the `chunks` key — and none around \
+         the count; got {f:?}. Eight means the count was quoted (numerically uncomparable \
+         downstream); four means the identity was left bare (invalid JSON as soon as the hex \
+         does not parse as a number)."
+    );
+}
+
+/// X1 (behavioural, composition): the fragment composes into a well-formed
+/// evt-first envelope through the blessed builder, with no dangling comma and
+/// exactly three top-level keys.
+///
+/// Mirrors `observability_tests.rs:224` (`heartbeat_fields_composes_into_the_envelope`)
+/// — the same proof for the other pure fragment builder in this crate. It is the
+/// only test in the slice that exercises the REAL composition the reducer
+/// performs, rather than the fragment in isolation.
+///
+/// Kills: a fragment that starts with a comma (the builder already emits one, so
+///        the line would carry `,,` and no JSON parser downstream recovers);
+///        a fragment that smuggles a reserved key (the top-level key census
+///        counts four instead of three, and last-key-wins would then let the
+///        smuggled value forge the event type);
+///        an envelope whose evt is not first (the relay reconstruction keys on
+///        field order being stable);
+///        an empty fragment, which would leave the envelope with one key and the
+///        purge unobserved.
+#[test]
+fn rb40_claim_purge_line_composes_into_the_envelope() {
+    let dq = rb22_dq();
+    let evt = rb40_evt();
+    let hex = ident(9).to_string();
+    let line = crate::observability::build_log_line(
+        &evt,
+        &super::purge_fields(ident(9), 2),
+        crate::observability::Breadcrumb::default(),
+    );
+
+    let expected =
+        format!("{{{dq}evt{dq}:{dq}{evt}{dq},{dq}guest{dq}:{dq}{hex}{dq},{dq}chunks{dq}:2}}");
+    assert_eq!(
+        line, expected,
+        "rb40 [line/exact]: the composed line must be the canonical envelope — `evt` first, \
+         then the purge fragment verbatim, and nothing else. This is the string an operator \
+         greps, an alert matches and an erasure audit reads, so it is pinned by value rather \
+         than by shape."
+    );
+
+    assert!(
+        line.starts_with('{') && line.ends_with('}'),
+        "rb40 [line/braces]: the composed line must be a single JSON object; got {line:?}."
+    );
+    assert_eq!(
+        line.matches('{').count(),
+        1,
+        "rb40 [line/one-object]: the line must carry exactly ONE opening brace — no nested \
+         object. A `sched` breadcrumb is the only nested shape the builder can emit, and this \
+         line takes the default (empty) breadcrumb. Got {line:?}."
+    );
+    assert!(
+        !line.contains(",}"),
+        "rb40 [line/no-dangling-comma]: the line ends in a dangling comma ({line:?}), which is \
+         invalid JSON. The builder appends a comma before a NON-EMPTY fragment, so this fires \
+         when the fragment renders empty — an empty fragment is also a line that observes \
+         nothing."
+    );
+    assert_eq!(
+        line.matches(dq).count(),
+        10,
+        "rb40 [line/quote-census]: the line must carry EXACTLY ten double quotes — three quoted \
+         keys (6) plus two quoted values (4), with the count bare. Got {line:?}."
+    );
+
+    let inner = &line[1..line.len() - 1];
+    let key_sep = format!("{dq}:");
+    assert_eq!(
+        inner.matches(key_sep.as_str()).count(),
+        3,
+        "rb40 [line/three-keys]: the line must carry EXACTLY three top-level keys (`evt`, \
+         `guest`, `chunks`); the key-separator census counts \
+         {}. A fourth key is either a reserved envelope key smuggled through the fragment \
+         (AM6 — last-key-wins would let it forge the event type or a breadcrumb) or an \
+         unreviewed field on a privacy-audit record. Got {line:?}",
+        inner.matches(key_sep.as_str()).count()
+    );
+    let evt_prefix = format!("{dq}evt{dq}:");
+    assert!(
+        inner.starts_with(evt_prefix.as_str()),
+        "rb40 [line/evt-first]: `evt` must be the FIRST key of the envelope; got {line:?}. \
+         Every downstream consumer (the relay reconstruction, the Loki label set bounded to \
+         reducer plus evt) keys on that position being stable."
+    );
 }

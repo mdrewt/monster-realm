@@ -244,6 +244,12 @@ fn rb22p_nd_fn() -> String {
 /// THE FROZEN BODY PIN, in squashed form. Same literal as the accounts_tests.rs
 /// arm; the messages differ so a mutant can be attributed to either arm.
 ///
+/// WIDENED BY rb-40 (ADR-0235): the helper now binds `let purged = ids.len();`
+/// BEFORE the move-loop and yields `purged` as its tail expression, so the count
+/// the claim-time observation publishes is the cardinality of the very set the
+/// loop deletes. `rb40p_purge_returns_the_collected_count` owns the attributable
+/// clauses; this literal stays the equality backstop.
+///
 /// Containment pins alone were MEASURED insufficient (red-team, clippy-clean and
 /// green against every needle clause): `if false ...` wrapping a correct body; a
 /// shadowed `let ids = Vec::new();`; a shadowed in-loop `let id: u64 = 0;`; an
@@ -254,11 +260,13 @@ fn rb22p_frozen_body() -> String {
         concat!("ctx", ".db."),
         concat!("export", "_bundle()"),
         ".owner_identity().filter(owner).map(|c|c.chunk_id).collect();",
+        "letpurged=ids.len();",
         "foridinids{",
         concat!("ctx", ".db."),
         concat!("export", "_bundle()"),
         concat!(".chunk_id().del", "ete(id);"),
         "}",
+        "purged",
     ]
     .concat()
 }
@@ -266,16 +274,20 @@ fn rb22p_frozen_body() -> String {
 /// The frozen signature slice `extract_squashed_fn_sig` returns.
 ///
 /// It starts at the `fn` needle, so the visibility keyword is NOT part of it —
-/// `pub(crate)` is pinned separately, as a prefix containment check.
+/// `pub(crate)` is pinned separately, as a prefix containment check. The trailing
+/// `-> usize` is rb-40 (ADR-0235): the helper reports how many chunks it deleted
+/// so its caller can publish that number. The two other call sites discard the
+/// value, which is warning-free (no must-use attribute is added).
 fn rb22p_frozen_sig() -> String {
     concat!(
         "fnpurge_export",
-        "_bundles(ctx:&ReducerContext,owner:Identity)"
+        "_bundles(ctx:&ReducerContext,owner:Identity)->usize"
     )
     .to_string()
 }
 
-/// The SAME body as `rb22p_frozen_body`, but as whitespace-bearing SOURCE text.
+/// The SAME body as `rb22p_frozen_body` (rb-40 shape: the count binding and the
+/// tail expression included), but as whitespace-bearing SOURCE text.
 ///
 /// Feeding this through the live pipeline must reproduce `rb22p_frozen_body()`
 /// byte for byte. That positive control is what makes the equality pin provably
@@ -288,12 +300,12 @@ fn rb22p_frozen_body_source() -> String {
         concat!("ctx", ".db."),
         concat!("export", "_bundle()"),
         "\n        .owner_identity()\n        .filter(owner)\n        .map(|c| c.chunk_id)\n",
-        "        .collect();\n    for id in ids ",
+        "        .collect();\n    let purged = ids.len();\n    for id in ids ",
         "{\n        ",
         concat!("ctx", ".db."),
         concat!("export", "_bundle()"),
         concat!(".chunk_id().del", "ete(id);"),
-        "\n    }\n",
+        "\n    }\n    purged\n",
     ]
     .concat()
 }
@@ -302,7 +314,7 @@ fn rb22p_frozen_body_source() -> String {
 fn rb22p_frozen_decl_source() -> String {
     concat!(
         "pub(crate) fn purge_export",
-        "_bundles(ctx: &ReducerContext, owner: Identity) "
+        "_bundles(ctx: &ReducerContext, owner: Identity) -> usize "
     )
     .to_string()
 }
@@ -5776,4 +5788,160 @@ extern "C" fn row_iter_bsatn_advance(
 #[no_mangle]
 extern "C" fn row_iter_bsatn_close(_iter: u32) -> u16 {
     std::process::abort()
+}
+
+// ===========================================================================
+// rb-40 (ADR-0235) — THE PURGE HELPER REPORTS WHAT IT DELETED.
+//
+// EARS E1 (spec M-residual-backlog.spec.md#rb-40, promoted residual
+// R-rb-22-EO-9): WHEN a guest pre-claim export_bundle chunks are purged at claim
+// time THE SYSTEM SHALL be observable doing so.
+//
+// THIS FILE OWNS THE PRODUCER HALF. `complete_guest_claim` is what EMITS the
+// observation (accounts_tests.rs, rb40_ prefix); this helper is what gives that
+// emission a value to carry. Without a returned count the line has no data
+// dependency on the purge at all: it would say only that control reached the
+// call, which the shipped rb-22 static pins already say, and a zero-chunk claim
+// would be indistinguishable from a purge that never ran.
+//
+// WHY THE COUNT IS THE COLLECTED SET, NOT A COUNTER: `let purged = ids.len();`
+// is taken BEFORE the move-loop consumes `ids`, so the value is the cardinality
+// of the very set the loop then deletes by primary key — one expression, no
+// second traversal, and nothing a conditional inside the loop can bias.
+//
+// The re-frozen `rb22p_frozen_body` / `rb22p_frozen_sig` / the
+// `rb22p_frozen_body_source` positive control are this section counterparts and
+// are edited in the same commit; they are the EQUALITY backstop, and the clauses
+// below are the attributable ones (equality reports only that something moved).
+//
+// SCAN HYGIENE: this section obeys the module contract that `rb22p_scan_hygiene`
+// enforces over THIS FILE — line comments only, no raw-string prefix, no logging
+// token, no output macro, no backslash before a double quote. Every needle below
+// is plain ASCII with no escape of any kind.
+// ===========================================================================
+
+/// EO-2 / rb-40: `purge_export_bundles` RETURNS the number of chunks it deleted,
+/// as the cardinality of the collected primary-key set.
+///
+/// Six clauses, each with its own pinned message. The frozen-body equality pin
+/// (`rb22p_purge_body_exact`) reports only that the body moved; these clauses
+/// say WHICH property broke, which is what makes a surgical mutant attributable.
+///
+/// Kills (first killer of each, in clause order):
+///   (1) the return type dropped, so the caller cannot bind anything and the
+///       claim-site emission has to invent a number;
+///   (2) the tail expression removed or replaced (a body that computes the count
+///       and then discards it type-checks the moment the return type goes with
+///       it, and reads as correct to every containment clause);
+///   (3) a count derived from anything other than the collected set — a hand
+///       maintained counter, a second index scan, a `chunks.len()` of some other
+///       vector;
+///   (4) the binding moved AFTER the loop, which is the shape a counter mutant
+///       takes: the loop MOVES `ids`, so the count would have to come from
+///       somewhere the delete set does not control;
+///   (5) a hard-coded literal count (`let purged = 0;` / `= 1;`), which makes
+///       every claim report the same number while the deletes still happen;
+///   (6) an early `return` — a `return purged;` hoisted above the loop returns
+///       the count of a purge that then never runs, which is the single worst
+///       failure mode available here: an audit line asserting an erasure that
+///       did not happen.
+#[test]
+fn rb40p_purge_returns_the_collected_count() {
+    let squashed = stripped_for_scan(PRIVACY_RS);
+
+    // --- (1) the signature returns the count --------------------------------
+    let sig = extract_squashed_fn_sig(&squashed, &rb22p_nd_fn())
+        .expect("rb40p [count/sig-read]: the helper signature has no opening brace");
+    let ret = "->usize";
+    assert!(
+        sig.ends_with(ret),
+        "rb40p [count/sig-usize]: the helper signature must end in `{ret}`; it reads {sig:?}. A \
+         helper that returns nothing cannot be observed: the claim-time call site would have to \
+         invent the number it publishes, and an invented number is decoration rather than \
+         evidence. `usize` is the type `Vec::len` already produces, so no cast can truncate it, \
+         and a discarded return value at the two call sites that do not want it is \
+         warning-free (no must-use attribute is added)."
+    );
+
+    // --- (2) the body ENDS in the tail expression ---------------------------
+    let body = rb22p_body(&squashed);
+    let tail = "}purged";
+    assert!(
+        body.ends_with(tail),
+        "rb40p [count/tail]: the helper body must END with `{tail}` — the closing brace of the \
+         delete loop immediately followed by the bare tail expression. A body that computes the \
+         count and never yields it satisfies every containment clause below and compiles the \
+         moment the return type goes with it, leaving the caller with nothing to publish. Body \
+         read: {body:?}"
+    );
+
+    // --- (3) the count IS the cardinality of the collected set --------------
+    let bind = "letpurged=ids.len();";
+    let n_bind = rb22p_count(&body, bind);
+    assert_eq!(
+        n_bind, 1,
+        "rb40p [count/bind-once]: the helper must contain `{bind}` EXACTLY once; found \
+         {n_bind}. The count has to BE the size of the primary-key set the loop then deletes, \
+         taken in one expression from that set: a hand-maintained counter can be biased by any \
+         condition inside the loop, and a second index scan measures the table at a different \
+         instant than the delete did. TWO bindings mean one of them is a rebind that re-points \
+         the tail expression at another value."
+    );
+
+    // --- (4) bound BEFORE the loop that MOVES the set -----------------------
+    let loop_head = "foridinids{";
+    let at_bind = body.find(bind).unwrap_or_else(|| {
+        panic!(
+            "rb40p [count/bind-offset]: the count binding was not found in the helper body, so \
+             the ordering clause below has no anchor and would pass VACUOUSLY."
+        )
+    });
+    let at_loop = body.find(loop_head).unwrap_or_else(|| {
+        panic!(
+            "rb40p [count/loop-offset]: the delete loop `{loop_head}` was not found in the \
+             helper body, so the ordering clause below has no anchor and would pass VACUOUSLY."
+        )
+    });
+    assert!(
+        at_bind < at_loop,
+        "rb40p [count/bind-before-loop]: the count binding (offset {at_bind}) must precede the \
+         delete loop (offset {at_loop}). The loop MOVES `ids`, so this order is not a style \
+         preference: it is the only position from which the count can be the cardinality of the \
+         set actually deleted. A count taken anywhere else has to come from a counter or a \
+         second scan, both of which can disagree with the deletes."
+    );
+
+    // --- (5) never a literal count ------------------------------------------
+    for literal in ["letpurged=0", "letpurged=1"] {
+        assert!(
+            !body.contains(literal),
+            "rb40p [count/no-literal]: the helper binds the count to the LITERAL in \
+             `{literal}`. Every delete still happens and every structural clause here stays \
+             green, while the claim-time line reports the same number for every claim — which \
+             is exactly the constant-line fallback this slice rejected, reached from the \
+             producer side instead of the emission side."
+        );
+    }
+
+    // --- (6) no early return ------------------------------------------------
+    // TOKEN SEMANTICS, as measured for `rb22p_no_early_return_in_purge`: a word
+    // boundary on the LEFT ONLY, because whitespace squashing fuses the keyword
+    // onto whatever follows it. The left-hand test still rejects an identifier
+    // such as `early_return`.
+    let bytes = body.as_bytes();
+    let mut scan = 0usize;
+    while let Some(rel) = body[scan..].find("return") {
+        let at = scan + rel;
+        let is_token = at == 0 || !is_word_byte(bytes[at - 1]);
+        assert!(
+            !is_token,
+            "rb40p [count/no-return]: the helper contains a `return` token. Now that the body \
+             yields a value, an early exit is no longer merely a partial erasure: a `return \
+             purged;` placed above the loop returns the FULL count of a purge that then never \
+             runs, so the claim-time line asserts an erasure that did not happen — a false \
+             audit record is worse than a missing one. The body is straight-line by design: \
+             collect the owner primary keys, take their count, delete each one, yield the count."
+        );
+        scan = at + "return".len();
+    }
 }
