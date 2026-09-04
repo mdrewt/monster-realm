@@ -8,7 +8,9 @@
 //! through a `pub(crate)` helper in that table's OWNING module — the
 //! `rekey_*` family (monster_mgmt / inventory / npc / raising / economy /
 //! ranking), `privacy::purge_export_bundles` (rb-22, ADR-0220: the
-//! claim-time purge of the retired guest's export chunks), and since m22-s3b
+//! claim-time purge of the retired guest's export chunks — whose purged count
+//! `complete_guest_claim` publishes through `observability::mr_log` as its
+//! terminal statement, rb-40 / ADR-0235), and since m22-s3b
 //! the `erase_*` / `anonymize_*` cascade family the deletion reaper delegates
 //! to (ADR-0228 D1 — same delegation precedent, one helper per owning
 //! module). Bare reads of
@@ -690,14 +692,35 @@ pub fn complete_guest_claim(ctx: &ReducerContext, code: String) -> Result<(), St
     // rb-22 (ADR-0220): the guest identity retires at this claim, so its
     // pre-claim export_bundle chunks would orphan — the S3 cascade keys on a
     // live account's own identity and cannot reach them. Purge them here, in
-    // the same transaction, via the owning module (G5/D0).
-    crate::privacy::purge_export_bundles(ctx, guest);
+    // the same transaction, via the owning module (G5/D0). The helper reports
+    // how many chunks it deleted (rb-40, ADR-0235); the count is published
+    // below, once nothing can roll the claim back.
+    let purged = crate::privacy::purge_export_bundles(ctx, guest);
     consume_claim_and_disarm(ctx, guest);
     ctx.db
         .account()
         .identity()
         .update(claimed_account(account, guest, now_ms(ctx)));
+    // rb-40 (ADR-0235): the purge is observable — ONE line through the blessed
+    // OBS-1 emission point (ADR-0180 D6), as the TERMINAL statement: a host log
+    // line survives a later rollback while the deletes do not, so nothing may
+    // run after it. The evt literal is bare on purpose (a const or concat! is
+    // invisible to a grep for the event name).
+    crate::observability::mr_log("guest_claim_export_purge", &purge_fields(guest, purged));
     Ok(())
+}
+
+/// The ONE field fragment of the claim-time export-purge line (rb-40,
+/// ADR-0235) — the `heartbeat_fields` precedent: PURE, no `ctx`, no table read,
+/// so the value is unit-testable off-instance. `guest` is the RETIRED guest
+/// identity (the SUBJECT of the erasure; the AUTH-21 provenance column already
+/// persists the guest-to-claimer linkage on the row) rendered through the
+/// `Identity` Display impl — 64 lowercase hex digits, structurally quote-safe.
+/// `chunks` is the count `purge_export_bundles` returned, unquoted. No
+/// player-authored field and no pre-tombstone value may ever join this
+/// fragment (PRV1-17/20 by analogy).
+fn purge_fields(guest: Identity, chunks: usize) -> String {
+    format!("\"guest\":\"{guest}\",\"chunks\":{chunks}")
 }
 
 // --- Deletion (M21 half — AUTH-28/29/37/38, D7; rb-24 arm/disarm, ADR-0221) ---

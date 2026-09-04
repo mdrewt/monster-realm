@@ -39,14 +39,14 @@ outside this slice's `touches:`.
 2. **The claim reducer emits, terminally.** `complete_guest_claim` binds the count
    (`let purged = crate::privacy::purge_export_bundles(ctx, guest);`) and, as the LAST statement before
    `Ok(())` — after `consume_claim_and_disarm` and the AUTH-21 provenance update — calls
-   `crate::observability::mr_log("guest_claim_export_purge", &claim_purge_fields(guest, purged))`.
+   `crate::observability::mr_log("guest_claim_export_purge", &purge_fields(guest, purged))`.
    The placement is load-bearing: the host writes a reducer's log line as the reducer runs, and the line
    survives a later panic or `Err` that rolls the transaction (including the purge's deletes) back. Emitting
    after every fallible statement means a "purged N" line can only exist for a transaction that also
    committed — the mirror image of the ADR-0185 D1 trade-off (there: commit before a fallible write could
    discard the outcome; here: emit after nothing can discard the purge). A tooth pins the emission as the
    terminal statement and bans a `return` token anywhere in `[purge, Ok(())]`.
-3. **The fragment is a pure function.** `fn claim_purge_fields(guest: Identity, chunks: usize) -> String`
+3. **The fragment is a pure function.** `fn purge_fields(guest: Identity, chunks: usize) -> String`
    renders `"guest":"<64 hex>","chunks":N` — the `heartbeat_fields` precedent (ADR-0180): a pure builder the
    unit tests can call, composed by `build_log_line` into
    `{"evt":"guest_claim_export_purge","guest":"<hex>","chunks":N}`. It reads no table, takes no `ctx`, and
@@ -87,15 +87,15 @@ outside this slice's `touches:`.
 
 RED arm (compiles on the pre-fix tree, fails by name): `rb40_claim_emits_one_purge_observation` (exactly one
 `crate::observability::mr_log(` in the reducer and file-wide, zero breadcrumbs, terminal-statement pin
-`...mr_log(,&claim_purge_fields(guest,purged));Ok(())`, ordering purge < consume < update < emit < Ok, depth 0,
+`...mr_log(,&purge_fields(guest,purged));Ok(())`, ordering purge < consume < update < emit < Ok, depth 0,
 no `return` in `[purge, Ok(())]`, `let purged` bound once, no `#[cfg(` in the emission's item span),
 `rb40_claim_binds_the_purge_result`, `rb40_evt_and_fragment_literals_are_pinned` (strings-kept view: the exact
 call, the evt token and the fragment literal each exactly once; no reserved envelope key, no `name` /
-`auth_issuer` / `claimed_from`), `rb40_claim_purge_fields_is_pure` (signature, privacy, no `ctx`/`.db.`/write
+`auth_issuer` / `claimed_from`), `rb40_purge_fields_is_pure` (signature, privacy, no `ctx`/`.db.`/write
 verb/log segment), `rb40_no_new_bare_log_in_accounts_or_privacy` (the OBS-2 needles at zero, by name);
 `rb40p_purge_returns_the_collected_count` (sig ends `->usize`, body ends `}purged`, `let purged = ids.len();`
 once and before the loop). GREEN arm (calls the new fn — cannot compile pre-fix, lands with the fix, the rb-22
-EO-6 precedent): `rb40_claim_purge_fields_is_exact`, `rb40_claim_purge_line_composes_into_the_envelope`.
+EO-6 precedent): `rb40_purge_fields_is_exact`, `rb40_claim_purge_line_composes_into_the_envelope`.
 Re-frozen: the four `privacy_tests.rs` literals (`rb22p_frozen_body/sig/body_source/decl_source`), the two
 `accounts_tests.rs` literals, and rb-22 clause (2) — now `;letpurged=crate::privacy::purge_export_bundles(ctx,guest);`.
 
@@ -124,3 +124,11 @@ Re-frozen: the four `privacy_tests.rs` literals (`rb22p_frozen_body/sig/body_sou
 - The OBS-2 ratchet is untouched: no bare `log::`, no `use log`, `.log-baseline` byte-identical.
 - The helper's widened return type is warning-free at the two sites that ignore it (`usize` carries no
   `must_use`; clippy runs the default lint set with `-D warnings`), so their pinned call text is unchanged.
+
+## Implementation-time discovery (measured during red->green)
+
+The plan named the fragment builder `claim_purge_fields`. With that name the emission's argument list is
+62 columns wide, and rustfmt's default `fn_call_width` (60) lays the call out vertically with a trailing
+comma — which no squashed-text pin can spell as a single statement. Measured on a scratch file: 62 wraps,
+56 (`purge_fields`) and 60 stay on one line. The builder is therefore `purge_fields`; the evt name and the
+statement shape are unchanged, and the tester re-derived its needles from the measured layout.

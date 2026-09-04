@@ -22,7 +22,9 @@
 //! that calls a helper here owns any logging); no escaped or char-literal double
 //! quote. A dozen evals concatenate every source file in this crate, test files
 //! included, and strip comments naively — one unpaired opener here silently
-//! blanks later modules from their view. STRENGTHENED for S4: this file carries
+//! blanks later modules from their view. rb-40 (ADR-0235) is the worked example
+//! of that doctrine: `purge_export_bundles` REPORTS its purged count and never
+//! emits; the claim-time observation line lives in `accounts.rs`. STRENGTHENED for S4: this file carries
 //! exactly ONE double-quote pair — the `#[path]` attribute — and no other quote
 //! byte anywhere. Every constant string is `stringify!`; the quote character is
 //! the `JSON_QUOTE` unicode-escape char constant.
@@ -55,7 +57,14 @@ use spacetimedb::{Identity, ReducerContext, Table};
 /// `privacy_tests.rs` pins it byte-exactly in squashed form, so ANY reshaping —
 /// a conditional, an extra binding, a second statement — is a deliberate,
 /// test-visible change, never a drive-by edit.
-pub(crate) fn purge_export_bundles(ctx: &ReducerContext, owner: Identity) {
+///
+/// RETURNS the number of chunks it deleted (rb-40, ADR-0235): the count is the
+/// cardinality of the collected key set, taken before the loop moves it, so it
+/// is exactly what the loop then deletes. The helper never emits — the caller
+/// owns any observation of the purge (`complete_guest_claim` publishes this
+/// count; the deletion cascade and the re-export purge discard it, which is
+/// warning-free by design).
+pub(crate) fn purge_export_bundles(ctx: &ReducerContext, owner: Identity) -> usize {
     let ids: Vec<u64> = ctx
         .db
         .export_bundle()
@@ -63,9 +72,11 @@ pub(crate) fn purge_export_bundles(ctx: &ReducerContext, owner: Identity) {
         .filter(owner)
         .map(|c| c.chunk_id)
         .collect();
+    let purged = ids.len();
     for id in ids {
         ctx.db.export_bundle().chunk_id().delete(id);
     }
+    purged
 }
 
 // ===========================================================================
