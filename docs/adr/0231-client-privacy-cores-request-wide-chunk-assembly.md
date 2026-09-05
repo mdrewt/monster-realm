@@ -235,3 +235,143 @@ half-reachable deletion state" consequence above still holds for the *controls*)
 "no production caller" cost this ADR already accepted, and it is bounded: the banner is proven
 against injected store rows, and rb-52 lands the controls.
 
+
+## Amendment A2 — 2026-09-05 (rb-52): the delete/cancel/export controls ship as the 17th overlay
+
+Self-amendment; no new ADR number was minted (the ADR-0104 precedent, and the route Amendment A1
+took). rb-52 discharges residual `R-m22-s8-X10` — PRV1-3/PRV1-4's UI surface: "WHEN the player
+opens the privacy surface THE CLIENT SHALL expose reachable delete/cancel controls wired to
+`conn.reducers` and render the distinct terminal notice once `terminal_at_ms` is `Some`". It gives
+`privacyStep` its first production caller and **supersedes the "no half-reachable deletion state"
+consequence at `:152-154`**: `client/src` now contains all three reducer call sites, and it contains
+them together, so a player who can start a deletion can always cancel it.
+
+- **A2-D1 — the privacy surface IS a registry overlay, where the countdown was not.** A1-D1 shipped
+  a HUD banner because that EARS was ambient ("SHALL *see*"). This one is an explicit open action
+  ("WHEN the player *opens*"), and `privacyModel.ts` already models a two-step
+  `confirm: 'delete-armed'` gate for an irreversible action — which wants a focus trap, Escape
+  dismissal and a dialog role, i.e. exactly what `openOverlayA11y` gives a registry member. So
+  `ui/privacyView.ts` joins `OverlayId` as a seventeenth `GUARD_ONLY` member and pays the
+  OR-MANIFEST-COMPLETE fan-out this ADR's deferral priced.
+  REJECTED — the registry-EXTERNAL `sessionView` exemption: `sessionView` is exempt because a
+  second `EXCLUSIVE_TOP` member makes `decide()` behave backwards (ADR-0182 D17). A `GUARD_ONLY`
+  modal has no such problem, so taking that exemption would be claiming a reason that does not
+  hold in order to avoid a census.
+
+- **A2-D2 — the shell is CONSTRUCTED at runtime, not static `index.html` markup.** This reverses
+  the plan's first instinct, and the reason is mechanical rather than aesthetic: a static overlay
+  shell must carry `role="dialog" aria-modal="true"` (`indexShell.test.ts` A3 asserts it over every
+  id whose `initialFocusSelector` resolves), and `evals/overlay-live-region-custody.eval.mjs`
+  pins `EXPECTED_ARIA_MODAL_SHELLS = 11` as an EXACT count over `client/index.html`. A twelfth
+  reds an eval **outside this slice's `touches:`**. The constructed route (`claimView`/`sessionView`
+  precedent) touches `client/index.html` not at all and costs one entry in `indexShell.test.ts`'s
+  `CONSTRUCTED_SHELL_IDS`, which is in scope. It is also the cheaper route on every other axis.
+
+- **A2-D3 — `initialFocusSelector` is a NATIVE `<button>`, and the view declares its button fields
+  as `HTMLButtonElement`.** `evals/keyboard-operable-rows.eval.mjs` classifies a `this.#field`
+  click receiver as a sanctioned *native* site only when the field's declared type is one of
+  `HTMLButtonElement`/`HTMLAnchorElement`; anything else lands in the frozen
+  `SANCTIONED_DELEGATIONS` ratchet and hard-fails — in an eval outside `touches:`. The same eval
+  hard-fails any `tabindex` write from a file not in its frozen `FROZEN_TABINDEX_WRITES`, so the
+  anchor must be natively focusable rather than a `tabindex`-ed heading. `renameView.ts`'s
+  `readonly #submitBtn: HTMLButtonElement` exists for exactly this reason and is the precedent.
+
+- **A2-D4 — `privacyView` IS in `BATTLE_FORCE_HIDE`, and `hide()` disarms the confirmation.**
+  The first draft of this amendment excluded it, reasoning that a force-hide would strand an armed
+  delete confirmation. **That reasoning was wrong and is recorded here as corrected rather than
+  quietly dropped:** `refreshBattle` deliberately does not consult `canOpen` (`main.ts`'s own
+  comment: "a battle auto-show is server truth and must fire even over a GUARD_ONLY overlay that
+  would deny it"), so excluding the id does not deny anything — it leaves the privacy modal painted
+  underneath the battle, with two `aria-modal` roots and two installed focus traps. Both memberships
+  therefore had a real hazard, and neither is fixed by the membership choice alone. What fixes it is
+  making the close itself disarm: `PrivacyView` takes an `onDismissed` handler and calls it from
+  `hide()`, so `main.ts`'s handle entry stays the byte-identical `privacyView?.hide()` that
+  `W-UXD3C-HANDLE-TABLE` pins while the model still receives `confirm-cancelled`. With the close
+  made safe, membership is the better answer: one modal at a time.
+
+- **A2-D5 — the open path is a button in the Account & Sign-in overlay, not a new menu leaf or
+  hotkey.** `MenuLeafDef.keyGlyph` is a required `string` that must equal a key in `helpModel.ts`'s
+  `CONTROLS` SSOT (`menuModel.test.ts` MM-KEYGLYPH-FROM-HELP-SSOT), and `CONTROLS` is
+  bidirectionally set-equality-gated against **`docs/PLAYTEST.md`** §3 by
+  `ui/playtestControlsDoc.test.ts`. `docs/PLAYTEST.md` is outside rb-52's declared `touches:`, so a
+  leaf or a documented hotkey is a hidden-dependency STOP; the slice is designed around it rather
+  than widened into it. A second, independent argument points the same way: an undocumented hotkey
+  would move `main.wiring.test.ts`'s pinned `worldHasFocus()` censuses (12/12/13), each labelled in
+  source as "a DELIBERATE ACT — do not just raise the numbers".
+  The placement is right on its own merits too: deletion and data export ARE account management,
+  "Account & Sign-in" already owns that domain and already has both a System menu leaf and a `KeyC`
+  front door, and a second top-level entry for one domain is the menu bloat `menuModel.test.ts`'s
+  anti-pattern 10 names. REJECTED — reusing an existing glyph for a new leaf: that ships a menu row
+  advertising a key that opens something else, precisely the defect MM-KEYGLYPH-FROM-HELP-SSOT
+  exists to kill. **DEFERRED, named:** promoting the surface to a top-level leaf + a documented
+  hotkey, which needs `helpModel.ts` and `docs/PLAYTEST.md` together.
+  **Ordering is load-bearing:** `openPrivacy()` hides the claim overlay BEFORE showing the privacy
+  one. `openOverlayA11y` captures `document.activeElement` as its return target, and
+  `closeOverlayA11y` restores it whenever the node is still `isConnected` — which a `display:none`
+  node is. Showing first would capture the claim button, and closing the privacy overlay would then
+  park focus inside a hidden subtree, where `worldHasFocus()` is false and every overlay hotkey is
+  dead until the player clicks the canvas.
+
+- **A2-D6 — the terminal notice is derived from the ROW, not from `state.notice` alone.**
+  `privacyStep`'s `account-changed` arm writes `countdown`, `confirm` and `inFlight` — it does NOT
+  write `notice`. So `notice: 'permanently-deleted'` is only ever reached by a CLICK
+  (`cancel-deletion-requested` on an already-terminal row, or a `request-failed` whose message ends
+  in `SERVER_ALREADY_DELETED_MESSAGE`). E1 says "once `terminal_at_ms` is `Some`", i.e. on OPEN,
+  with no interaction. The view model therefore keys the terminal notice on
+  `countdown.phase === 'terminal'` **OR** `notice === 'permanently-deleted'`, and both routes are
+  gated independently. A VM keyed on `state.notice` alone renders nothing at all when the player
+  opens the surface on an already-erased account — which is the criterion failing while every
+  click-driven test passes.
+
+- **A2-D7 — the player-facing copy is pure, and spec §9's pseudonymization sentence is pinned
+  against a SECOND SOURCE.** `privacyModel.ts`'s header reserved this copy to the slice that renders
+  the delete/cancel surface, "where it can be gated". It lives in `ui/privacyBanner.ts` — already
+  this surface's pure copy module, whose header is rescoped by this slice from "the deletion-grace
+  countdown" to the privacy surface's copy layer. M22 §9 residual 1's sentence is asserted equal to
+  `PIN_PSEUDONYMIZATION`, already exported by `evals/account-e2e.eval.mjs`, rather than to a second
+  hand-typed literal: one bad transcription copied into both the pin and the implementation is the
+  failure mode a hand-typed pin cannot see. The sentence ships with its backticks around
+  `Identity` INTACT rather than tidied for display — "verbatim" is the spec's own word, mandated
+  compliance language is the wrong place to edit lightly, and keeping them makes the gate a plain
+  equality against that second source with no transform in the middle. Note for future editors — the mandated sentence itself
+  ENDS in "not erasure", so a blanket "the word erasure must not appear" scan is the WRONG gate and
+  would fail correct code; the gate is that the word occurs exactly once and inside that sentence.
+
+- **A2-D8 — non-delivery must be observable.** `sendGuarded` reports a disconnected link but does
+  NOT observe `conn.live()` returning `undefined`: `undefined?.catch(...)` is a silent no-op, so no
+  `request-succeeded` and no `request-failed` ever arrives, `inFlight` stays set forever, and every
+  later click returns `begin`'s silent no-op. The player clicks Cancel during a live grace window
+  and nothing happens, ever, with no message. The shell therefore computes
+  `hasLiveConnection` as `conn?.live() !== undefined && !conn.linkFrozen()`, so an absent live
+  handle takes the model's `disconnected` path instead of the delivered one.
+
+- **A2-D9 — `account-changed` is dispatched on CHANGE, never per frame.** The arm writes
+  `inFlight: 'none'` unconditionally, and `begin`'s only double-submit guard is
+  `inFlight !== 'none'`. Pumped from the rAF tick the guard would have a ~16 ms lifetime and a
+  double-click would issue two `delete_account` calls. The dispatch is therefore gated on an
+  observed change in the derived `DeletionCountdown` (the A1-D2 memo idiom), and
+  `deriveDeletionCountdown` stays at ONE call site — `main.wiring.test.ts` pins that count — with
+  the result reused by both the banner and the model.
+
+**Accepted costs and residuals.**
+- No `.focus()` may appear in `ui/privacyView.ts`: `evals/overlay-a11y-manifest.eval.mjs` bans every
+  focus spelling in `client/src/ui/**/*View.ts`, so focus placement stays `overlayA11y`'s job. And
+  the notice is NOT a live region — `evals/a11y-static-shell.eval.mjs` pins exactly one, and
+  `ui/liveRegion.ts` owns it (the A1-D4 call, restated here for the notice).
+- `privacyView.test.ts` cannot join the nightly a11y tier: `evals/ci-gate-wiring.eval.mjs` holds a
+  byte-frozen copy of the `a11y-e2e` justfile recipe including its file list, and both that eval and
+  the `justfile` are outside `touches:`. Named, not hidden.
+- The claim → privacy hand-off rides `claimView`'s documented `S4-claimView-REOPEN-AFTER-HIDE`
+  residual: `ClaimPhase` cannot represent "dismissed", so a later `renderClaim()` arrives with
+  `vm.visible === true`. rb-52 creates the first state where that re-open can land on top of another
+  modal, so it is mitigated here rather than merely inherited: `renderClaim()` is suppressed while
+  the privacy overlay is visible. The underlying model defect still needs `claimModel.ts` and is
+  out of scope.
+- A1-D4's named follow-up — a ONE-SHOT announcement on the `active -> grace` edge — is not part of
+  this criterion and is DEFERred as a residual rather than absorbed.
+- rb-53 (`R-m22-s8-X11`) is untouched. This slice wires `requestDataExport` because `privacyStep`
+  already emits `call-request-data-export` and an unreachable effect variant is dead code; it does
+  NOT subscribe to `my_export_bundle`, assemble a bundle, or offer a download. Note that
+  `exportPermitted` is `true` pre-join (no account row ⇒ the non-pending branch), so the Export
+  control is offered in a state the server will reject — server-authoritative by design, and
+  recorded rather than clamped client-side.

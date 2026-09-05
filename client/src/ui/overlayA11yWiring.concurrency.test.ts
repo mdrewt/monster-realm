@@ -4,7 +4,7 @@
 // THE CRITERION. `overlayA11yWiring.test.ts` must be safe under
 // `vitest run --sequence.concurrent`: MEASURED at origin/master@318eb70, `76 failed | 40 passed
 // (116)`. The (not-yet-shipped) fix is `describe(` -> `describe.sequential(` at that file's line
-// 492 — its SINGLE top-level describe, so all 116 tests inherit the annotation — plus a rationale
+// 492 — its SINGLE top-level describe, so all 123 tests inherit the annotation — plus a rationale
 // comment carrying the marker `RB37-SEQUENTIAL-RATIONALE`. Neither exists yet: this file is RED.
 //
 // ADR-0224: the proof-of-teeth must be an ORDINARY TS test, never a new `evals/*.eval.mjs`.
@@ -314,7 +314,7 @@ describe.sequential('rb-37 proof-of-teeth — overlayA11yWiring.test.ts under vi
     armsRun += 1;
   }, 90000);
 
-  it('RB37-CONCURRENT-SAFE BITES: overlayA11yWiring.test.ts must survive vitest run --sequence.concurrent wholly green — a racy shared-state describe() reds ~76/116 (MEASURED at origin/master@318eb70); only the .sequential annotation on its single top-level describe fixes it, and a try/catch-every-it() bypass is caught by the exit-status + success clauses below, never the counters alone', () => {
+  it('RB37-CONCURRENT-SAFE BITES: overlayA11yWiring.test.ts must survive vitest run --sequence.concurrent wholly green — a racy shared-state describe() reds ~76/123 (MEASURED at origin/master@318eb70); only the .sequential annotation on its single top-level describe fixes it, and a try/catch-every-it() bypass is caught by the exit-status + success clauses below, never the counters alone', () => {
     const { result, report } = runVitest([SEQUENCE_CONCURRENT_FLAG], [TARGET_SPEC_RELATIVE], {
       spawnTimeoutMs: 180000,
     });
@@ -336,7 +336,7 @@ describe.sequential('rb-37 proof-of-teeth — overlayA11yWiring.test.ts under vi
         'child happened to pick up',
     ).toBe('overlayA11yWiring.test.ts');
 
-    expect(report.numTotalTests, 'the file holds 116 tests').toBe(116);
+    expect(report.numTotalTests, 'the file holds 123 tests').toBe(123);
     expect(report.numFailedTests).toBe(0);
     expect(
       report.numPendingTests,

@@ -6,7 +6,7 @@
 //      never reach the bubble-phase window keydown (movement + letter hotkeys). The currency
 //      inputs additionally handle Enter=submit / Escape=hide locally (D6, red-team H-2).
 //   2. The deferred initial focus is NO LONGER OWNED HERE (m23-s3). `ui/overlayA11y.ts` is the
-//      single owner of the setTimeout(…, 0) defer for all sixteen overlays, and it targets this
+//      single owner of the setTimeout(…, 0) defer for all seventeen overlays, and it targets this
 //      overlay's `initialFocusSelector` (#tradepropose-target) from OVERLAY_A11Y. The defer is
 //      still load-bearing: it lets the opening key event fully complete before focus lands.
 //   3. hide() resets the select→placeholder + unchecks all monsters + blanks both currency

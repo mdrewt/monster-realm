@@ -36,7 +36,7 @@
  * Verified by reading main.ts directly (not assumed): `status`, `interact-prompt`, and the
  * F9 error overlay are all created via `document.createElement` + `document.body.appendChild`
  * INSIDE `main()`, unconditionally, OUTSIDE the `if (mount !== null)` block that guards the
- * sixteen constructed views (main.ts:2246-2596 is the `#app`-gated block; the frame loop and
+ * seventeen constructed views (main.ts:2246-2596 is the `#app`-gated block; the frame loop and
  * `conn = connect(...)` sit after it, at main.ts:2648-2898, gated on nothing). `ui/liveRegion.ts`'s
  * `announce`/`flush` are documented (and read) to no-op silently when `#a11y-live` is absent —
  * "S1 must be inert-but-correct without it" (liveRegion.ts:46-49). So the frame loop's

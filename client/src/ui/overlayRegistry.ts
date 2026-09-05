@@ -1,4 +1,4 @@
-// ui/overlayRegistry.ts — the pure modality core for the 16 mutual-exclusion overlays
+// ui/overlayRegistry.ts — the pure modality core for the 17 mutual-exclusion overlays
 // (uxd3, ADR-0162).
 //
 // FUNCTIONAL CORE (ADR-0014). No DOM, no SDK, no import from `main.ts`, no view handles,
@@ -29,7 +29,7 @@
 // `hideAllExceptPlan` below is what `refreshBattle` consumes), `isVisible(id)` and
 // `anyVisibleExcept()`.
 
-/** The 16 mutual-exclusion overlays. `errorOverlayView` is NOT a member: it is
+/** The 17 mutual-exclusion overlays. `errorOverlayView` is NOT a member: it is
  *  non-blocking, F8-dismissed, and re-shows itself, so it never participates in
  *  mutual exclusion. Pinned by OR-MANIFEST-COMPLETE against `ui/*View.ts`. */
 export type OverlayId =
@@ -51,7 +51,11 @@ export type OverlayId =
   // M21b-2 (ADR-0182 D17 / G19): the claim overlay owns a text input, so it must GUARD movement
   // input while open — GUARD_ONLY registration gives that for free. sessionView is DELIBERATELY
   // NOT a member (a second EXCLUSIVE_TOP breaks decide(); D17): it is driven by conn.sessionState().
-  | 'claimView';
+  | 'claimView'
+  // rb-52 (ADR-0231 A2-D1): the privacy surface. GUARD_ONLY, like every other modal a player
+  // OPENS — it owns a two-step confirmation for an irreversible action, so it must never be
+  // dismissed out from under that confirmation by a stray keypress.
+  | 'privacyView';
 
 /**
  * How an overlay behaves when something else wants to open over it.
@@ -90,6 +94,7 @@ export const OVERLAY_TIERS: Readonly<Record<OverlayId, OverlayTier>> = {
   helpView: 'GUARD_ONLY',
   menuView: 'GUARD_ONLY',
   claimView: 'GUARD_ONLY',
+  privacyView: 'GUARD_ONLY',
 };
 
 /**
@@ -123,10 +128,10 @@ export interface A11yMeta {
 
 /**
  * The a11y metadata SSOT (M23 §2.0, ADR-0205). Typed `Record<OverlayId, _>` for exactly the
- * reason OVERLAY_TIERS is (`:76`): omitting an id is a COMPILE error, not a test failure, so a
- * seventeenth overlay cannot ship half-registered. Declaration order mirrors OVERLAY_TIERS, so
+ * reason OVERLAY_TIERS is (`:76`): omitting an id is a COMPILE error, not a test failure, so an
+ * eighteenth overlay cannot ship half-registered. Declaration order mirrors OVERLAY_TIERS, so
  * OVERLAY_IDS (`:100`) indexes this table too — one derived id list, never a second hand-kept
- * one. Sixteen per-view ARIA retrofits have no completeness oracle; one total table does.
+ * one. Seventeen per-view ARIA retrofits have no completeness oracle; one total table does.
  *
  * WHY THIS BELONGS IN THIS MODULE (ADR-0205 D7, recorded as a verification — spec §2.0 made the
  * placement call). The purity rule at `:4`-`:8` bans DOM, SDK, `main.ts` imports, view handles
@@ -142,7 +147,7 @@ export interface A11yMeta {
  * `initialFocusSelector: () => '…'` would drag a live handle back into the functional core and
  * re-open the coupling `anyVisible`'s probes-as-argument shape exists to prevent.
  *
- * `role` IS `'dialog'` FOR ALL SIXTEEN — the reason is on `A11yMeta` above; ADR-0205 D3 carries
+ * `role` IS `'dialog'` FOR ALL SEVENTEEN — the reason is on `A11yMeta` above; ADR-0205 D3 carries
  * the rejected alternatives.
  *
  * `dismissible` IS THE CONSTRAINT, NOT THE VARIATION: spec §2.1 phrases it over the TIER
@@ -258,6 +263,24 @@ export const OVERLAY_A11Y: Readonly<Record<OverlayId, A11yMeta>> = {
     initialFocusSelector: '#claim-signin-btn',
     dismissible: true,
   },
+  privacyView: {
+    role: 'dialog',
+    labelKey: 'a11y.overlay.privacyView.title',
+    // A NATIVE <button>, not a tabindex-ed heading (ADR-0231 A2-D3):
+    // `evals/keyboard-operable-rows.eval.mjs` hard-fails a `tabindex` write from any file outside
+    // its frozen table, and that eval is outside this slice's touches. `#claim-signin-btn` is the
+    // same shape for the same reason.
+    //
+    // THE CLOSE BUTTON, NOT THE DELETE BUTTON (A2-D10). `#privacy-delete-btn` carries `disabled`
+    // in every phase except `active` — and a disabled control is unfocusable, so in `grace`
+    // (PRV1-3's own state) `.focus()` would be a silent no-op leaving focus on <body>, where
+    // `focusTrap`'s capture listener on the root never fires and Tab walks the page behind the
+    // modal. In `terminal` — this criterion's flagship state — every other control is disabled or
+    // hidden, so the trap would have NO focusable content at all. The close control is the one
+    // thing enabled in all five phases.
+    initialFocusSelector: '#privacy-close-btn',
+    dismissible: true,
+  },
 };
 
 /**
@@ -280,6 +303,11 @@ export const BATTLE_FORCE_HIDE: readonly OverlayId[] = [
   'renameView',
   'tradeProposeView',
   'menuView',
+  // rb-52 (ADR-0231 A2-D4): one modal at a time. `refreshBattle` does NOT consult `canOpen`, so
+  // omitting an id does not deny the auto-show — it leaves the omitted overlay painted under the
+  // battle with a second aria-modal root and a second focus trap. Safe to force-hide because
+  // `PrivacyView.hide()` disarms the delete confirmation on its way out.
+  'privacyView',
 ];
 
 /**
@@ -365,7 +393,7 @@ export function anyVisible(probes: OverlayProbes, exempt?: OverlayId): boolean {
 
 /** Which overlays are visible right now, in OVERLAY_IDS declaration order — the argument
  *  `canOpen`/`hideAllExceptPlan` take. Re-probes on EVERY call, same contract as
- *  `anyVisible`: `main.ts` builds its probe table at module scope while all sixteen view
+ *  `anyVisible`: `main.ts` builds its probe table at module scope while all seventeen view
  *  bindings are still `undefined`, so a cached list would be permanently empty and mutual
  *  exclusion would never engage. NO try/catch, for `anyVisible`'s reason. The deterministic
  *  order is load-bearing — it is what makes `canOpen`'s `blockedBy` reproducible. */
@@ -376,7 +404,7 @@ export function visibleIds(probes: OverlayProbes): readonly OverlayId[] {
 /** Per-id force-hide thunks — the WRITE mirror of `OverlayProbes`, and the same division of
  *  labour: this module owns the SHAPE of the write, `main.ts` owns the handles.
  *
- *  Total `Record<OverlayId, _>` on purpose, so a 16th overlay is a COMPILE error here rather
+ *  Total `Record<OverlayId, _>` on purpose, so a 17th overlay is a COMPILE error here rather
  *  than a silently unhidable overlay. The value type admits `undefined`, and exactly the
  *  `NEVER_FORCE_HIDE` members supply it. For `dialogueView` that is not style: `main.ts` must
  *  contain ZERO `dialogueView?.hide` occurrences (ADR-0162 AC-9,

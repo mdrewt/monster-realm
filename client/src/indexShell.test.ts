@@ -1041,7 +1041,7 @@ interface DerivedShell {
 
 /**
  * The STATIC shells, DERIVED and never mapped (plan D-e; ADR-0205 D1 forbids a second
- * SSOT). Resolve each of the sixteen `OVERLAY_A11Y[id].initialFocusSelector` against the
+ * SSOT). Resolve each of the seventeen `OVERLAY_A11Y[id].initialFocusSelector` against the
  * real client/index.html; the ids whose anchor RESOLVES are the static shells. The
  * irregular ids are exactly why nothing textual is used: no string rule maps `pvpView`
  * to `#pvp-challenge-overlay`.
@@ -1065,6 +1065,10 @@ const CONSTRUCTED_SHELL_IDS: readonly string[] = [
   'raisingView',
   'evolutionView',
   'claimView',
+  // rb-52 (ADR-0231 A2-D2): the privacy overlay's shell is constructed too. A STATIC shell would
+  // have to carry `aria-modal="true"`, and `evals/overlay-live-region-custody.eval.mjs` pins the
+  // count of those in index.html at EXACTLY eleven — an eval outside rb-52's touches.
+  'privacyView',
 ];
 
 /** DERIVED, never hand-kept: every OverlayId is either a static shell or a constructed one.
@@ -1257,7 +1261,7 @@ describe('m23-s2 (S2 static shells): every static shell declares the ARIA that O
     // every attribute assertion in it stays green while a whole shell goes unchecked.
     expect(
       derivedIds,
-      'ANTI-VACUITY: resolving all sixteen OVERLAY_A11Y initialFocusSelectors against ' +
+      'ANTI-VACUITY: resolving all seventeen OVERLAY_A11Y initialFocusSelectors against ' +
         'index.html must yield exactly eleven static shells. FEWER means an anchor id was ' +
         'renamed or removed — the attribute loop below would then silently skip that shell ' +
         'and stay green. MORE means a constructed overlay grew a static anchor. Got: ' +

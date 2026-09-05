@@ -6,7 +6,7 @@
 // deferred focus lives in `client/src/ui/overlayA11y.ts` alone, so no `client/src/ui/*View.ts` may
 // call focus itself (M23 §2.2, criterion A11Y-15). Today that invariant is gated by THREE
 // HAND-KEPT FILE LISTS — `renameView.test.ts:501` (ten files), `renameView.test.ts:1300` (five),
-// `menuView.test.ts:1755` (one). `client/src/ui/` holds EIGHTEEN `*View.ts` files, and
+// `menuView.test.ts:1755` (one). `client/src/ui/` holds NINETEEN `*View.ts` files, and
 // `errorOverlayView.ts` and `sessionView.ts` are in NONE of them. That measured gap is what this
 // eval exists to close: the roster is `readdir`-DERIVED, so a new view is scanned the day it
 // lands, and two-way-ratcheted against KNOWN_VIEW_FILES so a rename or deletion is a loud red
@@ -26,10 +26,10 @@
 //     contains a comment reading `…breaks decide(); D17…`. And the natural fix for that
 //     (`.endsWith('View')`) is green-and-wrong: a seventeenth member added to the union alone,
 //     with no table entry, sails through.
-//   * §5.1's own `[A11Y-02]` regex `/^a11y\.[a-z0-9.]+$/` REJECTS ALL SIXTEEN shipped keys — they
+//   * §5.1's own `[A11Y-02]` regex `/^a11y\.[a-z0-9.]+$/` REJECTS ALL SEVENTEEN shipped keys — they
 //     are `a11y.overlay.boxView.title`, capital V, mandated by `ui/a11yCopy.ts:14-17` and by
 //     ADR-0205 D5, which instructs this slice BY NAME that "its [A11Y-02] regex must permit
-//     uppercase … or it reds on sixteen valid keys". The dangerous fix is `/^a11y\..+$/`, which
+//     uppercase … or it reds on seventeen valid keys". The dangerous fix is `/^a11y\..+$/`, which
 //     then admits `a11y..`, `a11y.....` AND `a11y.count.{n}` — dissolving the ICU ban it was
 //     written to enforce. `overlayRegistry.test.ts:1332` already ships the correct SHAPE_RE and
 //     records that measurement in-source.
@@ -74,6 +74,7 @@ export const KNOWN_VIEW_FILES = Object.freeze([
   ['helpView.ts', 'export class HelpView'],
   ['leaderboardView.ts', 'export class LeaderboardView'],
   ['menuView.ts', 'export class MenuView'],
+  ['privacyView.ts', 'export class PrivacyView'],
   ['pvpView.ts', 'export class PvpView'],
   ['questLogView.ts', 'export class QuestLogView'],
   ['raisingView.ts', 'export class RaisingView'],

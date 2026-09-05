@@ -51,7 +51,7 @@
  * whose statement reads `interactPromptEl.id = 'interact-prompt';`, and this slice's
  * `privacyCountdownEl.id = 'privacy-countdown';` — are all created with
  * `document.createElement` + `document.body.appendChild` INSIDE `main()`, unconditionally,
- * OUTSIDE the `if (mount !== null)` block that guards the sixteen constructed views.
+ * OUTSIDE the `if (mount !== null)` block that guards the seventeen constructed views.
  * `ui/liveRegion.ts` no-ops without `#a11y-live` (its own header), so the frame body is
  * reachable with no DOM shell at all.
  *

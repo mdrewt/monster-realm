@@ -286,9 +286,9 @@ no non-test `client/src` module may name any of fifteen CSS read-back or motion-
 (`[A11Y-RM2f]`, the read end of the same channel), and its file census — now the SINGLE OWNER of
 that scope, imported by `client/src/render/motionPreference.test.ts` — is two-way ratcheted
 against the shared walker (`[A11Y-RM2g]`). `ui/overlayA11yWiring.test.ts` is the only TOTALITY oracle over all
-sixteen `OverlayId`s, and the only one whose DOM fixture is the shipped `client/index.html` rather
+seventeen `OverlayId`s, and the only one whose DOM fixture is the shipped `client/index.html` rather
 than a hand-copied shell, so a `tabindex` deleted from the real markup reds. Since rb-18 it also
-covers BOTH polarities of the RE-OPEN edge for all sixteen —
+covers BOTH polarities of the RE-OPEN edge for all seventeen —
 `S10-WIRE-REPEAT-NO-REOPEN:<id>` (a second open on an already-visible overlay fires no helper and
 never yanks focus back) and `S10-WIRE-REOPEN-AFTER-CLOSE:<id>` (after a close, opening again IS a
 real edge: the helper fires, the ARIA is re-applied and the deferred focus is re-armed).
@@ -498,7 +498,16 @@ server-side axis; the client applies no allowlist. An armed delete confirmation
 survives every refusal `begin` can return — not permitted, another request
 already in flight, no live connection — so an action that never happened never
 spends step two; only the DELIVERED path writes the confirmation, which is what
-the `confirmOnDelivery` parameter name records (18r-a). The DOM overlay, the
+the `confirmOnDelivery` parameter name records (18r-a). **rb-52 (ADR-0231 Amendment A2) landed the
+DOM overlay and the reducer wiring:** `ui/privacyView.ts` is the SEVENTEENTH `OverlayId`
+(`GUARD_ONLY`, in `BATTLE_FORCE_HIDE`, shell constructed at runtime so `client/index.html`'s
+exact-pinned `aria-modal` count is untouched), reached from a button in the Account & Sign-in
+overlay rather than a menu leaf (a leaf needs a `helpModel` CONTROLS glyph, which is set-equality
+gated against `docs/PLAYTEST.md` — outside that slice's `touches:`). `main.ts`'s `applyPrivacy`
+drives `privacyStep` and executes its three effects through `conn.reducers`, so
+`deleteAccount`/`cancelAccountDeletion`/`requestDataExport` now have client call sites; the copy —
+including M22 §9's verbatim pseudonymization sentence and PRV1-4's distinct terminal notice — is
+pure, in `ui/privacyBanner.ts`. The export TRANSPORT + download remains rb-53. The DOM overlay, the
 `main.ts` wiring, the `deletion_grace_ms_default()` wasm read and the
 `my_export_bundle` subscription were DEFERred to m22-s8b (X9/X10/X11), whose
 `touches:` must include `evals/monster-privacy.eval.mjs` for its

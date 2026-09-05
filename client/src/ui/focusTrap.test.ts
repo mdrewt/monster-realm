@@ -392,7 +392,7 @@ describe('installTrap — full focusable-type coverage (FOCUSABLE_SELECTOR regre
   it('untagged: an element with tabindex="-1" is never reached by Tab, even though .focus() on it directly still works', () => {
     // WRONG IMPL KILLED: '[tabindex]:not([tabindex="-1"])' widened to plain '[tabindex]' — no
     // fixture anywhere else in this suite puts a tabindex="-1" element inside a trapped root.
-    // This is the ARIA APG dialog pattern (module header, ':36-40') and ten of the sixteen
+    // This is the ARIA APG dialog pattern (module header, ':36-40') and ten of the seventeen
     // overlays rely on it via openOverlayA11y's initialFocusSelector: the anchor must be
     // programmatically focusable but excluded from the Tab ring.
     document.body.innerHTML =

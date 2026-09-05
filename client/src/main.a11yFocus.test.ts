@@ -13,7 +13,7 @@
  *
  *   1. `#app` MUST exist. The precedent deliberately omits it so main() builds no view
  *      shells at all. This slice's whole subject — the twelve hotkey open-guards, the
- *      overlay a11y wiring, the canvas focus target — needs the REAL sixteen views
+ *      overlay a11y wiring, the canvas focus target — needs the REAL seventeen views
  *      constructed against the REAL static shells. The DOM is built by parsing the REAL
  *      `client/index.html` with `DOMParser` and moving its body children into the live
  *      document via `document.adoptNode` + `replaceChildren` — never `innerHTML`
@@ -310,7 +310,7 @@ function runFrame(atMs: number): void {
  *  battle/claim), which ship no markup ARIA of their own. For a static shell,
  *  `closest('[role="dialog"]')` is therefore non-null WHETHER THE OVERLAY IS OPEN OR
  *  CLOSED — role presence alone silently degenerates to "always true" for eleven of the
- *  sixteen overlays (this is exactly what made an earlier version of this helper produce a
+ *  seventeen overlays (this is exactly what made an earlier version of this helper produce a
  *  false positive on every static shell). `style.display` is the one signal EVERY view's
  *  `show()`/`hide()` writes in BOTH families — even `MenuView.show()`/`hide()`
  *  (`ui/menuView.ts:78-84`), which does not call `openOverlayA11y` at all today — so it is
@@ -359,7 +359,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
 
     vi.resetModules();
     await import('./main');
-    // main() awaits 17 dynamic view imports, then constructs all 16 views (renderer.init
+    // main() awaits 17 dynamic view imports, then constructs all 17 views (renderer.init
     // is awaited BEFORE connect() is called), then calls connect() — so by the time
     // H.connectOpts resolves, #app's canvas and every overlay view already exist.
     opts = await vi.waitFor(
