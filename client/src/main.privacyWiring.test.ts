@@ -874,4 +874,46 @@ describe('main.ts privacy surface wiring (rb-52, PRV1-3/PRV1-4)', () => {
     ).not.toBe(first);
     expect(second.length, 'the repainted status line must not be blank').toBeGreaterThan(0);
   });
+
+  it('RB52T-FRAME-DOES-NOT-CLEAR-INFLIGHT: an unchanged frame must not re-pump account-changed, so the in-flight lock survives', () => {
+    // WRONG IMPL KILLED ★ (MEASURED surviving before this tooth): dropping the
+    //   `lastPrivacyCountdown = privacyCountdown` memo write, so the change-detector fires on
+    //   EVERY frame. `privacyStep`'s `account-changed` arm writes `inFlight: 'none'`
+    //   unconditionally, and `begin`'s only double-submit guard is `inFlight !== 'none'` — so at
+    //   60fps that guard would have a ~16ms lifetime and a second click could issue a SECOND
+    //   delete_account. ADR-0231 A2-D9 is exactly this decision; the pure-tier
+    //   `RB52C-DOUBLE-SUBMIT` proves the MODEL holds the lock, and this proves the WIRING does
+    //   not throw it away once per frame.
+    // WRONG IMPL KILLED (2): a change-detector that compares the countdown by IDENTITY rather
+    //   than by field — `deriveDeletionCountdown` returns a fresh object every frame, so an
+    //   identity comparison is always "changed" and behaves exactly like the mutant above.
+    H.account = ACCOUNT_ACTIVE;
+    runFrame(0);
+    openPrivacySurface();
+
+    byId('privacy-delete-btn').click();
+    byId('privacy-confirm-btn').click();
+    expectOnlyReducer('delete');
+
+    // ANTI-VACUITY, ASSERTED FIRST: the request really is in flight, i.e. the lock is genuinely
+    // held right now. Without this, "still disabled after a frame" could be satisfied by a
+    // surface whose controls were never enabled at all.
+    const deleteBtn = byId('privacy-delete-btn') as HTMLButtonElement;
+    expect(
+      deleteBtn.disabled,
+      'precondition: an in-flight delete must disable its own control',
+    ).toBe(true);
+
+    // A frame with NO row change. The countdown object is freshly derived, but every field the
+    // detector compares is identical, so nothing may reach the model.
+    runFrame(1);
+
+    expect(
+      (byId('privacy-delete-btn') as HTMLButtonElement).disabled,
+      'an unchanged frame must NOT clear the in-flight lock — a per-frame account-changed pump ' +
+        'destroys the only double-submit guard the model has',
+    ).toBe(true);
+    // And the reducer must still have been called exactly once, from the one confirmed click.
+    expectOnlyReducer('delete');
+  });
 });
