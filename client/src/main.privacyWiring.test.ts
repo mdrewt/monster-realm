@@ -270,6 +270,24 @@ function runFrame(atMs: number): void {
   ).not.toBeNull();
 }
 
+/**
+ * `runFrame`, but driving the WALL clock too.
+ *
+ * `runFrame` stubs `performance.now()` only, and the deletion countdown reads
+ * `BigInt(Math.trunc(Date.now()))` — so under the plain driver every frame sees the same wall
+ * time and a frozen deadline is indistinguishable from a ticking one. The two clocks are stubbed
+ * SEPARATELY and given different values so a wiring that fed `performance.now()` into `nowMs`
+ * would produce a visibly wrong (millennia-long) countdown rather than a passing one.
+ */
+function runFrameAt(perfMs: number, wallMs: number): void {
+  const wallSpy = vi.spyOn(Date, 'now').mockReturnValue(wallMs);
+  try {
+    runFrame(perfMs);
+  } finally {
+    wallSpy.mockRestore();
+  }
+}
+
 // --- account-row fixtures ----------------------------------------------------------------
 // Every value is SYNTHETIC. The phases below do not depend on the wall clock: `phase` comes
 // from the terminal marker and the status tag alone (ui/privacyModel.ts's own contract).
@@ -297,6 +315,16 @@ function accountRow(
 }
 
 /** Active: delete permitted, export permitted, cancel NOT permitted. */
+/** Synthetic wall-clock readings. Small, and unrelated to any tunable window.
+ *  `WALL_STEP_MS` is a whole number of seconds so the label's seconds group must move. */
+const WALL_T0 = 5_000;
+const WALL_STEP_MS = 2_000;
+
+/** A live grace window whose deadline is still AHEAD of `WALL_T0`. The harness stubs the wasm
+ *  grace accessor to a tiny value, so the deadline is essentially `deletionRequestedAtMs` — a
+ *  request stamped in the future is how this fixture buys a countdown that is still running. */
+const ACCOUNT_PENDING_FUTURE = accountRow('PendingDeletion', BigInt(WALL_T0 + 60_000), undefined);
+
 const ACCOUNT_ACTIVE = accountRow('Active', undefined, undefined);
 /** A live deletion request: cancel permitted, delete and export NOT permitted. */
 const ACCOUNT_PENDING = accountRow('PendingDeletion', 0n, undefined);
@@ -805,5 +833,45 @@ describe('main.ts privacy surface wiring (rb-52, PRV1-3/PRV1-4)', () => {
       'step two must not be reachable on a freshly re-opened surface',
     ).not.toBeNull();
     expectOnlyReducer('none');
+  });
+
+  it('RB52T-STATUS-TICKS-WITH-THE-WALL-CLOCK: the OPEN surface repaints its deadline as the wall clock advances', () => {
+    // WRONG IMPL KILLED ★ (the shipped first draft, MEASURED CI-green): rendering the surface
+    //   from `privacyModelState.countdown`. The model is pumped only when the phase or a
+    //   permission flips (ADR-0231 A2-D9), and neither moves for the whole grace window — so the
+    //   status line would freeze at the value the `active -> grace` edge left behind, showing a
+    //   day-0 deadline on day six, WHILE the `#privacy-countdown` HUD banner beside it — derived
+    //   fresh every frame — showed the true remainder. Two contradictory deletion deadlines from
+    //   one derivation, on a compliance surface.
+    // WRONG IMPL KILLED (2): re-pumping `account-changed` every frame to keep it fresh. That
+    //   clears `inFlight` on every frame and destroys the double-submit guard (A2-D9); it is why
+    //   the fix is a RENDER path, not a model write. `RB52T-DELETE-WIRED` and the pure-tier
+    //   `RB52C-DOUBLE-SUBMIT` are what keep that alternative closed.
+    // WRONG IMPL KILLED (3): feeding `performance.now()` where the wall clock belongs — the two
+    //   clocks below are stubbed to DIFFERENT values, so that wiring cannot pass both frames.
+    H.account = ACCOUNT_PENDING_FUTURE;
+    runFrameAt(0, WALL_T0);
+    openPrivacySurface();
+
+    const statusAt = (): string => byId('privacy-status').textContent ?? '';
+    const first = statusAt();
+    // ANTI-VACUITY, ASSERTED FIRST: the surface really is showing a countdown, not an empty
+    // string — otherwise "it changed" below could be satisfied by two different flavours of blank.
+    expect(first.length, 'the grace status line must not be empty').toBeGreaterThan(0);
+    expect(
+      hiddenAncestorOf(byId('privacy-status')),
+      'the status line must be ON SCREEN for this tooth to mean anything',
+    ).toBeNull();
+
+    // Advance the WALL clock only. The perf clock moves too (a real rAF always does), but to a
+    // different value, so neither can be mistaken for the other.
+    runFrameAt(1, WALL_T0 + WALL_STEP_MS);
+    const second = statusAt();
+    expect(
+      second,
+      'the OPEN surface must repaint its deadline as the wall clock advances — a frozen status ' +
+        'line is a stale legal deadline',
+    ).not.toBe(first);
+    expect(second.length, 'the repainted status line must not be blank').toBeGreaterThan(0);
   });
 });

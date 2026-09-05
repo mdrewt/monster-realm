@@ -11832,6 +11832,39 @@ describe('★ main.ts wiring (rb-52): the claim-render suppression and the priva
     ).toBe(true);
   });
 
+  it('★ W-RB52-RECONNECT-CLEARS-PRIVACY-MEMO BITES: onReconnect resets the change-detector memo so a never-settling request cannot strand inFlight', () => {
+    // WRONG IMPL KILLED: omitting the reset. The SDK does not settle an in-flight reducer promise
+    //   across a link drop (the same class the adjacent renameView/tradePropose/shop hides exist
+    //   for), so `privacyModelState.inFlight` stays set and every control renders disabled with
+    //   NO notice. It self-heals by accident in most phases — `store.reset()` flips the phase to
+    //   `unknown`, which the change-detector notices — but NOT when the phase was ALREADY
+    //   `unknown`, which is the ordinary guest/pre-join state, and `exportPermitted` is true
+    //   there. Clearing the memo makes the next frame re-pump `account-changed` unconditionally,
+    //   which is what clears the lock.
+    const src = readMainTs();
+    const stripped = m20cWholeFile(src);
+    // Exactly one reset site — a second would mean something else is clearing the memo.
+    expect(
+      mwCodeOccurrences(squashWhitespace(stripped), 'lastPrivacyCountdown = undefined').length,
+      'main.ts must clear the privacy change-detector memo exactly once',
+    ).toBe(1);
+    // …and it must be on the RECONNECT path, not merely somewhere in the file. Bounded by the
+    // NEXT connection handler, so the reset cannot drift out of onReconnect's body unnoticed.
+    const startIdx = stripped.indexOf('onReconnect: (id) => {');
+    const endIdx = stripped.indexOf('onOwnWarp:', startIdx);
+    const resetIdx = stripped.indexOf('lastPrivacyCountdown = undefined');
+    expect(startIdx, 'ANTI-VACUITY: onReconnect must be found').toBeGreaterThan(-1);
+    expect(endIdx, 'ANTI-VACUITY: onOwnWarp must follow onReconnect').toBeGreaterThan(startIdx);
+    expect(
+      resetIdx,
+      'the memo reset must sit INSIDE onReconnect, beside the four view hides that exist for the ' +
+        'identical never-settling-promise reason',
+    ).toBeGreaterThan(startIdx);
+    expect(resetIdx, 'the memo reset must sit BEFORE the next connection handler').toBeLessThan(
+      endIdx,
+    );
+  });
+
   it('★ W-RB52-OPEN-VERDICT-BEFORE-HIDE BITES: openPrivacy takes the mutual-exclusion verdict BEFORE hiding the claim overlay, and reports a refusal', () => {
     // WRONG IMPL KILLED (1) ★ the verifier's surviving mutant V2: deleting the verdict check
     //   entirely, so the privacy overlay opens over a live battle or conversation.
