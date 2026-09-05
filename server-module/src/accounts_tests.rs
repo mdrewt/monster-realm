@@ -4061,6 +4061,7 @@ fn data_lifecycle_partition_matches_spec_section3() {
         "config",
         "encounter",
         "evolution_path",
+        "export_bundle_reaper_schedule",
         "guest_claim",
         "guest_claim_reaper_schedule",
         "heal_location_row",
@@ -4078,13 +4079,15 @@ fn data_lifecycle_partition_matches_spec_section3() {
     ];
     assert_eq!(
         not_owned, expected_not_owned,
-        "T2 / spec §3 NOT-OWNED: exactly eighteen tables hold no per-player data — spec §3's \
-         seventeen plus rb-24's `account_deletion_reaper_schedule`, which is scheduler \
-         bookkeeping whose two lifecycles (the runtime deleting a fired one-shot, and the \
-         PRV1-3 cancel disarm) are both explicit and neither of them a cascade step. Every \
-         one is an EXPLICIT registry entry with a mandatory reason — never a silent \
-         omission — because the two failure directions are symmetric: cascading over \
-         `config` deletes global game config, and quietly dropping a genuinely-owned table \
+        "T2 / spec §3 NOT-OWNED: exactly nineteen tables hold no per-player data — spec §3's \
+         seventeen, rb-24's `account_deletion_reaper_schedule`, and rb-48's \
+         `export_bundle_reaper_schedule` (ADR-0238). Both of the additions are scheduler \
+         bookkeeping rather than player data, and neither is reachable by a per-owner cascade \
+         step: the rb-24 row holds the identity whose own cascade it runs, and the rb-48 row is \
+         a GLOBAL interval singleton with no Identity column at all, so there is nothing for a \
+         cascade to key on. Every one is an EXPLICIT registry entry with a mandatory reason — \
+         never a silent omission — because the two failure directions are symmetric: cascading \
+         over `config` deletes global game config, and quietly dropping a genuinely-owned table \
          out of the cascade leaves an unerased copy of a deleted player's data."
     );
 }
@@ -10911,6 +10914,10 @@ fn m22s6_table_row_types() -> Vec<(&'static str, AlgebraicType)> {
             <crate::schema::ExportBundle as SpacetimeType>::make_type(&mut ts),
         ),
         (
+            "export_bundle_reaper_schedule",
+            <crate::privacy::ExportBundleReaperSchedule as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
             "guest_claim",
             <crate::schema::GuestClaim as SpacetimeType>::make_type(&mut ts),
         ),
@@ -11119,11 +11126,12 @@ fn m22s6_table_row_registry_matches_manifest() {
 
     let registry_len = registry.len();
     assert_eq!(
-        registry_len, 40,
+        registry_len, 41,
         "[m22s6/registry-census] the S6 row-type registry has {registry_len} entries; the live \
-         manifest carries exactly 40 (13 ERASE + 4 ANONYMIZE + 5 JOIN-ONLY + 18 NOT-OWNED, \
-         schema.rs :990-992). A registry that grew or shrank without a matching manifest change \
-         is a registry nobody reviewed against the schema it claims to cover."
+         manifest carries exactly 41 (13 ERASE + 4 ANONYMIZE + 5 JOIN-ONLY + 19 NOT-OWNED, \
+         schema.rs :990-992) — 40 before rb-48, plus `export_bundle_reaper_schedule` (ADR-0238). \
+         A registry that grew or shrank without a matching manifest change is a registry nobody \
+         reviewed against the schema it claims to cover."
     );
 
     let mut identity_bearing = 0usize;
@@ -11134,12 +11142,17 @@ fn m22s6_table_row_registry_matches_manifest() {
     }
     assert_eq!(
         identity_bearing, 21,
-        "[m22s6/registry-identity-floor] {identity_bearing} of the 40 registered row types \
+        "[m22s6/registry-identity-floor] {identity_bearing} of the 41 registered row types \
          carry an Identity column at some depth; exactly 21 is the live count (the 17 \
          cascade-classified owner-keyed tables R1 below re-derives, plus the 4 frozen NotOwned \
-         exceptions R3 below names). A count that drifted without a corresponding R1/R2/R3 edit \
-         means either a table's columns changed shape, or this registry stopped seeing them — \
-         either way a human needs to look, not have the number silently update itself."
+         exceptions R3 below names). The count is UNCHANGED by rb-48 on purpose: \
+         `export_bundle_reaper_schedule` is a global interval singleton carrying only an auto-inc \
+         id and the runtime's fire instant, so it adds a row type without adding an owner key — \
+         which is the derive-metadata proof, stronger than any text scan, that its `NotOwned` \
+         classification and its empty re-key obligation are both honest. A count that drifted \
+         without a corresponding R1/R2/R3 edit means either a table's columns changed shape, or \
+         this registry stopped seeing them — either way a human needs to look, not have the \
+         number silently update itself."
     );
 }
 
@@ -12606,7 +12619,7 @@ fn m22s9_derive_manifest_transcription() -> String {
             pair[0], pair[1],
             "[m22s9/transcription-dup] DATA_LIFECYCLE_MANIFEST names `{}` twice. The derivation \
              below looks each table up by name, so a duplicate would transcribe one entry twice \
-             and leave the census at 40 while a real table went missing.",
+             and leave the census at 41 while a real table went missing.",
             pair[0]
         );
     }
@@ -12660,11 +12673,13 @@ fn m22s9_derive_manifest_transcription() -> String {
 
     let census = entries.len();
     assert_eq!(
-        census, 40,
+        census, 41,
         "[m22s9/transcription-census] the derivation produced {census} entries; the live manifest \
-         carries exactly 40 (13 ERASE + 4 ANONYMIZE + 5 JOIN-ONLY + 18 NOT-OWNED, schema.rs \
-         :990-992). A transcription that silently shrank would let the e2e prove a cascade over \
-         fewer tables than the tree actually has."
+         carries exactly 41 (13 ERASE + 4 ANONYMIZE + 5 JOIN-ONLY + 19 NOT-OWNED, schema.rs \
+         :990-992) — 40 before rb-48, plus `export_bundle_reaper_schedule` (ADR-0238), which \
+         transcribes as `export_bundle_reaper_schedule:NotOwned::0`: NotOwned, no owner columns, \
+         not exportable. A transcription that silently shrank would let the e2e prove a cascade \
+         over fewer tables than the tree actually has."
     );
     entries.join("|")
 }
@@ -13199,9 +13214,10 @@ fn m22s9_e2e_manifest_transcription_matches_manifest() {
     let parts: Vec<&str> = derived.split('|').collect();
     let n_parts = parts.len();
     assert_eq!(
-        n_parts, 40,
+        n_parts, 41,
         "[m22s9/transcription-parts] the derived transcription splits into {n_parts} entries; the \
-         live manifest carries exactly 40."
+         live manifest carries exactly 41 (rb-48 / ADR-0238 adds \
+         `export_bundle_reaper_schedule`)."
     );
     for part in &parts {
         let colons = part.matches(':').count();

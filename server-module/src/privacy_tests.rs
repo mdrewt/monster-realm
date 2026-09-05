@@ -5184,7 +5184,8 @@ fn m22s4_cooldown_polarity_differs_from_is_deletion_due() {
 // contains, and every count is exact.
 // ===========================================================================
 
-/// X9: the reducer takes EXACTLY the sanctioned one-parameter signature.
+/// X9: the export reducer takes EXACTLY the sanctioned one-parameter signature,
+/// and privacy.rs declares EXACTLY the two reducers this slice reviewed.
 ///
 /// This is the highest-severity pin in the slice, on a par with the view body.
 /// A view or a reducer in this toolchain happily accepts extra arguments, so a
@@ -5192,10 +5193,36 @@ fn m22s4_cooldown_polarity_differs_from_is_deletion_due() {
 /// is a complete cross-account read of every exportable table, and it passes
 /// every ordering, counting and body clause below.
 ///
+/// REVISED BY rb-48 (ADR-0238) — ATTRIBUTION, NOT RELAXATION. The module's
+/// reducer count moves from one to two because PRV1-14 needs a scheduled
+/// reducer, and a scheduled reducer in this toolchain is a reducer like any
+/// other. Moving a count from 1 to 2 is exactly the shape a silent loosening
+/// takes, so the number is not moved alone. THREE clauses are added with it:
+///   - BOTH attributes are pinned to a NAMED declaration by adjacency, so a
+///     count of two is not satisfied by two attributes on two arbitrary
+///     functions;
+///   - EXHAUSTIVENESS — every occurrence of the attribute is walked, and each
+///     must be followed by one of exactly those two declarations. The two
+///     adjacency counts alone are satisfied by a THIRD attribute somewhere else
+///     (each of the first two still occurs once);
+///   - the PAREN-TOLERANT twin. The bracket form counts
+///     `#[spacetimedb::reducer(client_connected)]` and `#[reducer]` via an
+///     aliasing import ZERO times, so a parameterised third reducer — a
+///     lifecycle hook, reachable on every connect — is invisible to all three
+///     clauses above. Requiring the open-form count to EQUAL the bracket-form
+///     count closes that, and it is the shipped idiom from `guards_tests.rs`
+///     and `accounts_tests.rs::parse_reducers`.
+///     The second reducer is scheduler-only and is pinned by its own guard, body and
+///     signature tests (`rb48_reaper_*`); a THIRD is a second unreviewed client
+///     entry point into a module that holds one subject's whole personal-data dump.
+///
 /// Kills: an added identity-typed parameter (the caller-chosen-owner bypass);
 ///        an added struct parameter carrying an identity field;
 ///        a second definition under a cfg twin;
-///        a return type that swallows the guard errors.
+///        a return type that swallows the guard errors;
+///        a THIRD reducer in this module, in either the bracket or the
+///        parameterised spelling;
+///        an attribute detached from either pinned declaration.
 #[test]
 fn m22s4_reducer_signature_exact() {
     let squashed = stripped_for_scan(PRIVACY_RS);
@@ -5222,29 +5249,103 @@ fn m22s4_reducer_signature_exact() {
     );
 
     let attr = m22s4_nd_reducer_attr();
+    let n_full = rb22p_count(&squashed, &attr);
     assert_eq!(
-        rb22p_count(&squashed, &attr),
-        1,
-        "m22s4 [X9/attr-count]: privacy.rs must declare EXACTLY one reducer. A second client \
-         entry point in this module is a second, unreviewed way to reach the export machinery."
+        n_full, 2,
+        "m22s4 [X9/attr-count]: privacy.rs must declare EXACTLY two reducers; found {n_full}. The \
+         client-facing export (`request_data_export`) and the scheduler-only TTL reaper \
+         (`export_bundle_reaper`, rb-48 / ADR-0238) are both reviewed and both pinned by name \
+         below. A THIRD is a second, unreviewed way to reach the export machinery — or, if it is \
+         scheduler-shaped, an unattended reducer nobody gated."
     );
-    let adjacency = format!("{attr}pub{fn_needle}");
+
+    // BOTH attributes are tied to a NAMED declaration. A count of two is
+    // otherwise satisfied by two attributes sitting on two other functions.
+    let sanctioned: [(String, &str); 2] = [
+        (
+            format!("pub{fn_needle}"),
+            "the client-facing export reducer",
+        ),
+        (
+            format!("pub{}", rb48_nd_reaper_fn()),
+            "the scheduler-only TTL reaper (rb-48, ADR-0238), whose guard, body and signature are \
+             pinned by the rb48_reaper_ tests",
+        ),
+    ];
+    for (decl, what) in &sanctioned {
+        let adjacency = format!("{attr}{decl}");
+        assert_eq!(
+            rb22p_count(&squashed, &adjacency),
+            1,
+            "m22s4 [X9/attr-adjacency]: the reducer attribute must sit IMMEDIATELY above \
+             `{decl}` ({what}), exactly once. A count of the attribute and a count of the fn, \
+             taken separately, are both satisfied by an attribute attached to some OTHER \
+             function — and by anything wedged between the attribute and the declaration."
+        );
+    }
+
+    // EXHAUSTIVENESS: every attribute occurrence belongs to one of those two.
+    let mut walked = 0usize;
+    let mut scan = 0usize;
+    while let Some(rel) = squashed[scan..].find(attr.as_str()) {
+        let at = scan + rel;
+        let rest = &squashed[at + attr.len()..];
+        assert!(
+            sanctioned
+                .iter()
+                .any(|(decl, _)| rest.starts_with(decl.as_str())),
+            "m22s4 [X9/attr-exhaustive]: a reducer attribute in privacy.rs is followed by \
+             something other than the two sanctioned declarations. The two adjacency counts above \
+             each stay at ONE while a third attribute sits on a third function, so this walk is \
+             what makes the census closed rather than merely present. Text after the attribute: \
+             {:?}",
+            rest.chars().take(70).collect::<String>()
+        );
+        walked += 1;
+        scan = at + attr.len();
+    }
     assert_eq!(
-        rb22p_count(&squashed, &adjacency),
-        1,
-        "m22s4 [X9/attr-adjacency]: the reducer attribute must sit IMMEDIATELY above the pinned \
-         declaration. A count of the attribute and a count of the fn, taken separately, are both \
-         satisfied by an attribute attached to some OTHER function."
+        walked, n_full,
+        "m22s4 [X9/attr-walk]: the exhaustiveness walk visited {walked} attribute(s) but the \
+         census counted {n_full}; the two views of the same file must agree or one of them \
+         stopped looking."
+    );
+
+    // PAREN-TOLERANT twin: the bracket form is blind to a parameterised reducer.
+    let open = rb48_nd_reducer_attr_open();
+    let n_open = rb22p_count(&squashed, &open);
+    assert_eq!(
+        n_open, n_full,
+        "m22s4 [X9/attr-paren-tolerant]: privacy.rs carries {n_open} occurrence(s) of `{open}` \
+         but only {n_full} of the bracket form. The difference is a PARAMETERISED reducer — \
+         `#[spacetimedb::reducer(client_connected)]` or `(init)` — which every clause above \
+         counts ZERO times, because they all key on the closing bracket. A lifecycle-hook reducer \
+         in this module runs on every connect, is invisible to the census, and is exactly the \
+         shape this clause exists to make impossible. (Idiom: guards_tests.rs's n_open/n_full \
+         ambiguity assert, and accounts_tests.rs::parse_reducers, which matches the attribute \
+         WITHOUT the bracket for the same reason.)"
     );
 }
-
 /// X9: the body's statement ORDER is the security shape.
 ///
 /// Subject guard, then deletion gate, then cooldown, then the purge, then the
-/// writes — with EXACTLY three guard returns before the purge. Order is not
-/// cosmetic: every guard that runs after the purge has already destroyed the
-/// subject's previous bundle, and every guard that runs after a write has
-/// already written.
+/// writes, then the self-arm — with EXACTLY three guard returns before the
+/// purge. Order is not cosmetic: every guard that runs after the purge has
+/// already destroyed the subject's previous bundle, and every guard that runs
+/// after a write has already written.
+///
+/// EXTENDED BY rb-48 (ADR-0238) — an ADDITION, not a revision: this test was
+/// measured GREEN with the self-arm call in place, and the three new clauses at
+/// the end are what give the arm a position, a depth and a count in the
+/// statement shape. They are the teeth for the two shapes that break PRV1-14's
+/// arming invariant while leaving every clause above untouched: the arm call
+/// deleted outright, and the arm call hoisted above the insert loop or wrapped
+/// in an `if total > 0`. The invariant is `a chunk exists implies the singleton
+/// is armed`, and it is true BY CONSTRUCTION only if the arm runs after the
+/// writes in the same transaction — an `Err` anywhere rolls both back together.
+/// (`rb48_export_reducer_arms_the_reaper_last` owns the complementary
+/// ADJACENCY clause — that nothing at all sits between the arm and `Ok(())` —
+/// and the module's naming budget for the arm. The two do not overlap.)
 ///
 /// Kills: a guard moved below the purge (its rejection would still be correct,
 ///        but the caller's previous export is gone);
@@ -5253,7 +5354,11 @@ fn m22s4_reducer_signature_exact() {
 ///        a deleted guard (each reject reason is counted, so removing one takes
 ///        the count to zero rather than merely reordering it);
 ///        the purge wrapped in a conditional (the depth clause);
-///        a second purge call site.
+///        a second purge call site;
+///        the self-arm call removed, so nothing arms the reaper from the write
+///        path (rb-48);
+///        the self-arm hoisted above the insert loop or nested in a branch, so
+///        a request that writes chunks can leave the singleton unarmed (rb-48).
 #[test]
 fn m22s4_reducer_statement_order() {
     let squashed = stripped_for_scan(PRIVACY_RS);
@@ -5263,6 +5368,7 @@ fn m22s4_reducer_statement_order() {
     let player_read = [concat!("ctx", ".db."), "player()"].concat();
     let purge_call = m22s4_purge_call_pin();
     let insert = m22s4_nd_bundle_insert();
+    let arm_call = rb48_arm_call_pin();
 
     let i_account = m22s4_idx(&body, &account_read, "the subject guard's account read");
     let i_player = m22s4_idx(&body, &player_read, "the subject guard's presence read");
@@ -5293,13 +5399,15 @@ fn m22s4_reducer_statement_order() {
     );
     let i_purge = m22s4_idx(&body, &purge_call, "the purge call");
     let i_insert = m22s4_idx(&body, &insert, "the first export_bundle write");
+    let i_arm = m22s4_idx(&body, &arm_call, "the TTL reaper self-arm call");
 
     assert!(
         i_account < i_no_subject && i_player < i_no_subject,
         "m22s4 [X9/order]: the subject guard must READ both the account row and the presence row \
          before it can reject. An anonymous connection receives a working identity, so without \
-         this guard a zero-state identity can farm a full empty export on every call, forever \
-         (the TTL reaper is deferred)."
+         this guard a zero-state identity can farm a full empty export on every call — and while \
+         the PRV1-14 reaper now expires each bundle after seven days, an expiry is not a \
+         reachability guarantee and never was the reason this guard exists."
     );
     assert!(
         i_no_subject < i_gate,
@@ -5377,29 +5485,104 @@ fn m22s4_reducer_statement_order() {
         "m22s4 [X9/insert-count]: the body must carry exactly one export_bundle write site (the \
          insert loop). A second write site is a second, separately-shaped row."
     );
-}
 
-/// X9: the clock is read ONCE and both time columns read that binding.
+    // --- rb-48 (ADR-0238): the self-arm's count, depth and position ---------
+    assert_eq!(
+        rb22p_count(&body, &arm_call),
+        1,
+        "m22s4 [X9/arm-count]: the export reducer must arm the PRV1-14 TTL reaper exactly once, \
+         spelled exactly `{arm_call}`. ZERO means nothing arms the singleton from the write path, \
+         so a database that has never been re-published expires nothing and every bundle it holds \
+         is permanent — while the reaper, its schedule table and its constants all still exist and \
+         every other clause in this file stays green. TWO is a second arm site inside one \
+         transaction, which the shared arm seam makes harmless but which nobody reviewed."
+    );
+    assert_eq!(
+        m22s4_brace_depth_at(&body, i_arm),
+        0,
+        "m22s4 [X9/arm-depth]: the self-arm call must be a TOP-LEVEL statement of the reducer \
+         body. Wrapped in a conditional — `if total > 0 {{ .. }}` is the measured shape — it \
+         becomes a conditional arm, and the condition can be false on exactly the request that \
+         wrote the chunks. Depth is what separates `it is called` from `it is always called`."
+    );
+    assert!(
+        i_insert < i_arm,
+        "m22s4 [X9/arm-after-write]: the self-arm must run AFTER the insert loop (write at \
+         offset {i_insert}, arm at offset {i_arm}). Arm-last is what makes the invariant `a chunk \
+         exists implies the singleton is armed` true by construction: the writes and the arm share \
+         one transaction, so an Err anywhere in the walk rolls both back together. An arm placed \
+         BEFORE the writes arms on a request that then fails, and — worse — reads as correct to \
+         every count and depth clause above."
+    );
+}
+/// X9: each clock reader reads the injected clock ONCE, and both of the export
+/// reducer's time columns read that one binding.
 ///
 /// A shadowed second clock read is the measured cheat here: the request id and
 /// the row timestamp then come from two different instants, so the chunks of
 /// ONE request no longer share a request id and the client's reassembly rule
 /// (group by request, wait for the full count) silently never completes.
 ///
-/// Kills: a second clock read anywhere in the module;
+/// REVISED BY rb-48 (ADR-0238) — ATTRIBUTION, NOT RELAXATION. The file-wide
+/// count moves from one to two because the TTL reaper runs in its OWN
+/// transaction and must read the clock to compute an age; a reaper that reused
+/// the export's instant would be reading a stamp from a different transaction
+/// entirely. The number is not moved alone: each of the two reads is ATTRIBUTED
+/// to a named reducer body, and the two per-body counts are what turn `two
+/// somewhere` into `one here and one there`. Under the old clause a second read
+/// inside `request_data_export` and the reaper's legitimate read were the same
+/// failure; under this one they are distinguishable, and a THIRD read anywhere
+/// still reds. The three binding clauses are untouched.
+///
+/// Verified free of false positives: the seam's `now_ms: i64` PARAMETER and its
+/// `now_ms.saturating_sub(` call both lack the `(` this needle requires, so
+/// neither inflates the census.
+///
+/// Kills: a second clock read inside either reducer;
+///        a clock read anywhere else in the module (a helper minting its own
+///        instant);
 ///        a request id minted from something other than the bound clock;
 ///        a row timestamp taken from a fresh read.
 #[test]
 fn m22s4_now_bound_once() {
     let squashed = stripped_for_scan(PRIVACY_RS);
     let body = m22s4_reducer_body(&squashed);
+    let clock = "now_ms(";
 
+    let file_wide = rb22p_count(&squashed, clock);
     assert_eq!(
-        rb22p_count(&squashed, "now_ms("),
-        1,
-        "m22s4 [X9/now-file]: the whole module must read the injected clock exactly once. A \
-         second read anywhere is a second instant that can disagree with the first."
+        file_wide, 2,
+        "m22s4 [X9/now-file]: the whole module must read the injected clock EXACTLY twice; found \
+         {file_wide}. The two readers are the export reducer and the PRV1-14 TTL reaper (rb-48, \
+         ADR-0238), each in its own transaction, each attributed by name below. A third read \
+         anywhere is a third instant that can disagree with the other two — and in a helper, it \
+         is an instant no test in this module scopes at all."
     );
+
+    for (what, scoped, why) in [
+        (
+            "request_data_export",
+            body.clone(),
+            "one instant per request: the request id and every chunk's timestamp are minted from \
+             it, so a second read splits one request across two ids and the client waits forever",
+        ),
+        (
+            "export_bundle_reaper",
+            rb48_reaper_body(&squashed),
+            "one instant per tick: the age of every row in the sweep is measured against the same \
+             `now`, so a second read could expire one row and spare its neighbour on the same tick",
+        ),
+    ] {
+        let n = rb22p_count(&scoped, clock);
+        assert_eq!(
+            n, 1,
+            "m22s4 [X9/now-scope-{what}]: `{what}` must read the injected clock EXACTLY once; \
+             found {n}. It needs {why}. The file-wide count of two above says only that there are \
+             two reads SOMEWHERE — two reads inside one reducer and none in the other satisfies \
+             it, which is precisely the shadowed-second-read cheat this test was written for."
+        );
+    }
+
     assert_eq!(
         rb22p_count(&body, "letnow=now_ms(ctx);"),
         1,
@@ -5419,7 +5602,6 @@ fn m22s4_now_bound_once() {
          chunks of one request carry two different request ids and the client waits forever."
     );
 }
-
 /// X9: the subject is derived from the caller ONCE, and nothing else in the
 /// body names an identity.
 ///
@@ -6958,9 +7140,12 @@ fn rb48_reaper_body_exact() {
 
     let squashed = stripped_for_scan(PRIVACY_RS);
     let body = rb48_reaper_body(&squashed);
+    // `contains`, not `iter().any(..)`: both spellings are the same membership
+    // test over the two accepted formatter spellings, and clippy's
+    // manual_contains lint fires on the closure form under `-D warnings`.
     let accepted = [rb48_reaper_body_pin(), flat];
     assert!(
-        accepted.iter().any(|pin| *pin == body),
+        accepted.contains(&body),
         "rb48 [E1/body-exact]: the reaper body must be EXACTLY the frozen guard, sweep, plan and \
          delete-by-primary-key sequence (either formatter spelling of the seam call) — no extra \
          binding, no conditional, no second statement, and the seam's four arguments in exactly \
