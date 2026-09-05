@@ -903,9 +903,7 @@ let errorOverlayView: ErrorOverlayView | undefined;
 // Re-entrancy guard: if rendering the overlay itself throws and re-enters pushError,
 // short-circuit so a render fault cannot recurse into a stack overflow.
 let handlingError = false;
-// 17r-f: the last frame-error message, so a frame throwing every tick costs ONE ring slot
-// instead of evicting ADR-0172 D1's reserved crash records in ~1.07s. Never reset: a repeat is
-// the same diagnosis, and a DISTINCT message always records.
+// 17r-f: collapses a 60Hz thrower to ONE ring slot; never reset (ADR-0130 amendment 17r-f).
 let lastFrameErrorMessage: string | null = null;
 
 /** Record an error into the ring and reflect it in the overlay. TOTAL (never throws to
@@ -3226,8 +3224,7 @@ async function main(): Promise<void> {
       }
     } catch (err) {
       console.error('[frame] uncaught error', err);
-      // 17r-f: also surface it (overlay/ring/F9), tagged so an operator can tell a dead render
-      // loop from a one-off handler throw. normalizeError is TOTAL, unlike a bare template.
+      // 17r-f: surface it too — tagged, deduped, TOTAL (ADR-0130 amendment 17r-f).
       const frameErrorMessage = `frame: ${normalizeError('uncaught', err).message}`;
       if (frameErrorMessage !== lastFrameErrorMessage) {
         lastFrameErrorMessage = frameErrorMessage;
