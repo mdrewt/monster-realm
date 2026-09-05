@@ -323,13 +323,21 @@ pub(crate) fn should_reject_for_deletion(account: &Account) -> bool {
 /// arm delegates to `should_reject_for_deletion` (a third disjunct added there
 /// widens this consumer with it — ADR-0225), and the terminal marker is tested
 /// FIRST and OUTSIDE the stamp comparison, because an already-erased account is
-/// refused every commitment however old — the cascade has emptied it (the
-/// `reaper_should_run_cascade` precedent for composing inside this module). A
-/// gated row with NO request stamp is the illegal stamp-less shape that
+/// refused every commitment however old — the cascade has emptied it, sweeping
+/// both offer columns in the same transaction that stamps the marker, so this
+/// clause is unreachable in production and kept as the stated contract. Unlike
+/// `reaper_should_run_cascade`, which is defined DIRECTLY so the gate can never
+/// widen what the reaper erases, this consumer WANTS to widen with the gate —
+/// composing over the SSOT halves is the point (`reaper_rearm_at_ms` and
+/// `plan_deletion_rearms` compose their own halves the same way). A gated row
+/// with NO request stamp is the illegal stamp-less shape that
 /// `account_state_is_legal` only debug-asserts away; `None` is the fail-closed
 /// arm and is spelled as an explicit match arm on purpose — every `unwrap_or`
 /// default hides the decision inside a value and admits some stamp range
-/// silently.
+/// silently. Declaration count, delegation needles and this file's
+/// conditional-compilation count are pinned by
+/// `rb47_accounts_seam_is_declared_once_and_delegates` in `trading_tests.rs`;
+/// change them together with ADR-0237.
 pub(crate) fn opened_commitment_is_refused(account: &Account, opened_at_ms: i64) -> bool {
     account_has_terminal_marker(account)
         || (should_reject_for_deletion(account)
@@ -466,10 +474,14 @@ pub(crate) fn is_pending_deletion(ctx: &ReducerContext, identity: Identity) -> b
 /// row — a guest has no deletion state — exactly as `is_pending_deletion`
 /// decides, and with the same lookup shape on purpose: a shared row helper
 /// would force re-cutting that byte-frozen sibling's pin. Identity-taking like
-/// its sibling, and therefore an oracle primitive: reducer files reach it ONLY
-/// through `guards::require_commitment_predates_deletion`, which reads
-/// `ctx.sender()` and cannot be pointed at a third party (ADR-0227 D4); the
-/// bypass bans in `guards_tests.rs` hold that line.
+/// its sibling, and therefore an oracle primitive: the ONLY sanctioned consumer
+/// is `guards::require_commitment_predates_deletion`, which reads
+/// `ctx.sender()` and cannot be pointed at a third party (ADR-0227 D4). That
+/// line is held mechanically by the rb-47 seam-containment scan in
+/// `trading_tests.rs` (every module `lib.rs` declares, minus this file, the
+/// guards module and the test modules) and by the bypass-ban arrays in
+/// `guards_tests.rs`; a reducer that consults this predicate about another
+/// player is the deletion-status oracle ADR-0227 D4 rejected.
 pub(crate) fn refuses_commitment_opened_at(
     ctx: &ReducerContext,
     identity: Identity,

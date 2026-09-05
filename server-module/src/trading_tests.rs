@@ -1200,8 +1200,11 @@ fn ea_authorize_respond_01_respond_trade_propagates_authorize_result() {
     // leave `let _dead = "authorize_respond(&offer.status, offer.counterparty == me)?;";`
     // behind, and every sub-check of check_authorize_call is satisfied by the literal
     // while respond_trade performs no authorization at all. Verified safe: the production
-    // arg span and the `?;` terminator contain no inner string literals, and the
-    // log_reject("respond_trade", ...) argument that IS a literal sits outside both.
+    // arg span and the `?;` terminator contain no inner string literals. The reducer's own
+    // literals are the reject-logger's reducer-name tag and, since rb-47 (ADR-0237), the
+    // offer-age gate's identical tag; BOTH sit outside that span and that terminator, so
+    // blanking every literal in the file leaves this pin's scope untouched. A statement
+    // added between them must keep that true.
     let stripped = strip_rust_strings_trading(&strip_rust_comments_trading(TRADING_RS));
 
     // Locate respond_trade body (ends where confirm_trade begins).
@@ -3423,13 +3426,20 @@ fn rb47_body(file: &str, stripped: &str, name: &str) -> String {
 /// fixture would only ever hold the sender's row. `remove` and `find` are
 /// `Identity`-keyed, so this row never disturbs the per-state `remove(me) == 1`
 /// assertions. Returns the stranger's identity so a test can also ask ABOUT it.
+///
+/// The issuer string and the creation stamp are DIFFERENT from every other rb-47
+/// fixture on purpose. A predicate keyed on a field the fixtures never vary is
+/// unobservable, and the deletion decision touches three of this row's nine
+/// columns: with every row carrying an empty issuer and a zero clock, a leading
+/// `if !account.auth_issuer.is_empty() { return false; }` passes the whole suite
+/// (measured survivor A34) and needs no conditional compilation to hide behind.
 fn rb47_seed_deleting_stranger(
     acct: &crate::native_host_tests::Handle<'_, crate::schema::Account>,
     requested_at_ms: i64,
 ) -> spacetimedb::Identity {
     let stranger = spacetimedb::Identity::from_byte_array([9u8; 32]);
     acct.seed(&crate::accounts::requested_deletion(
-        crate::accounts::new_account_row(stranger, String::new(), 0),
+        crate::accounts::new_account_row(stranger, "rb47-stranger".to_string(), 77_000),
         requested_at_ms,
     ));
     stranger
@@ -3508,8 +3518,12 @@ fn rb47_opened_commitment_is_refused_truth_table() {
     let me = spacetimedb::Identity::from_byte_array([1u8; 32]);
 
     // Legal shapes: shipped constructors only, so this test can never assemble a
-    // state the module itself cannot produce.
-    let active = crate::accounts::new_account_row(me, String::new(), 0);
+    // state the module itself cannot produce. The issuer and the creation stamp
+    // are NON-DEFAULT, and differ from the stranger's and the caller's rows in
+    // the behavioural tests: a decision keyed on a column every fixture leaves at
+    // its default is invisible to execution, and the two illegal shapes below
+    // inherit these values through their struct updates.
+    let active = crate::accounts::new_account_row(me, "rb47-issuer".to_string(), 42_000);
     let pending = crate::accounts::requested_deletion(active.clone(), req);
     let terminal = crate::accounts::terminal_account(pending.clone(), req + 1_000);
 
@@ -3654,6 +3668,19 @@ fn rb47_accounts_seam_is_declared_once_and_delegates() {
         );
     }
 
+    let ssot_decl = ["fn", concat!("should_reject_for_", "deletion"), "("].concat();
+    let n_ssot = file.matches(ssot_decl.as_str()).count();
+    assert_eq!(
+        n_ssot, 1,
+        "rb-47 E1 FAIL (SSOT declaration census): `accounts.rs` declares the para-4.7 \
+         disjunction `{ssot_decl}` {n_ssot} time(s) and must declare it exactly once. GREEN \
+         AT HEAD — a REGRESSION fence, not a new criterion. BOTH rb-47 seams delegate to it, \
+         so twinning the CALLEE flips the decision for the published wasm while every \
+         delegation needle below still matches, every declaration count above still reads \
+         one, and every behavioural test links the honest twin. The equality clause below \
+         pins the CALL; this clause pins that the callee is unique."
+    );
+
     let cfg = concat!("#", "[cfg");
     let n_cfg = file.matches(cfg).count();
     assert_eq!(
@@ -3666,6 +3693,20 @@ fn rb47_accounts_seam_is_declared_once_and_delegates() {
          published wasm behaves differently. If a legitimate one is ever needed here, \
          re-derive this clause deliberately and say why in the slice notes — do not bump the \
          number to match the file."
+    );
+
+    let inner_cfg = concat!("#!", "[cfg");
+    let n_inner = file.matches(inner_cfg).count();
+    assert_eq!(
+        n_inner, 0,
+        "rb-47 E1 FAIL (inner conditional compilation): `accounts.rs` carries {n_inner} \
+         INNER conditional-compilation attribute(s) (`{inner_cfg}`) and must carry ZERO. \
+         MEASURED: `{inner_cfg}` does NOT contain `{cfg}`, so the outer-attribute census \
+         above is blind to it — and that is the whole trick. Two same-named inline modules, \
+         an inner attribute inside each, one re-exported by a `use`, and this file ships two \
+         implementations of the same seam while every declaration count still reads one. \
+         This file uses no inner attribute at all today, so the ban is total rather than a \
+         count."
     );
 
     let pure_body = rb47_body("accounts.rs", &stripped, pure_name);
@@ -3707,6 +3748,59 @@ fn rb47_accounts_seam_is_declared_once_and_delegates() {
          family before it is written. Body was: {pure_body:?}"
     );
 
+    for (needle, what) in [
+        (
+            concat!("cfg", "!("),
+            "a compile-time configuration test — `cfg!(test) && ..` prepended to the \
+             disjunction is TRUE in every test build and FALSE in the shipped wasm, so \
+             execution can never see it",
+        ),
+        (
+            concat!("#", "["),
+            "an attribute on a statement of the decision (conditional compilation, or an \
+             allow that hides a lint the decision depends on)",
+        ),
+        (
+            concat!("#", "!"),
+            "an INNER attribute, which conditionally compiles the block it opens rather \
+             than the item it precedes",
+        ),
+    ] {
+        let n = pure_body.matches(needle).count();
+        assert_eq!(
+            n, 0,
+            "rb-47 E1 FAIL (unconditional decision): the body of `{pure_name}` contains \
+             `{needle}` {n} time(s) and must contain it zero times — that is {what}. The \
+             equality clause below also rejects it; this one names the mutant."
+        );
+    }
+
+    let expected_pure = [
+        concat!("account_has_terminal_", "marker(account)||("),
+        concat!("should_reject_for_", "deletion(account)&&match"),
+        concat!("account.deletion_requested_", "at_ms{None=>true,"),
+        "Some(requested)=>opened_at_ms>=requested,})",
+    ]
+    .concat();
+    assert_eq!(
+        pure_body, expected_pure,
+        "rb-47 E1 FAIL (pure body equality): the stamp-aware decision's body must BE the \
+         specified expression, byte-for-byte in the squashed view. \
+         Got: {pure_body:?}. Expected: {expected_pure:?}. \
+         WHY EQUALITY AND NOT CONTAINMENT — the containment clauses above are blind to \
+         LEADING and TRAILING code, and both blind spots were MEASURED as CI-green bypasses \
+         of this exact seam: `cfg!(test) &&` in front of the disjunction (A1), and a \
+         short-circuit `if !account.auth_issuer.is_empty() {{ return false; }}` above it \
+         (A34) — the second needs no conditional compilation at all, only a column no \
+         fixture varies. Execution cannot close either: the test build defines `test`, and \
+         a fixture suite cannot vary what it does not know is being read. This is the same \
+         lesson `m22s5_is_pending_deletion_delegates_to_should_reject` already records for \
+         the sibling seam one file away. \
+         RE-DERIVATION CONTRACT: this literal comes from ADR-0237 D1 and the spec. If a \
+         legitimate refactor reds it, re-derive it from the ADR — never paste the current \
+         body in, which turns the strongest clause in this test into a tautology."
+    );
+
     let ctx_body = rb47_body("accounts.rs", &stripped, ctx_name);
     let lookup = concat!("ctx.db.acc", "ount().identity().find(identity)");
     assert!(
@@ -3728,6 +3822,28 @@ fn rb47_accounts_seam_is_declared_once_and_delegates() {
          context-bound half re-derived the decision where the truth table cannot see it; two \
          means the row is judged twice and only one of the answers can be returned. \
          Body was: {ctx_body:?}"
+    );
+
+    let expected_ctx = [
+        concat!("ctx.db.acc", "ount().identity().find(identity)"),
+        concat!(
+            ".is_some_and(|a|opened_commitment_is_",
+            "refused(&a,opened_at_ms))"
+        ),
+    ]
+    .concat();
+    assert_eq!(
+        ctx_body, expected_ctx,
+        "rb-47 E1 FAIL (ctx body equality): the context-bound predicate's body must BE the \
+         owner-keyed lookup fed straight into the pure decision, byte-for-byte in the \
+         squashed view. Got: {ctx_body:?}. Expected: {expected_ctx:?}. \
+         The two clauses above are containment checks and therefore blind to leading code. \
+         The MEASURED bypass (A2a) is a leading `if crate::marshal::now_ms(ctx) > 0 {{ \
+         return false; }}`: the row read and the delegation both survive textually, every \
+         behavioural test stays green because the native host's clock is ZERO, and the gate \
+         is dead for every real caller — whose clock never is. `m22-s5` pinned the sibling \
+         predicate's whole body for exactly this reason after exactly this bypass. \
+         RE-DERIVATION CONTRACT: from ADR-0237 D2, never pasted from the file."
     );
 }
 
@@ -3762,7 +3878,7 @@ fn rb47_ctx_predicate_answers_from_the_callers_row() {
     let stranger_req = req + 7_000;
     let stranger = rb47_seed_deleting_stranger(&acct, stranger_req);
 
-    let active = crate::accounts::new_account_row(me, String::new(), 0);
+    let active = crate::accounts::new_account_row(me, "rb47-caller".to_string(), 42_000);
     let pending = crate::accounts::requested_deletion(active.clone(), req);
     let terminal = crate::accounts::terminal_account(pending.clone(), req + 1_000);
 
@@ -3966,6 +4082,27 @@ fn rb47_guards_wrapper_is_fused_and_unconditional() {
          even keep the behavioural test beside this one green. Body was: {body:?}"
     );
 
+    let closure_tail = concat!(
+        ".map_err(|e|{log_rej",
+        "ect(reducer,ctx.sender(),e);e.to_string()})"
+    );
+    let expected_body = [fused.as_str(), closure_tail].concat();
+    let expected_body_wrapped = [fused_wrapped.as_str(), closure_tail].concat();
+    assert!(
+        body == expected_body || body == expected_body_wrapped,
+        "rb-47 E1 FAIL (wrapper body equality): the wrapper's body must BE the fused \
+         delegation and its logging map, byte-for-byte in the squashed view, and nothing \
+         else. Got: {body:?}. Expected: {expected_body_wrapped:?} (the arg-vertical rustfmt \
+         spelling; the single-line one is accepted too). \
+         `starts_with` above is blind to TRAILING code, and the MEASURED bypass (A38) is \
+         exactly that: `.or_else(|e| if crate::marshal::now_ms(ctx) > 0 {{ Ok(()) }} else {{ \
+         Err(e) }})` appended after the closure. The fused call still counts one, the body \
+         still starts with it, and the verdict is discarded for every caller whose clock is \
+         non-zero — which is every real one, and none of the native-host ones. A hollow \
+         `.or(Ok(()))` dies here too, one clause earlier than behaviour would catch it. \
+         RE-DERIVATION CONTRACT: from ADR-0237 D3, never pasted from the file."
+    );
+
     for (needle, what) in [
         (
             concat!("if", "false"),
@@ -4041,6 +4178,76 @@ fn rb47_guards_wrapper_is_fused_and_unconditional() {
              takes a bool from `deletion_gate` rather than a row."
         );
     }
+
+    // --- The identity-taking primitive has exactly ONE consumer -------------
+    let sole_consumer = concat!("refuses_commitment_", "opened_at(");
+    let n_consumer = file.matches(sole_consumer).count();
+    assert_eq!(
+        n_consumer, 1,
+        "rb-47 E1 FAIL (sole consumer): `guards.rs` calls the identity-taking accounts \
+         predicate `{sole_consumer}` {n_consumer} time(s) and must call it EXACTLY ONCE, \
+         from the caller-only wrapper every other clause in this test pins. \
+         WHAT THIS CLAUSE OWNS, and nothing else does: a SECOND guards wrapper that DOES \
+         take an identity parameter satisfies every clause above — the first wrapper's body \
+         is untouched, its declaration still counts one, and the five re-derivation bans \
+         stay zero because a wrapper spells no account-state vocabulary either. It is also \
+         invisible to the canonical bypass arrays in `guards_tests.rs`: those ban the \
+         ACCOUNTS-side spelling inside reducer files, not a guards-side wrapper around it, \
+         so `trading.rs` and `pvp.rs` could then call it in full compliance. And it is \
+         exactly the third-party deletion-status oracle ADR-0227 D4 forbids — ask it about \
+         any identity at any stamp and it answers. The primitive stays caller-only because \
+         exactly one caller-only wrapper consumes it."
+    );
+
+    // --- The pure verdict seam BOTH deletion wrappers fan through -----------
+    let gate_name = concat!("deletion_ga", "te");
+    let gate_decl = ["fn", gate_name, "("].concat();
+    let n_gate_decl = file.matches(gate_decl.as_str()).count();
+    assert_eq!(
+        n_gate_decl, 1,
+        "rb-47 E1 FAIL (verdict seam census): `guards.rs` declares `{gate_name}` \
+         {n_gate_decl} time(s) and must declare it exactly once. GREEN AT HEAD. This seam \
+         had NO source pin of any kind before rb-47 round 3, and EVERY deletion gate in the \
+         crate — the blanket one and the stamp-aware one, across five reducers — fans \
+         through it. A conditional-compilation twin pair here is a repo-wide gate \
+         switch-off that leaves every other clause in this slice, and every behavioural \
+         test in it, green (measured survivor A10)."
+    );
+
+    let gate_body = rb47_body("guards.rs", &stripped, gate_name);
+    let expected_gate = concat!("ifrejected{returnErr(REJECT_DELETION_", "GATED);}Ok(())");
+    assert_eq!(
+        gate_body, expected_gate,
+        "rb-47 E1 FAIL (verdict seam body): `{gate_name}`'s body must BE the reject-or-Ok \
+         mapping, byte-for-byte in the squashed view. Got: {gate_body:?}. Expected: \
+         {expected_gate:?}. The MEASURED bypass (A6) is `if rejected && cfg!(test)`: it \
+         keeps the declaration count, the polarity constant and every reject-message pin \
+         intact, passes every behavioural test in this repo because the test build defines \
+         `test`, and disables EVERY deletion gate in the shipped wasm. Execution cannot \
+         reach it from either side of the cfg. \
+         RE-DERIVATION CONTRACT: from ADR-0225 §2, never pasted from the file."
+    );
+
+    let cfg_attr = concat!("#", "[cfg");
+    let n_cfg = file.matches(cfg_attr).count();
+    assert_eq!(
+        n_cfg, 1,
+        "rb-47 E1 FAIL (conditional compilation): `guards.rs` carries {n_cfg} \
+         conditional-compilation attribute(s); exactly ONE is expected — the test-module \
+         declaration at the end of the file, the count MEASURED at HEAD. A second one is how \
+         a twin of the wrapper, of the verdict seam, or a file-scope conditional constant \
+         enters this file, and all three are invisible to every body-scoped clause above."
+    );
+    let inner_cfg = concat!("#!", "[cfg");
+    let n_inner_cfg = file.matches(inner_cfg).count();
+    assert_eq!(
+        n_inner_cfg, 0,
+        "rb-47 E1 FAIL (inner conditional compilation): `guards.rs` carries {n_inner_cfg} \
+         INNER conditional-compilation attribute(s) (`{inner_cfg}`) and must carry ZERO. \
+         MEASURED: `{inner_cfg}` does NOT contain `{cfg_attr}`, so the clause above cannot \
+         see one — which is how a twin pair comes back after being banned: two same-named \
+         inline modules, an inner attribute in each, one re-exported."
+    );
 }
 
 /// **E1 (wrapper behaviour)** — the wrapper refuses ONLY offers created at or
@@ -4075,7 +4282,7 @@ fn rb47_guards_wrapper_refuses_only_offers_created_after_the_request() {
     let gated: Result<(), String> = Err(crate::guards::REJECT_DELETION_GATED.to_string());
     let admitted: Result<(), String> = Ok(());
 
-    let active = crate::accounts::new_account_row(me, String::new(), 0);
+    let active = crate::accounts::new_account_row(me, "rb47-caller".to_string(), 42_000);
     let pending = crate::accounts::requested_deletion(active.clone(), req);
     let terminal = crate::accounts::terminal_account(pending.clone(), req + 1_000);
 
@@ -4347,6 +4554,17 @@ fn rb47_respond_trade_carries_the_offer_age_gate() {
          such a constant can deaden the gate from OUTSIDE the reducer body, where both the \
          boundary clause and the body-wide bans above are blind."
     );
+    let inner_cfg = concat!("#!", "[cfg");
+    let n_inner_cfg = file.matches(inner_cfg).count();
+    assert_eq!(
+        n_inner_cfg, 0,
+        "rb-47 E1 FAIL (inner conditional compilation, whole file): `trading.rs` carries \
+         {n_inner_cfg} INNER conditional-compilation attribute(s) (`{inner_cfg}`) and must \
+         carry ZERO. MEASURED: `{inner_cfg}` does NOT contain `{cfg_attr}`, so the clause \
+         above is blind to it. Wrapping the reducer in two same-named inline modules, one \
+         inner attribute in each, ships a `respond_trade` that carries no gate — while the \
+         gated twin, which the test build links, satisfies every clause in this test."
+    );
 
     // --- Clause E: exactly one wiring, here and file-wide -------------------
     let n_here = squashed.matches(bare).count();
@@ -4527,6 +4745,7 @@ fn rb47_respond_trade_carries_the_offer_age_gate() {
 #[test]
 fn rb47_propose_trade_gate_has_no_attribute_or_cfg_escape() {
     let stripped = rb47_stripped(TRADING_RS);
+    let file = rb47_squash(&stripped);
     let propose = concat!("propose_", "trade");
     let squashed = rb47_body("trading.rs", &stripped, propose);
 
@@ -4583,6 +4802,65 @@ fn rb47_propose_trade_gate_has_no_attribute_or_cfg_escape() {
              attribute inside the body must re-derive this clause deliberately."
         );
     }
+
+    let inner_cfg = concat!("#!", "[cfg");
+    let n_inner_cfg = file.matches(inner_cfg).count();
+    assert_eq!(
+        n_inner_cfg, 0,
+        "rb-47 R-rb-46-TRADINGCFG FAIL (inner conditional compilation): `trading.rs` carries \
+         {n_inner_cfg} INNER conditional-compilation attribute(s) (`{inner_cfg}`) and must \
+         carry ZERO. An inner attribute conditionally compiles the BLOCK it opens rather \
+         than the item it precedes, so it is invisible to every outer-attribute census — \
+         including the statement-boundary clause above, which only ever sees the character \
+         before the gate."
+    );
+
+    // --- The provenance of the gate's ONLY data input -----------------------
+    // The offer-age gate judges `offer.created_at_ms` and nothing else. Two
+    // measured survivors attack the DATUM rather than the gate: back-dating the
+    // stamp at propose time (A3) and accepting it as a reducer parameter (A25).
+    // Both leave every clause about the gate itself green, and both make every
+    // post-request offer read as predating.
+    let stamped = concat!("created_at_ms:now_", "ms(ctx),");
+    let n_stamped = squashed.matches(stamped).count();
+    assert_eq!(
+        n_stamped, 1,
+        "rb-47 E1 FAIL (stamp provenance): `{propose}` must set the offer's creation stamp \
+         as exactly `{stamped}` — the transaction clock, unmodified — and must do so once; \
+         found {n_stamped}. This stamp is the ONLY data input the rb-47 gate has, so its \
+         provenance IS the criterion: server-set, from the same ms-floored clock the \
+         deletion request is stamped with, with no arithmetic between. \
+         `created_at_ms: now_ms(ctx) - 86_400_000` (measured survivor A3) back-dates every \
+         new offer a day, so every post-request offer predates the request and the gate \
+         admits it — while every clause about the gate stays green. The trailing comma is \
+         part of the needle because it is what proves the expression ENDS at the clock read. \
+         Zero also means the field became a caller-supplied reducer parameter passed through \
+         by field shorthand (A25), which hands the attacker the gate's input directly."
+    );
+
+    let clock = concat!("now_", "ms(ctx)");
+    let n_clock = squashed.matches(clock).count();
+    assert_eq!(
+        n_clock, 1,
+        "rb-47 E1 FAIL (stamp provenance, single clock read): `{propose}` reads the \
+         transaction clock {n_clock} time(s) and must read it exactly once — the read that \
+         stamps the offer. A second read is either a second stamp source or an arithmetic \
+         detour around the one clause above, and the reaper's deadline deliberately derives \
+         from the INSERTED row's own `created_at_ms` (one SSOT for the two instants), never \
+         from a second clock read."
+    );
+
+    let field = concat!("created_at_", "ms:");
+    let n_field = squashed.matches(field).count();
+    assert_eq!(
+        n_field, 1,
+        "rb-47 E1 FAIL (stamp provenance, single field initializer): `{propose}` initializes \
+         `{field}` {n_field} time(s) and must initialize it exactly once. MEASURED: the \
+         reducer names `created_at_ms` TWICE — the field initializer pinned here, and \
+         `inserted.created_at_ms` handed to the TTL reaper — so the COLON is part of the \
+         needle and a bare-name count would be 2. Two initializers mean a second, \
+         conditional source for the gate's only input."
+    );
 }
 
 /// **E1 (reducer behaviour, refused direction)** — the shipped `respond_trade`
@@ -4626,9 +4904,11 @@ fn rb47_respond_trade_refuses_a_post_request_accept() {
     let stranger = rb47_seed_deleting_stranger(&acct, req + 7_000);
 
     // The caller is mid-grace for the WHOLE test: the controls below are what
-    // prove the gate does not fire before the authorization it must follow.
+    // prove the gate does not fire before the authorization it must follow. The
+    // issuer and creation stamp are non-default and differ from the stranger's,
+    // so a decision keyed on either column is observable here.
     acct.seed(&crate::accounts::requested_deletion(
-        crate::accounts::new_account_row(me, String::new(), 0),
+        crate::accounts::new_account_row(me, "rb47-caller".to_string(), 42_000),
         req,
     ));
 
@@ -4712,5 +4992,278 @@ fn rb47_respond_trade_refuses_a_post_request_accept() {
          is not reachable without inverting the comparison, which the pure truth table also \
          owns. Admitting it lets a deleting account escrow a counterparty into a swap the \
          cascade is about to unwind."
+    );
+}
+
+/// Every module `lib.rs` declares, MINUS the three that may legitimately name
+/// the rb-47 stamp seam (`accounts` declares both halves, `guards` holds its one
+/// sanctioned consumer, `schema` is data-only) and minus the `#[path]`-included
+/// sibling test modules (whose names all end in `tests`), PLUS the crate root
+/// itself: `lib.rs` declares reducers of its own and is a module file like any
+/// other.
+///
+/// Line-oriented over the comment-blanked view, mirroring
+/// `accounts_tests.rs`'s `m22_declared_mod_names` — copied, never imported, per
+/// this crate's local-machinery-per-module convention. A commented-out `mod` is
+/// invisible, `pub mod` and `pub(crate) mod` are both seen, and an inline
+/// `mod x { .. }` block declares no FILE so it is correctly ignored (no trailing
+/// semicolon). The comments-only view is deliberate: it preserves every newline
+/// byte-for-byte, which a line-oriented parse depends on.
+///
+/// DERIVED, never enumerated. A hand-written roster is exactly the hole this
+/// closes: the next module added to the crate would simply not be on it.
+fn rb47_scanned_module_names() -> Vec<String> {
+    let clean = strip_rust_comments_trading(M22S3B_LIB_RS);
+    let mut out: Vec<String> = vec!["lib".to_string()];
+    for line in clean.lines() {
+        let mut text = line.trim();
+        if let Some(rest) = text.strip_prefix("pub(crate)") {
+            text = rest.trim_start();
+        } else if let Some(rest) = text.strip_prefix("pub ") {
+            text = rest.trim_start();
+        }
+        let Some(rest) = text.strip_prefix("mod ") else {
+            continue;
+        };
+        let Some(name) = rest.trim().strip_suffix(';') else {
+            continue;
+        };
+        let name = name.trim();
+        if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            continue;
+        }
+        if name.ends_with("tests") || matches!(name, "accounts" | "guards" | "schema") {
+            continue;
+        }
+        out.push(name.to_string());
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// **E1 (containment)** — NO reducer module reaches the rb-47 stamp seam
+/// directly. ADR-0227 D4, generalized to the whole crate.
+///
+/// WHY THIS EXISTS. Both halves of the seam are `pub(crate)`, and the ctx-bound
+/// half takes an IDENTITY: called with somebody else's identity it is a
+/// deletion-status oracle about a third party, and called with a fabricated
+/// stamp it is a gate that answers whatever the caller wants. The canonical
+/// bypass arrays in `guards_tests.rs` ban exactly that — but they scan four
+/// files (`trading.rs`, `pvp.rs`, `battle.rs`, `economy.rs`). Every other
+/// reducer-bearing module in the crate could call it unseen, and so could the
+/// next module somebody adds. This census scans them all, and it DERIVES the
+/// list from the live `mod` declarations rather than enumerating it, so a new
+/// module is covered the day it is declared.
+///
+/// THE MUTANT IT REDS, concretely: a counterparty-keyed call added to
+/// `challenge_pvp` in `pvp.rs` — ask whether the CHALLENGE TARGET is mid-grace,
+/// then refuse the challenge. That is a privacy leak (the challenger learns a
+/// stranger's account lifecycle state) and it is the D4 violation ADR-0227
+/// argued through in full. It reds nothing else in this slice: the guards
+/// wrapper is untouched, every source pin on it still passes, and the reducer
+/// would even behave "sensibly".
+///
+/// ANTI-VACUITY, three ways, because a ban is worthless if the needle is wrong:
+///
+///   * the ctx-side needle must count exactly ONE in `guards.rs`, which is
+///     excluded from the ban and is the one place the call legitimately exists.
+///     A renamed seam therefore reds this test rather than silently banning a
+///     spelling nothing uses. (The pure-side needle is anchored the same way by
+///     `rb47_accounts_seam_is_declared_once_and_delegates`, which counts it
+///     inside the ctx predicate's body.)
+///   * the derived module list must contain `trading`, `pvp`, `battle`,
+///     `economy`, `ranking` and `privacy` — if the `mod` parse silently stops
+///     matching, the ban would pass over an empty set.
+///   * the list must hold at least ten entries, which a block comment swallowing
+///     half of `lib.rs` would break.
+///
+/// A module whose file cannot be read PANICS by name rather than being skipped:
+/// an unreadable module is an unscanned module, and skipping is how a census
+/// goes quietly blind. A `#[path]`-relocated module would land here too — that
+/// is deliberate, and the fix is to teach this helper the path, never to drop
+/// the module.
+///
+/// GREEN AT HEAD and after the slice.
+#[test]
+fn rb47_no_reducer_module_reaches_the_stamp_seam_directly() {
+    let ctx_seam = concat!("refuses_commitment_", "opened_at(");
+    let pure_seam = concat!("opened_commitment_is_", "refused(");
+
+    let guards = rb47_squash(&rb47_stripped(RB47_GUARDS_RS));
+    let n_guards = guards.matches(ctx_seam).count();
+    assert_eq!(
+        n_guards, 1,
+        "rb-47 E1 FAIL (containment, anti-vacuity): the ctx-bound seam needle `{ctx_seam}` \
+         matches `guards.rs` {n_guards} time(s) and must match exactly once — that file is \
+         EXCLUDED from the ban below because it holds the one sanctioned consumer. Zero \
+         means this test is banning a spelling that no longer exists anywhere, so every \
+         clause below would pass over a seam it cannot see; two means a second consumer \
+         appeared in the very file the ban trusts, which \
+         `rb47_guards_wrapper_is_fused_and_unconditional` owns in full."
+    );
+
+    let modules = rb47_scanned_module_names();
+    assert!(
+        modules.len() >= 10,
+        "rb-47 E1 FAIL (containment, anti-vacuity): only {} module(s) were derived from the \
+         crate root's `mod` declarations: {modules:?}. The crate declares far more than \
+         ten. A short list means the line-oriented parse stopped matching — a block comment \
+         swallowing declarations, a re-spelling, or a move of the module wiring — and a ban \
+         applied to a short list is a ban that passes because it looked nowhere.",
+        modules.len()
+    );
+    for required in ["trading", "pvp", "battle", "economy", "ranking", "privacy"] {
+        assert!(
+            modules.iter().any(|m| m.as_str() == required),
+            "rb-47 E1 FAIL (containment, anti-vacuity): the derived module list does not \
+             contain `{required}`; it is {modules:?}. These six are named explicitly \
+             because each one owns reducers that act between two players, which is where a \
+             counterparty-keyed deletion-status oracle would be written. A list missing any \
+             of them is not scanning what this test claims to scan."
+        );
+    }
+
+    let root = env!("CARGO_MANIFEST_DIR");
+    for name in &modules {
+        let path = format!("{root}/src/{name}.rs");
+        let src = std::fs::read_to_string(path.as_str()).unwrap_or_else(|err| {
+            panic!(
+                "rb-47 E1 FAIL (containment, unscanned module): `lib.rs` declares module \
+                 `{name}` but its source could not be read at `{path}` ({err}). An \
+                 unreadable module is an UNSCANNED module, and this census refuses to skip \
+                 one: skipping is how a ban goes quietly blind. If the module is \
+                 `#[path]`-relocated, teach `rb47_scanned_module_names` the path — never \
+                 drop the module."
+            )
+        });
+        let squashed = rb47_squash(&rb47_stripped(&src));
+        for (needle, what) in [
+            (
+                ctx_seam,
+                "the ctx-bound stamp-aware predicate, which takes an IDENTITY and will \
+                 answer about whatever account the caller names",
+            ),
+            (
+                pure_seam,
+                "the pure stamp-aware decision, which a reducer could feed a hand-built or \
+                 re-read row to reach the same answer",
+            ),
+        ] {
+            let n = squashed.matches(needle).count();
+            assert_eq!(
+                n, 0,
+                "rb-47 E1 FAIL (containment): `{name}.rs` reaches {what} — `{needle}` — \
+                 directly {n} time(s), and must reach it ZERO times. Only the caller-only \
+                 `guards.rs` wrapper may consume this seam (ADR-0227 D4, restated for the \
+                 stamp-aware pair by ADR-0237 D2): the wrapper reads `ctx.sender()` \
+                 internally, so no call site can point it at a third party. A reducer that \
+                 calls the seam itself chooses BOTH arguments — it can ask about a \
+                 counterparty (a deletion-status oracle about somebody else) or pass a \
+                 stamp of its own invention (a gate that answers whatever it wants), and \
+                 no fence in this crate constrains what it then does with the verdict. \
+                 GREEN AT HEAD; the whole point is that it stays that way as modules are \
+                 added."
+            );
+        }
+    }
+}
+
+/// **E1 (roster closure)** — `trading.rs` declares EXACTLY the five reducers
+/// this slice reasoned about, and no sixth.
+///
+/// WHY. Every gate in this slice, and every census in `guards_tests.rs`, names
+/// the reducers it constrains. A NEW reducer in this file is therefore
+/// unconstrained by construction — and the measured survivor (A4) is the cheapest
+/// possible one: `respond_trade_v1`, byte-identical to `respond_trade` minus the
+/// offer-age gate, published alongside it. Every clause in this slice still
+/// passes (they all scope to `respond_trade`), the already-open census still
+/// passes (it fences the nine names it lists), and
+/// `evals/trade-reducer-security` still passes (it checks a hard-coded name
+/// list). Only a CLOSED roster sees it.
+///
+/// The set is asserted, not the count alone: a count is satisfied by deleting one
+/// reducer and adding another, and the missing/extra split is what names which.
+/// The whole-file attribute count is asserted beside it because the roster walk
+/// keys on the exact bare attribute spelling — a parameterized or renamed
+/// attribute would drop a reducer out of the walk silently, and the two numbers
+/// disagreeing is the signal.
+///
+/// A reducer attribute NOT followed by `pub fn` PANICS rather than being skipped:
+/// an unparsed reducer is an unrostered reducer.
+///
+/// GREEN AT HEAD and after the slice.
+#[test]
+fn rb47_trading_reducer_roster_is_closed() {
+    let stripped = rb47_stripped(TRADING_RS);
+    let file = rb47_squash(&stripped);
+
+    let attr = concat!("#[spacetimedb::", "reducer]");
+    let attr_prefix = concat!("#[spacetimedb::", "reducer");
+    let n_attr = file.matches(attr_prefix).count();
+    assert_eq!(
+        n_attr, 5,
+        "rb-47 E1 FAIL (reducer count): `trading.rs` carries {n_attr} reducer attribute(s) \
+         and must carry exactly five. This count is deliberately taken on the attribute \
+         PREFIX, while the roster walk below keys on the exact bare spelling: a \
+         parameterized or otherwise reworded attribute would vanish from the walk silently \
+         while still declaring a client-callable reducer, and these two numbers disagreeing \
+         is what surfaces that."
+    );
+
+    let mut found: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut start = 0usize;
+    while let Some(rel) = file[start..].find(attr) {
+        let at = start + rel + attr.len();
+        let rest = &file[at..];
+        let tail = rest.strip_prefix(concat!("pub", "fn")).unwrap_or_else(|| {
+            let preview: String = rest.chars().take(60).collect();
+            panic!(
+                "rb-47 E1 FAIL (roster parse): a reducer attribute in `trading.rs` is not \
+                 followed by a public function declaration. Fail LOUD rather than skip: an \
+                 attribute this walk cannot parse is a reducer that never reaches the \
+                 roster below, which is a silent absence rather than a loud failure. Text \
+                 after the attribute: {preview:?}"
+            )
+        });
+        let name: String = tail
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        assert!(
+            !name.is_empty(),
+            "rb-47 E1 FAIL (roster parse): a reducer attribute in `trading.rs` is followed \
+             by a function with an EMPTY name, which cannot be classified."
+        );
+        found.insert(name);
+        start = at;
+    }
+
+    let expected: std::collections::BTreeSet<String> = [
+        ["cancel_", "trade"].concat(),
+        ["confirm_", "trade"].concat(),
+        ["propose_", "trade"].concat(),
+        ["respond_", "trade"].concat(),
+        ["trade_offer_", "reaper"].concat(),
+    ]
+    .into_iter()
+    .collect();
+
+    let missing: Vec<&String> = expected.difference(&found).collect();
+    let extra: Vec<&String> = found.difference(&expected).collect();
+    assert!(
+        missing.is_empty() && extra.is_empty(),
+        "rb-47 E1 FAIL (reducer roster): the set of reducers `trading.rs` declares is wrong. \
+         Missing: {missing:?}. UNEXPECTED: {extra:?}. Found: {found:?}. \
+         AN UNEXPECTED NAME IS THE DANGEROUS DIRECTION. Every gate in this slice and every \
+         census in `guards_tests.rs` scopes to the reducers it NAMES, so a sixth one here is \
+         constrained by nothing: a copy of the accepting reducer minus its offer-age gate \
+         (measured survivor A4) passes every other clause in this slice, the already-open \
+         census, and the hard-coded name list in `evals/trade-reducer-security`. \
+         IF YOU ADDED A REDUCER, classify it DELIBERATELY — a blanket-gated opener \
+         (ADR-0227), an already-open unwinder, or a stamp-conditioned accept (ADR-0237) — \
+         then add it here AND to the guards_tests.rs censuses that must fence it. Never \
+         delete a name from the expected set to make a build green: a missing name means a \
+         reducer was renamed or removed and every pin scoped to it is now vacuous."
     );
 }

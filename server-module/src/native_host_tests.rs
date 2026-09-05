@@ -18,7 +18,7 @@
 //! The table scan and the four WRITE syscalls stay loudly unmodelled — a
 //! full-table `.iter()` is the shape this repo bans in owner-scoped readers, so
 //! a predicate that reaches for one must fail here, not pass — and tests seed rows
-//! through [`Fixture::table`] instead, which sidesteps the auto_inc write-back
+//! through [`Fixture::table`] / [`Fixture::table_keyed`] instead, which sidesteps the auto_inc write-back
 //! decode, the monster dual-write pairing scan and the single-stack inventory
 //! scan (all of which read test files) without touching any of them.
 //!
@@ -58,8 +58,9 @@ use std::collections::{HashMap, VecDeque};
 use std::marker::PhantomData;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
-/// BSATN bytes of the indexed column value (an `Identity` for every table in
-/// scope). BSATN is canonical, so byte equality IS value equality.
+/// BSATN bytes of the indexed column value (an `Identity` for the owner-keyed
+/// tables; a `u64` for an auto-inc primary key since rb-47's `table_keyed`).
+/// BSATN is canonical, so byte equality IS value equality.
 type Key = Vec<u8>;
 /// BSATN bytes of one whole row, exactly as the generated insert path encodes
 /// it (`bsatn::to_vec` is the same encoder `IterBuf::serialize_into` uses).

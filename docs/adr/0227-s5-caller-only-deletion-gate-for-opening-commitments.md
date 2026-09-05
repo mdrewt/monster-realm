@@ -5,7 +5,7 @@
 **Slice:** m22-s5
 **Supersedes:** —
 **Amends:** —
-**Extended-by:** ADR-0236 (rb-46 — the same gate reaches `start_battle`, dev `start_wild_battle`, `buy`, `sell`; residual R-m22-s5-X12 closed)
+**Extended-by:** ADR-0236 (rb-46 — the same gate reaches `start_battle`, dev `start_wild_battle`, `buy`, `sell`; residual R-m22-s5-X12 closed), ADR-0237 (rb-47 — `respond_trade` gains a stamp-conditioned accept gate; residual R-m22-s5-X13 closed)
 **Subsystems:** security-authz
 **Extends:** ADR-0225 (S3 right-sized cascade + G5 write isolation; the reciprocal back-link is in ADR-0225's header)
 **Decision:** S5 gates the three commitment-OPENING reducers with `guards::require_not_deleting`, a caller-only ctx wrapper delegating via `is_pending_deletion` to `should_reject_for_deletion`; already-open reducers stay ungated (PRV1-10).
@@ -201,3 +201,20 @@ three" census in `guards_tests.rs` stays correct as a scope-local claim over `tr
 found that the m22-s5 pins on the `trading.rs` site carry no `#[cfg` / statement-boundary clause (a
 `#[cfg(test)]` attribute on that gate statement would pass them while the wasm shipped ungated); that is a
 registered residual against `trading_tests.rs`, outside rb-46's touches.
+
+## Amendment (2026-09-05, rb-47 — residual R-m22-s5-X13 closed)
+
+D5's list of in-flight reducers that "stay ungated by design" now reads with one qualification: `respond_trade`
+still carries no BLANKET gate, but since rb-47 (ADR-0237) it refuses an ACCEPTING response to an offer created at
+or after the caller's own deletion request, through a different wrapper (`guards::require_commitment_predates_deletion`)
+whose bare name the already-open census does not pin; declines and predating offers are untouched, and
+`confirm_trade` stays ungated because it is initiator-side and a deleting identity cannot originate a post-request
+offer. The consequence above that a pending-deletion player "can respond to / confirm / cancel trades" narrows to
+"respond to offers that predate the request". The "Confederate role-swap residual" bullet above is discharged by
+ADR-0237 for offers CREATED at or after the request; the two colluding orderings the immutable criterion admits —
+an offer proposed before the request, and a cancel-accept-re-request sequence — are recorded there as by-design
+residuals, not claimed closed. The account-state seam this bullet said the S5 bans keep out of `trading.rs` now
+exists as a second identity-taking primitive in `accounts.rs`, consumed only by the caller-only wrapper (D4
+restated by ADR-0237 D2 and held by a crate-wide containment test). Finally, the last sentence of the rb-46
+amendment — the m22-s5 pins on the `trading.rs` site lacking a `#[cfg` / statement-boundary clause — is closed by
+ADR-0237's `rb47_propose_trade_gate_has_no_attribute_or_cfg_escape` (residual R-rb-46-TRADINGCFG).

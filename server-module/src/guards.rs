@@ -126,9 +126,12 @@ pub(crate) fn require_not_deleting(ctx: &ReducerContext, reducer: &str) -> Resul
 /// parameter), one fused expression delegating transitively through the
 /// accounts predicate into the pure SSOT decision, no account state re-derived
 /// here, the same single static reason (an accepting response consummates a
-/// NEW trade, so the text is true, and a second string would ship unmapped on
-/// the client), and `log_reject` on the refuse path. Pinned by the rb-47 tests
-/// in `trading_tests.rs`; change it only together with them and ADR-0237.
+/// NEW trade, so the text is true; ADR-0227 D2 fixes ONE reason per gated
+/// shape so this module never learns the state split, and the existing
+/// polarity, PII and distinctness pins cover the constant — the client maps no
+/// server reject string today, and the client tree is outside rb-47), and
+/// `log_reject` on the refuse path. Pinned by the rb-47 tests in
+/// `trading_tests.rs`; change it only together with them and ADR-0237.
 pub(crate) fn require_commitment_predates_deletion(
     ctx: &ReducerContext,
     reducer: &str,
