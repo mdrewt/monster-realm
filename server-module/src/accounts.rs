@@ -309,6 +309,36 @@ pub(crate) fn should_reject_for_deletion(account: &Account) -> bool {
     account.status == AccountStatus::PendingDeletion || account_has_terminal_marker(account)
 }
 
+/// The rb-47 stamp-aware refinement of the para-4.7 gate (ADR-0237 D1): true
+/// when a deletion-gated account must be refused a commitment that was OPENED
+/// at `opened_at_ms` — a trade offer created at that instant, judged for the
+/// accepting counterparty. PRV1-10 keeps commitments that PREDATE the deletion
+/// request completable, so a mid-grace row refuses only offers stamped at or
+/// after its own request. Inclusive on purpose: both stamps come from the same
+/// ms-floored transaction clock, so an offer created IN the request millisecond
+/// does not predate it, and the attack this closes is "request deletion, then
+/// have a confederate propose immediately".
+///
+/// Composed DIRECTLY over the two SSOT halves, never re-derived: the mid-grace
+/// arm delegates to `should_reject_for_deletion` (a third disjunct added there
+/// widens this consumer with it — ADR-0225), and the terminal marker is tested
+/// FIRST and OUTSIDE the stamp comparison, because an already-erased account is
+/// refused every commitment however old — the cascade has emptied it (the
+/// `reaper_should_run_cascade` precedent for composing inside this module). A
+/// gated row with NO request stamp is the illegal stamp-less shape that
+/// `account_state_is_legal` only debug-asserts away; `None` is the fail-closed
+/// arm and is spelled as an explicit match arm on purpose — every `unwrap_or`
+/// default hides the decision inside a value and admits some stamp range
+/// silently.
+pub(crate) fn opened_commitment_is_refused(account: &Account, opened_at_ms: i64) -> bool {
+    account_has_terminal_marker(account)
+        || (should_reject_for_deletion(account)
+            && match account.deletion_requested_at_ms {
+                None => true,
+                Some(requested) => opened_at_ms >= requested,
+            })
+}
+
 /// PRV1-5 — should the deletion-grace reaper run the cascade for this row at
 /// `now_ms`?
 ///
@@ -429,6 +459,27 @@ pub(crate) fn is_pending_deletion(ctx: &ReducerContext, identity: Identity) -> b
         .identity()
         .find(identity)
         .is_some_and(|a| should_reject_for_deletion(&a))
+}
+
+/// The ctx-bound half of the rb-47 refinement (ADR-0237 D2): does `identity`'s
+/// account refuse a commitment opened at `opened_at_ms`? False when there is no
+/// row — a guest has no deletion state — exactly as `is_pending_deletion`
+/// decides, and with the same lookup shape on purpose: a shared row helper
+/// would force re-cutting that byte-frozen sibling's pin. Identity-taking like
+/// its sibling, and therefore an oracle primitive: reducer files reach it ONLY
+/// through `guards::require_commitment_predates_deletion`, which reads
+/// `ctx.sender()` and cannot be pointed at a third party (ADR-0227 D4); the
+/// bypass bans in `guards_tests.rs` hold that line.
+pub(crate) fn refuses_commitment_opened_at(
+    ctx: &ReducerContext,
+    identity: Identity,
+    opened_at_ms: i64,
+) -> bool {
+    ctx.db
+        .account()
+        .identity()
+        .find(identity)
+        .is_some_and(|a| opened_commitment_is_refused(&a, opened_at_ms))
 }
 
 /// True if `identity` owns any row in any REKEY-policy table (D5 guard 3). The

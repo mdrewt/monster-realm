@@ -3324,3 +3324,1393 @@ fn m22s3b_erase_trade_offers_shape() {
          {squashed:?}"
     );
 }
+
+// ===========================================================================
+// rb-47 (ADR-0237) — THE POST-REQUEST TRADE-ACCEPT GATE. E1 / R-m22-s5-X13.
+//
+// EARS E1 (immutable): WHEN a trade offer NAMING a deletion-gated identity as
+// counterparty was created AFTER that identity's deletion request, THE SYSTEM
+// SHALL reject that identity's accepting response (`respond_trade`) BEFORE any
+// write. Offers that PREDATE the request stay completable (PRV1-10). Declines
+// (`accepted == false`) stay open: gating them would freeze the counterparty's
+// escrow instead of releasing it — the exact trap-state defect the already-open
+// census in `guards_tests.rs` names, and the reason the gate sits BELOW the
+// decline block rather than at the top of the reducer.
+//
+// WHY A NEW SEAM. The stamp comparison needs the CALLER's
+// `Account.deletion_requested_at_ms`, and `trading.rs` is textually banned from
+// every route to it (the canonical bypass array in `guards_tests.rs`). ADR-0237
+// therefore adds two `accounts.rs` seams (a pure decision plus a ctx-bound
+// predicate) and ONE `guards.rs` wrapper, and `respond_trade` gains exactly one
+// depth-0 statement that calls the wrapper with `offer.created_at_ms`.
+//
+// THE EIGHT NEW PINS AND WHAT EACH OWNS
+//   1. the pure decision's truth table (the only place the boundary, the
+//      terminal clause and the missing-stamp arm are observable);
+//   2. the accounts.rs declarations plus delegation (owns the cfg-twin class);
+//   3. the ctx predicate under the native host (owns caller-keying);
+//   4. the guards wrapper's fused shape (owns the leading-return class);
+//   5. the wrapper's verdict under the native host (owns polarity);
+//   6. the trading.rs call site (owns the ARGUMENT, the placement, the tag);
+//   7. the pre-existing propose_trade site's attribute escape (R-rb-46-TRADINGCFG);
+//   8. the shipped reducer, executed, refused direction only.
+//
+// RED AT HEAD
+//   * Tests 1, 3, 5 and the seam clauses of 2 and 4 do not COMPILE at HEAD:
+//     none of `accounts::opened_commitment_is_refused`,
+//     `accounts::refuses_commitment_opened_at` or
+//     `guards::require_commitment_predates_deletion` exists yet. That compile
+//     failure is the red state for this whole file.
+//   * Test 6 is runtime-red at clause A (the call statement counts zero).
+//   * Test 8 is runtime-red by PROCESS ABORT: with no gate, case (d) reaches
+//     the status update and the native host's unmodelled write syscall aborts
+//     (nextest reports a signal, not an assertion). Case (d) runs LAST.
+//   * Test 7 is GREEN at HEAD by design — it hardens an already-shipped gate.
+//
+// SCAN SUBSTRATE RULES OBEYED HERE (this file is read by text scanners that
+// concatenate `_tests.rs` files): every production-symbol needle is assembled
+// from fragments, the double-quote CHARACTER is built from `char::from(0x22u8)`,
+// no raw strings, and no contiguous slash-star or star-slash anywhere.
+// ===========================================================================
+
+/// `guards.rs`, read at compile time for the rb-47 wrapper pins. DISTINCT name:
+/// `TRADING_RS` above already owns the unprefixed spelling in this file.
+const RB47_GUARDS_RS: &str = include_str!("guards.rs");
+
+/// `accounts.rs`, read at compile time for the rb-47 seam pins.
+const RB47_ACCOUNTS_RS: &str = include_str!("accounts.rs");
+
+/// A deliberately NON-ZERO request stamp for every rb-47 fixture.
+///
+/// At a request stamp of zero the `unwrap_or(0)` mis-spelling of the
+/// missing-stamp arm is byte-invisible: every wrong implementation agrees with
+/// the right one. A wall-clock-shaped stamp plus the negative offsets in the
+/// truth table is what makes them separable.
+const RB47_REQUESTED_AT_MS: i64 = 1_700_000_000_000;
+
+/// Comments removed, then string-literal PAYLOADS removed (the quotes survive,
+/// so a reducer-name tag reads as an empty literal in this view). File-agnostic:
+/// both strippers walk bytes and know nothing about `trading.rs`.
+fn rb47_stripped(src: &str) -> String {
+    strip_rust_strings_trading(&strip_rust_comments_trading(src))
+}
+
+/// All whitespace squashed out, so no pin here can be defeated by re-wrapping.
+fn rb47_squash(src: &str) -> String {
+    src.split_whitespace().collect()
+}
+
+/// The squashed INNER body of `fn <name>` in an already-stripped `src`, or a
+/// LOUD panic naming the file. A source pin whose landmark vanished passes on
+/// anything, so extraction failure is never allowed to read as absence.
+fn rb47_body(file: &str, stripped: &str, name: &str) -> String {
+    let body = m22s5_trading_fn_body(stripped, name).unwrap_or_else(|| {
+        panic!(
+            "rb-47 E1 FAIL (extraction): the brace-bounded body of `{name}` could not be \
+             sliced out of `{file}`. Fail LOUD rather than pass vacuously — if the function \
+             was renamed or removed, re-derive this pin DELIBERATELY from ADR-0237 and the \
+             spec, never by relaxing it."
+        )
+    });
+    rb47_squash(&body)
+}
+
+/// A mid-grace account row for somebody who is NOT the caller, seeded once per
+/// behavioural test and never removed.
+///
+/// Without it a TABLE-keyed predicate (refuse if ANYBODY is deleting) is
+/// observationally identical to the caller-keyed one in every state, because the
+/// fixture would only ever hold the sender's row. `remove` and `find` are
+/// `Identity`-keyed, so this row never disturbs the per-state `remove(me) == 1`
+/// assertions. Returns the stranger's identity so a test can also ask ABOUT it.
+fn rb47_seed_deleting_stranger(
+    acct: &crate::native_host_tests::Handle<'_, crate::schema::Account>,
+    requested_at_ms: i64,
+) -> spacetimedb::Identity {
+    let stranger = spacetimedb::Identity::from_byte_array([9u8; 32]);
+    acct.seed(&crate::accounts::requested_deletion(
+        crate::accounts::new_account_row(stranger, String::new(), 0),
+        requested_at_ms,
+    ));
+    stranger
+}
+
+/// Register the `u64`-keyed offer table for one fixture (rb-47 widened the host
+/// with `table_keyed` precisely so a reducer whose first statement is a point
+/// read on an auto-inc primary key can be executed at all).
+fn rb47_offer_table(
+    fx: &crate::native_host_tests::Fixture,
+) -> crate::native_host_tests::Handle<'_, crate::schema::TradeOffer, u64> {
+    fx.table_keyed("trade_offer", "trade_id", |r| r.trade_id)
+}
+
+/// One `trade_offer` row whose initiator is a third party. The struct literal is
+/// unavoidable (unlike `Account`, `TradeOffer` has no pure constructor and
+/// carries no legal-state invariant), and it is the same house pattern
+/// `economy_tests.rs` uses for `Player`.
+fn rb47_offer(
+    trade_id: u64,
+    counterparty: spacetimedb::Identity,
+    status: TradeStatus,
+    created_at_ms: i64,
+) -> crate::schema::TradeOffer {
+    crate::schema::TradeOffer {
+        trade_id,
+        initiator: spacetimedb::Identity::from_byte_array([3u8; 32]),
+        counterparty,
+        initiator_monster_ids: vec![],
+        initiator_items: vec![],
+        initiator_currency: 0,
+        counterparty_monster_ids: vec![],
+        counterparty_items: vec![],
+        counterparty_currency: 0,
+        initiator_cards: vec![],
+        counterparty_cards: vec![],
+        status,
+        created_at_ms,
+    }
+}
+
+/// **E1 (pure decision)** — the stamp-aware refusal is the terminal marker OR
+/// (the para-4.7 gate AND an offer that does not predate the request).
+///
+/// Five account shapes crossed with six stamps, including two NEGATIVE ones and
+/// both `i64` extremes. The request stamp is deliberately non-zero (see
+/// [`RB47_REQUESTED_AT_MS`]).
+///
+/// WHAT EACH ROW OWNS:
+///
+///   * Active, every stamp: false. Kills the inverted polarity (a total
+///     trade-accept outage that every source pin in this slice reports as
+///     correctly gated) and the dropped `should_reject_for_deletion` conjunct
+///     (with it gone, the missing-stamp arm answers true for every Active row).
+///   * PendingDeletion at the request stamp minus one: false. This is PRV1-10 —
+///     a PREDATING commitment stays completable, and it is the single row that
+///     separates this slice from the blanket gate the brief forbids.
+///   * PendingDeletion at exactly the request stamp: true. The boundary is
+///     INCLUSIVE (ADR-0237 D1): both stamps come from the same ms-floored
+///     transaction clock, so `propose immediately after requesting` is
+///     reachable, and an equal stamp does not predate. This row alone kills the
+///     strict-greater-than flip.
+///   * The legal terminal row at EVERY stamp, including stamps older than its
+///     own request: true. That is D1's LEADING clause, and dropping it leaves an
+///     already-erased account able to accept old offers.
+///   * Both ILLEGAL shapes (Active plus marker, PendingDeletion with no stamp)
+///     at every stamp: true. `account_state_is_legal` is only debug_asserted, so
+///     the shipped wasm can hold them, and every marker call site in
+///     `accounts.rs` is fail-closed on them deliberately. The negative stamps
+///     are what kill `unwrap_or(0)` on the second shape.
+///
+/// COMPILE-RED AT HEAD: `accounts::opened_commitment_is_refused` does not exist.
+#[test]
+fn rb47_opened_commitment_is_refused_truth_table() {
+    let req = RB47_REQUESTED_AT_MS;
+    let me = spacetimedb::Identity::from_byte_array([1u8; 32]);
+
+    // Legal shapes: shipped constructors only, so this test can never assemble a
+    // state the module itself cannot produce.
+    let active = crate::accounts::new_account_row(me, String::new(), 0);
+    let pending = crate::accounts::requested_deletion(active.clone(), req);
+    let terminal = crate::accounts::terminal_account(pending.clone(), req + 1_000);
+
+    // Illegal shapes: unreachable through the constructors BY CONSTRUCTION, so a
+    // struct-update literal is the only way to observe the fail-closed arms.
+    let illegal_marker = crate::schema::Account {
+        terminal_at_ms: Some(5),
+        ..active.clone()
+    };
+    let illegal_no_stamp = crate::schema::Account {
+        status: crate::schema::AccountStatus::PendingDeletion,
+        ..active.clone()
+    };
+
+    for opened in [req - 1, req, req + 1, i64::MIN, -1, i64::MAX] {
+        let got = crate::accounts::opened_commitment_is_refused(&active, opened);
+        assert!(
+            !got,
+            "rb-47 E1 FAIL (pure decision, Active row, offer opened at {opened}): the \
+             stamp-aware decision REFUSED an offer opened by an account that never requested \
+             deletion. An `Active` account is outside the para-4.7 gate at every stamp, so a \
+             true here is a TOTAL trade-accept outage for every honest player. It is exactly \
+             what an INVERTED polarity produces and exactly what dropping the \
+             `should_reject_for_deletion` conjunct produces (the missing-stamp arm then \
+             answers true for every Active row). No source pin in this slice can see either: \
+             the call text is byte-identical whichever way the decision runs."
+        );
+
+        let want = opened >= req;
+        let got = crate::accounts::opened_commitment_is_refused(&pending, opened);
+        assert_eq!(
+            got, want,
+            "rb-47 E1 FAIL (pure decision, PendingDeletion requested at {req}, offer opened \
+             at {opened}): wanted {want}, got {got}. The boundary is INCLUSIVE (ADR-0237 D1): \
+             an offer created IN the request millisecond does not PREDATE the request and is \
+             refused; an offer created one millisecond earlier is the predating commitment \
+             PRV1-10 protects and must stay completable. This row owns three mutants at once \
+             — the strict-greater-than flip (visible only at the equal stamp), the polarity \
+             inversion, and a BLANKET gate that ignores the stamp entirely (visible only at \
+             the earlier stamp). A blanket gate here IS the PRV1-10 break this whole slice \
+             exists to avoid."
+        );
+
+        let got = crate::accounts::opened_commitment_is_refused(&terminal, opened);
+        assert!(
+            got,
+            "rb-47 E1 FAIL (pure decision, terminal row, offer opened at {opened}): a row \
+             carrying the M22 terminal marker must be refused at EVERY stamp, including \
+             stamps that predate its own request. That is D1's LEADING clause — the marker \
+             test sits OUTSIDE the stamp comparison, not inside it. The cascade has already \
+             erased this account's monsters, items and currency, and `accounts.rs` states the \
+             contract as: an already-erased account must never be allowed new commitments. \
+             Drop the leading clause and this row is ADMITTED for every offer older than its \
+             own request stamp — invisible to every source pin and to the mid-grace rows."
+        );
+
+        let got = crate::accounts::opened_commitment_is_refused(&illegal_marker, opened);
+        assert!(
+            got,
+            "rb-47 E1 FAIL (pure decision, ILLEGAL Active-plus-marker row, offer opened at \
+             {opened}): the resurrected-tombstone shape must be refused at every stamp. \
+             `account_state_is_legal` forbids it, but only under a `debug_assert`, so the \
+             shipped wasm can hold it — which is why every marker call site in `accounts.rs` \
+             is fail-closed on it deliberately. Admitting it lets an already-erased account \
+             accept a fresh trade."
+        );
+
+        let got = crate::accounts::opened_commitment_is_refused(&illegal_no_stamp, opened);
+        assert!(
+            got,
+            "rb-47 E1 FAIL (pure decision, ILLEGAL PendingDeletion-with-no-stamp row, offer \
+             opened at {opened}): a gated account whose request stamp is missing must be \
+             refused at EVERY stamp. `None` is the fail-closed arm, and D1 spells it as an \
+             explicit match arm for exactly that reason. `None => false` admits every offer \
+             for such a row; `unwrap_or(0)` admits exactly the NEGATIVE stamps, which is why \
+             this table runs over `i64::MIN` and minus one as well as the request boundary. \
+             Both mis-spellings are byte-invisible to every source pin, and both are \
+             invisible to a truth table whose request stamp is zero."
+        );
+    }
+}
+
+/// **E1 (seam shape)** — `accounts.rs` declares each new seam EXACTLY ONCE and
+/// the pure one delegates rather than re-deriving.
+///
+/// WHAT EACH CLAUSE KILLS:
+///
+///   * Declaration count == 1, per function. A `#[cfg(test)]` plus
+///     `#[cfg(not(test))]` twin pair ships an UNGATED wasm while every
+///     behavioural test in this file stays green, because the test build links
+///     the honest twin.
+///   * Whole-file conditional-compilation count == 1 (the test-module
+///     declaration, true at HEAD). The same clause retires the file-scope
+///     cfg-const class here: such a constant needs an attribute too.
+///   * The pure body delegates to `should_reject_for_deletion` exactly once and
+///     to `account_has_terminal_marker` exactly once. ADR-0225: the disjunction
+///     has ONE home, and a third disjunct added there must widen this consumer
+///     with it. A re-derived status test here would diverge silently.
+///   * The stamp field is named exactly once and `unwrap_or` never. Every
+///     `unwrap_or` spelling is a disguised default for the fail-closed arm.
+///   * The ctx body performs the frozen account-row lookup and calls the pure
+///     decision exactly once — anti-vacuity, so the seam cannot answer from a
+///     fabricated or defaulted row.
+///
+/// RE-DERIVATION CONTRACT: every needle here comes from ADR-0237 D1/D2 and the
+/// spec. If a legitimate refactor reds a clause, re-argue the clause against the
+/// ADR — never regenerate it from whatever `accounts.rs` currently says.
+///
+/// RED AT HEAD: both declaration counts are zero.
+#[test]
+fn rb47_accounts_seam_is_declared_once_and_delegates() {
+    let stripped = rb47_stripped(RB47_ACCOUNTS_RS);
+    let file = rb47_squash(&stripped);
+
+    let pure_name = concat!("opened_commitment_", "is_refused");
+    let ctx_name = concat!("refuses_commitment_", "opened_at");
+    let pure_decl = ["fn", pure_name, "("].concat();
+    let ctx_decl = ["fn", ctx_name, "("].concat();
+
+    for (decl, what) in [
+        (
+            pure_decl.as_str(),
+            "the PURE stamp-aware decision (ADR-0237 D1), which owns the boundary, the \
+             terminal clause and the fail-closed missing-stamp arm",
+        ),
+        (
+            ctx_decl.as_str(),
+            "the ctx-bound stamp-aware predicate (ADR-0237 D2), the only seam that reads an \
+             account row for this decision",
+        ),
+    ] {
+        let n = file.matches(decl).count();
+        assert_eq!(
+            n, 1,
+            "rb-47 E1 FAIL (declaration census): `accounts.rs` declares {what} {n} time(s); \
+             the spec fixes it at exactly one, as `{decl}` in the squashed view. \
+             RED AT HEAD: zero — the seam does not exist yet, and `trading.rs` has no \
+             sanctioned route to the caller's deletion-request stamp without it. \
+             TWO is the dangerous count, not a typo: a conditional-compilation twin pair \
+             keeps every behavioural test in this file green (the test build links the honest \
+             twin) while the PUBLISHED wasm links one that admits everything."
+        );
+    }
+
+    let cfg = concat!("#", "[cfg");
+    let n_cfg = file.matches(cfg).count();
+    assert_eq!(
+        n_cfg, 1,
+        "rb-47 E1 FAIL (conditional compilation): `accounts.rs` carries {n_cfg} \
+         conditional-compilation attribute(s); exactly ONE is expected — the test-module \
+         declaration at the end of the file, which is the count MEASURED at HEAD. A second \
+         one is how the twin above, and equally a file-scope `cfg(not(test))` constant, would \
+         enter this file: both keep every behavioural clause in this slice green while the \
+         published wasm behaves differently. If a legitimate one is ever needed here, \
+         re-derive this clause deliberately and say why in the slice notes — do not bump the \
+         number to match the file."
+    );
+
+    let pure_body = rb47_body("accounts.rs", &stripped, pure_name);
+    for (needle, why) in [
+        (
+            concat!("should_reject_for_", "deletion("),
+            "the SSOT para-4.7 disjunction (ADR-0225: never re-derived, so a third disjunct \
+             added there widens this consumer with it)",
+        ),
+        (
+            concat!("account_has_terminal_", "marker("),
+            "the terminal-marker half, which D1 tests FIRST and OUTSIDE the stamp comparison",
+        ),
+        (
+            concat!("deletion_requested_", "at_ms"),
+            "the request stamp itself, read exactly once — twice means the decision consults \
+             it in two places and only one of them can be the one under test",
+        ),
+    ] {
+        let n = pure_body.matches(needle).count();
+        assert_eq!(
+            n, 1,
+            "rb-47 E1 FAIL (pure delegation): the body of `{pure_name}` names `{needle}` {n} \
+             time(s) and must name it exactly once. It is {why}. A body that re-spells the \
+             status test instead of delegating passes the truth table today and diverges \
+             silently the day the SSOT grows an arm. Body was: {pure_body:?}"
+        );
+    }
+
+    let unwrap_or = concat!("unwrap", "_or");
+    let n_unwrap = pure_body.matches(unwrap_or).count();
+    assert_eq!(
+        n_unwrap, 0,
+        "rb-47 E1 FAIL (fail-closed arm): the body of `{pure_name}` uses `{unwrap_or}` \
+         {n_unwrap} time(s) on the request stamp. D1 spells the missing-stamp case as an \
+         EXPLICIT match arm returning true: `unwrap_or(0)` silently admits every negative \
+         stamp, and any other default hides the decision inside a value. The truth table \
+         beside this test catches `unwrap_or(0)` behaviourally; this clause catches the whole \
+         family before it is written. Body was: {pure_body:?}"
+    );
+
+    let ctx_body = rb47_body("accounts.rs", &stripped, ctx_name);
+    let lookup = concat!("ctx.db.acc", "ount().identity().find(identity)");
+    assert!(
+        ctx_body.contains(lookup),
+        "rb-47 E1 FAIL (ctx anti-vacuity): the body of `{ctx_name}` must READ the account row \
+         it judges, through the frozen owner-keyed lookup `{lookup}` — the same shape \
+         `is_pending_deletion` ships (the duplicate spelling is deliberate: a shared helper \
+         would force re-cutting that byte-frozen pin). Without the lookup, the delegation \
+         clause below is satisfied by a body that decides on a fabricated or defaulted row \
+         and answers the same thing for every caller. Note the PARAMETER: the lookup takes \
+         `identity`, never `ctx.sender()` — the guards wrapper is the one seam that reads the \
+         sender. Body was: {ctx_body:?}"
+    );
+    let n_delegates = ctx_body.matches([pure_name, "("].concat().as_str()).count();
+    assert_eq!(
+        n_delegates, 1,
+        "rb-47 E1 FAIL (ctx delegation): the body of `{ctx_name}` calls the pure decision \
+         `{pure_name}` {n_delegates} time(s) and must call it exactly once. Zero means the \
+         context-bound half re-derived the decision where the truth table cannot see it; two \
+         means the row is judged twice and only one of the answers can be returned. \
+         Body was: {ctx_body:?}"
+    );
+}
+
+/// **E1 (ctx predicate, behaviour)** — the stamp-aware predicate answers from
+/// the row of the identity it was PASSED, live, at every offset.
+///
+/// The shipped predicate runs under the rb-41 native host through five caller
+/// states crossed with three offsets around the request stamp, with a mid-grace
+/// STRANGER row present throughout. The stranger is what makes the admitted
+/// states mean anything: without it, a TABLE-keyed answer (refuse if anybody is
+/// deleting) is observationally identical to the caller-keyed one.
+///
+/// The last two calls pass the STRANGER's identity while the caller has NO row —
+/// the only place the identity PARAMETER is observable at all. An implementation
+/// that ignores its parameter and reads `ctx.sender()` answers false for both,
+/// and every other assertion in this test stays green.
+///
+/// kills: a table-keyed or any-row-pending answer (the admitted states go red,
+/// or a full-table scan aborts the process on the unmodelled syscall — louder
+/// still); a row-EXISTS-keyed answer (the Active state); a memoised or latched
+/// answer (the removed-row state); a `ctx.sender()`-keyed answer (the stranger
+/// calls); the polarity inversion; the boundary flip (the equal-stamp offset).
+///
+/// COMPILE-RED AT HEAD: `accounts::refuses_commitment_opened_at` does not exist.
+#[test]
+fn rb47_ctx_predicate_answers_from_the_callers_row() {
+    let fx = crate::native_host_tests::fixture();
+    let acct = fx.table::<crate::schema::Account>("account", "identity", |r| r.identity);
+    let ctx = fx.ctx();
+    let me = ctx.sender();
+    let req = RB47_REQUESTED_AT_MS;
+    let stranger_req = req + 7_000;
+    let stranger = rb47_seed_deleting_stranger(&acct, stranger_req);
+
+    let active = crate::accounts::new_account_row(me, String::new(), 0);
+    let pending = crate::accounts::requested_deletion(active.clone(), req);
+    let terminal = crate::accounts::terminal_account(pending.clone(), req + 1_000);
+
+    let offsets: [(i64, &str); 3] = [
+        (req - 1, "one millisecond BEFORE the request (predating)"),
+        (req, "the EXACT request millisecond (inclusive boundary)"),
+        (req + 1, "one millisecond AFTER the request (the attack)"),
+    ];
+
+    // --- State 1: no account row for the caller (a guest) -------------------
+    for (opened, when) in offsets {
+        let got = crate::accounts::refuses_commitment_opened_at(&ctx, me, opened);
+        assert!(
+            !got,
+            "rb-47 E1 FAIL (admitted, no account row; offer opened {when}): the predicate \
+             refused a caller with NO account row while a STRANGER's row is mid-grace. A \
+             caller who never authenticated holds no deletion state at all, exactly as \
+             `is_pending_deletion` decides it. A refusal here means the answer comes from the \
+             TABLE rather than from the named identity's own row. Indexes the generated code \
+             asked this host about: {:?}",
+            fx.requested_indexes()
+        );
+    }
+
+    // --- State 2: an Active account row --------------------------------------
+    acct.seed(&active);
+    for (opened, when) in offsets {
+        let got = crate::accounts::refuses_commitment_opened_at(&ctx, me, opened);
+        assert!(
+            !got,
+            "rb-47 E1 FAIL (admitted, Active row; offer opened {when}): the predicate refused \
+             a caller whose account row is `Active`. This is the ordinary player, and \
+             refusing them is a total trade-accept outage that every source pin in this slice \
+             reports as correctly gated. It is also precisely what a row-EXISTS-keyed fake, \
+             an any-row-pending table answer, and an inverted branch all produce."
+        );
+    }
+
+    // --- State 3: mid-grace (PendingDeletion at the request stamp) -----------
+    assert_eq!(
+        acct.remove(me),
+        1,
+        "rb-47 fixture: exactly one `Active` row was seeded for the CALLER and must be \
+         removed before the next state is pushed — `seed` appends rather than upserting, so a \
+         miscount leaves two rows under one identity and the unique-index lookup asserts \
+         instead of answering. `remove` is Identity-keyed: the stranger's row is deliberately \
+         untouched and must never be counted here."
+    );
+    acct.seed(&pending);
+    for (opened, when) in offsets {
+        let want = opened >= req;
+        let got = crate::accounts::refuses_commitment_opened_at(&ctx, me, opened);
+        assert_eq!(
+            got, want,
+            "rb-47 E1 FAIL (mid-grace row; offer opened {when}): wanted {want}, got {got}. \
+             THIS IS THE WHOLE CRITERION, executed: an offer created at or after the deletion \
+             request is refused, and an offer created before it stays admitted. The earlier \
+             offset is PRV1-10 (a blanket gate reds it); the equal offset is ADR-0237 D1's \
+             inclusive boundary (the strict-greater-than flip reds it)."
+        );
+    }
+
+    // --- State 4: terminal (PendingDeletion plus the marker) -----------------
+    assert_eq!(
+        acct.remove(me),
+        1,
+        "rb-47 fixture: exactly one mid-grace row was seeded for the CALLER and must be \
+         removed before the terminal row is pushed (`seed` appends, never upserts; the \
+         stranger's row is Identity-keyed and stays put)."
+    );
+    acct.seed(&terminal);
+    for (opened, when) in offsets {
+        let got = crate::accounts::refuses_commitment_opened_at(&ctx, me, opened);
+        assert!(
+            got,
+            "rb-47 E1 FAIL (terminal row; offer opened {when}): a caller carrying the M22 \
+             terminal marker must be refused at EVERY offset, including the one that predates \
+             their own request. The cascade already erased this account's monsters, items and \
+             currency, so accepting even an old offer would recreate rows the deletion just \
+             removed. Dropping D1's leading marker clause reds exactly this offset and \
+             nothing else."
+        );
+    }
+
+    // --- State 5: the caller's row is gone again -----------------------------
+    assert_eq!(
+        acct.remove(me),
+        1,
+        "rb-47 fixture: exactly one terminal row was seeded for the CALLER and must be \
+         removable; the stranger's mid-grace row stays."
+    );
+    for (opened, when) in offsets {
+        let got = crate::accounts::refuses_commitment_opened_at(&ctx, me, opened);
+        assert!(
+            !got,
+            "rb-47 E1 FAIL (admitted, row removed; offer opened {when}): the verdict must \
+             track LIVE rows for the identity it was passed. An answer that latches on a row \
+             it has already seen — a memoised predicate, a cached decision, a process-wide \
+             flag — keeps refusing this identity forever, and an any-row-pending answer \
+             refuses it because of somebody else. No state above can distinguish either of \
+             those from a correct predicate on its own."
+        );
+    }
+
+    // --- The identity PARAMETER, observed (the caller still has no row) ------
+    let got = crate::accounts::refuses_commitment_opened_at(&ctx, stranger, stranger_req - 1);
+    assert!(
+        !got,
+        "rb-47 E1 FAIL (parameter honoured, predating): asked about the STRANGER's identity \
+         with an offer opened one millisecond before THE STRANGER's request, the predicate \
+         refused. PRV1-10 holds for every identity, not just for the sender. This call and \
+         the next are the only place the identity PARAMETER is observable: the caller has no \
+         row at all here, so an implementation that ignores its parameter and reads \
+         `ctx.sender()` answers false for BOTH — and only this pair notices."
+    );
+    let got = crate::accounts::refuses_commitment_opened_at(&ctx, stranger, stranger_req);
+    assert!(
+        got,
+        "rb-47 E1 FAIL (parameter honoured, at the request): asked about the STRANGER's \
+         identity with an offer opened AT the stranger's own request millisecond, the \
+         predicate admitted. A `ctx.sender()`-keyed implementation answers exactly this way \
+         (the sender has no row here), and so does one that reads the FIRST row of the table. \
+         The named identity's own row is the only correct source. Indexes the generated code \
+         asked this host about: {:?}",
+        fx.requested_indexes()
+    );
+}
+
+/// **E1 (wrapper shape)** — the `guards.rs` wrapper is ONE fused expression that
+/// delegates transitively and runs unconditionally.
+///
+/// WHAT EACH CLAUSE KILLS:
+///
+///   * Declaration count == 1: the conditional-compilation twin class again,
+///     this time in `guards.rs`.
+///   * `starts_with` the fused call: a LEADING short-circuit return, on any
+///     condition rustc cannot constant-fold, leaves the fused call textually
+///     intact while the gate goes dead for the caller that matters. That exact
+///     bypass was MEASURED against the sibling wrapper's containment-only pins
+///     in m22-s5.
+///   * Fused-call count == 1: a second, differently-argued call inside the same
+///     body would let the returned verdict come from the wrong stamp.
+///   * No always-false wrapper, no attribute, no `cfg!` test: the
+///     unreachable-placement class.
+///   * `log_reject` called exactly once WITH the reducer parameter, and no bare
+///     logger call: the reject stays observable and attributed, and the
+///     `.log-baseline` row for `guards.rs` stays unchanged.
+///   * The five `guards.rs` re-derivation bans still count ZERO across the whole
+///     file (PRV1-10): this module must never learn the account-state vocabulary
+///     `accounts.rs` owns. A regression fence, green at HEAD, and the reason the
+///     wrapper takes a bool from `deletion_gate` rather than a row.
+///
+/// RE-DERIVATION CONTRACT: derived from ADR-0237 D3. A legitimate refactor
+/// re-argues the clause against the ADR; it never regenerates the needle from
+/// the current file.
+///
+/// RED AT HEAD: the declaration count is zero.
+#[test]
+fn rb47_guards_wrapper_is_fused_and_unconditional() {
+    let stripped = rb47_stripped(RB47_GUARDS_RS);
+    let file = rb47_squash(&stripped);
+
+    let wrapper = concat!("require_commitment_", "predates_deletion");
+    let decl = ["fn", wrapper, "("].concat();
+    let n_decl = file.matches(decl.as_str()).count();
+    assert_eq!(
+        n_decl, 1,
+        "rb-47 E1 FAIL (declaration census): `guards.rs` declares the stamp-aware wrapper \
+         {n_decl} time(s) and must declare it exactly once, as `{decl}` in the squashed view. \
+         RED AT HEAD: zero. Two is the conditional-compilation twin: the test build links the \
+         honest wrapper while the published wasm links one that admits every accept."
+    );
+
+    let body = rb47_body("guards.rs", &stripped, wrapper);
+    let fused_head = concat!("deletion_ga", "te(crate::accounts::refuses_commitment_");
+    let fused_tail = "opened_at(ctx,ctx.sender(),opened_at_ms))";
+    let fused_tail_wrapped = "opened_at(ctx,ctx.sender(),opened_at_ms,))";
+    let fused = [fused_head, fused_tail].concat();
+    let fused_wrapped = [fused_head, fused_tail_wrapped].concat();
+
+    let n_fused =
+        body.matches(fused.as_str()).count() + body.matches(fused_wrapped.as_str()).count();
+    assert_eq!(
+        n_fused, 1,
+        "rb-47 E1 FAIL (fused delegation): the wrapper body must feed the ctx-bound \
+         stamp-aware predicate — called with the CALLER's own `ctx.sender()` and the offer \
+         stamp — straight into the pure `deletion_gate` seam, exactly once; found {n_fused}. \
+         Both rustfmt spellings are accepted (with and without the trailing comma rustfmt \
+         adds when it breaks an argument list vertically). The wrapper is caller-only BY \
+         SIGNATURE — it takes no identity parameter — and ADR-0227 D4 says only this wrapper \
+         may reach the identity-taking predicate, so this is where the sender is read. \
+         Body was: {body:?}"
+    );
+    assert!(
+        body.starts_with(fused.as_str()) || body.starts_with(fused_wrapped.as_str()),
+        "rb-47 E1 FAIL (leading code): the wrapper body must BEGIN with the fused delegation. \
+         The count clause above is blind to anything ABOVE it, and the measured m22-s5 bypass \
+         was exactly that: a short-circuit early return on a condition rustc cannot \
+         constant-fold, prepended to a body whose delegation text survived untouched. Under \
+         the native host the sender is the all-zero identity, so a sender-keyed twin would \
+         even keep the behavioural test beside this one green. Body was: {body:?}"
+    );
+
+    for (needle, what) in [
+        (
+            concat!("if", "false"),
+            "an always-false wrapper around the delegation — the gate then never runs, and \
+             every text clause in this test still passes",
+        ),
+        (
+            concat!("#", "["),
+            "an attribute on a statement of the wrapper (conditional compilation, or an allow \
+             that hides a lint the gate depends on)",
+        ),
+        (
+            concat!("cfg", "!("),
+            "a compile-time configuration test inside the wrapper, which compiles in both \
+             builds and runs in only one",
+        ),
+        (
+            concat!("log", "::"),
+            "a bare logger call (the reject logs through the shared `log_reject`; the \
+             `.log-baseline` row for this file is pinned elsewhere and must not move)",
+        ),
+    ] {
+        let n = body.matches(needle).count();
+        assert_eq!(
+            n, 0,
+            "rb-47 E1 FAIL (unconditional): the wrapper body contains `{needle}` {n} time(s) \
+             and must contain it zero times — that is {what}. Every other clause in this test \
+             is TEXT-based and therefore blind to reachability: the fused call can sit in the \
+             file, start the body, count exactly one, and still never run. Body was: {body:?}"
+        );
+    }
+
+    let logged = concat!("log_rej", "ect(reducer,");
+    let n_logged = body.matches(logged).count();
+    assert_eq!(
+        n_logged, 1,
+        "rb-47 E1 FAIL (observability): the wrapper body calls `{logged}` {n_logged} time(s) \
+         and must call it exactly once, forwarding the REDUCER NAME parameter it was given. A \
+         refused accept that logs nothing is invisible in production, and a name hard-coded \
+         inside the wrapper would misattribute every future call site. Body was: {body:?}"
+    );
+
+    for (needle, what) in [
+        (
+            ["Pending", "Deletion"].concat(),
+            "the mid-grace account status variant",
+        ),
+        (
+            ["terminal_", "at_ms"].concat(),
+            "the terminal marker column",
+        ),
+        (
+            ["Account", "Status"].concat(),
+            "the account status type itself",
+        ),
+        (
+            ["account_has_terminal_", "marker("].concat(),
+            "the marker predicate",
+        ),
+        (
+            ["ctx.db.acc", "ount("].concat(),
+            "a direct account-table read",
+        ),
+    ] {
+        let n = file.matches(needle.as_str()).count();
+        assert_eq!(
+            n, 0,
+            "rb-47 PRV1-10 FAIL (re-derivation fence): `guards.rs` names {what} (`{needle}`) \
+             {n} time(s) and must name it ZERO times. GREEN AT HEAD; the rb-47 wrapper must \
+             keep it that way. The account-state vocabulary has ONE home, `accounts.rs`: a \
+             second spelling here would diverge from the SSOT silently — most dangerously on \
+             the illegal shapes, where the fail-closed arms live. This is why the wrapper \
+             takes a bool from `deletion_gate` rather than a row."
+        );
+    }
+}
+
+/// **E1 (wrapper behaviour)** — the wrapper refuses ONLY offers created at or
+/// after the caller's own deletion request.
+///
+/// The behavioural centrepiece. Five caller states crossed with three offsets
+/// under the native host, with a mid-grace STRANGER row present throughout, and
+/// the refusal compared against the CONSTANT `guards::REJECT_DELETION_GATED` —
+/// never a re-typed literal, so a reworded reason cannot drift into text no
+/// client ever receives.
+///
+/// kills: the inverted polarity (which every source pin in this slice reports as
+/// correctly gated); a hollow wrapper or a trailing `.or(Ok(()))` (all five
+/// refused cells go green while the fused-call text stays intact); a blanket gate
+/// (the predating offsets red — the PRV1-10 break the brief forbids); the
+/// boundary flip (the equal offset); a dropped terminal clause (the terminal
+/// state's earliest offset); a table-keyed answer (the admitted states, while the
+/// stranger is mid-grace); a latched answer (the removed-row state).
+///
+/// COMPILE-RED AT HEAD: `guards::require_commitment_predates_deletion` does not
+/// exist.
+#[test]
+fn rb47_guards_wrapper_refuses_only_offers_created_after_the_request() {
+    let fx = crate::native_host_tests::fixture();
+    let acct = fx.table::<crate::schema::Account>("account", "identity", |r| r.identity);
+    let ctx = fx.ctx();
+    let me = ctx.sender();
+    let req = RB47_REQUESTED_AT_MS;
+    rb47_seed_deleting_stranger(&acct, req + 7_000);
+
+    let reducer = ["respond_", "trade"].concat();
+    let gated: Result<(), String> = Err(crate::guards::REJECT_DELETION_GATED.to_string());
+    let admitted: Result<(), String> = Ok(());
+
+    let active = crate::accounts::new_account_row(me, String::new(), 0);
+    let pending = crate::accounts::requested_deletion(active.clone(), req);
+    let terminal = crate::accounts::terminal_account(pending.clone(), req + 1_000);
+
+    let offsets: [(i64, &str); 3] = [
+        (req - 1, "one millisecond BEFORE the request (predating)"),
+        (req, "the EXACT request millisecond (inclusive boundary)"),
+        (req + 1, "one millisecond AFTER the request (the attack)"),
+    ];
+
+    // --- State 1: no account row for the caller (a guest) -------------------
+    for (opened, when) in offsets {
+        let got = crate::guards::require_commitment_predates_deletion(&ctx, &reducer, opened);
+        assert_eq!(
+            got,
+            admitted,
+            "rb-47 E1 FAIL (admitted, no account row; offer opened {when}): the wrapper \
+             returned {got:?} for a caller with NO account row, while a STRANGER's row is \
+             mid-grace. A guest holds no deletion state and must pass straight through. \
+             Indexes the generated code asked this host about: {:?}",
+            fx.requested_indexes()
+        );
+    }
+
+    // --- State 2: an Active account row --------------------------------------
+    acct.seed(&active);
+    for (opened, when) in offsets {
+        let got = crate::guards::require_commitment_predates_deletion(&ctx, &reducer, opened);
+        assert_eq!(
+            got, admitted,
+            "rb-47 E1 FAIL (admitted, Active row; offer opened {when}): the wrapper returned \
+             {got:?} for an ordinary player. Refusing here is a total trade-accept outage, \
+             and it is what an inverted polarity, a row-EXISTS-keyed answer and an \
+             any-row-pending table answer all produce — none of them visible to a source pin."
+        );
+    }
+
+    // --- State 3: mid-grace (PendingDeletion at the request stamp) -----------
+    assert_eq!(
+        acct.remove(me),
+        1,
+        "rb-47 fixture: exactly one `Active` row was seeded for the CALLER and must be \
+         removed before the next state is pushed (`seed` appends, never upserts; the \
+         stranger's row is Identity-keyed and stays put)."
+    );
+    acct.seed(&pending);
+    for (opened, when) in offsets {
+        let want = if opened >= req {
+            gated.clone()
+        } else {
+            admitted.clone()
+        };
+        let got = crate::guards::require_commitment_predates_deletion(&ctx, &reducer, opened);
+        assert_eq!(
+            got, want,
+            "rb-47 E1 FAIL (mid-grace; offer opened {when}): the wrapper returned {got:?}, \
+             wanted {want:?}. THIS IS THE CRITERION, executed end to end through the shipped \
+             wrapper: an offer created at or after the deletion request is refused with the \
+             module's single static deletion reject; an offer created before it is ADMITTED, \
+             because PRV1-10 keeps predating commitments completable. A blanket gate reds the \
+             first offset, the boundary flip reds the second, and a hollow wrapper reds both \
+             of the last two."
+        );
+    }
+
+    // --- State 4: terminal (PendingDeletion plus the marker) -----------------
+    assert_eq!(
+        acct.remove(me),
+        1,
+        "rb-47 fixture: exactly one mid-grace row was seeded for the CALLER and must be \
+         removed before the terminal row is pushed."
+    );
+    acct.seed(&terminal);
+    for (opened, when) in offsets {
+        let got = crate::guards::require_commitment_predates_deletion(&ctx, &reducer, opened);
+        assert_eq!(
+            got, gated,
+            "rb-47 E1 FAIL (terminal; offer opened {when}): the wrapper returned {got:?} for \
+             a caller carrying the M22 terminal marker; it must refuse at EVERY offset, \
+             including the one predating that account's own request. The cascade already \
+             erased this account's assets, so accepting an old offer would recreate rows the \
+             deletion just removed. Dropping D1's leading marker clause reds exactly this \
+             cell."
+        );
+    }
+
+    // --- State 5: the caller's row is gone again -----------------------------
+    assert_eq!(
+        acct.remove(me),
+        1,
+        "rb-47 fixture: exactly one terminal row was seeded for the CALLER and must be \
+         removable; the stranger's mid-grace row stays."
+    );
+    for (opened, when) in offsets {
+        let got = crate::guards::require_commitment_predates_deletion(&ctx, &reducer, opened);
+        assert_eq!(
+            got, admitted,
+            "rb-47 E1 FAIL (admitted, row removed; offer opened {when}): the wrapper returned \
+             {got:?} once the caller's row was gone again (the stranger's mid-grace row is \
+             still there). The verdict must track LIVE rows for the CALLER: a memoised or \
+             latched answer keeps refusing this identity forever, and an any-row-pending \
+             answer refuses it because of somebody else."
+        );
+    }
+}
+
+/// **E1 (call site)** — `respond_trade` carries the offer-age gate exactly once,
+/// as a reachable top-level statement, below the decline block and above the
+/// status write, with the OFFER's own creation stamp as its argument.
+///
+/// PIPELINE: comments stripped, then string-literal PAYLOADS stripped (the
+/// quotes survive, so the reducer-name tag reads as an empty literal), then all
+/// whitespace squashed. Clause H re-reads the strings-INTACT view, the only
+/// pipeline that can see the tag at all.
+///
+/// WHAT EACH CLAUSE KILLS:
+///
+///   * A — the WHOLE statement, once, fully qualified, INCLUDING THE ARGUMENT,
+///     with the propagation operator in the needle. The argument is the central
+///     tooth of this slice: `0` or `i64::MIN` never fires, and `now_ms(ctx)`
+///     refuses every predating offer (the PRV1-10 break). All of them compile,
+///     all keep every other clause here green, and none is visible to execution
+///     — the native host aborts before the admitted direction can be observed.
+///     The propagation operator is load-bearing for the reason this file already
+///     records twice: a discarded verdict compiles, calls the gate, ignores the
+///     answer, and stays clippy-clean under `-D warnings`. Comments are stripped
+///     first, so a commented-out statement reads as absent and a decoy comment
+///     carrying the statement text cannot satisfy the count.
+///   * B — brace depth 0. Every other clause is POSITION-based and blind to
+///     reachability: wrapping the statement in a conditional keeps the count,
+///     the order and the placement, and gates nothing.
+///   * C — the character immediately before the statement is a semicolon or a
+///     closing brace. An attribute leaves the statement text intact.
+///   * D — no attribute and no `cfg!` test anywhere in the body, and exactly ONE
+///     conditional-compilation attribute in the whole file (the test-module
+///     declaration, measured at HEAD).
+///   * E — the wrapper's bare name occurs once in the body AND once in the whole
+///     file: no second wiring into `confirm_trade` / `cancel_trade` /
+///     `propose_trade` (over-gating traps the counterparty's escrow) and no
+///     third-party sibling call.
+///   * F — PREFIX EQUALITY above the gate. rb-46's return-census clause is
+///     UNSATISFIABLE here (this prefix legitimately contains two returns), so
+///     equality is the SOLE defence against the whole above-the-gate class: a
+///     sender-keyed early-return twin (the native sender is the all-zero
+///     identity, so such a twin keeps the behavioural tests green), a file-scope
+///     conditional constant, and a macro divert. RE-DERIVATION CONTRACT: this
+///     literal is derived from ADR-0237 D4 and the reducer's specified guard
+///     order. NEVER paste the current body in to make it green — pasting turns
+///     the strongest clause in this slice into a tautology.
+///   * G — ordering against three landmarks: `authorize_respond` above (role
+///     before lifecycle, ADR-0117; it is also what proves the caller IS the
+///     counterparty, which is what makes a caller-keyed gate correct here), the
+///     decline path's disarm above (declines must keep unwinding), and the sole
+///     status write below (a gate after the write gates nothing).
+///   * H — the TAG, on the strings-intact view: a wrong or copied tag
+///     misattributes every reject line this gate ever emits.
+///
+/// RED AT HEAD: clause A counts zero — `respond_trade` carries no gate, so a
+/// player can request deletion and then accept an offer created afterwards.
+#[test]
+fn rb47_respond_trade_carries_the_offer_age_gate() {
+    let comments_only = strip_rust_comments_trading(TRADING_RS);
+    let stripped = strip_rust_strings_trading(&comments_only);
+    let file = rb47_squash(&stripped);
+    let respond = concat!("respond_", "trade");
+    let squashed = rb47_body("trading.rs", &stripped, respond);
+
+    let blank = m22s5_blank_string_literal();
+    let call = concat!("crate::guards::require_commitment_", "predates_deletion(");
+    let bare = concat!("require_commitment_", "predates_deletion");
+    let arg = concat!("offer.crea", "ted_at_ms");
+    let plain = [call, "ctx,", blank.as_str(), ",", arg, ")?;"].concat();
+    let trailing = [call, "ctx,", blank.as_str(), ",", arg, ",)?;"].concat();
+
+    // --- Clause A: the whole statement, argument included, exactly once ------
+    let n = squashed.matches(plain.as_str()).count() + squashed.matches(trailing.as_str()).count();
+    assert_eq!(
+        n, 1,
+        "rb-47 E1 FAIL (call site): `{respond}` must carry the offer-age gate EXACTLY ONCE, \
+         fully qualified, with the OFFER's own creation stamp as its third argument and the \
+         propagation operator on the result. Found {n}. \
+         RED AT HEAD: zero — the reducer carries no gate, so an account can request deletion \
+         and then accept an offer created AFTER that request, dragging its counterparty into \
+         a swap the cascade is about to unwind. \
+         THE ARGUMENT IS THE CENTRAL TOOTH, and it is why this needle is the whole statement \
+         rather than the call name: `0` and `i64::MIN` never fire (every offer predates \
+         them), and `now_ms(ctx)` refuses EVERY offer including predating ones — the PRV1-10 \
+         break. All three compile, all three satisfy every other clause in this test, and no \
+         behavioural test in this slice can see them (the native host aborts on the write the \
+         admitted direction reaches). \
+         The propagation operator is part of the pin for the reason this file records twice \
+         already: a discarded verdict calls the gate, ignores the answer, and stays \
+         clippy-clean. Comments are stripped before this count, so a commented-out statement \
+         reads as absent and a decoy comment cannot satisfy it. \
+         Expected (squashed, trailing-comma form): {trailing:?}"
+    );
+    let gate_pos = squashed
+        .find(plain.as_str())
+        .or_else(|| squashed.find(trailing.as_str()))
+        .unwrap_or_else(|| panic!("rb-47: the gate statement counted 1 but was not located"));
+
+    let n_arg = squashed.matches(arg).count();
+    assert_eq!(
+        n_arg, 1,
+        "rb-47 E1 FAIL (argument ambiguity): `{respond}` names `{arg}` {n_arg} time(s) and \
+         must name it exactly once — inside the gate statement. Zero means the stamp reaches \
+         the gate through a rebind this pin cannot follow, and the rebind is exactly where a \
+         substituted value would hide; two means a second, differently-argued read exists and \
+         the clause above could be satisfied by whichever one is spelled correctly."
+    );
+
+    // --- Clause B: reachability ---------------------------------------------
+    let depth = m22s5_depth_at(&squashed, gate_pos);
+    assert_eq!(
+        depth, 0,
+        "rb-47 E1 FAIL (reachability): the offer-age gate in `{respond}` sits at brace depth \
+         {depth} of the reducer body, not 0. Every other clause here is POSITION-based and \
+         therefore blind to reachability: putting the statement inside the accept branch \
+         keeps the count at one, keeps it below the decline block and above the write, and \
+         gates only the branch the author happened to think of. The gate must be an \
+         unconditional top-level statement — and a conditional is also the wrong shape \
+         semantically: the decline path stays ungated because of the gate's PLACEMENT below \
+         the decline block, which is a property this test can actually check."
+    );
+
+    // --- Clause C: statement boundary ---------------------------------------
+    let semi = char::from(0x3Bu8);
+    let close = char::from(0x7Du8);
+    let prev = squashed[..gate_pos].chars().next_back();
+    assert!(
+        prev == Some(semi) || prev == Some(close),
+        "rb-47 E1 FAIL (statement boundary): the character immediately before the offer-age \
+         gate in `{respond}` is {prev:?}; a top-level statement is preceded by the end of the \
+         previous statement or the end of a block. A closing square bracket means an \
+         ATTRIBUTE was attached to the gate — a test-only attribute there passes the count, \
+         the depth, the ordering and every behavioural test in this slice (the test build \
+         compiles it in) while the PUBLISHED wasm ships the reducer ungated."
+    );
+
+    // --- Clause D: no conditional compilation -------------------------------
+    for (needle, what) in [
+        (
+            concat!("#", "["),
+            "an attribute inside the reducer body (conditional compilation, or an allow that \
+             hides a lint the gate depends on)",
+        ),
+        (
+            concat!("cfg", "!("),
+            "a compile-time configuration test inside the reducer body, which compiles in \
+             both builds and runs in only one",
+        ),
+    ] {
+        let n_body = squashed.matches(needle).count();
+        assert_eq!(
+            n_body, 0,
+            "rb-47 E1 FAIL (unconditional): the body of `{respond}` contains `{needle}` \
+             {n_body} time(s) and must contain it zero times — that is {what}. GREEN AT HEAD; \
+             the slice must keep it that way. This is the class the boundary clause above \
+             catches for the gate statement specifically, closed body-wide."
+        );
+    }
+    let cfg_attr = concat!("#", "[cfg");
+    let n_file_cfg = file.matches(cfg_attr).count();
+    assert_eq!(
+        n_file_cfg, 1,
+        "rb-47 E1 FAIL (conditional compilation, whole file): `trading.rs` carries \
+         {n_file_cfg} conditional-compilation attribute(s); exactly ONE is expected — the \
+         test-module declaration at the end of the file, which is the count MEASURED at HEAD. \
+         A second one is how a file-scope conditional constant would enter this file, and \
+         such a constant can deaden the gate from OUTSIDE the reducer body, where both the \
+         boundary clause and the body-wide bans above are blind."
+    );
+
+    // --- Clause E: exactly one wiring, here and file-wide -------------------
+    let n_here = squashed.matches(bare).count();
+    assert_eq!(
+        n_here, 1,
+        "rb-47 E1 FAIL (single wiring, body): the offer-age wrapper's bare name appears \
+         {n_here} time(s) in `{respond}` and must appear exactly once. Two means the decline \
+         branch was gated as well, which FREEZES the counterparty's escrow instead of \
+         releasing it — the trap-state defect the already-open census in `guards_tests.rs` \
+         names explicitly, and the reason ADR-0237 D5 puts the gate below the decline block."
+    );
+    let n_file = file.matches(bare).count();
+    assert_eq!(
+        n_file, 1,
+        "rb-47 E1 FAIL (single wiring, whole file): the offer-age wrapper's bare name appears \
+         {n_file} time(s) in `trading.rs` and must appear exactly once, in `{respond}` alone. \
+         ADR-0237 D5 gates NOTHING else here: the confirm path is called by the INITIATOR (a \
+         party who is not the gated one, and who cannot have been offered a post-request \
+         commitment because the propose path is already gated for a deleting player), and the \
+         cancel path unwinds. Gating either traps a counterparty inside a commitment that can \
+         no longer be completed OR cancelled — strictly worse than the hole this slice \
+         closes. The bare name is the needle, so an alias or a local wrapper is caught too."
+    );
+
+    // --- Clause F: the prefix above the gate, byte for byte -----------------
+    // Derived by hand from ADR-0237 D4 and the reducer's specified guard order:
+    // caller binding, offer lookup with its not-found return, the role-and-status
+    // authorization with its logged mapping, then the whole decline block. String
+    // PAYLOADS are blanked by the pipeline, so the two literals read as empty.
+    let expected_prefix = [
+        concat!("letme=ctx.sen", "der();"),
+        concat!(
+            "letSome(offer)=ctx.db.trade_off",
+            "er().trade_id().find(trade_id)else{"
+        ),
+        concat!("returnE", "rr("),
+        blank.as_str(),
+        concat!(".to_str", "ing());};"),
+        concat!(
+            "authorize_res",
+            "pond(&offer.status,offer.counterparty==me).map_err(|e|{"
+        ),
+        concat!("letmsg=e.to_str", "ing();"),
+        concat!("log_rej", "ect("),
+        blank.as_str(),
+        ",me,&msg);msg})?;",
+        concat!("if!acce", "pted{"),
+        concat!("ctx.db.trade_off", "er().trade_id().del", "ete(trade_id);"),
+        concat!("disarm_trade_re", "aper(ctx,trade_id);"),
+        concat!("returnO", "k(());}"),
+    ]
+    .concat();
+    let prefix = &squashed[..gate_pos];
+    assert_eq!(
+        prefix,
+        expected_prefix.as_str(),
+        "rb-47 E1 FAIL (prefix equality): everything ABOVE the offer-age gate in `{respond}` \
+         must be EXACTLY the specified guard prefix. Got: {prefix:?}. Expected: \
+         {expected_prefix:?}. \
+         This clause is the SOLE defence against the whole above-the-gate class, because the \
+         return-census clause rb-46 uses is unsatisfiable here (this prefix legitimately \
+         contains a not-found return AND the decline path's success return). It closes: a \
+         sender-keyed early-return twin (the native host's sender is the all-zero identity, \
+         so such a twin keeps every behavioural test in this slice green); a file-scope \
+         conditional constant consulted above the gate; a macro divert; and any hoisting of \
+         the gate above the decline block, which would gate DECLINES and freeze the \
+         counterparty's escrow. \
+         RE-DERIVATION CONTRACT: this literal comes from ADR-0237 D4 and the spec. If a \
+         legitimate refactor reds it, re-derive it from the ADR and re-argue the placement. \
+         NEVER paste the current body in to make it green: pasting turns the strongest clause \
+         in this slice into a tautology."
+    );
+
+    // --- Clause G: ordering against the three landmarks ---------------------
+    let authorize = concat!("authorize_res", "pond(");
+    let n_auth = squashed.matches(authorize).count();
+    assert_eq!(
+        n_auth, 1,
+        "rb-47 E1 FAIL (anchor ambiguity): `{respond}` calls `{authorize}` {n_auth} time(s); \
+         this ordering pin needs exactly one so the offset is unambiguous. With zero the \
+         role-and-status authorization vanished and the pin is vacuous — fail LOUD."
+    );
+    let auth_pos = squashed
+        .find(authorize)
+        .expect("rb-47: the authorization anchor counted 1 but was not located");
+    assert!(
+        auth_pos < gate_pos,
+        "rb-47 E1 FAIL (ordering): the offer-age gate in `{respond}` is at squashed offset \
+         {gate_pos}, ABOVE the role-and-status authorization at {auth_pos}. Role FIRST is \
+         ADR-0117: a non-party caller must learn they are not a party, never something about \
+         somebody else's account lifecycle. The order is load-bearing for CORRECTNESS too, \
+         not just for message precedence — the gate reads `ctx.sender()`, and it is the \
+         authorization that has already proved the sender IS this offer's counterparty."
+    );
+
+    let disarm = concat!("disarm_trade_re", "aper(");
+    let disarm_pos = squashed.rfind(disarm).unwrap_or_else(|| {
+        panic!(
+            "rb-47 E1 FAIL (anchor missing): `{respond}` never disarms the offer's TTL \
+             schedule, so the decline path this gate must sit BELOW cannot be located. Fail \
+             LOUD rather than pass vacuously: without the anchor, a gate hoisted above the \
+             decline block would be invisible here."
+        )
+    });
+    assert!(
+        disarm_pos < gate_pos,
+        "rb-47 E1 FAIL (ordering): the offer-age gate in `{respond}` is at squashed offset \
+         {gate_pos}, ABOVE the decline path's disarm at {disarm_pos}. Declines must stay \
+         ungated: a declining response deletes the row and RELEASES the escrow, so gating it \
+         traps the counterparty's assets inside a commitment nobody can unwind — the exact \
+         defect the already-open census in `guards_tests.rs` names. The PLACEMENT, not a \
+         condition, is what keeps declines open."
+    );
+
+    let write = concat!("()", ".upd", "ate(");
+    let n_write = squashed.matches(write).count();
+    assert_eq!(
+        n_write, 1,
+        "rb-47 E1 FAIL (anchor ambiguity): `{respond}` performs {n_write} table update(s); \
+         this pin needs exactly one so the offset is unambiguous. With zero the acceptance \
+         write disappeared and `gate before the effect` is trivially true — ask whether the \
+         reducer still needs gating rather than accepting the vacuous pass."
+    );
+    let write_pos = squashed
+        .find(write)
+        .expect("rb-47: the status write counted 1 but was not located");
+    assert!(
+        gate_pos < write_pos,
+        "rb-47 E1 FAIL (decision before irreversible effect): the offer-age gate in \
+         `{respond}` is at squashed offset {gate_pos}, AFTER the status write at {write_pos}. \
+         This is the whole claim: a gate that runs once the offer has advanced to \
+         ConfirmedByCounterparty has already handed the initiator a confirmable swap and \
+         merely reported it. The behavioural test beside this one cannot see this ordering — \
+         the native host ABORTS the process on the write syscall, so it never gets past it. \
+         This clause is the only thing that owns the gate-after-write mutant."
+    );
+
+    // --- Clause H: the tag, on the strings-INTACT view ----------------------
+    let tagged = rb47_body("trading.rs", &comments_only, respond);
+    let q = char::from(0x22u8).to_string();
+    let tag = [q.as_str(), respond, q.as_str()].concat();
+    let tagged_plain = [call, "ctx,", tag.as_str(), ",", arg, ")?;"].concat();
+    let tagged_trailing = [call, "ctx,", tag.as_str(), ",", arg, ",)?;"].concat();
+    let n_tagged = tagged.matches(tagged_plain.as_str()).count()
+        + tagged.matches(tagged_trailing.as_str()).count();
+    assert_eq!(
+        n_tagged, 1,
+        "rb-47 E1 FAIL (reducer tag): the offer-age gate in `{respond}` must pass THIS \
+         reducer's own name as its tag, exactly once; found {n_tagged} on the strings-intact \
+         view. That view is the ONLY pipeline in the repo that can see the tag at all — every \
+         other clause here reads a view where string payloads are blanked, and the m22-s5 tag \
+         census enumerates the BLANKET gate's call sites only, so a tag copied from a \
+         neighbouring reducer is invisible everywhere else. A wrong tag misattributes every \
+         reject line this gate emits, which is what an operator reads when a player reports \
+         that accepting a trade stopped working. Expected (squashed, trailing-comma form): \
+         {tagged_trailing:?}"
+    );
+}
+
+/// **R-rb-46-TRADINGCFG** — the EXISTING `propose_trade` deletion gate has no
+/// attribute or `cfg!` escape.
+///
+/// A NEW test function, deliberately NOT extra clauses appended to
+/// `m22s5_propose_trade_carries_the_deletion_gate`: first-failure-wins means a
+/// clause added below an already-red assertion is never reached, so a separate
+/// test is the only way both can report.
+///
+/// GREEN AT HEAD BY DESIGN — this hardens a gate that already ships. The mutants
+/// it reds are a conditional-compilation attribute attached to the propose-side
+/// gate statement, and any `cfg!` guard wrapped around it: both keep the m22-s5
+/// count, depth and ordering clauses green, keep every behavioural test green
+/// (the test build compiles the gate in), and ship a wasm in which a mid-grace
+/// account can open a fresh trade offer.
+///
+/// The `too_many_arguments` allow on this reducer sits on the DECLARATION,
+/// outside the brace-bounded body extracted here — verified at HEAD, which is
+/// what makes the body-wide attribute ban satisfiable.
+#[test]
+fn rb47_propose_trade_gate_has_no_attribute_or_cfg_escape() {
+    let stripped = rb47_stripped(TRADING_RS);
+    let propose = concat!("propose_", "trade");
+    let squashed = rb47_body("trading.rs", &stripped, propose);
+
+    let blank = m22s5_blank_string_literal();
+    let call = concat!("crate::guards::require_not_", "deleting(");
+    let plain = [call, "ctx,", blank.as_str(), ")?;"].concat();
+    let trailing = [call, "ctx,", blank.as_str(), ",)?;"].concat();
+    let gate_pos = squashed
+        .find(plain.as_str())
+        .or_else(|| squashed.find(trailing.as_str()))
+        .unwrap_or_else(|| {
+            panic!(
+                "rb-47 R-rb-46-TRADINGCFG FAIL (anchor missing): `{propose}` carries no \
+                 deletion-gate statement, so this hardening test has nothing to harden. \
+                 GREEN AT HEAD — a red here means the m22-s5 gate itself regressed, and \
+                 `m22s5_propose_trade_carries_the_deletion_gate` owns that claim. Fail LOUD \
+                 rather than pass vacuously."
+            )
+        });
+
+    let semi = char::from(0x3Bu8);
+    let close = char::from(0x7Du8);
+    let prev = squashed[..gate_pos].chars().next_back();
+    assert!(
+        prev == Some(semi) || prev == Some(close),
+        "rb-47 R-rb-46-TRADINGCFG FAIL (statement boundary): the character immediately before \
+         the deletion gate in `{propose}` is {prev:?}; a top-level statement is preceded by \
+         the end of the previous statement or the end of a block. A closing square bracket \
+         means an ATTRIBUTE was attached to the gate — a test-only attribute there passes the \
+         m22-s5 count, depth and ordering clauses AND every behavioural test (the test build \
+         compiles it in), while the published wasm lets a mid-grace account escrow monsters, \
+         items and currency into a fresh offer."
+    );
+
+    for (needle, what) in [
+        (
+            concat!("#", "["),
+            "an attribute inside the reducer body (conditional compilation, or an allow that \
+             hides a lint the gate depends on)",
+        ),
+        (
+            concat!("cfg", "!("),
+            "a compile-time configuration test inside the reducer body, which compiles in \
+             both builds and runs in only one",
+        ),
+    ] {
+        let n = squashed.matches(needle).count();
+        assert_eq!(
+            n, 0,
+            "rb-47 R-rb-46-TRADINGCFG FAIL (unconditional): the body of `{propose}` contains \
+             `{needle}` {n} time(s) and must contain it zero times — that is {what}. GREEN AT \
+             HEAD: the only attribute on this reducer sits on the DECLARATION, outside the \
+             brace-bounded body this pin reads. Keep it that way; a legitimate future \
+             attribute inside the body must re-derive this clause deliberately."
+        );
+    }
+}
+
+/// **E1 (reducer behaviour, refused direction)** — the shipped `respond_trade`
+/// refuses an accepting response to an offer created at or after the caller's
+/// deletion request.
+///
+/// The shipped reducer is EXECUTED under the rb-41 native host over a
+/// `u64`-keyed `trade_offer` table (the `table_keyed` widening this slice added:
+/// before it, every reducer whose first statement is a point read on a
+/// non-`Identity` key stopped at not-found in every state, which made a
+/// behavioural test of it vacuous).
+///
+/// ONE-SIDED BY CONSTRUCTION, and this is the honest limit: every write syscall
+/// ABORTS the process uncatchably, so the ADMITTED direction — the predating
+/// offer that must stay completable — cannot be asserted here at all. It reaches
+/// the status update and takes the process down. That half of the criterion is
+/// owned by `rb47_guards_wrapper_refuses_only_offers_created_after_the_request`
+/// (which executes the same verdict one call below the reducer) and by clause A
+/// of `rb47_respond_trade_carries_the_offer_age_gate` (which owns the ARGUMENT).
+/// For the same reason there is no declining case here: a decline deletes a row.
+///
+/// THE THREE CONTROLS ARE NOT DECORATION. The caller is mid-grace in every one
+/// of them, so each proves the gate did NOT run: an ordinary status error, an
+/// ordinary role error and an ordinary not-found error would all be replaced by
+/// the deletion reject if the gate were hoisted above the authorization. They
+/// also prove the `u64`-keyed fixture actually resolves rows, without which the
+/// tooth below would pass vacuously on a not-found error.
+///
+/// RED AT HEAD BY PROCESS ABORT: with no gate, case (d) advances the offer and
+/// the unmodelled update syscall aborts (nextest reports a signal, not a failed
+/// assertion, and a should-panic attribute cannot catch it). Case (d) is
+/// therefore LAST — every control has already reported by then.
+#[test]
+fn rb47_respond_trade_refuses_a_post_request_accept() {
+    let fx = crate::native_host_tests::fixture();
+    let acct = fx.table::<crate::schema::Account>("account", "identity", |r| r.identity);
+    let offers = rb47_offer_table(&fx);
+    let ctx = fx.ctx();
+    let me = ctx.sender();
+    let req = RB47_REQUESTED_AT_MS;
+    let stranger = rb47_seed_deleting_stranger(&acct, req + 7_000);
+
+    // The caller is mid-grace for the WHOLE test: the controls below are what
+    // prove the gate does not fire before the authorization it must follow.
+    acct.seed(&crate::accounts::requested_deletion(
+        crate::accounts::new_account_row(me, String::new(), 0),
+        req,
+    ));
+
+    offers.seed(&rb47_offer(
+        1,
+        me,
+        TradeStatus::ConfirmedByCounterparty,
+        req,
+    ));
+    offers.seed(&rb47_offer(2, stranger, TradeStatus::Pending, req));
+    offers.seed(&rb47_offer(3, me, TradeStatus::Pending, req));
+    offers.seed(&rb47_offer(4, me, TradeStatus::Pending, req + 1));
+
+    // --- Control (a): the row is found, but its status is not Pending -------
+    let want: Result<(), String> = Err("trade offer is not in Pending state".to_string());
+    let got = crate::trading::respond_trade(&ctx, 1, true);
+    assert_eq!(
+        got,
+        want,
+        "rb-47 E1 FAIL (control, wrong status): the reducer returned {got:?} for a mid-grace \
+         caller responding to an offer that is no longer Pending; the pure authorization owns \
+         that answer, and the offer-age gate must run BELOW it (ADR-0117, role and status \
+         first). The deletion reject here means the gate was hoisted above the authorization, \
+         which leaks account-lifecycle state into a message that should be about the offer. \
+         This case also proves the u64-keyed fixture RESOLVES rows — without that, the tooth \
+         below would pass on a not-found error and prove nothing. Indexes the generated code \
+         asked this host about: {:?}",
+        fx.requested_indexes()
+    );
+
+    // --- Control (b): the caller is not this offer's counterparty -----------
+    let want: Result<(), String> =
+        Err("only the trade counterparty can perform this action".to_string());
+    let got = crate::trading::respond_trade(&ctx, 2, true);
+    assert_eq!(
+        got, want,
+        "rb-47 E1 FAIL (control, wrong role): the reducer returned {got:?} for a mid-grace \
+         caller responding to somebody else's offer. Role is checked FIRST and no status or \
+         lifecycle state may leak to a non-party (ADR-0117). The deletion reject here means \
+         the gate runs above the role check — and it would then tell any caller, about any \
+         offer, that THEY are mid-grace before establishing they are a party at all."
+    );
+
+    // --- Control (c): no such offer -----------------------------------------
+    let want: Result<(), String> = Err("trade offer not found".to_string());
+    let got = crate::trading::respond_trade(&ctx, 99, true);
+    assert_eq!(
+        got, want,
+        "rb-47 E1 FAIL (control, unknown offer): the reducer returned {got:?} for an offer id \
+         that was never seeded. The lookup owns this answer; the gate needs an OFFER's \
+         creation stamp and therefore cannot run before the offer is in hand. A deletion \
+         reject here means the gate was hoisted to the top of the reducer, where it has no \
+         stamp to judge and must be reading something else."
+    );
+
+    // --- (d) THE TOOTH: a Pending offer created AT or AFTER the request -----
+    // Runs LAST: at HEAD these two calls reach the status write and the native
+    // host aborts the process on the unmodelled write syscall. That abort IS the
+    // red state for this test.
+    let gated: Result<(), String> = Err(crate::guards::REJECT_DELETION_GATED.to_string());
+    let got = crate::trading::respond_trade(&ctx, 3, true);
+    assert_eq!(
+        got, gated,
+        "rb-47 E1 FAIL (the criterion, equal stamp): the reducer returned {got:?} for a \
+         mid-grace caller ACCEPTING an offer stamped in the very millisecond of their own \
+         deletion request. ADR-0237 D1's boundary is inclusive: an offer created in that \
+         millisecond does not PREDATE the request, and the attack this closes is `request \
+         deletion, then have a confederate propose immediately`. The expected reason is \
+         compared against the CONSTANT, never a re-typed literal, so a reworded reason cannot \
+         drift into text no client ever receives. \
+         RED AT HEAD BY ABORT, not by assertion: with no gate this call reaches the status \
+         write and the native host takes the process down on the unmodelled write syscall."
+    );
+    let got = crate::trading::respond_trade(&ctx, 4, true);
+    assert_eq!(
+        got, gated,
+        "rb-47 E1 FAIL (the criterion, later stamp): the reducer returned {got:?} for a \
+         mid-grace caller accepting an offer created one millisecond AFTER their deletion \
+         request. This is the literal EARS shape — an offer created AFTER the request — and \
+         an implementation that reds only the equal-stamp case above while passing this one \
+         is not reachable without inverting the comparison, which the pure truth table also \
+         owns. Admitting it lets a deleting account escrow a counterparty into a swap the \
+         cascade is about to unwind."
+    );
+}

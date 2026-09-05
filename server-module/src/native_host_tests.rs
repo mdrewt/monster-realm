@@ -141,8 +141,12 @@ fn host() -> MutexGuard<'static, Host> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn key_bytes(owner: Identity) -> Key {
-    bsatn::to_vec(&owner).expect("native_host_tests: an Identity always BSATN-encodes")
+/// BSATN bytes of one index key. Generic since rb-47: the generated point scan
+/// hands this host the BSATN of whatever the indexed column's type is (an
+/// `Identity` for the owner-keyed tables, a `u64` for an auto-inc primary key),
+/// and byte equality on canonical BSATN is value equality for every one of them.
+fn key_bytes<K: Serialize>(key: &K) -> Key {
+    bsatn::to_vec(key).expect("native_host_tests: an index key always BSATN-encodes")
 }
 
 /// One test's exclusive view of the in-memory host: rows are empty on
@@ -187,6 +191,24 @@ impl Fixture {
         column: &str,
         owner_of: fn(&R) -> Identity,
     ) -> Handle<'a, R> {
+        self.table_keyed(table, column, owner_of)
+    }
+
+    /// The same registration for a table whose single-column index is keyed by
+    /// a non-`Identity` column — a `u64` auto-inc primary key, say — so a reducer
+    /// whose FIRST statement is a point read on such a key can be executed here
+    /// at all (rb-47; before this every such reducer stopped at "not found" in
+    /// every state, which made a behavioural test of it vacuous). Same
+    /// derived-name rule, same idempotence, same no-constraints caveat as
+    /// [`Fixture::table`], which is now a thin `Identity`-keyed alias of this.
+    /// The write wall is unchanged: a path that reaches an update or delete
+    /// still aborts, so tests over such reducers can assert REFUSALS only.
+    pub(crate) fn table_keyed<'a, R: Serialize, K: Serialize>(
+        &'a self,
+        table: &str,
+        column: &str,
+        key_of: fn(&R) -> K,
+    ) -> Handle<'a, R, K> {
         let index = format!("{table}_{column}_idx_btree");
         let mut h = host();
         let table_id = h.table_id(table);
@@ -194,7 +216,7 @@ impl Fixture {
         h.index_table.insert(index_id, table_id);
         Handle {
             table_id,
-            owner_of,
+            key_of,
             _rows: PhantomData,
             _fixture: PhantomData,
         }
@@ -212,18 +234,20 @@ impl Fixture {
 /// going through the (unmodelled) write syscalls. Borrows the [`Fixture`] it
 /// came from, so `fixture().table(..)` — a temporary fixture whose lock would
 /// drop at the end of the statement — does not compile: the serialisation
-/// lock outlives every handle by construction.
-pub(crate) struct Handle<'a, R> {
+/// lock outlives every handle by construction. `K` is the indexed column's
+/// type and defaults to `Identity`, so every pre-rb-47 `Handle<'_, Row>`
+/// spelling still names the owner-keyed shape.
+pub(crate) struct Handle<'a, R, K = Identity> {
     table_id: u32,
-    owner_of: fn(&R) -> Identity,
+    key_of: fn(&R) -> K,
     _rows: PhantomData<fn(&R)>,
     _fixture: PhantomData<&'a Fixture>,
 }
 
-impl<R: Serialize> Handle<'_, R> {
+impl<R: Serialize, K: Serialize> Handle<'_, R, K> {
     /// Store `row` exactly as the generated insert path would encode it.
     pub(crate) fn seed(&self, row: &R) {
-        let key = key_bytes((self.owner_of)(row));
+        let key = key_bytes(&(self.key_of)(row));
         let bytes =
             bsatn::to_vec(row).expect("native_host_tests: a table row always BSATN-encodes");
         host()
@@ -233,10 +257,10 @@ impl<R: Serialize> Handle<'_, R> {
             .push((key, bytes));
     }
 
-    /// Remove every row whose indexed `Identity` is `owner`; returns how many
-    /// went, so a test can assert it actually removed something.
-    pub(crate) fn remove(&self, owner: Identity) -> usize {
-        let key = key_bytes(owner);
+    /// Remove every row whose indexed key is `key`; returns how many went, so
+    /// a test can assert it actually removed something.
+    pub(crate) fn remove(&self, key: K) -> usize {
+        let key = key_bytes(&key);
         let mut h = host();
         let rows = h.rows.entry(self.table_id).or_default();
         let before = rows.len();

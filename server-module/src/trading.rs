@@ -431,7 +431,10 @@ pub fn propose_trade(
 /// (role FIRST — no status leak to non-parties; 16.5f-1, ADR-0117).
 ///
 /// - `accepted = false` → row deleted (escrow released, no assets moved, TR-13).
-/// - `accepted = true` → status → ConfirmedByCounterparty (TR-14).
+/// - `accepted = true` → status → ConfirmedByCounterparty (TR-14), unless the
+///   caller is deletion-gated and the offer was created at or after their own
+///   deletion request (rb-47, ADR-0237 — offers predating the request stay
+///   completable, PRV1-10).
 #[spacetimedb::reducer]
 pub fn respond_trade(ctx: &ReducerContext, trade_id: u64, accepted: bool) -> Result<(), String> {
     let me = ctx.sender();
@@ -451,6 +454,18 @@ pub fn respond_trade(ctx: &ReducerContext, trade_id: u64, accepted: bool) -> Res
         disarm_trade_reaper(ctx, trade_id);
         return Ok(());
     }
+
+    // Offer-age gate (ADR-0237, PRV1-9 completeness): a deletion-gated caller may
+    // not ACCEPT an offer created at or after their own deletion request — that
+    // would consummate a NEW commitment mid-grace through a confederate's
+    // proposal — while offers predating the request stay completable (PRV1-10).
+    // Below the decline block on purpose (declines unwind; gating them would
+    // freeze the counterparty's escrow), after `authorize_respond` (role first,
+    // ADR-0117 — and it is what proved the caller IS the counterparty), before
+    // the status write. Fully qualified + `?;` + the inline `offer.created_at_ms`
+    // argument are all pinned (unshadowable path, no discarded verdict, no
+    // substituted stamp).
+    crate::guards::require_commitment_predates_deletion(ctx, "respond_trade", offer.created_at_ms)?;
 
     // Acceptance: advance to ConfirmedByCounterparty (TR-14).
     let mut updated = offer;
