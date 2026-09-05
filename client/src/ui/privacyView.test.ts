@@ -411,27 +411,30 @@ describe('PrivacyView (rb-52, PRV1-3/PRV1-4): the constructed DOM shell', () => 
     { id: EXPORT_BTN_ID, label: 'SYNTHETIC EXPORT', handler: 'onExportRequested' },
   ];
 
-  it.each(CONTROLS)(
-    'RB52V-CONTROL-REACHABLE ($id is visible, labelled, enabled — and fires $handler and NOTHING else)',
-    ({ id, label, handler }) => {
-      // WRONG IMPL KILLED (1) ★ THE MEASURED ONE: copying `claimView.ts`'s `#wireButton`
-      // verbatim. `ensureElement` creates every node `display:none` and claimView never
-      // un-hides its buttons, so that shell ships five blank invisible controls whose handlers
-      // a `.click()` still fires. Every click-only test passes; the human sees an empty box.
-      // The walk + the label assertion inside `expectReachableControl` are what see it.
-      // WRONG IMPL KILLED (2): a control wired to the wrong handler (delete -> cancel). The
-      // five zero-count assertions in `expectOnly` are what see THAT; a bare "some handler
-      // fired" check cannot.
-      // WRONG IMPL KILLED (3): a handler bound at construction to a stale closure so a second
-      // click fires nothing — the call count is exact, not `toHaveBeenCalled`.
-      view.show();
-      view.render(vmOf());
-      clearSpies();
-      const node = expectReachableControl(id, label, true);
-      node.click();
-      expectOnly(handler);
-    },
-  );
+  it.each(
+    CONTROLS,
+  )('RB52V-CONTROL-REACHABLE ($id is visible, labelled, enabled — and fires $handler and NOTHING else)', ({
+    id,
+    label,
+    handler,
+  }) => {
+    // WRONG IMPL KILLED (1) ★ THE MEASURED ONE: copying `claimView.ts`'s `#wireButton`
+    // verbatim. `ensureElement` creates every node `display:none` and claimView never
+    // un-hides its buttons, so that shell ships five blank invisible controls whose handlers
+    // a `.click()` still fires. Every click-only test passes; the human sees an empty box.
+    // The walk + the label assertion inside `expectReachableControl` are what see it.
+    // WRONG IMPL KILLED (2): a control wired to the wrong handler (delete -> cancel). The
+    // five zero-count assertions in `expectOnly` are what see THAT; a bare "some handler
+    // fired" check cannot.
+    // WRONG IMPL KILLED (3): a handler bound at construction to a stale closure so a second
+    // click fires nothing — the call count is exact, not `toHaveBeenCalled`.
+    view.show();
+    view.render(vmOf());
+    clearSpies();
+    const node = expectReachableControl(id, label, true);
+    node.click();
+    expectOnly(handler);
+  });
 
   it('RB52V-DISABLED-MIRROR: `disabled` follows the view model in BOTH directions, per control', () => {
     // WRONG IMPL KILLED (1) ★: never writing `disabled` at all. Every control would stay live,
@@ -610,27 +613,28 @@ describe('PrivacyView (rb-52, PRV1-3/PRV1-4): the constructed DOM shell', () => 
   // TOOTH 7 — the section 9 disclosure is on screen in EVERY state.
   // -------------------------------------------------------------------------
 
-  it.each(RB52_MATRIX.map(([where, state]) => ({ where, state })))(
-    'RB52V-DISCLOSURE-ALWAYS ($where still shows the full section 9 pseudonymization sentence)',
-    ({ state }) => {
-      // WRONG IMPL KILLED ★: a render path that blanks or replaces the disclosure on ONE branch
-      // — the terminal one being the obvious candidate ("the account is gone, the caveat no
-      // longer applies"). It is exactly backwards: the sentence explains that the Identity key
-      // and its behavioral history are NOT purged, which is most load-bearing precisely when
-      // the account has just been erased. A single-state assertion cannot see a one-branch
-      // blank; the matrix can.
-      // WRONG IMPL KILLED (2): a disclosure written once at construction and then destroyed by
-      // a later `replaceChildren()`-style rebuild — the assertion runs AFTER a render.
-      view.show();
-      view.render(buildPrivacyViewModel(state));
-      const disclosure = el(DISCLOSURE_ID);
-      expect(disclosure.textContent).toBe(PRIVACY_PSEUDONYMIZATION_DISCLOSURE);
-      expect(
-        hiddenAncestorOf(disclosure),
-        'the disclosure must be ON SCREEN in this state, not merely present in the DOM',
-      ).toBeNull();
-    },
-  );
+  it.each(
+    RB52_MATRIX.map(([where, state]) => ({ where, state })),
+  )('RB52V-DISCLOSURE-ALWAYS ($where still shows the full section 9 pseudonymization sentence)', ({
+    state,
+  }) => {
+    // WRONG IMPL KILLED ★: a render path that blanks or replaces the disclosure on ONE branch
+    // — the terminal one being the obvious candidate ("the account is gone, the caveat no
+    // longer applies"). It is exactly backwards: the sentence explains that the Identity key
+    // and its behavioral history are NOT purged, which is most load-bearing precisely when
+    // the account has just been erased. A single-state assertion cannot see a one-branch
+    // blank; the matrix can.
+    // WRONG IMPL KILLED (2): a disclosure written once at construction and then destroyed by
+    // a later `replaceChildren()`-style rebuild — the assertion runs AFTER a render.
+    view.show();
+    view.render(buildPrivacyViewModel(state));
+    const disclosure = el(DISCLOSURE_ID);
+    expect(disclosure.textContent).toBe(PRIVACY_PSEUDONYMIZATION_DISCLOSURE);
+    expect(
+      hiddenAncestorOf(disclosure),
+      'the disclosure must be ON SCREEN in this state, not merely present in the DOM',
+    ).toBeNull();
+  });
 
   it('RB52V-ERASURE-CENSUS-DOM: "erasure" appears exactly once in the rendered surface, and only inside the disclosure element', () => {
     // ⚠ A "the surface must not contain the word erasure" scan is the WRONG gate and would fail

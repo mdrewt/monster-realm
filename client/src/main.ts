@@ -93,7 +93,6 @@ import {
   claimStep,
 } from './ui/claimModel';
 import type { ClaimView, ClaimViewHandlers } from './ui/claimView';
-import type { PrivacyView, PrivacyViewHandlers } from './ui/privacyView';
 import { DIALOGUE_TREES } from './ui/dialogueContent';
 import { buildDialogueViewModel } from './ui/dialogueModel';
 import type { DialogueView } from './ui/dialogueView';
@@ -155,12 +154,13 @@ import {
 import { buildPrivacyViewModel, privacyBannerLabel } from './ui/privacyBanner';
 import {
   type DeletionCountdown,
+  deriveDeletionCountdown,
   PRIVACY_INITIAL,
   type PrivacyEvent,
   type PrivacyModelState,
-  deriveDeletionCountdown,
   privacyStep,
 } from './ui/privacyModel';
+import type { PrivacyView, PrivacyViewHandlers } from './ui/privacyView';
 import { buildPvpChallengeViewModel } from './ui/pvpModel';
 import type { PvpView } from './ui/pvpView';
 import { buildQuestLogViewModel } from './ui/questLogModel';
@@ -523,7 +523,11 @@ function applyPrivacy(event: PrivacyEvent): void {
 // Like sendGuarded, but the rejection is routed BACK INTO THE MODEL as well as to the error ring:
 // `privacyModel.ts` keys PRV1-4's terminal notice on the message text, and reduceErrorMessage
 // composes exactly the `${where}: ${message}` shape its `endsWith` guard expects.
-function sendPrivacy(where: string, which: 'delete' | 'cancel' | 'export', call: () => Promise<void> | undefined): void {
+function sendPrivacy(
+  where: string,
+  which: 'delete' | 'cancel' | 'export',
+  call: () => Promise<void> | undefined,
+): void {
   call()?.then(
     () => applyPrivacy({ kind: 'request-succeeded', which }),
     (err: unknown) => {
@@ -2976,7 +2980,8 @@ async function main(): Promise<void> {
         lastPrivacyCountdown === undefined ||
         lastPrivacyCountdown.phase !== privacyCountdown.phase ||
         lastPrivacyCountdown.cancelPermitted !== privacyCountdown.cancelPermitted ||
-        lastPrivacyCountdown.cancelPermanentlyRejected !== privacyCountdown.cancelPermanentlyRejected ||
+        lastPrivacyCountdown.cancelPermanentlyRejected !==
+          privacyCountdown.cancelPermanentlyRejected ||
         lastPrivacyCountdown.deletePermitted !== privacyCountdown.deletePermitted ||
         lastPrivacyCountdown.exportPermitted !== privacyCountdown.exportPermitted
       ) {

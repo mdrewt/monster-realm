@@ -81,7 +81,6 @@ import { t } from './a11yCopy';
 import { BattleView } from './battleView';
 import { BoxView } from './boxView';
 import { ClaimView } from './claimView';
-import { PrivacyView } from './privacyView';
 import { DialogueView } from './dialogueView';
 import { EvolutionView } from './evolutionView';
 import { HealView } from './healView';
@@ -90,6 +89,7 @@ import { LeaderboardView } from './leaderboardView';
 import { MenuView } from './menuView';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
+import { PrivacyView } from './privacyView';
 import { PvpView } from './pvpView';
 import { QuestLogView } from './questLogView';
 import { RaisingView } from './raisingView';
@@ -550,7 +550,9 @@ describe.sequential('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wir
   it('S10-WIRE-TOTALITY BITES: the opener table covers EVERY OverlayId and nothing else, and the manifest is the real seventeen', () => {
     // Compile-time totality is the primary device (Record<OverlayId, _>); these are the runtime
     // belts, so an `as` cast or a `@ts-expect-error` cannot quietly shrink the parameterisation.
-    expect(OVERLAY_IDS.length, 'the manifest must hold seventeen mutual-exclusion overlays').toBe(17);
+    expect(OVERLAY_IDS.length, 'the manifest must hold seventeen mutual-exclusion overlays').toBe(
+      17,
+    );
     expect(Object.keys(OPENERS).sort()).toEqual([...OVERLAY_IDS].sort());
     expect(Object.keys(OVERLAY_A11Y).sort()).toEqual([...OVERLAY_IDS].sort());
 
@@ -559,7 +561,9 @@ describe.sequential('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wir
     // `A11YCOPY-OVERLAY-NAMESPACE-EXACT` pins KEY set-equality, not VALUE distinctness, so nothing
     // asserted this before.
     const names = OVERLAY_IDS.map((id) => t(OVERLAY_A11Y[id].labelKey));
-    expect(new Set(names).size, 'the seventeen accessible names must be pairwise distinct').toBe(17);
+    expect(new Set(names).size, 'the seventeen accessible names must be pairwise distinct').toBe(
+      17,
+    );
 
     // rb-18: SHAPE totality, not just KEY totality. `Opened.reopen` is what makes the repeat and
     // reopen-after-close teeth possible, and since this file is not typechecked in CI (see the

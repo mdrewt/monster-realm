@@ -229,27 +229,27 @@ describe('privacyBannerLabel (PRV1-1): the exact rendered strings', () => {
       ms: remainingMs,
       duration,
     })),
-  )(
-    '★ RB51-LABEL-GRACE BITES: remainingMs $remainingMs renders exactly "Account deletion in $duration"',
-    ({ ms, duration }) => {
-      // WRONG IMPL KILLED (1) ★ THE ONE THE PLAN NAMES: a formatter that stops at the two
-      // largest units ('2d 3h'). It passes every "looks like a duration" shape check and every
-      // minute-scale fixture, and it makes the banner STAND STILL for an hour at a time — the
-      // exact opposite of PRV1-1's "ticking". Rows 86_400_000n and 183_845_000n kill it.
-      // WRONG IMPL KILLED (2): rendering a leading zero-valued group ('0d 1h 0m 0s') or
-      // dropping the trailing zero groups ('1h') — both are pinned by exact equality here.
-      // WRONG IMPL KILLED (3): rounding instead of truncating (999n -> '1s'), which would show
-      // "1s remaining" for a window that is already inside its final second.
-      // WRONG IMPL KILLED (4): an unclamped negative (-5_000n -> '-5s' or '0d -1h ...'), the
-      // classic symptom of subtracting in the wrong direction.
-      // WRONG IMPL KILLED (5): a units-in-the-wrong-place transposition (minutes rendered where
-      // hours belong) — 183_845_000n has four DISTINCT non-zero groups precisely so a swap
-      // cannot survive it.
-      expect(privacyBannerLabel(countdownOf({ phase: 'grace', remainingMs: ms }))).toBe(
-        GRACE_PREFIX + duration,
-      );
-    },
-  );
+  )('★ RB51-LABEL-GRACE BITES: remainingMs $remainingMs renders exactly "Account deletion in $duration"', ({
+    ms,
+    duration,
+  }) => {
+    // WRONG IMPL KILLED (1) ★ THE ONE THE PLAN NAMES: a formatter that stops at the two
+    // largest units ('2d 3h'). It passes every "looks like a duration" shape check and every
+    // minute-scale fixture, and it makes the banner STAND STILL for an hour at a time — the
+    // exact opposite of PRV1-1's "ticking". Rows 86_400_000n and 183_845_000n kill it.
+    // WRONG IMPL KILLED (2): rendering a leading zero-valued group ('0d 1h 0m 0s') or
+    // dropping the trailing zero groups ('1h') — both are pinned by exact equality here.
+    // WRONG IMPL KILLED (3): rounding instead of truncating (999n -> '1s'), which would show
+    // "1s remaining" for a window that is already inside its final second.
+    // WRONG IMPL KILLED (4): an unclamped negative (-5_000n -> '-5s' or '0d -1h ...'), the
+    // classic symptom of subtracting in the wrong direction.
+    // WRONG IMPL KILLED (5): a units-in-the-wrong-place transposition (minutes rendered where
+    // hours belong) — 183_845_000n has four DISTINCT non-zero groups precisely so a swap
+    // cannot survive it.
+    expect(privacyBannerLabel(countdownOf({ phase: 'grace', remainingMs: ms }))).toBe(
+      GRACE_PREFIX + duration,
+    );
+  });
 
   it('★ RB51-LABEL-DARK BITES: a DARK grace window says so in words, and never renders a fabricated 0', () => {
     // WRONG IMPL KILLED: `remainingMs ?? 0n` (or a `Number(undefined)` slip rendering 'NaNs').
