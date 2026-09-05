@@ -13,7 +13,7 @@
  *
  *   1. `#app` MUST exist. The precedent deliberately omits it so main() builds no view
  *      shells at all. This slice's whole subject — the twelve hotkey open-guards, the
- *      overlay a11y wiring, the canvas focus target — needs the REAL sixteen views
+ *      overlay a11y wiring, the canvas focus target — needs the REAL seventeen views
  *      constructed against the REAL static shells. The DOM is built by parsing the REAL
  *      `client/index.html` with `DOMParser` and moving its body children into the live
  *      document via `document.adoptNode` + `replaceChildren` — never `innerHTML`

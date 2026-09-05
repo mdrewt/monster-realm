@@ -26,10 +26,10 @@
 //     contains a comment reading `…breaks decide(); D17…`. And the natural fix for that
 //     (`.endsWith('View')`) is green-and-wrong: a seventeenth member added to the union alone,
 //     with no table entry, sails through.
-//   * §5.1's own `[A11Y-02]` regex `/^a11y\.[a-z0-9.]+$/` REJECTS ALL SIXTEEN shipped keys — they
+//   * §5.1's own `[A11Y-02]` regex `/^a11y\.[a-z0-9.]+$/` REJECTS ALL SEVENTEEN shipped keys — they
 //     are `a11y.overlay.boxView.title`, capital V, mandated by `ui/a11yCopy.ts:14-17` and by
 //     ADR-0205 D5, which instructs this slice BY NAME that "its [A11Y-02] regex must permit
-//     uppercase … or it reds on sixteen valid keys". The dangerous fix is `/^a11y\..+$/`, which
+//     uppercase … or it reds on seventeen valid keys". The dangerous fix is `/^a11y\..+$/`, which
 //     then admits `a11y..`, `a11y.....` AND `a11y.count.{n}` — dissolving the ICU ban it was
 //     written to enforce. `overlayRegistry.test.ts:1332` already ships the correct SHAPE_RE and
 //     records that measurement in-source.

@@ -11770,3 +11770,103 @@ describe('★ main.ts wiring (rb-51/PRV1-1): the countdown block sits between th
     ).toBeLessThan(codeDrain[0] as number);
   });
 });
+
+// ===========================================================================
+// ★ rb-52 (PRV1-3/PRV1-4) — the two mitigations ADR-0231 Amendment A2 CLAIMS, pinned.
+//
+// Both were found free by the pre-merge verifier's own mutant register: deleting either guard
+// left all 3039 client tests green. An ADR sentence that says a hazard "is mitigated here" and a
+// codebase in which deleting the mitigation is CI-green cannot both stand, so the sentences got
+// teeth rather than a downgrade.
+//
+// These are SOURCE pins, not behavioural ones, and that is deliberate: both guards are one-line
+// early returns inside `main.ts`, which is coverage-excluded, and the behaviour each prevents
+// (a second focus trap installed over a live modal; a player left with no overlay and no message)
+// is not observable from the shell's own render output.
+//
+// NO `new RegExp(...)` — indexOf / includes / split / slice only, per this file's convention.
+// ===========================================================================
+
+describe('★ main.ts wiring (rb-52): the claim-render suppression and the privacy open verdict', () => {
+  it('★ W-RB52-CLAIM-RENDER-DEFERRED BITES: renderClaim defers its paint while the privacy overlay is visible, and the dismissal flushes it', () => {
+    // WRONG IMPL KILLED (1) ★ the verifier's surviving mutant V4: deleting the
+    //   `if (privacyView?.visible)` early return. `ClaimView.render` writes `display:'block'` AND
+    //   calls `openOverlayA11y('claimView', …)`, so without the guard a claim-lifecycle render
+    //   re-opens the claim overlay ON TOP of the privacy modal and installs a SECOND focus trap
+    //   mid-confirmation — the exact defect A2 says is mitigated.
+    // WRONG IMPL KILLED (2): suppressing by DROPPING the paint instead of deferring it.
+    //   `renderClaim` is the only path by which the reconnect-driven claim flow pops itself up,
+    //   so a dropped paint strands a pending claim with NO UI until the player happens to reopen
+    //   the account overlay. The `claimRenderPending` latch and its flush are what make this a
+    //   deferral; a guard with no latch passes clause 1 and reintroduces that.
+    const src = readMainTs();
+    const stripped = m20cWholeFile(src);
+    const squashed = squashWhitespace(stripped);
+
+    expect(
+      mwCodeOccurrences(squashed, 'function renderClaim(): void { if (privacyView?.visible) {')
+        .length,
+      'renderClaim must open with the privacy-visible guard — a guard placed AFTER the render ' +
+        'call would paint first and suppress nothing',
+    ).toBe(1);
+    expect(
+      mwCodeOccurrences(squashed, 'claimRenderPending = true;').length,
+      'the suppressed branch must LATCH the deferred paint, not discard it',
+    ).toBe(1);
+    expect(
+      mwCodeOccurrences(squashed, 'if (claimRenderPending) renderClaim();').length,
+      'the privacy overlay’s dismissal must FLUSH the deferred claim paint — without this the ' +
+        'latch is set and never read, which is a dropped paint with extra steps',
+    ).toBe(1);
+    // The flush must live in the privacy view's own dismissal handler, not somewhere that only
+    // runs on one of the several close paths (Escape, the close button, the battle force-hide).
+    const handlerRegion = m20cHunk(
+      src,
+      'const privacyHandlers: PrivacyViewHandlers = {',
+      'privacyView = new PrivacyViewClass(privacyHandlers);',
+    );
+    expect(
+      handlerRegion.includes('claimRenderPending'),
+      'ANTI-VACUITY: the flush must sit inside the privacy handler block, which every close ' +
+        'path reaches through PrivacyView.hide()’s onDismissed call',
+    ).toBe(true);
+  });
+
+  it('★ W-RB52-OPEN-VERDICT-BEFORE-HIDE BITES: openPrivacy takes the mutual-exclusion verdict BEFORE hiding the claim overlay, and reports a refusal', () => {
+    // WRONG IMPL KILLED (1) ★ the verifier's surviving mutant V2: deleting the verdict check
+    //   entirely, so the privacy overlay opens over a live battle or conversation.
+    // WRONG IMPL KILLED (2): the shipped first draft — `claimView?.hide()` FIRST, then the
+    //   verdict, then an early return. `claimView` is not in BATTLE_FORCE_HIDE and has unguarded
+    //   `show()` paths, so it is reachable over a battle; clicking the privacy door there hid the
+    //   claim overlay, hit `deny`, and left the player with NEITHER overlay and no message.
+    // WRONG IMPL KILLED (3): a silent `return` on deny — a button that does nothing at all.
+    const src = readMainTs();
+    const region = m20cHunk(src, 'function openPrivacy(): void {', 'function openClaim(): void {');
+    expect(
+      region.includes('overlayVerdict('),
+      'openPrivacy must consult the mutual-exclusion verdict',
+    ).toBe(true);
+    expect(
+      region.includes('reportError('),
+      'a refused open must TELL the player — a bare early return is a dead button',
+    ).toBe(true);
+    const verdictAt = region.indexOf('overlayVerdict(');
+    const hideAt = region.indexOf('claimView?.hide()');
+    const showAt = region.indexOf('privacyView?.show()');
+    expect(verdictAt, 'ANTI-VACUITY: the verdict call must be found in the region').toBeGreaterThan(
+      -1,
+    );
+    expect(hideAt, 'ANTI-VACUITY: the claim hide must be found in the region').toBeGreaterThan(-1);
+    expect(showAt, 'ANTI-VACUITY: the show call must be found in the region').toBeGreaterThan(-1);
+    expect(
+      verdictAt,
+      'the verdict must be taken BEFORE claimView is hidden — deciding after the hide destroys ' +
+        'the surface the player came from even when the open is refused',
+    ).toBeLessThan(hideAt);
+    expect(
+      hideAt,
+      'A2-D5: the claim overlay must still be hidden BEFORE show(), or openOverlayA11y captures ' +
+        'a soon-to-be-hidden node as its focus-return target',
+    ).toBeLessThan(showAt);
+  });
+});

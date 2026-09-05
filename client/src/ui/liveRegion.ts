@@ -139,7 +139,7 @@ export class LiveRegion {
  * store the same fact twice and keep the copies in sync by convention.
  *
  * NO NODE IN THE DOCUMENT IS A NO-OP, NOT A `null`. Returning a no-op closure means the caller has
- * no null branch at all — and it is the common case in the sixteen view test fixtures, none of
+ * no null branch at all — and it is the common case in the seventeen view test fixtures, none of
  * which mount a live region.
  */
 export function adoptLiveRegion(root: HTMLElement): () => void {

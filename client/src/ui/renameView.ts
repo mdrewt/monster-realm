@@ -6,7 +6,7 @@
 //      never reach the bubble-phase window keydown (movement + letter hotkeys). It also
 //      handles Enter=submit / Escape=cancel locally.
 //   2. The deferred initial focus is NO LONGER OWNED HERE (m23-s3). `ui/overlayA11y.ts` is the
-//      single owner of the setTimeout(…, 0) defer for all sixteen overlays, and it targets this
+//      single owner of the setTimeout(…, 0) defer for all seventeen overlays, and it targets this
 //      overlay's `initialFocusSelector` (#rename-input) from OVERLAY_A11Y. The defer itself is
 //      still load-bearing for the same reason it always was: it lets the opening key event (KeyN)
 //      fully complete so the `n` does not land in the field it just opened.

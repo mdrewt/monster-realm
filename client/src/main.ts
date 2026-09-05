@@ -463,11 +463,18 @@ function applySession(event: SessionEvent): void {
 function renderClaim(): void {
   // rb-52: ClaimPhase cannot represent "dismissed" (S4-claimView-REOPEN-AFTER-HIDE), so a later
   // claim-lifecycle render would re-open the claim overlay ON TOP of the privacy modal, stealing
-  // its focus trap mid-confirmation. Suppressing the paint is the in-scope half; the model defect
-  // needs claimModel.ts.
-  if (privacyView?.visible) return;
+  // its focus trap mid-confirmation. DEFERRED, not dropped: renderClaim is the only path by which
+  // the reconnect-driven claim flow pops itself up, so discarding the paint would strand a pending
+  // claim with no UI at all. The privacy overlay's dismissal flushes it.
+  if (privacyView?.visible) {
+    claimRenderPending = true;
+    return;
+  }
+  claimRenderPending = false;
   claimView?.render(buildClaimViewModel(claimModelState));
 }
+/** Set when a claim paint was deferred because the privacy overlay owned the screen. */
+let claimRenderPending = false;
 
 function applyClaim(event: ClaimEvent): void {
   const step = claimStep(claimModelState, event);
@@ -486,9 +493,24 @@ let privacyModelState: PrivacyModelState = PRIVACY_INITIAL;
 // The last countdown fed to the model. `account-changed` writes `inFlight: 'none'`, so pumping it
 // every frame would give the double-submit guard a ~16ms life (A2-D9).
 let lastPrivacyCountdown: DeletionCountdown | undefined;
+// The countdown as of THIS frame. The model is pumped only on a permission/phase change (A2-D9),
+// but the surface's status line FORMATS `remainingMs` — so rendering from the model's stored
+// countdown would freeze the deadline at the value the last phase change left behind, i.e. for the
+// whole grace window, while the HUD banner beside it ticks. Two contradictory deletion deadlines
+// from one derivation is the worst outcome available on a compliance surface. Written every frame,
+// read only at render: no model write, so `inFlight` is untouched.
+let livePrivacyCountdown: DeletionCountdown | undefined;
+// The last status line painted, so the per-frame render is a no-op until the label actually moves.
+let lastPrivacyStatusLabel: string | undefined;
 
 function renderPrivacy(): void {
-  privacyView?.render(buildPrivacyViewModel(privacyModelState));
+  const vm = buildPrivacyViewModel(
+    livePrivacyCountdown === undefined
+      ? privacyModelState
+      : { ...privacyModelState, countdown: livePrivacyCountdown },
+  );
+  lastPrivacyStatusLabel = vm.statusLabel;
+  privacyView?.render(vm);
 }
 
 // A2-D8: a missing live handle is a NON-DELIVERY. sendGuarded cannot see it — `undefined?.catch()`
@@ -543,8 +565,19 @@ function sendPrivacy(
 // display:none node is — so showing first would park focus in a hidden subtree on close and kill
 // every overlay hotkey until the player clicks the canvas.
 function openPrivacy(): void {
+  // The verdict is taken BEFORE the hide. `claimView` is never a legitimate blocker — this surface
+  // is reached FROM it — and it is safe to read that off `blockedBy` rather than re-probing,
+  // because `canOpen` reports the FIRST denier in OVERLAY_IDS order and `claimView` is
+  // second-to-last, so a `claimView` verdict means nothing else denied. Hiding first and
+  // discovering the deny afterwards would leave the player with NEITHER overlay and no message.
+  const verdict = overlayVerdict('privacyView');
+  if (verdict.kind === 'deny' && verdict.blockedBy !== 'claimView') {
+    reportError('privacy: close the other overlay first');
+    return;
+  }
+  // Only now. A2-D5: hiding claim BEFORE show() is what keeps openOverlayA11y from capturing a
+  // soon-to-be-hidden node as its focus-return target.
   claimView?.hide();
-  if (overlayVerdict('privacyView').kind !== 'allow') return;
   renderPrivacy();
   privacyView?.show();
 }
@@ -2646,7 +2679,11 @@ async function main(): Promise<void> {
         applyPrivacy({ kind: 'cancel-deletion-requested', hasLiveConnection: privacyLinkLive() }),
       onExportRequested: () =>
         applyPrivacy({ kind: 'export-requested', hasLiveConnection: privacyLinkLive() }),
-      onDismissed: () => applyPrivacy({ kind: 'confirm-cancelled' }),
+      onDismissed: () => {
+        applyPrivacy({ kind: 'confirm-cancelled' });
+        // Flush a claim paint deferred while this overlay owned the screen.
+        if (claimRenderPending) renderClaim();
+      },
     };
     privacyView = new PrivacyViewClass(privacyHandlers);
     // M21b-2 (ADR-0182 D17): the session-lifecycle overlay (registry-external). Its actions drive
@@ -2861,6 +2898,12 @@ async function main(): Promise<void> {
       // the existing public hide()). Escape-only recovery during the gap (uxd2:
       // the global shop hotkey is gone — ADR-0161 D5).
       shopView?.hide();
+      // rb-52: the same never-settling-promise class as the four hides above, for the privacy
+      // surface's `inFlight` lock. Clearing the memo makes the next frame re-pump
+      // `account-changed`, which clears `inFlight` — without it, a drop during an export requested
+      // while the phase was already `unknown` (the ordinary guest state) leaves all three controls
+      // disabled, with no notice, for the life of the page.
+      lastPrivacyCountdown = undefined;
       // uxd2 (ADR-0161 D4/D5): the store was reset, so a pending or bound
       // shop / heal id refers to rows that may no longer exist — clear all three
       // (a stale pendingShopId would otherwise pop a shop on the first
@@ -2973,6 +3016,17 @@ async function main(): Promise<void> {
         graceMs: DELETION_GRACE_MS_DEFAULT,
       });
       renderPrivacyCountdown(privacyBannerLabel(privacyCountdown));
+      // rb-52: the OVERLAY's status line formats `remainingMs` too, so it must be repainted from
+      // the live countdown or it freezes at the value the last phase change left behind. A RENDER,
+      // never a model write. Memoized on the label so a still countdown costs nothing.
+      livePrivacyCountdown = privacyCountdown;
+      if (privacyView?.visible) {
+        const nextLabel = buildPrivacyViewModel({
+          ...privacyModelState,
+          countdown: privacyCountdown,
+        }).statusLabel;
+        if (nextLabel !== lastPrivacyStatusLabel) renderPrivacy();
+      }
       // rb-52 (A2-D9): CHANGE-DETECTED, never per frame. `account-changed` clears `inFlight`, and
       // that is the only double-submit guard. `remainingMs` moves every frame, so the comparison
       // deliberately ignores it — the model reads permissions and the phase, never the number.

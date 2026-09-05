@@ -270,7 +270,15 @@ export const OVERLAY_A11Y: Readonly<Record<OverlayId, A11yMeta>> = {
     // `evals/keyboard-operable-rows.eval.mjs` hard-fails a `tabindex` write from any file outside
     // its frozen table, and that eval is outside this slice's touches. `#claim-signin-btn` is the
     // same shape for the same reason.
-    initialFocusSelector: '#privacy-delete-btn',
+    //
+    // THE CLOSE BUTTON, NOT THE DELETE BUTTON (A2-D10). `#privacy-delete-btn` carries `disabled`
+    // in every phase except `active` — and a disabled control is unfocusable, so in `grace`
+    // (PRV1-3's own state) `.focus()` would be a silent no-op leaving focus on <body>, where
+    // `focusTrap`'s capture listener on the root never fires and Tab walks the page behind the
+    // modal. In `terminal` — this criterion's flagship state — every other control is disabled or
+    // hidden, so the trap would have NO focusable content at all. The close control is the one
+    // thing enabled in all five phases.
+    initialFocusSelector: '#privacy-close-btn',
     dismissible: true,
   },
 };

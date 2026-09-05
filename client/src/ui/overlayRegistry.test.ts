@@ -370,13 +370,13 @@ describe('overlayRegistry — canOpen decision table', () => {
   });
 
   it('OR-CANOPEN-GUARDONLY-ALL BITES: every GUARD_ONLY member blocks every other target — demoting ANY id out of GUARD_ONLY re-fails (AC-2/AC-20)', () => {
-    // WRONG IMPL KILLED: demoting any one of the 12 GUARD_ONLY ids. The loop domain is the
+    // WRONG IMPL KILLED: demoting any one of the 13 GUARD_ONLY ids. The loop domain is the
     // HARD-CODED EXPECTED_GUARD_ONLY literal (A4) — a derived `OVERLAY_IDS.filter(isGuardOnly)`
     // domain would simply shrink when an id is demoted and stay green.
     //
     // A1 carve-out: the battleView TARGET row is NOT deny-for-everything. refreshBattle really
     // does force-hide help/leaderboard/rename/tradePropose/menu and then show the battle, so
-    // those five GUARD_ONLY ids yield allow{forceHide:[g]} when the target is the battle. The
+    // those six GUARD_ONLY ids yield allow{forceHide:[g]} when the target is the battle. The
     // other six (dialogue/questLog/heal/shop/trade/pvp) still deny it.
     let denies = 0;
     let allows = 0;
@@ -400,8 +400,8 @@ describe('overlayRegistry — canOpen decision table', () => {
         denies += 1;
       }
     }
-    // ANTI-VACUITY + exactness: 12 blockers x 15 other targets = 180 cells, of which exactly
-    // the 5 battle-target/battle-force-hidable pairs allow. M21b-2 (G19) moved this from
+    // ANTI-VACUITY + exactness: 13 blockers x 16 other targets = 208 cells, of which exactly
+    // the 6 battle-target/battle-force-hidable pairs allow. M21b-2 (G19) moved this from
     // 11x14=154: `claimView` is a 12th GUARD_ONLY blocker and a 16th target, and it is NOT a
     // BATTLE_FORCE_HIDE member — so `canOpen('battleView', ['claimView'])` DENIES, and the
     // allow count stays 5 while the deny count grows 149 -> 175. That asymmetry is the point:
@@ -573,13 +573,13 @@ describe('overlayRegistry — force-hide sets', () => {
       }
     }
     // ANTI-VACUITY: 17 targets x (17 singletons + 136 pairs) = 2601 verdicts. (rb-52 moved this
-    // moved this from 15 x (15 + 105) = 1800; the pair count is C(16,2) = 120.)
+    // from 16 x (16 + 120) = 2176; the pair count is now C(17,2) = 136.)
     expect(verdicts, 'ANTI-VACUITY: the exhaustive sweep must have produced 2601 verdicts').toBe(
       2601,
     );
   });
 
-  it('OR-HIDEALLEXCEPT-BATTLE-SUBSET BITES: the battle plan is the VISIBLE intersection of the 8-set, and every other keep plans nothing (AC-4)', () => {
+  it('OR-HIDEALLEXCEPT-BATTLE-SUBSET BITES: the battle plan is the VISIBLE intersection of the 9-set, and every other keep plans nothing (AC-4)', () => {
     // WRONG IMPL KILLED (1): the tautology trap — expressing the expectation as
     // `BATTLE_FORCE_HIDE.filter(...)` is the SAME expression the implementation evaluates, so
     // it passes for any force-hide set whatsoever. The expectation below is an INDEPENDENT
@@ -1582,7 +1582,7 @@ describe('overlayRegistry — OVERLAY_A11Y stays inside the module purity rule (
       selectorsChecked,
       'ANTI-VACUITY: all 17 initialFocusSelector values must have been shape-checked',
     ).toBe(17);
-    // Each overlay focuses its OWN anchor. Sixteen identical selectors would pass every check
+    // Each overlay focuses its OWN anchor. Seventeen identical selectors would pass every check
     // above (they are all well-shaped) while meaning fifteen overlays focus the wrong element —
     // and §5.1's GOOD fixture only sanctions reusing `role`, never the selector.
     expect(

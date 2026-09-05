@@ -2,7 +2,7 @@
 // ui/overlayA11yWiring.test.ts — the CROSS-VIEW overlay-a11y wiring spec (M23 §5.5, slice m23-s10;
 // criteria A11Y-13, A11Y-14, A11Y-16).
 //
-// WHY THIS FILE EXISTS WHEN SIXTEEN PER-VIEW SPECS ALREADY DO. Each of those proves ONE id, from a
+// WHY THIS FILE EXISTS WHEN SEVENTEEN PER-VIEW SPECS ALREADY DO. Each of those proves ONE id, from a
 // hand-copied byte fixture of its own shell. Two properties are invisible to all of them together:
 //
 //   1. TOTALITY. Nothing asserts that EVERY `OverlayId` is wired. A seventeenth overlay, or a view
@@ -28,9 +28,9 @@
 //     `:52`, `:57`, `:64`, `:90`, `:105`), and for the other five they are echoed straight back from
 //     the table the assertion reads. A view whose `show()` calls nothing passes both.
 //     `helpView.test.ts:56` and `dialogueView.test.ts:23` already record this in-source.
-//   * The `{BUTTON, INPUT, SELECT, A, TEXTAREA}` tag allow-list is UNSATISFIABLE: exactly THREE of
-//     seventeen anchors qualify (`#rename-input`, `#tradepropose-target`, `#claim-signin-btn`). The
-//     other thirteen are `<div>`/`<ul>`/`<h2>` carrying `tabindex="-1"` — the ARIA APG dialog
+//   * The `{BUTTON, INPUT, SELECT, A, TEXTAREA}` tag allow-list is UNSATISFIABLE: exactly FOUR of
+//     seventeen anchors qualify (`#rename-input`, `#tradepropose-target`, `#claim-signin-btn` and,
+//     since rb-52, `#privacy-close-btn`). The other thirteen are `<div>`/`<ul>`/`<h2>` carrying `tabindex="-1"` — the ARIA APG dialog
 //     fallback the milestone DELIBERATELY ships. `docs/adr/0205:31,:50-58` amends the wording to
 //     "focusable — natively, or via `tabindex`" and `:284-287` instructs this slice by name to use
 //     "the identity assertion as the anti-vacuity device, not a native-tag allow-list".
@@ -133,7 +133,7 @@ const NATIVE_FOCUSABLE_TAGS: ReadonlySet<string> = new Set([
  *
  * NOT `focusTrap.ts:64`'s `FOCUSABLE_SELECTOR`: that one deliberately EXCLUDES `[tabindex="-1"]`
  * (`focusTrap.ts:52-56`), because tab-ring membership and programmatic focusability are different
- * questions. Using it here would fail fourteen of seventeen ids for the wrong reason.
+ * questions. Using it here would fail thirteen of seventeen ids for the wrong reason.
  */
 // Module-local, NOT exported: biome's `noExportsInTest` treats an export from a spec file as a
 // production-module smell, and nothing outside this file consumes it.
@@ -839,7 +839,7 @@ describe.sequential('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wir
         // repeat. A repeat that rebuilds the anchor detaches the node the manifest names, so the
         // guard stops mattering and production drops focus to <body> — while the assertion above
         // still passes. Pins `overlayRegistry.ts:152`'s "STABLE, CONSTRUCTOR-TIME ANCHOR" contract
-        // for all sixteen ids at once.
+        // for all seventeen ids at once.
         expect(
           root.querySelector(meta.initialFocusSelector),
           `${id}: the repeat rebuilt the manifest anchor node`,

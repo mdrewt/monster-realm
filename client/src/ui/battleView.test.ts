@@ -50,7 +50,7 @@ import { BattleView, type BattleViewCallbacks } from './battleView';
 //
 // COMPOSITION NOTE (plan §8 A7): DEFER-FOCUS and CLOSE-RESTORE are NOT separate
 // teeth here — DEFER-FOCUS ≡ HELPER-CALLED ∘ S1-DEFER-* (overlayA11y.test.ts already
-// proves the defer mechanism for all sixteen ids, folded here into
+// proves the defer mechanism for all seventeen ids, folded here into
 // S4-battleView-ANCHOR-FOCUS's end-to-end focus-move oracle); CLOSE-RESTORE is
 // folded into S4-battleView-CLOSE-RESTORE-UNGUARDED. Their absence as standalone
 // tags is a decision, not an omission.
@@ -152,7 +152,7 @@ describe('BattleView — m23-s4 overlay a11y wiring on the show()/hide()/refresh
     expect(
       root.getAttribute('aria-label'),
       'the constructed root carries NO static ARIA, so aria-label is the value oracle here; ' +
-        'because all sixteen catalog labels are distinct this also kills a copy-pasted wrong id',
+        'because all seventeen catalog labels are distinct this also kills a copy-pasted wrong id',
     ).toBe(t(S4_META.labelKey));
   });
 

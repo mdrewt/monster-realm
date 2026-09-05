@@ -70,6 +70,7 @@ const STATUS_ID = 'privacy-status';
 const NOTICE_ID = 'privacy-notice';
 const DISCLOSURE_ID = 'privacy-disclosure';
 const CONFIRM_ID = 'privacy-confirm';
+const CLOSE_BTN_ID = 'privacy-close-btn';
 const DELETE_BTN_ID = 'privacy-delete-btn';
 const CONFIRM_BTN_ID = 'privacy-confirm-btn';
 const CONFIRM_CANCEL_BTN_ID = 'privacy-confirm-cancel-btn';
@@ -80,6 +81,7 @@ const EXPORT_BTN_ID = 'privacy-export-btn';
  *  every one of them really exists after construction. */
 const ALL_PRIVACY_IDS: readonly string[] = [
   OVERLAY_ID,
+  CLOSE_BTN_ID,
   TITLE_ID,
   STATUS_ID,
   NOTICE_ID,
@@ -391,10 +393,49 @@ describe('PrivacyView (rb-52, PRV1-3/PRV1-4): the constructed DOM shell', () => 
     // `evals/keyboard-operable-rows.eval.mjs` hard-fails any `tabindex` write from this file,
     // in an eval outside this slice's touches.
     const selector = OVERLAY_A11Y.privacyView.initialFocusSelector;
-    expect(selector, 'the registry must point at the delete button').toBe(`#${DELETE_BTN_ID}`);
+    expect(selector, 'the registry must point at the always-enabled close button').toBe(
+      `#${CLOSE_BTN_ID}`,
+    );
     const anchor = el(OVERLAY_ID).querySelector(selector);
     expect(anchor, 'the anchor must resolve INSIDE the overlay root').not.toBeNull();
     expect((anchor as HTMLElement).tagName).toBe('BUTTON');
+  });
+
+  it('RB52V-ANCHOR-NEVER-DISABLED: the initial-focus anchor is enabled in EVERY phase, incl. grace and terminal', () => {
+    // WRONG IMPL KILLED (the shipped first draft): pointing `initialFocusSelector` at
+    // `#privacy-delete-btn`. `deletePermitted` is true ONLY in phase `active`, so in `grace`
+    // (PRV1-3's own state) and `terminal` (PRV1-4's) the anchor carries `disabled` — and a
+    // disabled control is unfocusable, so `openOverlayA11y`'s `.focus()` is a silent no-op,
+    // focus stays on <body>, and `focusTrap`'s capture listener on the root NEVER fires: Tab
+    // walks the page behind an open modal. In `terminal` every other control is disabled or
+    // hidden, so the trap would have no focusable content at all.
+    //
+    // happy-dom will happily "focus" a disabled node, so asserting activeElement here would be
+    // green against the very bug this kills. The honest oracle is the `disabled` property on the
+    // anchor across every phase.
+    const anchorId = OVERLAY_A11Y.privacyView.initialFocusSelector.slice(1);
+    let checked = 0;
+    const phasesSeen = new Set<string>();
+    for (const [label, state] of RB52_MATRIX) {
+      view.render(buildPrivacyViewModel(state));
+      const anchor = el(anchorId) as HTMLButtonElement;
+      expect(anchor.disabled, `${label}: the initial-focus anchor must never be disabled`).toBe(
+        false,
+      );
+      expect(
+        anchor.style.display,
+        `${label}: the initial-focus anchor must never be display:none`,
+      ).not.toBe('none');
+      phasesSeen.add(state.countdown.phase);
+      checked += 1;
+    }
+    expect(checked, 'ANTI-VACUITY: every matrix state must have been rendered').toBe(
+      RB52_MATRIX.length,
+    );
+    // The two phases that make this tooth necessary must BOTH be in the matrix, or it is a
+    // parameterised assertion over states in which the delete button happens to be enabled.
+    expect(phasesSeen.has('grace'), 'ANTI-VACUITY: the matrix must reach grace').toBe(true);
+    expect(phasesSeen.has('terminal'), 'ANTI-VACUITY: the matrix must reach terminal').toBe(true);
   });
 
   // -------------------------------------------------------------------------
