@@ -235,3 +235,80 @@ half-reachable deletion state" consequence above still holds for the *controls*)
 "no production caller" cost this ADR already accepted, and it is bounded: the banner is proven
 against injected store rows, and rb-52 lands the controls.
 
+
+## Amendment A2 — 2026-09-05 (rb-52): the delete/cancel/export controls ship as the 17th overlay
+
+Self-amendment; no new ADR number was minted (the ADR-0104 precedent, and the same route
+Amendment A1 took). rb-52 discharges residual `R-m22-s8-X10` — PRV1-3/PRV1-4's UI surface,
+"WHEN the player opens the privacy surface THE CLIENT SHALL expose reachable delete/cancel
+controls wired to `conn.reducers` and render the distinct terminal notice once
+`terminal_at_ms` is `Some`". It closes the "no production caller" cost this ADR accepted for
+`privacyStep`, and it ends the "no half-reachable deletion state" consequence above by
+landing the whole surface — request, confirm, cancel and the terminal notice — at once.
+
+- **A2-D1 — the privacy surface IS a registry overlay, where the countdown was not.** A1-D1
+  shipped a HUD banner because that EARS was ambient ("SHALL *see*"). This one is an explicit
+  open action ("WHEN the player *opens*"), and `privacyModel.ts` already models a two-step
+  `confirm: 'delete-armed'` gate for an irreversible action — which needs a focus trap,
+  Escape dismissal and a dialog role, i.e. exactly what `openOverlayA11y` gives a registry
+  member. So `ui/privacyView.ts` joins `OverlayId` as a seventeenth `GUARD_ONLY` member and
+  pays the OR-MANIFEST-COMPLETE fan-out this ADR's deferral priced.
+  REJECTED — the registry-EXTERNAL `sessionView` exemption: `sessionView` is exempt because a
+  second `EXCLUSIVE_TOP` member makes `decide()` behave backwards (ADR-0182 D17). A
+  `GUARD_ONLY` modal has no such problem, so taking that exemption would be claiming a reason
+  that does not hold in order to avoid the census.
+
+- **A2-D2 — `privacyView` is deliberately NOT in `BATTLE_FORCE_HIDE`.** Eight of the sixteen
+  overlays are; `dialogueView`/`shopView`/`tradeView`/`pvpView`/`questLogView`/`healView` are
+  not. `privacyView` joins the second group for a reason of its own: a force-hide runs through
+  `refreshBattle`'s handle thunks, which do NOT go through the close path that would disarm
+  the confirmation — so a battle auto-show would leave an armed delete confirmation live in
+  the model behind a hidden overlay. Denying the auto-show is the safe direction when the
+  thing being confirmed is irreversible.
+
+- **A2-D3 — the open path is a button in the Account & Sign-in overlay, not a new menu leaf or
+  hotkey.** `MenuLeafDef.keyGlyph` must equal a key in `helpModel.ts`'s `CONTROLS` SSOT
+  (`menuModel.test.ts` MM-KEYGLYPH-FROM-HELP-SSOT), and `CONTROLS` is set-equality-gated
+  against `docs/PLAYTEST.md` §3 by `ui/playtestControlsDoc.test.ts`. `docs/PLAYTEST.md` is
+  outside rb-52's declared `touches:`, so a leaf or a documented hotkey is a
+  hidden-dependency STOP — the slice is designed around it rather than widened into it.
+  The placement is independently right: deletion and data export ARE account management, the
+  "Account & Sign-in" overlay already owns that domain and already has both a System menu leaf
+  and a `KeyC` front door, and a second top-level entry for one domain is the menu bloat
+  `menuModel.ts`'s own anti-pattern 10 names. REJECTED — reusing an existing glyph for a new
+  leaf: that ships a menu row advertising a key that opens something else, which is precisely
+  the defect MM-KEYGLYPH-FROM-HELP-SSOT exists to kill. **DEFERRED, named:** promoting the
+  surface to a top-level leaf + a documented hotkey, which needs `helpModel.ts` and
+  `docs/PLAYTEST.md` together.
+
+- **A2-D4 — `ui/privacyView.ts` is fully unit-covered and is therefore NOT coverage-excluded.**
+  `helpView.ts` states the rule this repo follows: a view covered via happy-dom is not in
+  `vite.config.ts` `coverage.exclude` and not in the `dom-shell-coverage-exclusion` eval's
+  `DOM_SHELLS`. Both files were pre-authorised in rb-52's `touches:` on the assumption the
+  surface would be a thin e2e-only shell; neither is edited. Excluding a brand-new file would
+  shrink the 96% denominator by exactly this slice's own new code.
+
+- **A2-D5 — the player-facing copy is pure, and spec §9's pseudonymization sentence is
+  verbatim.** `privacyModel.ts`'s header reserved this to the slice that renders the
+  delete/cancel surface, "where it can be gated"; the copy lives in `ui/privacyBanner.ts`
+  (already this surface's pure copy layer) so it is exact-string testable, and M22 §9
+  residual 1's sentence is pinned byte-for-byte. Note for future editors: that sentence itself
+  ENDS in "not erasure", so a blanket "the word erasure must not appear" scan is the wrong
+  gate — the gate is that the word occurs only inside the mandated sentence. No hard-coded
+  duration, numeric or prose, appears anywhere in the new files
+  (`evals/deletion-grace-wasm-ssot.eval.mjs` G5 scans `client/` raw, and its own header names
+  prose as the likeliest drift).
+
+**Accepted costs and residuals.**
+- The claim → privacy hand-off (`claimView.hide()` then show) rides `claimView`'s already
+  documented `S4-claimView-REOPEN-AFTER-HIDE` residual: a reconnect-driven render can re-open
+  the claim overlay because `ClaimPhase` cannot represent "dismissed". Pre-existing, not
+  introduced here, and out of this slice's scope to fix (it needs `claimModel.ts`).
+- A1-D4's named follow-up — a ONE-SHOT assistive-technology announcement on the
+  `active -> grace` edge — is **not** part of this criterion and is DEFERred as a residual
+  rather than absorbed: it is an M23 a11y rule about a different surface (the banner), and
+  E1 is about the controls.
+- rb-53 (`R-m22-s8-X11`, the export transport + download) is untouched. This slice wires
+  `requestDataExport` because `privacyStep` already emits `call-request-data-export` and an
+  unreachable effect variant is dead code; it does NOT subscribe to `my_export_bundle`,
+  assemble a bundle, or offer a download.
