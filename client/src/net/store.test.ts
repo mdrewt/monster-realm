@@ -5104,7 +5104,7 @@ describe('AuthoritativeStore 15r-sec-a: reconcileBattlesFromView post-condition'
 //     chunkIndex: number; totalChunks: number; payloadJson: string; createdAtMs: bigint;
 //   };
 //   reconcileExportChunksFromView(rows: readonly StoreExportChunk[]): void
-//        — mirrors reconcileMonstersFromView (store.ts:575) EXACTLY: keep-set + a shallow
+//        — mirrors reconcileMonstersFromView (store.ts:601) EXACTLY: keep-set + a shallow
 //          own-key compare + prune; `#dirty` only when something actually changed.
 //   ownExportChunks(identity: string): readonly StoreExportChunk[]
 //        — the client-side owner filter (ADR-0015 V1). Exact `===`, no case folding, no

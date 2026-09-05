@@ -731,7 +731,7 @@ describe('main.ts export transport (rb-53, PRV1-11/12/13)', () => {
   });
 
   it('★★ RB53T-DOWNLOAD-ANCHOR: the anchor carries a SAFE filename, is clicked, and is removed with its object URL revoked', async () => {
-    // ★ A3-D8, and it is not hygiene: in the F9 bug-bundle precedent (`main.ts:2333-2336`) the
+    // ★ A3-D8, and it is not hygiene: in the F9 bug-bundle precedent (`main.ts:2402-2405`) the
     // `a.remove()` and `URL.revokeObjectURL(url)` sit inside the `try`, AFTER `a.click()`. A
     // throw there pins the object URL — and therefore the whole Blob — for the page's lifetime,
     // and leaves a stray `<a href>` in the document. At bug-bundle scale that is kilobytes; at
@@ -913,8 +913,8 @@ describe('main.ts export transport (rb-53, PRV1-11/12/13)', () => {
   });
 
   it('★★ RB53T-RECONNECT-DROPS-ARTIFACT: onReconnect with a DIFFERENT identity kills the offer', async () => {
-    // ★ ADR-0231 A3-D9. A rebuild can mint a NEW identity (`connection.ts:722`,
-    // `main.ts:2868`), and the cached artifact is `main.ts` state, NOT store state — so
+    // ★ ADR-0231 A3-D9. A rebuild can mint a NEW identity (`connection.ts:745`,
+    // `main.ts:2939`), and the cached artifact is `main.ts` state, NOT store state — so
     // `store.reset()` does not reach it. Without an explicit clear, the download button keeps
     // offering the PREVIOUS identity's complete personal-data export to whoever is at the
     // keyboard after the rotation. That is the one case in A3-D9 that is a leak rather than
@@ -997,7 +997,7 @@ describe('main.ts export transport (rb-53, PRV1-11/12/13)', () => {
 
   it('★★★ RB53T-NO-LEAK-ON-FAILURE: when createObjectURL throws, nothing escapes the handler and NO log sink or on-screen surface receives the artifact bytes', async () => {
     // ★ ADR-0231 A3-D7, and it is a DELIBERATE DIVERGENCE from the precedent this handler is
-    // otherwise modelled on. `downloadBugBundle` (main.ts:2336-2340) logs its WHOLE PAYLOAD on
+    // otherwise modelled on. `downloadBugBundle` (main.ts:2405-2409) logs its WHOLE PAYLOAD on
     // failure — which is safe there only because `KeyStoreSnapshot` is a no-PII allowlist by
     // construction (bugBundle.ts:24-33). The export artifact is the exact opposite: every
     // exportable table, including player-authored names and behavioural history. Logging it
@@ -1100,7 +1100,7 @@ describe('main.ts export transport (rb-53, PRV1-11/12/13)', () => {
     //   fresh" edit, and the one that reads as harmless because every behavioural assertion in
     //   this file would still pass). The wrapper below is the DELTA-2 idiom this harness family
     //   already uses for `ownAccount`: wrap ONE store read on the real instance and count it.
-    // WRONG IMPL KILLED (2): a recompute placed in the rAF repaint gate — `main.ts:3028` is
+    // WRONG IMPL KILLED (2): a recompute placed in the rAF repaint gate — `main.ts:3100` is
     //   keyed on `statusLabel` alone, which export state does not move, so the batch listener
     //   is the SOLE repaint owner for this part of the surface (A3-D10's closing note).
     openPrivacySurface();

@@ -11945,7 +11945,7 @@ describe('★ main.ts wiring (rb-52): the claim-render suppression and the priva
 // NO `new RegExp(...)` — indexOf / includes / split / slice only, per this file's convention.
 // ===========================================================================
 
-/** ADR-0231 A3-D8's download helper, modelled on `downloadBugBundle` (main.ts:2311) and pinned
+/** ADR-0231 A3-D8's download helper, modelled on `downloadBugBundle` (main.ts:2378) and pinned
  *  by that name so the region below can be bounded without a new marker comment. */
 const RB53_DOWNLOAD_DECL = 'function downloadExportBundle(): void {';
 
@@ -12107,7 +12107,7 @@ describe('★ main.ts wiring (rb-53/ADR-0231 A3-D2): the assembly has EXACTLY ON
     expect(
       countOccurrences(frameRegion, 'assembleExportBundle'),
       'the per-frame render loop must contain ZERO references to `assembleExportBundle`. The ' +
-        'rAF repaint gate (main.ts:3028) is keyed on `statusLabel` alone, which export state ' +
+        'rAF repaint gate (main.ts:3100) is keyed on `statusLabel` alone, which export state ' +
         'does not move — the batch listener is the SOLE owner of this part of the surface ' +
         '(A3-D10). A re-assembly here runs 60x/s over every exportable row the player owns',
     ).toBe(0);
@@ -12122,14 +12122,18 @@ describe('★ main.ts wiring (rb-53/ADR-0231 A3-D2): the assembly has EXACTLY ON
 describe('★ main.ts wiring (rb-53/ADR-0231 A3-D7/A3-D8): the download helper is shaped like the F9 precedent, minus the payload log', () => {
   it('★★ W-RB53-DOWNLOAD-SHAPE BITES: the download region creates an object URL, has a `finally`, revokes the URL, and never parses JSON', () => {
     // ★ A3-D8, and the reason it is a decision at all: in the F9 precedent
-    // (`downloadBugBundle`, main.ts:2333-2336) `a.remove()` and `URL.revokeObjectURL(url)` sit
+    // (`downloadBugBundle`, main.ts:2402-2405) `a.remove()` and `URL.revokeObjectURL(url)` sit
     // inside the `try`, AFTER `a.click()`. A throw there pins the object URL — and therefore the
     // whole Blob — for the page's lifetime, and leaves a stray `<a href>` in the document. At
     // bug-bundle scale that is kilobytes; at export scale it is the player's entire
     // personal-data dump, retained in memory with no way to release it.
     //
     // WRONG IMPL KILLED (1) ★ THE COPY-PASTE: `downloadBugBundle` duplicated verbatim, with the
-    //   revoke left inside the `try`. The `finally` needle is what sees it.
+    //   revoke left inside the `try`. A bare `finally` PRESENCE needle does NOT see it — MEASURED
+    //   as mutant M5 during the rb-53 verifier pass, which moved `URL.revokeObjectURL(url)` back
+    //   into the `try` after `click()` and SURVIVED all 3111 tests. The POSITIONAL assertion
+    //   below is what sees it: the revoke must occur AFTER the `finally` token in the
+    //   comment-stripped body, which is only true when it is inside the finally block.
     // WRONG IMPL KILLED (2): no revoke at all.
     // WRONG IMPL KILLED (3) ★ ADR-0231 decision 5: a `JSON.parse` anywhere on this path. The
     //   server hand-rolls its JSON with every 64-bit integer as a QUOTED decimal string
@@ -12165,6 +12169,29 @@ describe('★ main.ts wiring (rb-53/ADR-0231 A3-D7/A3-D8): the download helper i
       'the download body must carry a `finally` (A3-D8). In the F9 precedent the cleanup sits ' +
         'inside the `try` after `a.click()`, so a throw there pins the object URL — and the ' +
         'whole export Blob — for the page`s lifetime',
+    ).toBe(true);
+    // POSITIONAL, not a presence pair. `finally` and `revokeObjectURL` each occur exactly once
+    // in this body, so "the revoke comes after the finally" is true iff the revoke is inside the
+    // finally block — and false for the F9 copy-paste, where the revoke sits in the `try` above
+    // it. This is the assertion that gates A3-D8; the presence pair above only gates that both
+    // tokens exist at all.
+    expect(
+      countOccurrences(body, 'finally'),
+      'ANTI-VACUITY for the ordering below: `finally` must occur exactly once in the download ' +
+        'body, or an index comparison is comparing against an arbitrary one of several',
+    ).toBe(1);
+    expect(
+      countOccurrences(body, 'revokeObjectURL'),
+      'ANTI-VACUITY for the ordering below: `revokeObjectURL` must occur exactly once — two ' +
+        'revokes would let one sit in the finally while a live one stays in the try',
+    ).toBe(1);
+    expect(
+      body.indexOf('revokeObjectURL') > body.indexOf('finally'),
+      'the object-URL revoke must sit INSIDE the `finally`, not in the `try` (A3-D8). MEASURED: ' +
+        'moving it back into the try after `click()` — the verbatim F9 shape — survives every ' +
+        'other assertion in this file and every runtime tooth, because the happy path revokes ' +
+        'either way. It only diverges when the anchor work throws, which is exactly the case ' +
+        'the catch exists for, and the cost is the whole export Blob pinned for the page`s life',
     ).toBe(true);
     expect(
       body.includes('revokeObjectURL'),

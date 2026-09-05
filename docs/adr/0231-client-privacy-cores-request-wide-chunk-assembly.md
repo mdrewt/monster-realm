@@ -383,13 +383,13 @@ discharges residual `R-m22-s8-X11` — PRV1-11/12/13: "WHEN `request_data_export
 CLIENT SHALL read `my_export_bundle` from a live subscription, assemble it via
 `assembleExportBundle`, and offer the artifact as a downloadable file". It gives
 `assembleExportBundle` — shipped by m22-s8 with no production caller — its first one, and it
-**closes the dead end this ADR recorded at `:171-176`**: `requestDataExport` had a call site from
+**closes the dead end this ADR recorded at `:147-151`**: `requestDataExport` had a call site from
 rb-52 but nothing ever read the rows it produced.
 
 - **A3-D1 — `my_export_bundle` is wired as a `Vec`-VIEW, not as an `Option`-view: `onInsert` +
   `onDelete` that only `batcher.schedule()`, and a whole-set reconcile in the shared flush
   closure.** The repo has two structurally identical precedents — `my_monster_pub` (ADR-0194 D4,
-  `connection.ts:341-347`) and `my_battle` (ADR-0198 D4, `connection.ts:367-369`) — both PK-less
+  `connection.ts:353-359`) and `my_battle` (ADR-0198 D4, `connection.ts:379-381`) — both PK-less
   views returning `Vec<T>`, both rebuilt from the post-burst SDK cache by
   `store.reconcile*FromView`. `my_export_bundle` is the same shape (`privacy.rs:1565-1567` returns
   `Vec<ExportBundle>`; the view strips the primary key, `schema.rs:920`), so it takes the same
@@ -418,7 +418,7 @@ rb-52 but nothing ever read the rows it produced.
 
 - **A3-D4 — the download control is ALWAYS painted and only `disabled`; it is never
   `display:none`.** This is the dominant precedent in `privacyView.ts` (the delete/cancel/export
-  trio at `:157-159`), and here it is load-bearing rather than cosmetic. Unlike every other control
+  trio at `:172-174`), and here it is load-bearing rather than cosmetic. Unlike every other control
   in this file, the download control's enablement is driven by INCOMING SERVER DATA, so it can flip
   while the player has it focused. `overlayRegistry.ts:275-279` already records the consequence:
   focus falls to `<body>`, which is not a descendant of the overlay root, so `focusTrap`'s capture
@@ -446,7 +446,7 @@ rb-52 but nothing ever read the rows it produced.
   runtime tooth in `main.exportTransport.test.ts` reds if `renderPrivacy` drops the argument.
 
 - **A3-D7 — the CSP/sandbox fallback logs a STATIC string, deliberately unlike the F9 bug-bundle
-  precedent it is otherwise modelled on.** `downloadBugBundle` (`main.ts:2336-2340`) logs its whole
+  precedent it is otherwise modelled on.** `downloadBugBundle` (`main.ts:2405-2409`) logs its whole
   payload on failure, which is safe only because `KeyStoreSnapshot` is a no-PII allowlist by
   construction (`bugBundle.ts:24-33`). The export artifact is the opposite: every exportable table,
   including player-authored names and behavioural history. Logging it would retain the player's
@@ -462,7 +462,7 @@ rb-52 but nothing ever read the rows it produced.
   bug-bundle scale that is kilobytes; at export scale it is the entire dump.
 
 - **A3-D9 — `onReconnect(identity)` drops the cached assembly.** A rebuild can mint a NEW identity
-  (`connection.ts:722`, `main.ts:2868`), and the cached artifact is `main.ts` state, not store
+  (`connection.ts:745`, `main.ts:2939`), and the cached artifact is `main.ts` state, not store
   state, so `store.reset()` does not reach it. ACCEPTED and recorded: between a link drop and the
   next applied batch the button still offers the last artifact. That artifact is this player's own
   data, delivered to this client for this identity, so the staleness is a freshness question rather
@@ -471,7 +471,7 @@ rb-52 but nothing ever read the rows it produced.
 - **A3-D10 — the surface is repainted only while visible; the assembly is recomputed
   unconditionally.** `openPrivacy()` already renders from current state, so a burst arriving while
   the overlay is closed is picked up on open. Putting the recompute inside the visibility guard is
-  the bug this decision forecloses. Note also that the rAF repaint gate (`main.ts:3028`) is keyed on
+  the bug this decision forecloses. Note also that the rAF repaint gate (`main.ts:3100`) is keyed on
   `statusLabel` alone, which export state does not move — so the batch listener is the SOLE repaint
   owner for this part of the surface.
 
