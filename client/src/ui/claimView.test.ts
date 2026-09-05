@@ -112,6 +112,10 @@ function makeHandlers(): ClaimViewHandlers {
     onDeclineRequested: vi.fn(),
     onDeclineConfirmed: vi.fn(),
     onDeclineCancelled: vi.fn(),
+    // rb-52: client specs are NOT typechecked (`client/tsconfig.json` excludes `*.test.ts`), so a
+    // missing required handler here is silent until something clicks the button and calls
+    // `undefined()`. Spelled out rather than relying on the compiler that does not run.
+    onPrivacy: vi.fn(),
   };
 }
 
