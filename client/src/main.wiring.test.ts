@@ -12263,3 +12263,206 @@ describe('★ main.ts wiring (rb-53/ADR-0231 A3-D7/A3-D8): the download helper i
     ).toBe(true);
   });
 });
+
+// ===========================================================================
+// 17r-f (B1) — the rAF frame catch RECORDS the error it logs, and the `finally` still re-arms.
+// APPENDED BLOCK; nothing above this line is modified.
+//
+// SOURCE OF TRUTH — the ONE seeded acceptance criterion of slice 17r-f, verbatim:
+//   B1: "WHEN the frame loop throws THE error SHALL appear in the error overlay/ring and the
+//        F9 bundle AND the loop SHALL re-arm on the next frame."
+//
+// RED AT AUTHORING TIME: main.ts's catch is `console.error('[frame] uncaught error', err);` and
+// nothing else, so the region this tooth pins is EMPTY. A playtester whose game froze presses F9
+// and sends back a bundle whose error list says nothing about the throw that froze it.
+//
+// TIER SPLIT, stated so neither half is later "deduplicated" into the other. The BEHAVIOUR of B1
+// — the record reaching the ring, the overlay and the F9 bundle, exactly once per DISTINCT
+// message, with a live loop afterwards — belongs to the runtime harness
+// `client/src/main.frameErrorWiring.test.ts`. This tier owns the two things that harness cannot
+// see, both pinned by EXACT EQUALITY on comment-stripped, whitespace-squashed text:
+//   (A) the SHAPE of the catch body between the frame's own `console.error` and its `finally`;
+//   (B) that the `finally` still holds exactly the re-arm and nothing else.
+//
+// ★ WHY EXACT EQUALITY AND NOT THE COUNT+INDEX TOOTH THIS FILE USUALLY REACHES FOR. A
+// "the region contains `pushError(` once, after the log" tooth was measured (17r-f red-team) to
+// let 5 of 13 mutants through, and the leak is structural rather than accidental: `m20cScan` —
+// the scanner `stripLineComments` delegates to — keeps STRING-LITERAL TEXT VERBATIM in `.code`
+// (its own literal arms, ~:8095), because a literal IS code. So a decoy such as
+//     const why = "pushError('uncaught', frameErrorMessage);";
+// survives comment-stripping and satisfies every presence/count needle while the real call is
+// absent. Exact equality closes that whole class in one assertion: the region either IS the
+// shipped statement sequence or it is not. It still permits any COMMENT inside the catch (they
+// are stripped) and any biome re-wrapping (whitespace is squashed) — it constrains the code and
+// nothing else. This is the `W-UXD3C-OPENGUARDS` idiom, applied to a catch body.
+//
+// ★ THE SIX FRAME REGIONS THIS INSERT MUST NOT DISTURB, checked rather than assumed.
+// `regionOrThrow` is END-EXCLUSIVE (:1478), so a statement placed AFTER the `console.error` line
+// is OUTSIDE the two regions fenced BY that line — `UXD2_FRAME_*` (:3256) and `RB51_FRAME_*`
+// (:11601) stay byte-identical. The other four are all fenced
+// `['const frame = (): void => {' -> 'void main();']` and DO contain the catch:
+// `W-M21B2-SESSION-GATE-FRAME` (counts `sessionGateBlocks(`/`sendIntent(` + ordering), the a11y
+// snapshot ordering tooth, `W-RB51-DEV-GATE-CENSUS` (`import.meta.env` === 0 over the frame) and
+// `rb53FrameRegion` (`assembleExportBundle`/`ownExportChunks` === 0). The shipped diff moves none
+// of those counts or indices. NOTE for anyone extending this block: `:11461-11467` ALREADY bans
+// `import.meta.env` over a region containing this catch, so a redundant env clause here would be
+// duplicated policy, not extra bite.
+//
+// ★ THE ANCHOR IS A SUPERSTRING, ON PURPOSE. `S17RF_FRAME_LOG_STMT` is the FULL statement, which
+// contains the short needle `console.error('[frame] uncaught error'` that :3702 and :11634 both
+// assert is globally UNIQUE. Pinning the long form therefore adds no second occurrence of the
+// short one (a superstring of a unique substring occurs at most once), and it doubles as this
+// block's kill for the "console.error REPLACED rather than augmented" mutant: deleting or
+// renaming the log makes `expectUniqueAnchor` count 0 here and in both of those pre-existing
+// teeth. The log must stay FIRST, too — `pushError` renders and `.show()`s a DOM view, so the
+// console record has to exist before it (the same log-then-record order `reportError` uses).
+//
+// ★ ONE MUTANT THIS TIER CANNOT SEE, declared rather than papered over: `lastFrameErrorMessage`
+// declared INSIDE the `frame` closure instead of at module scope. It resets every frame, so the
+// dedupe silently does nothing, and the region text below is byte-identical either way. It is
+// killed by `main.frameErrorWiring.test.ts`'s B1b (three throwing frames, two expected records).
+// Do not "fix" that by widening the region: a wider fence would swallow the four ordering teeth
+// listed above.
+// ===========================================================================
+
+/** START fence: the frame handler's own log line, as a WHOLE statement (see the superstring note
+ *  above). END fence: the `finally` that owns the re-arm. `} finally {` is NOT globally unique in
+ *  main.ts (`pushError` and the two download helpers have their own), so it is resolved WITHIN
+ *  the post-anchor tail and the slice's own emptiness/derangement is caught by the exact-equality
+ *  comparisons rather than by a global uniqueness claim that would simply be false. */
+const S17RF_FRAME_LOG_STMT = "console.error('[frame] uncaught error', err);";
+const S17RF_FINALLY_OPEN = '} finally {';
+/** The close of the `frame` arrow itself — the first thing after the try/catch/finally, and the
+ *  only `\n  };` in the tail, so it bounds the `finally` block exactly. */
+const S17RF_CLOSURE_END = '\n  };';
+
+/** THE PINNED CONTRACT — the exact statement sequence the catch must hold, expressed in the ONE
+ *  normal form this tooth compares against. The normal form is fully mechanical, so any reader
+ *  can re-derive it from the shipped diff without running anything:
+ *    1. `stripLineComments` (`m20cScan`) removes every `//` and block comment and KEEPS string
+ *       and template literals verbatim (so the `` `frame: ${…}` `` template survives byte for
+ *       byte, including the quotes inside it);
+ *    2. `squashWhitespace` collapses every run of whitespace — the newlines and the 6/8-space
+ *       indents — to a SINGLE space, which is what makes the pin immune to biome re-wrapping;
+ *    3. `.trim()` drops the leading/trailing space the fences leave behind.
+ *  Spelled as four concatenated fragments so the embedded single quotes never need a `\'` escape
+ *  (biome rewrites those, which has silently broken text-scan consumers in this repo before).
+ *  IF THIS EVER DISAGREES WITH main.ts: revise it from the SPEC and the design, never to match
+ *  whatever the code happens to say — that is the whole point of an equality pin. */
+const S17RF_CATCH_TAIL =
+  "const frameErrorMessage = `frame: ${normalizeError('uncaught', err).message}`; " +
+  'if (frameErrorMessage !== lastFrameErrorMessage) { ' +
+  'lastFrameErrorMessage = frameErrorMessage; ' +
+  "pushError('uncaught', frameErrorMessage); }";
+
+/** The whole `finally` block, same treatment. */
+const S17RF_FINALLY_BODY = '} finally { requestAnimationFrame(frame); }';
+
+describe('★ main.ts wiring (17r-f/B1): the frame catch records what it logs, and the finally still re-arms', () => {
+  it('★★ W-17RF-FRAME-CATCH-BODY BITES: the catch body between the frame log and the `finally` is EXACTLY the tagged, deduped push', () => {
+    // WRONG IMPL KILLED (1) ★ THE DEFECT (master today): the catch is the log and nothing else,
+    //   so the region squashes to the empty string. The F9 bug bundle — the artifact that exists
+    //   to explain a freeze — is silent about the throw that caused it.
+    // WRONG IMPL KILLED (2) ★ THE STRING-LITERAL DECOY, and the reason this is an equality and
+    //   not a count: `const why = "pushError('uncaught', frameErrorMessage);";` beside a catch
+    //   that pushes nothing. `m20cScan` keeps literal TEXT verbatim, so every presence and count
+    //   needle is satisfied by the decoy alone (measured). Equality reds it.
+    // WRONG IMPL KILLED (3) ★ THE UNDEDUPED PUSH — a bare `pushError('uncaught', …)` with no
+    //   `lastFrameErrorMessage` comparison. It is an unthrottled 60 Hz producer into the 64-slot
+    //   error ring whose remaining 48 slots ADR-0172 D1 RESERVES "for the crash records the
+    //   bundle exists to carry": measured, the ring is 100% one repeated message within 1.07 s,
+    //   so the genuine pre-crash record is already evicted by the time anyone presses F9, and
+    //   the overlay is re-`show()`n every ~16 ms (which defeats F8 for exactly the failure mode
+    //   F8 exists for). The `if (frameErrorMessage !== lastFrameErrorMessage)` guard is part of
+    //   the pinned text for that reason.
+    // WRONG IMPL KILLED (4) ★ A LATCH / THROTTLE / VISIBILITY GUARD in its place — a
+    //   `framePushed` once-latch, a `rateLimitTick` window, or `if (errorOverlayView?.visible
+    //   === false)`. Each collapses the flood by DROPPING DISTINCT ERRORS, which is the opposite
+    //   trade from a consecutive-identical collapse. Any of them changes this text.
+    // WRONG IMPL KILLED (5) ★ AN UNTAGGED OR RAW RECORD — `pushError('uncaught', err)`,
+    //   `err.message`, or a naive `` `frame: ${err}` ``. main.ts's window `error` listener also
+    //   pushes `'uncaught'`, so without the `frame: ` tag an operator cannot tell a DEAD RENDER
+    //   LOOP from a click handler that threw once; and a bare template literal CAN THROW on a
+    //   hostile `toString`, from inside the catch, recreating a variant of this very bug. The
+    //   pinned text routes through `normalizeError`, which is exported and documented TOTAL.
+    // WRONG IMPL KILLED (6) ★ THE LOG DELETED OR RENAMED (`console.error` replaced rather than
+    //   augmented): `expectUniqueAnchor` below counts 0. The pre-existing teeth at ~:3702 and
+    //   ~:11634 red on the same anchor, so this mutant dies three times over.
+    const src = readMainTs();
+    expectUniqueAnchor(src, S17RF_FRAME_LOG_STMT);
+
+    const logIdx = src.indexOf(S17RF_FRAME_LOG_STMT);
+    const tail = src.slice(logIdx + S17RF_FRAME_LOG_STMT.length);
+
+    const finallyIdx = tail.indexOf(S17RF_FINALLY_OPEN);
+    expect(
+      finallyIdx,
+      'the frame`s `} finally {` must follow its `console.error` log — without it there is no ' +
+        'region to judge, and (worse) no unconditional rAF re-arm, which is the second half of B1',
+    ).toBeGreaterThanOrEqual(0);
+
+    const rawCatchTail = tail.slice(0, finallyIdx);
+    // ANTI-VACUITY / fence integrity: an inner `try { … } finally { … }` added inside the catch
+    // would move the fence and leave this pin judging a fragment of the body. There must be no
+    // `finally` between the log and the frame's own one.
+    expect(
+      stripLineComments(rawCatchTail).includes('finally'),
+      'the catch body between the frame log and the frame`s own `} finally {` must contain no ' +
+        '`finally` of its own — an inner try/finally moves the fence, and this pin would then be ' +
+        'comparing a prefix of the real body',
+    ).toBe(false);
+
+    expect(
+      squashWhitespace(stripLineComments(rawCatchTail)).trim(),
+      'B1: everything between the frame`s `console.error` and its `finally` must be EXACTLY the ' +
+        'tagged, consecutive-identical-deduped record. Comments are stripped and whitespace is ' +
+        'squashed, so this constrains the CODE only — the 2-line rationale comment the shipped ' +
+        'diff carries is invisible here, and biome may re-wrap freely. RED at authoring time: ' +
+        'the region is the empty string, because the catch logs and records nothing',
+    ).toBe(S17RF_CATCH_TAIL);
+  });
+
+  it('★ W-17RF-FRAME-FINALLY-REARM BITES: the frame`s `finally` is EXACTLY the unconditional requestAnimationFrame(frame) re-arm', () => {
+    // ★ B1's second half — "the loop SHALL re-arm on the next frame" — as a structural pin.
+    //
+    // GREEN AT AUTHORING TIME, and labelled so deliberately (mislabelling a green guard as RED
+    // is itself a defect in this file): main.ts's `finally` already holds exactly this re-arm.
+    // What makes it load-bearing NOW is that this slice is the first thing ever to ADD code to
+    // that catch, and the two most natural ways to write the addition — hoisting the record into
+    // the `finally`, or "tidying" the re-arm up into the `try` beside it — both silently delete
+    // the invariant while every record-side assertion in this slice stays green.
+    //
+    // WRONG IMPL KILLED (1) ★: the re-arm moved INTO the `try`. Every record-side assertion in
+    //   this slice keeps passing and the game freezes permanently on the first throwing frame,
+    //   which is the exact bug ADR-0074's `12.5c-4` marker exists to prevent. The region text
+    //   changes (the finally empties), so this reds.
+    // WRONG IMPL KILLED (2) ★ THE SHAPE THE RED-TEAM ACTUALLY COMPILED: the record moved into
+    //   the finally — `catch (err) { lastFrameErr = err; } finally { pushError(…);
+    //   requestAnimationFrame(frame); }`. It type-checks, it lints, and the sibling clause above
+    //   would be satisfied by a catch that merely stashes the value. Do NOT rely on "`err` is
+    //   out of scope in the finally" as a reason it cannot happen — it can. Equality on the
+    //   finally body is what rules it out.
+    // WRONG IMPL KILLED (3): the `finally` deleted outright (a bare try/catch) — `finallyIdx`
+    //   below is -1 and `regionOrThrow` throws by name.
+    // WRONG IMPL KILLED (4): a CONDITIONAL re-arm (`if (!fatal) requestAnimationFrame(frame);`)
+    //   or a second statement smuggled in beside it — either changes the pinned text.
+    const src = readMainTs();
+    expectUniqueAnchor(src, S17RF_FRAME_LOG_STMT);
+
+    const logIdx = src.indexOf(S17RF_FRAME_LOG_STMT);
+    const tail = src.slice(logIdx + S17RF_FRAME_LOG_STMT.length);
+
+    // Both fences are resolved inside the post-log tail and `regionOrThrow` fails LOUDLY (never
+    // an empty slice) if either is missing or out of order.
+    const rawFinally = regionOrThrow(tail, S17RF_FINALLY_OPEN, S17RF_CLOSURE_END);
+
+    expect(
+      squashWhitespace(stripLineComments(rawFinally)).trim(),
+      'B1 (re-arm): the frame`s `finally` must hold EXACTLY `requestAnimationFrame(frame);` — no ' +
+        'condition, no companion statement, and nothing moved into it from the catch. The re-arm ' +
+        'lives here rather than at the end of the `try` precisely so a THROWING frame still ' +
+        'schedules the next one (12.5c-4 / ADR-0074); anything else freezes the game on the ' +
+        'first fault while every record-side tooth in this slice stays green',
+    ).toBe(S17RF_FINALLY_BODY);
+  });
+});
