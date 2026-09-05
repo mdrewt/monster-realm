@@ -48,10 +48,10 @@
 // ui/overlayRegistry.ts:358-362: swallowing makes a breach look like working code. A focus that
 // throws is a bug we want loud.
 //
-// THREE CROSS-SLICE CONTRACTS S1 CANNOT ENFORCE:
-//   (a) A12 — `battleView`, `boxView`, `raisingView` and `evolutionView` share ONE `#app`-mounted
-//       root. The map is keyed by `OverlayId`, not by root, so S4 must CLOSE-BEFORE-OPEN; opening
-//       the next id first stacks two capture traps on the same node and Tab moves twice per press.
+// THREE CROSS-SLICE CONTRACTS S1 CANNOT ENFORCE — (a) is settled; S4 pinned the box/battle half:
+//   (a) A12 — RETRACTED: the four `#app`-mounted views do NOT "share ONE root". Each creates its
+//       OWN root under the shared mount, so FOUR `OverlayId`s key FOUR records that never collide;
+//       S4 must NOT close-before-open (`S4-CROSS-VIEW-DISTINCT-ROOTS`, boxView.test.ts).
 //   (b) A13 — if S5's `refreshBattle` force-hide path sets `style.display = 'none'` directly
 //       instead of routing through the view's `hide()` (and thus this close), the record survives
 //       with a live listener, a pending timer and a return target that expires — a much later close
