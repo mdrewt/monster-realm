@@ -709,35 +709,36 @@ describe('main.ts deletion-countdown banner (rb-51, PRV1-1)', { sequential: true
     },
   ];
 
-  it.each(OFF_ARMS)(
-    '★ RB51T-OFF BITES ($name): the banner is showing, then is cleared and hidden',
-    async ({ row }) => {
-      // WRONG IMPL KILLED (1) ★ THE MEASURED SURVIVOR: a memo write with NO `else` branch —
-      // `if (label !== null && label !== lastCountdownLabel) { write }`. It renders the
-      // countdown correctly and then NEVER TAKES IT DOWN: a player who cancels their deletion
-      // (arm 1) keeps staring at "your account will be deleted in 2d 3h 4m 5s", frozen, for
-      // the rest of the session. The second half of each arm is the only thing that sees it.
-      // WRONG IMPL KILLED (2): keying the banner on `deletionRequestedAtMs !== undefined`
-      // rather than on the derived PHASE — arms 1 (cancel), 3 (terminal) and 5 (dark tag) all
-      // carry a timestamp and must all render nothing.
-      // WRONG IMPL KILLED (3): a truthiness test on `terminalAtMs` (arm 3, the 0n marker).
-      // WRONG IMPL KILLED (4): dropping the store's owner filter, or fabricating an empty row
-      // when there is none (arm 4).
-      // ANTI-VACUITY: the FIRST half asserts the banner genuinely SHOWS the exact label, so
-      // this arm can never pass because nothing was ever rendered — which is precisely how a
-      // "boot straight into the off-state and assert hidden" test lies (the element is born
-      // hidden). The wall clock is IDENTICAL across both frames, so the only thing that
-      // changed is the row.
-      const store = await setupMain(GRACE_DAY_SCALE);
-      store.upsertAccount(LIVE_ROW);
-      runFrame(0, WALL_T0);
-      expectShowing(LABEL_AT_T0, 'the live grace window (anti-vacuity control)');
+  it.each(
+    OFF_ARMS,
+  )('★ RB51T-OFF BITES ($name): the banner is showing, then is cleared and hidden', async ({
+    row,
+  }) => {
+    // WRONG IMPL KILLED (1) ★ THE MEASURED SURVIVOR: a memo write with NO `else` branch —
+    // `if (label !== null && label !== lastCountdownLabel) { write }`. It renders the
+    // countdown correctly and then NEVER TAKES IT DOWN: a player who cancels their deletion
+    // (arm 1) keeps staring at "your account will be deleted in 2d 3h 4m 5s", frozen, for
+    // the rest of the session. The second half of each arm is the only thing that sees it.
+    // WRONG IMPL KILLED (2): keying the banner on `deletionRequestedAtMs !== undefined`
+    // rather than on the derived PHASE — arms 1 (cancel), 3 (terminal) and 5 (dark tag) all
+    // carry a timestamp and must all render nothing.
+    // WRONG IMPL KILLED (3): a truthiness test on `terminalAtMs` (arm 3, the 0n marker).
+    // WRONG IMPL KILLED (4): dropping the store's owner filter, or fabricating an empty row
+    // when there is none (arm 4).
+    // ANTI-VACUITY: the FIRST half asserts the banner genuinely SHOWS the exact label, so
+    // this arm can never pass because nothing was ever rendered — which is precisely how a
+    // "boot straight into the off-state and assert hidden" test lies (the element is born
+    // hidden). The wall clock is IDENTICAL across both frames, so the only thing that
+    // changed is the row.
+    const store = await setupMain(GRACE_DAY_SCALE);
+    store.upsertAccount(LIVE_ROW);
+    runFrame(0, WALL_T0);
+    expectShowing(LABEL_AT_T0, 'the live grace window (anti-vacuity control)');
 
-      store.upsertAccount(row);
-      runFrame(16, WALL_T0);
-      expectHidden('after the row left the grace window');
-    },
-  );
+    store.upsertAccount(row);
+    runFrame(16, WALL_T0);
+    expectHidden('after the row left the grace window');
+  });
 
   // -------------------------------------------------------------------------------------
   // (e) The memo must not swallow a real update.
