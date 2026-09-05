@@ -111,6 +111,14 @@ import {
 } from './ui/eventRing';
 import { buildEvolutionViewModel } from './ui/evolutionModel';
 import type { EvolutionView } from './ui/evolutionView';
+// uxd3-c (ADR-0164): this import block is pinned by
+// W-FANOUT-SURFACES-ROUTE-THROUGH-REGISTRY Part B — the clause that proves every fan-out
+// surface, every hotkey open-guard and the force-hide table resolve to the node-tested
+// registry rather than a local decoy, instead of to a locally-declared shadow (red-team F2 /
+// the W-CARE-IMPORT pattern). The needle is applied AFTER squashWhitespace, so this block is
+// left in Biome's canonical order and wrapping — the tooth pins WHICH VALUES are imported,
+// which is the load-bearing part; the specifier order is incidental and is the formatter's.
+import { assembleExportBundle, type ExportAssembly } from './ui/exportAssembly';
 import {
   buildHealViewModel,
   buildHealViewModelForLocation,
@@ -134,14 +142,6 @@ import {
   menuStep,
 } from './ui/menuModel';
 import type { MenuView } from './ui/menuView';
-// uxd3-c (ADR-0164): this import block is pinned by
-// W-FANOUT-SURFACES-ROUTE-THROUGH-REGISTRY Part B — the clause that proves every fan-out
-// surface, every hotkey open-guard and the force-hide table resolve to the node-tested
-// registry rather than a local decoy, instead of to a locally-declared shadow (red-team F2 /
-// the W-CARE-IMPORT pattern). The needle is applied AFTER squashWhitespace, so this block is
-// left in Biome's canonical order and wrapping — the tooth pins WHICH VALUES are imported,
-// which is the load-bearing part; the specifier order is incidental and is the formatter's.
-import { assembleExportBundle, type ExportAssembly } from './ui/exportAssembly';
 import {
   anyVisible,
   type CanOpenVerdict,
@@ -152,7 +152,11 @@ import {
   type OverlayProbes,
   visibleIds,
 } from './ui/overlayRegistry';
-import { buildPrivacyViewModel, exportBundleFilename, privacyBannerLabel } from './ui/privacyBanner';
+import {
+  buildPrivacyViewModel,
+  exportBundleFilename,
+  privacyBannerLabel,
+} from './ui/privacyBanner';
 import {
   type DeletionCountdown,
   deriveDeletionCountdown,

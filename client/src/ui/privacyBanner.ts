@@ -199,7 +199,10 @@ function safeFilenamePart(raw: string): string {
   let out = '';
   for (const ch of raw) {
     const ok =
-      (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch === '_';
+      (ch >= '0' && ch <= '9') ||
+      (ch >= 'a' && ch <= 'z') ||
+      (ch >= 'A' && ch <= 'Z') ||
+      ch === '_';
     if (ok) out += ch;
   }
   return out;
