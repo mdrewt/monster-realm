@@ -5898,3 +5898,1530 @@ fn rb40p_purge_returns_the_collected_count() {
         scan = at + "return".len();
     }
 }
+
+// ===========================================================================
+// rb-48 (ADR-0238) — PRV1-14: THE export_bundle TTL REAPER.
+//
+// EARS (spec M-residual-backlog.spec.md#rb-48, promoted residual R-m22-s4-X17):
+//   E1 WHEN an export_bundle chunk is older than its TTL THE SYSTEM SHALL
+//      delete it through the export reaper.
+//   E2 WHILE no chunk is older than the TTL THE SYSTEM SHALL delete nothing on
+//      a reaper tick.
+//   E3 WHEN a sender other than the database identity invokes the reaper THE
+//      SYSTEM SHALL reject before any delete. SOURCE-STRUCTURE ONLY, and it
+//      says so: native_host_tests.rs leaves the table scan, all four writes and
+//      the identity syscall unmodelled, so a scheduled reducer cannot be
+//      executed off-instance and this criterion has no behavioural instrument.
+//   E4 WHEN request_data_export writes chunks THE SYSTEM SHALL leave exactly
+//      one armed reaper schedule row, as its last statement, and a publish must
+//      repair a missing one.
+//   E5 THE SYSTEM SHALL write only export_bundle and
+//      export_bundle_reaper_schedule from privacy.rs, and delete export_bundle
+//      rows only by primary key.
+//
+// THE SPLIT, restated for this section: the whole BEHAVIOURAL half is the pure
+// seam `plan_export_reap`, EXECUTED directly (rb48_plan_export_reap_*).
+// Everything ctx-bound is a SOURCE-STRUCTURE pin over PRIVACY_RS — and, for the
+// publish-repair wiring, over lib.rs — through this module's existing
+// three-stage strip pipeline. Source pins are the weaker instrument; the pure
+// seam carries the behavioural teeth.
+//
+// SCAN HYGIENE (rb22p_scan_hygiene scans THIS FILE): line comments only, no
+// raw-string prefix, no logging token, no output macro, no backslash before a
+// double quote. The table attribute, the reducer attribute, the schedule
+// accessor inside an attribute, the cfg-gated parent module declaration and the
+// reaper fn needle are every one of them assembled from concat! fragments and
+// are NEVER spelled contiguously here, so a raw-corpus schema parser that
+// concatenates this file cannot mistake a pinned literal for a live
+// declaration.
+//
+// RUSTFMT TOLERANCE, MEASURED, TWICE AND ONLY TWICE. rustfmt breaks a call
+// whose argument text exceeds fn_call_width (60) and a signature whose one-line
+// spelling exceeds max_width (100) VERTICALLY, and its vertical form appends a
+// TRAILING COMMA — playtest.rs:169-175 is the shipped instance of exactly this
+// shape. Whitespace squashing does not hide a comma. So the reaper SIGNATURE
+// pin (109 columns flat) and the seam CALL inside the reaper body (73 columns
+// of argument text) each carry a derived one-comma twin, together with an
+// assertion that the twin differs from its sibling by EXACTLY ONE BYTE. That is
+// a formatter tolerance, not a widening: no semantic token differs between the
+// two spellings, and the one-byte assertion is what stops the accepted set from
+// ever quietly growing a third member.
+// ===========================================================================
+
+/// lib.rs, for the publish-repair wiring pin. Mirrors the accounts_tests.rs
+/// `LIB_RS` inclusion exactly (`include_str!` is relative to the including
+/// file, and this file sits beside lib.rs in `server-module/src/`).
+const RB48_LIB_RS: &str = include_str!("lib.rs");
+
+// --- squashed needles, assembled from fragments ------------------------------
+
+/// The squashed `fn` needle for the scheduled TTL reaper reducer.
+///
+/// Deliberately NOT a substring of the arm's needle: `fnensure_export_bundle`
+/// puts `ensure_` between `fn` and `export`, so a count of one can never be
+/// inflated by the other declaration.
+fn rb48_nd_reaper_fn() -> String {
+    concat!("fnexport_bundle", "_reaper(").to_string()
+}
+
+/// The squashed `fn` needle for the idempotent arm.
+fn rb48_nd_arm_fn() -> String {
+    concat!("fnensure_export_bundle", "_reaper(").to_string()
+}
+
+/// The squashed `fn` needle for the pure delete-selection seam.
+fn rb48_nd_seam_fn() -> String {
+    concat!("fnplan_export", "_reap(").to_string()
+}
+
+/// The bare arm NAMING needle (declaration and call site alike).
+fn rb48_nd_arm_named() -> String {
+    concat!("ensure_export_bundle", "_reaper(").to_string()
+}
+
+/// The sanctioned self-arm call, as a bare statement inside the export reducer.
+fn rb48_arm_call_pin() -> String {
+    [rb48_nd_arm_named(), "ctx);".to_string()].concat()
+}
+
+/// The same call as lib.rs spells it, module-qualified from the crate root.
+fn rb48_arm_call_pin_qualified() -> String {
+    ["crate::privacy::".to_string(), rb48_arm_call_pin()].concat()
+}
+
+/// The squashed `ctx.db.export_bundle_reaper_schedule()` accessor chain.
+fn rb48_nd_schedule_chain() -> String {
+    [
+        concat!("ctx", ".db."),
+        concat!("export_bundle_reaper", "_schedule()"),
+    ]
+    .concat()
+}
+
+/// The bare schedule-accessor naming needle (the R3 census form: the accessor
+/// name immediately followed by its call parenthesis).
+fn rb48_nd_schedule_named() -> String {
+    concat!("export_bundle_reaper", "_schedule(").to_string()
+}
+
+/// The paren-TOLERANT reducer attribute needle (no closing bracket), so a
+/// parameterised third reducer — `#[spacetimedb::reducer(client_connected)]`,
+/// which the bracket form counts ZERO times — cannot hide behind the count.
+/// Precedent: `guards_tests.rs:1874-1886` and `accounts_tests.rs:381-395`.
+fn rb48_nd_reducer_attr_open() -> String {
+    concat!("#[spacetimedb::", "reducer").to_string()
+}
+
+/// The `#[cfg` attribute prefix, split so this file never carries a contiguous
+/// outer cfg-test attribute. That matters beyond tidiness: `monster-privacy`
+/// accepts EITHER a raw outer cfg-test attribute inside a scanned file OR a
+/// gated parent declaration, and this file's exclusion is justified by the
+/// PARENT form (see the module header). Spelling the outer form here would
+/// silently move this file onto the other justification and mask a removed
+/// parent declaration.
+fn rb48_nd_cfg_attr() -> String {
+    concat!("#[c", "fg").to_string()
+}
+
+/// The `cfg!(` macro form, split for the same reason.
+fn rb48_nd_cfg_macro() -> String {
+    concat!("c", "fg!(").to_string()
+}
+
+/// The ONE sanctioned cfg attribute in privacy.rs, squashed: the cfg-test-gated
+/// `#[path]` parent declaration of this very module. Assembled from fragments so
+/// the token sequence is not spelled contiguously here (module header rule).
+fn rb48_privacy_trailer_pin() -> String {
+    [
+        concat!("#[c", "fg(test)]"),
+        concat!("#[pa", "th=]"),
+        concat!("mod", "privacy_tests;"),
+    ]
+    .concat()
+}
+
+/// The squashed schedule-table attribute. Never spelled contiguously: a
+/// raw-corpus schema parser that concatenates this file would otherwise see a
+/// phantom table declaration and put it in the baseline.
+fn rb48_table_attr_pin() -> String {
+    [
+        concat!("#[spacetimedb::", "table("),
+        concat!("accessor=export_bundle_reaper", "_schedule,"),
+        concat!("scheduled(export_bundle", "_reaper))]"),
+    ]
+    .concat()
+}
+
+/// The squashed struct opener for the schedule row.
+fn rb48_schedule_struct_opener() -> String {
+    concat!("pubstructExportBundleReaper", "Schedule{").to_string()
+}
+
+/// The squashed struct FIELD span, pinned by equality: an auto-inc primary key
+/// and the runtime's own fire instant, and NOTHING ELSE. The absence of an
+/// `Identity` column is what keeps the manifest's `NotOwned` classification and
+/// the empty re-key obligation honest, and it is re-proved from the real derive
+/// metadata by `m22s6_not_owned_identity_exceptions_are_frozen`.
+fn rb48_schedule_struct_fields_pin() -> String {
+    concat!(
+        "#[primary_key]#[auto_inc]pubid:u64,",
+        "pubscheduled_at:ScheduleAt,"
+    )
+    .to_string()
+}
+
+/// The table declaration as WHITESPACE-BEARING source text — the positive
+/// control's input, independently spelled from the two pins above.
+fn rb48_table_decl_source() -> String {
+    [
+        concat!("#[spacetimedb::", "table(accessor = export_bundle_reaper"),
+        concat!("_schedule, scheduled(export_bundle", "_reaper))]\n"),
+        concat!("pub struct ExportBundleReaper", "Schedule {\n"),
+        "    #[primary_key]\n    #[auto_inc]\n    pub id: u64,\n",
+        "    pub scheduled_at: ScheduleAt,\n}\n",
+    ]
+    .concat()
+}
+
+/// The FROZEN squashed signature of the reaper, in rustfmt's canonical vertical
+/// form (the flat spelling is 109 columns, past max_width, so the formatter
+/// MUST break the parameter list and append a trailing comma).
+fn rb48_reaper_sig_pin() -> String {
+    [
+        concat!("fnexport_bundle", "_reaper("),
+        concat!("ctx", ":&ReducerContext,"),
+        concat!("_sched:ExportBundleReaper", "Schedule,"),
+        ")->Result<(),String>",
+    ]
+    .concat()
+}
+
+/// The one-comma twin of the signature pin (the spelling a narrower future
+/// max_width would produce). Derived by DELETION so the two can differ by
+/// nothing except that comma; the owning test asserts the one-byte difference.
+fn rb48_reaper_sig_pin_flat() -> String {
+    rb48_reaper_sig_pin().replacen(
+        concat!("ExportBundleReaper", "Schedule,)"),
+        concat!("ExportBundleReaper", "Schedule)"),
+        1,
+    )
+}
+
+/// The COMPLETE rejecting guard, squashed. The bare `{return` prefix is
+/// forgeable (guest-claim-integrity.eval.mjs:679-694 measured it), so the pin
+/// carries the comparison, the branch, the return, the error constructor and
+/// the reject token in one literal.
+fn rb48_reaper_guard_pin() -> String {
+    [
+        "if",
+        concat!("ctx", ".sender()!="),
+        concat!("ctx", ".database_identity(){"),
+        "returnErr(stringify!(export_reaper_scheduler_only).to_string());}",
+    ]
+    .concat()
+}
+
+/// THE FROZEN REAPER BODY, squashed, in rustfmt's canonical form.
+///
+/// EQUALITY, not containment, and the reason is MEASURED in this very module:
+/// `rb22p_purge_body_exact` exists because containment pins were proven
+/// insufficient for a strictly SIMPLER body (a correct body wrapped in a dead
+/// `if false`; a shadowed collect; an in-loop constant key; an appended aliased
+/// write — all four clippy-clean and green). The reaper is larger, and its
+/// argument list alone admits four measured zero-deletion shapes: a ttl argument
+/// scaled by a thousand, a batch argument of zero with the constant parked in a
+/// discard binding, a now argument of zero with the clock parked likewise, and
+/// an honest transposition of `now` and `ttl` (both are i64, so it type-checks).
+/// One equality pin closes that whole family at once.
+fn rb48_reaper_body_pin() -> String {
+    [
+        rb48_reaper_guard_pin(),
+        "letrows:Vec<(u64,i64)>=".to_string(),
+        m22s4_nd_bundle_accessor(),
+        ".iter().map(|c|(c.chunk_id,c.created_at_ms)).collect();".to_string(),
+        concat!("foridinplan_export", "_reap(&rows,now_ms(ctx),").to_string(),
+        "EXPORT_BUNDLE_TTL_MS,EXPORT_REAP_MAX_DELETE_PER_TICK,){".to_string(),
+        m22s4_nd_bundle_accessor(),
+        concat!(".chunk_id().del", "ete(id);}").to_string(),
+        "Ok(())".to_string(),
+    ]
+    .concat()
+}
+
+/// The one-comma twin of the body pin (the spelling a wider future
+/// fn_call_width would produce). Derived by DELETION, as for the signature.
+fn rb48_reaper_body_pin_flat() -> String {
+    rb48_reaper_body_pin().replacen(
+        "EXPORT_REAP_MAX_DELETE_PER_TICK,){",
+        "EXPORT_REAP_MAX_DELETE_PER_TICK){",
+        1,
+    )
+}
+
+/// The reaper DECLARATION as whitespace-bearing source text (control input).
+fn rb48_reaper_decl_source() -> String {
+    [
+        concat!("#[spacetimedb::", "reducer]\n"),
+        concat!("pub fn export_bundle", "_reaper(\n"),
+        "    ctx: &ReducerContext,\n",
+        concat!("    _sched: ExportBundleReaper", "Schedule,\n"),
+        ") -> Result<(), String> ",
+    ]
+    .concat()
+}
+
+/// The reaper BODY as whitespace-bearing source text (control input),
+/// independently spelled from the squashed pin. Feeding this through the LIVE
+/// pipeline must reproduce `rb48_reaper_body_pin()` byte for byte — that is
+/// what proves the equality pin SATISFIABLE rather than a typo nobody can ever
+/// match, which reads exactly like a missing implementation.
+fn rb48_reaper_body_source() -> String {
+    [
+        "\n    if ",
+        concat!("ctx", ".sender()"),
+        " != ",
+        concat!("ctx", ".database_identity()"),
+        " {\n        return Err(stringify!(export_reaper_scheduler_only).to_string());\n    }\n",
+        "    let rows: Vec<(u64, i64)> = ",
+        concat!("ctx", ".db"),
+        "\n        .",
+        concat!("export", "_bundle()"),
+        "\n        .iter()\n        .map(|c| (c.chunk_id, c.created_at_ms))\n        .collect();\n",
+        concat!("    for id in plan_export", "_reap(\n"),
+        "        &rows,\n        now_ms(ctx),\n        EXPORT_BUNDLE_TTL_MS,\n",
+        "        EXPORT_REAP_MAX_DELETE_PER_TICK,\n    ) {\n        ",
+        concat!("ctx", ".db."),
+        concat!("export", "_bundle()"),
+        concat!(".chunk_id().del", "ete(id);"),
+        "\n    }\n    Ok(())\n",
+    ]
+    .concat()
+}
+
+/// THE FROZEN ARM BODY, squashed. Equality closes the shapes that every listed
+/// containment clause was measured green against: an interval multiplied into a
+/// day-long cadence with the constant itself untouched, a one-shot
+/// `ScheduleAt::Time`, and a `.take(0)` on the existing-id collect that makes
+/// the arm insert a fresh schedule row on EVERY export, unbounded.
+fn rb48_arm_body_pin() -> String {
+    [
+        "letexisting:Vec<u64>=".to_string(),
+        rb48_nd_schedule_chain(),
+        ".iter().map(|s|s.id).collect();".to_string(),
+        concat!("letplan=crate::playtest::plan_reaper", "_arm(&existing);").to_string(),
+        "ifplan.insert_one{".to_string(),
+        rb48_nd_schedule_chain(),
+        concat!(".ins", "ert(ExportBundleReaper").to_string(),
+        "Schedule{id:0,scheduled_at:ScheduleAt::Interval(EXPORT_REAP_INTERVAL.into()),});}"
+            .to_string(),
+        "foridinplan.delete_ids{".to_string(),
+        rb48_nd_schedule_chain(),
+        concat!(".id().del", "ete(id);}").to_string(),
+    ]
+    .concat()
+}
+
+/// The arm DECLARATION as whitespace-bearing source text (control input).
+fn rb48_arm_decl_source() -> String {
+    concat!(
+        "pub(crate) fn ensure_export_bundle",
+        "_reaper(ctx: &ReducerContext) "
+    )
+    .to_string()
+}
+
+/// The arm BODY as whitespace-bearing source text (control input).
+fn rb48_arm_body_source() -> String {
+    [
+        "\n    let existing: Vec<u64> = ",
+        concat!("ctx", ".db"),
+        "\n        .",
+        concat!("export_bundle_reaper", "_schedule()"),
+        "\n        .iter()\n        .map(|s| s.id)\n        .collect();\n",
+        concat!(
+            "    let plan = crate::playtest::plan_reaper",
+            "_arm(&existing);\n"
+        ),
+        "    if plan.insert_one {\n        ",
+        concat!("ctx", ".db"),
+        "\n            .",
+        concat!("export_bundle_reaper", "_schedule()"),
+        "\n            ",
+        concat!(".ins", "ert(ExportBundleReaper"),
+        "Schedule {\n                id: 0,\n",
+        "                scheduled_at: ScheduleAt::Interval(EXPORT_REAP_INTERVAL.into()),\n",
+        "            });\n    }\n",
+        "    for id in plan.delete_ids {\n        ",
+        concat!("ctx", ".db."),
+        concat!("export_bundle_reaper", "_schedule()"),
+        concat!(".id().del", "ete(id);"),
+        "\n    }\n",
+    ]
+    .concat()
+}
+
+/// The squashed `fn` needles for the two lib.rs publish-repair entry points.
+fn rb48_nd_lib_init_fn() -> String {
+    concat!("fni", "nit(").to_string()
+}
+fn rb48_nd_lib_sync_fn() -> String {
+    concat!("fnsync", "_content(").to_string()
+}
+
+// --- scoped body extractors --------------------------------------------------
+
+/// The squashed, SCOPED body of the TTL reaper, or a loud panic.
+///
+/// Scoped, never whole-file: `rb22p_machinery_comment_string_blind`'s decoy arm
+/// records why — text sitting in a sibling fn must never satisfy a clause about
+/// this one.
+fn rb48_reaper_body(squashed: &str) -> String {
+    let needle = rb48_nd_reaper_fn();
+    let n = rb22p_count(squashed, &needle);
+    assert_eq!(
+        n, 1,
+        "rb48 [reaper/scope]: privacy.rs must define `{needle}` exactly once; found {n}. ZERO \
+         means the TTL reaper does not exist yet (the intended RED before the implementer lands \
+         rb-48); TWO makes every clause scoped to it read whichever definition the extractor \
+         reaches first, leaving the other completely ungated."
+    );
+    let body = extract_squashed_fn_body(squashed, &needle).unwrap_or_else(|| {
+        panic!(
+            "rb48 [reaper/scope]: `{needle}` was found but its body is not brace-balanced, so \
+             every clause scoped to it would run over an arbitrary span and pass VACUOUSLY."
+        )
+    });
+    assert!(
+        body.len() > 80,
+        "rb48 [reaper/vacuity]: the reaper body is only {} squashed byte(s). An empty or stub \
+         body makes every containment and ordering clause below pass over nothing.",
+        body.len()
+    );
+    body.to_string()
+}
+
+/// The squashed, SCOPED body of the idempotent arm, or a loud panic.
+fn rb48_arm_body(squashed: &str) -> String {
+    let needle = rb48_nd_arm_fn();
+    let n = rb22p_count(squashed, &needle);
+    assert_eq!(
+        n, 1,
+        "rb48 [arm/scope]: privacy.rs must define `{needle}` exactly once; found {n}. ZERO is the \
+         intended RED before the arm lands; TWO makes every arm-scoped clause read whichever \
+         definition the extractor reaches first."
+    );
+    let body = extract_squashed_fn_body(squashed, &needle).unwrap_or_else(|| {
+        panic!(
+            "rb48 [arm/scope]: `{needle}` was found but its body is not brace-balanced, so every \
+             clause scoped to it would run over an arbitrary span and pass VACUOUSLY."
+        )
+    });
+    assert!(
+        body.len() > 80,
+        "rb48 [arm/vacuity]: the arm body is only {} squashed byte(s); an empty or stub body \
+         makes the scope clauses in R2 and R3 pass over nothing.",
+        body.len()
+    );
+    body.to_string()
+}
+
+/// The squashed, SCOPED body of the pure seam, or a loud panic.
+fn rb48_seam_body(squashed: &str) -> String {
+    let needle = rb48_nd_seam_fn();
+    let n = rb22p_count(squashed, &needle);
+    assert_eq!(
+        n, 1,
+        "rb48 [seam/scope]: privacy.rs must define `{needle}` exactly once; found {n}. ZERO is \
+         the intended RED before the seam lands; TWO makes the behavioural tests above and the \
+         text clauses below disagree about which function they are describing."
+    );
+    let body = extract_squashed_fn_body(squashed, &needle).unwrap_or_else(|| {
+        panic!(
+            "rb48 [seam/scope]: `{needle}` was found but its body is not brace-balanced, so every \
+             clause scoped to it would run over an arbitrary span and pass VACUOUSLY."
+        )
+    });
+    assert!(
+        body.len() > 40,
+        "rb48 [seam/vacuity]: the seam body is only {} squashed byte(s).",
+        body.len()
+    );
+    body.to_string()
+}
+
+// ===========================================================================
+// E1 / E2 — THE PURE SEAM. This is the whole behavioural half of the slice.
+//
+// `plan_export_reap(rows, now_ms, ttl_ms, batch)` collects the ids whose age is
+// AT LEAST ttl_ms under saturating arithmetic, sorts them ascending and
+// truncates to batch. It sorts INTERNALLY (ADR-0238 D3 amendment): the shell has
+// no sort statement, so removing a shell sort cannot silently starve old chunks
+// past their expiry, and the batch cap's oldest-first fairness property is a
+// property of the seam rather than of an unpinned caller.
+// ===========================================================================
+
+/// E1: a chunk older than the TTL is selected for deletion.
+///
+/// The TTL used here is the SHIPPED constant, so the criterion is tied to the
+/// value the module actually runs with rather than to a number this test made
+/// up. The magnitude of that constant is pinned separately
+/// (`rb48_ttl_is_exactly_seven_days_in_milliseconds`), which keeps mutant
+/// attribution clean: a wrong TTL reds there, not here.
+#[test]
+fn rb48_plan_export_reap_fires_when_due() {
+    let ttl = crate::privacy::EXPORT_BUNDLE_TTL_MS;
+    let now: i64 = 1_700_000_000_000;
+    let rows = [(7u64, now - ttl - 1)];
+
+    let out = crate::privacy::plan_export_reap(&rows, now, ttl, 256);
+    assert_eq!(
+        out,
+        [7u64],
+        "rb48 [E1/fires]: a chunk one millisecond past the shipped TTL must be selected for \
+         deletion. PRV1-14 is the ONLY expiry an orphaned bundle has — the deletion cascade keys \
+         on a live account's own identity and structurally cannot reach a bundle whose owner has \
+         been retired — so a reaper that selects nothing here leaves a second, denormalized copy \
+         of one player's personal data in every backup, forever."
+    );
+}
+
+/// E2: nothing expired means nothing deleted.
+///
+/// Kills a seam that returns every input id (the age test dropped entirely),
+/// which is the single worst failure available here: a tick would delete every
+/// live export bundle in the database, including one written seconds earlier.
+#[test]
+fn rb48_plan_export_reap_noop_when_nothing_due() {
+    let ttl: i64 = 1_000;
+    let now: i64 = 10_000;
+    let rows = [
+        (1u64, now),
+        (2u64, now - 1),
+        (3u64, now - (ttl - 1)),
+        (4u64, now + 5_000),
+    ];
+
+    let out = crate::privacy::plan_export_reap(&rows, now, ttl, 256);
+    assert!(
+        out.is_empty(),
+        "rb48 [E2/noop]: with no chunk older than the TTL the plan must be EMPTY; got {out:?}. A \
+         seam that returns its whole input deletes every live bundle on the next tick, including \
+         one written seconds ago, and every structural clause about the reducer stays green while \
+         it happens. The fourth row carries a FUTURE stamp on purpose: a clock that stepped \
+         backwards must read as fresh, never as maximally expired."
+    );
+}
+
+/// E1 / E2 (the boundary, both directions in one test): age EXACTLY the TTL is
+/// deleted; one millisecond short is kept.
+///
+/// Kills the strict-greater boundary, which is the mutant an implementer lands
+/// by reflex and which no other test in this file can see: every other row is
+/// either far past or far short of the window.
+#[test]
+fn rb48_plan_export_reap_boundary_exact_ttl() {
+    let ttl: i64 = 1_000;
+    let now: i64 = 10_000;
+
+    let at_boundary = [(11u64, now - ttl)];
+    assert_eq!(
+        crate::privacy::plan_export_reap(&at_boundary, now, ttl, 256),
+        [11u64],
+        "rb48 [E1/boundary-inclusive]: a chunk aged EXACTLY the TTL must be deleted. The boundary \
+         is inclusive, matching every other elapsed-time rule in this module (the export cooldown \
+         included); a strictly-greater test leaves a chunk sitting on the boundary undeleted on \
+         every tick that lands on the same millisecond."
+    );
+
+    let under_boundary = [(12u64, now - ttl + 1)];
+    assert!(
+        crate::privacy::plan_export_reap(&under_boundary, now, ttl, 256).is_empty(),
+        "rb48 [E2/boundary-exclusive]: a chunk one millisecond SHORT of the TTL must be kept. \
+         Without this direction the boundary clause above is satisfied by a seam that deletes \
+         everything."
+    );
+}
+
+/// E1 / E2 (arithmetic safety): the age comparison SATURATES at both extremes.
+///
+/// The release profile has overflow checks ON (privacy.rs states this for the
+/// cooldown predicate), so a wrapping subtraction PANICS inside a reducer and
+/// aborts its whole transaction in production — an unattended scheduled reducer
+/// that panics every tick, forever, deleting nothing and emitting nothing (this
+/// module is barred from logging by its own header contract).
+#[test]
+fn rb48_plan_export_reap_extreme_clocks() {
+    let ttl: i64 = 1_000;
+
+    assert_eq!(
+        crate::privacy::plan_export_reap(&[(1u64, i64::MIN)], i64::MAX, ttl, 256),
+        [1u64],
+        "rb48 [E1/saturate-high]: the maximum clock against the minimum stamp must SATURATE to a \
+         maximal age and select the row. A plain subtraction overflows here and panics."
+    );
+
+    assert!(
+        crate::privacy::plan_export_reap(&[(2u64, i64::MAX)], i64::MIN, ttl, 256).is_empty(),
+        "rb48 [E2/saturate-low]: the minimum clock against the maximum stamp must SATURATE to a \
+         minimal age and keep the row. A plain subtraction overflows in the other direction, and \
+         a wrapping one reports the freshest possible row as the oldest."
+    );
+
+    assert!(
+        crate::privacy::plan_export_reap(&[(3u64, 0), (4u64, -1)], 10_000, i64::MAX, 256)
+            .is_empty(),
+        "rb48 [E2/saturate-ttl]: with a maximal TTL and ordinary stamps nothing can be expired."
+    );
+}
+
+/// E1 (the per-tick cap, and the oldest-first fairness it depends on): the plan
+/// is the `batch` SMALLEST ids, ascending, from UNSORTED input.
+///
+/// The input is deliberately shuffled. The seam sorts internally, so this is the
+/// test that makes the cap fair: without the sort, `truncate` keeps an arbitrary
+/// prefix and a given chunk can be skipped past its expiry indefinitely under
+/// sustained load while every structural clause stays green.
+///
+/// Kills: the truncate removed (the whole expired set comes back);
+///        the seam's sort removed (the input order comes back);
+///        a cap applied before the sort (the wrong ids come back).
+#[test]
+fn rb48_plan_export_reap_caps_per_tick_oldest_first() {
+    let ttl: i64 = 1_000;
+    let now: i64 = 10_000;
+    let old = now - ttl - 1;
+    let rows = [
+        (50u64, old),
+        (10u64, old),
+        (40u64, old),
+        (20u64, old),
+        (30u64, old),
+    ];
+
+    assert_eq!(
+        crate::privacy::plan_export_reap(&rows, now, ttl, 3),
+        [10u64, 20, 30],
+        "rb48 [E1/cap]: with five expired rows and a batch of three the plan must be the three \
+         SMALLEST ids, ASCENDING — oldest first, because the primary key is auto-inc and \
+         therefore monotone in insertion order. Input order coming back means the seam does not \
+         sort; five ids coming back means the cap is gone; any other three means the cap was \
+         applied before the sort, which starves the oldest chunk on every tick."
+    );
+
+    assert!(
+        crate::privacy::plan_export_reap(&rows, now, ttl, 0).is_empty(),
+        "rb48 [E1/cap-zero]: a batch of zero must select nothing rather than everything."
+    );
+
+    assert_eq!(
+        crate::privacy::plan_export_reap(&rows, now, ttl, 5),
+        [10u64, 20, 30, 40, 50],
+        "rb48 [E1/cap-exact]: a batch equal to the expired population selects all of it."
+    );
+    assert_eq!(
+        crate::privacy::plan_export_reap(&rows, now, ttl, 99),
+        [10u64, 20, 30, 40, 50],
+        "rb48 [E1/cap-slack]: a batch larger than the expired population is not an error and \
+         selects exactly that population — an interval reaper must be able to catch up."
+    );
+}
+
+/// E1 / E2 (selection is a partition): interleaved fresh and expired rows,
+/// shuffled, yield EXACTLY the expired ids, ascending and duplicate-free.
+///
+/// The ordering and duplicate properties are asserted STRUCTURALLY as well as by
+/// value, so the clause still bites if the fixture is ever widened: a duplicate
+/// id would be deleted twice, and the second delete of an auto-inc key is a
+/// silent no-op that hides a double-count from any future observation.
+#[test]
+fn rb48_plan_export_reap_mixed_sorted_dedup() {
+    let ttl: i64 = 1_000;
+    let now: i64 = 10_000;
+    let expired = now - ttl;
+    let fresh = now - ttl + 1;
+    let rows = [
+        (9u64, fresh),
+        (3u64, expired),
+        (7u64, expired),
+        (1u64, fresh),
+        (5u64, expired),
+        (4u64, fresh),
+    ];
+
+    let out = crate::privacy::plan_export_reap(&rows, now, ttl, 256);
+    assert_eq!(
+        out,
+        [3u64, 5, 7],
+        "rb48 [E1/partition]: only the expired ids may be selected, and they must come back \
+         ascending. A fresh id in this list is an unexpired chunk deleted out from under a \
+         caller who has not finished downloading it; a missing expired id is PRV1-14 not \
+         happening."
+    );
+
+    for pair in out.windows(2) {
+        assert!(
+            pair[0] < pair[1],
+            "rb48 [E1/ascending]: the plan is not strictly ascending at {pair:?}. Equal adjacent \
+             ids are a DUPLICATE — the second delete of an auto-inc primary key is a silent \
+             no-op, so a duplicated plan inflates any count taken from its length while deleting \
+             one row."
+        );
+    }
+    for id in &out {
+        assert!(
+            rows.iter().any(|(row_id, _)| row_id == id),
+            "rb48 [E1/subset]: the plan names id {id}, which is not in the input at all. A plan \
+             that invents keys deletes rows the sweep never saw."
+        );
+    }
+}
+
+// ===========================================================================
+// E3 / E5 — THE REDUCER SHELL. SOURCE-STRUCTURE ONLY, and it says so.
+// ===========================================================================
+
+/// E3: the reaper is declared EXACTLY once, immediately under the reducer
+/// attribute, with the frozen two-parameter scheduler signature.
+///
+/// The signature is the highest-severity pin of the three: this toolchain
+/// happily accepts extra reducer arguments, so a third parameter on a
+/// SCHEDULER-ONLY entry point is a client-reachable argument on a reducer whose
+/// whole security story is that only the database identity may call it.
+///
+/// Kills: a third parameter added to the reaper;
+///        a rename or a second definition under a cfg twin;
+///        the attribute detached from the declaration (counting the attribute
+///        and the fn separately is satisfied by an attribute attached to some
+///        other function entirely);
+///        a decoy twin carrying the pinned text while the real reducer is
+///        gutted — the decoy cannot also be named `export_bundle_reaper`.
+#[test]
+fn rb48_reaper_declared_exactly_once_with_exact_signature() {
+    // --- positive control: the signature pins are SATISFIABLE ---------------
+    let control = stripped_for_scan(&format!("{}{}{}", rb48_reaper_decl_source(), '{', '}'));
+    let control_sig = extract_squashed_fn_sig(&control, &rb48_nd_reaper_fn())
+        .expect("rb48 [reaper/control-sig]: the control fixture has no signature");
+    assert_eq!(
+        control_sig,
+        rb48_reaper_sig_pin(),
+        "rb48 [reaper/control-sig]: the frozen SIGNATURE pin is UNSATISFIABLE — the live pipeline \
+         derives something else from the sanctioned declaration text. An unsatisfiable pin reads \
+         exactly like a missing implementation and sends the next reader to reverse-engineer the \
+         test instead of the spec. Fix the literal from the spec, never the other way round."
+    );
+    let flat = rb48_reaper_sig_pin_flat();
+    assert_eq!(
+        flat.len() + 1,
+        rb48_reaper_sig_pin().len(),
+        "rb48 [reaper/sig-twin]: the two accepted signature spellings must differ by EXACTLY ONE \
+         BYTE — the trailing comma rustfmt appends when it breaks a parameter list past \
+         max_width. Any wider difference means the accepted set has grown a member nobody \
+         reviewed, which is how a two-element tolerance becomes a hole."
+    );
+
+    let squashed = stripped_for_scan(PRIVACY_RS);
+    let fn_needle = rb48_nd_reaper_fn();
+
+    let n = rb22p_count(&squashed, &fn_needle);
+    assert_eq!(
+        n, 1,
+        "rb48 [E3/decl-count]: privacy.rs must define `{fn_needle}` exactly once; found {n}. ZERO \
+         is the intended RED before the reaper lands; TWO makes every body clause read whichever \
+         definition the extractor reaches first, so the other ships completely ungated."
+    );
+
+    let adjacency = format!("{}pub{}", m22s4_nd_reducer_attr(), fn_needle);
+    assert_eq!(
+        rb22p_count(&squashed, &adjacency),
+        1,
+        "rb48 [E3/attr-adjacency]: the reducer attribute must sit IMMEDIATELY above the reaper \
+         declaration, with nothing between them. Anything wedged in there — a cfg twin above the \
+         fn but below the attribute, for one — breaks the adjacency while leaving both separate \
+         counts satisfied."
+    );
+
+    let sig = extract_squashed_fn_sig(&squashed, &fn_needle)
+        .unwrap_or_else(|| panic!("rb48 [E3/sig]: `{fn_needle}` has no opening brace."));
+    let accepted = [rb48_reaper_sig_pin(), flat];
+    assert!(
+        accepted.iter().any(|pin| pin == sig),
+        "rb48 [E3/sig]: the reaper signature is not the frozen one (either formatter spelling of \
+         it). It takes the reducer context under the name `ctx` — every alias ban in this module \
+         keys on that name — and the schedule row it fires for, and NOTHING ELSE. This toolchain \
+         accepts extra reducer arguments, so one added parameter on a scheduler-only entry point \
+         is a caller-supplied value on the one reducer whose entire security story is that no \
+         caller may reach it. Read: {sig:?}"
+    );
+}
+
+/// E3 (the guard IS the security boundary): the reaper body BEGINS, at offset
+/// zero, with the complete rejecting scheduler check.
+///
+/// Offset zero, not containment: a guard that runs after the sweep has already
+/// read every owner's chunks, and a guard that runs after a delete has already
+/// deleted. And the COMPLETE rejecting form, not a `{return` prefix: a bare
+/// prefix is forgeable, which is why the pinned literal carries the comparison,
+/// the branch, the return, the error constructor and the reject token together.
+///
+/// The reject token is `export_reaper_scheduler_only` and is deliberately NOT
+/// prefixed with the accessor name: a token containing `export_bundle_reaper`
+/// as a prefix would poison every bare-token census in this file and in the
+/// evals that concatenate it.
+///
+/// Kills: the guard deleted;
+///        the guard demoted to an audit binding (`let scheduler_only = ...;`);
+///        the guard moved below the collect;
+///        an `if true { return Ok(()); }` wedged above it.
+#[test]
+fn rb48_reaper_guard_first_and_rejecting() {
+    let squashed = stripped_for_scan(PRIVACY_RS);
+    let body = rb48_reaper_body(&squashed);
+    let guard = rb48_reaper_guard_pin();
+
+    assert!(
+        body.starts_with(guard.as_str()),
+        "rb48 [E3/guard-first]: the reaper body must OPEN with the complete rejecting scheduler \
+         guard `{guard}` at offset zero. A scheduled reducer is a public entry point like any \
+         other in this toolchain: without the guard any client can call it and delete every \
+         account's export chunks past the TTL on demand. Containment is not enough — a guard \
+         placed after the sweep has already read the whole table, and one placed after the delete \
+         loop has already deleted. Body read: {body:?}"
+    );
+}
+
+/// E1 / E3 / E5 (THE BACKSTOP TOOTH): the reaper body is EXACTLY the frozen
+/// guard-sweep-plan-delete sequence, byte for byte in squashed form.
+///
+/// This module has already MEASURED that containment pins are insufficient for a
+/// strictly simpler body (`rb22p_purge_body_exact`'s four clippy-clean, green
+/// bypasses). Shipping a larger body with containment only would be a knowing
+/// regression, so this is the equality backstop and it owns the whole family of
+/// shapes that no single semantic clause reaches first.
+///
+/// Kills, each measured green against the containment clauses this replaces:
+///   the seam's ttl argument scaled (`EXPORT_BUNDLE_TTL_MS.saturating_mul(1000)`
+///     — nothing ever expires);
+///   the seam's batch argument replaced by `0` with the constant parked in a
+///     discard binding (nothing is ever deleted, and the constant is still
+///     `named` exactly once);
+///   the seam's now argument replaced by `0` with the clock parked likewise
+///     (every row reads as maximally fresh, and the clock is still read once);
+///   the now and ttl arguments TRANSPOSED — both are i64, so it compiles, and it
+///     is the shape a non-hostile implementer lands by accident;
+///   the sweep mapped to a constant stamp (`(c.chunk_id, i64::MAX)`);
+///   the sweep gaining a filter that empties the plan;
+///   a `rows.clear();` after the collect, or a shadowed empty plan;
+///   `.chunk_id().delete(0)` — a literal key on an auto-inc column, measured
+///     767/767 green elsewhere in this repo;
+///   `.chunk_id().delete(id + 1)`, which deletes a FRESH chunk and keeps the
+///     expired one;
+///   an `if false { ... }` INSIDE the delete loop;
+///   a delete performed through the iterator instead of by primary key;
+///   a second clock source (`ctx.timestamp`, `Timestamp::now()`) anywhere in the
+///     body;
+///   a `let _ = plan_export_reap(..); return Ok(());` above the delete loop.
+#[test]
+fn rb48_reaper_body_exact() {
+    // --- positive control: the frozen pin is REACHABLE through the pipeline --
+    let control_source = format!(
+        "{}{}{}{}",
+        rb48_reaper_decl_source(),
+        '{',
+        rb48_reaper_body_source(),
+        '}'
+    );
+    let control = stripped_for_scan(&control_source);
+    let control_body = extract_squashed_fn_body(&control, &rb48_nd_reaper_fn())
+        .expect("rb48 [reaper/control-extract]: the control fixture has no body");
+    assert_eq!(
+        control_body,
+        rb48_reaper_body_pin(),
+        "rb48 [reaper/control-body]: the frozen BODY pin is UNSATISFIABLE — the live pipeline \
+         derives something else from the sanctioned body text. A hand-typed squashed literal with \
+         one character wrong is a permanently red gate that reads exactly like a missing \
+         implementation. Revise the literal FROM THE SPEC, never to match whatever the code \
+         happens to say."
+    );
+
+    let flat = rb48_reaper_body_pin_flat();
+    assert_eq!(
+        flat.len() + 1,
+        rb48_reaper_body_pin().len(),
+        "rb48 [reaper/body-twin]: the two accepted body spellings must differ by EXACTLY ONE BYTE \
+         — the trailing comma rustfmt appends when it breaks the seam call past fn_call_width. \
+         Any wider difference means the accepted set grew a member nobody reviewed."
+    );
+
+    // --- blindness: the pin must not be satisfiable by PROSE -----------------
+    let mut prose = String::new();
+    prose.push_str("fn rb48_decoy() ");
+    prose.push('{');
+    prose.push_str("\n    ");
+    prose.push_str(concat!("/", "/ "));
+    prose.push_str(&rb48_reaper_body_pin());
+    prose.push_str("\n    let s = ");
+    prose.push(rb22p_dq());
+    prose.push_str(&rb48_reaper_body_pin());
+    prose.push(rb22p_dq());
+    prose.push_str(";\n");
+    prose.push('}');
+    prose.push('\n');
+    assert!(
+        prose.contains(rb48_reaper_body_pin().as_str()),
+        "rb48 [reaper/blind-vacuity]: the blindness fixture does not carry the needle, so the \
+         assertion below would prove nothing."
+    );
+    let stripped_prose = stripped_for_scan(&prose);
+    assert_eq!(
+        rb22p_count(&stripped_prose, &rb48_reaper_body_pin()),
+        0,
+        "rb48 [reaper/blind]: the strip pipeline still sees the sanctioned body after it was \
+         placed ONLY inside a line comment and inside a string literal, so every clause in this \
+         block would be satisfiable by a doc comment naming the right sequence. Stripped: \
+         {stripped_prose:?}"
+    );
+
+    let squashed = stripped_for_scan(PRIVACY_RS);
+    let body = rb48_reaper_body(&squashed);
+    let accepted = [rb48_reaper_body_pin(), flat];
+    assert!(
+        accepted.iter().any(|pin| *pin == body),
+        "rb48 [E1/body-exact]: the reaper body must be EXACTLY the frozen guard, sweep, plan and \
+         delete-by-primary-key sequence (either formatter spelling of the seam call) — no extra \
+         binding, no conditional, no second statement, and the seam's four arguments in exactly \
+         the pinned order. Containment was MEASURED insufficient for the far simpler purge helper \
+         in this same module, and four of the shapes this pin exists to kill produce a reaper that \
+         deletes NOTHING while every count, order and depth clause stays green. Read: {body:?}"
+    );
+}
+
+/// E1 (the seam's own text): the age test saturates, the plan is sorted, the cap
+/// is applied to the caller's batch, and the seam is straight-line.
+///
+/// The behavioural tests above are the real teeth here; these clauses exist so a
+/// mutation is ATTRIBUTABLE — an equality pin reports only that something moved,
+/// while these say WHICH property broke. Every needle is spelled against the
+/// seam's PARAMETER names, which the signature fixes, never against a local
+/// binding name the implementer is free to choose.
+#[test]
+fn rb48_seam_body_saturating_and_sorted() {
+    let squashed = stripped_for_scan(PRIVACY_RS);
+    let body = rb48_seam_body(&squashed);
+
+    // --- the age test is SATURATING, and its result is what is compared -----
+    let sub = "now_ms.saturating_sub(";
+    let args = m22s4_call_arg_lists(&body, sub);
+    assert_eq!(
+        args.len(),
+        1,
+        "rb48 [E1/seam-saturating]: the seam must apply `{sub}` EXACTLY once; found {} call(s). \
+         The release profile has overflow checks on, so a plain subtraction PANICS inside the \
+         reducer at the clock extremes and aborts its whole transaction — an unattended scheduled \
+         reducer that fails every tick forever, silently, because this module is barred from \
+         logging by its own header contract.",
+        args.len()
+    );
+    let arg = args[0].as_str();
+    assert_ne!(
+        arg, M22S4_UNBALANCED,
+        "rb48 [E1/seam-saturating]: the saturating-subtraction call is not paren-balanced. \
+         Refusing to classify is the safe direction: an unclassifiable predicate is an ungated \
+         predicate."
+    );
+    assert!(
+        !arg.is_empty()
+            && arg.chars().all(m22s4_is_word_char)
+            && !arg.starts_with(|c: char| c.is_ascii_digit()),
+        "rb48 [E1/seam-saturating-arg]: the subtrahend must be a plain BINDING naming the row's \
+         creation stamp; it reads {arg:?}. A literal or an expression there (`saturating_sub(0)` \
+         is the measured shape) makes every row's age the raw clock, so everything expires at \
+         once the moment the epoch passes the TTL."
+    );
+    let composed = format!("now_ms.saturating_sub({arg})>=ttl_ms");
+    assert_eq!(
+        rb22p_count(&body, &composed),
+        1,
+        "rb48 [E1/seam-predicate]: the seam's expiry test must be exactly `{composed}` — the \
+         SATURATED age compared to the CALLER'S ttl parameter, inclusive at the boundary. \
+         Comparing something else (the raw clock, a constant, the stamp itself) leaves the \
+         saturating call present and unused."
+    );
+
+    // --- the plan is sorted and capped, INSIDE the seam ---------------------
+    let sort = "sort_unstable()";
+    assert_eq!(
+        rb22p_count(&body, sort),
+        1,
+        "rb48 [E1/seam-sort]: the seam must call `{sort}` exactly once. The sort lives HERE, not \
+         in the shell (ADR-0238 D3): a shell sort is unpinnable by any test that can run in this \
+         crate, and without a sort the per-tick cap keeps an arbitrary prefix, so under sustained \
+         load a given chunk can be skipped past its expiry indefinitely while every other clause \
+         in this file stays green."
+    );
+    let truncate = "truncate(batch)";
+    assert_eq!(
+        rb22p_count(&body, truncate),
+        1,
+        "rb48 [E1/seam-cap]: the seam must apply `{truncate}` exactly once — the CALLER'S batch \
+         parameter, not a constant read behind the caller's back. A cap taken from a global makes \
+         the reducer's fourth argument decorative, and a seam with no cap at all hands the reducer \
+         an unbounded delete under the global write lock."
+    );
+
+    // --- straight-line: no early exit ---------------------------------------
+    let returns = m22s4_left_bounded_count(&body, "return");
+    assert_eq!(
+        returns, 0,
+        "rb48 [E1/seam-straight-line]: the seam must be straight-line — collect the expired ids, \
+         sort them, truncate, yield. Found {returns} `return` token(s). An early exit in a plan \
+         seam is where a batch or ttl short-circuit hides: it returns an empty plan under some \
+         condition while the predicate, the sort and the cap all remain present and correct."
+    );
+
+    // --- the seam reads its PARAMETERS, never the module constants ----------
+    for constant in ["EXPORT_BUNDLE_TTL_MS", "EXPORT_REAP_MAX_DELETE_PER_TICK"] {
+        assert_eq!(
+            rb22p_count(&body, constant),
+            0,
+            "rb48 [E1/seam-params]: the seam names the module constant `{constant}`. It must \
+             decide from its PARAMETERS alone: a seam that reaches for the globals makes the \
+             reducer's argument list decorative, so every argument mutant at the call site becomes \
+             invisible to the behavioural tests that pass their own values in."
+        );
+    }
+
+    // --- visibility: crate-internal, never crate-external -------------------
+    let bare_pub = format!("pub{}", rb48_nd_seam_fn());
+    assert_eq!(
+        rb22p_count(&squashed, &bare_pub),
+        0,
+        "rb48 [E1/seam-vis]: the seam must not be declared bare `pub`. It is an internal decision \
+         function; crate-external surface here is surface nobody reviewed, and rb-22's own finding \
+         is that widening visibility makes every module a legal caller."
+    );
+}
+
+/// E3 / E4 (the cfg twin, closed file-wide): privacy.rs carries EXACTLY ONE
+/// `#[cfg` attribute — the cfg-test-gated parent declaration of this module —
+/// and no `cfg!` macro anywhere.
+///
+/// MEASURED, and this is the cheapest high-value clause in the slice. A
+/// `#[cfg(not(target_arch = "wasm32"))]` on the arm call ships a module that
+/// NEVER arms its reaper while `just lint` (a HOST build) exits 0, every Rust
+/// test stays green, and CI never builds the server-module wasm at all. The
+/// `#[cfg(test)]` variant is caught only by clippy's dead-code pass, which is a
+/// weaker and more easily silenced net. A file-wide count of one is unforgeable
+/// and subsumes every future cfg twin on the reducer, the guard statement, the
+/// arm, the arm call and the constants alike.
+#[test]
+fn rb48_privacy_has_exactly_one_cfg_attribute() {
+    let squashed = stripped_for_scan(PRIVACY_RS);
+    let needle = rb48_nd_cfg_attr();
+
+    let n = rb22p_count(&squashed, &needle);
+    assert_eq!(
+        n, 1,
+        "rb48 [E3/cfg-count]: privacy.rs must carry EXACTLY ONE `{needle}` attribute; found {n}. \
+         A conditional-compilation attribute anywhere else in this module ships production code \
+         that a host build, `just lint`, every Rust test and every eval all agree is present — \
+         while the wasm the database actually runs has it compiled out. CI does not build the \
+         server-module wasm, so no gate other than this count can see the difference."
+    );
+
+    assert!(
+        squashed.contains(rb48_privacy_trailer_pin().as_str()),
+        "rb48 [E3/cfg-identity]: the single cfg attribute in privacy.rs must be the cfg-test-gated \
+         `#[path]` declaration of this very module. Counting to one without saying WHICH one is \
+         satisfied by deleting the parent declaration (which silently deletes every test in this \
+         file) and adding a cfg twin somewhere in the shipped code."
+    );
+
+    let macro_needle = rb48_nd_cfg_macro();
+    assert_eq!(
+        rb22p_count(&squashed, &macro_needle),
+        0,
+        "rb48 [E3/cfg-macro]: privacy.rs spells `{macro_needle}`. The macro form is the same \
+         defeat in an expression position — a branch that is always taken on the host and never in \
+         the wasm — and it is invisible to the attribute count above."
+    );
+}
+
+/// E4 / E5: the schedule table is declared exactly once, PRIVATE, scheduled onto
+/// the reaper, with the exact two-column row.
+///
+/// Kills: the attribute gaining the public keyword, which publishes scheduler
+///        bookkeeping to every connected client and moves the eval's
+///        public/private anchors;
+///        an accessor argument that is not FIRST (the raw-corpus parser that
+///        feeds the schema baseline, the re-key manifest and the deletion-policy
+///        census cannot read any other spelling, so all three would silently
+///        stop seeing the table);
+///        a schedule pointed at a different reducer;
+///        an added column — an Identity column especially, which would make the
+///        manifest's NotOwned classification and the empty re-key obligation
+///        both false;
+///        a second table smuggled into this module.
+#[test]
+fn rb48_schedule_table_declared_once_private_and_scheduled() {
+    // --- positive control: both table pins are SATISFIABLE ------------------
+    let control = stripped_for_scan(&rb48_table_decl_source());
+    assert_eq!(
+        rb22p_count(&control, &rb48_table_attr_pin()),
+        1,
+        "rb48 [E4/control-attr]: the table ATTRIBUTE pin is UNSATISFIABLE — the live pipeline \
+         derives something else from the sanctioned declaration text. Fix the literal from the \
+         spec, never the other way round."
+    );
+    let opener = rb48_schedule_struct_opener();
+    let control_at = m22s4_idx(&control, &opener, "the control fixture's row struct");
+    let control_fields = m22s4_braced_span(&control, control_at + opener.len() - 1)
+        .expect("rb48 [E4/control-span]: the control fixture's row struct is not brace-balanced");
+    assert_eq!(
+        control_fields,
+        rb48_schedule_struct_fields_pin(),
+        "rb48 [E4/control-fields]: the row-COLUMN pin is UNSATISFIABLE against the sanctioned \
+         struct text."
+    );
+
+    let squashed = stripped_for_scan(PRIVACY_RS);
+
+    let table_attr_prefix = concat!("#[spacetimedb::", "table(");
+    assert_eq!(
+        rb22p_count(&squashed, table_attr_prefix),
+        1,
+        "rb48 [E4/table-census]: privacy.rs must declare EXACTLY ONE table. Before this slice it \
+         declared none (it owns `export_bundle` WRITES; the row type lives in schema.rs), so a \
+         second declaration here is a table that skipped both the manifest classification and the \
+         schema-baseline review."
+    );
+
+    assert_eq!(
+        rb22p_count(&squashed, &rb48_table_attr_pin()),
+        1,
+        "rb48 [E4/table-attr]: the schedule table's attribute must be EXACTLY the sanctioned one, \
+         exactly once — the accessor argument FIRST (nothing else is readable by the raw-corpus \
+         parser that feeds the schema baseline, the re-key manifest and the deletion-policy \
+         census), scheduled onto the reaper, and NO public keyword. A schedule pointed at a \
+         different reducer arms a timer that fires something nobody reviewed."
+    );
+
+    let attr_body = m22s4_call_arg_lists(&squashed, table_attr_prefix);
+    assert_eq!(
+        attr_body.len(),
+        1,
+        "rb48 [E4/table-attr-args]: expected exactly one table attribute argument list."
+    );
+    assert!(
+        !attr_body[0].contains("public"),
+        "rb48 [E4/table-private]: the schedule table attribute carries the `public` keyword. This \
+         row is scheduler bookkeeping: publishing it hands every connected client a live view of \
+         when the module reaps, and it moves the schema eval's public/private anchors. The table \
+         is PRIVATE, like every other reaper schedule in this crate."
+    );
+
+    assert_eq!(
+        rb22p_count(&squashed, &opener),
+        1,
+        "rb48 [E4/row-decl]: the schedule row struct must be declared exactly once, public (the \
+         table macro requires it) and by the pinned name."
+    );
+    let at = m22s4_idx(&squashed, &opener, "the schedule row struct");
+    let fields = m22s4_braced_span(&squashed, at + opener.len() - 1).unwrap_or_else(|| {
+        panic!("rb48 [E4/row-span]: the schedule row struct is not brace-balanced.")
+    });
+    assert_eq!(
+        fields,
+        rb48_schedule_struct_fields_pin(),
+        "rb48 [E4/row-columns]: the schedule row must be EXACTLY an auto-inc primary key and the \
+         runtime's fire instant. Any added column is a column the manifest entry does not describe; \
+         an Identity column specifically would make the `NotOwned` classification false and open a \
+         re-key obligation this slice declares empty. Read: {fields:?}"
+    );
+}
+
+/// E4: the arm is declared exactly once, crate-visible, and its body is EXACTLY
+/// the frozen delegate-to-plan_reaper_arm sequence.
+///
+/// EQUALITY, because every listed containment clause was MEASURED green against
+/// three shapes that each break the reaper without breaking a single count:
+///   `ScheduleAt::Interval((EXPORT_REAP_INTERVAL * 288).into())` — a day-long
+///     cadence with the constant itself untouched, so the constant's own value
+///     pin stays green and the reaper runs 288 times less often than reviewed;
+///   `ScheduleAt::Time(ctx.timestamp)` — a ONE-SHOT that is consumed on its
+///     first fire and never re-fires, so the reaper runs exactly once per export
+///     and never again;
+///   `.take(0)` appended to the existing-id collect — the arm then believes the
+///     singleton is missing on every call and inserts a NEW schedule row per
+///     export, unbounded, each one firing forever.
+///
+/// `pub(crate)`, not private: lib.rs `init` and `sync_content` arm it too, so a
+/// publish repairs a missing schedule row exactly as it does for every other
+/// singleton reaper in this crate. Bare `pub` is banned separately — crate
+/// external surface here buys nothing, and R2's closed write set is what stops
+/// any other module from using the crate-internal visibility for anything.
+#[test]
+fn rb48_arm_declared_once_pub_crate_and_delegates() {
+    // --- positive control: the frozen arm body is SATISFIABLE ---------------
+    let control_source = format!(
+        "{}{}{}{}",
+        rb48_arm_decl_source(),
+        '{',
+        rb48_arm_body_source(),
+        '}'
+    );
+    let control = stripped_for_scan(&control_source);
+    let control_body = extract_squashed_fn_body(&control, &rb48_nd_arm_fn())
+        .expect("rb48 [E4/arm-control-extract]: the control fixture has no body");
+    assert_eq!(
+        control_body,
+        rb48_arm_body_pin(),
+        "rb48 [E4/arm-control]: the frozen ARM BODY pin is UNSATISFIABLE — the live pipeline \
+         derives something else from the sanctioned body text. An unsatisfiable equality pin is \
+         indistinguishable from a missing implementation. Revise the literal from the spec."
+    );
+
+    let squashed = stripped_for_scan(PRIVACY_RS);
+
+    let decl = format!("pub(crate){}", rb48_nd_arm_fn());
+    assert_eq!(
+        rb22p_count(&squashed, &decl),
+        1,
+        "rb48 [E4/arm-decl]: the arm must be declared exactly once as `{decl}`. Private makes the \
+         two lib.rs publish-repair call sites unresolvable — and this reaper would then be the \
+         only singleton in the crate whose armed-ness depends on user traffic, contradicting the \
+         operator runbook's promise that publishing the module repairs a missing schedule row."
+    );
+    let bare_pub = format!("pub{}", rb48_nd_arm_fn());
+    assert_eq!(
+        rb22p_count(&squashed, &bare_pub),
+        0,
+        "rb48 [E4/arm-vis]: the arm must not be declared bare `pub`. Crate-external surface here \
+         buys nothing an operator can use and everything an unreviewed caller can."
+    );
+
+    let body = rb48_arm_body(&squashed);
+    assert_eq!(
+        body,
+        rb48_arm_body_pin(),
+        "rb48 [E4/arm-body]: the arm body must be EXACTLY the frozen sequence — collect the \
+         existing schedule ids, delegate the decision to the SHARED `plan_reaper_arm` seam, insert \
+         one interval row when it says so, and delete the surplus. The three measured bypasses \
+         this equality closes (a multiplied interval, a one-shot `ScheduleAt::Time`, and a \
+         `.take(0)` that re-inserts on every export) all leave the delegation, the count and the \
+         constant's own value pin green. Read: {body:?}"
+    );
+
+    // Attributable clauses: equality reports only THAT something moved.
+    assert_eq!(
+        rb22p_count(
+            &body,
+            concat!("crate::playtest::plan_reaper", "_arm(&existing)")
+        ),
+        1,
+        "rb48 [E4/arm-delegates]: the arm must delegate to the SHARED idempotent-arm seam exactly \
+         once, keyed on the ids it just collected. A fourth hand-rolled copy of that decision is \
+         an SSOT break, and an unconditional insert arms a second schedule row on every call."
+    );
+    assert_eq!(
+        rb22p_count(&body, "ScheduleAt::Time("),
+        0,
+        "rb48 [E4/arm-interval]: the schedule must be an INTERVAL, never a one-shot. A \
+         `ScheduleAt::Time` row is consumed by the runtime on its first fire and never re-armed, \
+         so the reaper would run exactly once per export and the TTL would go unenforced between \
+         them."
+    );
+}
+
+/// E4: `request_data_export` arms the reaper as its LAST statement, immediately
+/// before the success tail.
+///
+/// The ORDER and the DEPTH clauses live in `m22s4_reducer_statement_order` with
+/// the rest of that reducer's statement shape; this test owns the ADJACENCY —
+/// that nothing at all sits between the arm call and `Ok(())` — and the module's
+/// naming budget for the arm.
+///
+/// Arm-LAST is the invariant, not arm-somewhere: an `Err` anywhere in the walk
+/// aborts the whole transaction, so arming after the insert loop makes `a chunk
+/// exists implies the singleton is armed` true by construction.
+///
+/// Kills: the arm call removed (the naming budget drops to one);
+///        a second call site anywhere in the module (an unreviewed arm path);
+///        anything appended after the arm call — a late guard, a late write, a
+///        second arm — which is exactly where a statement that runs AFTER the
+///        chunks are durable would go.
+#[test]
+fn rb48_export_reducer_arms_the_reaper_last() {
+    let squashed = stripped_for_scan(PRIVACY_RS);
+    let call = rb48_arm_call_pin();
+
+    let namings = rb22p_count(&squashed, &rb48_nd_arm_named());
+    assert_eq!(
+        namings, 2,
+        "rb48 [E4/arm-budget]: privacy.rs must name the arm exactly TWICE — its own declaration \
+         and the ONE self-arm call inside the export reducer; found {namings}. ZERO or ONE means \
+         the call was removed and nothing arms the singleton from the write path. THREE is a \
+         second, unreviewed arm site: the arm is idempotent, so an extra call is invisible at \
+         runtime and invisible to every count clause that is not this one."
+    );
+
+    let body = m22s4_reducer_body(&squashed);
+    let tail = format!("{call}Ok(())");
+    assert!(
+        body.ends_with(tail.as_str()),
+        "rb48 [E4/arm-last]: the export reducer must END with `{tail}` — the self-arm call \
+         immediately followed by the success tail, with NOTHING between them and nothing after. \
+         Arm-last is what makes `a chunk exists implies the singleton is armed` true by \
+         construction: the insert loop and the arm share one transaction, so an Err anywhere rolls \
+         both back together. A statement wedged in after the arm is a statement that runs once the \
+         caller's whole personal-data dump is already durable. Body tail read: {:?}",
+        &body[body.len().saturating_sub(160)..]
+    );
+}
+
+/// E4 (publish repair): lib.rs arms the export reaper from BOTH `init` and
+/// `sync_content`, exactly once each.
+///
+/// `init` runs once, at database creation, so on any already-deployed database
+/// it is the publish path or nothing; `sync_content` is the only entry point
+/// that can reach a LIVE database. Every other singleton reaper in this crate is
+/// armed from both, and the operator runbook tells the on-call engineer that a
+/// missing schedule row is repaired by publishing the module. Without these two
+/// lines that promise is false for this one reaper, and a database holding
+/// pre-slice legacy chunks is swept only if some account happens to export
+/// again.
+///
+/// Kills: either call removed (each is counted in its own scope, so the two
+///        failures are distinguishable);
+///        a call added anywhere else in lib.rs (the file-wide count).
+#[test]
+fn rb48_arm_wired_from_init_and_sync_content() {
+    let lib = stripped_for_scan(RB48_LIB_RS);
+    let call = rb48_arm_call_pin_qualified();
+
+    let total = rb22p_count(&lib, &call);
+    assert_eq!(
+        total, 2,
+        "rb48 [E4/lib-budget]: lib.rs must call `{call}` exactly twice — once from `init` and once \
+         from `sync_content`; found {total}. A third call site is an arm path outside the two the \
+         runbook documents."
+    );
+
+    for (what, needle, why) in [
+        (
+            "init",
+            rb48_nd_lib_init_fn(),
+            "covers a freshly created database, beside ensure_playtest_reaper, ensure_mr_heartbeat \
+             and ensure_deletion_reapers_armed",
+        ),
+        (
+            "sync_content",
+            rb48_nd_lib_sync_fn(),
+            "is the ONLY entry point that can reach a LIVE database, so it is the publish repair \
+             the operator runbook promises",
+        ),
+    ] {
+        let body = extract_squashed_fn_body(&lib, &needle).unwrap_or_else(|| {
+            panic!(
+                "rb48 [E4/lib-scope]: fn {what} was not found in lib.rs (needle {needle:?}), so \
+                 the wiring clause for it has no scope and would pass VACUOUSLY."
+            )
+        });
+        assert!(
+            body.len() > 80,
+            "rb48 [E4/lib-vacuity]: lib.rs `{what}` has a body of only {} squashed byte(s), so the \
+             count below would run over a stub.",
+            body.len()
+        );
+        assert_eq!(
+            rb22p_count(body, &call), 1,
+            "rb48 [E4/lib-wired-{what}]: lib.rs `{what}` must call `{call}` EXACTLY once — it \
+             {why}. Without it this is the only reaper in the crate a publish does not repair, and \
+             a database holding pre-slice legacy chunks is swept only if some account happens to \
+             export again."
+        );
+    }
+}
+
+// ===========================================================================
+// E1 — THE CONSTANTS. A retention ceiling nobody can read off the source is a
+// retention ceiling nobody reviewed.
+// ===========================================================================
+
+/// E1: the TTL is seven days, expressed in milliseconds.
+///
+/// Pinned TWICE, independently: against the decimal magnitude and against the
+/// factored day arithmetic. One instrument alone is blind in one direction — the
+/// magnitude alone reads as an arbitrary number nobody can check, and the
+/// factored form alone is satisfied by any unit at all.
+///
+/// Kills: a wrong magnitude (a seventy-day TTL keeps a personal-data snapshot
+///        ten times longer than the retention statement in the operator runbook,
+///        the ADR and the manifest basis all say);
+///        a seconds-for-milliseconds unit swap, which makes every chunk expire
+///        roughly ten minutes after it is written and silently deletes bundles
+///        out from under a client that is still assembling them.
+#[test]
+fn rb48_ttl_is_exactly_seven_days_in_milliseconds() {
+    const SEVEN_DAYS_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+    let ttl = crate::privacy::EXPORT_BUNDLE_TTL_MS;
+
+    assert_eq!(
+        ttl, 604_800_000_i64,
+        "rb48 [E1/ttl-magnitude]: the export TTL must be exactly 604800000 milliseconds. This \
+         number is the retention ceiling the manifest basis, ADR-0238 and the operator runbook all \
+         state; a bundle is a second, denormalized copy of one player's personal data and lands in \
+         every backup taken during its lifetime, so the ceiling is a privacy commitment rather \
+         than a tuning knob."
+    );
+    assert_eq!(
+        ttl, SEVEN_DAYS_MS,
+        "rb48 [E1/ttl-units]: the export TTL must equal seven days spelled as day arithmetic in \
+         MILLISECONDS. Spelled independently of the magnitude clause above precisely so a \
+         seconds-for-milliseconds swap cannot satisfy both: the whole module stamps rows with the \
+         injected millisecond clock, so a seconds-scaled TTL expires every chunk about ten minutes \
+         after it is written."
+    );
+}
+
+/// E1: the reaper's cadence and its per-tick batch cap are both pinned by value.
+///
+/// A cadence LONGER than the TTL would let a chunk outlive its expiry
+/// indefinitely while every other clause in this file stayed green, and a batch
+/// cap of ZERO disables the reaper completely while leaving the constant named
+/// exactly once in the body — which is all the equality pin can see.
+///
+/// The cap is 256 rather than the sibling reaper's 8192 deliberately: export
+/// rows carry chunked `payload_json` strings, not forty bytes of scalars, and
+/// every reducer serializes under one global write lock. A batch that always
+/// commits beats a large one that aborts and retries the identical oversized
+/// transaction every tick, forever, deleting nothing.
+#[test]
+fn rb48_reap_interval_and_batch_cap_pinned() {
+    let interval = crate::privacy::EXPORT_REAP_INTERVAL;
+    let ttl = crate::privacy::EXPORT_BUNDLE_TTL_MS;
+
+    assert_eq!(
+        interval,
+        std::time::Duration::from_secs(3600),
+        "rb48 [E1/interval-value]: the reaper cadence must be exactly one hour. Hourly is 168 \
+         times finer than the TTL — the TTL is a retention CEILING, so minute precision buys \
+         nothing — and twelve times fewer unindexed full scans of `export_bundle` under the global \
+         write lock than a five-minute cadence would cost, forever."
+    );
+    assert!(
+        interval >= std::time::Duration::from_secs(60),
+        "rb48 [E1/interval-floor]: a cadence under a minute turns an unindexed full-table scan \
+         into a hot loop under the global write lock."
+    );
+
+    let ceiling = u128::try_from(ttl / 7).expect("rb48 [E1/interval-ceiling]: the TTL is negative");
+    assert!(
+        interval.as_millis() < ceiling,
+        "rb48 [E1/interval-ceiling]: the cadence must be far below the TTL (under a seventh of \
+         it). A reaper that ticks less often than chunks expire lets a chunk outlive its expiry by \
+         a whole interval or more, which makes the retention ceiling a statement about intent \
+         rather than about behaviour — and every other clause in this file stays green while it \
+         does."
+    );
+
+    assert_eq!(
+        crate::privacy::EXPORT_REAP_MAX_DELETE_PER_TICK, 256,
+        "rb48 [E1/batch-value]: the per-tick batch cap must be exactly 256. ZERO disables the \
+         reaper completely while leaving the constant named exactly once in the reducer body, so \
+         the frozen-body pin cannot see it and every source clause stays green. The value is 256 \
+         and not the sibling reaper's 8192 because export rows carry chunked payload strings \
+         rather than forty-byte scalars, and an oversized delete under the global write lock aborts \
+         and retries the identical transaction every tick, forever."
+    );
+}
+
+// ===========================================================================
+// THE ROSTER CENSUS — what anchors the ledger's literal test counts.
+// ===========================================================================
+
+/// The eighteen `rb48_` test names this slice ships, in the order the plan lists
+/// them. The ledger's E-gate filters are substring filters over these names, so
+/// a test renamed out of a filter — or never written at all — would otherwise be
+/// invisible: the ledger would simply record a smaller literal and report green.
+fn rb48_test_roster() -> [&'static str; 18] {
+    [
+        "rb48_plan_export_reap_fires_when_due",
+        "rb48_plan_export_reap_noop_when_nothing_due",
+        "rb48_plan_export_reap_boundary_exact_ttl",
+        "rb48_plan_export_reap_extreme_clocks",
+        "rb48_plan_export_reap_caps_per_tick_oldest_first",
+        "rb48_plan_export_reap_mixed_sorted_dedup",
+        "rb48_reaper_declared_exactly_once_with_exact_signature",
+        "rb48_reaper_guard_first_and_rejecting",
+        "rb48_reaper_body_exact",
+        "rb48_seam_body_saturating_and_sorted",
+        "rb48_privacy_has_exactly_one_cfg_attribute",
+        "rb48_schedule_table_declared_once_private_and_scheduled",
+        "rb48_arm_declared_once_pub_crate_and_delegates",
+        "rb48_export_reducer_arms_the_reaper_last",
+        "rb48_arm_wired_from_init_and_sync_content",
+        "rb48_ttl_is_exactly_seven_days_in_milliseconds",
+        "rb48_reap_interval_and_batch_cap_pinned",
+        "rb48_test_roster_is_closed",
+    ]
+}
+
+/// X (ledger anchor): this file declares EXACTLY the eighteen `rb48_` tests the
+/// roster names, each exactly once, and no nineteenth.
+///
+/// A test cannot prove its own existence, but a file CAN prove which tests it
+/// declares — this module already includes its own source for the hygiene scan,
+/// so the census costs nothing. Both directions matter: the per-name clause
+/// catches a rename or a deletion, and the total count catches an addition that
+/// the ledger's literal EXPECTs have not been updated for.
+///
+/// Kills: a test silently renamed out of an E-gate's substring filter (the gate
+///        would then run fewer tests and still print `N passed`);
+///        a planned test never written (same shape);
+///        a nineteenth `rb48_` test slipped in without a ledger update.
+#[test]
+fn rb48_test_roster_is_closed() {
+    let roster = rb48_test_roster();
+
+    assert!(
+        PRIVACY_TESTS_RS.len() > 200,
+        "rb48 [roster/vacuity]: this file reads as only {} bytes, so every count below would pass \
+         over nothing.",
+        PRIVACY_TESTS_RS.len()
+    );
+
+    let mut seen: Vec<&str> = roster.to_vec();
+    seen.sort_unstable();
+    for pair in seen.windows(2) {
+        assert_ne!(
+            pair[0], pair[1],
+            "rb48 [roster/dup]: the roster names `{}` twice, so the total-count clause below is \
+             satisfied by seventeen distinct tests plus a duplicate entry.",
+            pair[0]
+        );
+    }
+
+    for name in roster {
+        let needle = format!("fn {name}(");
+        let n = rb22p_count(PRIVACY_TESTS_RS, &needle);
+        assert_eq!(
+            n, 1,
+            "rb48 [roster/name]: `{needle}` must be declared exactly once in privacy_tests.rs; \
+             found {n}. ZERO means the test was renamed or never written — and because every \
+             E-gate in the ledger filters by a SUBSTRING of these names, a missing test does not \
+             red anything: the filtered run simply matches fewer tests and still reports the same \
+             count passed as ran."
+        );
+    }
+
+    let declared = rb22p_count(PRIVACY_TESTS_RS, "#[test]\nfn rb48_");
+    assert_eq!(
+        declared,
+        roster.len(),
+        "rb48 [roster/closed]: privacy_tests.rs declares {declared} `rb48_` test(s); the roster \
+         names {}. The roster is CLOSED on purpose: the ledger's E-gate EXPECTs carry literal \
+         counts derived from these names, so a nineteenth test has to move a literal in the ledger \
+         in the same commit rather than quietly change what a gate measures.",
+        roster.len()
+    );
+}
