@@ -31,6 +31,7 @@
 // — pending, but the remaining time is unknown — says so in words. Fabricating "0s" there would
 // claim an irreversible deadline had arrived.
 
+import type { ExportAssembly } from './exportAssembly';
 import type { DeletionCountdown, PrivacyModelState, PrivacyNotice } from './privacyModel';
 
 /** The player-facing copy, spelled once. Authored here rather than in `ui/a11yCopy.ts`: that
@@ -142,10 +143,67 @@ const PRIVACY_STATUS_ACTIVE = 'This account is active.';
 const PRIVACY_STATUS_UNKNOWN = 'Account status unavailable.';
 const PRIVACY_STATUS_TERMINAL = 'This account has been permanently deleted.';
 
+// rb-53 (PRV1-11/12/13, ADR-0231 A3-D5): ONE sentence per `ExportAssemblyStatus`.
+//
+// `inconsistent` carries NO NUMBER, deliberately: the core reports `totalChunks: undefined` for
+// that status because the delivered rows disagree, so any figure rendered here would be
+// fabricated — or `receivedChunks` masquerading as a total.
+//
+// `incomplete` does NOT promise arrival. The client cannot distinguish "still streaming" from a
+// partial server-side removal (the TTL reaper deletes a bounded number of rows per tick, oldest
+// first, so it can cut across one owner's request), and telling a player to wait for chunks that
+// will never come is worse than telling them what is true.
+const EXPORT_STATUS_NONE = 'No data export has arrived on this device yet.';
+const EXPORT_STATUS_INCOMPLETE_PREFIX = 'Data export incomplete — ';
+const EXPORT_STATUS_INCOMPLETE_SUFFIX = ' chunks delivered.';
+const EXPORT_STATUS_INCOMPLETE_DARK = 'Data export incomplete — some chunks are missing.';
+const EXPORT_STATUS_INCONSISTENT =
+  'Data export could not be assembled — the delivered chunks do not describe one request. ' +
+  'Request it again.';
+const EXPORT_STATUS_COMPLETE_PREFIX = 'Data export ready — ';
+const EXPORT_STATUS_COMPLETE_SUFFIX = ' chunks.';
+
 const DELETE_LABEL = 'Delete my account';
 const CONFIRM_PROMPT = 'This cannot be undone. Confirm deletion?';
 const CANCEL_LABEL = 'Cancel account deletion';
 const EXPORT_LABEL = 'Request my data export';
+// DISTINCT from EXPORT_LABEL on purpose: the two controls sit side by side and do completely
+// different things — one asks the server to BUILD an export, the other saves the one that has
+// already arrived. A shared name would make the second look like a duplicate of the first.
+const DOWNLOAD_LABEL = 'Download my data export';
+
+/** The download filename, composed from data the caller already has (A3-D11).
+ *
+ *  CLOCK-FREE: `capturedAtMs` is an INPUT, so this module stays pure and the same inputs always
+ *  produce the same name.
+ *
+ *  Both components are run through `bugBundleFilename`'s character-class strip. `requestId` is a
+ *  `bigint` by type and would stringify to digits only — but `rowConvert` is a documented pure
+ *  pass-through with no validation, so a drifted binding could deliver something whose `String()`
+ *  carries a path separator, and a filename is handed straight to the OS.
+ *
+ *  An ABSENT request id renders a stable token rather than the string `undefined`: the filename
+ *  is the only part of this feature the player sees before opening the file, and
+ *  `mr-export-undefined-....json` reads as a broken client on the one artifact they are handed
+ *  as their legal data export. */
+export function exportBundleFilename(requestId: bigint | undefined, capturedAtMs: number): string {
+  const id = requestId === undefined ? 'request' : safeFilenamePart(String(requestId));
+  const at = safeFilenamePart(String(capturedAtMs));
+  return `mr-export-${id === '' ? 'request' : id}-${at === '' ? 'at' : at}.json`;
+}
+
+/** Keep only characters that are safe in a filename on every OS this client runs on. A
+ *  character-class strip, never an escape: there is no separator, colon or whitespace that has a
+ *  meaningful rendering here, so dropping them is lossless for every legitimate input. */
+function safeFilenamePart(raw: string): string {
+  let out = '';
+  for (const ch of raw) {
+    const ok =
+      (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch === '_';
+    if (ok) out += ch;
+  }
+  return out;
+}
 
 /**
  * Which notice the surface is showing.
@@ -171,6 +229,41 @@ export interface PrivacyViewModel {
   readonly confirmPrompt: string | undefined;
   readonly noticeKind: PrivacyNoticeKind;
   readonly noticeLabel: string | undefined;
+  /** rb-53: what the surface says about the data export, or `undefined` when NO assembly has
+   *  been computed yet — which the shell renders by hiding the line entirely. That is a
+   *  different state from a computed `'none'`, which has something to say. */
+  readonly exportStatusLabel: string | undefined;
+  /** ALWAYS present. The control is painted in every state and only ever `disabled` (A3-D4). */
+  readonly downloadLabel: string;
+  /** True IFF the assembly is `complete` — i.e. iff there is an artifact. */
+  readonly downloadEnabled: boolean;
+}
+
+/** The export sentence. Reads ONLY the assembly: the deletion lattice does not gate it, because
+ *  `exportPermitted` governs asking the server for a NEW export, never reading one that has
+ *  already been delivered to this client. */
+function exportStatusLabelFor(assembly: ExportAssembly | undefined): string | undefined {
+  if (assembly === undefined) return undefined;
+  switch (assembly.status) {
+    case 'none':
+      return EXPORT_STATUS_NONE;
+    case 'incomplete':
+      return assembly.totalChunks === undefined
+        ? EXPORT_STATUS_INCOMPLETE_DARK
+        : EXPORT_STATUS_INCOMPLETE_PREFIX +
+            String(assembly.receivedChunks) +
+            ' of ' +
+            String(assembly.totalChunks) +
+            EXPORT_STATUS_INCOMPLETE_SUFFIX;
+    case 'inconsistent':
+      return EXPORT_STATUS_INCONSISTENT;
+    case 'complete':
+      return (
+        EXPORT_STATUS_COMPLETE_PREFIX +
+        String(assembly.receivedChunks) +
+        EXPORT_STATUS_COMPLETE_SUFFIX
+      );
+  }
 }
 
 /**
@@ -218,7 +311,10 @@ function noticeLabelFor(kind: PrivacyNoticeKind, rejectMessage: string | undefin
  * permission rule here would be a second SSOT, and the one that renders is the one the player
  * believes.
  */
-export function buildPrivacyViewModel(state: PrivacyModelState): PrivacyViewModel {
+export function buildPrivacyViewModel(
+  state: PrivacyModelState,
+  exportAssembly?: ExportAssembly,
+): PrivacyViewModel {
   const kind = noticeKindFor(state);
   return {
     statusLabel: statusLabelFor(state.countdown),
@@ -234,5 +330,11 @@ export function buildPrivacyViewModel(state: PrivacyModelState): PrivacyViewMode
     confirmPrompt: state.confirm === 'delete-armed' ? CONFIRM_PROMPT : undefined,
     noticeKind: kind,
     noticeLabel: noticeLabelFor(kind, state.rejectMessage),
+    exportStatusLabel: exportStatusLabelFor(exportAssembly),
+    downloadLabel: DOWNLOAD_LABEL,
+    // The artifact is present IFF the status is `complete` (exportAssembly.ts's own contract),
+    // so this is the ONE fact the control needs. Enabling on `incomplete` would hand the player
+    // a truncated personal-data file and call it their export.
+    downloadEnabled: exportAssembly?.status === 'complete',
   };
 }

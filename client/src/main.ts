@@ -141,6 +141,7 @@ import type { MenuView } from './ui/menuView';
 // the W-CARE-IMPORT pattern). The needle is applied AFTER squashWhitespace, so this block is
 // left in Biome's canonical order and wrapping — the tooth pins WHICH VALUES are imported,
 // which is the load-bearing part; the specifier order is incidental and is the formatter's.
+import { assembleExportBundle, type ExportAssembly } from './ui/exportAssembly';
 import {
   anyVisible,
   type CanOpenVerdict,
@@ -151,7 +152,7 @@ import {
   type OverlayProbes,
   visibleIds,
 } from './ui/overlayRegistry';
-import { buildPrivacyViewModel, privacyBannerLabel } from './ui/privacyBanner';
+import { buildPrivacyViewModel, exportBundleFilename, privacyBannerLabel } from './ui/privacyBanner';
 import {
   type DeletionCountdown,
   deriveDeletionCountdown,
@@ -508,9 +509,71 @@ function renderPrivacy(): void {
     livePrivacyCountdown === undefined
       ? privacyModelState
       : { ...privacyModelState, countdown: livePrivacyCountdown },
+    exportAssembly,
   );
   lastPrivacyStatusLabel = vm.statusLabel;
   privacyView?.render(vm);
+}
+
+// --- rb-53 (PRV1-11/12/13): the export transport's client end -----------------------
+// The assembly of the moment, or `undefined` when none has been computed for this identity yet.
+// It holds the whole artifact, so it is module state rather than store state — which is exactly
+// why `onReconnect` has to clear it explicitly (A3-D9): `store.reset()` cannot reach it, and a
+// rebuild can mint a NEW identity.
+let exportAssembly: ExportAssembly | undefined;
+
+// A3-D2: the SOLE `assembleExportBundle(` call site, on the arrival edge. `onBatchApplied` fires
+// once per coalesced transaction burst; the frame fires ~60x/s forever, and the rAF repaint gate
+// is keyed on `statusLabel` alone (which export state does not move), so this listener is the
+// SOLE owner of this part of the surface.
+//
+// A3-D10: the recompute is OUTSIDE the visibility guard. A burst arriving while the overlay is
+// closed must still be picked up — `openPrivacy()` renders from current state, so the offer is
+// there on open. Only the REPAINT is conditional.
+store.onBatchApplied(() => {
+  // Both owner filters run: the store's client-side one (ADR-0015 V1) and the assembler's own
+  // filter-first rule. Neither is redundant — the second decides which bytes reach the file.
+  exportAssembly = assembleExportBundle(store.ownExportChunks(identity), identity);
+  if (privacyView?.visible) renderPrivacy();
+});
+
+// A3-D3: offered behind a gesture, never auto-downloaded — chunks re-arrive on every applied
+// snapshot, so an automatic save would re-fire on each reconnect, and browsers block non-gesture
+// downloads outright.
+function downloadExportBundle(): void {
+  const artifact = exportAssembly?.artifact;
+  // Defense in depth behind `vm.downloadEnabled`: the control is painted disabled in every other
+  // state, but a truncated personal-data file must be unreachable by ANY route, not merely by
+  // the one the UI offers.
+  if (exportAssembly?.status !== 'complete' || artifact === undefined) return;
+  // Both declared BEFORE the `try` so the `finally` can release exactly what was actually
+  // created. `URL.createObjectURL` is itself one of the calls a CSP/sandbox policy blocks, so it
+  // has to be INSIDE the try — the F9 precedent's shape, where only the anchor work is guarded,
+  // lets that throw escape a click listener in the middle of a privacy interaction.
+  let url = '';
+  let anchor: HTMLAnchorElement | undefined;
+  try {
+    url = URL.createObjectURL(new Blob([artifact], { type: 'application/json' }));
+    anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = exportBundleFilename(exportAssembly.requestId, Date.now());
+    document.body.appendChild(anchor);
+    anchor.click();
+  } catch {
+    // A3-D7: a STATIC string, deliberately unlike the F9 bug-bundle fallback this is otherwise
+    // modelled on. That one logs its payload, which is safe only because the bug bundle is a
+    // no-PII allowlist by construction; the artifact here is the player's entire personal-data
+    // export, and logging it would retain it in the devtools buffer for the page's life and —
+    // through reportError — put it on screen and into the ring the F9 bundle embeds.
+    console.error('[data-export] download blocked');
+    reportError('data export: download blocked by the browser');
+  } finally {
+    // A3-D8: in a `finally`, not inside the `try` after `click()` as the F9 precedent has it —
+    // a throw there would pin the object URL, and with it the whole export Blob, for the page's
+    // lifetime, and leave a stray anchor in the document.
+    anchor?.remove();
+    if (url !== '') URL.revokeObjectURL(url);
+  }
 }
 
 // A2-D8: a missing live handle is a NON-DELIVERY. sendGuarded cannot see it — `undefined?.catch()`
@@ -2679,6 +2742,7 @@ async function main(): Promise<void> {
         applyPrivacy({ kind: 'cancel-deletion-requested', hasLiveConnection: privacyLinkLive() }),
       onExportRequested: () =>
         applyPrivacy({ kind: 'export-requested', hasLiveConnection: privacyLinkLive() }),
+      onExportDownload: () => downloadExportBundle(),
       onDismissed: () => {
         applyPrivacy({ kind: 'confirm-cancelled' });
         // Flush a claim paint deferred while this overlay owned the screen.
@@ -2869,6 +2933,10 @@ async function main(): Promise<void> {
       // 17r-b (ADR-0130 residual e): a rebuild can mint a NEW identity — refresh FIRST so every
       // identity-gated listener (and the connect event below) sees this connection's identity.
       identity = id;
+      // rb-53 (A3-D9): the cached artifact is main.ts state, not store state, so store.reset()
+      // cannot reach it — and a rebuild can mint a NEW identity. Dropped here so the previous
+      // identity's personal-data export is never downloadable by the next one.
+      exportAssembly = undefined;
       // 16r-f: capture BEFORE resetPredictionState nulls activeBattleId; a 2nd drop while a
       // reseed is still pending must keep the FIRST capture (not overwrite it with null).
       if (!battleReseedPending) reseedPrevBattleId = activeBattleId;

@@ -35,6 +35,7 @@ import {
   battleRowToStore,
   characterRowToStore,
   evolutionPathRowToStore,
+  exportChunkRowToStore,
   healLocationRowToStore,
   inventoryRowToStore,
   itemRowToStore,
@@ -50,6 +51,7 @@ import {
   type SdkBattleRow,
   type SdkCharacterRow,
   type SdkEvolutionPathRow,
+  type SdkExportChunkRow,
   type SdkInventoryRow,
   type SdkItemRowRow,
   type SdkMonsterPubRow,
@@ -180,6 +182,16 @@ export function connect(opts: ConnectionOptions): Connection {
         store.reconcileBattlesFromView(
           [...live.db.myBattle.iter()].map((row) =>
             battleRowToStore(row as unknown as SdkBattleRow),
+          ),
+        );
+        // rb-53 (ADR-0231 A3-D1): the third Vec-view reconcile. AUTHORITATIVE — a chunkId absent
+        // from this argument is deleted, which is how a server-side purge withdraws the client's
+        // download offer. It runs BEFORE flushBatch() because main.ts's batch listener is the
+        // sole assembleExportBundle() call site, and a reconcile after the flush would leave it
+        // assembling the PRE-burst chunk set.
+        store.reconcileExportChunksFromView(
+          [...live.db.my_export_bundle.iter()].map((row) =>
+            exportChunkRowToStore(row as unknown as SdkExportChunkRow),
           ),
         );
       } catch (err) {
@@ -629,6 +641,17 @@ export function connect(opts: ConnectionOptions): Connection {
       store.upsertAccount(accountRowToStore(row as unknown as SdkAccountRow));
       batcher.schedule();
     });
+
+    // rb-53 (ADR-0231 A3-D1): `my_export_bundle` is a PK-less Vec-VIEW — the my_monster_pub /
+    // my_battle shape, NOT the my_account/my_wallet one. The SDK never fires onUpdate for it, so
+    // do NOT wire one, and per-row store writes are banned here: the batcher's flush closure
+    // reconciles the whole chunk map from the SDK cache, so these handlers only schedule that
+    // flush. onDelete IS wired (unlike my_account/my_wallet, whose rows are never deleted
+    // server-side): export chunks leave this view via the 7-day TTL reaper and the deletion
+    // cascade, and with no delete handler the batcher is never scheduled for that burst — the
+    // client would keep offering a download of data the server has already purged.
+    conn.db.my_export_bundle.onInsert(() => batcher.schedule());
+    conn.db.my_export_bundle.onDelete(() => batcher.schedule());
   }
 
   /** Issue the connection-internal joinGame through the WRAPPED connection (ADR-0157 §1) — the
@@ -787,6 +810,12 @@ export function connect(opts: ConnectionOptions): Connection {
             // with onInsert + onUpdate (and NO onDelete) in wireTables above. Subscribing the
             // private `account` table itself would error the whole batch and onApplied never fires.
             'SELECT * FROM my_account',
+            // rb-53 (ADR-0231 A3-D1): my_export_bundle is the owner-scoped VIEW over the PRIVATE
+            // export_bundle table — the ONLY client read path for a completed data export
+            // (schema.rs:916). Subscribing `export_bundle` itself would error the whole batch.
+            // The same literal is mirrored in evals/monster-privacy.eval.mjs's
+            // EXPECTED_SUBSCRIPTIONS, which pins this array as an exact SET.
+            'SELECT * FROM my_export_bundle',
           ]);
       })
       .onConnectError((_ctx, err: Error) => {

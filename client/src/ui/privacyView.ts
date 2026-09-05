@@ -20,7 +20,8 @@
 // ★ NO `.focus()` ANYWHERE IN THIS FILE, in any spelling.
 // `evals/overlay-a11y-manifest.eval.mjs` bans `.focus(`, `?.focus`, `['focus']` and `autofocus`
 // in every `client/src/ui/**/*View.ts` (A11Y-15): focus placement belongs to `overlayA11y.ts`,
-// which is the single owner. The initial anchor is `#privacy-delete-btn`, a NATIVE <button> —
+// which is the single owner. The initial anchor is `#privacy-close-btn` (overlayRegistry.ts's
+// `initialFocusSelector`), a NATIVE <button> —
 // `evals/keyboard-operable-rows.eval.mjs` hard-fails a `tabindex` write from any file outside its
 // frozen table, so a tabindex-ed heading anchor is not available to us (A2-D3). That same eval
 // only accepts a `this.#field` click receiver as native when the FIELD'S DECLARED TYPE is
@@ -46,6 +47,9 @@ export interface PrivacyViewHandlers {
   readonly onConfirmCancelled: () => void;
   readonly onCancelDeletion: () => void;
   readonly onExportRequested: () => void;
+  /** rb-53: save the artifact that has already ARRIVED. Distinct from `onExportRequested`,
+   *  which asks the server to build a new one. */
+  readonly onExportDownload: () => void;
   /** Called from `hide()` — every close path, including the battle force-hide. */
   readonly onDismissed: () => void;
 }
@@ -77,6 +81,13 @@ export class PrivacyView {
   readonly #confirmCancelBtn: HTMLButtonElement;
   readonly #cancelBtn: HTMLButtonElement;
   readonly #exportBtn: HTMLButtonElement;
+  // rb-53 (A3-D4): ALWAYS painted, only ever `disabled`. Unlike every other control here its
+  // enablement is driven by INCOMING SERVER DATA, so it can flip while the player has it
+  // focused — and a control that becomes `display:none` under focus drops focus to <body>,
+  // which is outside the overlay root, so focusTrap's capture listener never fires and Tab
+  // walks the page behind the dialog (the hazard overlayRegistry.ts:275-279 records).
+  readonly #downloadBtn: HTMLButtonElement;
+  readonly #exportStatus: HTMLElement;
   readonly #onDismissed: () => void;
 
   constructor(handlers: PrivacyViewHandlers) {
@@ -105,6 +116,8 @@ export class PrivacyView {
     );
     this.#cancelBtn = this.#ensureButton('privacy-cancel-btn', handlers.onCancelDeletion);
     this.#exportBtn = this.#ensureButton('privacy-export-btn', handlers.onExportRequested);
+    this.#downloadBtn = this.#ensureButton('privacy-download-btn', handlers.onExportDownload);
+    this.#exportStatus = ensureElement('privacy-export-status', 'p');
     this.#onDismissed = handlers.onDismissed;
 
     for (const child of [
@@ -117,6 +130,8 @@ export class PrivacyView {
       this.#confirmCancelBtn,
       this.#cancelBtn,
       this.#exportBtn,
+      this.#exportStatus,
+      this.#downloadBtn,
       this.#notice,
       this.#disclosure,
     ]) {
@@ -157,6 +172,12 @@ export class PrivacyView {
     this.#paintButton(this.#deleteBtn, vm.deleteLabel, vm.deleteEnabled);
     this.#paintButton(this.#cancelBtn, vm.cancelLabel, vm.cancelEnabled);
     this.#paintButton(this.#exportBtn, vm.exportLabel, vm.exportEnabled);
+    // A3-D4: painted on EVERY render, in every state — `#paintButton` clears `display`, so the
+    // control keeps its place in the focus ring whether or not an artifact is available.
+    this.#paintButton(this.#downloadBtn, vm.downloadLabel, vm.downloadEnabled);
+    // The status line is not focusable, so it may hide — the `#notice` rule.
+    this.#exportStatus.textContent = vm.exportStatusLabel ?? '';
+    this.#exportStatus.style.display = vm.exportStatusLabel === undefined ? 'none' : '';
 
     const armed = vm.confirmPrompt !== undefined;
     this.#confirm.textContent = vm.confirmPrompt ?? '';
