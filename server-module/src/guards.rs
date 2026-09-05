@@ -115,6 +115,39 @@ pub(crate) fn require_not_deleting(ctx: &ReducerContext, reducer: &str) -> Resul
     })
 }
 
+/// The rb-47 stamp-aware sibling of `require_not_deleting` (ADR-0237 D3), for a
+/// reducer that ACCEPTS a commitment somebody else opened — `respond_trade` on
+/// the counterparty side: refuse the CALLER only while their account is
+/// deletion-gated AND the commitment was opened at or after their own deletion
+/// request (`opened_at_ms` is the offer's creation stamp). Commitments that
+/// predate the request stay completable (PRV1-10), which is why this is not,
+/// and must never become, a blanket gate on an already-open interaction. Same
+/// shape as its sibling on purpose: caller-only by signature (no identity
+/// parameter), one fused expression delegating transitively through the
+/// accounts predicate into the pure SSOT decision, no account state re-derived
+/// here, the same single static reason (an accepting response consummates a
+/// NEW trade, so the text is true; ADR-0227 D2 fixes ONE reason per gated
+/// shape so this module never learns the state split, and the existing
+/// polarity, PII and distinctness pins cover the constant — the client maps no
+/// server reject string today, and the client tree is outside rb-47), and
+/// `log_reject` on the refuse path. Pinned by the rb-47 tests in
+/// `trading_tests.rs`; change it only together with them and ADR-0237.
+pub(crate) fn require_commitment_predates_deletion(
+    ctx: &ReducerContext,
+    reducer: &str,
+    opened_at_ms: i64,
+) -> Result<(), String> {
+    deletion_gate(crate::accounts::refuses_commitment_opened_at(
+        ctx,
+        ctx.sender(),
+        opened_at_ms,
+    ))
+    .map_err(|e| {
+        log_reject(reducer, ctx.sender(), e);
+        e.to_string()
+    })
+}
+
 /// Validate + canonicalize a player-visible name (#27c Unicode hardening).
 ///
 /// Order matters: trim -> NFC-normalize -> length -> charset, so length and

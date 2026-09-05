@@ -2365,7 +2365,7 @@ fn m22s5_gated_reducer_census_is_exactly_three() {
     // above (silently absent from both the gated and already-open sets) rather
     // than a loud parse ambiguity. Neither spelling exists in either file today;
     // a future legitimate use must extend the extractor first, deliberately.
-    let bypass: [(String, &str); 5] = [
+    let bypass: [(String, &str); 7] = [
         (
             ["crate::accounts::is_pending_", "deletion("].concat(),
             "the accounts-side context predicate",
@@ -2377,6 +2377,15 @@ fn m22s5_gated_reducer_census_is_exactly_three() {
         (
             ["ctx.db.acc", "ount("].concat(),
             "a direct account-table read",
+        ),
+        (
+            ["crate::accounts::refuses_commitment_", "opened_at("].concat(),
+            "the stamp-aware accounts-side context predicate (rb-47) — reachable from a \
+             reducer file ONLY through the guards wrapper",
+        ),
+        (
+            ["opened_commitment_is_", "refused("].concat(),
+            "the pure stamp-aware decision (rb-47)",
         ),
         (
             ["cfg_", "attr("].concat(),
@@ -2417,6 +2426,14 @@ fn m22s5_gated_reducer_census_is_exactly_three() {
 /// escrow the gate exists to protect would be frozen rather than released. The
 /// scheduler-only three are worse still — `ctx.sender()` there is the DATABASE
 /// identity, so a caller-keyed gate would consult the wrong account entirely.
+///
+/// SINCE rb-47 (ADR-0237) one of the nine carries a SECOND, narrower gate:
+/// `respond_trade` refuses an ACCEPTING response to an offer created after the
+/// caller's own deletion request, through a DIFFERENT wrapper whose bare name is
+/// not the one this fence pins. It is still never BLANKET-gated, and declines
+/// still pass untouched — which is exactly the trap-state reasoning above, held
+/// in place by the new gate's PLACEMENT below the decline block rather than by
+/// this census. A hit here still means the blanket gate was added.
 ///
 /// Every name is asserted to EXIST first: a fence over a reducer that was
 /// renamed away silently stops fencing anything.
@@ -2463,7 +2480,11 @@ fn m22s5_already_open_reducers_are_not_gated() {
              scheduler-only reaper would consult the DATABASE identity's account rather \
              than any player's. The bare NAME is the needle, so an alias or a wrapper \
              around the gate is caught here too. If a future spec really gates one of \
-             these, change the spec first, then this list — never the reverse."
+             these, change the spec first, then this list — never the reverse. \
+             SCOPE, since rb-47 (ADR-0237): `respond_trade` also carries a \
+             STAMP-CONDITIONED refusal, through a different wrapper with a different bare \
+             name. That is not blanket gating and cannot be reported here — so a hit is \
+             still the blanket gate, and still the trap-state defect."
         );
     }
 }
@@ -2899,13 +2920,18 @@ fn rb46_gated_names() -> [String; 4] {
 ///      single wrong tag; the region check is what kills a SWAP (buy tagged for
 ///      sell and sell tagged for buy), under which every count is still one.
 ///   4. THE BYPASS BANS: no reducer in either file may reach the accounts
-///      predicate, the pure SSOT decision or the account table directly, and
-///      neither file may hide a reducer from the extractor behind a
+///      predicate, the pure SSOT decision, the account table, or (since rb-47,
+///      ADR-0237) either half of the stamp-aware seam directly: the ctx-bound
+///      `refuses_commitment_opened_at` and the pure `opened_commitment_is_refused`,
+///      whose one sanctioned consumer is the caller-only wrapper in `guards.rs`.
+///      Nor may either file hide a reducer from the extractor behind a
 ///      conditional-compilation attribute wrapper or a renamed attribute
 ///      import. A reducer that consults the predicate itself is gated by a rule
 ///      NO fence in this crate constrains: it can invert the polarity, log
 ///      nothing, or run after the write, and the set assertion still reports it
-///      as gated.
+///      as gated. The stamp-aware pair is worse still: its ctx-bound half takes
+///      an IDENTITY, so a reducer calling it directly can ask about a third
+///      party (the deletion-status oracle ADR-0227 D4 forbids).
 ///
 /// RED AT HEAD: neither file carries a call site, so the found set is EMPTY and
 /// the SET assertion fails first, naming `start_battle` and `start_wild_battle`
@@ -2946,7 +2972,7 @@ fn rb46_gated_reducer_census_battle_and_economy() {
     let attr = rb46_reducer_attr();
     let names = rb46_gated_names();
 
-    let bypass: [(String, &str); 5] = [
+    let bypass: [(String, &str); 7] = [
         (
             ["crate::accounts::is_pending_", "deletion("].concat(),
             "the accounts-side context predicate",
@@ -2958,6 +2984,15 @@ fn rb46_gated_reducer_census_battle_and_economy() {
         (
             ["ctx.db.acc", "ount("].concat(),
             "a direct account-table read",
+        ),
+        (
+            ["crate::accounts::refuses_commitment_", "opened_at("].concat(),
+            "the stamp-aware accounts-side context predicate (rb-47) — reachable from a \
+             reducer file ONLY through the guards wrapper",
+        ),
+        (
+            ["opened_commitment_is_", "refused("].concat(),
+            "the pure stamp-aware decision (rb-47)",
         ),
         (
             ["cfg_", "attr("].concat(),
@@ -3054,7 +3089,10 @@ fn rb46_gated_reducer_census_battle_and_economy() {
                  it as gated. The last two needles close the extractor's camouflage class: \
                  a conditional-compilation attribute wrapper or a renamed attribute import \
                  makes a whole reducer INVISIBLE to the body extractor, which is a silent \
-                 absence rather than a loud parse failure. All five are ZERO at HEAD."
+                 absence rather than a loud parse failure. The two rb-47 needles ban the \
+                 stamp-aware seam on the same reasoning, and its ctx-bound half is the \
+                 sharper hazard: it takes an IDENTITY, so a direct call can answer about a \
+                 third party. All seven are ZERO at HEAD."
             );
         }
     }
