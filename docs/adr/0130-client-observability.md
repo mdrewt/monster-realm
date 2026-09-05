@@ -362,3 +362,59 @@ spec's EARS scenario unrepresentable — noted as a future simplification).
   (today's handler is a single boolean assignment; the contract is written on the field).
 - (g) **NEW** — `onHydrated`'s placement between `onReady` and `onReconnect` in main.ts is unenforced by any pin
   (the onReconnect-region slicers assert positives only); harmless if moved, recorded for completeness.
+
+---
+
+## Amendment — 17r-f (2026-09-05): the rAF frame catch feeds the error surface, deduped
+
+**Context.** `frame()`'s catch was `console.error`-only, so an uncaught render-loop throw reached
+neither the error overlay, nor the error ring, nor the F9 bundle — the three surfaces this ADR
+exists to provide. The window `error`/`unhandledrejection` listeners never see it, because the
+`try` swallows it by design (the `finally` re-arm is what keeps a transient throw from killing the
+loop permanently). On a self-hosted deployment nobody tails browser consoles, and the M23 a11y
+block — deliberately written to throw on a catalog miss — sits inside that swallow zone,
+contradicting `ui/overlayA11y.ts`'s own loud-failure doctrine.
+
+**Decision.** The catch now also records the error, as
+`pushError('uncaught', ` + "`frame: ${normalizeError('uncaught', err).message}`" + `)`, guarded by a
+module-scope `lastFrameErrorMessage` so that **consecutive identical** frame errors collapse to one
+ring record. `console.error` is kept and runs first. The `finally { requestAnimationFrame(frame) }`
+re-arm is untouched.
+
+**Why `'uncaught'` and not a new `'frame'` `ErrorSource`.** `ErrorSource` (`client/src/ui/errorRing.ts:14`)
+is the shared taxonomy consumed by the bundle schema and by the overlay's `dataset.source`; a fourth
+variant is a cross-module contract change, not a wiring change. It is also transcribed a second time
+inline at `main.ts`'s `pushError` signature, so a variant needs two coordinated edits that can
+silently drift. (This slice removes that duplication: the signature now references the exported
+type.) Operator disambiguation is instead carried in the MESSAGE, via the `frame: ` prefix — the
+existing house idiom (`reduceErrorMessage` returns `` `${where}: ${message}` ``,
+`ui/statusModel.ts:47`). Without it an F9 bundle cannot distinguish "the render loop is dead and the
+game is frozen" from "a click handler threw once and everything is fine".
+
+**Why the dedupe is not optional — the ADR-0172 D1 interaction.** ADR-0172 D1 accepts the undecayed
+16-breadcrumb movement cap explicitly because "the remaining 48 slots are reserved for the crash
+records the bundle exists to carry". An undeduped writer here is an uncapped, undecayed **60 Hz**
+producer into that same 64-slot ring — measured: **100% of the ring in ~1.07 s**, after which a
+genuine pre-crash record (e.g. a websocket drop that CAUSED the frame throw) is provably absent from
+the bundle. Since no human presses F9 within 1.07 s of a crash starting, that would make the F9
+bundle *strictly worse than the console-only behaviour it replaces* whenever the frame throw is a
+symptom rather than the root cause. The dedupe therefore **preserves** ADR-0172 D1 rather than
+voiding it, and it costs no policy: there is no clock, no window, no cap, no tunable.
+
+It is deliberately NOT a once-latch and NOT a `rateLimitTick` throttle. Both of those drop the
+second, *different*, fatal error — the one that matters after a transient — and both are gated
+against by the runtime arm that asserts two distinct messages both record while a repeat does not.
+
+**Consequences.**
+- A frame throwing every tick costs ONE ring slot and shows the overlay ONCE, so F8 dismissal
+  continues to work (an undeduped writer re-`show()`s within ~16 ms of the press, defeating F8 for
+  exactly the failure mode it exists for) and `#mr-error-overlay` — which has no stylesheet and
+  intercepts clicks (ADR-0184) — does not become a permanent, undismissable block in e2e runs.
+- `lastFrameErrorMessage` is never reset. An intermittent error alternating with good frames records
+  once; that is intended, since the message is the diagnosis.
+- `normalizeError` is used rather than a bare template literal because it is documented TOTAL: a
+  hostile `toString` in `` `frame: ${err}` `` would throw *inside the catch* and escape `frame()`,
+  re-creating a variant of the bug this amendment fixes.
+
+**The `finally` re-arm invariant belongs to ADR-0074**, not to this ADR (`docs/adr/0074-zone-sync-robustness.md:27`,
+`:68`; in-code marker `12.5c-4`). This amendment preserves it and adds nothing to it.
