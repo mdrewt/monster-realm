@@ -38,6 +38,8 @@
 - Update M8.5d plan to reflect SHA-pinning requirement removal
 - Post-2.8.1 doc-truth sweep — drop stale 1.x syntax instructions, correct view-PK adoption status (#349)
 - Fix stale battle_action comment claiming battle is public
+- ADR-0224 retires scanner-script gates, supersedes ADR-0010 (#401)
+- ADR-0224 amendment — mandatory delete-on-migration + moderation clause (#402)
 
 ### Features
 
@@ -226,6 +228,24 @@
 - The M23 accessibility eval tier — a readdir-derived focus ban, a live-region census with ownership, a reduced-motion scope-escape ratchet, and the cross-view wiring totality spec (#370)
 - The nightly a11y decay ratchet, its wiring gate, and the manual protocol for the two never-CI-green criteria (#371)
 - The 39-table data-lifecycle manifest, Account.terminal_at_ms, and the private export_bundle chunk contract (#373)
+- Deletion terminal guards, reaper recheck skeleton, and the §4.7 gate predicate (cascade → S3b, ADR-0225) (#404)
+- PRV1-9/10 deletion gate on the three commitment-opening reducers via guards::require_not_deleting (ADR-0227) (#406)
+- M22 §5 data export — request_data_export + my_export_bundle view (PRV1-11/12/13, ADR-0226) (#407)
+- M22 §4.4 deletion cascade — delegated erase/anonymize, one-shot re-arm + R2 sweep, PRV1-8(b) fresh re-registration (ADR-0228) (#408)
+- M22 S6 deletion-completeness gate — PRV1-15/16 from derive metadata, manifest-driven cascade chain (ADR-0229) (#409)
+- M22 S7 runbook — data deletion & backup retention section + G24 doc/citation gate (PRV1-18, ADR-0230) (#410)
+- M22 S8 client privacy cores — deletion countdown/cancel/terminal lattice + request-wide export chunk assembly (PRV1-1/3/4/11/12/13, ADR-0231) (#411)
+- M22 S9 post-integration verification — live cascade e2e + cross-slice contract pins (ADR-0232, closes M22) (#412)
+- M23 S8 colour independence — A11Y-29 token SSOT in game-core + CB-safe default HP palette (ADR-0233) (#413)
+- Wire the live OS reduced-motion preference into the render loop (closes R-rb-38-E1) (#417)
+- OBS-48 softened to require-justification (Drew ruling, issue #342) (#418)
+- Observable claim-time export purge — purge_export_bundles reports its count, complete_guest_claim emits guest_claim_export_purge (closes R-rb-22-EO-9, ADR-0235) (#421)
+- Caller-only deletion gate reaches PvE battle start and the shop — start_battle, dev start_wild_battle, buy, sell (closes R-m22-s5-X12, ADR-0236) (#428)
+- Respond_trade refuses an accepting response to an offer created at or after the caller's deletion request — stamp-aware accounts/guards seam (closes R-m22-s5-X13, ADR-0237) (#429)
+- PRV1-14 export_bundle TTL reaper — hourly interval singleton, cap 256, armed from request_data_export and init/sync_content (closes R-m22-s4-X17, ADR-0238) (#430)
+- PRV1-1 ticking deletion-grace countdown — pure privacyBanner label + main.ts frame-tick HUD reading the wasm grace (closes R-m22-s8-X9) (#432)
+- PRV1-3/PRV1-4 privacy surface — the 17th overlay wires delete/cancel/export to conn.reducers and renders the distinct terminal notice (closes R-m22-s8-X10) (#435)
+- PRV1-11/12/13 live export transport — my_export_bundle joins the subscribe array, assembles on the batch edge, and ships as a downloadable file (closes R-m22-s8-X11) (#436)
 
 ### Fixes
 
@@ -283,6 +303,34 @@
 - Explicit policy discriminator on every REKEY_MANIFEST entry — [G6/policy] parses it once, the D6 REKEY columns are value-pinned, and FG70 co-scans the Rust T9 text reader (#378)
 - Pin the [G6/declared] own-property boundary — FG72a-f proof-of-teeth against Object.prototype pollution, Object.hasOwn on the classifier-result reads (residual R-m22-s0-X2) (#379)
 - Resolve Rust type aliases in findIdentityColumns — union binding table, token expansion, fail-closed [G6/alias]; FG73a-p proof-of-teeth (residual R-m22-s0-X3) (#380)
+- Evals/run.mjs exit-verdict guard — a truncated or verdict-swallowed eval run can no longer exit 0 [R-m22-s0-X4] (#383)
+- Reducer sanction ledger — a pre-declared reducer is admitted, an undeclared one is not [R-m22-s1-X1] (#384)
+- Single-source the deletion display-name tombstone; the guest-claim sentinel goes module-private [R-m22-s1-X2] (#385)
+- Expose DELETION_GRACE_MS_DEFAULT to TS via a wasm accessor so S8's countdown cannot duplicate it [R-m22-s1-X3] (#386)
+- Stylesheet-owned reduced-motion guard for the battle HP bar [R-m23-s2-X4] (#387)
+- The live region follows the open modal so aria-modal cannot mute it [R-m23-s2-X5] (#388)
+- Single-owner stripCssComments — the .mjs eval owns it, the .ts test imports it [R-m23-s2-X6] (#389)
+- Keyboard-operable-rows eval — A11Y-25/A11Y-26 get their first oracle [R-m23-s6-A11Y-25] (#390)
+- The eval owns the CSS oracle — [A11Y-06]/[A11Y-07] are executed, not grepped [R-m23-s10-X18] (#391)
+- Retire the two subsumed hand-kept .focus( lists; keep and defer the third [R-m23-s10-X19] (#392)
+- [A11Y-RM2e/f/g] close the RMCSS custom-property channel and reconcile the motion census upward [R-m23-s10-X20] (#393)
+- The cross-view RE-OPEN edge — both polarities, in the shared wiring layer [R-m23-s10-X21] (#394)
+- The axe-core + real-browser a11y tier spec §5.7 decided and no slice owned [R-m23-s11-X10] (#395)
+- A browser-tier reduced-motion oracle for A11Y-27's stylesheet arm [R-m23-s11-X11] (#396)
+- Purge a guest's pre-claim export_bundle chunks at claim time [R-m22-s2-S3-GUEST-EXPORT-ORPHAN] (#397)
+- Declare AccountDeletionReaperSchedule + guarded no-op reaper, arm/disarm wiring [R-m22-s2-X15] (#398)
+- Needle<->key correspondence + identifier-bounded call matching in [G6/consumed] [R-rb-2-X10] (#399)
+- Correct ADR-0207's retired typeof-inference prose + ADR-0223 records the design once [R-rb-2-X9] (#400)
+- Retarget 7 drifted main.ts citations onto stable landmarks (R-rb18-MAINCITE) (#414)
+- Hydration-gated battle reseed latch + identity refresh on reconnect (closes ADR-0130 residuals d+e) (#419)
+- Fail-loud G5 write attribution — rooted receiver-chain walk + Rust-side alias bans (closes R-rb-22-EO-11, ADR-0234) (#420)
+- REKEY exists-half predicates proven against real rows via a native test host; eval reach-leg retired (closes R-rb-25-X9, ADR-0222 amended in place) (#422)
+- Reciprocal ADR back-links replace three self-disclosed 'no back-link edit' caveats; the four-consumer premise re-measured as already discharged (closes R-rb-26-X9-spec-false-premise) (#423)
+- The next-free ADR number is derived into the drift-gated digest, not hand-maintained in README (closes R-rb-26-X11) (#424)
+- The busy guard preserves the armed delete confirmation; only a delivered send spends it (#426)
+- Four stale doc/comment citations retargeted onto landmarks (M-postgate-eighteenth-review-residuals) (#427)
+- Comment-truth micro-sweep — retract the overlayA11y "share ONE root" claim and drop the stale playtest-report EXPECTED RED qualifiers (M-postgate-seventeenth-review-residuals) (#431)
+- Frame-loop errors reach the error overlay/ring and the F9 bundle — tagged, consecutive-deduped, re-arm intact (M-postgate-seventeenth-review-residuals) (#437)
 
 ### M8.5d
 
@@ -389,6 +437,7 @@
 - Regenerate — freshness gate was 16 entries / 6.2d stale (#347)
 - Exclude github-actions-mutable-action-tag from Semgrep gate (#348)
 - Regenerate OKF bundle drifted by battle_action comment fix (#356)
+- Regenerate via git-cliff — nightly changelog-freshness was 36 entries / 6.5d stale (#382)
 
 ### Refactor
 
@@ -416,6 +465,9 @@
 - Test-integrity & diagnostics residuals — de-vacuified RT-SZ-02/F-5f/M14d pins, grantBait revival tripwire, movement-rejection breadcrumb (ADR-0172) (#276)
 - Accounts/auth eval gates — 11 proven bypasses closed (ADR-0179 G1-G12) (#300)
 - Trading reducer behavioral negative-path suite (dynamic e2e, eval tighten, operator pins) (#317)
+- Pin guest-claim rekey delegate reach in accounts.rs (residual R-rb-7-X8) (#405)
+- Make overlayA11yWiring.test.ts safe under vitest --sequence.concurrent (R-rb18-CONCURRENT) (#415)
+- Gate A11Y-27's renderer arm with a real-browser reduced-motion e2e + nightly wiring (R-rb-20-RM-7) (#416)
 
 ### Wip
 
@@ -426,3 +478,5 @@
 - Regen knowledge bundle — UTC date rollover (2026-07-13→2026-07-14) (#166)
 - Docs — ARCHITECTURE.md 11r-f block, ADR-0171 final; graphs refreshed; full just ci exit 0
 - Drill evidence in ADR-0200 + ARCHITECTURE note
+- Round-2 gating-test hardening — 10 measured forgeries now bite (subject-shadow census, delegation polarity pin, claim-variant twins, independent frozen-body spelling, audit-tag pin, reason floor)
+- Security-audit note — [SCOPE] self-certification: the three new files never spell the cfg attribute in prose; docs state the compiler (E0433) is the real publish guard
