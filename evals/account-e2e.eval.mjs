@@ -1887,6 +1887,19 @@ export const DELETION_CITATIONS = [
     file: DELETION_SOURCE_PRIVACY,
     marker: 'accessor = my_export_bundle,',
   },
+  // rb-48 (ADR-0238 D9): §9.4 now names the TTL reaper and its constant. Both
+  // resolve here so the retruthed claim cannot outlive the code it describes
+  // (red-team M-G4: the reaper deleted from privacy.rs left G24 at 6/6).
+  {
+    symbol: 'export_bundle_reaper',
+    file: DELETION_SOURCE_PRIVACY,
+    marker: 'pub fn export_bundle_reaper(',
+  },
+  {
+    symbol: 'EXPORT_BUNDLE_TTL_MS',
+    file: DELETION_SOURCE_PRIVACY,
+    marker: 'pub(crate) const EXPORT_BUNDLE_TTL_MS',
+  },
 ];
 
 /**
@@ -2315,10 +2328,17 @@ const FIXTURE_SCHEMA_RS = [
 ].join('\n');
 
 const FIXTURE_PRIVACY_RS = [
-  '// privacy.rs (fixture) — the my_export_bundle view.',
+  '// privacy.rs (fixture) — the my_export_bundle view + the rb-48 TTL reaper.',
   '#[spacetimedb::view(accessor = my_export_bundle, sql = "SELECT * FROM export_bundle")]',
   'pub struct MyExportBundle {',
   '    pub id: u64,',
+  '}',
+  '',
+  'pub(crate) const EXPORT_BUNDLE_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000;',
+  '',
+  '#[spacetimedb::reducer]',
+  'pub fn export_bundle_reaper(ctx: &ReducerContext, _sched: ExportBundleReaperSchedule) -> Result<(), String> {',
+  '    Ok(())',
   '}',
 ].join('\n');
 
@@ -2425,11 +2445,15 @@ const DOC_4_MY_EXPORT = linesMapBefore(
   DELETION_APPENDIX_HEADING,
   (l) => l.split('my_export_bundle').join('my-export-view'),
 );
-const DOC_4_NO_TTL = linesMapBefore(GOOD_DELETION_RUNBOOK_LINES, DELETION_APPENDIX_HEADING, (l) =>
-  l.split('7-day TTL').join('a bounded TTL'),
+const DOC_4_TTL_SOFTENED = linesMapBefore(
+  GOOD_DELETION_RUNBOOK_LINES,
+  DELETION_APPENDIX_HEADING,
+  (l) => l.split('7-day TTL').join('a bounded TTL'),
 );
-const DOC_4_S4B = linesMapBefore(GOOD_DELETION_RUNBOOK_LINES, DELETION_APPENDIX_HEADING, (l) =>
-  l.split('ADR-0238').join('ADR-0999'),
+const DOC_4_ADR_RENUMBERED = linesMapBefore(
+  GOOD_DELETION_RUNBOOK_LINES,
+  DELETION_APPENDIX_HEADING,
+  (l) => l.split('ADR-0238').join('ADR-0999'),
 );
 
 // fence-hidden — ADR-0238 removed from every prose occurrence before the appendix
@@ -2438,17 +2462,17 @@ const DOC_4_S4B = linesMapBefore(GOOD_DELETION_RUNBOOK_LINES, DELETION_APPENDIX_
 // EDIT 8 banner above for the measured bypass this closes.
 const TRIPLE_BACKTICK = String.fromCharCode(96) + String.fromCharCode(96) + String.fromCharCode(96);
 const DELETION_APPENDIX_AT = GOOD_DELETION_RUNBOOK_LINES.indexOf(DELETION_APPENDIX_HEADING);
-const DOC_4_S4B_FENCE_BEFORE = GOOD_DELETION_RUNBOOK_LINES.slice(0, DELETION_APPENDIX_AT).map((l) =>
+const DOC_4_ADR_FENCE_BEFORE = GOOD_DELETION_RUNBOOK_LINES.slice(0, DELETION_APPENDIX_AT).map((l) =>
   l.split(' (see ADR-0238)').join(''),
 );
-const DOC_4_S4B_FENCE_AFTER = GOOD_DELETION_RUNBOOK_LINES.slice(DELETION_APPENDIX_AT);
-const DOC_4_S4B_FENCE_HIDDEN = DOC_4_S4B_FENCE_BEFORE.concat([
+const DOC_4_ADR_FENCE_AFTER = GOOD_DELETION_RUNBOOK_LINES.slice(DELETION_APPENDIX_AT);
+const DOC_4_ADR_FENCE_HIDDEN = DOC_4_ADR_FENCE_BEFORE.concat([
   TRIPLE_BACKTICK,
   'decoy reference: ADR-0238',
   TRIPLE_BACKTICK,
   '',
 ])
-  .concat(DOC_4_S4B_FENCE_AFTER)
+  .concat(DOC_4_ADR_FENCE_AFTER)
   .join('\n');
 const DOC_4_BOTH_NAMES = linesMapBefore(
   GOOD_DELETION_RUNBOOK_LINES,
@@ -2597,8 +2621,8 @@ export const G24_BAD_FIXTURES = [
     4,
   ],
   [
-    'clause4-no-independent-ttl',
-    DOC_4_NO_TTL,
+    'clause4-ttl-softened',
+    DOC_4_TTL_SOFTENED,
     GOOD_DELETION_SOURCES,
     'clause 4:',
     '"7-day TTL" was softened to "a bounded TTL" and still accepted — this phrase is the ' +
@@ -2606,16 +2630,16 @@ export const G24_BAD_FIXTURES = [
     4,
   ],
   [
-    'clause4-s4b',
-    DOC_4_S4B,
+    'clause4-adr-renumbered',
+    DOC_4_ADR_RENUMBERED,
     GOOD_DELETION_SOURCES,
     'clause 4:',
     'the ADR-0238 cross-reference was renamed to ADR-0999 and still accepted',
     4,
   ],
   [
-    'clause4-s4b-fence-hidden',
-    DOC_4_S4B_FENCE_HIDDEN,
+    'clause4-adr-fence-hidden',
+    DOC_4_ADR_FENCE_HIDDEN,
     GOOD_DELETION_SOURCES,
     'clause 4:',
     'ADR-0238 was removed from every prose occurrence of the export-bundle sentence and re-added ONLY ' +

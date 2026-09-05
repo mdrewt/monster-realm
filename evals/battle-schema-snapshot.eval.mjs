@@ -2563,7 +2563,7 @@ pub struct Inventory {
   }
   // The pinned SET, not just the count. A count-only pin is evaded by a COMPENSATING
   // DOUBLE FLIP — one private table promoted and one public table demoted in the same
-  // change keeps 18/20 balanced (ADR-0199, red-team, measured against the D7 bootstrap
+  // change keeps the pinned counts balanced (ADR-0199, red-team, measured against the D7 bootstrap
   // window where [visibility-escalation] is skipped and `--write` silences
   // [visibility-drift], leaving this tooth as the only remaining backstop). Pinning
   // every name makes any single flip a RED regardless of what else moved.

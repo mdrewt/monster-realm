@@ -3844,9 +3844,9 @@ fn data_lifecycle_manifest_totality_bidirectional() {
         }
     }
     assert!(
-        census.len() >= 40,
+        census.len() >= 41,
         "T1 non-vacuity: only {} table declarations were found across the {} scanned \
-         modules; the live tree carries 40 — the 39 that rb-24's \
+         modules; the live tree carries 41 — the 40 that rb-24's \
          account_deletion_reaper_schedule completed, plus rb-48's \
          export_bundle_reaper_schedule in privacy.rs (ADR-0238). A census that shrank \
          is a census that stopped looking, and every set comparison below would then be \
@@ -11079,7 +11079,7 @@ fn m22s6_identity_column_count(accessor: &str, ty: &AlgebraicType) -> usize {
 
 /// X4 (PRV1-15 totality): the S6 row-type registry and `DATA_LIFECYCLE_MANIFEST`
 /// name the SAME set of tables, with no duplicates on either side, the census
-/// pinned at 40, and a non-vacuity floor on how many of the 40 are identity-bearing.
+/// pinned at 41, and a non-vacuity floor on how many of the 41 are identity-bearing.
 ///
 /// This is DISTINCT from `data_lifecycle_manifest_totality_bidirectional` (:3524),
 /// which proves every LIVE TABLE has a manifest entry by scanning table-attribute
@@ -11144,7 +11144,7 @@ fn m22s6_table_row_registry_matches_manifest() {
         registry_len, 41,
         "[m22s6/registry-census] the S6 row-type registry has {registry_len} entries; the live \
          manifest carries exactly 41 (13 ERASE + 4 ANONYMIZE + 5 JOIN-ONLY + 19 NOT-OWNED, \
-         schema.rs :990-992) — 40 before rb-48, plus `export_bundle_reaper_schedule` (ADR-0238). \
+         schema.rs :989-993) — 40 before rb-48, plus `export_bundle_reaper_schedule` (ADR-0238). \
          A registry that grew or shrank without a matching manifest change is a registry nobody \
          reviewed against the schema it claims to cover."
     );
@@ -11415,7 +11415,7 @@ fn m22s6_not_owned_identity_exceptions_are_frozen() {
         population, 19,
         "[m22s6/x3-population] {population} manifest entries are classified NotOwned; the live \
          set is exactly 19 (spec §3's seventeen plus rb-24's account_deletion_reaper_schedule \
-         and rb-48's export_bundle_reaper_schedule, ADR-0238; schema.rs :990-992)."
+         and rb-48's export_bundle_reaper_schedule, ADR-0238; schema.rs :989-993)."
     );
 
     let observed_len = observed_exceptions.len();
@@ -12691,7 +12691,7 @@ fn m22s9_derive_manifest_transcription() -> String {
         census, 41,
         "[m22s9/transcription-census] the derivation produced {census} entries; the live manifest \
          carries exactly 41 (13 ERASE + 4 ANONYMIZE + 5 JOIN-ONLY + 19 NOT-OWNED, schema.rs \
-         :990-992) — 40 before rb-48, plus `export_bundle_reaper_schedule` (ADR-0238), which \
+         :989-993) — 40 before rb-48, plus `export_bundle_reaper_schedule` (ADR-0238), which \
          transcribes as `export_bundle_reaper_schedule:NotOwned::0`: NotOwned, no owner columns, \
          not exportable. A transcription that silently shrank would let the e2e prove a cascade \
          over fewer tables than the tree actually has."

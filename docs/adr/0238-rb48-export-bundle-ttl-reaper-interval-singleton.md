@@ -60,7 +60,11 @@ only agree if the caller happens to pass sorted input. `EXPORT_REAP_MAX_DELETE_P
 the `playtest.rs`-analogous 8192: `export_bundle` rows carry `payload_json` chunks, not 40-byte
 scalars, and reducers serialize under one global write lock — an oversized batch could exceed the
 transaction budget and abort every tick, retrying forever (strictly worse than no reaper; red-team
-finding 10). 256/hour is 6k rows/day, far above any plausible expiry rate.
+finding 10). 256/hour is ~6.1k rows/day — at the ≥17 chunks every bundle carries (one per exportable table,
+empty tables included) that is roughly 360 bundles/day, a DRAIN RATE rather than a ceiling: a burst
+above it (a launch cohort exporting inside one window, or a sybil wave) drains over successive
+ticks, during which the excess chunks persist past the TTL and a bundle can sit half-deleted for up
+to an hour (residuals R-rb-48-PARTIALREAP and R-rb-48-SCANCOST).
 `EXPORT_REAP_INTERVAL = Duration::from_secs(3600)` (hourly, not the sibling's 5 minutes): 168× finer
 than the TTL, and 12× fewer unindexed full-table scans than a 5-minute interval (reviewer finding
 m5). `EXPORT_BUNDLE_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000` (604_800_000), declared in privacy.rs per
@@ -102,11 +106,13 @@ accessor named exactly 3× file-wide, all inside `ensure_export_bundle_reaper`; 
 every occurrence, plus a paren-tolerant `#[spacetimedb::reducer` count that also catches a
 bracket-less third reducer); `m22s4_now_bound_once` (`now_ms(` count 2 file-wide, 1 per reducer
 body); `m22s4_reducer_statement_order` (an addition — measured green today — gaining the arm-call
-count/depth/order clauses).
+count/depth/order clauses). A seventh test, `m22s4_sender_bound_once_and_sole_identity_source`,
+changed only its `[X9/dispatch-args]` failure message (four → five context-passing calls); no
+assertion or floor moved, so that is prose retruth, not a pin revision.
 
 **D8 — Byte-exact body, row-literal, and arg-list pins, plus a file-wide single-`#[cfg` clause.**
 The reaper body is pinned by squashed EQUALITY, not containment: this module already measured
-(`privacy_tests.rs:437-468`) that containment was insufficient for the strictly simpler
+(`privacy_tests.rs:458-469`) that containment was insufficient for the strictly simpler
 `purge_export_bundles` body (a dead `if false` branch, a shadowed empty `Vec`, an in-loop zeroed id,
 and an aliased write all passed clippy-clean and green), and the red-team's hostile-mutant battery
 against an unpinned arg list confirmed the same failure mode here: a wrong TTL/batch/now argument,
@@ -134,7 +140,10 @@ absent). The needles land instead on `'no independent TTL'` → `'7-day TTL'` (d
 2's `'7 days'`) and `'S4b'` → `'ADR-0238'`, both prefix-free against every existing needle; every
 BAD fixture keeps its one-needle-deleted shape. This is a literal swap on an existing gate clause,
 never a new `evals/*.eval.mjs` file and never a new clause added to an existing one — the two forms
-ADR-0224 bans.
+ADR-0224 bans. Clause 5's `DELETION_CITATIONS` roster gains two declaration-shaped rows
+(`pub fn export_bundle_reaper(`, `pub(crate) const EXPORT_BUNDLE_TTL_MS`) so the retruthed §9.4
+cannot outlive the code it describes (red-team M-G4) — a roster row on an existing clause, not a
+new clause.
 
 ## Rejected alternatives
 
@@ -143,6 +152,11 @@ ADR-0224 bans.
   `request_data_export` body; and it structurally cannot reach pre-slice legacy chunks.
 - **A `created_at_ms` btree index + range filter.** Pushes the expiry decision into the database
   where no native test can observe it — the pure `plan_export_reap` seam is the point of the proof.
+- **Reusing `playtest::plan_reap` with an unbounded population cap.** Behaviourally identical for
+  `cap = u64::MAX`, but its fifth parameter deletes FRESH rows whenever the population exceeds the
+  cap — a live footgun on personal-data chunks if that magic value is ever mis-set — and the export
+  policy would become a caller of a five-parameter seam shaped for a different table. Two 15-line
+  pure functions with different policy shapes is the cheaper, clearer arrangement.
 - **Self-arm-only arming (arm from `request_data_export` alone; the original plan).** Rejected per
   reviewer M5: it would make this the crate's sole singleton reaper not repaired by a publish,
   falsify the runbook's "publishing the module runs that sweep" promise, and ship
@@ -165,8 +179,8 @@ ADR-0224 bans.
 - Disclosed hidden dependencies, outside the slice's originally declared touches:
   `evals/battle-schema-snapshot.eval.mjs` (T-VIS-ANCHORS private-table count 22→23 and the
   `pinnedPrivateTables` roster); `evals/account-e2e.eval.mjs` (`M22S9_MANIFEST_TRANSCRIPTION` +1
-  entry, the 40→41 census literals including `mkFix`'s loop bound, and the G24 clause 4 needle
-  retarget); `client/src/module_bindings/types.ts` (`spacetime generate` emits
+  entry, the 40→41 census literals including `mkFix`'s loop bound, the G24 clause 4 needle
+  retarget, and two clause-5 `DELETION_CITATIONS` roster rows); `client/src/module_bindings/types.ts` (`spacetime generate` emits
   `ExportBundleReaperSchedule`'s row type even though the table is private — row types are emitted
   for private tables too); `docs/observability-dr-runbook.md` (§9.4 retruth); and
   `server-module/src/lib.rs` (+2 lines, per D4).
@@ -182,10 +196,31 @@ ADR-0224 bans.
 ## Residuals
 
 - **R-rb-48-OBS.** No observation is emitted on a reaper tick (D6). privacy.rs's own contract bans
-  logging in this module and no other module owns this reducer's calling context.
-- **R-rb-48-SCANCOST.** The hourly `export_bundle().iter()` scan is unindexed and full-table.
-  Revisit with a `created_at_ms` btree index plus a range filter if `export_bundle`'s row count
-  grows enough, under the global write lock, for the scan cost to matter.
+  logging in this module and no other module owns this reducer's calling context. This is the
+  amplifier for the two residuals below: a reaper stuck in an abort loop or working a week-long
+  backlog is invisible to operators.
+- **R-rb-48-SCANCOST.** The hourly `export_bundle().iter()` scan is unindexed and full-table, and it
+  materialises every row INCLUDING `payload_json` to read two scalar columns — so the cost driver is
+  total payload bytes, not row count, and it is inflatable for free: `join_game` needs no JWT, so
+  unlimited anonymous identities can each call `request_data_export` and write ≥17 chunks. If the
+  scan ever exceeds the transaction budget the reaper aborts every tick, silently disabling a
+  retention control. Remediation: `#[index(btree)]` on `ExportBundle.created_at_ms` plus a bounded
+  range read, or at minimum an operator alarm on `export_bundle` row count / bytes.
+- **R-rb-48-PARTIALREAP.** The 256-per-tick cap is global across owners, so when the expiring set
+  exceeds it a bundle can be deleted k-of-N and stay split for up to an hour; the client assembler
+  (`client/src/ui/exportAssembly.ts`) reports such a bundle as `incomplete`, a wait state that only
+  resolves at the next tick. Unreachable today (no client subscribes to `my_export_bundle` yet).
+  Follow-up: when a tick returns exactly the cap, arm a one-shot `ScheduleAt::Time` follow-up to
+  drain immediately, or reap per request atomically; either reshapes the frozen reaper body and
+  re-pins it.
+- **R-rb-48-SLOCLASS.** `ops/observability/rules/recording.rules.yml` lists three scheduled
+  functions as deliberately excluded from the SLO allowlist so the exclusion is auditable;
+  `export_bundle_reaper` is in neither list (nor is rb-24's `account_deletion_reaper`). Outside this
+  slice's touches; classify both in a follow-up.
+- **R-rb-48-G24NEG.** G24 clause 4 and the ledger X3 pin are substring checks: a §9.4 rewording that
+  keeps the positive sentence and every needle but explicitly negates it passes both (measured,
+  red-team M-G5). Not closable by substring matching; it is a reviewer-checklist obligation on
+  runbook §9 edits. The structural half IS closed by the D9 roster rows.
 
 ## Confirmation
 
