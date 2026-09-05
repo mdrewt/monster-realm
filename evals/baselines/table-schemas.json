@@ -854,5 +854,17 @@
       "scheduled_at",
       "account_identity"
     ]
+  },
+  "export_bundle_reaper_schedule": {
+    "pk": "id",
+    "visibility": "private",
+    "columns": {
+      "id": "u64",
+      "scheduled_at": "ScheduleAt"
+    },
+    "order": [
+      "id",
+      "scheduled_at"
+    ]
   }
 }

@@ -5,7 +5,7 @@ slug: reducers/on_connect
 updated: 2026-09-01
 tags: [reducer, spacetimedb, lib]
 abstract: "Lifecycle: lazy-provision or touch an `account` on connect (M21, ADR-0179 D4). Anonymous play is FIRST-CLASS. Returning…"
-resource: server-module/src/lib.rs#L221
+resource: server-module/src/lib.rs#L223
 source: scripts/okf-export.mjs@server-module/src/lib.rs
 ---
 

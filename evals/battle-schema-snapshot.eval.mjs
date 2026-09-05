@@ -2550,11 +2550,12 @@ pub struct Inventory {
   const realVisTableNames = Object.keys(realVisAll);
   const realPublicCount = realVisTableNames.filter((t) => realVisAll[t] === 'public').length;
   const realPrivateCount = realVisTableNames.filter((t) => realVisAll[t] === 'private').length;
-  if (realPublicCount !== 18 || realPrivateCount !== 22) {
+  if (realPublicCount !== 18 || realPrivateCount !== 23) {
     teeth.push(
       `T-VIS-ANCHORS FAILED: the real corpus derives ${realPublicCount} public / ` +
-        `${realPrivateCount} private table(s), expected 18/22 (measured a6ae43c; +export_bundle ` +
-        `private, M22-S2/ADR-0207; +account_deletion_reaper_schedule private, rb-24/ADR-0221) — ` +
+        `${realPrivateCount} private table(s), expected 18/23 (measured a6ae43c; +export_bundle ` +
+        `private, M22-S2/ADR-0207; +account_deletion_reaper_schedule private, rb-24/ADR-0221; ` +
+        `+export_bundle_reaper_schedule private, rb-48/ADR-0238) — ` +
         `if a table's ` +
         `declared visibility legitimately changed, update this tooth's pinned counts DELIBERATELY ` +
         `from ADR-0199, not to silence a red`,
@@ -2631,6 +2632,10 @@ pub struct Inventory {
     // directory of pending deletions. Scheduled tables are private like every
     // other *_schedule row here.
     'account_deletion_reaper_schedule',
+    // rb-48 (ADR-0238): the PRV1-14 export TTL reaper's interval-singleton
+    // schedule row — scheduler bookkeeping, private like every other
+    // *_schedule table here.
+    'export_bundle_reaper_schedule',
   ];
   for (const t of pinnedPrivateTables) {
     if (realVisAll[t] !== 'private') {

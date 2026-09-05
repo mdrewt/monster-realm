@@ -153,13 +153,13 @@ export const TOMBSTONE_DISPLAY_NAME_E2E = '(deleted account)';
 export const TOMBSTONE_IDENTITY_HEX_E2E =
   '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff';
 
-// THE 40-entry data-lifecycle transcription (schema.rs DATA_LIFECYCLE_MANIFEST
+// THE 41-entry data-lifecycle transcription (schema.rs DATA_LIFECYCLE_MANIFEST
 // + the S6 typespace walk's identity-column names), one biome-stable string:
 // entries sorted by table, `table:Policy[(parent)]:col1+col2:1|0`, '|'-joined.
 // Erase/Anonymize entries MUST carry >=1 column (red-team CRITICAL-1: a
 // zero-column entry is an UNATTEMPTED table, invisible to the vacuity list).
 export const M22S9_MANIFEST_TRANSCRIPTION =
-  'account:Anonymize:claimed_from+identity:1|account_deletion_reaper_schedule:NotOwned::0|battle:Anonymize:opponent_identity+player_identity:1|battle_action:Erase:player_identity:1|battle_challenge:Erase:challenger+target:1|battle_challenge_reaper_schedule:ViaJoin(battle_challenge)::0|battle_wild:ViaJoin(battle)::0|character:ViaJoin(player)::1|config:NotOwned::0|encounter:NotOwned::0|evolution_path:NotOwned::0|export_bundle:Erase:owner_identity:0|guest_claim:NotOwned::0|guest_claim_reaper_schedule:NotOwned::0|heal_cooldown:Erase:owner_identity:1|heal_location_row:NotOwned::0|inventory:Erase:owner_identity:1|item_row:NotOwned::0|monster:Erase:owner_identity:1|monster_pub:Erase:owner_identity:1|movement_tick_schedule:NotOwned::0|mr_heartbeat_schedule:NotOwned::0|npc:NotOwned::0|player:Anonymize:identity:1|player_conversation:Erase:owner_identity:1|player_dialogue_state:Erase:owner_identity:1|player_quest:Erase:owner_identity:1|player_wallet:Erase:owner_identity:1|playtest_event:Erase:identity:1|playtest_reaper_schedule:NotOwned::0|profile:Anonymize:identity:1|pvp_deadline_schedule:ViaJoin(battle)::0|shop_item_row:NotOwned::0|shop_row:NotOwned::0|skill_row:NotOwned::0|species_row:NotOwned::0|trade_offer:Erase:counterparty+initiator:1|trade_offer_reaper_schedule:ViaJoin(trade_offer)::0|type_relation_row:NotOwned::0|zone_def:NotOwned::0';
+  'account:Anonymize:claimed_from+identity:1|account_deletion_reaper_schedule:NotOwned::0|battle:Anonymize:opponent_identity+player_identity:1|battle_action:Erase:player_identity:1|battle_challenge:Erase:challenger+target:1|battle_challenge_reaper_schedule:ViaJoin(battle_challenge)::0|battle_wild:ViaJoin(battle)::0|character:ViaJoin(player)::1|config:NotOwned::0|encounter:NotOwned::0|evolution_path:NotOwned::0|export_bundle:Erase:owner_identity:0|export_bundle_reaper_schedule:NotOwned::0|guest_claim:NotOwned::0|guest_claim_reaper_schedule:NotOwned::0|heal_cooldown:Erase:owner_identity:1|heal_location_row:NotOwned::0|inventory:Erase:owner_identity:1|item_row:NotOwned::0|monster:Erase:owner_identity:1|monster_pub:Erase:owner_identity:1|movement_tick_schedule:NotOwned::0|mr_heartbeat_schedule:NotOwned::0|npc:NotOwned::0|player:Anonymize:identity:1|player_conversation:Erase:owner_identity:1|player_dialogue_state:Erase:owner_identity:1|player_quest:Erase:owner_identity:1|player_wallet:Erase:owner_identity:1|playtest_event:Erase:identity:1|playtest_reaper_schedule:NotOwned::0|profile:Anonymize:identity:1|pvp_deadline_schedule:ViaJoin(battle)::0|shop_item_row:NotOwned::0|shop_row:NotOwned::0|skill_row:NotOwned::0|species_row:NotOwned::0|trade_offer:Erase:counterparty+initiator:1|trade_offer_reaper_schedule:ViaJoin(trade_offer)::0|type_relation_row:NotOwned::0|zone_def:NotOwned::0';
 
 // Tables that may legitimately hold ZERO A-scoped rows at the pre-cascade
 // snapshot, each with its measured reason. HARD-CAPPED — a fourth entry is a
@@ -1139,9 +1139,9 @@ export function checkExportAssembly(chunks, expected) {
 export function checkCascadeTruth(input) {
   const { entries, pre, post, allowlist, allowlistCap, seededFloor, graceMs } = input;
   const fail = (reason) => ({ ok: false, reason, vacuous: [], detail: '' });
-  if (!Array.isArray(entries) || entries.length !== 40) {
+  if (!Array.isArray(entries) || entries.length !== 41) {
     return fail(
-      '[s9/census] transcription entries: ' + (entries ? entries.length : 'none') + ', expected 40',
+      '[s9/census] transcription entries: ' + (entries ? entries.length : 'none') + ', expected 41',
     );
   }
   if (!Array.isArray(allowlist) || allowlist.length > allowlistCap) {
@@ -1340,7 +1340,7 @@ export function checkCascadeTruth(input) {
   }
   return {
     ok: true,
-    reason: 'cascade truth held over 40 classified entries',
+    reason: 'cascade truth held over 41 classified entries',
     vacuous,
     detail: 'seeded=' + seededSum + ' vacuous=[' + vacuous.join(',') + ']',
   };
@@ -2118,10 +2118,12 @@ export function checkDrRunbookDeletionSection(text, sources) {
     }
   }
 
-  // clause 4 — export bundles as LANDED. `no independent TTL` and `S4b` are
-  // the honest half: the PRV1-14 reaper is deferred, so a bundle outlives the
-  // export request and lands in every subsequent backup.
-  for (const needle of ['export_bundle', 'my_export_bundle', 'no independent TTL', 'S4b']) {
+  // clause 4 — export bundles as LANDED. `7-day TTL` and `ADR-0238` are the
+  // honest half since rb-48: the PRV1-14 reaper exists, so a bundle has its own
+  // expiry — and still lands in every backup taken during its lifetime. (Before
+  // rb-48 the needles were `no independent TTL` and `S4b`; the retarget keeps
+  // the clause and needle count, ADR-0224.)
+  for (const needle of ['export_bundle', 'my_export_bundle', '7-day TTL', 'ADR-0238']) {
     if (body.indexOf(needle) === -1) {
       return miss(
         4,
@@ -2212,7 +2214,7 @@ export function linesMapBefore(lines, marker, fn) {
 // The decoy appendix duplicates EVERY needle every G24 clause tests: both
 // pinned sentences verbatim, DELETION_GRACE_MS_DEFAULT, 604_800_000, "7
 // days", account_deletion_reaper, AccountDeletionReaperSchedule, "one-shot",
-// "re-arm", export_bundle, my_export_bundle, "no independent TTL", S4b. A
+// "re-arm", export_bundle, my_export_bundle, "7-day TTL", ADR-0238. A
 // checker that scans the whole document instead of the extracted section
 // still finds every one of these; only a section-scoped checker rejects the
 // BAD fixtures below. That is the scoping proof.
@@ -2245,7 +2247,7 @@ export const GOOD_DELETION_RUNBOOK_LINES = [
   'A scheduled reducer, account_deletion_reaper, is driven by the AccountDeletionReaperSchedule row.',
   'It is one-shot: cancelling and re-requesting deletion always performs a fresh re-arm of that row rather than reusing a stale one.',
   '',
-  'Export via export_bundle and the my_export_bundle view carries no independent TTL of its own (see S4b); its lifetime is bounded by the account it was exported from, never a separate expiry.',
+  'Export via export_bundle and the my_export_bundle view expires on a 7-day TTL (see ADR-0238); the scheduled reaper deletes chunks past it, and the deletion cascade still purges them early.',
   '',
   DELETION_APPENDIX_HEADING,
   '',
@@ -2257,7 +2259,7 @@ export const GOOD_DELETION_RUNBOOK_LINES = [
   PIN_BACKUP_LIMIT,
   'DELETION_GRACE_MS_DEFAULT 604_800_000 7 days',
   'account_deletion_reaper AccountDeletionReaperSchedule one-shot re-arm',
-  'export_bundle my_export_bundle no independent TTL S4b',
+  'export_bundle my_export_bundle 7-day TTL ADR-0238',
   '',
 ];
 
@@ -2424,25 +2426,25 @@ const DOC_4_MY_EXPORT = linesMapBefore(
   (l) => l.split('my_export_bundle').join('my-export-view'),
 );
 const DOC_4_NO_TTL = linesMapBefore(GOOD_DELETION_RUNBOOK_LINES, DELETION_APPENDIX_HEADING, (l) =>
-  l.split('no independent TTL').join('a bounded TTL'),
+  l.split('7-day TTL').join('a bounded TTL'),
 );
 const DOC_4_S4B = linesMapBefore(GOOD_DELETION_RUNBOOK_LINES, DELETION_APPENDIX_HEADING, (l) =>
-  l.split('S4b').join('S9'),
+  l.split('ADR-0238').join('ADR-0999'),
 );
 
-// fence-hidden — S4b removed from every prose occurrence before the appendix
+// fence-hidden — ADR-0238 removed from every prose occurrence before the appendix
 // and re-added ONLY inside a fenced code block placed just before the
 // appendix heading (still inside section 9's extracted body). See the
 // EDIT 8 banner above for the measured bypass this closes.
 const TRIPLE_BACKTICK = String.fromCharCode(96) + String.fromCharCode(96) + String.fromCharCode(96);
 const DELETION_APPENDIX_AT = GOOD_DELETION_RUNBOOK_LINES.indexOf(DELETION_APPENDIX_HEADING);
 const DOC_4_S4B_FENCE_BEFORE = GOOD_DELETION_RUNBOOK_LINES.slice(0, DELETION_APPENDIX_AT).map((l) =>
-  l.split(' (see S4b)').join(''),
+  l.split(' (see ADR-0238)').join(''),
 );
 const DOC_4_S4B_FENCE_AFTER = GOOD_DELETION_RUNBOOK_LINES.slice(DELETION_APPENDIX_AT);
 const DOC_4_S4B_FENCE_HIDDEN = DOC_4_S4B_FENCE_BEFORE.concat([
   TRIPLE_BACKTICK,
-  'decoy reference: S4b',
+  'decoy reference: ADR-0238',
   TRIPLE_BACKTICK,
   '',
 ])
@@ -2591,7 +2593,7 @@ export const G24_BAD_FIXTURES = [
     'clause 4:',
     'the section was accepted with no mention of my_export_bundle even though the bare ' +
       'export_bundle mention (and everything else) survived — the privacy-scoped view is the ' +
-      'thing S4b actually names',
+      'thing the PRV1-14 reaper actually names',
     4,
   ],
   [
@@ -2599,8 +2601,8 @@ export const G24_BAD_FIXTURES = [
     DOC_4_NO_TTL,
     GOOD_DELETION_SOURCES,
     'clause 4:',
-    '"no independent TTL" was softened to "a bounded TTL" and still accepted — this phrase is the ' +
-      'one place the doc states export bundles do NOT get their own expiry',
+    '"7-day TTL" was softened to "a bounded TTL" and still accepted — this phrase is the ' +
+      'one place the doc states the expiry export bundles actually get (rb-48, ADR-0238)',
     4,
   ],
   [
@@ -2608,7 +2610,7 @@ export const G24_BAD_FIXTURES = [
     DOC_4_S4B,
     GOOD_DELETION_SOURCES,
     'clause 4:',
-    'the S4b cross-reference was renamed to S9 and still accepted',
+    'the ADR-0238 cross-reference was renamed to ADR-0999 and still accepted',
     4,
   ],
   [
@@ -2616,7 +2618,7 @@ export const G24_BAD_FIXTURES = [
     DOC_4_S4B_FENCE_HIDDEN,
     GOOD_DELETION_SOURCES,
     'clause 4:',
-    'S4b was removed from every prose occurrence of the export-bundle sentence and re-added ONLY ' +
+    'ADR-0238 was removed from every prose occurrence of the export-bundle sentence and re-added ONLY ' +
       'inside a fenced code block placed before the appendix heading, and was still accepted — ' +
       'squashDocText strips fenced code blocks as its second pass; deleting that one replacement ' +
       'is a MEASURED bypass in this repo (doing the same thing to the REAL runbook section 9 made ' +
@@ -4493,7 +4495,7 @@ export default async function () {
           });
         for (const t of ['v1', 'v2', 'v3', 'v4', 'v5'])
           entries.push({ table: t, policy: 'ViaJoin', parent: 'e1', cols: [], exportable: false });
-        for (let i = 1; i <= 18; i++)
+        for (let i = 1; i <= 19; i++)
           entries.push({
             table: 'n' + i,
             policy: 'NotOwned',

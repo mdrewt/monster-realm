@@ -916,7 +916,7 @@ pub struct BattleAction {
 /// owner-scoped `my_export_bundle` view (S4) is the ONLY client read path —
 /// like `account`, `public` here would hand one player's whole personal-data
 /// dump to every client. `created_at_ms` is server-stamped at insert; the S4
-/// TTL reaper re-derives staleness from it plus the injected clock, so no
+/// TTL reaper (rb-48) re-derives staleness from it plus the injected clock, so no
 /// caller can supply it. Synthetic `chunk_id` PK: views strip primary keys, and
 /// a `#[primary_key]`+`#[auto_inc]` column may carry no default, so the row
 /// needs its own key. `request_id` is MINTED BY S4 (generation strategy is
@@ -988,9 +988,9 @@ pub struct DataLifecycleEntry {
 ///
 /// The classification is spec §3's exhaustive partition (12 ERASE + 4
 /// ANONYMIZE + 5 JOIN-ONLY + 17 NOT-OWNED over the 38 pre-M22 tables) plus
-/// m22-s2's own `export_bundle` (ERASE) and rb-24's
-/// `account_deletion_reaper_schedule` (NOT-OWNED, ADR-0221) — 40 entries. Do
-/// not re-partition: add new tables with their own entry. The claim-flow
+/// m22-s2's `export_bundle` (ERASE), rb-24's `account_deletion_reaper_schedule`
+/// (NOT-OWNED, ADR-0221) and rb-48's `export_bundle_reaper_schedule` (NOT-OWNED,
+/// ADR-0238) — 41 entries. Do not re-partition: add new tables with their own entry. The claim-flow
 /// re-key axis lives separately as `REKEY_MANIFEST` in
 /// `evals/guest-claim-integrity.eval.mjs` (per-column, consumed by G6); a
 /// cross-manifest gate test ties the two together.
@@ -1234,6 +1234,14 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
         table: "evolution_path",
         policy: DeletionPolicy::NotOwned,
         basis: "seeded evolution graph content, not player data",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "export_bundle_reaper_schedule",
+        policy: DeletionPolicy::NotOwned,
+        basis: "global hourly TTL reaper schedule for export_bundle (rb-48, ADR-0238): an \
+                interval singleton with no Identity column, armed by request_data_export \
+                and by init and sync_content, never keyed to any player",
         exportable: false,
     },
     DataLifecycleEntry {
