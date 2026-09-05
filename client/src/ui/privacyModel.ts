@@ -6,10 +6,12 @@
 // never carry the number, and neither may its sibling spec: the SSOT eval scans all of `client/`
 // for a numeric duplicate and does not exempt test files.
 //
-// The DOM shell that renders this, the `main.ts` wiring that calls the three reducers, and the
-// wasm read itself all ship in m22-s8b. This module therefore emits notice CODES and the
+// UPDATED 2026-09-05 (rb-51): the countdown's DOM shell, its `main.ts` frame tick and the wasm
+// read HAVE now shipped — `main.ts` builds a `DeletionStatusInput` from the account row and
+// renders the result through `ui/privacyBanner.ts`. Still deferred: the `main.ts` wiring that
+// CALLS the three reducers (rb-52/rb-53). This module therefore still emits notice CODES and the
 // VERBATIM server message, never player-facing copy: spec §9's required pseudonymization language
-// belongs to the slice that actually renders text, where it can be gated.
+// belongs to the slice that renders the delete/cancel surface, where it can be gated.
 //
 // PRV1-1 (request + grace countdown), PRV1-3 (cancel while the window is live), PRV1-4 (a
 // distinct, permanently-rejected terminal state).

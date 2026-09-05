@@ -15,9 +15,9 @@
 // on a typo here.
 //
 // PURE MODEL — no DOM, no SDK, no store, NO CLOCK. `nowMs` and `graceMs` are INPUTS
-// (s8b's wiring reads `deletion_grace_ms_default()` from the wasm and the frame clock and
-// hands them in); the purity half is enforced twice, once by the signature and once by the
-// source scan at the bottom of this file.
+// (as of rb-51 the shipped wiring in `main.ts` reads `deletion_grace_ms_default()` from the wasm
+// and `Date.now()` for the frame clock, and hands both in); the purity half is enforced twice,
+// once by the signature and once by the source scan at the bottom of this file.
 //
 // THE CONTRACT THE IMPLEMENTER BUILDS (verbatim from the m22-s8 plan's "Interfaces (frozen
 // seam for s8b) — REVISED" section; do not invent variants):

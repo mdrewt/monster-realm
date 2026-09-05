@@ -17,6 +17,7 @@ import { Identity } from 'spacetimedb';
 // vite-plugin-wasm + top-level-await — see vite.config.ts / server.fs.allow).
 import {
   apply_move,
+  deletion_grace_ms_default,
   move_queue_cap,
   party_size,
   party_slot_none,
@@ -150,6 +151,8 @@ import {
   type OverlayProbes,
   visibleIds,
 } from './ui/overlayRegistry';
+import { privacyBannerLabel } from './ui/privacyBanner';
+import { deriveDeletionCountdown } from './ui/privacyModel';
 import { buildPvpChallengeViewModel } from './ui/pvpModel';
 import type { PvpView } from './ui/pvpView';
 import { buildQuestLogViewModel } from './ui/questLogModel';
@@ -211,6 +214,9 @@ const STEP_MS = step_ms();
 const QUEUE_CAP = move_queue_cap();
 const PARTY_SIZE = party_size();
 const PARTY_SLOT_NONE = party_slot_none();
+// rb-51 (PRV1-1): the deletion grace window, read ONCE per session — it is a build constant, and
+// re-reading it per frame would cross the wasm boundary ~60x/s for a value that cannot change.
+const DELETION_GRACE_MS_DEFAULT = deletion_grace_ms_default();
 // M11c: rawMap is `let` — replaced on zone warp (zone_map() re-called for the new zone id).
 let rawMap = zone_map(ZONE_ID);
 
@@ -2634,6 +2640,30 @@ async function main(): Promise<void> {
   // (actionWord, screen position) key changes — never unconditionally per frame.
   let lastPromptKey = 'none';
 
+  // rb-51 (PRV1-1): the deletion-grace countdown banner — created at runtime beside the
+  // #status / #interact-prompt precedent, and deliberately NOT an overlay: it must be visible
+  // WHENEVER the window is live, not only once the player opens something. It carries no
+  // aria-live and no implicit-live role: a region that changes every second would interrupt an
+  // assistive-technology user continuously; ui/liveRegion.ts stays the sole announcement owner.
+  const privacyCountdownEl = document.createElement('div');
+  privacyCountdownEl.id = 'privacy-countdown';
+  privacyCountdownEl.style.position = 'fixed';
+  privacyCountdownEl.style.top = '4px';
+  privacyCountdownEl.style.left = '50%';
+  privacyCountdownEl.style.transform = 'translateX(-50%)';
+  privacyCountdownEl.style.pointerEvents = 'none';
+  privacyCountdownEl.style.display = 'none';
+  privacyCountdownEl.style.zIndex = '45';
+  privacyCountdownEl.style.font = '12px/1.4 monospace';
+  privacyCountdownEl.style.color = '#ffd9d9';
+  privacyCountdownEl.style.background = 'rgba(60, 12, 12, 0.82)';
+  privacyCountdownEl.style.padding = '2px 8px';
+  privacyCountdownEl.style.borderRadius = '3px';
+  document.body.appendChild(privacyCountdownEl);
+  // The memo key is the RENDERED LABEL (`null` when nothing should show) — a DOM-write economy
+  // choice: the derived remaining time changes every frame, the label once a second.
+  let lastCountdownLabel: string | null = null;
+
   // pt-b1 (ADR-0130): mount the F9 error overlay (self-mounting, starts hidden,
   // non-blocking pointer-events:none). pushError renders into it on the first error.
   errorOverlayView = new ErrorOverlayView();
@@ -2804,6 +2834,32 @@ async function main(): Promise<void> {
       lastA11ySnapshot = nextSnapshot;
       liveRegion.flush(now);
       // M23S5-A11YSNAPSHOT-END
+      // rb-51 (PRV1-1): the ticking deletion countdown, ABOVE the render path on purpose — a
+      // recurring throw below is swallowed by this frame's catch, and a frozen legal deadline is
+      // worse than a blank one. Wall clock, not `now`: `performance.now()` is ms since navigation
+      // and would make every deadline read millennia away.
+      const privacyAccount = store.ownAccount(identity);
+      const countdownLabel = privacyBannerLabel(
+        deriveDeletionCountdown({
+          status: privacyAccount?.status,
+          deletionRequestedAtMs: privacyAccount?.deletionRequestedAtMs,
+          terminalAtMs: privacyAccount?.terminalAtMs,
+          nowMs: BigInt(Date.now()),
+          graceMs: DELETION_GRACE_MS_DEFAULT,
+        }),
+      );
+      if (countdownLabel !== lastCountdownLabel) {
+        lastCountdownLabel = countdownLabel;
+        if (countdownLabel !== null) {
+          privacyCountdownEl.textContent = countdownLabel;
+          privacyCountdownEl.style.display = 'block';
+        } else {
+          // The else is load-bearing: without it a cancelled deletion leaves a frozen notice up
+          // for the rest of the session.
+          privacyCountdownEl.textContent = '';
+          privacyCountdownEl.style.display = 'none';
+        }
+      }
       // nh2 (ADR-0148 R1): drain BEFORE the continuation re-issue, so a step emitted below is
       // never drained by the frame that issued it. This is a RESIDUAL fix, not the primary one:
       // measured, the outstanding-work gate takes press-phase render teleports from 88% to ~2%
