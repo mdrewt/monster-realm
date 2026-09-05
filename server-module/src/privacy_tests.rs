@@ -482,12 +482,31 @@ fn rb22p_purge_body_exact() {
 }
 
 /// EO-2 (owner scope): the delete set is filtered through the `owner_identity`
-/// btree index, and the module NEVER iterates the whole `export_bundle` table.
+/// btree index, and no OWNER-SCOPED path ever sweeps the whole
+/// `export_bundle` table.
 ///
-/// Kills: swapping `.owner_identity().filter(owner)` for a full-table
-///        `.iter()` sweep (with or without a later in-Rust predicate) — which
-///        deletes EVERY owner's export chunks, i.e. turns a privacy fix into
-///        mass data loss, while the body still collects and deletes.
+/// REVISED BY rb-48 (ADR-0238) — ATTRIBUTION, NOT RELAXATION. The file-wide ban
+/// on the sweep spelling could not survive PRV1-14: the TTL reaper's whole job
+/// is a global expiry pass, which is a full-table read by construction. So the
+/// ban becomes exact ARITHMETIC plus SCOPE — exactly ONE sweep in the module,
+/// and it is inside `export_bundle_reaper` — which is strictly stronger than the
+/// old clause everywhere except in the one function the slice reviewed: a second
+/// sweep anywhere now reds, where before a second sweep and a first sweep were
+/// the same failure.
+///
+/// The sanctioned sweep is safe for a different reason than the owner paths are:
+/// it selects by the TTL predicate alone and NEVER by owner, so it cannot be
+/// pointed at one account, and `rb48_reaper_body_exact` pins the whole sequence
+/// byte-for-byte. The owner paths remain index-scoped, and this test still says
+/// so first.
+///
+/// Kills: swapping `.owner_identity().filter(owner)` for a full-table `.iter()`
+///        sweep in the purge (with or without a later in-Rust predicate) —
+///        which deletes EVERY owner's export chunks, i.e. turns a privacy fix
+///        into mass data loss, while the body still collects and deletes;
+///        moving the reaper's sweep INTO the purge (the counts stay at one
+///        file-wide, and only the per-body attribution catches it);
+///        a SECOND sweep added anywhere in the module.
 #[test]
 fn rb22p_owner_scoped_filter_never_iter() {
     let squashed = stripped_for_scan(PRIVACY_RS);
@@ -502,14 +521,46 @@ fn rb22p_owner_scoped_filter_never_iter() {
     );
 
     let sweep = concat!("export", "_bundle()", ".iter()");
-    assert!(
-        !squashed.contains(sweep),
-        "rb22p [owner/no-iter]: privacy.rs contains `{sweep}`. A full-table sweep deletes OTHER \
-         owners' export chunks: the guest-orphan fix would become the largest data-loss bug in \
-         the module. Selection is by owner index only."
+
+    let total = rb22p_count(&squashed, sweep);
+    assert_eq!(
+        total, 1,
+        "rb22p [owner/sweep-census]: privacy.rs must contain EXACTLY ONE `{sweep}`; found {total}. \
+         The single sanctioned sweep is the PRV1-14 TTL reaper (rb-48, ADR-0238), which selects by \
+         age alone and can never be pointed at one account. ZERO means the reaper stopped reading \
+         the table it exists to expire; TWO or more is a second global read of every account's \
+         export chunks in a module whose every other selection is owner-indexed."
+    );
+
+    assert_eq!(
+        rb22p_count(&body, sweep),
+        0,
+        "rb22p [owner/no-iter]: `purge_export_bundles` contains `{sweep}`. A full-table sweep in \
+         the OWNER-SCOPED path deletes OTHER owners' export chunks: the guest-orphan fix would \
+         become the largest data-loss bug in the module. Selection there is by owner index only. \
+         (Note the arithmetic: moving the reaper's sweep into the purge keeps the file-wide count \
+         at one, so this per-body clause is the one that catches it.)"
+    );
+
+    let reducer_body = m22s4_reducer_body(&squashed);
+    assert_eq!(
+        rb22p_count(&reducer_body, sweep),
+        0,
+        "rb22p [owner/no-iter-reducer]: `request_data_export` contains `{sweep}`. The export \
+         reducer reads the caller's own chunks through the owner index for its cooldown; a sweep \
+         there would compute that cooldown from every account's most recent export."
+    );
+
+    let reaper_body = rb48_reaper_body(&squashed);
+    assert_eq!(
+        rb22p_count(&reaper_body, sweep),
+        1,
+        "rb22p [owner/sweep-attributed]: the module's single sweep must sit INSIDE \
+         `export_bundle_reaper`. This clause is the other half of the census above: together they \
+         say not merely `one sweep` but `one sweep, and it is the reviewed one`. An unattributed \
+         sweep is an ungated global read."
     );
 }
-
 /// EO-1 / EO-2 (reachability): the helper contains no early `return`.
 ///
 /// The body is straight-line by design — a collect and a loop. A `return` can
@@ -541,12 +592,28 @@ fn rb22p_no_early_return_in_purge() {
     }
 }
 
-/// EO-3 (module write isolation, D0): privacy.rs writes `export_bundle` and
-/// nothing else, and EVERY write verb is attributable to a same-statement
+/// EO-3 (module write isolation, D0): privacy.rs writes `export_bundle` and its
+/// own schedule singleton and NOTHING ELSE, in exactly the sanctioned
+/// quantities, and EVERY write verb is attributable to a same-statement
 /// `ctx.db.<table>()` chain.
+///
+/// REVISED BY rb-48 (ADR-0238) — ATTRIBUTION, NOT RELAXATION. The closed set
+/// grows from one name to two because PRV1-14's interval singleton is a second
+/// table this module owns. Widening a set is the classic silent loosening, so
+/// the widening is paid for THREE times over: exact per-table arithmetic (3 and
+/// 2, total 5, where before there was only `all of them are export_bundle`), a
+/// scope clause putting every schedule write inside the arm, and the naming
+/// census in `m22s4_no_exportable_false_table_is_named`. The net pin is strictly
+/// stronger than the one-name equality it replaces: that clause was green on any
+/// number of export_bundle writes, including a fourth one nobody reviewed.
 ///
 /// Kills: any foreign-table write added to this module (its accessor is outside
 ///        the owned set);
+///        a FOURTH export_bundle write or a THIRD schedule write (the exact
+///        counts) — an extra insert is an extra durable row shaped by code that
+///        no frozen-body pin covers;
+///        a schedule write outside the arm, which is an arm path that skipped
+///        the shared `plan_reaper_arm` decision;
 ///        the MEASURED alias bypass `let db = &ctx.db; db.account()...delete(..)`,
 ///        which the PRE-rb-39 shared helper silently misattributed to the
 ///        previous statement's accessor — here the intervening `;` makes it a
@@ -579,18 +646,75 @@ fn rb22p_writes_only_export_bundle() {
         );
     }
 
-    let allowed = concat!("export", "_bundle");
+    // The CLOSED set, with the sanctioned count for each name and the reason the
+    // module is allowed to write it at all.
+    let allowed: [(&str, usize, &str); 2] = [
+        (
+            concat!("export", "_bundle"),
+            3,
+            "the module's own write target: the owner-scoped purge delete, the export insert \
+             loop, and the TTL reaper's delete-by-primary-key",
+        ),
+        (
+            concat!("export_bundle_reaper", "_schedule"),
+            2,
+            "the module's own interval singleton (rb-48, ADR-0238): the arm's one insert and its \
+             surplus-row delete, both inside ensure_export_bundle_reaper",
+        ),
+    ];
+
     for t in &targets {
-        assert_eq!(
-            t.as_str(),
-            allowed,
-            "rb22p [W/target]: privacy.rs writes table `{t}`, which is not `{allowed}`. This \
-             module owns exactly one table's writes; every other table's writes belong to that \
-             table's own owning module (G5 / D0)."
+        assert!(
+            allowed.iter().any(|(name, _, _)| t.as_str() == *name),
+            "rb22p [W/target]: privacy.rs writes table `{t}`, which is outside the two-name set \
+             this module owns. Every other table's writes belong to that table's own owning module \
+             (G5 / D0). The set is CLOSED and each member carries a stated reason above: adding a \
+             third name here is a design change that needs an ADR, not a test edit."
         );
     }
-}
 
+    for (name, want, why) in &allowed {
+        let got = targets.iter().filter(|t| t.as_str() == *name).count();
+        assert_eq!(
+            got, *want,
+            "rb22p [W/arithmetic]: privacy.rs performs {got} write(s) to `{name}`; exactly {want} \
+             are sanctioned ({why}). Set membership alone is satisfied by any number of writes to \
+             an allowed table, so an appended fourth insert — a second, differently-shaped durable \
+             row written by code no frozen-body pin covers — would pass. The exact count is what \
+             makes widening the set from one name to two a net TIGHTENING."
+        );
+    }
+
+    assert_eq!(
+        targets.len(),
+        5,
+        "rb22p [W/total]: privacy.rs must perform exactly five writes in total; found {}. The \
+         total is pinned separately from the per-table counts so that a write the attribution \
+         helper classified into an allowed bucket by accident still moves a number.",
+        targets.len()
+    );
+
+    // SCOPE: every schedule-table write is inside the arm. Expressed as two
+    // counts rather than as offsets, so `rb22p_write_targets` — whose body is
+    // itself pinned — needs no change (reviewer m3).
+    let chain = rb48_nd_schedule_chain();
+    let file_wide = rb22p_count(&squashed, &chain);
+    assert_eq!(
+        file_wide, 3,
+        "rb22p [W/schedule-census]: privacy.rs must reach the schedule accessor exactly three \
+         times — the arm's collect, its insert and its delete; found {file_wide}."
+    );
+    let arm_body = rb48_arm_body(&squashed);
+    assert_eq!(
+        rb22p_count(&arm_body, &chain),
+        file_wide,
+        "rb22p [W/schedule-scope]: all {file_wide} schedule-accessor uses must sit INSIDE \
+         `ensure_export_bundle_reaper`. The two counts being EQUAL is the attribution: the arm's \
+         occurrences are a subset of the file's, so equal cardinalities mean equal sets. A \
+         schedule write anywhere else is an arm path that skipped the shared `plan_reaper_arm` \
+         decision and can insert a second, permanently-firing schedule row."
+    );
+}
 /// EO-3 (alias bans): the module binds no alias of the db handle, and every
 /// reducer-context parameter is named `ctx`.
 ///
@@ -3491,16 +3615,28 @@ fn m22s4_exporter_totality_negative_fixtures() {
 /// banned here automatically, and a hand-list would rot the first time the
 /// manifest grows.
 ///
-/// ONE EXEMPTION, stated rather than hidden: `export_bundle` itself. It is the
-/// module's own write target (purge, cooldown read, insert loop) and the only
-/// non-exportable accessor privacy.rs may legitimately name; the whole-file
-/// write census (rb22p_writes_only_export_bundle) is what keeps that naming
-/// honest.
+/// TWO EXEMPTIONS, stated rather than hidden, each with its reason spelled out
+/// in the array below. `export_bundle` is the module's own write target.
+/// `export_bundle_reaper_schedule` is added by rb-48 (ADR-0238): it is the
+/// module's own interval singleton, non-exportable because scheduler
+/// bookkeeping is not the subject's personal data, and it is named three times
+/// by the arm that keeps exactly one of its rows alive.
+///
+/// EXEMPTING A SECOND NAME IS A WIDENING, SO IT IS PAID FOR — this is the
+/// compensating pin, and without it R3 would be a net loosening. The schedule
+/// accessor is named EXACTLY three times file-wide and all three of those
+/// namings are INSIDE `ensure_export_bundle_reaper`, so the exemption buys the
+/// arm and nothing else: the export walk still cannot touch the table, and a
+/// fourth naming anywhere reds here. The floor is also ratcheted with the
+/// population (20 to 22), because a floor that stays put while the manifest
+/// grows is a floor that loosens by standing still.
 ///
 /// Kills: reading battle_wild, guest_claim, config or any other unclassified
 ///        table into the export walk;
 ///        an export of the wild individuality seed (the must-never-leak column
-///        the private side table exists to hold).
+///        the private side table exists to hold);
+///        the schedule accessor named from the export walk, from the purge or
+///        from any fourth site (the exact-3-and-all-in-the-arm clause).
 #[test]
 fn m22s4_no_exportable_false_table_is_named() {
     let squashed = stripped_for_scan(PRIVACY_RS);
@@ -3518,10 +3654,23 @@ fn m22s4_no_exportable_false_table_is_named() {
          changed; both must red LOUD rather than silently shrink the ban set."
     );
 
-    let exempt = concat!("export", "_bundle");
+    let exempt: [(&str, &str); 2] = [
+        (
+            concat!("export", "_bundle"),
+            "the module's own write target (purge, cooldown read, insert loop, TTL reap); the \
+             whole-file write census keeps that naming honest",
+        ),
+        (
+            concat!("export_bundle_reaper", "_schedule"),
+            "the module's own interval singleton (rb-48, ADR-0238); the exactly-3-and-all-in-the \
+             -arm clause below is what keeps THAT naming honest",
+        ),
+    ];
+
     let mut checked = 0usize;
     for table in &banned {
-        if table == exempt {
+        let table: &str = table;
+        if exempt.iter().any(|(name, _)| table == *name) {
             continue;
         }
         let needle = format!("{table}(");
@@ -3530,16 +3679,43 @@ fn m22s4_no_exportable_false_table_is_named() {
             n, 0,
             "m22s4 [X3/named]: privacy.rs names the accessor `{needle}` {n} time(s). `{table}` is \
              classified NON-exportable, so no export code path may read it: export scope is \
-             structurally narrower than deletion scope (PRV1-12). The only sanctioned exception \
-             is the module's own write target, which is exempted by name above."
+             structurally narrower than deletion scope (PRV1-12). The only sanctioned exceptions \
+             are the module's own two tables, exempted BY NAME AND WITH A REASON above, each with \
+             its own compensating pin."
         );
         checked += 1;
     }
     assert!(
-        checked >= 20,
+        checked >= 22,
         "m22s4 [X3/floor]: only {checked} non-exportable accessors were checked; the live \
-         manifest classifies 23 (24 minus the module's own write target). A shrunken ban set is a \
-         ban set that stopped looking."
+         manifest classifies 24 (41 entries minus the 17 exportable ones), which is 22 after the \
+         module's own two write targets are exempted. RATCHETED from 20 by rb-48: the \
+         non-exportable population grew from 23 to 24 with the schedule table, so a floor left at \
+         20 would have loosened by standing still. A shrunken ban set is a ban set that stopped \
+         looking."
+    );
+
+    // The compensating pin for the second exemption: the schedule accessor is
+    // named exactly three times, and all three namings are the arm's. Expressed
+    // as two equal counts — the arm body is a substring of the file, so equal
+    // cardinalities mean the two occurrence sets are the same set.
+    let schedule = rb48_nd_schedule_named();
+    let file_wide = rb22p_count(&squashed, &schedule);
+    assert_eq!(
+        file_wide, 3,
+        "m22s4 [X3/schedule-census]: privacy.rs names `{schedule}` {file_wide} time(s); exactly \
+         THREE are sanctioned — the arm's collect, its insert and its delete. This is the price of \
+         exempting the name above: without an exact count, the exemption admits the export walk \
+         reading its own scheduler bookkeeping into a subject's personal-data dump."
+    );
+    let arm_body = rb48_arm_body(&squashed);
+    assert_eq!(
+        rb22p_count(&arm_body, &schedule),
+        file_wide,
+        "m22s4 [X3/schedule-scope]: all {file_wide} namings of `{schedule}` must sit INSIDE \
+         `ensure_export_bundle_reaper`. The count alone says `three`; this clause says `three, and \
+         they are the reviewed three`. A naming outside the arm is the export machinery — or a \
+         second arm path — touching a table PRV1-12 says it may never touch."
     );
 
     let seed = concat!("individuality", "_seed");
@@ -3551,7 +3727,6 @@ fn m22s4_no_exportable_false_table_is_named() {
          must never appear in an export payload under any name."
     );
 }
-
 // ===========================================================================
 // PRV1-13 / X4 — sub-chunking and the request-wide index.
 // ===========================================================================
