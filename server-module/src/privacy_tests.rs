@@ -1138,7 +1138,10 @@ fn rb22p_stub_probe_regression() {
 //            chunk_index and total_chunks.
 //   plus the S4 guards (subject existence, deletion gate, cooldown), the battle
 //   redaction, and the owner-scoped view that is the entire client read path.
-//   PRV1-14 (the TTL reaper) is DEFERRED to S4b and deliberately ungated here.
+//   PRV1-14 (the TTL reaper) LANDED in rb-48 (ADR-0238) and is gated by the
+//   rb48_ block at the end of this file: a global hourly interval singleton, a
+//   scheduler-only reducer, and the pure plan_export_reap seam that carries the
+//   whole behavioural proof.
 //
 // THE SPLIT (ADR-0225 D5): a ReducerContext was not constructible off-instance when
 // this was written (rb-41's native_host_tests changed that; the scans stand as written),
@@ -5678,8 +5681,11 @@ fn m22s4_sender_bound_once_and_sole_identity_source() {
     assert!(
         ctx_calls >= 3,
         "m22s4 [X9/dispatch-args]: only {ctx_calls} context-passing call(s) were found in the \
-         reducer body; the clock read, the deletion gate, the purge and the per-table dispatch \
-         are four. A scan that finds too few is a scan that stopped looking."
+         reducer body; the clock read, the deletion gate, the purge, the per-table dispatch and \
+         the rb-48 TTL-reaper self-arm are five. A scan that finds too few is a scan that stopped \
+         looking. The floor stays at three on purpose: it guards against a broken walk, not \
+         against a changed statement list, and every one of those five calls is pinned by name \
+         and position elsewhere in this module."
     );
 
     // The only tables this body may touch are the three the guards need.

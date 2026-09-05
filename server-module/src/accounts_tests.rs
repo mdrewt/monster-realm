@@ -3829,7 +3829,7 @@ fn m22_rekey_manifest_keys() -> Vec<String> {
 ///        both sorted lists runs BEFORE the set compare so it cannot be
 ///        satisfied by coincidence);
 ///        deleting a table AND its entry in one diff to dodge classification
-///        (the >= 39 floor);
+///        (the >= 40 census floor and the >= 41 manifest floor);
 ///        adding a `mod` to the crate and leaving it out of this scan;
 ///        the pre-existing five-file `include_str!` set, which sees 31 of 38.
 #[test]
@@ -3844,11 +3844,14 @@ fn data_lifecycle_manifest_totality_bidirectional() {
         }
     }
     assert!(
-        census.len() >= 39,
+        census.len() >= 40,
         "T1 non-vacuity: only {} table declarations were found across the {} scanned \
-         modules; the tree carries 39 and rb-24 adds account_deletion_reaper_schedule. \
-         A census that shrank is a census that stopped looking, and every set \
-         comparison below would then be comparing two small sets.",
+         modules; the live tree carries 40 — the 39 that rb-24's \
+         account_deletion_reaper_schedule completed, plus rb-48's \
+         export_bundle_reaper_schedule in privacy.rs (ADR-0238). A census that shrank \
+         is a census that stopped looking, and every set comparison below would then be \
+         comparing two small sets. RATCHETED with the tree per the ADR-0006 additive \
+         rule: a floor left behind while the schema grows loosens by standing still.",
         census.len(),
         sources.len()
     );
@@ -3859,12 +3862,12 @@ fn data_lifecycle_manifest_totality_bidirectional() {
         declared.push(entry.table.to_string());
     }
     assert!(
-        declared.len() >= 40,
-        "T1 ratchet: DATA_LIFECYCLE_MANIFEST has {} entries; the tree's 39 live tables \
-         plus rb-24's `account_deletion_reaper_schedule` is 40. Set equality alone is \
-         satisfied by deleting a table AND its entry in one diff, which is exactly how a \
-         table dodges classification; this floor is the ADR-0006 additive ratchet \
-         against that.",
+        declared.len() >= 41,
+        "T1 ratchet: DATA_LIFECYCLE_MANIFEST has {} entries; the tree's 40 live tables \
+         plus rb-48's `export_bundle_reaper_schedule` (ADR-0238) is 41. Set equality \
+         alone is satisfied by deleting a table AND its entry in one diff, which is \
+         exactly how a table dodges classification; this floor is the ADR-0006 additive \
+         ratchet against that.",
         declared.len()
     );
     declared.sort();
@@ -3940,17 +3943,19 @@ fn data_lifecycle_manifest_totality_bidirectional() {
 /// `ViaJoin` PAYLOADS pinned by exact parent value.
 ///
 /// The four sets START from spec §3's own recount — "38 = 12 ERASE +
-/// 4 ANONYMIZE, 5 JOIN-ONLY, 17 NOT-OWNED" — and the live tree is now 40
-/// entries (13 ERASE, 4 ANONYMIZE, 5 JOIN-ONLY, 18 NOT-OWNED), because M22
-/// adds two tables the §3 recount predates.
+/// 4 ANONYMIZE, 5 JOIN-ONLY, 17 NOT-OWNED" — and the live tree is now 41
+/// entries (13 ERASE, 4 ANONYMIZE, 5 JOIN-ONLY, 19 NOT-OWNED), because M22 and
+/// rb-48 add three tables the §3 recount predates.
 ///
 /// The `Erase` list carries one table beyond the spec's twelve: `export_bundle`.
 /// A snapshot of personal data is itself personal data, so the export bundle is
 /// erased by the same cascade that produced it (spec §5's 7-day TTL reaper is a
 /// SECOND, independent expiry, not a substitute for the cascade).
 ///
-/// The `NotOwned` list carries one beyond the spec's seventeen:
-/// `account_deletion_reaper_schedule` (rb-24). It is scheduler bookkeeping, not
+/// The `NotOwned` list carries two beyond the spec's seventeen, and they are
+/// NotOwned for different reasons.
+///
+/// `account_deletion_reaper_schedule` (rb-24) is scheduler bookkeeping, not
 /// player data: the row holds only an auto-inc id, the fire instant the RUNTIME
 /// reads, and the account identity — and it is the row whose own reducer runs
 /// the cascade, so cascading over it would be a table deleting the schedule that
@@ -3959,6 +3964,16 @@ fn data_lifecycle_manifest_totality_bidirectional() {
 /// `cancel_account_deletion` disarms a pending one (PRV1-3, ADR-0126 D4, pinned
 /// by `rb24_cancel_disarms_the_reaper`). `guest_claim_reaper_schedule` carries
 /// the same policy for the same class of reason.
+///
+/// `export_bundle_reaper_schedule` (rb-48, ADR-0238) is NotOwned more strongly
+/// still: it is a GLOBAL interval singleton with NO Identity column at any
+/// depth, so there is no per-player key a cascade step could scope itself with,
+/// and `m22s6_table_row_registry_matches_manifest`'s identity-bearing count
+/// stays at 21 across this slice precisely because of that. One row exists for
+/// the whole database, `ensure_export_bundle_reaper` keeps it at one, and it
+/// carries the reaper's cadence and nothing else. Its exportable flag is false
+/// for the same reason: a subject's export must not contain the module's own
+/// scheduler state.
 ///
 /// The five parents are pinned BY VALUE, not merely proven live: each was
 /// verified against the real join column in source before being written here —
@@ -13192,7 +13207,7 @@ fn m22s9_bindings_expose_m22_surface() {
 ///        red-team's CRITICAL-1 kill);
 ///        a decoy second mention of the constant steering a first-hit anchor
 ///        onto text the eval never uses;
-///        a census that quietly shrank below the 40 live tables;
+///        a census that quietly shrank below the 41 live tables;
 ///        an exportable flag flipped on one side only (the flag is the fourth
 ///        field of every entry, so the export-scope axis is inside the compare).
 #[test]

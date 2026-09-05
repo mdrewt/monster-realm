@@ -118,7 +118,8 @@ unpinned interval expression is green under a 24-hour-cadence rewrite or a one-s
 swap. Separately, privacy.rs is pinned to exactly one `#[cfg` occurrence file-wide (the
 `#[cfg(test)] #[path = ...]` trailer): the red-team measured that `#[cfg(not(target_arch =
 "wasm32"))]` on the arm call ships an unarmed reaper that beats `-D warnings` on the host build and
-is invisible to CI — `just ci`'s wasm step builds client-wasm only, never server-module — so lint,
+is invisible to CI — `just ci`'s `wasm` recipe builds client-wasm only, and the module's own wasm32
+build inside `spacetime generate` (bindings-drift) treats the dead arm as a warning, not an error — so lint,
 every Rust test, and every eval stay green while the shipped module never arms.
 
 **D9 — Runbook §9.4 retruth and G24 needle retarget, as a roster retarget on an existing clause.**
