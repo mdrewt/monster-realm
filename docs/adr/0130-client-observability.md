@@ -362,3 +362,78 @@ spec's EARS scenario unrepresentable — noted as a future simplification).
   (today's handler is a single boolean assignment; the contract is written on the field).
 - (g) **NEW** — `onHydrated`'s placement between `onReady` and `onReconnect` in main.ts is unenforced by any pin
   (the onReconnect-region slicers assert positives only); harmless if moved, recorded for completeness.
+
+---
+
+## Amendment — 17r-f (2026-09-05): the rAF frame catch feeds the error surface, deduped
+
+**Context.** `frame()`'s catch was `console.error`-only, so an uncaught render-loop throw reached
+neither the error overlay, nor the error ring, nor the F9 bundle — the three surfaces this ADR
+exists to provide. The window `error`/`unhandledrejection` listeners never see it, because the
+`try` swallows it by design (the `finally` re-arm is what keeps a transient throw from killing the
+loop permanently). On a self-hosted deployment nobody tails browser consoles, and the M23 a11y
+block — deliberately written to throw on a catalog miss — sits inside that swallow zone,
+contradicting `ui/overlayA11y.ts`'s own loud-failure doctrine.
+
+**Decision.** The catch now also records the error, as
+`pushError('uncaught', ` + "`frame: ${normalizeError('uncaught', err).message}`" + `)`, guarded by a
+module-scope `lastFrameErrorMessage` so that **consecutive identical** frame errors collapse to one
+ring record. `console.error` is kept and runs first. The `finally { requestAnimationFrame(frame) }`
+re-arm is untouched.
+
+**Why `'uncaught'` and not a new `'frame'` `ErrorSource`.** `ErrorSource` (`client/src/ui/errorRing.ts:14`)
+is the shared taxonomy consumed by the bundle schema and by the overlay's `dataset.source`; a fourth
+variant is a cross-module contract change, not a wiring change. It is also transcribed a second time
+inline at `main.ts`'s `pushError` signature, so a variant needs two coordinated edits that can
+silently drift. (This slice removes that duplication: the signature now references the exported
+type.) Operator disambiguation is instead carried in the MESSAGE, via the `frame: ` prefix — the
+existing house idiom (`reduceErrorMessage` returns `` `${where}: ${message}` ``,
+`ui/statusModel.ts:47`). Without it an F9 bundle cannot distinguish "the render loop is dead and the
+game is frozen" from "a click handler threw once and everything is fine".
+
+**Why the dedupe is not optional — the ADR-0172 D1 interaction.** ADR-0172 D1 accepts the undecayed
+16-breadcrumb movement cap explicitly because "the remaining 48 slots are reserved for the crash
+records the bundle exists to carry". An undeduped writer here is an uncapped, undecayed **60 Hz**
+producer into that same 64-slot ring — measured: **100% of the ring in ~1.07 s**, after which a
+genuine pre-crash record (e.g. a websocket drop that CAUSED the frame throw) is provably absent from
+the bundle. Since no human presses F9 within 1.07 s of a crash starting, that would make the F9
+bundle *strictly worse than the console-only behaviour it replaces* whenever the frame throw is a
+symptom rather than the root cause. The dedupe therefore **preserves** ADR-0172 D1 *for the
+constant-message thrower*, which is the common shape, rather than voiding it wholesale; see the
+bounded-protection consequence below for what it does NOT cover. It costs no policy: there is no
+clock, no window, no cap, no tunable.
+
+It is deliberately NOT a once-latch and NOT a `rateLimitTick` throttle. Both of those drop the
+second, *different*, fatal error — the one that matters after a transient — and both are gated
+against by the runtime arm that asserts two distinct messages both record while a repeat does not.
+
+**Consequences.**
+- A frame throwing every tick costs ONE ring slot and shows the overlay ONCE, so F8 dismissal
+  continues to work (an undeduped writer re-`show()`s within ~16 ms of the press, defeating F8 for
+  exactly the failure mode it exists for) and `#mr-error-overlay` — which has no stylesheet and
+  intercepts clicks (ADR-0184) — does not become a permanent, undismissable block in e2e runs.
+- **A completing frame clears the memo**, so the collapse is genuinely *consecutive* and a fault
+  that recurs after the loop recovered records again. An earlier draft never reset it; the review
+  measured the resulting ever-seen latch reporting a **600-second-stale `tMs` on a live freeze**
+  (the operator reads "the errors stopped ten minutes ago") and leaving the overlay hidden
+  permanently after a single F8. Both are gated by `B1e`.
+- **The dedupe is a 1-deep exact-string memo, and its protection is correspondingly bounded — it
+  is NOT a cap.** Any frame error whose text interpolates a varying token defeats it and restores
+  the full 60 Hz flood: measured, 200 frames of
+  `` `a11yCopy: no entry for key '${key}'` `` over 7 rotating keys fill 64/64 slots. That message
+  is `ui/a11yCopy.ts`'s, i.e. the very throw this amendment nominates as its motivating example.
+  Likewise two distinct root causes sharing a `.message` (V8's site-independent `TypeError` text)
+  collapse to one record, and two messages diverging only past `ERROR_MSG_MAX_LEN` collapse after
+  truncation. A bounded set or an ADR-0172-style `count=`-carrying cap is the honest fix; it is
+  deliberately out of this slice and registered as a residual.
+- **`normalizeError` is NOT total, contrary to its docstring**, so the tagged message is built
+  inside a local `try`/`catch` that falls back to `frame: [unstringifiable error]`.
+  `ui/errorRing.ts:33-34` reads `raw.message` and `:44` reads `message.length` *outside* its own
+  guard, so an `Error` whose `message` is `undefined`/`null`/a `Symbol`, a revoked `Proxy`, or a
+  throwing `message` getter all throw. Every other caller is shielded by `pushError`'s own
+  try/catch; the frame catch was the one unshielded call site. Hardening `errorRing.ts` itself
+  fixes the class rather than this one site, but that file is outside this slice's `touches:`, so
+  it is registered as a residual.
+
+**The `finally` re-arm invariant belongs to ADR-0074**, not to this ADR (`docs/adr/0074-zone-sync-robustness.md:27`,
+`:68`; in-code marker `12.5c-4`). This amendment preserves it and adds nothing to it.

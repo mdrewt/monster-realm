@@ -98,7 +98,7 @@ import { buildDialogueViewModel } from './ui/dialogueModel';
 import type { DialogueView } from './ui/dialogueView';
 import { buildErrorOverlayModel } from './ui/errorOverlayModel';
 import { ErrorOverlayView } from './ui/errorOverlayView';
-import { ErrorRing } from './ui/errorRing';
+import { ErrorRing, type ErrorSource, normalizeError } from './ui/errorRing';
 import {
   EventRing,
   isPvpBattle,
@@ -903,10 +903,12 @@ let errorOverlayView: ErrorOverlayView | undefined;
 // Re-entrancy guard: if rendering the overlay itself throws and re-enters pushError,
 // short-circuit so a render fault cannot recurse into a stack overflow.
 let handlingError = false;
+// 17r-f: collapses a CONSECUTIVE 60Hz thrower to ONE ring slot (ADR-0130 amendment 17r-f).
+let lastFrameErrorMessage: string | null = null;
 
 /** Record an error into the ring and reflect it in the overlay. TOTAL (never throws to
  *  the caller): a render/ring fault routes to console.error. */
-function pushError(source: 'uncaught' | 'unhandledrejection' | 'reducer', raw: unknown): void {
+function pushError(source: ErrorSource, raw: unknown): void {
   if (handlingError) return;
   handlingError = true;
   try {
@@ -3220,8 +3222,20 @@ async function main(): Promise<void> {
           interactPromptEl.style.display = 'none';
         }
       }
+      lastFrameErrorMessage = null;
     } catch (err) {
       console.error('[frame] uncaught error', err);
+      // 17r-f: surface it too — tagged, deduped, total (ADR-0130 amendment 17r-f).
+      let frameErrorMessage: string;
+      try {
+        frameErrorMessage = `frame: ${normalizeError('uncaught', err).message}`;
+      } catch {
+        frameErrorMessage = 'frame: [unstringifiable error]';
+      }
+      if (frameErrorMessage !== lastFrameErrorMessage) {
+        lastFrameErrorMessage = frameErrorMessage;
+        pushError('uncaught', frameErrorMessage);
+      }
     } finally {
       requestAnimationFrame(frame); // always re-arm (12.5c-4)
     }
