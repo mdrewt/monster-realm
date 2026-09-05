@@ -2860,6 +2860,17 @@ export function g24Teeth() {
       file: DELETION_SOURCE_PRIVACY,
       marker: 'accessor = my_export_bundle,',
     },
+    // rb-48 (ADR-0238 D9): the §9.4 retruth's reaper and TTL constant.
+    {
+      symbol: 'export_bundle_reaper',
+      file: DELETION_SOURCE_PRIVACY,
+      marker: 'pub fn export_bundle_reaper(',
+    },
+    {
+      symbol: 'EXPORT_BUNDLE_TTL_MS',
+      file: DELETION_SOURCE_PRIVACY,
+      marker: 'pub(crate) const EXPORT_BUNDLE_TTL_MS',
+    },
   ];
   const citationsIsArray = Array.isArray(DELETION_CITATIONS);
   const citationsLengthOk =
