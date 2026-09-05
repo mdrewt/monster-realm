@@ -507,7 +507,17 @@ gated against `docs/PLAYTEST.md` — outside that slice's `touches:`). `main.ts`
 drives `privacyStep` and executes its three effects through `conn.reducers`, so
 `deleteAccount`/`cancelAccountDeletion`/`requestDataExport` now have client call sites; the copy —
 including M22 §9's verbatim pseudonymization sentence and PRV1-4's distinct terminal notice — is
-pure, in `ui/privacyBanner.ts`. The export TRANSPORT + download remains rb-53. The DOM overlay, the
+pure, in `ui/privacyBanner.ts`. **rb-53 (ADR-0231 Amendment A3) closed that dead end**:
+`'SELECT * FROM my_export_bundle'` joins the ONE `.subscribe([...])` array (and the
+`EXPECTED_SUBSCRIPTIONS` allowlist that pins it as an exact set), the view is wired as a PK-less
+`Vec`-VIEW — schedule-only `onInsert`/`onDelete`, no `onUpdate`, and a whole-set
+`store.reconcileExportChunksFromView` in the flush closure, the `my_monster_pub`/`my_battle` shape
+rather than the `my_account` per-row one — and `main.ts`'s ONE `store.onBatchApplied` listener
+holds the sole `assembleExportBundle(` call site, so the artifact is recomputed on the arrival
+edge and never per frame. The download is offered behind a button (`#privacy-download-btn`, always
+painted and only ever `disabled`, because a control that vanishes under focus escapes the overlay's
+focus trap) and its CSP fallback logs a STATIC string — the F9 bug-bundle precedent it is otherwise
+modelled on logs its payload, which here would be the player's whole personal-data export. The DOM overlay, the
 `main.ts` wiring, the `deletion_grace_ms_default()` wasm read and the
 `my_export_bundle` subscription were DEFERred to m22-s8b (X9/X10/X11), whose
 `touches:` must include `evals/monster-privacy.eval.mjs` for its

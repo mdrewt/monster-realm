@@ -11903,3 +11903,363 @@ describe('★ main.ts wiring (rb-52): the claim-render suppression and the priva
     ).toBeLessThan(showAt);
   });
 });
+
+// ===========================================================================
+// ★ rb-53 (PRV1-11/12/13, residual R-m22-s8-X11; ADR-0231 Amendment A3) — the export
+// transport's SOURCE-side pins. ADDED describe blocks; nothing above is modified.
+//
+// ★ SOURCE OF TRUTH — gate E1, verbatim:
+//   "[PRV1-11/12/13 live transport + download] WHEN request_data_export completes THE CLIENT
+//    SHALL read my_export_bundle from a live subscription, assemble it via
+//    assembleExportBundle, and offer the artifact as a downloadable file"
+//
+// WHAT THIS BLOCK IS FOR, AND WHAT IT DELIBERATELY IS NOT. The BEHAVIOUR — that a delivered
+// row set becomes a downloadable file with the right bytes, that an incomplete export is
+// refused, that a reconnect drops the artifact, that the CSP fallback logs no personal data —
+// is gated at runtime by `main.exportTransport.test.ts`, which drives the real store through
+// the real shell. A text scan cannot see any of that. What a text scan CAN see, and what
+// nothing else can, is the STRUCTURE ADR-0231 A3 pins:
+//   * EXACTLY ONE `assembleExportBundle(` call site (A3-D2) — so the assembly cannot also be
+//     computed per frame or per click while the batch listener keeps every runtime tooth green;
+//   * ZERO of it inside the rAF frame body — the same statement from the other side, because a
+//     SECOND call site added there would raise the census and this bound names WHERE;
+//   * the download helper's shape: `createObjectURL` + a `finally` + `revokeObjectURL` (A3-D8),
+//     and NO `JSON.parse` anywhere near the artifact (ADR-0231 decision 5).
+//
+// DELIBERATELY ABSENT, and named rather than quietly skipped:
+//   (a) a structural pin that the recompute sits OUTSIDE `if (privacyView?.visible)` (A3-D10).
+//       `if (privacyView?.visible)` legitimately occurs in `renderClaim` and in the frame body
+//       too, so a needle-bounded ordering check over it would be anchored on an ambiguous
+//       string. `RB53T-COMPLETE-WHILE-CLOSED` kills that mutant behaviourally, which is the
+//       stronger tier for it.
+//   (b) a structural pin that `renderPrivacy()` forwards the cached assembly. ADR-0231 A3-D6
+//       records that the parameter is OPTIONAL precisely because `client/tsconfig.json` excludes
+//       `**/*.test.ts`, so the typechecker cannot enforce it either — and the forgotten-argument
+//       risk is closed behaviourally instead: `RB53T-CRITERION-END-TO-END` reds if the argument
+//       is dropped, because the control never enables.
+//
+// RED REASON AT AUTHORING TIME: `assembleExportBundle`, `exportBundleFilename`,
+// `downloadExportBundle` and `onExportDownload` occur ZERO times in main.ts, so the count
+// assertions fail on 0 and the region helper THROWS on a missing declaration.
+//
+// NO `new RegExp(...)` — indexOf / includes / split / slice only, per this file's convention.
+// ===========================================================================
+
+/** ADR-0231 A3-D8's download helper, modelled on `downloadBugBundle` (main.ts:2378) and pinned
+ *  by that name so the region below can be bounded without a new marker comment. */
+const RB53_DOWNLOAD_DECL = 'function downloadExportBundle(): void {';
+
+/**
+ * The BODY of a top-level function declaration, brace-walked from its OWN opening `{`.
+ *
+ * Deliberately NOT `m21b2FunctionCode`: that helper slices to the next COLUMN-0 `function `,
+ * and `downloadExportBundle` sits beside `downloadBugBundle`, whose only following top-level
+ * declaration is `async function main(` — which does not start with `function `, so the slice
+ * would run to end-of-file (or throw). A balanced brace walk is exact where a next-declaration
+ * slice is a guess.
+ *
+ * `code` must already be comment-stripped by `m20cScan`, which PRESERVES string-literal text —
+ * so this walk carries the same tiny quote state machine `nh5BraceDepthAt` uses, and a brace
+ * inside a literal is data rather than nesting.
+ */
+function rb53FunctionBody(code: string, decl: string): string {
+  const hits = mwCodeOccurrences(code, decl);
+  expect(
+    hits.length,
+    `main.ts must declare \`${decl}\` EXACTLY once AS CODE. Zero means the helper is missing or ` +
+      'was spelled as a `const … = () => {` arrow (re-derive this anchor from the source before ' +
+      'changing anything else); two means this scan cannot tell which body it is judging',
+  ).toBe(1);
+  const open = (hits[0] as number) + decl.length - 1;
+  expect(code.charAt(open), `\`${decl}\` must end at its own opening brace`).toBe('{');
+  let depth = 0;
+  let mode = 0; // 0 code, 1 ' , 2 " , 3 `
+  for (let i = open; i < code.length; i += 1) {
+    const ch = code.charAt(i);
+    if (mode === 0) {
+      if (ch === '{') depth += 1;
+      else if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) return code.slice(open + 1, i);
+      } else if (ch === "'") mode = 1;
+      else if (ch === '"') mode = 2;
+      else if (ch === '`') mode = 3;
+      continue;
+    }
+    if (ch === '\\') {
+      i += 1;
+      continue;
+    }
+    const closer = mode === 1 ? "'" : mode === 2 ? '"' : '`';
+    if (ch === closer) mode = 0;
+    else if (mode !== 3 && ch === '\n') mode = 0; // an unescaped newline ends '…' / "…"
+  }
+  throw new Error(
+    `unbalanced braces after \`${decl}\` in main.ts — refusing to scan a runaway region`,
+  );
+}
+
+/** The rAF frame body's fences, as W-M21B2-SESSION-GATE-FRAME and W-RB51-DEV-GATE-CENSUS
+ *  already use them. Asserted unique AS CODE at every use. */
+const RB53_FRAME_START = 'const frame = (): void => {';
+const RB53_FRAME_END = 'void main();';
+
+function rb53FrameRegion(code: string): string {
+  const startHits = mwCodeOccurrences(code, RB53_FRAME_START);
+  const endHits = mwCodeOccurrences(code, RB53_FRAME_END);
+  expect(startHits.length, `\`${RB53_FRAME_START}\` must be unique AS CODE`).toBe(1);
+  expect(endHits.length, `\`${RB53_FRAME_END}\` must be unique AS CODE`).toBe(1);
+  const region = code.slice(startHits[0] as number, endHits[0] as number);
+  expect(
+    region.includes('predictor.drain('),
+    'ANTI-VACUITY: the frame region must still contain `predictor.drain(` — if it does not, the ' +
+      'fences no longer bound the frame body and every ban below is satisfied for free',
+  ).toBe(true);
+  return region;
+}
+
+describe('★ main.ts wiring (rb-53/ADR-0231 A3-D2): the assembly has EXACTLY ONE call site, and it is the batch listener', () => {
+  it('★★ W-RB53-ASSEMBLE-ONE-CALL BITES: `assembleExportBundle` occurs exactly TWICE in main.ts — one import specifier and one call', () => {
+    // ★ A3-D2 AS A CENSUS. The count is TWO, and the breakdown is stated so it can never be
+    // "fixed" by raising the number (the `moveSendCount` / `worldHasFocus()` rule this file
+    // already applies to its other censuses):
+    //   1. the import specifier `import { assembleExportBundle } from './ui/exportAssembly';`
+    //   2. the ONE call, inside the `store.onBatchApplied` listener.
+    //
+    // WRONG IMPL KILLED (1) ★: a SECOND call site — the frame body ("keep it fresh"), the click
+    //   handler ("assemble on demand"), or a `renderPrivacy()` that recomputes on every paint.
+    //   Each one is a full re-scan of the chunk map and, at `complete`, a full re-concatenation
+    //   of the entire export; and each one keeps every behavioural tooth in
+    //   main.exportTransport.test.ts green, because the RESULT is the same.
+    // WRONG IMPL KILLED (2) ★ THE ALIAS: `const asm = assembleExportBundle;` followed by
+    //   `asm(...)` in the frame — the CALL census (`assembleExportBundle(` with its paren) would
+    //   still read 1 while a second, unpinned invocation path exists. The three-way total is
+    //   what sees it: import + alias + call is THREE, not two.
+    // WRONG IMPL KILLED (3): the module imported and never called (the import specifier present,
+    //   the assembly never computed) — the total would be 1.
+    const src = readMainTs();
+    const code = m20cWholeFile(src);
+
+    // ANTI-VACUITY: a token unrelated to this slice, so it holds before and after any change
+    // here. Zero would mean the scanner ate the file and every census below is measuring a
+    // fragment.
+    expect(
+      mwCodeOccurrences(code, 'store.onBatchApplied(').length,
+      'positive control: main.ts must register at least one `store.onBatchApplied(` listener — ' +
+        'proves this tooth is scanning real, comment-stripped main.ts',
+    ).toBeGreaterThanOrEqual(1);
+
+    expect(
+      code.includes("'./ui/exportAssembly'"),
+      "main.ts must import from './ui/exportAssembly' — the assembly is the frozen, " +
+        'separately-gated pure core (ADR-0231 decision 3/5: request-wide chunk fields, splicing ' +
+        'and NEVER JSON.parse). An inline re-implementation in the shell would be ' +
+        'coverage-excluded and would get none of that core`s adversarial fixtures',
+    ).toBe(true);
+
+    expect(
+      countOccurrences(code, 'assembleExportBundle'),
+      'main.ts must mention `assembleExportBundle` EXACTLY TWICE (comment-stripped, whole ' +
+        'file): the ONE import specifier plus the ONE call site inside the batch listener ' +
+        '(ADR-0231 A3-D2). THREE means an alias binding or a second call; ONE means the import ' +
+        'is dead. RED AT AUTHORING TIME: 0. If a second call site is genuinely wanted, raise ' +
+        'this number in the same review that says WHERE it lives and why — do not edit it to ' +
+        'match the code',
+    ).toBe(2);
+
+    expect(
+      mwCodeOccurrences(code, 'assembleExportBundle(').length,
+      'and EXACTLY ONE of those two must be a CALL (the trailing paren distinguishes the call ' +
+        'from the import specifier, exactly as F-3a`s `resolveConnectionConfig(` does)',
+    ).toBe(1);
+  });
+
+  it('★★ W-RB53-ASSEMBLE-ON-BATCH BITES: the ONE call sits inside a `store.onBatchApplied(` listener, and ZERO times in the rAF frame body', () => {
+    // ★ A3-D2's placement half. `store.onBatchApplied` fires once per coalesced transaction
+    // burst — precisely the arrival edge — while the frame fires ~60 times a second forever.
+    // The census above says HOW MANY; this says WHERE, and the two together are what make the
+    // decision unfakeable: moving the single call into the frame keeps the count at two.
+    //
+    // WRONG IMPL KILLED (1) ★: the recompute moved into the frame body. Every behavioural tooth
+    //   in main.exportTransport.test.ts still passes (the value is identical); what changes is
+    //   that the client re-scans the chunk map and re-concatenates the player's entire export
+    //   on every animation frame. `RB53T-NO-PER-FRAME-WORK` is the behavioural half of this
+    //   kill; this is the structural one, and it fails with a clearer diagnosis.
+    // WRONG IMPL KILLED (2): the call placed in the CLICK handler only — the surface could then
+    //   never say whether an export is ready, so the button would be a coin flip (A3-D3).
+    //   `hosting.length === 1` reds because no onBatchApplied listener contains the call.
+    const src = readMainTs();
+    const code = m20cWholeFile(src);
+
+    const listenerStarts = mwCodeOccurrences(code, 'store.onBatchApplied(');
+    const hosting = listenerStarts.filter((at) =>
+      callArgs(code, 'store.onBatchApplied(', at).includes('assembleExportBundle('),
+    );
+    expect(
+      hosting.length,
+      'EXACTLY ONE `store.onBatchApplied(` listener must contain the `assembleExportBundle(` ' +
+        'call (ADR-0231 A3-D2 — the assembly is computed ON BATCH, which is the arrival edge). ' +
+        'Zero means it is computed somewhere else entirely (the frame, a click handler, a ' +
+        'reducer callback); two means two listeners race to compute the same artifact',
+    ).toBe(1);
+
+    const frameRegion = rb53FrameRegion(code);
+    expect(
+      countOccurrences(frameRegion, 'assembleExportBundle'),
+      'the per-frame render loop must contain ZERO references to `assembleExportBundle`. The ' +
+        'rAF repaint gate (main.ts:3100) is keyed on `statusLabel` alone, which export state ' +
+        'does not move — the batch listener is the SOLE owner of this part of the surface ' +
+        '(A3-D10). A re-assembly here runs 60x/s over every exportable row the player owns',
+    ).toBe(0);
+    expect(
+      countOccurrences(frameRegion, 'ownExportChunks'),
+      'and ZERO references to `store.ownExportChunks` — a per-frame re-scan of the chunk map is ' +
+        'the same cost with the concatenation moved one line away',
+    ).toBe(0);
+  });
+});
+
+describe('★ main.ts wiring (rb-53/ADR-0231 A3-D7/A3-D8): the download helper is shaped like the F9 precedent, minus the payload log', () => {
+  it('★★ W-RB53-DOWNLOAD-SHAPE BITES: the download region creates an object URL, has a `finally`, revokes the URL, and never parses JSON', () => {
+    // ★ A3-D8, and the reason it is a decision at all: in the F9 precedent
+    // (`downloadBugBundle`, main.ts:2402-2405) `a.remove()` and `URL.revokeObjectURL(url)` sit
+    // inside the `try`, AFTER `a.click()`. A throw there pins the object URL — and therefore the
+    // whole Blob — for the page's lifetime, and leaves a stray `<a href>` in the document. At
+    // bug-bundle scale that is kilobytes; at export scale it is the player's entire
+    // personal-data dump, retained in memory with no way to release it.
+    //
+    // WRONG IMPL KILLED (1) ★ THE COPY-PASTE: `downloadBugBundle` duplicated verbatim, with the
+    //   revoke left inside the `try`. A bare `finally` PRESENCE needle does NOT see it — MEASURED
+    //   as mutant M5 during the rb-53 verifier pass, which moved `URL.revokeObjectURL(url)` back
+    //   into the `try` after `click()` and SURVIVED all 3111 tests. The POSITIONAL assertion
+    //   below is what sees it: the revoke must occur AFTER the `finally` token in the
+    //   comment-stripped body, which is only true when it is inside the finally block.
+    // WRONG IMPL KILLED (2): no revoke at all.
+    // WRONG IMPL KILLED (3) ★ ADR-0231 decision 5: a `JSON.parse` anywhere on this path. The
+    //   server hand-rolls its JSON with every 64-bit integer as a QUOTED decimal string
+    //   precisely so the client never re-encodes them; a parse/re-encode round trip is
+    //   BYTE-IDENTICAL on well-formed output, so no byte-equality test can detect it — and it
+    //   re-opens the 2^53 precision hole AND can throw `SyntaxError` on a torn chunk.
+    //   This ban is a text scan for exactly that reason: the defect is invisible to behaviour.
+    // WRONG IMPL KILLED (4): a filename composed inline instead of through the pure, exhaustively
+    //   tested `exportBundleFilename` (A3-D11) — the inline version is coverage-excluded and
+    //   gets none of the separator / "undefined" / big-id fixtures privacyBanner.test.ts ships.
+    const src = readMainTs();
+    const code = m20cWholeFile(src);
+    const body = rb53FunctionBody(code, RB53_DOWNLOAD_DECL);
+
+    // ANTI-VACUITY: this really is a download body, not a degenerate slice.
+    expect(
+      body.length,
+      'the downloadExportBundle body must be non-empty after comment-stripping',
+    ).toBeGreaterThan(80);
+    expect(
+      body.includes('new Blob('),
+      'ANTI-VACUITY: the download body must construct a Blob — if it does not, this region is ' +
+        'not the download path and every assertion below is vacuous',
+    ).toBe(true);
+
+    expect(
+      body.includes('createObjectURL'),
+      'the download body must create an object URL — it is the only route from an in-memory ' +
+        'artifact to a file the player can save (A3-D3: behind a button, never auto-downloaded)',
+    ).toBe(true);
+    expect(
+      body.includes('finally'),
+      'the download body must carry a `finally` (A3-D8). In the F9 precedent the cleanup sits ' +
+        'inside the `try` after `a.click()`, so a throw there pins the object URL — and the ' +
+        'whole export Blob — for the page`s lifetime',
+    ).toBe(true);
+    // POSITIONAL, not a presence pair. `finally` and `revokeObjectURL` each occur exactly once
+    // in this body, so "the revoke comes after the finally" is true iff the revoke is inside the
+    // finally block — and false for the F9 copy-paste, where the revoke sits in the `try` above
+    // it. This is the assertion that gates A3-D8; the presence pair above only gates that both
+    // tokens exist at all.
+    expect(
+      countOccurrences(body, 'finally'),
+      'ANTI-VACUITY for the ordering below: `finally` must occur exactly once in the download ' +
+        'body, or an index comparison is comparing against an arbitrary one of several',
+    ).toBe(1);
+    expect(
+      countOccurrences(body, 'revokeObjectURL'),
+      'ANTI-VACUITY for the ordering below: `revokeObjectURL` must occur exactly once — two ' +
+        'revokes would let one sit in the finally while a live one stays in the try',
+    ).toBe(1);
+    expect(
+      body.indexOf('revokeObjectURL') > body.indexOf('finally'),
+      'the object-URL revoke must sit INSIDE the `finally`, not in the `try` (A3-D8). MEASURED: ' +
+        'moving it back into the try after `click()` — the verbatim F9 shape — survives every ' +
+        'other assertion in this file and every runtime tooth, because the happy path revokes ' +
+        'either way. It only diverges when the anchor work throws, which is exactly the case ' +
+        'the catch exists for, and the cost is the whole export Blob pinned for the page`s life',
+    ).toBe(true);
+    expect(
+      body.includes('revokeObjectURL'),
+      'the download body must revoke the object URL — without it the artifact is unreachable ' +
+        'and unreleasable for the rest of the session',
+    ).toBe(true);
+    expect(
+      body.includes('exportBundleFilename('),
+      'the download body must name the file through `exportBundleFilename(` (A3-D11) — the pure ' +
+        'copy-layer helper whose separator strip, "undefined" ban and 2^53 behaviour are pinned ' +
+        'in privacyBanner.test.ts. An inline template is none of that',
+    ).toBe(true);
+
+    expect(
+      countOccurrences(body, 'JSON.parse'),
+      'the download path must contain ZERO `JSON.parse` (ADR-0231 decision 5). The artifact is ' +
+        'built by SPLICING the verbatim server payloads; a parse/re-encode round trip is ' +
+        'byte-identical on well-formed output — so no behavioural test in this repo can see it ' +
+        '— while it re-opens the 2^53 precision hole the server`s quoted-integer encoding ' +
+        'exists to close, and can throw SyntaxError on a torn chunk',
+    ).toBe(0);
+  });
+
+  it('★★ W-RB53-DOWNLOAD-WIRED BITES: the helper has EXACTLY one call site, reached through the view`s onExportDownload handler', () => {
+    // WRONG IMPL KILLED (1) ★: the helper written and never wired — an unreachable function is
+    //   dead code, and the button beside it does nothing. The `=== 2` total (declaration + one
+    //   call) is what sees it, and it is the same census idiom W-NH5-RESET-BODY-UNCHANGED uses.
+    // WRONG IMPL KILLED (2): a SECOND call site (a hotkey, an auto-download on batch). A3-D3 is
+    //   explicit that the artifact is offered behind a button and NEVER auto-downloaded: chunks
+    //   re-arrive on every applied snapshot, so an auto-download would re-fire on every
+    //   reconnect and spam duplicate files — and browsers block non-gesture downloads anyway,
+    //   leaving the criterion silently unfulfilled with no error surface.
+    // WRONG IMPL KILLED (3): the view handler wired to the wrong helper (`downloadBugBundle`) —
+    //   the exactly-one `onExportDownload:` site plus the call census cover the wiring; the
+    //   privacyView tier's RB53V-DOWNLOAD-CLICK-EXCLUSIVE covers the handler`s exclusivity.
+    const src = readMainTs();
+    const code = m20cWholeFile(src);
+
+    expect(
+      mwCodeOccurrences(code, 'downloadExportBundle(').length,
+      'main.ts must mention `downloadExportBundle(` at EXACTLY TWO code sites: the declaration ' +
+        'and ONE call from the privacy view`s onExportDownload handler. One means the helper is ' +
+        'declared and never reached (a dead button); three means a second trigger — and A3-D3 ' +
+        'forbids any non-gesture download path',
+    ).toBe(2);
+
+    expect(
+      mwCodeOccurrences(code, 'onExportDownload:').length,
+      'main.ts must wire `onExportDownload:` EXACTLY once — the privacy view`s new handler. Zero ' +
+        'means the shell never receives the click; two means two handler tables claim it',
+    ).toBe(1);
+
+    // The wiring must live in the privacy handler block, not in some unrelated options object.
+    const handlerRegion = m20cHunk(
+      src,
+      'const privacyHandlers: PrivacyViewHandlers = {',
+      'privacyView = new PrivacyViewClass(privacyHandlers);',
+    );
+    expect(
+      handlerRegion.includes('onExportDownload:'),
+      'ANTI-VACUITY + the placement: `onExportDownload` must sit in the privacy handler block ' +
+        'that is actually handed to `new PrivacyViewClass(...)` — a handler declared anywhere ' +
+        'else is never reached by the button',
+    ).toBe(true);
+    expect(
+      handlerRegion.includes('downloadExportBundle()'),
+      'and that handler must call `downloadExportBundle()` — a handler wired to anything else ' +
+        '(or to nothing) is the dead-button failure this whole census exists to prevent',
+    ).toBe(true);
+  });
+});

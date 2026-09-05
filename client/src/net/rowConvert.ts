@@ -17,6 +17,7 @@ import type {
   StoreCharacter,
   StoreEssenceRequirement,
   StoreEvolutionPath,
+  StoreExportChunk,
   StoreHealLocationRow,
   StoreInventory,
   StoreItemRow,
@@ -621,6 +622,59 @@ export function accountRowToStore(row: SdkAccountRow): StoreAccount {
         : row.claimedFrom.toHexString(),
     claimedAtMs: row.claimedAtMs,
     terminalAtMs: row.terminalAtMs === null ? undefined : row.terminalAtMs,
+  };
+}
+
+// --- rb-53 (ADR-0231 A3-D1): the owner-scoped `my_export_bundle` VIEW row ------------
+
+/** Field types pinned from the generated binding
+ *  `client/src/module_bindings/my_export_bundle_table.ts`: u64 -> bigint, u32 -> number,
+ *  i64 -> bigint, Identity -> the caller's `toHexString()` result. */
+export interface SdkExportChunkRow {
+  readonly chunkId: bigint;
+  readonly ownerIdentity: { toHexString(): string };
+  readonly requestId: bigint;
+  readonly tableName: string;
+  readonly chunkIndex: number;
+  readonly totalChunks: number;
+  readonly payloadJson: string;
+  readonly createdAtMs: bigint;
+}
+
+/**
+ * Map a `my_export_bundle` view row to the store's chunk shape. Modelled on
+ * `accountRowToStore`: EXPLICIT field mapping (the eight columns, never a spread — an SDK-only
+ * field leaking into the store would be spliced into the player's download), NO numeric coercion
+ * (the u64/i64 columns stay `bigint`, the u32 index/count stay `number`), NO defaulting (the
+ * broke-vs-dark rule at `rowConvert.ts:543-568`), NO validation and NO clamping.
+ *
+ * `payloadJson` is carried BYTE-IDENTICAL and is never parsed. The server hand-rolls its JSON
+ * with every 64-bit integer as a quoted decimal string precisely so this client never re-encodes
+ * them (`ui/exportAssembly.ts:19-26`), and a parse/re-encode round trip is byte-identical on
+ * well-formed output — so nothing downstream could detect the precision hole it would open.
+ *
+ * `chunkIndex` and `totalChunks` must stay `number`: the assembly core's completeness check is
+ * `Number.isInteger(c.chunkIndex)`, which is `false` for every `bigint`, so a widening
+ * conversion here would report `inconsistent` for every correct export.
+ *
+ * Fail-SOFT, not fail-loud: this runs downstream of an SDK row callback whose dispatch loop has
+ * no per-listener isolation (ADR-0085 A6), and it runs inside the shared flush closure where a
+ * throw would starve EVERY batch listener — including the movement reconcile that drives
+ * prediction snap. `ownerIdentity?.toHexString?.()` keeps a degenerate row from throwing; an
+ * unresolvable owner degrades to `''`, which `assembleExportBundle` refuses outright rather than
+ * matching against another row's owner.
+ */
+export function exportChunkRowToStore(row: SdkExportChunkRow): StoreExportChunk {
+  const owner = row.ownerIdentity;
+  return {
+    chunkId: row.chunkId,
+    ownerIdentity: typeof owner?.toHexString === 'function' ? owner.toHexString() : '',
+    requestId: row.requestId,
+    tableName: row.tableName,
+    chunkIndex: row.chunkIndex,
+    totalChunks: row.totalChunks,
+    payloadJson: row.payloadJson,
+    createdAtMs: row.createdAtMs,
   };
 }
 

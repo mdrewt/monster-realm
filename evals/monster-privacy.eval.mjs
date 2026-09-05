@@ -1316,6 +1316,10 @@ const EXPECTED_SUBSCRIPTIONS = [
   'SELECT * FROM battle_challenge',
   'SELECT * FROM profile',
   'SELECT * FROM my_account',
+  // rb-53 (ADR-0231 A3-D1): the owner-scoped view over the PRIVATE `export_bundle` table — the
+  // client's only read path for a completed data export (PRV1-11/12/13). This is the
+  // "deliberate eval edit in the PR that privacy-reviews it" the header above asks for.
+  'SELECT * FROM my_export_bundle',
 ];
 
 const SUBSCRIBE_MARKER = '.subscribe([';

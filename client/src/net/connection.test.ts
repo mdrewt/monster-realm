@@ -4835,3 +4835,481 @@ describe('★ connection.ts wiring (17r-b / ADR-0130 residual e): the reconnect 
     ).toBe(0);
   });
 });
+
+// ===========================================================================
+// rb-53 (PRV1-11/12/13, residual R-m22-s8-X11; ADR-0231 Amendment A3) —
+// W-RB53-*: the `my_export_bundle` live transport.
+//
+// ★ SOURCE OF TRUTH — gate E1, verbatim:
+//   "[PRV1-11/12/13 live transport + download] WHEN request_data_export completes THE CLIENT
+//    SHALL read my_export_bundle from a live subscription, assemble it via
+//    assembleExportBundle, and offer the artifact as a downloadable file"
+//
+// WHAT connect() GAINS — exactly three wiring points, all inside `export function connect(opts)`:
+//   1. `'SELECT * FROM my_export_bundle'` joins the ONE `.subscribe([...])` array;
+//   2. `conn.db.my_export_bundle.onInsert(() => batcher.schedule());` and the matching
+//      `.onDelete(...)` in `wireTables` — and NO `.onUpdate` (A3-D1: a PK-less Vec-view, the
+//      `my_monster_pub` / `my_battle` shape, so the SDK never fires onUpdate and every change
+//      arrives as an unordered insert+delete pair);
+//   3. `store.reconcileExportChunksFromView(...)` beside the two existing reconciles, INSIDE
+//      the stale-build guard's `try`, BEFORE `store.flushBatch()`.
+//
+// ⚠ WHY THIS TIER IS A SOURCE SCAN AT ALL, stated honestly (ADR-0231 A3 "Deferred by rb-53"):
+// `connection.ts` is coverage-excluded and unimportable under vitest (DOM/wasm side effects at
+// module scope), so EVERY subscription EARS in this repo is discharged by a scan — the
+// W-UX2B-SUBSCRIBE / W-13RE-SUBSCRIBE / W-15RSECA-SUBSCRIBE precedent. A pinned string proves
+// only that the string is there. So this block adds ONE control the precedent lacks:
+// W-RB53-SUBSCRIBE-ROSTER cross-checks every subscribed name against the GENERATED
+// `tablesSchema` roster in `client/src/module_bindings/index.ts`. It is the only tooth in this
+// slice that is INDEPENDENT of the pinned literal, and it is what catches `my_export_bundel`.
+// A wrong literal is otherwise caught only by the cloud `just e2e` job, never by `just ci`.
+//
+// RED REASON AT AUTHORING TIME (verified against connection.ts this session): `my_export_bundle`
+// appears NOWHERE in connection.ts — not in the subscribe array, not as a handler, not as a
+// reconcile — so every count below reads 0 where 1 is required. A MISSING IMPLEMENTATION.
+//
+// CODE-AWARE throughout, except where the needle IS a string literal by nature (the
+// `'SELECT * FROM …'` subscription texts — the applicability note at :219-222).
+// NO `new RegExp`, no regex literal: indexOf / split / slice only.
+// ===========================================================================
+
+const RB53_SUB_LITERAL = "'SELECT * FROM my_export_bundle'";
+const RB53_INSERT_STMT = 'conn.db.my_export_bundle.onInsert(() => batcher.schedule());';
+const RB53_DELETE_STMT = 'conn.db.my_export_bundle.onDelete(() => batcher.schedule());';
+
+/** The generated bindings' path, resolved from THIS file (client/src/net/). */
+const RB53_BINDINGS_PATH = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  'module_bindings',
+  'index.ts',
+);
+
+/**
+ * Every TABLE name declared in the generated `tablesSchema`, collected from the lines that are
+ * EXACTLY `    name: '<x>',` — four leading spaces, which is the indentation the generator uses
+ * for a table's own `name` property. Index and constraint names live at DEEPER indentation
+ * inside `{ accessor: …, name: '…' }` / `{ name: '…', constraint: … }` object literals, so they
+ * are structurally excluded rather than filtered out by a guess.
+ *
+ * Hand-rolled line scan — `new RegExp` is banned repo-wide and a regex literal blinds this
+ * file's own comment strippers.
+ */
+function rb53TableRoster(): string[] {
+  let text: string;
+  try {
+    text = readFileSync(RB53_BINDINGS_PATH, 'utf8');
+  } catch (err) {
+    // Fail loud — a missing file must never make the cross-check vacuously pass.
+    throw new Error(
+      'the generated bindings could not be read at expected path: ' +
+        RB53_BINDINGS_PATH +
+        ' — ' +
+        String(err),
+    );
+  }
+  const prefix = "    name: '";
+  const out: string[] = [];
+  for (const line of text.split('\n')) {
+    if (!line.startsWith(prefix)) continue;
+    if (!line.endsWith("',")) continue;
+    out.push(line.slice(prefix.length, line.length - 2));
+  }
+  return out;
+}
+
+/** Every `<x>` in a `SELECT * FROM <x>'` occurrence of `text`, in order. The closing single
+ *  quote is the terminator: every subscription in connection.ts is a bare
+ *  `'SELECT * FROM <table>'` literal with no WHERE clause (verified this session). */
+function rb53SubscribedNames(text: string): string[] {
+  const marker = 'SELECT * FROM ';
+  const out: string[] = [];
+  let from = 0;
+  for (;;) {
+    const at = text.indexOf(marker, from);
+    if (at === -1) return out;
+    const nameStart = at + marker.length;
+    const end = text.indexOf("'", nameStart);
+    if (end === -1) {
+      throw new Error(
+        'a `SELECT * FROM …` subscription literal is unterminated in the scanned region — ' +
+          'refusing to guess where the table name ends',
+      );
+    }
+    out.push(text.slice(nameStart, end));
+    from = end;
+  }
+}
+
+describe('★ connection.ts wiring (rb-53 / ADR-0231 A3-D1): W-RB53-SUBSCRIBE — my_export_bundle joins the ONE subscribe array', () => {
+  it("★★ W-RB53-SUBSCRIBE BITES: the .subscribe([...]) array contains 'SELECT * FROM my_export_bundle' exactly once", () => {
+    // WRONG IMPL KILLED (a) ★ THE MOST LIKELY WAY THIS SLICE "LANDS" WITHOUT WORKING:
+    //   subscribing NOTHING. The converter, the store method, the assembly and the button can
+    //   all ship and every other gate in the slice stays green while not one chunk row ever
+    //   arrives — the download control is permanently disabled and the criterion is unmet.
+    // WRONG IMPL KILLED (b): parking the literal in a dead module-level constant, in a
+    //   commented-out line, or in a SECOND unreachable `.subscribe()` call. The WINDOW is what
+    //   kills that (a whole-file needle cannot tell a live subscription from a dead string).
+    // WRONG IMPL KILLED (c): subscribing the view TWICE (an over-eager merge) — the ===1 count,
+    //   not a `toContain`.
+    // WRONG IMPL KILLED (d): subscribing the PRIVATE `export_bundle` table instead of the
+    //   owner-scoped view. SpacetimeDB rejects the whole subscription BATCH, `onApplied` never
+    //   fires, and EVERY player gets a blank world — the T0 rollout probe finding recorded in
+    //   ADR-0087. The needle carries its CLOSING quote, so `'SELECT * FROM export_bundle'` is
+    //   not a substring of the required literal and the two cannot alias.
+    const src = readConnectionTs();
+    expectUniqueAnchor(src, '.subscribe([');
+    const arrayBody = bodyRegion(src, '.subscribe([', ']);');
+
+    // Anti-vacuity: the window really is the subscription array. `my_conversation` is the
+    // sibling owner-scoped VIEW subscription this slice's is modelled on, so its presence
+    // proves both that the region resolved and that comment-stripping did not eat the contents.
+    expect(
+      countOccurrences(arrayBody, "'SELECT * FROM my_conversation'"),
+      'the .subscribe([...]) window must still contain the my_conversation subscription — if it ' +
+        'does not, this gate is judging the wrong region and every assertion here is vacuous',
+    ).toBe(1);
+
+    expect(
+      countOccurrences(arrayBody, RB53_SUB_LITERAL),
+      "connection.ts's ONE .subscribe([...]) array must contain 'SELECT * FROM my_export_bundle' " +
+        'exactly once (ADR-0231 A3-D1). The name is EXACT and it is the SQL (snake) spelling, ' +
+        'not the camelCase binding handle: a wrong view name errors the WHOLE subscription ' +
+        'batch and onApplied never fires — every player gets a blank world, not merely a dead ' +
+        'download button. RED AT AUTHORING TIME: my_export_bundle appears nowhere in ' +
+        'connection.ts. ⚠ THE SAME LITERAL MUST ALSO JOIN `EXPECTED_SUBSCRIPTIONS` in ' +
+        'evals/monster-privacy.eval.mjs (~:1292-1319) — that allowlist is an EXACT SET over ' +
+        'this array, so adding the subscription without the eval line reds `just eval`',
+    ).toBe(1);
+
+    expect(
+      countOccurrences(arrayBody, "'SELECT * FROM export_bundle'"),
+      "the .subscribe([...]) array must NEVER contain 'SELECT * FROM export_bundle' — the table " +
+        'is PRIVATE (the view strips the primary key and scopes rows to the owner), and ' +
+        'subscribing a private table errors the entire batch',
+    ).toBe(0);
+  });
+
+  it('★★ W-RB53-SUBSCRIBE-ROSTER BITES: EVERY subscribed name is a real table in the GENERATED bindings — the one tooth independent of the pinned literal', () => {
+    // ★ THIS IS THE CONTROL THE W-UX2B / W-13RE / W-15RSECA PRECEDENT LACKS, and the reason it
+    // exists is stated in ADR-0231 A3's deferral list: connection.ts cannot be imported under
+    // vitest, so every subscription EARS in this repo is discharged by pinning a STRING — and a
+    // pinned string is satisfied by a TYPO as long as the typo is spelled identically in the
+    // test. `my_export_bundel` in both places passes every other assertion in this file, errors
+    // the whole subscription batch at runtime, and blanks the world for every player. This
+    // tooth derives the truth from a DIFFERENT source: the generated `tablesSchema` roster,
+    // which `spacetime generate` writes from the server schema.
+    //
+    // WRONG IMPL KILLED (1) ★: a misspelled table name in ANY subscription, new or existing.
+    // WRONG IMPL KILLED (2): a subscription to a name that was renamed server-side and
+    //   regenerated away — the roster moves, the literal does not.
+    const roster = rb53TableRoster();
+
+    // --- ANTI-VACUITY, ASSERTED FIRST -------------------------------------------------
+    // An empty (or wrongly-parsed) roster would make "every subscribed name is in the roster"
+    // fail loudly rather than pass — but a roster that accidentally collected INDEX names would
+    // make it pass too easily, so both the floor and two known members are pinned.
+    expect(
+      roster.length,
+      'the generated tablesSchema roster must be non-empty and substantial — a zero or tiny ' +
+        'roster means the line parser is wrong and this whole cross-check is meaningless',
+    ).toBeGreaterThanOrEqual(20);
+    for (const known of ['my_conversation', 'trade_offer', 'my_export_bundle']) {
+      expect(
+        roster.indexOf(known),
+        `the roster must contain the known table \`${known}\` — if it does not, the parser is ` +
+          'reading the wrong lines (or `spacetime generate` has not been re-run for the ' +
+          'my_export_bundle view, which is itself the bug this tooth is about)',
+      ).not.toBe(-1);
+    }
+    expect(
+      roster.indexOf('species_row_id_idx_btree'),
+      'the roster must NOT contain INDEX names — those live at deeper indentation inside ' +
+        '`{ accessor: …, name: … }` literals, and collecting them would make the membership ' +
+        'check below accept almost any string',
+    ).toBe(-1);
+
+    const src = readConnectionTs();
+    expectUniqueAnchor(src, '.subscribe([');
+    const arrayBody = bodyRegion(src, '.subscribe([', ']);');
+    const subscribed = rb53SubscribedNames(arrayBody);
+    expect(
+      subscribed.length,
+      'ANTI-VACUITY: the subscribe array must contain a substantial number of subscriptions — ' +
+        'if this is small the region is mis-bounded and the membership loop below judges nothing',
+    ).toBeGreaterThanOrEqual(20);
+    expect(
+      subscribed.indexOf('my_export_bundle'),
+      'the parsed subscription list must include my_export_bundle. RED AT AUTHORING TIME',
+    ).not.toBe(-1);
+
+    for (const name of subscribed) {
+      expect(
+        roster.indexOf(name),
+        `\`SELECT * FROM ${name}\` names a table that does not exist in the generated bindings ` +
+          `(client/src/module_bindings/index.ts). Known tables: ${roster.join(', ')}. A wrong ` +
+          'name errors the WHOLE subscription batch — onApplied never fires and every player ' +
+          'gets a blank world. This is the ONLY assertion in this slice that would catch a ' +
+          'typo spelled identically in the test and in the source',
+      ).not.toBe(-1);
+    }
+  });
+});
+
+describe('★ connection.ts wiring (rb-53 / ADR-0231 A3-D1): W-RB53-INGEST — my_export_bundle is insert+delete, NEVER update, and the handlers only SCHEDULE', () => {
+  it('★★ W-RB53-INGEST BITES: onInsert and onDelete are each registered exactly once, as the EXACT schedule-only statement', () => {
+    // WHY BOTH HANDLERS: chunk rows LEAVE this view — the 7-day TTL reaper deletes them (at most
+    //   EXPORT_REAP_MAX_DELETE_PER_TICK per tick, so it can cut across one owner's request) and
+    //   `delete_account`'s cascade removes them outright. With no onDelete the batcher is never
+    //   scheduled for that burst, the reconcile never runs, and the client keeps offering a
+    //   download of data the server has already purged.
+    // WRONG IMPL KILLED (1) ★: a PER-ROW store write in the handler —
+    //   `store.upsertExportChunk(exportChunkRowToStore(row))`, copied from the my_wallet block
+    //   directly above it in the file. That is per-row ingest against a MID-BURST cache: the
+    //   view has no primary key, so the delete half of an unordered pair removes the row the
+    //   insert half just wrote (the my_conversation coalescing wipe, ADR-0087). The EXACT
+    //   contiguous statement admits no store call at all.
+    // WRONG IMPL KILLED (2): omitting `batcher.schedule()` — the row lands in the SDK cache and
+    //   nothing reconciles until some UNRELATED table happens to flush. No e2e can see this
+    //   (the NPC wander tick flushes every ~200 ms and the run self-heals).
+    // WRONG IMPL KILLED (3): a CONDITIONAL schedule (`if (…) batcher.schedule()`) — a
+    //   contiguous needle admits no `if` / `?:` / `&&`.
+    // WRONG IMPL KILLED (4): registering either handler twice — the ===1 counts.
+    const squashed = squashedStrippedConnectionTs();
+
+    expect(
+      countCodeOccurrences(squashed, RB53_INSERT_STMT),
+      'connection.ts must contain EXACTLY this statement, exactly once (ADR-0231 A3-D1):\n  ' +
+        RB53_INSERT_STMT +
+        '\nRED AT AUTHORING TIME: `conn.db.my_export_bundle` appears nowhere in connection.ts. ' +
+        'If the implementation is present but this reds, compare it CHARACTER BY CHARACTER — ' +
+        'the needle deliberately pins that the handler does NOTHING but schedule, because a ' +
+        'per-row store write against a PK-less view is the my_conversation coalescing wipe. Do ' +
+        'NOT loosen this needle to match the code; correct the code, or re-derive the needle ' +
+        'FROM ADR-0231 A3-D1',
+    ).toBe(1);
+
+    expect(
+      countCodeOccurrences(squashed, RB53_DELETE_STMT),
+      'connection.ts must contain EXACTLY this statement, exactly once (ADR-0231 A3-D1):\n  ' +
+        RB53_DELETE_STMT +
+        '\nUnlike my_wallet (whose rows are never deleted server-side), export_bundle rows are ' +
+        'deleted by the TTL reaper and by the deletion cascade — insert-only wiring leaves the ' +
+        'batcher unscheduled for that burst and strands a purged export as downloadable',
+    ).toBe(1);
+
+    // The handlers must not write to the store AT ALL: the flush-time reconcile is the ONE
+    // write path for chunk rows (the 13r-e / 15r-sec-a rule, restated for this table).
+    for (const banned of ['store.upsertExportChunk(', 'store.removeExportChunk(']) {
+      expect(
+        countCodeOccurrences(squashed, banned),
+        `connection.ts must never call \`${banned}\` — the flush-time reconcile from the SDK ` +
+          'cache is the ONE write path for chunk rows (ADR-0231 A3-D1). A per-row write racing ' +
+          'the reconcile is exactly the my_conversation coalescing wipe',
+      ).toBe(0);
+    }
+  });
+
+  it('★★ W-RB53-NO-ONUPDATE BITES (tripwire): NO conn.db.my_export_bundle.onUpdate handler exists anywhere in the file', () => {
+    // WRONG IMPL KILLED — and it is the single most likely mistake here, because the nearest
+    // neighbours in this file (`conn.db.trade_offer`, `conn.db.profile`, `conn.db.my_account`)
+    // ALL have an onUpdate and a copy-paste keeps it. A view binding carries no primary key, so
+    // the SDK has nothing to correlate old and new rows with and onUpdate NEVER FIRES. Wiring
+    // one is dead code that implies a delivery guarantee the transport does not make — and,
+    // worse, it invites the author to reason about chunk arrival as ordered events when the
+    // whole reconcile design exists because they are not.
+    //
+    // SCOPED to my_export_bundle on purpose: `conn.db.my_account.onUpdate` (ADR-0182 D15) is
+    // LEGITIMATE and mandated. A blanket "no view onUpdate" ban would red on correct, shipped
+    // code — and the natural "fix" would be deleting the account-claim repaint.
+    const squashed = squashedStrippedConnectionTs();
+
+    // Anti-vacuity #1: the ingest must exist before "no update handler" means anything.
+    expect(
+      countCodeOccurrences(squashed, 'conn.db.my_export_bundle.onInsert('),
+      'precondition: the my_export_bundle insert handler must exist before the onUpdate ban ' +
+        'means anything. RED AT AUTHORING TIME',
+    ).toBe(1);
+
+    // Anti-vacuity #2: the needle SHAPE demonstrably matches a real, shipped registration — so
+    // the zero asserted next is a genuine absence rather than a broken scan.
+    expect(
+      countCodeOccurrences(squashed, 'conn.db.my_account.onUpdate('),
+      'the sanctioned my_account onUpdate handler (ADR-0182 D15) must still be wired — it is ' +
+        'this gate`s calibration: it proves a `conn.db.<view>.onUpdate(` needle CAN match, so ' +
+        'the zero asserted next is a real absence. Do NOT delete the account handler to make ' +
+        'anything green',
+    ).toBe(1);
+
+    expect(
+      countCodeOccurrences(squashed, 'conn.db.my_export_bundle.onUpdate'),
+      'there must be NO conn.db.my_export_bundle.onUpdate handler (ADR-0231 A3-D1): the view ' +
+        'has no primary key in the generated bindings, so the SDK never fires onUpdate — every ' +
+        'change arrives as unordered onInsert(new) + onDelete(old). `privacy.rs` has exactly ' +
+        'three writers for this table (the insert, the deletion cascade and the TTL reaper) and ' +
+        'not one of them is an update',
+    ).toBe(0);
+
+    expect(
+      countCodeOccurrences(squashed, 'conn.db.myExportBundle.'),
+      'ONE spelling only. The generated bindings ship a snake_case ALIAS map ' +
+        '(module_bindings/index.ts:496-512) in which `conn.db.my_export_bundle` and ' +
+        '`conn.db.myExportBundle` are the SAME LIVE OBJECT — so a camelCase registration is a ' +
+        'REAL handler that every snake-spelled needle above is blind to. This slice uses the ' +
+        'snake spelling, matching its two structural precedents in this file (conn.db.my_wallet ' +
+        'and conn.db.my_monster_pub) and ADR-0231 A3-D1`s own quoted wiring',
+    ).toBe(0);
+  });
+});
+
+describe('★ connection.ts wiring (rb-53 / ADR-0231 A3-D1): W-RB53-RECONCILE — the flush closure rebuilds the chunk map from the SDK cache', () => {
+  it('★★ W-RB53-RECONCILE BITES: exactly ONE store.reconcileExportChunksFromView( site, INSIDE the stale-build guard, BEFORE store.flushBatch(), with the WHOLE mapped cache as its argument', () => {
+    // THE ORDER IS THE POINT (carried forward from W-13RE / W-15RSECA): `store.flushBatch()` is
+    // what notifies every listener, and `main.ts`'s batch listener is the SOLE
+    // `assembleExportBundle(` call site. Reconciling AFTER the flush means the listener that
+    // just ran assembled the PRE-burst chunk set, so a completed export is invisible until some
+    // unrelated table happens to flush.
+    //
+    // THE SCOPE IS EQUALLY THE POINT (the red-team-VERIFIED bypass W-15RSECA records): a call
+    // placed in the closure but OUTSIDE `if (live !== undefined)` reads a SUPERSEDED
+    // connection's cache on every flush a dying socket scheduled — re-seeding the store after
+    // store.reset() with a dead socket's rows, which for THIS table means a previous identity's
+    // personal-data chunks.
+    //
+    // WRONG IMPL KILLED (a): reconciling inside the ROW HANDLERS — per-row reconciliation
+    //   against a mid-burst cache, the ordering dependence the design exists to remove. The
+    //   region bound (the batcher's own call arguments) kills it.
+    // WRONG IMPL KILLED (b): rebuilding from the row EVENTS instead of the post-burst row set —
+    //   the `my_export_bundle.iter()` needle kills it.
+    // WRONG IMPL KILLED (c): handing the store RAW SDK rows — `ownerIdentity` would stay an SDK
+    //   Identity OBJECT, so `store.ownExportChunks(identity)`'s `===` filter never matches and
+    //   the player's own export is invisible while the rows sit in the store. The
+    //   `exportChunkRowToStore` needle kills it.
+    // WRONG IMPL KILLED (d) ★ THE TRUNCATION SURVIVOR: `[...live.db.my_export_bundle.iter()]
+    //   .slice(0, 1).map(…)`. Every presence and position assertion above still passes, and the
+    //   reconcile is AUTHORITATIVE — every chunkId absent from the argument is DELETED — so the
+    //   export is permanently incomplete. store.test.ts cannot see it (it calls the store
+    //   method with its own arrays) and no e2e in this slice can either. The whole argument is
+    //   therefore compared by EQUALITY against a mechanically-generated sanctioned set, never
+    //   by a ban-list (an index loop, a destructure, a helper call or `Array.from(…, fn)` each
+    //   dodge one entry of any blacklist).
+    const squashed = squashedStrippedConnectionTs();
+    expectUniqueAnchor(squashed, 'new MicrotaskBatcher(');
+    const flushClosure = parenArgsAt(squashed, 'new MicrotaskBatcher(');
+
+    // --- (a) exactly one call site, whole file ----------------------------------------
+    expect(
+      countCodeOccurrences(squashed, 'store.reconcileExportChunksFromView('),
+      'store.reconcileExportChunksFromView( must be called from EXACTLY ONE site AS CODE — the ' +
+        'batcher flush closure. RED AT AUTHORING TIME: it does not exist in the client at all. ' +
+        'A second call site is a per-row reconcile against a mid-burst SDK cache',
+    ).toBe(1);
+
+    // --- (b) INSIDE the stale-build guard block ---------------------------------------
+    const guardDecl = 'if (live !== undefined) {';
+    const guardHits = codeOccurrences(flushClosure, guardDecl);
+    expect(
+      guardHits.length,
+      `the flush closure must contain EXACTLY ONE \`${guardDecl}\` block AS CODE — the ` +
+        'ADR-0085 C2 stale-build guard the two existing reconciles live in. Zero means it was ' +
+        'deleted or re-spelled (connection.test.ts:3859-3864 records why `current === undefined` ' +
+        'is the one spelling that must NOT be used)',
+    ).toBe(1);
+    const guardBody = braceBodyAt(flushClosure, guardHits[0]! + guardDecl.length - 1);
+    expect(
+      includesAsCode(guardBody, 'store.reconcileMonstersFromView('),
+      'ANTI-VACUITY: the brace-walked guard body must still contain the 13r-e monster reconcile ' +
+        '— if it does not, the walk bound the wrong block and the membership assertion below ' +
+        'passes for free',
+    ).toBe(true);
+    expect(
+      countCodeOccurrences(guardBody, 'store.reconcileExportChunksFromView('),
+      'the export reconcile must sit INSIDE the `if (live !== undefined)` block, beside the two ' +
+        "existing reconciles — an unguarded read of a dying connection's cache can fire after " +
+        'store.reset() and re-seed the store from a dead socket. For THIS table that means a ' +
+        "previous identity's personal-data chunks",
+    ).toBe(1);
+
+    // --- (c) ORDER: before the listener notification ----------------------------------
+    const reconcileHits = codeOccurrences(flushClosure, 'store.reconcileExportChunksFromView(');
+    const flushHits = codeOccurrences(flushClosure, 'store.flushBatch()');
+    expect(
+      flushHits.length,
+      'the flush closure must still call `store.flushBatch()` AS CODE exactly once — if this ' +
+        'anchor is gone the whole per-transaction reconcile signal is gone with it',
+    ).toBe(1);
+    expect(
+      reconcileHits[0],
+      'the export reconcile must run BEFORE store.flushBatch() inside the flush closure. ' +
+        "flushBatch() is what notifies main.ts's batch listener, and that listener is the SOLE " +
+        'assembleExportBundle( call site — reconciling after it means the assembly it just ' +
+        'computed used the PRE-burst chunk set',
+    ).toBeLessThan(flushHits[0]!);
+
+    // --- (d) the SOURCE of truth and the CONVERSION -----------------------------------
+    expect(
+      includesAsCode(flushClosure, 'my_export_bundle.iter()'),
+      "the flush closure must rebuild the chunk map from the SDK's own post-burst row set — " +
+        '`[...live.db.my_export_bundle.iter()]`. Reconstructing it from the insert/delete ' +
+        'EVENTS is id-set arithmetic over an unordered burst, which is the ordering dependence ' +
+        'this design exists to remove (ADR-0231 A3-D1)',
+    ).toBe(true);
+    expect(
+      includesAsCode(flushClosure, 'exportChunkRowToStore'),
+      'the flush closure must map the SDK rows through `exportChunkRowToStore` — a raw SDK row ' +
+        "keeps ownerIdentity as an Identity OBJECT, so store.ownExportChunks(identity)'s exact " +
+        '`===` filter never matches and the player`s own export is invisible while the rows sit ' +
+        'in the store',
+    ).toBe(true);
+
+    // --- (e) the ARGUMENT is EXACTLY the whole mapped cache ---------------------------
+    // Sliced from the CODE occurrence, never handed the raw needle: parenArgsAt resolves its
+    // anchor with a plain indexOf, so a decoy string carrying the same text earlier in the
+    // closure would otherwise steer the walk to the wrong parens. `reconcileHits[0]` is proven
+    // to exist by the `=== 1` count in clause (a) plus the in-guard count in clause (b); the
+    // `?? 0` is a total fallback that keeps this line free of a non-null assertion (and, if the
+    // impossible happened, would slice from 0 and red the equality rather than throw).
+    const argRegion = parenArgsAt(
+      flushClosure.slice(reconcileHits[0] ?? 0),
+      'store.reconcileExportChunksFromView(',
+    );
+    const compactArg = argRegion.split(' ').join('');
+    // ONE expression, composed mechanically over THREE inert degrees of freedom, so the set can
+    // never drift from a single source of truth and a future formatter change is a
+    // one-character edit here rather than a new literal:
+    //   * CAST — the two sibling reconciles both spell `row as unknown as Sdk…Row`, but the
+    //     generated row type may be structurally assignable without it; both are behaviourally
+    //     identical and neither is a truncation;
+    //   * INNER / OUTER trailing commas — biome inserts them when it wraps a call across lines
+    //     and omits them when the call fits on one. Neither changes behaviour.
+    const reconcileArg = (cast: string, inner: string, outer: string): string =>
+      `[...live.db.my_export_bundle.iter()].map((row)=>exportChunkRowToStore(row${cast})${inner})${outer}`;
+    const sanctionedArgs = ['asunknownasSdkExportChunkRow', ''].flatMap((cast) =>
+      ['', ','].flatMap((inner) => ['', ','].map((outer) => reconcileArg(cast, inner, outer))),
+    );
+    expect(
+      sanctionedArgs.includes(compactArg),
+      'the argument to store.reconcileExportChunksFromView( must be EXACTLY the whole post-burst ' +
+        'view cache, mapped through the boundary converter and nothing else (ADR-0231 A3-D1).\n' +
+        `  expected (whitespace-insensitive, any trailing-comma spelling, cast optional): ${reconcileArg('asunknownasSdkExportChunkRow', '', '')}\n` +
+        `  found: ${compactArg}\n` +
+        'Anything interposed between `.iter()]` and `.map(` — a `.slice(`, a `.filter(`, a ' +
+        '`.reduce(`, an index loop — hands the store a SUBSET, and the reconcile is ' +
+        'AUTHORITATIVE: every chunkId absent from this argument is DELETED on every flush, so ' +
+        'the export is permanently incomplete and the download control never enables. A ' +
+        'truncating mutant passes every other assertion in this block, is invisible to ' +
+        'store.test.ts (which calls the store method directly with its own arrays), and is ' +
+        'invisible to every e2e in this slice. If this fires on a legitimate change, re-review ' +
+        'the new expression HERE and in the ADR — do NOT relax it to a substring check',
+    ).toBe(true);
+
+    // --- (f) regression anchors: the two existing reconciles are untouched -------------
+    for (const sibling of ['store.reconcileMonstersFromView(', 'store.reconcileBattlesFromView(']) {
+      expect(
+        countCodeOccurrences(squashed, sibling),
+        `the existing \`${sibling}…\` reconcile must still be called exactly once from the same ` +
+          'flush closure — this slice ADDS a third reconcile, it does not replace either',
+      ).toBe(1);
+    }
+  });
+});

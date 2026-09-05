@@ -249,6 +249,25 @@ export type StoreAccount = {
   readonly terminalAtMs: bigint | undefined;
 };
 
+/** One `my_export_bundle` view row, normalised at the boundary (rb-53, ADR-0231 A3-D1).
+ *
+ *  Field-for-field the shape `ui/exportAssembly.ts`'s `ExportChunkInput` reads, so the store's
+ *  rows feed `assembleExportBundle` with no adapter in between — but declared HERE rather than
+ *  imported from `ui/`, because `net/` must not depend on the view layer.
+ *
+ *  Every value is the SERVER'S, verbatim: no coercion, no defaulting, no clamping. `payloadJson`
+ *  in particular is spliced into the player's download byte-for-byte and is never parsed. */
+export type StoreExportChunk = {
+  readonly chunkId: bigint;
+  readonly ownerIdentity: string;
+  readonly requestId: bigint;
+  readonly tableName: string;
+  readonly chunkIndex: number;
+  readonly totalChunks: number;
+  readonly payloadJson: string;
+  readonly createdAtMs: bigint;
+};
+
 /** A player quest row, normalized (ownerIdentity as hex string; M12d). */
 export type StorePlayerQuest = {
   readonly pqId: bigint;
@@ -426,6 +445,13 @@ export class AuthoritativeStore {
   // NO removeAccount: account rows are never truly deleted server-side (delete_account flips
   // `status`), so a view onDelete can only be the old half of an update pair (ADR-0182 D15).
   #ownAccount: StoreAccount | undefined;
+  // rb-53: `my_export_bundle` is a PK-less Vec-VIEW, so it takes the `my_monster_pub` /
+  // `my_battle` route (ADR-0231 A3-D1) — the whole map is rebuilt from the post-burst SDK cache
+  // by `reconcileExportChunksFromView`, never written per row. Keyed by `chunk_id`, the row's
+  // synthetic `#[auto_inc]` primary key: it is the only field unique per row (the view strips
+  // the key, so it has to come out of the payload), and keying by `requestId` instead would
+  // collapse a whole export to one chunk and leave it permanently `incomplete`.
+  readonly #exportChunks = new Map<bigint, StoreExportChunk>();
   readonly #batchListeners = new Set<() => void>();
   #dirty = false;
   /** Nominal server step interval (ms), used for burst detection + jitter EWMA.
@@ -802,6 +828,11 @@ export class AuthoritativeStore {
     // can never surface to the next one (every anonymous rebuild can mint a new identity);
     // repopulated from the `my_account` view's initial onInsert on reconnect (ADR-0182 D15).
     this.#ownAccount = undefined;
+    // rb-53: export chunks — cleared on disconnect so a previous identity's personal-data
+    // export can never surface to the next one; repopulated from the `my_export_bundle` view's
+    // initial snapshot when the subscription re-applies (the `#ownAccount` rule, for a table
+    // whose rows ARE the player's exported data).
+    this.#exportChunks.clear();
     this.#dirty = false;
   }
 
@@ -1163,6 +1194,46 @@ export class AuthoritativeStore {
   ownAccount(identity: string): StoreAccount | undefined {
     const slot = this.#ownAccount;
     return slot !== undefined && slot.identity === identity ? slot : undefined;
+  }
+
+  /** Rebuild the whole chunk map from the post-burst `my_export_bundle` cache (rb-53,
+   *  ADR-0231 A3-D1) — the `reconcileMonstersFromView` / `reconcileBattlesFromView` shape.
+   *
+   *  AUTHORITATIVE: a `chunkId` absent from `rows` is DELETED. That is what makes a server-side
+   *  purge (the 7-day TTL reaper, the deletion cascade) withdraw the client's download offer
+   *  instead of leaving erased data downloadable forever.
+   *
+   *  `#dirty` is set only on a REAL change, so an unchanged burst costs no listener wake. */
+  reconcileExportChunksFromView(rows: readonly StoreExportChunk[]): void {
+    const keep = new Set<bigint>();
+    for (const c of rows) {
+      keep.add(c.chunkId);
+      const prev = this.#exportChunks.get(c.chunkId);
+      if (prev === undefined || !shallowRowEq(prev, c)) {
+        this.#exportChunks.set(c.chunkId, c);
+        this.#dirty = true;
+      }
+    }
+    for (const id of [...this.#exportChunks.keys()]) {
+      if (!keep.has(id)) {
+        this.#exportChunks.delete(id);
+        this.#dirty = true;
+      }
+    }
+  }
+
+  /** This player's export chunks ONLY — client-side owner filter (ADR-0015 V1), defense in
+   *  depth behind the server-side owner-scoped view, and the FIRST of the two independent
+   *  filters that keep another player's bytes out of the downloaded file (the second is
+   *  `assembleExportBundle`'s own filter-first rule).
+   *
+   *  EXACT comparison — no case folding, no trimming: the `ownWallet` / `ownAccount` rule. */
+  ownExportChunks(identity: string): readonly StoreExportChunk[] {
+    const out: StoreExportChunk[] = [];
+    for (const c of this.#exportChunks.values()) {
+      if (c.ownerIdentity === identity) out.push(c);
+    }
+    return out;
   }
 }
 

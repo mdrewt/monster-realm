@@ -375,3 +375,126 @@ them together, so a player who can start a deletion can always cancel it.
   `exportPermitted` is `true` pre-join (no account row ⇒ the non-pending branch), so the Export
   control is offered in a state the server will reject — server-authoritative by design, and
   recorded rather than clamped client-side.
+
+## Amendment A3 — 2026-09-05 (rb-53): the live export transport and the download offer
+
+Self-amendment; no new ADR number was minted (the A1/A2 route, ADR-0104 precedent). rb-53
+discharges residual `R-m22-s8-X11` — PRV1-11/12/13: "WHEN `request_data_export` completes THE
+CLIENT SHALL read `my_export_bundle` from a live subscription, assemble it via
+`assembleExportBundle`, and offer the artifact as a downloadable file". It gives
+`assembleExportBundle` — shipped by m22-s8 with no production caller — its first one, and it
+**closes the dead end this ADR recorded at `:147-151`**: `requestDataExport` had a call site from
+rb-52 but nothing ever read the rows it produced.
+
+- **A3-D1 — `my_export_bundle` is wired as a `Vec`-VIEW, not as an `Option`-view: `onInsert` +
+  `onDelete` that only `batcher.schedule()`, and a whole-set reconcile in the shared flush
+  closure.** The repo has two structurally identical precedents — `my_monster_pub` (ADR-0194 D4,
+  `connection.ts:353-359`) and `my_battle` (ADR-0198 D4, `connection.ts:379-381`) — both PK-less
+  views returning `Vec<T>`, both rebuilt from the post-burst SDK cache by
+  `store.reconcile*FromView`. `my_export_bundle` is the same shape (`privacy.rs:1565-1567` returns
+  `Vec<ExportBundle>`; the view strips the primary key, `schema.rs:920`), so it takes the same
+  route: `store.reconcileExportChunksFromView`.
+  REJECTED — the `my_account`/`my_wallet` per-row `upsert` idiom. Those are single-row
+  `Option`-shaped slots whose "no `onDelete`" rule exists because a view UPDATE arrives as an
+  unordered insert+delete pair. Copying them here would have meant re-litigating that rule for a
+  table that is never updated at all (`privacy.rs` has exactly three writers: insert `:1544`,
+  cascade delete `:87`, TTL-reaper delete `:1645`) — and a reviewer reading the new block beside
+  `connection.ts:341` would rightly read it as copied from the wrong neighbour. The reconcile also
+  makes a client-side chunk cap unnecessary: the set is whatever the owner-scoped view currently
+  holds, bounded by the server's 7-day TTL reaper.
+
+- **A3-D2 — the assembly is computed ON BATCH (`store.onBatchApplied`), never per frame and never
+  only on click.** Exactly ONE `assembleExportBundle(` call site in `main.ts`. Per-frame is a full
+  re-scan and, at `complete`, a full re-concatenation 60×/s. On-click-only would leave the surface
+  unable to say whether an export is ready, making the button a coin flip. `onBatchApplied` fires
+  once per coalesced transaction burst — precisely the arrival edge. (Measured during review: the
+  splice is ~0.003–0.006 ms even at 32 MB, because V8 never flattens the rope until `new Blob`
+  consumes it. The per-batch recompute is not a netcode cost, so no revision counter is warranted.)
+
+- **A3-D3 — the artifact is offered behind a BUTTON; it is never auto-downloaded.** Chunks
+  re-arrive on every applied snapshot, so an auto-download would re-fire on each reconnect and spam
+  duplicate files; browsers also block non-gesture downloads, which would leave the criterion
+  silently unfulfilled with no error surface.
+
+- **A3-D4 — the download control is ALWAYS painted and only `disabled`; it is never
+  `display:none`.** This is the dominant precedent in `privacyView.ts` (the delete/cancel/export
+  trio at `:172-174`), and here it is load-bearing rather than cosmetic. Unlike every other control
+  in this file, the download control's enablement is driven by INCOMING SERVER DATA, so it can flip
+  while the player has it focused. `overlayRegistry.ts:275-279` already records the consequence:
+  focus falls to `<body>`, which is not a descendant of the overlay root, so `focusTrap`'s capture
+  listener never fires and Tab walks the page behind an `aria-modal` dialog Chromium does not make
+  AT-inert. A control that vanishes under focus is that defect through a new door.
+  (The export-status `<p>` beside it DOES hide when there is nothing to say — it is not focusable,
+  and it mirrors `#privacy-notice`.)
+
+- **A3-D5 — one status sentence per `ExportAssemblyStatus`, `inconsistent` prints NO total, and
+  `incomplete` does not promise arrival.** The core deliberately returns `totalChunks: undefined`
+  on `inconsistent` (`exportAssembly.ts:59-62`), so printing a number there would leak a fabricated
+  total. `incomplete` is reached by two causes that the client cannot tell apart — still streaming,
+  and a server-side partial removal (the TTL reaper deletes at most
+  `EXPORT_REAP_MAX_DELETE_PER_TICK` rows per tick, oldest `chunk_id` first, so it can cut across one
+  owner's request) — so the copy says what is true (some chunks are missing) rather than telling the
+  player to wait for chunks that may never arrive.
+
+- **A3-D6 — the export state does NOT enter `privacyModel.ts`; it is an OPTIONAL second argument to
+  `buildPrivacyViewModel`.** `privacyStep`'s only double-submit guard is `inFlight`, and an
+  `export-chunks-changed` event would create a second per-burst pump into the reducer that A2-D9
+  exists to prevent. The parameter is optional rather than required because `client/tsconfig.json`
+  excludes `**/*.test.ts`: a required parameter would be enforced on the two `main.ts` sites and on
+  none of the ~29 spec call sites, buying a large mechanical spec churn for a guarantee the
+  typechecker cannot give. The forgotten-call-site risk is closed behaviourally instead — the
+  runtime tooth in `main.exportTransport.test.ts` reds if `renderPrivacy` drops the argument.
+
+- **A3-D7 — the CSP/sandbox fallback logs a STATIC string, deliberately unlike the F9 bug-bundle
+  precedent it is otherwise modelled on.** `downloadBugBundle` (`main.ts:2405-2409`) logs its whole
+  payload on failure, which is safe only because `KeyStoreSnapshot` is a no-PII allowlist by
+  construction (`bugBundle.ts:24-33`). The export artifact is the opposite: every exportable table,
+  including player-authored names and behavioural history. Logging it would retain the player's
+  complete personal-data dump in the devtools buffer for the page's life, and — if routed through
+  `reportError` — put it on screen and into the `errorRing` that `buildBugBundle` embeds in the file
+  players are asked to attach to bug reports. No existing gate would catch that
+  (`evals/client-no-pii-logs.eval.mjs`'s ban list is credential-shaped), so it is recorded here and
+  gated by a tooth asserting no log sink receives the artifact bytes.
+
+- **A3-D8 — `a.remove()` and `URL.revokeObjectURL(url)` move to a `finally`.** In the F9 precedent
+  both sit inside the `try`, after `a.click()`; a throw there pins the object URL — and therefore
+  the whole Blob — for the page's lifetime and leaves a stray `<a href>` in the document. At
+  bug-bundle scale that is kilobytes; at export scale it is the entire dump.
+
+- **A3-D9 — `onReconnect(identity)` drops the cached assembly.** A rebuild can mint a NEW identity
+  (`connection.ts:745`, `main.ts:2939`), and the cached artifact is `main.ts` state, not store
+  state, so `store.reset()` does not reach it. ACCEPTED and recorded: between a link drop and the
+  next applied batch the button still offers the last artifact. That artifact is this player's own
+  data, delivered to this client for this identity, so the staleness is a freshness question rather
+  than a leak; the identity rotation — the only case that is a leak — is what this clear covers.
+
+- **A3-D10 — the surface is repainted only while visible; the assembly is recomputed
+  unconditionally.** `openPrivacy()` already renders from current state, so a burst arriving while
+  the overlay is closed is picked up on open. Putting the recompute inside the visibility guard is
+  the bug this decision forecloses. Note also that the rAF repaint gate (`main.ts:3100`) is keyed on
+  `statusLabel` alone, which export state does not move — so the batch listener is the SOLE repaint
+  owner for this part of the surface.
+
+- **A3-D11 — the download filename lives in `ui/privacyBanner.ts`, the surface's copy layer, not in
+  the frozen `ui/exportAssembly.ts` core.** It is composed from the `requestId` (a `bigint`) and a
+  caller-supplied `capturedAtMs`, so it stays clock-free, and it is run through
+  `bugBundleFilename`'s character-class strip anyway: `rowConvert` is a documented pure pass-through
+  with no validation (`rowConvert.ts:543-566`), so a drifted binding could deliver a `requestId`
+  whose `String()` carries a path separator.
+
+### Deferred by rb-53 (named, not hidden)
+
+- **A one-shot live-region announcement on the `incomplete → complete` edge.** Already outstanding
+  from A1-D4 as `R-rb-52-GRACEANNOUNCE`'s sibling; it needs a `ui/a11yCopy.ts` catalog entry and the
+  live-region custody surface, both outside this slice's `touches:`. Not required by the criterion.
+- **A browser/e2e proof that the LIVE subscription is correct.** `connection.ts` is
+  coverage-excluded and unimportable under vitest, so every subscription EARS in this repo is
+  discharged by a source scan (the `W-UX2B-SUBSCRIBE` precedent). rb-53 adds one control the
+  precedent lacks — a tooth cross-checking each subscribed name against the generated
+  `tablesSchema` roster in `client/src/module_bindings/index.ts`, which is the only check in the
+  slice that is independent of the pinned string. A wrong literal is still ultimately caught by the
+  cloud `just e2e` job (`client/e2e/golden.spec.ts` waits on a non-empty identity), never by
+  `just ci`. `evals/account-e2e.eval.mjs` is NOT a mitigation: it opens its own subscription with
+  its own literal and never reads `client/src/net/connection.ts`.
+- **A retry/refresh affordance for `inconsistent`, and any per-table or streaming download.** YAGNI
+  — the existing Export control already re-requests.

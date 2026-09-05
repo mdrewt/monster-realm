@@ -549,8 +549,19 @@ describe('privacyBannerLabel (PRV1-1): totality, round-trip and monotonicity', (
 //     readonly noticeKind:
 //       'none' | 'disconnected' | 'permanently-deleted' | 'request-rejected' | 'terminal-row';
 //     readonly noticeLabel: string | undefined;
+//     // ⚠ AMENDED BY rb-53 (ADR-0231 A3-D6) — THREE MORE FIELDS. The block above is the rb-52
+//     // contract as it was authored and is left as written; the CURRENT contract is the ten
+//     // fields above PLUS these three, and `buildPrivacyViewModel` takes an OPTIONAL second
+//     // argument. The rb-53 section at the foot of this file pins all of it, including the
+//     // whole-object key roster (thirteen keys) that stops a fabricated fourteenth from hiding.
+//     readonly exportStatusLabel: string | undefined;
+//     readonly downloadLabel: string;
+//     readonly downloadEnabled: boolean;
 //   }
-//   export function buildPrivacyViewModel(state: PrivacyModelState): PrivacyViewModel;
+//   export function buildPrivacyViewModel(
+//     state: PrivacyModelState,
+//     exportAssembly?: ExportAssembly,   // rb-53 (A3-D6): OPTIONAL — see the rb-53 header below
+//   ): PrivacyViewModel;
 //
 // ★ ON THE BACKTICKS AROUND Identity — DECIDED AND STATED (the brief asks for this explicitly).
 //   The shipped UI string KEEPS them: M22 section 9 requires the sentence "to be used verbatim
@@ -1150,5 +1161,530 @@ describe('rb-52 privacy model: the double-submit guard survives an account refre
       'and the refresh cleared the in-flight marker, which is why the guard had to be the ' +
         'confirmation rather than the marker',
     ).toBe('none');
+  });
+});
+
+// ###########################################################################
+// rb-53 (PRV1-11/12/13) — the EXPORT half of the privacy surface's copy layer.
+// ###########################################################################
+//
+// ★ SOURCE OF TRUTH — gate E1, verbatim:
+//   "[PRV1-11/12/13 live transport + download] WHEN request_data_export completes THE CLIENT
+//    SHALL read my_export_bundle from a live subscription, assemble it via
+//    assembleExportBundle, and offer the artifact as a downloadable file"
+//
+// Design record: `docs/adr/0231-client-privacy-cores-request-wide-chunk-assembly.md`,
+// Amendment A3 — A3-D4 (the control is always painted, only `disabled`), A3-D5 (one sentence
+// per ExportAssemblyStatus; `inconsistent` prints NO total; `incomplete` does not promise
+// arrival), A3-D6 (the export state is an OPTIONAL second argument, NOT a privacyModel event),
+// A3-D11 (the filename lives HERE, in the surface's copy layer, not in the frozen assembly core).
+//
+// THE CONTRACT THE IMPLEMENTER BUILDS (do not invent variants):
+//
+//   export function exportBundleFilename(
+//     requestId: bigint | undefined,
+//     capturedAtMs: number,
+//   ): string;
+//   export function buildPrivacyViewModel(
+//     state: PrivacyModelState,
+//     exportAssembly?: ExportAssembly,
+//   ): PrivacyViewModel;
+//   // and PrivacyViewModel gains EXACTLY three fields:
+//   //   readonly exportStatusLabel: string | undefined;   // undefined ⇒ the <p> is hidden
+//   //   readonly downloadLabel: string;                   // ALWAYS present (A3-D4)
+//   //   readonly downloadEnabled: boolean;                // true IFF status === 'complete'
+//
+// ★ WHY THE COPY IS PINNED BY PROPERTY AND NOT BY EXACT STRING, unlike the rb-51 duration
+//   table above. The rb-51 table IS the specification — the grammar was decided in the plan.
+//   The four export sentences are not: A3-D5 fixes their PROPERTIES (one per status, distinct,
+//   no fabricated total on `inconsistent`, no promise of arrival on `incomplete`) and leaves the
+//   wording to the implementer. Inventing exact strings here would freeze copy no decision
+//   record makes, and a tester who writes the copy is writing the feature. So: DISTINCTNESS,
+//   NON-EMPTINESS, the digit ban and the artifact ban are asserted; the words are not.
+//
+// ★ WHY THE FIXTURES ARE LITERALS AND NOT `assembleExportBundle(...)` OUTPUT. `exportAssembly.ts`
+//   is a frozen, separately-gated pure core (m22-s8). Deriving the fixtures from it would mean a
+//   regression there silently changed what THIS file tests; and the four statuses are exactly
+//   the seam the VM must handle, whether or not the core can currently reach them. Same
+//   reasoning as `countdownOf` at :93-95.
+//
+// RED REASON AT AUTHORING TIME: `client/src/ui/privacyBanner.ts` exports no
+// `exportBundleFilename`, and `buildPrivacyViewModel` takes ONE parameter and returns ten
+// fields. So the filename cases fail with "exportBundleFilename is not a function" and every
+// view-model case reads `undefined` where a label or a boolean is required — a MISSING
+// IMPLEMENTATION, not a typo here.
+//
+// NO regex literal, no `new RegExp`: scanning is indexOf/split only. NO numeric duplicate of the
+// grace window — every value here is a small synthetic one.
+
+/** Type-only, therefore ERASED at runtime — this import cannot break the file's collection. */
+import type { ExportAssembly, ExportAssemblyStatus } from './exportAssembly';
+/** ★ A NAMESPACE binding, deliberately, and NOT a fourth name on the top import block. A named
+ *  import of a not-yet-existing export is an ESM LINK error that takes this whole file's
+ *  COLLECTION down, so every unrelated rb-51/rb-52 tooth in it would red for the wrong reason
+ *  and the run would report a formatting-shaped failure instead of a missing feature. Through
+ *  the namespace, a missing implementation reds exactly the filename cases below, by name.
+ *  (`buildPrivacyViewModel` needs no such treatment: it already exists, and calling it with a
+ *  second argument it does not yet declare is a runtime no-op — so the view-model cases below
+ *  red on the MISSING FIELDS, which is the diagnosis that points at the real work.) */
+import * as privacyBannerModule from './privacyBanner';
+
+/** The rb-53 filename entry point, reached through the namespace above. */
+const exportBundleFilename = (requestId: bigint | undefined, capturedAtMs: number): string =>
+  privacyBannerModule.exportBundleFilename(requestId, capturedAtMs);
+
+/** A synthetic request id and its decimal spelling, so the filename tooth can look for the
+ *  digits without re-deriving them. */
+const RB53_REQUEST_ID = 4242n;
+const RB53_REQUEST_DIGITS = '4242';
+
+/** A canary that exists ONLY inside the artifact, so "the dump did not leak into the copy" is
+ *  asserted on CONTENT rather than on a length or a count. */
+const RB53_ARTIFACT_CANARY = 'RB53-ARTIFACT-CANARY-9f2b';
+const RB53_ARTIFACT = `{"request_id":"4242","total_chunks":3,"chunks":[{"k":"${RB53_ARTIFACT_CANARY}"}]}`;
+
+/** The four `ExportAssemblyStatus` values, each as a WHOLE `ExportAssembly` in the shape
+ *  `exportAssembly.ts` really returns for it — including its documented `totalChunks:
+ *  undefined` on `none` and on `inconsistent` (exportAssembly.ts:59-62), which is exactly what
+ *  makes "print no total on inconsistent" a real constraint rather than a style note. */
+const RB53_ASSEMBLIES: Readonly<Record<ExportAssemblyStatus, ExportAssembly>> = {
+  none: {
+    status: 'none',
+    requestId: undefined,
+    receivedChunks: 0,
+    totalChunks: undefined,
+    artifact: undefined,
+  },
+  incomplete: {
+    status: 'incomplete',
+    requestId: RB53_REQUEST_ID,
+    receivedChunks: 2,
+    totalChunks: 3,
+    artifact: undefined,
+  },
+  inconsistent: {
+    status: 'inconsistent',
+    requestId: RB53_REQUEST_ID,
+    receivedChunks: 4,
+    totalChunks: undefined,
+    artifact: undefined,
+  },
+  complete: {
+    status: 'complete',
+    requestId: RB53_REQUEST_ID,
+    receivedChunks: 3,
+    totalChunks: 3,
+    artifact: RB53_ARTIFACT,
+  },
+};
+
+const RB53_STATUSES: readonly ExportAssemblyStatus[] = [
+  'none',
+  'incomplete',
+  'inconsistent',
+  'complete',
+];
+
+/** The TEN fields rb-52 shipped. The export argument must not move ANY of them. */
+const RB52_VM_KEYS: readonly string[] = [
+  'statusLabel',
+  'deleteLabel',
+  'cancelLabel',
+  'exportLabel',
+  'deleteEnabled',
+  'cancelEnabled',
+  'exportEnabled',
+  'confirmPrompt',
+  'noticeKind',
+  'noticeLabel',
+];
+
+/** The THREE fields rb-53 adds — and the whole roster is ten plus three, never fourteen. */
+const RB53_VM_KEYS: readonly string[] = ['exportStatusLabel', 'downloadLabel', 'downloadEnabled'];
+
+/** A representative model state for the export teeth: an ACTIVE account, which is the state a
+ *  player who has just requested an export is in. Built by RUNNING the reducer, per this file's
+ *  rb-52 convention. */
+const RB53_STATE = rb52State([{ kind: 'account-changed', countdown: RB52_ACTIVE }]);
+
+function rb53Vm(status: ExportAssemblyStatus, state: PrivacyModelState = RB53_STATE) {
+  return buildPrivacyViewModel(state, RB53_ASSEMBLIES[status]);
+}
+
+/** Every string a VM can put on screen, INCLUDING the three rb-53 fields. */
+function rb53AllVmStrings(vm: ReturnType<typeof buildPrivacyViewModel>): string[] {
+  const record = vm as unknown as Record<string, unknown>;
+  const out: string[] = [];
+  for (const key of Object.keys(record)) {
+    const value = record[key];
+    if (typeof value === 'string') out.push(value);
+  }
+  return out;
+}
+
+// ===========================================================================
+// The WHOLE view model, per status — not one flag.
+// ===========================================================================
+
+describe('rb-53 privacy view model: the export argument adds EXACTLY three fields and moves nothing else', () => {
+  it('★★ RB53C-VM-WHOLE-SHAPE BITES: the key roster is exactly ten + three, for every status AND for the no-argument call', () => {
+    // ★ WHY THE WHOLE OBJECT AND NOT THE FLAG UNDER TEST. This repo has already been bitten by
+    // a five-mutant acceptance gate that pinned an `effect` and a field and MISSED a fabricated
+    // `notice` / `rejectMessage` invented alongside them. A VM that also grew, say, an
+    // `exportArtifact` or an `exportRequestId` field would satisfy every behavioural assertion
+    // below AND would put the player's whole personal-data dump one `JSON.stringify` away from
+    // anything that serialises a view model. The roster is the only assertion that sees it.
+    // WRONG IMPL KILLED (1) ★: any fabricated fourteenth field.
+    // WRONG IMPL KILLED (2): a field DROPPED on one status arm (an early `return` that omits
+    //   `downloadLabel` on `none`) — the loop covers all four plus the no-argument call.
+    // WRONG IMPL KILLED (3): `exportStatusLabel` OMITTED rather than present-as-undefined when
+    //   there is no assembly. `Object.keys` on `{a: undefined}` includes 'a'; on `{}` it does
+    //   not — and `privacyView` keys the <p>'s visibility on `=== undefined`, so an absent key
+    //   and a present-undefined one must be the same thing to the shell but are NOT the same
+    //   thing to a consumer that spreads the VM.
+    const expectedKeys = [...RB52_VM_KEYS, ...RB53_VM_KEYS].sort();
+    expect(
+      new Set(expectedKeys).size,
+      'ANTI-VACUITY: the expected roster must have no duplicates',
+    ).toBe(expectedKeys.length);
+
+    for (const status of RB53_STATUSES) {
+      expect(
+        Object.keys(rb53Vm(status) as unknown as Record<string, unknown>).sort(),
+        `status '${status}': the view model must carry EXACTLY the ten rb-52 fields plus the ` +
+          'three rb-53 ones',
+      ).toEqual(expectedKeys);
+    }
+    expect(
+      Object.keys(buildPrivacyViewModel(RB53_STATE) as unknown as Record<string, unknown>).sort(),
+      'the NO-ARGUMENT call must return the same thirteen-key shape — the second parameter is ' +
+        'OPTIONAL (A3-D6), and ~29 spec call sites plus one main.ts frame-body call still use ' +
+        'the one-argument form',
+    ).toEqual(expectedKeys);
+  });
+
+  it('★★ RB53C-VM-DELETION-FIELDS-FROZEN BITES: all TEN rb-52 fields are byte-identical with and without the export argument, for every status', () => {
+    // ★ THE LEGAL-DEADLINE TOOTH. `statusLabel` is the deletion countdown sentence — the one
+    // place the player is told when an irreversible erasure fires. An export line that
+    // overwrote it (the obvious "reuse the status line for both" shortcut) would replace a
+    // legal deadline with "your export is ready", and every export-side assertion in this file
+    // would still pass. Stating it over ALL TEN fields rather than over `statusLabel` alone
+    // also kills an export argument that quietly flips `exportEnabled` or `noticeKind`.
+    // WRONG IMPL KILLED: `statusLabel: exportLabelFor(assembly) ?? statusLabelFor(countdown)`,
+    //   and any other arm where the export state reaches a rb-52 field.
+    const base = buildPrivacyViewModel(RB53_STATE) as unknown as Record<string, unknown>;
+    for (const status of RB53_STATUSES) {
+      const withExport = rb53Vm(status) as unknown as Record<string, unknown>;
+      for (const key of RB52_VM_KEYS) {
+        expect(
+          withExport[key],
+          `status '${status}': \`${key}\` must be UNCHANGED by the export argument. The ` +
+            'deletion lattice and the export lattice are independent — one surface, two ' +
+            'unrelated facts, and the countdown is the one with a legal deadline attached',
+        ).toBe(base[key]);
+      }
+    }
+    expect(
+      typeof base.statusLabel === 'string' && (base.statusLabel as string).length > 0,
+      'ANTI-VACUITY: the baseline status line must be a real, non-empty sentence — comparing ' +
+        'four empty strings to an empty string would prove nothing',
+    ).toBe(true);
+  });
+});
+
+// ===========================================================================
+// A3-D5 — one sentence per status, and the `inconsistent` total is never printed.
+// ===========================================================================
+
+describe('rb-53 privacy view model: exportStatusLabel says ONE distinct thing per status', () => {
+  it('★★ RB53C-EXPORT-LABELS-DISTINCT BITES: the four statuses yield four DIFFERENT non-empty sentences', () => {
+    // ★ THE ANTI-VACUITY TOOTH FOR EVERY OTHER EXPORT-COPY ASSERTION IN THIS FILE. A VM that
+    // returned ONE constant sentence for every status (or `''`, or the same sentence as the
+    // deletion status line) satisfies "the label is present" everywhere — and ships a surface
+    // that cannot tell the player whether their export is still streaming, is broken, or is
+    // ready to download. A3-D5 requires one sentence PER status.
+    // WRONG IMPL KILLED (2): collapsing `incomplete` and `inconsistent` onto one sentence.
+    //   They are different facts with different remedies: one is "wait", the other is "the
+    //   delivered rows cannot describe one coherent request" — and the client genuinely cannot
+    //   tell the player to wait for chunks a partial server-side reap means will never arrive.
+    const seen = new Map<ExportAssemblyStatus, string>();
+    for (const status of RB53_STATUSES) {
+      const label = rb53Vm(status).exportStatusLabel;
+      expect(typeof label, `status '${status}': the label must be a string`).toBe('string');
+      expect(
+        (label ?? '').length,
+        `status '${status}': the label must be NON-EMPTY — a blank line tells the player nothing`,
+      ).toBeGreaterThan(0);
+      seen.set(status, label as string);
+    }
+    expect(
+      new Set(seen.values()).size,
+      `the four statuses must render four DISTINCT sentences; got ${JSON.stringify([
+        ...seen.entries(),
+      ])}`,
+    ).toBe(4);
+  });
+
+  it('★★ RB53C-EXPORT-LABEL-ABSENT BITES: with NO export argument there is nothing to say, and the field is undefined', () => {
+    // The shell hides `#privacy-export-status` on exactly `undefined` (mirroring
+    // `#privacy-notice`), so this is the field that decides whether an empty paragraph sits in
+    // the layout forever.
+    // WRONG IMPL KILLED (1): `exportStatusLabel: labelFor(assembly) ?? ''`. An empty-string
+    //   label is NOT undefined, so the shell keeps the <p> painted and blank.
+    // WRONG IMPL KILLED (2): a default assembly fabricated inside the VM when the argument is
+    //   absent (`exportAssembly ?? NONE`) — that would make the surface claim "no export is
+    //   ready" before a single batch has been applied, i.e. state a fact the client does not
+    //   have yet. Absent means DARK (ADR-0154), not "none".
+    const vm = buildPrivacyViewModel(RB53_STATE);
+    expect(vm.exportStatusLabel).toBeUndefined();
+    expect(vm.exportStatusLabel).not.toBe('');
+    expect(
+      rb53Vm('none').exportStatusLabel,
+      'ANTI-VACUITY + THE DISTINCTION: an assembly whose status is `none` DOES have something ' +
+        'to say ("nothing has arrived"), and it is a different state from "no assembly has ' +
+        'been computed yet". If this is undefined the two are collapsed',
+    ).not.toBeUndefined();
+  });
+
+  it('★★ RB53C-INCONSISTENT-PRINTS-NO-NUMBER BITES: the `inconsistent` sentence contains NO digit at all', () => {
+    // ★ A3-D5, and it is a real leak rather than a style rule: the core deliberately returns
+    // `totalChunks: undefined` on `inconsistent` (exportAssembly.ts:59-62) because the delivered
+    // values DISAGREE — there is no defensible number. A sentence that prints one is either
+    // reporting a FABRICATED total or leaking `receivedChunks` as if it were the total ("4 of 4
+    // chunks received" for an export that is broken).
+    // WRONG IMPL KILLED (1) ★: `` `${a.receivedChunks} of ${a.totalChunks} chunks` `` reused
+    //   across every arm — on `inconsistent` that renders the literal text "undefined".
+    // WRONG IMPL KILLED (2): printing `receivedChunks` alone, which reads as a total.
+    // THE BAN IS ON DIGITS, not on the specific numbers, because the numbers in the fixture
+    // (4 received) are exactly what a wrong impl would print, and a fixture-value-only ban
+    // would be satisfied by an impl that printed some OTHER number.
+    const label = rb53Vm('inconsistent').exportStatusLabel ?? '';
+    expect(
+      label.length,
+      'ANTI-VACUITY: the sentence must exist before its shape is judged',
+    ).toBeGreaterThan(0);
+    for (const digit of ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']) {
+      expect(
+        label.indexOf(digit),
+        `the inconsistent sentence renders ${JSON.stringify(label)}, which contains the digit ` +
+          `"${digit}". The core reports NO total for this status because the delivered values ` +
+          'disagree; any number printed here is fabricated or is receivedChunks masquerading ' +
+          'as a total (A3-D5)',
+      ).toBe(-1);
+    }
+    expect(
+      label.indexOf('undefined'),
+      'and it must never render the token "undefined" — the shape a template literal over an ' +
+        'absent totalChunks produces',
+    ).toBe(-1);
+  });
+
+  it('★★ RB53C-ARTIFACT-NEVER-IN-COPY BITES: the artifact bytes appear in NO field of the view model, on any status', () => {
+    // ★ ADR-0231 A3-D7's sibling, one layer up. The artifact is the player's COMPLETE personal
+    // data export — every exportable table, including player-authored names and behavioural
+    // history. Splicing it (or any slice of it) into a label puts it on screen, into any
+    // consumer that logs a view model, and — because `reportError` feeds `errorRing`, which
+    // `buildBugBundle` embeds — into the file players are asked to attach to bug reports.
+    // WRONG IMPL KILLED: `exportStatusLabel: a.artifact` (a debug shortcut), a "preview" of the
+    //   first N bytes, or a `JSON.stringify(assembly)` diagnostic label.
+    expect(
+      RB53_ARTIFACT.indexOf(RB53_ARTIFACT_CANARY),
+      'ANTI-VACUITY: the fixture artifact must really carry the canary',
+    ).not.toBe(-1);
+    for (const status of RB53_STATUSES) {
+      for (const text of rb53AllVmStrings(rb53Vm(status))) {
+        expect(
+          text.indexOf(RB53_ARTIFACT_CANARY),
+          `status '${status}': ${JSON.stringify(text)} contains the artifact bytes. The export ` +
+            'artifact must never reach a rendered string — it is the whole personal-data dump',
+        ).toBe(-1);
+      }
+    }
+  });
+});
+
+// ===========================================================================
+// A3-D4 — the download control: always labelled, enabled IFF complete.
+// ===========================================================================
+
+describe('rb-53 privacy view model: downloadEnabled is true IFF the assembly is complete', () => {
+  it('★★ RB53C-DOWNLOAD-ENABLED-IFF-COMPLETE BITES: false on none/incomplete/inconsistent, true on complete, and false with no argument', () => {
+    // ★ BOTH DIRECTIONS, and both are real harms:
+    //   * enabling on `incomplete` hands the player a TRUNCATED personal-data file and calls it
+    //     their export — worse than refusing, because it looks authoritative. `exportAssembly`
+    //     returns `artifact: undefined` for every non-complete status, so a control enabled here
+    //     also downloads nothing at all (or the string "undefined");
+    //   * disabling on `complete` is the criterion failing outright — the export arrived and
+    //     the player cannot have it.
+    // WRONG IMPL KILLED (1): `downloadEnabled: assembly !== undefined` (present ⇒ offer it).
+    // WRONG IMPL KILLED (2): `downloadEnabled: a.receivedChunks > 0` — true on `incomplete` and
+    //   on `inconsistent`, and it is exactly the shape someone reaches for when the status
+    //   union feels redundant.
+    // WRONG IMPL KILLED (3): a constant `true`/`false`.
+    for (const status of RB53_STATUSES) {
+      expect(
+        rb53Vm(status).downloadEnabled,
+        `status '${status}': downloadEnabled must be ${status === 'complete'} — the artifact is ` +
+          "present IFF the status is 'complete' (exportAssembly.ts's own contract)",
+      ).toBe(status === 'complete');
+    }
+    expect(
+      buildPrivacyViewModel(RB53_STATE).downloadEnabled,
+      'with NO assembly computed yet there is nothing to download',
+    ).toBe(false);
+  });
+
+  it('★★ RB53C-DOWNLOAD-LABEL-STABLE BITES: downloadLabel is non-empty and IDENTICAL in every state, including when disabled', () => {
+    // ★ A3-D4 AT THE COPY TIER. The control is ALWAYS painted and only `disabled`, so it always
+    // needs a name — and the name must not move. Two reasons, and the second is the
+    // load-bearing one:
+    //   * a blank <button> has no accessible name at all;
+    //   * this control's enablement is driven by INCOMING SERVER DATA, so it can flip while the
+    //     player has it focused. A label that changed with the status would rename a focused
+    //     control under a screen-reader user mid-interaction.
+    // WRONG IMPL KILLED (1): `downloadLabel: a.status === 'complete' ? 'Download' : ''` — the
+    //   empty arm is how a "hide it when there is nothing to download" instinct sneaks past
+    //   A3-D4 even though the shell never hides the node.
+    // WRONG IMPL KILLED (2): a label that embeds the chunk counts, which moves on every burst.
+    const first = buildPrivacyViewModel(RB53_STATE).downloadLabel;
+    expect(typeof first).toBe('string');
+    expect(first.length, 'the download control must always carry a name').toBeGreaterThan(0);
+    for (const status of RB53_STATUSES) {
+      expect(
+        rb53Vm(status).downloadLabel,
+        `status '${status}': the download label must not drift`,
+      ).toBe(first);
+    }
+    // …and it must not collide with the three rb-52 control names: four buttons, four names.
+    const base = buildPrivacyViewModel(RB53_STATE);
+    expect(
+      new Set([base.deleteLabel, base.cancelLabel, base.exportLabel, base.downloadLabel]).size,
+      'the four controls must have four DISTINCT names — "Request my data export" and the ' +
+        'download control sit side by side and do completely different things (one asks the ' +
+        'server to build an export; the other saves the one that already arrived)',
+    ).toBe(4);
+  });
+
+  it('★ RB53C-EXPORT-INDEPENDENT-OF-MODEL BITES: the same assembly renders the same export fields across every deletion state', () => {
+    // A3-D6: the export state does NOT enter `privacyModel.ts`, so the three new fields are a
+    // function of the ASSEMBLY alone. WRONG IMPL KILLED: gating the download on a deletion
+    // permission (`downloadEnabled: … && state.countdown.exportPermitted`). `exportPermitted` is
+    // FALSE for a pending-or-terminal account — so a player who requested an export and THEN
+    // requested deletion could never retrieve the data they are legally entitled to, which is
+    // the opposite of what the permission mirrors (it gates asking the server for a NEW export,
+    // not reading one already delivered to this client).
+    for (const [where, state] of RB52_MATRIX) {
+      const vm = buildPrivacyViewModel(state, RB53_ASSEMBLIES.complete);
+      expect(
+        vm.downloadEnabled,
+        `${where}: a COMPLETE artifact already delivered to this client must stay downloadable ` +
+          'whatever the deletion lattice says — exportPermitted gates asking the server for a ' +
+          'NEW export, never reading one that has already arrived',
+      ).toBe(true);
+      expect(vm.downloadLabel).toBe(buildPrivacyViewModel(state).downloadLabel);
+      expect(vm.exportStatusLabel).toBe(rb53Vm('complete').exportStatusLabel);
+    }
+  });
+});
+
+// ===========================================================================
+// A3-D11 — the download FILENAME.
+// ===========================================================================
+
+describe('rb-53 privacy copy: exportBundleFilename is filesystem-safe and never says "undefined"', () => {
+  /** Every property a download filename must have, asserted in one place so no case can be
+   *  written that quietly checks fewer of them. */
+  function expectSafeFilename(name: string, where: string): void {
+    expect(typeof name, `${where}: must return a string`).toBe('string');
+    expect(name.length, `${where}: must be non-empty`).toBeGreaterThan(0);
+    expect(name.endsWith('.json'), `${where}: must end with .json — got ${name}`).toBe(true);
+    for (const banned of ['/', '\\', '..', ':', ' ', '\t', '\n', '\r']) {
+      expect(
+        name.indexOf(banned),
+        `${where}: ${JSON.stringify(name)} contains ${JSON.stringify(banned)}. A download ` +
+          'filename reaches the OS: a separator is a path-traversal shape, a colon is invalid ' +
+          'on Windows, and whitespace makes the file awkward to attach anywhere',
+      ).toBe(-1);
+    }
+    expect(
+      name.indexOf('undefined'),
+      `${where}: ${JSON.stringify(name)} contains the token "undefined". A filename is the ` +
+        'only part of this feature the player SEES before they open the file, and ' +
+        '"mr-export-undefined-…json" reads as a broken client on the one artifact they are ' +
+        'being handed as their legal data export',
+    ).toBe(-1);
+  }
+
+  it('★★ RB53C-FILENAME-SAFE BITES: a normal requestId yields a safe name carrying the request digits', () => {
+    // WRONG IMPL KILLED: interpolating a raw ISO timestamp (colons), or building the name from
+    // `String(requestId)` with no character-class strip at all. `rowConvert` is a documented
+    // pure pass-through with NO validation (rowConvert.ts:543-566), so a drifted binding can
+    // deliver a `requestId` whose `String()` carries a separator — which is why A3-D11 routes
+    // this through `bugBundleFilename`'s strip even though the value is nominally a bigint.
+    const name = exportBundleFilename(RB53_REQUEST_ID, 1700);
+    expectSafeFilename(name, 'a normal requestId');
+    expect(
+      name.indexOf(RB53_REQUEST_DIGITS),
+      'the request id must be IN the name — two exports downloaded in one session must not ' +
+        'collide, and the id is what ties the file to the request the player made',
+    ).not.toBe(-1);
+  });
+
+  it('★★ RB53C-FILENAME-UNDEFINED-REQUEST BITES: an ABSENT requestId never renders the token "undefined"', () => {
+    // ★ THE ONE A CHARACTER-CLASS STRIP DOES NOT FIX. `String(undefined)` is "undefined", and
+    // every character of it is inside `[A-Za-z0-9_-]` — so the bugBundleFilename strip passes it
+    // through untouched. The `none` status is reachable at the call site (main.ts hands the VM
+    // whatever assembly it has), so this is not a hypothetical input.
+    // WRONG IMPL KILLED: `` `mr-export-${requestId}-${capturedAtMs}.json` `` — the naive
+    //   template, which is what anyone writes first.
+    const name = exportBundleFilename(undefined, 1700);
+    expectSafeFilename(name, 'an absent requestId');
+  });
+
+  it('★★ RB53C-FILENAME-HOSTILE BITES: a hostile non-bigint requestId still yields a name with no separator', () => {
+    // Mirrors `bugBundle.test.ts`'s T-FILENAME-SHA-SANITIZE, cast through `as never` because the
+    // declared parameter type cannot express the drifted-binding input this defends against.
+    // WRONG IMPL KILLED: trusting the value verbatim — a crafted or drifted `request_id` would
+    // inject a path separator into the download filename.
+    expectSafeFilename(exportBundleFilename('a/b..c' as never, 1700), 'a hostile string id');
+    expectSafeFilename(exportBundleFilename('../../etc/passwd' as never, 1700), 'a traversal id');
+    expectSafeFilename(exportBundleFilename(null as never, 1700), 'a null id');
+  });
+
+  it('★ RB53C-FILENAME-TIMESTAMPED BITES: two captures of the SAME request produce two DIFFERENT names', () => {
+    // Kills a filename that ignores `capturedAtMs`: re-downloading the same export would
+    // silently overwrite (or collide with) the previous file in the browser`s download folder.
+    const a = exportBundleFilename(RB53_REQUEST_ID, 1700);
+    const b = exportBundleFilename(RB53_REQUEST_ID, 2700);
+    expect(a).not.toBe(b);
+    expectSafeFilename(a, 'capture A');
+    expectSafeFilename(b, 'capture B');
+  });
+
+  it('★ RB53C-FILENAME-CLOCK-FREE BITES: the same inputs always produce the same name', () => {
+    // A3-D11: the filename is composed from the caller-supplied `capturedAtMs`, so the copy
+    // layer stays CLOCK-FREE (this whole module has "no clock" in its header contract).
+    // WRONG IMPL KILLED: reading `Date.now()` inside the function and ignoring the argument —
+    // the bundle body and the filename would then be able to disagree about when the capture
+    // happened, which is the exact bug `downloadBugBundle`'s "one timestamp for both" comment
+    // records.
+    expect(exportBundleFilename(RB53_REQUEST_ID, 1700)).toBe(
+      exportBundleFilename(RB53_REQUEST_ID, 1700),
+    );
+  });
+
+  it('★ RB53C-FILENAME-BIG-REQUEST BITES: a request id past 2^53 survives in the name, exactly', () => {
+    // `request_id` is a wall-clock millisecond stored as u64 and is already far past 2^53. A
+    // filename built through `Number(requestId)` would round it, so two exports minted in the
+    // same millisecond-family would produce the SAME name — and the player would silently
+    // overwrite one export with another.
+    const huge = 9007199254740993n;
+    const name = exportBundleFilename(huge, 1700);
+    expectSafeFilename(name, 'a 2^53+1 requestId');
+    expect(name.indexOf('9007199254740993')).not.toBe(-1);
+    expect(
+      name.indexOf('9007199254740992'),
+      'the name must NOT carry the Number() round trip of the id',
+    ).toBe(-1);
   });
 });

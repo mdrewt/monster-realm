@@ -76,6 +76,11 @@ const CONFIRM_BTN_ID = 'privacy-confirm-btn';
 const CONFIRM_CANCEL_BTN_ID = 'privacy-confirm-cancel-btn';
 const CANCEL_BTN_ID = 'privacy-cancel-btn';
 const EXPORT_BTN_ID = 'privacy-export-btn';
+// rb-53 (ADR-0231 A3-D4): the download control and its status line. Both ids are PREFIX-FREE of
+// every id above — `privacy-export-status` is not a prefix of `privacy-export-btn` and neither
+// is a prefix of the other — so a substring-based census cannot confuse the two export nodes.
+const DOWNLOAD_BTN_ID = 'privacy-download-btn';
+const EXPORT_STATUS_ID = 'privacy-export-status';
 
 /** Every id the shell owns, so a census can assert none of them leaked into index.html and
  *  every one of them really exists after construction. */
@@ -92,6 +97,8 @@ const ALL_PRIVACY_IDS: readonly string[] = [
   CONFIRM_CANCEL_BTN_ID,
   CANCEL_BTN_ID,
   EXPORT_BTN_ID,
+  DOWNLOAD_BTN_ID,
+  EXPORT_STATUS_ID,
 ];
 
 // ---------------------------------------------------------------------------
@@ -189,6 +196,12 @@ function vmOf(overrides: Partial<PrivacyViewModel> = {}): PrivacyViewModel {
     confirmPrompt: undefined,
     noticeKind: 'none',
     noticeLabel: undefined,
+    // rb-53: the three export fields. Defaults are the QUIET state (nothing to say, nothing to
+    // download), so every pre-existing rb-52 case is unaffected and the rb-53 cases below opt in
+    // through `overrides`.
+    exportStatusLabel: undefined,
+    downloadLabel: 'SYNTHETIC DOWNLOAD',
+    downloadEnabled: false,
     ...overrides,
   };
 }
@@ -209,6 +222,11 @@ const HANDLER_NAMES: readonly HandlerName[] = [
   'onCancelDeletion',
   'onExportRequested',
   'onDismissed',
+  // rb-53: SEVEN now. Joining the roster (rather than being spied separately) is what makes
+  // every pre-existing `expectOnly` assertion ALSO say "and the download handler did not fire" —
+  // which is the misrouting this surface can least afford: `onExportRequested` asks the SERVER
+  // to build a new export, `onExportDownload` saves the one already in the client.
+  'onExportDownload',
 ];
 
 let spies: Record<HandlerName, ReturnType<typeof vi.fn>>;
@@ -222,6 +240,7 @@ function freshSpies(): Record<HandlerName, ReturnType<typeof vi.fn>> {
     onCancelDeletion: vi.fn(),
     onExportRequested: vi.fn(),
     onDismissed: vi.fn(),
+    onExportDownload: vi.fn(),
   };
 }
 
@@ -819,5 +838,232 @@ describe('PrivacyView (rb-52, PRV1-3/PRV1-4): the constructed DOM shell', () => 
     expect(spies.onDismissed, 'and the toggle-close must disarm too').toHaveBeenCalledTimes(1);
     view.toggle();
     expect(view.visible, 'toggle on a closed surface must open it').toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  // rb-53 (PRV1-11/12/13, ADR-0231 Amendment A3) — the DOWNLOAD control and the
+  // export status line. Appended INSIDE this describe so they share the same
+  // beforeEach/afterEach lifecycle (one constructed shell, one cleanup path).
+  //
+  // THE CONTRACT THIS TIER ADDS:
+  //   * `<button id="privacy-download-btn">`, declared `HTMLButtonElement`, ALWAYS PAINTED and
+  //     only ever `disabled` (A3-D4) — never `display:none`;
+  //   * `<p id="privacy-export-status">`, hidden when `vm.exportStatusLabel === undefined`,
+  //     mirroring `#privacy-notice`;
+  //   * `PrivacyViewHandlers` gains `readonly onExportDownload: () => void;`.
+  // Every decision stays in `ui/privacyBanner.ts`; this file only paints.
+  // -------------------------------------------------------------------------
+
+  /** The four `ExportAssemblyStatus` outcomes as this tier sees them: a label and an enablement.
+   *  The COPY is pinned in privacyBanner.test.ts — these are obviously synthetic strings, so a
+   *  shell that painted a hard-coded sentence of its own would fail here. */
+  const RB53_EXPORT_STATES: ReadonlyArray<{
+    readonly where: string;
+    readonly label: string;
+    readonly enabled: boolean;
+  }> = [
+    { where: 'none: nothing has arrived', label: 'SYNTHETIC EXPORT NONE', enabled: false },
+    { where: 'incomplete: still streaming', label: 'SYNTHETIC EXPORT INCOMPLETE', enabled: false },
+    {
+      where: 'inconsistent: the delivered rows disagree',
+      label: 'SYNTHETIC EXPORT INCONSISTENT',
+      enabled: false,
+    },
+    { where: 'complete: the artifact is ready', label: 'SYNTHETIC EXPORT COMPLETE', enabled: true },
+  ];
+
+  /** The ids of every ancestor of `node`, nearest first — used to prove a node is REACHABLE
+   *  from the overlay root by WALKING, never by clicking it (this file's standing rule). */
+  function ancestorMarkersOf(node: Element | null): string[] {
+    const out: string[] = [];
+    for (
+      let el: Element | null = node?.parentElement ?? null;
+      el instanceof HTMLElement;
+      el = el.parentElement
+    ) {
+      out.push(el.id === '' ? el.tagName : `#${el.id}`);
+    }
+    return out;
+  }
+
+  it('★★ RB53V-DOWNLOAD-ALWAYS-PAINTED: the download control is a labelled native <button> that is NEVER display:none — in all four export states', () => {
+    // ★ THIS IS A3-D4, AND IT IS LOAD-BEARING RATHER THAN COSMETIC. Unlike every other control
+    // in this file, the download control's enablement is driven by INCOMING SERVER DATA, so it
+    // can flip WHILE THE PLAYER HAS IT FOCUSED. `overlayRegistry.ts:275-279` records the
+    // consequence of a focused node disappearing: focus falls to <body>, which is NOT a
+    // descendant of the overlay root, so `focusTrap`'s capture listener never fires and Tab
+    // walks the page behind an `aria-modal` dialog Chromium does not make AT-inert. A control
+    // that vanishes under focus is that defect through a new door.
+    // WRONG IMPL KILLED (1) ★ THE MEASURED SHAPE: hide-when-disabled —
+    //   `this.#downloadBtn.style.display = vm.downloadEnabled ? '' : 'none';`, i.e. exactly what
+    //   the confirm row two methods above legitimately does. The THREE non-complete states are
+    //   asserted explicitly because they are the states the export spends almost all of its
+    //   life in, and a `complete`-only assertion would never see it.
+    // WRONG IMPL KILLED (2): the claimView `#wireButton` shape — `ensureElement` creates every
+    //   node `display:none` and never un-hides it, so the control ships BLANK and INVISIBLE
+    //   while a programmatic `.click()` still fires its handler. The walk + the label assertion
+    //   are what see it; a click-only test certifies an invisible surface as reachable.
+    // WRONG IMPL KILLED (3): a `<div>` with a listener — `evals/keyboard-operable-rows.eval.mjs`
+    //   only accepts a native click receiver, and a div is unreachable by keyboard.
+    view.show();
+    let checked = 0;
+    for (const state of RB53_EXPORT_STATES) {
+      view.render(vmOf({ exportStatusLabel: state.label, downloadEnabled: state.enabled }));
+      const node = btn(DOWNLOAD_BTN_ID);
+      expect(
+        hiddenAncestorOf(node),
+        `${state.where}: #${DOWNLOAD_BTN_ID} (or an ancestor) is display:none, so no human can ` +
+          'reach it — and if it vanished while focused, focus falls to <body> and every ' +
+          'keyboard user is outside the modal with the trap silently inert (A3-D4)',
+      ).toBeNull();
+      expect(
+        node.style.display,
+        `${state.where}: the download control must never carry an inline display:none of its own`,
+      ).not.toBe('none');
+      expect(
+        (node.textContent ?? '').length,
+        `${state.where}: the download control must carry a non-empty label — a blank button has ` +
+          'no accessible name and nothing for a sighted player to read either',
+      ).toBeGreaterThan(0);
+      expect(node.textContent, `${state.where}: it must render the view model's own label`).toBe(
+        'SYNTHETIC DOWNLOAD',
+      );
+      checked += 1;
+    }
+    expect(checked, 'ANTI-VACUITY: all four export states must have been rendered').toBe(
+      RB53_EXPORT_STATES.length,
+    );
+  });
+
+  it('★★ RB53V-DOWNLOAD-DISABLED-MIRROR: `disabled` is false EXACTLY when downloadEnabled, in BOTH directions', () => {
+    // WRONG IMPL KILLED (1) ★: never writing `disabled` at all — the control would be live on an
+    //   `incomplete` assembly, and clicking it hands the player a TRUNCATED personal-data file
+    //   (or an empty one: the core returns `artifact: undefined` for every non-complete status)
+    //   while calling it their export. That is worse than refusing, because it looks
+    //   authoritative.
+    // WRONG IMPL KILLED (2): writing `disabled` ONCE and never clearing it on the way back —
+    //   hence the TRANSITION below (disabled -> enabled -> disabled), never a static snapshot.
+    //   This direction is the one the arrival edge depends on: chunks stream in and the control
+    //   must come alive without a re-open.
+    // WRONG IMPL KILLED (3): reading the WRONG flag (`vm.exportEnabled`, its nearest neighbour)
+    //   — the middle render gives the two flags DIFFERENT values, so the transposition cannot
+    //   survive it.
+    view.show();
+    view.render(vmOf({ downloadEnabled: false, exportEnabled: true }));
+    expect(
+      btn(DOWNLOAD_BTN_ID).disabled,
+      'nothing to download yet — the control is painted and refused',
+    ).toBe(true);
+
+    view.render(vmOf({ downloadEnabled: true, exportEnabled: false }));
+    expect(
+      btn(DOWNLOAD_BTN_ID).disabled,
+      'the artifact arrived: the control must come ALIVE without a re-open. (exportEnabled is ' +
+        'false here on purpose — a shell reading that flag instead would still be disabled)',
+    ).toBe(false);
+
+    view.render(vmOf({ downloadEnabled: false, exportEnabled: true }));
+    expect(
+      btn(DOWNLOAD_BTN_ID).disabled,
+      'and it must go BACK to refused when the export is reaped server-side — a one-way write ' +
+        'leaves a live button over a file that no longer exists',
+    ).toBe(true);
+  });
+
+  it('★★ RB53V-DOWNLOAD-CLICK-EXCLUSIVE: clicking the enabled control fires onExportDownload exactly once and NOTHING else', () => {
+    // WRONG IMPL KILLED (1) ★ THE MISROUTING THAT MATTERS ON THIS SURFACE: the download control
+    //   wired to `onExportRequested` (a copy-paste of the export branch one line above). The
+    //   player presses "Download" and the client asks the SERVER to build ANOTHER export — which
+    //   purges the live rows and re-mints them, so the artifact they were about to save
+    //   disappears. The six zero-count assertions in `expectOnly` are what see it; a bare
+    //   "something fired" check cannot.
+    // WRONG IMPL KILLED (2): a handler bound at construction to a stale closure so a second
+    //   click fires nothing — the call count is exact, not `toHaveBeenCalled`.
+    // REACHABILITY FIRST, as everywhere in this file: on screen and labelled BEFORE the click.
+    view.show();
+    view.render(vmOf({ downloadEnabled: true, exportStatusLabel: 'SYNTHETIC EXPORT COMPLETE' }));
+    clearSpies();
+    const node = expectReachableControl(DOWNLOAD_BTN_ID, 'SYNTHETIC DOWNLOAD', true);
+    node.click();
+    expectOnly('onExportDownload');
+  });
+
+  it('★★ RB53V-EXPORT-STATUS-BOTH-WAYS: the status line shows the label and HIDES on undefined — asserted in BOTH directions', () => {
+    // WRONG IMPL KILLED (1) ★: a node written ONCE and then frozen — the transition is asserted
+    //   twice, hidden -> visible -> hidden, so a shell that paints the first label and never
+    //   updates fails the second render, and one that never hides fails the third.
+    // WRONG IMPL KILLED (2): keying the hide on `''` instead of `undefined` (or on
+    //   `?? ''`) — the view model deliberately distinguishes "nothing to say" (undefined) from
+    //   any sentence, and an empty-but-displayed paragraph occupies the layout forever, which
+    //   the player reads as a half-loaded surface.
+    // WRONG IMPL KILLED (3): rendering the export status into `#privacy-notice` or
+    //   `#privacy-status` instead of its own node — the two neighbours are asserted UNMOVED, so
+    //   a shell that reused either would fail here rather than silently overwriting the
+    //   deletion deadline or the server's rejection message with an export sentence.
+    view.show();
+
+    // HIDDEN FIRST — the state the surface opens in before any batch has been applied.
+    view.render(vmOf({ exportStatusLabel: undefined }));
+    expect(el(EXPORT_STATUS_ID).textContent, 'nothing to say ⇒ nothing rendered').toBe('');
+    expect(
+      hiddenAncestorOf(el(EXPORT_STATUS_ID)),
+      'and the paragraph must be OFF SCREEN, not merely emptied',
+    ).not.toBeNull();
+
+    // VISIBLE — a real sentence arrives.
+    const beforeStatus = el(STATUS_ID).textContent;
+    const beforeNotice = el(NOTICE_ID).textContent;
+    view.render(vmOf({ exportStatusLabel: 'SYNTHETIC EXPORT INCOMPLETE' }));
+    expect(el(EXPORT_STATUS_ID).textContent).toBe('SYNTHETIC EXPORT INCOMPLETE');
+    expect(
+      hiddenAncestorOf(el(EXPORT_STATUS_ID)),
+      'the export sentence must be ON SCREEN — it is the only place the player is told whether ' +
+        'their export is streaming, broken or ready',
+    ).toBeNull();
+    expect(
+      el(STATUS_ID).textContent,
+      'the DELETION status line must be untouched — it carries a legal deadline, and an export ' +
+        'sentence written over it is that deadline silently replaced',
+    ).toBe(beforeStatus);
+    expect(el(NOTICE_ID).textContent, 'and the notice line must be untouched too').toBe(
+      beforeNotice,
+    );
+
+    // HIDDEN AGAIN — the assembly is cleared (a reconnect, or a reaped export).
+    view.render(vmOf({ exportStatusLabel: undefined }));
+    expect(el(EXPORT_STATUS_ID).textContent, 'the sentence must be cleared, not frozen').toBe('');
+    expect(
+      hiddenAncestorOf(el(EXPORT_STATUS_ID)),
+      'and hidden again — without this arm a stale "your export is ready" sits on the surface ' +
+        'for the rest of the page`s life, over an artifact the client no longer holds',
+    ).not.toBeNull();
+  });
+
+  it('★ RB53V-NEW-NODES-INSIDE-OVERLAY: both new ids are DESCENDANTS of #privacy-overlay, proved by walking the ancestor chain', () => {
+    // WRONG IMPL KILLED: a node created by `ensureElement` and never appended to the overlay
+    //   root — it stays parked on <body>, where `hide()` cannot reach it. The download control
+    //   would then remain on screen, over the world, after the modal closes; and because it is
+    //   outside the root, `focusTrap` would never see it either.
+    // Proved by WALKING, never by clicking: a `.click()` fires the handler of a node parked
+    // anywhere in the document, so it says nothing at all about where the node lives.
+    view.show();
+    view.render(vmOf({ exportStatusLabel: 'SYNTHETIC EXPORT COMPLETE', downloadEnabled: true }));
+    for (const id of [DOWNLOAD_BTN_ID, EXPORT_STATUS_ID]) {
+      const markers = ancestorMarkersOf(el(id));
+      expect(
+        markers.indexOf(`#${OVERLAY_ID}`),
+        `#${id} must have #${OVERLAY_ID} among its ancestors; walked ${JSON.stringify(markers)}. ` +
+          'A node parked on <body> is not hidden by the overlay`s close and would stay on ' +
+          'screen forever',
+      ).not.toBe(-1);
+      expect(
+        hiddenAncestorOf(el(id)),
+        `#${id} must be reachable once the surface is open`,
+      ).toBeNull();
+    }
+    expect(
+      el(EXPORT_STATUS_ID).tagName,
+      'the export status line is a paragraph, not a button',
+    ).toBe('P');
   });
 });
