@@ -330,7 +330,10 @@ them together, so a player who can start a deletion can always cancel it.
   countdown" to the privacy surface's copy layer. M22 §9 residual 1's sentence is asserted equal to
   `PIN_PSEUDONYMIZATION`, already exported by `evals/account-e2e.eval.mjs`, rather than to a second
   hand-typed literal: one bad transcription copied into both the pin and the implementation is the
-  failure mode a hand-typed pin cannot see. Note for future editors — the mandated sentence itself
+  failure mode a hand-typed pin cannot see. The sentence ships with its backticks around
+  `Identity` INTACT rather than tidied for display — "verbatim" is the spec's own word, mandated
+  compliance language is the wrong place to edit lightly, and keeping them makes the gate a plain
+  equality against that second source with no transform in the middle. Note for future editors — the mandated sentence itself
   ENDS in "not erasure", so a blanket "the word erasure must not appear" scan is the WRONG gate and
   would fail correct code; the gate is that the word occurs exactly once and inside that sentence.
 

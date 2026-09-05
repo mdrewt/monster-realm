@@ -106,8 +106,12 @@ export function privacyBannerLabel(countdown: DeletionCountdown): string | null 
 // ===========================================================================
 
 /**
- * M22 §9 residual 1's REQUIRED EXACT LANGUAGE, verbatim, minus the spec's markdown backticks
- * around `Identity` (this string is rendered with `textContent`, which would print them).
+ * M22 §9 residual 1's REQUIRED EXACT LANGUAGE, verbatim — BACKTICKS INCLUDED.
+ *
+ * The backticks around `Identity` are kept rather than stripped for display. "Verbatim" is the
+ * spec's own word, and mandated compliance language is precisely where "we tidied it slightly for
+ * the UI" is the wrong call; keeping them also makes the gate a plain equality against a second
+ * source with no transform in the middle, which is the shape a bad transcription cannot survive.
  *
  * The spec's instruction is "to be used verbatim in the ADR, commit messages, and any UI copy —
  * the word 'erasure' must never be used for this". Note the sentence ITSELF ends in "not
@@ -118,7 +122,7 @@ export function privacyBannerLabel(countdown: DeletionCountdown): string | null 
  * occurs exactly once, inside this literal.
  */
 export const PRIVACY_PSEUDONYMIZATION_DISCLOSURE =
-  'Direct name/display fields are severed on deletion. The Identity key and its associated ' +
+  'Direct name/display fields are severed on deletion. The `Identity` key and its associated ' +
   'timestamps/behavioral history are not purged from multi-user or historical rows; this is a ' +
   'documented, accepted pseudonymization limitation, not erasure.';
 
