@@ -2,7 +2,7 @@
 type: SpacetimeDB Table
 title: monster_pub
 slug: tables/monster_pub
-updated: 2026-09-01
+updated: 2026-09-05
 tags: [schema, spacetimedb, private]
 abstract: "Safe projection of the monster table — NO hidden fields (no IVs, EVs, nature). PRIVATE since issue #284 / ADR-0194 (nee…"
 resource: server-module/src/schema.rs#L309

@@ -2,7 +2,7 @@
 type: SpacetimeDB Table
 title: evolution_path
 slug: tables/evolution_path
-updated: 2026-09-01
+updated: 2026-09-05
 tags: [schema, spacetimedb, public]
 abstract: "PUBLIC evolution-graph edge table (EG1-4), seeded clear-and-reinsert from the game-core evolution_paths registry by syn…"
 resource: server-module/src/schema.rs#L515

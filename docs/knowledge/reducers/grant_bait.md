@@ -2,7 +2,7 @@
 type: SpacetimeDB Reducer
 title: grant_bait
 slug: reducers/grant_bait
-updated: 2026-09-01
+updated: 2026-09-05
 tags: [reducer, spacetimedb, taming]
 abstract: "DEV/TEST: grant bait to the CALLER only (self-scoped to `ctx.sender()`; no arbitrary-recipient parameter). Rejects non-…"
 resource: server-module/src/taming.rs#L282
