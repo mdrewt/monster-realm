@@ -15,12 +15,26 @@
 // on a typo here.
 //
 // PURE MODEL — no DOM, no SDK, no store, NO CLOCK. `nowMs` and `graceMs` are INPUTS
-// (s8b's wiring reads `deletion_grace_ms_default()` from the wasm and the frame clock and
-// hands them in); the purity half is enforced twice, once by the signature and once by the
-// source scan at the bottom of this file.
+// (as of rb-51 the shipped wiring in `main.ts` reads `deletion_grace_ms_default()` from the wasm
+// and `Date.now()` for the frame clock, and hands both in); the purity half is enforced twice,
+// once by the signature and once by the source scan at the bottom of this file.
+//
+// ★ WHO CONSUMES THIS SEAM, AS OF rb-51 (this narration was written when NO caller existed and
+// the whole downstream slice was still called "s8b"; it is corrected here to name the real
+// owners rather than a slice id that no longer exists):
+//   * the PER-FRAME caller is `client/src/main.ts` — SHIPPED in rb-51. It reads the account row
+//     from the store, hands `deriveDeletionCountdown` a `DeletionStatusInput` built from it plus
+//     `BigInt(Math.trunc(Date.now()))` and the `deletion_grace_ms_default()` wasm value, and
+//     renders the result through `ui/privacyBanner.ts`. Every "the caller drives this from a
+//     per-frame tick" note below is about THAT code, and it is real code today.
+//   * the REDUCER CALL SITES (delete / cancel / export) and the DELETE-CANCEL UI surface are
+//     rb-52 (residual R-m22-s8-X10) — still deferred.
+//   * the EXPORT TRANSPORT + download is rb-53 (residual R-m22-s8-X11) — still deferred.
+// So `privacyStep`, `PrivacyNotice` and `rejectMessage` have no caller yet; `PrivacyPhase`,
+// `DeletionCountdown` and `deriveDeletionCountdown` have exactly one.
 //
 // THE CONTRACT THE IMPLEMENTER BUILDS (verbatim from the m22-s8 plan's "Interfaces (frozen
-// seam for s8b) — REVISED" section; do not invent variants):
+// seam)" section; do not invent variants):
 //
 //   export type PrivacyPhase = 'unknown' | 'active' | 'grace' | 'due' | 'terminal';
 //   export interface DeletionStatusInput {
@@ -81,7 +95,8 @@
 //   undefined — a DARK countdown. A PendingDeletion row whose countdown is dark is 'grace'
 //   (the non-alarming, cancel-permitted phase); 'due' is reachable ONLY from a COMPUTED
 //   `remainingMs === 0n`.
-//   WHY: `nowMs` is `BigInt(Date.now())` at s8b's call site. Under a clock-dependent phase,
+//   WHY: `nowMs` is `BigInt(Math.trunc(Date.now()))` at main.ts's call site. Under a
+//   clock-dependent phase,
 //   ONE wiring slip passing a raw number would drop every PendingDeletion account into
 //   'unknown' — where `cancelPermitted` is false — and the client would refuse a cancel the
 //   server ACCEPTS. That is the B1 blocker, re-entered through the back door.
@@ -298,9 +313,10 @@ describe('deriveDeletionCountdown (PRV1-1): the grace window', () => {
     // alone and NEVER from the clock; the clock only decides whether a deadline can be shown.
     // THREE different inputs make the countdown dark and all three must behave identically:
     //   * a degenerate row — `accountRowToStore` is deliberately fail-SOFT (rowConvert.ts:598-601);
-    //   * a non-bigint `nowMs` — s8b's call site passes `BigInt(Date.now())`, so one wiring
-    //     slip hands this core a raw number;
-    //   * a non-bigint `graceMs` — s8b reads it from the wasm, which can hand back a number.
+    //   * a non-bigint `nowMs` — main.ts's frame call site passes `BigInt(Math.trunc(Date.now()))`
+    //     (shipped rb-51), so one wiring slip hands this core a raw number;
+    //   * a non-bigint `graceMs` — main.ts reads it from the wasm accessor
+    //     `deletion_grace_ms_default()`, which can hand back a number.
     // In every one of them the server would still ACCEPT the cancel
     // (`needs_cancel_write(PendingDeletion)` is true, accounts.rs:233-235, reached at :820).
     //
@@ -380,10 +396,12 @@ describe('deriveDeletionCountdown (PRV1-1): the grace window', () => {
   it('★★ S8T-COUNTDOWN-TOTAL BITES: the derivation is TOTAL — a hostile clock darkens the COUNTDOWN and never moves the PHASE', () => {
     // ★ THE RT7 TOOTH, revised. Two failures live here, and the second is the dangerous one:
     //   (a) `deriveDeletionCountdown` throws `TypeError: Cannot mix BigInt and other types`
-    //       the moment `nowMs`/`graceMs` is a number, `undefined` or `null` — and s8b calls
-    //       this from a PER-FRAME tick, so the failure mode is a dead render loop.
+    //       the moment `nowMs`/`graceMs` is a number, `undefined` or `null` — and main.ts calls
+    //       this from a PER-FRAME rAF tick (shipped rb-51), so the failure mode is a dead
+    //       render loop, not a broken banner.
     //   (b) ★ degrading the whole result to `'unknown'` on a bad clock. `nowMs` is
-    //       `BigInt(Date.now())` at s8b's call site, so ONE wiring slip that passes a raw
+    //       `BigInt(Math.trunc(Date.now()))` at main.ts's call site, so ONE wiring slip that
+    //       passes a raw
     //       number would put EVERY PendingDeletion account into `'unknown'` — where
     //       `cancelPermitted` is false — and the client would refuse a cancel the server
     //       ACCEPTS. That is the B1 blocker re-entering through the back door, which is why
@@ -412,7 +430,7 @@ describe('deriveDeletionCountdown (PRV1-1): the grace window', () => {
           c = deriveDeletionCountdown(
             inputOf({ status, deletionRequestedAtMs: NOW_MS - 10_000n, ...clock }),
           );
-        }, `${where}: a throw here kills s8b's per-frame countdown tick`).not.toThrow();
+        }, `${where}: a throw here kills main.ts's per-frame countdown tick`).not.toThrow();
 
         expect(c?.phase, `${where}: the PHASE never depends on the clock`).toBe(expectedPhase);
         expect(c?.deadlineAtMs, `${where}: the COUNTDOWN is what goes dark`).toBeUndefined();
@@ -652,9 +670,11 @@ describe('privacyStep (PRV1-1): requesting deletion takes two explicit steps', (
       hasLiveConnection: false,
     });
     expect(step.effect).toBe('none');
-    expect(step.next.notice, 'the notice CODE, by exact value — s8b renders the copy').toBe(
-      'disconnected',
-    );
+    expect(
+      step.next.notice,
+      'the notice CODE, by exact value — the delete/cancel surface (rb-52, residual ' +
+        'R-m22-s8-X10) renders the copy; this core never carries player-facing text',
+    ).toBe('disconnected');
     expect(step.next.confirm).toBe('delete-armed');
     expect(step.next.inFlight, 'nothing was sent, so nothing is in flight').toBe('none');
   });
@@ -863,8 +883,8 @@ describe('privacyStep (PRV1-1): requesting deletion takes two explicit steps', (
     // A notice is about the LAST attempt. Leaving `'request-rejected'` (and the verbatim
     // server string behind it) on screen after the retry SUCCEEDED tells the player their
     // account deletion was refused when it was in fact accepted — and `rejectMessage` is what
-    // s8b renders, so a stale one is a stale sentence in front of the player, not just a
-    // stale field.
+    // the delete/cancel surface (rb-52, residual R-m22-s8-X10) renders, so a stale one is a
+    // stale sentence in front of the player, not just a stale field.
     //
     // WRONG IMPL KILLED: `{ ...state, inFlight: 'none' }` — structurally tidy, and it keeps
     // both halves of the previous failure alive forever.
@@ -1084,9 +1104,10 @@ describe('privacyStep (PRV1-4): the permanently-deleted account', () => {
       expect(step.next.notice, `message ${show(message)} is NOT the terminal reject`).toBe(
         'request-rejected',
       );
-      expect(step.next.rejectMessage, 'the VERBATIM server string, for s8b to render').toBe(
-        message,
-      );
+      expect(
+        step.next.rejectMessage,
+        'the VERBATIM server string, for the rb-52 delete/cancel surface to render',
+      ).toBe(message);
       expect(step.next.inFlight, show(message)).toBe('none');
     }
   });
@@ -1307,9 +1328,9 @@ describe('privacyModel: purity and totality', () => {
 // PURITY SOURCE SCAN — gate X8.
 //
 // WHY BOTH THIS AND THE BEHAVIOURAL TESTS: the signature proves no clock can ENTER through
-// the parameters. It cannot see a module that reaches `Date.now()` internally — and s8b calls
-// this core from a per-frame tick, where an ambient clock read is both a purity break and a
-// non-determinism the countdown tests could never reproduce.
+// the parameters. It cannot see a module that reaches `Date.now()` internally — and main.ts
+// calls this core from a per-frame rAF tick (shipped rb-51), where an ambient clock read is
+// both a purity break and a non-determinism the countdown tests could never reproduce.
 //
 // NAMED RESIDUAL, the same honesty as the G30 scans: a substring scan cannot see
 // `globalThis['Date']` or a clock smuggled through a parameter. What it guarantees is that
@@ -1451,7 +1472,7 @@ describe('X8 source scan: privacyModel.ts is pure', () => {
       expect(
         countOccurrences(stripped, token),
         `privacyModel.ts must never name "${token}" — the countdown clock is an INPUT ` +
-          '(`nowMs`), because s8b drives this core from a per-frame tick',
+          '(`nowMs`), because main.ts drives this core from a per-frame tick (rb-51)',
       ).toBe(0);
     }
     for (const specifier of importSpecifiers(stripped)) {

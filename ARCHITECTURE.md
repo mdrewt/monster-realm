@@ -69,7 +69,7 @@ effectful shells.
   torn down on despawn), behind an **`AssetProvider`** seam (albedo today; HD-2D
   normal/material channels are an additive future render mode — ADR-0004). It owns no
   state and reads no store/predictor: the M4c loop feeds it resolved positions
-  (own from the slide clock, remote from the interpolation buffer). **Wasm-sourced constants** — `party_size()` and `party_slot_none()` are now single-sourced from `game-core` via `client-wasm` exports, replacing the former TS magic literals. A third accessor, `deletion_grace_ms_default()`, exports the operator-tunable grace window as `i64` (JS `BigInt`), ensuring type-safe arithmetic in S8's countdown (`requestedAt + grace − now`, all `bigint`); a `number` accessor would throw at runtime on BigInt mixing. No TS consumer ships in this slice — S8 owns the countdown and will import it — so reachability is proven by the gate's executable call (ADR-0212).
+  (own from the slide clock, remote from the interpolation buffer). **Wasm-sourced constants** — `party_size()` and `party_slot_none()` are now single-sourced from `game-core` via `client-wasm` exports, replacing the former TS magic literals. A third accessor, `deletion_grace_ms_default()`, exports the operator-tunable grace window as `i64` (JS `BigInt`), ensuring type-safe arithmetic in S8's countdown (`requestedAt + grace − now`, all `bigint`); a `number` accessor would throw at runtime on BigInt mixing. No TS consumer shipped with the accessor itself; rb-51 added the first one — `main.ts` reads it once at module scope and hands it to `deriveDeletionCountdown` for the on-screen grace countdown (ADR-0212, ADR-0231 Amendment A1).
   **M8.6b connected the pure-core slide clock and interpolation buffer into the integrated loop via `RenderResolver`** — prior integrated loop fed raw integer tiles; the pure cores were tested-but-unimported. Now own animates from SlideClock (fractional, keyed to snapped tiles) and remotes from the interpolation buffer (now − interpDelay), completing the M4c smoothness design into reality. **ptc5g (ADR-0141)** extends `RenderResolver`'s own-path snap: besides the predictor's time-gap `snapped` flag, it also snaps when the new authoritative own-target is `> 1` tile (Chebyshev) from the slide clock's current target — so a same-zone server correction / respawn / dropped-update catch-up jumps rather than gliding multiple tiles over one `STEP_MS` (zone warps stay reset-covered via `resolver.reset()`). Resolves the M10.5 D-render-snap residual (trigger fired at M11 warps).
 
 ## Mechanical gates (each ships a proof-of-teeth fixture — ADR-0010)
@@ -500,9 +500,15 @@ already in flight, no live connection — so an action that never happened never
 spends step two; only the DELIVERED path writes the confirmation, which is what
 the `confirmOnDelivery` parameter name records (18r-a). The DOM overlay, the
 `main.ts` wiring, the `deletion_grace_ms_default()` wasm read and the
-`my_export_bundle` subscription are DEFERred to m22-s8b (X9/X10/X11), whose
+`my_export_bundle` subscription were DEFERred to m22-s8b (X9/X10/X11), whose
 `touches:` must include `evals/monster-privacy.eval.mjs` for its
-`EXPECTED_SUBSCRIPTIONS` entry.
+`EXPECTED_SUBSCRIPTIONS` entry. **rb-51 discharged X9** (ADR-0231
+Amendment A1): the countdown ships as a runtime-created `#privacy-countdown` HUD
+banner driven from the rAF frame, with the wasm grace read once at module scope
+and the copy composed in the pure `ui/privacyBanner.ts`. X10 (delete/cancel
+controls + terminal notice) and X11 (export transport + download) remain
+deferred to rb-52/rb-53, and the `EXPECTED_SUBSCRIPTIONS` obligation belongs to
+rb-53 — rb-51 added no subscription.
 
 **m22-s3b** (ADR-0228) landed the §4.4 five-step cascade in
 `account_deletion_reaper`'s fall-through: 6a force-resolve via

@@ -135,14 +135,17 @@ constant degrades a backup, never the only signal.
 
 ## Consequences
 
-- **`terminalAtMs` is write-only until m22-s8b.** It is converted, stored and covered by tests, but
-  no production code reads it yet: `main.ts`'s `onClaimResult` callback, in its AUTH-51 / D15
-  claim-rejected branch, is the file's sole non-comment `store.ownAccount(identity)` read, and it
-  takes only `?.claimedFrom` (`main.ts:2777` as of 18r-b; the callback is the anchor, the number a
-  dated hint per rb-36's citation doctrine). Both graphs agree the blast radius is census tests, not
-  call sites. Stating this plainly is more useful than an "end-to-end" claim the code does not
-  support.
-- **Both pure cores have no production caller in this slice.** That is the cost of the split. It is
+- **`terminalAtMs` was write-only until rb-51** (2026-09-05 — see Amendment A1; this bullet
+  originally said "until m22-s8b"). At the time of writing it was converted, stored and covered by
+  tests with no production reader: `main.ts`'s `onClaimResult` callback, in its AUTH-51 / D15
+  claim-rejected branch, was the file's sole non-comment `store.ownAccount(identity)` read, and it
+  took only `?.claimedFrom` (the callback is the anchor, the number a dated hint per rb-36's
+  citation doctrine). Both graphs agreed the blast radius was census tests, not call sites. rb-51
+  added the second reader — the rAF frame's countdown block — and it DOES read `terminalAtMs`,
+  through `deriveDeletionCountdown`. Stating this plainly is more useful than an "end-to-end"
+  claim the code does not support.
+- **Both pure cores have no production caller in this slice.** (rb-51 gave `privacyModel.ts` one;
+  `exportAssembly.ts` still has none — Amendment A1.) That is the cost of the split. It is
   bounded: they are the frozen seam s8b builds against, and landing the assembly core before the
   transport is what gets it adversarial fixtures (mixed-owner chunks, `NaN` indices, a
   lexically-smaller-but-numerically-newer `request_id`) before it ever sees a live row.
@@ -176,3 +179,59 @@ constant degrades a backup, never the only signal.
   contract.
 - **A client-side `exportable` allowlist** as defence in depth. Rejected: a second SSOT that can
   only hide data the player is entitled to, against a server that already filters before writing.
+
+## Amendment A1 — 2026-09-05 (rb-51): the grace countdown ships as a HUD banner
+
+Self-amendment; no new ADR number was minted (the ADR-0104 precedent). rb-51 discharged residual
+`R-m22-s8-X9` — PRV1-1's "ticking countdown in a rendered surface" — and made four decisions this
+ADR's deferral did not anticipate. They are recorded here so rb-52 does not re-litigate them.
+
+**Where "s8b" went.** This ADR's deferral target `m22-s8b` was never built as one slice: its three
+criteria were promoted into residuals `R-m22-s8-X9/X10/X11` and queued as **rb-51 / rb-52 / rb-53**.
+Read every "s8b" above as that trio. rb-51 is X9 only.
+
+- **A1-D1 — the countdown is a passively-visible HUD banner, not a registry overlay.** The criterion
+  rb-51 answers is the promoted residual `R-m22-s8-X9`
+  (`specs/monster-realm-v2/M-residual-backlog.spec.md`, section rb-51), whose EARS reads "WHEN the
+  deletion grace window is live THE PLAYER SHALL see a ticking countdown to the reaper fire in a
+  rendered surface" — NOT M22 §7.4's PRV1-1, which is the server-side `delete_account` transition.
+  A modal only satisfies "shall see" after the player opens something, whereas the sibling residual
+  `R-m22-s8-X10` (rb-52) is explicitly "WHEN the player *opens* the privacy surface". So the banner
+  is the right shape for X9 and the modal is the right shape for X10. Mechanically it also keeps the slice
+  inside its declared `client/**` touches: a new `client/src/ui/*View.ts` is pinned by
+  `overlayRegistry.test.ts`'s readdir-derived OR-MANIFEST-COMPLETE and by
+  `evals/overlay-a11y-manifest.eval.mjs`'s frozen `KNOWN_VIEW_FILES` roster, and the latter is
+  outside those touches. **This DEFERS the ~17-file overlay fan-out to rb-52; it does not abolish
+  it.** The banner is created at runtime beside the `#status` / `#interact-prompt` precedent
+  (ADR-0161 D6), so it also stays clear of `W-ONE-CORNER-AFFORDANCE`, which parses static markup.
+- **A1-D2 — the change-detection memo is keyed on the RENDERED LABEL.** This is a DOM-write economy
+  choice, not a correctness one: the derived remaining time changes every frame, the label once a
+  second. (A `remainingMs` key would render the same text — the plan-phase red-team measured that
+  it is strictly finer — so the only claim made here is about DOM writes, not behaviour. The write
+  count itself is not pinned by a test.) The memo's hide arm IS load-bearing: without it a
+  cancelled deletion leaves a frozen notice on screen for the rest of the page's life.
+- **A1-D3 — the wasm grace is read ONCE, at module scope**, as `DELETION_GRACE_MS_DEFAULT`
+  (deliberately NOT the spelling `DELETION_GRACE_MS`, which ADR-0230 declares a phantom). A
+  per-frame read would cross the wasm boundary ~60x/s for a build constant. The dependency is
+  proven behaviourally — two different mocked windows produce two different labels — never by a
+  call-site text pin alone.
+- **A1-D5 — the frame's session gate CLEARS the banner rather than freezing it.** `frame` returns
+  early while the session terminal is up (`sessionGateBlocks()`), which would otherwise leave a
+  `position: fixed` deletion deadline on screen after the session expired — at exactly the moment
+  the store has stopped being a live view of that account and a different person may be at the
+  keyboard. The early-return path therefore renders `null` first. (`#interact-prompt`, which
+  freezes a transient hint under the same gate, is left as it is: a stale hint is not a stale legal
+  deadline.)
+- **A1-D4 — the banner is deliberately not a live region**, and carries no implicit-live role: a
+  surface that changes every second would interrupt an assistive-technology user continuously, and
+  `ui/liveRegion.ts` stays the sole owner of `#a11y-live`. **DEFERRED, named:** a ONE-SHOT
+  announcement on the `active -> grace` edge is gate-legal and would close the remaining gap for a
+  screen-reader user. It is left to rb-52, which owns the player-facing privacy copy and therefore
+  the catalog entry it needs.
+
+**Accepted cost.** rb-51 ships a NOTIFICATION of a state the player can neither enter nor cancel
+from the client — the deletion reducers are still unreachable from `client/src` (the "no
+half-reachable deletion state" consequence above still holds for the *controls*). This mirrors the
+"no production caller" cost this ADR already accepted, and it is bounded: the banner is proven
+against injected store rows, and rb-52 lands the controls.
+
