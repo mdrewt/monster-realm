@@ -11177,3 +11177,175 @@ describe('★ main.ts wiring (m23-s5/ADR-0206): the live-region pump rides the r
     ).toBeLessThan(flushIdx as number);
   });
 });
+
+// ===========================================================================
+// rb-51 (PRV1-1 / residual R-m22-s8-X9, ADR-0231 Amendment A1) — the deletion-countdown
+// banner's SOURCE-side pins. ADDED describe block; nothing above is modified.
+//
+// SOURCE OF TRUTH: the rb-51 plan of record, sections "Label grammar" and "Files" 3(a)-(f).
+//
+// WHAT THIS BLOCK IS FOR, AND WHAT IT DELIBERATELY IS NOT. The BEHAVIOUR of the banner — that
+// it ticks, that it tracks the WALL clock and not `performance.now()`, that it clears itself on
+// every path off the grace window, and that the window really comes from the wasm accessor — is
+// gated at runtime by `main.privacyCountdown.test.ts`. A text scan cannot see any of that. What
+// a text scan CAN see, and what nothing else can, is the STRUCTURE this slice's ADRs pin:
+//   * the grace window is imported from the wasm pkg (ADR-0212: game-core is its SSOT, and the
+//     accessor is the client's only route to it);
+//   * it is read EXACTLY ONCE, at MODULE scope — one value per session, frozen at import,
+//     rather than a fresh wasm boundary crossing on every animation frame;
+//   * the derivation and the label both go through the tested pure cores rather than being
+//     re-implemented inline in the frame body;
+//   * none of it is inside `if (import.meta.env.DEV)`, which would ship a production bundle
+//     where the countdown silently never renders while every runtime test above stays green
+//     (vitest evaluates main.ts with DEV true).
+// DELIBERATELY ABSENT: any pin on the grace NUMBER itself. Duplicating it here is precisely
+// what `evals/deletion-grace-wasm-ssot.eval.mjs` exists to forbid.
+//
+// RED REASON AT AUTHORING TIME: `deletion_grace_ms_default`, `deriveDeletionCountdown(`,
+// `privacyBannerLabel(` and `'./ui/privacyBanner'` occur ZERO times in main.ts, so the
+// containment assertions fail on `false` and the count assertion fails on `0`.
+//
+// NO `new RegExp(...)` — indexOf / includes / split / slice only, per this file's convention.
+// ===========================================================================
+
+/** The wasm import block's closing line. Unique in main.ts (asserted, not assumed) — it is
+ *  what lets the block be sliced back to its own `import {` without a fixed-width window. */
+const RB51_WASM_SPECIFIER = "} from '../../client-wasm/pkg/client_wasm.js';";
+
+describe('★ main.ts wiring (rb-51/PRV1-1): the deletion countdown reads the wasm grace ONCE, at module scope, outside the DEV gate', () => {
+  it('★ W-RB51-WASM-IMPORT BITES: deletion_grace_ms_default is imported from the client-wasm pkg', () => {
+    // WRONG IMPL KILLED (1) ★: the grace window written into main.ts (or into privacyBanner.ts)
+    // as a literal, or defaulted `?? <number>`. ADR-0212 makes game-core the SSOT and this
+    // accessor the client's ONLY route to it; a client-side copy drifts from the reaper the day
+    // the server value changes, and the player is shown a deadline the server does not honour.
+    // WRONG IMPL KILLED (2): the symbol imported from somewhere OTHER than the wasm pkg — e.g. a
+    // local `./ui/privacyGrace.ts` shim re-exporting a constant. The needle is checked INSIDE the
+    // wasm import block, never anywhere in the file, so a same-named local decoy does not satisfy
+    // it. (Biome's organizeImports assist may reorder the specifiers inside the block; the tooth
+    // pins WHICH values are imported, which is the load-bearing part, not their order.)
+    const raw = readMainTs();
+    const stripped = stripLineComments(raw);
+    expect(
+      stripped.length,
+      'ANTI-VACUITY: comment-stripped main.ts collapsed to under half its raw size — every ' +
+        'assertion in this block would be scanning a fragment',
+    ).toBeGreaterThan(raw.length / 2);
+
+    expectUniqueAnchor(stripped, RB51_WASM_SPECIFIER);
+    const specIdx = stripped.indexOf(RB51_WASM_SPECIFIER);
+    const openIdx = stripped.lastIndexOf('import {', specIdx);
+    expect(
+      openIdx,
+      'the wasm import block must open with `import {` before its specifier line',
+    ).toBeGreaterThanOrEqual(0);
+    const wasmImport = stripped.slice(openIdx, specIdx + RB51_WASM_SPECIFIER.length);
+    expect(
+      wasmImport.includes('zone_map'),
+      'ANTI-VACUITY: the sliced block must still contain the pre-existing `zone_map` specifier — ' +
+        'otherwise the slice is not the wasm import block and the assertion below is meaningless',
+    ).toBe(true);
+    expect(
+      wasmImport.includes('deletion_grace_ms_default'),
+      'main.ts must import `deletion_grace_ms_default` from ../../client-wasm/pkg/client_wasm.js ' +
+        '(ADR-0212: the deletion grace window is game-core content and the wasm accessor is the ' +
+        'client’s only route to it — the number must never be typed into client/)',
+    ).toBe(true);
+  });
+
+  it('★ W-RB51-ONE-CALL-SITE BITES: exactly ONE deletion_grace_ms_default( call, and it sits at MODULE scope', () => {
+    // WRONG IMPL KILLED (1) ★: the accessor called from INSIDE the rAF frame body. It reads
+    // correctly, so every behavioural tooth in main.privacyCountdown.test.ts stays green — and it
+    // crosses the wasm boundary ~60 times a second, forever, for a value that cannot change
+    // within a session. The plan freezes it at module scope for exactly that reason.
+    // WRONG IMPL KILLED (2): a SECOND call site (e.g. one in the frame "so a reconnect re-reads
+    // it"). Two reads of a constant are two chances to disagree; the count pins it at one.
+    // WRONG IMPL KILLED (3): the value imported but never called (the specifier present, the
+    // countdown fed a hard-coded window) — the count would be 0.
+    // NOTE ON THE NEEDLE: the trailing `(` is what distinguishes the CALL from the import
+    // specifier `deletion_grace_ms_default,`, exactly as F-3a's `resolveConnectionConfig(` does.
+    const stripped = stripLineComments(readMainTs());
+    expect(
+      countOccurrences(stripped, 'deletion_grace_ms_default('),
+      'main.ts must contain EXACTLY ONE `deletion_grace_ms_default(` call site: the module-scope ' +
+        'read. 0 means the wasm accessor is imported but never called; 2+ means the value is ' +
+        'being re-read (a per-frame wasm boundary crossing for a session constant).',
+    ).toBe(1);
+
+    const callIdx = stripped.indexOf('deletion_grace_ms_default(');
+    const mainIdx = stripped.indexOf('async function main(');
+    expect(mainIdx, 'ANTI-VACUITY: `async function main(` must exist').toBeGreaterThan(0);
+    expect(
+      callIdx,
+      'the `deletion_grace_ms_default()` read must happen at MODULE scope — BEFORE ' +
+        '`async function main(` — so the whole session shares one frozen value (the same ' +
+        'discipline W-M20C-WASM-MARK pins for WASM_READY_MS)',
+    ).toBeLessThan(mainIdx);
+  });
+
+  it('★ W-RB51-SEAM-PRESENT BITES: the countdown routes through the tested pure cores (deriveDeletionCountdown + privacyBannerLabel)', () => {
+    // WRONG IMPL KILLED (1) ★: the phase/deadline arithmetic re-implemented INLINE in the frame
+    // body. `ui/privacyModel.ts` is where the broke-vs-dark rules, the 0n terminal marker and
+    // PRV1-3's "cancellable until terminal_at_ms is Some" live, all property-tested; an inline
+    // copy in main.ts is coverage-excluded (client/vite.config.ts:97) and gets none of that.
+    // WRONG IMPL KILLED (2): the label composed inline from string concatenation in main.ts —
+    // the same argument, plus the copy would then be invisible to privacyBanner.test.ts's
+    // exact-string table, which is the only thing pinning the player-facing wording.
+    // WRONG IMPL KILLED (3): the module imported under a different path (a copy of the label
+    // logic in a second file) — the specifier is pinned alongside the call.
+    const stripped = stripLineComments(readMainTs());
+    expect(
+      stripped.includes("'./ui/privacyBanner'"),
+      "main.ts must import from './ui/privacyBanner' (the label is composed in the pure, " +
+        'exact-string-tested module, never inline in the frame body)',
+    ).toBe(true);
+    expect(
+      stripped.includes('privacyBannerLabel('),
+      'main.ts must CALL privacyBannerLabel( — an import with no call site is a countdown that ' +
+        'is computed and thrown away (and `noUnusedLocals` would red the typecheck)',
+    ).toBe(true);
+    expect(
+      stripped.includes('deriveDeletionCountdown('),
+      'main.ts must CALL deriveDeletionCountdown( — the phase, the deadline and the ' +
+        'broke-vs-dark rules are ui/privacyModel.ts’s, not the frame body’s',
+    ).toBe(true);
+  });
+
+  it('★ W-RB51-NOT-DEV-GATED BITES: no part of the countdown wiring sits inside `if (import.meta.env.DEV)`', () => {
+    // WRONG IMPL KILLED ★, and it is not hypothetical — it is the shape this whole family of
+    // F-5 teeth exists for: the countdown block tucked inside the DEV gate (the natural landing
+    // spot for "new wiring" when the surrounding file already has a gated block). vitest and
+    // `vite dev` both evaluate main.ts with `import.meta.env.DEV === true`, so EVERY runtime
+    // tooth in main.privacyCountdown.test.ts stays green while the PRODUCTION bundle — after
+    // minifier DCE — ships no countdown at all. PRV1-1 would be silently unfulfilled for every
+    // real player, and nothing else in this repo would notice.
+    const stripped = stripLineComments(readMainTs());
+    const gateIdx = devGateIndex(stripped);
+    expect(gateIdx, 'the DEV gate must exist as a real statement').toBeGreaterThanOrEqual(0);
+    // Same block-bounding walk F-5f uses: the gate's body is indented and the block closes with
+    // a column-0 `}`, so the first `'\n}\n'` at or after the gate is its terminator.
+    const blockEndIdx = stripped.indexOf('\n}\n', gateIdx);
+    expect(
+      blockEndIdx,
+      'the DEV gate block must close with a column-0 `}` — without a terminator this tooth ' +
+        'cannot bound the block and refuses to judge a truncated slice',
+    ).toBeGreaterThan(gateIdx);
+    const gateBlock = stripped.slice(gateIdx, blockEndIdx + 2);
+    expect(
+      gateBlock.includes(').__game ='),
+      'ANTI-VACUITY: the extracted block must contain the DEV hook assignments — otherwise the ' +
+        'slice is not the gate body and every absence below passes for free',
+    ).toBe(true);
+    for (const needle of [
+      'deletion_grace_ms_default(',
+      'deriveDeletionCountdown(',
+      'privacyBannerLabel(',
+    ] as const) {
+      expect(
+        gateBlock.includes(needle),
+        `\`${needle}\` must NOT appear inside the \`if (import.meta.env.DEV)\` block — the ` +
+          'countdown is a PRODUCTION surface (PRV1-1). Gated, it is dead-code-eliminated from ' +
+          'the shipped bundle while every unit test (which runs with DEV true) stays green.',
+      ).toBe(false);
+    }
+  });
+});
