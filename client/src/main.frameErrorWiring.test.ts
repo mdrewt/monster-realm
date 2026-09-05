@@ -584,9 +584,14 @@ describe('main.ts frame-loop error wiring (17r-f, B1)', { sequential: true }, ()
     await setupMain();
     expectCleanBaseline();
 
+    // ★ A FRESH INSTANCE PER FRAME, deliberately (verifier finding 5). Re-throwing the SAME
+    // object let a dedupe keyed on OBJECT IDENTITY (`err !== last`) survive all four runtime
+    // arms — and in production every throwing frame constructs a new Error, so identity dedupe
+    // is no dedupe at all. Distinct objects, identical messages, is the real shape.
     H.throwOnRender = new Error('first-boom');
     runFrame();
-    runFrame(); // the SAME message again — must cost nothing
+    H.throwOnRender = new Error('first-boom');
+    runFrame(); // the SAME message, a DIFFERENT object — must cost nothing
     H.throwOnRender = new Error('second-boom');
     runFrame(); // a DIFFERENT message — must always record
 
@@ -612,6 +617,43 @@ describe('main.ts frame-loop error wiring (17r-f, B1)', { sequential: true }, ()
         'dedupe; one entry means a latch/throttle/visibility guard that throws away distinct ' +
         'errors; an empty list is today`s console-only catch',
     ).toEqual(['frame: first-boom', 'frame: second-boom']);
+  });
+
+  // -------------------------------------------------------------------------------------
+
+  it('★★ B1e BITES: the SAME error recurring AFTER a healthy frame records AGAIN (consecutive, not ever-seen)', async () => {
+    // ★ RED-TEAM S3. The first draft never reset the memo, which made it an EVER-SEEN latch
+    // rather than the consecutive collapse its own ADR described — and NOTHING in the repo could
+    // tell the two apart (adding the reset was measured surviving all 209 tests, and so was
+    // removing it). Two measured operator harms, both from real sequences:
+    //   - a fault at t=0, ten minutes of healthy frames, then the identical fault throwing on 60
+    //     consecutive frames with the game visibly frozen: the F9 bundle carried ONE record with
+    //     a 600-SECOND-STALE tMs, while the event ring kept filling with fresh breadcrumbs. An
+    //     operator reads that as "the errors stopped ten minutes ago" and triages the wrong thing.
+    //   - F8 dismiss, healthy frames, the identical fault returns for 300 frames: `pushError` is
+    //     never reached, so `show()` never runs and the overlay stays hidden PERMANENTLY, for
+    //     exactly the failure mode the overlay exists for.
+    // WRONG IMPL KILLED: the module-scope memo without `lastFrameErrorMessage = null;` at the end
+    //   of the try body. B1b stays green under it (its two identical throws are adjacent), so
+    //   this arm — a HEALTHY frame between two identical throws — is the only discriminator.
+    // WRONG IMPL KILLED (2): the reset moved INSIDE the catch, which defeats the dedupe entirely
+    //   and reds B1b instead. The two arms fence the statement's position from both sides.
+    await setupMain();
+    expectCleanBaseline();
+
+    H.throwOnRender = new Error('recurring-boom');
+    runFrame();
+    H.throwOnRender = null;
+    runFrame(); // a HEALTHY frame — this is what clears the memo
+    H.throwOnRender = new Error('recurring-boom');
+    runFrame(); // the same message again, but no longer consecutive — must record AGAIN
+
+    expect(
+      uncaughtMessages(singleBundle()),
+      'B1: a fault that recurs after the loop recovered is a NEW incident and must record again ' +
+        '— otherwise the bundle reports a live freeze with a timestamp from the first occurrence ' +
+        'and the overlay never re-shows. Exactly one entry here is the ever-seen latch',
+    ).toEqual(['frame: recurring-boom', 'frame: recurring-boom']);
   });
 
   // -------------------------------------------------------------------------------------

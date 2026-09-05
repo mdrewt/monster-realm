@@ -903,7 +903,7 @@ let errorOverlayView: ErrorOverlayView | undefined;
 // Re-entrancy guard: if rendering the overlay itself throws and re-enters pushError,
 // short-circuit so a render fault cannot recurse into a stack overflow.
 let handlingError = false;
-// 17r-f: collapses a 60Hz thrower to ONE ring slot; never reset (ADR-0130 amendment 17r-f).
+// 17r-f: collapses a CONSECUTIVE 60Hz thrower to ONE ring slot (ADR-0130 amendment 17r-f).
 let lastFrameErrorMessage: string | null = null;
 
 /** Record an error into the ring and reflect it in the overlay. TOTAL (never throws to
@@ -3222,10 +3222,16 @@ async function main(): Promise<void> {
           interactPromptEl.style.display = 'none';
         }
       }
+      lastFrameErrorMessage = null;
     } catch (err) {
       console.error('[frame] uncaught error', err);
-      // 17r-f: surface it too — tagged, deduped, TOTAL (ADR-0130 amendment 17r-f).
-      const frameErrorMessage = `frame: ${normalizeError('uncaught', err).message}`;
+      // 17r-f: surface it too — tagged, deduped, total (ADR-0130 amendment 17r-f).
+      let frameErrorMessage: string;
+      try {
+        frameErrorMessage = `frame: ${normalizeError('uncaught', err).message}`;
+      } catch {
+        frameErrorMessage = 'frame: [unstringifiable error]';
+      }
       if (frameErrorMessage !== lastFrameErrorMessage) {
         lastFrameErrorMessage = frameErrorMessage;
         pushError('uncaught', frameErrorMessage);

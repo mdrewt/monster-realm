@@ -12331,6 +12331,16 @@ describe('★ main.ts wiring (rb-53/ADR-0231 A3-D7/A3-D8): the download helper i
  *  the post-anchor tail and the slice's own emptiness/derangement is caught by the exact-equality
  *  comparisons rather than by a global uniqueness claim that would simply be false. */
 const S17RF_FRAME_LOG_STMT = "console.error('[frame] uncaught error', err);";
+/** RED-TEAM S1 (mutant #14, MEASURED CI-clean before this clause existed): the region below
+ *  slices FORWARD from the log, so everything between `} catch (err) {` and the log was
+ *  examined by NOTHING in the repo. `if (document.getElementById('app') !== null) return;`
+ *  inserted there passed all 209 tests while making the whole feature a production no-op —
+ *  `index.html` ships `<div id="app">`, and this file's runtime sibling deliberately boots
+ *  WITHOUT it. The prefix is now pinned empty. `} catch (err) {` occurs ~26x in main.ts, so it
+ *  is resolved as the LAST one before the log and additionally required to be the ONLY one
+ *  inside the frame closure (an inserted inner try/catch would otherwise re-anchor it). */
+const S17RF_FRAME_OPEN = 'const frame = (): void => {';
+const S17RF_CATCH_OPEN = '} catch (err) {';
 const S17RF_FINALLY_OPEN = '} finally {';
 /** The close of the `frame` arrow itself — the first thing after the try/catch/finally, and the
  *  only `\n  };` in the tail, so it bounds the `finally` block exactly. */
@@ -12350,10 +12360,19 @@ const S17RF_CLOSURE_END = '\n  };';
  *  IF THIS EVER DISAGREES WITH main.ts: revise it from the SPEC and the design, never to match
  *  whatever the code happens to say — that is the whole point of an equality pin. */
 const S17RF_CATCH_TAIL =
-  "const frameErrorMessage = `frame: ${normalizeError('uncaught', err).message}`; " +
+  'let frameErrorMessage: string; try { ' +
+  "frameErrorMessage = `frame: ${normalizeError('uncaught', err).message}`; " +
+  "} catch { frameErrorMessage = 'frame: [unstringifiable error]'; } " +
   'if (frameErrorMessage !== lastFrameErrorMessage) { ' +
   'lastFrameErrorMessage = frameErrorMessage; ' +
   "pushError('uncaught', frameErrorMessage); }";
+/** RED-TEAM S3 (mutant #16, MEASURED surviving all 209 tests before this clause): the memo must
+ *  be CLEARED by a frame that completes, which is what makes the collapse CONSECUTIVE rather
+ *  than ever-seen. Without it a fault recorded once is suppressed forever — measured: a 600s
+ *  stale tMs on a live freeze, and an overlay that never re-shows after one F8. The statement
+ *  sits at the END of the try body, i.e. OUTSIDE the region the tail pin above compares, so it
+ *  needs its own clause. Its behavioural half is B1e in main.frameErrorWiring.test.ts. */
+const S17RF_MEMO_RESET = 'lastFrameErrorMessage = null;';
 
 /** The whole `finally` block, same treatment. */
 const S17RF_FINALLY_BODY = '} finally { requestAnimationFrame(frame); }';
@@ -12392,6 +12411,38 @@ describe('★ main.ts wiring (17r-f/B1): the frame catch records what it logs, a
     expectUniqueAnchor(src, S17RF_FRAME_LOG_STMT);
 
     const logIdx = src.indexOf(S17RF_FRAME_LOG_STMT);
+
+    // ★★ RED-TEAM S1 — THE PREFIX. Everything between `} catch (err) {` and the log used to be
+    // unexamined by every assertion in the repo, and `if (document.getElementById('app') !== null)
+    // return;` inserted there was MEASURED passing all 209 tests while making 17r-f a no-op in
+    // every real browser. Two clauses: the catch that owns the log is the ONLY one inside the
+    // frame closure (so an inserted inner try/catch cannot re-anchor `lastIndexOf`), and the text
+    // between it and the log is EMPTY once comments are stripped.
+    const frameOpenIdx = src.indexOf(S17RF_FRAME_OPEN);
+    expectUniqueAnchor(src, S17RF_FRAME_OPEN);
+    const catchOpenIdx = src.lastIndexOf(S17RF_CATCH_OPEN, logIdx);
+    expect(
+      catchOpenIdx,
+      'the frame`s `} catch (err) {` must be found before its log line — without it there is no ' +
+        'prefix to judge',
+    ).toBeGreaterThan(frameOpenIdx);
+    expect(
+      countOccurrences(src.slice(frameOpenIdx, logIdx), S17RF_CATCH_OPEN),
+      'the frame closure must open EXACTLY ONE `} catch (err) {` before its log line. A second ' +
+        'one means an inner try/catch was added inside the frame body, which re-anchors the ' +
+        'prefix fence below and would let a guard hide in the OUTER catch, unexamined.',
+    ).toBe(1);
+    expect(
+      squashWhitespace(
+        stripLineComments(src.slice(catchOpenIdx + S17RF_CATCH_OPEN.length, logIdx)),
+      ).trim(),
+      'RED-TEAM S1: NOTHING may sit between `} catch (err) {` and the frame`s log statement. A ' +
+        'depth-0 early `return` there (e.g. gated on `#app`, on `import.meta.env`, or on any ' +
+        'module-scope flag) keeps every runtime arm green — the runtime harness boots WITHOUT ' +
+        '`#app` — while shipping a client whose frame errors reach nothing. Measured CI-clean ' +
+        'before this clause existed.',
+    ).toBe('');
+
     const tail = src.slice(logIdx + S17RF_FRAME_LOG_STMT.length);
 
     const finallyIdx = tail.indexOf(S17RF_FINALLY_OPEN);
@@ -12411,6 +12462,29 @@ describe('★ main.ts wiring (17r-f/B1): the frame catch records what it logs, a
         '`finally` of its own — an inner try/finally moves the fence, and this pin would then be ' +
         'comparing a prefix of the real body',
     ).toBe(false);
+
+    // ★★ RED-TEAM S3 — THE MEMO RESET. Adding/removing `lastFrameErrorMessage = null;` at the end
+    // of the try body was MEASURED surviving all 209 tests, so the gate could not tell the
+    // shipped design from the ever-seen latch the first draft actually implemented. The statement
+    // lives OUTSIDE the tail region compared below, so it needs its own clause: exactly two
+    // occurrences of the identifier-assignment in the whole frame closure (this reset, plus the
+    // catch's own write), and the reset must sit BEFORE the catch opens.
+    const closureEndIdx = src.indexOf(S17RF_CLOSURE_END, logIdx);
+    const frameBody = stripLineComments(src.slice(frameOpenIdx, closureEndIdx));
+    expect(
+      countOccurrences(frameBody, S17RF_MEMO_RESET),
+      'the frame closure must contain EXACTLY ONE `lastFrameErrorMessage = null;` — the reset at ' +
+        'the end of the try body that makes the collapse CONSECUTIVE rather than ever-seen. ' +
+        'Without it, a fault recorded once is suppressed for the life of the session: measured, a ' +
+        '600s-stale timestamp on a live freeze and an overlay that never re-shows after one F8. ' +
+        'B1e in main.frameErrorWiring.test.ts is the behavioural half.',
+    ).toBe(1);
+    expect(
+      src.lastIndexOf(S17RF_MEMO_RESET, catchOpenIdx),
+      'the `lastFrameErrorMessage = null;` reset must sit in the TRY body, before ' +
+        '`} catch (err) {` — inside the catch it would defeat the dedupe entirely, and after the ' +
+        'catch it would run on every throwing frame too',
+    ).toBeGreaterThan(frameOpenIdx);
 
     expect(
       squashWhitespace(stripLineComments(rawCatchTail)).trim(),
