@@ -28,7 +28,7 @@
 import type { DeletionCountdown } from './privacyModel';
 
 /** The player-facing copy, spelled once. Authored here rather than in `ui/a11yCopy.ts`: that
- *  catalog is the ACCESSIBLE-NAME seam for the sixteen overlays (ADR-0205 D5), and this banner is
+ *  catalog is the ACCESSIBLE-NAME catalog for the sixteen overlays (ADR-0205 D4/D5), and this banner is
  *  deliberately not an overlay. */
 const DARK_LABEL = 'Account deletion pending — time remaining unavailable';
 const DUE_LABEL = 'Account deletion is due now';

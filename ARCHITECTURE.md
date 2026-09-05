@@ -502,7 +502,7 @@ the `confirmOnDelivery` parameter name records (18r-a). The DOM overlay, the
 `main.ts` wiring, the `deletion_grace_ms_default()` wasm read and the
 `my_export_bundle` subscription were DEFERred to m22-s8b (X9/X10/X11), whose
 `touches:` must include `evals/monster-privacy.eval.mjs` for its
-`EXPECTED_SUBSCRIPTIONS` entry. **rb-51 discharged X9's half** (ADR-0231
+`EXPECTED_SUBSCRIPTIONS` entry. **rb-51 discharged X9** (ADR-0231
 Amendment A1): the countdown ships as a runtime-created `#privacy-countdown` HUD
 banner driven from the rAF frame, with the wasm grace read once at module scope
 and the copy composed in the pure `ui/privacyBanner.ts`. X10 (delete/cancel

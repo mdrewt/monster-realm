@@ -1,11 +1,21 @@
-// ui/privacyBanner.test.ts — PRV1-1's player-facing LABEL, the pure half (rb-51, residual
-// R-m22-s8-X9; ADR-0231 Amendment A1).
+// ui/privacyBanner.test.ts — the deletion countdown's player-facing LABEL, the pure half
+// (rb-51; ADR-0231 Amendment A1).
 //
-// EARS COVERED (spec specs/monster-realm-v2/M22-privacy-compliance.spec.md §7.4)
-//   PRV1-1 [UI surface] — WHEN the deletion grace window is live THE PLAYER SHALL see a
-//   TICKING countdown to the reaper fire. "Ticking" is the load-bearing word: the label must
-//   change at least once per second at EVERY magnitude, which is why the grammar below always
-//   renders down to seconds instead of stopping at the two largest units.
+// ★ SOURCE OF TRUTH — the PROMOTED RESIDUAL, quoted verbatim. Section `rb-51` of
+// `specs/monster-realm-v2/M-residual-backlog.spec.md` (source slice m22-s8, residual
+// R-m22-s8-X9):
+//   "[PRV1-1 UI surface] WHEN the deletion grace window is live THE PLAYER SHALL see a ticking
+//    countdown to the reaper fire in a rendered surface (DOM shell + main.ts frame tick + the
+//    deletion_grace_ms_default() wasm read)"
+//
+// ATTRIBUTION CORRECTION (rb-51 review): this header previously cited "spec §7.4 PRV1-1".
+// M22 §7.4's PRV1-1 is the SERVER criterion — `delete_account` transitions the account status —
+// and is gated in `server-module`. The UI criterion is the residual above. Pointing a reader at
+// §7.4 for this file sends them to a criterion it does not and structurally cannot test.
+//
+// "Ticking" is the load-bearing word: the label must change at least once per second at EVERY
+// magnitude, which is why the grammar below always renders down to seconds instead of stopping
+// at the two largest units.
 //
 // RED REASON AT AUTHORING TIME: `client/src/ui/privacyBanner.ts` DOES NOT EXIST. The import
 // below fails to resolve, so every test in this file reds on a MISSING IMPLEMENTATION — not
@@ -240,14 +250,130 @@ describe('privacyBannerLabel (PRV1-1): the exact rendered strings', () => {
     }
   });
 
-  it('RB51-LABEL-ANTI-VACUITY: the three copy strings are distinct and none is empty', () => {
-    // A stub returning the SAME string (or '') for everything would pass a suite whose
-    // expectations were all built from one constant. They are not — but proving the three
-    // constants really are three costs one assertion and removes the doubt.
-    const rendered = new Set([DARK_LABEL, DUE_LABEL, GRACE_PREFIX + '1s']);
-    expect(rendered.size, 'the three rendered forms must be three DISTINCT strings').toBe(3);
-    for (const text of rendered) {
-      expect(text.length, 'no rendered form may be empty').toBeGreaterThan(0);
+  it('★ RB51-LABEL-ASCII BITES: the duration is built from ASCII digits and unit letters ONLY — no locale formatter, at any magnitude', () => {
+    // ★ THE LOCALE MUTANT, and it is not exotic: `${days}d` written as
+    // `${days.toLocaleString()}d` (or `Number(days).toLocaleString()`) is the shape a
+    // "make the big number readable" edit takes. It survives EVERY other tooth in this file on
+    // a machine whose default locale is `en-US`, because `toLocaleString` is a NO-OP there for
+    // values under 1000 — which is every hours/minutes/seconds group and every days count these
+    // fixtures reach. It then ships:
+    //   * `de-DE` — a GROUPING SEPARATOR ('1.157d'), so the exact-string table reds only for a
+    //     tester who happens to run in that locale, i.e. never in this repo's CI;
+    //   * `ar-EG` / any `ar-*` default — ARABIC-INDIC digits (U+0660..U+0669 in place of ASCII
+    //     0-9), a label whose numerals the exact-string table cannot even spell. The code
+    //     points are named rather than pasted, so this file stays ASCII apart from its prose
+    //     dashes.
+    //   The player-facing consequence is the same in both: a legally significant deadline
+    //   rendered in characters the rest of this suite has never seen.
+    // This tooth is locale-INDEPENDENT by construction: it pins the ALPHABET, not the value, so
+    // it reds under en-US too — the mutant's `toLocaleString()` on a 4-digit day count emits a
+    // separator on the CI machine as well (row 100_000_000_000n below is 1157 days precisely so
+    // that the grouping case is reachable without depending on the ambient locale).
+    //
+    // WRONG IMPL KILLED (2): a thousands separator hand-written into the formatter
+    // ("1,157d") — same clause, same failure.
+    // WRONG IMPL KILLED (3): a NON-BREAKING space or a narrow no-break space between groups
+    // (what several locales' list/number formats emit) — U+00A0 is not U+0020 and is not in the
+    // alphabet, and the exact-string table's `===` would red with an invisible diff a reader
+    // could stare past for an hour. Here the failure message names the offending code point.
+    //
+    // indexOf-based membership only: NO `new RegExp` (Semgrep-banned repo-wide) and no regex
+    // literal at all (a `/[0-9]/`-shaped literal containing `/` or `*` is the exact construct
+    // main.wiring.test.ts's W-14RC-BRACE-REGEX-STAR-CEILING bans across client/src).
+    const GRACE_ALPHABET = '0123456789dhms ';
+    for (const remainingMs of [
+      0n,
+      58_000n,
+      183_845_000n,
+      86_400_000n,
+      // 1157 days — four digits in the LEADING group, which is where every grouping-separator
+      // formatter first becomes visible. Synthetic, and not a duplicate of any shipped window.
+      100_000_000_000n,
+    ]) {
+      const label = privacyBannerLabel(countdownOf({ phase: 'grace', remainingMs }));
+      expect(
+        String(label).startsWith(GRACE_PREFIX),
+        `remainingMs ${String(remainingMs)} must render the grace sentence, got ${String(label)}`,
+      ).toBe(true);
+      const duration = String(label).slice(GRACE_PREFIX.length);
+      expect(
+        duration.length,
+        `remainingMs ${String(remainingMs)}: the duration must be non-empty`,
+      ).toBeGreaterThan(0);
+      for (const ch of duration) {
+        expect(
+          GRACE_ALPHABET.indexOf(ch),
+          `remainingMs ${String(remainingMs)} rendered "${duration}", which contains the ` +
+            `character ${JSON.stringify(ch)} (code point ${ch.codePointAt(0)}). A duration may ` +
+            `use ONLY ${JSON.stringify(GRACE_ALPHABET)} — ASCII digits, the four unit letters ` +
+            'and a plain U+0020 space. A separator, a non-ASCII digit or a non-breaking space ' +
+            'means the formatter went through the host locale instead of composing the string ' +
+            'itself, and the countdown then reads differently for every player.',
+        ).not.toBe(-1);
+      }
+    }
+  });
+
+  it('★ RB51-LABEL-ANTI-VACUITY BITES: the three rendered forms are three DISTINCT, NON-EMPTY strings PRODUCED BY privacyBannerLabel', () => {
+    // ★ REWRITTEN IN THE rb-51 REVIEW, AND WHY — the previous version of this test was itself
+    // vacuous, which is the worst thing an anti-vacuity tooth can be. It built
+    // `new Set([DARK_LABEL, DUE_LABEL, GRACE_PREFIX + '1s'])` out of three string LITERALS
+    // declared in THIS file and never called `privacyBannerLabel` at all. MEASURED: an
+    // implementation whose entire body is `return '';` passed it, because the Set it inspected
+    // was made of the test file's own constants. It asserted that three constants this file
+    // spells differently are spelled differently.
+    //
+    // WRONG IMPL KILLED (1) ★ THE MEASURED SURVIVOR: `privacyBannerLabel` stubbed to
+    // `return '';`. Every value below now comes OUT of the function, and every one is asserted
+    // non-empty, so the stub reds three times over.
+    // WRONG IMPL KILLED (2): a stub returning ONE constant sentence for every phase (the
+    // classic "make the suite compile" placeholder). The distinctness check sees it: three
+    // calls, three different phases, three required-different answers.
+    // WRONG IMPL KILLED (3): a `grace` arm that quietly falls through to the DARK or DUE
+    // sentence for a COMPUTED remaining time — the grace value would then equal one of the
+    // other two and the Set collapses to 2.
+    // WRONG IMPL KILLED (4): a label that renders `null`/`undefined` stringified ('null') — the
+    // typeof assertion plus the null-distinctness clause below both catch it.
+    //
+    // This tooth deliberately does NOT re-assert the exact wording: RB51-LABEL-GRACE /
+    // RB51-LABEL-DARK / RB51-LABEL-DUE own that. What it owns is the property those three
+    // cannot state on their own — that the function is a real discriminator over the phases and
+    // not a constant.
+    const darkLabel = privacyBannerLabel(countdownOf({ phase: 'grace', remainingMs: undefined }));
+    const dueLabel = privacyBannerLabel(countdownOf({ phase: 'due', remainingMs: 0n }));
+    const graceLabel = privacyBannerLabel(countdownOf({ phase: 'grace', remainingMs: 1_000n }));
+    const produced = [
+      ['a DARK grace window', darkLabel],
+      ['the `due` phase', dueLabel],
+      ['a computed grace window', graceLabel],
+    ] as const;
+
+    for (const [where, label] of produced) {
+      expect(typeof label, `${where}: privacyBannerLabel must return a string here`).toBe('string');
+      expect(
+        (label ?? '').length,
+        `${where}: the rendered form must be NON-EMPTY. An empty string is not "render nothing" ` +
+          "— null is; an empty string still forces the banner shell's visible branch, so a " +
+          "`return '';` stub ships a blank box that no exact-string table would notice",
+      ).toBeGreaterThan(0);
+    }
+
+    expect(
+      new Set(produced.map(([, label]) => label)).size,
+      'privacyBannerLabel must render THREE DISTINCT strings for dark / due / computed-grace — ' +
+        `got ${JSON.stringify(produced.map(([, label]) => label))}. Equal values mean the ` +
+        'function is a constant (or one arm falls through to another), which every ' +
+        "expectation built from this file's own copy constants would happily agree with",
+    ).toBe(3);
+
+    // ...and none of the three may collide with the SILENT answer, which is `null` and nothing
+    // else. Stated separately so a future "return the dark sentence instead of null" mutation
+    // reds here as well as in RB51-LABEL-SILENT.
+    for (const [where, label] of produced) {
+      expect(
+        label,
+        `${where}: a rendered form must never be the silent phases' null`,
+      ).not.toBeNull();
     }
   });
 });

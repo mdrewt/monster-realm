@@ -2,12 +2,19 @@
 /**
  * main.privacyCountdown.test.ts — RUNTIME gate over main.ts's deletion-countdown banner:
  * the `#privacy-countdown` DOM shell, the per-frame tick that fills it, and the
- * `deletion_grace_ms_default()` wasm read that gives it a deadline (rb-51, residual
- * R-m22-s8-X9; ADR-0231 Amendment A1; spec §7.4 PRV1-1).
+ * `deletion_grace_ms_default()` wasm read that gives it a deadline (rb-51;
+ * ADR-0231 Amendment A1).
  *
- * SOURCE OF TRUTH — EARS criterion E1: WHEN the deletion grace window is live THE PLAYER
- * SHALL see a ticking countdown to the reaper fire, in a rendered surface (DOM shell +
- * main.ts frame tick + the `deletion_grace_ms_default()` wasm read).
+ * ★ SOURCE OF TRUTH — the PROMOTED RESIDUAL R-m22-s8-X9, section `rb-51` of
+ * `specs/monster-realm-v2/M-residual-backlog.spec.md` (source slice m22-s8), verbatim:
+ *   "[PRV1-1 UI surface] WHEN the deletion grace window is live THE PLAYER SHALL see a ticking
+ *    countdown to the reaper fire in a rendered surface (DOM shell + main.ts frame tick + the
+ *    deletion_grace_ms_default() wasm read)"
+ *
+ * ATTRIBUTION CORRECTION (rb-51 review): this header previously cited "spec §7.4 PRV1-1".
+ * M22 §7.4's PRV1-1 is the SERVER criterion (`delete_account` transitions the account status),
+ * gated in `server-module`; it says nothing about a rendered surface. The UI criterion is the
+ * residual quoted above, which is what every test in this file is written from.
  *
  * SCOPE: the LABEL GRAMMAR is `ui/privacyBanner.test.ts`'s (pure, node-tier) and the PHASE
  * derivation is `ui/privacyModel.test.ts`'s. This file does NOT re-test either. It pins only
@@ -15,6 +22,19 @@
  * document, that the value written into it moves with the WALL clock (and with nothing else),
  * that it is CLEARED again on every path off the grace window, and that the grace window
  * itself comes from the wasm accessor rather than a number typed into main.ts.
+ *
+ * ★ ALL THREE SENTENCES MUST REACH THE DOM (added in the rb-51 review). The first version of
+ * this file exercised a COMPUTED `grace` label plus the five "off" arms — so `due` and the DARK
+ * sentence were rendered by NO test at any tier, and four wiring mutants lived in that gap:
+ * a suppressed `due` (the banner blanks at the deadline), a DARK window rendered as nothing,
+ * `deletionRequestedAtMs ?? 0n` (which turns "we do not know" into a confident "due now", the
+ * ADR-0154 broke-vs-dark inversion AT THE SEAM), and `status ?? 'Active'`. The first three are
+ * killed by RB51T-DUE-REACHES-DOM / RB51T-DARK-REACHES-DOM below. The FOURTH is NOT
+ * runtime-observable and is stated here rather than faked: `unknown` and `active` both render
+ * `null`, so `status: privacyAccount?.status ?? 'Active'` produces a byte-identical DOM in
+ * every reachable case. It is closed one tier down, by main.wiring.test.ts's
+ * W-RB51-NO-FABRICATED-INPUT, which bans `??` inside the `deriveDeletionCountdown(` argument
+ * list. Do not add a runtime arm for it — any such arm would be permanently vacuous.
  *
  * WHY A RUNTIME IMPORT — `main.wiring.test.ts:20-22` prescribes source-scan, "NOT import",
  * for main.ts. This file is the SANCTIONED, SCOPED exception, modelled on
@@ -26,12 +46,20 @@
  * roughly 53,000 years long and passes every source pin.
  *
  * LIGHTEST-HARNESS CHOICE (the `main.reducedMotionWiring.test.ts` shape): NO `#app`, and
- * `client/index.html` is never parsed. Verified by reading main.ts (not assumed): `#status`
- * (:2610-2612) and `#interact-prompt` (:2620-2632) are created with
+ * `client/index.html` is never parsed. Verified by reading main.ts (not assumed): the three
+ * runtime-created shells — the one whose statement reads `status.id = 'status';`, the one
+ * whose statement reads `interactPromptEl.id = 'interact-prompt';`, and this slice's
+ * `privacyCountdownEl.id = 'privacy-countdown';` — are all created with
  * `document.createElement` + `document.body.appendChild` INSIDE `main()`, unconditionally,
- * OUTSIDE the `if (mount !== null)` block that guards the sixteen constructed views — and the
- * plan places `#privacy-countdown` beside them. `ui/liveRegion.ts` no-ops without
- * `#a11y-live` (its own header, :46-49), so the frame body is reachable with no DOM shell.
+ * OUTSIDE the `if (mount !== null)` block that guards the sixteen constructed views.
+ * `ui/liveRegion.ts` no-ops without `#a11y-live` (its own header), so the frame body is
+ * reachable with no DOM shell at all.
+ *
+ * ★ CITE LANDMARKS, NOT LINE NUMBERS (rb-51 review). This paragraph previously cited
+ * `main.ts:2610-2612` / `:2620-2632`, and the HARNESS REQUIREMENT below cited `main.ts:2790`.
+ * All three drifted the moment this slice inserted ~30 lines of banner shell above them — the
+ * documented citation-drift failure this repo has hit repeatedly. Every reference in this file
+ * is now a searchable statement from the source instead of an offset.
  *
  * ★ TWO INDEPENDENT CLOCKS, AND WHY `runFrame` TAKES BOTH (the critical harness decision).
  * The precedents' `runFrame(atMs)` stubs `performance.now()` ONLY. Under that harness a
@@ -50,9 +78,14 @@
  * expected label (the per-arm anti-vacuity control), and only then upserts the arm's row and
  * asserts it went away.
  *
- * HARNESS REQUIREMENT: the Connection stub's `sessionState()` MUST be 'hidden'. Any other
- * value makes the frame early-return at `main.ts:2790` (`if (sessionGateBlocks()) return;`)
- * before reaching the countdown block, and every negative arm would pass vacuously.
+ * ★ HARNESS REQUIREMENT — the Connection stub's `sessionState()` DEFAULTS to 'hidden', and
+ * every arm except RB51T-SESSION-CLEARS leaves it there. Any other value makes the frame take
+ * the early return at the statement `if (sessionGateBlocks()) {` (main.ts's frame body — cite
+ * the statement, not an offset), so a negative arm run under a terminal session would pass for
+ * the wrong reason entirely. The value is driven from `H.sessionState` rather than hard-coded
+ * so RB51T-SESSION-CLEARS can move it MID-TEST, which is the only way to observe the
+ * clear-on-terminal / restore-on-return transition that gate is about; `afterEach` restores
+ * the default, so the ordering of the arms in this file can never matter.
  *
  * RED REASON AT AUTHORING TIME: main.ts creates no `#privacy-countdown` element, imports no
  * `deletion_grace_ms_default`, and its frame calls neither `deriveDeletionCountdown` nor
@@ -69,6 +102,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Connection, ConnectionOptions } from './net/connection';
 import type { AuthoritativeStore, StoreAccount } from './net/store';
+import type { SessionState } from './ui/sessionModel';
 
 // --- hoisted state shared with the mock factories --------------------------------------
 const H = vi.hoisted(() => ({
@@ -79,6 +113,10 @@ const H = vi.hoisted(() => ({
   /** What the mocked wasm accessor returns. Set BEFORE each `import('./main')`, because the
    *  contract reads it ONCE at module scope. */
   graceMs: 0n as bigint,
+  /** What the Connection stub's `sessionState()` answers, read LIVE on every call so a test can
+   *  move it between frames. 'hidden' is the ordinary case and the default every arm relies on
+   *  (see the header's HARNESS REQUIREMENT); `afterEach` restores it. */
+  sessionState: 'hidden' as SessionState,
 }));
 
 // The wasm pkg — every name main.ts imports, plus the other exports of the real module (the
@@ -111,8 +149,9 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
 });
 
 // The connection: capture the options object (its `store` field is this file's injection
-// point), hand back a Connection-shaped stub. sessionState() MUST be 'hidden' — see the
-// header's HARNESS REQUIREMENT.
+// point), hand back a Connection-shaped stub. `sessionState()` reads `H.sessionState` on EVERY
+// call — never a captured constant — so RB51T-SESSION-CLEARS can flip it between two frames of
+// the SAME booted module. See the header's HARNESS REQUIREMENT for why 'hidden' is the default.
 vi.mock('./net/connection', () => {
   const stub: Connection = {
     conn: undefined,
@@ -120,7 +159,7 @@ vi.mock('./net/connection', () => {
     identity: () => H.identity,
     linkFrozen: () => false,
     continueAnonymously: () => undefined,
-    sessionState: () => 'hidden',
+    sessionState: () => H.sessionState,
     startSignIn: () => undefined,
     reconnectNow: () => undefined,
   };
@@ -270,6 +309,17 @@ const GRACE_DAY_SCALE = 183_845_000n;
 const LABEL_AT_T0 = 'Account deletion in 2d 3h 4m 5s';
 const LABEL_AT_T0_PLUS_2S = 'Account deletion in 2d 3h 4m 3s';
 
+/** A MINUTE-scale window, so a single test can walk the clock ACROSS the deadline without
+ *  fabricating an absurd timestamp. Synthetic, like every other window in this file. */
+const GRACE_MINUTE_SCALE = 45_000n;
+
+/** The two NON-countdown sentences `ui/privacyBanner.ts` can render. Spelled here as literals
+ *  on purpose — importing them would let a copy change silently rewrite this file's
+ *  expectations too, which is the whole point of an exact-string gate. The dash in DARK_LABEL
+ *  is an EM DASH (U+2014), matching the shipped copy byte for byte. */
+const DUE_LABEL = 'Account deletion is due now';
+const DARK_LABEL = 'Account deletion pending — time remaining unavailable';
+
 /** A foreign identity — the store's owner filter (`ownAccount(identity)`, store.ts:1163-1166)
  *  returns undefined for it. This is how the "no account row" arm is reached without calling
  *  `reset()` (which would clear unrelated store state this harness does not model). */
@@ -352,6 +402,9 @@ describe('main.ts deletion-countdown banner (rb-51, PRV1-1)', { sequential: true
 
     H.connectOpts = null;
     H.graceMs = graceMs;
+    // Reset the session to the ordinary case on every boot, so an arm that moves it can never
+    // leak a terminal session into the arm that runs next (belt; afterEach is the braces).
+    H.sessionState = 'hidden';
     // A fresh boot appends its OWN #privacy-countdown; clearing first is what makes the
     // "exactly one element" assertion in RB51T-WASM-GRACE meaningful rather than cumulative.
     document.body.innerHTML = '';
@@ -393,6 +446,7 @@ describe('main.ts deletion-countdown banner (rb-51, PRV1-1)', { sequential: true
     restoreDocumentAdd = undefined;
     restoreWindowAdd = undefined;
     H.connectOpts = null;
+    H.sessionState = 'hidden';
     vi.unstubAllGlobals();
     rafCallback = null;
     document.body.innerHTML = '';
@@ -422,6 +476,67 @@ describe('main.ts deletion-countdown banner (rb-51, PRV1-1)', { sequential: true
       'none',
     );
     expect(el.textContent, 'the banner must be created empty').toBe('');
+  });
+
+  it('★ RB51T-NOT-A-LIVE-REGION BITES: #privacy-countdown carries NO aria-live, no aria-atomic and no implicit-live role — at creation AND while showing', async () => {
+    // ADR-0231 Amendment A1-D4, and this is the ONLY tier that can see it. The repo's
+    // announcement gate `[A11Y-05a]` parses `client/index.html` with an HTML parser; this
+    // element does not exist in that file at all — it is created by `document.createElement`
+    // inside `main()`. So an `aria-live` attribute added at RUNTIME is invisible to every eval
+    // and every static markup scan in this repo, and nothing but a runtime read finds it.
+    //
+    // WRONG IMPL KILLED (1) ★ THE ONE THAT LOOKS LIKE A KINDNESS:
+    //   `privacyCountdownEl.setAttribute('aria-live', 'polite');` — added by someone reasoning
+    //   "it is important, so announce it". The banner's text changes ONCE PER SECOND, forever,
+    //   for the entire grace window. A polite live region re-utters on every change, so a
+    //   screen-reader user is interrupted every second for days and can hear nothing else,
+    //   including the overlay announcements `ui/liveRegion.ts` owns. That module is the SOLE
+    //   announcement owner in this client precisely so that coalescing is decided in one place.
+    // WRONG IMPL KILLED (2) ★ THE SNEAKIER SPELLING: `role="status"` / `role="alert"` /
+    //   `role="log"` / `role="timer"` / `role="marquee"`. Each of these carries an IMPLICIT
+    //   `aria-live` in the ARIA spec, so an assertion that only looked for the `aria-live`
+    //   ATTRIBUTE would wave every one of them through while the behaviour is identical (worse,
+    //   for `alert`, which is assertive).
+    // WRONG IMPL KILLED (3): `aria-atomic` — meaningless without a live region, and its
+    //   presence is the tell that someone is mid-way through adding one.
+    // WRONG IMPL KILLED (4): the attribute added not at creation but on the first frame that
+    //   has something to say (the "only announce when it matters" shape). That is why this
+    //   tooth re-checks AFTER a real countdown is on screen, not only at boot.
+    const store = await setupMain(GRACE_DAY_SCALE);
+
+    /** Roles whose ARIA mapping carries an implicit live region. */
+    const IMPLICIT_LIVE_ROLES = ['status', 'alert', 'log', 'timer', 'marquee'];
+
+    const assertSilent = (where: string): void => {
+      const el = countdownEl();
+      for (const attr of ['aria-live', 'aria-atomic', 'aria-relevant']) {
+        expect(
+          el.getAttribute(attr),
+          `${where}: #privacy-countdown must carry NO \`${attr}\`. A banner that changes every ` +
+            'second would interrupt an assistive-technology user continuously; ui/liveRegion.ts ' +
+            'stays the sole announcement owner (ADR-0231 Amendment A1-D4). This element is ' +
+            'created at RUNTIME, so [A11Y-05a] — which parses index.html — cannot see it.',
+        ).toBeNull();
+      }
+      const role = el.getAttribute('role');
+      expect(
+        IMPLICIT_LIVE_ROLES.indexOf(role ?? ''),
+        `${where}: #privacy-countdown must not carry an IMPLICITLY LIVE role (got ` +
+          `${JSON.stringify(role)}). ${JSON.stringify(IMPLICIT_LIVE_ROLES)} each map to an ` +
+          'implicit aria-live, so any of them reproduces the continuous-interruption defect ' +
+          'without the attribute this tooth would otherwise be looking for.',
+      ).toBe(-1);
+    };
+
+    assertSilent('at creation, before any frame');
+
+    // ...and again with a real, ticking countdown on screen. The expectShowing call is the
+    // anti-vacuity control: it proves the banner is genuinely rendering here, so "no live
+    // region" is a statement about a working banner and not about an inert one.
+    store.upsertAccount(LIVE_ROW);
+    runFrame(0, WALL_T0);
+    expectShowing(LABEL_AT_T0, 'the live grace window (anti-vacuity control)');
+    assertSilent('while a live countdown is showing');
   });
 
   // -------------------------------------------------------------------------------------
@@ -470,6 +585,94 @@ describe('main.ts deletion-countdown banner (rb-51, PRV1-1)', { sequential: true
     // The performance clock jumps 2s; the WALL clock is frozen at the same instant.
     runFrame(2_000, WALL_T0);
     expectShowing(LABEL_AT_T0, 'frame 2 (perf = 2000, wall unchanged)');
+  });
+
+  // -------------------------------------------------------------------------------------
+  // (a2) THE OTHER TWO SENTENCES REACH THE DOM. Added in the rb-51 review: every arm above
+  //      exercises a COMPUTED `grace` label, and every arm below exercises the "off" cases —
+  //      so `due` and DARK were rendered by nothing, and four wiring mutants lived in that gap.
+  // -------------------------------------------------------------------------------------
+
+  it('★ RB51T-DUE-REACHES-DOM BITES: walking the WALL clock across the deadline flips the banner to "Account deletion is due now"', async () => {
+    // ★ THE GAP THIS CLOSES: before this arm, no test in this file ever put the `due` phase on
+    // screen. `deriveDeletionCountdown` and `privacyBannerLabel` each have their own `due`
+    // coverage — but a WIRING that computed `due` correctly and then rendered nothing for it was
+    // invisible to every tier at once.
+    //
+    // WRONG IMPL KILLED (1) ★ THE MEASURED SURVIVOR: the `due` label suppressed at the seam —
+    //   e.g. `renderPrivacyCountdown(label === DUE_LABEL ? null : label)`, or a phase filter
+    //   that only forwards `grace`. The banner then BLANKS at the exact moment the deadline
+    //   arrives: the player's countdown runs to "1s" and the notice about their irreversible,
+    //   still-cancellable deletion vanishes from the screen. Every other tooth in this file
+    //   stays green, because none of them ever crosses the deadline.
+    // WRONG IMPL KILLED (2): `due` rendered as a countdown that keeps counting nothing
+    //   ("Account deletion in 0s") — the exact-string assertion is what separates the two.
+    // WRONG IMPL KILLED (3): an off-by-one at the SEAM — `BigInt(Date.now()) - 1n`, or a
+    //   `Math.ceil`/`Math.floor` slip on a clock that is already integral. Frame 3 sits EXACTLY
+    //   on the deadline, the single instant where one millisecond changes the SENTENCE: at
+    //   `now === deadline` the remaining time is a computed 0n and the phase is `due`, while at
+    //   `now === deadline - 1` it is 1ms and the banner reads "Account deletion in 0s" instead.
+    //   No other frame in this file can tell those two wirings apart.
+    // WRONG IMPL KILLED (4): a memo keyed on something that stops changing once the countdown
+    //   hits zero — the `grace`-to-`due` write would then never happen. Frames 3 and 4 are two
+    //   different clocks with the SAME label, so a memo that suppresses the repeat is fine and
+    //   a memo that suppressed the TRANSITION is not.
+    //
+    // The row never changes: only the wall clock moves. Nothing but the passage of time can be
+    // credited for any transition below.
+    const store = await setupMain(GRACE_MINUTE_SCALE);
+    store.upsertAccount(
+      accountOf({ status: 'PendingDeletion', deletionRequestedAtMs: WALL_T0_MS }),
+    );
+
+    runFrame(0, WALL_T0);
+    expectShowing('Account deletion in 45s', 'frame 1 (the whole window remains)');
+
+    runFrame(16, WALL_T0 + 44_000);
+    expectShowing('Account deletion in 1s', 'frame 2 (one second left — still `grace`)');
+
+    runFrame(32, WALL_T0 + 45_000);
+    expectShowing(DUE_LABEL, 'frame 3 (EXACTLY on the deadline — `due`, not "0s")');
+
+    runFrame(48, WALL_T0 + 90_000);
+    expectShowing(DUE_LABEL, 'frame 4 (well past the deadline — still `due`, never negative)');
+  });
+
+  it('★ RB51T-DARK-REACHES-DOM BITES: a PendingDeletion row with NO request timestamp renders the DARK sentence, never a confident "due now"', async () => {
+    // ★ ADR-0154's broke-vs-dark rule, AT THE WIRING SEAM — the one place it had no gate.
+    //
+    // WRONG IMPL KILLED (1) ★ THE MEASURED SURVIVOR, and it is the single most dangerous
+    //   mutation in this slice: `deletionRequestedAtMs: privacyAccount?.deletionRequestedAtMs ?? 0n`
+    //   in the frame's argument object. It looks like ordinary defensive coding. With `0n` the
+    //   deadline becomes `0n + graceMs`, which is ~55 years in the past against a real
+    //   `Date.now()`, so `deriveDeletionCountdown` returns a COMPUTED zero and the banner tells
+    //   a player whose remaining time is simply UNKNOWN — perhaps days away — that their
+    //   account deletion "is due now". `privacyModel.test.ts` cannot see it (the fabrication
+    //   happens at the call site, in main.ts, which is coverage-excluded), and
+    //   `privacyBanner.test.ts` cannot see it either (it is handed a countdown, not a row).
+    //   This assertion is the only thing standing there.
+    // WRONG IMPL KILLED (2): the DARK sentence suppressed to `null`, so the banner disappears
+    //   for an account that IS pending deletion — silence about a live irreversible process.
+    // WRONG IMPL KILLED (3): a fabricated `remainingMs ?? 0n` one layer up, rendering
+    //   'Account deletion in 0s' — the exact-string assertion separates all three outcomes.
+    //
+    // ANTI-VACUITY: the first half shows a real, computed countdown, so this arm can never pass
+    // because nothing was ever rendered. The wall clock is IDENTICAL across both frames — only
+    // the row changed, and only in the one field this test is about.
+    const store = await setupMain(GRACE_DAY_SCALE);
+    store.upsertAccount(LIVE_ROW);
+    runFrame(0, WALL_T0);
+    expectShowing(LABEL_AT_T0, 'the computed grace window (anti-vacuity control)');
+
+    store.upsertAccount(accountOf({ status: 'PendingDeletion', deletionRequestedAtMs: undefined }));
+    runFrame(16, WALL_T0);
+    expectShowing(DARK_LABEL, 'the DARK window: pending, but the remaining time is unknown');
+
+    // And the reverse edge, so the DARK arm is not a one-way trap either: the timestamp
+    // arriving on a later batch must restore the real countdown.
+    store.upsertAccount(LIVE_ROW);
+    runFrame(32, WALL_T0);
+    expectShowing(LABEL_AT_T0, 'the timestamp arrived — the computed countdown is back');
   });
 
   // -------------------------------------------------------------------------------------
@@ -565,6 +768,71 @@ describe('main.ts deletion-countdown banner (rb-51, PRV1-1)', { sequential: true
     // be credited for the banner going away.
     runFrame(16, WALL_T0);
     expectHidden('after the terminal marker landed');
+  });
+
+  // -------------------------------------------------------------------------------------
+  // (f) THE SESSION TERMINAL CLEARS THE BANNER — and it comes back. New behaviour in the
+  //     shipped wiring; nothing else in this repo exercises it.
+  // -------------------------------------------------------------------------------------
+
+  it('★ RB51T-SESSION-CLEARS BITES: a session terminal takes a LIVE banner down, and returning to `hidden` brings it back', async () => {
+    // The shipped frame body opens with
+    //   `if (sessionGateBlocks()) { renderPrivacyCountdown(null); return; }`
+    // and `sessionGateBlocks()` is `conn?.sessionState() !== 'hidden'` (main.ts's
+    // module-scope predicate). Two DIFFERENT decisions live in that one statement and this is
+    // the only test in the repo that can see either.
+    //
+    // WHY CLEARING IS THE RIGHT BEHAVIOUR, stated so a future reader does not "simplify" it
+    // back to a bare `return;`: once the session terminal is up, the store is no longer a live
+    // view of this account, and the person at the keyboard may not be the one who scheduled the
+    // deletion. A FROZEN deadline — the last value, pinned on screen forever while the tab sits
+    // behind an expired-session overlay — is both a stale claim about an irreversible legal
+    // process and a disclosure to whoever is looking at the screen.
+    //
+    // WRONG IMPL KILLED (1) ★ THE MEASURED SURVIVOR: a bare `if (sessionGateBlocks()) return;`
+    //   with no `renderPrivacyCountdown(null)` before it. The frame stops updating the banner
+    //   but never clears it, so the last rendered sentence — "Account deletion in 2d 3h 4m 5s"
+    //   — freezes on screen for the rest of the page's life. Phase 2 below is what sees it.
+    // WRONG IMPL KILLED (2) ★: the clear made PERMANENT — a latch, or the countdown block moved
+    //   above the gate so the terminal path also wipes the memo in a way the recovery cannot
+    //   undo. A session terminal is recoverable (`retry-connect` / `continue-anonymously` both
+    //   return `sessionState()` to 'hidden'), and a player who recovers must get their deadline
+    //   back. Phase 3 is what sees that.
+    // WRONG IMPL KILLED (3): a gate written as `sessionState() === 'expired'` — it would let a
+    //   'unreachable' terminal keep the banner live. Phase 4 uses the OTHER terminal value.
+    // WRONG IMPL KILLED (4): the gate inverted (`=== 'hidden'` blocks) — phase 1 would already
+    //   fail, because the ordinary case would clear instead of render.
+    //
+    // The WALL CLOCK IS IDENTICAL on every frame below. Nothing about the passage of time, and
+    // nothing about the account row, can be credited for a single transition here — the only
+    // input that moves is `sessionState()`.
+    const store = await setupMain(GRACE_DAY_SCALE);
+    store.upsertAccount(LIVE_ROW);
+
+    // Phase 1 — the ordinary case: 'hidden' does NOT block, and the banner renders.
+    runFrame(0, WALL_T0);
+    expectShowing(LABEL_AT_T0, 'phase 1: sessionState() === hidden (the ordinary case)');
+
+    // Phase 2 — the session expires. The deadline must come DOWN, not freeze.
+    H.sessionState = 'expired';
+    runFrame(16, WALL_T0);
+    expectHidden('phase 2: sessionState() === expired');
+
+    // Phase 3 — the player recovers (retry / continue-anonymously). The deadline is theirs
+    // again, and it is the SAME sentence: the row and the clock never moved.
+    H.sessionState = 'hidden';
+    runFrame(32, WALL_T0);
+    expectShowing(LABEL_AT_T0, 'phase 3: back to hidden — the banner must return');
+
+    // Phase 4 — the OTHER terminal value, so the gate cannot be keyed on 'expired' alone.
+    H.sessionState = 'unreachable';
+    runFrame(48, WALL_T0);
+    expectHidden('phase 4: sessionState() === unreachable');
+
+    // Phase 5 — and back once more, so phase 4's clear is not a latch either.
+    H.sessionState = 'hidden';
+    runFrame(64, WALL_T0);
+    expectShowing(LABEL_AT_T0, 'phase 5: recovered from `unreachable` too');
   });
 
   // -------------------------------------------------------------------------------------

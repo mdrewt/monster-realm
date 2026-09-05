@@ -4696,8 +4696,12 @@ describe('★ index.html (uxd3, widened m23-s5/ADR-0206 A5): exactly ONE persist
     //
     // VERIFIED the expected set is UNCHANGED: index.html's only other inline `position:fixed`
     // nodes are `#help-overlay` and `#menu-overlay`, both `inset:0` (full-screen modal shells,
-    // filtered out below); `#status` and `#interact-prompt` are created at RUNTIME by
-    // main.ts, which this tooth — a static markup scan of index.html — never parses.
+    // filtered out below); `#status`, `#interact-prompt` and — as of rb-51 — the deletion
+    // countdown banner `#privacy-countdown` are created at RUNTIME by main.ts, which this tooth
+    // — a static markup scan of index.html — never parses. That is a STATED LIMIT of this
+    // tooth, not an oversight: `#privacy-countdown` is `position:fixed` and NOT `inset:0`, so
+    // it would join the expected set the day it moved into index.html. Its runtime shell is
+    // gated by main.privacyCountdown.test.ts (RB51T-SHELL / RB51T-NOT-A-LIVE-REGION) instead.
     //
     // WRONG IMPL KILLED (1): a second corner affordance shipped as
     //   `<a style="position:fixed;top:8px;right:8px">Menu</a>` — invisible to the old
@@ -11347,5 +11351,401 @@ describe('★ main.ts wiring (rb-51/PRV1-1): the deletion countdown reads the wa
           'the shipped bundle while every unit test (which runs with DEV true) stays green.',
       ).toBe(false);
     }
+  });
+
+  it('★ W-RB51-DEV-GATE-CENSUS BITES: main.ts has exactly ONE `if (import.meta.env.DEV)` gate, exactly FOUR `import.meta.env.DEV` reads, and ZERO of either inside the frame loop', () => {
+    // ★ WHY THIS EXISTS — W-RB51-NOT-DEV-GATED ABOVE IS NOT SUFFICIENT, MEASURED. That tooth
+    // locates "the DEV gate" through `devGateIndex`, whose needle is
+    // `'\nif (import.meta.env.DEV) {'` — a LEADING NEWLINE, i.e. an `if` at COLUMN 0. That
+    // narrowing is correct and load-bearing for the F-5 family (it is what stopped the gate
+    // resolving to a prose mention), but it has an exact, exploitable consequence here: an
+    // INDENTED, NESTED second gate is invisible to it. Wrapping the countdown block inside
+    // `main()` in
+    //     if (import.meta.env.DEV) {
+    //       const privacyAccount = store.ownAccount(identity);
+    //       renderPrivacyCountdown(privacyBannerLabel(deriveDeletionCountdown({ … })));
+    //     }
+    // ships a production bundle — after Vite's define-replacement and the minifier's
+    // dead-branch elimination — in which the countdown NEVER RENDERS FOR ANY PLAYER, while
+    // vitest and `vite dev` (both `DEV === true`) keep every runtime tooth in
+    // main.privacyCountdown.test.ts green and W-RB51-NOT-DEV-GATED green with them, because the
+    // block it extracts is still the column-0 hook gate and the countdown is not in it.
+    //
+    // The kill is a CENSUS, not a region scan: a nested gate cannot be hidden from a count.
+    // Both numbers are stated, both are DELIBERATE-REVIEW gates, and the four sites are named
+    // so a future reader can tell "a legitimate fifth env read" from "a second gate".
+    //
+    // WRONG IMPL KILLED (1) ★ THE MEASURED SURVIVOR: the indented, nested gate above (gate
+    //   count 1 -> 2, read count 4 -> 5).
+    // WRONG IMPL KILLED (2): the same gate spelled so the `if (…)` needle misses it —
+    //   `if (import.meta.env.DEV === true) {`, or a hoisted
+    //   `const isDev = import.meta.env.DEV;` consumed as `if (isDev) {`. Neither raises the
+    //   GATE count, and both raise the READ count, which is why the second census exists.
+    // WRONG IMPL KILLED (3): any env-conditional inside the frame body at all — the region ban
+    //   below catches a spelling that somehow satisfies both counts (e.g. moving one of the
+    //   three existing module-scope reads INTO the frame).
+    //
+    // Code-aware throughout (`m20cScan` + `mwCodeOccurrences`): comments are stripped, so the
+    // rationale prose at the `mrTradeHook` / `mrPvpHook` declarations cannot pad either count,
+    // and a decoy string literal cannot either.
+    const code = m20cScan(readMainTs()).code;
+
+    // ANTI-VACUITY: a token unrelated to this slice, so it holds before and after any change
+    // here. Zero occurrences means the scan is reading an empty or truncated string and every
+    // census below would be trivially satisfied at 0.
+    expect(
+      mwCodeOccurrences(code, 'import.meta.env.VITE_STDB_URI').length,
+      'positive control: main.ts must read `import.meta.env.VITE_STDB_URI` AS CODE — proves ' +
+        'this tooth is scanning real, comment-stripped main.ts and not an empty string',
+    ).toBe(1);
+
+    expect(
+      mwCodeOccurrences(code, 'if (import.meta.env.DEV)').length,
+      'main.ts must contain EXACTLY ONE `if (import.meta.env.DEV)` GATE — the D-17.5-E / ' +
+        'ADR-0127 test-hook block that assigns __game / __mrTrade / __mrPvp. A SECOND gate ' +
+        '(indented and nested inside main(), which `devGateIndex`’s column-0 needle cannot ' +
+        'see) is how production wiring gets dead-code-eliminated out of the shipped bundle ' +
+        'while every DEV-true unit test stays green. If a second gate is genuinely wanted, ' +
+        'raise this number in the same review that says WHAT it gates and why — do not edit ' +
+        'it to match the code.',
+    ).toBe(1);
+
+    expect(
+      mwCodeOccurrences(code, 'import.meta.env.DEV').length,
+      'main.ts must READ `import.meta.env.DEV` at EXACTLY FOUR code sites, and they are these ' +
+        'four: (1) the `resolveConnectionConfig(` module-scope call (pt-a1/ADR-0128 prod-vs-dev ' +
+        'target), (2) the `resolveDevLogLevel(` module-scope call (ADR-0157 dev-rethrows / ' +
+        'prod-degrades asymmetry), (3) the `resolveTelemetryConfig(` module-scope call ' +
+        '(m20c/ADR-0180), and (4) the ONE `if (import.meta.env.DEV) {` test-hook gate. A FIFTH ' +
+        'read is, in practice, always a new gate wearing a spelling the gate census above ' +
+        'cannot see (`=== true`, or a hoisted `const isDev`), and a new gate around production ' +
+        'wiring ships a bundle where that wiring is absent for every real player.',
+    ).toBe(4);
+
+    // --- and NOTHING env-conditional inside the frame body ------------------------------
+    // Bounded to the frame loop, the region this slice actually added code to. The fences are
+    // the same pair W-M21B2-SESSION-GATE-FRAME uses, asserted unique AS CODE.
+    const FRAME_START = 'const frame = (): void => {';
+    const FRAME_END = 'void main();';
+    const frameStartHits = mwCodeOccurrences(code, FRAME_START);
+    const frameEndHits = mwCodeOccurrences(code, FRAME_END);
+    expect(frameStartHits.length, `\`${FRAME_START}\` must be unique AS CODE`).toBe(1);
+    expect(frameEndHits.length, `\`${FRAME_END}\` must be unique AS CODE`).toBe(1);
+    const frameRegion = code.slice(frameStartHits[0] as number, frameEndHits[0] as number);
+    expect(
+      frameRegion.includes('predictor.drain('),
+      'ANTI-VACUITY: the frame region must still contain `predictor.drain(` — if it does not, ' +
+        'the fences no longer bound the frame body and the ban below is satisfied for free',
+    ).toBe(true);
+    expect(
+      mwCodeOccurrences(frameRegion, 'import.meta.env').length,
+      'the per-frame render loop must contain ZERO `import.meta.env` references. Build-time ' +
+        'configuration is resolved ONCE at module scope in this file (three sites, named ' +
+        'above); an env read inside the frame is either a per-frame branch on a constant or — ' +
+        'the case that matters — a DEV gate wrapped around production rendering.',
+    ).toBe(0);
+  });
+
+  it('★ W-RB51-NO-FABRICATED-INPUT BITES: the deriveDeletionCountdown( argument object passes the account row through UNMODIFIED — no `??` default anywhere in it', () => {
+    // ★ ADR-0154's broke-vs-dark rule, defended AT THE CALL SITE — the one place neither pure
+    // suite can reach. `ui/privacyModel.test.ts` proves the DERIVATION never fabricates; it is
+    // handed an input record and cannot see who built it. main.ts builds it, and main.ts is
+    // excluded from the coverage denominator (`client/vite.config.ts`). A `??` written into
+    // this argument list is therefore invisible to every behavioural tier at once — with ONE
+    // exception, recorded honestly below.
+    //
+    // WRONG IMPL KILLED (1) ★ NAMED, and it is runtime-observable:
+    //   `deletionRequestedAtMs: privacyAccount?.deletionRequestedAtMs ?? 0n`. The deadline
+    //   becomes `0n + graceMs`, decades in the past against a real `Date.now()`, so a DARK
+    //   window — "pending, remaining time unknown" — renders as the confident sentence
+    //   "Account deletion is due now". main.privacyCountdown.test.ts's RB51T-DARK-REACHES-DOM
+    //   kills this one too; both tiers are kept because they fail with different diagnoses.
+    // WRONG IMPL KILLED (2) ★ NAMED, and THIS ONE HAS NO RUNTIME TIER:
+    //   `status: privacyAccount?.status ?? 'Active'`. It collapses the `unknown` phase into
+    //   `active` — precisely the "we do not know" / "we know it is fine" distinction ADR-0154
+    //   exists to preserve, and the same collapse `privacyModel.ts`'s own comment refuses
+    //   ("a tag added by a later milestone must not be silently treated as `Active`"). It is
+    //   NOT observable through this banner: both phases render `null`, so the DOM is
+    //   byte-identical in every reachable case, and a runtime arm written for it would be
+    //   permanently vacuous. This assertion is the ONLY gate on it. The collapse becomes
+    //   player-visible the moment rb-52 renders the delete/cancel/export controls off the same
+    //   input — `deletePermitted` and `exportPermitted` both differ between the two phases — so
+    //   this is a live defect being pinned early, not a hypothetical.
+    // WRONG IMPL KILLED (3): `terminalAtMs: privacyAccount?.terminalAtMs ?? 0n` — `0n` is a
+    //   VALID terminal marker (privacyModel.ts's `hasTerminalMarker` is presence-based on
+    //   purpose), so this reads EVERY account as permanently deleted: no countdown, and once
+    //   rb-52 lands, no cancel either.
+    // WRONG IMPL KILLED (4): a `||` fallback instead of `??` — the contiguous per-field needles
+    //   below carry their own trailing comma, so `privacyAccount?.status || 'Active'` fails
+    //   them even though it contains no `??`. The two clauses are belt and braces on purpose.
+    const stripped = stripLineComments(readMainTs());
+
+    expect(
+      countOccurrences(stripped, 'deriveDeletionCountdown('),
+      'main.ts must contain EXACTLY ONE `deriveDeletionCountdown(` call site — the per-frame ' +
+        'countdown. Zero means the seam is gone (W-RB51-SEAM-PRESENT says the same, louder); ' +
+        'two means a second, unpinned input object is being built somewhere this tooth is not ' +
+        'looking at.',
+    ).toBe(1);
+
+    // The file's ONE balanced-paren walker, on comment-stripped source, so a rationale comment
+    // inside the argument list cannot satisfy (or defeat) anything below. Whitespace-squashed
+    // so biome's line-wrapping of the object literal is irrelevant.
+    const args = squashWhitespace(callArgs(stripped, 'deriveDeletionCountdown('));
+
+    // ANTI-VACUITY: the walk really captured the argument object, not an empty slice.
+    expect(
+      args.trim().length,
+      'the deriveDeletionCountdown( argument list must be non-empty — an empty slice means the ' +
+        'balanced-paren walk resolved to the wrong `(` and every check below is vacuous',
+    ).toBeGreaterThan(0);
+    expect(
+      args.includes('graceMs: DELETION_GRACE_MS_DEFAULT,'),
+      'ANTI-VACUITY: the argument object must pass the module-scope wasm grace window as ' +
+        '`graceMs: DELETION_GRACE_MS_DEFAULT,` (ADR-0212) — if it does not, this slice is ' +
+        `scanning the wrong argument list. Got: ${JSON.stringify(args)}`,
+    ).toBe(true);
+
+    // The three ROW-DERIVED fields, each pinned as a CONTIGUOUS `key: value,` — the trailing
+    // comma is what makes `?? 'Active'` / `?? 0n` unwriteable without breaking the needle.
+    for (const field of [
+      'status: privacyAccount?.status,',
+      'deletionRequestedAtMs: privacyAccount?.deletionRequestedAtMs,',
+      'terminalAtMs: privacyAccount?.terminalAtMs,',
+    ] as const) {
+      expect(
+        args.includes(field),
+        `the deriveDeletionCountdown( argument object must carry the CONTIGUOUS \`${field}\` — ` +
+          'the account row is passed through UNMODIFIED, absences included. `undefined` here ' +
+          'is DATA, not a hole to be filled: it is how the pure core is told "the client does ' +
+          'not know", and every default written in its place converts an honest dark state ' +
+          'into a confident wrong one (ADR-0154). ' +
+          `Got: ${JSON.stringify(args)}`,
+      ).toBe(true);
+    }
+
+    // The whole-shape ban, so a FOURTH row-derived field added later inherits the rule without
+    // anyone having to remember to add a needle for it.
+    expect(
+      countOccurrences(args, '??'),
+      'the deriveDeletionCountdown( argument object must contain ZERO `??` operators. Every ' +
+        'field is either a straight read off the account row (absent when the row is absent, ' +
+        'which is the input the pure core is built to receive) or a module-scope constant. A ' +
+        'nullish default here is the broke-vs-dark inversion at the seam, and `main.ts` is ' +
+        `coverage-excluded, so nothing else in this repo sees it. Got: ${JSON.stringify(args)}`,
+    ).toBe(0);
+  });
+});
+
+// ===========================================================================
+// rb-51 — WHERE the countdown block sits INSIDE the frame body. Added in the rb-51 review,
+// after two placement mutants were measured GREEN against everything above.
+//
+// The frame body is a sequence, and this slice's code is correct only in one window of it.
+// Nothing in the repo pinned that window: `W-RB51-SEAM-PRESENT` proves the three calls exist,
+// `W-RB51-ONE-CALL-SITE` proves the wasm read is at module scope, and the runtime suite proves
+// the VALUES are right — but every one of them is satisfied by the block placed anywhere in the
+// frame at all. Two moves were measured, and both are behaviour changes main.ts's own comment
+// says the placement exists to prevent:
+//
+//   MUTANT A — the block moved to the BOTTOM of the frame, below `renderer?.render(...)`.
+//     The frame body is wrapped in ONE try/catch whose handler is a `console.error`; anything
+//     that throws in the render path (a wasm fault, a Pixi fault, a resolver fault) skips
+//     everything after it for that frame. Recurring, that is EVERY frame. The banner then
+//     freezes at whatever it last said — a stale, still-counting deadline for an irreversible
+//     legal process — and the only visible symptom is console noise. main.ts's comment states
+//     this in one line ("ABOVE the render path on purpose — a recurring throw below is
+//     swallowed by this frame's catch, and a frozen legal deadline is worse than a blank one");
+//     until this tooth, deleting that placement while keeping the comment cost nothing.
+//
+//   MUTANT B — the block moved ABOVE the session gate. The gate's whole job for this slice is
+//     `renderPrivacyCountdown(null); return;` — the deadline comes DOWN when the session
+//     terminal owns the screen. Above the gate, the block re-renders the deadline first and the
+//     gate then clears it in the SAME frame, so the value flickers rather than clearing; worse,
+//     an implementation that also drops the gate's `renderPrivacyCountdown(null)` (a natural
+//     "it's already handled above" tidy-up) leaves the deadline permanently on screen behind
+//     the expired-session overlay. RB51T-SESSION-CLEARS sees the second half; ORDER is the only
+//     thing that sees the first.
+//
+// RAW SOURCE for the ordering that involves the A11Y sentinel — it is a `//` comment and does
+// not survive comment-stripping — and a SECOND, INDEPENDENT pass over the comment-stripped,
+// string-literal-aware `code` for the four ordering points that are real statements. The two
+// index spaces are NEVER mixed (this file's standing rule); each pass computes its own indices
+// from its own text and compares only within itself.
+// ===========================================================================
+
+/** The frame body's fences. START is the closure declaration; END is the catch's error log —
+ *  chosen over `void main();` so the region is the TRY BODY, which is the thing whose statement
+ *  order this tooth is about. Both are asserted globally unique before use. */
+const RB51_FRAME_START = 'const frame = (): void => {';
+const RB51_FRAME_END = "console.error('[frame] uncaught error'";
+
+/** The five ordering points, in the order they must appear. Deliberately NOT asserted unique in
+ *  the WHOLE file — `if (sessionGateBlocks()) {` also opens the keydown handler,
+ *  `store.ownAccount(identity)` is also read in the claim-result handler, and
+ *  `renderPrivacyCountdown(` is also the closure's own declaration. Each one's count is pinned
+ *  INSIDE THE REGION instead, which is both correct and stricter here. */
+const RB51_SESSION_GATE = 'if (sessionGateBlocks()) {';
+const RB51_RENDER_CALL = 'renderPrivacyCountdown(';
+const RB51_A11Y_END = '// M23S5-A11YSNAPSHOT-END';
+const RB51_ROW_READ = 'store.ownAccount(identity)';
+const RB51_DRAIN = 'predictor.drain(';
+
+describe('★ main.ts wiring (rb-51/PRV1-1): the countdown block sits between the session gate and the render path', () => {
+  it('★ W-RB51-FRAME-PLACEMENT BITES: inside the frame body the order is session gate -> its clear -> the a11y block -> the countdown block -> predictor.drain(', () => {
+    // WRONG IMPL KILLED (1) ★ MUTANT A (see the section header): the countdown block moved
+    //   BELOW `predictor.drain(` / the render path. Clause (4) reds.
+    // WRONG IMPL KILLED (2) ★ MUTANT B: the countdown block moved ABOVE the session gate.
+    //   Clause (1) reds — the FIRST `renderPrivacyCountdown(` in the region would then be the
+    //   block's own call, which precedes the gate.
+    // WRONG IMPL KILLED (3): the gate's `renderPrivacyCountdown(null)` deleted, leaving a bare
+    //   `if (sessionGateBlocks()) return;` — the region count of `renderPrivacyCountdown(`
+    //   drops from 2 to 1. (RB51T-SESSION-CLEARS is the behavioural half of the same kill; this
+    //   is the structural one, and it names the missing statement rather than a stale label.)
+    // WRONG IMPL KILLED (4): the countdown block hoisted INTO or ABOVE the M23S5-A11YSNAPSHOT
+    //   block, which owns the ONE announcement edge and the ONE focus return at the very top of
+    //   the frame (ADR-0206 D3). Clause (3) reds.
+    // WRONG IMPL KILLED (5): a THIRD `renderPrivacyCountdown(` call somewhere in the frame — a
+    //   second write path for one element, which is how two sources of truth for a DOM node
+    //   start. The region count of exactly 2 reds.
+    const src = readMainTs();
+    expectUniqueAnchor(src, RB51_FRAME_START);
+    expectUniqueAnchor(src, RB51_FRAME_END);
+    const region = regionOrThrow(src, RB51_FRAME_START, RB51_FRAME_END);
+
+    // --- ANTI-VACUITY: the region really is the frame's try body ------------------------
+    // Two statements from OPPOSITE ends of it, neither owned by this slice, so a mis-bounded
+    // or collapsed slice reds here rather than making every ordering compare trivially true.
+    expect(
+      region.includes('liveRegion.flush(now);'),
+      'ANTI-VACUITY: the frame region must contain `liveRegion.flush(now);` (its TOP, inside ' +
+        'M23S5-A11YSNAPSHOT) — if it does not, these fences no longer bound the frame try body',
+    ).toBe(true);
+    expect(
+      region.includes('interactPromptEl.style.display'),
+      'ANTI-VACUITY: the frame region must contain the interact-prompt write at its BOTTOM — ' +
+        'same bail-out, from the other end, so a truncated region cannot pass',
+    ).toBe(true);
+
+    // --- the five ordering points resolve, with the multiplicities this tooth assumes ----
+    for (const [needle, count, why] of [
+      [RB51_SESSION_GATE, 1, 'the frame’s session-terminal early return'],
+      [RB51_RENDER_CALL, 2, 'the gate’s clear AND the countdown block’s render — exactly two'],
+      [RB51_A11Y_END, 1, 'the a11y snapshot block’s closing sentinel'],
+      [RB51_ROW_READ, 1, 'the countdown block’s own account-row read'],
+      [RB51_DRAIN, 1, 'the drain that opens the render path'],
+    ] as const) {
+      expect(
+        countOccurrences(region, needle),
+        `the frame region must contain \`${needle}\` EXACTLY ${count} time(s) — ${why}. A ` +
+          'different count means either the statement moved out of the frame (and the ordering ' +
+          'below would compare against -1) or a second copy appeared (and `indexOf` would pick ' +
+          'an arbitrary one).',
+      ).toBe(count);
+    }
+
+    const gateIdx = region.indexOf(RB51_SESSION_GATE);
+    const clearIdx = region.indexOf(RB51_RENDER_CALL);
+    const a11yEndIdx = region.indexOf(RB51_A11Y_END);
+    const rowIdx = region.indexOf(RB51_ROW_READ);
+    const renderIdx = region.indexOf(RB51_RENDER_CALL, clearIdx + RB51_RENDER_CALL.length);
+    const drainIdx = region.indexOf(RB51_DRAIN);
+
+    // --- (1) the session gate comes FIRST, and its clear is INSIDE it --------------------
+    expect(
+      gateIdx,
+      'MUTANT B: the session gate `if (sessionGateBlocks()) {` must precede EVERY ' +
+        '`renderPrivacyCountdown(` call in the frame. Below the countdown block, the frame ' +
+        'paints the deadline and then clears it in the same tick — and a tidy-up that drops ' +
+        'the gate’s own clear (as redundant) leaves a stale, frozen legal deadline on screen ' +
+        'behind the expired-session overlay for the rest of the page’s life.',
+    ).toBeLessThan(clearIdx);
+
+    // --- (2) that first call is the gate's clear, above the a11y block -------------------
+    expect(
+      clearIdx,
+      'the gate’s `renderPrivacyCountdown(null)` must sit INSIDE the early-return branch, i.e. ' +
+        'above the M23S5-A11YSNAPSHOT block — it is the statement that takes the deadline DOWN ' +
+        'when the session terminal owns the screen (rb-51, ADR-0231 Amendment A1)',
+    ).toBeLessThan(a11yEndIdx);
+
+    // --- (3) the countdown block sits BELOW the a11y snapshot block ----------------------
+    expect(
+      a11yEndIdx,
+      'the countdown block must sit BELOW the M23S5-A11YSNAPSHOT block, not inside or above ' +
+        'it. That block owns the ONE announcement edge and the ONE focus return (ADR-0206 D3) ' +
+        'and is pinned BYTE-FOR-BYTE by W-M23S5-LIVEREGION-PUMP — code interleaved into it reds ' +
+        'that exact-equality tooth for a confusing reason instead of this one.',
+    ).toBeLessThan(rowIdx);
+
+    // --- (4) ...and ABOVE the render path. THE MUTANT-A CLAUSE. --------------------------
+    expect(
+      rowIdx,
+      'MUTANT A: the countdown block (`const privacyAccount = store.ownAccount(identity);` and ' +
+        'the render that follows it) must sit ABOVE `predictor.drain(` and therefore above the ' +
+        'whole render path. main.ts says why in one line, and this is the tooth that makes the ' +
+        'line true: the frame body has ONE try/catch, so a RECURRING throw below — a wasm, ' +
+        'Pixi or resolver fault — silently skips every statement after it, every frame. The ' +
+        'banner would then FREEZE at its last value: a stale countdown for an irreversible ' +
+        'deletion, with no symptom but console noise. A blank banner is a bug; a frozen legal ' +
+        'deadline is a lie.',
+    ).toBeLessThan(drainIdx);
+    expect(
+      rowIdx,
+      'the account row must be read BEFORE the render that consumes it (the block is ' +
+        '`const privacyAccount = …;` then `renderPrivacyCountdown(privacyBannerLabel(…))`)',
+    ).toBeLessThan(renderIdx);
+    expect(
+      renderIdx,
+      'the countdown block’s own `renderPrivacyCountdown(` must also precede `predictor.drain(`' +
+        ' — pinning only the row read would let the render alone drift below the render path',
+    ).toBeLessThan(drainIdx);
+
+    // --- (5) THE SAME ORDER, INDEPENDENTLY, IN CODE SPACE ---------------------------------
+    // The pass above reads RAW source, because the A11Y sentinel IS a comment. Raw source is
+    // also forgeable: a comment carrying `predictor.drain(` planted above the countdown block
+    // would skew clause (4) while changing no code. This second pass re-derives every index
+    // from the comment-stripped, string-literal-aware `code` of the SAME region and re-asserts
+    // the four statement-only comparisons. Indices from the two passes are never compared with
+    // each other — each block is self-contained, which is this file's standing rule about
+    // mixing stripped and raw offsets.
+    const regionCode = m20cScan(region).code;
+    expect(
+      regionCode.includes('liveRegion.flush(now);'),
+      'ANTI-VACUITY: the comment-stripped frame region must still contain `liveRegion.flush(now);`',
+    ).toBe(true);
+    const codeGate = mwCodeOccurrences(regionCode, RB51_SESSION_GATE);
+    const codeRender = mwCodeOccurrences(regionCode, RB51_RENDER_CALL);
+    const codeRow = mwCodeOccurrences(regionCode, RB51_ROW_READ);
+    const codeDrain = mwCodeOccurrences(regionCode, RB51_DRAIN);
+    expect(codeGate.length, `\`${RB51_SESSION_GATE}\` must occur once AS CODE in the frame`).toBe(
+      1,
+    );
+    expect(
+      codeRender.length,
+      `\`${RB51_RENDER_CALL}\` must occur exactly twice AS CODE in the frame — the gate's clear ` +
+        "and the countdown block's render. A decoy string literal counts for neither.",
+    ).toBe(2);
+    expect(codeRow.length, `\`${RB51_ROW_READ}\` must occur once AS CODE in the frame`).toBe(1);
+    expect(codeDrain.length, `\`${RB51_DRAIN}\` must occur once AS CODE in the frame`).toBe(1);
+    expect(
+      codeGate[0] as number,
+      'CODE-SPACE re-check of MUTANT B: the session gate precedes the first ' +
+        'renderPrivacyCountdown( STATEMENT (not merely the first mention of it)',
+    ).toBeLessThan(codeRender[0] as number);
+    expect(
+      codeRender[0] as number,
+      'CODE-SPACE: the gate’s clear precedes the countdown block’s row read',
+    ).toBeLessThan(codeRow[0] as number);
+    expect(
+      codeRow[0] as number,
+      'CODE-SPACE re-check of MUTANT A: the countdown block’s row read precedes ' +
+        '`predictor.drain(` as a STATEMENT — a comment planted above the block cannot satisfy ' +
+        'this the way it could satisfy the raw-source pass',
+    ).toBeLessThan(codeDrain[0] as number);
+    expect(
+      codeRender[1] as number,
+      'CODE-SPACE: the countdown block’s render precedes `predictor.drain(` too',
+    ).toBeLessThan(codeDrain[0] as number);
   });
 });

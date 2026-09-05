@@ -186,11 +186,18 @@ Self-amendment; no new ADR number was minted (the ADR-0104 precedent). rb-51 dis
 `R-m22-s8-X9` — PRV1-1's "ticking countdown in a rendered surface" — and made four decisions this
 ADR's deferral did not anticipate. They are recorded here so rb-52 does not re-litigate them.
 
-- **A1-D1 — the countdown is a passively-visible HUD banner, not a registry overlay.** PRV1-1 reads
-  "WHEN the deletion grace window is live THE PLAYER SHALL *see* a ticking countdown"; a modal only
-  satisfies that after the player opens something, whereas the sibling residual `R-m22-s8-X10`
-  (rb-52) is explicitly "WHEN the player *opens* the privacy surface". So the banner is the right
-  shape for X9 and the modal is the right shape for X10. Mechanically it also keeps the slice
+**Where "s8b" went.** This ADR's deferral target `m22-s8b` was never built as one slice: its three
+criteria were promoted into residuals `R-m22-s8-X9/X10/X11` and queued as **rb-51 / rb-52 / rb-53**.
+Read every "s8b" above as that trio. rb-51 is X9 only.
+
+- **A1-D1 — the countdown is a passively-visible HUD banner, not a registry overlay.** The criterion
+  rb-51 answers is the promoted residual `R-m22-s8-X9`
+  (`specs/monster-realm-v2/M-residual-backlog.spec.md`, section rb-51), whose EARS reads "WHEN the
+  deletion grace window is live THE PLAYER SHALL see a ticking countdown to the reaper fire in a
+  rendered surface" — NOT M22 §7.4's PRV1-1, which is the server-side `delete_account` transition.
+  A modal only satisfies "shall see" after the player opens something, whereas the sibling residual
+  `R-m22-s8-X10` (rb-52) is explicitly "WHEN the player *opens* the privacy surface". So the banner
+  is the right shape for X9 and the modal is the right shape for X10. Mechanically it also keeps the slice
   inside its declared `client/**` touches: a new `client/src/ui/*View.ts` is pinned by
   `overlayRegistry.test.ts`'s readdir-derived OR-MANIFEST-COMPLETE and by
   `evals/overlay-a11y-manifest.eval.mjs`'s frozen `KNOWN_VIEW_FILES` roster, and the latter is
@@ -199,14 +206,22 @@ ADR's deferral did not anticipate. They are recorded here so rb-52 does not re-l
   (ADR-0161 D6), so it also stays clear of `W-ONE-CORNER-AFFORDANCE`, which parses static markup.
 - **A1-D2 — the change-detection memo is keyed on the RENDERED LABEL.** This is a DOM-write economy
   choice, not a correctness one: the derived remaining time changes every frame, the label once a
-  second. (A `remainingMs` key would be behaviourally equivalent — the plan-phase red-team measured
-  it — so no stronger claim is made.) The memo's `else` branch is load-bearing: without it a
-  cancelled deletion leaves a frozen notice on screen for the rest of the session.
+  second. (A `remainingMs` key would render the same text — the plan-phase red-team measured that
+  it is strictly finer — so the only claim made here is about DOM writes, not behaviour. The write
+  count itself is not pinned by a test.) The memo's hide arm IS load-bearing: without it a
+  cancelled deletion leaves a frozen notice on screen for the rest of the page's life.
 - **A1-D3 — the wasm grace is read ONCE, at module scope**, as `DELETION_GRACE_MS_DEFAULT`
   (deliberately NOT the spelling `DELETION_GRACE_MS`, which ADR-0230 declares a phantom). A
   per-frame read would cross the wasm boundary ~60x/s for a build constant. The dependency is
   proven behaviourally — two different mocked windows produce two different labels — never by a
   call-site text pin alone.
+- **A1-D5 — the frame's session gate CLEARS the banner rather than freezing it.** `frame` returns
+  early while the session terminal is up (`sessionGateBlocks()`), which would otherwise leave a
+  `position: fixed` deletion deadline on screen after the session expired — at exactly the moment
+  the store has stopped being a live view of that account and a different person may be at the
+  keyboard. The early-return path therefore renders `null` first. (`#interact-prompt`, which
+  freezes a transient hint under the same gate, is left as it is: a stale hint is not a stale legal
+  deadline.)
 - **A1-D4 — the banner is deliberately not a live region**, and carries no implicit-live role: a
   surface that changes every second would interrupt an assistive-technology user continuously, and
   `ui/liveRegion.ts` stays the sole owner of `#a11y-live`. **DEFERRED, named:** a ONE-SHOT
