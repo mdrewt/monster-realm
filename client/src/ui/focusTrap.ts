@@ -50,7 +50,7 @@
 // inside a 96%-line-coverage denominator.
 //
 // THE `tabindex="-1"` ANCHORS ARE OUTSIDE THE RING ON PURPOSE. The `initialFocusSelector` of ten of
-// the sixteen overlays (ui/overlayRegistry.ts OVERLAY_A11Y) is a heading, list or status line that
+// the seventeen overlays (ui/overlayRegistry.ts OVERLAY_A11Y) is a heading, list or status line that
 // S2/S4 give `tabindex="-1"`. `[tabindex]:not([tabindex="-1"])` excludes them from the tab ring
 // while `ui/overlayA11y.ts` still focuses them programmatically on open — the ARIA APG dialog
 // pattern: the dialog's name is announced on open, but Tab never lands back on the heading.

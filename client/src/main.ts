@@ -415,7 +415,7 @@ function overlayVerdict(id: OverlayId): CanOpenVerdict {
 // UXD3C-CANOPEN-END
 
 /** uxd2 (ADR-0161 D4), rewired by uxd3-b (ADR-0163): the ONE shared predicate over the
- *  15 mutual-exclusion overlays. Every per-overlay read now lives in `overlayProbes`
+ *  17 mutual-exclusion overlays. Every per-overlay read now lives in `overlayProbes`
  *  above — this body holds none. Six consumers: the four negated fan-out surfaces, the
  *  deferred shop-open gate and the frame-loop prompt. The hotkey handlers still keep
  *  their inline guard lists (each exempts its own overlay); routing those through

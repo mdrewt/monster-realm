@@ -28,10 +28,11 @@
 //     renders the result through `ui/privacyBanner.ts`. Every "the caller drives this from a
 //     per-frame tick" note below is about THAT code, and it is real code today.
 //   * the REDUCER CALL SITES (delete / cancel / export) and the DELETE-CANCEL UI surface are
-//     rb-52 (residual R-m22-s8-X10) — still deferred.
+//     rb-52 (residual R-m22-s8-X10) — SHIPPED. `main.ts`'s `applyPrivacy` drives `privacyStep`
+//     and executes its effects through `conn.reducers`, and `ui/privacyView.ts` renders the
+//     surface from `ui/privacyBanner.ts`'s `buildPrivacyViewModel`.
 //   * the EXPORT TRANSPORT + download is rb-53 (residual R-m22-s8-X11) — still deferred.
-// So `privacyStep`, `PrivacyNotice` and `rejectMessage` have no caller yet; `PrivacyPhase`,
-// `DeletionCountdown` and `deriveDeletionCountdown` have exactly one.
+// So `privacyStep`, `PrivacyNotice` and `rejectMessage` now have a production caller too.
 //
 // THE CONTRACT THE IMPLEMENTER BUILDS (verbatim from the m22-s8 plan's "Interfaces (frozen
 // seam)" section; do not invent variants):

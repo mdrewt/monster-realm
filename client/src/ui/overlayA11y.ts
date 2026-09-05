@@ -15,7 +15,7 @@
 // `ui/tradeProposeView.ts:124` and the behaviour must be identical.
 //
 // The scheduler stays a REAL `setTimeout` rather than an injected one: injecting it would add a
-// parameter all sixteen S3/S4 call sites must fill, for a seam only the tests want. The defer is
+// parameter all seventeen S3/S4 call sites must fill, for a seam only the tests want. The defer is
 // pinned by both polarities instead — synchronously after `openOverlayA11y` the target is NOT
 // focused; after a real macrotask boundary it IS.
 //

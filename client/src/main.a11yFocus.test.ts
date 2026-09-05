@@ -310,7 +310,7 @@ function runFrame(atMs: number): void {
  *  battle/claim), which ship no markup ARIA of their own. For a static shell,
  *  `closest('[role="dialog"]')` is therefore non-null WHETHER THE OVERLAY IS OPEN OR
  *  CLOSED — role presence alone silently degenerates to "always true" for eleven of the
- *  sixteen overlays (this is exactly what made an earlier version of this helper produce a
+ *  seventeen overlays (this is exactly what made an earlier version of this helper produce a
  *  false positive on every static shell). `style.display` is the one signal EVERY view's
  *  `show()`/`hide()` writes in BOTH families — even `MenuView.show()`/`hide()`
  *  (`ui/menuView.ts:78-84`), which does not call `openOverlayA11y` at all today — so it is
@@ -359,7 +359,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
 
     vi.resetModules();
     await import('./main');
-    // main() awaits 17 dynamic view imports, then constructs all 16 views (renderer.init
+    // main() awaits 17 dynamic view imports, then constructs all 17 views (renderer.init
     // is awaited BEFORE connect() is called), then calls connect() — so by the time
     // H.connectOpts resolves, #app's canvas and every overlay view already exist.
     opts = await vi.waitFor(
