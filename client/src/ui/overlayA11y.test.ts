@@ -14,7 +14,7 @@
 // ENVIRONMENT: happy-dom — ARIA attributes, focus(), document.activeElement, and a real
 // `setTimeout(...,0)` macrotask flush all need a DOM. The module's deferred-focus timer is a REAL
 // timer by design (plan §Purity seams: injecting a scheduler here would add a parameter all
-// sixteen S3/S4 call sites must fill for zero benefit) — flushed below with a real
+// seventeen S3/S4 call sites must fill for zero benefit) — flushed below with a real
 // `await new Promise((r) => setTimeout(r, 0))`, never fake timers (house rule, F3).
 //
 // TEST-ISOLATION DEVICE (deliberate, not boilerplate): overlayA11y.ts holds ONE module-private
@@ -34,7 +34,7 @@
 // WRONG-IMPL-KILLED index:
 //   - synchronous focus (renameView.ts:101's bug, re-introduced)  -> S1-DEFER-NOT-SYNC / S1-DEFER-THEN-FOCUSED
 //   - pending timer not cancelled on same-tick close             -> S1-DEFER-NO-STEAL-AFTER-CLOSE
-//   - ARIA set from a literal instead of OVERLAY_A11Y             -> S1-ARIA-ALL-16
+//   - ARIA set from a literal instead of OVERLAY_A11Y             -> S1-ARIA-ALL-17
 //   - a display:none node left claiming to be a dialog            -> S1-ARIA-STRIPPED-ON-CLOSE
 //   - trap never installed / never uninstalled                    -> S1-TRAP-WIRED-ON-OPEN
 //   - leaky/mis-keyed return-focus map                            -> S1-RETURNFOCUS-RESTORE / -DETACHED-FALLBACK / -DOUBLE-OPEN
@@ -42,7 +42,7 @@
 //
 // RED-TEAM ROUND 2 (measured hole, PARTIALLY closed below by a TRIPWIRE, UNTAGGED addition):
 // `root.setAttribute('role', meta.role)` was replaced with the literal
-// `root.setAttribute('role', 'dialog')` and S1-ARIA-ALL-16's full 16-way parameterisation still
+// `root.setAttribute('role', 'dialog')` and S1-ARIA-ALL-17's full 17-way parameterisation still
 // passed, because EVERY entry in OVERLAY_A11Y currently uses role: 'dialog' — the manifest has
 // zero variance on that field, so no amount of looping over it can distinguish a real per-id
 // table read from a hardcoded literal. `A11yMeta.role` is a two-member union
@@ -69,7 +69,7 @@ async function flushMacrotask(): Promise<void> {
  *  `#id` (the twelve static-shell overlays). A bare `<div>` with no `tabindex` is used in BOTH
  *  cases — DELIBERATELY, not for convenience: red-team MEASURED that happy-dom focuses a bare
  *  `<div>` with no tabindex, which a real browser would NOT (A6 in the plan adjudication). Using a
- *  `<button>` here would dodge that real shape entirely (ten of the sixteen real selectors are
+ *  `<button>` here would dodge that real shape entirely (ten of the seventeen real selectors are
  *  headings/lists/status lines, never natively focusable elements). This proves the focus CALL
  *  targeted the right element — NOT that a browser would honour it; that property belongs to
  *  S2/S4/S10 and the nightly axe/E2E run (plan risk R1). */
@@ -168,7 +168,7 @@ describe('openOverlayA11y — deferred initial focus, ONE macrotask, no synchron
 // ---------------------------------------------------------------------------
 
 describe('openOverlayA11y/closeOverlayA11y — ARIA attribute writes and focus-trap wiring (S1-ARIA)', () => {
-  it('S1-ARIA-ALL-16 BITES: opening each of the 16 overlays sets role/aria-modal/aria-label from OVERLAY_A11Y, id-DERIVED, never a literal', () => {
+  it('S1-ARIA-ALL-17 BITES: opening each of the 17 overlays sets role/aria-modal/aria-label from OVERLAY_A11Y, id-DERIVED, never a literal', () => {
     // WRONG IMPL KILLED: a literal (e.g. always role="dialog" aria-label="Overlay") would pass
     // for one id and fail the other fifteen once parameterised over the full manifest.
     //
@@ -176,10 +176,10 @@ describe('openOverlayA11y/closeOverlayA11y — ARIA attribute writes and focus-t
     // unchanged): the `role` assertion below is currently a PARTIAL tooth. Every OVERLAY_A11Y
     // entry today has role: 'dialog', so this loop cannot distinguish
     // `root.setAttribute('role', meta.role)` from the hardcoded `root.setAttribute('role',
-    // 'dialog')` — both produce byte-identical output for all sixteen ids. See the
+    // 'dialog')` — both produce byte-identical output for all seventeen ids. See the
     // "TRIPWIRE" describe block below in this file for the deliberate trap that reds the day
     // that stops being true, and forces a real per-id role assertion to be added then.
-    expect(OVERLAY_IDS.length, 'ANTI-VACUITY').toBe(16);
+    expect(OVERLAY_IDS.length, 'ANTI-VACUITY').toBe(17);
     let checked = 0;
     for (const id of OVERLAY_IDS) {
       const { root } = mountRootFor(id);
@@ -195,7 +195,7 @@ describe('openOverlayA11y/closeOverlayA11y — ARIA attribute writes and focus-t
       closeOverlayA11y(id, null);
       checked += 1;
     }
-    expect(checked, 'ANTI-VACUITY: all 16 ids must have been exercised').toBe(16);
+    expect(checked, 'ANTI-VACUITY: all 17 ids must have been exercised').toBe(17);
   });
 
   it('S1-ARIA-STRIPPED-ON-CLOSE BITES: role, aria-modal and aria-label are all removed on close — a display:none node must not keep claiming to be a dialog', () => {
@@ -357,10 +357,10 @@ describe('closeOverlayA11y — return-focus map, detached-target fallback, and n
 describe('OVERLAY_A11Y — role tripwire (deliberate trap door, not a regression guard)', () => {
   it('untagged: TRIPWIRE — every OVERLAY_A11Y role is currently "dialog"; this MUST red the day that stops being true', () => {
     // This is a DELIBERATE TRIPWIRE, not a real regression guard: it pins the current fact that
-    // all sixteen OVERLAY_A11Y entries use role: 'dialog'. Because the manifest has zero variance
-    // on this field today, S1-ARIA-ALL-16's 16-way parameterised role assertion cannot distinguish
+    // all seventeen OVERLAY_A11Y entries use role: 'dialog'. Because the manifest has zero variance
+    // on this field today, S1-ARIA-ALL-17's 17-way parameterised role assertion cannot distinguish
     // `root.setAttribute('role', meta.role)` from a hardcoded `root.setAttribute('role',
-    // 'dialog')` (red-team round 2, MEASURED — both keep S1-ARIA-ALL-16 green). There is no public
+    // 'dialog')` (red-team round 2, MEASURED — both keep S1-ARIA-ALL-17 green). There is no public
     // API to inject a synthetic role into OVERLAY_A11Y from a test, so this cannot be turned into
     // a real per-id assertion today.
     //
@@ -369,7 +369,7 @@ describe('OVERLAY_A11Y — role tripwire (deliberate trap door, not a regression
     // red — ON PURPOSE. Whoever lands that change must, in the SAME change, add a real per-id
     // assertion here (e.g. asserting the new alertdialog id's root gets role="alertdialog" while
     // a sibling dialog id's root does not) before updating or removing this tripwire. Until that
-    // day, S1-ARIA-ALL-16's role check above stays a PARTIAL tooth for exactly this reason.
+    // day, S1-ARIA-ALL-17's role check above stays a PARTIAL tooth for exactly this reason.
     const roles = new Set(OVERLAY_IDS.map((id) => OVERLAY_A11Y[id].role));
     expect(
       Array.from(roles).sort(),
@@ -398,8 +398,8 @@ describe('OVERLAY_A11Y — role tripwire (deliberate trap door, not a regression
 // Do NOT edit these tests to match a buggy implementation — correct them from the plan only.
 
 describe('openOverlayA11y — live-region custody: adoption into the open root (LRC-ADOPT, X1)', () => {
-  it('LRC-ADOPT BITES: opening each of the 16 overlays makes the SAME live-region node a direct LAST child of root, before the call returns — never a clone, never a second region', () => {
-    expect(OVERLAY_IDS.length, 'ANTI-VACUITY').toBe(16);
+  it('LRC-ADOPT BITES: opening each of the 17 overlays makes the SAME live-region node a direct LAST child of root, before the call returns — never a clone, never a second region', () => {
+    expect(OVERLAY_IDS.length, 'ANTI-VACUITY').toBe(17);
     let checked = 0;
     for (const id of OVERLAY_IDS) {
       const node = mountLiveNode();
@@ -435,7 +435,7 @@ describe('openOverlayA11y — live-region custody: adoption into the open root (
       closeOverlayA11y(id, null);
       checked += 1;
     }
-    expect(checked, 'ANTI-VACUITY: all 16 ids must have been exercised').toBe(16);
+    expect(checked, 'ANTI-VACUITY: all 17 ids must have been exercised').toBe(17);
   });
 
   it('LRC-ADOPT-REOPEN-REHOMES BITES: re-opening the SAME id on a DIFFERENT root re-homes the live region into the new root — a re-open is not exempt from custody', () => {

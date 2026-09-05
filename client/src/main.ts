@@ -93,6 +93,7 @@ import {
   claimStep,
 } from './ui/claimModel';
 import type { ClaimView, ClaimViewHandlers } from './ui/claimView';
+import type { PrivacyView, PrivacyViewHandlers } from './ui/privacyView';
 import { DIALOGUE_TREES } from './ui/dialogueContent';
 import { buildDialogueViewModel } from './ui/dialogueModel';
 import type { DialogueView } from './ui/dialogueView';
@@ -151,8 +152,15 @@ import {
   type OverlayProbes,
   visibleIds,
 } from './ui/overlayRegistry';
-import { privacyBannerLabel } from './ui/privacyBanner';
-import { deriveDeletionCountdown } from './ui/privacyModel';
+import { buildPrivacyViewModel, privacyBannerLabel } from './ui/privacyBanner';
+import {
+  type DeletionCountdown,
+  PRIVACY_INITIAL,
+  type PrivacyEvent,
+  type PrivacyModelState,
+  deriveDeletionCountdown,
+  privacyStep,
+} from './ui/privacyModel';
 import { buildPvpChallengeViewModel } from './ui/pvpModel';
 import type { PvpView } from './ui/pvpView';
 import { buildQuestLogViewModel } from './ui/questLogModel';
@@ -307,6 +315,7 @@ let menuView: MenuView | undefined;
 // session-lifecycle overlay (registry-EXTERNAL, driven by conn.sessionState()), each backed by
 // its pure model state carried at module scope.
 let claimView: ClaimView | undefined;
+let privacyView: PrivacyView | undefined;
 let sessionView: SessionView | undefined;
 let claimModelState: ClaimModelState = CLAIM_INITIAL;
 let sessionModelState: SessionModelState = SESSION_INITIAL;
@@ -356,6 +365,7 @@ const overlayProbes: OverlayProbes = {
   helpView: () => helpView?.visible ?? false,
   menuView: () => menuView?.visible ?? false,
   claimView: () => claimView?.visible ?? false,
+  privacyView: () => privacyView?.visible ?? false,
 };
 // UXD3B-PROBES-END
 
@@ -388,6 +398,7 @@ const overlayHandles: OverlayHandles = {
   helpView: () => helpView?.hide(),
   menuView: () => menuView?.hide(),
   claimView: () => claimView?.hide(),
+  privacyView: () => privacyView?.hide(),
 };
 // UXD3C-HANDLES-END
 
@@ -450,6 +461,11 @@ function applySession(event: SessionEvent): void {
 }
 
 function renderClaim(): void {
+  // rb-52: ClaimPhase cannot represent "dismissed" (S4-claimView-REOPEN-AFTER-HIDE), so a later
+  // claim-lifecycle render would re-open the claim overlay ON TOP of the privacy modal, stealing
+  // its focus trap mid-confirmation. Suppressing the paint is the in-scope half; the model defect
+  // needs claimModel.ts.
+  if (privacyView?.visible) return;
   claimView?.render(buildClaimViewModel(claimModelState));
 }
 
@@ -461,6 +477,72 @@ function applyClaim(event: ClaimEvent): void {
   if (step.effect === 'delete-code-and-permit-join') claimCode.clear(globalThis, URI, DB);
   if (step.effect === 'join') conn?.live()?.reducers.joinGame({ name: 'Player' });
   renderClaim();
+}
+
+// --- rb-52 (PRV1-3/PRV1-4): the privacy surface ------------------------------------
+// Decisions live in ui/privacyModel.ts (rules) and ui/privacyBanner.ts (copy); this block only
+// dispatches and paints. Rationale is ADR-0231 Amendment A2, not repeated here.
+let privacyModelState: PrivacyModelState = PRIVACY_INITIAL;
+// The last countdown fed to the model. `account-changed` writes `inFlight: 'none'`, so pumping it
+// every frame would give the double-submit guard a ~16ms life (A2-D9).
+let lastPrivacyCountdown: DeletionCountdown | undefined;
+
+function renderPrivacy(): void {
+  privacyView?.render(buildPrivacyViewModel(privacyModelState));
+}
+
+// A2-D8: a missing live handle is a NON-DELIVERY. sendGuarded cannot see it — `undefined?.catch()`
+// is silent — so inFlight would stick forever and every later click would be a silent no-op.
+function privacyLinkLive(): boolean {
+  return conn?.live() !== undefined && !conn.linkFrozen();
+}
+
+function applyPrivacy(event: PrivacyEvent): void {
+  const step = privacyStep(privacyModelState, event);
+  privacyModelState = step.next;
+  switch (step.effect) {
+    case 'none':
+      break;
+    case 'call-delete-account':
+      sendPrivacy('delete-account', 'delete', () => conn?.live()?.reducers.deleteAccount({}));
+      break;
+    case 'call-cancel-account-deletion':
+      sendPrivacy('cancel-account-deletion', 'cancel', () =>
+        conn?.live()?.reducers.cancelAccountDeletion({}),
+      );
+      break;
+    case 'call-request-data-export':
+      sendPrivacy('request-data-export', 'export', () =>
+        conn?.live()?.reducers.requestDataExport({}),
+      );
+      break;
+  }
+  renderPrivacy();
+}
+
+// Like sendGuarded, but the rejection is routed BACK INTO THE MODEL as well as to the error ring:
+// `privacyModel.ts` keys PRV1-4's terminal notice on the message text, and reduceErrorMessage
+// composes exactly the `${where}: ${message}` shape its `endsWith` guard expects.
+function sendPrivacy(where: string, which: 'delete' | 'cancel' | 'export', call: () => Promise<void> | undefined): void {
+  call()?.then(
+    () => applyPrivacy({ kind: 'request-succeeded', which }),
+    (err: unknown) => {
+      const message = reduceErrorMessage(err, where);
+      reportError(message);
+      applyPrivacy({ kind: 'request-failed', which, message });
+    },
+  );
+}
+
+// A2-D5: the claim overlay is hidden FIRST. openOverlayA11y captures document.activeElement as its
+// return target and closeOverlayA11y restores it while the node is still isConnected — which a
+// display:none node is — so showing first would park focus in a hidden subtree on close and kill
+// every overlay hotkey until the player clicks the canvas.
+function openPrivacy(): void {
+  claimView?.hide();
+  if (overlayVerdict('privacyView').kind !== 'allow') return;
+  renderPrivacy();
+  privacyView?.show();
 }
 
 // AUTH-51: "signed in" is store.ownAccount(identity) !== undefined — the row the SERVER wrote —
@@ -1481,6 +1563,13 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     return;
   }
+  // rb-52: LAST in the Escape stack on purpose — the first `e.code === 'Escape'` in this file is
+  // pinned as the rename branch and three teeth slice fixed windows forward from it.
+  if (e.code === 'Escape' && privacyView?.visible) {
+    privacyView.hide();
+    e.preventDefault();
+    return;
+  }
   // Suppress movement input while an overlay is open.
   if (anyOverlayVisible()) {
     suppressNativeMovementDefault(e);
@@ -2240,6 +2329,7 @@ async function main(): Promise<void> {
     { MenuView: MenuViewClass },
     { ClaimView: ClaimViewClass },
     { SessionView: SessionViewClass },
+    { PrivacyView: PrivacyViewClass },
   ] = await Promise.all([
     import('./ui/boxView'),
     import('./ui/battleView'),
@@ -2258,6 +2348,7 @@ async function main(): Promise<void> {
     import('./ui/menuView'),
     import('./ui/claimView'),
     import('./ui/sessionView'),
+    import('./ui/privacyView'),
   ]);
   renderer = new WorldRenderer();
   const mount = document.getElementById('app');
@@ -2539,8 +2630,21 @@ async function main(): Promise<void> {
           hasLiveConnection: conn !== undefined && !conn.linkFrozen(),
         }),
       onDeclineCancelled: () => applyClaim({ kind: 'decline-cancelled' }),
+      onPrivacy: () => openPrivacy(),
     };
     claimView = new ClaimViewClass(claimHandlers);
+    const privacyHandlers: PrivacyViewHandlers = {
+      onDeleteRequested: () => applyPrivacy({ kind: 'delete-requested' }),
+      onDeleteConfirmed: () =>
+        applyPrivacy({ kind: 'delete-confirmed', hasLiveConnection: privacyLinkLive() }),
+      onConfirmCancelled: () => applyPrivacy({ kind: 'confirm-cancelled' }),
+      onCancelDeletion: () =>
+        applyPrivacy({ kind: 'cancel-deletion-requested', hasLiveConnection: privacyLinkLive() }),
+      onExportRequested: () =>
+        applyPrivacy({ kind: 'export-requested', hasLiveConnection: privacyLinkLive() }),
+      onDismissed: () => applyPrivacy({ kind: 'confirm-cancelled' }),
+    };
+    privacyView = new PrivacyViewClass(privacyHandlers);
     // M21b-2 (ADR-0182 D17): the session-lifecycle overlay (registry-external). Its actions drive
     // the pure sessionModel; a confirmed continue-anonymously routes to conn.continueAnonymously().
     const sessionHandlers: SessionViewHandlers = {
@@ -2852,20 +2956,33 @@ async function main(): Promise<void> {
       // recurring throw below is swallowed by this frame's catch, and a frozen legal deadline is
       // worse than a blank one.
       const privacyAccount = store.ownAccount(identity);
-      renderPrivacyCountdown(
-        privacyBannerLabel(
-          deriveDeletionCountdown({
-            status: privacyAccount?.status,
-            deletionRequestedAtMs: privacyAccount?.deletionRequestedAtMs,
-            terminalAtMs: privacyAccount?.terminalAtMs,
-            // Wall clock, and INTEGRAL by construction: `performance.now()` is ms since navigation
-            // (every deadline would read millennia away) and a fractional argument makes `BigInt`
-            // throw, in a block that sits above the render path.
-            nowMs: BigInt(Math.trunc(Date.now())),
-            graceMs: DELETION_GRACE_MS_DEFAULT,
-          }),
-        ),
-      );
+      // ONE derivation per frame, reused by the banner AND the rb-52 surface — a second call site
+      // would be a second seam for the same fact (and is pinned at exactly one).
+      const privacyCountdown = deriveDeletionCountdown({
+        status: privacyAccount?.status,
+        deletionRequestedAtMs: privacyAccount?.deletionRequestedAtMs,
+        terminalAtMs: privacyAccount?.terminalAtMs,
+        // Wall clock, and INTEGRAL by construction: `performance.now()` is ms since navigation
+        // (every deadline would read millennia away) and a fractional argument makes `BigInt`
+        // throw, in a block that sits above the render path.
+        nowMs: BigInt(Math.trunc(Date.now())),
+        graceMs: DELETION_GRACE_MS_DEFAULT,
+      });
+      renderPrivacyCountdown(privacyBannerLabel(privacyCountdown));
+      // rb-52 (A2-D9): CHANGE-DETECTED, never per frame. `account-changed` clears `inFlight`, and
+      // that is the only double-submit guard. `remainingMs` moves every frame, so the comparison
+      // deliberately ignores it — the model reads permissions and the phase, never the number.
+      if (
+        lastPrivacyCountdown === undefined ||
+        lastPrivacyCountdown.phase !== privacyCountdown.phase ||
+        lastPrivacyCountdown.cancelPermitted !== privacyCountdown.cancelPermitted ||
+        lastPrivacyCountdown.cancelPermanentlyRejected !== privacyCountdown.cancelPermanentlyRejected ||
+        lastPrivacyCountdown.deletePermitted !== privacyCountdown.deletePermitted ||
+        lastPrivacyCountdown.exportPermitted !== privacyCountdown.exportPermitted
+      ) {
+        lastPrivacyCountdown = privacyCountdown;
+        applyPrivacy({ kind: 'account-changed', countdown: privacyCountdown });
+      }
       // nh2 (ADR-0148 R1): drain BEFORE the continuation re-issue, so a step emitted below is
       // never drained by the frame that issued it. This is a RESIDUAL fix, not the primary one:
       // measured, the outstanding-work gate takes press-phase render teleports from 88% to ~2%

@@ -44,6 +44,11 @@ export interface ClaimViewHandlers {
   readonly onDeclineRequested: () => void;
   readonly onDeclineConfirmed: () => void;
   readonly onDeclineCancelled: () => void;
+  /** rb-52 (ADR-0231 A2-D5): the front door to the privacy surface. It lives HERE rather than on
+   *  a menu leaf of its own because a leaf needs a `keyGlyph` in `helpModel.ts`'s CONTROLS SSOT,
+   *  which is set-equality-gated against `docs/PLAYTEST.md` — outside rb-52's touches. Account
+   *  deletion and data export are account management, so this is also where they belong. */
+  readonly onPrivacy: () => void;
 }
 
 /** Find an existing overlay element or create a detached one appended to <body>, so the shell
@@ -65,6 +70,7 @@ export class ClaimView {
   readonly #nudge: HTMLElement;
   readonly #feedback: HTMLElement;
   readonly #confirm: HTMLElement;
+  readonly #privacyBtn: HTMLButtonElement;
 
   constructor(handlers: ClaimViewHandlers) {
     this.#overlay = ensureElement('claim-overlay');
@@ -81,12 +87,21 @@ export class ClaimView {
     this.#wireButton('claim-decline-btn', handlers.onDeclineRequested);
     this.#wireButton('claim-decline-confirm-btn', handlers.onDeclineConfirmed);
     this.#wireButton('claim-decline-cancel-btn', handlers.onDeclineCancelled);
+    this.#privacyBtn = this.#wireButton('claim-privacy-btn', handlers.onPrivacy);
+    // UNLIKE ITS FIVE SIBLINGS, this button is LABELLED AND UN-HIDDEN. `ensureElement` creates
+    // every node `display:none` and `render()` never un-hides the buttons, so the five above ship
+    // blank and invisible while a programmatic `.click()` still fires them. That is a real defect
+    // (tracked as a follow-up, not fixed here — it is claimView's own copy, outside this slice's
+    // criterion); this one must not inherit it, because rb-52's criterion is REACHABILITY.
+    this.#privacyBtn.textContent = 'Privacy & Account Data';
+    this.#privacyBtn.style.display = '';
   }
 
-  #wireButton(id: string, handler: () => void): void {
-    const btn = ensureElement(id, 'button');
+  #wireButton(id: string, handler: () => void): HTMLButtonElement {
+    const btn = ensureElement(id, 'button') as HTMLButtonElement;
     if (btn.parentElement !== this.#overlay) this.#overlay.appendChild(btn);
     btn.addEventListener('click', () => handler());
+    return btn;
   }
 
   /** Render from the pure VM (textContent only — the claim body is never player-controlled, but

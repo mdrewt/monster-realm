@@ -29,8 +29,8 @@
 
 /**
  * The catalog. Flat `Record<string, string>` — no nesting, no interpolation, one key per
- * announced string. The sixteen `a11y.overlay.<OverlayId>.title` entries are the accessible
- * NAMES of the sixteen mutual-exclusion overlays (`ui/overlayRegistry.ts` OVERLAY_A11Y), so each
+ * announced string. The seventeen `a11y.overlay.<OverlayId>.title` entries are the accessible
+ * NAMES of the seventeen mutual-exclusion overlays (`ui/overlayRegistry.ts` OVERLAY_A11Y), so each
  * one reads as a dialog name: short, title-cased, no trailing punctuation. Each is the wording
  * the overlay already shows the player, so what an AT announces and what is on screen agree.
  *
@@ -67,6 +67,9 @@ export const a11yCopy: Readonly<Record<string, string>> = Object.freeze({
   'a11y.overlay.helpView.title': 'Controls & Goals', // index.html:86
   'a11y.overlay.menuView.title': 'Menu', // ui/menuModel.ts:325
   'a11y.overlay.claimView.title': 'Account & Sign-in', // ui/menuModel.ts:103
+  // rb-52: reached from the Account & Sign-in overlay (ADR-0231 A2-D5), so the name says what the
+  // surface is FOR rather than repeating its parent's label.
+  'a11y.overlay.privacyView.title': 'Privacy & Account Data',
   // The canvas world region (m23-s4, M23 §2.3). NOT an overlay: `render/world.ts` sets
   // role="application" + tabindex="0" on `app.canvas` itself and labels it from here, so the
   // hotkey-vs-quick-nav collision has a named landing place a screen reader can reach. The S0

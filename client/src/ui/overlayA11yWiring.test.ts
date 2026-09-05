@@ -18,18 +18,18 @@
 //      RETURN SHAPE and not merely the key set.
 //   2. FIXTURE FIDELITY. The per-view specs copy their shell markup into the test file, so they
 //      keep passing if `client/index.html` loses a `tabindex` — the very attribute ADR-0205 D1
-//      makes ten of the sixteen anchors depend on. This file adopts the REAL `client/index.html`,
+//      makes ten of the seventeen anchors depend on. This file adopts the REAL `client/index.html`,
 //      so that deletion reds here.
 //
 // THE ORACLE, AND WHY IT IS NOT THE ONE §5.5 SPECIFIES. Both of §5.5's stated open-side assertions
 // are VACUOUS on the shipped tree, measured:
 //   * `role === OVERLAY_A11Y[id].role` and `aria-modal === 'true'` are STATIC LITERALS in
-//     `client/index.html` for eleven of the sixteen roots (`:17`, `:22`, `:25`, `:29`, `:36`, `:44`,
+//     `client/index.html` for eleven of the seventeen roots (`:17`, `:22`, `:25`, `:29`, `:36`, `:44`,
 //     `:52`, `:57`, `:64`, `:90`, `:105`), and for the other five they are echoed straight back from
 //     the table the assertion reads. A view whose `show()` calls nothing passes both.
 //     `helpView.test.ts:56` and `dialogueView.test.ts:23` already record this in-source.
 //   * The `{BUTTON, INPUT, SELECT, A, TEXTAREA}` tag allow-list is UNSATISFIABLE: exactly THREE of
-//     sixteen anchors qualify (`#rename-input`, `#tradepropose-target`, `#claim-signin-btn`). The
+//     seventeen anchors qualify (`#rename-input`, `#tradepropose-target`, `#claim-signin-btn`). The
 //     other thirteen are `<div>`/`<ul>`/`<h2>` carrying `tabindex="-1"` — the ARIA APG dialog
 //     fallback the milestone DELIBERATELY ships. `docs/adr/0205:31,:50-58` amends the wording to
 //     "focusable — natively, or via `tabindex`" and `:284-287` instructs this slice by name to use
@@ -39,7 +39,7 @@
 //
 // So the four conjuncts asserted per id are:
 //   (a) VALUE — `aria-label === t(OVERLAY_A11Y[id].labelKey)`. `index.html` ships ZERO `aria-label`
-//       attributes, so this one exists only if `overlayA11y.ts:108` actually ran. All sixteen
+//       attributes, so this one exists only if `overlayA11y.ts:108` actually ran. All seventeen
 //       catalog values are distinct, so it also kills a copy-pasted wrong `OverlayId`.
 //   (b) MECHANISM — `openOverlayA11y` was called EXACTLY ONCE, with THIS id. Call-through spying
 //       (`{ spy: true }`) keeps the real attribute writes and focus moves working, so a cheat that
@@ -59,9 +59,9 @@
 //       called again, the manifest anchor node is not rebuilt, and focus stays on whatever the
 //       player moved it to inside the overlay. Added by rb-18 (residual R-m23-s10-X21). Until it
 //       existed, this file opened each id exactly once, so deleting a view's `if (!wasVisible)`
-//       guard shipped GREEN here — MEASURED, all sixteen mutants survived. Sixteen per-view specs
+//       guard shipped GREEN here — MEASURED, all sixteen mutants survived. Seventeen per-view specs
 //       each caught their own (also measured), but nothing in the SHARED layer did, so the
-//       guarantee rested entirely on sixteen separately-maintained files staying in sync and on
+//       guarantee rested entirely on seventeen separately-maintained files staying in sync and on
 //       a seventeenth overlay's author remembering to copy the idiom. Here the `reopen` handle is
 //       a REQUIRED field of `Opened`, so a new `OverlayId` cannot ship without one.
 //       SCOPE, stated so it is not over-read: this proves the guard on the open path each view's
@@ -81,6 +81,7 @@ import { t } from './a11yCopy';
 import { BattleView } from './battleView';
 import { BoxView } from './boxView';
 import { ClaimView } from './claimView';
+import { PrivacyView } from './privacyView';
 import { DialogueView } from './dialogueView';
 import { EvolutionView } from './evolutionView';
 import { HealView } from './healView';
@@ -132,7 +133,7 @@ const NATIVE_FOCUSABLE_TAGS: ReadonlySet<string> = new Set([
  *
  * NOT `focusTrap.ts:64`'s `FOCUSABLE_SELECTOR`: that one deliberately EXCLUDES `[tabindex="-1"]`
  * (`focusTrap.ts:52-56`), because tab-ring membership and programmatic focusability are different
- * questions. Using it here would fail thirteen of sixteen ids for the wrong reason.
+ * questions. Using it here would fail fourteen of seventeen ids for the wrong reason.
  */
 // Module-local, NOT exported: biome's `noExportsInTest` treats an export from a spec file as a
 // production-module smell, and nothing outside this file consumes it.
@@ -181,7 +182,7 @@ interface Opened {
    * Drive the SAME production open path a SECOND time, on the SAME instance.
    *
    * REQUIRED, never optional: the totality device is `Readonly<Record<OverlayId, () => Opened>>`,
-   * and an optional field would make sixteen silent omissions legal — reopening exactly the hole
+   * and an optional field would make seventeen silent omissions legal — reopening exactly the hole
    * rb-18 closes.
    *
    * It must close over the instance the opener already built. Calling `OPENERS[id]()` a second
@@ -208,7 +209,7 @@ const noop = (): void => {};
 const asyncNoop = async (): Promise<void> => {};
 
 /**
- * How each of the sixteen overlays is OPENED, keyed by id.
+ * How each of the seventeen overlays is OPENED, keyed by id.
  *
  * `Readonly<Record<OverlayId, …>>` on purpose: a seventeenth `OverlayId` is a COMPILE error here,
  * not a silently unchecked overlay — the same device `OVERLAY_TIERS` and `OVERLAY_A11Y` use.
@@ -409,6 +410,23 @@ const OPENERS: Readonly<Record<OverlayId, () => Opened>> = {
     view.show();
     return { root: capturedRoot('helpView'), close: () => view.hide(), reopen: () => view.show() };
   },
+  // rb-52: the privacy overlay's shell is JS-created (ADR-0231 A2-D2), like claimView's.
+  privacyView: () => {
+    const view = new PrivacyView({
+      onDeleteRequested: noop,
+      onDeleteConfirmed: noop,
+      onConfirmCancelled: noop,
+      onCancelDeletion: noop,
+      onExportRequested: noop,
+      onDismissed: noop,
+    });
+    view.show();
+    return {
+      root: capturedRoot('privacyView'),
+      close: () => view.hide(),
+      reopen: () => view.show(),
+    };
+  },
   menuView: () => {
     const view = new MenuView({ onInput: noop });
     view.show();
@@ -447,7 +465,8 @@ function capturedRoot(id: OverlayId): HTMLElement {
   return calls[calls.length - 1][1];
 }
 
-/** The eleven static shells plus `claimView`: the roots that ARE addressable by id. */
+/** The eleven static shells plus the two JS-created ones (`claimView`, `privacyView`): the
+ *  roots that ARE addressable by id. */
 const ROOT_IDS: Partial<Record<OverlayId, string>> = {
   dialogueView: 'dialogue-overlay',
   questLogView: 'quest-log-overlay',
@@ -461,6 +480,7 @@ const ROOT_IDS: Partial<Record<OverlayId, string>> = {
   helpView: 'help-overlay',
   menuView: 'menu-overlay',
   claimView: 'claim-overlay',
+  privacyView: 'privacy-overlay',
 };
 
 function installSentinel(): HTMLElement {
@@ -514,7 +534,7 @@ afterEach(async () => {
 //     zero-consumer export is banned by that family's rule, as the hook comment above records.
 // Every test awaits at least one REAL macrotask (`flushMacrotask`), so under concurrency test B's
 // `beforeEach` wipes test A's DOM and mock record mid-flight. Genuine per-test isolation would mean
-// constructing a happy-dom Window per test and injecting `document` into all sixteen view classes
+// constructing a happy-dom Window per test and injecting `document` into all seventeen view classes
 // plus overlayA11y/focusTrap/liveRegion — a production refactor of the whole overlay family, which
 // is not something a one-spec-file residual slice gets to do. The residual's own text authorises
 // the serial route "with a documented reason"; this block is that reason.
@@ -527,26 +547,26 @@ afterEach(async () => {
 // flag, the second pins this marker and this block's content. If you ever make the file genuinely
 // per-test-isolated, delete the annotation AND that spec in the same commit.
 describe.sequential('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wiring spec', () => {
-  it('S10-WIRE-TOTALITY BITES: the opener table covers EVERY OverlayId and nothing else, and the manifest is the real sixteen', () => {
+  it('S10-WIRE-TOTALITY BITES: the opener table covers EVERY OverlayId and nothing else, and the manifest is the real seventeen', () => {
     // Compile-time totality is the primary device (Record<OverlayId, _>); these are the runtime
     // belts, so an `as` cast or a `@ts-expect-error` cannot quietly shrink the parameterisation.
-    expect(OVERLAY_IDS.length, 'the manifest must hold sixteen mutual-exclusion overlays').toBe(16);
+    expect(OVERLAY_IDS.length, 'the manifest must hold seventeen mutual-exclusion overlays').toBe(17);
     expect(Object.keys(OPENERS).sort()).toEqual([...OVERLAY_IDS].sort());
     expect(Object.keys(OVERLAY_A11Y).sort()).toEqual([...OVERLAY_IDS].sort());
 
     // The unstated PREMISE of S10-WIRE-OPEN-ARIA's copy-paste kill: a wrong OverlayId is only
-    // detectable through `aria-label` if the sixteen resolved NAMES are distinct. The delegated
+    // detectable through `aria-label` if the seventeen resolved NAMES are distinct. The delegated
     // `A11YCOPY-OVERLAY-NAMESPACE-EXACT` pins KEY set-equality, not VALUE distinctness, so nothing
     // asserted this before.
     const names = OVERLAY_IDS.map((id) => t(OVERLAY_A11Y[id].labelKey));
-    expect(new Set(names).size, 'the sixteen accessible names must be pairwise distinct').toBe(16);
+    expect(new Set(names).size, 'the seventeen accessible names must be pairwise distinct').toBe(17);
 
     // rb-18: SHAPE totality, not just KEY totality. `Opened.reopen` is what makes the repeat and
     // reopen-after-close teeth possible, and since this file is not typechecked in CI (see the
     // header correction) a `reopen`-less opener is a RUNTIME question. Asserted here, over every
     // id, so a seventeenth overlay cannot ship an opener that satisfies the key set while handing
     // back nothing to re-open — which is exactly how the guarantee would drift back to resting on
-    // sixteen separately-maintained per-view specs.
+    // seventeen separately-maintained per-view specs.
     for (const id of OVERLAY_IDS) {
       const opened = OPENERS[id]();
       expect(
@@ -571,7 +591,9 @@ describe.sequential('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wir
     let checkedAnchors = 0;
     for (const id of OVERLAY_IDS) {
       const rootId = ROOT_IDS[id];
-      if (rootId === undefined || id === 'claimView') continue; // claim's shell is JS-created
+      // claim's and privacy's shells are JS-created, so their anchors cannot resolve in the
+      // shipped markup — the eleven STATIC shells are what this clause is about.
+      if (rootId === undefined || id === 'claimView' || id === 'privacyView') continue;
       const root = requireElement(rootId);
       const anchor = root.querySelector(OVERLAY_A11Y[id].initialFocusSelector);
       expect(
@@ -614,7 +636,7 @@ describe.sequential('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wir
 
   it('S10-WIRE-STATIC-MARKUP-CONTROL BITES: on the SHIPPED shells, role and aria-modal read correct BEFORE anything is opened — so asserting them alone proves nothing', () => {
     // No view is constructed in this test. If these pass, §5.5's two stated open-side assertions
-    // are satisfied by markup alone for eleven of sixteen ids.
+    // are satisfied by markup alone for eleven of seventeen ids.
     const shell = requireElement('dialogue-overlay');
     expect(shell.getAttribute('role')).toBe(OVERLAY_A11Y.dialogueView.role);
     expect(shell.getAttribute('aria-modal')).toBe('true');
@@ -647,7 +669,7 @@ describe.sequential('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wir
         const { root } = OPENERS[id]();
 
         // THE LOAD-BEARING ASSERTION. index.html ships zero aria-label attributes, so this one
-        // exists only because overlayA11y.ts:108 ran; and all sixteen catalog values are distinct,
+        // exists only because overlayA11y.ts:108 ran; and all seventeen catalog values are distinct,
         // so a wrong id would land the wrong name here.
         expect(
           root.getAttribute('aria-label'),
@@ -831,7 +853,7 @@ describe.sequential('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wir
         // — is INDISTINGUISHABLE from the correct live-state read to every assertion in the test
         // above, passes that view's own full spec, and leaves the overlay permanently unannounced,
         // untrapped and unfocused for the rest of the instance's life after the first close.
-        // TWELVE of the sixteen per-view specs have no reopen-after-close coverage at all, so this
+        // TWELVE of the seventeen per-view specs have no reopen-after-close coverage at all, so this
         // is the one place the class is closed for every id. Only a scenario that CLOSES first can
         // force `wasVisible` to be read from live state rather than from a one-shot latch.
         const sentinel = installSentinel();
@@ -921,7 +943,7 @@ describe.sequential('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wir
       checked,
       'S10-WIRE-FOCUS-IDENTITY must have executed once per OverlayId — a loop that never ran ' +
         'reports success in exactly the same way as one that passed',
-    ).toBe(16);
+    ).toBe(17);
     // Siblings, in the SAME hook rather than a second one, so the rationale above stays
     // co-located and a future reader cannot delete one half. Not redundant with the compile-time
     // `Record<OverlayId, …>` (which forces the openers to EXIST) nor with `checked` (which only
@@ -929,10 +951,10 @@ describe.sequential('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wir
     // and `just ci` does not run the nightly `a11y-e2e` recipe whose `numPendingTests` clause
     // would otherwise catch it.
     expect(repeatChecked, 'S10-WIRE-REPEAT-NO-REOPEN must have executed once per OverlayId').toBe(
-      16,
+      17,
     );
     expect(reopenChecked, 'S10-WIRE-REOPEN-AFTER-CLOSE must have executed once per OverlayId').toBe(
-      16,
+      17,
     );
   });
 });

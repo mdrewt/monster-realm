@@ -4197,8 +4197,9 @@ describe('★ main.ts wiring (uxd3): refreshBattle force-hide set === the overla
     const { BATTLE_FORCE_HIDE } = await import('./ui/overlayRegistry');
     expect(
       BATTLE_FORCE_HIDE.length,
-      'BATTLE_FORCE_HIDE must have exactly 8 members (the pre-existing 7 + menuView, AC-19)',
-    ).toBe(8);
+      'BATTLE_FORCE_HIDE must have exactly 9 members (the pre-existing 7 + menuView (AC-19) + ' +
+        'privacyView (rb-52, ADR-0231 A2-D4))',
+    ).toBe(9);
     expect(
       [...BATTLE_FORCE_HIDE].includes('dialogueView'),
       'BATTLE_FORCE_HIDE must NEVER contain dialogueView — force-hiding a live conversation ' +
@@ -5195,9 +5196,9 @@ describe('★ main.ts wiring (uxd3-b/ADR-0163): all five fan-out surfaces route 
     // with no probe entry reds HERE, automatically, with no edit to this file.
     expect(
       OVERLAY_IDS.length,
-      'the imported manifest must hold 16 overlays (anti-vacuity: a shrunken manifest would ' +
+      'the imported manifest must hold 17 overlays (anti-vacuity: a shrunken manifest would ' +
         'make the per-id loop below trivially satisfiable by an under-wired table)',
-    ).toBe(16);
+    ).toBe(17);
     expect(
       region.includes('overlayProbes'),
       'ANTI-VACUITY: the marked region must actually contain the `overlayProbes` declaration — ' +
@@ -6095,7 +6096,7 @@ describe('★ main.ts wiring (uxd3-c/ADR-0164): the force-hide handle table mirr
     // hide thunk `claimView: () => claimView?.hide(),` inside the UXD3C-HANDLES markers — a
     // manifest member with no handle entry reds here automatically. claimView is NOT a
     // NEVER_FORCE_HIDE member (only dialogueView is), so it gets a real thunk, not `undefined`.
-    expect(OVERLAY_IDS.length, 'the imported manifest must hold 16 overlays').toBe(16);
+    expect(OVERLAY_IDS.length, 'the imported manifest must hold 17 overlays').toBe(17);
     expect(
       NEVER_FORCE_HIDE.length,
       'the imported NEVER_FORCE_HIDE must hold exactly 1 member',
@@ -10470,7 +10471,7 @@ describe('★ main.ts wiring (M21b-2 UI entry point, G20/G29 idiom): W-M21B2-CLA
     ).toBeLessThan(retry[0]!);
   });
 
-  it('★★ BITES: all FOUR hasLiveConnection sites read `conn !== undefined && !conn.linkFrozen()` — never the always-true bare form', () => {
+  it('★★ BITES: all SEVEN hasLiveConnection sites are live-link guarded — the four claim/session sites inline, the three rb-52 sites through privacyLinkLive(), and never the always-true bare form', () => {
     // WRONG IMPL KILLED ★ NAMED: `hasLiveConnection: conn !== undefined` (the bare form). It is
     //   ALWAYS true once connected — even on a FROZEN link — so a join / decline-confirm / retry
     //   action fires into a dead socket and is silently lost, exactly the disconnected feedback
@@ -10480,17 +10481,37 @@ describe('★ main.ts wiring (M21b-2 UI entry point, G20/G29 idiom): W-M21B2-CLA
     const squashed = squashWhitespace(m20cWholeFile(src));
     expect(
       mwCodeOccurrences(squashed, 'hasLiveConnection:').length,
-      'main.ts must wire EXACTLY four hasLiveConnection sites (claim onJoin / onDeclineConfirmed; ' +
-        'session onContinueConfirmed / onRetry) — a change to that count is a wiring change to ' +
-        're-derive, not to absorb',
-    ).toBe(4);
+      'main.ts must wire EXACTLY seven hasLiveConnection sites (claim onJoin / onDeclineConfirmed; ' +
+        'session onContinueConfirmed / onRetry; rb-52 privacy onDeleteConfirmed / onCancelDeletion ' +
+        '/ onExportRequested) — a change to that count is a wiring change to re-derive, not absorb',
+    ).toBe(7);
     expect(
       mwCodeOccurrences(squashed, 'hasLiveConnection: conn !== undefined && !conn.linkFrozen()')
         .length,
-      'EVERY hasLiveConnection site must read `conn !== undefined && !conn.linkFrozen()` (code-aware) ' +
-        '— the bare `conn !== undefined` is always-true on a frozen link and drops the AUTH-59 ' +
-        'disconnected feedback, letting the action fire into a dead socket',
+      'the FOUR claim/session hasLiveConnection sites must read `conn !== undefined && ' +
+        '!conn.linkFrozen()` (code-aware) — the bare `conn !== undefined` is always-true on a ' +
+        'frozen link and drops the AUTH-59 disconnected feedback, letting the action fire into a ' +
+        'dead socket',
     ).toBe(4);
+    // rb-52 (ADR-0231 A2-D8) RATCHETS this tooth UP rather than widening it. Its three sites go
+    // through one helper whose predicate is STRICTER than the inline form: measured, `conn` can be
+    // defined and NOT frozen while `conn.live()` is still undefined, and `sendGuarded` cannot see
+    // that — `undefined?.catch(...)` is silent, so `inFlight` would stick forever and every later
+    // click would be a silent no-op. Pinning the BODY is what stops a later edit from quietly
+    // relaxing it back to the four-site form.
+    expect(
+      mwCodeOccurrences(squashed, 'hasLiveConnection: privacyLinkLive()').length,
+      'the three rb-52 privacy sites must route through privacyLinkLive()',
+    ).toBe(3);
+    expect(
+      mwCodeOccurrences(
+        squashed,
+        'function privacyLinkLive(): boolean { return conn?.live() !== undefined && !conn.linkFrozen(); }',
+      ).length,
+      'privacyLinkLive() must read `conn?.live() !== undefined && !conn.linkFrozen()` — the ' +
+        'four-site inline form is NOT sufficient here: a defined, unfrozen conn with an undefined ' +
+        'live() handle takes the DELIVERED path, spends the confirmation, and silently sends nothing',
+    ).toBe(1);
     // Region control: conn.linkFrozen() is consulted inside the claim/session handler block.
     const region = m20cHunk(
       src,
