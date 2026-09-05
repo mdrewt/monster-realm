@@ -184,12 +184,14 @@ silently double every count pin.
 - This slice does NOT claim "the confederate role-swap is closed"; it closes offers CREATED at or after the
   request.
 - The reducer proof is one-sided (write wall); the wrapper's `log_reject` REASON argument is compared nowhere
-  behaviourally (only the returned `Err` is); the containment scan is the crate's first runtime file read in a
-  test (`std::fs` under `CARGO_MANIFEST_DIR`) and excludes `schema.rs`, whose view bodies are code.
+  behaviourally (only the returned `Err` is); the containment scan reads the module files at test time through
+  the crate's existing idiom (`env!("CARGO_MANIFEST_DIR")` + `std::fs`, as `observability_tests.rs` and
+  `accounts_tests.rs` already do) and excludes `schema.rs`, whose view bodies are code.
 - Host-clock non-monotonicity is the only way to make the stamp comparison lie: both stamps are server-set from
   `ctx.timestamp`, no client input reaches either, and a backward clock step between propose and request could
   admit one offer. Recorded; no code change. `delete_account` forward-stamping the request (the gate would sleep
-  for the offset) is caught only by an unrelated rb-24 test — this slice does not own that premise.
+  for the offset) is caught only by an unrelated M21 test (`auth28_deletion_write_gate_and_transition` pins the
+  request stamp to `now`) — this slice does not own that premise.
 - Boundary smell, flagged: the pure age rule sits beside an `Account`-typed predicate in `server-module` while
   its sibling `is_deletion_due` lives in `game-core`; the stamp half is extractable later.
 - **Disclosed hidden dependency.** The launch declared `trading.rs`, `trading_tests.rs` and the docs; the fix
