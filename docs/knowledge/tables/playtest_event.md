@@ -2,7 +2,7 @@
 type: SpacetimeDB Table
 title: playtest_event
 slug: tables/playtest_event
-updated: 2026-09-01
+updated: 2026-09-05
 tags: [schema, spacetimedb, private]
 abstract: "SpacetimeDB private table playtest_event."
 resource: server-module/src/playtest.rs#L16

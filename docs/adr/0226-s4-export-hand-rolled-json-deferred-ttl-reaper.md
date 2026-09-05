@@ -5,6 +5,7 @@
 **Slice:** m22-s4
 **Supersedes:** —
 **Amends:** —
+**Extended-by:** ADR-0238
 **Subsystems:** security-authz, schema-persistence, ci-gates
 **Decision:** request_data_export + my_export_bundle ship in privacy.rs: hand-rolled per-field JSON, request-wide chunk numbering, subject/deletion/cooldown guards, purge-before-write; the PRV1-14 reaper defers to S4b (frozen-table ritual).
 

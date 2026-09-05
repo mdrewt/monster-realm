@@ -473,8 +473,12 @@ at `game_core::EXPORT_CHUNK_ROWS` with request-wide `chunk_index`/`total_chunks`
 and guards subject-existence → deletion-gate → cooldown → purge-before-write.
 `battle` is the one redacted table (counterparty identity + monster list nulled,
 `state` omitted); the owner-scoped `my_export_bundle` view is the sole read
-path. The PRV1-14 TTL reaper is DEFERred to S4b (scheduled tables are
-automigration-frozen) — S4b must land before ANY public exposure.
+path. The PRV1-14 TTL reaper landed in **rb-48** (ADR-0238): an hourly
+interval-singleton `export_bundle_reaper_schedule` + scheduler-only
+`export_bundle_reaper` in `privacy.rs` delete chunks older than the 7-day
+`EXPORT_BUNDLE_TTL_MS` through the pure `plan_export_reap` seam (256 per
+tick); `request_data_export` arms the singleton as its last statement and
+`init`/`sync_content` re-arm it on publish.
 
 **m22-s8** (ADR-0231) landed the CLIENT half's decision cores plus the
 `terminal_at_ms` data path (`rowConvert`/`store` carry it as `bigint |
@@ -588,7 +592,7 @@ invalidates downstream `touches:` declarations — **keep the file names stable.
 | `content_cache.rs` | `LazyLock` hot-path content caches (zone maps, evolutions, dialogue trees, quests, skills, items, abilities, heal locations) + the `content_version`-keyed rebuildable type-chart cache — no reducers; ADR-0089/ADR-0170 | `content_cache_tests.rs` |
 | `ranking.rs` | `get_or_init_profile` + `apply_pvp_rating` (module-write-only `profile` rating/W/L — applied only from the `settle_pvp_battle` funnel in `pvp.rs`; M17a — ADR-0119) + the module's one reducer `set_profile_name` (writes `player.name` only, profile-untouching; the ADR-0125 mirror surfaces the rename on the leaderboard — pt-c1, ADR-0132) | `ranking_tests.rs` |
 | `playtest.rs` | the PRIVATE append-only `playtest_event` capture table + its interval-singleton TTL+cap reaper (`playtest_reaper` scheduler-only reducer + `playtest_reaper_schedule` table, armed by `ensure_playtest_reaper` from init/sync_content); `record_recruit_event` fires from `attempt_recruit` at the H1 decision point; pure seams `hp_permille`/`plan_reap`/`plan_reaper_arm` (server-only observability, NOT a game rule; pt-b2 — ADR-0131; report via `just playtest-report`, which since 16r-d decodes `spacetime sql --format json` envelopes with fail-loud validation instead of parsing the CLI's *display* rendering — that text format carries no stability contract and 2.8.1 silently changed it; envelope shape + decoder contract in ADR-0197 D19-D23) | `playtest_tests.rs` |
-| `privacy.rs` | M22 privacy/data-lifecycle module: the claim-time purge of a retired guest's export chunks (`purge_export_bundles`, owner-generic for S3 cascade reuse; rb-22 — ADR-0220) + the §5 data export (m22-s4 — ADR-0226): `request_data_export` reducer, `my_export_bundle` owner-scoped view, the manifest-total `EXPORTERS` registry with 17 per-table JSON serializers, request-wide chunk planner and zero-new-state cooldown; since rb-40 (ADR-0235) `purge_export_bundles` returns the purged chunk count (`-> usize`, frozen-body pin re-frozen) and never emits — `complete_guest_claim` (accounts.rs) publishes it as the `guest_claim_export_purge` line through `observability::mr_log`, its terminal statement | `privacy_tests.rs` |
+| `privacy.rs` | M22 privacy/data-lifecycle module: the claim-time purge of a retired guest's export chunks (`purge_export_bundles`, owner-generic for S3 cascade reuse; rb-22 — ADR-0220) + the §5 data export (m22-s4 — ADR-0226) and the PRV1-14 TTL reaper (rb-48 — ADR-0238: `export_bundle_reaper_schedule` interval singleton + scheduler-only `export_bundle_reaper` over the pure `plan_export_reap` seam, armed by `request_data_export` and by `init`/`sync_content` via `ensure_export_bundle_reaper`): `request_data_export` reducer, `my_export_bundle` owner-scoped view, the manifest-total `EXPORTERS` registry with 17 per-table JSON serializers, request-wide chunk planner and zero-new-state cooldown; since rb-40 (ADR-0235) `purge_export_bundles` returns the purged chunk count (`-> usize`, frozen-body pin re-frozen) and never emits — `complete_guest_claim` (accounts.rs) publishes it as the `guest_claim_export_purge` line through `observability::mr_log`, its terminal statement | `privacy_tests.rs` |
 
 Behavior is provably unchanged because table/reducer **names are explicit**, so
 regenerated TypeScript bindings and the schema snapshot are byte-identical — the

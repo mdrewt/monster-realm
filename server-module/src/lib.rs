@@ -172,6 +172,7 @@ pub fn init(ctx: &ReducerContext) {
     crate::playtest::ensure_playtest_reaper(ctx);
     crate::observability::ensure_mr_heartbeat(ctx);
     crate::accounts::ensure_deletion_reapers_armed(ctx);
+    crate::privacy::ensure_export_bundle_reaper(ctx);
     log::info!(
         "{{\"evt\":\"init\",\"zones\":{}}}",
         ctx.db.zone_def().iter().count()
@@ -207,6 +208,7 @@ pub fn sync_content(ctx: &ReducerContext) -> Result<(), String> {
     crate::playtest::ensure_playtest_reaper(ctx);
     crate::observability::ensure_mr_heartbeat(ctx);
     crate::accounts::ensure_deletion_reapers_armed(ctx);
+    crate::privacy::ensure_export_bundle_reaper(ctx);
     Ok(())
 }
 

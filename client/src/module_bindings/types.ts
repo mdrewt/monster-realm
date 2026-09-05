@@ -262,6 +262,12 @@ export const ExportBundle = __t.object("ExportBundle", {
 });
 export type ExportBundle = __Infer<typeof ExportBundle>;
 
+export const ExportBundleReaperSchedule = __t.object("ExportBundleReaperSchedule", {
+  id: __t.u64(),
+  scheduledAt: __t.scheduleAt(),
+});
+export type ExportBundleReaperSchedule = __Infer<typeof ExportBundleReaperSchedule>;
+
 export const GuestClaim = __t.object("GuestClaim", {
   guestIdentity: __t.identity(),
   code: __t.string(),

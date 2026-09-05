@@ -2,7 +2,7 @@
 type: SpacetimeDB Reducer
 title: battle_challenge_reaper
 slug: reducers/battle_challenge_reaper
-updated: 2026-09-01
+updated: 2026-09-05
 tags: [reducer, spacetimedb, pvp]
 abstract: "Scheduled reaper: delete a Pending battle challenge that has outlived `CHALLENGE_TTL_MS` (17.5e-1, ADR-0126). This is a…"
 resource: server-module/src/pvp.rs#L1296

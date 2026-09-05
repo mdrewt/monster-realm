@@ -5,16 +5,24 @@
 //! rb-22 (ADR-0220) creates this module ahead of S4 to close the guest-export
 //! orphan: pre-claim `export_bundle` chunks must not survive under a retired
 //! guest identity after `complete_guest_claim` — the S3 deletion cascade keys on
-//! a live account's own identity and structurally cannot reach them, and S4's
-//! 7-day TTL reaper is an independent expiry, not a reachability guarantee.
+//! a live account's own identity and structurally cannot reach them, and the
+//! 7-day TTL reaper (rb-48, below) is an independent expiry, not a reachability
+//! guarantee.
 //!
 //! m22-s4 (ADR-0226) lands the export itself: `request_data_export` walks every
 //! `exportable` table in `DATA_LIFECYCLE_MANIFEST`, serializes the caller's own
 //! rows to hand-rolled JSON (64-bit integers as quoted decimal strings — the S8
 //! client would silently lose precision above 2^53), sub-chunks at
 //! `game_core::EXPORT_CHUNK_ROWS`, and writes `export_bundle` rows read back only
-//! through the owner-scoped `my_export_bundle` view. The PRV1-14 TTL reaper is
-//! deferred to S4b (scheduled tables are automigration-frozen, ADR-0221).
+//! through the owner-scoped `my_export_bundle` view.
+//!
+//! rb-48 (ADR-0238) lands the PRV1-14 TTL reaper at the tail of this file: an
+//! hourly interval-singleton schedule (`export_bundle_reaper_schedule`, no
+//! Identity column) drives the scheduler-only `export_bundle_reaper`, which
+//! deletes every `export_bundle` chunk older than `EXPORT_BUNDLE_TTL_MS` (7
+//! days) through the pure `plan_export_reap` seam. `request_data_export` arms
+//! the singleton as its last statement, and `init` / `sync_content` re-arm it
+//! on publish, so a chunk can never exist without its expiry armed.
 //!
 //! SCAN HYGIENE (gate-enforced by `privacy_tests.rs`, which scans this file AND
 //! itself): line comments only — never a block comment or a path glob spelling
@@ -45,7 +53,8 @@ use game_core::{
     ActionState, Direction, MonsterCard, MoveInput, NatureKind, PvpAction, TradeItem, TradeStatus,
     TrustTier, EXPORT_CHUNK_ROWS,
 };
-use spacetimedb::{Identity, ReducerContext, Table};
+use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
+use std::time::Duration;
 
 /// Delete every `export_bundle` chunk owned by `owner` (collect the PKs via the
 /// `owner_identity` btree index, then delete each by PK — the ADR-0126 idiom,
@@ -1478,8 +1487,9 @@ fn rows_character(ctx: &ReducerContext, owner: Identity) -> Result<Vec<String>, 
 /// Build the caller a fresh export: one chunk per exportable table (split at
 /// the game-core sub-chunk boundary), all sharing one request_id minted from
 /// the injected clock. Rejects (distinct static reasons, reject-not-clamp) a
-/// caller with no game state at all (anonymous identities are free, and with
-/// the S4b reaper deferred an orphaned bundle has no expiry), a caller inside
+/// caller with no game state at all (anonymous identities are free; an orphaned
+/// bundle now expires via the hourly TTL reaper, rb-48, but a zero-state
+/// identity should not write one in the first place), a caller inside
 /// the deletion grace window (PRV1-7; cancel-then-export stays available), and
 /// a caller inside the flood-control cooldown window.
 #[spacetimedb::reducer]
@@ -1542,6 +1552,7 @@ pub fn request_data_export(ctx: &ReducerContext) -> Result<(), String> {
             created_at_ms: now,
         });
     }
+    ensure_export_bundle_reaper(ctx);
     Ok(())
 }
 
@@ -1558,6 +1569,106 @@ fn my_export_bundle(ctx: &spacetimedb::ViewContext) -> Vec<ExportBundle> {
         .owner_identity()
         .filter(ctx.sender())
         .collect()
+}
+
+// ===========================================================================
+// PRV1-14 TTL reaper (rb-48, ADR-0238). A GLOBAL hourly interval singleton —
+// not a per-request one-shot: no Identity column (so NotOwned in the manifest,
+// no re-key entry), reachability-independent, and the only sanctioned
+// full-table sweep in this module. The behavioural proof is the pure
+// `plan_export_reap` seam (the native test host models no table scan and no
+// writes); the shell below is pinned byte-exactly in squashed form by
+// privacy_tests.rs, so any reshaping is a deliberate, test-visible change.
+// ===========================================================================
+
+// Retention ceiling for an export snapshot (spec M22 section 5: seven days).
+pub(crate) const EXPORT_BUNDLE_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+// Sweep cadence: an hour is 168 times finer than the TTL, and every tick is an
+// unindexed scan of export_bundle under the global write lock.
+pub(crate) const EXPORT_REAP_INTERVAL: Duration = Duration::from_secs(3600);
+// Per-tick delete cap: export rows carry whole payload chunks, so a small batch
+// that always commits beats a large one that could abort every tick forever.
+pub(crate) const EXPORT_REAP_MAX_DELETE_PER_TICK: usize = 256;
+
+// PRIVATE scheduled table colocated with its reducer (ADR-0056 exception).
+#[spacetimedb::table(accessor = export_bundle_reaper_schedule, scheduled(export_bundle_reaper))]
+pub struct ExportBundleReaperSchedule {
+    #[primary_key]
+    #[auto_inc]
+    pub id: u64,
+    pub scheduled_at: ScheduleAt,
+}
+
+// Pure delete-selection: every chunk whose age reaches the TTL, oldest id
+// first, at most `batch` of them. Sorts internally so the shell carries no
+// ordering obligation; saturating arithmetic so an extreme clock never aborts
+// the reducer (the release profile enables overflow checks).
+pub(crate) fn plan_export_reap(
+    rows: &[(u64, i64)],
+    now_ms: i64,
+    ttl_ms: i64,
+    batch: usize,
+) -> Vec<u64> {
+    let mut expired: Vec<u64> = Vec::new();
+    for &(id, created) in rows {
+        if now_ms.saturating_sub(created) >= ttl_ms {
+            expired.push(id);
+        }
+    }
+    expired.sort_unstable();
+    expired.truncate(batch);
+    expired
+}
+
+// Scheduler-only reducer. GUARD FIRST (before any read). Interval singleton:
+// the runtime keeps the row and re-fires it every EXPORT_REAP_INTERVAL.
+#[spacetimedb::reducer]
+pub fn export_bundle_reaper(
+    ctx: &ReducerContext,
+    _sched: ExportBundleReaperSchedule,
+) -> Result<(), String> {
+    if ctx.sender() != ctx.database_identity() {
+        return Err(stringify!(export_reaper_scheduler_only).to_string());
+    }
+    let rows: Vec<(u64, i64)> = ctx
+        .db
+        .export_bundle()
+        .iter()
+        .map(|c| (c.chunk_id, c.created_at_ms))
+        .collect();
+    for id in plan_export_reap(
+        &rows,
+        now_ms(ctx),
+        EXPORT_BUNDLE_TTL_MS,
+        EXPORT_REAP_MAX_DELETE_PER_TICK,
+    ) {
+        ctx.db.export_bundle().chunk_id().delete(id);
+    }
+    Ok(())
+}
+
+// Idempotent self-healing singleton arm (delegates to playtest::plan_reaper_arm,
+// the crate SSOT for the one-row rule). Called last by request_data_export and
+// from init / sync_content in lib.rs.
+pub(crate) fn ensure_export_bundle_reaper(ctx: &ReducerContext) {
+    let existing: Vec<u64> = ctx
+        .db
+        .export_bundle_reaper_schedule()
+        .iter()
+        .map(|s| s.id)
+        .collect();
+    let plan = crate::playtest::plan_reaper_arm(&existing);
+    if plan.insert_one {
+        ctx.db
+            .export_bundle_reaper_schedule()
+            .insert(ExportBundleReaperSchedule {
+                id: 0,
+                scheduled_at: ScheduleAt::Interval(EXPORT_REAP_INTERVAL.into()),
+            });
+    }
+    for id in plan.delete_ids {
+        ctx.db.export_bundle_reaper_schedule().id().delete(id);
+    }
 }
 
 #[cfg(test)]

@@ -2,7 +2,7 @@
 type: SpacetimeDB Reducer
 title: care
 slug: reducers/care
-updated: 2026-09-01
+updated: 2026-09-05
 tags: [reducer, spacetimedb, raising]
 abstract: "Care for a monster (Trust-favorable credit, EG2-5/ADR-0175), gated by a per-monster cooldown measured from the server c…"
 resource: server-module/src/raising.rs#L75

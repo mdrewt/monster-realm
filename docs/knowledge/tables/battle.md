@@ -2,7 +2,7 @@
 type: SpacetimeDB Table
 title: battle
 slug: tables/battle
-updated: 2026-09-01
+updated: 2026-09-05
 tags: [schema, spacetimedb, private]
 abstract: "A single PvE or PvP battle. The `state` column holds the full `BattleState` (pure data from `game-core`); the server mo…"
 resource: server-module/src/schema.rs#L401

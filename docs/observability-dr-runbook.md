@@ -305,16 +305,20 @@ row. An account sitting `PendingDeletion` with **no** schedule row is the failur
 ### 9.4 Export bundles — retention as landed
 
 `request_data_export` writes `export_bundle` rows, read back only through the owner-scoped
-`my_export_bundle` view. Their retention today is entirely indirect:
+`my_export_bundle` view. Their retention is bounded three ways:
 
-- purged when that owner requests a **new** export (purge-before-write), and
-- purged by the deletion cascade.
+- purged when that owner requests a **new** export (purge-before-write),
+- purged by the deletion cascade, and
+- expired by the scheduled TTL reaper.
 
-**There is no independent TTL.** The PRV1-14 expiry reaper is deferred to **S4b**
-(`server-module/src/privacy.rs`), so a bundle belonging to an account that neither re-exports nor
-deletes persists indefinitely. Treat that as operator-relevant: an export bundle is a second,
-denormalized copy of one player's personal data, and it lands in **every** subsequent backup
-taken under §2. Until S4b ships, the only bound on its lifetime is the account's.
+**Export bundles expire on a 7-day TTL** (`EXPORT_BUNDLE_TTL_MS`, rb-48, ADR-0238). The scheduled
+`export_bundle_reaper` (`server-module/src/privacy.rs`) sweeps `export_bundle` hourly and deletes
+every chunk older than the TTL, at most 256 per tick; the deletion cascade and purge-before-write
+still remove chunks earlier. Its interval-singleton `export_bundle_reaper_schedule` row is armed by
+`request_data_export` itself and re-armed by `init`/`sync_content`, so publishing the module and
+running the sync repairs a missing row exactly as for the deletion reaper (see ADR-0238). An export
+bundle is still a second, denormalized copy of one player's personal data and lands in every backup
+taken under §2 during its lifetime.
 
 ### 9.5 Classification SSOT
 

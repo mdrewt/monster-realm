@@ -2,10 +2,10 @@
 type: SpacetimeDB Reducer
 title: sync_content
 slug: reducers/sync_content
-updated: 2026-09-01
+updated: 2026-09-05
 tags: [reducer, spacetimedb, lib]
 abstract: "SpacetimeDB reducer sync_content."
-resource: server-module/src/lib.rs#L182
+resource: server-module/src/lib.rs#L183
 source: scripts/okf-export.mjs@server-module/src/lib.rs
 ---
 

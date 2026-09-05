@@ -2,7 +2,7 @@
 type: SpacetimeDB Reducer
 title: respond_trade
 slug: reducers/respond_trade
-updated: 2026-09-01
+updated: 2026-09-05
 tags: [reducer, spacetimedb, trading]
 abstract: "Counterparty responds to a Pending offer. Role + status authorization is delegated to the pure `authorize_respond` (rol…"
 resource: server-module/src/trading.rs#L439

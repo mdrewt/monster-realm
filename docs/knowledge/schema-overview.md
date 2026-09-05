@@ -2,9 +2,9 @@
 type: Schema Overview
 title: Monster Realm Schema Overview
 slug: schema-overview
-updated: 2026-09-01
+updated: 2026-09-05
 tags: [schema, spacetimedb, overview]
-abstract: "40-table SpacetimeDB schema for Monster Realm: public/private split (ADR-0040). 52 reducers."
+abstract: "41-table SpacetimeDB schema for Monster Realm: public/private split (ADR-0040). 53 reducers."
 source: scripts/okf-export.mjs@server-module/src/
 ---
 
@@ -31,7 +31,7 @@ source: scripts/okf-export.mjs@server-module/src/
 - [type_relation_row](tables/type_relation_row.md)
 - [zone_def](tables/zone_def.md)
 
-### Private (22)
+### Private (23)
 
 - [account](tables/account.md)
 - [account_deletion_reaper_schedule](tables/account_deletion_reaper_schedule.md)
@@ -41,6 +41,7 @@ source: scripts/okf-export.mjs@server-module/src/
 - [battle_wild](tables/battle_wild.md)
 - [encounter](tables/encounter.md)
 - [export_bundle](tables/export_bundle.md)
+- [export_bundle_reaper_schedule](tables/export_bundle_reaper_schedule.md)
 - [guest_claim](tables/guest_claim.md)
 - [guest_claim_reaper_schedule](tables/guest_claim_reaper_schedule.md)
 - [heal_cooldown](tables/heal_cooldown.md)
@@ -56,7 +57,7 @@ source: scripts/okf-export.mjs@server-module/src/
 - [pvp_deadline_schedule](tables/pvp_deadline_schedule.md)
 - [trade_offer_reaper_schedule](tables/trade_offer_reaper_schedule.md)
 
-## Reducers (52)
+## Reducers (53)
 
 - [accept_challenge](reducers/accept_challenge.md)
 - [account_deletion_reaper](reducers/account_deletion_reaper.md)
@@ -79,6 +80,7 @@ source: scripts/okf-export.mjs@server-module/src/
 - [enqueue_move](reducers/enqueue_move.md)
 - [essence_train](reducers/essence_train.md)
 - [evolve](reducers/evolve.md)
+- [export_bundle_reaper](reducers/export_bundle_reaper.md)
 - [flee](reducers/flee.md)
 - [grant_bait](reducers/grant_bait.md)
 - [guest_claim_reaper](reducers/guest_claim_reaper.md)

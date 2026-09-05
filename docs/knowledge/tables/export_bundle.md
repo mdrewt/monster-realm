@@ -2,7 +2,7 @@
 type: SpacetimeDB Table
 title: export_bundle
 slug: tables/export_bundle
-updated: 2026-09-01
+updated: 2026-09-05
 tags: [schema, spacetimedb, private]
 abstract: "PRIVATE per-owner data-export chunk (M22 §5, ADR-0207). One row per `(owner_identity, request_id, table_name)`, sub-chu…"
 resource: server-module/src/schema.rs#L931

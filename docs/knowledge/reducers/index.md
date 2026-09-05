@@ -26,6 +26,7 @@
 | reducers/enqueue_move | SpacetimeDB Reducer | enqueue_move | Append one intent to the bounded queue (anti-flood: reject when full). Buffers i |
 | reducers/essence_train | SpacetimeDB Reducer | essence_train | Essence-train a monster: +ESSENCE_TRAIN_AMOUNT to ONE pool, gated by the shared  |
 | reducers/evolve | SpacetimeDB Reducer | evolve | Evolve a monster along one authored evolution-graph edge (EG2-1 shape). Steps: 1 |
+| reducers/export_bundle_reaper | SpacetimeDB Reducer | export_bundle_reaper | SpacetimeDB reducer export_bundle_reaper. |
 | reducers/flee | SpacetimeDB Reducer | flee | Flee from a battle. Sets outcome to `Fled`; no XP awarded. |
 | reducers/grant_bait | SpacetimeDB Reducer | grant_bait | DEV/TEST: grant bait to the CALLER only (self-scoped to `ctx.sender()`; no arbit |
 | reducers/guest_claim_reaper | SpacetimeDB Reducer | guest_claim_reaper | Reap a single expired `guest_claim` row (AUTH-27). Scheduler-only. Deletes exact |
