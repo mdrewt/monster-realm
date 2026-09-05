@@ -3829,7 +3829,7 @@ fn m22_rekey_manifest_keys() -> Vec<String> {
 ///        both sorted lists runs BEFORE the set compare so it cannot be
 ///        satisfied by coincidence);
 ///        deleting a table AND its entry in one diff to dodge classification
-///        (the >= 40 census floor and the >= 41 manifest floor);
+///        (the >= 41 census floor and the >= 41 manifest floor);
 ///        adding a `mod` to the crate and leaving it out of this scan;
 ///        the pre-existing five-file `include_str!` set, which sees 31 of 38.
 #[test]
