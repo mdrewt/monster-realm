@@ -11412,10 +11412,10 @@ fn m22s6_not_owned_identity_exceptions_are_frozen() {
     }
 
     assert_eq!(
-        population, 18,
+        population, 19,
         "[m22s6/x3-population] {population} manifest entries are classified NotOwned; the live \
-         set is exactly 18 (spec §3's seventeen plus rb-24's own \
-         account_deletion_reaper_schedule, schema.rs :990-992)."
+         set is exactly 19 (spec §3's seventeen plus rb-24's account_deletion_reaper_schedule \
+         and rb-48's export_bundle_reaper_schedule, ADR-0238; schema.rs :990-992)."
     );
 
     let observed_len = observed_exceptions.len();
