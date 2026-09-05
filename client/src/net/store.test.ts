@@ -5079,3 +5079,402 @@ describe('AuthoritativeStore 15r-sec-a: reconcileBattlesFromView post-condition'
     ).toBe(1);
   });
 });
+
+// =============================================================================
+// rb-53 (PRV1-11/12/13, residual R-m22-s8-X11; ADR-0231 Amendment A3) — the
+// `my_export_bundle` chunk map: reconcileExportChunksFromView + ownExportChunks.
+// APPENDED BLOCK — nothing above this line is modified.
+//
+// ★ SOURCE OF TRUTH — gate E1, verbatim:
+//   "[PRV1-11/12/13 live transport + download] WHEN request_data_export completes THE CLIENT
+//    SHALL read my_export_bundle from a live subscription, assemble it via
+//    assembleExportBundle, and offer the artifact as a downloadable file"
+//
+// WHY THIS SHAPE (A3-D1). `my_export_bundle` is a Vec-VIEW with no primary key, structurally
+// identical to `my_monster_pub` (ADR-0194 D4) and `my_battle` (ADR-0198 D4): the SDK never
+// fires onUpdate, every change arrives as an unordered onInsert(new) + onDelete(old) pair, and
+// the adapter rebuilds membership from the post-burst cache. So the store method is the same
+// whole-set reconcile — keyed by `chunkId`, pruning, and marking `#dirty` ONLY on a real
+// change, because the connection adapter calls it in EVERY batcher flush (every table's burst,
+// including the ~5/s movement ticks).
+//
+// CONTRACT UNDER TEST (do not invent variants):
+//   export type StoreExportChunk = {
+//     chunkId: bigint; ownerIdentity: string; requestId: bigint; tableName: string;
+//     chunkIndex: number; totalChunks: number; payloadJson: string; createdAtMs: bigint;
+//   };
+//   reconcileExportChunksFromView(rows: readonly StoreExportChunk[]): void
+//        — mirrors reconcileMonstersFromView (store.ts:575) EXACTLY: keep-set + a shallow
+//          own-key compare + prune; `#dirty` only when something actually changed.
+//   ownExportChunks(identity: string): readonly StoreExportChunk[]
+//        — the client-side owner filter (ADR-0015 V1). Exact `===`, no case folding, no
+//          trimming — the same rule `ownMonsters` / `ownAccount` already follow.
+//   reset() also clears the chunk map.
+//
+// BOUNDARY: this tier holds NO completeness logic, NO cap, NO sort and NO JSON.parse. Whether
+// the delivered set describes one coherent request is `ui/exportAssembly.ts`'s decision, and it
+// is gated there; the store's whole job is membership + the owner filter.
+//
+// RED REASON AT AUTHORING TIME: `AuthoritativeStore` has neither method, and `store.ts` exports
+// no `StoreExportChunk`, so every case below fails with
+// "s.reconcileExportChunksFromView is not a function" (or, for the read-only cases,
+// "s.ownExportChunks is not a function") — a MISSING IMPLEMENTATION, not a typo here.
+//
+// NO regex literal, no `new RegExp`. Every numeric fixture is synthetic — the deletion-grace
+// SSOT eval reads `client/**` RAW and does not exempt test files.
+// =============================================================================
+
+/** Reached through the EXISTING `storeMod` namespace binding (imported at :3265) rather than a
+ *  fourth `from './store'` import line: pinned biome folds same-specifier imports together once
+ *  a file accumulates enough of them, and a type-only alias costs no import at all. Erased at
+ *  runtime, so a not-yet-existing type cannot break this file's collection. */
+type Rb53ExportChunk = storeMod.StoreExportChunk;
+
+const RB53_ME = 'rb53-owner-me-hex';
+const RB53_FOREIGN = 'rb53-owner-foreign-hex';
+/** One request id, shared by every own chunk — the producer numbers `chunk_index` REQUEST-WIDE
+ *  (ADR-0231's opening context), so "same request, different index" is the ordinary shape. */
+const RB53_REQUEST = 4242n;
+
+const RB53_PAYLOAD_A = '{"table":"account","rows":[{"k":"a"}]}';
+const RB53_PAYLOAD_B = '{"table":"player","rows":[{"k":"b"}]}';
+const RB53_PAYLOAD_C = '{"table":"monster","rows":[{"k":"c"}]}';
+/** A marker that exists ONLY in the foreign owner's payload, so "the leak did not happen" is
+ *  asserted on CONTENT and not merely on a count. */
+const RB53_FOREIGN_MARKER = 'RB53-FOREIGN-PAYLOAD-MARKER';
+
+function rb53Chunk(chunkId: bigint, overrides: Partial<Rb53ExportChunk> = {}): Rb53ExportChunk {
+  return {
+    chunkId,
+    ownerIdentity: RB53_ME,
+    requestId: RB53_REQUEST,
+    tableName: 'account',
+    chunkIndex: 0,
+    totalChunks: 1,
+    payloadJson: RB53_PAYLOAD_A,
+    createdAtMs: 1_700_000_000_000n,
+    ...overrides,
+  };
+}
+
+/** The chunk ids the store holds for `identity`, as sorted decimal strings — every assertion
+ *  below is therefore ORDER-INDEPENDENT. The contract fixes MEMBERSHIP, never iteration order
+ *  (`exportAssembly.ts` sorts by the request-wide `chunkIndex` itself), so a test that pinned an
+ *  order would be gating a promise the store does not make. */
+function rb53Ids(s: AuthoritativeStore, identity: string): string[] {
+  return [...s.ownExportChunks(identity)].map((c) => c.chunkId.toString()).sort();
+}
+
+function rb53Find(
+  s: AuthoritativeStore,
+  identity: string,
+  chunkId: bigint,
+): Rb53ExportChunk | undefined {
+  return [...s.ownExportChunks(identity)].find((c) => c.chunkId === chunkId);
+}
+
+describe('AuthoritativeStore rb-53: ownExportChunks is an OWNER FILTER, in both directions', () => {
+  it('★★ RB53S-OWNER-BOTH-DIRECTIONS BITES: a FOREIGN chunk is absent from ownExportChunks(ME) and PRESENT in ownExportChunks(FOREIGN)', () => {
+    // ★ BOTH DIRECTIONS, and that is the whole design of this tooth. A one-directional
+    // assertion is passed by TWO opposite stubs:
+    //   * `return [...this.#exportChunks.values()]` (no filter at all) passes any "my chunk is
+    //     there" check, and hands `assembleExportBundle` another player's rows — the leak
+    //     ADR-0231 names at exportAssembly.ts:92-95;
+    //   * `return []` (or a filter inverted to always-false) passes any "the foreign chunk is
+    //     absent" check, and the player can never download their own export at all.
+    // Only asserting BOTH memberships kills both at once.
+    const s = new AuthoritativeStore();
+    s.reconcileExportChunksFromView([
+      rb53Chunk(1n, { chunkIndex: 0, totalChunks: 1 }),
+      rb53Chunk(2n, {
+        ownerIdentity: RB53_FOREIGN,
+        payloadJson: `{"table":"account","rows":[{"k":"${RB53_FOREIGN_MARKER}"}]}`,
+      }),
+    ]);
+
+    expect(rb53Ids(s, RB53_ME), 'my own chunk, and ONLY my own chunk').toEqual(['1']);
+    expect(
+      rb53Ids(s, RB53_FOREIGN),
+      "the foreign owner's chunk is still IN THE MAP — the filter is a READ-side scope, not a " +
+        'write-side drop. A `return []` stub passes the negative above and fails here',
+    ).toEqual(['2']);
+
+    // CONTENT, not just count: the marker must be unreachable through the own accessor.
+    for (const c of s.ownExportChunks(RB53_ME)) {
+      expect(
+        c.payloadJson.indexOf(RB53_FOREIGN_MARKER),
+        "another player's payload bytes must never be reachable through ownExportChunks(ME) — " +
+          'this array is what is spliced into the file the player downloads',
+      ).toBe(-1);
+    }
+
+    // A pre-join / unresolved identity addresses NOTHING. With no owner to compare against, a
+    // missing filter would hand every cached chunk to the assembler.
+    expect(rb53Ids(s, ''), 'an empty identity owns nothing').toEqual([]);
+  });
+
+  it('★ RB53S-OWNER-EXACT BITES: the owner match is EXACT — no case folding, no trimming', () => {
+    // main.ts holds the identity as the hex string the SDK handed `onConnect`, and both sides
+    // compare with `===`. Any normalisation applied here and not there silently empties the
+    // player's own export (or, worse, matches the wrong identity). Same rule ownAccount's
+    // M21b-2 A1 tooth pins for the account slot.
+    const s = new AuthoritativeStore();
+    s.reconcileExportChunksFromView([rb53Chunk(3n, { ownerIdentity: 'AABBCC' })]);
+    expect(rb53Ids(s, 'aabbcc')).toEqual([]);
+    expect(rb53Ids(s, ' AABBCC ')).toEqual([]);
+    expect(rb53Ids(s, 'AABBCC'), 'anti-vacuity for the two negatives').toEqual(['3']);
+  });
+});
+
+describe('AuthoritativeStore rb-53: the chunk map is keyed by chunkId', () => {
+  it('★★ RB53S-KEYED-BY-CHUNKID BITES: three chunks of ONE request all survive; a repeated chunkId REPLACES', () => {
+    // ★ WRONG IMPL KILLED (1) — THE ONE THAT LOOKS RIGHT: keying the map by `requestId`. Every
+    // chunk of one export shares it, so all N collapse into ONE entry, `receivedChunks` reads 1
+    // against `totalChunks` N, and `assembleExportBundle` reports `incomplete` FOREVER. The
+    // download control is then permanently disabled and the criterion silently fails while
+    // every membership count in a one-chunk fixture stays green — which is why this fixture is
+    // a THREE-chunk request.
+    // WRONG IMPL KILLED (2): a composite `(requestId, tableName, chunkIndex)` key. The producer
+    // sub-chunks a large table at EXPORT_CHUNK_ROWS, so one table legitimately spans several
+    // rows; the second clause below is two rows that agree on all three of those fields and
+    // differ only in `chunk_id`, which is exactly what the PRIMARY key exists for.
+    // WRONG IMPL KILLED (3): an array store that APPENDS — the third clause re-delivers one
+    // chunkId and requires the map to hold one row with the NEW payload.
+    const s = new AuthoritativeStore();
+    s.reconcileExportChunksFromView([
+      rb53Chunk(1n, { chunkIndex: 0, totalChunks: 3, payloadJson: RB53_PAYLOAD_A }),
+      rb53Chunk(2n, { chunkIndex: 1, totalChunks: 3, payloadJson: RB53_PAYLOAD_B }),
+      rb53Chunk(3n, { chunkIndex: 2, totalChunks: 3, payloadJson: RB53_PAYLOAD_C }),
+    ]);
+    expect(
+      rb53Ids(s, RB53_ME),
+      'all three chunks of ONE request must survive — a requestId-keyed map collapses them to ' +
+        'one and the export is permanently incomplete',
+    ).toEqual(['1', '2', '3']);
+
+    // Two rows agreeing on (requestId, tableName, chunkIndex) and differing ONLY in chunkId.
+    const s2 = new AuthoritativeStore();
+    s2.reconcileExportChunksFromView([
+      rb53Chunk(10n, { payloadJson: RB53_PAYLOAD_A }),
+      rb53Chunk(11n, { payloadJson: RB53_PAYLOAD_B }),
+    ]);
+    expect(
+      rb53Ids(s2, RB53_ME),
+      'chunk_id is the PRIMARY key: two rows that agree on requestId/tableName/chunkIndex are ' +
+        'still two rows',
+    ).toEqual(['10', '11']);
+
+    // Same chunkId, new payload — the map holds ONE row and the NEW payload wins.
+    const s3 = new AuthoritativeStore();
+    s3.reconcileExportChunksFromView([rb53Chunk(20n, { payloadJson: RB53_PAYLOAD_A })]);
+    s3.reconcileExportChunksFromView([rb53Chunk(20n, { payloadJson: RB53_PAYLOAD_B })]);
+    expect(rb53Ids(s3, RB53_ME)).toEqual(['20']);
+    expect(
+      rb53Find(s3, RB53_ME, 20n)?.payloadJson,
+      'the delivered payload is AUTHORITATIVE — an insert-if-absent upsert would freeze the ' +
+        'first bytes the client ever saw into the downloaded file',
+    ).toBe(RB53_PAYLOAD_B);
+  });
+
+  it('★ RB53S-DUPLICATE-DELIVERY BITES: the same chunkId delivered TWICE in ONE row set is stored ONCE', () => {
+    // A view returns a Vec, not a set. Kills an array-backed impl: a duplicated row would be
+    // spliced into the artifact twice AND would inflate `receivedChunks` past `totalChunks`.
+    const s = new AuthoritativeStore();
+    const row = rb53Chunk(9n);
+    s.reconcileExportChunksFromView([row, { ...row }]);
+    expect(rb53Ids(s, RB53_ME), 'keyed by chunkId — one row, however many times delivered').toEqual(
+      ['9'],
+    );
+  });
+});
+
+describe('AuthoritativeStore rb-53: the reconcile PRUNES, and an empty row set is authoritative', () => {
+  it('★★ RB53S-RECONCILE-PRUNES BITES: a chunk absent from the new row set is DROPPED, and [] empties the map', () => {
+    // ★ WRONG IMPL KILLED: an upsert-only reconcile (the `for (const r of rows) map.set(...)`
+    // shape, with no keep-set sweep). The server's TTL reaper deletes export_bundle rows —
+    // at most EXPORT_REAP_MAX_DELETE_PER_TICK per tick, so it can also cut ACROSS one owner's
+    // request — and `delete_account`'s cascade removes them outright. Without the prune, rows
+    // the server has already purged stay in the client cache and the player keeps being offered
+    // a download of data that no longer exists on the server: a retention promise the product
+    // does not keep.
+    // ALSO KILLED: an `if (rows.length === 0) return;` guard — the "don't wipe the store on an
+    // empty burst" instinct. An empty owner-scoped view result is AUTHORITATIVE: there is no
+    // live export.
+    const s = new AuthoritativeStore();
+    s.reconcileExportChunksFromView([
+      rb53Chunk(1n, { chunkIndex: 0, totalChunks: 3 }),
+      rb53Chunk(2n, { chunkIndex: 1, totalChunks: 3 }),
+      rb53Chunk(3n, { chunkIndex: 2, totalChunks: 3 }),
+    ]);
+    expect(rb53Ids(s, RB53_ME), 'precondition').toEqual(['1', '2', '3']);
+
+    s.reconcileExportChunksFromView([
+      rb53Chunk(1n, { chunkIndex: 0, totalChunks: 3 }),
+      rb53Chunk(3n, { chunkIndex: 2, totalChunks: 3 }),
+    ]);
+    expect(
+      rb53Ids(s, RB53_ME),
+      'the middle chunk was reaped server-side and must be GONE from the client cache too',
+    ).toEqual(['1', '3']);
+
+    s.reconcileExportChunksFromView([]);
+    expect(
+      rb53Ids(s, RB53_ME),
+      'an empty view result is authoritative, not a no-op — the whole export has been reaped',
+    ).toEqual([]);
+  });
+
+  it('★ RB53S-PRUNES-FOREIGN BITES: a foreign-owner chunk absent from the new set is pruned too', () => {
+    // The reconcile is over the WHOLE map, not over the caller's slice: an owner-scoped filter
+    // applied on the WRITE side would leave other-owner rows unreachable-but-resident forever.
+    const s = new AuthoritativeStore();
+    s.reconcileExportChunksFromView([
+      rb53Chunk(1n),
+      rb53Chunk(2n, { ownerIdentity: RB53_FOREIGN }),
+    ]);
+    expect(rb53Ids(s, RB53_FOREIGN), 'precondition').toEqual(['2']);
+    s.reconcileExportChunksFromView([rb53Chunk(1n)]);
+    expect(rb53Ids(s, RB53_FOREIGN)).toEqual([]);
+    expect(rb53Ids(s, RB53_ME), 'and my own chunk is untouched').toEqual(['1']);
+  });
+});
+
+describe('AuthoritativeStore rb-53: #dirty discipline (the render-storm guard)', () => {
+  it('★★ RB53S-DIRTY-DISCIPLINE BITES: an UNCHANGED row set marks NOTHING dirty; a changed one and a prune each mark it ONCE', () => {
+    // WHAT THIS PINS. The connection adapter calls this reconcile in EVERY batcher flush — i.e.
+    // on every table's burst, including the ~5/s movement ticks — so an unchanged row set must
+    // be a NO-OP. Without change detection every movement tick marks the batch dirty, and in
+    // THIS slice that is not merely a render storm: `main.ts`'s batch listener is the sole
+    // `assembleExportBundle(` call site, so a spurious dirty re-concatenates the whole export
+    // artifact on every tick.
+    //
+    // THE FIXTURE IS PRODUCTION-SHAPED ON PURPOSE: the rows are rebuilt by calling the factory
+    // again, so they are structurally equal but NON-IDENTICAL objects — exactly what
+    // `exportChunkRowToStore` emits on every conversion. The store never sees the same object
+    // twice in production. (A shallow own-key compare is sufficient here and a deep one is not
+    // needed: every field of StoreExportChunk is a primitive.)
+    //
+    // WRONG IMPL KILLED (1): no change detection at all (`map.set` + `#dirty = true` per row).
+    // WRONG IMPL KILLED (2) — THE OVER-SUPPRESSION MIRROR: a comparator tightened until nothing
+    // is ever dirty (`prev !== undefined` ⇒ unchanged). It passes clause one trivially, and the
+    // second and third clauses are what see it: an arriving chunk would never repaint the
+    // surface, so the download control would stay disabled while the export sat complete in the
+    // store.
+    // WRONG IMPL KILLED (3): a prune that removes the row without marking dirty — the reaped
+    // export would stay downloadable until some unrelated table happened to dirty the store.
+    const s = new AuthoritativeStore();
+    s.reconcileExportChunksFromView([
+      rb53Chunk(1n),
+      rb53Chunk(2n, { payloadJson: RB53_PAYLOAD_B }),
+    ]);
+    s.flushBatch(); // consume the dirty from the initial population
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+
+    s.reconcileExportChunksFromView([
+      rb53Chunk(1n),
+      rb53Chunk(2n, { payloadJson: RB53_PAYLOAD_B }),
+    ]);
+    s.flushBatch();
+    expect(
+      cb,
+      'an unchanged row set must not mark the batch dirty — this reconcile runs on EVERY batcher ' +
+        'flush, and a dirty mark here re-assembles the whole export artifact on every movement ' +
+        'tick',
+    ).toHaveBeenCalledTimes(0);
+
+    s.reconcileExportChunksFromView([
+      rb53Chunk(1n),
+      rb53Chunk(2n, { payloadJson: RB53_PAYLOAD_C }),
+    ]);
+    s.flushBatch();
+    expect(
+      cb,
+      'a CHANGED payload must mark the batch dirty exactly once — over-suppression is the freeze ' +
+        'failure mode: the chunk lands in the store and the surface never learns the export is ' +
+        'ready',
+    ).toHaveBeenCalledTimes(1);
+
+    s.reconcileExportChunksFromView([rb53Chunk(1n)]);
+    s.flushBatch();
+    expect(cb, 'and a PRUNE is a change too').toHaveBeenCalledTimes(2);
+  });
+
+  it('★ RB53S-DIRTY-ON-ARRIVAL BITES: the FIRST delivery marks the batch dirty', () => {
+    // Kills an impl that only marks dirty on an UPDATE to an existing key. The first delivery is
+    // the arrival edge the whole criterion hangs on — nothing repaints without it.
+    const s = new AuthoritativeStore();
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+    s.reconcileExportChunksFromView([rb53Chunk(1n)]);
+    expect(cb, 'not mid-batch — only flushBatch signals').toHaveBeenCalledTimes(0);
+    s.flushBatch();
+    expect(cb).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('AuthoritativeStore rb-53: reset() clears the chunk map', () => {
+  it('★★ RB53S-RESET-EMPTIES BITES: reset() drops every chunk, for every owner', () => {
+    // Kills a reset() that forgets the new map. reset() runs on DISCONNECT, and the very next
+    // connection can carry a DIFFERENT identity (every anonymous rebuild can mint one). A
+    // surviving chunk map would hold the previous session's personal-data rows in this client's
+    // memory — and, for a rotated identity, would hold them under an identity that is no longer
+    // the person at the keyboard. Every other slot in this store (wallet, account, battles) is
+    // cleared for exactly this reason.
+    const s = new AuthoritativeStore();
+    s.reconcileExportChunksFromView([
+      rb53Chunk(1n),
+      rb53Chunk(2n, { ownerIdentity: RB53_FOREIGN }),
+    ]);
+    expect(rb53Ids(s, RB53_ME), 'precondition').toEqual(['1']);
+
+    s.reset();
+
+    expect(rb53Ids(s, RB53_ME)).toEqual([]);
+    expect(rb53Ids(s, RB53_FOREIGN)).toEqual([]);
+  });
+
+  it('★ RB53S-RESET-KEEPS-LISTENERS BITES: reset() keeps batch listeners alive; a post-reset reconcile still signals', () => {
+    // The same guarantee the wallet and account slots assert for their own reset arms: a reset
+    // that cleared the listener set would silently kill the running loop.
+    const s = new AuthoritativeStore();
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+    s.reconcileExportChunksFromView([rb53Chunk(1n)]);
+    s.flushBatch();
+
+    s.reset();
+    expect(rb53Ids(s, RB53_ME)).toEqual([]);
+
+    s.reconcileExportChunksFromView([rb53Chunk(2n)]);
+    s.flushBatch();
+    expect(cb, 'once pre-reset, once post-reset').toHaveBeenCalledTimes(2);
+    expect(rb53Ids(s, RB53_ME)).toEqual(['2']);
+  });
+});
+
+describe('AuthoritativeStore rb-53: a value-changing reconcile REPLACES the stored row', () => {
+  it('★ RB53S-REPLACES-NOT-MUTATES BITES: the stored object is the NEW one; a previously handed-out row is untouched', () => {
+    // THE IN-PLACE-MUTATION CHEAT this kills (the same one reconcileBattlesFromView's clause 7
+    // records): `Object.assign(prev, row)`. Every membership, count and dirty assertion above
+    // still holds, because the MAP is right — but `main.ts` caches the ASSEMBLED artifact
+    // computed from a previous read, and a row mutated under it means the cached artifact and
+    // the store silently disagree about what the player is downloading.
+    const s = new AuthoritativeStore();
+    s.reconcileExportChunksFromView([rb53Chunk(3n, { payloadJson: RB53_PAYLOAD_A })]);
+    const captured = rb53Find(s, RB53_ME, 3n);
+    expect(captured, 'precondition: the row was stored').toBeDefined();
+
+    s.reconcileExportChunksFromView([rb53Chunk(3n, { payloadJson: RB53_PAYLOAD_B })]);
+
+    expect(
+      rb53Find(s, RB53_ME, 3n),
+      'the stored row must be the NEW object, not the previous one mutated in place',
+    ).not.toBe(captured);
+    expect(
+      captured?.payloadJson,
+      'the previously handed-out row must be UNCHANGED — the store publishes readonly rows and ' +
+        'consumers hold references to them',
+    ).toBe(RB53_PAYLOAD_A);
+  });
+});

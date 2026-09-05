@@ -3701,3 +3701,376 @@ describe('rowConvert M22 S8: accountRowToStore carries terminal_at_ms (PRV1-4)',
     expect(stored.terminalAtMs, 'the marker survives the explicit mapping').toBe(0n);
   });
 });
+
+// =============================================================================
+// rb-53 (PRV1-11/12/13, residual R-m22-s8-X11; ADR-0231 Amendment A3) —
+// exportChunkRowToStore: the `my_export_bundle` view row converter.
+// APPENDED BLOCK — nothing above this line is weakened.
+//
+// ★ SOURCE OF TRUTH — gate E1, verbatim:
+//   "[PRV1-11/12/13 live transport + download] WHEN request_data_export completes THE CLIENT
+//    SHALL read my_export_bundle from a live subscription, assemble it via
+//    assembleExportBundle, and offer the artifact as a downloadable file"
+//
+// THE EXACT FIELD LIST, verified against the GENERATED BINDING rather than transcribed from
+// prose: `client/src/module_bindings/my_export_bundle_table.ts` declares
+//   chunkId u64, ownerIdentity identity, requestId u64, tableName string,
+//   chunkIndex u32, totalChunks u32, payloadJson string, createdAtMs i64
+// — EIGHT fields, no more, no fewer. u64/i64 decode as `bigint`, u32 as `number`, and an
+// Identity's only contract is `toHexString()`.
+//
+// CONTRACT (modelled byte-for-byte on `playerWalletRowToStore`, rowConvert.ts:537-574 — the
+// doctrine paragraph there governs this converter verbatim):
+//   export interface SdkExportChunkRow {
+//     readonly chunkId: bigint;
+//     readonly ownerIdentity: { toHexString(): string };
+//     readonly requestId: bigint;
+//     readonly tableName: string;
+//     readonly chunkIndex: number;
+//     readonly totalChunks: number;
+//     readonly payloadJson: string;
+//     readonly createdAtMs: bigint;
+//   }
+//   export function exportChunkRowToStore(row: SdkExportChunkRow): StoreExportChunk;
+// EXPLICIT field mapping (never a spread), NO Number() coercion, NO `?? 0`/`?? 0n` defaulting,
+// NO validation that can throw, and `payloadJson` carried VERBATIM — never parsed, never
+// re-encoded (ADR-0231 decision 5: the server hand-rolls its JSON with every 64-bit integer as
+// a quoted decimal string precisely so this client never re-encodes them).
+//
+// ★ REACHED THROUGH THE EXISTING `rowConvertModule` NAMESPACE BINDING (imported at :13), NOT a
+// fourth named import from './rowConvert'. Two reasons, both deliberate: pinned biome folds
+// same-specifier imports together once a file accumulates enough of them, and — more
+// importantly for a RED-phase suite — a named import of a not-yet-existing export is an ESM
+// LINK error that takes this whole 3700-line file's COLLECTION down, so every unrelated tooth
+// in it would red for the wrong reason. Through the namespace, a missing implementation reds
+// exactly the cases below, with "exportChunkRowToStore is not a function".
+//
+// RED REASON AT AUTHORING TIME (verified by reading client/src/net/rowConvert.ts this session):
+// neither `exportChunkRowToStore` nor `SdkExportChunkRow` exists — the own-row converter family
+// ends at `accountRowToStore` (:610). Every case below is a MISSING IMPLEMENTATION.
+//
+// NOTE, as the blocks above already record: client/tsconfig.json EXCLUDES `**/*.test.ts`, so
+// `npm run typecheck` does not see this file — the gating signal is the runtime failure.
+// =============================================================================
+
+/** Type-only, therefore ERASED at runtime: a not-yet-existing type cannot break collection. */
+import type { StoreExportChunk } from './store';
+
+const EXPORT_OWNER_HEX = 'ec00112233445566';
+
+/** The eight keys, spelled once, so the roster tooth and the presence tooth cannot drift. */
+const RB53_CHUNK_KEYS: readonly string[] = [
+  'chunkId',
+  'ownerIdentity',
+  'requestId',
+  'tableName',
+  'chunkIndex',
+  'totalChunks',
+  'payloadJson',
+  'createdAtMs',
+];
+
+/**
+ * A payload the SERVER could really emit, chosen so a `JSON.parse` → `JSON.stringify` round
+ * trip is DETECTABLE: it carries a 64-bit integer as a QUOTED decimal string, a DUPLICATE key
+ * (which a parse collapses to the last one) and non-canonical spacing (which a re-encode drops).
+ * Byte equality against this literal is therefore a real no-reparse tooth and not a tautology.
+ */
+const RB53_RAW_PAYLOAD = '{"id":"9007199254740993",  "n":1,"n":2}';
+
+function makeSdkExportChunkRow(
+  overrides: Partial<Record<string, unknown>> = {},
+): rowConvertModule.SdkExportChunkRow {
+  return {
+    chunkId: 7n,
+    ownerIdentity: { toHexString: () => EXPORT_OWNER_HEX },
+    requestId: 4242n,
+    tableName: 'account',
+    chunkIndex: 0,
+    totalChunks: 3,
+    payloadJson: RB53_RAW_PAYLOAD,
+    createdAtMs: 1_700_000_000_000n,
+    ...overrides,
+  } as unknown as rowConvertModule.SdkExportChunkRow;
+}
+
+describe('rowConvert rb-53: exportChunkRowToStore — the exact eight-key roster (RC-EX-01)', () => {
+  it('★★ RC-EX-01a BITES: the output has EXACTLY the eight chunk keys — kills the spread impl', () => {
+    // WRONG IMPL KILLED: `{ ...row, ownerIdentity: row.ownerIdentity.toHexString() }`. A spread
+    // smuggles every SDK-only field the generator adds later into the store — and THIS row is
+    // the one row in the client that is, by construction, the player's own personal data on its
+    // way into a downloadable file. The exact key set is what proves the mapping is EXPLICIT,
+    // the same tooth RC-PW-04 applies to the wallet and RC-AC-04a to the account.
+    const sdk = makeSdkExportChunkRow({
+      // A field the current generated binding does not have; a spread impl leaks it.
+      serverOnlyScratch: 'leak-me',
+    });
+    const stored = rowConvertModule.exportChunkRowToStore(sdk);
+    expect(Object.keys(stored as unknown as Record<string, unknown>).sort()).toEqual(
+      [...RB53_CHUNK_KEYS].sort(),
+    );
+  });
+
+  it('★ RC-EX-01b BITES: every key is PRESENT even when its value is degenerate — kills a conditional spread', () => {
+    // `Object.keys` on `{a: undefined}` includes 'a'; on `{}` it does not. An impl that
+    // conditionally spreads fields (`...(x !== undefined && { chunkIndex: x })`) passes the
+    // sorted-key comparison ONLY when every field happens to be present, so the absent case is
+    // pinned explicitly — and with it the "eight keys, always" contract that makes RC-EX-01a
+    // mean anything.
+    const stored = rowConvertModule.exportChunkRowToStore(
+      makeSdkExportChunkRow({
+        chunkIndex: undefined,
+        totalChunks: undefined,
+        tableName: undefined,
+      }),
+    ) as unknown as Record<string, unknown>;
+    for (const key of RB53_CHUNK_KEYS) {
+      expect(Object.hasOwn(stored, key), `${key} must be present-but-undefined, not omitted`).toBe(
+        true,
+      );
+    }
+  });
+
+  it('★ RC-EX-01c BITES: the result is a FRESH object, not the SDK row itself', () => {
+    // WRONG IMPL KILLED: `return row as unknown as StoreExportChunk` — a zero-work "converter"
+    // that satisfies naive field assertions while leaving the SDK Identity OBJECT in
+    // `ownerIdentity`, where the store's `===` owner filter can never match it.
+    const sdk = makeSdkExportChunkRow();
+    expect(rowConvertModule.exportChunkRowToStore(sdk) as unknown).not.toBe(sdk as unknown);
+  });
+
+  it('★ RC-EX-01d BITES: the result is assignable to StoreExportChunk (compile-time contract pin)', () => {
+    // A tsc tooth, not a runtime one — and, as RC-HL-CC-08 records, client/tsconfig.json
+    // excludes `**/*.test.ts`, so it surfaces in the editor and in review rather than in
+    // `npm run typecheck`. It pins the field NAMES against store.ts: a converter emitting
+    // `chunk_id` / `owner` would fail here rather than mysteriously never matching.
+    const stored: StoreExportChunk = rowConvertModule.exportChunkRowToStore(
+      makeSdkExportChunkRow(),
+    );
+    expect(stored.chunkId).toBe(7n);
+    expect(stored.tableName).toBe('account');
+  });
+});
+
+describe('rowConvert rb-53: exportChunkRowToStore — ownerIdentity via toHexString() (RC-EX-02)', () => {
+  it('★★ RC-EX-02a BITES: ownerIdentity is the plain hex STRING — kills String(row.ownerIdentity)', () => {
+    // WRONG IMPL KILLED: `String(row.ownerIdentity)` (yielding "[object Object]"), or storing
+    // the raw SDK Identity object. `store.ownExportChunks(identity)` and
+    // `assembleExportBundle(chunks, ownerIdentity)` BOTH compare with `===` against the hex
+    // string main.ts holds; an object never matches either, so the player's own export is
+    // invisible to them while the rows sit in the cache — indistinguishable from an unwired
+    // feature, with the subscription live.
+    const stored = rowConvertModule.exportChunkRowToStore(makeSdkExportChunkRow());
+    expect(typeof stored.ownerIdentity).toBe('string');
+    expect(stored.ownerIdentity).toBe(EXPORT_OWNER_HEX);
+    expect(stored.ownerIdentity).not.toBe('[object Object]');
+  });
+
+  it('★ RC-EX-02b BITES: the hex is preserved VERBATIM and toHexString() is called EXACTLY once', () => {
+    // Case normalisation applied here and not at the comparison site silently empties the
+    // player's export. The call count pins that the converter does not re-derive the identity
+    // twice (two conversions are two chances to disagree, and the SDK's Identity is not free).
+    let calls = 0;
+    const stored = rowConvertModule.exportChunkRowToStore(
+      makeSdkExportChunkRow({
+        ownerIdentity: {
+          toHexString: () => {
+            calls += 1;
+            return 'AABBCCDD';
+          },
+        },
+      }),
+    );
+    expect(stored.ownerIdentity).toBe('AABBCCDD');
+    expect(stored.ownerIdentity).not.toBe('aabbccdd');
+    expect(calls, 'ownerIdentity.toHexString() must be called exactly once').toBe(1);
+  });
+});
+
+describe('rowConvert rb-53: exportChunkRowToStore — u64/i64 stay bigint, u32 stays number (RC-EX-03)', () => {
+  it('★★ RC-EX-03a BITES: chunkId / requestId / createdAtMs survive 2^53 + 1 byte-identically', () => {
+    // ★ THE ROW THAT IS IMPOSSIBLE TO PASS UNDER A `Number()` IMPLEMENTATION:
+    //   Number(9007199254740993n)         === 9007199254740992   (off by one, silently)
+    //   BigInt(Number(9007199254740993n)) === 9007199254740992n  (right TYPE, wrong VALUE)
+    // The second assertion in each pair states that mutant's exact output so a failure NAMES
+    // the bug. `request_id` is a wall-clock millisecond and `chunk_id` an auto_inc u64 — both
+    // are already far past 2^53 in production, and `requestId` is what selects the NEWEST
+    // export, so a lossy conversion silently serves the PREVIOUS one.
+    const huge = 9007199254740993n;
+    const stored = rowConvertModule.exportChunkRowToStore(
+      makeSdkExportChunkRow({ chunkId: huge, requestId: huge, createdAtMs: huge }),
+    );
+    for (const [field, value] of [
+      ['chunkId', stored.chunkId],
+      ['requestId', stored.requestId],
+      ['createdAtMs', stored.createdAtMs],
+    ] as const) {
+      expect(typeof value, `${field} must stay a bigint`).toBe('bigint');
+      expect(value, `${field} must survive 2^53+1 exactly`).toBe(huge);
+      expect(value, `${field} must NOT be the Number() round trip 9007199254740992n`).not.toBe(
+        9007199254740992n,
+      );
+    }
+  });
+
+  it('★★ RC-EX-03b BITES: chunkIndex / totalChunks stay typeof "number" — kills a BigInt() conversion', () => {
+    // The u32 columns decode as `number`, and `exportAssembly.ts` gates on
+    // `Number.isInteger(c.chunkIndex)` and `c.chunkIndex >= totalChunks`. A bigint there makes
+    // `Number.isInteger` FALSE for every chunk, so every export is reported `inconsistent` and
+    // no artifact is ever produced — a total feature failure with no error anywhere.
+    const stored = rowConvertModule.exportChunkRowToStore(
+      makeSdkExportChunkRow({ chunkIndex: 2, totalChunks: 5 }),
+    );
+    expect(typeof stored.chunkIndex).toBe('number');
+    expect(typeof stored.totalChunks).toBe('number');
+    expect(stored.chunkIndex).toBe(2);
+    expect(stored.totalChunks).toBe(5);
+  });
+
+  it('★★ RC-EX-03c BITES: a ZERO chunkIndex survives as 0, and an ABSENT one stays undefined — kills `?? 0`', () => {
+    // TWO fabrications, in opposite directions, and both are silent:
+    //   * `row.chunkIndex ?? 0` / `row.chunkIndex || 0` on a drifted binding invents chunk 0 —
+    //     which `exportAssembly` then accepts as a real, in-range index, producing a COMPLETE
+    //     artifact that is missing a chunk and duplicating another;
+    //   * a truthiness guard (`row.chunkIndex ? row.chunkIndex : undefined`) DROPS the real
+    //     index 0, which every request has exactly one of, so no export is ever complete.
+    // Only a malformed row can observe the defaulting — a well-typed row always carries a
+    // number — so the absent case is probed with the shape a schema drift would hand us.
+    const zero = rowConvertModule.exportChunkRowToStore(makeSdkExportChunkRow({ chunkIndex: 0 }));
+    expect(zero.chunkIndex, '0 is a REAL index, not an absence').toBe(0);
+    expect(zero.chunkIndex).not.toBeUndefined();
+
+    const missing = rowConvertModule.exportChunkRowToStore(
+      makeSdkExportChunkRow({ chunkIndex: undefined, totalChunks: undefined }),
+    ) as unknown as Record<string, unknown>;
+    expect(missing.chunkIndex, 'an absent index is DARK, never 0').toBeUndefined();
+    expect(missing.chunkIndex).not.toBe(0);
+    expect(missing.totalChunks).toBeUndefined();
+    expect(missing.totalChunks).not.toBe(0);
+  });
+
+  it('★ RC-EX-03d BITES: an ABSENT bigint stays undefined — kills `?? 0n`', () => {
+    // The bigint half of the same rule. A fabricated `0n` requestId makes every chunk look like
+    // it belongs to the same, oldest request — so a stale chunk can fill a hole in the new one,
+    // which is precisely the merge `exportAssembly.ts` refuses to perform.
+    const stored = rowConvertModule.exportChunkRowToStore(
+      makeSdkExportChunkRow({ chunkId: undefined, requestId: undefined, createdAtMs: undefined }),
+    ) as unknown as Record<string, unknown>;
+    for (const key of ['chunkId', 'requestId', 'createdAtMs']) {
+      expect(stored[key], `${key} must stay undefined`).toBeUndefined();
+      expect(stored[key], `${key} must not be fabricated to 0n`).not.toBe(0n);
+    }
+  });
+
+  it('★ RC-EX-03e BITES fast-check: every u64 chunkId/requestId pair round-trips exactly', () => {
+    // Property form over the whole u64 domain, so a Number()-based impl fails for most of it and
+    // shrinks to a named counterexample. Block-bodied arrow: fast-check reads an
+    // expression-bodied matcher's return value as a `false` predicate and fails spuriously.
+    fc.assert(
+      fc.property(
+        fc.bigUintN(64),
+        fc.bigUintN(64),
+        fc.integer({ min: 0, max: 4095 }),
+        (chunkId, requestId, chunkIndex) => {
+          const stored = rowConvertModule.exportChunkRowToStore(
+            makeSdkExportChunkRow({ chunkId, requestId, chunkIndex }),
+          );
+          expect(typeof stored.chunkId).toBe('bigint');
+          expect(stored.chunkId).toBe(chunkId);
+          expect(stored.requestId).toBe(requestId);
+          expect(typeof stored.chunkIndex).toBe('number');
+          expect(stored.chunkIndex).toBe(chunkIndex);
+        },
+      ),
+    );
+  });
+});
+
+describe('rowConvert rb-53: exportChunkRowToStore — payloadJson is carried VERBATIM (RC-EX-04)', () => {
+  it("★★ RC-EX-04a BITES: the server's bytes survive byte-for-byte — kills a JSON.parse round trip", () => {
+    // ★ ADR-0231 decision 5. A parse/re-encode is BYTE-IDENTICAL on canonical server output, so
+    // a fixture of well-formed compact JSON could not detect it. This payload is chosen so the
+    // round trip is OBSERVABLE: `JSON.stringify(JSON.parse(...))` collapses the duplicate `"n"`
+    // key to its LAST value and drops the double space. It also carries a 64-bit integer as a
+    // QUOTED decimal string — the server's own encoding, which exists precisely so the client
+    // never re-encodes it and re-opens the 2^53 hole.
+    // ALSO KILLED: any trim/normalise/validate step, and any converter that would THROW on a
+    // torn chunk (this runs inside an SDK row callback with no per-listener isolation).
+    const stored = rowConvertModule.exportChunkRowToStore(makeSdkExportChunkRow());
+    expect(stored.payloadJson).toBe(RB53_RAW_PAYLOAD);
+    expect(
+      stored.payloadJson,
+      'the payload must NOT be a JSON.parse/JSON.stringify round trip — that collapses the ' +
+        'duplicate key and the spacing, and on real data it re-encodes the quoted 64-bit ' +
+        'integers the server hand-rolled to keep exact',
+    ).not.toBe(JSON.stringify(JSON.parse(RB53_RAW_PAYLOAD)));
+    expect(typeof stored.payloadJson).toBe('string');
+  });
+
+  it('★ RC-EX-04b BITES: an EMPTY payload stays the empty string — kills `?? ""` masking and truthiness drops', () => {
+    // An empty payload is a real, if degenerate, value; the fabrication that matters is the
+    // reverse — an impl that turns an ABSENT payload into `''` would splice a silent hole into
+    // the artifact instead of letting the assembler see a malformed row.
+    const empty = rowConvertModule.exportChunkRowToStore(
+      makeSdkExportChunkRow({ payloadJson: '' }),
+    );
+    expect(empty.payloadJson).toBe('');
+
+    const missing = rowConvertModule.exportChunkRowToStore(
+      makeSdkExportChunkRow({ payloadJson: undefined }),
+    ) as unknown as Record<string, unknown>;
+    expect(missing.payloadJson, 'an absent payload is DARK, never an invented empty string').toBe(
+      undefined,
+    );
+  });
+
+  it('★ RC-EX-04c BITES: tableName is carried bare and verbatim', () => {
+    // Kills a converter that narrows/normalises the table name (lower-casing it, or mapping it
+    // through an allowlist). `exportable` filtering is ENTIRELY server-side (ADR-0231 decision
+    // 4) — a client-side allowlist would be a second SSOT for PRV1-12 that can only ever HIDE
+    // data the player is entitled to.
+    const stored = rowConvertModule.exportChunkRowToStore(
+      makeSdkExportChunkRow({ tableName: 'Player_Quest' }),
+    );
+    expect(stored.tableName).toBe('Player_Quest');
+  });
+});
+
+describe('rowConvert rb-53: exportChunkRowToStore — totality (RC-EX-05)', () => {
+  it('★★ RC-EX-05a BITES: never throws for hostile/degenerate rows (fail-soft, not fail-loud)', () => {
+    // WRONG IMPL KILLED: a defensive converter that VALIDATES and throws. Rejecting a bad row
+    // loudly is the right instinct in a reducer and the WRONG one here: the throw escapes into
+    // the SDK's row-callback dispatch loop, which has no per-listener isolation (ADR-0085 A6),
+    // so EVERY sibling table's ingest starves for that transaction.
+    const hostile: readonly unknown[] = [
+      makeSdkExportChunkRow({ chunkId: undefined }),
+      makeSdkExportChunkRow({ requestId: null }),
+      makeSdkExportChunkRow({ tableName: undefined }),
+      makeSdkExportChunkRow({ chunkIndex: 'not-a-number' }),
+      makeSdkExportChunkRow({ totalChunks: Number.NaN }),
+      makeSdkExportChunkRow({ payloadJson: '{"unterminated": ' }),
+      makeSdkExportChunkRow({ createdAtMs: 'not-a-bigint' }),
+      makeSdkExportChunkRow({ ownerIdentity: { toHexString: () => '' } }),
+    ];
+    for (const row of hostile) {
+      expect(
+        () => rowConvertModule.exportChunkRowToStore(row as rowConvertModule.SdkExportChunkRow),
+        'exportChunkRowToStore must never throw — a throw inside a row callback kills the whole ' +
+          'flushBatch (ADR-0085 A6)',
+      ).not.toThrow();
+    }
+  });
+
+  it('★ RC-EX-05b BITES: a NaN totalChunks passes through UNCLAMPED — the assembler owns that verdict', () => {
+    // The converter invents no policy. `exportAssembly.ts` already treats a non-positive-integer
+    // `totalChunks` as `inconsistent` (and its own suite pins that); a converter that "helpfully"
+    // clamped NaN to 0 or 1 here would manufacture a COMPLETE one-chunk export out of a
+    // malformed row — a downloadable file the server never produced.
+    const stored = rowConvertModule.exportChunkRowToStore(
+      makeSdkExportChunkRow({ totalChunks: Number.NaN }),
+    );
+    expect(Number.isNaN(stored.totalChunks)).toBe(true);
+    expect(stored.totalChunks).not.toBe(0);
+    expect(stored.totalChunks).not.toBe(1);
+  });
+});
