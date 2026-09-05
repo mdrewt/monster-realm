@@ -561,6 +561,7 @@ fn rb22p_owner_scoped_filter_never_iter() {
          sweep is an ungated global read."
     );
 }
+
 /// EO-1 / EO-2 (reachability): the helper contains no early `return`.
 ///
 /// The body is straight-line by design — a collect and a loop. A `return` can
@@ -688,9 +689,14 @@ fn rb22p_writes_only_export_bundle() {
     assert_eq!(
         targets.len(),
         5,
-        "rb22p [W/total]: privacy.rs must perform exactly five writes in total; found {}. The \
-         total is pinned separately from the per-table counts so that a write the attribution \
-         helper classified into an allowed bucket by accident still moves a number.",
+        "rb22p [W/total]: privacy.rs must perform exactly five writes in total; found {}. This \
+         number is IMPLIED by the three clauses above, and saying otherwise would be arithmetic \
+         nobody checked: the membership loop puts EVERY target inside the two-name set, and the \
+         per-name arithmetic fixes those two names at three and two. It is therefore a redundant \
+         CROSS-CHECK, not an independent tooth. It is kept because it is the one clause that \
+         reports the whole census as a single number — when the attribution helper's output \
+         changes shape, this line says `the module now writes N times` before a reader has to \
+         reconstruct that from two per-name failures.",
         targets.len()
     );
 
@@ -715,6 +721,7 @@ fn rb22p_writes_only_export_bundle() {
          decision and can insert a second, permanently-firing schedule row."
     );
 }
+
 /// EO-3 (alias bans): the module binds no alias of the db handle, and every
 /// reducer-context parameter is named `ctx`.
 ///
@@ -3730,6 +3737,7 @@ fn m22s4_no_exportable_false_table_is_named() {
          must never appear in an export payload under any name."
     );
 }
+
 // ===========================================================================
 // PRV1-13 / X4 — sub-chunking and the request-wide index.
 // ===========================================================================
@@ -5329,6 +5337,7 @@ fn m22s4_reducer_signature_exact() {
          WITHOUT the bracket for the same reason.)"
     );
 }
+
 /// X9: the body's statement ORDER is the security shape.
 ///
 /// Subject guard, then deletion gate, then cooldown, then the purge, then the
@@ -5339,16 +5348,26 @@ fn m22s4_reducer_signature_exact() {
 ///
 /// EXTENDED BY rb-48 (ADR-0238) — an ADDITION, not a revision: this test was
 /// measured GREEN with the self-arm call in place, and the three new clauses at
-/// the end are what give the arm a position, a depth and a count in the
-/// statement shape. They are the teeth for the two shapes that break PRV1-14's
-/// arming invariant while leaving every clause above untouched: the arm call
-/// deleted outright, and the arm call hoisted above the insert loop or wrapped
-/// in an `if total > 0`. The invariant is `a chunk exists implies the singleton
-/// is armed`, and it is true BY CONSTRUCTION only if the arm runs after the
-/// writes in the same transaction — an `Err` anywhere rolls both back together.
-/// (`rb48_export_reducer_arms_the_reaper_last` owns the complementary
-/// ADJACENCY clause — that nothing at all sits between the arm and `Ok(())` —
-/// and the module's naming budget for the arm. The two do not overlap.)
+/// the end give the arm an ATTRIBUTABLE position, depth and count in the
+/// statement shape. They name the two shapes that break PRV1-14's arming
+/// invariant while leaving every clause above untouched: the arm call deleted
+/// outright, and the arm call hoisted above the insert loop or wrapped in an
+/// `if total > 0`. The invariant is `a chunk exists implies the singleton is
+/// armed`, and it is true BY CONSTRUCTION only if the arm runs after the writes
+/// in the same transaction — an `Err` anywhere rolls both back together.
+///
+/// (`rb48_export_reducer_arms_the_reaper_last` owns the complementary ADJACENCY
+/// clause — that nothing at all sits between the arm and `Ok(())` — and the
+/// module's naming budget for the arm. THOSE TWO SUBSUME THE THREE CLAUSES
+/// BELOW, and claiming otherwise would be false: a reducer body whose squashed
+/// tail is exactly the arm call followed by `Ok(())`, in a module that names the
+/// arm exactly twice, thereby carries that call exactly once, at brace depth
+/// zero — nothing may close a block between the call and the tail — and after
+/// the sole insert site. The three are kept anyway, as ATTRIBUTION rather than
+/// as independent teeth: assertions are first-failure-wins and these run first,
+/// so a deleted, hoisted or conditional arm reds HERE with a message naming
+/// which property broke, instead of reding THERE with a 160-byte tail dump the
+/// reader has to diff by eye.)
 ///
 /// Kills: a guard moved below the purge (its rejection would still be correct,
 ///        but the caller's previous export is gone);
@@ -5518,6 +5537,7 @@ fn m22s4_reducer_statement_order() {
          every count and depth clause above."
     );
 }
+
 /// X9: each clock reader reads the injected clock ONCE, and both of the export
 /// reducer's time columns read that one binding.
 ///
@@ -5545,7 +5565,13 @@ fn m22s4_reducer_statement_order() {
 ///        a clock read anywhere else in the module (a helper minting its own
 ///        instant);
 ///        a request id minted from something other than the bound clock;
-///        a row timestamp taken from a fresh read.
+///        a row timestamp taken from a fresh read;
+///        the NAME `now_ms` re-pointed at a DIFFERENT item by an `as` alias
+///        (measured on the artifact: a microsecond helper added to marshal.rs
+///        and imported here under that alias). Every count above is a count of
+///        the name, and both frozen-body pins are pins on the name, so that one
+///        line changes the clock's UNIT while leaving the whole file green — the
+///        import identity and alias-ban clauses are what see it.
 #[test]
 fn m22s4_now_bound_once() {
     let squashed = stripped_for_scan(PRIVACY_RS);
@@ -5560,6 +5586,34 @@ fn m22s4_now_bound_once() {
          ADR-0238), each in its own transaction, each attributed by name below. A third read \
          anywhere is a third instant that can disagree with the other two — and in a helper, it \
          is an instant no test in this module scopes at all."
+    );
+
+    // The IDENTITY of the name every clause in this file reads. Split so a
+    // self-scan never counts this test's own literal; the squash removes the
+    // spaces, so the pinned form is the import with no whitespace at all.
+    let import = concat!("usecrate::marshal::now", "_ms;");
+    assert_eq!(
+        rb22p_count(&squashed, import),
+        1,
+        "m22s4 [X9/now-import]: privacy.rs must bind its clock with EXACTLY the import `{import}` \
+         (squashed), exactly once. Every clause in this file — the census above, the three binding \
+         clauses below, and BOTH frozen-body equality pins — reads only the NAME `now_ms`, never \
+         the item behind it, so re-pointing that name leaves every pinned byte and every count \
+         identical while the value it returns changes UNIT. The measured shape is a new microsecond \
+         helper added to marshal.rs and imported here under an alias: the seven-day retention \
+         ceiling silently becomes about ten minutes, and bundles are deleted out from under a \
+         client that is still assembling them."
+    );
+    let alias = concat!("asnow", "_ms");
+    assert_eq!(
+        rb22p_count(&squashed, alias),
+        0,
+        "m22s4 [X9/now-alias]: privacy.rs renames some other item to `now_ms` with an `as` alias. \
+         The name is the only handle this module's tests have on the clock: an alias swaps the \
+         function behind it without moving a single frozen byte, a single count or a single \
+         behavioural assertion — `plan_export_reap` takes `now_ms` as a PARAMETER, so its unit \
+         tests pass their own value in and never touch this import. Pinned as a separate clause \
+         from the import above so the failure names the CAUSE rather than only the absence."
     );
 
     for (what, scoped, why) in [
@@ -5605,6 +5659,7 @@ fn m22s4_now_bound_once() {
          chunks of one request carry two different request ids and the client waits forever."
     );
 }
+
 /// X9: the subject is derived from the caller ONCE, and nothing else in the
 /// body names an identity.
 ///
@@ -6773,6 +6828,15 @@ fn rb48_plan_export_reap_noop_when_nothing_due() {
          it happens. The fourth row carries a FUTURE stamp on purpose: a clock that stepped \
          backwards must read as fresh, never as maximally expired."
     );
+
+    assert!(
+        crate::privacy::plan_export_reap(&[], 0, 1, 8).is_empty(),
+        "rb48 [E2/noop-empty]: an EMPTY sweep must plan NOTHING. This is the reaper's steady \
+         state, not an edge case — it ticks hourly forever, and most databases hold no export \
+         bundle at all most of the time — so a seam that fabricates an id from an empty input \
+         would delete a row the sweep never saw, on every tick, in the quietest database. Every \
+         other case in this block feeds a non-empty slice, so nothing else here would notice."
+    );
 }
 
 /// E1 / E2 (the boundary, both directions in one test): age EXACTLY the TTL is
@@ -7556,13 +7620,37 @@ fn rb48_export_reducer_arms_the_reaper_last() {
 /// pre-slice legacy chunks is swept only if some account happens to export
 /// again.
 ///
+/// A COUNT IS NOT A WIRING. The artifact red-team measured SIX shapes that hold
+/// both counts at their sanctioned values while the shipped module arms nothing,
+/// in four families, each answered by its own clause below: a
+/// conditional-compilation attribute on the call line in `sync_content`, in
+/// `init`, or in both (host builds, clippy and every Rust test here compile the
+/// HOST target, and CI never builds the server-module wasm); the `sync_content`
+/// call relocated into the dead pre-M12.5b early-return branch; the same call
+/// wrapped in an always-false conditional at the tail; and a decoy module
+/// holding a second `pub fn init` planted ABOVE the real reducer, which steals
+/// the scope of the first-hit body extractor.
+///
 /// Kills: either call removed (each is counted in its own scope, so the two
 ///        failures are distinguishable);
-///        a call added anywhere else in lib.rs (the file-wide count).
+///        a call added anywhere else in lib.rs (the file-wide count);
+///        a conditional-compilation attribute or `cfg!` branch inside either
+///        body;
+///        the call detached from the sibling deletion-reaper arm — relocated,
+///        fenced or wrapped (the adjacency clause);
+///        anything wedged after the `sync_content` arm (the tail clause);
+///        a second `init` or `sync_content` definition (the scope clauses).
 #[test]
 fn rb48_arm_wired_from_init_and_sync_content() {
     let lib = stripped_for_scan(RB48_LIB_RS);
     let call = rb48_arm_call_pin_qualified();
+    // The SIBLING arm this call must sit immediately after, spelled in fragments
+    // so a self-scan of this file never counts the test's own literal (module
+    // header rule). accounts_tests.rs owns that sibling's own wiring test.
+    let sibling = concat!("crate::accounts::ensure_deletion", "_reapers_armed(ctx);");
+    let adjacency = format!("{sibling}{call}");
+    let cfg_attr = rb48_nd_cfg_attr();
+    let cfg_macro = rb48_nd_cfg_macro();
 
     let total = rb22p_count(&lib, &call);
     assert_eq!(
@@ -7570,6 +7658,39 @@ fn rb48_arm_wired_from_init_and_sync_content() {
         "rb48 [E4/lib-budget]: lib.rs must call `{call}` exactly twice — once from `init` and once \
          from `sync_content`; found {total}. A third call site is an arm path outside the two the \
          runbook documents."
+    );
+
+    // --- SCOPE INTEGRITY: exactly one of each entry point, and the lifecycle
+    //     attribute welded to the `init` every clause below reads ------------
+    let init_fn = rb48_nd_lib_init_fn();
+    let sync_fn = rb48_nd_lib_sync_fn();
+    for (what, needle) in [("init", &init_fn), ("sync_content", &sync_fn)] {
+        let n = rb22p_count(&lib, needle);
+        assert_eq!(
+            n, 1,
+            "rb48 [E4/lib-scope-{what}]: lib.rs must declare `{needle}` EXACTLY once; found {n}. \
+             `extract_squashed_fn_body` binds the FIRST hit, so a SECOND definition of this name \
+             silently steals the scope of every clause below. The MEASURED shape is a decoy \
+             dead-code module holding a `pub fn init` that carries the arm call, planted ABOVE the \
+             real lifecycle reducer with the real call deleted: the file-wide budget of two still \
+             holds, the per-body count still reads one, and the reducer the database actually runs \
+             arms nothing."
+        );
+    }
+    let init_attr = [
+        rb48_nd_reducer_attr_open(),
+        "(init)]pub".to_string(),
+        rb48_nd_lib_init_fn(),
+    ]
+    .concat();
+    assert_eq!(
+        rb22p_count(&lib, &init_attr),
+        1,
+        "rb48 [E4/lib-init-attr]: lib.rs must spell `{init_attr}` exactly once in squashed form — \
+         the lifecycle attribute IMMEDIATELY above the `init` this test scopes to, with nothing \
+         between them. Counting the attribute and the fn separately is satisfied by an attribute \
+         welded to some other function while an unattributed `pub fn init` decoy absorbs every \
+         body clause; anything wedged between the two is the same defeat one line higher."
     );
 
     for (what, needle, why) in [
@@ -7605,7 +7726,58 @@ fn rb48_arm_wired_from_init_and_sync_content() {
              a database holding pre-slice legacy chunks is swept only if some account happens to \
              export again."
         );
+        assert_eq!(
+            rb22p_count(body, &cfg_attr), 0,
+            "rb48 [E4/lib-cfg-attr-{what}]: lib.rs `{what}` carries a conditional-compilation \
+             attribute (`{cfg_attr}`) inside its body. This is THE measured publish bypass for \
+             this slice: a target-arch attribute on the line above the arm call leaves the host \
+             build, `just lint`, clippy and every Rust test in this repo green — they all compile \
+             the HOST target — while the wasm the database actually runs has the call compiled out \
+             and never arms the reaper on publish. CI's `wasm` recipe builds client-wasm only, and \
+             the module's own wasm32 build inside the bindings-drift eval compiles the call out \
+             without a warning, so the count clause above sees a fully wired module and no other \
+             gate in this repo can see the difference."
+        );
+        assert_eq!(
+            rb22p_count(body, &cfg_macro), 0,
+            "rb48 [E4/lib-cfg-macro-{what}]: lib.rs `{what}` spells `{cfg_macro}` inside its body. \
+             The macro form is the same defeat in an expression position — a branch always taken \
+             on the host and never in the wasm — and it is invisible to the attribute clause above."
+        );
+        assert_eq!(
+            rb22p_count(body, &adjacency), 1,
+            "rb48 [E4/lib-adjacency-{what}]: lib.rs `{what}` must arm the deletion reapers and \
+             this one as ONE CONTIGUOUS pair — `{adjacency}` — exactly once. Adjacency, not mere \
+             containment: the per-body count above is equally satisfied by the call RELOCATED into \
+             the dead pre-M12.5b early-return branch, by the call wrapped in an always-false \
+             conditional at the tail, by an attribute fencing it off from the statement above it, \
+             and by a decoy body that carries the arm call but not the sibling. Welding this call \
+             to the deletion-reaper arm — the statement every reviewer reads it beside, and the \
+             one the runbook pairs it with — makes all four shapes move this literal. (If the \
+             SIBLING call is what moved, accounts_tests.rs::m22s3b_ensure_rearm_wiring reds too.)"
+        );
     }
+
+    // --- ARM LAST in the LIVE-database entry point: the squashed body ENDS
+    //     with the arm call and the success tail, so nothing sits after it ---
+    let sync_body = extract_squashed_fn_body(&lib, &sync_fn).unwrap_or_else(|| {
+        panic!(
+            "rb48 [E4/lib-tail-scope]: lib.rs `sync_content` has no brace-balanced body, so the \
+             tail clause below would pass VACUOUSLY."
+        )
+    });
+    let tail = format!("{call}Ok(())");
+    assert!(
+        sync_body.ends_with(tail.as_str()),
+        "rb48 [E4/lib-arm-last]: lib.rs `sync_content` must END with `{tail}` — the arm call \
+         immediately followed by the success tail, with nothing between them and nothing after. \
+         `sync_content` is the ONLY entry point that can reach a LIVE database, so it is the \
+         publish repair the operator runbook promises; a call parked in the pre-M12.5b \
+         owner-identity early-return branch (which no live database can reach) or wrapped in an \
+         always-false conditional satisfies the file-wide budget and the per-body count alike \
+         while a publish repairs nothing at all. Body tail read: {:?}",
+        &sync_body[sync_body.len().saturating_sub(160)..]
+    );
 }
 
 // ===========================================================================

@@ -126,7 +126,17 @@ swap. Separately, privacy.rs is pinned to exactly one `#[cfg` occurrence file-wi
 "wasm32"))]` on the arm call ships an unarmed reaper that beats `-D warnings` on the host build and
 is invisible to CI — `just ci`'s `wasm` recipe builds client-wasm only, and the module's own wasm32
 build inside `spacetime generate` (bindings-drift) treats the dead arm as a warning, not an error — so lint,
-every Rust test, and every eval stay green while the shipped module never arms.
+every Rust test, and every eval stay green while the shipped module never arms. The artifact red-team then
+measured the same family against `lib.rs`, where round 1 only counted the two arm calls: a `#[cfg]` on
+either call, the `sync_content` call relocated into the dead zero-owner early-return branch or wrapped in
+`if false {}`, and a decoy dead-code `fn init` stealing the first-hit scope all survived; and an
+`as now_ms` alias onto a microsecond helper in `marshal.rs` left every frozen body byte-identical while
+the TTL's unit silently became ~10 minutes. Round 2 closes them in the existing tests:
+`rb48_arm_wired_from_init_and_sync_content` pins each arm call by ADJACENCY to the
+`ensure_deletion_reapers_armed(ctx);` statement before it, requires `#[cfg`- and `cfg!(`-free bodies, a
+`sync_content` tail of `…ensure_export_bundle_reaper(ctx);Ok(())`, exactly one `fn init(`/`fn
+sync_content(` each and the `#[spacetimedb::reducer(init)]` attribute welded to `pub fn init(`; and
+`m22s4_now_bound_once` pins the import `use crate::marshal::now_ms;` exactly once and bans `as now_ms`.
 
 **D9 — Runbook §9.4 retruth and G24 needle retarget, as a roster retarget on an existing clause.**
 `evals/account-e2e.eval.mjs`'s `checkDrRunbookDeletionSection` (G24 clause 4) requires the
