@@ -44,8 +44,8 @@
 // evals/playtest-verify.eval.mjs CALL-SITE idiom). Section 4 also gained a direct
 // `/*`-anywhere negative scan (kills B at the scan layer too, without a risky
 // full block-comment stripper). Section 3 gained T3p/T3q for a tightened
-// `identity` contract the specialist is concurrently landing — EXPECTED RED
-// until that lands.
+// `identity` contract the specialist landed: a bare-string identity, or a
+// one-element array holding an empty string, now throws instead of being accepted.
 //
 // scripts/playtest-report.mjs currently exports aggregateReport, sortByEventId,
 // decodeSqlJson and coerceRow (Section 2's dynamic-import check below verifies
@@ -1355,12 +1355,11 @@ export default async function () {
     }
   }
 
-  // ── T3p (tightened identity contract — EXPECTED RED until the specialist
-  //         lands it): a bare STRING identity must THROW. decodeSqlJson never
-  //         unwraps identity — it always stays the one-element array (see
-  //         T3f) — so a bare string reaching coerceRow can only mean the CLI
-  //         response shape drifted. Accepting it silently (the current
-  //         `typeof rawIdentity === 'string'` branch) masks that drift.
+  // ── T3p (tightened identity contract): a bare STRING identity must THROW.
+  //         decodeSqlJson never unwraps identity — it always stays the one-element
+  //         array (see T3f) — so a bare string reaching coerceRow can only mean the
+  //         CLI response shape drifted. coerceRow no longer has an accept branch for
+  //         it, so accepting it silently can no longer mask that drift.
   {
     const raw = {
       event_id: 10,
@@ -1382,7 +1381,7 @@ export default async function () {
         name,
         pass: false,
         detail:
-          "TEETH (real) T3p [EXPECTED RED until the specialist's identity-contract tightening lands]: " +
+          'TEETH (real) T3p: ' +
           'coerceRow did NOT throw on a BARE STRING identity — decodeSqlJson never unwraps the Identity ' +
           'array (see T3f), so a bare string reaching coerceRow can only mean the response shape drifted; ' +
           'accepting it silently masks that drift.',
@@ -1390,11 +1389,10 @@ export default async function () {
     }
   }
 
-  // ── T3q (tightened identity contract — EXPECTED RED until the specialist
-  //         lands it): identity: [''] (a one-element array holding an EMPTY
-  //         string) must THROW. An empty group key is never a real player —
-  //         accepting it would silently merge malformed rows into one bogus
-  //         (identity="", species_id) aggregation group.
+  // ── T3q (tightened identity contract): identity: [''] (a one-element array
+  //         holding an EMPTY string) must THROW. An empty group key is never a
+  //         real player — accepting it would silently merge malformed rows into
+  //         one bogus (identity="", species_id) aggregation group.
   {
     const raw = {
       event_id: 10,
@@ -1416,7 +1414,7 @@ export default async function () {
         name,
         pass: false,
         detail:
-          "TEETH (real) T3q [EXPECTED RED until the specialist's identity-contract tightening lands]: " +
+          'TEETH (real) T3q: ' +
           "coerceRow did NOT throw on identity: [''] (a one-element array holding an EMPTY string) — an " +
           'empty group key is never a real player; accepting it would silently merge malformed rows into ' +
           'one bogus aggregation group.',
