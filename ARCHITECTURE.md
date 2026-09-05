@@ -455,8 +455,8 @@ re-arm; the re-pinned frozen-body gate reds when the cascade body lands).
 (caller-only ctx wrapper — no identity param by design; delegates transitively via
 `accounts::is_pending_deletion`, never re-deriving the disjunction) gated exactly the
 three commitment-OPENING reducers — `propose_trade`, `challenge_pvp`, `accept_challenge` —
-before any write (PRV1-9), while every reducer acting on an already-open interaction stays
-ungated — except `respond_trade`, which since **rb-47** (ADR-0237) refuses only an ACCEPTING response to an offer created at or after the caller's own deletion request (declines and predating offers untouched) — so live trades/battles/challenges are never force-terminated at request time
+before any write (PRV1-9), while the reducers acting on an already-open interaction carry no
+blanket gate — `respond_trade` alone, since **rb-47** (ADR-0237), refuses an ACCEPTING response to an offer created at or after the caller's own deletion request (declines and predating offers untouched) — so live trades/battles/challenges are never force-terminated at request time
 (PRV1-10; `submit_pvp_action` deliberately NOT gated — deadline-forfeit would be de-facto
 force-termination, ADR-0227 D5). PvE `battle::start_battle`, the dev-only `battle::start_wild_battle`
 and shop `economy::buy`/`sell` were gated by **rb-46** (ADR-0236, residual R-m22-s5-X12 closed) — the
