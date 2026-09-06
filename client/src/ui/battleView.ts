@@ -116,9 +116,9 @@ export class BattleView {
     // discarded outright but border-style is preserved.
     // #844 HAD to move rather than merely be dashed: it MEASURES 2.34:1 against its own card
     // background #2a1a1a, below the WCAG 1.4.11 3:1 non-text floor, and dashing a
-    // sub-threshold border removes roughly half its remaining ink (measured 54% ink on the
-    // shipped 6px-on/3px-off dash period) — `dashed #844` would have shipped a non-colour cue
-    // nobody can see, i.e. the same defect in a new hat. #b66 measures 4.13:1 on that same
+    // sub-threshold border paints materially less of it — the shipped dash period is 6px on,
+    // 3px off — so `dashed #844` would have shipped a non-colour cue nobody can see, i.e. the
+    // same defect in a new hat. #b66 measures 4.13:1 on that same
     // background and stays in the same red family; the player's #484 on #1a2a1a is already
     // 3.49:1, so it keeps its colour and only widens.
     // BE HONEST ABOUT WHAT THAT COSTS: the pair this slice ships is 1.073:1 in relative
@@ -140,8 +140,8 @@ export class BattleView {
     // <select>s. On the buttons the accessible name IS the information, so hue encodes
     // nothing and they keep their 1px solid rule. The two <select>s have no accessible name
     // at all today, and NONE of these borders has been measured against 1.4.11 — the floor
-    // this slice just invoked to move #844. Both gaps are real, both are outside this slice's
-    // touches: for the fix, and neither is claimed closed here.
+    // this slice just invoked to move #844. Both gaps are real, fixing either is outside this
+    // slice's touches:, and neither is claimed closed here.
     // DEFERRED, not done (ledger gate X6): in PvP refresh() passes the rival's BARE player
     // name as the opponent label, so the card's ROLE reaches assistive technology only as a
     // player name. ADR-0233's clause that every member of this border family "carr[ies] text
