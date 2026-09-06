@@ -3371,6 +3371,39 @@ describe('BattleView rb56: skill affinity is a persistent visible label, not tit
       'rb56 (PvE): btn.title must carry ONLY the accuracy — not the affinity',
     ).toBe('Acc 95%');
 
+    // ANTI-MUTANT (structural, additive): textContent concatenates every descendant and
+    // ignores ARIA, so it stays green for a mutant that appends a visually-hidden,
+    // aria-hidden <span> carrying the affinity instead of putting it in the visible label.
+    // The shipped design deliberately adds NO new DOM node — that is the whole reason a
+    // <span> badge was rejected in favour of a plain template-string append — so the label
+    // must be a single text node.
+    for (const b of buttons) {
+      expect(
+        b.children.length,
+        'rb56 (PvE) ANTI-MUTANT: the skill button must have NO element children. Any element ' +
+          'child means the affinity could be carried by a node that is hidden, clipped or ' +
+          'aria-hidden — the DOM-present-but-imperceptible defect wearing a different hat — ' +
+          'while btn.textContent (asserted above) stays byte-identical to the correct shape',
+      ).toBe(0);
+      // battleView.ts:8-11 — this view "ships NO ARIA of its own … every attribute … comes
+      // from openOverlayA11y, never from a literal in this file". The skill button is not the
+      // overlay root, so it must carry neither aria-label nor aria-hidden as a file literal.
+      expect(
+        b.getAttribute('aria-label'),
+        'rb56 (PvE) ANTI-MUTANT: the skill button must carry no literal aria-label ' +
+          '(battleView.ts:8-11 — this view ships NO ARIA of its own). An aria-label REPLACES ' +
+          'the accessible name computation entirely, so a screen reader would announce name+power ' +
+          'only and never the affinity even though btn.textContent (asserted above) still contains ' +
+          'it — and Playwright getByRole(..., { name }) would match the aria-label, not the visible ' +
+          'text',
+      ).toBeNull();
+      expect(
+        b.getAttribute('aria-hidden'),
+        'rb56 (PvE) ANTI-MUTANT: the skill button must carry no literal aria-hidden ' +
+          '(battleView.ts:8-11 — this view ships NO ARIA of its own from a literal in this file)',
+      ).toBeNull();
+    }
+
     document.body.removeChild(parent);
   });
 
@@ -3406,6 +3439,38 @@ describe('BattleView rb56: skill affinity is a persistent visible label, not tit
       buttons[1]!.title,
       'rb56 (PvP): btn.title must carry ONLY the accuracy — not the affinity',
     ).toBe('Acc 95%');
+
+    // ANTI-MUTANT (structural, additive) — mirrors the PvE case above. Mutant B specifically
+    // targets this PvP arm: `btn.setAttribute('aria-label', vm.isPvp ? \`Submit: ${skill.name}\`
+    // : ...)` keeps the correct visible textContent (asserted above) while an aria-label WINS
+    // the accessible-name computation, so a screen reader announces no affinity and
+    // Playwright's getByRole(..., { name }) would match the aria-label, not the visible text.
+    for (const b of buttons) {
+      expect(
+        b.children.length,
+        'rb56 (PvP) ANTI-MUTANT: the skill button must have NO element children. Any element ' +
+          'child means the affinity could be carried by a node that is hidden, clipped or ' +
+          'aria-hidden — the DOM-present-but-imperceptible defect wearing a different hat — ' +
+          'while btn.textContent (asserted above) stays byte-identical to the correct shape',
+      ).toBe(0);
+      // battleView.ts:8-11 — this view "ships NO ARIA of its own … every attribute … comes
+      // from openOverlayA11y, never from a literal in this file". The skill button is not the
+      // overlay root, so it must carry neither aria-label nor aria-hidden as a file literal.
+      expect(
+        b.getAttribute('aria-label'),
+        'rb56 (PvP) ANTI-MUTANT: the skill button must carry no literal aria-label ' +
+          '(battleView.ts:8-11 — this view ships NO ARIA of its own). An aria-label REPLACES ' +
+          'the accessible name computation entirely, so a screen reader would announce ' +
+          '"Submit: <name>" only and never the affinity even though btn.textContent (asserted ' +
+          'above) still contains it — and Playwright getByRole(..., { name }) would match the ' +
+          'aria-label, not the visible text',
+      ).toBeNull();
+      expect(
+        b.getAttribute('aria-hidden'),
+        'rb56 (PvP) ANTI-MUTANT: the skill button must carry no literal aria-hidden ' +
+          '(battleView.ts:8-11 — this view ships NO ARIA of its own from a literal in this file)',
+      ).toBeNull();
+    }
 
     document.body.removeChild(parent);
   });
