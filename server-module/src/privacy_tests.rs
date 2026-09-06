@@ -50,7 +50,8 @@
 //! `_tests.rs` modules never import each other and a re-derivation would risk
 //! silent divergence. `rb22p_machinery_comment_string_blind` is the pipeline's
 //! non-vacuity control; the `rb64p_` block below gates the attribution helper
-//! directly, over fixtures rather than over privacy.rs.
+//! directly, over fixtures rather than over privacy.rs — except its last test,
+//! a total ban scanned over privacy.rs for the two verb spellings no walk sees.
 
 #![cfg(test)]
 
@@ -369,12 +370,11 @@ enum WriteAttrFault {
 /// silent drop.
 ///
 /// SEMANTICS AND HONEST LIMITS: ADR-0234 (rb-39) is the SSOT and they are
-/// deliberately not restated here. This is a VERBATIM local copy of that
-/// decision's `write_target_accessors` and `rooted_chain_accessor` bodies, per
-/// the per-module local-copy convention stated in the MACHINERY note of this
-/// file's header. Ported by rb-64 (residual R-rb-39-PRIVACY-LOCAL-PORT), which
-/// closes the semicolon-boundary gap the reducer-security-auditor measured
-/// against the rule this replaced: a foreign write SHARING a statement with an
+/// deliberately not restated here. This helper and `rooted_chain_accessor` are a
+/// local copy per the MACHINERY note above. Ported by rb-64 (residual
+/// R-rb-39-PRIVACY-LOCAL-PORT), which closes the semicolon-boundary gap measured
+/// at rb-39's implementation review (ADR-0234, honest limits) and re-measured as
+/// F4 in this slice's RED-before: a foreign write SHARING a statement with an
 /// owned read carries no boundary between the two and was credited to the owned
 /// table.
 ///
@@ -383,6 +383,26 @@ enum WriteAttrFault {
 /// accounts_tests.rs's `g5_alias_violation`. The walk compensates — a handle
 /// that escapes that ban makes EVERY write performed through it an
 /// `UnrootedChain`, so what is lost there is a specific failure tag, not a write.
+/// Three further LOCAL limits, each measured in rb-64's artifact red-team and
+/// security audit and stated here as a limit, not as work pending:
+///
+/// * SPLIT-BINDING: ADR-0234 accepts a per-table handle passed to a fn in another
+///   file because `[W/split-binding]` in `evals/guest-claim-integrity.eval.mjs`
+///   catches it — but that clause scans `accounts.rs` ONLY, so for privacy.rs the
+///   shape is ungated by any scan (measured: a foreign `account` delete reached
+///   through a sibling-module fn passed the whole Rust suite). Review covers it;
+///   recorded as a residual for the supervisor.
+/// * PAREN-LESS VERBS: a fn-item binding of a trait verb
+///   (`let del = <_ as Table>::<verb>;`) and an in-file declarative macro (spelled
+///   `macro_` then `rules`) whose verb is a metavariable produce NO census entry
+///   in this walk and in the shared one alike. privacy.rs closes both with total
+///   bans in `rb64p_paren_less_verb_and_in_file_macro_are_banned`; the shared
+///   helper and ADR-0234's in-file-macro bullet are recorded as a residual.
+/// * SHIM ROOT: a locally constructed struct named `ctx` with a `db` field whose
+///   accessor returns a foreign table handle roots as the OWNED name (the
+///   generated handle types are constructible ZSTs). Today every export_bundle
+///   write site is body-pinned and the census is exact-count, so the shim has no
+///   slot — recorded, not gated.
 fn rb22p_write_targets(squashed: &str) -> Vec<Result<String, WriteAttrFault>> {
     // The four row-write verbs in their chained spelling. The fallible
     // `try_insert` is the sibling the infallible spelling wraps; the two needles
@@ -462,10 +482,12 @@ fn rooted_chain_accessor(squashed: &str, verb_dot: usize) -> Result<String, Writ
         };
         // Every receiver segment must be a ZERO-ARGUMENT call — a table handle,
         // or a column/index handle obtained from one. MEASURED laundering shape:
-        // `ctx.db.<owned>().identity().find(x).map(|_| ctx.db.<foreign>())
+        // `ctx.db.<owned>().<column>().find(x).map(|_| ctx.db.<foreign>())
         // .unwrap()` then the verb — an argument-taking segment can return ANY
         // handle, so the rooted accessor spelled to its left is not evidence
-        // about the table the verb reaches.
+        // about the table the verb reaches. This `<column>` token is the ONE
+        // generalisation from the accounts_tests.rs copy (export_bundle has no
+        // `identity()` column); the code itself is byte-identical.
         if open + 2 != hop {
             return Err(WriteAttrFault::UnrootedChain);
         }
@@ -854,10 +876,11 @@ fn rb22p_no_db_or_ctx_alias() {
     assert!(
         !squashed.contains(by_ref),
         "rb22p [alias/db-ref]: privacy.rs binds the database handle by reference (`{by_ref}`). \
-         A red-team PROVED this exact shape defeated the pre-rb-64 attribution rule: the aliased \
-         handle's foreign-table delete was credited to the nearest earlier accessor, so a delete \
-         of another table's rows read as an `export_bundle` write. Chain every write directly off \
-         `ctx.db.` in the statement that performs it."
+         A red-team PROVED this exact shape defeats attribution whenever no statement boundary \
+         separates the alias from the write; the pre-rb-64 rule caught it only by the accident \
+         of an intervening semicolon, and since rb-64 every write through an aliased handle is \
+         an `UnrootedChain` refusal. Chain every write directly off `ctx.db.` in the statement \
+         that performs it."
     );
 
     let by_move = concat!("=", "ctx", ".db;");
@@ -1928,8 +1951,9 @@ fn rb64p_shipped_chain_shapes_are_attributed_in_source_order() {
 // ===========================================================================
 // m22-s4 — EXPORT GATING TESTS (PRV1-11 / PRV1-12 / PRV1-13 + the S4 security
 // amendments). APPEND-ONLY BLOCK: everything above this banner is the rb-22
-// suite as later revised by rb-40 / rb-48 / rb-64; every symbol below carries
-// the `m22s4_` / `M22S4_` prefix so it can never collide with an `rb22p_` helper.
+// suite as later revised by other slices (rb-40, rb-48 and rb-64 among them);
+// every symbol below carries the `m22s4_` / `M22S4_` prefix so it can never
+// collide with an `rb22p_` helper.
 //
 // WHAT THIS GATES (spec M22 section 5; ADR-0226):
 //   PRV1-11  one chunk per exportable:true table, own rows only, per-column JSON.
@@ -6923,9 +6947,14 @@ fn m22s4_ufcs_write_needles() -> [String; 3] {
 ///
 /// The ban is TOTAL rather than target-attributed: every legitimate write in this
 /// delete-and-insert module is dotted off `ctx.db.export_bundle()`, so a UFCS
-/// write verb has no honest use here, and a UFCS call CANNOT avoid spelling
-/// `::<verb>(` — so banning the three tokens outright closes the inline form, the
-/// bound-table-handle form and the fully-path-qualified form in one assertion.
+/// write verb has no honest use here, and banning the three tokens outright
+/// closes the inline form, the bound-table-handle form and the
+/// fully-path-qualified form in one assertion. The paren-adjacent spelling CAN be
+/// avoided, though (measured rb-64): binding the trait verb as a FN ITEM
+/// (`let del = <_ as Table>::<verb>;` — no paren after the verb) reaches the same
+/// write without ever matching these needles. That shape is closed by
+/// `rb64p_paren_less_verb_and_in_file_macro_are_banned`'s paren-less needle; the
+/// three needles here remain the belt-and-braces for the CALL spelling.
 /// This is the privacy.rs-scoped Rust twin of `C1A_UFCS_NEEDLES`
 /// (evals/ranking-security.eval.mjs), which hardened ranking.rs against the same
 /// shape. Mirrors that eval's needle direction rather than re-deriving it.
@@ -6953,15 +6982,9 @@ fn m22s4_no_ufcs_write_verb_in_privacy() {
         let n = rb22p_count(&squashed, &needle);
         assert_eq!(
             n, 0,
-            "m22s4 [X11/ufcs-write]: privacy.rs spells the UFCS write verb `{needle}` {n} time(s); \
-             exactly zero is allowed. UFCS call syntax (verb before accessor) was invisible to \
-             the dotted-verb write census that rb22p_writes_only_export_bundle used before rb-64 \
-             AND that the two widened security evals delegate the write direction to, so a UFCS \
-             write to any table from inside a `rows_` reader corrupted foreign rows on every \
-             export call while every gate stayed green (measured red-team Finding 1). The census \
-             refuses the spelling outright now; this zero-count ban is its belt-and-braces \
-             restatement. Every legitimate write in this module is dotted off \
-             `ctx.db.export_bundle()`; a UFCS write verb has no honest use here."
+            "m22s4 [X11/ufcs-write]: privacy.rs spells the UFCS write verb `{needle}` {n} \
+             time(s); exactly zero is allowed (see the doc comment above: measured red-team \
+             Finding 1; belt-and-braces since rb-64)."
         );
     }
 }
