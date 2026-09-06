@@ -362,4 +362,73 @@ describe('PlaceholderAssets action cue (rb-57 / R-m23-s8-postmerge-tint / ADR-02
     // draw — the caller still needs a real texture to render the sprite with.
     expect(result).toBe(fakeTexture);
   });
+
+  it('T10: at the instant generateTexture() is called, the Graphics target is in a fully renderable container state — alpha=1, visible, renderable, unscaled — so the cue actually rasterizes instead of drawing into a blank/collapsed target', () => {
+    // Own local fake (T7/T9 precedent) — NOT captureBuild: this tooth reads
+    // CONTAINER-LEVEL render state off `opts.target` (alpha/visible/renderable/
+    // scale), which captureBuild's helper never inspects (it only reads
+    // `target.context.instructions`, the recorded PATH data). A `g.alpha =
+    // 0.0001` (or `.visible = false` / `.renderable = false` / `.scale.set(0)`)
+    // inserted right before the real `generateTexture()` call leaves every
+    // draw-instruction assertion in T1-T9 green while pixi's real
+    // GenerateTextureSystem — which does `getLocalBounds(container).rectangle`
+    // then a real `renderer.render({ container })` — would rasterize a blank
+    // or size-collapsed texture. Captured SYNCHRONOUSLY inside the callback,
+    // same as captureBuild, since `g.destroy()` runs immediately after and
+    // nulls internal Container state.
+    for (const action of ACTIONS) {
+      let snapshot:
+        | {
+            readonly alpha: number;
+            readonly visible: boolean;
+            readonly renderable: boolean;
+            readonly scaleX: number;
+            readonly scaleY: number;
+          }
+        | undefined;
+      const fake = {
+        generateTexture(opts: {
+          target: {
+            readonly alpha: number;
+            readonly visible: boolean;
+            readonly renderable: boolean;
+            readonly scale: { readonly x: number; readonly y: number };
+          };
+        }) {
+          snapshot = {
+            alpha: opts.target.alpha,
+            visible: opts.target.visible,
+            renderable: opts.target.renderable,
+            scaleX: opts.target.scale.x,
+            scaleY: opts.target.scale.y,
+          };
+          return { destroy() {} };
+        },
+      };
+      const assets = new PlaceholderAssets(fake as unknown as Renderer);
+      assets.texture(action, 'South');
+
+      if (!snapshot) {
+        throw new Error(`T10 capture: generateTexture() never called for ${action}`);
+      }
+      // Kills: `g.alpha = 0.0001` inserted just before `generateTexture()` —
+      // every fill on this Graphics (body, notch, glyph) rasterizes to
+      // (near-)invisible.
+      expect(snapshot.alpha).toBe(1);
+      // Kills: `g.visible = false` inserted just before `generateTexture()` —
+      // pixi's real render pass skips the container's transform update and
+      // draw entirely; the returned texture would be blank.
+      expect(snapshot.visible).toBe(true);
+      // Kills: `g.renderable = false` inserted just before `generateTexture()`
+      // — the container is still transformed but never actually drawn into
+      // the render target.
+      expect(snapshot.renderable).toBe(true);
+      // Kills: `g.scale.set(0)` inserted just before `generateTexture()` — the
+      // container's local bounds collapse to a point, so
+      // `getLocalBounds(container).rectangle` sizes the output texture as
+      // degenerate (0-area).
+      expect(snapshot.scaleX).toBe(1);
+      expect(snapshot.scaleY).toBe(1);
+    }
+  });
 });
