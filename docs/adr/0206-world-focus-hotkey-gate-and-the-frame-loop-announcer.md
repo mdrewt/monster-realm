@@ -188,20 +188,22 @@ re-parents it, `worldCanvasEl` becomes `null` and the gate degenerates to
 being recognised. Announcements are one frame late (≤16 ms) against a `polite`, 500 ms-coalesced
 region — immaterial.
 
-**Accepted residual — `visibleIds(probes)[0]` is DECLARATION order, not z-order.**
-`client/src/ui/overlayRegistry.ts:372-374` filters `OVERLAY_IDS` in `OVERLAY_TIERS` insertion order,
-which is a sound proxy for "frontmost" only while at most one overlay is visible. `dialogueView`
-breaks that: `client/src/main.ts:1574` renders it unconditionally on every store batch and force-hides
-only `menuView` (`:1565`), so a server-pushed conversation can become visible underneath an
-already-open overlay. Two consequences, both real: `topOverlay` does not transition when a dialogue
-opens over a *lower*-index overlay, so that announcement is silently missed; and `visibleIds()[0]`
-reports `dialogueView` as "on top" while a full-screen `z-index:100` `helpView` is what actually
-covers the screen, so the announced name is wrong. **Not fixed here, deliberately:** constraining the
-render-driven overlays' visibility is a view/registry change outside this slice's `touches:`, and
-selecting by real DOM z-order requires changing `A11ySnapshot` — the API S1 froze and S10's tests
-will assert against. A set-diff heuristic inside `main.ts` would work around a registry-ordering
-defect while diverging from `announcements.ts:39-40`'s own documented contract. Recorded as a
-residual targeting S6/S10, not left in prose.
+**Accepted residual — `visibleIds(probes)[0]` is DECLARATION order, not z-order.** `visibleIds`
+(`client/src/ui/overlayRegistry.ts:400-402` today) filters `OVERLAY_IDS` in `OVERLAY_TIERS`
+insertion order, which is a sound proxy for "frontmost" only while at most one overlay is visible.
+`dialogueView` breaks that: `main.ts`'s M12d `store.onBatchApplied` dialogue listener
+(`client/src/main.ts:1837-1887` today) renders it unconditionally on every store batch
+(`dialogueView?.render(dialogueVm)` at `:1851` today) and force-hides only `menuView` (`:1842`
+today), so a server-pushed conversation can become visible underneath an already-open overlay. Two
+consequences, both real: `topOverlay` does not transition when a dialogue opens over a *lower*-index
+overlay, so that announcement is silently missed; and `visibleIds()[0]` reports `dialogueView` as
+"on top" while a full-screen `z-index:100` `helpView` is what actually covers the screen, so the
+announced name is wrong. **Not fixed here, deliberately:** constraining the render-driven overlays'
+visibility is a view/registry change outside this slice's `touches:`, and selecting by real DOM
+z-order requires changing `A11ySnapshot` — the API S1 froze and S10's tests will assert against. A
+set-diff heuristic inside `main.ts` would work around a registry-ordering defect while diverging
+from `announcements.ts:39-40`'s own documented contract. Recorded as a residual targeting S6/S10,
+not left in prose.
 
 **Follow-ups (not this slice).** The `message` channel needs a producer for §2.4 (3) and (4); it is
 tied to the same residual row rather than an implicit "later slice". The
