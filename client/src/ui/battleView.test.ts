@@ -3508,11 +3508,22 @@ describe('BattleView rb56: skill affinity is a persistent visible label, not tit
 //       `borderTopColor: 'initial'`, Chromium `currentColor`. Killed by s8Rgb's refusal.
 //   S2  state-gated no-ops, ALL of them CI-clean against a single-render tooth:
 //       `if (vm.isPvp) this.#opponentCardEl.style.borderStyle = 'solid'`, the same
-//       gated on `card.status`, on a terminal `vm.outcome`, or on `vm.weather`. Killed
-//       ONLY by re-asserting the pair under PvE, PvP, statused and terminal+weather
-//       VMs — and, for the LATCH spelling (a gate that fires once and never unwinds),
-//       by the PvE -> PvP -> PvE re-render sequence in the second case. The residual is
-//       specifically about the PvP state, so this is the highest-value tooth family.
+//       gated on `card.status`, on a terminal `vm.outcome`, on `vm.weather`, and — the
+//       measured worst of them — on `vm.pvpPendingSubmit`, a field `battleView.ts`
+//       already branches on in three places (`#renderPvpStatus:221`, `#renderSkills:299`,
+//       `#renderSwapButtons:466`), which makes it the most plausible copy-paste gate in
+//       the file. Killed ONLY by re-asserting the pair under all FIVE `RB59_STATES`
+//       rows — and, for the LATCH spelling (a gate that fires once and never unwinds),
+//       by the PvE -> PvP -> pending -> PvE re-render sequence in the second case, since
+//       the state loop never re-reads a row it has left. The residual is specifically
+//       about the PvP state, so this is the highest-value tooth family.
+//   STYLE the two styles differing as STRINGS while being identical or self-defeating as
+//       PIXELS. `2px double` vs `2px solid` renders BYTE-IDENTICALLY in Chromium (measured
+//       sha256 48e6b33b585b791c for both), and `groove`/`ridge`/`inset`/`outset` repaint
+//       two of their four sides to `#673838` = 1.744:1 while the DECLARED colour X2 reads
+//       still measures 4.13:1. All four are CI-clean against a deny-list of the obviously
+//       dead keywords. Killed ONLY by `RB59_PERCEPTIBLE_STYLES` being an ALLOW-LIST of
+//       {solid, dashed, dotted} — see that constant for the full measurement.
 //   S3  AT-invisible / screen-invisible cues, all CI-clean: `aria-hidden="true"` on the
 //       header, `header.style.display='none'`, `nameSpan.style.fontSize='0'`, or a role
 //       token smuggled into a `<span class="sr-only">` child of the nameSpan — and
@@ -3534,33 +3545,60 @@ describe('BattleView rb56: skill affinity is a persistent visible label, not tit
 // file is neither coverage-measured nor mutation-measured. Every clause has to carry
 // its own teeth.
 //
-// DISCLOSED SCOPE LIMIT: happy-dom does no cascade, no layout and no paint, so this
-// block proves "the inline declarations the constructor writes describe two visually
-// distinct, sufficiently-contrasting borders", never "a player sees two distinct
-// borders". The airtight oracle for the second claim is a real browser.
+// DISCLOSED SCOPE LIMITS (three, all measured rather than assumed):
+//  1. happy-dom does no cascade, no layout and no paint, so this block proves "the inline
+//     declarations the constructor writes describe two visually distinct,
+//     sufficiently-contrasting borders", never "a player sees two distinct borders". The
+//     airtight oracle for the second claim is a real browser — which is exactly why the
+//     `double`/`groove` facts above had to be measured THERE and imported here as an
+//     allow-list, since no assertion in a paint-less DOM can derive them.
+//  2. An EXCHANGE of the two borders between the two card elements (opponent solid /
+//     player dashed rather than the reverse) is CI-clean here, deliberately: X1 asks only
+//     that the two differ, so a role swap is criterion-conformant and pinning a token to a
+//     role would contradict this block's refusal to pin any style token. See `rb59Cards`.
+//  3. `#root.style.visibility = 'hidden'` — hiding the OVERLAY ROOT rather than a card —
+//     is not caught. The X3 visibility clauses are scoped to the two cards, per the
+//     criterion. It is left open knowingly: blanking the whole battle overlay is not a
+//     plausible lazy fix for a border cue and would red the e2e suite immediately.
 // =============================================================================
 
 /** The four physical sides, in the order both readers below walk them. */
 const RB59_SIDES = ['top', 'right', 'bottom', 'left'] as const;
 
 /**
- * Border-style keywords that DECLARE a border and then draw absolutely nothing.
+ * The ONLY border-style keywords that are admissible as a role cue. An ALLOW-LIST, not a
+ * deny-list, and the difference is measured rather than stylistic.
  *
- * `''` is the deleted/never-written declaration; `none` and `hidden` paint no border at
- * all; `initial`/`inherit`/`unset`/`revert` are CSS-wide keywords whose computed result
- * this oracle cannot know and must therefore refuse rather than guess. Every one of them
- * would let "the two cards have DIFFERENT border styles" be satisfied by giving one card
- * NO border — a difference that is not a cue.
+ * WHY AN ALLOW-LIST. A deny-list of the obviously-dead keywords (`''`, `none`, `hidden`,
+ * `initial`, `inherit`, `unset`, `revert`) admits eight more that CSS accepts and that a
+ * reader would assume are distinct. Two measured facts in real Chromium
+ * (deviceScaleFactor 1, sha256 of the card element screenshot, a `#b66` border on a
+ * `#2a1a1a` card) say otherwise:
+ *
+ *  1. `double` RENDERS BYTE-IDENTICALLY TO `solid` at this width:
+ *        solid   48e6b33b585b791c
+ *        double  48e6b33b585b791c   <-- same hash
+ *        dashed  f2b94f522c24a3a2
+ *        dotted  eb21a0e89356ce89
+ *     So `opponent: 2px double` / `player: 2px solid` satisfies "different border styles",
+ *     clears the 3:1 clause and every X3 clause, is CI-clean — and ships LITERALLY THE SAME
+ *     PIXELS as today's defect. The string differs; the screen does not. That is the whole
+ *     defect with a new spelling, and only an allow-list sees it.
+ *
+ *  2. `groove` / `ridge` / `inset` / `outset` make the X2 contrast clause FAIL OPEN. X2
+ *     measures the DECLARED `border-top-color` (`#b66` = 4.13:1 against the card), but
+ *     Chromium synthesises the 3-D effect by REPAINTING two of the four sides darker — the
+ *     measured repaint is `#b66 -> #673838`, which is 1.744:1 against the card's own
+ *     background, UNDER the 3:1 floor X2 exists to enforce. The four-side agreement loop in
+ *     `rb59Border` cannot see this: all four DECLARED colours are equal and only the
+ *     PAINTED ones differ, and happy-dom has no paint at all.
+ *
+ * `solid`, `dashed` and `dotted` are the three that are mutually distinguishable AND painted
+ * in the colour they declare. Note this is a set of THREE, not a pinned pair: `dotted` vs
+ * `dashed` is as acceptable as `dashed` vs `solid`, so no style token is pinned to a role
+ * anywhere in this block.
  */
-const RB59_DEAD_STYLES: ReadonlySet<string> = new Set([
-  '',
-  'none',
-  'hidden',
-  'initial',
-  'inherit',
-  'unset',
-  'revert',
-]);
+const RB59_PERCEPTIBLE_STYLES: ReadonlySet<string> = new Set(['solid', 'dashed', 'dotted']);
 
 /** The label `#renderMonsterCard` hard-codes for the player card, in EVERY battle state. */
 const RB59_PLAYER_LABEL = 'You: ';
@@ -3574,7 +3612,7 @@ const RB59_NAME_SPAN_CSS = 'font-weight:bold;';
 const RB59_BASE = makeUx4VM();
 
 /**
- * The four battle states the X1 pair relation must hold in — the S2 tooth family.
+ * The FIVE battle states the X1 pair relation must hold in — the S2 tooth family.
  *
  * `makeUx4VM` (NOT `makeRecruitVM`) is the factory here on purpose: `makeRecruitVM`
  * omits `isPvp`/`pvpPendingSubmit`/`pvpOpponentName` entirely, and `client/tsconfig.json`
@@ -3582,9 +3620,23 @@ const RB59_BASE = makeUx4VM();
  * it would silently be a PvE row and the whole S2 family would be vacuous. Every row
  * sets `isPvp` EXPLICITLY rather than relying on `undefined` being falsy.
  *
- * The rows deliberately DISAGREE on `isPvp`, `pvpOpponentName`, both cards' `status`,
- * `outcome`, `weather` and `canFlee` — those are exactly the four fields the measured S2
- * mutants gate on, so a gate reading any of them flips at least one row.
+ * FIXTURE-CONSTANT HYGIENE (the ux4 F2/F5 lesson, re-applied here after measurement). If
+ * every row carries the SAME value for an incidental field, a state gate can read that field
+ * and no row notices. The first draft of this array held `pvpPendingSubmit:false`,
+ * `canSwap:false`, `canRecruit:false`, `cureItems:[]`, `bench:[]`, `turnNumber:2` and
+ * hpPercent 73/72 on ALL FOUR rows, and SEVEN state-gated no-ops were MEASURED CI-clean
+ * against it. The worst was `if (vm.pvpPendingSubmit) this.#opponentCardEl.style.borderStyle
+ * = 'solid'` — the highest-value miss in the whole block, because the residual is
+ * specifically about PvP and `battleView.ts` already branches on `pvpPendingSubmit` in three
+ * places (`#renderPvpStatus:221`, `#renderSkills:299`, `#renderSwapButtons:466`), so it is
+ * the most plausible copy-paste gate in the file. Row 5 exists to close that class.
+ *
+ * WHAT IS ACTUALLY VARIED, exhaustively and truthfully: `isPvp`, `pvpOpponentName`,
+ * `pvpPendingSubmit`, both cards' `status`, both cards' `hpPercent`, `outcome`, `weather`,
+ * `canFlee`, `canSwap`, `bench`, `canRecruit`, `cureItems` and `turnNumber`. A gate reading
+ * ANY of those flips at least one row. Fields still constant across all five rows, disclosed
+ * rather than claimed closed: `battleId`, `skills`, `baitOptions`, and both cards' `level`,
+ * `speciesName` and `affinity`.
  */
 const RB59_STATES = [
   { label: 'PvE, ongoing', vm: makeUx4VM({ isPvp: false }) },
@@ -3606,6 +3658,30 @@ const RB59_STATES = [
       canFlee: false,
     }),
   },
+  {
+    // ROW 5 — the fixture-constant closer. Every field the first four rows held constant is
+    // flipped here at once: pvpPendingSubmit (the highest-value gate — see the note above),
+    // canSwap + a populated bench, canRecruit, a non-empty cureItems, a different turnNumber,
+    // and both cards driven to a low hpPercent so a gate on the HP severity band flips too.
+    // `cureStatus` is the StatusKind VARIANT name ('Poison'), not the 'PSN' badge token —
+    // battleModel.ts's CureItem doc pins that, and a fixture that lies about the shape is a
+    // fixture that stops representing anything the model can produce.
+    // The label says "recruit offer", not "bait offer": `baitOptions` stays [] (it is one of
+    // the disclosed still-constant fields above), so what renders is the bare recruit control.
+    label: 'PvP awaiting the opponent submission, with a bench, a recruit offer and a cure item',
+    vm: makeUx4VM({
+      isPvp: true,
+      pvpOpponentName: 'Rival',
+      pvpPendingSubmit: true,
+      canSwap: true,
+      bench: [...UX4_BENCH],
+      canRecruit: true,
+      turnNumber: 9,
+      cureItems: [{ itemId: 4, name: 'Antidote', cureStatus: 'Poison', count: 2 }],
+      opponentCard: { ...RB59_BASE.opponentCard, hpPercent: 12 },
+      playerCard: { ...RB59_BASE.playerCard, hpPercent: 8 },
+    }),
+  },
 ] as const;
 
 interface Rb59CardPair {
@@ -3616,17 +3692,30 @@ interface Rb59CardPair {
 /**
  * Resolve the two monster cards from a rendered BattleView, every step fail-loud.
  *
- * WHICH BYPASS THIS CLOSES: an index-only walk. `#root.children[2]` and `[3]` are
- * positions, not identities — a constructor reorder, an eleventh root child, or a swap of
- * the two `#renderMonsterCard` call sites (battleView.ts:208-209) would silently retarget
- * every assertion in this block onto the wrong element, and a PAIR RELATION
- * (`opponent.style !== player.style`) is perfectly symmetric, so it would keep passing
- * with the operands exchanged while the CUE ITSELF was inverted — the opponent card
- * wearing the player's border and vice versa. So the indices are CHECKED against content:
- * `#renderMonsterCard` hard-codes the literal 'You' label for the player card in every
- * battle state (the opponent's label is `vm.pvpOpponentName` in PvP, so it cannot be
- * pinned), which makes "player card contains 'You: ' AND opponent card does not" a total,
- * state-independent orientation oracle.
+ * WHICH BYPASS THIS CLOSES — stated narrowly, because an earlier draft of this comment
+ * overclaimed and was MEASURED false. `#root.children[2]` and `[3]` are positions, not
+ * identities, so an index-only walk would silently retarget every assertion in this block
+ * onto the wrong element. The content check closes exactly two things: a CONSTRUCTOR
+ * REORDER (the cards no longer sitting at those indices) and a swap of the two
+ * `#renderMonsterCard` CALL SITES at battleView.ts:208-209 (confirmed RED). It works
+ * because `#renderMonsterCard` hard-codes the literal 'You' label for the player card in
+ * every battle state — the opponent's label is `vm.pvpOpponentName` in PvP and so cannot be
+ * pinned — which makes "player card contains 'You: ' AND opponent card does not" a total,
+ * state-independent oracle for WHICH ELEMENT IS WHICH.
+ *
+ * WHAT IT DOES NOT CLOSE, AND WHY THAT IS CORRECT. It does not detect an exchange of the two
+ * BORDERS between the two constructor-owned card elements (opponent `solid` / player
+ * `dashed` instead of the reverse). That was measured CI-clean, and it is left open ON
+ * PURPOSE: ledger X1 asks only that the two cards DIFFER by style, so a role swap is
+ * criterion-conformant. Pinning a particular style token to a particular role would be
+ * exactly the implementation-detail pin this block refuses everywhere else — there is no
+ * `'dashed'` literal anywhere in these tests, and adding one here to catch a conformant
+ * implementation would make the gate contradict itself. If the ledger ever DOES fix an
+ * orientation, that is a new criterion and needs a new clause, not a stretched reading of
+ * this one.
+ *
+ * The pair relation `opponent.style !== player.style` is symmetric, so it cannot see the
+ * swap either; that symmetry is a property of the criterion, not a hole in the walk.
  *
  * `isConnected` is asserted because a DETACHED element still reads its inline `border`
  * back verbatim — MEASURED — so detachment is NOT caught by any refusal in `rb59Border`.
@@ -3674,21 +3763,24 @@ function rb59Cards(parent: HTMLElement): Rb59CardPair {
     ).toContain('HP ');
   }
 
-  // ORIENTATION. The pair relation asserted by the callers is symmetric, so without this
-  // the operands could be exchanged and every assertion would still pass while the cue
-  // pointed at the wrong monster.
+  // WHICH-ELEMENT-IS-WHICH. Scoped exactly as the docstring says: this identifies the two
+  // ELEMENTS, so a constructor reorder or a #renderMonsterCard call-site swap reds here
+  // rather than retargeting the assertions. It does NOT, and is not meant to, pin which
+  // border style belongs to which role — see the docstring for why that is deliberate.
   expect(
     player.textContent,
-    `rb59 WALK ORIENTATION: #root.children[${RM3_PLAYER_INDEX}] must be the PLAYER card — ` +
+    `rb59 WALK IDENTITY: #root.children[${RM3_PLAYER_INDEX}] must be the PLAYER card — ` +
       `#renderMonsterCard is called with the hard-coded "You" label for it in every battle ` +
-      'state (battleView.ts:209), so this is a total orientation oracle',
+      'state (battleView.ts:209), so this is a total, state-independent oracle for which ' +
+      'ELEMENT this is',
   ).toContain(RB59_PLAYER_LABEL);
   expect(
     opponent.textContent,
-    `rb59 WALK ORIENTATION: #root.children[${RM3_OPPONENT_INDEX}] must NOT be the player ` +
-      'card. Together with the clause above this pins WHICH card is which, so a swap of the ' +
-      'two #renderMonsterCard call sites reds here instead of silently inverting the cue ' +
-      'under a perfectly symmetric pair relation',
+    `rb59 WALK IDENTITY: #root.children[${RM3_OPPONENT_INDEX}] must NOT be the player card. ` +
+      'Together with the clause above this pins which element is which, so a constructor ' +
+      'reorder or a swap of the two #renderMonsterCard call sites reds HERE instead of ' +
+      'retargeting every assertion in this block onto the wrong node. It deliberately does ' +
+      'NOT pin which border style belongs to which role — X1 asks only for a difference',
   ).not.toContain(RB59_PLAYER_LABEL);
 
   return { opponent, player };
@@ -3711,14 +3803,19 @@ interface Rb59Border {
  *    border is a declaration that paints nothing, and "the two cards have different border
  *    styles" would be satisfied by a cue that does not exist.
  *  - `border:2px hidden #844` reads back `'hidden'` (MEASURED) — likewise invisible.
+ *  - `border:2px double #b66` — a string that differs from `solid` and MEASURES byte-
+ *    identical to it in Chromium, and `border:2px groove #b66`, whose synthesised 3-D
+ *    repaint drops two sides to 1.744:1 while the declared colour still reads 4.13:1. Both
+ *    are refused by `RB59_PERCEPTIBLE_STYLES` — see that constant for the measured hashes
+ *    and why the check is an ALLOW-LIST rather than a deny-list of the dead keywords.
  *  - `border:2px dashed` with the colour dropped reads `borderTopColor: 'initial'`
  *    (MEASURED); this reader hands that string back RAW so `s8Rgb` can refuse it, rather
  *    than silently treating it as a colour.
  *  - `border:2px wavy #844` — an invalid style token drops the WHOLE declaration to `''`
- *    (MEASURED), which the empty-style refusal turns into a loud failure instead of a
- *    silently border-less card.
+ *    (MEASURED), which the allow-list turns into a loud failure instead of a silently
+ *    border-less card.
  *  - A per-side override (`el.style.borderRightStyle = 'none'`) that leaves a cue on three
- *    sides and a gap on the fourth: caught by the side-agreement clauses.
+ *    sides and a gap on the fourth: caught by the allow-list and the side-agreement clauses.
  *
  * THE AUTHORING HAZARD, MEASURED, AND WHY THE WIDTH TEST IS WRITTEN INSIDE-OUT:
  * `border:thin dashed #844` reads `borderTopWidth === 'thin'`, whose `parseFloat` is `NaN`.
@@ -3744,12 +3841,25 @@ function rb59Border(el: HTMLElement, where: string): Rb59Border {
     el.style.borderLeftStyle,
   ].map((v) => (v ?? '').trim());
   for (const [i, value] of styles.entries()) {
-    if (RB59_DEAD_STYLES.has(value)) {
+    if (!RB59_PERCEPTIBLE_STYLES.has(value)) {
       throw new Error(
         `rb59 BORDER REFUSED (${where}): border-${RB59_SIDES[i]}-style read ` +
-          `${JSON.stringify(value)}. That declares a border and paints NOTHING, so "the two ` +
-          'cards have different border styles" would be satisfied by giving one card no ' +
-          'border at all. This reader refuses rather than defaulting',
+          `${JSON.stringify(value)}, which is not one of the three admissible cue styles ` +
+          '(solid, dashed, dotted). This is an ALLOW-LIST, and deliberately so — a deny-list ' +
+          'of the obviously-dead keywords admits three measured CI-clean bypasses. (a) The ' +
+          'empty string, "none", "hidden" and the CSS-wide keywords "initial"/"inherit"/ ' +
+          '"unset"/"revert" declare a border and paint NOTHING, so "the two cards have ' +
+          'different border styles" would be satisfied by giving one card no border at all. ' +
+          '(b) "double" renders BYTE-IDENTICALLY to "solid" in real Chromium at this width ' +
+          '(sha256 of the card screenshot: solid 48e6b33b585b791c, double 48e6b33b585b791c, ' +
+          'against dashed f2b94f522c24a3a2 and dotted eb21a0e89356ce89) — so a double/solid ' +
+          'pair differs as a STRING and ships the identical PIXELS of the defect this slice ' +
+          'exists to fix. (c) "groove"/"ridge"/"inset"/"outset" make the X2 contrast clause ' +
+          'fail OPEN: Chromium synthesises the 3-D effect by repainting two of the four ' +
+          'sides darker (measured #b66 -> #673838, which is 1.744:1 against the card ' +
+          'background, under the 3:1 floor), while all four DECLARED colours stay equal so ' +
+          'neither the side-agreement loop below nor happy-dom (which has no paint) can see ' +
+          'it. This reader refuses rather than defaulting',
       );
     }
   }
@@ -3839,10 +3949,10 @@ describe('BattleView rb-59: card role is cued by border STYLE, not by hue alone 
     //
     // WRONG IMPLEMENTATIONS KILLED:
     //  (S2) every state-gated no-op — `if (vm.isPvp) …borderStyle='solid'`, the same gated
-    //       on `card.status`, on a terminal `vm.outcome`, or on `vm.weather`. Each is
-    //       CI-clean against a PvE-only tooth; each reds exactly one row here. The four
-    //       rows disagree on isPvp, pvpOpponentName, both statuses, outcome and weather
-    //       precisely so that no gate on any of those fields can stay hidden.
+    //       on `card.status`, on a terminal `vm.outcome`, on `vm.weather`, and (the measured
+    //       highest-value one) on `vm.pvpPendingSubmit`. Each is CI-clean against a PvE-only
+    //       tooth; each reds exactly one row here. See the RB59_STATES docstring for the
+    //       exhaustive list of what the five rows vary and what they still hold constant.
     //  (S8) `2px dashed #844` opposite `8px solid #484` — CI-clean, and it makes WIDTH the
     //       discriminator when the criterion says the discriminator must be STYLE. The
     //       width-equality clause is the only thing that sees it.
@@ -3859,9 +3969,12 @@ describe('BattleView rb-59: card role is cued by border STYLE, not by hue alone 
 
     expect(
       RB59_STATES,
-      'rb59 X1 ANCHOR: all four battle states must be exercised — a shorter list makes the ' +
-        'per-state loop below vacuous for exactly the states the measured S2 mutants gate on',
-    ).toHaveLength(4);
+      'rb59 X1 ANCHOR: all FIVE battle states must be exercised — a shorter list makes the ' +
+        'per-state loop below vacuous for exactly the states the measured state-gate mutants ' +
+        'read. Row 5 in particular is the only row with pvpPendingSubmit true, canSwap true, ' +
+        'a non-empty bench, canRecruit true, non-empty cureItems, turnNumber 9 and a critical ' +
+        'HP band; deleting it silently re-opens seven measured CI-clean no-ops',
+    ).toHaveLength(5);
 
     for (const { label, vm } of RB59_STATES) {
       view.refresh(vm);
@@ -3879,8 +3992,9 @@ describe('BattleView rb-59: card role is cued by border STYLE, not by hue alone 
           'identical in greyscale. This is a PAIR RELATION, not two literal assertions, ' +
           'because giving BOTH cards the same non-solid style passes every per-card check ' +
           'while leaving the roles exactly as indistinguishable as they are today. It is ' +
-          'also asserted in all four battle states, because a cue that switches itself off ' +
-          'in PvP is the residual this slice exists to close',
+          'also asserted in all FIVE battle states, because a cue that switches itself off ' +
+          'in PvP — or while waiting on the opponent submission — is the residual this ' +
+          'slice exists to close',
       ).not.toBe(pb.style);
 
       expect(
@@ -3902,19 +4016,24 @@ describe('BattleView rb-59: card role is cued by border STYLE, not by hue alone 
     // fails, both styles being 'solid'.
     //
     // WRONG IMPLEMENTATIONS KILLED — this case exists for the LATCH spellings the
-    // four-state loop above cannot see, because that loop reads each state on a fresh
-    // render but never returns to a state it has already left:
+    // five-state loop above cannot see. That loop reads each state immediately after its own
+    // render and never returns to a state it has already left, so a gate that FIRES ONCE and
+    // never unwinds survives it — and survives it especially on the LAST row, which nothing
+    // there re-reads:
     //  (a) a one-way latch: `if (vm.isPvp) this.#opponentCardEl.style.borderStyle='solid'`
     //      leaves the opponent card permanently solid once a single PvP frame renders, so
-    //      render 3 (back to PvE) is where it dies — render 1 and render 2 alone would
-    //      each pass with the latch present.
+    //      the return-to-PvE render is where it dies — renders 1 and 2 alone would each pass
+    //      with the latch present. The `pvpPendingSubmit` variant of the same latch is why
+    //      render 3 below drives that state and renders 4-6 read the border again after it:
+    //      pvpPendingSubmit is the LAST row of RB59_STATES, so the loop above cannot see a
+    //      latch that fires there.
     //  (b) a per-render rebuild that re-applies the ORIGINAL hue-only cssText: the card
     //      elements are constructor-owned and `#renderMonsterCard` opens with
     //      `el.replaceChildren()`, never by replacing the card itself, so the identity
     //      assertions below red on any implementation that starts recreating them.
     //  (c) a cue written from the `refresh(null)` teardown arm rather than the constructor:
-    //      it would survive renders 1-4 and vanish on the null round-trip, or exist only
-    //      after one.
+    //      it would survive renders 1-5 and vanish on the null round-trip at render 6, or
+    //      exist only after one.
     const parent = document.createElement('div');
     document.body.appendChild(parent);
 
@@ -3922,6 +4041,11 @@ describe('BattleView rb-59: card role is cued by border STYLE, not by hue alone 
 
     const pve = makeUx4VM({ isPvp: false });
     const pvp = makeUx4VM({ isPvp: true, pvpOpponentName: 'Rival' });
+    const pvpPending = makeUx4VM({
+      isPvp: true,
+      pvpOpponentName: 'Rival',
+      pvpPendingSubmit: true,
+    });
 
     const first = (() => {
       view.refresh(pve);
@@ -3939,10 +4063,14 @@ describe('BattleView rb-59: card role is cued by border STYLE, not by hue alone 
 
     const sequence = [
       { label: 'render 2 (PvP)', act: () => view.refresh(pvp) },
-      { label: 'render 3 (back to PvE — the LATCH detector)', act: () => view.refresh(pve) },
-      { label: 'render 4 (PvE repeated)', act: () => view.refresh(pve) },
       {
-        label: 'render 5 (after a refresh(null) teardown round-trip)',
+        label: 'render 3 (PvP awaiting the opponent submission)',
+        act: () => view.refresh(pvpPending),
+      },
+      { label: 'render 4 (back to PvE — the LATCH detector)', act: () => view.refresh(pve) },
+      { label: 'render 5 (PvE repeated)', act: () => view.refresh(pve) },
+      {
+        label: 'render 6 (after a refresh(null) teardown round-trip)',
         act: () => {
           view.refresh(null);
           view.refresh(pve);
@@ -3976,8 +4104,10 @@ describe('BattleView rb-59: card role is cued by border STYLE, not by hue alone 
         `rb59 X1 PERSISTENCE PAIR (${label}): the two cards must STILL differ by border ` +
           `style — opponent ${JSON.stringify(ob.style)}, player ${JSON.stringify(pb.style)}. ` +
           'The measured latch mutant sets the opponent card back to "solid" the first time a ' +
-          'PvP frame renders and never unwinds, so it survives render 1 and render 2 and ' +
-          'dies only here, on the return to PvE',
+          'PvP (or pvpPendingSubmit) frame renders and never unwinds, so it survives every ' +
+          'render up to that point and dies only on the renders that come AFTER it — which ' +
+          'is why this sequence returns to PvE and keeps reading rather than stopping at the ' +
+          'PvP frames',
       ).not.toBe(pb.style);
       expect(
         ob.width,
@@ -4026,8 +4156,9 @@ describe('BattleView rb-59: card role is cued by border STYLE, not by hue alone 
     //  (deletion) a border colour simply removed: `rb59Border` refuses the empty read, and
     //       an empty value defaulted to black would otherwise SCORE BETTER than the shipped
     //       one and let this gate be satisfied by deleting the declaration.
-    //  (state-gating) the whole check runs in all four battle states, so a colour tuned
-    //       only on the PvE path dies on the PvP row.
+    //  (state-gating) the whole check runs in all FIVE battle states, so a colour tuned
+    //       only on the PvE path dies on the PvP row, and one tuned only while the player is
+    //       free to act dies on the pvpPendingSubmit row.
     const parent = document.createElement('div');
     document.body.appendChild(parent);
 
@@ -4055,7 +4186,29 @@ describe('BattleView rb-59: card role is cued by border STYLE, not by hue alone 
 
         // The background operand is read from THIS card, never from a literal here — that
         // is what makes S4 (border painted in the card's own background colour) fail.
-        const backgroundRaw = s8ReadColour(card, 'background', `${where} background`);
+        //
+        // BOTH SPELLINGS ARE READ, and that is a latent-false-RED fix, not a loosening.
+        // `background` is a SHORTHAND: the cards ship `background:#2a1a1a`, so
+        // `style.background` is populated today — but the semantically identical
+        // `background-color:#2a1a1a` leaves the shorthand EMPTY in happy-dom, and a future
+        // retune spelling it that way would red this gate for a reason that has nothing to
+        // do with contrast. The pre-existing `s8ReadColour` (:3047, master code this slice
+        // must not edit) reads ONE property, so the fallback and its own non-emptiness
+        // refusal are restated here rather than by editing that helper. This still fails
+        // CLOSED: an absent background in BOTH spellings throws below, never defaults.
+        const backgroundRaw =
+          card.style.background.trim().length > 0
+            ? card.style.background.trim()
+            : card.style.backgroundColor.trim();
+        expect(
+          backgroundRaw.length,
+          `rb59 X2 BACKGROUND-PRESENT (${where}): the card's inline background declaration ` +
+            'read back EMPTY in BOTH the `background` shorthand and the `background-color` ' +
+            'longhand. Both operands of a contrast ratio must come from a LIVE, attached ' +
+            'element with a real declaration — an empty read guessed at as black or white ' +
+            'is the fail-open shape this gate exists to refuse, and it would let the ratio ' +
+            'be satisfied by DELETING the card background rather than by fixing the border',
+        ).toBeGreaterThan(0);
         const ratio = s8Contrast(
           s8Luminance(border.colour, `${where} border`),
           s8Luminance(backgroundRaw, `${where} background`),
