@@ -3412,7 +3412,9 @@ fn rb54_call_site_precedes_the_version_gate() {
     let decl_idx = stripped
         .find("fn sync_content_inner(ctx")
         .expect("sync_content_inner must be declared in content.rs");
-    let brace_rel = stripped[decl_idx..].find('{').expect("the fn must have a body");
+    let brace_rel = stripped[decl_idx..]
+        .find('{')
+        .expect("the fn must have a body");
     let body_start = decl_idx + brace_rel + 1;
     let call_hit = stripped[body_start..].find(call);
     let call_rel = call_hit.expect(
