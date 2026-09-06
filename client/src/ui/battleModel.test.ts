@@ -2467,3 +2467,984 @@ describe('battleModel rb-55: statusBadge is mechanically linked to A11Y_TOKENS (
     ).toEqual(variants.map((v) => [v.name, rustTokenFor(v.name)]).sort());
   });
 });
+
+// =============================================================================
+// rb-58 — the unknown-status fallback token must spend the entropy its 3-character
+// budget allows, on EVERY code point of the tag
+//
+// SOURCE OF TRUTH: residual R-m23-s8-postmerge-fallback (the harness slice ledger)
+// == R-m23-s8-FALLBACK-COLLIDE (docs/adr/0233-a11y-colour-independence-token-ssot.md:195).
+// BOTH ids are real: the first is the harness-side ledger name, the second the ADR-side
+// name, and they denote ONE residual. Neither is a typo and neither is fabricated — do
+// not "correct" either spelling to the other (that mis-edit has been made before).
+//
+// THE DEFECT. The shipped fallback derived its two payload characters from the first
+// two code points of the tag only, so any two unknown server statuses sharing a
+// two-code-point prefix rendered the SAME badge — a systematic, guessable collision
+// (`Confusion` / `Corrosion`, `Pestilence` / `Pestilent`, and so on). The badge's job
+// during deployed-server / stale-bundle skew is to prove a status EXISTS *and* to keep
+// two unknown statuses distinguishable (the HONEST BOUND paragraph of the
+// `unknownStatusToken` doc comment in battleModel.ts); a prefix-only derivation
+// discharges only the first half.
+//
+// WHAT THIS SUITE DOES AND DOES NOT CLAIM. Three characters hold at most 1296 tokens
+// after the leading '?', so nothing here claims the fallback is injective over all
+// possible tags — that is pigeonhole-impossible and asserting it would make the suite
+// unsatisfiable. It claims something weaker and achievable: every code point of the tag
+// feeds the token, so collisions become unpredictable rather than systematic on a
+// shared prefix, and the token space is used broadly rather than clustered.
+//
+// NOT A TRANSCRIPTION. No expected token VALUE is written anywhere below — not in code,
+// not in a comment. Every oracle is a RELATION (distinctness, shape, determinism,
+// pairwise inequality) computed from the live return value, so this block cannot become
+// a second hand-written copy of the derivation that an implementer "repairs" instead of
+// repairing battleModel.ts. Likewise the dead prefix-only transform is never given a
+// name: it appears exactly once, inline, inside the anti-vacuity assertion that needs it.
+// =============================================================================
+
+/**
+ * Seventeen tags that are NOT StatusEffect variants (so every one of them reaches the
+ * `default:` arm of statusBadge) and that deliberately cluster on shared two-code-point
+ * prefixes. The clustering is the whole point: it is what makes the distinctness clauses
+ * in T1 falsifiable. Chosen so the dead prefix-only transform collapses them to far fewer
+ * than 17 buckets while a whole-tag derivation keeps all 17 apart.
+ */
+const RB58_CORPUS: readonly string[] = [
+  'Confusion',
+  'Corrosion',
+  'Curse',
+  'Curdle',
+  'Cruse',
+  'Xurse',
+  'Blight',
+  'Blightx',
+  'Blighty',
+  'Bleed',
+  'Petrify',
+  'Pestilence',
+  'Pestilent',
+  'Slow',
+  'Slime',
+  'Frostbite',
+  'Frenzy',
+];
+
+/** Appended to every rb-58 failure: where the repair goes, and where it does NOT go. */
+const RB58_REPAIR =
+  'THE REPAIR IS ALWAYS IN client/src/ui/battleModel.ts (unknownStatusToken), never in ' +
+  'this file. Do not edit the corpus, lower a floor, widen a regex, or delete a clause to ' +
+  'make this green — each of those absorbs exactly the defect the clause exists to catch. ' +
+  'Residual R-m23-s8-postmerge-fallback == R-m23-s8-FALLBACK-COLLIDE (ADR-0233:195).';
+
+/** Scope disclaimer carried by the distinctness clauses so they are not over-read. */
+const RB58_NO_UNIQUENESS_CLAIM =
+  'SCOPE: this is NOT a uniqueness claim over all tags — a 3-character budget holds at ' +
+  'most 1296 tokens, so collisions must remain possible. It is a claim that collisions ' +
+  'are not SYSTEMATIC on a shared prefix, which is what made the shipped fallback useless ' +
+  'for exactly the skew case it exists to serve.';
+
+/** The implementation under scan, resolved from this spec's own URL (no cwd dependence) —
+ *  the same idiom RB55_CONTENT_RS_PATH uses above, pointed at a sibling file. */
+const RB58_IMPL_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), 'battleModel.ts');
+
+/** Region anchor for the derivation. A LOCATION, not a value — carries no token. */
+const RB58_FN_ANCHOR = 'export function unknownStatusToken';
+
+/**
+ * Read the implementation, or FAIL LOUD naming the resolved path (the rb55ReadContentRs
+ * idiom above). Never `?? ''`, never an existsSync guard, never it.skip: a swallowed read
+ * turns the whole source-scan tier into a permanently green no-op.
+ */
+function rb58ReadImplSrc(): string {
+  try {
+    return readFileSync(RB58_IMPL_PATH, 'utf8');
+  } catch (err) {
+    throw new Error(
+      `rb58: the implementation under scan could not be read at ${RB58_IMPL_PATH} — ${err}. ` +
+        `Every assertion in the source-scan test is vacuous without it. ${RB58_REPAIR}`,
+    );
+  }
+}
+
+/**
+ * Remove comments from TypeScript source in ONE left-to-right pass that ALSO recognises
+ * string and template literals — so a comment delimiter appearing inside a literal can
+ * never open or close a comment.
+ *
+ * MEASURED BYPASS THIS CLOSES, DO NOT SIMPLIFY BACK: a two-step stripper (one regex for
+ * block comments, then a second for line comments) is desynchronised FROM INSIDE the
+ * scanned code by planting `const open = <a single-quoted block-comment opener>;` and a
+ * matching closer a few lines later. The first regex then deletes everything between them
+ * — including an environment fork and its `return` — and every clause downstream inspects
+ * a doctored region while the shipped bundle carries the defect. Here the literal
+ * alternatives are tried at the same positions as the comment alternatives, so the planted
+ * opener is consumed as the string it is.
+ *
+ * (This doc block deliberately spells no comment delimiter and no regex source: a stray
+ * two-character sequence in here would close this very comment and corrupt the file.)
+ *
+ * String contents are PRESERVED, not blanked: an ambient read hidden inside a template
+ * literal's `${...}` must remain visible to the file-wide purity census below.
+ *
+ * ASSUMPTIONS, true of the file under scan and pinned by the clauses in T4: no regex
+ * literal (a `/` starting a regex could be read as a comment opener) and no nested
+ * template literal. Both are checked indirectly — a mis-scan drops the export signatures
+ * or the surviving-delimiter clause fires.
+ */
+function rb58StripComments(text: string): string {
+  return text.replace(
+    /'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g,
+    (m) => (m.startsWith('/') ? '' : m),
+  );
+}
+
+describe('rb58 unknown-status fallback token entropy', () => {
+  it('rb58 T1 seventeen prefix-clustered unknown tags get seventeen distinct badges', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      // ANCHOR 0 — the guidance itself. MEASURED GUT: both message constants can be
+      // emptied to '' with byte-identical pass/fail behaviour, which silently deletes
+      // every repair instruction AND both residual ids while the suite stays green. A
+      // failure message is part of the gate, so it gets asserted like one.
+      expect(
+        RB58_REPAIR,
+        'rb58 T1 ANCHOR: the shared repair guidance must still name the residual. Emptying ' +
+          'it changes no test outcome and destroys the only in-file record of what this ' +
+          'suite is for.',
+      ).toContain('R-m23-s8-FALLBACK-COLLIDE');
+      expect(
+        RB58_REPAIR,
+        'rb58 T1 ANCHOR: the shared repair guidance must still name the harness-side id too ' +
+          '— both names are real and denote one residual.',
+      ).toContain('R-m23-s8-postmerge-fallback');
+      expect(
+        RB58_REPAIR.length,
+        'rb58 T1 ANCHOR: the repair guidance must still be substantive prose, not a stub.',
+      ).toBeGreaterThan(200);
+      expect(
+        RB58_NO_UNIQUENESS_CLAIM,
+        'rb58 T1 ANCHOR: the scope disclaimer must still state the size of the token space, ' +
+          'so a reader cannot mistake the distinctness clauses below for a uniqueness claim.',
+      ).toContain('1296');
+      expect(
+        RB58_NO_UNIQUENESS_CLAIM.length,
+        'rb58 T1 ANCHOR: the scope disclaimer must still be substantive prose, not a stub.',
+      ).toBeGreaterThan(150);
+
+      // ANCHOR 1 — the corpus itself. An emptied or shortened corpus would make every
+      // distinctness clause below satisfiable by a constant function.
+      expect(
+        RB58_CORPUS.length,
+        'rb58 T1 ANCHOR: the corpus must still hold exactly 17 tags. Deleting members is ' +
+          'the cheapest way to make the distinctness clauses below pass without fixing ' +
+          `anything — a 1-tag corpus is trivially "all distinct". ${RB58_REPAIR}`,
+      ).toBe(17);
+
+      // ANCHOR 2 — every corpus member must actually REACH the default arm. Derived from
+      // the generated roster, never a hand-listed set of variant names.
+      const curated = (
+        StatusEffect.algebraicType.value as { variants: Array<{ name: string }> }
+      ).variants.map((v) => v.name);
+      expect(
+        curated.length,
+        'rb58 T1 ANCHOR: StatusEffect must expose exactly 5 generated variants; an empty ' +
+          'roster makes the "no corpus member is curated" check below vacuous.',
+      ).toBe(5);
+      expect(
+        RB58_CORPUS.filter((t) => curated.includes(t)),
+        'rb58 T1 ANCHOR: no corpus member may be a real StatusEffect variant. A member that ' +
+          'IS curated returns its curated badge instead of the fallback, so it silently ' +
+          'stops exercising unknownStatusToken at all. If a bindings regen just added a ' +
+          'variant whose name collides with a corpus member, RENAME THE CORPUS MEMBER to ' +
+          `another prefix-sharing invented tag — do not delete it. ${RB58_REPAIR}`,
+      ).toEqual([]);
+
+      // ANTI-VACUITY — stated as a property OF THE CORPUS, not as a named reproduction of
+      // the dead transform (a named copy would be a third artefact an implementer could
+      // "repair" instead of repairing the impl). Keeping only the first two code points
+      // collapses these 17 tags to 8 buckets; that collapse is what the distinctness
+      // clauses below are falsifiable AGAINST. If this number ever equalled 17, the
+      // clauses below would be satisfied by literally any injective-on-this-corpus
+      // function — including the defect — and would gate nothing.
+      expect(
+        new Set(RB58_CORPUS.map((t) => [...t].slice(0, 2).join('').toUpperCase())).size,
+        'rb58 T1 ANTI-VACUITY: the corpus must still COLLAPSE (to 8 buckets) under a ' +
+          'two-code-point prefix. This number being 17 — i.e. not fewer than 17 — means the ' +
+          'corpus no longer contains any prefix-sharing pair, and the distinctness clauses ' +
+          'below would then be satisfied by the very implementation this slice replaces. ' +
+          'THE REPAIR IS NEVER TO EDIT THE CORPUS: this clause exists precisely to catch ' +
+          `an edit that de-clusters it. ${RB58_REPAIR}`,
+      ).toBe(8);
+
+      // THE HELPER. 17 tags in, 17 distinct tokens out.
+      //
+      // MEASURED LAUNDERING GUT, WHICH IS WHY THE TOKENS ARE BOUND AND SHAPE-CHECKED
+      // FIRST: changing the mapped expression from `unknownStatusToken(t)` to
+      // `unknownStatusToken(t) + t` makes both distinctness counts 17 on the UNFIXED
+      // implementation — the tag itself supplies the entropy the derivation lacks — and
+      // the IDENTITY clause below still passes because both of its sides launder
+      // identically. Counting a set of values nobody checked the SHAPE of counts nothing.
+      // The shape clause is what makes the count a statement about the BADGE.
+      //
+      // MEASURED on the landing implementation: 17 distinct helper tokens, 17 distinct
+      // badges, 0 malformed on either side.
+      const helperTokens = RB58_CORPUS.map((t) => unknownStatusToken(t));
+      expect(
+        helperTokens.filter((t) => !/^\?[0-9A-Z]{2}$/.test(t)),
+        'rb58 T1 SHAPE: every value counted below must be a real fallback token — "?" plus ' +
+          'two upper-case base-36 digits. A row here means the counted values are not the ' +
+          'badges the player sees: either the derivation is malformed, or this test is ' +
+          'counting something with the tag concatenated onto it, in which case the ' +
+          `distinctness count below is measuring the corpus and not the code. ${RB58_REPAIR}`,
+      ).toEqual([]);
+      expect(
+        new Set(helperTokens).size,
+        'rb58 T1: 17 unknown tags that share two-code-point prefixes must produce 17 ' +
+          'DISTINCT fallback tokens. A number well below 17 (8, for the shipped ' +
+          'prefix-only transform) means two different server statuses render the same ' +
+          'badge purely because their names start alike — the player sees one label for ' +
+          'two conditions, which is the defect ADR-0233:195 records. ON THE EXPECTED VALUE, ' +
+          'HONESTLY: 17-of-17 is MEASURED for the shipped derivation, not entailed by the ' +
+          'property this slice claims — 17 tags into 1296 slots collide with probability ' +
+          'about 10% for a uniform hash, and multiplier 37 does collide on one pair here. ' +
+          'So there are two different failures with two different repairs. Retuning this to ' +
+          'a literal 8 to accommodate a prefix-only transform is the FORBIDDEN repair and ' +
+          'contradicts the two anchors above. Re-measuring it as part of a deliberate, ' +
+          'reviewed re-derivation of the hash is legitimate — in the same commit as the ' +
+          'change, never afterwards to make a red go away. ' +
+          `${RB58_NO_UNIQUENESS_CLAIM} ${RB58_REPAIR}`,
+      ).toBe(RB58_CORPUS.length);
+
+      // THE BADGE. Load-bearing, and NOT implied by the clause above. MEASURED BYPASS, DO
+      // NOT REMOVE: a red-team pass left unknownStatusToken honest and truncated the tag at
+      // the CALL SITE instead — `return unknownStatusToken([...tag].slice(0, 5).join(''))`
+      // in the default arm of statusBadge. Every helper-only clause stayed green while
+      // `Pestilence` and `Pestilent` (identical for 5 code points) collided on screen. The
+      // badge is what the player actually reads, so the badge is what must be distinct.
+      const badgeTokens = RB58_CORPUS.map((t) => statusBadge(t));
+      expect(
+        badgeTokens.filter((t) => !/^\?[0-9A-Z]{2}$/.test(t)),
+        'rb58 T1 SHAPE (badge): every badge counted below must itself be a well-formed ' +
+          'fallback token, for the same reason as the helper clause above — an unshaped ' +
+          `count is laundering waiting to happen. ${RB58_REPAIR}`,
+      ).toEqual([]);
+      expect(
+        new Set(badgeTokens).size,
+        'rb58 T1 BADGE: the value statusBadge RETURNS must be distinct for all 17 tags, not ' +
+          'merely the value unknownStatusToken returns. MEASURED: truncating the tag at the ' +
+          'statusBadge call site keeps the helper perfectly honest and still ships colliding ' +
+          'badges for two tags with a long shared prefix. Never repair this by loosening the ' +
+          `count; the default arm must pass the WHOLE tag through. ${RB58_REPAIR}`,
+      ).toBe(RB58_CORPUS.length);
+
+      // ...and the two must be the SAME value for EVERY member (the shipped m23s8 test
+      // pins this for one tag only). Kills a default arm that post-processes, re-maps or
+      // re-truncates the helper's output for some tags but not others.
+      expect(
+        RB58_CORPUS.filter((t) => statusBadge(t) !== unknownStatusToken(t)),
+        'rb58 T1 IDENTITY: for every unknown tag, statusBadge must return byte-exactly ' +
+          'unknownStatusToken(tag). A name listed here is a tag whose badge was rewritten ' +
+          'between the helper and the default arm — a .replace(), a re-slice, a special ' +
+          'case — so the exported helper is no longer the single source of the fallback ' +
+          `value the player sees. ${RB58_REPAIR}`,
+      ).toEqual([]);
+
+      // THE BADGE TIER NEEDS ITS OWN LONG PAIR. MEASURED SURVIVOR, found by the verifier:
+      // a default arm that truncates the tag at the CALL SITE — `unknownStatusToken([...tag]
+      // .slice(0, k).join(''))` — is caught by the corpus clauses above ONLY for k <= 10,
+      // because the longest corpus member (`Pestilence`) is 10 code points. Every k >= 11
+      // passed 127/127 while `statusBadge` rendered ONE badge for two 300-code-point tags.
+      // T2 already learned this lesson for the HELPER and fixed it with a 300-code-point
+      // pair; the same lesson had not been applied to the tier that actually ships. These
+      // two tags differ only in their LAST code point, so no finite cut point can separate
+      // them.
+      const longA = `${'q'.repeat(299)}a`;
+      const longB = `${'q'.repeat(299)}b`;
+      expect(
+        statusBadge(longA),
+        'rb58 T1 BADGE (no call-site truncation): two 300-code-point tags differing only ' +
+          'in their FINAL code point must render two DIFFERENT badges THROUGH statusBadge. ' +
+          'A failure here means the default arm bounds the tag before hashing it — the ' +
+          'residual`s own defect, reintroduced one hop up from the function this slice ' +
+          'fixed, where a corpus of short realistic names can never see it. Fix the ' +
+          `default arm; do not shorten these tags. ${RB58_REPAIR}`,
+      ).not.toBe(statusBadge(longB));
+      expect(
+        [statusBadge(longA), statusBadge(longB)],
+        'rb58 T1 BADGE IDENTITY (long tags): each long tag`s badge must be byte-exactly ' +
+          'the helper`s token. This is what forbids the default arm from bounding, ' +
+          'trimming or re-slicing the tag on its way to the helper, at ANY cut point — the ' +
+          'corpus IDENTITY clause above cannot say that, because every corpus member is ' +
+          `short enough to survive a bound. ${RB58_REPAIR}`,
+      ).toEqual([unknownStatusToken(longA), unknownStatusToken(longB)]);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('rb58 T2 every code point of the tag feeds the token', () => {
+    // EVERY PAIR PINS ITS OWN DISCRIMINATING STRUCTURE — `lenA`/`lenB` (in CODE POINTS)
+    // and `diffAt`, the first index at which the two differ, or -1 when one is a proper
+    // prefix of the other. MEASURED GUT THIS CLOSES: rewriting pair 1 from
+    // "299 x's then a y" to "a y then 299 x's" makes the whole of T2 green on the
+    // UNFIXED implementation (only pair 1 is red today), while `pairs.length` and the
+    // now-lying `label`/`kills` prose survive untouched. With the structure pinned, a
+    // pair edited to differ somewhere else reds on `diffAt` instead of going quiet.
+    const pairs: ReadonlyArray<{
+      readonly a: string;
+      readonly b: string;
+      readonly label: string;
+      readonly kills: string;
+      readonly lenA: number;
+      readonly lenB: number;
+      readonly diffAt: number;
+    }> = [
+      {
+        // Kills: prefix truncation at EVERY k, and drop-the-last-code-point. Two tags
+        // that agree on the first 299 code points and differ only in the 300th.
+        // MEASURED: a red-team truncation at k=9 survived a `Status${i}` corpus, because
+        // 'Status199' is exactly 9 code points long — a corpus-shaped tooth cannot see a
+        // truncation whose cut point sits past the corpus's own tag lengths. This pair
+        // has no cut point that works.
+        a: `${'x'.repeat(299)}y`,
+        b: 'x'.repeat(300),
+        label: 'two 300-code-point tags differing only in the LAST code point',
+        kills:
+          'a derivation that stops after the first k code points (for ANY k), or that ' +
+          'drops the final code point. MEASURED: truncating at k=9 passed a corpus of ' +
+          '9-character tags; only an unbounded-length pair like this one can see it',
+        lenA: 300,
+        lenB: 300,
+        diffAt: 299,
+      },
+      {
+        // Kills: a suffix-only derivation. MEASURED: under a multiplier-36 mutant these
+        // two hash identically, because 36 is a multiple of the base the digits are read
+        // in and the leading code point's contribution vanishes modulo the space size.
+        a: 'Curse',
+        b: 'Xurse',
+        label: 'two tags differing only in the FIRST code point',
+        kills:
+          'a suffix-only derivation, and a rolling hash whose multiplier annihilates the ' +
+          'leading term (MEASURED: multiplier 36 makes exactly this pair collide while ' +
+          'the whole 17-tag corpus above still separates)',
+        lenA: 5,
+        lenB: 5,
+        diffAt: 0,
+      },
+      {
+        // Kills: an order-invariant accumulator (sum / xor / bitwise-or of code points),
+        // which spreads tokens beautifully and still gives every anagram one badge.
+        a: 'AB',
+        b: 'BA',
+        label: 'two tags that are anagrams of each other',
+        kills:
+          'an order-invariant accumulator — a plain sum, xor or bitwise-or of the code ' +
+          'points passes every corpus and every spread floor while collapsing all ' +
+          'anagrams onto one badge',
+        lenA: 2,
+        lenB: 2,
+        diffAt: 0,
+      },
+      {
+        // Kills: charCodeAt substituted for codePointAt. MEASURED: under that mutant both
+        // of these hash identically, because a UTF-16 code unit read only sees the shared
+        // high surrogate of the two astral characters. This is the behavioural half of
+        // the source-scan clause in T4.
+        a: '\u{1F600}',
+        b: '\u{1F601}',
+        label: 'two adjacent astral (non-BMP) tags',
+        kills:
+          'reading UTF-16 code units instead of code points (charCodeAt for codePointAt) ' +
+          '— MEASURED: both of these then hash to the same value because they share a ' +
+          'high surrogate, so the badge cannot tell two emoji-named statuses apart',
+        lenA: 1,
+        lenB: 1,
+        diffAt: 0,
+      },
+      {
+        // Kills: FIXED-ARITY FEATURE SAMPLING — a derivation that reads only a bounded
+        // set of positions, e.g. (length, first, middle, last). MEASURED: such a
+        // derivation passes all four pairs above BY CONSTRUCTION (each of them differs
+        // in length, first, or last) while ignoring 297 of 300 code points on a long
+        // tag, and it collapses `Corrosion`, `Cordosion` and `Corposion` onto ONE token.
+        // This pair differs at index 3 ONLY — not at 0 (first), not at 8 (last), not at
+        // 4 (middle of nine) — so no bounded sample of endpoints can separate it. It is
+        // the pair that falsifies this test's own title, and therefore the one to keep
+        // if you are ever tempted to prune the table.
+        a: 'Corrosion',
+        b: 'Cordosion',
+        label: 'two 9-code-point tags differing ONLY at interior index 3',
+        kills:
+          'a fixed-arity feature sample — reading only (length, first, middle, last), or ' +
+          'any other bounded set of positions, instead of folding over every code point ' +
+          '(MEASURED: those three 9-letter tags all render one token under such a scheme)',
+        lenA: 9,
+        lenB: 9,
+        diffAt: 3,
+      },
+      {
+        // Kills: a DEDUPLICATING derivation, e.g. folding over `new Set(tag)` — which
+        // looks like a reasonable "normalise the input" step and is invisible to every
+        // pair above. MEASURED: it renders Poison, Poisonn, Poisson and Poiison as one
+        // token. `Poison` IS a curated variant, which is irrelevant here: T2 calls the
+        // HELPER directly, so the switch in statusBadge never runs. That is deliberate —
+        // the tag space the fallback must survive is the server's, not this bundle's.
+        a: 'Poison',
+        b: 'Poisonn',
+        label: 'a tag and the same tag with its final code point repeated',
+        kills:
+          'a deduplicating derivation (folding over the SET of code points) and any ' +
+          'other multiplicity-blind normalisation — repetition is information, and a ' +
+          'server variant name may differ from another only by a doubled letter',
+        lenA: 6,
+        lenB: 7,
+        diffAt: -1,
+      },
+      {
+        // Kills: an ASCII case-fold (`tag.toLowerCase()` / `toUpperCase()` before the
+        // fold). Case-folding the INPUT is a different thing from upper-casing the
+        // OUTPUT (which the token format requires): the first destroys entropy the
+        // server may be using, the second only formats what survived.
+        a: 'Curse',
+        b: 'curse',
+        label: 'two tags differing only in the CASE of their first code point',
+        kills:
+          'a case-fold of the INPUT before the fold. Upper-casing the OUTPUT token is ' +
+          'required and fine; upper- or lower-casing the TAG throws away a distinction ' +
+          'the server is entitled to make between two variant names',
+        lenA: 5,
+        lenB: 5,
+        diffAt: 0,
+      },
+      {
+        // THE ZERO-PAD SIDE. Found by the verifier as a MEASURED SURVIVOR of the
+        // seven-pair suite: `padStart(2, '0')` -> `padEnd(2, '0')` passed 127/127. The
+        // shipped `length <= 3` clauses and this suite's own shape census only pin the
+        // token's LENGTH, so padding on the wrong side was invisible — yet it merges every
+        // residue h in [1, 35] with 36h, collapsing the image from 1296 to 1260 across 36
+        // systematic pairs. These two tags are that defect's smallest witness: they hash
+        // to 1 and 36, so they render `?01` / `?10` correctly and BOTH `?10` under padEnd.
+        a: 'Aawh',
+        b: 'Aaxl',
+        label: 'two tags hashing to 1 and 36 — the zero-pad SIDE, not its length',
+        kills:
+          'padding the token on the wrong side (padEnd for padStart). A length-only ' +
+          'oracle cannot see it: both tokens are still exactly 3 characters and still ' +
+          'match the shape regex, but every sub-base residue has been merged with its ' +
+          '36-multiple. The pad is load-bearing for WHICH token you get, not just for how ' +
+          'long it is',
+        lenA: 4,
+        lenB: 4,
+        diffAt: 2,
+      },
+    ];
+
+    expect(
+      pairs.length,
+      'rb58 T2 ANCHOR: all eight discriminating pairs must still be present. Each kills a ' +
+        'different wrong derivation and none of the others covers it — truncation at any ' +
+        'k, suffix-only folding, order-invariance, code-unit reads, fixed-arity feature ' +
+        'sampling, deduplication, input case-folding, and the zero-pad SIDE. ' +
+        `${RB58_REPAIR}`,
+    ).toBe(8);
+
+    for (const { a, b, label, kills, lenA, lenB, diffAt } of pairs) {
+      // STRUCTURE PINS, ABOVE THE BEHAVIOURAL CLAUSE. These say what this pair IS, so
+      // the pair cannot be quietly rewritten into an easier one that the unfixed
+      // implementation already separates (MEASURED on pair 1; see the table comment).
+      const cpA = [...a];
+      const cpB = [...b];
+      expect(
+        cpA.length,
+        `rb58 T2 STRUCTURE (${label}): the first member must still be ${lenA} code points ` +
+          'long. A changed length means the pair is no longer the one whose comment ' +
+          `explains it, and the mutant named there is no longer covered. ${RB58_REPAIR}`,
+      ).toBe(lenA);
+      expect(
+        cpB.length,
+        `rb58 T2 STRUCTURE (${label}): the second member must still be ${lenB} code ` +
+          `points long. ${RB58_REPAIR}`,
+      ).toBe(lenB);
+      expect(
+        cpA.findIndex((c, i) => c !== cpB[i]),
+        `rb58 T2 STRUCTURE (${label}): these two tags must still first differ at code ` +
+          `point index ${diffAt} (-1 meaning one is a proper prefix of the other). WHERE ` +
+          'they differ is the entire point of the pair: moving the difference to another ' +
+          'position turns a discriminating pair into one the defect already separates, ' +
+          'which is a MEASURED way to make this whole test green without changing the ' +
+          `implementation at all. ${RB58_REPAIR}`,
+      ).toBe(diffAt);
+
+      const ta = unknownStatusToken(a);
+      const tb = unknownStatusToken(b);
+      // ANCHOR per pair: a pair that silently degenerated into two undefineds, two empty
+      // strings, or two thrown-away values must not be able to satisfy the inequality
+      // below by accident.
+      expect(
+        ta,
+        `rb58 T2 ANCHOR (${label}): the first member must still produce a full 3-character ` +
+          'token. A short or absent token here means the inequality below would be ' +
+          `comparing garbage rather than two real badges. ${RB58_REPAIR}`,
+      ).toHaveLength(3);
+      expect(
+        tb,
+        `rb58 T2 ANCHOR (${label}): the second member must still produce a full ` +
+          `3-character token. ${RB58_REPAIR}`,
+      ).toHaveLength(3);
+      expect(
+        ta,
+        `rb58 T2 (${label}): these two tags must NOT share a badge. This clause kills ` +
+          `${kills}. ${RB58_NO_UNIQUENESS_CLAIM} A collision on THIS pair is never an ` +
+          'unlucky pigeonhole hit — it is a structural blindness in the derivation, ' +
+          `because the two tags differ by construction in exactly one place. ${RB58_REPAIR}`,
+      ).not.toBe(tb);
+    }
+  });
+
+  it('rb58 T3 the token is total, structurally invariant and deterministic', async () => {
+    const cases: readonly string[] = [
+      // The EMPTY tag. It hashes below the base, so its unpadded rendering is a single
+      // digit and a dropped zero-pad ships a 2-character badge where the pill and the
+      // shipped `length <= 3` / `length > 0` clauses both expect 3. It is NOT the only
+      // such input — roughly one tag in 36 hashes below the base (36 of the 1296
+      // residues; `Ara` hashes to 0) and T5's shape census reds on about 83 of its 3000
+      // draws. What the empty tag is, is the DETERMINISTIC representative of that class:
+      // the one member guaranteed to be exercised on every run regardless of the draw.
+      '',
+      'A',
+      // A character whose uppercase form is LONGER than itself ('ß' -> 'SS'):
+      // the historical reason the old implementation needed a trailing cap at all.
+      'ß',
+      // Astral, and astral-plus-ASCII: a lone surrogate in the output would render as
+      // U+FFFD in the badge pill.
+      '\u{1F600}',
+      '\u{1F600}x',
+      'Curse',
+      'Confusion',
+      // Far longer than any real variant name — the derivation must not overflow, wrap to
+      // NaN, or blow the 3-character budget on a long tag.
+      'x'.repeat(300),
+    ];
+    expect(
+      cases.length,
+      'rb58 T3 ANCHOR: all 8 shape cases must still be present. Deleting the empty-tag or ' +
+        'the astral case removes the only coverage of the zero-pad and the surrogate ' +
+        `hazards respectively. ${RB58_REPAIR}`,
+    ).toBe(8);
+
+    const tokens = cases.map((t) => unknownStatusToken(t));
+
+    // ANCHOR for the upper-case clause below. A token made only of digits satisfies
+    // `t === t.toUpperCase()` vacuously, so a `.toLowerCase()` mutant would survive a
+    // corpus that happened to hash to all-numeric tokens. At least one case must produce a
+    // letter for the invariance clause to have any teeth at all.
+    expect(
+      tokens.some((t) => /[A-Z]/.test(t)),
+      'rb58 T3 ANCHOR: at least one case must produce a token containing a LETTER. Every ' +
+        'clause of the form `token === token.toUpperCase()` is vacuously true for an ' +
+        'all-digit token, so without this anchor a derivation that lower-cased its output ' +
+        `would pass the case-invariance clause below unchallenged. ${RB58_REPAIR}`,
+    ).toBe(true);
+
+    // ONE WHOLE-ARRAY ORACLE, NOT A LOOP. MEASURED ONE-CHARACTER GUT THIS CLOSES: with a
+    // `for (let i = 0; …)` loop, changing the initialiser to `i = 5` made this test PASS on
+    // the unfixed implementation — silently skipping the empty tag, 'A', the sharp s and
+    // both astral cases, i.e. the only coverage of the zero-pad and surrogate hazards —
+    // while the `cases.length === 8` anchor above happily reported 8. A single toEqual over
+    // a census built from `cases` has no index to move: the expected side is derived from
+    // the same array, so a skipped case is a missing ROW and reds immediately.
+    const shapeCensus = tokens.map((token, i) => ({
+      index: i,
+      tag: JSON.stringify(cases[i] ?? '').slice(0, 24),
+      length: token.length,
+      wellFormed: /^\?[0-9A-Z]{2}$/.test(token),
+      alreadyUpperCase: token === token.toUpperCase(),
+    }));
+    expect(
+      shapeCensus,
+      'rb58 T3 SHAPE CENSUS: for EVERY case the fallback must be 3 characters long, must ' +
+        "match /^\\?[0-9A-Z]{2}$/ ('?' plus two upper-case base-36 digits), and must already " +
+        'be upper-case. Read the diff by row: `wellFormed: false` with `length: 2` on the ' +
+        'empty tag is a dropped zero-pad (that row is the ONLY case that exposes it); ' +
+        '`wellFormed: false` with `length: 3` on an astral tag is a raw code point or a lone ' +
+        'surrogate in the badge, which renders as U+FFFD; a length above 3 overflows the ' +
+        'pill (upper-casing can LENGTHEN a string — the sharp-s row is why that is checked ' +
+        'per case rather than argued from the format). Do NOT repair a failure here by ' +
+        `deleting the offending row: every row is a hazard class. ${RB58_REPAIR}`,
+    ).toEqual(
+      cases.map((tag, i) => ({
+        index: i,
+        tag: JSON.stringify(tag).slice(0, 24),
+        length: 3,
+        wellFormed: true,
+        alreadyUpperCase: true,
+      })),
+    );
+
+    // DETERMINISM, tier 1: three calls in one process.
+    const first = unknownStatusToken('Confusion');
+    expect(
+      [unknownStatusToken('Confusion'), unknownStatusToken('Confusion')],
+      'rb58 T3 DETERMINISM: the same tag must produce the same token on every call. A ' +
+        'badge that changes between two renders of the same battle tells the player the ' +
+        `status changed when it did not. ${RB58_REPAIR}`,
+    ).toEqual([first, first]);
+
+    // DETERMINISM, tier 2: TWO FRESH MODULE INSTANCES WITH DIFFERENT CALL HISTORIES.
+    //
+    // MEASURED BYPASS THIS EXISTS FOR: a derivation seeded from a module-scope
+    // `Math.random()`. Every call within one process agrees, so the three-call clause above
+    // is structurally incapable of seeing it, while two browser tabs (or one reload) render
+    // different badges for the same status.
+    //
+    // MEASURED WEAKNESS OF THE OBVIOUS VERSION, WHICH IS WHY THE ORDER IS PERTURBED: a
+    // module-scope Map handing out tokens in FIRST-SEEN CALL ORDER passes a single
+    // reset-and-reimport comparison, because the fresh instance is asked for 'Confusion'
+    // first in both runs. It only reds by luck — through unrelated tests earlier in this
+    // file consuming slots in the statically imported instance — which means `-t rb58`
+    // alone would have missed it. Instance 1 is therefore deliberately given a DIFFERENT
+    // call history from instance 2, and both are compared to the long-lived instance the
+    // rest of this file has been using. Any state that survives a call now separates them.
+    vi.resetModules();
+    const m1 = await import('./battleModel');
+    m1.unknownStatusToken('Zzz');
+    m1.unknownStatusToken('Qqq');
+    m1.unknownStatusToken('Zzz');
+    const t1 = m1.unknownStatusToken('Confusion');
+
+    vi.resetModules();
+    const m2 = await import('./battleModel');
+    const t2 = m2.unknownStatusToken('Confusion');
+
+    expect(
+      [t1, t2],
+      'rb58 T3 DETERMINISM (fresh modules, different call histories): the token for one tag ' +
+        'must not depend on which module instance asks, nor on what that instance was asked ' +
+        'BEFORE. The three values compared here come from an instance that answered three ' +
+        'other calls first, an instance asked this tag first, and the instance the rest of ' +
+        'this file has been using all along. A mismatch means the derivation carries state ' +
+        'or ambient entropy — a module-scope RNG seed, a first-seen-order allocation table, ' +
+        'a memo keyed on something other than the tag — and the same status will render ' +
+        'different badges in two browser tabs, or before and after a reload. The token is a ' +
+        `pure function of the tag, of nothing else. ${RB58_REPAIR}`,
+    ).toEqual([first, first]);
+  });
+
+  it('rb58 T4 the derivation reads only its argument — no env fork, no ambient entropy', () => {
+    // WHY A SOURCE SCAN, WHEN EVERY OTHER TIER IS BEHAVIOURAL. This is the ONLY tier that
+    // can see an ENVIRONMENT FORK. MEASURED BYPASS, DO NOT REMOVE: a red-team pass wrapped
+    // the honest hash in `if (import.meta.env.PROD) { return <the old colliding transform>; }`.
+    // vitest sets PROD false, so every behavioural test above ran the honest branch and was
+    // green — while a real `vite build` tree-shook the bundle back to the exact defect this
+    // slice exists to close. No runtime assertion in a test process can distinguish those
+    // two builds; only reading the source can.
+    //
+    // MEASURED BYPASS 2, WHY THE PURITY BAN IS FILE-WIDE: the fork does not have to live in
+    // the function. A red-team pass kept `unknownStatusToken` textually perfect — the honest
+    // loop, exactly one `return`, no ambient name anywhere in its body — and moved the fork
+    // into a module-scope helper it calls. A region-scoped scan sees nothing; the bundle
+    // ships the defect. The blacklist below is therefore applied to the WHOLE stripped file.
+    // That costs nothing: battleModel.ts is a pure view-model module (its own header at :1-4
+    // declares "No DOM, no SDK, no side effects") and has ZERO legitimate uses of any banned
+    // name. The region-scoped single-exit clause is kept as well — the two are complementary,
+    // not redundant.
+    //
+    // MEASURED BYPASS 3, WHY THE STRIPPER IS A ONE-PASS SCANNER: a two-step stripper is
+    // desynchronised from INSIDE the scanned code by planting a block-comment opener and
+    // closer as ordinary string literals, deleting the fork and its `return` before either
+    // clause runs. See rb58StripComments — string literals are consumed as strings and
+    // PRESERVED, so an ambient read hidden inside a template literal stays visible too.
+    const src = rb58ReadImplSrc();
+    const strippedSrc = rb58StripComments(src);
+
+    // FILE-LEVEL POSITIVE CONTROL. Every file-wide clause below is a "must not contain",
+    // and a file that got blanked — by a stripper desync, a regex-literal mis-scan, a read
+    // that returned something else — satisfies all of them perfectly. These two clauses are
+    // what make the negatives mean anything at the file level.
+    expect(
+      [
+        'export function unknownStatusToken',
+        'export function statusBadge',
+        'export function buildBattleViewModel',
+      ].filter((sig) => !strippedSrc.includes(sig)),
+      'rb58 T4 POSITIVE CONTROL (file): the stripped source must still contain every one of ' +
+        'these top-level signatures. A name listed here means the comment strip ate live ' +
+        'code — which is exactly what a planted comment delimiter is FOR — and every ' +
+        `"must not contain" clause below would then pass vacuously. ${RB58_REPAIR}`,
+    ).toEqual([]);
+    expect(
+      strippedSrc.length,
+      'rb58 T4 POSITIVE CONTROL (file mass): stripping comments must not remove most of the ' +
+        'file. A collapse to a fraction of the original is a desynchronised strip, not a ' +
+        `well-commented module. ${RB58_REPAIR}`,
+    ).toBeGreaterThan(src.length / 5);
+
+    // NO COMMENT DELIMITER MAY SURVIVE THE STRIP. After a correct one-pass scan the only way
+    // `/*` or `*/` can remain is inside a string literal — which is precisely the desync
+    // payload. Green today; this is the tripwire for the planted-delimiter attack.
+    expect(
+      strippedSrc,
+      'rb58 T4 STRIPPER INTEGRITY: no comment delimiter may survive the strip. Surviving ' +
+        'delimiters mean one of two things, both bad: a real comment was not stripped (so ' +
+        'the clauses below are reading prose as code), or a delimiter is sitting inside a ' +
+        'STRING LITERAL — the MEASURED payload that desynchronises a naive stripper and ' +
+        'deletes an environment fork from this scan before it can be seen. There is no ' +
+        `legitimate reason for battleModel.ts to contain one. ${RB58_REPAIR}`,
+    ).not.toMatch(/\/\*|\*\//);
+
+    // THE STRIPPER'S DOCUMENTED ASSUMPTION, ASSERTED RATHER THAN ASSUMED. The one-pass
+    // scanner handles strings and comments; it does NOT understand REGEX LITERALS. A regex
+    // containing a quote or a comment delimiter — `/['\"]/`, `/[/*]/` — desynchronises the
+    // pass and can silently swallow a span of live code. That failure direction is a false
+    // GREEN, which the three positive controls above do not reliably catch: they only fire
+    // if a top-level signature or most of the file's mass disappears, and a swallowed
+    // five-line environment fork does neither. battleModel.ts contains no regex literal
+    // today; this clause is what makes that a checked precondition instead of a comment.
+    // If the module legitimately grows one, teach the scanner or move the regex — do not
+    // delete this clause.
+    expect(
+      src.match(/[=(,:[]\s*\/(?![/*])/g) ?? [],
+      'rb58 T4 STRIPPER PRECONDITION: battleModel.ts has grown what looks like a REGEX ' +
+        'LITERAL. The comment stripper this test relies on does not parse regex literals, ' +
+        'so one containing a quote or a comment delimiter can desynchronise the scan and ' +
+        'silently blank live code — and a blanked region passes every "must not contain" ' +
+        'clause below VACUOUSLY. That is a false green, the failure direction that ' +
+        `actually matters here. ${RB58_REPAIR}`,
+    ).toEqual([]);
+
+    // THE FILE-WIDE PURITY CENSUS. This is the clause that closes the delegated fork.
+    const ambient: ReadonlyArray<readonly [string, RegExp]> = [
+      ['import.meta', /import\s*\.\s*meta/],
+      ['process.env', /process\s*\.\s*env/],
+      ['globalThis', /\bglobalThis\b/],
+      ['Math.random', /Math\s*\.\s*random/],
+      ['Date', /\bDate\b/],
+      ['crypto', /\bcrypto\b/],
+      ['window', /\bwindow\b/],
+      ['navigator', /\bnavigator\b/],
+    ];
+    expect(
+      ambient.filter(([, re]) => re.test(strippedSrc)).map(([name]) => name),
+      'rb58 T4 PURITY (whole file): battleModel.ts must not read the environment ANYWHERE. ' +
+        'Each name listed here is a way the badge can differ between two builds, two ' +
+        'processes or two moments while every unit test in this file stays green: a ' +
+        'build-mode fork (import.meta / process.env), a shared mutable seed (globalThis), ' +
+        'ambient entropy (Math.random / Date / crypto), or a browser-environment fork ' +
+        '(window / navigator). THE BAN IS FILE-WIDE ON PURPOSE — MEASURED: a fork delegated ' +
+        'to a module-scope helper leaves unknownStatusToken textually spotless and still ' +
+        'tree-shakes the original collision back into a production bundle. The module ' +
+        'declares itself pure at :1-4; this clause holds it to that, so what this suite ' +
+        `measures under vitest is what a player sees in a real build. ${RB58_REPAIR}`,
+    ).toEqual([]);
+
+    expect(
+      src.split(RB58_FN_ANCHOR).length - 1,
+      `rb58 T4 ANCHOR UNIQUENESS: the literal \`${RB58_FN_ANCHOR}\` must occur EXACTLY ONCE ` +
+        `in ${RB58_IMPL_PATH}. The region below is sliced from the FIRST occurrence, so a ` +
+        'second one — in a comment, a string, a re-export — steers the whole scan off the ' +
+        'shipped function and every clause below then inspects something that is not the ' +
+        `derivation. Describe the function in prose; never reproduce its signature line. ${RB58_REPAIR}`,
+    ).toBe(1);
+
+    const lines = src.split('\n');
+    const startLine = lines.findIndex((l) => l.startsWith(RB58_FN_ANCHOR));
+    expect(
+      startLine,
+      `rb58 T4 ANCHOR: no line in ${RB58_IMPL_PATH} begins with \`${RB58_FN_ANCHOR}\`, so ` +
+        'there is no region to scan and every clause below is vacuous. The fallback helper ' +
+        `must remain a top-level named export of that module. ${RB58_REPAIR}`,
+    ).toBeGreaterThanOrEqual(0);
+
+    let endLine = -1;
+    for (let i = startLine + 1; i < lines.length; i++) {
+      if ((lines[i] ?? '').trimEnd() === '}') {
+        endLine = i;
+        break;
+      }
+    }
+    expect(
+      endLine,
+      'rb58 T4 ANCHOR: the function body must be terminated by a line that is exactly `}` at ' +
+        'column 0. Without that terminator the region slice is empty or runs to end of file, ' +
+        `and this scan stops being a statement about the derivation. ${RB58_REPAIR}`,
+    ).toBeGreaterThan(startLine);
+
+    // The region is sliced from the RAW source (so the line rule is about the file as
+    // written) and then stripped with the SAME one-pass scanner, so the desync payload
+    // cannot doctor it either.
+    const region = rb58StripComments(lines.slice(startLine, endLine + 1).join('\n'));
+
+    // REGION LIVENESS — deliberately SEPARATE from the code-point pin below. MEASURED GUT:
+    // when one clause carried both jobs, swapping its needle to a spelling-agnostic one
+    // ('tag') deleted the code-point pin while still looking like a positive control — and
+    // the previous version of this comment openly invited that edit. Liveness is proven
+    // here, by needles that say nothing about HOW the token is derived; the pin below is
+    // then free to be strict.
+    expect(
+      region.trim().length,
+      'rb58 T4 LIVENESS: the stripped region must be non-empty. An empty region satisfies ' +
+        'every "must not contain" clause vacuously, so the scan would report clean on any ' +
+        `implementation whatsoever. ${RB58_REPAIR}`,
+    ).toBeGreaterThan(0);
+    expect(
+      region,
+      'rb58 T4 LIVENESS: the stripped region must still contain live code (a `return`). ' +
+        `If it does not, the region slice or the strip captured prose, not a function. ${RB58_REPAIR}`,
+    ).toContain('return');
+    expect(
+      region.split('\n').filter((l) => l.trim().length > 0).length,
+      'rb58 T4 LIVENESS: the stripped region must still have at least three non-blank lines ' +
+        '(a signature, a body, a closing brace). A region reduced below that has been eaten ' +
+        `by a mis-scan and proves nothing. ${RB58_REPAIR}`,
+    ).toBeGreaterThanOrEqual(3);
+
+    // THE CODE-POINT PIN. Not a liveness proof (that is settled above) — a statement about
+    // the derivation: it must read CODE POINTS, not UTF-16 code units. T2's astral pair
+    // kills the code-unit read behaviourally; this is its source-tier twin, and it is the
+    // tier that still speaks when someone re-shapes the loop into something T2's two emoji
+    // happen to survive. DO NOT swap this needle for a weaker one to make a failure go
+    // away: if a rewrite genuinely reads whole code points by another spelling, that is a
+    // deliberate, reviewed change to BOTH this clause and the comment above it — and the
+    // landing implementation reads `(ch.codePointAt(0) ?? 0)`, with no non-null assertion,
+    // so nothing here depends on a `!`.
+    expect(
+      region,
+      'rb58 T4 CODE-POINT PIN: the derivation must read full code points (`codePointAt`), ' +
+        'not UTF-16 code units. A code-unit read makes every pair of astral-named statuses ' +
+        'that shares a high surrogate render one badge — the same class of systematic ' +
+        'collision this whole slice exists to remove, just moved from the ASCII prefix to ' +
+        'the surrogate prefix. This clause is a PIN, not a liveness control (liveness is ' +
+        `proven separately above): do not weaken the needle, fix the derivation. ${RB58_REPAIR}`,
+    ).toContain('codePointAt');
+
+    // EXACTLY ONE `return`, region-scoped. Complementary to the file-wide purity census
+    // above, not redundant with it: that one bans the ambient READS, this one bans the
+    // second EXIT — a depth-0 early return needs no ambient name at all (a module-scope
+    // `const LEGACY = …` reachable only in one build does the job).
+    expect(
+      (region.match(/\breturn\b/g) ?? []).length,
+      'rb58 T4 SINGLE EXIT: the derivation must have EXACTLY ONE `return`. A second one is ' +
+        'either a depth-0 early exit above the hash or the far branch of a fork — and ' +
+        'MEASURED, the fork shape `if (<a build-mode flag>) { return <old transform>; }` ' +
+        'kept every behavioural test in this file green (vitest evaluates the flag false) ' +
+        'while the production bundle shipped the original collision. Do not repair this by ' +
+        `inlining the branch into a ternary; repair it by deleting the branch. ${RB58_REPAIR}`,
+    ).toBe(1);
+  });
+
+  it('rb58 T5 unseen tags spread across the token space', () => {
+    // WHY THE INPUTS ARE NOT WRITTEN IN THIS FILE. MEASURED BYPASS, DO NOT REMOVE: a
+    // red-team pass shipped a 220-row lookup table fitted to the named corpora, returning
+    // one shared token for every tag not in the table. It passed every corpus-based clause
+    // above — the corpora ARE the table's keys — and shipped a single badge for the entire
+    // real world. Only inputs this file does not know can catch that. The seed is fixed, so
+    // the draws are identical on every machine and every re-run: this is a deterministic
+    // test with unwritten inputs, not a flaky one.
+    const samples = fc.sample(fc.string({ minLength: 1 }), { numRuns: 300, seed: 58 });
+    expect(
+      samples.length,
+      'rb58 T5 ANCHOR: 300 samples must be drawn. A shortened or empty sample set makes the ' +
+        `shape census and the spread floor below trivially satisfiable. ${RB58_REPAIR}`,
+    ).toBe(300);
+
+    // THE DRAW ITSELF IS PINNED. MEASURED GUT: swapping the arbitrary for a tame one —
+    // `fc.stringMatching(/^[A-Z]{2,8}$/)` — yields 238 distinct tokens on the UNFIXED
+    // implementation, clearing the spread floor below and turning this whole test green
+    // without touching the derivation. The two clauses here describe the INPUT DISTRIBUTION,
+    // so a tamed generator reds before the impl is ever consulted. MEASURED on the real
+    // seed-58 draw: 297 distinct inputs, 237 of them containing a non-alphanumeric
+    // character, longest 12 characters.
+    //
+    // VERSION NOTE: the seed pins these values only while the fast-check version holds
+    // (client/package-lock.json). A future fast-check bump can legitimately change the draw
+    // — if these two clauses red together right after a dependency bump, that is the cause,
+    // and the repair is to re-measure and re-record the values here (in the same commit as
+    // the bump), never to delete the clauses.
+    expect(
+      new Set(samples).size,
+      'rb58 T5 DRAW: the 300 drawn tags must be nearly all distinct (measured 297). A ' +
+        'collapsed input set means the generator was swapped or narrowed, and the spread ' +
+        `floor below would then be measuring the generator, not the derivation. ${RB58_REPAIR}`,
+    ).toBeGreaterThanOrEqual(250);
+    expect(
+      samples.filter((s) => /[^A-Za-z0-9]/.test(s)).length,
+      'rb58 T5 DRAW: at least half the drawn tags must contain a NON-ALPHANUMERIC character ' +
+        '(measured 237 of 300). This is what makes the shape census below a real test: an ' +
+        'alphanumeric-only generator can never produce the raw-punctuation badge that the ' +
+        'prefix-slicing derivation ships, so a tamed generator would report the defect as ' +
+        `clean. MEASURED: exactly that swap makes this test pass unfixed. ${RB58_REPAIR}`,
+    ).toBeGreaterThanOrEqual(150);
+
+    // SHAPE over unseen inputs. Slicing to the first 5 offenders is loss-free as a
+    // predicate (the slice is empty iff the census is) and keeps the failure output
+    // readable when a derivation is wrong for every input.
+    const malformed = samples
+      .filter((s) => !/^\?[0-9A-Z]{2}$/.test(unknownStatusToken(s)))
+      .slice(0, 5)
+      .map((s) => ({ tag: JSON.stringify(s).slice(0, 40), token: unknownStatusToken(s) }));
+    expect(
+      malformed,
+      'rb58 T5 SHAPE: EVERY tag — not just the curated-looking ones in the corpora above — ' +
+        "must yield '?' plus two upper-case base-36 digits. Each row here is a real string a " +
+        'server could name a status and the unreadable badge it produced: raw punctuation, a ' +
+        'lone surrogate, a lower-case character, or a short token from a dropped pad. The ' +
+        'derivation must be TOTAL over strings, because the whole point of the fallback is ' +
+        `tags this bundle has never seen. Showing at most 5 rows. ${RB58_REPAIR}`,
+    ).toEqual([]);
+
+    // SPREAD. 300 draws into 1296 slots collide by the birthday bound: the expected number
+    // of distinct tokens is about 264, and 200 sits far below that — a wide, deliberately
+    // non-tight floor so this can never flake, even though the seed already pins the draws.
+    expect(
+      new Set(samples.map((s) => unknownStatusToken(s))).size,
+      'rb58 T5 SPREAD: 300 unseen tags must land on at least 200 distinct tokens. This ' +
+        'floor is a MUTANT CATCHER, NOT A STATISTICAL CLAIM: 300 draws into the 1296 ' +
+        'available tokens are expected to give about 264 distinct, so a healthy derivation ' +
+        'clears 200 with enormous margin and only a structurally degenerate one falls ' +
+        'below it — a lookup table with a shared default, a constant, a derivation keyed on ' +
+        'the first character alone, or one whose payload space collapsed to a handful of ' +
+        'values. LOWERING THIS FLOOR IS THE FORBIDDEN REPAIR: a number chosen to fit the ' +
+        'measured value is a number that catches nothing. The draws are seeded, so a ' +
+        `failure here is reproducible and is telling you about the derivation. ${RB58_REPAIR}`,
+    ).toBeGreaterThanOrEqual(200);
+
+    // THE IMAGE CENSUS — the clause that actually gates TOKEN-SPACE SIZE, and the reason
+    // the 300-draw floor above is not enough on its own. MEASURED on the seed-58 300-draw,
+    // varying only the modulus: 1296 -> 270 distinct, 1024 -> 257, 648 -> 242, 512 -> 223,
+    // 400 -> 205, 324 -> 206. EVERY ONE of those clears 200 — i.e. a fourfold loss of
+    // entropy, which is precisely this residual's subject, is invisible to a 300-draw floor
+    // because 300 draws cannot distinguish a 1296-token space from a 400-token one.
+    // Widening the draw is what separates them: with 3000 draws the image approaches the
+    // space size. MEASURED at 3000 draws, seed 58: honest 1156 distinct, %648 -> 640,
+    // %512 -> 510, %400 -> 400, %324 -> 324.
+    //
+    // WHAT THE 900 FLOOR DOES AND DOES NOT CATCH — stated precisely, because a floor whose
+    // reach is overclaimed is worse than one that is understood. It kills every collapse at
+    // or below 648 (measured 640) with a 256-token margin below the honest 1156. It does
+    // NOT catch a mild collapse: 1024 slots drawn 3000 times still yields roughly a thousand
+    // distinct tokens, which clears 900. Closing that case needs a floor near 1050, and no
+    // one has yet measured a SECOND honest derivation shape to know how much slack 1050
+    // leaves — so the conservative floor is what ships, and the gap is recorded here rather
+    // than papered over. A halving of the token space is caught; a 20% shave is not.
+    const wide = fc.sample(fc.string({ minLength: 1 }), { numRuns: 3000, seed: 58 });
+    expect(
+      wide.length,
+      'rb58 T5 ANCHOR: 3000 samples must be drawn for the image census. A shortened draw ' +
+        `caps the image and makes the floor below unreachable-or-meaningless. ${RB58_REPAIR}`,
+    ).toBe(3000);
+    expect(
+      new Set(wide.map((s) => unknownStatusToken(s))).size,
+      'rb58 T5 IMAGE: 3000 unseen tags must reach at least 900 DISTINCT tokens. This is the ' +
+        'clause that gates how big the token space actually is — the 300-draw floor above ' +
+        'cannot: MEASURED, shrinking the space fourfold (1296 -> 400) still gave 205 ' +
+        'distinct in 300 draws and sailed past it. At 3000 draws the honest derivation ' +
+        'reaches 1156 while a %512 collapse caps out at 510 and a %324 collapse at 324, so ' +
+        'this floor separates them with room to spare. A failure here means the badge has ' +
+        'fewer usable values than its 3-character budget allows, which is the residual ' +
+        'itself in a subtler form: the fallback stops distinguishing unknown statuses ' +
+        'sooner than it needs to. LOWERING THIS FLOOR IS THE FORBIDDEN REPAIR — widen the ' +
+        `token space instead. ${RB58_NO_UNIQUENESS_CLAIM} ${RB58_REPAIR}`,
+    ).toBeGreaterThanOrEqual(900);
+  });
+});

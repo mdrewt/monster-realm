@@ -1,6 +1,12 @@
 // ui/battleModel.ts — pure view-model for the battle screen (M7c, ADR-0014).
 //
 // No DOM, no SDK, no side effects. Takes store data, returns view-models.
+// That purity claim is ENFORCED MECHANICALLY, file-wide: `rb58 T4` in battleModel.test.ts
+// scans this whole file and fails if it names `import.meta`, `process.env`, `globalThis`,
+// `Math.random`, `Date`, `crypto`, `window` or `navigator` anywhere — including inside a
+// string. Adding an ambient read here reds that test, by design (a build-mode fork
+// delegated to a module-scope helper was a measured way to ship one derivation under test
+// and a different one in a production bundle).
 // The thin DOM shell (battleView.ts) renders these; the loop refreshes on batch.
 import type { StoreBattle, StoreSkillRow, StoreSpeciesRow } from '../net/store';
 import { hpPercent } from './boxModel';
@@ -33,7 +39,8 @@ export interface BattleMonsterCardVM {
   readonly affinity: string;
   /** Short status badge label — whatever `statusBadge` returns for the tag: the token
    *  that variant's row carries in `A11Y_TOKENS` (game-core/src/content.rs), an
-   *  `unknownStatusToken` "?XX" fallback for a tag this bundle does not know
+   *  `unknownStatusToken` fallback shaped as `?` plus two upper-case base-36 digits
+   *  (each of which may be a letter OR a numeral) for a tag this bundle does not know
    *  (ADR-0233), or null when there is no status. */
   readonly status: string | null;
 }
@@ -42,18 +49,58 @@ export interface BattleMonsterCardVM {
  * The badge shown for a status tag this bundle does not know — a deployed server
  * running ahead of a cached client bundle (M23 §2.6, ADR-0233).
  *
- * Derived from the tag rather than a shared placeholder so two unknown statuses
- * stay distinguishable, and prefixed with `?` so it can never collide with a
- * curated three-letter token: `Paralysis` sliced to three characters uppercases
- * to `PAR`, which IS its curated badge, so a bare slice would make the fallback
- * indistinguishable from a correct label.
+ * DERIVATION. A polynomial rolling hash is folded over EVERY code point of the tag and
+ * reduced into two base-36 digits, so the whole name feeds the badge. The previous
+ * derivation kept only the first two code points, so `Confusion` and `Corrosion`
+ * rendered ONE badge — a systematic, guessable collision on any shared prefix, and the
+ * exact defect recorded as residual R-m23-s8-postmerge-fallback ==
+ * R-m23-s8-FALLBACK-COLLIDE (ADR-0233:195). Both of those ids are real and name one
+ * residual; neither is a typo for the other.
+ *
+ * THE `?` PREFIX STAYS, for a reason the new derivation does not disturb: no curated
+ * token in the `A11Y_TOKENS` SSOT begins with `?`, so a fallback can never be read as a
+ * real label. That is a property of the token roster rather than of this derivation,
+ * and two different tests hold its two halves. A curated `case` DELETED here is caught by
+ * the m23s8 SHADOW CENSUS in battleModel.test.ts (it flags any variant whose badge is
+ * byte-identical to its own fallback). A curated TOKEN retyped to start with `?` is caught
+ * by `m23s8_forgery_shipped_pairs_are_pinned` in game-core/src/content.rs, which pins the
+ * exact shipped (key, token) pairs — the census would catch that only by a 1-in-1296
+ * coincidence, so do not rely on it for that half.
+ *
+ * HONEST BOUND. `?` plus two base-36 digits admits 1296 tokens, which is the pigeonhole
+ * MAXIMUM for the three-character budget, so collisions REMAIN POSSIBLE: about 0.077%
+ * for any given pair of tags, and even odds once roughly 43 unknown tags are in play at
+ * once. What the badge promises is therefore narrower than it may look — that a status
+ * EXISTS, and that two unknown statuses no longer collide SYSTEMATICALLY merely because
+ * their names start alike. It is not a one-to-one map and must never be described as
+ * one.
+ *
+ * The hash is NON-CRYPTOGRAPHIC and DISPLAY-ONLY: a legibility device for a
+ * three-character pill. Never reuse it as an identifier, a key, or a token.
  */
 export function unknownStatusToken(tag: string): string {
-  // Spread, not `slice`: `slice` counts UTF-16 code units, so a tag containing an
-  // astral character yields a lone surrogate that renders as U+FFFD. The trailing
-  // cap is load-bearing too — `'\u00df'.toUpperCase()` is two characters, so
-  // uppercasing can lengthen the token past the badge's three-character budget.
-  return `?${[...tag].slice(0, 2).join('').toUpperCase()}`.slice(0, 3);
+  // The modulus is INSIDE the loop deliberately: h stays below 1296 at every step, so
+  // `h * 31 + cp` never exceeds ~1.16e6 and is exact in a double — no Math.imul, no
+  // `>>> 0`, and none of the sign hazard an end-of-loop reduction carries.
+  //
+  // ON THE MULTIPLIER, HONESTLY. 31 is the conventional odd polynomial multiplier and is
+  // coprime to 1296. It is NOT injective on two-code-point tags in general — it cannot be,
+  // since 128^2 ASCII pairs exceed 1296 slots by pigeonhole (`AG` and `kA` both hash to
+  // 790). Over two letters drawn from ONE case-contiguous 26-symbol alphabet it is
+  // injective (31 * 26 = 806 < 1296), but so is every multiplier in [26, 50], so that is
+  // not why 31 was picked. It was picked because it separates all 17 members of the T1
+  // corpus in battleModel.test.ts where 37 collides on one pair — a MEASUREMENT of that
+  // corpus, not a proof of superiority. Changing it is a deliberate re-derivation that
+  // must be re-measured, and T1 is what will tell you.
+  //
+  // `padStart(2, '0')` is load-bearing: it makes the three-character budget STRUCTURAL
+  // rather than clamped by a trailing cap. Roughly one tag in 36 hashes below the base
+  // (36 of the 1296 residues) and would otherwise render a two-character badge — e.g.
+  // `Ara` hashes to 0. The empty tag is the deterministic REPRESENTATIVE of that class,
+  // which is why T3's case list leads with it; it is not the only member.
+  let h = 0;
+  for (const ch of tag) h = (h * 31 + (ch.codePointAt(0) ?? 0)) % 1296;
+  return `?${h.toString(36).padStart(2, '0').toUpperCase()}`;
 }
 
 /** Map a StatusEffect tag to a short badge label. Pure — unit-testable.
