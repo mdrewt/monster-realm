@@ -103,17 +103,71 @@ export class BattleView {
       'border-radius:3px;background:#334;color:#aaf;font-size:12px;font-weight:bold;display:none;';
     this.#root.appendChild(this.#weatherEl);
 
-    // Opponent card (top)
+    // The opponent card (top) and the player card (bottom). rb-59 closes residual
+    // R-m23-s8-postmerge-border, which docs/adr/0233 §Residuals spells R-m23-s8-BORDER:
+    // these two ROLES used to be separated by HUE ALONE — `1px solid #844` against
+    // `1px solid #484`, red against green, a classic worst-case pair for protanopia and
+    // deuteranopia and only 1.64:1 apart in relative luminance (`#525252` against `#757575`
+    // under `filter: grayscale(1)`), far below any threshold at which two 1px lines read as
+    // two different lines. That is WCAG 1.4.1 "use of colour", the same failure class m23-s8
+    // already fixed in this file for the HP-severity palette (ADR-0233, A11Y-29). Border
+    // STYLE is the hue-free channel: `dashed` against `solid` is perceivable with NO colour
+    // vision at all, and it survives Windows forced-colors mode, where both hues are
+    // discarded outright but border-style is preserved.
+    // #844 HAD to move rather than merely be dashed: it MEASURES 2.34:1 against its own card
+    // background #2a1a1a, below the WCAG 1.4.11 3:1 non-text floor, and dashing a
+    // sub-threshold border paints materially less of it — the shipped dash period is 6px on,
+    // 3px off — so `dashed #844` would have shipped a non-colour cue nobody can see, i.e. the
+    // same defect in a new hat. #b66 measures 4.13:1 on that same
+    // background and stays in the same red family; the player's #484 on #1a2a1a is already
+    // 3.49:1, so it keeps its colour and only widens.
+    // BE HONEST ABOUT WHAT THAT COSTS: the pair this slice ships is 1.073:1 in relative
+    // luminance, i.e. FLATTER in greyscale than the pair it replaces. That is deliberate —
+    // luminance was never the channel here — but it does mean border STYLE is now the single
+    // hue-free carrier, which is why battleView.test.ts pins the style pair, the widths, the
+    // card's whole declaration roster and border-image rather than just the two literals.
+    // This cue is REDUNDANT, not primary — do not overclaim it. In PvE what says WHICH card
+    // is whose is the header text #renderMonsterCard writes, `Opponent: <species>` against
+    // `You: <species>`; the border style only makes the PAIRING perceivable without hue, and
+    // that redundancy is what satisfies 1.4.1. In PvP the opponent header carries the rival's
+    // NAME instead of a role word — see the DEFER below.
+    // The card BACKGROUNDS (#2a1a1a against #1a2a1a, measured 1.10:1 — near-identical
+    // luminance) are deliberately NOT retuned: once the border style carries the distinction
+    // hue-free the criterion is met, and the backgrounds are then decoration layered over a
+    // channel that already carries the information. Argued dismissal, not an oversight.
+    // Dismissed for 1.4.1, and ONLY for 1.4.1: the #844 border on the Flee button and its
+    // siblings on the Recruit / Use Item / Swap / Submit buttons and on the two bait/cure
+    // <select>s. On the buttons the accessible name IS the information, so hue encodes
+    // nothing and they keep their 1px solid rule. The two <select>s have no accessible name
+    // at all today, and NONE of these borders has been measured against 1.4.11 — the floor
+    // this slice just invoked to move #844. Both gaps are real, fixing either is outside this
+    // slice's touches:, and neither is claimed closed here.
+    // DEFERRED, not done (ledger gate X6): in PvP refresh() passes the rival's BARE player
+    // name as the opponent label, so the card's ROLE reaches assistive technology only as a
+    // player name. ADR-0233's clause that every member of this border family "carr[ies] text
+    // labels" is technically satisfied — the label just names the RIVAL, not the ROLE, which
+    // is the half of A11Y-29 a border cue cannot cover. A leading role word breaks the
+    // `startsWith('<name>: ')` parse in e2e/monster-privacy.spec.ts, which the REQUIRED e2e
+    // job runs and which is outside this slice's touches:. MEASURED HONESTLY: a trailing
+    // ` (Opponent)` suffix would satisfy that parse AND pvp-side-b.spec.ts's substring match
+    // without touching either file — it was not taken because a parenthetical after the
+    // species name is a weaker announcement than a leading role word, and because the slice
+    // was in its landing phase. The successor should pick the spelling on merit.
+    // Do NOT re-home these hexes into `:root` custom properties in styles.css — docs/adr/0233
+    // bans it. NOTHING IN CI ENFORCES THAT BAN: reduced-motion-hp-bar.eval.mjs's
+    // custom-property clause is scoped to the two .hp-fill rules and anything nested under the
+    // reduced-motion guard, so a top-level :root token would ship green. It is a convention,
+    // not a gate, and styles.css separately expects a later slice to add :root tokens for
+    // OTHER values — the ban is on re-homing THESE border hexes.
     this.#opponentCardEl = document.createElement('div');
     this.#opponentCardEl.style.cssText =
-      'border:1px solid #844;border-radius:4px;padding:8px;width:100%;max-width:320px;' +
+      'border:2px dashed #b66;border-radius:4px;padding:8px;width:100%;max-width:320px;' +
       'background:#2a1a1a;margin-bottom:12px;';
     this.#root.appendChild(this.#opponentCardEl);
 
-    // Player card (bottom)
     this.#playerCardEl = document.createElement('div');
     this.#playerCardEl.style.cssText =
-      'border:1px solid #484;border-radius:4px;padding:8px;width:100%;max-width:320px;' +
+      'border:2px solid #484;border-radius:4px;padding:8px;width:100%;max-width:320px;' +
       'background:#1a2a1a;margin-bottom:12px;';
     this.#root.appendChild(this.#playerCardEl);
 
