@@ -1,6 +1,12 @@
 // ui/battleModel.ts — pure view-model for the battle screen (M7c, ADR-0014).
 //
 // No DOM, no SDK, no side effects. Takes store data, returns view-models.
+// That purity claim is ENFORCED MECHANICALLY, file-wide: `rb58 T4` in battleModel.test.ts
+// scans this whole file and fails if it names `import.meta`, `process.env`, `globalThis`,
+// `Math.random`, `Date`, `crypto`, `window` or `navigator` anywhere — including inside a
+// string. Adding an ambient read here reds that test, by design (a build-mode fork
+// delegated to a module-scope helper was a measured way to ship one derivation under test
+// and a different one in a production bundle).
 // The thin DOM shell (battleView.ts) renders these; the loop refreshes on batch.
 import type { StoreBattle, StoreSkillRow, StoreSpeciesRow } from '../net/store';
 import { hpPercent } from './boxModel';
@@ -54,8 +60,12 @@ export interface BattleMonsterCardVM {
  * THE `?` PREFIX STAYS, for a reason the new derivation does not disturb: no curated
  * token in the `A11Y_TOKENS` SSOT begins with `?`, so a fallback can never be read as a
  * real label. That is a property of the token roster rather than of this derivation,
- * and the SHADOW CENSUS in battleModel.test.ts:2049-2063 is what holds it — a curated
- * row that ever adopted a leading `?`, or a switch case deleted here, reds there.
+ * and two different tests hold its two halves. A curated `case` DELETED here is caught by
+ * the m23s8 SHADOW CENSUS in battleModel.test.ts (it flags any variant whose badge is
+ * byte-identical to its own fallback). A curated TOKEN retyped to start with `?` is caught
+ * by `m23s8_forgery_shipped_pairs_are_pinned` in game-core/src/content.rs, which pins the
+ * exact shipped (key, token) pairs — the census would catch that only by a 1-in-1296
+ * coincidence, so do not rely on it for that half.
  *
  * HONEST BOUND. `?` plus two base-36 digits admits 1296 tokens, which is the pigeonhole
  * MAXIMUM for the three-character budget, so collisions REMAIN POSSIBLE: about 0.077%
@@ -71,15 +81,23 @@ export interface BattleMonsterCardVM {
 export function unknownStatusToken(tag: string): string {
   // The modulus is INSIDE the loop deliberately: h stays below 1296 at every step, so
   // `h * 31 + cp` never exceeds ~1.16e6 and is exact in a double — no Math.imul, no
-  // `>>> 0`, and none of the sign hazard an end-of-loop reduction carries. The
-  // multiplier 31 is measured, not lore: it is the only candidate injective on every
-  // two-code-point ASCII tag (31 * 26 = 806 < 1296) and top-of-table on five other
-  // corpora.
+  // `>>> 0`, and none of the sign hazard an end-of-loop reduction carries.
   //
-  // `padStart(2, '0')` is load-bearing: it makes the three-character budget
-  // STRUCTURAL rather than clamped by a trailing cap. The empty tag is the sole input
-  // that exposes its absence — it hashes below the base and would otherwise render two
-  // characters.
+  // ON THE MULTIPLIER, HONESTLY. 31 is the conventional odd polynomial multiplier and is
+  // coprime to 1296. It is NOT injective on two-code-point tags in general — it cannot be,
+  // since 128^2 ASCII pairs exceed 1296 slots by pigeonhole (`AG` and `kA` both hash to
+  // 790). Over two letters drawn from ONE case-contiguous 26-symbol alphabet it is
+  // injective (31 * 26 = 806 < 1296), but so is every multiplier in [26, 50], so that is
+  // not why 31 was picked. It was picked because it separates all 17 members of the T1
+  // corpus in battleModel.test.ts where 37 collides on one pair — a MEASUREMENT of that
+  // corpus, not a proof of superiority. Changing it is a deliberate re-derivation that
+  // must be re-measured, and T1 is what will tell you.
+  //
+  // `padStart(2, '0')` is load-bearing: it makes the three-character budget STRUCTURAL
+  // rather than clamped by a trailing cap. Roughly one tag in 36 hashes below the base
+  // (36 of the 1296 residues) and would otherwise render a two-character badge — e.g.
+  // `Ara` hashes to 0. The empty tag is the deterministic REPRESENTATIVE of that class,
+  // which is why T3's case list leads with it; it is not the only member.
   let h = 0;
   for (const ch of tag) h = (h * 31 + (ch.codePointAt(0) ?? 0)) % 1296;
   return `?${h.toString(36).padStart(2, '0').toUpperCase()}`;

@@ -2483,7 +2483,8 @@ describe('battleModel rb-55: statusBadge is mechanically linked to A11Y_TOKENS (
 // two-code-point prefix rendered the SAME badge — a systematic, guessable collision
 // (`Confusion` / `Corrosion`, `Pestilence` / `Pestilent`, and so on). The badge's job
 // during deployed-server / stale-bundle skew is to prove a status EXISTS *and* to keep
-// two unknown statuses distinguishable (battleModel.ts:44-49); a prefix-only derivation
+// two unknown statuses distinguishable (the HONEST BOUND paragraph of the
+// `unknownStatusToken` doc comment in battleModel.ts); a prefix-only derivation
 // discharges only the first half.
 //
 // WHAT THIS SUITE DOES AND DOES NOT CLAIM. Three characters hold at most 1296 tokens
@@ -2702,9 +2703,15 @@ describe('rb58 unknown-status fallback token entropy', () => {
           'DISTINCT fallback tokens. A number well below 17 (8, for the shipped ' +
           'prefix-only transform) means two different server statuses render the same ' +
           'badge purely because their names start alike — the player sees one label for ' +
-          'two conditions, which is the defect ADR-0233:195 records. The expected value is ' +
-          'RB58_CORPUS.length BY CONSTRUCTION: writing a literal here (8, say) is a retune, ' +
-          'not a repair, and contradicts the two anchors above. ' +
+          'two conditions, which is the defect ADR-0233:195 records. ON THE EXPECTED VALUE, ' +
+          'HONESTLY: 17-of-17 is MEASURED for the shipped derivation, not entailed by the ' +
+          'property this slice claims — 17 tags into 1296 slots collide with probability ' +
+          'about 10% for a uniform hash, and multiplier 37 does collide on one pair here. ' +
+          'So there are two different failures with two different repairs. Retuning this to ' +
+          'a literal 8 to accommodate a prefix-only transform is the FORBIDDEN repair and ' +
+          'contradicts the two anchors above. Re-measuring it as part of a deliberate, ' +
+          'reviewed re-derivation of the hash is legitimate — in the same commit as the ' +
+          'change, never afterwards to make a red go away. ' +
           `${RB58_NO_UNIQUENESS_CLAIM} ${RB58_REPAIR}`,
       ).toBe(RB58_CORPUS.length);
 
@@ -2747,214 +2754,212 @@ describe('rb58 unknown-status fallback token entropy', () => {
   });
 
   it('rb58 T2 every code point of the tag feeds the token', () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
-      // EVERY PAIR PINS ITS OWN DISCRIMINATING STRUCTURE — `lenA`/`lenB` (in CODE POINTS)
-      // and `diffAt`, the first index at which the two differ, or -1 when one is a proper
-      // prefix of the other. MEASURED GUT THIS CLOSES: rewriting pair 1 from
-      // "299 x's then a y" to "a y then 299 x's" makes the whole of T2 green on the
-      // UNFIXED implementation (only pair 1 is red today), while `pairs.length` and the
-      // now-lying `label`/`kills` prose survive untouched. With the structure pinned, a
-      // pair edited to differ somewhere else reds on `diffAt` instead of going quiet.
-      const pairs: ReadonlyArray<{
-        readonly a: string;
-        readonly b: string;
-        readonly label: string;
-        readonly kills: string;
-        readonly lenA: number;
-        readonly lenB: number;
-        readonly diffAt: number;
-      }> = [
-        {
-          // Kills: prefix truncation at EVERY k, and drop-the-last-code-point. Two tags
-          // that agree on the first 299 code points and differ only in the 300th.
-          // MEASURED: a red-team truncation at k=9 survived a `Status${i}` corpus, because
-          // 'Status199' is exactly 9 code points long — a corpus-shaped tooth cannot see a
-          // truncation whose cut point sits past the corpus's own tag lengths. This pair
-          // has no cut point that works.
-          a: `${'x'.repeat(299)}y`,
-          b: 'x'.repeat(300),
-          label: 'two 300-code-point tags differing only in the LAST code point',
-          kills:
-            'a derivation that stops after the first k code points (for ANY k), or that ' +
-            'drops the final code point. MEASURED: truncating at k=9 passed a corpus of ' +
-            '9-character tags; only an unbounded-length pair like this one can see it',
-          lenA: 300,
-          lenB: 300,
-          diffAt: 299,
-        },
-        {
-          // Kills: a suffix-only derivation. MEASURED: under a multiplier-36 mutant these
-          // two hash identically, because 36 is a multiple of the base the digits are read
-          // in and the leading code point's contribution vanishes modulo the space size.
-          a: 'Curse',
-          b: 'Xurse',
-          label: 'two tags differing only in the FIRST code point',
-          kills:
-            'a suffix-only derivation, and a rolling hash whose multiplier annihilates the ' +
-            'leading term (MEASURED: multiplier 36 makes exactly this pair collide while ' +
-            'the whole 17-tag corpus above still separates)',
-          lenA: 5,
-          lenB: 5,
-          diffAt: 0,
-        },
-        {
-          // Kills: an order-invariant accumulator (sum / xor / bitwise-or of code points),
-          // which spreads tokens beautifully and still gives every anagram one badge.
-          a: 'AB',
-          b: 'BA',
-          label: 'two tags that are anagrams of each other',
-          kills:
-            'an order-invariant accumulator — a plain sum, xor or bitwise-or of the code ' +
-            'points passes every corpus and every spread floor while collapsing all ' +
-            'anagrams onto one badge',
-          lenA: 2,
-          lenB: 2,
-          diffAt: 0,
-        },
-        {
-          // Kills: charCodeAt substituted for codePointAt. MEASURED: under that mutant both
-          // of these hash identically, because a UTF-16 code unit read only sees the shared
-          // high surrogate of the two astral characters. This is the behavioural half of
-          // the source-scan clause in T4.
-          a: '\u{1F600}',
-          b: '\u{1F601}',
-          label: 'two adjacent astral (non-BMP) tags',
-          kills:
-            'reading UTF-16 code units instead of code points (charCodeAt for codePointAt) ' +
-            '— MEASURED: both of these then hash to the same value because they share a ' +
-            'high surrogate, so the badge cannot tell two emoji-named statuses apart',
-          lenA: 1,
-          lenB: 1,
-          diffAt: 0,
-        },
-        {
-          // Kills: FIXED-ARITY FEATURE SAMPLING — a derivation that reads only a bounded
-          // set of positions, e.g. (length, first, middle, last). MEASURED: such a
-          // derivation passes all four pairs above BY CONSTRUCTION (each of them differs
-          // in length, first, or last) while ignoring 297 of 300 code points on a long
-          // tag, and it collapses `Corrosion`, `Cordosion` and `Corposion` onto ONE token.
-          // This pair differs at index 3 ONLY — not at 0 (first), not at 8 (last), not at
-          // 4 (middle of nine) — so no bounded sample of endpoints can separate it. It is
-          // the pair that falsifies this test's own title, and therefore the one to keep
-          // if you are ever tempted to prune the table.
-          a: 'Corrosion',
-          b: 'Cordosion',
-          label: 'two 9-code-point tags differing ONLY at interior index 3',
-          kills:
-            'a fixed-arity feature sample — reading only (length, first, middle, last), or ' +
-            'any other bounded set of positions, instead of folding over every code point ' +
-            '(MEASURED: those three 9-letter tags all render one token under such a scheme)',
-          lenA: 9,
-          lenB: 9,
-          diffAt: 3,
-        },
-        {
-          // Kills: a DEDUPLICATING derivation, e.g. folding over `new Set(tag)` — which
-          // looks like a reasonable "normalise the input" step and is invisible to every
-          // pair above. MEASURED: it renders Poison, Poisonn, Poisson and Poiison as one
-          // token. `Poison` IS a curated variant, which is irrelevant here: T2 calls the
-          // HELPER directly, so the switch in statusBadge never runs. That is deliberate —
-          // the tag space the fallback must survive is the server's, not this bundle's.
-          a: 'Poison',
-          b: 'Poisonn',
-          label: 'a tag and the same tag with its final code point repeated',
-          kills:
-            'a deduplicating derivation (folding over the SET of code points) and any ' +
-            'other multiplicity-blind normalisation — repetition is information, and a ' +
-            'server variant name may differ from another only by a doubled letter',
-          lenA: 6,
-          lenB: 7,
-          diffAt: -1,
-        },
-        {
-          // Kills: an ASCII case-fold (`tag.toLowerCase()` / `toUpperCase()` before the
-          // fold). Case-folding the INPUT is a different thing from upper-casing the
-          // OUTPUT (which the token format requires): the first destroys entropy the
-          // server may be using, the second only formats what survived.
-          a: 'Curse',
-          b: 'curse',
-          label: 'two tags differing only in the CASE of their first code point',
-          kills:
-            'a case-fold of the INPUT before the fold. Upper-casing the OUTPUT token is ' +
-            'required and fine; upper- or lower-casing the TAG throws away a distinction ' +
-            'the server is entitled to make between two variant names',
-          lenA: 5,
-          lenB: 5,
-          diffAt: 0,
-        },
-      ];
+    // EVERY PAIR PINS ITS OWN DISCRIMINATING STRUCTURE — `lenA`/`lenB` (in CODE POINTS)
+    // and `diffAt`, the first index at which the two differ, or -1 when one is a proper
+    // prefix of the other. MEASURED GUT THIS CLOSES: rewriting pair 1 from
+    // "299 x's then a y" to "a y then 299 x's" makes the whole of T2 green on the
+    // UNFIXED implementation (only pair 1 is red today), while `pairs.length` and the
+    // now-lying `label`/`kills` prose survive untouched. With the structure pinned, a
+    // pair edited to differ somewhere else reds on `diffAt` instead of going quiet.
+    const pairs: ReadonlyArray<{
+      readonly a: string;
+      readonly b: string;
+      readonly label: string;
+      readonly kills: string;
+      readonly lenA: number;
+      readonly lenB: number;
+      readonly diffAt: number;
+    }> = [
+      {
+        // Kills: prefix truncation at EVERY k, and drop-the-last-code-point. Two tags
+        // that agree on the first 299 code points and differ only in the 300th.
+        // MEASURED: a red-team truncation at k=9 survived a `Status${i}` corpus, because
+        // 'Status199' is exactly 9 code points long — a corpus-shaped tooth cannot see a
+        // truncation whose cut point sits past the corpus's own tag lengths. This pair
+        // has no cut point that works.
+        a: `${'x'.repeat(299)}y`,
+        b: 'x'.repeat(300),
+        label: 'two 300-code-point tags differing only in the LAST code point',
+        kills:
+          'a derivation that stops after the first k code points (for ANY k), or that ' +
+          'drops the final code point. MEASURED: truncating at k=9 passed a corpus of ' +
+          '9-character tags; only an unbounded-length pair like this one can see it',
+        lenA: 300,
+        lenB: 300,
+        diffAt: 299,
+      },
+      {
+        // Kills: a suffix-only derivation. MEASURED: under a multiplier-36 mutant these
+        // two hash identically, because 36 is a multiple of the base the digits are read
+        // in and the leading code point's contribution vanishes modulo the space size.
+        a: 'Curse',
+        b: 'Xurse',
+        label: 'two tags differing only in the FIRST code point',
+        kills:
+          'a suffix-only derivation, and a rolling hash whose multiplier annihilates the ' +
+          'leading term (MEASURED: multiplier 36 makes exactly this pair collide while ' +
+          'the whole 17-tag corpus above still separates)',
+        lenA: 5,
+        lenB: 5,
+        diffAt: 0,
+      },
+      {
+        // Kills: an order-invariant accumulator (sum / xor / bitwise-or of code points),
+        // which spreads tokens beautifully and still gives every anagram one badge.
+        a: 'AB',
+        b: 'BA',
+        label: 'two tags that are anagrams of each other',
+        kills:
+          'an order-invariant accumulator — a plain sum, xor or bitwise-or of the code ' +
+          'points passes every corpus and every spread floor while collapsing all ' +
+          'anagrams onto one badge',
+        lenA: 2,
+        lenB: 2,
+        diffAt: 0,
+      },
+      {
+        // Kills: charCodeAt substituted for codePointAt. MEASURED: under that mutant both
+        // of these hash identically, because a UTF-16 code unit read only sees the shared
+        // high surrogate of the two astral characters. This is the behavioural half of
+        // the source-scan clause in T4.
+        a: '\u{1F600}',
+        b: '\u{1F601}',
+        label: 'two adjacent astral (non-BMP) tags',
+        kills:
+          'reading UTF-16 code units instead of code points (charCodeAt for codePointAt) ' +
+          '— MEASURED: both of these then hash to the same value because they share a ' +
+          'high surrogate, so the badge cannot tell two emoji-named statuses apart',
+        lenA: 1,
+        lenB: 1,
+        diffAt: 0,
+      },
+      {
+        // Kills: FIXED-ARITY FEATURE SAMPLING — a derivation that reads only a bounded
+        // set of positions, e.g. (length, first, middle, last). MEASURED: such a
+        // derivation passes all four pairs above BY CONSTRUCTION (each of them differs
+        // in length, first, or last) while ignoring 297 of 300 code points on a long
+        // tag, and it collapses `Corrosion`, `Cordosion` and `Corposion` onto ONE token.
+        // This pair differs at index 3 ONLY — not at 0 (first), not at 8 (last), not at
+        // 4 (middle of nine) — so no bounded sample of endpoints can separate it. It is
+        // the pair that falsifies this test's own title, and therefore the one to keep
+        // if you are ever tempted to prune the table.
+        a: 'Corrosion',
+        b: 'Cordosion',
+        label: 'two 9-code-point tags differing ONLY at interior index 3',
+        kills:
+          'a fixed-arity feature sample — reading only (length, first, middle, last), or ' +
+          'any other bounded set of positions, instead of folding over every code point ' +
+          '(MEASURED: those three 9-letter tags all render one token under such a scheme)',
+        lenA: 9,
+        lenB: 9,
+        diffAt: 3,
+      },
+      {
+        // Kills: a DEDUPLICATING derivation, e.g. folding over `new Set(tag)` — which
+        // looks like a reasonable "normalise the input" step and is invisible to every
+        // pair above. MEASURED: it renders Poison, Poisonn, Poisson and Poiison as one
+        // token. `Poison` IS a curated variant, which is irrelevant here: T2 calls the
+        // HELPER directly, so the switch in statusBadge never runs. That is deliberate —
+        // the tag space the fallback must survive is the server's, not this bundle's.
+        a: 'Poison',
+        b: 'Poisonn',
+        label: 'a tag and the same tag with its final code point repeated',
+        kills:
+          'a deduplicating derivation (folding over the SET of code points) and any ' +
+          'other multiplicity-blind normalisation — repetition is information, and a ' +
+          'server variant name may differ from another only by a doubled letter',
+        lenA: 6,
+        lenB: 7,
+        diffAt: -1,
+      },
+      {
+        // Kills: an ASCII case-fold (`tag.toLowerCase()` / `toUpperCase()` before the
+        // fold). Case-folding the INPUT is a different thing from upper-casing the
+        // OUTPUT (which the token format requires): the first destroys entropy the
+        // server may be using, the second only formats what survived.
+        a: 'Curse',
+        b: 'curse',
+        label: 'two tags differing only in the CASE of their first code point',
+        kills:
+          'a case-fold of the INPUT before the fold. Upper-casing the OUTPUT token is ' +
+          'required and fine; upper- or lower-casing the TAG throws away a distinction ' +
+          'the server is entitled to make between two variant names',
+        lenA: 5,
+        lenB: 5,
+        diffAt: 0,
+      },
+    ];
 
+    expect(
+      pairs.length,
+      'rb58 T2 ANCHOR: all seven discriminating pairs must still be present. Each kills a ' +
+        'different wrong derivation and none of the others covers it — truncation at any ' +
+        'k, suffix-only folding, order-invariance, code-unit reads, fixed-arity feature ' +
+        `sampling, deduplication, and input case-folding. ${RB58_REPAIR}`,
+    ).toBe(7);
+
+    for (const { a, b, label, kills, lenA, lenB, diffAt } of pairs) {
+      // STRUCTURE PINS, ABOVE THE BEHAVIOURAL CLAUSE. These say what this pair IS, so
+      // the pair cannot be quietly rewritten into an easier one that the unfixed
+      // implementation already separates (MEASURED on pair 1; see the table comment).
+      const cpA = [...a];
+      const cpB = [...b];
       expect(
-        pairs.length,
-        'rb58 T2 ANCHOR: all seven discriminating pairs must still be present. Each kills a ' +
-          'different wrong derivation and none of the others covers it — truncation at any ' +
-          'k, suffix-only folding, order-invariance, code-unit reads, fixed-arity feature ' +
-          `sampling, deduplication, and input case-folding. ${RB58_REPAIR}`,
-      ).toBe(7);
+        cpA.length,
+        `rb58 T2 STRUCTURE (${label}): the first member must still be ${lenA} code points ` +
+          'long. A changed length means the pair is no longer the one whose comment ' +
+          `explains it, and the mutant named there is no longer covered. ${RB58_REPAIR}`,
+      ).toBe(lenA);
+      expect(
+        cpB.length,
+        `rb58 T2 STRUCTURE (${label}): the second member must still be ${lenB} code ` +
+          `points long. ${RB58_REPAIR}`,
+      ).toBe(lenB);
+      expect(
+        cpA.findIndex((c, i) => c !== cpB[i]),
+        `rb58 T2 STRUCTURE (${label}): these two tags must still first differ at code ` +
+          `point index ${diffAt} (-1 meaning one is a proper prefix of the other). WHERE ` +
+          'they differ is the entire point of the pair: moving the difference to another ' +
+          'position turns a discriminating pair into one the defect already separates, ' +
+          'which is a MEASURED way to make this whole test green without changing the ' +
+          `implementation at all. ${RB58_REPAIR}`,
+      ).toBe(diffAt);
 
-      for (const { a, b, label, kills, lenA, lenB, diffAt } of pairs) {
-        // STRUCTURE PINS, ABOVE THE BEHAVIOURAL CLAUSE. These say what this pair IS, so
-        // the pair cannot be quietly rewritten into an easier one that the unfixed
-        // implementation already separates (MEASURED on pair 1; see the table comment).
-        const cpA = [...a];
-        const cpB = [...b];
-        expect(
-          cpA.length,
-          `rb58 T2 STRUCTURE (${label}): the first member must still be ${lenA} code points ` +
-            'long. A changed length means the pair is no longer the one whose comment ' +
-            `explains it, and the mutant named there is no longer covered. ${RB58_REPAIR}`,
-        ).toBe(lenA);
-        expect(
-          cpB.length,
-          `rb58 T2 STRUCTURE (${label}): the second member must still be ${lenB} code ` +
-            `points long. ${RB58_REPAIR}`,
-        ).toBe(lenB);
-        expect(
-          cpA.findIndex((c, i) => c !== cpB[i]),
-          `rb58 T2 STRUCTURE (${label}): these two tags must still first differ at code ` +
-            `point index ${diffAt} (-1 meaning one is a proper prefix of the other). WHERE ` +
-            'they differ is the entire point of the pair: moving the difference to another ' +
-            'position turns a discriminating pair into one the defect already separates, ' +
-            'which is a MEASURED way to make this whole test green without changing the ' +
-            `implementation at all. ${RB58_REPAIR}`,
-        ).toBe(diffAt);
-
-        const ta = unknownStatusToken(a);
-        const tb = unknownStatusToken(b);
-        // ANCHOR per pair: a pair that silently degenerated into two undefineds, two empty
-        // strings, or two thrown-away values must not be able to satisfy the inequality
-        // below by accident.
-        expect(
-          ta,
-          `rb58 T2 ANCHOR (${label}): the first member must still produce a full 3-character ` +
-            'token. A short or absent token here means the inequality below would be ' +
-            `comparing garbage rather than two real badges. ${RB58_REPAIR}`,
-        ).toHaveLength(3);
-        expect(
-          tb,
-          `rb58 T2 ANCHOR (${label}): the second member must still produce a full ` +
-            `3-character token. ${RB58_REPAIR}`,
-        ).toHaveLength(3);
-        expect(
-          ta,
-          `rb58 T2 (${label}): these two tags must NOT share a badge. This clause kills ` +
-            `${kills}. ${RB58_NO_UNIQUENESS_CLAIM} A collision on THIS pair is never an ` +
-            'unlucky pigeonhole hit — it is a structural blindness in the derivation, ' +
-            `because the two tags differ by construction in exactly one place. ${RB58_REPAIR}`,
-        ).not.toBe(tb);
-      }
-    } finally {
-      warnSpy.mockRestore();
+      const ta = unknownStatusToken(a);
+      const tb = unknownStatusToken(b);
+      // ANCHOR per pair: a pair that silently degenerated into two undefineds, two empty
+      // strings, or two thrown-away values must not be able to satisfy the inequality
+      // below by accident.
+      expect(
+        ta,
+        `rb58 T2 ANCHOR (${label}): the first member must still produce a full 3-character ` +
+          'token. A short or absent token here means the inequality below would be ' +
+          `comparing garbage rather than two real badges. ${RB58_REPAIR}`,
+      ).toHaveLength(3);
+      expect(
+        tb,
+        `rb58 T2 ANCHOR (${label}): the second member must still produce a full ` +
+          `3-character token. ${RB58_REPAIR}`,
+      ).toHaveLength(3);
+      expect(
+        ta,
+        `rb58 T2 (${label}): these two tags must NOT share a badge. This clause kills ` +
+          `${kills}. ${RB58_NO_UNIQUENESS_CLAIM} A collision on THIS pair is never an ` +
+          'unlucky pigeonhole hit — it is a structural blindness in the derivation, ' +
+          `because the two tags differ by construction in exactly one place. ${RB58_REPAIR}`,
+      ).not.toBe(tb);
     }
   });
 
   it('rb58 T3 the token is total, structurally invariant and deterministic', async () => {
     const cases: readonly string[] = [
-      // The EMPTY tag. This case, and only this case, hashes below the base so its
-      // unpadded rendering is a single digit — it is therefore the SOLE killer of a
-      // dropped zero-pad, which would ship a 2-character badge where the pill and the
-      // shipped `length <= 3` / `length > 0` clauses both expect 3.
+      // The EMPTY tag. It hashes below the base, so its unpadded rendering is a single
+      // digit and a dropped zero-pad ships a 2-character badge where the pill and the
+      // shipped `length <= 3` / `length > 0` clauses both expect 3. It is NOT the only
+      // such input — roughly one tag in 36 hashes below the base (36 of the 1296
+      // residues; `Ara` hashes to 0) and T5's shape census reds on about 83 of its 3000
+      // draws. What the empty tag is, is the DETERMINISTIC representative of that class:
+      // the one member guaranteed to be exercised on every run regardless of the draw.
       '',
       'A',
       // A character whose uppercase form is LONGER than itself ('ß' -> 'SS'):
@@ -3136,6 +3141,26 @@ describe('rb58 unknown-status fallback token entropy', () => {
         'deletes an environment fork from this scan before it can be seen. There is no ' +
         `legitimate reason for battleModel.ts to contain one. ${RB58_REPAIR}`,
     ).not.toMatch(/\/\*|\*\//);
+
+    // THE STRIPPER'S DOCUMENTED ASSUMPTION, ASSERTED RATHER THAN ASSUMED. The one-pass
+    // scanner handles strings and comments; it does NOT understand REGEX LITERALS. A regex
+    // containing a quote or a comment delimiter — `/['\"]/`, `/[/*]/` — desynchronises the
+    // pass and can silently swallow a span of live code. That failure direction is a false
+    // GREEN, which the three positive controls above do not reliably catch: they only fire
+    // if a top-level signature or most of the file's mass disappears, and a swallowed
+    // five-line environment fork does neither. battleModel.ts contains no regex literal
+    // today; this clause is what makes that a checked precondition instead of a comment.
+    // If the module legitimately grows one, teach the scanner or move the regex — do not
+    // delete this clause.
+    expect(
+      src.match(/[=(,:[]\s*\/(?![/*])/g) ?? [],
+      'rb58 T4 STRIPPER PRECONDITION: battleModel.ts has grown what looks like a REGEX ' +
+        'LITERAL. The comment stripper this test relies on does not parse regex literals, ' +
+        'so one containing a quote or a comment delimiter can desynchronise the scan and ' +
+        'silently blank live code — and a blanked region passes every "must not contain" ' +
+        'clause below VACUOUSLY. That is a false green, the failure direction that ' +
+        `actually matters here. ${RB58_REPAIR}`,
+    ).toEqual([]);
 
     // THE FILE-WIDE PURITY CENSUS. This is the clause that closes the delegated fork.
     const ambient: ReadonlyArray<readonly [string, RegExp]> = [
