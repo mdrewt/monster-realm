@@ -2460,7 +2460,7 @@ describe('battleModel rb-55: statusBadge is mechanically linked to A11Y_TOKENS (
         .sort(),
       'rb55 CONTRACT (view-model chain): the badge a BattleMonsterCardVM actually carries must ' +
         'be byte-exactly the token A11Y_TOKENS ships for that variant. The assertion above ' +
-        'binds statusBadge\'s return; this one binds what monsterCard propagates, so a rewrite ' +
+        "binds statusBadge's return; this one binds what monsterCard propagates, so a rewrite " +
         'between the two — a .replace(), a truncation, a re-map — cannot ship a badge the SSOT ' +
         'never authorised. NOT COVERED, by declared scope: the final DOM hop at ' +
         `battleView.ts:290 (\`statusEl.textContent = card.status\`). ${RB55_ONE_CONTRACT}`,
