@@ -103,17 +103,48 @@ export class BattleView {
       'border-radius:3px;background:#334;color:#aaf;font-size:12px;font-weight:bold;display:none;';
     this.#root.appendChild(this.#weatherEl);
 
-    // Opponent card (top)
+    // The opponent card (top) and the player card (bottom). rb-59 closes residual
+    // R-m23-s8-postmerge-border, which docs/adr/0233 §Residuals spells R-m23-s8-BORDER:
+    // these two ROLES used to be separated by HUE ALONE — `1px solid #844` against
+    // `1px solid #484`, red against green, the worst pair for protanopia and deuteranopia
+    // and byte-identical in greyscale. That is WCAG 1.4.1 "use of colour", the same failure
+    // class m23-s8 already fixed in this file for the HP-severity palette (ADR-0233,
+    // A11Y-29). Border STYLE is the hue-free channel: `dashed` against `solid` is
+    // perceivable with NO colour vision at all, and it survives Windows forced-colors mode,
+    // where both hues are discarded outright.
+    // #844 HAD to move rather than merely be dashed: it MEASURES 2.34:1 against its own card
+    // background #2a1a1a, below the WCAG 1.4.11 3:1 non-text floor, and dashing a
+    // sub-threshold border removes roughly half its remaining ink — `dashed #844` would have
+    // shipped a non-colour cue nobody can see, i.e. the same defect in a new hat. #b66
+    // measures 4.13:1 on that same background and stays in the same red family; the player's
+    // #484 on #1a2a1a is already 3.49:1, so it keeps its colour and only widens.
+    // This cue is REDUNDANT, not primary — do not overclaim it. What says WHICH card is
+    // whose is the header text #renderMonsterCard writes, `Opponent: <species>` against
+    // `You: <species>`; the border style only makes the PAIRING perceivable without hue, and
+    // that redundancy is what satisfies 1.4.1.
+    // The card BACKGROUNDS (#2a1a1a against #1a2a1a, measured 1.10:1 — near-identical
+    // luminance) are deliberately NOT retuned: once the border style carries the distinction
+    // hue-free the criterion is met, and the backgrounds are then decoration layered over a
+    // channel that already carries the information. Argued dismissal, not an oversight.
+    // Likewise surveyed and dismissed: the #844 border on the Flee button and its siblings on
+    // the Recruit / Use Item / Swap / Submit buttons sit on <button>s whose accessible names
+    // ARE the information, so hue encodes nothing there and they keep their 1px solid rule.
+    // DEFERRED, not done (ledger gate X6): in PvP #render passes the rival's BARE player name
+    // as the opponent label, with no role word, so ADR-0233's claim that every member of this
+    // border family "carr[ies] text labels" is false in exactly that state. Fixing it breaks
+    // the `<name>: ` prefix parse in e2e/monster-privacy.spec.ts and e2e/pvp-side-b.spec.ts,
+    // both run by the REQUIRED e2e job and both outside this slice's touches:.
+    // Do NOT re-home these hexes into `:root` custom properties in styles.css — docs/adr/0233
+    // bans it and evals/reduced-motion-hp-bar.eval.mjs gates it.
     this.#opponentCardEl = document.createElement('div');
     this.#opponentCardEl.style.cssText =
-      'border:1px solid #844;border-radius:4px;padding:8px;width:100%;max-width:320px;' +
+      'border:2px dashed #b66;border-radius:4px;padding:8px;width:100%;max-width:320px;' +
       'background:#2a1a1a;margin-bottom:12px;';
     this.#root.appendChild(this.#opponentCardEl);
 
-    // Player card (bottom)
     this.#playerCardEl = document.createElement('div');
     this.#playerCardEl.style.cssText =
-      'border:1px solid #484;border-radius:4px;padding:8px;width:100%;max-width:320px;' +
+      'border:2px solid #484;border-radius:4px;padding:8px;width:100%;max-width:320px;' +
       'background:#1a2a1a;margin-bottom:12px;';
     this.#root.appendChild(this.#playerCardEl);
 
