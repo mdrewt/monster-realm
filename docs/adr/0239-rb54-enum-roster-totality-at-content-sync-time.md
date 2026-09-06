@@ -7,7 +7,7 @@
 **Amends:** —
 **Extends:** ADR-0233 (adds a sync-time enforcement point to its A11Y-29 token contract), ADR-0229 (lifts its derive-metadata pattern from tests into production), ADR-0055 (release fail-loud)
 **Subsystems:** content, ci-gates
-**Decision:** `server-module/src/content.rs` proves game-core's `StatusKind`/`Affinity` rosters are complete enumerations by reflecting the `SpacetimeType` derive at content-sync time, called above `sync_content_inner`'s version gate so a new enum variant fails the publish rather than only a CI test.
+**Decision:** content.rs proves the StatusKind/Affinity rosters are complete by reflecting the SpacetimeType derive, called above sync_content_inner's version gate, so a new enum variant fails the publish rather than only a CI test.
 
 ---
 
