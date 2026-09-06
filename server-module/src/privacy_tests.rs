@@ -334,9 +334,31 @@ fn rb22p_identity_ctor_needles() -> [String; 4] {
 
 // --- write attribution (this module's local copy; see the doc below) ---------
 
-const RB22P_NO_ANCHOR: &str = "<<unattributable-write-no-anchor>>";
-const RB22P_CROSS_STATEMENT: &str = "<<unattributable-write-statement-boundary>>";
-const RB22P_EMPTY_ACCESSOR: &str = "<<unattributable-write-empty-accessor>>";
+/// Why a row-write verb could not be attributed to a table (ADR-0234).
+///
+/// Every variant is a REFUSAL, never a finding about the target: the scan knows
+/// a write happened and knows it cannot say which table it touches. Callers must
+/// treat all three as gate failures — an unattributed write is an UNGATED write.
+#[derive(Debug, PartialEq, Eq)]
+enum WriteAttrFault {
+    /// The receiver chain does not bottom out in a word-bounded handle root: an
+    /// aliased handle, a handle bound in an earlier statement, a bare identifier
+    /// receiver, a decoy binding whose name merely ENDS in the handle name, or a
+    /// segment that TAKES ARGUMENTS — a combinator can return any handle at all,
+    /// so nothing spelled to its left is evidence about the table reached.
+    UnrootedChain,
+    /// A chain segment has an EMPTY name — the byte before its opening paren is
+    /// not an identifier byte (a turbofish, an index expression).
+    EmptyAccessor,
+    /// The verb is spelled in the path form, so the receiver arrives as an
+    /// ARGUMENT and there is no receiver chain to walk at all.
+    // rb-64 RED-PHASE STUB: the stub body below never constructs this variant —
+    // its absence is part of the red — so the lint would fire on it in the RED
+    // window only. The rooted-chain walk that replaces the body does construct
+    // it; DELETE this attribute together with the stub.
+    #[allow(dead_code)]
+    UfcsSpelling,
+}
 
 /// The accessor name behind every write verb in an already-squashed source.
 ///
@@ -358,34 +380,34 @@ const RB22P_EMPTY_ACCESSOR: &str = "<<unattributable-write-empty-accessor>>";
 /// read carries no `;` and is therefore invisible here). This local copy is
 /// retained per the per-module local-copy convention — the two files live under
 /// different parent modules and a `_tests.rs` file never imports scan machinery
-/// from a sibling `_tests.rs` — and its exact body is pinned, so the difference
-/// is a deliberate, bounded one rather than drift.
-fn rb22p_write_targets(squashed: &str) -> Vec<String> {
+/// from a sibling `_tests.rs`.
+fn rb22p_write_targets(squashed: &str) -> Vec<Result<String, WriteAttrFault>> {
+    // rb-64 RED-PHASE STUB: old semantics on the new type; the specialist replaces this body
     let prefix = concat!("ctx", ".db.");
     let verbs = [
         concat!(".ins", "ert(").to_string(),
         concat!(".upd", "ate(").to_string(),
         concat!(".del", "ete(").to_string(),
     ];
-    let mut acc: Vec<String> = Vec::new();
+    let mut acc: Vec<Result<String, WriteAttrFault>> = Vec::new();
     for verb in &verbs {
         let mut start = 0usize;
         while let Some(rel) = squashed[start..].find(verb.as_str()) {
             let vpos = start + rel;
             match squashed[..vpos].rfind(prefix) {
-                None => acc.push(RB22P_NO_ANCHOR.to_string()),
+                None => acc.push(Err(WriteAttrFault::UnrootedChain)),
                 Some(dbrel) => {
                     if squashed[dbrel..vpos].contains(';') {
-                        acc.push(RB22P_CROSS_STATEMENT.to_string());
+                        acc.push(Err(WriteAttrFault::UnrootedChain));
                     } else {
                         let name: String = squashed[dbrel + prefix.len()..]
                             .chars()
                             .take_while(|c| c.is_alphanumeric() || *c == '_')
                             .collect();
                         if name.is_empty() {
-                            acc.push(RB22P_EMPTY_ACCESSOR.to_string());
+                            acc.push(Err(WriteAttrFault::EmptyAccessor));
                         } else {
-                            acc.push(name);
+                            acc.push(Ok(name));
                         }
                     }
                 }
@@ -629,22 +651,33 @@ fn rb22p_writes_only_export_bundle() {
     let squashed = stripped_for_scan(PRIVACY_RS);
     let targets = rb22p_write_targets(&squashed);
 
+    let root = concat!("ctx", ".db.");
+
     assert!(
-        !targets.is_empty(),
-        "rb22p [W/non-vacuity]: privacy.rs contains NO write verb at all. The module exists to \
-         perform exactly one delete; with zero writes found, every clause below passes over an \
-         empty set and this gate says `clean` about nothing."
+        targets.iter().any(|t| t.is_ok()),
+        "rb22p [W/non-vacuity]: privacy.rs contains NO ATTRIBUTED write verb at all. The module \
+         exists to perform exactly one delete; with zero attributed writes found, every clause \
+         below passes over an empty set and this gate says `clean` about nothing. An ALL-REFUSAL \
+         census must not count as `writes found` either: that is the shape a scan which reached \
+         the wrong file — or a stripper that blanked it — produces."
     );
 
     for t in &targets {
-        assert!(
-            !t.starts_with("<<"),
-            "rb22p [W/attribution]: a write verb in privacy.rs could not be attributed to a \
-             same-statement `ctx.db.` chain (marker {t}). Refusing to classify is the safe \
-             direction: an unattributed write is an UNGATED write, and the measured shape is an \
-             aliased db handle whose foreign-table delete is silently credited to the previous \
-             statement's accessor."
-        );
+        if let Err(fault) = t {
+            panic!(
+                "rb22p [W/attribution]: a write verb in privacy.rs is NOT rooted in a \
+                 `{root}<table>()` receiver chain of its own (fault: {fault:?}; extracted: \
+                 {targets:?}). The MEASURED shapes are an aliased database handle, a column \
+                 handle bound in an earlier statement, a bare identifier receiver, a foreign \
+                 write sharing a statement with an owned read, a chain laundered through an \
+                 argument-taking combinator segment, and the path-form verb spelling — each \
+                 detaches the write from the only evidence about which table it touches, and each \
+                 was silently credited to a neighbouring accessor or dropped outright before this \
+                 port. Refusing to classify is the safe direction: an unattributed write is an \
+                 UNGATED write. Chain every write directly off `{root}` in the statement that \
+                 performs it."
+            );
+        }
     }
 
     // The CLOSED set, with the sanctioned count for each name and the reason the
@@ -664,7 +697,7 @@ fn rb22p_writes_only_export_bundle() {
         ),
     ];
 
-    for t in &targets {
+    for t in targets.iter().flatten() {
         assert!(
             allowed.iter().any(|(name, _, _)| t.as_str() == *name),
             "rb22p [W/target]: privacy.rs writes table `{t}`, which is outside the two-name set \
@@ -675,7 +708,11 @@ fn rb22p_writes_only_export_bundle() {
     }
 
     for (name, want, why) in &allowed {
-        let got = targets.iter().filter(|t| t.as_str() == *name).count();
+        let got = targets
+            .iter()
+            .flatten()
+            .filter(|t| t.as_str() == *name)
+            .count();
         assert_eq!(
             got, *want,
             "rb22p [W/arithmetic]: privacy.rs performs {got} write(s) to `{name}`; exactly {want} \
@@ -690,19 +727,22 @@ fn rb22p_writes_only_export_bundle() {
         targets.len(),
         5,
         "rb22p [W/total]: privacy.rs must perform exactly five writes in total; found {}. This \
-         number is IMPLIED by the three clauses above, and saying otherwise would be arithmetic \
-         nobody checked: the membership loop puts EVERY target inside the two-name set, and the \
-         per-name arithmetic fixes those two names at three and two. It is therefore a redundant \
-         CROSS-CHECK, not an independent tooth. It is kept because it is the one clause that \
-         reports the whole census as a single number — when the attribution helper's output \
+         number is implied by the three clauses above ONLY TOGETHER WITH [W/attribution]: \
+         membership and per-name arithmetic both iterate the ATTRIBUTED entries, so on their own \
+         they are blind to a refusal, and [W/attribution] is what proves that every entry in the \
+         census IS attributed. The count is taken over the WHOLE census rather than over the \
+         attributed subset, deliberately and by measurement: over the subset a refused write \
+         stops moving this number at all, which collapses the clause from a cross-check on the \
+         census SHAPE into a restatement of the arithmetic above it. It is also the one clause \
+         that reports the whole census as a single number — when the attribution helper's output \
          changes shape, this line says `the module now writes N times` before a reader has to \
          reconstruct that from two per-name failures.",
         targets.len()
     );
 
     // SCOPE: every schedule-table write is inside the arm. Expressed as two
-    // counts rather than as offsets, so `rb22p_write_targets` — whose body is
-    // itself pinned — needs no change (reviewer m3).
+    // counts rather than as offsets, so `rb22p_write_targets` needs no change
+    // (reviewer m3).
     let chain = rb48_nd_schedule_chain();
     let file_wide = rb22p_count(&squashed, &chain);
     assert_eq!(
@@ -1132,6 +1172,688 @@ fn rb22p_stub_probe_regression() {
         );
     }
 }
+
+// ===========================================================================
+// rb-64 — WRITE ATTRIBUTION ON THE ROOTED-CHAIN RULE (ADR-0234), THE TEETH.
+//
+// These tests gate `rb22p_write_targets` DIRECTLY, not through privacy.rs.
+// privacy.rs today contains none of the shapes below, so every hole here is
+// invisible to `rb22p_writes_only_export_bundle` until a future edit lands one —
+// and by then the gate that should have caught it is the gate reporting `clean`.
+// The census over the real file is the no-false-RED control and stays where it
+// is, in that consumer.
+//
+// SCAN HYGIENE (see the module header): every write verb, table accessor, handle
+// prefix, handle-type name and reducer-context parameter spelling below is
+// assembled from split fragments via concat! / [..].concat(), exactly as the
+// rb39_ region of accounts_tests.rs does. Around twenty-five evals concatenate
+// every .rs file under server-module/src — test files included — and do NOT
+// strip string literals, so a contiguous scanner needle inside a FIXTURE reads
+// to them as a live declaration. No fixture names the dual-write table for the
+// same reason (measured: one contiguous write chain against it in this file reds
+// that eval, while the fragmented spelling passes).
+// ===========================================================================
+
+/// rb-64 fixture vocabulary: the reducer-context parameter spelling.
+fn rb64p_ctx_param() -> &'static str {
+    concat!("ctx:&Reducer", "Context")
+}
+
+/// rb-64 fixture vocabulary: the rooted database-handle prefix.
+fn rb64p_db_root() -> &'static str {
+    concat!("ctx", ".db.")
+}
+
+/// The same handle WITHOUT its trailing dot — what an alias binding copies.
+fn rb64p_db_handle() -> &'static str {
+    concat!("ctx", ".db")
+}
+
+/// A DECOY reducer-context parameter whose name merely ENDS in the handle name.
+fn rb64p_decoy_ctx_param() -> &'static str {
+    concat!("my_", "ctx:&Reducer", "Context")
+}
+
+/// The decoy binding's handle prefix: it CONTAINS the rooted prefix as a
+/// substring, so only a word-boundary check can tell the two apart.
+fn rb64p_decoy_db_root() -> &'static str {
+    concat!("my_", "ctx", ".db.")
+}
+
+/// The four row-write verbs in their chained spelling.
+fn rb64p_insert_verb() -> &'static str {
+    concat!(".ins", "ert(")
+}
+
+fn rb64p_try_insert_verb() -> &'static str {
+    concat!(".try_ins", "ert(")
+}
+
+fn rb64p_update_verb() -> &'static str {
+    concat!(".upd", "ate(")
+}
+
+fn rb64p_delete_verb() -> &'static str {
+    concat!(".del", "ete(")
+}
+
+/// The same four verbs in their path spelling, where the receiver is an argument.
+fn rb64p_ufcs_insert_verb() -> &'static str {
+    concat!("::ins", "ert(")
+}
+
+fn rb64p_ufcs_try_insert_verb() -> &'static str {
+    concat!("::try_ins", "ert(")
+}
+
+fn rb64p_ufcs_update_verb() -> &'static str {
+    concat!("::upd", "ate(")
+}
+
+fn rb64p_ufcs_delete_verb() -> &'static str {
+    concat!("::del", "ete(")
+}
+
+/// A table this module does NOT own — the cross-table counter-example accessor.
+fn rb64p_foreign_table() -> &'static str {
+    concat!("acc", "ount")
+}
+
+/// The table this module DOES own, and the name inside the consumer's allowed
+/// set — so a fixture misattributed to THIS name is a CI-clean cross-table write.
+fn rb64p_owned_table() -> &'static str {
+    concat!("export", "_bundle")
+}
+
+/// Handle-type names for the path-spelled verbs. Three DIFFERENT ones, because a
+/// refusal keyed on any single type name is a refusal the other two walk past.
+fn rb64p_table_type() -> &'static str {
+    concat!("Ta", "ble")
+}
+
+fn rb64p_unique_column_type() -> &'static str {
+    concat!("Unique", "Column")
+}
+
+fn rb64p_btree_index_type() -> &'static str {
+    concat!("BTree", "Index")
+}
+
+/// Wrap a fixture body in the `fn f(<ctx param>){ .. }` shell.
+fn rb64p_fn(body: &str) -> String {
+    ["fn f(", rb64p_ctx_param(), "){", body, "}"].concat()
+}
+
+/// The same shell, but with the DECOY context parameter name.
+fn rb64p_decoy_fn(body: &str) -> String {
+    ["fn f(", rb64p_decoy_ctx_param(), "){", body, "}"].concat()
+}
+
+/// Run a fixture through the module's live strip pipeline and then the census —
+/// the same two steps, in the same order, the shipped consumer takes.
+fn rb64p_targets(fixture: &str) -> Vec<Result<String, WriteAttrFault>> {
+    rb22p_write_targets(&stripped_for_scan(fixture))
+}
+
+/// Require a census of EXACTLY one unrooted-chain refusal.
+///
+/// `tooth` names the row and `why` states, in one sentence, the measured cheat
+/// that row kills; both print with the whole extracted census, so a failure says
+/// which verdict was wrong AND which fixture produced it.
+fn rb64p_expect_unrooted(tooth: &str, why: &str, fixture: &str) {
+    let targets = rb64p_targets(fixture);
+    assert!(
+        matches!(targets.as_slice(), [Err(WriteAttrFault::UnrootedChain)]),
+        "rb-64 [{tooth}]: this write must be EXACTLY one Err(UnrootedChain) — not the accessor \
+         that a neighbouring read happens to name, and not an empty census. {why} Refusing to \
+         classify is the safe direction: an unattributed write is an UNGATED write, and a DROPPED \
+         one is worse still, because no clause downstream ever iterates over it. The slice \
+         pattern pins the LENGTH at one for exactly that reason. Fixture: {fixture:?}. Got: \
+         {targets:?}"
+    );
+}
+
+/// Require a census of EXACTLY one empty-accessor refusal.
+fn rb64p_expect_empty_accessor(tooth: &str, why: &str, fixture: &str) {
+    let targets = rb64p_targets(fixture);
+    assert!(
+        matches!(targets.as_slice(), [Err(WriteAttrFault::EmptyAccessor)]),
+        "rb-64 [{tooth}]: this write must be EXACTLY one Err(EmptyAccessor) — the segment in \
+         front of the verb has no identifier name at all. {why} The VARIANT is pinned as well as \
+         the refusal: collapsing the three faults into one loses the reader's only clue about \
+         which rule fired, and leaking an Ok whose name is the empty string reads as `attributed` \
+         to every caller that only asks is_ok. Fixture: {fixture:?}. Got: {targets:?}"
+    );
+}
+
+/// Require a census of EXACTLY one path-spelling refusal.
+fn rb64p_expect_ufcs(tooth: &str, why: &str, fixture: &str) {
+    let targets = rb64p_targets(fixture);
+    assert!(
+        matches!(targets.as_slice(), [Err(WriteAttrFault::UfcsSpelling)]),
+        "rb-64 [{tooth}]: a verb spelled in the path form must be EXACTLY one \
+         Err(UfcsSpelling). {why} Its receiver arrives as an ARGUMENT, so no chain roots it: an \
+         empty census hides the write completely, and reading the handle out of the argument list \
+         would credit a foreign write to the very table it deletes rows from. Fixture: \
+         {fixture:?}. Got: {targets:?}"
+    );
+}
+
+/// Require a census of EXACTLY one attributed write, naming `table`.
+fn rb64p_expect_single_ok(tooth: &str, why: &str, fixture: &str, table: &str) {
+    let targets = rb64p_targets(fixture);
+    assert!(
+        matches!(targets.as_slice(), [Ok(name)] if name.as_str() == table),
+        "rb-64 [{tooth}]: this write must be EXACTLY one Ok({table}). {why} A verb the census \
+         cannot see is a verb the gate cannot gate, and a verb it sees under the WRONG name is a \
+         foreign write wearing an owned one. Fixture: {fixture:?}. Got: {targets:?}"
+    );
+}
+
+/// rb-64 (T1/8): a FOREIGN write that SHARES A STATEMENT with an owned read is
+/// refused — the residual's exact shape, and its argument-list and closure twins.
+///
+/// None of the three carries a statement boundary between the owned read and the
+/// foreign verb, so the pre-rb-64 rule (nearest EARLIER handle prefix, poisoned
+/// only by an intervening semicolon) credits all three to the OWNED table
+/// (rb-64.red-before.md F4/F8/F9). That name is INSIDE this module's allowed set,
+/// so the shipped consumer stays GREEN on the cross-table write it exists to catch.
+///
+/// Kills: the shipped nearest-earlier-prefix body (it reports the owned table on
+///        every row);
+///        any port that keeps a semicolon hybrid or a delimiter-window fallback;
+///        a fix that DROPS the unattributable write instead of reporting it.
+#[test]
+fn rb64p_same_statement_foreign_write_is_refused() {
+    let owned_read = [rb64p_db_root(), rb64p_owned_table(), "().owner_identity()"].concat();
+    let foreign_delete = [rb64p_foreign_table(), "().identity()", rb64p_delete_verb()].concat();
+
+    let f4 = rb64p_fn(
+        &[
+            "if ",
+            owned_read.as_str(),
+            ".filter(x).next().is_some(){db.",
+            foreign_delete.as_str(),
+            "v)}",
+        ]
+        .concat(),
+    );
+    rb64p_expect_unrooted(
+        "T1/residual",
+        "THE RESIDUAL: an if-guard reads the owned table and its consequent deletes a foreign \
+         one, with no statement boundary anywhere between them, so a semicolon-poison rule never \
+         fires and the foreign delete is credited to the owned accessor spelled to its left.",
+        &f4,
+    );
+
+    let f8 = rb64p_fn(
+        &[
+            "foo(",
+            rb64p_db_root(),
+            rb64p_owned_table(),
+            "().chunk_id().find(x), t.identity()",
+            rb64p_delete_verb(),
+            "y));",
+        ]
+        .concat(),
+    );
+    rb64p_expect_unrooted(
+        "T1/argument-list",
+        "The owned read and the foreign write are two ARGUMENTS of one call, so they are \
+         separated by a comma rather than by a semicolon — the same misattribution without the \
+         if-guard that a hand-written exception for control flow would special-case.",
+        &f8,
+    );
+
+    let f9 = rb64p_fn(
+        &[
+            owned_read.as_str(),
+            ".filter(o).for_each(|c| db.",
+            foreign_delete.as_str(),
+            "c.owner));",
+        ]
+        .concat(),
+    );
+    rb64p_expect_unrooted(
+        "T1/closure",
+        "The foreign write sits in a CLOSURE BODY nested inside the owned chain itself, so it \
+         shares not merely a statement but an expression with the read it would be credited to.",
+        &f9,
+    );
+}
+
+/// rb-64 (T2/8): the TIGHTEST same-expression shape — an owned read and a foreign
+/// write joined by a boolean operator, with no punctuation between them at all.
+///
+/// MEASURED (plan section H): a port that keeps the semicolon rule but gates it on
+/// a blacklist of suspicious receiver names, and a port that searches back only to
+/// the nearest delimiter, both pass T1 and both accept this. The receiver is named
+/// `tbl` deliberately — not `db`, `col` or `ids` — so no name-shaped exception can
+/// separate it from a legitimate handle.
+///
+/// Kills: a semicolon hybrid gated by a receiver-identifier blacklist;
+///        a delimiter-window search back from the verb;
+///        a port that hardens the delete family and leaves the insert family on
+///        the old rule (row two is the insert twin of row one).
+#[test]
+fn rb64p_tight_same_expression_write_is_refused() {
+    let owned_read = [
+        rb64p_db_root(),
+        rb64p_owned_table(),
+        "().chunk_id().find(id).is_some()",
+    ]
+    .concat();
+    let unrooted_receiver = ["tbl.", rb64p_foreign_table(), "().identity()"].concat();
+
+    let p6a = rb64p_fn(
+        &[
+            "let _ = ",
+            owned_read.as_str(),
+            " && ",
+            unrooted_receiver.as_str(),
+            rb64p_delete_verb(),
+            "id).is_some();",
+        ]
+        .concat(),
+    );
+    rb64p_expect_unrooted(
+        "T2/delete",
+        "Read and write are two operands of ONE boolean expression, so the only punctuation \
+         between them is the operator: every delimiter-window or semicolon-derived rule reaches \
+         back past it to the owned accessor and reports a clean owned write.",
+        &p6a,
+    );
+
+    let p6b = rb64p_fn(
+        &[
+            "let _ = ",
+            owned_read.as_str(),
+            " && ",
+            unrooted_receiver.as_str(),
+            rb64p_insert_verb(),
+            "row).is_some();",
+        ]
+        .concat(),
+    );
+    rb64p_expect_unrooted(
+        "T2/insert",
+        "The insert twin of the row above, because a port may harden one verb family and leave \
+         the other on the old rule — the census would then be correct for deletes and silently \
+         wrong for the writes that CREATE durable rows.",
+        &p6b,
+    );
+}
+
+/// rb-64 (T3/8): every unrooted receiver shape reports the unrooted-chain fault —
+/// including a decoy binding whose name merely ENDS in the handle name.
+///
+/// Rows one to three are the rb-22 shapes the semicolon rule was written for and
+/// must stay caught (as typed faults) after the port. Row four is the exhaustion
+/// guard. Row five is the MEASURED decoy: a one-sided word-boundary check accepts
+/// it and, because it names the OWNED table, credits a write off a completely
+/// different binding to a name inside the consumer's allowed set.
+///
+/// Kills: any walk that accepts a BARE IDENTIFIER receiver as rooted;
+///        a silent drop for a write with no handle anywhere in the source;
+///        a one-sided (or missing) word-boundary check on the handle root;
+///        a missing bounds guard — row four must produce a VERDICT, not a panic.
+#[test]
+fn rb64p_unrooted_receivers_report_unrooted_chain() {
+    let foreign_delete = [rb64p_foreign_table(), "().identity()", rb64p_delete_verb()].concat();
+
+    let f1 = rb64p_fn(
+        &[
+            rb64p_db_root(),
+            rb64p_owned_table(),
+            "().chunk_id().find(me); let db = &",
+            rb64p_db_handle(),
+            "; db.",
+            foreign_delete.as_str(),
+            "m);",
+        ]
+        .concat(),
+    );
+    rb64p_expect_unrooted(
+        "T3/alias-after-read",
+        "An owned READ, then the database handle bound by reference and a foreign delete taken \
+         off the alias — the rb-22 red-team's original bypass, which the pre-port rule caught \
+         only by the accident of an intervening semicolon.",
+        &f1,
+    );
+
+    let f2 = rb64p_fn(&["ids", rb64p_insert_verb(), "0, x);"].concat());
+    rb64p_expect_unrooted(
+        "T3/anchorless",
+        "A write with NO database handle anywhere in the source, which the pre-rb-39 shared \
+         helper dropped on the floor: absent from the census entirely, so every downstream clause \
+         passes over a set that does not contain it.",
+        &f2,
+    );
+
+    let f3 = rb64p_fn(
+        &[
+            "let col = ",
+            rb64p_db_root(),
+            rb64p_foreign_table(),
+            "().identity(); col",
+            rb64p_delete_verb(),
+            "x);",
+        ]
+        .concat(),
+    );
+    rb64p_expect_unrooted(
+        "T3/cross-statement-handle",
+        "A column handle bound one statement earlier: the accessor spelled at the BINDING is not \
+         evidence about the verb, because the handle can be rebound, shadowed or replaced in \
+         between.",
+        &f3,
+    );
+
+    // Row four is deliberately NOT wrapped in the `fn f(..)` shell: the guard
+    // under test is what happens when the receiver chain runs off the FRONT of
+    // the source, which only a source that OPENS with the closing paren reaches.
+    // A scanner that panics on a hostile shape is a scanner that cannot be run,
+    // so the requirement is a verdict, not an absence of one.
+    let exhausted = [")", rb64p_delete_verb(), "x);"].concat();
+    rb64p_expect_unrooted(
+        "T3/exhaustion",
+        "The chain walks off the front of the source with the parenthesis nesting still \
+         unbalanced, so an unguarded index step underflows: this row asserts a VERDICT where a \
+         missing bounds guard produces a panic instead.",
+        &exhausted,
+    );
+
+    let p4 = rb64p_decoy_fn(
+        &[
+            rb64p_decoy_db_root(),
+            rb64p_owned_table(),
+            "().chunk_id()",
+            rb64p_delete_verb(),
+            "id);",
+        ]
+        .concat(),
+    );
+    rb64p_expect_unrooted(
+        "T3/owned-name-decoy",
+        "A DIFFERENT binding whose name merely ends in the handle name, writing the table this \
+         module OWNS: a one-sided word-boundary check attributes it to that owned name, which is \
+         inside the consumer's allowed set, so the misattribution ships CI-clean.",
+        &p4,
+    );
+}
+
+/// rb-64 (T4/8): a turbofish segment in front of the verb reports the
+/// empty-accessor fault, and reports it under its OWN variant.
+///
+/// The byte before the segment's opening paren is not an identifier byte, so the
+/// accessor name is empty. Attributing it would publish `Ok` with an empty name —
+/// which passes `is_ok` and survives the attribution clause, and is then stopped
+/// downstream only by the accident that the empty string is not an allowed name.
+///
+/// Kills: an implementation that leaks the empty name as an Ok;
+///        one that drops the empty-accessor case back into the unrooted fault
+///        (the variant is pinned, not merely the refusal);
+///        one that collapses the three fault variants into a single value.
+#[test]
+fn rb64p_turbofish_segment_reports_empty_accessor() {
+    let p5 = rb64p_fn(&["tbl::<Row>()", rb64p_delete_verb(), "k);"].concat());
+    rb64p_expect_empty_accessor(
+        "T4/turbofish",
+        "The segment in front of the verb closes a turbofish, so walking back over identifier \
+         bytes yields nothing at all — a name the allowed-set membership clause can never match, \
+         reported as an Ok that the attribution clause would wave through.",
+        &p5,
+    );
+}
+
+/// rb-64 (T5/8): all four chained write-verb spellings are SEEN by the census.
+///
+/// MEASURED (plan section H): a verb list missing one spelling does not red
+/// anything — the write it cannot see simply never enters the census, and the
+/// consumer's three-two-five arithmetic stays intact over the writes it can. The
+/// fallible insert is the sibling the infallible spelling wraps, so it puts a row
+/// in exactly the same table; the short verb's needle opens with the dot that the
+/// fallible spelling replaces with an underscore, so it can never match one.
+///
+/// Row five is the discriminating control: the SAME fallible verb off an aliased
+/// handle must be refused, so a fix that merely appends the spelling to the verb
+/// list without routing it through the chain walk cannot pass this test.
+///
+/// Kills: a verb list that stops at the three short spellings;
+///        a list missing the update spelling (measured: the write is dropped and
+///        the whole census still reads as sanctioned);
+///        a fallible spelling recognised but exempted from the rooting rule.
+#[test]
+fn rb64p_every_verb_spelling_is_seen() {
+    let column_chain = [rb64p_db_root(), rb64p_foreign_table(), "().identity()"].concat();
+    let foreign = rb64p_foreign_table();
+
+    for (tooth, verb, args) in [
+        ("T5/insert", rb64p_insert_verb(), "row);"),
+        ("T5/update", rb64p_update_verb(), "row);"),
+        ("T5/delete", rb64p_delete_verb(), "k);"),
+    ] {
+        let fixture = rb64p_fn(&[column_chain.as_str(), verb, args].concat());
+        rb64p_expect_single_ok(
+            tooth,
+            "A rooted chain to a FOREIGN table must be attributed to that foreign table: a verb \
+             the needle list omits produces no census entry at all, so the write is invisible to \
+             the allowed-set membership clause that exists to reject it.",
+            &fixture,
+            foreign,
+        );
+    }
+
+    let try_insert = rb64p_fn(
+        &[
+            rb64p_db_root(),
+            foreign,
+            "()",
+            rb64p_try_insert_verb(),
+            "row);",
+        ]
+        .concat(),
+    );
+    rb64p_expect_single_ok(
+        "T5/try-insert",
+        "The FALLIBLE insert is a supported way to put a row in a table, and the short verb's \
+         needle opens with the dot this spelling replaces with an underscore, so a list built \
+         from the short spellings alone reports an EMPTY census over a foreign row creation.",
+        &try_insert,
+        foreign,
+    );
+
+    let aliased_try_insert = rb64p_fn(
+        &[
+            "let db = &",
+            rb64p_db_handle(),
+            "; db.",
+            foreign,
+            "()",
+            rb64p_try_insert_verb(),
+            "row);",
+        ]
+        .concat(),
+    );
+    rb64p_expect_unrooted(
+        "T5/try-insert-aliased",
+        "The same fallible verb off an ALIASED handle: this is what stops the four rows above \
+         from being satisfied by a fix that adds the spelling to the needle list but exempts it \
+         from the rooting rule.",
+        &aliased_try_insert,
+    );
+}
+
+/// rb-64 (T6/8): the path spelling of every write verb is refused, under EVERY
+/// handle type that can carry it.
+///
+/// MEASURED (plan section H): a refusal keyed on one handle-type name is walked
+/// past by the other two, and the pre-port needle list sees none of these at all —
+/// the verb token starts with a path separator, not a dot, so a foreign write
+/// spelled this way produces an EMPTY census (rb-64.red-before.md F5).
+///
+/// Three different type names and all four verbs, because the verdict must come
+/// from the SPELLING of the call, never from the identifier in front of it.
+///
+/// Kills: keying the refusal on a single handle-type name;
+///        a path-form needle list missing a verb (each verb has its own row);
+///        reading the handle out of the ARGUMENT list and crediting the write to
+///        it, which would name the very table the call deletes rows from.
+#[test]
+fn rb64p_ufcs_spellings_are_refused_under_any_type_name() {
+    let table_handle = [rb64p_db_root(), rb64p_foreign_table(), "()"].concat();
+    let column_handle = [rb64p_db_root(), rb64p_foreign_table(), "().identity()"].concat();
+
+    for (tooth, type_name, verb, receiver, args) in [
+        (
+            "T6/insert",
+            rb64p_table_type(),
+            rb64p_ufcs_insert_verb(),
+            table_handle.as_str(),
+            ", row);",
+        ),
+        (
+            "T6/delete",
+            rb64p_unique_column_type(),
+            rb64p_ufcs_delete_verb(),
+            column_handle.as_str(),
+            ", k);",
+        ),
+        (
+            "T6/update",
+            rb64p_btree_index_type(),
+            rb64p_ufcs_update_verb(),
+            column_handle.as_str(),
+            ", row);",
+        ),
+        (
+            "T6/try-insert",
+            rb64p_table_type(),
+            rb64p_ufcs_try_insert_verb(),
+            table_handle.as_str(),
+            ", row);",
+        ),
+    ] {
+        let fixture = rb64p_fn(&[type_name, verb, "&", receiver, args].concat());
+        rb64p_expect_ufcs(
+            tooth,
+            "The verb is spelled through a trait path with the receiver passed as an argument, \
+             and the handle type in front of it is only one of several that can carry the call, \
+             so a refusal keyed on a particular type name — or a needle list missing this verb — \
+             lets the write vanish from the census entirely.",
+            &fixture,
+        );
+    }
+}
+
+/// rb-64 (T7/8): a chain LAUNDERED through an argument-taking segment is refused,
+/// even though a rooted handle is spelled to its left.
+///
+/// MEASURED (plan section H): dropping the zero-argument segment rule was the
+/// single most dangerous alternative implementation — a cross-table delete written
+/// this way replaced a shipped privacy.rs write with the whole three-two-five
+/// census intact and the consumer returning clean. A segment that TAKES ARGUMENTS
+/// can return any handle at all (row one literally returns a foreign one), so
+/// nothing spelled to its left is evidence about the table the verb reaches.
+///
+/// Kills: dropping the zero-argument segment rule;
+///        accepting a ONE-argument segment as a chain hop (row two);
+///        the nearest-earlier-prefix body, which credits row one to the foreign
+///        table it names and row two to the owned one.
+#[test]
+fn rb64p_laundered_chain_is_refused() {
+    let p3a = rb64p_fn(
+        &[
+            rb64p_db_root(),
+            rb64p_owned_table(),
+            "().chunk_id().find(x).map(|_| ",
+            rb64p_db_root(),
+            rb64p_foreign_table(),
+            "()).unwrap()",
+            rb64p_delete_verb(),
+            "row);",
+        ]
+        .concat(),
+    );
+    rb64p_expect_unrooted(
+        "T7/combinator",
+        "The receiver is the RESULT of a combinator whose closure returns a different table's \
+         handle, so the rooted accessor spelled at the head of the chain describes the read, not \
+         the write the verb performs.",
+        &p3a,
+    );
+
+    let p3b = rb64p_fn(
+        &[
+            rb64p_db_root(),
+            rb64p_owned_table(),
+            "().chunk_id().find(x).unwrap()",
+            rb64p_delete_verb(),
+            "row);",
+        ]
+        .concat(),
+    );
+    rb64p_expect_unrooted(
+        "T7/one-arg-segment",
+        "The laundering segment here takes exactly ONE argument, so a rule that only rejects \
+         segments with several arguments — or that counts commas — accepts it and credits the \
+         write to the accessor at the head of the chain.",
+        &p3b,
+    );
+}
+
+/// rb-64 (T8/8): the shipped chain shapes are attributed correctly and reported
+/// in SOURCE ORDER.
+///
+/// Element zero is a rooted two-hop chain (accessor, then column, then the verb)
+/// and element one a rooted one-hop chain, so this is also the no-false-RED
+/// control for both shipped shapes: an over-strict rule that refuses multi-hop
+/// chains, or one that only ever accepts them, reds here rather than silently
+/// reshaping the census over privacy.rs.
+///
+/// The ORDER is the second half of the tooth. A scan implemented as one pass per
+/// verb reports every insert before every delete regardless of where they sit,
+/// which is a census the reader cannot line up against the file — and it is the
+/// shape the pre-rb-64 body has.
+///
+/// Kills: a per-verb scan loop (order);
+///        a rule that rejects a two-hop chain (element zero);
+///        a rule that rejects, or misnames, a one-hop chain (element one).
+#[test]
+fn rb64p_shipped_chain_shapes_are_attributed_in_source_order() {
+    let fixture = rb64p_fn(
+        &[
+            rb64p_db_root(),
+            rb64p_foreign_table(),
+            "().identity()",
+            rb64p_delete_verb(),
+            "id); ",
+            rb64p_db_root(),
+            rb64p_owned_table(),
+            "()",
+            rb64p_insert_verb(),
+            "row);",
+        ]
+        .concat(),
+    );
+    let targets = rb64p_targets(&fixture);
+    assert_eq!(
+        targets,
+        vec![
+            Ok(rb64p_foreign_table().to_string()),
+            Ok(rb64p_owned_table().to_string()),
+        ],
+        "rb-64 [T8/source-order]: two rooted writes must be attributed to their own accessors and \
+         reported in the order the SOURCE spells them — the foreign two-hop delete first, the \
+         owned one-hop insert second. A census assembled one verb family at a time reports the \
+         insert first no matter where it sits, which no reader can line up against the file and \
+         which hides an inserted row behind an unrelated delete. This is also the no-false-RED \
+         control for both shipped chain shapes: a rule strict enough to refuse the two-hop chain, \
+         or loose enough to misname the one-hop one, reds here instead of quietly reshaping the \
+         census over privacy.rs. Fixture: {fixture:?}. Got: {targets:?}"
+    );
+}
+
 // ===========================================================================
 // m22-s4 — EXPORT GATING TESTS (PRV1-11 / PRV1-12 / PRV1-13 + the S4 security
 // amendments). APPEND-ONLY BLOCK: everything above this banner is rb-22's
