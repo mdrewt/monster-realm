@@ -469,4 +469,30 @@ describe('PlaceholderAssets action cue (rb-57 / R-m23-s8-postmerge-tint / ADR-02
       }
     }
   });
+
+  it('T12: the facing notch is fully opaque in its own ink, and the body GEOMETRY is action-invariant, across all 12 (action,facing) combinations', () => {
+    for (const action of ACTIONS) {
+      for (const facing of FACINGS) {
+        const [body, notch] = captureBuild(action, facing);
+        // Kills: `.fill({ color: CUE_INK, alpha: 0.01 })` on the notch — a
+        // near-invisible facing cue that still carries the right colour but
+        // never actually rasterizes, leaving the facing axis unreadable even
+        // though T3's RELATIVE `glyph.style.color === notch.style.color`
+        // check (and its own `alpha === 1` pin on the GLYPH) stays green.
+        expect(notch!.style.alpha, `notch alpha was not 1 for ${action}/${facing}`).toBe(1);
+        expect(notch!.style.color, `notch color was not NOTCH_INK for ${action}/${facing}`).toBe(
+          NOTCH_INK,
+        );
+        // Kills: `g.roundRect(inset, inset, body, body, action === 'Walking' ? 8 : 4)`
+        // — a per-action body corner-radius/geometry change that T4 (which only
+        // ever calls captureBuild('Idle', facing, ...)) never observes, and T11
+        // (which pins only the body's colour/alpha, never its `ops`) never
+        // observes either.
+        expect(
+          body!.ops,
+          `body ops drifted from the shared geometry for ${action}/${facing}`,
+        ).toEqual([{ action: 'roundRect', data: [5, 5, 22, 22, 4] }]);
+      }
+    }
+  });
 });
