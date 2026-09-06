@@ -31,8 +31,10 @@ export interface BattleMonsterCardVM {
   readonly maxHp: number;
   readonly hpPercent: number;
   readonly affinity: string;
-  /** Short status badge label ("PSN", "BRN", "PAR", "SLP", "FRZ"), a "?XX" fallback
-   *  for a tag this bundle does not know (ADR-0233), or null when there is no status. */
+  /** Short status badge label — whatever `statusBadge` returns for the tag: the token
+   *  that variant's row carries in `A11Y_TOKENS` (game-core/src/content.rs), an
+   *  `unknownStatusToken` "?XX" fallback for a tag this bundle does not know
+   *  (ADR-0233), or null when there is no status. */
   readonly status: string | null;
 }
 
@@ -54,7 +56,12 @@ export function unknownStatusToken(tag: string): string {
   return `?${[...tag].slice(0, 2).join('').toUpperCase()}`.slice(0, 3);
 }
 
-/** Map a StatusEffect tag to a short badge label. Pure — unit-testable. */
+/** Map a StatusEffect tag to a short badge label. Pure — unit-testable.
+ *
+ *  These five arms are the client half of a two-file contract whose SSOT is
+ *  `A11Y_TOKENS` in game-core/src/content.rs. They are no longer merely *supposed* to
+ *  agree: the rb-55 parity test in battleModel.test.ts reads that const and compares it
+ *  to what this function RETURNS, so changing a label here alone is red (ADR-0240). */
 export function statusBadge(tag: string | null | undefined): string {
   if (!tag) return '';
   switch (tag) {
@@ -78,7 +85,9 @@ export function statusBadge(tag: string | null | undefined): string {
       // collapsed to null by the `|| null` at the monsterCard call site below, and
       // battleView.ts's `if (card.status)` then renders no badge at all — so a
       // monster carrying a status the bundle has not learned about looks perfectly
-      // healthy. The token SSOT is `A11Y_TOKENS` in game-core/src/content.rs.
+      // healthy. The token SSOT is `A11Y_TOKENS` in game-core/src/content.rs, and the
+      // rb-55 parity test holds the two in step (ADR-0240) — so reaching this arm means
+      // the bindings carry a variant the SSOT has no row for, not merely a stale switch.
       return unknownStatusToken(tag);
   }
 }

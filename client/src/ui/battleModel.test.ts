@@ -2204,3 +2204,266 @@ describe('battleModel m23-s8: statusBadge unknown-tag fallback is visible', () =
     }
   });
 });
+
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// =============================================================================
+// rb-55 — statusBadge and A11Y_TOKENS are ONE contract, mechanically linked
+// SOURCE OF TRUTH: residual R-m23-s8-TSDUP, recorded at docs/adr/0233-*.md:179-182
+// ("nothing correlates the two tables"). Do NOT cite content.rs:1621-1625 for that
+// claim — this slice rewrote those lines, and they now say the opposite.
+//
+// The five status tokens are hand-written TWICE: as `A11yToken` rows inside
+// `pub const A11Y_TOKENS` (game-core/src/content.rs:1692) and as `case` arms in
+// `statusBadge` (client/src/ui/battleModel.ts). Each side pins its OWN literals
+// and, BEFORE this block existed, was perfectly green while disagreeing with the other
+// (measured: 4 of the 5 tokens). This block reads the Rust const at runtime and compares
+// it to what statusBadge RETURNS, so a drift in EITHER direction is now red.
+//
+// THIS IS NOT A THIRD TRANSCRIPTION. No token literal appears anywhere below, and
+// the keys are derived from the generated StatusEffect roster rather than listed.
+// The oracle is deliberately the RETURN VALUE, never a constant battleModel.ts
+// merely contains: three mutants survive a "does the file contain the string"
+// oracle with the whole suite green — an early `if (tag === 'Poison') return 'POI';`
+// above the switch, a parallel unwired copy of the map, and `.toLowerCase()` on the
+// returned token.
+// =============================================================================
+
+/** The a11y token SSOT, resolved from this spec's own URL (no cwd dependence). */
+const RB55_CONTENT_RS_PATH = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+  '..',
+  'game-core',
+  'src',
+  'content.rs',
+);
+
+/** Region anchor for the shipped table. A LOCATION, not a value — carries no token. */
+const RB55_TOKENS_ANCHOR = 'pub const A11Y_TOKENS: &[A11yToken] = &[';
+
+/**
+ * One `A11yToken { key: "status.x", token: "…" }` struct literal in any rustfmt shape
+ * (the shipped rows are broken across four lines; a one-line row must match too).
+ *
+ * Struct-literal form ONLY, and `status.` keys ONLY. Both restrictions are load-bearing:
+ * content.rs also carries a TUPLE-form copy of the same pairs (`M23S8_EXPECTED_PAIRS` at
+ * :7516, rows shaped `("status.poison", <token>),`) which this pattern must never match,
+ * and the eight `affinity.*` rows in the const are deliberately unconsumed by the client.
+ *
+ * No token VALUE is written anywhere in this block — not in code, not in a comment. This
+ * test asserts a relation between two hand-copies; it must not become hand-copy number 3.
+ */
+/** As RB55_STATUS_ROW but for ANY key family — the totality clause counts rows it can parse
+ *  against `A11yToken {` openers, so it must not restrict itself to `status.`. */
+const RB55_ANY_ROW =
+  /A11yToken\s*\{\s*key\s*:\s*"([a-z]+\.[A-Za-z0-9_]+)"\s*,\s*token\s*:\s*"([^"\n]*)"\s*,?\s*\}/g;
+
+const RB55_STATUS_ROW =
+  /A11yToken\s*\{\s*key\s*:\s*"(status\.[A-Za-z0-9_]+)"\s*,\s*token\s*:\s*"([^"\n]*)"\s*,?\s*\}/g;
+
+/** Appended to every failure below: the repair is always bilateral. */
+const RB55_ONE_CONTRACT =
+  'game-core/src/content.rs (A11Y_TOKENS — the SSOT) and client/src/ui/battleModel.ts ' +
+  '(statusBadge — the mirror) are ONE contract: repair BOTH files, never one. Editing ' +
+  'only the side this test names just moves the drift.';
+
+/** The trap that makes "just change the Rust token" the wrong repair. */
+const RB55_CEILING =
+  'CEILING CONTRADICTION — read before choosing a side to edit: A11Y_TOKEN_MAX_LEN is 4 ' +
+  '(game-core/src/content.rs:1749) but the badge pill caps every token at 3 characters ' +
+  '(client/src/ui/battleModel.test.ts:2033). A 4-character Rust token is therefore legal ' +
+  'in content.rs and has NO legal client repair — shorten the token, do not widen the pill.';
+
+/**
+ * Read the SSOT, or FAIL LOUD naming the resolved path (the indexShell.test.ts:99-106
+ * idiom). Never `?? ''`, never an existsSync guard, never it.skip: a swallowed read turns
+ * this whole gate into a permanently green no-op the day the crate moves.
+ */
+function rb55ReadContentRs(): string {
+  try {
+    return readFileSync(RB55_CONTENT_RS_PATH, 'utf8');
+  } catch (err) {
+    throw new Error(
+      `rb-55: the a11y token SSOT could not be read at ${RB55_CONTENT_RS_PATH} — ${err}. ` +
+        `Every assertion in this block is vacuous without it. ${RB55_ONE_CONTRACT}`,
+    );
+  }
+}
+
+describe('battleModel rb-55: statusBadge is mechanically linked to A11Y_TOKENS (content.rs)', () => {
+  it('rb55 every StatusEffect variant badge equals its A11Y_TOKENS row token', () => {
+    // ONE `it` ON PURPOSE. MEASURED: a sibling anti-vacuity `it` is a one-line CI-clean
+    // deletion, after which the parity assertion below passes 1/1 comparing [] to [].
+    // Every anchor therefore lives HERE, above the toEqual it protects.
+    //
+    // Kills (in clause order):
+    //  1. anchor index      — a whole-file or wrongly-anchored scan; a doc comment that
+    //                         steers the region slice off the const.
+    //  2. terminator index  — an unterminated / re-shaped const body.
+    //  3. variants length   — an empty generated roster making the map/compare vacuous.
+    //  4. key census        — a Rust row added, deleted, renamed or duplicated; a region
+    //                         slice that picked up the out-of-const test fixtures.
+    //  5. the toEqual       — ANY value drift, in either direction, including the three
+    //                         mutants a contains-the-constant oracle cannot see.
+    const src = rb55ReadContentRs();
+
+    const anchorAt = src.indexOf(RB55_TOKENS_ANCHOR);
+    expect(
+      anchorAt,
+      `rb55 ANCHOR: the literal \`${RB55_TOKENS_ANCHOR}\` was not found in ` +
+        `${RB55_CONTENT_RS_PATH}. There is then no region to parse and every assertion ` +
+        'below is vacuous. KNOWN FALSE-RED PATH: the region is sliced from the FIRST ' +
+        'occurrence of that literal, so a doc comment that QUOTES the anchor verbatim ' +
+        '(the A11yToken struct docs at :1618 and the table docs at :1685 both sit above ' +
+        'the const) steers the slice at the comment instead of the table. If you just ' +
+        'edited prose above A11Y_TOKENS, that is the cause — describe the const, do not ' +
+        `quote its opening line. ${RB55_ONE_CONTRACT}`,
+    ).toBeGreaterThanOrEqual(0);
+
+    // MEASURED BYPASS, DO NOT REMOVE. The slice as first written took the FIRST match and
+    // asserted nothing about how many there were. A red-team pass then shipped a decoy that
+    // defeated the whole gate with the ENTIRE CI green (client 3119 passed, cargo nextest
+    // 2238 passed, evals 99 PASS): a `pub const A11Y_TOKENS_SNIPPET: &str = r#"..."#` raw
+    // string placed above the real const, reproducing the anchor line AND a line-initial
+    // `];` of its own. The region then slices over the decoy's stale rows, and the shipped
+    // table is free to drift. A raw string is never touched by the `//` strip below, so
+    // comment-handling cannot help here — only counting can.
+    expect(
+      src.split(RB55_TOKENS_ANCHOR).length - 1,
+      'rb55 ANCHOR UNIQUENESS: the const-opening literal must occur EXACTLY ONCE in ' +
+        'content.rs. A second occurrence — a raw string, a block comment, a doc line that ' +
+        'quotes it — steers the region slice off the shipped table, and a decoy carrying ' +
+        'its own line-initial `];` passes every clause below while the real const drifts. ' +
+        'This was MEASURED to defeat the entire gate with all of CI green. Describe the ' +
+        `const in prose; never reproduce its opening line. ${RB55_ONE_CONTRACT}`,
+    ).toBe(1);
+
+    // The const body ends at the first line-initial `];` at or after the anchor.
+    const endAt = src.indexOf('\n];', anchorAt);
+    expect(
+      endAt,
+      'rb55 ANCHOR: no line-initial `];` terminates the A11Y_TOKENS body after the anchor, ' +
+        'so the region slice would be empty and the census below trivially satisfiable. ' +
+        `${RB55_ONE_CONTRACT}`,
+    ).toBeGreaterThan(anchorAt);
+
+    // Strip `//`-to-end-of-line INSIDE the region: `///` doc lines and `//` notes between
+    // rows must not be parsed as data, and a commented-out row must not count as shipped.
+    const region = src.slice(anchorAt, endAt).replace(/\/\/[^\n]*/g, '');
+
+    const variants = (StatusEffect.algebraicType.value as { variants: Array<{ name: string }> })
+      .variants;
+    expect(
+      variants.length,
+      'rb55 ANCHOR: StatusEffect must expose exactly 5 generated variants. An empty roster ' +
+        'makes BOTH sides of the parity toEqual below the empty array, which is the exact ' +
+        'shape in which this gate stops gating anything.',
+    ).toBe(5);
+    expect(
+      variants.map((v) => v.name),
+      'rb55 ANCHOR: the generated variant roster must still contain a known member.',
+    ).toContain('Poison');
+
+    // MEASURED BYPASS, DO NOT REMOVE. RB55_STATUS_ROW proves a row is WRITTEN, not that it is
+    // COMPILED, and it only recognises one spelling. A red-team pass shipped, with all of CI
+    // green: a `#[cfg(any())]`-disabled copy of the correct row (visible to this regex, never
+    // compiled) beside the real row spelled `key: concat!("status.", "burn")` (compiled,
+    // invisible to this regex). The two clauses below close that pair — the first makes every
+    // `A11yToken {` opener in the region have to parse, the second bans the attribute/macro
+    // escape hatch outright. Both MUST stay above the contract assertion.
+    const rowOpeners = region.match(/A11yToken\s*\{/g) ?? [];
+    const allParsedRows = [...region.matchAll(RB55_ANY_ROW)];
+    expect(
+      allParsedRows.length,
+      'rb55 TOTALITY: every `A11yToken {` inside the const body must parse as a literal ' +
+        'key/token pair. A row this parse cannot see — fields reordered, `concat!`, a const ' +
+        'reference, a raw string — is a row the compiler still ships and this gate would ' +
+        `silently ignore. ${RB55_ONE_CONTRACT}`,
+    ).toBe(rowOpeners.length);
+    expect(
+      region,
+      'rb55 TOTALITY: no attribute or macro may appear inside the A11Y_TOKENS body. A ' +
+        '`#[cfg(...)]`-disabled row is visible to this parse and invisible to the compiler, ' +
+        `which is a shipped drift this gate would report as clean. ${RB55_ONE_CONTRACT}`,
+    ).not.toMatch(/#\[|cfg!\(/);
+    expect(
+      region,
+      'rb55 TOTALITY: no block-comment delimiter may appear inside the A11Y_TOKENS body. ' +
+        'The stripper below removes `//` to end-of-line only, so a `/* ... */` row would be ' +
+        `parsed as shipped data. ${RB55_ONE_CONTRACT}`,
+    ).not.toMatch(/\/\*|\*\//);
+
+    const rustRows = [...region.matchAll(RB55_STATUS_ROW)];
+    const rustByKey = new Map(rustRows.map((m) => [m[1], m[2]]));
+
+    // KEY CENSUS — the row SET, before any token value is looked at. Keys are derived from
+    // the roster, never listed here.
+    const foundKeys = rustRows.map((m) => m[1]).sort();
+    const wantedKeys = variants.map((v) => `status.${v.name.toLowerCase()}`).sort();
+    expect(
+      foundKeys,
+      'rb55 CENSUS: the `status.*` rows inside A11Y_TOKENS must be exactly one row per ' +
+        'generated StatusEffect variant — no extra row, no missing row, no duplicate key. ' +
+        'A MISMATCH IS USUALLY REAL DRIFT, but check the region slice first: content.rs has ' +
+        '17 occurrences of `A11yToken {` and FOUR are OUTSIDE this const (the struct ' +
+        'definition at :1627 and the test fixtures at :7819, :8017, :8039). The :7819 ' +
+        'fixture deliberately ships a WRONG token for `status.burn`, so a whole-file scan ' +
+        'false-REDs on it — never widen this parse past the const body to make a failure go ' +
+        `away. ${RB55_ONE_CONTRACT}`,
+    ).toEqual(wantedKeys);
+
+    const rustTokenFor = (name: string): string => {
+      const key = `status.${name.toLowerCase()}`;
+      return rustByKey.get(key) ?? `<A11Y_TOKENS has no ${key} row>`;
+    };
+
+    // THE CONTRACT. The left side is what statusBadge RETURNS; the right side is what the
+    // Rust table SAYS. Nothing is compared to a literal in this file, which is the point:
+    // this test asserts a RELATION between two hand-written copies rather than becoming a
+    // third hand-written copy of the same five strings.
+    expect(
+      variants.map((v) => [v.name, statusBadge(v.name)]).sort(),
+      'rb55 CONTRACT: statusBadge() must RETURN, for every generated StatusEffect variant, ' +
+        'byte-exactly the token that variant\'s row carries in A11Y_TOKENS. The "actual" ' +
+        'side is the live return value of `statusBadge` in client/src/ui/battleModel.ts; the "expected" ' +
+        'side is parsed from game-core/src/content.rs:1692. A screen reader announces the ' +
+        'Rust token while the sighted pill renders the client one, so a drift here is two ' +
+        `players being told two different things about the same monster. ${RB55_ONE_CONTRACT} ` +
+        `${RB55_CEILING}`,
+    ).toEqual(variants.map((v) => [v.name, rustTokenFor(v.name)]).sort());
+
+    // MEASURED GAP, DO NOT REMOVE. The assertion above stops at the pure function; production
+    // reads the badge through monsterCard (`status: statusBadge(...) || null`), and a red-team
+    // pass shipped `statusBadge(mon.status?.tag).replace('BRN', 'BUR')` at that hop with the
+    // WHOLE client suite green (3119 passed) — the view model carried a token the SSOT never
+    // authorised. Re-run the same comparison through buildBattleViewModel so the value a card
+    // actually carries is bound to the Rust table too, not just the function's return.
+    expect(
+      variants
+        .map((v) => {
+          const vm = buildBattleViewModel(
+            makeBattle({
+              sideA: battleSide({
+                active: 0,
+                team: [battleMonster({ speciesId: 1, status: { tag: v.name } })],
+              }),
+            } as Partial<StoreBattle>),
+            makeSkillMap(1),
+            makeSpeciesMap(speciesRow(1)),
+          );
+          return [v.name, vm?.playerCard.status ?? '<no view model>'];
+        })
+        .sort(),
+      'rb55 CONTRACT (view-model chain): the badge a BattleMonsterCardVM actually carries must ' +
+        'be byte-exactly the token A11Y_TOKENS ships for that variant. The assertion above ' +
+        "binds statusBadge's return; this one binds what monsterCard propagates, so a rewrite " +
+        'between the two — a .replace(), a truncation, a re-map — cannot ship a badge the SSOT ' +
+        'never authorised. NOT COVERED, by declared scope: the final DOM hop at ' +
+        `battleView.ts:290 (\`statusEl.textContent = card.status\`). ${RB55_ONE_CONTRACT}`,
+    ).toEqual(variants.map((v) => [v.name, rustTokenFor(v.name)]).sort());
+  });
+});
