@@ -332,4 +332,34 @@ describe('PlaceholderAssets action cue (rb-57 / R-m23-s8-postmerge-tint / ADR-02
       expect(sortedRectStrings(rotated)).toEqual(sortedRectStrings(glyph));
     }
   });
+
+  it('T9: an unknown action string (a Rust-side ActionState variant not yet mirrored into WasmAction) must fail-soft, not throw, and still return a texture', () => {
+    // Own minimal fake (T7 precedent) — NOT captureBuild: an unrecognised
+    // action legitimately draws only 2 fills (body, notch; no glyph bars),
+    // which would wrongly trip captureBuild's A5/A6 "exactly 3" guard. This
+    // tooth cares only about "did it throw / what did it return", not draw-op
+    // geometry, so it needs none of captureBuild's instruction-extraction.
+    const fakeTexture = { label: 'T9-fake-texture' };
+    const fake = {
+      generateTexture() {
+        return fakeTexture;
+      },
+    };
+    const assets = new PlaceholderAssets(fake as unknown as Renderer);
+
+    let result: unknown;
+    // Kills: deleting the `?? []` on `ACTION_GLYPH[action]` in `#build` — an
+    // unmirrored action then runs `for (const bar of undefined)`, which
+    // throws `TypeError: undefined is not iterable` INSIDE the render frame
+    // loop, violating the house fail-soft rule (rowConvert.ts:82-85) that a
+    // hand-written enum mirror lagging the real `ActionState` must never crash
+    // the renderer.
+    expect(() => {
+      result = assets.texture('Running' as WasmAction, 'South');
+    }).not.toThrow();
+    // Kills: a "fix" that swallows the exception (e.g. wrapping `#build` in a
+    // try/catch that returns `undefined`) instead of genuinely completing the
+    // draw — the caller still needs a real texture to render the sprite with.
+    expect(result).toBe(fakeTexture);
+  });
 });

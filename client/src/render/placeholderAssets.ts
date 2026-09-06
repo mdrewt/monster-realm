@@ -50,9 +50,14 @@ interface GlyphBar {
  * - INVARIANT UNDER A 180-DEGREE ROTATION about the tile centre, so a glyph can
  *   never encode a heading and grow into a second, competing facing cue.
  *
- * `Record<WasmAction, ...>` is load-bearing: a fourth `WasmAction` variant must be
- * a COMPILE ERROR. A `switch` with a `default` would silently ship a colour-only
- * sprite for the new variant -- exactly the defect ADR-0241 closes.
+ * `Record<WasmAction, ...>` is load-bearing: once `WasmAction` gains a fourth member,
+ * a missing entry here is a COMPILE ERROR, where a `switch` with a `default` would
+ * silently ship a colour-only sprite for it -- exactly the defect ADR-0241 closes.
+ * Note the honest limit: `WasmAction` (convert.ts) is a HAND-WRITTEN mirror of
+ * game-core's `ActionState`, and the forcing function for widening it is the
+ * sdk-enum-exhaustiveness eval, not tsc. So a Rust-side variant added without that
+ * mirror edit reaches here as an unknown key -- which is why the draw below is
+ * fail-soft rather than throwing (`rowConvert.ts:82-85`, "fail-soft, NEVER throw").
  */
 const ACTION_GLYPH: Record<WasmAction, readonly GlyphBar[]> = {
   Idle: [{ dx: -3, dy: -1, w: 6, h: 2 }],
@@ -115,7 +120,7 @@ export class PlaceholderAssets implements AssetProvider {
     // a single fill instruction, so a per-bar fill would split the glyph across
     // several instructions, and sharing the NOTCH's fill would merge the two cues
     // into one. Its own single fill keeps this purely additive to the draw list.
-    for (const bar of ACTION_GLYPH[action]) {
+    for (const bar of ACTION_GLYPH[action] ?? []) {
       g.rect(centre + bar.dx, centre + bar.dy, bar.w, bar.h);
     }
     g.fill(CUE_INK);
