@@ -54,6 +54,16 @@ const NOTCH_OFFSET: Record<WasmDirection, { readonly x: number; readonly y: numb
 const ACTION_TINTS: readonly number[] = [0x6fd3a0, 0x4fb3ff, 0xf2c14e];
 const NOTCH_INK = 0x10131a;
 
+/** Per-action tint literals (never imported from the module under test) — a
+ *  NEW mapping distinct from `ACTION_TINTS` (T3's exclusion-list array),
+ *  needed because T11 pins each action to its OWN colour, not merely that
+ *  the glyph avoids the set of all three. */
+const ACTION_TINT_BY_ACTION: Record<WasmAction, number> = {
+  Idle: 0x6fd3a0,
+  Walking: 0x4fb3ff,
+  Jumping: 0xf2c14e,
+};
+
 interface CapturedOp {
   readonly action: string;
   readonly data: readonly number[];
@@ -429,6 +439,34 @@ describe('PlaceholderAssets action cue (rb-57 / R-m23-s8-postmerge-tint / ADR-02
       // degenerate (0-area).
       expect(snapshot.scaleX).toBe(1);
       expect(snapshot.scaleY).toBe(1);
+    }
+  });
+
+  it('T11: the body fill is tinted PER-ACTION with its own opaque colour — the three body tints are pairwise distinct, not collapsed onto a shared value', () => {
+    const bodyColors: number[] = [];
+    for (const action of ACTIONS) {
+      const [body] = captureBuild(action, 'South');
+      // Kills: collapsing Walking/Jumping's body tint onto Idle's (or any
+      // other shared/hard-coded body colour) for this action — each action's
+      // body must match its OWN literal tint, not merely "some" tint.
+      expect(body!.style.color).toBe(ACTION_TINT_BY_ACTION[action]);
+      // Kills: `.fill({ color: ACTION_TINT[action] ?? 0, alpha: 0.01 })` — a
+      // near-invisible body that still carries the right colour but never
+      // actually rasterizes.
+      expect(body!.style.alpha).toBe(1);
+      bodyColors.push(body!.style.color);
+    }
+    // Kills: collapsing ANY pair of the three per-action body tints onto a
+    // shared value (not just a collapse onto a specific hard-coded literal
+    // like Idle's) — a future 2-of-3 merge still reds here even if it picks
+    // a colour no existing test happens to pin.
+    for (let i = 0; i < bodyColors.length; i++) {
+      for (let j = i + 1; j < bodyColors.length; j++) {
+        expect(
+          bodyColors[i],
+          `${ACTIONS[i]} and ${ACTIONS[j]} share the same body tint (${bodyColors[i]})`,
+        ).not.toBe(bodyColors[j]);
+      }
     }
   });
 });
