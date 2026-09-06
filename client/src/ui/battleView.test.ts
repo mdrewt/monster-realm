@@ -3289,3 +3289,189 @@ describe('BattleView m23-s8: colour-independent HP severity palette (M23 §2.6, 
     document.body.removeChild(parent);
   });
 });
+
+// =============================================================================
+// rb-56 — "skill affinity exposed only via btn.title, not a persistent visible
+// cue" (EARS criterion, verbatim).
+//
+// WHAT THESE ASSERTIONS KILL: any `#renderSkills` shape that writes the skill's
+// affinity ONLY into `btn.title` — a hover/long-press-only tooltip, never
+// rendered on screen by default — while `btn.textContent` carries the name and
+// power (PvE) or the "Submit:" prefix and name (PvP) but never the affinity.
+// The required shape is: `btn.textContent` carries the affinity as a persistent
+// visible label (` · ${skill.affinity}`, the same U+00B7 MIDDLE DOT separator
+// `#renderMonsterCard` already uses for its own `HP x/y · Affinity` line) and
+// `btn.title` carries ONLY the accuracy.
+//
+// The fixture below is a NEW `RB56_SKILLS`, NOT `UX4_TWO_SKILLS` — see its doc comment
+// for the measured vacuity that forced REAL `Affinity` enum variants. `UX4_TWO_SKILLS`
+// is left exactly as the ux4 section wrote it.
+//
+// The "exactly 2 buttons" precondition is ASSERTED at runtime below, not assumed in prose:
+// with canFlee/canSwap/canRecruit false and cureItems/bench empty, `#renderActions` renders
+// nothing, so the only buttons under `parent` are the two skill buttons.
+// =============================================================================
+
+/**
+ * rb56's own two-skill fixture — NOT `UX4_TWO_SKILLS` above, and not
+ * interchangeable with it. `UX4_TWO_SKILLS` uses `'Grass'` / `'Normal'`,
+ * neither a member of the real `Affinity` enum, so a wrong implementation
+ * that maps affinity through a client-side short-token table with a
+ * passthrough default (`AFF[skill.affinity] ?? skill.affinity`) renders
+ * identically to the verbatim-affinity implementation this criterion
+ * requires — both fall through the `??` to the same string. `Plant` and
+ * `Electric` ARE real `Affinity::` variants (`game-core/src/monster/types.rs`),
+ * so a token-map-with-default implementation renders each affinity's assigned
+ * short token instead of the variant name, and the `toEqual` assertions below
+ * catch it. `Vine Whip` and `Thunder Fang` are real shipped skill names.
+ */
+const RB56_SKILLS = [
+  { id: 1, name: 'Vine Whip', affinity: 'Plant', power: 40, accuracy: 100 },
+  { id: 2, name: 'Thunder Fang', affinity: 'Electric', power: 35, accuracy: 95 },
+];
+
+describe('BattleView rb56: skill affinity is a persistent visible label, not title-only', () => {
+  afterEach(() => {
+    document.body.replaceChildren();
+  });
+
+  it('rb56 PvE: skill buttons show name, power AND affinity in textContent; title carries only accuracy', () => {
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+
+    const view = new BattleView(parent, makeUx4Callbacks());
+    view.refresh(makeUx4VM({ skills: RB56_SKILLS, canFlee: false }));
+    view.show();
+
+    const buttons = [...parent.querySelectorAll('button')];
+    expect(
+      buttons,
+      'rb56 (PvE) precondition: exactly 2 buttons must exist in the WHOLE view — canFlee:false, ' +
+        'canSwap:false, canRecruit:false, cureItems:[] and bench:[] leave #actionsEl empty (see ' +
+        '#renderActions/#renderSwapButtons above), so a different count means this query is ' +
+        'reading the wrong elements (e.g. a leaked Flee or swap button), not the two skill buttons',
+    ).toHaveLength(2);
+
+    expect(
+      buttons.map((b) => b.textContent),
+      "rb56 (PvE): each skill button's visible textContent must carry its name, power AND " +
+        'affinity, verbatim (not through a client-side short-token map with a passthrough ' +
+        'default — see the fixture comment on `RB56_SKILLS` above for why real enum values are ' +
+        'load-bearing here). This assertion kills an implementation that carries only name+power, ' +
+        'leaving the affinity in the hover/long-press-only `btn.title`',
+    ).toEqual(['Vine Whip (40) · Plant', 'Thunder Fang (35) · Electric']);
+
+    expect(
+      buttons[0]!.title,
+      'rb56 (PvE): btn.title must carry ONLY the accuracy — not the affinity, which has moved to ' +
+        'the visible textContent asserted above',
+    ).toBe('Acc 100%');
+    expect(
+      buttons[1]!.title,
+      'rb56 (PvE): btn.title must carry ONLY the accuracy — not the affinity',
+    ).toBe('Acc 95%');
+
+    // ANTI-MUTANT (structural, additive): textContent concatenates every descendant and
+    // ignores ARIA, so it stays green for a mutant that appends a visually-hidden,
+    // aria-hidden <span> carrying the affinity instead of putting it in the visible label.
+    // The shipped design deliberately adds NO new DOM node — that is the whole reason a
+    // <span> badge was rejected in favour of a plain template-string append — so the label
+    // must be a single text node.
+    for (const b of buttons) {
+      expect(
+        b.children.length,
+        'rb56 (PvE) ANTI-MUTANT: the skill button must have NO element children. Any element ' +
+          'child means the affinity could be carried by a node that is hidden, clipped or ' +
+          'aria-hidden — the DOM-present-but-imperceptible defect wearing a different hat — ' +
+          'while btn.textContent (asserted above) stays byte-identical to the correct shape',
+      ).toBe(0);
+      // battleView.ts:8-11 — this view "ships NO ARIA of its own … every attribute … comes
+      // from openOverlayA11y, never from a literal in this file". The skill button is not the
+      // overlay root, so it must carry neither aria-label nor aria-hidden as a file literal.
+      expect(
+        b.getAttribute('aria-label'),
+        'rb56 (PvE) ANTI-MUTANT: the skill button must carry no literal aria-label ' +
+          '(battleView.ts:8-11 — this view ships NO ARIA of its own). An aria-label REPLACES ' +
+          'the accessible name computation entirely, so a screen reader would announce name+power ' +
+          'only and never the affinity even though btn.textContent (asserted above) still contains ' +
+          'it — and Playwright getByRole(..., { name }) would match the aria-label, not the visible ' +
+          'text',
+      ).toBeNull();
+      expect(
+        b.getAttribute('aria-hidden'),
+        'rb56 (PvE) ANTI-MUTANT: the skill button must carry no literal aria-hidden ' +
+          '(battleView.ts:8-11 — this view ships NO ARIA of its own from a literal in this file)',
+      ).toBeNull();
+    }
+
+    document.body.removeChild(parent);
+  });
+
+  it('rb56 PvP: skill buttons show "Submit:", name AND affinity in textContent; title carries only accuracy', () => {
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+
+    const view = new BattleView(parent, makeUx4Callbacks());
+    view.refresh(makeUx4VM({ skills: RB56_SKILLS, canFlee: false, isPvp: true }));
+    view.show();
+
+    const buttons = [...parent.querySelectorAll('button')];
+    expect(
+      buttons,
+      'rb56 (PvP) precondition: exactly 2 buttons must exist in the WHOLE view — the same fixture ' +
+        'shape as the PvE case; isPvp:true only changes the label ternary inside #renderSkills, ' +
+        'never the #actionsEl gating checked above',
+    ).toHaveLength(2);
+
+    expect(
+      buttons.map((b) => b.textContent),
+      'rb56 (PvP): each skill button\'s visible textContent must carry "Submit:", the name AND ' +
+        'the affinity, verbatim. This assertion kills an implementation whose PvP arm carries only ' +
+        '"Submit: <name>", leaving the affinity in the hover-only btn.title, and also kills a ' +
+        'passthrough-default token-map implementation (see `RB56_SKILLS` fixture comment above)',
+    ).toEqual(['Submit: Vine Whip · Plant', 'Submit: Thunder Fang · Electric']);
+
+    expect(
+      buttons[0]!.title,
+      'rb56 (PvP): btn.title must carry ONLY the accuracy — not the affinity',
+    ).toBe('Acc 100%');
+    expect(
+      buttons[1]!.title,
+      'rb56 (PvP): btn.title must carry ONLY the accuracy — not the affinity',
+    ).toBe('Acc 95%');
+
+    // ANTI-MUTANT (structural, additive) — mirrors the PvE case above. Mutant B specifically
+    // targets this PvP arm: `btn.setAttribute('aria-label', vm.isPvp ? \`Submit: ${skill.name}\`
+    // : ...)` keeps the correct visible textContent (asserted above) while an aria-label WINS
+    // the accessible-name computation, so a screen reader announces no affinity and
+    // Playwright's getByRole(..., { name }) would match the aria-label, not the visible text.
+    for (const b of buttons) {
+      expect(
+        b.children.length,
+        'rb56 (PvP) ANTI-MUTANT: the skill button must have NO element children. Any element ' +
+          'child means the affinity could be carried by a node that is hidden, clipped or ' +
+          'aria-hidden — the DOM-present-but-imperceptible defect wearing a different hat — ' +
+          'while btn.textContent (asserted above) stays byte-identical to the correct shape',
+      ).toBe(0);
+      // battleView.ts:8-11 — this view "ships NO ARIA of its own … every attribute … comes
+      // from openOverlayA11y, never from a literal in this file". The skill button is not the
+      // overlay root, so it must carry neither aria-label nor aria-hidden as a file literal.
+      expect(
+        b.getAttribute('aria-label'),
+        'rb56 (PvP) ANTI-MUTANT: the skill button must carry no literal aria-label ' +
+          '(battleView.ts:8-11 — this view ships NO ARIA of its own). An aria-label REPLACES ' +
+          'the accessible name computation entirely, so a screen reader would announce ' +
+          '"Submit: <name>" only and never the affinity even though btn.textContent (asserted ' +
+          'above) still contains it — and Playwright getByRole(..., { name }) would match the ' +
+          'aria-label, not the visible text',
+      ).toBeNull();
+      expect(
+        b.getAttribute('aria-hidden'),
+        'rb56 (PvP) ANTI-MUTANT: the skill button must carry no literal aria-hidden ' +
+          '(battleView.ts:8-11 — this view ships NO ARIA of its own from a literal in this file)',
+      ).toBeNull();
+    }
+
+    document.body.removeChild(parent);
+  });
+});
