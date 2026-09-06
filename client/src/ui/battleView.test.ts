@@ -3480,13 +3480,20 @@ describe('BattleView rb56: skill affinity is a persistent visible label, not tit
 // rb-59 — "the opponent card and the player card are separated by HUE ALONE"
 // (EARS criterion). SOURCE OF TRUTH: memory/projects/gates/rb-59.gates.md X1/X2/X3.
 //
-// THE SHIPPED DEFECT (battleView.ts:107-118). The constructor builds the two cards as
+// THE SHIPPED DEFECT (battleView.ts, the two card blocks in the constructor). It builds them as
 //   opponent: 'border:1px solid #844;…' + 'background:#2a1a1a;…'
 //   player:   'border:1px solid #484;…' + 'background:#1a2a1a;…'
 // Same border STYLE, same border WIDTH, same border-radius, same padding, same text
 // treatment. The ONLY channel that answers "whose monster is this?" is the #844/#484
-// HUE pair — red vs green, the single worst pair for protanopia and deuteranopia and
-// literally identical in greyscale. `#844` on its own `#2a1a1a` card background also
+// HUE pair — red vs green, a classic worst-case pair for protanopia and deuteranopia and
+// only 1.64:1 apart in relative luminance, i.e. a weak greyscale signal: under Chromium's
+// `filter: grayscale(1)` they resolve to `#525252` and `#757575`. (An earlier draft of this
+// comment said "byte-identical in greyscale". That is true only under a naive (R+G+B)/3
+// desaturation and false under the luma weights every browser actually uses — MEASURED, and
+// corrected here rather than left standing beside four exact ratios.) Note the pair this
+// slice SHIPS is 1.073:1 in relative luminance, i.e. flatter still: the hue-free distinction
+// now rests entirely on border STYLE, which is why the style clauses below are the
+// load-bearing ones. `#844` on its own `#2a1a1a` card background also
 // measures 2.34:1, under the WCAG 1.4.11 3:1 non-text-contrast floor, so the cue is
 // faint even for a trichromat: dashing a border nobody can see would ship nothing.
 //
@@ -3510,8 +3517,8 @@ describe('BattleView rb56: skill affinity is a persistent visible label, not tit
 //       `if (vm.isPvp) this.#opponentCardEl.style.borderStyle = 'solid'`, the same
 //       gated on `card.status`, on a terminal `vm.outcome`, on `vm.weather`, and — the
 //       measured worst of them — on `vm.pvpPendingSubmit`, a field `battleView.ts`
-//       already branches on in three places (`#renderPvpStatus:221`, `#renderSkills:299`,
-//       `#renderSwapButtons:466`), which makes it the most plausible copy-paste gate in
+//       already branches on in three places (`#renderPvpStatus`, `#renderSkills`,
+//       `#renderSwapButtons`), which makes it the most plausible copy-paste gate in
 //       the file. Killed ONLY by re-asserting the pair under all FIVE `RB59_STATES`
 //       rows — and, for the LATCH spelling (a gate that fires once and never unwinds),
 //       by the PvE -> PvP -> pending -> PvE re-render sequence in the second case, since
@@ -3603,9 +3610,60 @@ const RB59_PERCEPTIBLE_STYLES: ReadonlySet<string> = new Set(['solid', 'dashed',
 /** The label `#renderMonsterCard` hard-codes for the player card, in EVERY battle state. */
 const RB59_PLAYER_LABEL = 'You: ';
 
-/** The header's own inline declaration, verbatim from battleView.ts:243. */
+/**
+ * The property NAMES a correct card declaration produces — expressed as a reference cssText the
+ * TEST owns, never read from the implementation, and compared as a SET of property names only.
+ *
+ * WHY A REFERENCE ELEMENT AND NOT A LITERAL LIST: the `border` shorthand expands to 37 longhands
+ * in happy-dom (including the six `border-image-*` ones), and hard-coding that roster would pin
+ * a happy-dom version rather than the criterion. Building the reference from a cssText with the
+ * same SHORTHANDS and deliberately DIFFERENT values (`1px solid #000`) keeps the comparison
+ * honest: the names match for any style/width/colour the allow-list permits, so this clause
+ * cannot pin `dashed` or `2px`, but it fails the moment the implementation declares a property
+ * the shipped set does not contain.
+ *
+ * WHAT IT CLOSES — five CI-clean bypasses MEASURED against the previous draft, all of which are
+ * a single extra write on the line after `cssText` and all of which render the cue invisible
+ * while every border longhand still reads back perfectly: `opacity:0`, `clip-path:inset(100%)`,
+ * `font-size:0` (which inherits into the header, so the name span's OWN declaration pin still
+ * passes), and `outline:2px dashed #b66` on the player card (which paints an outermost ring
+ * matching the opponent's cue). The sixth, `border-image`, is NOT caught here — the shorthand
+ * already declares those longhands, so the name set is unchanged — and has its own clause below.
+ */
+const RB59_CARD_DECL_REFERENCE =
+  'border:1px solid #000;border-radius:4px;padding:8px;width:100%;max-width:320px;' +
+  'background:#000;margin-bottom:12px;';
+
+/** A detached div carrying only the reference declaration set. Never touches the implementation. */
+function rb59Reference(): HTMLElement {
+  const el = document.createElement('div');
+  el.style.cssText = RB59_CARD_DECL_REFERENCE;
+  return el;
+}
+
+/** The sorted set of property names a declaration actually declares. */
+function rb59PropertyNames(el: HTMLElement): readonly string[] {
+  const names: string[] = [];
+  for (let i = 0; i < el.style.length; i += 1) names.push(el.style.item(i));
+  return [...new Set(names)].sort();
+}
+
+/**
+ * `border-image-source` as a correct card leaves it. MEASURED in real Chromium: an opponent card
+ * carrying `border-image-source: linear-gradient(#484,#484)` alongside `border:2px dashed #b66`
+ * renders ONE uniform `#484` ring — the player card's colour, solid — while
+ * `style.borderTopStyle` still reads `'dashed'` and `style.borderTopColor` still reads `#b66` at
+ * the 4.13:1 the contrast clause measures. The role cue is gone and the ratio never sees it.
+ * Point the gradient at the card's own background instead and it resurrects the
+ * border-painted-in-the-background bypass that the ratio clause is supposed to own. `border-image`
+ * is reachable only as a SEPARATE write (the `border` shorthand resets it), which is exactly the
+ * shape a "decorative polish" commit takes.
+ */
+const RB59_NO_BORDER_IMAGE = 'initial';
+
+/** The header's own inline declaration, verbatim from `#renderMonsterCard`. */
 const RB59_HEADER_CSS = 'display:flex;justify-content:space-between;';
-/** The name span's own inline declaration (battleView.ts:245, set property-wise). */
+/** The name span's own inline declaration (`#renderMonsterCard`, set property-wise). */
 const RB59_NAME_SPAN_CSS = 'font-weight:bold;';
 
 /** A VM whose cards this block spreads from, so no override drops a required field. */
@@ -3628,7 +3686,7 @@ const RB59_BASE = makeUx4VM();
  * against it. The worst was `if (vm.pvpPendingSubmit) this.#opponentCardEl.style.borderStyle
  * = 'solid'` — the highest-value miss in the whole block, because the residual is
  * specifically about PvP and `battleView.ts` already branches on `pvpPendingSubmit` in three
- * places (`#renderPvpStatus:221`, `#renderSkills:299`, `#renderSwapButtons:466`), so it is
+ * places (`#renderPvpStatus`, `#renderSkills`, `#renderSwapButtons`), so it is
  * the most plausible copy-paste gate in the file. Row 5 exists to close that class.
  *
  * WHAT IS ACTUALLY VARIED, exhaustively and truthfully: `isPvp`, `pvpOpponentName`,
@@ -3678,8 +3736,11 @@ const RB59_STATES = [
       canRecruit: true,
       turnNumber: 9,
       cureItems: [{ itemId: 4, name: 'Antidote', cureStatus: 'Poison', count: 2 }],
-      opponentCard: { ...RB59_BASE.opponentCard, hpPercent: 12 },
-      playerCard: { ...RB59_BASE.playerCard, hpPercent: 8 },
+      // currentHp/maxHp are varied too, not just hpPercent: `#renderMonsterCard` renders the
+      // RAW pair (`HP <currentHp>/<maxHp>`), so a gate spelled on the raw ratio rather than on
+      // hpPercent was MEASURED to survive every other row (red-team N10).
+      opponentCard: { ...RB59_BASE.opponentCard, hpPercent: 12, currentHp: 2, maxHp: 19 },
+      playerCard: { ...RB59_BASE.playerCard, hpPercent: 8, currentHp: 1, maxHp: 22 },
     }),
   },
 ] as const;
@@ -3697,7 +3758,7 @@ interface Rb59CardPair {
  * identities, so an index-only walk would silently retarget every assertion in this block
  * onto the wrong element. The content check closes exactly two things: a CONSTRUCTOR
  * REORDER (the cards no longer sitting at those indices) and a swap of the two
- * `#renderMonsterCard` CALL SITES at battleView.ts:208-209 (confirmed RED). It works
+ * `#renderMonsterCard` CALL SITES in `refresh` (confirmed RED). It works
  * because `#renderMonsterCard` hard-codes the literal 'You' label for the player card in
  * every battle state — the opponent's label is `vm.pvpOpponentName` in PvP and so cannot be
  * pinned — which makes "player card contains 'You: ' AND opponent card does not" a total,
@@ -3771,7 +3832,7 @@ function rb59Cards(parent: HTMLElement): Rb59CardPair {
     player.textContent,
     `rb59 WALK IDENTITY: #root.children[${RM3_PLAYER_INDEX}] must be the PLAYER card — ` +
       `#renderMonsterCard is called with the hard-coded "You" label for it in every battle ` +
-      'state (battleView.ts:209), so this is a total, state-independent oracle for which ' +
+      'state (the `refresh` call site), so this is a total, state-independent oracle for which ' +
       'ELEMENT this is',
   ).toContain(RB59_PLAYER_LABEL);
   expect(
@@ -3988,8 +4049,9 @@ describe('BattleView rb-59: card role is cued by border STYLE, not by hue alone 
         `rb59 X1 PAIR (${label}): the opponent card's border style is ${JSON.stringify(ob.style)} ` +
           `and the player card's is ${JSON.stringify(pb.style)} — they must DIFFER. As shipped ` +
           'both are "solid" and the two card ROLES are separated by the #844/#484 hue pair ' +
-          'alone: red vs green, the worst pair for protanopia and deuteranopia, and byte- ' +
-          'identical in greyscale. This is a PAIR RELATION, not two literal assertions, ' +
+          'alone: red vs green, a classic worst-case pair for protanopia and deuteranopia, ' +
+          'and only 1.64:1 apart in relative luminance. This is a PAIR RELATION, not two ' +
+          'literal assertions, ' +
           'because giving BOTH cards the same non-solid style passes every per-card check ' +
           'while leaving the roles exactly as indistinguishable as they are today. It is ' +
           'also asserted in all FIVE battle states, because a cue that switches itself off ' +
@@ -4011,7 +4073,7 @@ describe('BattleView rb-59: card role is cued by border STYLE, not by hue alone 
     document.body.removeChild(parent);
   });
 
-  it('rb59 X1 persistence: the differing border-style pair survives PvE to PvP and back, a repeat refresh, and a null round-trip', () => {
+  it('rb59 X1 persistence: the differing border-style pair survives PvE to PvP and back, a repeat refresh, and a null round-trip', async () => {
     // COVERS X1 ("and across successive re-renders"). RED PRE-FIX: the first pair relation
     // fails, both styles being 'solid'.
     //
@@ -4127,6 +4189,29 @@ describe('BattleView rb-59: card role is cued by border STYLE, not by hue alone 
           'byte-identical to render 1, for the same reason',
       ).toEqual([baselinePlayer.style, baselinePlayer.width, baselinePlayer.colour]);
     }
+
+    // --- DEFERRED WRITES. Every assertion above is synchronous, so a flatten scheduled with
+    // `queueMicrotask` or `setTimeout(..., 0)` lands AFTER the test function returns but BEFORE
+    // first paint in a real browser: the cue provably never renders, and both spellings were
+    // MEASURED CI-clean against the previous draft (red-team N7/N8). Yielding the task queue
+    // once and re-reading closes both. It costs one tick and cannot flake — a correct
+    // constructor-set border has nothing pending to observe.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const settled = rb59Cards(parent);
+    const settledOpponent = rb59Border(settled.opponent, 'after the task queue drains / opponent');
+    const settledPlayer = rb59Border(settled.player, 'after the task queue drains / player');
+    expect(
+      settledOpponent.style,
+      'rb59 X1 SETTLED PAIR: the two cards must still differ by border style once the task ' +
+        'queue has drained. A flatten deferred with queueMicrotask or setTimeout(0) satisfies ' +
+        'every synchronous assertion in this file and still robs the player of the cue, ' +
+        'because it lands before the browser paints',
+    ).not.toBe(settledPlayer.style);
+    expect(
+      [settledOpponent.style, settledOpponent.width, settledOpponent.colour],
+      "rb59 X1 SETTLED STABILITY: the opponent card's border must be byte-identical to " +
+        'render 1 after the queue drains, not merely different from the player card',
+    ).toEqual([baselineOpponent.style, baselineOpponent.width, baselineOpponent.colour]);
 
     document.body.removeChild(parent);
   });
@@ -4297,6 +4382,28 @@ describe('BattleView rb-59: card role is cued by border STYLE, not by hue alone 
     for (const which of ['opponent', 'player'] as const) {
       const card = cards[which];
 
+      expect(
+        rb59PropertyNames(card),
+        `rb59 X3 DECLARATION SET (${which} card): the card must declare EXACTLY the property ` +
+          'names its shipped shorthand set produces — nothing added. The values are not pinned ' +
+          'here (the reference deliberately uses different ones), only the roster, because ' +
+          'every measured bypass in this class is ONE extra declaration on the line after ' +
+          '`cssText`: opacity:0, clip-path:inset(100%), font-size:0 (inherited, so the name ' +
+          "span's own declaration pin still passes), or an outline that repaints the cue. Each " +
+          'leaves every border longhand reading back perfectly while the player sees nothing',
+      ).toEqual(rb59PropertyNames(rb59Reference()));
+
+      expect(
+        card.style.borderImageSource,
+        `rb59 X3 NO BORDER IMAGE (${which} card): border-image-source must stay ` +
+          `${JSON.stringify(RB59_NO_BORDER_IMAGE)}. MEASURED in Chromium: a border-image on the ` +
+          'opponent card repaints its border as ONE uniform ring of whatever the image contains ' +
+          "— the player card's colour, solid, or the card's own background — while " +
+          'border-top-style still reads "dashed" and border-top-color still reads the ' +
+          'high-contrast hex. Neither the style clause nor the contrast ratio can see it, ' +
+          'because the `border` shorthand declares these longhands and then never touches them',
+      ).toBe(RB59_NO_BORDER_IMAGE);
+
       // --- S3: the whole-subtree sweep. `card` itself is included, not just descendants.
       const subtree = [card, ...(Array.from(card.querySelectorAll('*')) as HTMLElement[])];
       expect(
@@ -4354,7 +4461,7 @@ describe('BattleView rb-59: card role is cued by border STYLE, not by hue alone 
       expect(
         card.children.length,
         `rb59 X3 NO CHURN (${which} card): with status null the card must hold EXACTLY three ` +
-          'children — header, hp bar, hp text (battleView.ts:240-292). A fourth child means ' +
+          'children — header, hp bar, hp text (`#renderMonsterCard`). A fourth child means ' +
           'the cue was carried by a NEW node rather than by the card border itself, and a new ' +
           'node is a node that can be clipped, hidden or aria-hidden; a smaller count means ' +
           'the fix removed part of the card',
