@@ -2193,66 +2193,65 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
     { outcome: 'SideAWins' as const },
     { outcome: 'SideBWins' as const },
     { outcome: 'Fled' as const },
-  ])(
-    'BITES: H3 terminal outcome $outcome (canSwap=false, empty bench) → swap hint hidden while the ux1 continue hint stays visible',
-    ({ outcome }) => {
-      // KILLS: the MOST LIKELY wrong implementation — a predicate missing the
-      //   `vm.outcome === 'Ongoing' &&` conjunct, i.e. keyed on `!vm.canSwap` alone.
-      //   `canSwap` is false and `bench` is empty on EVERY terminal outcome
-      //   (battleModel.ts:258 gates the bench loop on `ongoing`), so a bench-or-canSwap-only
-      //   predicate parks "No healthy party monster in this battle to swap in. When this
-      //   battle ends…" right next to "Victory!" and ux1's "Press Esc to continue" — advice
-      //   about a battle that has already ended, on the very overlay ux1 just made honest.
-      // ALSO GATES ux1: the continue-hint clause in the same assertion means a regression
-      //   that hides the ux1 exit affordance while wiring the ux4 one cannot pass here.
-      const parent = document.createElement('div');
-      document.body.appendChild(parent);
+  ])('BITES: H3 terminal outcome $outcome (canSwap=false, empty bench) → swap hint hidden while the ux1 continue hint stays visible', ({
+    outcome,
+  }) => {
+    // KILLS: the MOST LIKELY wrong implementation — a predicate missing the
+    //   `vm.outcome === 'Ongoing' &&` conjunct, i.e. keyed on `!vm.canSwap` alone.
+    //   `canSwap` is false and `bench` is empty on EVERY terminal outcome
+    //   (battleModel.ts:258 gates the bench loop on `ongoing`), so a bench-or-canSwap-only
+    //   predicate parks "No healthy party monster in this battle to swap in. When this
+    //   battle ends…" right next to "Victory!" and ux1's "Press Esc to continue" — advice
+    //   about a battle that has already ended, on the very overlay ux1 just made honest.
+    // ALSO GATES ux1: the continue-hint clause in the same assertion means a regression
+    //   that hides the ux1 exit affordance while wiring the ux4 one cannot pass here.
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
 
-      const view = new BattleView(parent, makeUx4Callbacks());
-      // turnNumber 12 and skills:[] — distinct from H1 (5, two skills) and H2 (9, one
-      // skill) so an incidental-field predicate cannot hide behind a shared constant (F2).
-      view.refresh(
-        makeUx4VM({
-          outcome,
-          isPvp: false,
-          canSwap: false,
-          bench: [],
-          canFlee: false,
-          turnNumber: 12,
-          skills: [],
-        }),
-      );
-      view.show();
+    const view = new BattleView(parent, makeUx4Callbacks());
+    // turnNumber 12 and skills:[] — distinct from H1 (5, two skills) and H2 (9, one
+    // skill) so an incidental-field predicate cannot hide behind a shared constant (F2).
+    view.refresh(
+      makeUx4VM({
+        outcome,
+        isPvp: false,
+        canSwap: false,
+        bench: [],
+        canFlee: false,
+        turnNumber: 12,
+        skills: [],
+      }),
+    );
+    view.show();
 
-      const swapHint = parent.querySelector(UX4_SWAP_HINT_SELECTOR) as HTMLElement | null;
-      expect(
-        swapHint,
-        `ux4-2 (H3/${outcome}): the swap hint element must exist on the result overlay too ` +
-          '(created once in the constructor, only toggled thereafter)',
-      ).not.toBeNull();
-      const continueHint = parent.querySelector(CONTINUE_HINT_SELECTOR) as HTMLElement | null;
-      expect(
-        continueHint,
-        `precondition (H3/${outcome}): ux1's continue hint must exist — it is the second half of ` +
-          "this case's single conjunction",
-      ).not.toBeNull();
+    const swapHint = parent.querySelector(UX4_SWAP_HINT_SELECTOR) as HTMLElement | null;
+    expect(
+      swapHint,
+      `ux4-2 (H3/${outcome}): the swap hint element must exist on the result overlay too ` +
+        '(created once in the constructor, only toggled thereafter)',
+    ).not.toBeNull();
+    const continueHint = parent.querySelector(CONTINUE_HINT_SELECTOR) as HTMLElement | null;
+    expect(
+      continueHint,
+      `precondition (H3/${outcome}): ux1's continue hint must exist — it is the second half of ` +
+        "this case's single conjunction",
+    ).not.toBeNull();
 
-      const swapHidden = swapHint!.style.display === 'none';
-      const continueVisible = continueHint!.style.display !== 'none';
-      expect(
-        swapHidden && continueVisible,
-        `ux4-2 (H3/${outcome}) ONE CONJUNCTION — swapHintHidden=${String(swapHidden)} ` +
-          `(display=${JSON.stringify(swapHint!.style.display)}), ` +
-          `continueHintVisible=${String(continueVisible)} ` +
-          `(display=${JSON.stringify(continueHint!.style.display)}). The toggle predicate MUST ` +
-          "include the `vm.outcome === 'Ongoing' &&` conjunct: canSwap is false and bench is " +
-          'empty on every terminal outcome, so a `!vm.canSwap`-only predicate shows swap advice ' +
-          'on the result screen. And ux1-2 must keep its exit affordance on that same screen',
-      ).toBe(true);
+    const swapHidden = swapHint!.style.display === 'none';
+    const continueVisible = continueHint!.style.display !== 'none';
+    expect(
+      swapHidden && continueVisible,
+      `ux4-2 (H3/${outcome}) ONE CONJUNCTION — swapHintHidden=${String(swapHidden)} ` +
+        `(display=${JSON.stringify(swapHint!.style.display)}), ` +
+        `continueHintVisible=${String(continueVisible)} ` +
+        `(display=${JSON.stringify(continueHint!.style.display)}). The toggle predicate MUST ` +
+        "include the `vm.outcome === 'Ongoing' &&` conjunct: canSwap is false and bench is " +
+        'empty on every terminal outcome, so a `!vm.canSwap`-only predicate shows swap advice ' +
+        'on the result screen. And ux1-2 must keep its exit affordance on that same screen',
+    ).toBe(true);
 
-      document.body.removeChild(parent);
-    },
-  );
+    document.body.removeChild(parent);
+  });
 
   it('BITES: H4 the hint is a #root sibling of #outcomeEl — NOT inside #actionsEl, NOT on the caller-supplied parent — and 3 refreshes leave exactly one', () => {
     // KILLS (anti-pattern 3): appending the hint to the caller-supplied `parent`
@@ -3292,37 +3291,79 @@ describe('BattleView m23-s8: colour-independent HP severity palette (M23 §2.6, 
 });
 
 // =============================================================================
-// rb-56 — "skill affinity exposed only via btn.title (battleView.ts:308), not a
-// persistent visible cue" (EARS criterion, verbatim).
+// rb-56 — "skill affinity exposed only via btn.title, not a persistent visible
+// cue" (EARS criterion, verbatim).
 //
-// RED REASON: `#renderSkills` (battleView.ts:295-316) currently writes the skill's
-// affinity ONLY into `btn.title` (:308) — a hover/long-press-only tooltip, never
-// rendered on screen by default — while `btn.textContent` (:307) carries the name
-// and power (PvE) or the "Submit:" prefix and name (PvP) but never the affinity.
-// After the fix, `btn.textContent` carries the affinity as a persistent visible
-// label (` · ${skill.affinity}`, the same U+00B7 MIDDLE DOT separator
-// `#renderMonsterCard` already uses at :283) and `btn.title` carries ONLY the
-// accuracy.
+// WHAT THESE ASSERTIONS KILL: any `#renderSkills` shape that writes the skill's
+// affinity ONLY into `btn.title` — a hover/long-press-only tooltip, never
+// rendered on screen by default — while `btn.textContent` carries the name and
+// power (PvE) or the "Submit:" prefix and name (PvP) but never the affinity.
+// The required shape is: `btn.textContent` carries the affinity as a persistent
+// visible label (` · ${skill.affinity}`, the same U+00B7 MIDDLE DOT separator
+// `#renderMonsterCard` already uses for its own `HP x/y · Affinity` line) and
+// `btn.title` carries ONLY the accuracy.
 //
-// FIXTURE: reuses the EXISTING `makeUx4VM` / `UX4_TWO_SKILLS` fixtures defined
-// above in the ux4 section (:1598-1634, :1706-1709) — unmodified. Two skills with
-// distinct affinities ('Grass' / 'Normal'), distinct power (40 / 35) and distinct
-// accuracy (100 / 95); neither affinity is a substring of either skill name.
+// GAP CLOSED (review-measured vacuity, post-landing): the FIRST draft of this
+// block reused the ux4-section `UX4_TWO_SKILLS` fixture, whose two affinities
+// are `'Grass'` and `'Normal'` — NEITHER is a member of the real `Affinity`
+// enum (`game-core/src/monster/types.rs:13-22`: Fire, Water, Plant, Electric,
+// Earth, Wind, Light, Dark). `game-core/src/content.rs:1685-1691` (ADR-0233)
+// records that the shipped a11y token table's eight affinity rows are
+// deliberately unconsumed BECAUSE this client renders the affinity name
+// VERBATIM rather than through a client-side short-token map — avoiding that
+// second, unsynchronised SSOT is the whole architectural point of this
+// criterion. But a WRONG implementation that reintroduces exactly that map,
+// with a passthrough default for anything not in it —
+//   `const AFF: Record<string,string> = { Fire:'FIR', Water:'WTR', ... };`
+//   `btn.textContent = `${skill.name} (${skill.power}) · ${AFF[skill.affinity]
+//   ?? skill.affinity}`;`
+// — passed the first draft, because 'Grass' and 'Normal' both fall through the
+// `??` to the verbatim value and the assertion could not tell the two
+// implementations apart. `RB56_SKILLS` below uses two REAL enum variants
+// (`Plant`, `Electric`) instead, so that wrong implementation now renders
+// `AFF['Plant'] ?? 'Plant'` → whichever short token the map happens to assign
+// Plant (not `'Plant'` itself, since a real map exists precisely to shorten
+// real affinities) and the `toEqual` below reds against it.
+//
+// FIXTURE: a NEW `RB56_SKILLS` local to this block (NOT `UX4_TWO_SKILLS`,
+// which stays exactly as the ux4 section left it — other tests depend on its
+// specific 'Grass'/'Normal' asymmetry, documented at :1663-1683). Two skills,
+// real shipped names, with distinct REAL affinities ('Plant' / 'Electric'),
+// distinct power (40 / 35) and distinct accuracy (100 / 95); neither affinity
+// is a substring of either skill name.
 //
 // BUTTON-COUNT CLAIM, VERIFIED (not assumed) by reading the two methods below:
-//   - `#renderActions` (battleView.ts:318-368): the Flee button is gated on
-//     `vm.canFlee` (false here); `#renderSwapButtons` is only called
-//     `if (vm.canSwap)` (false here — and its own `for (const member of vm.bench)`
-//     loop is empty anyway, since `makeUx4VM`'s default `bench` is `[]`); the bait
-//     selector + Recruit button are gated on `vm.canRecruit` (false, makeUx4VM
-//     default); the cure-item selector + Use Item button are gated on
+//   - `#renderActions`: the Flee button is gated on `vm.canFlee` (false here);
+//     `#renderSwapButtons` is only called `if (vm.canSwap)` (false here — and
+//     its own `for (const member of vm.bench)` loop is empty anyway, since
+//     `makeUx4VM`'s default `bench` is `[]`); the bait selector + Recruit
+//     button are gated on `vm.canRecruit` (false, makeUx4VM default); the
+//     cure-item selector + Use Item button are gated on
 //     `vm.cureItems.length > 0` (`[]`, makeUx4VM default).
-//   - `#renderSwapButtons` (battleView.ts:451-471): never reached anyway (see
-//     above), and would render zero buttons from an empty `bench` even if it were.
-// So with `makeUx4VM({ skills: UX4_TWO_SKILLS, canFlee: false })`, `#actionsEl`
+//   - `#renderSwapButtons`: never reached anyway (see above), and would render
+//     zero buttons from an empty `bench` even if it were.
+// So with `makeUx4VM({ skills: RB56_SKILLS, canFlee: false })`, `#actionsEl`
 // renders NOTHING and the ONLY buttons anywhere under `parent` are the two skill
 // buttons — `parent.querySelectorAll('button')` needs no positional walk.
 // =============================================================================
+
+/**
+ * rb56's own two-skill fixture — NOT `UX4_TWO_SKILLS` above, and not
+ * interchangeable with it. `UX4_TWO_SKILLS` uses `'Grass'` / `'Normal'`,
+ * neither a member of the real `Affinity` enum, so a wrong implementation
+ * that maps affinity through a client-side short-token table with a
+ * passthrough default (`AFF[skill.affinity] ?? skill.affinity`) renders
+ * identically to the verbatim-affinity implementation this criterion
+ * requires — both fall through the `??` to the same string. `Plant` and
+ * `Electric` ARE real `Affinity::` variants (`game-core/src/monster/types.rs`),
+ * so a token-map-with-default implementation renders each affinity's assigned
+ * short token instead of the variant name, and the `toEqual` assertions below
+ * catch it. `Vine Whip` and `Thunder Fang` are real shipped skill names.
+ */
+const RB56_SKILLS = [
+  { id: 1, name: 'Vine Whip', affinity: 'Plant', power: 40, accuracy: 100 },
+  { id: 2, name: 'Thunder Fang', affinity: 'Electric', power: 35, accuracy: 95 },
+];
 
 describe('BattleView rb56: skill affinity is a persistent visible label, not title-only', () => {
   afterEach(() => {
@@ -3334,7 +3375,7 @@ describe('BattleView rb56: skill affinity is a persistent visible label, not tit
     document.body.appendChild(parent);
 
     const view = new BattleView(parent, makeUx4Callbacks());
-    view.refresh(makeUx4VM({ skills: UX4_TWO_SKILLS, canFlee: false }));
+    view.refresh(makeUx4VM({ skills: RB56_SKILLS, canFlee: false }));
     view.show();
 
     const buttons = [...parent.querySelectorAll('button')];
@@ -3349,10 +3390,11 @@ describe('BattleView rb56: skill affinity is a persistent visible label, not tit
     expect(
       buttons.map((b) => b.textContent),
       "rb56 (PvE): each skill button's visible textContent must carry its name, power AND " +
-        'affinity. Currently (battleView.ts:307) it carries only name+power, with the affinity ' +
-        'hidden in btn.title — a hover/long-press-only tooltip, never a persistent visible cue — ' +
-        'which is exactly the criterion this assertion reds against',
-    ).toEqual(['Vine Whip (40) · Grass', 'Tackle (35) · Normal']);
+        'affinity, verbatim (not through a client-side short-token map with a passthrough ' +
+        'default — see the fixture comment on `RB56_SKILLS` above for why real enum values are ' +
+        'load-bearing here). This assertion kills an implementation that carries only name+power, ' +
+        'leaving the affinity in the hover/long-press-only `btn.title`',
+    ).toEqual(['Vine Whip (40) · Plant', 'Thunder Fang (35) · Electric']);
 
     expect(
       buttons[0]!.title,
@@ -3372,7 +3414,7 @@ describe('BattleView rb56: skill affinity is a persistent visible label, not tit
     document.body.appendChild(parent);
 
     const view = new BattleView(parent, makeUx4Callbacks());
-    view.refresh(makeUx4VM({ skills: UX4_TWO_SKILLS, canFlee: false, isPvp: true }));
+    view.refresh(makeUx4VM({ skills: RB56_SKILLS, canFlee: false, isPvp: true }));
     view.show();
 
     const buttons = [...parent.querySelectorAll('button')];
@@ -3386,9 +3428,10 @@ describe('BattleView rb56: skill affinity is a persistent visible label, not tit
     expect(
       buttons.map((b) => b.textContent),
       'rb56 (PvP): each skill button\'s visible textContent must carry "Submit:", the name AND ' +
-        'the affinity. Currently (battleView.ts:307) the PvP arm carries only "Submit: <name>", ' +
-        'with the affinity hidden in btn.title',
-    ).toEqual(['Submit: Vine Whip · Grass', 'Submit: Tackle · Normal']);
+        'the affinity, verbatim. This assertion kills an implementation whose PvP arm carries only ' +
+        '"Submit: <name>", leaving the affinity in the hover-only btn.title, and also kills a ' +
+        'passthrough-default token-map implementation (see `RB56_SKILLS` fixture comment above)',
+    ).toEqual(['Submit: Vine Whip · Plant', 'Submit: Thunder Fang · Electric']);
 
     expect(
       buttons[0]!.title,
