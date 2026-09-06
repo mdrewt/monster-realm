@@ -2748,6 +2748,35 @@ describe('rb58 unknown-status fallback token entropy', () => {
           'case — so the exported helper is no longer the single source of the fallback ' +
           `value the player sees. ${RB58_REPAIR}`,
       ).toEqual([]);
+
+      // THE BADGE TIER NEEDS ITS OWN LONG PAIR. MEASURED SURVIVOR, found by the verifier:
+      // a default arm that truncates the tag at the CALL SITE — `unknownStatusToken([...tag]
+      // .slice(0, k).join(''))` — is caught by the corpus clauses above ONLY for k <= 10,
+      // because the longest corpus member (`Pestilence`) is 10 code points. Every k >= 11
+      // passed 127/127 while `statusBadge` rendered ONE badge for two 300-code-point tags.
+      // T2 already learned this lesson for the HELPER and fixed it with a 300-code-point
+      // pair; the same lesson had not been applied to the tier that actually ships. These
+      // two tags differ only in their LAST code point, so no finite cut point can separate
+      // them.
+      const longA = `${'q'.repeat(299)}a`;
+      const longB = `${'q'.repeat(299)}b`;
+      expect(
+        statusBadge(longA),
+        'rb58 T1 BADGE (no call-site truncation): two 300-code-point tags differing only ' +
+          'in their FINAL code point must render two DIFFERENT badges THROUGH statusBadge. ' +
+          'A failure here means the default arm bounds the tag before hashing it — the ' +
+          'residual`s own defect, reintroduced one hop up from the function this slice ' +
+          'fixed, where a corpus of short realistic names can never see it. Fix the ' +
+          `default arm; do not shorten these tags. ${RB58_REPAIR}`,
+      ).not.toBe(statusBadge(longB));
+      expect(
+        [statusBadge(longA), statusBadge(longB)],
+        'rb58 T1 BADGE IDENTITY (long tags): each long tag`s badge must be byte-exactly ' +
+          'the helper`s token. This is what forbids the default arm from bounding, ' +
+          'trimming or re-slicing the tag on its way to the helper, at ANY cut point — the ' +
+          'corpus IDENTITY clause above cannot say that, because every corpus member is ' +
+          `short enough to survive a bound. ${RB58_REPAIR}`,
+      ).toEqual([unknownStatusToken(longA), unknownStatusToken(longB)]);
     } finally {
       warnSpy.mockRestore();
     }
@@ -2888,15 +2917,37 @@ describe('rb58 unknown-status fallback token entropy', () => {
         lenB: 5,
         diffAt: 0,
       },
+      {
+        // THE ZERO-PAD SIDE. Found by the verifier as a MEASURED SURVIVOR of the
+        // seven-pair suite: `padStart(2, '0')` -> `padEnd(2, '0')` passed 127/127. The
+        // shipped `length <= 3` clauses and this suite's own shape census only pin the
+        // token's LENGTH, so padding on the wrong side was invisible — yet it merges every
+        // residue h in [1, 35] with 36h, collapsing the image from 1296 to 1260 across 36
+        // systematic pairs. These two tags are that defect's smallest witness: they hash
+        // to 1 and 36, so they render `?01` / `?10` correctly and BOTH `?10` under padEnd.
+        a: 'Aawh',
+        b: 'Aaxl',
+        label: 'two tags hashing to 1 and 36 — the zero-pad SIDE, not its length',
+        kills:
+          'padding the token on the wrong side (padEnd for padStart). A length-only ' +
+          'oracle cannot see it: both tokens are still exactly 3 characters and still ' +
+          'match the shape regex, but every sub-base residue has been merged with its ' +
+          '36-multiple. The pad is load-bearing for WHICH token you get, not just for how ' +
+          'long it is',
+        lenA: 4,
+        lenB: 4,
+        diffAt: 2,
+      },
     ];
 
     expect(
       pairs.length,
-      'rb58 T2 ANCHOR: all seven discriminating pairs must still be present. Each kills a ' +
+      'rb58 T2 ANCHOR: all eight discriminating pairs must still be present. Each kills a ' +
         'different wrong derivation and none of the others covers it — truncation at any ' +
         'k, suffix-only folding, order-invariance, code-unit reads, fixed-arity feature ' +
-        `sampling, deduplication, and input case-folding. ${RB58_REPAIR}`,
-    ).toBe(7);
+        'sampling, deduplication, input case-folding, and the zero-pad SIDE. ' +
+        `${RB58_REPAIR}`,
+    ).toBe(8);
 
     for (const { a, b, label, kills, lenA, lenB, diffAt } of pairs) {
       // STRUCTURE PINS, ABOVE THE BEHAVIOURAL CLAUSE. These say what this pair IS, so

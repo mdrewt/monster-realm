@@ -117,14 +117,26 @@ the literal tag (`client/src/ui/battleModel.ts:128-130`).
 new eval** — ADR-0224 bars both a new `evals/*.eval.mjs` and extra clauses in an existing one, and
 this invariant belongs to the module it lives in.
 
-The 23-row mutant register at `memory/projects/gates/rb-58.mutant-register.md` measured **21 CAUGHT
-/ 0 SURVIVED / 2 controls held**, run **twice** with byte-identical verdicts, with the tree proven
-pristine by sha256 after every row. **Eight mutants are killed by exactly one tooth** (M4, M12,
-M13, M15, M16, M17, M18, M19), which is what makes those teeth load-bearing rather than decorative.
-**Nine of the rows are CI-clean bypasses measured by an adversarial pass over the tests before any
-implementation existed** — each a real route to shipping the defect at a fully green suite. Two of
-them, **M13** and **M20**, left `unknownStatusToken` textually spotless and were confirmed by a
-real `vite build` to tree-shake the ORIGINAL colliding transform back into the production bundle.
+The 27-row mutant register at `memory/projects/gates/rb-58.mutant-register.md` measured **25 CAUGHT
+/ 0 SURVIVED / 2 controls held**, run in full **three times**, with the tree proven pristine by
+sha256 after every row. **Twelve rows are killed by exactly one tooth** (M12, M13, M15, M16, M17,
+M18, M19, M20, M22, M23, M24, C3), which is what makes those teeth load-bearing rather than
+decorative.
+
+**Eleven of the rows are CI-clean bypasses that were MEASURED, not imagined** — each a real route to
+shipping the defect at a fully green suite. Nine came from an adversarial pass over the *tests*
+before any implementation existed; two of those, **M13** and **M20**, left `unknownStatusToken`
+textually spotless and were confirmed by a real `vite build` to tree-shake the ORIGINAL colliding
+transform back into the production bundle. The remaining two were found by the **verifier, against
+the finished artifact, after six earlier lenses had passed it**: `padStart` -> `padEnd` (**M22** —
+the shipped clauses pinned only the token's LENGTH, so padding on the wrong side was invisible while
+merging every residue `h` in [1,35] with `36h`), and a `statusBadge` call-site truncation at any cut
+point >= 11 (**M23**/**M24** — the acceptance corpus's longest member is 10 code points, so a
+corpus-shaped tooth could not see it). Both are now closed, by a zero-pad-side pair in T2 and a
+300-code-point badge-tier pair in T1. The lesson generalises and is worth carrying: **a
+corpus-shaped tooth cannot see a truncation whose cut point sits past the corpus's own lengths**,
+and it must be paired with an unbounded-length witness at every tier that ships — the helper tier
+had one, the badge tier did not.
 
 That is why `rb58 T4` scans the **WHOLE file** for ambient reads — `import.meta`, `process.env`,
 `globalThis`, `Math.random`, `Date`, `crypto`, `window`, `navigator` — rather than only the
@@ -150,6 +162,8 @@ should be discharged together with the already-unowned `ADR-0233:179-182` item t
 raised (recorded at ADR-0240:100-104). No `Amends:` header is used here for the same reason: an
 `Amends:` forces a reciprocal back-link edit into ADR-0233, which this slice may not make.
 
-rb-56 set the same precedent one slice earlier: it closed **R-m23-s8-TITLE** and left
-`ADR-0233:183-185`, which still describes that residual as "named, not fixed here", untouched and
-unamended.
+The on-point precedent is **rb-55 / ADR-0240:100-104**, which made exactly this call for the
+`R-m23-s8-TSDUP` residual in exactly this file, and left `ADR-0233:179-182` unowned rather than
+amending a second ADR outside its grant. (rb-56 also closed **R-m23-s8-TITLE** without amending
+`ADR-0233:183-185`, but it minted no ADR at all and so never held a `docs/adr/**` grant to exceed —
+it is a weaker precedent, not the governing one.)
