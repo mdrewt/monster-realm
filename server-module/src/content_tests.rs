@@ -3015,3 +3015,786 @@ fn r1_duplicate_pair_has_exactly_one_enforcement_point() {
          the expected count deliberately, from the spec, and say why."
     );
 }
+
+// ===========================================================================
+// rb-54 GATING TESTS — enum-roster totality is a CI-TIME gate.
+//
+// EARS criterion (verbatim): "content-pipeline validation runs at CI time, not
+// content-sync time — a new enum variant fails CI rather than validate_content"
+//
+// THE DEFECT (verified). `game_core::validate_a11y_tokens`
+// (game-core/src/content.rs:1768) builds its REQUIRED a11y-token-key set from
+// two HAND-MAINTAINED rosters: `STATUS_KIND_ALL: [StatusKind; 5]`
+// (game-core/src/content.rs:1641) and `Affinity::ALL: [Affinity; 8]`
+// (game-core/src/monster/types.rs:28). A sixth `StatusKind` variant is a compile
+// error in the exhaustive `status_token_key`, so the author adds ONE match arm
+// and the crate compiles — but the fixed-size roster does not grow, the key
+// never enters `required`, and `validate_content` returns `Ok(())` at
+// content-sync time. Only a game-core-only test catches it today (measured at
+// game-core/src/content.rs:7488-7494).
+//
+// THE CONTRACT UNDER TEST — new production code at the END of server-module's
+// content.rs production region (immediately ABOVE the inline test module):
+//
+//   fn reflected_variant_names<T: spacetimedb::SpacetimeType>(enum_name: &str)
+//       -> Result<Vec<String>, String>
+//   fn check_roster_is_total<T: spacetimedb::SpacetimeType + PartialEq + Debug>(
+//       enum_name: &str, roster: &[T]) -> Result<(), String>
+//   fn validate_enum_rosters() -> Result<(), String>
+//
+// plus the call `validate_enum_rosters()?;` as the FIRST statement of
+// `sync_content_inner`, ABOVE the `content_version` early-return gate.
+//
+// ERR-MESSAGE CONTRACT (teeth A and B depend on it, so it is part of the
+// contract, not decoration): every `Err` returned by `check_roster_is_total`
+// contains the `enum_name` argument verbatim, the reflected variant count, and
+// the roster length.
+//
+// MEASURED REFLECTION OUTPUT (spiked in this worktree before these teeth were
+// written): StatusKind reflects to
+//   "Poison", "Burn", "Paralysis", "Sleep", "Freeze"
+// and Affinity to
+//   "Fire", "Water", "Plant", "Electric", "Earth", "Wind", "Light", "Dark".
+//
+// RED STATE. Teeth A-E2 are red for ONE reason before the implementation lands:
+// THE CRATE DOES NOT COMPILE, because `super::reflected_variant_names`,
+// `super::check_roster_is_total` and `super::validate_enum_rosters` do not
+// exist (E0425). That is this file's established red convention — see the
+// module header (lines 7-13) and the M13.5c T4 contract block (line 716). Teeth
+// F-I are source scans: they are ALSO red on their own merits the moment the
+// crate compiles without the wiring, so they are not merely compile-gated.
+//
+// AUTHORING NOTE for the implementer: teeth F clause 5 and I read the RAW
+// (NOT comment-stripped) source, so the region between `sync_content_inner`'s
+// opening brace and the call, and the 200 bytes preceding each of the three new
+// fn declarations, must not contain the literal tokens listed in those teeth
+// even inside a comment. In particular, keep the doc comments on the three new
+// functions free of a literal attribute-opener-plus-cfg spelling.
+// ===========================================================================
+
+/// Whitespace-free view of `src` (the compaction idiom used by the 13.5c and
+/// uxd2 source-guards above) so rustfmt line wrapping cannot false-RED a pin.
+fn rb54_compact(src: &str) -> String {
+    src.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// The (at most) `len` bytes of `src` immediately before byte index `idx`,
+/// snapped forward to a char boundary so a multi-byte character in a comment
+/// (content.rs is full of em-dashes) cannot panic the slice.
+fn rb54_window_before(src: &str, idx: usize, len: usize) -> &str {
+    let mut start = idx.saturating_sub(len);
+    while start < idx && !src.is_char_boundary(start) {
+        start += 1;
+    }
+    &src[start..idx]
+}
+
+/// rb-54 tooth A — a SHORT `StatusKind` roster must be REJECTED.
+///
+/// This is the whole point of the slice: the roster is hand-maintained, so the
+/// gate has to notice when a variant was added to the enum but not to the
+/// roster. Passing the first 4 of the 5 shipped entries simulates exactly that
+/// drift (5 declared variants, 4 rostered).
+///
+/// KILLS: a `check_roster_is_total` that only ever returns `Ok(())` (a stub, or
+/// one that compares the roster against itself, or one that `zip`s the two
+/// lists and so silently stops at the shorter one).
+///
+/// The message clauses pin the Err-message contract stated in the block header:
+/// the enum name plus BOTH counts. Without the counts the operator reading a CI
+/// failure cannot tell which side drifted.
+#[test]
+fn rb54_short_status_roster_is_rejected() {
+    let full: [game_core::StatusKind; 5] = game_core::content::STATUS_KIND_ALL;
+    let short = &full[..4];
+
+    let outcome = super::check_roster_is_total::<game_core::StatusKind>("StatusKind", short);
+    let msg = outcome.expect_err(
+        "TEETH(rb-54 A): check_roster_is_total accepted a 4-entry StatusKind \
+         roster while the type declares 5 variants. That is the shipped defect \
+         in miniature — the validator must compare the roster length against \
+         the REFLECTED variant count and return Err on a mismatch, not zip or \
+         truncate to the shorter of the two. Returned",
+    );
+
+    assert!(
+        msg.contains("StatusKind"),
+        "TEETH(rb-54 A): the rejection message must name the enum it is about \
+         (the `enum_name` argument, verbatim) so a CI failure says WHICH roster \
+         drifted; got {msg:?}"
+    );
+    assert!(
+        msg.contains('5'),
+        "TEETH(rb-54 A): the rejection message must state the REFLECTED variant \
+         count (5 for StatusKind) so the reader knows what the type declares; \
+         got {msg:?}"
+    );
+    assert!(
+        msg.contains('4'),
+        "TEETH(rb-54 A): the rejection message must state the ROSTER length (4 \
+         here) so the reader knows what the hand-written list contains; got \
+         {msg:?}"
+    );
+}
+
+/// rb-54 tooth B — a SHORT `Affinity` roster must be REJECTED, and the message
+/// must attribute the failure to Affinity.
+///
+/// KILLS: a `check_roster_is_total` that is hard-wired to StatusKind (reflects
+/// StatusKind regardless of `T`, or ignores `enum_name` and prints a fixed
+/// string). Such an impl passes tooth A and mis-attributes every Affinity
+/// failure, sending the next author to the wrong roster.
+#[test]
+fn rb54_short_affinity_roster_is_rejected() {
+    let full: [game_core::Affinity; 8] = game_core::Affinity::ALL;
+    let short = &full[..7];
+
+    let outcome = super::check_roster_is_total::<game_core::Affinity>("Affinity", short);
+    let msg = outcome.expect_err(
+        "TEETH(rb-54 B): check_roster_is_total accepted a 7-entry Affinity \
+         roster while the type declares 8 variants. Affinity::ALL is the second \
+         hand-maintained roster behind validate_a11y_tokens and must be checked \
+         by the same rule as StatusKind. Returned",
+    );
+
+    assert!(
+        msg.contains("Affinity"),
+        "TEETH(rb-54 B): the rejection message must name Affinity — an impl that \
+         prints a hard-coded `StatusKind` (or ignores `enum_name`) points the \
+         next author at the wrong roster; got {msg:?}"
+    );
+    assert!(
+        msg.contains('8'),
+        "TEETH(rb-54 B): the rejection message must state Affinity's REFLECTED \
+         variant count (8); got {msg:?}"
+    );
+    assert!(
+        msg.contains('7'),
+        "TEETH(rb-54 B): the rejection message must state the ROSTER length (7 \
+         here); got {msg:?}"
+    );
+}
+
+/// rb-54 tooth C — POSITIVE CONTROL: the SHIPPED rosters are total, so the
+/// production entry point must return `Ok(())` today.
+///
+/// KILLS: an always-Err validator (which would satisfy teeth A, B and E1 while
+/// making every `sync_content` call fail), and a reflection helper whose Err
+/// branch fires on the real enums.
+///
+/// FENCE NOTE: this test is also the alarm for a genuine future drift — when a
+/// 6th StatusKind (or 9th Affinity) variant is added without growing the
+/// roster, THIS test goes red in CI. That red is the feature, not a regression:
+/// fix the roster, do not weaken the test.
+#[test]
+fn rb54_shipped_rosters_are_total() {
+    let outcome = super::validate_enum_rosters();
+    assert!(
+        outcome.is_ok(),
+        "TEETH(rb-54 C): validate_enum_rosters must accept the SHIPPED rosters \
+         (STATUS_KIND_ALL has all 5 StatusKind variants, Affinity::ALL has all \
+         8 Affinity variants). An Err here means either the validator is \
+         unconditionally rejecting (which would break every sync_content call) \
+         or a roster has genuinely drifted from its enum — in the latter case \
+         add the missing entry to the roster, never relax this test. Got: \
+         {outcome:?}"
+    );
+}
+
+/// rb-54 tooth D — the reflection ORACLE returns the DECLARED variant names.
+///
+/// The expected names are written as LITERALS, not derived from the same
+/// roster the gate is supposed to police. A test that compared reflection to
+/// `STATUS_KIND_ALL` would be circular: it would pass for a 6th variant that is
+/// missing from the roster, which is the exact defect.
+///
+/// KILLS: a `reflected_variant_names` that returns the roster back, an empty
+/// vec, a vec of indices, or the names of the wrong type; and a length-only
+/// oracle (one that returns `Result<usize, _>` in spirit) — the NAMES are what
+/// let a future maintainer see WHICH variant is unrostered.
+#[test]
+fn rb54_reflection_returns_declared_variant_names() {
+    let status_outcome = super::reflected_variant_names::<game_core::StatusKind>("StatusKind");
+    let status = status_outcome.expect(
+        "TEETH(rb-54 D): reflecting StatusKind must succeed — it is a fieldless \
+         enum with a derived SpacetimeType, so it reflects to a named-variant \
+         sum. The oracle returned",
+    );
+    assert!(
+        !status.is_empty(),
+        "TEETH(rb-54 D): reflecting StatusKind returned ZERO variant names. An \
+         empty oracle makes every roster look total (0 == 0 is never asserted, \
+         but a truncating comparison would pass) — the Err branch must fire on \
+         a zero-variant sum instead of returning an empty vec"
+    );
+    assert_eq!(
+        status,
+        ["Poison", "Burn", "Paralysis", "Sleep", "Freeze"],
+        "TEETH(rb-54 D): reflected StatusKind variant names must equal the five \
+         DECLARED variants, in declaration order (measured spike). If this list \
+         changed because a variant was added, that is the drift this slice \
+         exists to catch: add the variant to STATUS_KIND_ALL and to the a11y \
+         token table, then update this literal DELIBERATELY, from the spec"
+    );
+
+    let affinity_outcome = super::reflected_variant_names::<game_core::Affinity>("Affinity");
+    let affinity = affinity_outcome.expect(
+        "TEETH(rb-54 D): reflecting Affinity must succeed — it is a fieldless \
+         enum with a derived SpacetimeType. The oracle returned",
+    );
+    assert!(
+        !affinity.is_empty(),
+        "TEETH(rb-54 D): reflecting Affinity returned ZERO variant names; see \
+         the StatusKind clause above for why an empty oracle is a false green"
+    );
+    assert_eq!(
+        affinity,
+        ["Fire", "Water", "Plant", "Electric", "Earth", "Wind", "Light", "Dark"],
+        "TEETH(rb-54 D): reflected Affinity variant names must equal the eight \
+         DECLARED variants, in declaration order (measured spike). The order is \
+         load-bearing elsewhere too — Affinity::ALL is the canonical layout of \
+         the eight flat essence columns (EG1-1/EG1-7, ADR-0174 D1)"
+    );
+}
+
+/// rb-54 tooth E1 — a roster with a REPEATED entry must be REJECTED.
+///
+/// The fixture has exactly 5 entries, so the length clause is satisfied: ONLY a
+/// pairwise-distinctness clause can catch it.
+///
+/// KILLS: a length-only `check_roster_is_total`. That impl calls a roster of
+/// `[Poison, Poison, Burn, Paralysis, Sleep]` total while `Freeze` is missing —
+/// which is precisely the shipped defect wearing a different hat (the a11y
+/// `required` set would still be short one key).
+#[test]
+fn rb54_duplicate_roster_entry_is_rejected() {
+    let dup: [game_core::StatusKind; 5] = [
+        game_core::StatusKind::Poison,
+        game_core::StatusKind::Poison,
+        game_core::StatusKind::Burn,
+        game_core::StatusKind::Paralysis,
+        game_core::StatusKind::Sleep,
+    ];
+
+    let outcome = super::check_roster_is_total::<game_core::StatusKind>("StatusKind", &dup);
+    let msg = outcome.expect_err(
+        "TEETH(rb-54 E1): check_roster_is_total accepted a 5-entry StatusKind \
+         roster that lists Poison TWICE and omits Freeze. The length clause \
+         alone cannot see this — the validator must ALSO require the roster \
+         entries to be pairwise distinct (that is what the `PartialEq` bound on \
+         T is for). Returned",
+    );
+
+    assert!(
+        msg.contains("StatusKind"),
+        "TEETH(rb-54 E1): the duplicate-entry rejection must name the enum it is \
+         about (the `enum_name` argument, verbatim); got {msg:?}"
+    );
+}
+
+/// rb-54 tooth E2 — the reflection oracle's Err branch is REACHABLE.
+///
+/// `u32` reflects to `AlgebraicType::U32`, which is not a named-variant sum, so
+/// the one Err branch of `reflected_variant_names` must fire.
+///
+/// KILLS: an oracle whose Err branch is dead (e.g. one that unwraps/expects the
+/// sum and would PANIC a reducer instead of returning Err, or one that returns
+/// `Ok(vec![])` for a non-sum — which tooth D's non-empty clause only covers
+/// for the two real enums).
+///
+/// If `u32` turns out not to implement `spacetimedb::SpacetimeType` in this SDK
+/// version, substitute another primitive that does (`bool` or `String`) and say
+/// which in the handoff — the clause is "a non-sum type", not "u32".
+#[test]
+fn rb54_reflection_rejects_a_non_sum_type() {
+    let outcome = super::reflected_variant_names::<u32>("u32");
+    assert!(
+        outcome.is_err(),
+        "TEETH(rb-54 E2): reflecting a non-sum type must return Err, never Ok \
+         and never a panic. A panicking oracle inside sync_content_inner aborts \
+         the reducer with no diagnostic; an Ok here means the not-a-named-sum \
+         branch is dead code. Got: {outcome:?}"
+    );
+}
+
+/// rb-54 tooth F — the CALL SITE is the first statement of `sync_content_inner`
+/// and precedes the content-version early-return gate.
+///
+/// This is the criterion itself: the gate must run on EVERY sync, including the
+/// already-current one that returns early. A call placed below the version gate
+/// is skipped on every seeded database, so the validator would only ever run on
+/// a fresh publish.
+///
+/// Clause 3 is an INDEX comparison, not a presence check: a presence-only
+/// needle does not gate ordering (measured elsewhere in this repo — a mutant
+/// that moved a call below its anchor survived a presence needle).
+///
+/// Clause 5 reads the RAW source on purpose. `m13_5c_strip_rust_comments` is
+/// STRING-BLIND: a block-comment opener inside a string literal plus a closer
+/// inside a trailing line comment blanks a whole attribute line, so the
+/// STRIPPED prefix can look clean while the shipped wasm never calls the
+/// validator. Brace balance is preserved by that trick and rustfmt leaves it
+/// byte-identical, so the stripped scan cannot see it. A raw-source clause
+/// cannot be blinded by a stripper.
+///
+/// KILLS: a call placed after the version gate (clause 3); a second call added
+/// to make an ordering scan ambiguous (clause 1); a call wrapped in `if`, a
+/// nested block, or preceded by an early exit (clause 4); and a cfg-attributed
+/// call statement, whether or not the attribute is hidden from the comment
+/// stripper (clauses 4 and 5).
+#[test]
+fn rb54_call_site_precedes_the_version_gate() {
+    let raw = M13_5C_CONTENT_RS_SOURCE;
+    let stripped = m13_5c_strip_rust_comments(raw);
+    let call = "validate_enum_rosters()";
+
+    // --- Clauses 1-3: scoped to the fn body (fn-find + brace-walk) -----------
+    let body = m13_5c_fn_body(&stripped, "fn sync_content_inner(ctx");
+    let compact = rb54_compact(body);
+
+    let tail_anchor = ["recompute_monster_derived", "_fields(&mutm,"].concat();
+    assert!(
+        compact.contains(tail_anchor.as_str()),
+        "SCAN PRECONDITION (rb-54 F): the extracted sync_content_inner body does \
+         not reach its own re-derive tail ({tail_anchor:?}). The brace walk \
+         stopped early, so every count below is untrustworthy. Fix the extractor \
+         before trusting any verdict here."
+    );
+    let spill = ["fn", "validate_enum_rosters"].concat();
+    assert!(
+        !compact.contains(spill.as_str()),
+        "SCAN PRECONDITION (rb-54 F): the extracted sync_content_inner body \
+         spills into the `validate_enum_rosters` DECLARATION, whose own text \
+         contains the call needle. The exactly-once count below would be a \
+         permanent false RED. Fix the extractor."
+    );
+
+    let n_call = compact.matches(call).count();
+    assert_eq!(
+        n_call, 1,
+        "TEETH(rb-54 F clause 1): sync_content_inner must call \
+         `validate_enum_rosters()` EXACTLY once; found {n_call}. Zero means the \
+         CI-time roster gate is never wired into the sync path at all (the \
+         validator would be dead code); two or more make the ordering clause \
+         below ambiguous — pick the one call site above the version gate."
+    );
+
+    let gate = ["content_version", "==CONTENT_VERSION"].concat();
+    let n_gate = compact.matches(gate.as_str()).count();
+    assert_eq!(
+        n_gate, 1,
+        "SCAN PRECONDITION (rb-54 F clause 2): the version-gate comparison \
+         `cfg.content_version == CONTENT_VERSION` must appear EXACTLY once in \
+         sync_content_inner; found {n_gate}. The ordering clause below anchors \
+         on it, so zero makes this test vacuous and two make it ambiguous."
+    );
+
+    let call_idx = compact
+        .find(call)
+        .expect("call needle counted once above must be findable");
+    let gate_idx = compact
+        .find(gate.as_str())
+        .expect("version-gate needle counted once above must be findable");
+    assert!(
+        call_idx < gate_idx,
+        "TEETH(rb-54 F clause 3): `validate_enum_rosters()` must be called \
+         BEFORE the content-version early-return gate. Found the call at byte \
+         {call_idx} and the gate at byte {gate_idx} of the compacted body. \
+         Below the gate the validator is skipped on every already-current \
+         database, which is the whole failure mode this slice exists to close: \
+         the roster check must run at CI time on every sync, not only on a \
+         fresh publish."
+    );
+
+    // --- Clauses 4-5: the prefix, on BOTH the stripped and the RAW source.
+    // `m13_5c_strip_rust_comments` preserves byte positions (comments become
+    // spaces), so one pair of indices addresses both strings.
+    let decl_idx = stripped
+        .find("fn sync_content_inner(ctx")
+        .expect("sync_content_inner must be declared in content.rs");
+    let brace_rel = stripped[decl_idx..]
+        .find('{')
+        .expect("the fn must have a body");
+    let body_start = decl_idx + brace_rel + 1;
+    let call_hit = stripped[body_start..].find(call);
+    let call_rel = call_hit.expect(
+        "TEETH(rb-54 F clauses 4-5): no `validate_enum_rosters()` call found \
+         after sync_content_inner's opening brace",
+    );
+    let prefix_end = body_start + call_rel;
+    let stripped_prefix = &stripped[body_start..prefix_end];
+    let raw_prefix = &raw[body_start..prefix_end];
+
+    let banned_stripped: [String; 4] = [
+        "return".to_string(),
+        "{".to_string(),
+        "#[".to_string(),
+        ["cfg", "!("].concat(),
+    ];
+    for token in &banned_stripped {
+        assert!(
+            !stripped_prefix.contains(token.as_str()),
+            "TEETH(rb-54 F clause 4): the STRIPPED prefix between \
+             sync_content_inner's opening brace and the validate_enum_rosters \
+             call contains the banned token {token:?}. The call must be the \
+             FIRST statement of the body — nothing conditional, no nested \
+             block, no early exit and no attribute above it, or the gate can be \
+             skipped on the paths that matter. Prefix scanned: \
+             {stripped_prefix:?}"
+        );
+    }
+
+    let banned_raw: [String; 4] = [
+        "return".to_string(),
+        "{".to_string(),
+        "#[".to_string(),
+        "cfg".to_string(),
+    ];
+    for token in &banned_raw {
+        assert!(
+            !raw_prefix.contains(token.as_str()),
+            "TEETH(rb-54 F clause 5, the one that matters): the RAW (NOT \
+             comment-stripped) prefix between sync_content_inner's opening brace \
+             and the validate_enum_rosters call contains the banned token \
+             {token:?}. This clause exists because the comment stripper is \
+             string-blind: a block-comment opener hidden in a string literal \
+             plus a closer in a trailing line comment blanks a cfg attribute \
+             line, leaving the stripped prefix clean while the shipped wasm \
+             never calls the validator. Put NOTHING between the brace and the \
+             call — not even a comment mentioning these tokens. Prefix \
+             scanned: {raw_prefix:?}"
+        );
+    }
+}
+
+/// rb-54 tooth G — the call STATEMENT is exactly the propagating call.
+///
+/// Equality, not needle-plus-banlist. A measured bypass,
+/// `log_roster_status(validate_enum_rosters())?;`, walks past a ban list on
+/// `let _`, `.ok()`, `unwrap_or` and `is_ok()` while being a total no-op: the
+/// wrapper swallows the Err and returns Ok.
+///
+/// KILLS: every swallow spelling (`let _ = ...;`, `... .ok();`,
+/// `... .unwrap_or_default();`), the wrapper above, and a `.map_err(...)`
+/// re-wrap that would change the operator-visible message contract.
+///
+/// CONSTRAINT (do not "fix" by hand-rolling the rejection): content_tests.rs
+/// lines 2866-3017 run a five-way exact-count census over this same function
+/// body which pins `return Err(` to EXACTLY 1 (the version-stamp guard). The
+/// roster gate must therefore propagate with `?` and never with a hand-rolled
+/// `return Err(...)`, or that census goes red. This equality pin enforces it.
+#[test]
+fn rb54_call_statement_is_exactly_the_propagating_call() {
+    let stripped = m13_5c_strip_rust_comments(M13_5C_CONTENT_RS_SOURCE);
+    let body = m13_5c_fn_body(&stripped, "fn sync_content_inner(ctx");
+    let call = "validate_enum_rosters()";
+
+    let call_hit = body.find(call);
+    let call_idx = call_hit.expect(
+        "TEETH(rb-54 G): sync_content_inner does not call \
+         `validate_enum_rosters()` at all — see tooth F clause 1",
+    );
+    let after = &body[call_idx..];
+    let semi_hit = after.find(';');
+    let semi = semi_hit.expect(
+        "TEETH(rb-54 G): no statement terminator found after the \
+         validate_enum_rosters call; the call must be a complete statement",
+    );
+    let words: Vec<&str> = after[..=semi].split_whitespace().collect();
+    let stmt = words.join(" ");
+
+    assert_eq!(
+        stmt, "validate_enum_rosters()?;",
+        "TEETH(rb-54 G): the call statement must be EXACTLY \
+         `validate_enum_rosters()?;`. Anything else either swallows the Err \
+         (`let _ = ...`, `.ok()`, `.unwrap_or_default()`) or hides it behind a \
+         wrapper that carries the `?` while returning Ok regardless \
+         (`log_roster_status(validate_enum_rosters())?;` — a measured, \
+         ban-list-proof no-op). Do NOT hand-roll `return Err(...)` here either: \
+         the exact-count census at content_tests.rs:2866-3017 pins this body to \
+         exactly one `return Err(`. Statement found: {stmt:?}"
+    );
+}
+
+/// rb-54 tooth H — `validate_enum_rosters`'s body is PINNED, exactly.
+///
+/// The body normalization removes ALL whitespace and then collapses a trailing
+/// comma before a close paren (`,)` becomes `)`). Both are deliberate: the
+/// StatusKind call is 104 columns on one line, so rustfmt provably wraps it
+/// vertically and adds a trailing comma. Normalizing both makes the pin
+/// wrap-agnostic without weakening it — it remains an EQUALITY over the entire
+/// body, not a needle.
+///
+/// KILLS four measured CI-clean bypasses:
+///  (a) a file-scope `const ENUM_ROSTER_REFLECTION_ENFORCED: bool = false;` plus
+///      an `if !... ` early `Ok(())` — extra statements break the equality;
+///  (b) a cfg-attributed early `Ok(())` keyed on the wasm32 target arch inside
+///      the body: it compiles for host AND wasm32, and `just lint` / `cargo
+///      nextest` compile host-only, so nothing ever executes the wasm arm and
+///      the shipped module validates nothing. The token bans below name it;
+///  (c) a `zip` or `truncate` against the roster length (would need extra body
+///      text, and tooth A kills the behavior directly);
+///  (d) reflecting the WRONG type — the turbofishes and the roster paths are
+///      both spelled in the pin, and `T` is inferred from the roster, so a
+///      mismatched pair does not even compile.
+#[test]
+fn rb54_validate_enum_rosters_body_is_pinned() {
+    let stripped = m13_5c_strip_rust_comments(M13_5C_CONTENT_RS_SOURCE);
+    let body = m13_5c_fn_body(&stripped, "fn validate_enum_rosters()");
+    let normalized = rb54_compact(body).replace(",)", ")");
+
+    let banned: [String; 4] = [
+        ["#[", "cfg"].concat(),
+        ["cfg", "!("].concat(),
+        ["target", "_arch"].concat(),
+        ["debug", "_assert"].concat(),
+    ];
+    for token in &banned {
+        assert!(
+            !normalized.contains(token.as_str()),
+            "TEETH(rb-54 H): validate_enum_rosters's body contains the banned \
+             token {token:?}. A conditional-compilation escape hatch here \
+             compiles green on the host (where every test and lint runs) while \
+             the shipped wasm skips the check entirely, and a debug-only \
+             assertion is compiled out of the release module. The body must be \
+             two unconditional statements. Body found: {normalized:?}"
+        );
+    }
+
+    let expected_body = concat!(
+        "check_roster_is_total::<game_core::StatusKind>(",
+        "\"StatusKind\",&game_core::content::STATUS_KIND_ALL)?;",
+        "check_roster_is_total::<game_core::Affinity>(",
+        "\"Affinity\",&game_core::Affinity::ALL)"
+    );
+    assert_eq!(
+        normalized, expected_body,
+        "TEETH(rb-54 H): validate_enum_rosters's body must be EXACTLY the two \
+         pinned calls — StatusKind first (propagating with `?`), Affinity second \
+         (the tail expression). Note the paths: STATUS_KIND_ALL is NOT \
+         re-exported at the game_core crate root (game-core/src/lib.rs:16 is a \
+         plain `pub mod content;`), so it must be reached through \
+         `game_core::content::`, while `Affinity::ALL` and both enum types ARE \
+         root re-exports. Any extra statement — a feature-flag early exit, a \
+         zip or truncate, a log line — breaks this equality by design. \
+         Normalization applied: all whitespace removed, then a trailing comma \
+         before a close paren dropped, so rustfmt's vertical wrap of the \
+         104-column StatusKind call is accepted. Body found: {normalized:?}"
+    );
+}
+
+/// rb-54 tooth I — none of the three new validators is conditionally compiled.
+///
+/// Checks the 200 bytes preceding each declaration on BOTH the stripped and the
+/// RAW source, using the fact that `m13_5c_strip_rust_comments` preserves byte
+/// positions. The raw pass is what survives the string-blind stripper trick
+/// described in tooth F clause 5; the exactly-once precondition guarantees the
+/// index really is the declaration and not a mention in prose.
+///
+/// KILLS: a cfg-attribute (test-only, or one keyed on the target arch) on any
+/// of the three functions. Such an attribute makes the CI-time gate a test-only
+/// artifact: the host test suite stays green and proves nothing about the
+/// module that actually ships.
+///
+/// IMPLEMENTER NOTE: because the raw pass sees comments, the doc comments on
+/// these three functions must not spell an attribute opener followed by `cfg`.
+#[test]
+fn rb54_new_validators_are_not_cfg_test_gated() {
+    let raw = M13_5C_CONTENT_RS_SOURCE;
+    let stripped = m13_5c_strip_rust_comments(raw);
+    let cfg_attr = ["#[", "cfg"].concat();
+
+    let decls = [
+        "fn reflected_variant_names",
+        "fn check_roster_is_total",
+        "fn validate_enum_rosters",
+    ];
+    for decl in decls {
+        let n = stripped.matches(decl).count();
+        assert_eq!(
+            n, 1,
+            "SCAN PRECONDITION (rb-54 I): `{decl}` must be declared EXACTLY once \
+             in content.rs's code (comments are stripped before counting); found \
+             {n}. Zero means the validator does not exist yet; two or more make \
+             the attribute window below address the wrong declaration."
+        );
+        let idx = stripped
+            .find(decl)
+            .expect("declaration counted once above must be findable");
+
+        let stripped_window = rb54_window_before(&stripped, idx, 200);
+        assert!(
+            !stripped_window.contains(cfg_attr.as_str()),
+            "TEETH(rb-54 I): a conditional-compilation attribute sits within the \
+             200 bytes before `{decl}`. All three roster validators must be \
+             UNCONDITIONAL production code: gate any of them to test builds and \
+             the host suite goes green while the shipped wasm module carries no \
+             roster check at all. Window scanned: {stripped_window:?}"
+        );
+
+        let raw_window = rb54_window_before(raw, idx, 200);
+        assert!(
+            !raw_window.contains(cfg_attr.as_str()),
+            "TEETH(rb-54 I, raw pass): a conditional-compilation attribute sits \
+             within the 200 RAW bytes before `{decl}`. The raw pass exists \
+             because the comment stripper is string-blind and can be made to \
+             blank an attribute line (see tooth F clause 5); it also means the \
+             doc comments on these functions must not contain that literal. \
+             Window scanned: {raw_window:?}"
+        );
+    }
+}
+
+// ===========================================================================
+// rb-54 CLOSURE TEETH — added after the artifact red-team MEASURED three
+// CI-clean bypasses that every tooth above survives.
+//
+// Root cause: of the three new functions, only `validate_enum_rosters` had its
+// body pinned, and it is the trivial one. The two that carry the actual logic
+// were guarded solely by behavioural teeth whose fixtures all evaluate the
+// CURRENT 5-and-8 shape, so an oracle that returns the right answer by the
+// wrong provenance is invisible to them.
+//
+// The measured bypasses, each verified green on all ten teeth above AND with a
+// real sixth StatusKind variant present in game-core:
+//   X1  `reflected_variant_names` branches on `enum_name` and reflects
+//       StatusEffect for the StatusKind roster. StatusKind and StatusEffect
+//       reflect to byte-identical name lists, so no fixture comparing names can
+//       see it, and the roster gate is dead.
+//   X2  the same substitution planted one frame further down, in the
+//       `TypespaceBuilder::add` impl, keyed on `TypeId`. That impl had no
+//       pin and no test of any kind.
+//   X3  `check_roster_is_total` compares the roster against a hardcoded per-enum
+//       count instead of against the reflected length.
+// ===========================================================================
+
+/// rb-54 closure tooth J — the oracle is driven by its TYPE PARAMETER, not by
+/// its diagnostic label.
+///
+/// `enum_name` is documented as diagnostic only, so reflecting `Affinity` while
+/// labelling the call `StatusKind` must still return the eight Affinity names.
+/// An oracle that branches on the label returns the five status names here.
+///
+/// KILLS bypass X1 behaviourally — which matters because no name-comparing
+/// fixture can: StatusKind and StatusEffect reflect to identical lists, so the
+/// substitution is invisible to tooth D. Deliberately mismatching the label is
+/// what makes the two implementations diverge.
+#[test]
+fn rb54_oracle_is_driven_by_the_type_not_the_label() {
+    let names = super::reflected_variant_names::<game_core::Affinity>("StatusKind")
+        .expect("reflecting Affinity must succeed regardless of the diagnostic label");
+
+    assert_eq!(
+        names,
+        vec![
+            "Fire".to_string(),
+            "Water".to_string(),
+            "Plant".to_string(),
+            "Electric".to_string(),
+            "Earth".to_string(),
+            "Wind".to_string(),
+            "Light".to_string(),
+            "Dark".to_string(),
+        ],
+        "TEETH(rb-54 J): reflected_variant_names must reflect its TYPE PARAMETER \
+         and treat enum_name as a diagnostic string only. Reflecting Affinity \
+         under the label StatusKind returned {names:?}. If that is the five \
+         status names, the oracle is branching on the label and reflecting some \
+         other type — a MEASURED bypass that leaves the roster gate dead while \
+         every name-comparing tooth stays green, because StatusKind and \
+         StatusEffect declare identical variant names."
+    );
+}
+
+/// rb-54 closure tooth K — the oracle's body never names a concrete type.
+///
+/// The honest implementation is generic end to end: it reflects `T` and nothing
+/// else. Any concrete type mentioned inside that body is a substitution, and
+/// substituting a type whose variant list happens to match today is invisible
+/// to every behavioural fixture.
+///
+/// KILLS bypass X1 structurally (belt-and-braces with tooth J).
+#[test]
+fn rb54_oracle_body_reflects_only_its_type_parameter() {
+    let stripped = m13_5c_strip_rust_comments(M13_5C_CONTENT_RS_SOURCE);
+    let body = m13_5c_fn_body(&stripped, "fn reflected_variant_names");
+    let compact = rb54_compact(body);
+
+    let generic_call = ["<Tas", "spacetimedb::SpacetimeType>::make_type"].concat();
+    assert!(
+        compact.contains(generic_call.as_str()),
+        "TEETH(rb-54 K): reflected_variant_names must obtain its answer from \
+         `<T as SpacetimeType>::make_type`. Body found: {compact:?}"
+    );
+
+    let concrete = ["game", "_core::"].concat();
+    assert!(
+        !compact.contains(concrete.as_str()),
+        "TEETH(rb-54 K): reflected_variant_names's body names a concrete \
+         game-core type. The oracle must be generic over T alone — a body that \
+         reflects a NAMED type for some roster returns the right answer by the \
+         wrong provenance, and because StatusKind and StatusEffect declare \
+         identical variant names that forgery passes every name-comparing \
+         tooth. Body found: {compact:?}"
+    );
+}
+
+/// rb-54 closure tooth L — the never-interning builder resolves inline, only.
+///
+/// `EnumRosterTypespace::add` shipped with no pin and no test. It is the last
+/// frame before the derive's answer reaches the oracle, so a `TypeId`-keyed
+/// redirect there substitutes one type's variant list for another's while every
+/// tooth above stays green.
+///
+/// KILLS bypass X2.
+#[test]
+fn rb54_typespace_builder_resolves_inline_only() {
+    let stripped = m13_5c_strip_rust_comments(M13_5C_CONTENT_RS_SOURCE);
+    let body = m13_5c_fn_body(&stripped, "fn add(");
+    let normalized = rb54_compact(body);
+
+    assert_eq!(
+        normalized, "make_ty(self)",
+        "TEETH(rb-54 L): EnumRosterTypespace::add's body must be EXACTLY \
+         `make_ty(self)`. Anything else — a TypeId lookup that redirects to \
+         another type's make_type, a hand-built sum, a cached list — makes the \
+         returned variant list stop being the derive's answer for the type the \
+         caller asked about, which is the single property the whole roster gate \
+         rests on. That redirect was MEASURED passing all ten teeth above with a \
+         real unrostered sixth variant present. Body found: {normalized:?}"
+    );
+}
+
+/// rb-54 closure tooth M — the roster is measured against the REFLECTED length.
+///
+/// KILLS bypass X3: a per-enum hardcoded expected count (`match enum_name {
+/// "StatusKind" => 5, ... }`) reads as a defensive pin and is a total no-op —
+/// it re-introduces exactly the hand-maintained literal the slice exists to
+/// remove, one layer up.
+#[test]
+fn rb54_length_check_compares_against_the_reflected_count() {
+    let stripped = m13_5c_strip_rust_comments(M13_5C_CONTENT_RS_SOURCE);
+    let body = m13_5c_fn_body(&stripped, "fn check_roster_is_total");
+    let compact = rb54_compact(body);
+
+    let compare = ["roster.len()!=", "reflected.len()"].concat();
+    assert!(
+        compact.contains(compare.as_str()),
+        "TEETH(rb-54 M): check_roster_is_total must compare the roster length \
+         directly against the REFLECTED variant count. A hardcoded per-enum \
+         expected count is the hand-maintained literal this slice exists to \
+         delete, moved one layer up, and it was MEASURED leaving the gate dead \
+         with every other tooth green. Body found: {compact:?}"
+    );
+
+    for digit in ['5', '8'] {
+        let literal = format!("=>{digit}");
+        assert!(
+            !compact.contains(literal.as_str()),
+            "TEETH(rb-54 M): check_roster_is_total's body maps something to the \
+             literal {digit}, which is the current width of a shipped roster. \
+             The whole point is that no compiled-in count decides this — the \
+             derive metadata does. Body found: {compact:?}"
+        );
+    }
+}
