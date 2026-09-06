@@ -22,12 +22,22 @@ keys it REQUIRES from two **hand-maintained rosters**:
 mapped through the exhaustive `status_token_key` / `affinity_token_key`.
 
 Adding a sixth `StatusKind` variant **is** a compile error in `status_token_key` — it has no
-wildcard arm — so the author adds exactly one match arm and the crate compiles again. The
-fixed-size roster does not grow. The new key therefore never enters `required`, `A11Y_TOKENS` is
+wildcard arm. Measured, it is a compile error in four places: `status_token_key`
+(`game-core/src/content.rs:1658`), the `applies_status` cross-check (`:820`), `StatusKind::matches`
+(`game-core/src/combat/ability.rs:57`) and the status-application match
+(`game-core/src/combat/resolve.rs:177`). The author fills four arms and the workspace compiles
+again. (The upstream note at `game-core/src/content.rs:7490` says "the one match arm"; that is
+stale, and this ADR repeated it before it was re-measured.) None of those four sites is the roster:
+the fixed-size `STATUS_KIND_ALL` does not grow. The new key therefore never enters `required`, `A11Y_TOKENS` is
 never asked for a row, and **`validate_content` returns `Ok(())`**. ADR-0233 records this as
-measured, and `game-core/src/content.rs:7488-7494` states it in the source: adding a sixth variant
-plus the one match arm it forces "was MEASURED to compile clean with the validator still returning
-`Ok(())`".
+measured, and `game-core/src/content.rs:7488-7494` states it in the source — adding a sixth variant
+plus the arms it forces "was MEASURED to compile clean with the validator still returning `Ok(())`"
+(that note says "the one match arm"; only the arm count is stale, the conclusion is exactly right).
+
+This slice re-measured the whole scenario end to end rather than trusting the note: with
+`StatusKind::Frostbite` added, all four arms filled and `STATUS_KIND_ALL` left at five entries, the
+workspace compiles and `content::tests::content_parses_and_validates` — which calls
+`validate_content` — still **passes**.
 
 The only thing that catches it is `m23s8_totality_status_kind_variants_have_tokens`
 (`game-core/src/content.rs:7845`), a `#[cfg(test)]` test. That is the residual m23-s8 filed as
@@ -103,9 +113,11 @@ Two shapes were considered and rejected:
   (`game-core/src/content.rs:7852-7860`). Rejected: it would hard-code a game-core spelling
   convention into server-module, so a future `StatusKind::SuperBurn` keyed `"status.super_burn"`
   would false-RED the *server* over a *game-core* naming choice that nothing declares.
-- **Re-deriving the reflected list from the roster** in any form. That is the forgery family
-  game-core records eight measured instances of (`game-core/src/content.rs:7754-7758`). It is
-  structurally prevented here rather than merely text-pinned — see D4.
+- **Re-deriving the reflected list from the table it is meant to check** in any form. That is the
+  forgery family game-core records eight measured instances of
+  (`game-core/src/content.rs:1753-1757` and `:7968-7974` — there the eight forged validators
+  re-derived their oracle from `A11Y_TOKENS` itself). The analogous forgeries here are prevented by
+  a combination of type binding and body pins — see D4.
 
 ### D4 — The oracle is bound to the roster's element type in the signature
 
@@ -121,9 +133,20 @@ injectable for tests. The plan-phase red-team measured two CI-clean forgeries th
   types are near-synonyms that `game-core/src/combat/ability.rs:34-36` documents as a coupled pair.
   A plain typo would produce a permanently silent validator.
 
-Binding `T` to the roster's element type makes both impossible rather than text-pinned. The negative
-test fixture gets stronger as a result, not weaker: a test passes a deliberately short slice of the
-**real** shipped roster (`&STATUS_KIND_ALL[..4]`), which is a truer negative than a synthetic list.
+Binding `T` to the roster's element type eliminates both forgeries **at `check_roster_is_total`'s
+call boundary**. The negative test fixture gets stronger as a result, not weaker: a test passes a
+deliberately short slice of the **real** shipped roster (`&STATUS_KIND_ALL[..4]`), which is a truer
+negative than a synthetic list.
+
+**That binding is not by itself sufficient, and an earlier draft of this ADR wrongly claimed it
+was.** The artifact red-team measured the same substitution planted one and two frames further
+down — inside `reflected_variant_names` (branching on the `enum_name` label) and inside
+`EnumRosterTypespace::add` (keyed on `TypeId`) — passing all ten original teeth *with a real
+unrostered sixth variant present*. Both frames are now pinned: `add`'s body must equal
+`make_ty(self)`, the oracle's body may not name a concrete `game_core::` type, and a behavioural
+tooth reflects `Affinity` under the label `"StatusKind"` so a label-keyed oracle diverges. The
+honest summary is that the type binding removes the forgery from the call boundary and explicit
+pins remove it from the two frames below; it is not eliminated by typing alone.
 
 **Contract:** `T` must be a fieldless enum with a derived `PartialEq`. For a payload-carrying enum,
 distinct *values* are not distinct *variants* — `[…, Sleep { turns_remaining: 1 }, Sleep {
@@ -152,22 +175,40 @@ This slice does **not** make `game_core::validate_content` fail on a new variant
 *sibling* server-side gate; `validate_content` stays blind to the variant exactly as ADR-0233
 describes. The accurate claim is: **a new enum variant now fails the server module's publish-time
 validate phase**, not "fails content validation". The practical gap is small — `validate_content`
-has exactly one non-test caller in the tree, `server-module/src/content.rs:61` — but the distinction
-is recorded so no future reader over-reads the guarantee.
+has exactly one non-test caller in the tree, `server-module/src/content.rs:67` — but the distinction
+is recorded so no future reader over-reads the guarantee. Note the phase name precisely: the call
+sits ABOVE the `LOAD`/`VALIDATE`/`WRITE` phase markers entirely (D2), so "fails at content-sync
+time" is right and "fails in the VALIDATE phase" would not be.
 
 Equally, this is **defence in depth behind** the game-core CI tests, not a replacement for them. A
 developer adding a sixth variant still sees `m23s8_totality_status_kind_variants_have_tokens` go red
-first. What changes is that CI is no longer the *only* thing standing between that variant and a
-shipped module.
+first — and, measured, `evals/spacetime-type-snapshot.eval.mjs` reds too, on the variant-order
+baseline. So a new variant already had two CI detectors before this slice; the honest value added is
+a third detector that lives in the module itself and a sync-time failure with an actionable message,
+not a previously-undetectable defect becoming detectable.
+
+Worth stating plainly, because it bounds the claim: since the predicate is data-independent and the
+host test suite evaluates the same function, **any artifact whose CI is green necessarily has
+`validate_enum_rosters() == Ok(())` in the shipped wasm.** The reducer wiring therefore cannot fire
+in a CI-green build; its value is for a build that skipped or subverted CI, and for making the
+failure legible at the point content is loaded rather than in an unrelated test. The cost is two
+reflections and two small allocations on every `sync_content`, including the previously-free
+already-current fast path.
 
 ## Consequences
 
-- A new `StatusKind` or `Affinity` variant whose roster entry is missing makes the module
-  **unpublishable** until the roster is fixed. That is the point.
-- `server-module` gains runtime type reflection in production for the first time. The
-  never-interning builder has no depth cap, so a self-referential type would recurse until the
-  process aborts — safe for two leaf enums, and documented as "payload-free enums only; never a row
-  type" on the helper.
+- A new `StatusKind` or `Affinity` variant whose roster entry is missing fails `init` on a fresh
+  database and fails any explicit owner-only `sync_content` call. It does NOT block the wasm build
+  and does NOT block `just publish` onto an EXISTING database — `init` runs only at database
+  creation (D5), so a drifted module publishes fine over a live DB and the `Err` surfaces on the
+  next sync. An earlier draft said "unpublishable", which overstated it and contradicted D5.
+- `server-module` gains runtime type reflection in production. The never-interning builder has no
+  depth cap, so a self-referential type would recurse until the stack is exhausted and the process
+  aborts — safe for the two fieldless leaf enums actually reflected. The test-only precedent
+  (`accounts_tests.rs`) documents this hazard AND carries an explicit depth cap in its consumer;
+  this slice lifts the builder without the cap, so the contract is carried by a doc comment on
+  `EnumRosterTypespace` instead. That comment was claimed by an earlier draft of this ADR before it
+  was actually written; it is now shipped.
 - Known residual hole, stated rather than papered over: collapsing `status_token_key`'s arms **and**
   deleting the resulting orphan `A11Y_TOKENS` rows passes both this check and
   `validate_a11y_tokens`'s orphan-key branch. That combination is still red in CI at

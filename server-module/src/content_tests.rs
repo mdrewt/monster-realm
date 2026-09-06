@@ -3644,3 +3644,157 @@ fn rb54_new_validators_are_not_cfg_test_gated() {
         );
     }
 }
+
+// ===========================================================================
+// rb-54 CLOSURE TEETH — added after the artifact red-team MEASURED three
+// CI-clean bypasses that every tooth above survives.
+//
+// Root cause: of the three new functions, only `validate_enum_rosters` had its
+// body pinned, and it is the trivial one. The two that carry the actual logic
+// were guarded solely by behavioural teeth whose fixtures all evaluate the
+// CURRENT 5-and-8 shape, so an oracle that returns the right answer by the
+// wrong provenance is invisible to them.
+//
+// The measured bypasses, each verified green on all ten teeth above AND with a
+// real sixth StatusKind variant present in game-core:
+//   X1  `reflected_variant_names` branches on `enum_name` and reflects
+//       StatusEffect for the StatusKind roster. StatusKind and StatusEffect
+//       reflect to byte-identical name lists, so no fixture comparing names can
+//       see it, and the roster gate is dead.
+//   X2  the same substitution planted one frame further down, in the
+//       `TypespaceBuilder::add` impl, keyed on `TypeId`. That impl had no
+//       pin and no test of any kind.
+//   X3  `check_roster_is_total` compares the roster against a hardcoded per-enum
+//       count instead of against the reflected length.
+// ===========================================================================
+
+/// rb-54 closure tooth J — the oracle is driven by its TYPE PARAMETER, not by
+/// its diagnostic label.
+///
+/// `enum_name` is documented as diagnostic only, so reflecting `Affinity` while
+/// labelling the call `StatusKind` must still return the eight Affinity names.
+/// An oracle that branches on the label returns the five status names here.
+///
+/// KILLS bypass X1 behaviourally — which matters because no name-comparing
+/// fixture can: StatusKind and StatusEffect reflect to identical lists, so the
+/// substitution is invisible to tooth D. Deliberately mismatching the label is
+/// what makes the two implementations diverge.
+#[test]
+fn rb54_oracle_is_driven_by_the_type_not_the_label() {
+    let names = super::reflected_variant_names::<game_core::Affinity>("StatusKind")
+        .expect("reflecting Affinity must succeed regardless of the diagnostic label");
+
+    assert_eq!(
+        names,
+        vec![
+            "Fire".to_string(),
+            "Water".to_string(),
+            "Plant".to_string(),
+            "Electric".to_string(),
+            "Earth".to_string(),
+            "Wind".to_string(),
+            "Light".to_string(),
+            "Dark".to_string(),
+        ],
+        "TEETH(rb-54 J): reflected_variant_names must reflect its TYPE PARAMETER \
+         and treat enum_name as a diagnostic string only. Reflecting Affinity \
+         under the label StatusKind returned {names:?}. If that is the five \
+         status names, the oracle is branching on the label and reflecting some \
+         other type — a MEASURED bypass that leaves the roster gate dead while \
+         every name-comparing tooth stays green, because StatusKind and \
+         StatusEffect declare identical variant names."
+    );
+}
+
+/// rb-54 closure tooth K — the oracle's body never names a concrete type.
+///
+/// The honest implementation is generic end to end: it reflects `T` and nothing
+/// else. Any concrete type mentioned inside that body is a substitution, and
+/// substituting a type whose variant list happens to match today is invisible
+/// to every behavioural fixture.
+///
+/// KILLS bypass X1 structurally (belt-and-braces with tooth J).
+#[test]
+fn rb54_oracle_body_reflects_only_its_type_parameter() {
+    let stripped = m13_5c_strip_rust_comments(M13_5C_CONTENT_RS_SOURCE);
+    let body = m13_5c_fn_body(&stripped, "fn reflected_variant_names");
+    let compact = rb54_compact(body);
+
+    let generic_call = ["<Tas", "spacetimedb::SpacetimeType>::make_type"].concat();
+    assert!(
+        compact.contains(generic_call.as_str()),
+        "TEETH(rb-54 K): reflected_variant_names must obtain its answer from \
+         `<T as SpacetimeType>::make_type`. Body found: {compact:?}"
+    );
+
+    let concrete = ["game", "_core::"].concat();
+    assert!(
+        !compact.contains(concrete.as_str()),
+        "TEETH(rb-54 K): reflected_variant_names's body names a concrete \
+         game-core type. The oracle must be generic over T alone — a body that \
+         reflects a NAMED type for some roster returns the right answer by the \
+         wrong provenance, and because StatusKind and StatusEffect declare \
+         identical variant names that forgery passes every name-comparing \
+         tooth. Body found: {compact:?}"
+    );
+}
+
+/// rb-54 closure tooth L — the never-interning builder resolves inline, only.
+///
+/// `EnumRosterTypespace::add` shipped with no pin and no test. It is the last
+/// frame before the derive's answer reaches the oracle, so a `TypeId`-keyed
+/// redirect there substitutes one type's variant list for another's while every
+/// tooth above stays green.
+///
+/// KILLS bypass X2.
+#[test]
+fn rb54_typespace_builder_resolves_inline_only() {
+    let stripped = m13_5c_strip_rust_comments(M13_5C_CONTENT_RS_SOURCE);
+    let body = m13_5c_fn_body(&stripped, "fn add(");
+    let normalized = rb54_compact(body);
+
+    assert_eq!(
+        normalized, "make_ty(self)",
+        "TEETH(rb-54 L): EnumRosterTypespace::add's body must be EXACTLY \
+         `make_ty(self)`. Anything else — a TypeId lookup that redirects to \
+         another type's make_type, a hand-built sum, a cached list — makes the \
+         returned variant list stop being the derive's answer for the type the \
+         caller asked about, which is the single property the whole roster gate \
+         rests on. That redirect was MEASURED passing all ten teeth above with a \
+         real unrostered sixth variant present. Body found: {normalized:?}"
+    );
+}
+
+/// rb-54 closure tooth M — the roster is measured against the REFLECTED length.
+///
+/// KILLS bypass X3: a per-enum hardcoded expected count (`match enum_name {
+/// "StatusKind" => 5, ... }`) reads as a defensive pin and is a total no-op —
+/// it re-introduces exactly the hand-maintained literal the slice exists to
+/// remove, one layer up.
+#[test]
+fn rb54_length_check_compares_against_the_reflected_count() {
+    let stripped = m13_5c_strip_rust_comments(M13_5C_CONTENT_RS_SOURCE);
+    let body = m13_5c_fn_body(&stripped, "fn check_roster_is_total");
+    let compact = rb54_compact(body);
+
+    let compare = ["roster.len()!=", "reflected.len()"].concat();
+    assert!(
+        compact.contains(compare.as_str()),
+        "TEETH(rb-54 M): check_roster_is_total must compare the roster length \
+         directly against the REFLECTED variant count. A hardcoded per-enum \
+         expected count is the hand-maintained literal this slice exists to \
+         delete, moved one layer up, and it was MEASURED leaving the gate dead \
+         with every other tooth green. Body found: {compact:?}"
+    );
+
+    for digit in ['5', '8'] {
+        let literal = format!("=>{digit}");
+        assert!(
+            !compact.contains(literal.as_str()),
+            "TEETH(rb-54 M): check_roster_is_total's body maps something to the \
+             literal {digit}, which is the current width of a shipped roster. \
+             The whole point is that no compiled-in count decides this — the \
+             derive metadata does. Body found: {compact:?}"
+        );
+    }
+}

@@ -757,6 +757,19 @@ fn seed_heal_locations_from(ctx: &ReducerContext, defs: &[game_core::HealLocatio
 /// `make_ty` and hands back the structural type, which is all the roster
 /// totality check needs. It is unconditional production code — the roster gate
 /// runs inside `sync_content_inner` in the shipped wasm module too.
+///
+/// CONTRACT: payload-free enums only; never a row type and never a type that
+/// can reach itself. Because nothing is interned, a self-referential type
+/// recurses without a depth cap until the stack is exhausted, which aborts the
+/// whole process rather than returning an error — see the same hazard recorded
+/// on the test-only precedent in `accounts_tests.rs`, whose consumer carries an
+/// explicit depth cap for exactly this reason. Reflection here runs inside
+/// `init`, so an abort is a failed publish with no diagnostic.
+///
+/// `add` must stay exactly `make_ty(self)`. Resolving a type through anything
+/// else — a `TypeId` lookup, a hand-built sum, another type's `make_type` —
+/// makes the returned variant list stop being the derive's answer for the type
+/// the caller asked about, which is the one property the roster gate rests on.
 struct EnumRosterTypespace;
 
 impl spacetimedb::sats::typespace::TypespaceBuilder for EnumRosterTypespace {
@@ -838,10 +851,11 @@ fn check_roster_is_total<T: spacetimedb::SpacetimeType + PartialEq + core::fmt::
     if roster.len() != reflected.len() {
         return Err(format!(
             "{enum_name}: the hand-maintained roster has {} entries but the type \
-             declares {} variants {:?}. Grow the SOURCE roster (STATUS_KIND_ALL \
-             for StatusKind, {enum_name}::ALL for an enum that carries its own \
-             ALL constant) so it lists every variant — this list is compiled in, \
-             so re-publishing the module will not clear this error.",
+             declares {} variants {:?}. Grow the SOURCE roster in game-core so \
+             it lists every variant, and give each new variant an a11y token \
+             row — STATUS_KIND_ALL is a free const in game-core content.rs, \
+             Affinity::ALL is an associated const on the type. This list is \
+             compiled in, so re-publishing the module will not clear this error.",
             roster.len(),
             reflected.len(),
             reflected,
