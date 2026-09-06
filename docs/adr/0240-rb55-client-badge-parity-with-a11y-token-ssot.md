@@ -73,20 +73,35 @@ must be explicit rather than assumed.
 ADR-0224 retired the **vehicle and the oracle class**: standalone `evals/*.eval.mjs` scanners, and
 meta-checks that exist to audit another check. It did not retire reading source from an ordinary
 test — its own instruction is that an invariant belongs in "an ordinary test in the crate/module
-the invariant belongs to", and `game-core/src/content.rs` itself ships four `include_str!`-based
-self-source tests written after 0224. `client/src/main.wiring.test.ts:746` is live in-repo
+the invariant belongs to", and `game-core/src/content.rs` itself ships two source-reading tests
+written after 0224 (`m23s8_reachability_validate_content_rejects_a_broken_table` and
+`m23s8_forgery_validator_judges_only_its_argument`, four `include_str!` read sites between them,
+one of which is self-source). `client/src/main.wiring.test.ts:746` is live in-repo
 precedent for the same thing under vitest.
 
 ADR-0224:86-89 nonetheless prefers AST analysis and treats string matching as "a rare exception
 requiring its own justification". This is that justification: there is no Rust parser available to
 a vitest process, a `syn`-grade parser written in TypeScript is wildly disproportionate to five
 rows in one const, and the scan reads exactly one anchored region of one file rather than sweeping
-a corpus. The two classes ADR-0224 names as the failure mode — comment-stripping bugs and decoy
-matches — are each closed by a named control in the slice's mutant register (C-A the struct-form
-`BR9` fixture, C-B the tuple-form pin), both of which must stay GREEN.
+a corpus. The two classes ADR-0224 names as the failure mode — comment-stripping bugs and
+decoy matches — are the ones an adversarial pass actually exploited, and they are now closed by
+assertion rather than by good intentions. An artifact red-team measured four bypasses that kept the
+ENTIRE gate set green (client 3119 passed, `cargo nextest` 2238 passed, 99 evals): a raw-string
+decoy reproducing the anchor line with its own `];` terminator; a `#[cfg(any())]`-disabled copy of
+the correct row beside a real row spelled `concat!("status.", "burn")`; a block-comment carrier for
+the same decoy; and a `.replace()` at the `monsterCard` hop below `statusBadge`. The test now
+asserts anchor uniqueness, row totality (every `A11yToken {` opener in the region must parse), an
+attribute/macro ban and a block-comment ban inside the region, and re-runs the whole comparison
+through `buildBattleViewModel`. All four were re-measured RED after that hardening. Two controls
+must stay GREEN and are what prove the region scoping is not merely over-matching: C-A, the
+deliberately-wrong struct-form `status.burn` fixture at `content.rs:7819`, and C-B, the tuple-form
+pin at `:7517`.
 
-This supersedes ADR-0233:179-182, which asserted that "a mechanical link would be a text scan
-(retired by ADR-0224)". That reading of 0224 was too broad.
+This CORRECTS, but does not supersede, ADR-0233:179-182, which asserted that "a mechanical link
+would be a text scan (retired by ADR-0224)". That reading of 0224 was too broad. ADR-0233 is left
+byte-unchanged and therefore still carries the stale sentence with no forward pointer: editing it
+falls outside this slice's one-new-ADR `touches:` grant. Flagged to the supervisor rather than
+taken silently.
 
 ## Consequences
 
@@ -98,9 +113,24 @@ an addition to the client subscription set, which is exact-set-pinned by an eval
 outside this slice's declared `touches:`. That half is deferred to the backlog as its own residual
 rather than described in prose here.
 
-**`client/`'s test suite now requires `game-core/` to be present.** This is the first client test
-to read outside the npm package root. Running `npm test` in a checkout of `client/` alone will now
-fail with a resolved-path error rather than passing.
+**`client/`'s test suite now requires the `game-core/` crate source to be present.** Reading
+outside the npm package root is not itself new — `client/src/ui/playtestControlsDoc.test.ts:78-85`
+already reads `docs/PLAYTEST.md` with the identical three-`..` idiom, and several client specs
+import from the root `evals/` directory — but this is the first client test to read a sibling Rust
+crate's source, so the client suite's dependency now spans a language boundary as well as a
+directory one.
+
+**Two gaps remain, both measured and neither closed here.** (1) The final DOM hop is unguarded:
+`battleView.ts:290` assigns `card.status` to `textContent`, and a rewrite there ships a badge the
+test never sees. `battleView.ts` is in this slice's `touches:` but is pinned as source text by
+`evals/reduced-motion-hp-bar.eval.mjs`, so it was deliberately left unedited; nothing in the repo
+asserts `statusEl.textContent === card.status`. (2) The gate is a one-hunk deletion with no CI
+signal — no manifest lists client spec files and no count floors them. The obvious fix, an
+`include_str!` pin in `game-core` asserting the describe title exists, was REJECTED: it is exactly
+the meta-check ADR-0224:133-141 retires ("no follow-up task audits an existing test for its own
+blind spots"), it would put production Rust into a comment-only slice, and it would invert the
+layering by pointing the functional core at a presentation-shell file. Both are registered as
+residuals rather than papered over.
 
 **A Rust-only edit to `A11Y_TOKENS` can red the client suite.** That is the intent, but the
 direction is surprising, so the failure message names both files, the offending variant, and the

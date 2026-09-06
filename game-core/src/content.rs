@@ -7511,10 +7511,8 @@ mod tests {
     /// (`m23s8_forgery_shipped_pairs_are_pinned`) and the message oracle the
     /// reject tests assert against, so it must not move when the impl moves.
     /// The five status tokens are byte-identical to `statusBadge` in
-    /// `client/src/ui/battleModel.ts` — the client badge and this table are
-    /// one contract, correlated by the rb-55 parity test (ADR-0240). This list
-    /// stays the SOLE literal pin of those values: the client test asserts the
-    /// relation between the two files and deliberately transcribes no token.
+    /// `client/src/ui/battleModel.ts`, correlated by the rb-55 parity test
+    /// (ADR-0240); this stays the only pin of all thirteen pairs at once.
     const M23S8_EXPECTED_PAIRS: [(&str, &str); 13] = [
         ("status.poison", "PSN"),
         ("status.burn", "BRN"),
