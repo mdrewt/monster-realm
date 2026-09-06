@@ -1620,9 +1620,9 @@ pub fn validate_npc_interactions(
 ///
 /// The five status tokens are byte-identical to `statusBadge` in
 /// `client/src/ui/battleModel.ts` — the client badge and this table are one
-/// contract. Nothing mechanically links the two (residual R-m23-s8-TSDUP); the
-/// pinned-pairs test here and the generated-variant tooth on the client side
-/// are what make a drift visible.
+/// contract, and rb-55 made that mechanical: a vitest test reads the five
+/// `status.*` rows out of this const and compares them to what `statusBadge`
+/// RETURNS, so a drift in either direction is red (ADR-0240).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct A11yToken {
     /// `status.<lowercased variant>` or `affinity.<lowercased variant>`.
@@ -7512,7 +7512,9 @@ mod tests {
     /// reject tests assert against, so it must not move when the impl moves.
     /// The five status tokens are byte-identical to `statusBadge` in
     /// `client/src/ui/battleModel.ts` — the client badge and this table are
-    /// one contract.
+    /// one contract, correlated by the rb-55 parity test (ADR-0240). This list
+    /// stays the SOLE literal pin of those values: the client test asserts the
+    /// relation between the two files and deliberately transcribes no token.
     const M23S8_EXPECTED_PAIRS: [(&str, &str); 13] = [
         ("status.poison", "PSN"),
         ("status.burn", "BRN"),
@@ -8064,10 +8066,12 @@ mod tests {
     /// A11Y-29 rename tripwire: the exact 13 `(key, token)` pairs are PINNED.
     ///
     /// `A11Y_TOKENS` sits outside `content-hash` and `append-only-ids`
-    /// coverage, so nothing else in the repo notices a renamed key or a
-    /// retyped token. The five status tokens are byte-identical to
-    /// `statusBadge` in `client/src/ui/battleModel.ts`; drifting one of them
-    /// splits the client badge from the server-side contract silently.
+    /// coverage, so for the eight `affinity.*` rows nothing else in the repo
+    /// notices a renamed key or a retyped token. The five `status.*` rows are
+    /// additionally correlated to `statusBadge` in
+    /// `client/src/ui/battleModel.ts` by the rb-55 parity test (ADR-0240),
+    /// which reads this const and compares it to that function's return value;
+    /// this pin is what makes a COORDINATED rename of both sides still visible.
     ///
     /// KILLS `status_token_key`/`affinity_token_key` collapsing to `""` or
     /// `"xyzzy"` in the case where `A11Y_TOKENS` is BUILT from those const fns

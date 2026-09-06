@@ -7,7 +7,7 @@
 **Amends:** —
 **Extends:** ADR-0233 (mechanises the correlation its R-m23-s8-TSDUP residual left to a doc comment), ADR-0224 (invokes its declared-exception clause for a string-matching source scan)
 **Subsystems:** client-ui, content
-**Decision:** a vitest test reads the A11Y_TOKENS const body out of game-core/src/content.rs and asserts the label statusBadge() RETURNS for every StatusEffect variant equals that variant's shipped token, so a status label changed in either file alone fails CI.
+**Decision:** a vitest test reads the A11Y_TOKENS const body from game-core/src/content.rs and asserts the label statusBadge() RETURNS for each StatusEffect variant equals its shipped token, so a label changed in one file alone fails CI.
 
 ---
 
