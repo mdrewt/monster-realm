@@ -64,10 +64,18 @@ effectful shells.
   snapshots, **hold-not-extrapolate**), `slideClock` (the own character's self-owned
   slide, keyed to target-tile changes, **decoupled from `move_started_at`**), `zorder`
   (stable overlap order), `viewRegistry` (pooled-view create/teardown). The Pixi shell
-  (`world`/`characterView`/`placeholderAssets`, no pixel tests — validated by the M5
-  e2e) draws `TILE_PX`-scaled tiles + one **pooled** sprite per entity (mutate-in-place,
-  torn down on despawn), behind an **`AssetProvider`** seam (albedo today; HD-2D
-  normal/material channels are an additive future render mode — ADR-0004). It owns no
+  (`world`/`characterView`/`placeholderAssets`, no rasterized-pixel tests — validated
+  by the M5 e2e) draws `TILE_PX`-scaled tiles + one **pooled** sprite per entity
+  (mutate-in-place, torn down on despawn), behind an **`AssetProvider`** seam (albedo
+  today; HD-2D normal/material channels are an additive future render mode — ADR-0004).
+  `placeholderAssets` is the only one of the three that a unit test IMPORTS and EXECUTES:
+  `placeholderAssets.test.ts` captures Pixi `Graphics` call arguments through a structural
+  fake renderer — draw instructions, not rasterized pixels. (`world.ts` separately carries
+  `world.test.ts`, a pure source scan that deliberately never imports it; `characterView.ts`
+  has no test.) The suite exists because BOTH of the sprite's state cues must be readable
+  WITHOUT colour (rb-57, ADR-0241): facing is the notch's position, and action is a
+  per-action monochrome glyph of integer rects drawn in the notch's ink, which demotes
+  `ACTION_TINT` to redundant reinforcement rather than the sole carrier. It owns no
   state and reads no store/predictor: the M4c loop feeds it resolved positions
   (own from the slide clock, remote from the interpolation buffer). **Wasm-sourced constants** — `party_size()` and `party_slot_none()` are now single-sourced from `game-core` via `client-wasm` exports, replacing the former TS magic literals. A third accessor, `deletion_grace_ms_default()`, exports the operator-tunable grace window as `i64` (JS `BigInt`), ensuring type-safe arithmetic in S8's countdown (`requestedAt + grace − now`, all `bigint`); a `number` accessor would throw at runtime on BigInt mixing. No TS consumer shipped with the accessor itself; rb-51 added the first one — `main.ts` reads it once at module scope and hands it to `deriveDeletionCountdown` for the on-screen grace countdown (ADR-0212, ADR-0231 Amendment A1).
   **M8.6b connected the pure-core slide clock and interpolation buffer into the integrated loop via `RenderResolver`** — prior integrated loop fed raw integer tiles; the pure cores were tested-but-unimported. Now own animates from SlideClock (fractional, keyed to snapped tiles) and remotes from the interpolation buffer (now − interpDelay), completing the M4c smoothness design into reality. **ptc5g (ADR-0141)** extends `RenderResolver`'s own-path snap: besides the predictor's time-gap `snapped` flag, it also snaps when the new authoritative own-target is `> 1` tile (Chebyshev) from the slide clock's current target — so a same-zone server correction / respawn / dropped-update catch-up jumps rather than gliding multiple tiles over one `STEP_MS` (zone warps stay reset-covered via `resolver.reset()`). Resolves the M10.5 D-render-snap residual (trigger fired at M11 warps).
@@ -377,8 +385,12 @@ imperative shells (`main.ts`, `net/connection.ts`, `render/world.ts`,
 `ui/questLogView.ts`, `ui/healView.ts`, `ui/shopView.ts`, `ui/tradeView.ts`,
 `ui/pvpView.ts`) — their substantive decision logic lives in the tested cores, and
 they are validated by the two-window e2e (`e2e/golden.spec.ts`, `e2e/recruit.spec.ts`)
-via `window.__game()`, never by vitest units, so vitest-v8 would always score them
-0% (DOM/Pixi/live-SDK, not unit-runnable). The threshold was ratcheted 25 → **96** in
+via `window.__game()` rather than by vitest units, so vitest-v8 would score them ~0%
+(DOM/Pixi/live-SDK). The one partial exception is `render/placeholderAssets.ts`, which
+rb-57/ADR-0241 showed IS unit-runnable in node — `placeholderAssets.test.ts` imports it
+and asserts its Pixi draw instructions through a fake renderer. It stays excluded anyway:
+it is still a Pixi shell, its texture output is a rendering concern, and the exclusion set
+is exact-set-guarded (below). The threshold was ratcheted 25 → **96** in
 m13.5a after a post-exclusion re-measure of 99.35% lines (ADR-0050 amendment A1), and no
 unit-coverable logic module is excluded, so the gate stays a real regression backstop
 rather than a number dominated by non-unit code; the exclusion set itself is
