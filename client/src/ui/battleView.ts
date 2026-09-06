@@ -303,16 +303,17 @@ export class BattleView {
       btn.style.cssText =
         'padding:6px 8px;cursor:pointer;font-family:monospace;font-size:12px;' +
         'border:1px solid #666;border-radius:3px;background:#2a2a3e;color:#e0e0e0;';
-      // rb-56 (residual R-m23-s8-postmerge-title, which docs/adr/0233 §residuals calls
-      // R-m23-s8-TITLE — same gap, two spellings): the affinity is a PERSISTENT VISIBLE
-      // label, not a hover-only `title` — no-hover/touch/SR users get no tooltip. Mirrors the monster card's own
-      // `HP x/y · Affinity` shape at :283. Rendered VERBATIM, NOT as a short A11Y_TOKENS token:
-      // `game-core/src/content.rs:1687-1691` records (ADR-0233) that the eight affinity token rows are
-      // DELIBERATELY unconsumed BECAUSE this client renders the affinity name as text; a client-side
-      // token map would be a second SSOT with no parity oracle. APPEND only — never prepend or infix:
-      // `client/e2e/pvp-side-b.spec.ts:349` and siblings match `/^Submit: /` (start-anchored),
-      // `client/e2e/my-battle-privacy.spec.ts:486` and `client/e2e/recruit.spec.ts:722` match
-      // `button:has-text("(")`, and `battleView.test.ts:1013` filters on `startsWith('Submit:')`.
+      // rb-56 (residual R-m23-s8-postmerge-title, which docs/adr/0233 §Residuals spells
+      // R-m23-s8-TITLE — same gap): the affinity is a PERSISTENT VISIBLE label, not a
+      // hover-only `title`; no-hover, touch and screen-reader users never see a tooltip.
+      // Mirrors the monster card's own `HP x/y · Affinity` line in #renderMonsterCard.
+      // Rendered VERBATIM, NOT as a short A11Y_TOKENS token: `game-core/src/content.rs`
+      // records (ADR-0233) that the eight affinity token rows are DELIBERATELY unconsumed
+      // BECAUSE this client renders the affinity name as text; a client-side token map
+      // would be a second SSOT with no parity oracle. APPEND only — never prepend or
+      // infix: `e2e/pvp-side-b.spec.ts` matches `/^Submit: /` (start-anchored),
+      // `e2e/my-battle-privacy.spec.ts` and `e2e/recruit.spec.ts` match
+      // `button:has-text("(")`, and this file's own test filters on `startsWith('Submit:')`.
       // PvP still says "Submit:" to distinguish it from PvE "use now" semantics.
       btn.textContent = vm.isPvp
         ? `Submit: ${skill.name} · ${skill.affinity}`

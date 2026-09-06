@@ -3303,48 +3303,13 @@ describe('BattleView m23-s8: colour-independent HP severity palette (M23 §2.6, 
 // `#renderMonsterCard` already uses for its own `HP x/y · Affinity` line) and
 // `btn.title` carries ONLY the accuracy.
 //
-// GAP CLOSED (review-measured vacuity, post-landing): the FIRST draft of this
-// block reused the ux4-section `UX4_TWO_SKILLS` fixture, whose two affinities
-// are `'Grass'` and `'Normal'` — NEITHER is a member of the real `Affinity`
-// enum (`game-core/src/monster/types.rs:13-22`: Fire, Water, Plant, Electric,
-// Earth, Wind, Light, Dark). `game-core/src/content.rs:1685-1691` (ADR-0233)
-// records that the shipped a11y token table's eight affinity rows are
-// deliberately unconsumed BECAUSE this client renders the affinity name
-// VERBATIM rather than through a client-side short-token map — avoiding that
-// second, unsynchronised SSOT is the whole architectural point of this
-// criterion. But a WRONG implementation that reintroduces exactly that map,
-// with a passthrough default for anything not in it —
-//   `const AFF: Record<string,string> = { Fire:'FIR', Water:'WTR', ... };`
-//   `btn.textContent = `${skill.name} (${skill.power}) · ${AFF[skill.affinity]
-//   ?? skill.affinity}`;`
-// — passed the first draft, because 'Grass' and 'Normal' both fall through the
-// `??` to the verbatim value and the assertion could not tell the two
-// implementations apart. `RB56_SKILLS` below uses two REAL enum variants
-// (`Plant`, `Electric`) instead, so that wrong implementation now renders
-// `AFF['Plant'] ?? 'Plant'` → whichever short token the map happens to assign
-// Plant (not `'Plant'` itself, since a real map exists precisely to shorten
-// real affinities) and the `toEqual` below reds against it.
+// The fixture below is a NEW `RB56_SKILLS`, NOT `UX4_TWO_SKILLS` — see its doc comment
+// for the measured vacuity that forced REAL `Affinity` enum variants. `UX4_TWO_SKILLS`
+// is left exactly as the ux4 section wrote it.
 //
-// FIXTURE: a NEW `RB56_SKILLS` local to this block (NOT `UX4_TWO_SKILLS`,
-// which stays exactly as the ux4 section left it — other tests depend on its
-// specific 'Grass'/'Normal' asymmetry, documented at :1663-1683). Two skills,
-// real shipped names, with distinct REAL affinities ('Plant' / 'Electric'),
-// distinct power (40 / 35) and distinct accuracy (100 / 95); neither affinity
-// is a substring of either skill name.
-//
-// BUTTON-COUNT CLAIM, VERIFIED (not assumed) by reading the two methods below:
-//   - `#renderActions`: the Flee button is gated on `vm.canFlee` (false here);
-//     `#renderSwapButtons` is only called `if (vm.canSwap)` (false here — and
-//     its own `for (const member of vm.bench)` loop is empty anyway, since
-//     `makeUx4VM`'s default `bench` is `[]`); the bait selector + Recruit
-//     button are gated on `vm.canRecruit` (false, makeUx4VM default); the
-//     cure-item selector + Use Item button are gated on
-//     `vm.cureItems.length > 0` (`[]`, makeUx4VM default).
-//   - `#renderSwapButtons`: never reached anyway (see above), and would render
-//     zero buttons from an empty `bench` even if it were.
-// So with `makeUx4VM({ skills: RB56_SKILLS, canFlee: false })`, `#actionsEl`
-// renders NOTHING and the ONLY buttons anywhere under `parent` are the two skill
-// buttons — `parent.querySelectorAll('button')` needs no positional walk.
+// The "exactly 2 buttons" precondition is ASSERTED at runtime below, not assumed in prose:
+// with canFlee/canSwap/canRecruit false and cureItems/bench empty, `#renderActions` renders
+// nothing, so the only buttons under `parent` are the two skill buttons.
 // =============================================================================
 
 /**
