@@ -303,8 +303,9 @@ export class BattleView {
       btn.style.cssText =
         'padding:6px 8px;cursor:pointer;font-family:monospace;font-size:12px;' +
         'border:1px solid #666;border-radius:3px;background:#2a2a3e;color:#e0e0e0;';
-      // rb-56 (residual R-m23-s8-postmerge-title): the affinity is a PERSISTENT VISIBLE label, not a
-      // hover-only `title` — no-hover/touch/SR users get no tooltip. Mirrors the monster card's own
+      // rb-56 (residual R-m23-s8-postmerge-title, which docs/adr/0233 §residuals calls
+      // R-m23-s8-TITLE — same gap, two spellings): the affinity is a PERSISTENT VISIBLE
+      // label, not a hover-only `title` — no-hover/touch/SR users get no tooltip. Mirrors the monster card's own
       // `HP x/y · Affinity` shape at :283. Rendered VERBATIM, NOT as a short A11Y_TOKENS token:
       // `game-core/src/content.rs:1687-1691` records (ADR-0233) that the eight affinity token rows are
       // DELIBERATELY unconsumed BECAUSE this client renders the affinity name as text; a client-side
