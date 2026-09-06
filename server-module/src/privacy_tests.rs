@@ -764,11 +764,15 @@ fn rb22p_writes_only_export_bundle() {
                  handle bound in an earlier statement, a bare identifier receiver, a foreign \
                  write sharing a statement with an owned read, a chain laundered through an \
                  argument-taking combinator segment, and the path-form verb spelling — each \
-                 detaches the write from the only evidence about which table it touches, and each \
-                 was silently credited to a neighbouring accessor or dropped outright before this \
-                 port. Refusing to classify is the safe direction: an unattributed write is an \
-                 UNGATED write. Chain every write directly off `{root}` in the statement that \
-                 performs it."
+                 detaches the write from the only evidence about which table it touches. Before \
+                 this port the same-statement, argument-list, closure, laundered-combinator, \
+                 fallible-insert and path-form shapes were credited to a neighbouring accessor or \
+                 dropped outright; the alias and cross-statement shapes were refused only by a \
+                 semicolon that a single-statement write does not contain, and the bare receiver \
+                 only when no handle was spelled anywhere in the source at all. Refusing to \
+                 classify is the safe direction: an unattributed write is an UNGATED write. Chain \
+                 every write directly off `{root}` in the statement that performs it; use \
+                 `.push(` for non-table containers."
             );
         }
     }
@@ -1270,17 +1274,25 @@ fn rb22p_stub_probe_regression() {
 // ===========================================================================
 // rb-64 — WRITE ATTRIBUTION ON THE ROOTED-CHAIN RULE (ADR-0234), THE TEETH.
 //
-// These tests gate `rb22p_write_targets` DIRECTLY, not through privacy.rs.
-// privacy.rs today contains none of the shapes below, so every hole here is
-// invisible to `rb22p_writes_only_export_bundle` until a future edit lands one —
-// and by then the gate that should have caught it is the gate reporting `clean`.
-// The census over the real file is the no-false-RED control and stays where it
-// is, in that consumer.
+// T1-T8 gate `rb22p_write_targets` DIRECTLY, over fixtures, not through
+// privacy.rs. privacy.rs today contains none of the shapes below, so every hole
+// here is invisible to `rb22p_writes_only_export_bundle` until a future edit
+// lands one — and by then the gate that should have caught it is the gate
+// reporting `clean`. The census over the real file is the no-false-RED control
+// and stays where it is, in that consumer.
+//
+// T9 is the ONE exception, and it says so in its own doc: the two verb spellings
+// it covers produce NO census entry at all, so no assertion about the helper's
+// OUTPUT can reach them. It bans both spellings in privacy.rs by text instead,
+// and carries the two fixtures that MEASURE the blindness as its controls.
 //
 // SCAN HYGIENE (see the module header): every write verb, table accessor, handle
-// prefix, handle-type name and reducer-context parameter spelling below is
-// assembled from split fragments via concat! / [..].concat(), exactly as the
-// rb39_ region of accounts_tests.rs does. Around twenty-five evals concatenate
+// prefix, handle-type name, macro-definition keyword and reducer-context
+// parameter spelling below is assembled from split fragments via concat! /
+// [..].concat(), exactly as the rb39_ region of accounts_tests.rs does. That
+// covers T9's needles too: this file never spells the macro keyword or a
+// paren-less trait-path verb contiguously, so the ban cannot trip on its own
+// fixtures. Around twenty-five evals concatenate
 // every .rs file under server-module/src — test files included — and do NOT
 // strip string literals, so a contiguous scanner needle inside a FIXTURE reads
 // to them as a live declaration. No fixture names the dual-write table for the
@@ -1359,20 +1371,6 @@ fn rb64p_owned_table() -> &'static str {
     concat!("export", "_bundle")
 }
 
-/// Handle-type names for the path-spelled verbs. Three DIFFERENT ones, because a
-/// refusal keyed on any single type name is a refusal the other two walk past.
-fn rb64p_table_type() -> &'static str {
-    concat!("Ta", "ble")
-}
-
-fn rb64p_unique_column_type() -> &'static str {
-    concat!("Unique", "Column")
-}
-
-fn rb64p_btree_index_type() -> &'static str {
-    concat!("BTree", "Index")
-}
-
 /// Wrap a fixture body in the `fn f(<ctx param>){ .. }` shell.
 fn rb64p_fn(body: &str) -> String {
     ["fn f(", rb64p_ctx_param(), "){", body, "}"].concat()
@@ -1444,17 +1442,17 @@ fn rb64p_expect_single_ok(tooth: &str, why: &str, fixture: &str, table: &str) {
     );
 }
 
-/// rb-64 (T1/8): a FOREIGN write that SHARES A STATEMENT with an owned read is
+/// rb-64 (T1/9): a FOREIGN write that SHARES A STATEMENT with an owned read is
 /// refused — the residual's exact shape, and its argument-list and closure twins.
 ///
 /// None of the three carries a statement boundary between the owned read and the
 /// foreign verb, so the pre-rb-64 rule (nearest EARLIER handle prefix, poisoned
-/// only by an intervening semicolon) credits all three to the OWNED table
+/// only by an intervening semicolon) credited all three to the OWNED table
 /// (rb-64.red-before.md F4/F8/F9). That name is INSIDE this module's allowed set,
-/// so the shipped consumer stays GREEN on the cross-table write it exists to catch.
+/// so the shipped consumer stayed GREEN on the cross-table write it exists to catch.
 ///
-/// Kills: the shipped nearest-earlier-prefix body (it reports the owned table on
-///        every row);
+/// Kills: the pre-rb-64 nearest-earlier-prefix body (it reported the owned table
+///        on every row);
 ///        any port that keeps a semicolon hybrid or a delimiter-window fallback;
 ///        a fix that DROPS the unattributable write instead of reporting it.
 #[test]
@@ -1516,7 +1514,7 @@ fn rb64p_same_statement_foreign_write_is_refused() {
     );
 }
 
-/// rb-64 (T2/8): the TIGHTEST same-expression shape — an owned read and a foreign
+/// rb-64 (T2/9): the TIGHTEST same-expression shape — an owned read and a foreign
 /// write joined by a boolean operator, with no punctuation between them at all.
 ///
 /// MEASURED (plan section H): a port that keeps the semicolon rule but gates it on
@@ -1578,7 +1576,7 @@ fn rb64p_tight_same_expression_write_is_refused() {
     );
 }
 
-/// rb-64 (T3/8): every unrooted receiver shape reports the unrooted-chain fault —
+/// rb-64 (T3/9): every unrooted receiver shape reports the unrooted-chain fault —
 /// including a decoy binding whose name merely ENDS in the handle name.
 ///
 /// Rows one to three are the rb-22 shapes the semicolon rule was written for and
@@ -1676,7 +1674,7 @@ fn rb64p_unrooted_receivers_report_unrooted_chain() {
     );
 }
 
-/// rb-64 (T4/8): a turbofish segment in front of the verb reports the
+/// rb-64 (T4/9): a turbofish segment in front of the verb reports the
 /// empty-accessor fault, and reports it under its OWN variant.
 ///
 /// The byte before the segment's opening paren is not an identifier byte, so the
@@ -1700,7 +1698,7 @@ fn rb64p_turbofish_segment_reports_empty_accessor() {
     );
 }
 
-/// rb-64 (T5/8): all four chained write-verb spellings are SEEN by the census.
+/// rb-64 (T5/9): all four chained write-verb spellings are SEEN by the census.
 ///
 /// MEASURED (plan section H): a verb list missing one spelling does not red
 /// anything — the write it cannot see simply never enters the census, and the
@@ -1778,7 +1776,7 @@ fn rb64p_every_verb_spelling_is_seen() {
     );
 }
 
-/// rb-64 (T6/8): the path spelling of every write verb is refused, under EVERY
+/// rb-64 (T6/9): the path spelling of every write verb is refused, under EVERY
 /// handle type that can carry it.
 ///
 /// MEASURED (plan section H): a refusal keyed on one handle-type name is walked
@@ -1798,31 +1796,34 @@ fn rb64p_ufcs_spellings_are_refused_under_any_type_name() {
     let table_handle = [rb64p_db_root(), rb64p_foreign_table(), "()"].concat();
     let column_handle = [rb64p_db_root(), rb64p_foreign_table(), "().identity()"].concat();
 
+    // THREE DIFFERENT handle-type names across the four rows, spelled inline so a
+    // reader sees the variation in the table itself: a refusal keyed on any single
+    // type name is a refusal the other two walk past.
     for (tooth, type_name, verb, receiver, args) in [
         (
             "T6/insert",
-            rb64p_table_type(),
+            concat!("Ta", "ble"),
             rb64p_ufcs_insert_verb(),
             table_handle.as_str(),
             ", row);",
         ),
         (
             "T6/delete",
-            rb64p_unique_column_type(),
+            concat!("Unique", "Column"),
             rb64p_ufcs_delete_verb(),
             column_handle.as_str(),
             ", k);",
         ),
         (
             "T6/update",
-            rb64p_btree_index_type(),
+            concat!("BTree", "Index"),
             rb64p_ufcs_update_verb(),
             column_handle.as_str(),
             ", row);",
         ),
         (
             "T6/try-insert",
-            rb64p_table_type(),
+            concat!("Ta", "ble"),
             rb64p_ufcs_try_insert_verb(),
             table_handle.as_str(),
             ", row);",
@@ -1840,7 +1841,7 @@ fn rb64p_ufcs_spellings_are_refused_under_any_type_name() {
     }
 }
 
-/// rb-64 (T7/8): a chain LAUNDERED through an argument-taking segment is refused,
+/// rb-64 (T7/9): a chain LAUNDERED through an argument-taking segment is refused,
 /// even though a rooted handle is spelled to its left.
 ///
 /// MEASURED (plan section H): dropping the zero-argument segment rule was the
@@ -1896,47 +1897,75 @@ fn rb64p_laundered_chain_is_refused() {
     );
 }
 
-/// rb-64 (T8/8): the shipped chain shapes are attributed correctly and reported
-/// in SOURCE ORDER.
+/// rb-64 (T8/9): the shipped chain shapes are attributed correctly, reported in
+/// SOURCE ORDER, and EVERY entry survives into the census — refusals included,
+/// wherever in the sequence they sit and however long the sequence is.
 ///
-/// Element zero is a rooted two-hop chain (accessor, then column, then the verb)
-/// and element one a rooted one-hop chain, so this is also the no-false-RED
-/// control for both shipped shapes: an over-strict rule that refuses multi-hop
-/// chains, or one that only ever accepts them, reds here rather than silently
-/// reshaping the census over privacy.rs.
-///
-/// The ORDER is the second half of the tooth. A scan implemented as one pass per
+/// ROWS ONE AND TWO (the shape and order control). Element zero is a rooted
+/// two-hop chain (accessor, then column, then the verb) and element one a rooted
+/// one-hop chain, so this is the no-false-RED control for both shipped shapes: an
+/// over-strict rule that refuses multi-hop chains, or one that only ever accepts
+/// them, reds here rather than silently reshaping the census over privacy.rs. The
+/// ORDER is the second half of that tooth — a scan implemented as one pass per
 /// verb reports every insert before every delete regardless of where they sit,
-/// which is a census the reader cannot line up against the file — and it is the
-/// shape the pre-rb-64 body had.
+/// which is a census no reader can line up against the file, and it is the shape
+/// the pre-rb-64 body had.
 ///
-/// Kills: a per-verb scan loop (order);
-///        a rule that rejects a two-hop chain (element zero);
-///        a rule that rejects, or misnames, a one-hop chain (element one).
+/// ROWS THREE TO SIX pin the SHAPE OF THE CENSUS ITSELF, and they exist because
+/// no other fixture in this block produces a census that MIXES the two verdicts:
+/// every one of them is a single Err, a single Ok, two Oks, or — T9's two
+/// controls — empty. MEASURED (rb-64 artifact red-team): a walk that pushes a
+/// refusal only while the census is still EMPTY, and a walk that stops
+/// accumulating once it holds five entries, each pass every other test in this
+/// file AND the consumer over the real privacy.rs — the real census is five
+/// attributed writes with no refusal in it, so neither the per-name arithmetic nor
+/// the `[W/total]` count of five ever moves — and each lets a laundered foreign
+/// delete appended to privacy.rs ship with the whole module suite green (measured:
+/// 71 of 71). Mixing Ok and Err in ONE census, at four different refusal positions
+/// and at three different census lengths, is what makes those bodies visible.
+///
+/// Kills: a per-verb scan loop (rows one and two: order);
+///        a rule that rejects a two-hop chain, or rejects or misnames a one-hop
+///        one (rows one and two);
+///        dropping a refusal once the census is non-empty (rows three, four and
+///        five put the Err LAST, after one, two and five attributed writes);
+///        a length cap on the census (rows five and six carry SIX entries, and a
+///        cap at five is invisible to a file that performs exactly five writes);
+///        returning AT the first refusal (row six puts the Err FIRST and five
+///        attributed writes after it, so an early return reports one entry);
+///        returning only the refusals and discarding the attributed entries
+///        around them (every row pins each entry BY POSITION — never a set, a
+///        count or a multiset).
+///
+/// HONEST LIMIT: each of these rows carries exactly ONE refusal, so a body that
+/// keeps one refusal out of several is not distinguished here. Its blast radius
+/// is bounded by `[W/attribution]`, which panics on the first Err in the census
+/// and never reaches a second.
 #[test]
 fn rb64p_shipped_chain_shapes_are_attributed_in_source_order() {
-    let fixture = rb64p_fn(
+    let eb = rb64p_owned_table();
+    let sched = concat!("export_bundle_reaper", "_schedule");
+    let foreign = rb64p_foreign_table();
+
+    let order_fixture = rb64p_fn(
         &[
             rb64p_db_root(),
-            rb64p_foreign_table(),
+            foreign,
             "().identity()",
             rb64p_delete_verb(),
             "id); ",
             rb64p_db_root(),
-            rb64p_owned_table(),
+            eb,
             "()",
             rb64p_insert_verb(),
             "row);",
         ]
         .concat(),
     );
-    let targets = rb64p_targets(&fixture);
+    let order_targets = rb64p_targets(&order_fixture);
     assert_eq!(
-        targets,
-        vec![
-            Ok(rb64p_foreign_table().to_string()),
-            Ok(rb64p_owned_table().to_string()),
-        ],
+        order_targets,
+        vec![Ok(foreign.to_string()), Ok(eb.to_string())],
         "rb-64 [T8/source-order]: two rooted writes must be attributed to their own accessors and \
          reported in the order the SOURCE spells them — the foreign two-hop delete first, the \
          owned one-hop insert second. A census assembled one verb family at a time reports the \
@@ -1944,7 +1973,287 @@ fn rb64p_shipped_chain_shapes_are_attributed_in_source_order() {
          which hides an inserted row behind an unrelated delete. This is also the no-false-RED \
          control for both shipped chain shapes: a rule strict enough to refuse the two-hop chain, \
          or loose enough to misname the one-hop one, reds here instead of quietly reshaping the \
-         census over privacy.rs. Fixture: {fixture:?}. Got: {targets:?}"
+         census over privacy.rs. Fixture: {order_fixture:?}. Got: {order_targets:?}"
+    );
+
+    // The five write shapes privacy.rs actually ships, each rooted in its own
+    // accessor: the export insert, the two chunk-key deletes, and the schedule
+    // arm's insert and surplus-row delete.
+    let write = |accessor: &str, column: &str, verb: &str, args: &str| -> String {
+        [rb64p_db_root(), accessor, column, verb, args].concat()
+    };
+    let eb_insert = write(eb, "()", rb64p_insert_verb(), "row);");
+    let eb_chunk_delete = write(eb, "().chunk_id()", rb64p_delete_verb(), "id);");
+    let sched_insert = write(sched, "()", rb64p_insert_verb(), "row);");
+    let sched_id_delete = write(sched, "().id()", rb64p_delete_verb(), "id);");
+    // The refusal spliced between them: T2's unrooted `tbl` receiver, which the
+    // walk must refuse wherever in the sequence it appears.
+    let tbl_receiver = ["tbl.", foreign, "().identity()"].concat();
+    let foreign_refusal = [tbl_receiver.as_str(), rb64p_delete_verb(), "id);"].concat();
+
+    let refusal_second = rb64p_fn(&[eb_insert.as_str(), foreign_refusal.as_str()].concat());
+    let second_targets = rb64p_targets(&refusal_second);
+    assert!(
+        matches!(
+            second_targets.as_slice(),
+            [Ok(w0), Err(WriteAttrFault::UnrootedChain)] if w0.as_str() == eb
+        ),
+        "rb-64 [T8/refusal-after-one-ok]: an attributed owned write followed by an unrooted \
+         foreign one must produce EXACTLY two entries, Ok then Err(UnrootedChain), in that order. \
+         MEASURED cheat: a walk that pushes a refusal only while the census is still EMPTY drops \
+         this Err and reports a clean single-entry census — and no other fixture in this file can \
+         see it, because no other one produces a census that MIXES an Ok with an Err. Fixture: \
+         {refusal_second:?}. Got: {second_targets:?}"
+    );
+
+    let refusal_third = rb64p_fn(
+        &[
+            eb_insert.as_str(),
+            eb_chunk_delete.as_str(),
+            foreign_refusal.as_str(),
+        ]
+        .concat(),
+    );
+    let third_targets = rb64p_targets(&refusal_third);
+    assert!(
+        matches!(
+            third_targets.as_slice(),
+            [Ok(w0), Ok(w1), Err(WriteAttrFault::UnrootedChain)]
+                if w0.as_str() == eb && w1.as_str() == eb
+        ),
+        "rb-64 [T8/refusal-after-two-oks]: a refusal arriving THIRD, after two attributed writes \
+         to the same owned table, must still be the third entry. The row above already fails a \
+         drop-once-non-empty walk; this one fails it again one position later, so a body that \
+         special-cases the first entry rather than the empty census is caught too, and it pins \
+         that a repeated accessor name is reported twice rather than deduplicated. Fixture: \
+         {refusal_third:?}. Got: {third_targets:?}"
+    );
+
+    let refusal_last = rb64p_fn(
+        &[
+            eb_insert.as_str(),
+            eb_chunk_delete.as_str(),
+            eb_chunk_delete.as_str(),
+            sched_insert.as_str(),
+            sched_id_delete.as_str(),
+            foreign_refusal.as_str(),
+        ]
+        .concat(),
+    );
+    let last_targets = rb64p_targets(&refusal_last);
+    assert!(
+        matches!(
+            last_targets.as_slice(),
+            [
+                Ok(w0),
+                Ok(w1),
+                Ok(w2),
+                Ok(w3),
+                Ok(w4),
+                Err(WriteAttrFault::UnrootedChain)
+            ] if w0.as_str() == eb
+                && w1.as_str() == eb
+                && w2.as_str() == eb
+                && w3.as_str() == sched
+                && w4.as_str() == sched
+        ),
+        "rb-64 [T8/six-refusal-last]: the five write shapes privacy.rs actually ships, followed \
+         by one unrooted foreign write, must produce SIX entries — three owned, two schedule, \
+         then the refusal. MEASURED cheat: a walk that stops accumulating once it holds five \
+         entries. Over the real file that cap is invisible (privacy.rs performs exactly five \
+         writes, so the count, the per-name arithmetic and [W/total] are all unchanged), and it \
+         silently swallows the SIXTH write — which is precisely the one a future edit adds. \
+         Fixture: {refusal_last:?}. Got: {last_targets:?}"
+    );
+
+    let refusal_first = rb64p_fn(
+        &[
+            foreign_refusal.as_str(),
+            eb_insert.as_str(),
+            eb_chunk_delete.as_str(),
+            eb_chunk_delete.as_str(),
+            sched_insert.as_str(),
+            sched_id_delete.as_str(),
+        ]
+        .concat(),
+    );
+    let first_targets = rb64p_targets(&refusal_first);
+    assert!(
+        matches!(
+            first_targets.as_slice(),
+            [
+                Err(WriteAttrFault::UnrootedChain),
+                Ok(w0),
+                Ok(w1),
+                Ok(w2),
+                Ok(w3),
+                Ok(w4)
+            ] if w0.as_str() == eb
+                && w1.as_str() == eb
+                && w2.as_str() == eb
+                && w3.as_str() == sched
+                && w4.as_str() == sched
+        ),
+        "rb-64 [T8/six-refusal-first]: the same six writes with the refusal FIRST must produce \
+         the same six entries in the mirrored order. This is the row a drop-once-non-empty walk \
+         PASSES (its census is still empty when the Err arrives), and it is deliberately kept as \
+         the other side of the boundary: it fails a walk that stops at the first refusal, and it \
+         fails a walk that reports only the LAST refusal or collapses the census to one fault. \
+         Together with the row above, every entry of a six-long mixed census is pinned by \
+         position from both ends. Fixture: {refusal_first:?}. Got: {first_targets:?}"
+    );
+}
+
+/// rb-64 (T9/9): privacy.rs spells NO paren-less trait-path write verb and
+/// defines NO macro of its own. A TOTAL, privacy.rs-scoped ban, because the
+/// census is structurally BLIND to both shapes.
+///
+/// MEASURED (rb-64 artifact red-team): two verb spellings put a row-write into
+/// privacy.rs and produce NO census entry at all, so `[W/non-vacuity]`,
+/// `[W/attribution]`, `[W/target]`, `[W/arithmetic]` and `[W/total]` all stay
+/// green over a write none of them ever sees. Both PoCs passed the whole tree:
+/// 858 of 858 Rust tests and 99 of 99 evals.
+///
+/// (1) A FN-ITEM BINDING. The verb is bound as a VALUE through its trait path and
+///     then called through the binding, so the verb token never sits in front of
+///     an opening paren — neither the dotted needle nor the path-form needle in
+///     the census can land on it.
+/// (2) An IN-FILE macro whose write verb is a METAVARIABLE. The verb is spelled
+///     only by the expansion, and every scan in this module (this census, the
+///     frozen-body pin, the alias bans, the hygiene needles) reads PRE-EXPANSION
+///     source text.
+///
+/// WHY A BAN AND NOT AN ATTRIBUTION RULE: the walk is a verbatim local copy of
+/// ADR-0234's, and that equivalence is the entire point of the rb-64 port, so
+/// neither hole can be closed inside the walk in this slice. A ban is the honest
+/// instrument instead — this module performs five writes, every one of them dotted
+/// off its own `ctx.db.<table>()` chain, and needs neither spelling.
+///
+/// The two controls below are the EVIDENCE for that choice as well as the
+/// non-vacuity proof: each fixture is run through the live strip pipeline (the
+/// banned needle survives it, so the zero-counts are not measured with a broken
+/// needle) and then through the census, which returns an EMPTY vector.
+///
+/// Kills: removing or breaking either needle family (each carries its own
+///        surviving-needle control);
+///        a census that starts GUESSING a table for either shape from the
+///        surrounding text — the controls pin its output at EMPTY, which is the
+///        honest report for a write whose target the walk cannot see.
+///
+/// HONEST LIMIT: if a later slice teaches the walk to REFUSE either shape loudly
+/// (an Err, not a guess), the two census controls must be revised from THAT
+/// slice's spec. They encode today's measured blindness, which is exactly the
+/// reason the ban above is total rather than target-attributed.
+#[test]
+fn rb64p_paren_less_verb_and_in_file_macro_are_banned() {
+    let squashed = stripped_for_scan(PRIVACY_RS);
+    let root = rb64p_db_root();
+
+    // The four row-write verbs as PAREN-LESS trait-path tokens. Strictly WIDER
+    // than `m22s4_ufcs_write_needles`: each token there ends in an opening paren,
+    // so each token here is a proper prefix of it and matches everywhere it does
+    // and in the paren-less shapes besides — and that list also omits the fallible
+    // spelling entirely. The fallible and infallible tokens are DISJOINT (the
+    // separator in the fallible one is followed by `try_`, so the short token
+    // cannot occur inside it): four independent zero-counts, not one restated.
+    let insert_token = concat!("::ins", "ert");
+    let try_insert_token = concat!("::try_ins", "ert");
+    let update_token = concat!("::upd", "ate");
+    let delete_token = concat!("::del", "ete");
+    let path_verbs = [insert_token, try_insert_token, update_token, delete_token];
+    let macro_kw = concat!("macro_", "rules!");
+
+    // --- control 1: the fn-item binding survives stripping and censuses EMPTY --
+    let fn_item = rb64p_fn(
+        &[
+            "let del = <_ as ",
+            concat!("Ta", "ble"),
+            ">",
+            delete_token,
+            "; del(",
+            root,
+            rb64p_foreign_table(),
+            "(), row);",
+        ]
+        .concat(),
+    );
+    let fn_item_squashed = stripped_for_scan(&fn_item);
+    assert!(
+        rb22p_count(&fn_item_squashed, delete_token) >= 1,
+        "rb-64 [T9/fn-item-needle]: the fn-item control does not carry the banned paren-less verb \
+         token after stripping, so the zero-count clause below would be measured with a needle \
+         that finds nothing. Stripped fixture: {fn_item_squashed:?}"
+    );
+    let fn_item_targets = rb64p_targets(&fn_item);
+    assert!(
+        fn_item_targets.is_empty(),
+        "rb-64 [T9/fn-item-blind]: the census must report EXACTLY nothing for a verb bound as a \
+         fn item — the verb token sits in front of a semicolon, not a paren, so no needle in the \
+         walk reaches it and no receiver chain is ever walked. This assertion is the RECORDED \
+         REASON the ban above is total: an empty census means the consumer's five clauses run \
+         over a set that does not contain this write. If it ever reports something, the walk has \
+         begun guessing a table name from surrounding text (or has learned to refuse the shape, \
+         in which case revise this row from that slice's spec). Got: {fn_item_targets:?}"
+    );
+
+    // --- control 2: the in-file macro survives stripping and censuses EMPTY ----
+    let macro_fixture = rb64p_fn(
+        &[
+            macro_kw,
+            " w { ($r:expr, $m:ident, $a:expr) => { $r.$m($a) }; } w!(",
+            root,
+            rb64p_foreign_table(),
+            "().identity(), ",
+            concat!("del", "ete"),
+            ", id);",
+        ]
+        .concat(),
+    );
+    let macro_squashed = stripped_for_scan(&macro_fixture);
+    assert!(
+        rb22p_count(&macro_squashed, macro_kw) >= 1,
+        "rb-64 [T9/macro-needle]: the macro control does not carry the banned macro-definition \
+         keyword after stripping, so the zero-count clause below would be measured with a needle \
+         that finds nothing. Stripped fixture: {macro_squashed:?}"
+    );
+    let macro_targets = rb64p_targets(&macro_fixture);
+    assert!(
+        macro_targets.is_empty(),
+        "rb-64 [T9/macro-blind]: the census must report EXACTLY nothing for a macro whose write \
+         verb is a metavariable — the verb is spelled only by the EXPANSION, and every scan in \
+         this module reads pre-expansion text. Like the fn-item row above, this is the recorded \
+         reason the ban is total rather than attributed. Got: {macro_targets:?}"
+    );
+
+    // --- the ban --------------------------------------------------------------
+    for verb in path_verbs {
+        let n = rb22p_count(&squashed, verb);
+        assert_eq!(
+            n, 0,
+            "rb-64 [T9/paren-less-verb]: privacy.rs spells the trait-path write verb `{verb}` \
+             {n} time(s); exactly zero is allowed, PAREN OR NO PAREN. Bound as a fn item — \
+             `let d = <_ as Type>{verb}; d(handle, row);` — the verb never sits in front of an \
+             opening paren, so the census produces no entry at all for the write and every \
+             clause in rb22p_writes_only_export_bundle passes over a set that omits it \
+             (measured rb-64 artifact red-team: passed 858/858 Rust tests and 99/99 evals). \
+             This ban is strictly WIDER than m22s4_no_ufcs_write_verb_in_privacy, whose three \
+             needles all end in an opening paren and whose list omits the fallible spelling. \
+             Spell every write as a dotted call on its `{root}<table>()` chain."
+        );
+    }
+
+    let macro_hits = rb22p_count(&squashed, macro_kw);
+    assert_eq!(
+        macro_hits, 0,
+        "rb-64 [T9/in-file-macro]: privacy.rs defines {macro_hits} macro(s) of its own \
+         (`{macro_kw}`); exactly zero is allowed. A macro whose write verb arrives as a \
+         metavariable — `w!(handle, verb, id)` — spells that verb only on expansion, while this \
+         census, the frozen-body pin, the alias bans and the hygiene needles all read \
+         PRE-EXPANSION source text, so the write is invisible to every one of them (measured \
+         rb-64 artifact red-team: passed 858/858 Rust tests and 99/99 evals). This module holds \
+         one purge helper, one reducer, one view and the TTL reaper; none of them needs a macro. \
+         Spell every write as a dotted call on its `{root}<table>()` chain; define no macro in \
+         privacy.rs."
     );
 }
 
