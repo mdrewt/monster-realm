@@ -9861,3 +9861,239 @@ fn rb65p_export_fields_is_pure() {
          and move the source control with it."
     );
 }
+
+// ===========================================================================
+// rb-65 (ADR-0243) — BEHAVIOURAL ARM. Applied WITH the fix, never before it.
+//
+// These two tests CALL `export_fields`, so on the pre-fix tree they are a BUILD
+// error rather than a by-name RED — and a build error takes every test in the
+// crate with it, which is indistinguishable from a broken tree and proves
+// nothing about this criterion (the rb-22 EO-6 / rb-40 precedent). The RED arm
+// above lands first and is captured by name; this block lands in the same commit
+// as the implementation.
+//
+// WHY THEY EXIST AT ALL. Every other rb-65p clause is a SOURCE SCAN, and a
+// source scan can only ever say that the right TEXT is in the right place. These
+// two say what the line actually CONTAINS. They also carry the ONLY proof of the
+// new `json_usize_into` encoder's bare-decimal contract: the ADR-0226 width rule
+// (64-bit quoted, 32-bit and below bare) lives in one place, and `usize` had no
+// bare-decimal encoder before this slice — `json_u64_into` QUOTES, and
+// `json_u32_into(.. as u32)` narrows. The encoder is exercised THROUGH the
+// builder rather than directly, because the builder is the only caller that
+// matters and a direct test would pin a helper nobody is required to keep.
+//
+// `request_data_export` itself is not natively executable (`native_host_tests.rs`
+// models no datastore write), so there is no behavioural proof of the emission —
+// an honest limit recorded in ADR-0243, not a gap this arm closes.
+// ===========================================================================
+
+/// A deterministic fixture identity. This module owns no `use super::*`, so the
+/// type is named in full — and the constructor ban that covers privacy.rs is
+/// scoped to production source (`rb22p_no_identity_constructor` reads
+/// `PRIVACY_RS` only), exactly as the equivalent accounts_tests.rs fixture is.
+fn rb65p_ident(b: u8) -> spacetimedb::Identity {
+    spacetimedb::Identity::from_byte_array([b; 32])
+}
+
+/// X2 (behavioural): `export_fields` renders EXACTLY the sanctioned three-key
+/// fragment — the subject QUOTED, both counts BARE.
+///
+/// The two counts are given DISTINCT fixture values on purpose: `purged` and
+/// `written` are both integers, so an honest transposition of the two encoder
+/// calls type-checks, is clippy-clean, and satisfies every containment clause in
+/// the source-scan arm. Equal fixture values would make this test green on it.
+///
+/// The identity hex is asserted three ways: the WIDTH (64), the alphabet
+/// (lowercase hex), and the exact value for the fixture identity. The third kills
+/// a Debug rendering, which is a different string for the same value and would
+/// put a type name and a prefix inside a JSON string position.
+///
+/// Kills: a constant-returning builder (any fixture disagrees);
+///        `purged` and `written` transposed;
+///        a QUOTED count — which is what `json_u64_into` would produce for the
+///        same value (ADR-0226 quotes 64-bit integers because the S8 client
+///        loses precision above 2^53), and which no panel or alert can compare
+///        numerically;
+///        a `purged as u32` narrowing through `json_u32_into`, which renders
+///        4_294_967_296 as 0 — a silent `nothing was purged` for the largest
+///        re-exports in the system;
+///        a builder that OMITS a count when it is zero — the zero case is the
+///        FIRST export a subject ever requests, and an absent key reads
+///        downstream as `unknown`, not as `none`;
+///        an UNQUOTED identity, which is invalid JSON the moment the hex begins
+///        with a non-digit;
+///        renamed or reordered keys.
+#[test]
+fn rb65p_export_fields_is_exact() {
+    let dq = rb22p_dq();
+    let hex = rb65p_ident(7).to_string();
+
+    assert_eq!(
+        hex.len(),
+        64,
+        "rb65p [fields/hex-width]: the fixture identity renders as {} character(s); an Identity \
+         is 32 bytes and its Display is fixed-width lowercase hex, so 64 is the only correct \
+         width. A different width means the fragment is not rendering Display at all.",
+        hex.len()
+    );
+    assert!(
+        hex.chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+        "rb65p [fields/hex-alphabet]: the fixture identity renders as {hex:?}, which is not pure \
+         LOWERCASE hex. That alphabet is what makes an identity structurally quote-free and \
+         therefore safe to interpolate into a JSON string position without escaping — which is \
+         exactly what `json_identity_into` does, with no escape pass at all."
+    );
+    assert_eq!(
+        hex,
+        "07".repeat(32),
+        "rb65p [fields/hex-value]: the fixture identity is 32 bytes of 0x07, so its hex rendering \
+         is `07` thirty-two times, whichever byte order the SDK uses. A different value here \
+         means the fragment renders the identity through Debug (a type name plus a prefix) rather \
+         than Display."
+    );
+
+    let expected = format!("{dq}subject{dq}:{dq}{hex}{dq},{dq}purged{dq}:3,{dq}written{dq}:7");
+    assert_eq!(
+        super::export_fields(rb65p_ident(7), 3, 7),
+        expected,
+        "rb65p [fields/exact]: the fragment must be exactly three keys in this order — `subject`, \
+         the QUOTED hex of the requesting identity; `purged`, the BARE count of prior chunks this \
+         request destroyed; `written`, the BARE count of chunks it wrote. The two counts are 3 \
+         and 7 here precisely so a TRANSPOSITION of the two encoder calls — which type-checks, is \
+         clippy-clean and satisfies every source-scan clause in this slice — reds by value. The \
+         keys are `purged` and `written` rather than rb-40's `chunks`, because that key already \
+         means chunks PURGED at the claim site and one key must never name two quantities."
+    );
+
+    let both_zero = format!("{dq}subject{dq}:{dq}{hex}{dq},{dq}purged{dq}:0,{dq}written{dq}:0");
+    assert_eq!(
+        super::export_fields(rb65p_ident(7), 0, 0),
+        both_zero,
+        "rb65p [fields/zero]: a ZERO count must render as `:0` on BOTH keys, never be omitted and \
+         never be suppressed. Zero-purged is the FIRST export a subject ever requests — the one \
+         case where `this caller had nothing to purge` and `the purge never ran` are hardest to \
+         tell apart, and therefore the exact negative this residual exists to make visible. It is \
+         also the first `json_usize_into` boundary: a helper that skips falsy values, or one that \
+         renders an empty string, produces a malformed line here and nowhere else."
+    );
+
+    let big = super::export_fields(rb65p_ident(7), 4_294_967_296, 1);
+    let big_purged = format!("{dq}purged{dq}:4294967296,");
+    assert!(
+        big.contains(big_purged.as_str()),
+        "rb65p [fields/large]: a purge count beyond 32 bits must render as a BARE decimal, \
+         unclamped, untruncated and unquoted; got {big:?}. This is the whole reason \
+         `json_usize_into` exists: `json_u64_into` would render `{big_purged}` with the number in \
+         QUOTES (ADR-0226's width rule), and `json_u32_into(purged as u32)` renders this exact \
+         input as 0 — a silent `nothing was purged` for the largest re-exports in the system, \
+         which are the ones an audit most needs to be right about."
+    );
+
+    let f = super::export_fields(rb65p_ident(9), 12, 34);
+    assert!(
+        f.starts_with(dq),
+        "rb65p [fields/leading-quote]: the fragment must START at the opening quote of the first \
+         key; got {f:?}. `build_log_line` splices it verbatim after a comma, so any leading byte \
+         other than a quote produces malformed JSON in every emitted line — a leading comma in \
+         particular gives the envelope `,,`, which no downstream parser recovers from."
+    );
+    assert!(
+        f.ends_with('4'),
+        "rb65p [fields/trailing-digit]: the fragment must END on the last digit of the written \
+         count; got {f:?}. A trailing comma, brace or quote would either break the envelope or \
+         hide a fourth key that the AM6 reserved-key assert never sees in release."
+    );
+    assert_eq!(
+        f.matches(dq).count(),
+        8,
+        "rb65p [fields/quote-census]: the fragment must carry EXACTLY eight double quotes — three \
+         quoted keys (6) plus the one quoted identity value (2) — and none around either count; \
+         got {f:?}. TEN or TWELVE means a count was quoted (numerically uncomparable downstream, \
+         and the shape `json_u64_into` would produce); SIX means the identity was left bare \
+         (invalid JSON as soon as the hex does not parse as a number)."
+    );
+}
+
+/// X2 (behavioural, composition): the export fragment composes into a
+/// well-formed evt-first envelope through the blessed builder, with no dangling
+/// comma and exactly four top-level keys.
+///
+/// Mirrors `rb40_claim_purge_line_composes_into_the_envelope` and
+/// `rb65_cascade_line_composes_into_the_envelope` — the same proof for the third
+/// pure fragment builder in this family. It is the only test in this file that
+/// exercises the REAL composition the reducer performs.
+///
+/// Kills: a fragment that starts with a comma;
+///        a fragment that smuggles a reserved key (the key census counts five
+///        instead of four, and last-key-wins would let the smuggled value forge
+///        the event type);
+///        an envelope whose evt is not first (the relay reconstruction and the
+///        Loki label set both key on that position being stable, ADR-0180);
+///        an empty fragment, which would leave the envelope with one key and the
+///        re-export purge unobserved.
+#[test]
+fn rb65p_export_line_composes_into_the_envelope() {
+    let dq = rb22p_dq();
+    let evt = concat!("data", "_export");
+    let hex = rb65p_ident(9).to_string();
+    let line = crate::observability::build_log_line(
+        evt,
+        &super::export_fields(rb65p_ident(9), 2, 5),
+        crate::observability::Breadcrumb::default(),
+    );
+
+    let fragment = format!("{dq}subject{dq}:{dq}{hex}{dq},{dq}purged{dq}:2,{dq}written{dq}:5");
+    let expected = format!("{{{dq}evt{dq}:{dq}{evt}{dq},{fragment}}}");
+    assert_eq!(
+        line, expected,
+        "rb65p [line/exact]: the composed line must be the canonical envelope — `evt` first, then \
+         the export fragment verbatim, and nothing else. This is the string an operator greps, an \
+         alert matches and an erasure audit reads, so it is pinned by value rather than by shape."
+    );
+
+    assert!(
+        line.starts_with('{') && line.ends_with('}'),
+        "rb65p [line/braces]: the composed line must be a single JSON object; got {line:?}."
+    );
+    assert_eq!(
+        line.matches('{').count(),
+        1,
+        "rb65p [line/one-object]: the line must carry exactly ONE opening brace — no nested \
+         object. A `sched` breadcrumb is the only nested shape the builder can emit, and this \
+         line takes the default (empty) breadcrumb. Got {line:?}."
+    );
+    assert!(
+        !line.contains(",}"),
+        "rb65p [line/no-dangling-comma]: the line ends in a dangling comma ({line:?}), which is \
+         invalid JSON. The builder appends a comma before a NON-EMPTY fragment, so this fires \
+         when the fragment renders empty — an empty fragment is also a line that observes nothing."
+    );
+    assert_eq!(
+        line.matches(dq).count(),
+        12,
+        "rb65p [line/quote-census]: the line must carry EXACTLY twelve double quotes — four \
+         quoted keys (8) plus two quoted values, the evt and the subject hex (4) — with both \
+         counts bare. Got {line:?}."
+    );
+
+    let inner = &line[1..line.len() - 1];
+    let key_sep = format!("{dq}:");
+    assert_eq!(
+        inner.matches(key_sep.as_str()).count(),
+        4,
+        "rb65p [line/four-keys]: the line must carry EXACTLY four top-level keys (`evt`, \
+         `subject`, `purged`, `written`); the key-separator census counts {}. A fifth key is \
+         either a reserved envelope key smuggled through the fragment (AM6 — last-key-wins would \
+         let it forge the event type or a breadcrumb) or an unreviewed field on a privacy-audit \
+         record. Got {line:?}",
+        inner.matches(key_sep.as_str()).count()
+    );
+    let evt_prefix = format!("{dq}evt{dq}:");
+    assert!(
+        inner.starts_with(evt_prefix.as_str()),
+        "rb65p [line/evt-first]: `evt` must be the FIRST key of the envelope; got {line:?}. Every \
+         downstream consumer (the relay reconstruction, the Loki label set bounded to reducer \
+         plus evt) keys on that position being stable."
+    );
+}

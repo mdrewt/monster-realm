@@ -10,7 +10,8 @@
 //! ranking), `privacy::purge_export_bundles` (rb-22, ADR-0220: the
 //! claim-time purge of the retired guest's export chunks — whose purged count
 //! `complete_guest_claim` publishes through `observability::mr_log` as its
-//! terminal statement, rb-40 / ADR-0235), and since m22-s3b
+//! terminal statement, rb-40 / ADR-0235 — and the deletion reaper publishes
+//! its own step-6b count the same way, rb-65 / ADR-0243), and since m22-s3b
 //! the `erase_*` / `anonymize_*` cascade family the deletion reaper delegates
 //! to (ADR-0228 D1 — same delegation precedent, one helper per owning
 //! module). Bare reads of
@@ -786,6 +787,21 @@ fn purge_fields(guest: Identity, chunks: usize) -> String {
     format!("\"guest\":\"{guest}\",\"chunks\":{chunks}")
 }
 
+/// The ONE field fragment of the deletion-cascade line (rb-65, ADR-0243) —
+/// the `purge_fields` shape: PURE, no `ctx`, no table read, unit-tested by
+/// value. `subject` is the ERASED account identity — the SUBJECT of the
+/// erasure, the key an audit is answered by; the Anonymize-policy `account`
+/// row keeps that same key permanently, so this 30-day host-log copy is the
+/// shorter-lived one — rendered through the `Identity` Display impl (64
+/// lowercase hex digits, structurally quote-safe). `export_bundle` is the
+/// count step 6b's `purge_export_bundles` returned, unquoted, keyed by the
+/// helper noun so the deferred per-step counts append beside it (ADR-0243
+/// D4). No player-authored field and no pre-tombstone value may ever join
+/// this fragment (PRV1-17/20, which name this reducer literally).
+fn cascade_fields(subject: Identity, export_chunks: usize) -> String {
+    format!("\"subject\":\"{subject}\",\"export_bundle\":{export_chunks}")
+}
+
 // --- Deletion (M21 half — AUTH-28/29/37/38, D7; rb-24 arm/disarm, ADR-0221) ---
 
 /// Arm the one-shot deletion-grace reaper for `account` (rb-24, PRV1-1). Fire
@@ -1003,6 +1019,10 @@ pub struct AccountDeletionReaperSchedule {
 /// stamping the auth-issuer tombstone and the terminal marker. An `Err`
 /// anywhere aborts the whole transaction, so a partially-erased account
 /// cannot persist and the marker can never precede the erasure (PRV1-6e).
+/// Then, TERMINALLY (rb-65, ADR-0243), one `account_deletion_cascade` line
+/// through `observability::mr_log` carrying the subject hex and the count
+/// step 6b's purge returned — written pre-commit, at-least-once, never a
+/// commit record: the SSOT for `was X erased` is the row's `terminal_at_ms`.
 /// Scheduler-only: the guard is the entire precondition of the ADR-0195 D6
 /// struct-argument carve-out.
 #[spacetimedb::reducer]
@@ -1032,7 +1052,7 @@ pub fn account_deletion_reaper(
     crate::playtest::erase_playtest_events(ctx, args.account_identity);
     crate::trading::erase_trade_offers(ctx, args.account_identity);
     crate::pvp::erase_pvp_rows(ctx, args.account_identity);
-    crate::privacy::purge_export_bundles(ctx, args.account_identity);
+    let export_chunks = crate::privacy::purge_export_bundles(ctx, args.account_identity);
     crate::erase_character_rows(ctx, args.account_identity);
     crate::ranking::anonymize_display_names(ctx, args.account_identity);
     crate::battle::anonymize_battles(ctx, args.account_identity);
@@ -1040,6 +1060,12 @@ pub fn account_deletion_reaper(
         .account()
         .identity()
         .update(terminal_account(anonymized_account(account), now));
+    // rb-65 (ADR-0243): ONE cascade-wide observation, TERMINAL — after the
+    // stamp, after every step, before Ok(()). A host log line survives a
+    // later rollback while the writes do not, so nothing may run after it.
+    // Unconditional: the zero-chunk cascade is the negative an audit needs.
+    let fields = cascade_fields(args.account_identity, export_chunks);
+    crate::observability::mr_log("account_deletion_cascade", &fields);
     Ok(())
 }
 

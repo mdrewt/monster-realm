@@ -16278,3 +16278,223 @@ fn rb65_cascade_fields_is_pure() {
          than a description — the two behavioural tests own the fragment VALUE."
     );
 }
+
+// ===========================================================================
+// rb-65 (ADR-0243) — BEHAVIOURAL ARM. Applied WITH the fix, never before it.
+//
+// These two tests CALL `cascade_fields`, so on the pre-fix tree they are a BUILD
+// error rather than a by-name RED — and a build error takes every test in the
+// crate with it, which is indistinguishable from a broken tree and proves
+// nothing about this criterion (the rb-22 EO-6 / rb-40 precedent). The RED arm
+// above lands first and is captured by name; this block lands in the same commit
+// as the implementation.
+//
+// WHY THEY EXIST AT ALL. Every other rb-65 clause is a SOURCE SCAN, and a source
+// scan can only ever say that the right TEXT is in the right place. These two
+// say what the line actually CONTAINS: the pure fragment builder is the seam
+// that makes the emission testable by value in a crate where the deletion reaper
+// itself cannot be executed off-instance (`native_host_tests.rs` leaves
+// `datastore_update` / `_insert` / `_delete` UNMODELLED, so neither reducer in
+// this slice is natively runnable — an honest limit recorded in ADR-0243, not a
+// gap this arm closes). They own the kills no scan reaches: a builder that
+// renders the count into the wrong shape, quotes it, omits a zero, truncates a
+// large one, or renders the identity through Debug instead of Display.
+//
+// Helpers reused from the RED arm above: `rb65_evt()`, `rb22_dq()` (:4770) and
+// the `ident(u8)` fixture (:730).
+// ===========================================================================
+
+/// X1 (behavioural): `cascade_fields` renders EXACTLY the sanctioned two-key
+/// fragment — the erased identity QUOTED, the purged bundle count BARE.
+///
+/// The identity hex is asserted three ways on purpose: the WIDTH (64), the
+/// alphabet (lowercase hex), and the exact value for the fixture identity. The
+/// third is what kills a Debug rendering, which is a different string for the
+/// same value and would put a type name and a `0x` prefix inside a JSON string
+/// position (auditor C8); the first two say WHY 64 lowercase hex characters is
+/// the contract (`guards.rs:54`: Identity Display is fixed-width lowercase hex,
+/// which is exactly what makes it structurally quote-free and safe to
+/// interpolate raw).
+///
+/// Kills: a constant-returning builder (any fixture disagrees);
+///        a builder that renders the identity through `{subject:?}` (Debug),
+///        which is not 64 lowercase hex characters;
+///        a QUOTED count, which cannot be compared numerically by any alert or
+///        panel and is the single most likely `it looks the same` mutation;
+///        an UNQUOTED identity, which is invalid JSON the moment the hex begins
+///        with a non-digit;
+///        a builder that OMITS the count when it is zero — the zero-bundle
+///        cascade is the exact negative an erasure audit needs, and an absent key
+///        reads downstream as `unknown`, not as `none`;
+///        an `export_chunks as u32` (or any narrowing) truncation of a large
+///        count;
+///        renamed or reordered keys.
+#[test]
+fn rb65_cascade_fields_is_exact() {
+    let dq = rb22_dq();
+    let hex = ident(7).to_string();
+
+    assert_eq!(
+        hex.len(),
+        64,
+        "rb65 [fields/hex-width]: the fixture identity renders as {} character(s); an Identity is \
+         32 bytes and its Display is fixed-width lowercase hex, so 64 is the only correct width. \
+         A different width means the fragment is not rendering Display at all.",
+        hex.len()
+    );
+    assert!(
+        hex.chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+        "rb65 [fields/hex-alphabet]: the fixture identity renders as {hex:?}, which is not pure \
+         LOWERCASE hex. That alphabet is what makes an identity structurally quote-free and \
+         therefore safe to interpolate into a JSON string position without escaping."
+    );
+    assert_eq!(
+        hex,
+        "07".repeat(32),
+        "rb65 [fields/hex-value]: `ident(7)` is 32 bytes of 0x07, so its hex rendering is `07` \
+         thirty-two times, whichever byte order the SDK uses. A different value here means the \
+         fragment renders the identity through Debug (a type name plus a prefix) rather than \
+         Display — the same value, a different string, and one that is not a bare hex token."
+    );
+
+    let expected = format!("{dq}subject{dq}:{dq}{hex}{dq},{dq}export_bundle{dq}:3");
+    assert_eq!(
+        super::cascade_fields(ident(7), 3),
+        expected,
+        "rb65 [fields/exact]: the fragment must be exactly two keys in this order — `subject`, \
+         the QUOTED hex of the erased account identity (the SUBJECT an erasure audit is keyed \
+         on), then `export_bundle`, the BARE count of chunks the delegated purge deleted. This is \
+         the whole payload: no player-authored value, no provider, no pre-tombstone field. The \
+         subject key is `subject` and not `account` because ADR-0243 D4 reserves the \
+         erase-helper nouns for the deferred per-step counts, and the account row's own terminal \
+         stamp is one of them."
+    );
+
+    let zero = super::cascade_fields(ident(7), 0);
+    assert_eq!(
+        zero,
+        format!("{dq}subject{dq}:{dq}{hex}{dq},{dq}export_bundle{dq}:0"),
+        "rb65 [fields/zero]: a ZERO count must render as `:0`, never be omitted and never be \
+         suppressed. The zero-bundle cascade is the negative an erasure audit needs: it is the \
+         only way to tell `this account had no export bundle to purge` from `the cascade never \
+         ran`, which is precisely the ambiguity this slice exists to remove. An omitted key reads \
+         downstream as unknown, not as none."
+    );
+
+    let big = super::cascade_fields(ident(7), 4_294_967_296);
+    assert!(
+        big.ends_with(format!("{dq}export_bundle{dq}:4294967296").as_str()),
+        "rb65 [fields/large]: a count beyond 32 bits must render as a bare decimal, unclamped and \
+         untruncated; got {big:?}. An `export_chunks as u32` narrowing renders this exact input \
+         as 0 — a silent `nothing was deleted` for the largest erasures in the system, which are \
+         the ones an audit most needs to be right about."
+    );
+
+    let f = super::cascade_fields(ident(9), 12);
+    assert!(
+        f.starts_with(dq),
+        "rb65 [fields/leading-quote]: the fragment must START at the opening quote of the first \
+         key; got {f:?}. `build_log_line` splices it verbatim after a comma, so any leading byte \
+         other than a quote produces malformed JSON in every emitted line."
+    );
+    assert!(
+        f.ends_with('2'),
+        "rb65 [fields/trailing-digit]: the fragment must END on the last digit of the count; got \
+         {f:?}. A trailing comma, brace or quote would either break the envelope or hide a third \
+         key that the AM6 reserved-key scan never sees."
+    );
+    assert_eq!(
+        f.matches(dq).count(),
+        6,
+        "rb65 [fields/quote-census]: the fragment must carry EXACTLY six double quotes — two for \
+         the `subject` key, two for its hex value, two for the `export_bundle` key — and none \
+         around the count; got {f:?}. Eight means the count was quoted (numerically uncomparable \
+         downstream); four means the identity was left bare (invalid JSON as soon as the hex does \
+         not parse as a number)."
+    );
+}
+
+/// X1 (behavioural, composition): the cascade fragment composes into a
+/// well-formed evt-first envelope through the blessed builder, with no dangling
+/// comma and exactly three top-level keys.
+///
+/// Mirrors `rb40_claim_purge_line_composes_into_the_envelope` and
+/// `observability_tests.rs:224` — the same proof for the crate's other pure
+/// fragment builders. It is the only test in this slice that exercises the REAL
+/// composition the reducer performs, rather than the fragment in isolation.
+///
+/// Kills: a fragment that starts with a comma (the builder already emits one, so
+///        the line would carry `,,` and no JSON parser downstream recovers);
+///        a fragment that smuggles a reserved key (the top-level key census
+///        counts four instead of three, and last-key-wins would then let the
+///        smuggled value forge the event type);
+///        an envelope whose evt is not first (the relay reconstruction and the
+///        Loki label set both key on that position being stable, ADR-0180);
+///        an empty fragment, which would leave the envelope with one key and the
+///        cascade unobserved.
+#[test]
+fn rb65_cascade_line_composes_into_the_envelope() {
+    let dq = rb22_dq();
+    let evt = rb65_evt();
+    let hex = ident(9).to_string();
+    let line = crate::observability::build_log_line(
+        &evt,
+        &super::cascade_fields(ident(9), 2),
+        crate::observability::Breadcrumb::default(),
+    );
+
+    let fragment = format!("{dq}subject{dq}:{dq}{hex}{dq},{dq}export_bundle{dq}:2");
+    let expected = format!("{{{dq}evt{dq}:{dq}{evt}{dq},{fragment}}}");
+    assert_eq!(
+        line, expected,
+        "rb65 [line/exact]: the composed line must be the canonical envelope — `evt` first, then \
+         the cascade fragment verbatim, and nothing else. This is the string an operator greps, \
+         an alert matches and an erasure audit reads, so it is pinned by value rather than by \
+         shape."
+    );
+
+    assert!(
+        line.starts_with('{') && line.ends_with('}'),
+        "rb65 [line/braces]: the composed line must be a single JSON object; got {line:?}."
+    );
+    assert_eq!(
+        line.matches('{').count(),
+        1,
+        "rb65 [line/one-object]: the line must carry exactly ONE opening brace — no nested \
+         object. A `sched` breadcrumb is the only nested shape the builder can emit, and this \
+         line takes the default (empty) breadcrumb. Got {line:?}."
+    );
+    assert!(
+        !line.contains(",}"),
+        "rb65 [line/no-dangling-comma]: the line ends in a dangling comma ({line:?}), which is \
+         invalid JSON. The builder appends a comma before a NON-EMPTY fragment, so this fires \
+         when the fragment renders empty — an empty fragment is also a line that observes nothing."
+    );
+    assert_eq!(
+        line.matches(dq).count(),
+        10,
+        "rb65 [line/quote-census]: the line must carry EXACTLY ten double quotes — three quoted \
+         keys (6) plus two quoted values (4), with the bundle count bare. Got {line:?}."
+    );
+
+    let inner = &line[1..line.len() - 1];
+    let key_sep = format!("{dq}:");
+    assert_eq!(
+        inner.matches(key_sep.as_str()).count(),
+        3,
+        "rb65 [line/three-keys]: the line must carry EXACTLY three top-level keys (`evt`, \
+         `subject`, `export_bundle`); the key-separator census counts {}. A fourth key is either \
+         a reserved envelope key smuggled through the fragment (AM6 — last-key-wins would let it \
+         forge the event type or a breadcrumb) or an unreviewed field on a privacy-audit record \
+         that names an account which has just been erased. Got {line:?}",
+        inner.matches(key_sep.as_str()).count()
+    );
+    let evt_prefix = format!("{dq}evt{dq}:");
+    assert!(
+        inner.starts_with(evt_prefix.as_str()),
+        "rb65 [line/evt-first]: `evt` must be the FIRST key of the envelope; got {line:?}. Every \
+         downstream consumer (the relay reconstruction, the Loki label set bounded to reducer \
+         plus evt) keys on that position being stable."
+    );
+}
