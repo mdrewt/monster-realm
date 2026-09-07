@@ -280,8 +280,16 @@ fn rb22p_frozen_body() -> String {
 /// It starts at the `fn` needle, so the visibility keyword is NOT part of it —
 /// `pub(crate)` is pinned separately, as a prefix containment check. The trailing
 /// `-> usize` is rb-40 (ADR-0235): the helper reports how many chunks it deleted
-/// so its caller can publish that number. The two other call sites discard the
-/// value, which is warning-free (no must-use attribute is added).
+/// so its caller can publish that number.
+///
+/// SINCE rb-65 (ADR-0243) ALL THREE CALLERS BIND IT and publish it —
+/// `complete_guest_claim` and `account_deletion_reaper` in accounts.rs, and
+/// `request_data_export` in this module — so there is no discarding caller left
+/// anywhere in the crate. The helper still carries no `must_use` attribute:
+/// nothing forces the binding, which is exactly why each call site has its own
+/// statement pin (`rb40_claim_binds_the_purge_result`,
+/// `rb65_reaper_binds_the_purge_result`, `rb65p_export_binds_the_purge_result`)
+/// rather than relying on a compiler warning that does not exist.
 fn rb22p_frozen_sig() -> String {
     concat!(
         "fnpurge_export",
@@ -7372,9 +7380,11 @@ fn rb40p_purge_returns_the_collected_count() {
         "rb40p [count/sig-usize]: the helper signature must end in `{ret}`; it reads {sig:?}. A \
          helper that returns nothing cannot be observed: the claim-time call site would have to \
          invent the number it publishes, and an invented number is decoration rather than \
-         evidence. `usize` is the type `Vec::len` already produces, so no cast can truncate it, \
-         and a discarded return value at the two call sites that do not want it is \
-         warning-free (no must-use attribute is added)."
+         evidence. `usize` is the type `Vec::len` already produces, so no cast can truncate it. \
+         SINCE rb-65 (ADR-0243) every one of the three call sites BINDS this value and publishes \
+         it, so there is no discarding caller left in the crate — and because no must-use \
+         attribute is added, nothing but the three per-site statement pins would notice if one \
+         of them stopped."
     );
 
     // --- (2) the body ENDS in the tail expression ---------------------------
@@ -9148,8 +9158,10 @@ fn rb48_test_roster_is_closed() {
 // contract; that is the recorded hygiene exception.
 //
 // EVERYTHING IN THIS SECTION IS A SOURCE SCAN and therefore COMPILES ON THE
-// PRE-FIX TREE. The three tests that CALL `export_fields` land in the same
-// commit as the implementation.
+// PRE-FIX TREE. The TWO behavioural tests that CALL `export_fields` —
+// `rb65p_export_fields_is_exact` and
+// `rb65p_export_line_composes_into_the_envelope` — land in the same commit as
+// the implementation, in the block at the end of this file.
 //
 // SCAN HYGIENE: this section obeys the module contract that `rb22p_scan_hygiene`
 // enforces over THIS FILE — line comments only, no raw-string prefix, no
@@ -9344,12 +9356,31 @@ fn rb65p_fields_body_source() -> String {
 /// re-export purge, and it is the TERMINAL statement of the reducer.
 ///
 /// The twin of `rb65_reaper_emits_one_cascade_observation`, clause for clause,
-/// with two deliberate differences: the conditional-compilation census is NOT
-/// restated here (`rb48_privacy_has_exactly_one_cfg_attribute` :8484 already
-/// pins this file at exactly one `#[cfg` attribute and zero `cfg!` macros, and
-/// ADR-0224 forbids a second clause for zero marginal coverage), and the
-/// reachability clause is scoped BY DEPTH, because this reducer legitimately
-/// carries one nested `return Err(..)` AFTER the purge.
+/// with FOUR deliberate differences — every one of them a consequence of this
+/// reducer's shape rather than a gap:
+///   - the conditional-compilation census is NOT restated here
+///     (`rb48_privacy_has_exactly_one_cfg_attribute` already pins this file at
+///     exactly one `#[cfg` attribute and zero `cfg!` macros, and ADR-0224
+///     forbids a second clause for zero marginal coverage);
+///   - the reachability clause is scoped BY DEPTH, because this reducer
+///     legitimately carries one nested `return Err(..)` AFTER the purge, where
+///     the reaper carries none at all below its cascade;
+///   - that nested return's SHAPE is pinned too (round 2): a count alone cannot
+///     tell the PRV1-11 fail-loud arm from a fail-silent rewrite of it, and the
+///     rewrite was MEASURED green against the count;
+///   - the `?` ban is region-and-depth scoped rather than whole-body, because
+///     this reducer legitimately propagates a reader's Err from inside the
+///     manifest walk. The accounts twin bans `?` outright, which it can: every
+///     step of that cascade is `-> ()` by ADR-0228 D1.
+///
+/// The accounts twin also carries a whole-body EXIT CENSUS this side does not
+/// need. Its prefix — everything above the purge binding — is pinned ONLY by an
+/// exact-equality frozen-body literal, which a mutant can regenerate along with
+/// the code it describes (MEASURED). This reducer's prefix is pinned by a
+/// COUNT that no literal carries: `m22s4_reducer_statement_order`'s
+/// `[X9/returns]` fixes the number of `return` tokens preceding the purge at
+/// exactly three, so a fourth early exit planted above the purge reds THERE, in
+/// a shipped test this slice does not own and cannot regenerate.
 ///
 /// Kills (first killer of each, in clause order):
 ///   (1) the emission dropped entirely — the pre-fix state, in which the count
@@ -9358,6 +9389,11 @@ fn rb65p_fields_body_source() -> String {
 ///   (2') an ALIASING import followed by a call through the alias, which the
 ///       qualified needle cannot see;
 ///   (3) the emission written through the breadcrumb form;
+///   (3') a FUNCTION-POINTER emission channel — MEASURED: a `fn(&str, &str)`
+///       binding of the blessed wrapper, planted in `plan_export_chunks` and
+///       invoked through the local name. It spells no opening paren after the
+///       identifier and no `as`-renamed import, so (2), (2') and the alias ban
+///       are all green on it while a second, unreviewed event ships;
 ///   (5) the emission moved above the rb-48 self-arm (which can still abort the
 ///       transaction), or anywhere else; the evt indirected through a `const`;
 ///       either count argument dropped, re-argued or transposed;
@@ -9366,6 +9402,16 @@ fn rb65p_fields_body_source() -> String {
 ///       exactly the first-export case;
 ///   (8) a DEPTH-0 `return` inserted between the purge binding and the trailing
 ///       Ok, which makes the emission dead code or adds an exit that skips it;
+///   (8b) the PRV1-11 fail-loud arm rewritten `None => { return Ok(()); }` —
+///       MEASURED: the nested-return COUNT is unchanged, so (8) stays green,
+///       while a request that finds no exporter for a manifest-exportable table
+///       returns SUCCESS with a short bundle, its prior bundle already purged,
+///       no arm and no line. Counting the SHAPE is what tells a fail-loud arm
+///       from a fail-silent one;
+///   (8c) a `?` early exit at depth 0 in the same region — MEASURED as `let _ =
+///       rows_character(ctx, me)?;` after the purge binding. It spells no
+///       `return` token, so (8) and (8b) are both blind to it, and it skips the
+///       self-arm and the emission on any reader Err;
 ///   (9) a `let purged = 0;` or `let total = 0;` shadow, which re-points a
 ///       textually PERFECT emission at a constant while the purge and the writes
 ///       both still happen. `let total = 0;` is the MEASURED one: it also makes
@@ -9433,14 +9479,47 @@ fn rb65p_export_emits_one_observation() {
          surface for a single causeless INFO line. `mr_log` is the blessed no-breadcrumb form."
     );
 
+    // --- (3') THE BARE IDENTIFIER CENSUS (artifact red-team S4) --------------
+    // Every emission census above keys on a spelling that ends in an OPENING
+    // PAREN, and a function POINTER never has one. This clause counts the bare
+    // identifier and requires it to equal the qualified CALL count. It sits
+    // after the breadcrumb clause because that clause has just proved the ONE
+    // other identifier containing this substring is absent from the file, so
+    // the two numbers can be compared as equals rather than as a bound.
+    let ident_only = concat!("mr_", "log");
+    let n_ident = rb22p_count(&squashed, ident_only);
+    assert_eq!(
+        n_ident, n_file,
+        "rb65p [emit/fn-pointer]: privacy.rs names the bare identifier `{ident_only}` {n_ident} \
+         time(s) but performs only {n_file} qualified CALL(s) of `{emit}`. The difference is an \
+         emission reached without ever spelling a call site: MEASURED as a `fn(&str, &str)` \
+         binding of the blessed wrapper, planted inside `plan_export_chunks` and invoked through \
+         the local name. It spells no opening paren after the identifier and no `as`-renamed \
+         import, so the per-body count, the file-wide count, the unqualified-call clause and the \
+         alias-import ban all stay GREEN while a second, unreviewed event ships from a pure \
+         helper this slice never scoped — and from a fn that has no business emitting at all. \
+         The two counts are comparable as EQUALS because `{breadcrumb}` — the one other \
+         identifier carrying this substring — is asserted ZERO by the clause immediately above; \
+         if that ban is ever relaxed, this equality must be re-derived in the same change."
+    );
+
     // --- (4) conditional compilation: CITED, not restated --------------------
-    // `rb48_privacy_has_exactly_one_cfg_attribute` (:8484) already pins this
-    // file at EXACTLY ONE `#[cfg` attribute — the cfg-test-gated parent
-    // declaration of this very module — and at zero `cfg!` macros. That count is
-    // file-wide and unforgeable, so it already covers every new statement this
-    // slice adds; restating it here would be a second clause for zero marginal
-    // coverage (ADR-0224). The rb-65 ledger runs it in the same gate as this
-    // test for exactly that reason.
+    // `rb48_privacy_has_exactly_one_cfg_attribute` already pins this file at
+    // EXACTLY ONE `#[cfg` attribute — the cfg-test-gated parent declaration of
+    // this very module — and at zero `cfg!` macros. That count is file-wide and
+    // unforgeable, so it already covers every statement this slice adds;
+    // restating it here would be a second clause for zero marginal coverage
+    // (ADR-0224).
+    //
+    // A CITATION IS ONLY HONEST IF THE CITED TEST ACTUALLY RUNS. Two existing
+    // tests carry rb-65's production invariants without being rb-65 tests:
+    // `rb48_privacy_has_exactly_one_cfg_attribute` (the cfg census above) and
+    // `rb64p_paren_less_verb_and_in_file_macro_are_banned` (the paren-less
+    // write-verb ban, which is what stops a fn-item binding of a write verb
+    // reaching a table from the new code this slice adds). BOTH are named in
+    // the rb-65 ledger's X2 filter alongside every `rb65p_` test, and both run
+    // again in the whole-crate X5 and X7 gates — so neither can be silently
+    // dropped from the surface this slice depends on.
 
     // --- (5) THE EMISSION IS THE TERMINAL STATEMENT --------------------------
     let tail = rb65p_frozen_export_tail();
@@ -9585,6 +9664,82 @@ fn rb65p_export_emits_one_observation() {
          `continue`, which is the shape that produces a SHORT export (a bundle missing a table \
          the manifest promises) while returning success. MORE THAN ONE is an undeclared early \
          exit hiding one brace deep, where the depth-0 clause above cannot see it."
+    );
+
+    // --- (8b) THE NESTED EXIT IS AN `Err`, NEVER AN `Ok` (red-team S3) ------
+    // MEASURED SURVIVOR of the clause immediately above: rewriting the PRV1-11
+    // arm as `None => { return Ok(()); }` keeps the nested count at exactly
+    // one, so [emit/reachable-nested] stays green — while a request whose
+    // manifest walk finds no exporter for a table returns SUCCESS with a
+    // partial bundle, the caller's prior bundle already purged, no arm and no
+    // line. Counting the SHAPE is what tells the fail-loud arm from a
+    // fail-silent one. Region-scoped rather than depth-scoped because the
+    // depth-0 count is already pinned at zero two clauses above, so a region
+    // total and a depth>0 total are the same number here.
+    let n_ret_err = rb22p_count(region, concat!("returnEr", "r("));
+    assert_eq!(
+        n_ret_err, 1,
+        "rb65p [emit/nested-is-err]: exactly ONE `Err` return may sit between the purge and the \
+         trailing Ok — the PRV1-11 `export_missing_exporter` fail-loud arm; found {n_ret_err}. \
+         ZERO means the arm no longer FAILS: PRV1-11 promises that a table the manifest declares \
+         exportable, with no exporter behind it, aborts the whole request rather than silently \
+         producing a bundle that is missing it."
+    );
+    // SUBSUMED BY ARITHMETIC, and saying so is the point: the depth-0 count is
+    // zero, the nested count is one, and that one return is an `Err` — so an
+    // `Ok` return in this region is already unrepresentable. Kept as
+    // ATTRIBUTION (the m22s4_reducer_statement_order precedent for a
+    // deliberately subsumed clause), because assertions are first-failure-wins
+    // and a reader who lands on THIS message is told which of the two shapes
+    // moved without having to diff the region dump.
+    let n_ret_ok = rb22p_count(region, concat!("returnO", "k("));
+    assert_eq!(
+        n_ret_ok, 0,
+        "rb65p [emit/nested-not-ok]: {n_ret_ok} `Ok` return(s) sit between the purge and the \
+         trailing Ok(()); ZERO is allowed. This is arithmetic given the three clauses above — \
+         zero at depth 0, one nested, and that one an `Err` — and it is kept for ATTRIBUTION. \
+         The shape it names is the MEASURED survivor: rewriting the PRV1-11 fail-loud arm as \
+         `None => {{ return Ok(()); }}` holds the nested-return count at exactly one, so \
+         [emit/reachable-nested] stays GREEN, and every request that hits that arm reports \
+         SUCCESS with a SHORT bundle — after the purge has destroyed the caller's previous one, \
+         without arming the TTL reaper and without emitting the line that would have recorded \
+         any of it. On that exact rewrite [emit/nested-is-err] is the clause that fires."
+    );
+
+    // --- (8c) THE `?` OPERATOR, SCOPED BY DEPTH (artifact red-team S2) ------
+    // A SECOND early-exit channel, and one that spells no `return` token at
+    // all, so all three clauses above are blind to it by construction. The
+    // legitimate `?` — `rows_fn(ctx, me)?` inside the manifest walk — sits at
+    // depth 3, so the same depth split the return census uses applies here.
+    let mut try_depth0 = 0usize;
+    let mut try_nested = 0usize;
+    for (rel, ch) in region.char_indices() {
+        if ch != '?' {
+            continue;
+        }
+        if m22s4_brace_depth_at(&body, at_purge + rel) == 0 {
+            try_depth0 += 1;
+        } else {
+            try_nested += 1;
+        }
+    }
+    assert_eq!(
+        try_depth0, 0,
+        "rb65p [emit/no-try]: {try_depth0} DEPTH-0 `?` operator(s) sit between the bound purge \
+         and the trailing Ok(()); ZERO is allowed. A `?` is an early exit that spells no `return` \
+         token, so all three reachability clauses above are blind to it. MEASURED: `let _ = \
+         rows_character(ctx, me)?;` planted directly after the purge binding is clippy-clean, \
+         keeps every count, ordering, depth and terminal clause green, and turns any reader Err \
+         into a path that skips the self-arm AND the emission — after the purge has already \
+         destroyed the caller's previous bundle."
+    );
+    assert_eq!(
+        try_nested, 1,
+        "rb65p [emit/try-nested]: exactly ONE nested `?` may sit in this region — the \
+         `rows_fn(ctx, me)?` that propagates a reader's Err from inside the manifest walk; found \
+         {try_nested}. ZERO means that propagation was swallowed, which produces a SHORT bundle \
+         on a reader failure while returning success; MORE THAN ONE is a second fallible call \
+         nobody reviewed, hiding one brace deep where the depth-0 clause above cannot see it."
     );
 
     // --- (9) no local is shadowed or rebound ---------------------------------
@@ -9752,7 +9907,15 @@ fn rb65p_export_fields_is_pure() {
          dashboard query and `just logs` grep keyed on the name goes silent with no other gate \
          reddening. TWO means a second site emits the same event name from a flow this slice \
          never reviewed. The count is taken with comments removed and whitespace INTACT, so \
-         neither a doc comment nor a formatter-invisible respelling can move it."
+         neither a doc comment nor a formatter-invisible respelling can move it. \
+         TWO ACCEPTED OVER-STRICTNESSES, stated so a legitimate red is not mistaken for a gate \
+         bug: (a) the count includes no comment, so a doc comment that needs to name the event \
+         may spell it freely; (b) because whitespace is PRESERVED, an interior space — \
+         `stringify!(data_export )` — reds here even though it expands to the byte-identical \
+         event name. That is the price of the whitespace-preserving view, and the view is what \
+         makes the clause see spellings every squashed scan in this module is blind to. If the \
+         formatter ever produces that spacing, re-derive this needle from the formatted tree; \
+         never relax the clause to a squashed view."
     );
 
     let body = extract_squashed_fn_body(&squashed, &needle)
@@ -9915,8 +10078,11 @@ fn rb65p_ident(b: u8) -> spacetimedb::Identity {
 ///        loses precision above 2^53), and which no panel or alert can compare
 ///        numerically;
 ///        a `purged as u32` narrowing through `json_u32_into`, which renders
-///        4_294_967_296 as 0 — a silent `nothing was purged` for the largest
-///        re-exports in the system;
+///        4_294_967_296 as 0 on the HOST. Scoped honestly (ADR-0243 D3): on
+///        wasm32 `usize` IS `u32`, so this input is unreachable in the shipped
+///        module and the clause pins the ENCODER CONTRACT — the count rendered
+///        at the width the purge helper returns, with no cast between them —
+///        rather than a production truncation;
 ///        a builder that OMITS a count when it is zero — the zero case is the
 ///        FIRST export a subject ever requests, and an absent key reads
 ///        downstream as `unknown`, not as `none`;
@@ -9985,9 +10151,15 @@ fn rb65p_export_fields_is_exact() {
         "rb65p [fields/large]: a purge count beyond 32 bits must render as a BARE decimal, \
          unclamped, untruncated and unquoted; got {big:?}. This is the whole reason \
          `json_usize_into` exists: `json_u64_into` would render `{big_purged}` with the number in \
-         QUOTES (ADR-0226's width rule), and `json_u32_into(purged as u32)` renders this exact \
-         input as 0 — a silent `nothing was purged` for the largest re-exports in the system, \
-         which are the ones an audit most needs to be right about."
+         QUOTES (ADR-0226's width rule — the one failure mode here that IS reachable in the \
+         shipped wasm, because it is a rendering decision rather than a width one), and \
+         `json_u32_into(purged as u32)` renders this HOST-side input as 0. SCOPE, STATED \
+         HONESTLY (ADR-0243 D3): on wasm32 `usize` IS `u32`, so the narrowing half of this tooth \
+         is NOT evidence about a production truncation — the input is unreachable there. What it \
+         pins is the ENCODER CONTRACT: `purged` is rendered at the width \
+         `purge_export_bundles` returns, through the encoder whose whole job is that width, with \
+         no cast between them. That is what keeps a future 64-bit host target, or an `as u32` \
+         added for tidiness, a conscious change rather than a silent one."
     );
 
     let f = super::export_fields(rb65p_ident(9), 12, 34);

@@ -15444,11 +15444,14 @@ fn rb40_claim_purge_line_composes_into_the_envelope() {
 // broken build (the rb-22 EO-6 / rb-40 precedent). The two behavioural tests
 // that CALL `cascade_fields` land in the same commit as the implementation.
 //
-// SCAN HYGIENE (this file's header rule, restated because this section adds the
-// crate's SECOND emission-site needle and a second backslash-bearing fragment
-// pin to a file a dozen evals concatenate wholesale, `_tests.rs` included):
-// every needle below is assembled from `concat!` fragments or from the
-// `rb22_dq()` / `rb40_bs()` byte helpers, so this file never carries a
+// SCAN HYGIENE (this file's header rule, restated because this section adds a
+// second backslash-bearing fragment pin, a second evt token and — in round 2 —
+// the bare-identifier and alias spellings of the emission point, to a file a
+// dozen evals concatenate wholesale, `_tests.rs` included). The QUALIFIED call
+// needle is NOT new: this section reuses `rb40_nd_mr_log()`, which is the point
+// of the file-wide 1 -> 2 census widening rather than a second spelling of the
+// same thing. Every needle below is assembled from `concat!` fragments or from
+// the `rb22_dq()` / `rb40_bs()` byte helpers, so this file never carries a
 // contiguous emission call site, evt token, escaped-quote pair, block comment,
 // raw string, or quote inside a char literal.
 // ===========================================================================
@@ -15621,10 +15624,20 @@ fn rb65_accounts_trailer_pin() -> String {
 /// X1 (emission): `account_deletion_reaper` emits EXACTLY ONE observation of the
 /// completed cascade, and it is the TERMINAL statement of the reducer.
 ///
-/// TEN clauses, each with its OWN pinned message. Coarse mutants only ever prove
-/// the FIRST assertion — `expect()` throws on first failure — so every later
-/// clause is written to be attributable by FAILURE MESSAGE under a surgical
-/// mutant of its own.
+/// EVERY CLAUSE HAS ITS OWN PINNED MESSAGE. Coarse mutants only ever prove the
+/// FIRST assertion — `expect()` throws on first failure — so every later clause
+/// is written to be attributable by FAILURE MESSAGE under a surgical mutant of
+/// its own. (No count is stated here on purpose: the Kills list below IS the
+/// inventory, and a numeral in this paragraph is one more thing to leave stale.)
+///
+/// THREE GROUPS ARE ROUND-2 ADDITIONS, and each closes a MEASURED CI-clean
+/// survivor of the round-1 set rather than restating one of its clauses: (3')
+/// the function-pointer emission channel, and (8b) / (8c) the two early-exit
+/// channels that make the whole cascade unreachable while every position-based
+/// clause here stays green. Three of the assertions inside those groups are
+/// deliberately SUBSUMED by their neighbours and say so in their own messages —
+/// they are attribution, not teeth (the m22s4_reducer_statement_order
+/// precedent).
 ///
 /// Kills (first killer of each, in clause order):
 ///   (0) a SECOND declaration of either reducer, which would steer both scoped
@@ -15644,6 +15657,11 @@ fn rb65_accounts_trailer_pin() -> String {
 ///   (3) the emission written through `mr_log_breadcrumb`, which adds a `cause`
 ///       that duplicates the subject and pulls the m20e trace-pair machinery
 ///       (G9f/G9h) into a causeless INFO line;
+///   (3') a FUNCTION-POINTER emission channel — MEASURED: a `fn(&str, &str)`
+///       binding of the blessed wrapper, planted in `rekey_all` and invoked
+///       through the local name. It spells no opening paren after the
+///       identifier and no `as`-renamed import, so (2), (2') and the alias ban
+///       are all green on it while a second, unreviewed event ships;
 ///   (4) a conditional-compilation attribute anywhere in accounts.rs: the
 ///       published wasm then emits NOTHING while `just lint` (a HOST build),
 ///       every Rust test and every eval agree the code is present — CI never
@@ -15661,6 +15679,17 @@ fn rb65_accounts_trailer_pin() -> String {
 ///   (8) a `return` inserted between the purge binding and the trailing `Ok(())`,
 ///       which makes the emission dead code or adds an exit that skips it while
 ///       every POSITION-based clause above stays green;
+///   (8b) an early exit planted ABOVE the cascade — MEASURED as a file-scope
+///       `const OBSERVE: bool = false;` plus an `if !OBSERVE { .. }` return,
+///       with the frozen-body literal REGENERATED around it. Clause (8)'s
+///       region starts at the purge binding and cannot see it; the equality
+///       backstop moved with the code. The whole-body exit census is
+///       transcribed from ADR-0228 D2 rather than from that literal, so a
+///       regeneration cannot move it;
+///   (8c) a `?` early exit anywhere in the body — a second exit channel that
+///       spells no `return` token at all, so (8) and (8b) are both blind to it.
+///       Every delegated step is `-> ()` (ADR-0228 D1), so the sanctioned body
+///       carries zero and the ban can be total;
 ///   (9) a `let export_chunks = 0;` (or `let fields = ..;`) rebind, which
 ///       re-points a textually PERFECT emission at a constant while the purge
 ///       still runs.
@@ -15796,6 +15825,30 @@ fn rb65_reaper_emits_one_cascade_observation() {
          causeless INFO line. `mr_log` is the blessed no-breadcrumb form."
     );
 
+    // --- (3') THE BARE IDENTIFIER CENSUS (artifact red-team S4) --------------
+    // Every emission census above keys on a spelling that ends in an OPENING
+    // PAREN, and a function POINTER never has one. This clause counts the bare
+    // identifier instead and requires it to equal the qualified CALL count.
+    // It is placed after the breadcrumb clause because that clause has just
+    // proved the ONE other identifier containing this substring is absent, so
+    // the two numbers can be compared as equals rather than as a bound.
+    let ident_only = concat!("mr_", "log");
+    let n_ident = m22_count_occurrences(&squashed, ident_only);
+    assert_eq!(
+        n_ident, n_file,
+        "rb65 [emit/fn-pointer]: accounts.rs names the bare identifier `{ident_only}` {n_ident} \
+         time(s) but performs only {n_file} qualified CALL(s) of `{emit}`. The difference is an \
+         emission reached without ever spelling a call site: MEASURED as `let emit: fn(&str, \
+         &str) = crate::observability::mr_log;` bound inside `rekey_all` and invoked through the \
+         local name. It spells no opening paren after the identifier and no `as`-renamed import, \
+         so the file-wide count, the per-body attribution, the unqualified-call clause and the \
+         alias-import ban all stay GREEN while a second, unreviewed event is published from a \
+         helper neither ceremony's reviewers scope. The two counts are comparable as EQUALS \
+         because `{breadcrumb}` — the one other identifier carrying this substring — is asserted \
+         ZERO by the clause immediately above; if that ban is ever relaxed, this equality must be \
+         re-derived in the same change."
+    );
+
     // --- (4) FILE-WIDE conditional-compilation census ------------------------
     let cfg_attr = rb65_nd_cfg_attr();
     let n_cfg = m22_count_occurrences(&squashed, &cfg_attr);
@@ -15925,6 +15978,122 @@ fn rb65_reaper_emits_one_cascade_observation() {
          exit that skips it, while the count, cfg, terminal, ordering and depth clauses above all \
          stay GREEN because every one of them reasons about POSITION and none about REACHABILITY. \
          Region text: {region:?}"
+    );
+
+    // --- (8b) THE WHOLE-BODY `return` CENSUS (artifact red-team S1) ----------
+    // MEASURED CI-CLEAN SURVIVOR of every clause above, the one immediately
+    // preceding this included: a file-scope `const OBSERVE: bool = false;` plus
+    // an `if !OBSERVE { return Ok(()); }` planted directly above the first
+    // delegated call, with `rb24_frozen_reaper_body` REGENERATED to carry the
+    // new fragment. The region clause above starts at the PURGE BINDING and
+    // cannot see an exit planted higher; clause (0') only re-asserts the guard;
+    // and the equality backstop moves with the code, which is precisely what
+    // the two-transcription rule warns about. The published reducer then no-ops
+    // every cascade — no erase, no terminal stamp, no line — while the suite
+    // and clippy stay green.
+    //
+    // THE FIX IS A CENSUS OF THE WHOLE BODY, transcribed from ADR-0228 D2's
+    // three sanctioned exits rather than derived from the frozen literal, so
+    // regenerating that literal cannot move it.
+    let body_bytes = body.as_bytes();
+    let mut returns = 0usize;
+    let mut first_return: Option<usize> = None;
+    let mut scan = 0usize;
+    while let Some(rel) = body[scan..].find("return") {
+        let at = scan + rel;
+        // Word boundary on the LEFT ONLY, exactly as rb24_has_return_token
+        // documents: squash_ws fuses `return Err(..)` into `returnErr(`, so a
+        // right-hand boundary would blind this to the very shape it counts.
+        if at == 0 || !is_word_byte(body_bytes[at - 1]) {
+            returns += 1;
+            if first_return.is_none() {
+                first_return = Some(at);
+            }
+        }
+        scan = at + "return".len();
+    }
+    assert_eq!(
+        returns, 3,
+        "rb65 [emit/return-census]: the deletion reaper body must carry EXACTLY three `return` \
+         tokens; found {returns}. ADR-0228 D2 sanctions three and only three exits, all of them \
+         ABOVE the cascade: the scheduler-guard reject, the missing-row no-op, and the \
+         not-yet-due re-arm. A FOURTH is an early exit that skips every erase step, the PRV1-6e \
+         terminal stamp and the observation line at once — MEASURED as a file-scope `const \
+         OBSERVE: bool = false;` plus an `if !OBSERVE {{ return Ok(()); }}` above the first \
+         delegated call, with the frozen-body literal regenerated around it. The reachability \
+         clause above starts at the purge binding and cannot see an exit planted higher, and the \
+         equality backstop moves with the code. This census is transcribed from the plan's exit \
+         list rather than from that literal, which is what makes it independent of a \
+         regeneration."
+    );
+    assert_eq!(
+        m22_count_occurrences(body, concat!("returnEr", "r(")),
+        1,
+        "rb65 [emit/return-err-shape]: exactly ONE of the reaper's three exits may be an `Err` — \
+         the scheduler-only reject, which is the entire precondition of the ADR-0195 D6 \
+         struct-argument carve-out. A second `Err` exit aborts a transaction that has already \
+         begun erasing rows, from a branch nobody reviewed; ZERO means the guard stopped \
+         rejecting while still spelling the comparison."
+    );
+    // MOSTLY SUBSUMED, and saying so is the point: given a total of three and
+    // exactly one `Err`, the other two exits are non-`Err` by arithmetic. What
+    // this clause adds is their exact SPELLING — a `return Ok(())` without its
+    // semicolon, or a turbofished `return Ok::<(), String>(())`, is the same
+    // Rust and a different byte sequence, and every squashed pin in this file
+    // is a byte sequence. Kept as ATTRIBUTION (the m22s4_reducer_statement_order
+    // precedent) so a reshuffled exit set reds with a number rather than with a
+    // 240-byte tail dump.
+    assert_eq!(
+        m22_count_occurrences(body, concat!("returnO", "k(());")),
+        2,
+        "rb65 [emit/return-ok-shape]: exactly TWO of the reaper's three exits may be a silent \
+         `Ok(())`, spelled exactly so — the missing-row no-op and the not-yet-due re-arm; found \
+         {}. Given the census and the `Err` clause above this is arithmetic rather than a new \
+         fact, and it is kept for ATTRIBUTION: what it adds on its own is the exact SPELLING of \
+         the two silent exits, because a semicolon-less `return Ok(())` or a turbofished \
+         `Ok::<(), String>` is the same Rust and a different byte sequence — and every squashed \
+         pin in this file, this one included, compares byte sequences.",
+        m22_count_occurrences(body, concat!("returnO", "k(());"))
+    );
+    // ATTRIBUTION, NOT AN INDEPENDENT TOOTH, and saying so is the point (the
+    // m22s4_reducer_statement_order precedent for a deliberately subsumed
+    // clause). Clause (0') already proves the body STARTS with the guard, and
+    // the guard needle ENDS in a `return` token — so the first exit's offset is
+    // a THEOREM of that clause rather than a new fact. It is asserted anyway
+    // because assertions are first-failure-wins: a body whose exits have been
+    // reshuffled reds HERE naming the offset, instead of reding on a 240-byte
+    // tail dump the reader has to diff by eye.
+    assert_eq!(
+        first_return,
+        Some(guard.len() - "return".len()),
+        "rb65 [emit/return-first]: the FIRST `return` token in the reaper body must be the \
+         scheduler guard's own, at offset {} — the guard needle ENDS in that token and clause (0') \
+         has already proved the body STARTS with the guard, so this clause is a restatement of \
+         those two facts kept for ATTRIBUTION. A first exit anywhere else is a statement that \
+         runs BEFORE the authorization check, on behalf of a caller the guard has not yet \
+         rejected.",
+        guard.len() - "return".len()
+    );
+
+    // --- (8c) NO `?` OPERATOR ANYWHERE IN THE REAPER BODY (red-team S2) -----
+    // A SECOND measured early-exit channel, and one that spells no `return`
+    // token at all, so both reachability clauses above are blind to it by
+    // construction. The ban is TOTAL rather than region-scoped because it can
+    // be: all thirteen delegated steps are `-> ()` by ADR-0228 D1 and both
+    // recheck seams are pure, so the sanctioned body carries ZERO `?` today.
+    let n_try = body.matches('?').count();
+    assert_eq!(
+        n_try, 0,
+        "rb65 [emit/no-try]: the deletion reaper body contains {n_try} `?` operator(s); ZERO is \
+         allowed. Every delegated cascade step returns `()` (ADR-0228 D1) and both recheck seams \
+         are pure, so a `?` here is necessarily NEW — and it is an early exit that spells no \
+         `return` token, which is why the two reachability clauses above cannot see it. MEASURED: \
+         `u32::try_from(export_chunks).map_err(|e| e.to_string())?;` planted between the purge \
+         binding and the character sweep is clippy-clean, keeps every count, ordering, depth and \
+         equality clause green, and aborts the cascade mid-way on any Err — leaving a partially \
+         erased account with no terminal stamp and no line. If a fallible step is ever \
+         legitimately added here, this clause must be re-derived consciously, in the same change \
+         as the ADR-0228 D1 amendment that permits it."
     );
 
     // --- (9) neither local is shadowed or rebound ----------------------------
@@ -16386,9 +16555,14 @@ fn rb65_cascade_fields_is_exact() {
     assert!(
         big.ends_with(format!("{dq}export_bundle{dq}:4294967296").as_str()),
         "rb65 [fields/large]: a count beyond 32 bits must render as a bare decimal, unclamped and \
-         untruncated; got {big:?}. An `export_chunks as u32` narrowing renders this exact input \
-         as 0 — a silent `nothing was deleted` for the largest erasures in the system, which are \
-         the ones an audit most needs to be right about."
+         untruncated; got {big:?}. An `export_chunks as u32` narrowing in the builder renders \
+         this HOST-side input as 0. SCOPE, STATED HONESTLY (ADR-0243 D3): on wasm32 `usize` IS \
+         `u32`, so this input is unreachable in the shipped module and the tooth is NOT evidence \
+         about a production truncation. What it pins is the TYPE CONTRACT the builder's frozen \
+         signature states — the count is rendered at the width \
+         `purge_export_bundles` returns, with no cast between them — so that a future 64-bit \
+         host target, or a `chunks as u32` added for tidiness, is a conscious change rather than \
+         a silent one."
     );
 
     let f = super::cascade_fields(ident(9), 12);
