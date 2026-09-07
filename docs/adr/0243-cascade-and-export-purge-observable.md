@@ -7,7 +7,7 @@
 **Amends:** —
 **Extends:** ADR-0235 (the claim-time precedent this generalises — and whose third rejection reason it reverses), ADR-0228 (the §4.4 cascade and its D1 infallible `-> ()` helpers), ADR-0226 (the export reducer's pinned statement shape), ADR-0238 (the arm-last tail this re-freezes), ADR-0180 D6/D12 (`mr_log` as the sole emission point; identity as a field, never a label), ADR-0224 (proof-of-teeth as ordinary tests), ADR-0230 (whose PRV1-17/20 "emits no log line" evidence this falsifies)
 **Subsystems:** security-authz, ci-gates
-**Decision:** `account_deletion_reaper` and `request_data_export` bind the count `purge_export_bundles` returns and each emit ONE terminal `mr_log` line — `account_deletion_cascade` and `data_export` — carrying the subject and the counts, never a player-authored field.
+**Decision:** `account_deletion_reaper` and `request_data_export` bind the count `purge_export_bundles` returns and each emit ONE terminal `mr_log` line (`account_deletion_cascade`, `data_export`) carrying subject + counts, never a player-authored field.
 
 ## Context and problem statement
 
