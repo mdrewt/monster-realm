@@ -1239,6 +1239,33 @@ function recordingRuleExprBodies(recordingRulesText) {
 }
 
 /**
+ * Grafana panel types that actually ISSUE their targets. Display-only types (`row`, `text`,
+ * `news`, `dashlist`, `canvas`, ...) carry a `targets` array that is never executed, so a panel
+ * of one of those types is not a consumer no matter what its query says.
+ */
+const QUERYING_PANEL_TYPES = new Set([
+  'timeseries',
+  'stat',
+  'gauge',
+  'bargauge',
+  'barchart',
+  'histogram',
+  'heatmap',
+  'piechart',
+  'table',
+  'trend',
+  'xychart',
+  'state-timeline',
+  'status-history',
+  'candlestick',
+  'logs',
+  'graph',
+]);
+
+/** The uid Grafana actually routes a Prometheus query on (provisioning/datasources.yml). */
+const PROMETHEUS_DATASOURCE_UID = 'mr-prometheus';
+
+/**
  * EARS (rb-66): "No Grafana panel or alert consumes evt=guest_claim_export_purge". This is the
  * INVERSE CLOSURE of item 14: `checkQueriedSeriesAreDefined` says nothing queries an UNDEFINED
  * series; this says a DEFINED event reaches a consumer that actually draws or evaluates it.
@@ -1337,7 +1364,14 @@ export function checkEventHasQueriedConsumer(
   const consumers = [];
   for (const panel of dashboard.panels || []) {
     // A `row` draws nothing and a `text` panel never issues its targets (RT-19).
-    if (panel.type === 'row' || panel.type === 'text') continue;
+    // ALLOW-LIST, not a deny-list. `row`, `text`, `news`, `dashlist`, `canvas` and every future
+    // display-only type never issue their targets, and a two-name deny-list reads the next one
+    // added as a live consumer (measured by the verifier on `type: "news"`). An unknown type
+    // fails CLOSED: a panel type this gate has never heard of is not evidence a human sees the
+    // event. Absent `type` is Grafana's default and stays legal.
+    if (panel.type !== undefined && panel.type !== null && !QUERYING_PANEL_TYPES.has(panel.type)) {
+      continue;
+    }
     // A zero-height or zero-width rectangle is a panel a human cannot read. Absent gridPos is
     // Grafana auto-layout and stays legal (RT-18).
     const gridPos = panel.gridPos;
@@ -1357,9 +1391,17 @@ export function checkEventHasQueriedConsumer(
       // A datasource that is PRESENT must RESOLVE to Prometheus. A `${DS}` template string and
       // a bare `{uid}` do not, and neither may be ASSUMED to (RT-17). Absent/null is the
       // dashboard default and stays legal, as the shipped A3 tooth requires.
+      //
+      // `type` alone is NOT the resolution: Grafana routes a query on the `uid`, and `type` is
+      // advisory metadata a hand-edit can leave stale. `{type:'prometheus', uid:'mr-loki'}` names
+      // a REAL provisioned Loki datasource (provisioning/datasources/datasources.yml) and draws
+      // nothing — measured surviving the type-only check. So a declared uid must be the
+      // provisioned Prometheus one; a uid this file does not know is not evidence either.
       const datasource = target.datasource ?? panel.datasource;
       if (datasource !== undefined && datasource !== null) {
         if (typeof datasource !== 'object' || datasource.type !== 'prometheus') continue;
+        const uid = datasource.uid;
+        if (uid !== undefined && uid !== null && uid !== PROMETHEUS_DATASOURCE_UID) continue;
       }
       // `#` opens a comment in PromQL too: the identifier must appear in code (RT-21).
       if (!promqlIdentifiers(promqlCode(target.expr)).includes(recordName)) continue;

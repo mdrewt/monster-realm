@@ -633,3 +633,65 @@ test('RT-24 (MEDIUM): the purge rule body is DERIVED from its sibling, not re-sp
       'with a stated reason — a silent divergence is how a recorded constant ships',
   );
 });
+
+// ===========================================================================
+// RT-25/RT-26 (rb-66) — found by the VERIFIER, not by the artifact red-team pass: two mutants
+// that survived the RT-14..RT-24 hardening. Both were EXECUTED against the shipped predicate
+// and returned ok=true for a real dashboard in which the panel draws nothing. Both mutate the
+// COMMITTED dashboard through `dashboardWith`, so neither can drift away from reality.
+// ===========================================================================
+
+test('RT-25 (HIGH): a display-only panel type never issues its targets, whatever it is named', () => {
+  // MEASURED: `type: "news"` passed the original two-name `row`/`text` deny-list. `news`,
+  // `dashlist` and `canvas` are real Grafana types that carry a `targets` array and never
+  // execute it, so the deny-list read a dead panel as a live consumer. The fix is an allow-list
+  // that fails CLOSED on a type this gate has never heard of.
+  for (const type of ['news', 'dashlist', 'canvas', 'not-a-real-panel-type']) {
+    assertRejected(
+      checkEventHasQueriedConsumer(
+        readOps('rules/recording.rules.yml'),
+        dashboardWith((panel) => {
+          panel.type = type;
+        }),
+        '',
+        PURGE_EVT,
+      ),
+      `a ${type} panel does not issue its targets, so it cannot be the event's consumer`,
+    );
+  }
+});
+
+test('RT-26 (HIGH): a prometheus-TYPED target pinned to another datasource uid draws nothing', () => {
+  // MEASURED: `{type:"prometheus", uid:"mr-loki"}` passed the type-only check. Grafana routes a
+  // query on the UID; `type` is advisory metadata a hand-edit can leave stale, and `mr-loki` is
+  // a REAL provisioned datasource (grafana/provisioning/datasources/datasources.yml), so this is
+  // a plausible copy-paste error that ships a panel drawing nothing while the gate stays green.
+  for (const uid of ['mr-loki', 'mr-tempo', 'some-other-prometheus']) {
+    assertRejected(
+      checkEventHasQueriedConsumer(
+        readOps('rules/recording.rules.yml'),
+        dashboardWith((panel) => {
+          panel.datasource = { type: 'prometheus', uid };
+          delete panel.targets[0].datasource;
+        }),
+        '',
+        PURGE_EVT,
+      ),
+      `a prometheus-TYPED datasource pinned to uid ${uid} is not the provisioned Prometheus one`,
+    );
+  }
+  // Positive control, in the SAME test: the shipped uid must still be accepted, or this tooth
+  // would be satisfiable by a predicate that rejects every datasource.
+  assert.equal(
+    checkEventHasQueriedConsumer(
+      readOps('rules/recording.rules.yml'),
+      dashboardWith((panel) => {
+        panel.datasource = { type: 'prometheus', uid: 'mr-prometheus' };
+      }),
+      '',
+      PURGE_EVT,
+    ).ok,
+    true,
+    'the provisioned mr-prometheus uid must still resolve, or RT-26 is satisfiable by rejecting everything',
+  );
+});
