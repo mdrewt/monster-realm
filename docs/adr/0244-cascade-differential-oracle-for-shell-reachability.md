@@ -89,7 +89,9 @@ every `(state, target, property)` whose fully-enumerated computed value differs.
 
 The obvious reading of ADR-0224's delete-on-touch rule is that `findCascadeReachingSelectors` is now redundant
 and must go. **Measured, that is false, and acting on it would have weakened the gate.** happy-dom's CSS parser
-silently DROPS seven at-rule and selector shapes that Chromium honours. Each names a pinned id *directly*, each
+silently DROPS the eight at-rule and selector shapes below (a ninth, `@media (prefers-color-scheme: dark)`, was
+measured blind too but is deliberately NOT in the probe arrays — see the count note after the table). Each names
+a pinned id *directly*, each
 is fully live in Chromium (`display:none`, `AX=IGNORED` via `Accessibility.getPartialAXTree`), and the cascade
 oracle reports **zero offenders** for every one:
 
@@ -114,12 +116,36 @@ The last two are **true for the default user with no emulation whatsoever**, and
 ship `@media (prefers-contrast: more)` into this exact file — so the most plausible future carrier of a
 regression is a construct the cascade oracle cannot see at all.
 
-The shape blacklist catches **seven of those eight** spellings, because it reads the lowercased prelude text and
-is therefore indifferent to whether the engine can apply the rule. The two oracles are **complementary, not
-redundant**: the blacklist covers the at-rule and selector *shapes* happy-dom cannot parse; the cascade oracle
-covers the *value, specificity and ancestor* shapes a prelude scan cannot judge. Both are retained, and a
-`RB9-G4` parser-coverage tooth asserts the shape half flags every spelling in the table, so the day happy-dom
-learns to parse `@layer` the pair is still honest.
+The shape blacklist catches **all eight** — measured, `parser-gap-shapes=8/8 flagged` (ledger X4), and 11 of 11
+across every spelling named in this ADR, including both `@scope` forms and `prefers-color-scheme: dark`. It reads
+the lowercased prelude text and is therefore indifferent to whether the engine can apply the rule. The two
+oracles are **complementary, not redundant**: the blacklist covers the parse-gap shapes *that name a pinned id,
+or are `*`, or are `nth-*`*; the cascade oracle covers the *value, specificity and ancestor* shapes a prelude
+scan cannot judge. Both are retained, and a `RB9-G4` parser-coverage tooth asserts the shape half flags every
+spelling in the array, so the day happy-dom learns to parse `@layer` the pair is still honest.
+
+**COUNT NOTE, stated because this ADR's whole thesis is retracting miscounted claims.** The probe arrays hold
+**eight** spellings. A ninth, `@media (prefers-color-scheme: dark)`, was measured blind to happy-dom and IS
+flagged by the blacklist, but it is asserted in no array, so it is a declared-but-unprobed member of the blind
+set rather than a covered one. Do not read "eight" as "the complete set of things happy-dom cannot parse" — it is
+the set this slice measured and pinned.
+
+**AND THE UNION OF THE TWO ORACLES STILL HAS A HOLE — measured, not theorised.** The sentence above is exact and
+the obvious generalisation of it is FALSE: the blacklist only flags a prelude that *names a pinned id*, is `*`,
+or is `nth-*`. So a parse-gap at-rule wrapping an **indirect** selector is invisible to BOTH oracles at once.
+Four such rules were measured at `cascade=0, shape=0` and then confirmed live in real Chromium against the real
+markup:
+
+    @layer{body > button{visibility:hidden}}                                   -> #help-hint visibility:hidden
+    @layer{body > div:last-of-type{display:none}}                              -> #a11y-live display:none, out of the AX tree
+    @media (scripting: enabled){div[role="dialog"] ~ button{opacity:0!important}} -> #help-hint opacity:0, DEFAULT user
+    body{& > button{visibility:hidden}}                                        -> #help-hint visibility:hidden
+
+These are precisely the regressions R-m23-s2-X3 exists to prevent, one `@layer{…}` wrapper away from rows this
+slice does kill. They are NOT closed here: widening the blacklist to flag any unparseable at-rule is the retired
+enumeration vehicle ADR-0224 forbids, and it would false-RED the `@media (prefers-reduced-motion: reduce)` guard
+`client/src/styles.css` legitimately ships (ADR-0213). Registered as residual `R-rb-9-UNIONHOLE`; the honest fix
+is a real-browser assertion in the Playwright tier, which is where blind spot (b) also lands.
 
 `importsAnotherStylesheet` is retained for a related reason: a prepended `@import` genuinely works in Chromium,
 and the cascade oracle only REDs on it by accident of a happy-dom bug that discards the rest of the sheet.
@@ -146,8 +172,10 @@ not code but three false sentences: see below.
   the probe that `findIdSelectors` reads its input and walks *inside* `@media` — a property nothing else tests,
   and one S9's `prefers-contrast` rules make newly relevant.
 - **Declared blind spots, all measured rather than supposed.**
-  (a) *Engine parse coverage* — the seven shapes above; covered by the retained shape blacklist and pinned by
-  `RB9-G4`, not by this oracle.
+  (a) *Engine parse coverage* — the eight shapes above, covered by the retained shape blacklist ONLY WHERE their
+  prelude names a pinned id, is `*`, or is `nth-*`, and pinned by `RB9-G4` rather than by this oracle. A ninth
+  spelling is measured-blind but unprobed, and the union of the two oracles has a measured hole where a parse-gap
+  at-rule wraps an indirect selector — both stated in full above, residual `R-rb-9-UNIONHOLE`.
   (b) *Occlusion and clipping* — outside ANY computed-style oracle, in any engine.
   `body::after{content:"";position:fixed;inset:0;background:#0b0d12;z-index:2147483647}` and
   `body{clip-path:inset(100%)}` were **pixel-proven** blank in Chromium (the crop where `#help-title` paints

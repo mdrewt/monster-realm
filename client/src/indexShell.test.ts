@@ -985,14 +985,21 @@ const POSITIONAL_SELECTOR_TOKENS: readonly string[] = [
  *   3. the present-tense record of the residual, which this slice closed.
  * The cascade oracle now lives in `indexShellCascade.test.ts`: it renders the real markup with
  * and without the sheet and diffs the fully-enumerated computed style, so it never reads
- * selector text and is indifferent to how a rule spells its reach. It subsumes the indirect
- * selectors this SHAPE oracle admits (a plain tag selector, `:last-of-type`, a sibling combinator).
+ * selector text and is indifferent to how a rule spells its reach. It catches the indirect
+ * selectors this SHAPE oracle admits (a plain tag selector, `:last-of-type`, a sibling combinator)
+ * WHEN THEY APPEAR AT TOP LEVEL — but NOT when they are wrapped in an at-rule happy-dom cannot
+ * parse. MEASURED at `cascade=0, shape=0` and confirmed in real Chromium:
+ * `@layer{body > button{visibility:hidden}}` blanks `#help-hint`, and
+ * `@layer{body > div:last-of-type{display:none}}` drops `#a11y-live` out of the AX tree. That is a
+ * hole in the UNION of the two oracles, not in either alone; it is residual R-rb-9-UNIONHOLE, and
+ * it is why neither of these functions may be described as subsuming the other.
  *
  * SO WHY IS THIS STILL HERE? Because the two oracles cover DISJOINT bypass classes, and deleting
  * this one would have weakened the gate. happy-dom's CSS parser silently DROPS eight at-rule and
  * selector shapes that Chromium honours — `@layer` (named and anonymous), `@scope(`, CSS nesting,
- * `[attr i]`, `@container`, and the `@media` features `prefers-contrast`, `prefers-color-scheme:
- * dark` and `scripting` — each of which names a pinned id DIRECTLY and hides it in Chromium with
+ * `[attr i]`, `@container`, and the `@media` features `prefers-contrast` and `scripting` (a ninth,
+ * `prefers-color-scheme: dark`, is measured-blind but deliberately unprobed) — each of which names
+ * a pinned id DIRECTLY and hides it in Chromium with
  * `AX=IGNORED`. The cascade oracle reports ZERO offenders for every one of them; this prelude scan
  * catches them, because reading selector TEXT is immune to what the engine can apply. Two of those
  * `@media` features are true for the DEFAULT user, and §2.7 puts `prefers-contrast` rules in this
