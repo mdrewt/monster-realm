@@ -108,61 +108,177 @@ semantic check: they assert the section NAMES these things, not that it describe
 
 G24 does not mechanically verify PRV1-17 or PRV1-20 — both are properties of log CONTENT, which no
 runner can prove negatively without the taint-scanner class ADR-0224 retires.
-These are verified by code review of the following git:line evidence:
+These are verified by code review of the declaration-shaped evidence below. Every hop that
+resolves to a declaration names it inside a code span, with its file named in the same paragraph
+— usually in bare prose, occasionally inside a code span of its own — and never as a file-and-line
+pair: that number drifts the moment anything is inserted above the target, and a drifted citation
+points a reader at unrelated code while still looking precise. A few hops name a helper as a bare
+identifier instead; those are prose rather than citations, and nothing resolves them.
 
-**PRV1-17 — every reachable log call site.** Each hop below was read directly; none is inferred
-from a source scan.
+**PRV1-17 — every reachable log call site.** Each hop below was read directly against the source.
 
-- `server-module/src/accounts.rs` contains **zero** `log::`/`mr_log` calls of its own (measured).
-  Its only logging path is `reject()` (`accounts.rs:515-518`), which forwards to
-  `guards::log_reject` (`server-module/src/guards.rs:47-56`). `log_reject` emits one
-  `log::warn!` carrying `reducer`, `sender` (an `Identity`, fixed-width hex) and `reason`.
-- `delete_account` (`accounts.rs:769-799`) and `cancel_account_deletion` (`accounts.rs:804-834`)
-  reach `reject()` only with **static string literals** — `"sign in required"`, `"no account"`,
-  and the `const REJECT_ALREADY_DELETED` at `accounts.rs:84`. No caller-supplied or
-  player-authored value can reach the `reason` parameter on these paths.
-- `account_deletion_reaper` (`accounts.rs:923-958`) emits **no log line at all**; its
-  scheduler-only `Err` is a static string and is returned, not logged.
-- All **11** delegated cascade helpers were extracted brace-balanced and each body contains zero
-  `log::`/`mr_log` calls: `monster_mgmt.rs:148`, `inventory.rs:125`, `npc.rs:464`,
-  `raising.rs:765`, `economy.rs:283`, `playtest.rs:212`, `trading.rs:780`, `pvp.rs:729`,
-  `privacy.rs:58`, `ranking.rs:286`, `battle.rs:1557`. (Several of those FILES do log elsewhere,
-  in unrelated reducers — the distinction is per-function, not per-file.) `privacy.rs:19-28`
-  additionally bans logging macros file-wide. The reaper's twelfth direct cascade call,
-  `crate::erase_character_rows` (`server-module/src/lib.rs:253-257`), is not cross-module
-  delegated and so is not in that list; it is a 4-line body and is likewise log-free.
-- The only logging transitively reachable from the cascade is through step 6a,
-  `resolve_all_live_interactions` (`server-module/src/lib.rs:240-245`), which calls exactly four
-  resolvers. Their logging, traced per resolver:
-  `pvp::forfeit_on_disconnect` (`server-module/src/pvp.rs:645-701`) -> `apply_pvp_forfeit`
-  (`pvp.rs:382-389`, a pure delegator with no logging of its own) / `settle_pvp_battle`
-  (`pvp.rs:559-602`); and `battle::resolve_wild_battle_on_disconnect` (`battle.rs:1459-1510`),
-  whose ADR-0185 write-back failure line is `battle.rs:1495-1499`
-  (`"evt":"wild_disconnect_writeback_err"`). Every one of those lines carries a `battle_id`
-  (`u64`) and a `json_escape`d internal error string, and nothing else. No player-authored text,
-  no pre-tombstone `name` or `auth_issuer`.
+- `server-module/src/accounts.rs` publishes exactly two observability lines of its own, both through
+  the one blessed emission point. The claim-time one, added by rb-40 (ADR-0235), is emitted from
+  `pub fn complete_guest_claim(` under the event `"guest_claim_export_purge"`, its field fragment
+  built by the pure `fn purge_fields(` out of the retired guest `Identity` (rendered through Display
+  as 64 lowercase hex digits) and a `usize` chunk count. The cascade one, added by rb-65 (ADR-0243),
+  is emitted from `pub fn account_deletion_reaper(` under the event `"account_deletion_cascade"`,
+  its fragment built by the pure `fn cascade_fields(` out of the erased subject `Identity` and a
+  `usize` export-bundle count. Each is the terminal statement of its reducer, immediately before the
+  trailing `Ok(())`. The claim-time one is CONTEXT for this file-level census and is NOT PRV1-17
+  evidence: PRV1-17 names `pub fn delete_account(`, `pub fn cancel_account_deletion(` and the
+  deletion reaper, and a guest claim is none of the three.
+- That emission point is `pub(crate) fn mr_log(` in observability.rs, the one blessed sink
+  (ADR-0180 D6): it wraps the event name and the caller's pre-rendered field fragment in the module
+  envelope and hands the result to the host log facade. Strictly, it delegates to its
+  `pub(crate) fn mr_log_breadcrumb(` sibling in the same file with a default, all-`None` breadcrumb,
+  and `pub(crate) fn build_log_line(` there appends the `cause`, `sched` and `phase` envelope fields
+  only when they are `Some` — so for these two lines the envelope is exactly the event name plus the
+  caller's fragment. That is a property of the CALL and not of the sink: the breadcrumb form is a
+  `pub(crate)` peer, so a future site that switches to it adds three envelope fields no argument in
+  this section covers.
+- Apart from those two lines, every logging call accounts.rs makes ITSELF runs through one helper:
+  its private `fn reject(` calls that helper, and `pub(crate) fn provision_or_touch_account(` calls
+  it directly on the unrecognized-issuer and unrecognized-audience connect paths. None of the three
+  reducers PRV1-17 names reaches either of those two connect paths. This is a DIRECT-CALL census of
+  one file, never a transitive one: the cascade step traced further down reaches logging in other
+  modules, and none of that logging passes through this helper.
+- The helper is `pub(crate) fn log_reject(` in guards.rs. It emits one `log::warn!` carrying
+  `reducer`, `sender` (an `Identity`, fixed-width hex) and `reason`, with both `&str` parameters
+  `json_escape`d.
+- `pub fn delete_account(` and `pub fn cancel_account_deletion(` in accounts.rs reach that reject
+  path only with static string literals — `"sign in required"`, `"no account"`, and the
+  `const REJECT_ALREADY_DELETED` declared in the same file. No caller-supplied or player-authored
+  value can reach the `reason` parameter on these paths.
+- `pub fn account_deletion_reaper(` in accounts.rs emits exactly one line of its own, and that line
+  is PRV1-17-safe by construction rather than by silence: `fn cascade_fields(` is pure and renders
+  only an `Identity` and a `usize`. The reaper's scheduler-only `Err` is a static string, and it is
+  returned rather than logged.
+- All 11 delegated cascade helpers were extracted brace-balanced, and not one of those bodies
+  carries a logging call. One helper per file:
+  - `pub(crate) fn erase_monsters(` in monster_mgmt.rs
+  - `pub(crate) fn erase_inventory(` in inventory.rs
+  - `pub(crate) fn erase_npc_state(` in npc.rs
+  - `pub(crate) fn erase_heal_cooldown(` in raising.rs
+  - `pub(crate) fn erase_wallet(` in economy.rs
+  - `pub(crate) fn erase_playtest_events(` in playtest.rs
+  - `pub(crate) fn erase_trade_offers(` in trading.rs
+  - `pub(crate) fn erase_pvp_rows(` in pvp.rs
+  - `pub(crate) fn purge_export_bundles(` in privacy.rs
+  - `pub(crate) fn anonymize_display_names(` in ranking.rs
+  - `pub(crate) fn anonymize_battles(` in battle.rs
+- Several of those FILES do log elsewhere, in unrelated reducers — the distinction is per-function,
+  not per-file. privacy.rs is the sharpest case: its module header bans logging and print MACROS
+  file-wide and that ban still holds literally, yet the file does publish an observability line of
+  its own — `pub fn request_data_export(` hands a field fragment to the same emission function,
+  which is a function call and not a macro. Read the ban per function, never as "privacy.rs never
+  logs": the cascade reaches the purge helper, never that reducer.
+- The twelfth delegated erase/anonymize helper, `pub(crate) fn erase_character_rows(` in lib.rs, is
+  the reaper's one crate-root cascade call rather than a cross-module one, and so is not in that
+  list; its body is likewise log-free.
+- Apart from the reaper's own cascade line, the one cascade step that reaches any logging at all is
+  step 6a, `pub(crate) fn resolve_all_live_interactions(` in lib.rs, which calls exactly four
+  resolvers. Their logging, traced per resolver and then one hop past them:
+  - `pub(crate) fn forfeit_on_disconnect(` in pvp.rs logs its own forfeit failures and delegates to
+    `fn apply_pvp_forfeit(`, which carries no logging of its own. It is a delegator and not a pure
+    function: it takes the `ReducerContext`, and the settlement funnel it hands to writes the battle
+    row, applies the ladder rating and deletes stale action rows. That funnel is
+    `fn settle_pvp_battle(` in the same file, whose write-back and side-B failures each emit one
+    line.
+  - The subtree does not end at that funnel, and reading it as if it did is what left this section
+    incomplete. The funnel calls `pub(crate) fn write_back_battle_results(` in battle.rs, which is
+    silent on every outcome but one. Erasing an account that is SIDE B of an ongoing PvP battle
+    forfeits that battle to SIDE A, and the side-A-wins branch that outcome selects holds six log
+    call sites of its own: two that abandon the whole XP section when the loser's species row or
+    the loser's level will not parse, three that abandon one winner's stat recompute when its own
+    IVs, EVs or level will not parse, and one that reports a corrupt winner level and nothing else.
+  - That branch ends by calling `pub(crate) fn check_and_evolve(` in evolution.rs, unconditionally
+    and per winning monster, which holds five more: a missing monster row, an unmarshalable
+    monster, an unmarshalable evolution edge, a failed apply, and the chain-step cap. Eleven sites
+    behind step 6a that the per-resolver reading above does not reach. The quality-time tail beside
+    that call is wild-gated and a forfeited PvP battle is never wild, so it is not on this path.
+  - `pub(crate) fn resolve_wild_battle_on_disconnect(` in battle.rs, whose ADR-0185 write-back
+    failure line carries the event `"wild_disconnect_writeback_err"`. That one line really is the
+    whole of this resolver's logging, and for a reason worth stating rather than assuming: it sets
+    the outcome to `Fled` on the row BEFORE handing it to the same write-back, and `Fled` is not
+    the side-A-wins branch, so none of the eleven sites above is reachable from here.
+  - `pub(crate) fn cancel_trades_on_disconnect(` in trading.rs is the third resolver, and it
+    carries no logging call.
+  - `pub(crate) fn cancel_challenges_on_disconnect(` in pvp.rs is the fourth, and it carries none
+    either.
 
-  (An earlier draft of this ADR cited `battle.rs:894`/`:936` here. Those are the ADR-0185
-  write-back logs inside `swap_active` and `flee` — player-invoked reducers that the cascade never
-  reaches. The citation was wrong; the criterion still holds, on the corrected line above.)
+Every line the step-6a subtree can emit was then read field by field. Each carries numeric row
+identifiers — a `battle_id`, a `monster_id`, a `species_id` — and, where it carries a reason at
+all, `json_escape`d internal text raised inside `game-core`, the marshalling seam or the write-back
+itself — an invalid monster level, a monster row not found, a target species not found, a missing
+public counterpart row, each interpolating at most a numeric id. No player-authored field, no
+`nickname`, and no pre-tombstone `name` or `auth_issuer` reaches any of them, so PRV1-17 and
+PRV1-20 both still hold across the extended subtree, and hold more widely than the shorter reading
+claimed. The extension matters anyway: a future reason string that interpolated a player-chosen
+name into one of those eleven lines would break PRV1-17 while every gate in this repository stayed
+green, and the shorter reading did not name evolution.rs at all.
 
-**PRV1-20 — the erasure window emits nothing.** PRV1-20 narrows PRV1-17 to the moment of erasure or
-anonymization: no log line there may carry the erased identity's pre-tombstone `name` or
-`auth_issuer`. It holds **by absence**: the reaper body emits no log line, and every helper that
-performs the actual delete/update is log-free per the census above, so there is no line at that
-moment into which a pre-tombstone value could be interpolated. The pre-tombstone `name` and
-`auth_issuer` are read only into the `terminal_account(anonymized_account(account), now))` update
-at `accounts.rs:955-958`, which writes to the table and logs nothing.
+**PRV1-20 — the erasure window's one line is content-safe.** PRV1-20 narrows PRV1-17 to the moment
+of erasure or anonymization: no log line there may carry the erased identity's pre-tombstone `name`
+or `auth_issuer`. It holds by content, not by absence. The cascade line the reaper emits is built by
+`fn cascade_fields(`, which is pure — it takes no `ctx` and reads no table, and it renders exactly
+two things: an `Identity` through its Display impl (64 lowercase hex digits) and a `usize` count.
+`fn purge_fields(` on the claim path has the same shape. Both are declared in accounts.rs.
 
-**Honest caveat.** The step-6a helpers named above were read directly, not exhaustively taint-traced,
-and the two criteria are therefore verified rather than mechanically enforced. A future edit adding a
-log line to any of these paths would not fail CI today.
+The two nouns PRV1-20 names do not live on the same row, and neither is carried forward into any
+line. They are traced separately here because fusing them into one sentence produces a claim that
+is false about both.
 
-Mechanical enforcement is deferred because the spec's named vehicle (`evals/account-privacy.eval.mjs`
-seed-set extension) is both outside this slice's `touches:` row and retired as a category by ADR-0224.
-The correct future target is an in-crate `#[test]` in `server-module/src/accounts_tests.rs`, on the
-next slice that holds `accounts.rs` write-capable. Both PRV1-17 and PRV1-20 are currently MET BY
-VERIFICATION and will be gated mechanically on that future slice.
+- `auth_issuer` is a column of the `pub struct Account {` row, declared in schema.rs. There is no
+  `name` column on that row at all, so PRV1-20's other noun cannot be read from it.
+- The cascade's one sanctioned write to that column OVERWRITES it with the
+  `game_core::TOMBSTONE_AUTH_ISSUER` sentinel: the pre-tombstone issuer is DROPPED, never carried
+  anywhere. The overwrite is the pure row-to-row constructor `pub(crate) fn anonymized_account(` in
+  accounts.rs, whose result reaches the table through the
+  `terminal_account(anonymized_account(account), now)` update in the same file — a write, with no
+  logging call in it.
+- The erased identity's pre-tombstone display name lives on the `player` and `profile` rows
+  instead. The cascade's step-6c anonymize for those two is
+  `pub(crate) fn anonymize_display_names(` in ranking.rs, already listed in the log-free census
+  above.
+- It feeds each row it finds to `pub(crate) fn player_with_deleted_name(` and to
+  `pub(crate) fn profile_with_deleted_name(`, both in ranking.rs. Their struct-update `..p` tail is
+  the only thing in the cascade that consumes a pre-tombstone display name, and it consumes it into
+  a new row value — never into a format argument. Neither helper carries a logging call.
+- The battle-side step-6c anonymize, `pub(crate) fn anonymize_battles(` in battle.rs, reads no name
+  at all: it swaps IDENTITIES through `pub(crate) fn battle_with_tombstoned_party(` in the same
+  file. Neither of the two logs.
+
+Two reviewers independently walked the whole callee closure of the twelve delegated erase and
+anonymize helpers — step 6a's four resolvers excepted, since those are traced above — and reached
+eighteen functions carrying no logging call site at all. Both anonymize steps are therefore log-free
+transitively and not merely in their own bodies. That is stronger than what this paragraph used to
+assert, and it is still a REVIEW result: nothing in CI recomputes that closure.
+
+**Honest caveat — what rb-68 mechanises, and what it does not.** rb-68 plants three in-crate
+`#[test]` functions in this crate's accounts test module. They derive both emission sites from
+accounts.rs during the run and judge THIS section against them. At the reach the gate actually has,
+and no wider: every code span here that is SHAPED like a declaration — a visibility keyword plus an
+item keyword, and nothing else qualifies — must occur exactly once in the source file resolved as
+the nearest `.rs` token inside that span's OWN paragraph, so a helper written as a bare identifier
+is prose the gate never resolves, and a file named only in a neighbouring paragraph never binds;
+each emission must be described beside its own event name, positionally; and the file-and-line ban
+is built from the `.rs` tokens this section itself names, so a citation of a `.md`, a `.mjs` or any
+other path shape rides straight through it. That is a document-to-source CORRESPONDENCE gate, and
+that is all it is.
+
+What it does NOT mechanise is the negative CONTENT property PRV1-17 and PRV1-20 assert — that no
+player-authored and no pre-tombstone value ever reaches a log line. Proving that needs the
+taint-scanner class ADR-0224 retires. The step-6a helpers named above were read directly, not
+exhaustively taint-traced, so both criteria remain MET BY VERIFICATION, and a future edit that adds
+a logging call to one of those paths still would not fail CI.
+
+Two limits of that gate are worth stating plainly, since ADR-0230 states the same kind of limit
+about G24's own clauses above. First, its stale-claim arm is a BLACKLIST of the sentences this slice
+retracts; it cannot read polarity, so prose wrapped around a correct declaration, a correct file
+name and a correct event name can still say something false about them. Second, its citation ban
+judges one rendered line and one adjacent pair at a time, so a citation hand-wrapped across three
+lines is invisible to it. Review, not the gate, is what catches either.
 
 ## The `## 9.` numbering
 
@@ -206,12 +322,19 @@ citation-resolution logic is all non-vacuously verified.
 (+) PRV1-18 is now mechanically gated and exact-body-enforced, so an editor cannot drift the deletion
 risk disclosures without breaking CI. The two required clauses are immutable.
 
-(+) PRV1-17 and PRV1-20 are currently met by verification with a clear evidence chain (git:line
-pointers to the source), so the spec's three deletion criteria are all satisfied and documented for
-the operator.
+(+) PRV1-17 and PRV1-20 are currently met by verification with a clear evidence chain of
+declaration-shaped pointers into the source — each hop names a declaration and the file it lives in,
+never a file-and-line pair — so the spec's three deletion criteria are all satisfied and documented
+for the operator.
 
 (-) A new hand-maintained artifact: the five-entry citation roster and the six-clause layout in the
 runbook, both subject to drift on future table/constant renames or file moves.
 
-(o) PRV1-17 and PRV1-20's mechanical enforcement is deferred to a future slice that owns `accounts.rs`
-write-capable. The spec requirement is met; the gate is not yet planted.
+(o) rb-68 plants a document-to-source CORRESPONDENCE gate over the evidence chain above: both
+emission sites in `accounts.rs` are derived from the source during the run, and every
+DECLARATION-SHAPED span the chain carries must exist, exactly once, in the file resolved from that
+span's own paragraph. Bare identifiers, and citations of paths that are not `.rs`, are outside its
+reach. The negative CONTENT property
+PRV1-17 and PRV1-20 assert is still not mechanically enforced, so both criteria remain MET BY
+VERIFICATION and the heading above still reads as it did. The spec requirement is met; the content
+gate is not yet planted.

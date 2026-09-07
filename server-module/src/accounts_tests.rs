@@ -16672,3 +16672,3338 @@ fn rb65_cascade_line_composes_into_the_envelope() {
          plus evt) keys on that position being stable."
     );
 }
+
+// ===========================================================================
+// rb-68: ADR-0230's PRV1-17 / PRV1-20 evidence chain must MATCH accounts.rs's
+// LIVE emission sites (residuals R-rb-40-ADR0230 and R-rb-65-ADR0230-PRV120).
+//
+// WHAT THESE THREE TESTS GATE, and why the shipped census does not gate it:
+// every other emission pin in this file reads the SOURCE. ADR-0230 is the
+// document that tells a reader what that source does, and until rb-68 NO test
+// compared the two -- so the ADR could (and did) deny that accounts.rs emits
+// anything of its own, deny that the deletion reaper emits anything, and rest
+// PRV1-20 on the absence of a line that has existed since rb-65. FOUR claims
+// in one evidence chain stopped being true across rb-40 (ADR-0235) and rb-65
+// (ADR-0243) while every gate in this tree stayed green.
+// `rb68p_adr_violations` is the seam: the emission facts are DERIVED from
+// accounts.rs at test time and the document is judged against them.
+//
+// WHERE THE FOUR RETRACTED SENTENCES APPEAR, and where they deliberately do
+// NOT. They are spelled in exactly two places: split across `concat!`
+// fragments inside `[emit/no-stale-claim]`, and INDEPENDENTLY re-spelled in
+// the control fixtures that prove that clause bites (a fixture built out of
+// the clause's own needle proves only that a string equals itself). They
+// appear in NO failure message and in no comment above -- a gate needle a
+// reader sees in a failure is a gate an editor satisfies by deleting exactly
+// the bytes it showed them, which is the opposite of reading the sentence and
+// correcting the claim.
+//
+// DO NOT COLLAPSE TEST 1 INTO A SECOND CENSUS. The file-wide call-site census
+// is already shipped twice over (`rb40_claim_emits_one_purge_observation` and
+// `rb65_reaper_emits_one_cascade_observation` pin it at exactly two, one per
+// reducer body, with the remainder asserted zero as arithmetic). A third copy
+// would add nothing. What test 1 adds is the RECONCILIATION: the file-wide
+// PREFIX-FREE count of the bare emission identifier must equal the SUM of the
+// per-site counts the document side consumes, so a THIRD emission site in a
+// THIRD function reds inside rb-68 itself rather than only in the two sibling
+// censuses -- and so no document clause below can ever be judged against a
+// fact list that has quietly stopped describing the file.
+//
+// HONEST LIMITS (accepted here, NOT closed by rb-68):
+//  1. POLARITY. Every clause below is a text scan. Prose that surrounds a
+//     CORRECT declaration span, a correct event literal and a correct file
+//     name can still say something false about them ("the reaper is silent",
+//     "nothing here reaches the host log"), and no scan reaches that. ADR-0230
+//     states the same limitation about its own G24 clauses. It stays a review
+//     responsibility. `[emit/no-stale-claim]` is a BLACKLIST of the four
+//     sentences this slice retracts -- it is not a semantic check and must not
+//     be read as one.
+//  2. HAND-WRAPPING is semi-load-bearing, and BOTH text scans bound it the
+//     same way. `[cite/no-line]` and `[emit/no-stale-claim]` each judge one
+//     rendered line and one ADJACENT PAIR of lines, over a whitespace-
+//     collapsed, backtick-stripped view. A citation or a retracted sentence
+//     spread across THREE lines, or across a blank line, is still invisible to
+//     both. Widening k was measured to add no false REDs at k=3 either, so a
+//     later slice can raise it; two is what this slice proves. The
+//     stale-claim scan additionally does not join line 9 to line 10, so a
+//     claim STRADDLING the end of the digest-owned header escapes -- the
+//     header block is nine single-field lines, none of which wraps.
+//  3. R-rb-67-CITESHAPE stays OPEN in privacy_tests.rs. The closures below
+//     (positional per-paragraph pairing plus the builder leg, the invisible-
+//     CLASS hidden-char rule, the carrier ban, the nearest-file decl binding,
+//     the two rosters, the window arms, the presence pins) are implemented in
+//     THIS module's collector only. rb-67's collector over ADR-0220 is
+//     unchanged and still carries the co-occurrence and named-blacklist
+//     shapes. Follow-up: R-rb-68-CITESHAPE-PORT.
+//  4. The prefix-free census is prefix-free on the RIGHT only: the byte after
+//     the identifier must not be a word byte (that is what excludes the
+//     breadcrumb sibling). A word byte BEFORE it -- a different identifier
+//     ENDING in the emission name -- inflates the file-wide count and so reds
+//     the reconciliation. It fails SAFE, but it is not modelled.
+//  5. ENTITY DECODING IS ONE PASS and numeric entities are refused a control
+//     codepoint (they decode to a space instead), so line numbers can never
+//     move under normalisation. A doubly-encoded entity survives one pass.
+//  6. `[cite/decl-real]` binds a declaration span to the NEAREST file token in
+//     its own paragraph. That makes the ONE-ITEM-PER-FILE sub-list shape the
+//     corrected prose uses unambiguous, and it means a paragraph that carries
+//     a declaration span must NOT name an unrelated `.rs` file closer to that
+//     span than the owning one. Naming this test module beside a declaration
+//     span reds `[cite/roster-coverage]` on purpose: this file is not in the
+//     source roster, so no clause could resolve the span against it.
+//     `[scope/paragraph]` reds a bullet that names a declaration WITHOUT
+//     naming its file. That is deliberate and it is not a false RED: it is the
+//     convention this ADR states about itself two paragraphs above the
+//     evidence chain, and without a file in the paragraph no clause here can
+//     resolve the span at all.
+//  7. `[scope/roster-floor]` is a BOUND and not the instrument that closes the
+//     deletion residual. MEASURED at the time of writing: the live section
+//     names 17 roster files and carries 48 declaration-shaped spans, against
+//     floors of 14 and 44. An earlier draft of this note claimed the span
+//     floor sat four below today's count and that the step-6a resolver trace
+//     was caught by the floor's arithmetic; the verifier measured BOTH claims
+//     false -- the floor then stood at 31, seventeen below, and deleting the
+//     whole step-6a trace (3,574 bytes, 25.4% of the section, which is round
+//     2's headline correction) left every clause green. The span floor is now
+//     44, which reds that deletion. The bound is still a bound: it cannot say
+//     WHICH block went, and `[scope/presence]` -- which pins the PRV1-20
+//     evidence block by name and by its derived builder set -- covers the two
+//     CRITERIA and the PRV1-20 content argument only. An excision small
+//     enough to stay above 44 spans and 14 files is review's job, not this
+//     gate's.
+//  7b. `[doc/no-hidden-char]` bans invisible CLASSES (Unicode `Cc`, `Zs`/`Zl`/
+//     `Zp` other than a plain space, the format and zero-width ranges), not a
+//     named list -- a named list of a dozen codepoints was MEASURED to miss
+//     nine of the twelve it was aimed at, and a printable ALLOW-list was
+//     measured to red 194 of this repo's 213 ADRs, so neither is available.
+//     The price is that a VISIBLE HOMOGLYPH is legal, and the verifier
+//     measured the consequence: a retracted claim restated with one Cyrillic
+//     `U+0435` inside the needle rides through `[emit/no-stale-claim]` while
+//     the byte-identical ASCII sentence reds. Folding confusables before the
+//     needle scan would close it; that is not in this slice, and it is
+//     tracked as `R-rb-68-HOMOGLYPH` rather than left implicit.
+//  8. `[cite/no-line]`'s COUNT/LOCATOR split is heuristic, and it is tuned
+//     from both directions at once (see `rb68p_digit_run_is_a_locator`). Two
+//     shapes are knowingly conceded to keep the honest set green: a ONE- OR
+//     TWO-DIGIT line number introduced by a prose word and followed by a word
+//     (`row 12 of ...` is an enumeration this document writes, and `line 42
+//     of ...` is not distinguishable from it), and a three-or-more-digit
+//     locator immediately followed by a plural noun (`— 300 lines` is a count;
+//     `— 300 lines below` would be read as one too). Abbreviations (`l`, `ln`,
+//     `ll`, `lineno`, `#`, `@`) and glued locators have no such concession.
+//  9. `[emit/pair]`'s builder leg binds a fragment builder to the reducer
+//     whose DECLARATION MARKER precedes it in the same paragraph. The PRV1-20
+//     content paragraph names both builders and NO reducer declaration, so
+//     exchanging them THERE is caught by `[scope/presence]` (both must be
+//     present) but not attributed -- the paragraph would have to name a
+//     reducer for the positional rule to have anything to bind to.
+// 10. `[doc/no-hidden-carrier]`'s tag test uses a roster of HTML element
+//     names. A generic type whose name collides with one of them, written in
+//     BARE PROSE rather than in a code span (`Vec<Data>`, `Option<Time>`),
+//     would read as a tag. Code spans are excluded first, and this ADR's
+//     stated convention puts every type in one.
+//
+// SCAN HYGIENE (this file's header rule, restated because this section adds a
+// third consumer of both evt tokens and of the emission call needle to a file
+// a dozen evals concatenate wholesale, `_tests.rs` included): every needle and
+// every FIXTURE string below is assembled from `concat!` fragments or from the
+// shipped `rb22_dq()` byte helper (no backslash is needed anywhere here, so
+// `rb40_bs()` is not among this section's callers), and every event literal
+// comes from the DERIVATION rather than from a spelling. This file therefore
+// still never carries a contiguous emission call site, evt token,
+// escaped-quote pair, block comment, raw string, or quote inside a char
+// literal. A fixture is the easiest place to lose that property, because a
+// fixture LOOKS like prose rather than like a needle.
+// ===========================================================================
+
+/// ADR-0230, read as TEXT. The `../../` reach out of `src/` is this tree's
+/// shipped idiom for reading a document (`M22_REKEY_EVAL_MJS` above does the
+/// same for an eval, `RB67_ADR_0220_MD` in privacy_tests.rs for an ADR): a
+/// document that is never read cannot be gated. NOTE that this makes the ADR a
+/// COMPILE INPUT of this crate -- editing it recompiles the test binary.
+const RB68_ADR_0230_MD: &str =
+    include_str!("../../docs/adr/0230-deletion-runbook-gates-with-declaration-shaped-cites.md");
+
+/// The heading ANCHOR of the section this slice gates -- the text after the
+/// `## ` marker and after any house-style number, and a PREFIX of it at that.
+/// ADR-0230's heading also carries a trailing clause about deferred mechanical
+/// enforcement which this slice deliberately leaves byte-identical, and pinning
+/// the whole line here would couple this gate to prose it does not own.
+fn rb68p_prv_heading() -> String {
+    concat!("PRV1-17", " and PRV1-20").to_string()
+}
+
+/// The one OTHER section an event literal may legally appear in.
+fn rb68p_conseq_heading() -> String {
+    concat!("Conse", "quences").to_string()
+}
+
+/// The two criterion names this section owns, for the DUPLICATE-heading test
+/// below. Derived from the anchor rather than re-spelled.
+fn rb68p_criteria() -> Vec<String> {
+    let anchor = rb68p_prv_heading();
+    anchor
+        .split(" and ")
+        .map(std::string::ToString::to_string)
+        .collect()
+}
+
+/// The ANCHOR TEXT of a level-two heading line: the `## ` marker, then an
+/// OPTIONAL `<digits>. ` house-style number, then the heading text. `None` for
+/// every line that is not a level-two heading.
+///
+/// The number is tolerated on purpose, and it is not a nicety. ADR-0230 carries
+/// a whole SECTION about renumbering its own `##` headings into a numbered
+/// house style (`## 9.`), so a later editor applying that style to this very
+/// heading is doing exactly what the document tells them to. MEASURED: before
+/// this, `## 10. PRV1-17 and PRV1-20 ...` did not merely red -- the live test
+/// PANICKED in its section lookup, which is a false RED on the document's own
+/// documented convention and the loudest possible way to earn a gate deletion.
+fn rb68p_heading_anchor(line: &str) -> Option<&str> {
+    let rest = line.strip_prefix("## ")?.trim_start();
+    let digits: usize = rest.chars().take_while(char::is_ascii_digit).count();
+    if digits > 0 {
+        if let Some(tail) = rest[digits..].strip_prefix('.') {
+            return Some(tail.trim_start());
+        }
+    }
+    Some(rest)
+}
+
+/// FLOORS for the live document: (distinct roster files the section must name,
+/// declaration-shaped code spans the section must carry).
+///
+/// DERIVED AND FROZEN. The file count is a FACT of the cascade (the eleven
+/// delegated helpers plus the accounts, guards and crate-root files), so
+/// fourteen is exact with one file of headroom.
+///
+/// The SPAN floor was raised from 24 to 31 on measured evidence. At 24 the
+/// headroom was eleven spans below the live count, and a red team removed the
+/// whole step-6a resolver trace (five spans), the reject-path and reaper
+/// bullets (five spans) and a combined 44% of the section without ever
+/// reaching it. Thirty-one sits four below today's thirty-five: it catches
+/// every one of those excisions and still absorbs an honest re-wording that
+/// merges a bullet or drops a duplicated marker. It is a BOUND, not a
+/// transcription -- and it is deliberately NOT the only instrument, because a
+/// floor cannot tell WHICH block was deleted. `[scope/presence]` pins the
+/// PRV1-20 evidence block by name, which is what actually closes the residual.
+const RB68_LIVE_FLOORS: (usize, usize) = (14, 44);
+
+/// FLOORS for the control fixtures. The fixture documents are small by design
+/// -- one paragraph per shape -- so the live floors would red every one of
+/// them and no fixture could ever isolate a single label. The floor CLAUSE is
+/// still proven, by two dedicated fixtures that vary only this parameter.
+const RB68_SMALL_FLOORS: (usize, usize) = (2, 2);
+
+/// One live emission site, DERIVED from accounts.rs -- never transcribed.
+#[derive(Debug)]
+struct Rb68Fact {
+    /// The file the declaration lives in, as the document spells it.
+    file: String,
+    /// The squashed `fn` needle of the enclosing reducer.
+    decl: String,
+    /// The reducer's bare name, for failure messages.
+    label: String,
+    /// The event literal, SLICED out of the strings-kept body.
+    evt: String,
+    /// The squashed `fn` needle of the fragment builder, derived from the
+    /// emission's second argument.
+    fields_fn: String,
+    /// Emissions counted inside this reducer's body.
+    in_body: usize,
+    /// Does the squashed body END with the shipped frozen emission tail?
+    terminal: bool,
+}
+
+/// Non-overlapping occurrences of `needle` in `hay` whose FOLLOWING byte is not
+/// an identifier byte.
+///
+/// This is what makes the reconciliation below a census of the emission
+/// identifier rather than of every identifier that starts with it: the
+/// breadcrumb sibling (`mr_log_breadcrumb`) contains the bare name as a strict
+/// prefix and would otherwise be counted as an emission. Banned outright
+/// elsewhere in this file, but a census must not depend on another clause
+/// holding.
+fn rb68p_prefix_free_count(hay: &str, needle: &str) -> usize {
+    if needle.is_empty() {
+        return 0;
+    }
+    let bytes = hay.as_bytes();
+    let mut n = 0usize;
+    let mut start = 0usize;
+    while let Some(rel) = hay[start..].find(needle) {
+        let after = start + rel + needle.len();
+        if !bytes.get(after).copied().is_some_and(is_word_byte) {
+            n += 1;
+        }
+        start = after;
+    }
+    n
+}
+
+/// Re-space a squashed `fn` needle into the form a DOCUMENT spells it in:
+/// `fnpurge_fields(` becomes `fn purge_fields(`.
+///
+/// Used only by the control fixtures, and used there so that every declaration
+/// span in a POSITIVE control is built from the same shipped needle the live
+/// derivation uses. A hand-typed span would make a green control prove nothing
+/// about the live source, and a typo in one would read exactly like a missing
+/// fix.
+fn rb68p_spaced_decl(needle: &str) -> String {
+    let bare = needle.strip_prefix("fn").unwrap_or(needle);
+    format!("fn {bare}")
+}
+
+/// The LIVE emission facts, derived ONCE from accounts.rs.
+///
+/// Every step is a derivation, and every step that could silently produce an
+/// empty or wrong fact panics with its own label instead:
+///   - the reducer's declaration must occur exactly once (a decoy declaration
+///     above the real one steers `extract_squashed_fn_body`'s first-hit read);
+///   - the event literal is SLICED out of the strings-KEPT body between the
+///     two quote bytes that follow the emission call. That slice is also the
+///     only proof in this slice that the first argument is a BARE literal: a
+///     `const EVT` or a `concat!` leaves identifier bytes where the slice
+///     requires a quote, and the derivation fails loudly rather than deriving
+///     a fact the document could then be judged against;
+///   - the fragment builder is derived from the emission's SECOND argument, in
+///     both live shapes (the claim path INLINES the builder call, the cascade
+///     path BINDS it to a local first);
+///   - terminality REUSES the shipped frozen tails. There is deliberately no
+///     third encoding of "the emission is the last statement" in this tree,
+///     and no statement-counting model: the reaper's `let ... else { return
+///     Ok(()); };` makes a `body_stmt_count - 2` reading under-specified.
+fn rb68p_live_emission_facts() -> &'static Vec<Rb68Fact> {
+    static FACTS: std::sync::OnceLock<Vec<Rb68Fact>> = std::sync::OnceLock::new();
+    FACTS.get_or_init(|| {
+        let squashed = stripped_for_scan(ACCOUNTS_RS);
+        let kept = stripped_keep_strings(ACCOUNTS_RS);
+        let emit = rb40_nd_mr_log();
+        let dq = rb22_dq();
+        let file = concat!("accounts", ".rs").to_string();
+        let mut out: Vec<Rb68Fact> = Vec::new();
+        for (decl, label, tail) in [
+            (
+                nd_complete(),
+                concat!("complete_guest", "_claim"),
+                rb40_frozen_emit_tail(),
+            ),
+            (
+                rb24_nd_reaper_decl(),
+                concat!("account_deletion", "_reaper"),
+                rb65_frozen_emit_tail(),
+            ),
+        ] {
+            let n_decl = m22_count_occurrences(&squashed, &decl);
+            assert_eq!(
+                n_decl, 1,
+                "rb68p [live/decl-unique]: accounts.rs must declare `{decl}` ({label}) EXACTLY \
+                 once; found {n_decl}. Every fact below is read out of the body that needle \
+                 selects, and `extract_squashed_fn_body` binds the FIRST hit -- so a second \
+                 definition steers the whole derivation at a decoy and the document would then \
+                 be judged against a reducer nobody ships."
+            );
+            let body = extract_squashed_fn_body(&squashed, &decl).unwrap_or_else(|| {
+                panic!(
+                    "rb68p [live/body]: no brace-balanced body for `{decl}` ({label}) in \
+                     accounts.rs. Without a body there is no emission to derive and every \
+                     document clause would be judged against nothing."
+                )
+            });
+            let kept_body = extract_squashed_fn_body(&kept, &decl).unwrap_or_else(|| {
+                panic!(
+                    "rb68p [live/kept-body]: no brace-balanced body for `{decl}` ({label}) in \
+                     the strings-KEPT view of accounts.rs. That view is the ONLY one in which \
+                     the event literal survives at all."
+                )
+            });
+            let at = kept_body.find(emit.as_str()).unwrap_or_else(|| {
+                panic!(
+                    "rb68p [live/emit-site]: {label} carries no `{emit}` call. ZERO emissions is \
+                     precisely the pre-rb-40 / pre-rb-65 state ADR-0230 still describes, so if \
+                     this fires the DOCUMENT may well be right and the SOURCE wrong -- check \
+                     rb40_claim_emits_one_purge_observation and \
+                     rb65_reaper_emits_one_cascade_observation before touching the ADR."
+                )
+            });
+            let after = &kept_body[at + emit.len()..];
+            let rest = after.strip_prefix(dq).unwrap_or_else(|| {
+                panic!(
+                    "rb68p [live/evt-bare]: {label}'s emission does not open its first argument \
+                     with a bare string literal. An indirected event name (a `const`, a \
+                     `concat!`, a formatted value) is one a reader grepping this module for the \
+                     event never finds, and there is no literal here to slice."
+                )
+            });
+            let end = rest.find(dq).unwrap_or_else(|| {
+                panic!("rb68p [live/evt-close]: {label}'s event literal is never closed.")
+            });
+            let evt = rest[..end].to_string();
+            assert!(
+                !evt.is_empty(),
+                "rb68p [live/evt-empty]: {label} emits an EMPTY event name. Every containment \
+                 and pairing clause below would then be satisfied by every byte of the document."
+            );
+            let arg = rest[end + 1..].strip_prefix(",&").unwrap_or_else(|| {
+                panic!(
+                    "rb68p [live/fields-arg]: {label}'s emission does not hand a borrowed field \
+                     fragment as its second argument. The fragment builder is derived from that \
+                     argument; without it there is no builder to name."
+                )
+            });
+            let ident_end = arg.find(|c: char| !is_word_char(c)).unwrap_or(arg.len());
+            let first = &arg[..ident_end];
+            let builder = if arg[ident_end..].starts_with('(') {
+                first.to_string()
+            } else {
+                let needle = format!("let{first}=");
+                let bind = body.find(needle.as_str()).unwrap_or_else(|| {
+                    panic!(
+                        "rb68p [live/fields-binding]: {label} hands `{first}` to its emission but \
+                         binds it nowhere in its own body. A fragment built outside the reducer \
+                         is one no purity test in this file covers."
+                    )
+                });
+                let rhs = &body[bind + needle.len()..];
+                let call_end = rhs.find('(').unwrap_or_else(|| {
+                    panic!("rb68p [live/fields-call]: `{first}` is not bound to a call in {label}.")
+                });
+                rhs[..call_end].to_string()
+            };
+            out.push(Rb68Fact {
+                file: file.clone(),
+                label: label.to_string(),
+                evt,
+                fields_fn: format!("fn{builder}("),
+                in_body: m22_count_occurrences(body, &emit),
+                terminal: body.ends_with(tail.as_str()),
+                decl,
+            });
+        }
+        out
+    })
+}
+
+/// Every production source this module can READ, squashed once. This is the
+/// SOURCE roster: it is what a declaration span is resolved AGAINST, so a
+/// declaration attributed to a file that is not here cannot be judged at all
+/// (which is exactly what `[cite/roster-coverage]` reports).
+fn rb68p_sources() -> &'static Vec<(String, String)> {
+    static SOURCES: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+    SOURCES.get_or_init(|| {
+        [
+            (concat!("accounts", ".rs"), ACCOUNTS_RS),
+            (concat!("lib", ".rs"), LIB_RS),
+            (concat!("schema", ".rs"), SCHEMA_RS),
+            (concat!("monster_mgmt", ".rs"), MONSTER_MGMT_RS),
+            (concat!("ranking", ".rs"), RANKING_RS),
+            (concat!("battle", ".rs"), M22_BATTLE_RS),
+            (concat!("content", ".rs"), M22_CONTENT_RS),
+            (concat!("content_cache", ".rs"), M22_CONTENT_CACHE_RS),
+            (concat!("economy", ".rs"), M22_ECONOMY_RS),
+            (concat!("evolution", ".rs"), M22_EVOLUTION_RS),
+            (concat!("guards", ".rs"), M22_GUARDS_RS),
+            (concat!("inventory", ".rs"), M22_INVENTORY_RS),
+            (concat!("marshal", ".rs"), M22_MARSHAL_RS),
+            (concat!("movement", ".rs"), M22_MOVEMENT_RS),
+            (concat!("npc", ".rs"), M22_NPC_RS),
+            (concat!("observability", ".rs"), M22_OBSERVABILITY_RS),
+            (concat!("playtest", ".rs"), M22_PLAYTEST_RS),
+            (concat!("privacy", ".rs"), M22_PRIVACY_RS),
+            (concat!("pvp", ".rs"), M22_PVP_RS),
+            (concat!("raising", ".rs"), M22_RAISING_RS),
+            (concat!("taming", ".rs"), M22_TAMING_RS),
+            (concat!("trading", ".rs"), M22_TRADING_RS),
+        ]
+        .iter()
+        .map(|(name, src)| ((*name).to_string(), stripped_for_scan(src)))
+        .collect()
+    })
+}
+
+/// The SOURCE roster's file names, in the order `rb68p_sources` lists them.
+fn rb68p_roster() -> &'static Vec<String> {
+    static ROSTER: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    ROSTER.get_or_init(|| rb68p_sources().iter().map(|(n, _)| n.clone()).collect())
+}
+
+/// The squashed source of `name`, if this module can read it.
+fn rb68p_source_of<'a>(sources: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    sources
+        .iter()
+        .find(|(n, _)| n.as_str() == name)
+        .map(|(_, s)| s.as_str())
+}
+
+/// Blank every HTML comment, KEEPING the newlines inside it.
+///
+/// MEASURED (rb-67 round 2, and re-measured for this collector): a comment
+/// placed INSIDE a file name renders in every markdown viewer as an ordinary
+/// file-and-line citation while splitting the citation needle in two, so the
+/// scan saw no file name at all. Blanking makes every clause judge the text a
+/// READER sees.
+///
+/// The newlines are kept on purpose: line numbers in messages, the paragraph
+/// splitter and the section ranges must all stay where they were. The cost is
+/// that a comment spanning a line break cannot be re-fused, which is why
+/// `[doc/html-in-section]` bans the construct inside the gated section rather
+/// than relying on this stripper alone.
+fn rb68p_strip_html_comments(md: &str) -> String {
+    let open = "<!--";
+    let close = "-->";
+    let mut out = String::with_capacity(md.len());
+    let mut rest = md;
+    loop {
+        let at = match rest.find(open) {
+            Some(at) => at,
+            None => {
+                out.push_str(rest);
+                return out;
+            }
+        };
+        out.push_str(&rest[..at]);
+        let tail = &rest[at + open.len()..];
+        match tail.find(close) {
+            Some(end) => {
+                for c in tail[..end].chars() {
+                    if c == '\n' {
+                        out.push('\n');
+                    }
+                }
+                rest = &tail[end + close.len()..];
+            }
+            None => {
+                for c in tail.chars() {
+                    if c == '\n' {
+                        out.push('\n');
+                    }
+                }
+                return out;
+            }
+        }
+    }
+}
+
+/// Decode the HTML entity spellings a citation, a hidden character or a
+/// retracted claim can hide behind, then drop markdown backslash escapes.
+///
+/// MEASURED: `accounts.rs&#58;773` and `accounts.rs:&#55;73` both render as an
+/// ordinary file-and-line citation and both walked past a scan that reads the
+/// source bytes; `mr\_log` renders as the identifier while splitting it.
+///
+/// A numeric entity is REFUSED a control codepoint -- it decodes to a space
+/// instead. That is not cosmetic: `&#10;` would otherwise ADD a line and every
+/// line number reported below, plus the HTML-comment line test and the section
+/// LINE range, would desynchronise from the file a reader edits. One pass, so
+/// a doubly-encoded entity survives; named in the honest limits above.
+fn rb68p_decode_entities(md: &str) -> String {
+    let named: [(&str, char); 8] = [
+        ("&colon;", ':'),
+        ("&lowbar;", '_'),
+        ("&num;", '#'),
+        ("&period;", '.'),
+        ("&lpar;", '('),
+        ("&rpar;", ')'),
+        ("&lt;", '<'),
+        ("&gt;", '>'),
+    ];
+    let mut out = String::with_capacity(md.len());
+    let bytes = md.as_bytes();
+    let mut i = 0usize;
+    'outer: while i < bytes.len() {
+        if bytes[i] == b'&' {
+            for (name, ch) in named {
+                if md[i..].starts_with(name) {
+                    out.push(ch);
+                    i += name.len();
+                    continue 'outer;
+                }
+            }
+            if md[i..].starts_with("&#") {
+                let body = &md[i + 2..];
+                let hex = body.starts_with('x') || body.starts_with('X');
+                let digits: String = body[usize::from(hex)..]
+                    .chars()
+                    .take_while(|c| c.is_ascii_hexdigit())
+                    .collect();
+                let consumed = 2 + usize::from(hex) + digits.len();
+                if !digits.is_empty() && md[i + consumed..].starts_with(';') {
+                    let radix = if hex { 16 } else { 10 };
+                    if let Ok(v) = u32::from_str_radix(&digits, radix) {
+                        let decoded = char::from_u32(v).unwrap_or(' ');
+                        out.push(if decoded.is_control() { ' ' } else { decoded });
+                        i += consumed + 1;
+                        continue 'outer;
+                    }
+                }
+            }
+        }
+        if bytes[i] == b'\\' {
+            let next = md[i + 1..].chars().next();
+            if let Some(c) = next {
+                out.push(c);
+                i += 1 + c.len_utf8();
+                continue 'outer;
+            }
+        }
+        let c = md[i..].chars().next().unwrap_or(' ');
+        out.push(c);
+        i += c.len_utf8();
+    }
+    out
+}
+
+/// The full normalisation every clause is judged over: HTML comments blanked
+/// (newlines kept), entities decoded, backslash escapes dropped. LINE NUMBERS
+/// AND LINE COUNTS ARE PRESERVED BY CONSTRUCTION -- that is why every clause
+/// below may report a line number a reader can open.
+fn rb68p_normalise(md: &str) -> String {
+    rb68p_decode_entities(&rb68p_strip_html_comments(md))
+}
+
+/// Drop emphasis markers OUTSIDE code spans. Used by the stale-claim scan
+/// ALONE: `contains **zero**` and `contains zero` are the same sentence to a
+/// reader, and MEASURED, the emphasis split walked past a literal blacklist.
+/// It is not applied to the span clauses, where `*` inside a span is code.
+///
+/// The in-span flag RESETS at every newline. An inline code span cannot cross a
+/// line break in CommonMark, so this costs nothing on well-formed text -- and
+/// it means one unpaired delimiter (in a fenced block elsewhere in the
+/// document, say) inverts the emphasis reading of ONE line rather than of every
+/// line after it. This scan runs over the whole document, so its blast radius
+/// under a broken delimiter has to be bounded here rather than by the
+/// section-scoped parity guard.
+fn rb68p_strip_emphasis(md: &str) -> String {
+    let mut out = String::with_capacity(md.len());
+    let mut in_span = false;
+    for c in md.chars() {
+        if c == '\n' {
+            in_span = false;
+            out.push(c);
+            continue;
+        }
+        if c == '`' {
+            in_span = !in_span;
+            out.push(c);
+            continue;
+        }
+        if !in_span && (c == '*' || c == '_') {
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Is `c` an INVISIBLE or FORMAT character -- one that occupies bytes in the
+/// file and renders as nothing, or as an ordinary space, to a reader? Returns
+/// the class name for the failure message.
+///
+/// THIS CLAUSE IS A BAN ON CLASSES, AND IT USED TO BE AN ALLOW-LIST OF
+/// PRINTABLES. The allow-list was a measured false RED and the single worst
+/// defect in this gate's first round: it permitted exactly the four non-ASCII
+/// characters ADR-0230 happened to use that day, and 194 of the 213 ADRs in
+/// this corpus use characters outside that set -- the right arrow alone appears
+/// 1,150 times. Any honest later edit adding an arrow, an ellipsis, a times
+/// sign, an accented name or a curly quote ANYWHERE in the document, including
+/// in the digest-owned header this slice does not even gate, would have reddened
+/// CI with a message about smuggling. A gate that reds on `x -> y` is a gate the
+/// next editor deletes, and they would be right to.
+///
+/// What is actually being defended against is a character a READER cannot see
+/// but a SCAN can: one that splits a needle, pads a claim, or parks a token out
+/// of sight. That is a closed set of Unicode classes, not an open set of
+/// printables:
+///   - `Cc` control characters other than the newline and the tab (a carriage
+///     return, and every C0/C1 code);
+///   - `Zs`/`Zl`/`Zp` separators other than the ordinary space (a no-break
+///     space, an en space, a narrow no-break space, a line separator);
+///   - `Cf` format characters (the word joiner, the zero-width space and
+///     joiners, the bidi overrides and isolates, the byte-order mark, the
+///     deprecated formatting codes, the tag characters);
+///   - the zero-width fillers and joiners that are not formally `Cf` but render
+///     as nothing anyway (the combining grapheme joiner, the Hangul fillers,
+///     the Khmer inherent vowels, the Mongolian vowel separator, the variation
+///     selectors, the blank braille pattern).
+///
+/// A NAMED blacklist of a dozen specific codepoints was MEASURED to miss nine
+/// of the twelve it was aimed at, which is why this is by class.
+fn rb68p_hidden_class(c: char) -> Option<&'static str> {
+    if c == '\n' || c == '\t' || c == ' ' {
+        return None;
+    }
+    if c.is_control() {
+        return Some("a control character");
+    }
+    if c.is_whitespace() {
+        // Everything left here is a separator: Zs, Zl or Zp. It renders as a
+        // space (or as a line break) and is not one.
+        return Some("a non-ASCII space or line separator");
+    }
+    let point = u32::from(c);
+    // Format and zero-width classes, as inclusive ranges.
+    let invisible: [(u32, u32); 22] = [
+        (0x0000_00AD, 0x0000_00AD), // soft hyphen
+        (0x0000_034F, 0x0000_034F), // combining grapheme joiner
+        (0x0000_0600, 0x0000_0605), // Arabic number signs
+        (0x0000_061C, 0x0000_061C), // Arabic letter mark
+        (0x0000_06DD, 0x0000_06DD),
+        (0x0000_070F, 0x0000_070F), // Syriac abbreviation mark
+        (0x0000_0890, 0x0000_0891),
+        (0x0000_08E2, 0x0000_08E2),
+        (0x0000_115F, 0x0000_1160), // Hangul choseong/jungseong fillers
+        (0x0000_17B4, 0x0000_17B5), // Khmer inherent vowels
+        (0x0000_180B, 0x0000_180F), // Mongolian selectors and vowel separator
+        (0x0000_200B, 0x0000_200F), // zero-width space, joiners, marks
+        (0x0000_202A, 0x0000_202E), // bidi embedding and override
+        (0x0000_2060, 0x0000_2064), // word joiner, invisible operators
+        (0x0000_2065, 0x0000_206F), // isolates and the deprecated formats
+        (0x0000_2800, 0x0000_2800), // blank braille pattern
+        (0x0000_3164, 0x0000_3164), // Hangul filler
+        (0x0000_FE00, 0x0000_FE0F), // variation selectors
+        (0x0000_FEFF, 0x0000_FEFF), // zero-width no-break space / BOM
+        (0x0000_FFA0, 0x0000_FFA0), // halfwidth Hangul filler
+        (0x0000_FFF9, 0x0000_FFFB), // interlinear annotation
+        (0x000E_0000, 0x000E_0FFF), // tags and the variation supplement
+    ];
+    if invisible
+        .iter()
+        .any(|(lo, hi)| point >= *lo && point <= *hi)
+    {
+        return Some("a zero-width or format character");
+    }
+    if (0x0001_D173..=0x0001_D17A).contains(&point) {
+        return Some("a musical formatting character");
+    }
+    None
+}
+
+/// Element names a raw HTML tag can carry in markdown. A tag is refused inside
+/// the gated section because four such carriers were MEASURED to park every
+/// gated token invisibly -- but the test has to be on a REAL element name.
+///
+/// MEASURED FALSE RED: the round-1 rule fired on any `<` followed by a letter
+/// and a later `>`, so `Vec<u64>` and `Option<Identity>` reddened -- in a
+/// section that discusses `Identity` and `usize` types, in a corpus where 62
+/// ADRs write generics. That defect and the allow-list above are the same
+/// mistake: a rule shaped by what the attack looks like rather than by what the
+/// honest text looks like.
+fn rb68p_is_html_element(name: &str) -> bool {
+    [
+        "a",
+        "abbr",
+        "address",
+        "area",
+        "article",
+        "aside",
+        "audio",
+        "b",
+        "base",
+        "bdi",
+        "bdo",
+        "big",
+        "blockquote",
+        "body",
+        "br",
+        "button",
+        "canvas",
+        "caption",
+        "center",
+        "cite",
+        "code",
+        "col",
+        "colgroup",
+        "data",
+        "datalist",
+        "dd",
+        "del",
+        "details",
+        "dfn",
+        "dialog",
+        "div",
+        "dl",
+        "dt",
+        "em",
+        "embed",
+        "fieldset",
+        "figcaption",
+        "figure",
+        "font",
+        "footer",
+        "form",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "head",
+        "header",
+        "hgroup",
+        "hr",
+        "html",
+        "i",
+        "iframe",
+        "img",
+        "input",
+        "ins",
+        "kbd",
+        "label",
+        "legend",
+        "li",
+        "link",
+        "main",
+        "map",
+        "mark",
+        "menu",
+        "meta",
+        "meter",
+        "nav",
+        "noscript",
+        "object",
+        "ol",
+        "optgroup",
+        "option",
+        "output",
+        "p",
+        "param",
+        "picture",
+        "pre",
+        "progress",
+        "q",
+        "rp",
+        "rt",
+        "ruby",
+        "s",
+        "samp",
+        "script",
+        "section",
+        "select",
+        "slot",
+        "small",
+        "source",
+        "span",
+        "strike",
+        "strong",
+        "style",
+        "sub",
+        "summary",
+        "sup",
+        "svg",
+        "table",
+        "tbody",
+        "td",
+        "template",
+        "textarea",
+        "tfoot",
+        "th",
+        "thead",
+        "time",
+        "title",
+        "tr",
+        "track",
+        "tt",
+        "u",
+        "ul",
+        "var",
+        "video",
+        "wbr",
+    ]
+    .contains(&name)
+}
+
+/// Blank the CONTENT of every inline code span on one line, keeping the
+/// delimiters and the byte length.
+///
+/// A markdown code span is the one place a document legitimately shows angle
+/// brackets, HTML and generics, and it is text a reader SEES. Every clause that
+/// hunts for a construct which renders as NOTHING has to look outside the spans
+/// or it judges the document's own examples.
+fn rb68p_blank_code_spans(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    for (idx, part) in line.split('`').enumerate() {
+        if idx > 0 {
+            out.push('`');
+        }
+        if idx % 2 == 1 {
+            for _ in part.chars() {
+                out.push(' ');
+            }
+        } else {
+            out.push_str(part);
+        }
+    }
+    out
+}
+
+/// Does this line carry a raw HTML TAG, outside its code spans?
+fn rb68p_has_html_tag(line: &str) -> bool {
+    let blanked = rb68p_blank_code_spans(line);
+    let bytes = blanked.as_bytes();
+    for (i, b) in bytes.iter().enumerate() {
+        if *b != b'<' {
+            continue;
+        }
+        let mut j = i + 1;
+        if bytes.get(j) == Some(&b'/') {
+            j += 1;
+        }
+        let name_start = j;
+        while j < bytes.len() && j - name_start < 12 && bytes[j].is_ascii_alphanumeric() {
+            j += 1;
+        }
+        if j == name_start {
+            continue;
+        }
+        let name = blanked[name_start..j].to_ascii_lowercase();
+        let closed = matches!(bytes.get(j), Some(b'>' | b' ' | b'/'));
+        if closed && rb68p_is_html_element(&name) && blanked[j..].contains('>') {
+            return true;
+        }
+    }
+    false
+}
+
+/// Every backticked code span in `md`, as (byte offset of the span text, span).
+/// Offsets are taken ONCE over the whole document, which is what makes a span
+/// attributable to a SECTION.
+fn rb68p_code_spans(md: &str) -> Vec<(usize, &str)> {
+    let mut out: Vec<(usize, &str)> = Vec::new();
+    let mut at = 0usize;
+    for (idx, span) in md.split('`').enumerate() {
+        if idx % 2 == 1 {
+            out.push((at, span));
+        }
+        at += span.len() + 1;
+    }
+    out
+}
+
+/// The byte range of the BODY of the section whose level-two heading ANCHOR
+/// starts with `heading` -- the lines AFTER that heading line, up to the next
+/// level-two heading, or the end of the document.
+///
+/// Matched on the ANCHOR and not on the raw line, so a house-style number
+/// (`## 10. PRV1-17 and PRV1-20 ...`) finds the same section. A level-THREE
+/// heading is not a terminator: `### ` does not carry the `## ` prefix, and
+/// this ADR uses sub-headings.
+fn rb68p_section_body_range(md: &str, heading: &str) -> Option<(usize, usize)> {
+    let mut at = 0usize;
+    let mut start: Option<usize> = None;
+    for line in md.split('\n') {
+        let line_start = at;
+        at += line.len() + 1;
+        let anchor = rb68p_heading_anchor(line);
+        match start {
+            None => {
+                if anchor.is_some_and(|a| a.starts_with(heading)) {
+                    start = Some(at.min(md.len()));
+                }
+            }
+            Some(s) => {
+                if anchor.is_some() {
+                    return Some((s, line_start.min(md.len())));
+                }
+            }
+        }
+    }
+    start.map(|s| (s, md.len()))
+}
+
+/// Is this code span shaped like a DECLARATION?
+///
+/// Shape, never proximity: the visibility keyword and the item keyword are
+/// what a reader resolves against the source, and they are what
+/// `[cite/decl-real]` then requires to occur there.
+fn rb68p_is_decl_shaped(span: &str) -> bool {
+    let s = span.trim();
+    for prefix in [
+        "pub(crate) fn ",
+        "pub fn ",
+        "fn ",
+        "pub(crate) const ",
+        "pub const ",
+        "const ",
+        "pub(crate) struct ",
+        "pub struct ",
+        "struct ",
+        "pub(crate) static ",
+        "pub static ",
+        "static ",
+    ] {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            return rest
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+        }
+    }
+    false
+}
+
+/// A paragraph, with the byte offset it starts at.
+struct Rb68Para {
+    start: usize,
+    text: String,
+}
+
+/// Split on blank lines AND on list-item starts AND on headings.
+///
+/// The list-aware split is a precondition of the nearest-file binding: with a
+/// blank-line-only splitter the whole eleven-helper census is ONE paragraph, a
+/// declaration span can be attributed to any file that census names, and a
+/// swapped attribution measured CLEAN. A whitespace-only line breaks a
+/// paragraph here too, which is why `[doc/no-blankish]` can be an isolated
+/// clause rather than a load-bearing one.
+fn rb68p_paragraphs(md: &str) -> Vec<Rb68Para> {
+    let mut out: Vec<Rb68Para> = Vec::new();
+    let mut cur: Vec<&str> = Vec::new();
+    let mut cur_start = 0usize;
+    let mut at = 0usize;
+    for line in md.split('\n') {
+        let line_start = at;
+        at += line.len() + 1;
+        if line.trim().is_empty() {
+            if !cur.is_empty() {
+                out.push(Rb68Para {
+                    start: cur_start,
+                    text: cur.join("\n"),
+                });
+                cur.clear();
+            }
+            continue;
+        }
+        let trimmed = line.trim_start();
+        let is_item = trimmed.starts_with("- ") || trimmed.starts_with("* ");
+        let is_head = line.starts_with('#');
+        if (is_item || is_head) && !cur.is_empty() {
+            out.push(Rb68Para {
+                start: cur_start,
+                text: cur.join("\n"),
+            });
+            cur.clear();
+        }
+        if cur.is_empty() {
+            cur_start = line_start;
+        }
+        cur.push(line);
+    }
+    if !cur.is_empty() {
+        out.push(Rb68Para {
+            start: cur_start,
+            text: cur.join("\n"),
+        });
+    }
+    out
+}
+
+/// Every `<word>.rs` token in `text`, as (byte offset, lowercased token).
+///
+/// ASCII-lowercased in place so the offsets stay usable for the nearest-file
+/// binding, and so a shouted `PRIVACY.RS:79-92` is judged as the citation it
+/// renders as.
+fn rb68p_rs_tokens(text: &str) -> Vec<(usize, String)> {
+    let low = text.to_ascii_lowercase();
+    let bytes = low.as_bytes();
+    let mut out: Vec<(usize, String)> = Vec::new();
+    let mut from = 0usize;
+    while let Some(rel) = low[from..].find(".rs") {
+        let at = from + rel;
+        let end = at + 3;
+        let bounded = !bytes.get(end).copied().is_some_and(is_word_byte);
+        let mut start = at;
+        while start > 0 && is_word_byte(bytes[start - 1]) {
+            start -= 1;
+        }
+        if bounded && start < at {
+            out.push((start, low[start..end].to_string()));
+        }
+        from = end;
+    }
+    out
+}
+
+/// One rendered line, normalised for the citation scan: backticks dropped
+/// (a backtick BETWEEN the path and its locator is the natural markdown
+/// spelling and is invisible to any scan that reads them as adjacent), every
+/// whitespace RUN collapsed to a single space, ASCII-lowercased.
+///
+/// Whitespace is COLLAPSED and not deleted, unlike every other scan in this
+/// file. That is the whole reason a COUNT can be told from a LOCATOR: `2
+/// emissions` and `:773` differ only in whether whitespace separates the digit
+/// run from what follows it.
+fn rb68p_scan_text(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut pending_space = false;
+    for c in line.chars() {
+        if c == '`' {
+            continue;
+        }
+        if c.is_whitespace() {
+            pending_space = true;
+            continue;
+        }
+        if pending_space && !out.is_empty() {
+            out.push(' ');
+        }
+        pending_space = false;
+        out.push(c.to_ascii_lowercase());
+    }
+    out
+}
+
+/// Consume up to SIX consecutive non-alphanumeric characters, returning the
+/// remainder and whether any of them was whitespace.
+///
+/// Raised from three on measured evidence: at three, ANY gap of four or more
+/// punctuation characters lost the forward arm entirely, and ` — (` alone is
+/// four. Widening it is cheap because this skips only NON-ALPHANUMERICS -- it
+/// can never step over a word, so `accounts.rs (ADR-0235)` still stops dead on
+/// the `A` however large the budget is, and the honest parenthesised-provenance
+/// spelling stays green at any width.
+fn rb68p_skip_gap(s: &str) -> (&str, bool) {
+    let mut rest = s;
+    let mut ws = false;
+    for _ in 0..6 {
+        match rest.chars().next() {
+            Some(c) if !c.is_alphanumeric() => {
+                ws = ws || c.is_whitespace();
+                rest = &rest[c.len_utf8()..];
+            }
+            _ => break,
+        }
+    }
+    (rest, ws)
+}
+
+/// How a digit run was introduced. The three classes read the SAME digits
+/// differently, and that is the whole reason a count can be told from a
+/// citation without a list of nouns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Rb68Intro {
+    /// An abbreviation: `l`, `ln`, `ll`, `lineno`, `#`, `@`. Nobody writes
+    /// `at l. 12 sites`; these introduce a line number and nothing else.
+    Abbrev,
+    /// A prose word: `line`, `lines`, `row`, `rows`, `no`, `nos`, `at`. These
+    /// introduce enumerations (`line 1 is the claim-time purge`, `row 12 of
+    /// the runbook table`, `at 12 sites`) as readily as citations.
+    Word,
+    /// Nothing but punctuation between the path and the digits.
+    Bare,
+}
+
+/// Read a digit run -- or a `NNN-MMM` range -- and decide whether it is a
+/// LOCATOR or a COUNT.
+///
+/// THE HONEST SET AND THE ATTACK SET PULL IN OPPOSITE DIRECTIONS, and this is
+/// the one function where they meet. Every rule below is pinned by fixtures on
+/// BOTH sides in `rb68p_adr0230_evidence_oracle_control`, and several of the
+/// pairs differ by a single character:
+///   GLUED       `accounts.rs:773`     vs `accounts.rs: 2 emissions`
+///   MAGNITUDE   `row 773 for`         vs `row 12 of the runbook table`
+///   RANGE       `lines 773-799`       vs `lines 1-2 of the census`
+///   UNIT NOUN   `accounts.rs — 773 for a reader` vs `accounts.rs — 300 lines`
+///   ABBREVIATED `accounts.rs, l. 79`  vs `accounts.rs at 12 sites`
+/// The decision, in order:
+///   1. no whitespace at all between the path/word and the digits -> LOCATOR;
+///   2. an ABBREVIATION introduced them -> LOCATOR;
+///   3. a `ff` suffix -> LOCATOR;
+///   4. a RANGE whose longer side is two or more digits -> LOCATOR (`1-2` is
+///      an enumeration of two items, `79-92` is a span of a file);
+///   5. a run of three or more digits -> LOCATOR, UNLESS the next word is a
+///      plural or unit noun (`300 lines`, `123 emissions`), because a count
+///      names WHAT it counts and a citation just keeps talking;
+///   6. anything else -> a COUNT.
+///
+/// Rule 5's noun test is a suffix test and not a dictionary: a count in this
+/// document is always followed by the thing being counted.
+fn rb68p_digit_run_is_a_locator(s: &str, gap_ws: bool, intro: Rb68Intro) -> Option<String> {
+    let run = |t: &str| -> (usize, usize) {
+        let mut n = 0usize;
+        let mut len = 0usize;
+        for c in t.chars() {
+            if !c.is_numeric() || n >= 5 {
+                break;
+            }
+            n += 1;
+            len += c.len_utf8();
+        }
+        (n, len)
+    };
+    let (digits, taken) = run(s);
+    if digits == 0 {
+        return None;
+    }
+    let mut rest = &s[taken..];
+    let mut widest = digits;
+    // A range is ONE locator, not two numbers: consume the second side so the
+    // magnitude test sees the whole citation.
+    if let Some(after_dash) = rest
+        .strip_prefix('-')
+        .or_else(|| rest.strip_prefix('\u{2013}'))
+        .or_else(|| rest.strip_prefix('\u{2014}'))
+    {
+        let (second, second_len) = run(after_dash);
+        if second > 0 {
+            widest = widest.max(second);
+            rest = &after_dash[second_len..];
+            if widest >= 2 {
+                return Some(s.chars().take(12).collect());
+            }
+        }
+    }
+    if !gap_ws || intro == Rb68Intro::Abbrev {
+        return Some(s.chars().take(12).collect());
+    }
+    if rest.starts_with("ff") {
+        return Some(s.chars().take(12).collect());
+    }
+    // The next WORD, if the run is followed by whitespace and one.
+    let next_word: String = rest
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_alphabetic())
+        .collect();
+    let followed_by_a_word = rest.starts_with(char::is_whitespace) && !next_word.is_empty();
+    let counted_noun = next_word.len() >= 4 && next_word.ends_with('s');
+    if widest >= 3 && !(followed_by_a_word && counted_noun) {
+        return Some(s.chars().take(12).collect());
+    }
+    // Everything left is a COUNT: one or two whitespace-separated digits with no
+    // range, or a longer run naming what it counts. `accounts.rs: 2.`, `— 2,
+    // and privacy.rs — 1`, `at 12 sites`, `(2)` on a wrapped line, `row 12 of`
+    // and `— 300 lines` all land here and all of them are honest prose in this
+    // document today.
+    None
+}
+
+/// The locator words, longest first so `lines` is never read as `line` plus a
+/// stray `s` and `lineno` is never read as `line` plus `no`. BOTH arms use
+/// this ONE list: in round 1 the backward arm carried a strictly narrower list
+/// than the forward arm, so every reversed `at` / `l` / `#` locator escaped
+/// both.
+fn rb68p_locator_words() -> [(&'static str, Rb68Intro); 13] {
+    [
+        ("lineno", Rb68Intro::Abbrev),
+        ("lines", Rb68Intro::Word),
+        ("line", Rb68Intro::Word),
+        ("ln", Rb68Intro::Abbrev),
+        ("ll", Rb68Intro::Abbrev),
+        ("rows", Rb68Intro::Word),
+        ("row", Rb68Intro::Word),
+        ("nos", Rb68Intro::Word),
+        ("no", Rb68Intro::Word),
+        ("at", Rb68Intro::Word),
+        ("l", Rb68Intro::Abbrev),
+        ("#", Rb68Intro::Abbrev),
+        ("@", Rb68Intro::Abbrev),
+    ]
+}
+
+/// FORWARD arm: `path` then a short gap, then an OPTIONAL locator word, then a
+/// short gap, then a digit run.
+fn rb68p_forward_locator(tail: &str) -> Option<String> {
+    let (after_gap, gap_ws) = rb68p_skip_gap(tail);
+    for (word, intro) in rb68p_locator_words() {
+        if let Some(rest) = after_gap.strip_prefix(word) {
+            let (rest, word_ws) = rb68p_skip_gap(rest);
+            if let Some(hit) = rb68p_digit_run_is_a_locator(rest, gap_ws || word_ws, intro) {
+                return Some(format!("{word}{hit}"));
+            }
+        }
+    }
+    rb68p_digit_run_is_a_locator(after_gap, gap_ws, Rb68Intro::Bare)
+}
+
+/// BACKWARD arm: a locator word followed by a digit run, ANYWHERE on a line
+/// that names a source file. `see L773 of accounts.rs` and `#773 in
+/// accounts.rs` put the number BEFORE the path, where no forward-looking
+/// window can ever see it.
+///
+/// Deliberately PATH-AGNOSTIC, and the caller reports it as such. Binding this
+/// arm to one path would be a lie on a line that names two.
+fn rb68p_backward_locator(t: &str) -> Option<String> {
+    for (word, intro) in rb68p_locator_words() {
+        let mut scan = 0usize;
+        while let Some(rel) = t[scan..].find(word) {
+            let hit = scan + rel;
+            let bounded = !t[..hit]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_');
+            let after = hit + word.len();
+            if bounded {
+                let (rest, ws) = rb68p_skip_gap(&t[after..]);
+                if let Some(found) = rb68p_digit_run_is_a_locator(rest, ws, intro) {
+                    return Some(format!("{word}{found}"));
+                }
+            }
+            scan = after;
+        }
+    }
+    None
+}
+
+/// Does this normalised scan text cite `path` by LINE NUMBER, reading FORWARD
+/// from the path? Returns the offending fragment.
+fn rb68p_locator_hit(t: &str, path: &str) -> Option<String> {
+    let mut from = 0usize;
+    while let Some(rel) = t[from..].find(path) {
+        let at = from + rel + path.len();
+        if let Some(hit) = rb68p_forward_locator(&t[at..]) {
+            return Some(hit);
+        }
+        from = at;
+    }
+    None
+}
+
+/// EVERY way ADR-0230's text can contradict, or under-describe, accounts.rs's
+/// live emission sites -- one LABELLED violation per defect, in one pass.
+///
+/// It deliberately does NOT short-circuit: a red capture must show every
+/// violated clause at once, or the first failure shadows the rest and a second
+/// defect ships behind the fix for the first. There are exactly THREE
+/// exceptions, and each of them FAILS LOUD rather than opening, IN THIS ORDER:
+///   `[live/vacuity]`   MEASURED: with an EMPTY fact list the entire oracle
+///                      reported CLEAN on a fully gutted document. Every
+///                      emission clause is quantified over the facts;
+///   `[scope/section]`  MEASURED: renaming the heading silenced six clauses at
+///                      once, and a stale citation plus a fabricated
+///                      declaration then rode in behind the rename. A SECOND
+///                      heading naming either criterion is refused here too:
+///                      inserting `## PRV1-20 evidence` mid-section truncated
+///                      the body and un-scoped everything below it, and a
+///                      fabricated declaration plus two banned citations then
+///                      rode in behind THAT;
+///   `[doc/parity]`     an odd backtick count swaps the code and prose halves
+///                      of the section, so every other span verdict would be
+///                      computed over the wrong text.
+///
+/// THE SECTION GUARD RUNS BEFORE THE PARITY GUARD, and parity, the fence ban
+/// and the whitespace-line ban are all SCOPED TO THE SECTION BODY. In round 1
+/// all three were whole-document, and a backtick fence anywhere in a 260-line
+/// ADR reddened this gate -- 63 of the 213 ADRs in this corpus carry one, and
+/// ADR-0230 has four sections this slice does not own. A code sample added to
+/// one of them is an honest edit. Scoping costs nothing, because the only
+/// consumer of a span OUTSIDE the section is the emphasis stripper, whose span
+/// tracking resets at every newline for exactly this reason, and the code-span
+/// extractor now reads the section BODY rather than the whole document.
+///
+/// `facts`, `sources`, `roster` and `floors` are PARAMETERS rather than
+/// globals so the control fixtures exercise THIS function against the exact
+/// live facts the shipped test uses -- a control over a private copy proves
+/// nothing about the shipped path.
+fn rb68p_adr_violations(
+    md: &str,
+    facts: &[Rb68Fact],
+    sources: &[(String, String)],
+    roster: &[String],
+    floors: (usize, usize),
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+
+    // Comment LINE numbers are taken from the RAW text. Blanking keeps every
+    // newline and entity decoding refuses to produce one, so these numbers are
+    // the same before and after normalisation -- which is why this clause
+    // compares LINE NUMBERS and never byte offsets. MEASURED: a raw comment
+    // OFFSET compared against a stripped section RANGE is off by the length of
+    // every comment above it.
+    let comment_lines: Vec<usize> = md
+        .split('\n')
+        .enumerate()
+        .filter(|(_, line)| line.contains("<!--"))
+        .map(|(i, _)| i + 1)
+        .collect();
+
+    let normalised = rb68p_normalise(md);
+    let md: &str = normalised.as_str();
+
+    let mut lines: Vec<(usize, &str)> = Vec::new();
+    {
+        let mut at = 0usize;
+        for line in md.split('\n') {
+            lines.push((at, line));
+            at += line.len() + 1;
+        }
+    }
+
+    // --- RETURN-ALONE GUARD 1: [live/vacuity] -------------------------------
+    if facts.is_empty() {
+        return vec![String::from(
+            "[live/vacuity]: the live emission fact list is EMPTY. Every emission clause below \
+             is quantified over those facts, so an empty list makes the pairing, the containment \
+             and the event-literal clauses all vacuously satisfied -- MEASURED: with no facts \
+             this oracle reported a fully gutted document CLEAN. Returned ALONE: a gate that \
+             cannot see the source it is comparing against has no verdict to give.",
+        )];
+    }
+
+    // --- RETURN-ALONE GUARD 2: [scope/section] ------------------------------
+    // THREE ways this section can stop being the section, all measured:
+    // renaming its heading (round 1 caught it), duplicating the heading (round
+    // 1 caught it), and TRUNCATING it with a new `## ` heading in the middle
+    // (round 1 did NOT). The third is the dangerous one: it is a plausible
+    // honest edit, it leaves the heading untouched, and everything below the
+    // insertion point silently leaves scope. It is caught by counting the
+    // headings that name EITHER gated criterion -- exactly one line may.
+    let heading = rb68p_prv_heading();
+    let criteria = rb68p_criteria();
+    let n_headings = lines
+        .iter()
+        .filter(|(_, line)| {
+            rb68p_heading_anchor(line).is_some()
+                && criteria.iter().any(|c| line.contains(c.as_str()))
+        })
+        .count();
+    let section = rb68p_section_body_range(md, &heading);
+    if n_headings != 1 || section.is_none() {
+        let names = criteria.join(" / ");
+        return vec![format!(
+            "[scope/section]: {n_headings} level-two heading(s) name {names}, and exactly ONE \
+             may -- the one opening `{heading}`. MEASURED, three shapes: renaming this heading \
+             silenced SIX clauses at once; duplicating it made the body range end at its own \
+             twin; and inserting a SECOND heading that names one of these criteria part-way \
+             down TRUNCATED the section, after which a fabricated declaration and two banned \
+             file-and-line citations all survived, because every span, citation, paragraph, \
+             floor and presence clause below is scoped to this section's body. A leading house-\
+             style number (`## 10. `) is tolerated -- this ADR documents that convention about \
+             itself -- but a second heading about the same criteria is not. Returned ALONE: \
+             with no section there is no text to judge. If the section is genuinely being \
+             split, split this needle in the SAME commit."
+        )];
+    }
+    let (sec_start, sec_end) = section.unwrap_or((0, 0));
+    let conseq = rb68p_section_body_range(md, &rb68p_conseq_heading());
+
+    let sec_body = &md[sec_start..sec_end];
+    let sec_low = sec_body.to_ascii_lowercase();
+    let in_section = |at: usize| at >= sec_start && at < sec_end;
+    let mut sec_lines: Vec<(usize, usize, &str)> = Vec::new();
+    for (idx, (ls, line)) in lines.iter().enumerate() {
+        if in_section(*ls) {
+            sec_lines.push((idx + 1, *ls, *line));
+        }
+    }
+
+    // --- [doc/no-fence], computed BEFORE the parity guard --------------------
+    // A fence is THREE backticks: it desynchronises the span split for the
+    // whole remainder of the section while often leaving the TOTAL count even,
+    // and it is the usual cause of a parity break. Reporting it beside the
+    // parity verdict is what makes the parity message actionable instead of
+    // mysterious. The tilde spelling is a fence to CommonMark too and carries
+    // no backtick at all, so parity never sees it.
+    let mut fences: Vec<String> = Vec::new();
+    for (no, _, line) in &sec_lines {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with(concat!("``", "`")) || trimmed.starts_with("~~~") {
+            fences.push(format!(
+                "[doc/no-fence]: line {no} opens or closes a FENCED code block INSIDE the gated \
+                 section. Every clause here reads INLINE code spans by splitting on the \
+                 backtick, so a fence swaps which side of that split is code and which is prose \
+                 for everything after it, and a declaration parked in a fence is judged as part \
+                 of whatever text happens to neighbour it. A tilde fence carries no backtick and \
+                 so is invisible to the parity clause entirely -- MEASURED as a place to park \
+                 retracted prose. Put the declaration in an INLINE code span. A fence in ANOTHER \
+                 section of this document is legal and is not this clause's business."
+            ));
+        }
+    }
+
+    // --- RETURN-ALONE GUARD 3: [doc/parity], SECTION-SCOPED -----------------
+    let total_ticks = sec_body.chars().filter(|c| *c == '`').count();
+    let odd_line = sec_lines
+        .iter()
+        .find(|(_, _, line)| line.chars().filter(|c| *c == '`').count() % 2 != 0)
+        .map(|(no, _, _)| *no);
+    if total_ticks % 2 != 0 || odd_line.is_some() {
+        let where_at = odd_line.map_or_else(|| String::from("(none)"), |n| n.to_string());
+        out = fences;
+        out.push(format!(
+            "[doc/parity]: the gated section carries {total_ticks} backticks and the first line \
+             in it with an ODD count is line {where_at}. Code spans are read by splitting on the \
+             backtick, so one unpaired delimiter swaps the code and prose halves of everything \
+             that follows it. PER LINE and not merely in total, because two unpaired delimiters \
+             on DIFFERENT lines restore the total while leaving every span between them \
+             inverted. Returned with the fence findings and NOTHING ELSE on purpose: every \
+             other span clause would be judging the wrong text."
+        ));
+        return out;
+    }
+    out.extend(fences);
+
+    // --- [doc/no-blankish], IN SECTION; [doc/no-hidden-char], WHOLE DOCUMENT -
+    for (no, _, line) in &sec_lines {
+        if !line.is_empty() && line.trim().is_empty() {
+            out.push(format!(
+                "[doc/no-blankish]: line {no} is not empty but holds only whitespace. It reads \
+                 as a paragraph break to a human and to markdown, and a splitter keyed on the \
+                 two-newline sequence FUSES the paragraphs across it -- which is how a \
+                 declaration span smuggles itself into a paragraph that never names its file, \
+                 and how a stale sentence acquires a neighbour that vouches for it."
+            ));
+        }
+    }
+    for (idx, (_, line)) in lines.iter().enumerate() {
+        let no = idx + 1;
+        for c in line.chars() {
+            if let Some(class) = rb68p_hidden_class(c) {
+                let point = u32::from(c);
+                out.push(format!(
+                    "[doc/no-hidden-char]: line {no} carries U+{point:04X}, {class}. It occupies \
+                     bytes in the file and renders as nothing (or as an ordinary space) to a \
+                     reader, so it can split a gated needle in two, pad a retracted claim past a \
+                     blacklist, or park a token where no reader will ever question it. This is a \
+                     ban on CLASSES -- control, separator, format, and the zero-width fillers \
+                     and variation selectors -- because a NAMED blacklist of a dozen codepoints \
+                     was MEASURED to miss nine of them. It is deliberately NOT an allow-list of \
+                     printables: that shape was measured to red on the arrows, ellipses, accents \
+                     and curly quotes that 194 of this corpus's 213 ADRs already use, which is a \
+                     false RED on honest prose and the fastest way to get a gate deleted. Every \
+                     VISIBLE character, ASCII or not, is welcome here."
+                ));
+                break;
+            }
+        }
+    }
+
+    // --- [doc/no-hidden-carrier] and [doc/html-in-section], IN SECTION -------
+    for (no, _, line) in &sec_lines {
+        let line: &str = line;
+        let no = *no;
+        let trimmed = line.trim_start();
+        let is_ref_def = trimmed.starts_with('[')
+            && trimmed.find("]:").is_some_and(|close| {
+                !trimmed[1..close].contains('[')
+                    && trimmed[close + 2..]
+                        .chars()
+                        .next()
+                        .is_some_and(char::is_whitespace)
+            });
+        if is_ref_def || rb68p_has_html_tag(line) {
+            out.push(format!(
+                "[doc/no-hidden-carrier]: line {no} carries a construct that renders as NOTHING \
+                 -- a markdown link-reference definition or a raw HTML tag. MEASURED: four such \
+                 carriers parked EVERY gated token (the file name, the emission point, both \
+                 declaration markers, both event literals and both fragment builders) \
+                 invisibly, so the visible bullet could be replaced by a flat denial while this \
+                 oracle read the tokens it wanted out of text no reader ever sees. Evidence a \
+                 reader cannot read is not evidence. The tag test looks OUTSIDE code spans and \
+                 requires a real HTML element name: in round 1 it read `Vec<u64>` and \
+                 `Option<Identity>` as tags, in a section about `Identity` and `usize` values, \
+                 and 62 ADRs in this corpus write generics."
+            ));
+        }
+    }
+    for no in &comment_lines {
+        let inside = lines
+            .get(no.saturating_sub(1))
+            .is_some_and(|(ls, _)| in_section(*ls));
+        if inside {
+            out.push(format!(
+                "[doc/html-in-section]: line {no} opens an HTML comment INSIDE the gated \
+                 section. Comments are blanked before every clause here, so a single-line one is \
+                 already defeated -- but the stripper keeps the newlines inside a comment (line \
+                 numbers, paragraph breaks and section ranges must stay honest), so a comment \
+                 SPANNING a line break cannot be re-fused and can still split a needle in two. \
+                 The construct is therefore refused inside this section outright. A comment \
+                 elsewhere in the document is legal and this ADR carries one."
+            ));
+        }
+    }
+
+    // --- [scope/roster-floor] -----------------------------------------------
+    // Spans are extracted from the SECTION BODY and shifted back into document
+    // coordinates, not filtered out of a whole-document split. That is what
+    // makes the parity guard above section-scoped without opening a hole: a
+    // fence in an earlier section can no longer invert which half of this
+    // section's backtick split is code.
+    let named_files = roster
+        .iter()
+        .filter(|name| sec_low.contains(name.as_str()))
+        .count();
+    let section_spans: Vec<(usize, &str)> = rb68p_code_spans(sec_body)
+        .into_iter()
+        .map(|(at, s)| (at + sec_start, s))
+        .collect();
+    let decl_spans = section_spans
+        .iter()
+        .filter(|(_, s)| rb68p_is_decl_shaped(s))
+        .count();
+    let (min_files, min_decls) = floors;
+    if named_files < min_files || decl_spans < min_decls {
+        out.push(format!(
+            "[scope/roster-floor]: the section names {named_files} roster file(s) (floor \
+             {min_files}) and carries {decl_spans} declaration-shaped code span(s) (floor \
+             {min_decls}). MEASURED: deleting 2,640 of this section's 5,213 bytes -- the whole \
+             emission bullet and the whole delegated-helper census -- left every REMAINING \
+             clause satisfied, because every one of them is quantified over the text that is \
+             still there. A gate with no floor cannot tell a corrected document from a deleted \
+             one. These are anti-gutting BOUNDS, and they are not the only instrument: a floor \
+             cannot say WHICH block went, so `[scope/presence]` below pins the named evidence \
+             blocks and this clause only stops the section being whittled down around them."
+        ));
+    }
+
+    // --- [scope/presence]: the named evidence blocks, not just a byte count --
+    // MEASURED, all four with every floor satisfied: deleting the step-6a
+    // resolver trace, deleting the reject-path and reaper bullets, deleting the
+    // ENTIRE PRV1-20 evidence paragraph -- which is the whole of residual
+    // R-rb-65-ADR0230-PRV120 -- and a combined 44% excision. A floor with
+    // headroom is the wrong instrument for that: it measures how MUCH is left,
+    // and the residual is about WHAT is left. This clause is DERIVED, not
+    // transcribed: the criterion name comes from the heading anchor and both
+    // builder needles come from the live emission facts, so it cannot drift
+    // from the source it is protecting.
+    let paragraphs = rb68p_paragraphs(md);
+    for criterion in &criteria {
+        let named = paragraphs
+            .iter()
+            .any(|p| in_section(p.start) && p.text.contains(criterion.as_str()));
+        if !named {
+            out.push(format!(
+                "[scope/presence]: no paragraph in the gated section so much as NAMES \
+                 {criterion}, and the section's own heading says it is about it. The evidence \
+                 for a criterion is not optional prose: deleting the paragraph that carries it \
+                 was MEASURED to leave every floor, span, citation and pairing clause here \
+                 satisfied, because all of them are quantified over the text that is still \
+                 there."
+            ));
+        }
+    }
+    // The PRV1-20 argument specifically: it is the one this ADR got WRONG (it
+    // rested on the absence of a line that has existed since rb-65), and the
+    // corrected form rests on both fragment builders being pure. A paragraph
+    // that names the criterion must therefore carry BOTH builder spans -- that
+    // is the argument, and an argument that loses its evidence is a claim.
+    let prv20 = criteria.last().cloned().unwrap_or_default();
+    let content_para = paragraphs.iter().any(|p| {
+        in_section(p.start)
+            && p.text.contains(prv20.as_str())
+            && facts.iter().all(|f| {
+                rb68p_code_spans(&p.text)
+                    .iter()
+                    .any(|(_, s)| squash_ws(s).contains(f.fields_fn.as_str()))
+            })
+    });
+    if !content_para {
+        let builders: Vec<String> = facts.iter().map(|f| f.fields_fn.clone()).collect();
+        let listed = builders.join("`, `");
+        out.push(format!(
+            "[scope/presence]: no paragraph in the gated section argues {prv20} FROM CONTENT -- \
+             none that names the criterion also carries every live fragment builder (`{listed}`, \
+             derived from accounts.rs during this run) in a code span. That combination IS the \
+             corrected argument: the criterion holds because the two functions that render the \
+             erasure-window log lines are pure and render only an identity and a count. The \
+             version this slice retracted argued it from ABSENCE instead, and it was wrong -- \
+             the line it said did not exist has existed since rb-65. Deleting this paragraph was \
+             MEASURED to leave every other clause green."
+        ));
+    }
+
+    // --- [cite/no-line], per line AND over a two-line window -----------------
+    let ban_roster: Vec<String> = {
+        let mut seen: Vec<String> = Vec::new();
+        for (_, tok) in rb68p_rs_tokens(&rb68p_scan_text(sec_body)) {
+            if !seen.contains(&tok) {
+                seen.push(tok);
+            }
+        }
+        seen
+    };
+    let cite_note = "ADR-0230 bans file-and-line citations in its own evidence chain: the number \
+                     drifts the moment anything is inserted above the target, and a drifted \
+                     citation points a reader at unrelated code while still looking precise -- \
+                     which is the residual that created this gate. Cite the DECLARATION inside a \
+                     code span instead. The test is on SHAPE and is TWO-SIDED: a locator glued or \
+                     nearly glued to the file name, or one of line / lines / row / rows / no / \
+                     nos / at / l / ln / ll / lineno / # / @ followed by a number anywhere on a \
+                     line that names a source file. A COUNT is not a locator and stays green: \
+                     `accounts.rs: 2 emissions`, `at 12 sites`, `row 12 of the runbook table`, \
+                     `lines 1-2 of the census`, `300 lines` and `(ADR-0235)` are all legal here, \
+                     and each of them is a fixture.";
+    // The scan text is what a READER sees on one rendered line: backticks
+    // dropped, whitespace runs collapsed, lowercased. The BAN ROSTER is built
+    // from that same view rather than from the raw section, so a file name
+    // split by its own markdown (`accounts`.rs`) is still one token.
+    let scan_lines: Vec<(usize, String)> = sec_lines
+        .iter()
+        .map(|(no, _, line)| (*no, rb68p_scan_text(line)))
+        .collect();
+    let mut line_red: Vec<bool> = vec![false; scan_lines.len()];
+    // FORWARD arm, per path: the number FOLLOWS the file name, so the message
+    // can name the file with confidence.
+    for (idx, (no, scan)) in scan_lines.iter().enumerate() {
+        for path in &ban_roster {
+            if let Some(hit) = rb68p_locator_hit(scan, path) {
+                line_red[idx] = true;
+                out.push(format!(
+                    "[cite/no-line]: line {no} cites `{path}` by LINE NUMBER (at `{hit}`). \
+                     {cite_note}"
+                ));
+                break;
+            }
+        }
+    }
+    // BACKWARD arm, ONCE per line and PATH-AGNOSTIC. `L773 of accounts.rs` and
+    // `#773 in accounts.rs` put the number BEFORE the path, where no
+    // forward-looking window can see it. Round 1 ran this arm inside the
+    // per-path loop and named whichever path it happened to be holding, which
+    // on a line naming two files named the wrong one -- so it now reports every
+    // file the line names and says the number precedes them.
+    for (idx, (no, scan)) in scan_lines.iter().enumerate() {
+        if line_red[idx] {
+            continue;
+        }
+        let named: Vec<&str> = ban_roster
+            .iter()
+            .filter(|p| scan.contains(p.as_str()))
+            .map(std::string::String::as_str)
+            .collect();
+        if named.is_empty() {
+            continue;
+        }
+        if let Some(hit) = rb68p_backward_locator(scan) {
+            line_red[idx] = true;
+            let listed = named.join("`, `");
+            out.push(format!(
+                "[cite/no-line]: line {no} carries a REVERSED line locator (at `{hit}`) on a line \
+                 that names `{listed}`. The number comes BEFORE the file name here, which is why \
+                 this arm is reported separately and why it does not bind the locator to one of \
+                 those files: on a line naming two, either binding would be a guess. {cite_note}"
+            ));
+        }
+    }
+    // The k=2 WINDOW: a citation split across a hard wrap belongs to neither
+    // line. MEASURED: it defeated the per-line form in 6 of 6 attempts.
+    for idx in 0..scan_lines.len().saturating_sub(1) {
+        let (a, first) = (&scan_lines[idx].0, &scan_lines[idx].1);
+        let (b, second) = (&scan_lines[idx + 1].0, &scan_lines[idx + 1].1);
+        if *b != *a + 1 || first.is_empty() || second.is_empty() {
+            continue;
+        }
+        if line_red[idx] || line_red[idx + 1] {
+            continue;
+        }
+        let joined = format!("{first} {second}");
+        let hit = ban_roster
+            .iter()
+            .find_map(|path| rb68p_locator_hit(&joined, path).map(|h| (path.clone(), h)))
+            .or_else(|| {
+                let names = ban_roster.iter().any(|p| joined.contains(p.as_str()));
+                rb68p_backward_locator(&joined)
+                    .filter(|_| names)
+                    .map(|h| (String::from("(reversed)"), h))
+            });
+        if let Some((path, hit)) = hit {
+            out.push(format!(
+                "[cite/no-line]: lines {a}-{b} cite `{path}` by LINE NUMBER ACROSS A HARD WRAP \
+                 (at `{hit}`), which neither line does on its own. MEASURED: a citation split by \
+                 the wrap defeated the per-line form in 6 of 6 attempts, and the wrap is the \
+                 shape an editor reaches for by accident rather than by design. Reported \
+                 separately from the per-line arms so the three are never confused. {cite_note}"
+            ));
+        }
+    }
+
+    // --- paragraph-scoped declaration clauses --------------------------------
+    for para in &paragraphs {
+        if !in_section(para.start) {
+            continue;
+        }
+        let decls: Vec<(usize, &str)> = rb68p_code_spans(&para.text)
+            .into_iter()
+            .filter(|(_, s)| rb68p_is_decl_shaped(s))
+            .collect();
+        if decls.is_empty() {
+            continue;
+        }
+        let tokens = rb68p_rs_tokens(&para.text);
+        let head: String = para.text.chars().take(90).collect();
+        if tokens.is_empty() {
+            out.push(format!(
+                "[scope/paragraph]: a paragraph carries a DECLARATION span but names no `.rs` \
+                 file at all, so a reader who lands on it cannot tell which module owns the \
+                 declaration -- and a later reader helpfully adding a file name may well add the \
+                 wrong one. Nothing below can resolve the span either: every declaration clause \
+                 binds a span to a file named in its OWN paragraph. Paragraph opens: `{head}`"
+            ));
+            continue;
+        }
+        for (off, span) in decls {
+            let nearest = tokens
+                .iter()
+                .min_by_key(|(at, _)| off.abs_diff(*at))
+                .map(|(_, name)| name.clone())
+                .unwrap_or_default();
+            let src = match rb68p_source_of(sources, &nearest) {
+                Some(src) => src,
+                None => {
+                    out.push(format!(
+                        "[cite/roster-coverage]: the declaration span `{span}` is bound to \
+                         `{nearest}`, which is not in the SOURCE roster this module can read, so \
+                         no clause here can check that the declaration exists there at all. Two \
+                         rosters are in play on purpose: the SOURCE roster resolves \
+                         declarations, and a separate CITATION-BAN roster (every `.rs` token in \
+                         the section) is what makes a file-and-line citation of ANY file red \
+                         while a bare mention of an unreadable one stays green. A declaration \
+                         span next to an unreadable file name is an unverifiable claim wearing \
+                         the shape of a verified one."
+                    ));
+                    continue;
+                }
+            };
+            let squashed = squash_ws(span);
+            let hits = m22_count_occurrences(src, &squashed);
+            if hits == 0 {
+                out.push(format!(
+                    "[cite/decl-real]: the code span `{span}` does not occur in `{nearest}`'s \
+                     CODE (comments and string literals are blanked before the comparison, so a \
+                     declaration quoted in a doc comment there does not count as one). It is a \
+                     FABRICATION -- a plausible-looking declaration no compiler ever saw. The \
+                     file is the NEAREST `.rs` token to this span in its own paragraph, not `any \
+                     file the paragraph names`: MEASURED, a swapped attribution between two \
+                     helpers whose files were BOTH named read CLEAN under the looser rule. A \
+                     renamed parameter, a widened visibility and a helper attributed to the \
+                     wrong module all land here."
+                ));
+            } else if hits != 1 {
+                out.push(format!(
+                    "[cite/decl-sole]: the code span `{span}` occurs {hits} times in \
+                     `{nearest}`, and a citation that resolves to more than one place resolves \
+                     to none of them. Loosening exactly-one to at-least-one is what reopens the \
+                     decoy-twin bypass this shape exists to close: a second declaration planted \
+                     above the real one steals every first-hit scan in this file. If the \
+                     marker is genuinely ambiguous, cite a LONGER prefix of the declaration."
+                ));
+            }
+        }
+    }
+
+    // --- [emit/pair], POSITIONAL, PER PARAGRAPH, AND A TRIPLE ----------------
+    // Round 1 asked whether SOME occurrence of the declaration marker was
+    // followed, anywhere in the section, by its own event. Three MEASURED
+    // bypasses of that shape, all of which ADD text rather than remove it:
+    //   - a contradicting bullet APPENDED after the true one passed, because
+    //     `paired` broke true on the first position that happened to work;
+    //   - the same bullet PREPENDED passed for the same reason;
+    //   - one span carrying both events passed as well.
+    // The fix is not any->all over the whole section (measured: that reds the
+    // LIVE document, because the reaper's marker legitimately recurs in a later
+    // bullet with no event span after it). It is any->all WITHIN A PARAGRAPH,
+    // and only where the paragraph actually pairs: every declaration marker
+    // that is followed by an event span IN ITS OWN PARAGRAPH must be followed
+    // by its OWN event first.
+    //
+    // AND IT IS A TRIPLE, not a pair. `Rb68Fact::fields_fn` was derived and
+    // then never read by this collector, so swapping the two fragment builders
+    // between the two paths passed -- and that swap falsifies the whole of the
+    // corrected PRV1-20 argument, which rests on the CASCADE line being built
+    // by the cascade builder. The first BUILDER-shaped span after a marker must
+    // be that reducer's own builder too.
+    for fact in facts {
+        let label = &fact.label;
+        let decl = &fact.decl;
+        let present = section_spans
+            .iter()
+            .any(|(_, s)| squash_ws(s).contains(decl.as_str()));
+        if !present {
+            out.push(format!(
+                "[emit/pair]: no code span in the gated section carries {label}'s declaration \
+                 marker `{decl}`, so the section does not name this emission site at all. \
+                 accounts.rs emits through this reducer TODAY -- the fact was derived from the \
+                 file during this run, not transcribed -- and a document that omits it tells a \
+                 reader the erasure path is silent when it is not."
+            ));
+        }
+    }
+    for para in &paragraphs {
+        if !in_section(para.start) {
+            continue;
+        }
+        let spans: Vec<(usize, &str)> = rb68p_code_spans(&para.text);
+        let head: String = para.text.chars().take(90).collect();
+        for (i, (_, marker)) in spans.iter().enumerate() {
+            let squashed_marker = squash_ws(marker);
+            for fact in facts {
+                if !squashed_marker.contains(fact.decl.as_str()) {
+                    continue;
+                }
+                let after = &spans[i + 1..];
+                let next_evt_span = after
+                    .iter()
+                    .find(|(_, s)| facts.iter().any(|f| s.contains(f.evt.as_str())));
+                let next_evt: Vec<&Rb68Fact> = next_evt_span.map_or_else(Vec::new, |(_, s)| {
+                    facts
+                        .iter()
+                        .filter(|f| s.contains(f.evt.as_str()))
+                        .collect()
+                });
+                if next_evt.len() > 1 {
+                    // ONE span naming BOTH events. MEASURED: it pairs with
+                    // whichever fact the scan happens to reach first, so it
+                    // satisfies a positional rule for free while telling the
+                    // reader nothing about which reducer emits which.
+                    out.push(format!(
+                        "[emit/pair]: the first event-bearing code span after {}'s declaration \
+                         marker `{}` names {} different events at once, so it pairs with all of \
+                         them and identifies none. An event span that follows a declaration is \
+                         the document's claim about what THAT reducer emits; a span naming both \
+                         is not a claim. Split them. Paragraph opens: `{head}`",
+                        fact.label,
+                        fact.decl,
+                        next_evt.len()
+                    ));
+                }
+                if let Some(other) = next_evt.first().filter(|_| next_evt.len() == 1) {
+                    if other.evt != fact.evt {
+                        out.push(format!(
+                            "[emit/pair]: in ONE paragraph of the gated section, the first \
+                             event-bearing code span after {}'s declaration marker `{}` is {}'s \
+                             event, not its own. POSITIONAL and not co-occurrence: a full \
+                             event-to-reducer PAYLOAD SWAP -- each reducer described under the \
+                             OTHER one's event literal -- was MEASURED CLEAN in all four \
+                             configurations of a co-occurrence rule, because both markers and \
+                             both literals were still present in the same paragraph. Scoped to \
+                             the paragraph and applied to EVERY marker in it, because a rule \
+                             that accepted any ONE working position let a contradicting bullet \
+                             be ADDED beside the true one and stay green. An operator reading \
+                             the swapped document greps the wrong event for the wrong erasure. \
+                             Paragraph opens: `{head}`",
+                            fact.label, fact.decl, other.label
+                        ));
+                    }
+                }
+                let next_builder_span = after.iter().find(|(_, s)| {
+                    facts
+                        .iter()
+                        .any(|f| squash_ws(s).contains(f.fields_fn.as_str()))
+                });
+                let next_builder: Vec<&Rb68Fact> =
+                    next_builder_span.map_or_else(Vec::new, |(_, s)| {
+                        let sq = squash_ws(s);
+                        facts
+                            .iter()
+                            .filter(|f| sq.contains(f.fields_fn.as_str()))
+                            .collect()
+                    });
+                if next_builder.len() > 1 {
+                    out.push(format!(
+                        "[emit/builder]: the first fragment-builder code span after {}'s \
+                         declaration marker `{}` names {} different builders at once, so it \
+                         attributes the purity argument to all of them and to none of them.",
+                        fact.label,
+                        fact.decl,
+                        next_builder.len()
+                    ));
+                }
+                if let Some(other) = next_builder.first().filter(|_| next_builder.len() == 1) {
+                    if other.fields_fn != fact.fields_fn {
+                        out.push(format!(
+                            "[emit/builder]: in ONE paragraph of the gated section, the first \
+                             fragment-builder code span after {}'s declaration marker `{}` is \
+                             `{}` -- {}'s builder, not its own `{}`. This is the THIRD leg of the \
+                             pairing and it was missing in round 1: the builder was derived from \
+                             the live emission's second argument and then never compared against \
+                             the document, so exchanging the two builders between the two paths \
+                             passed every clause. That exchange is not cosmetic. The corrected \
+                             PRV1-20 argument is that the ERASURE-WINDOW line is rendered by a \
+                             PURE function that emits only an identity and a count; naming the \
+                             other path's builder there attributes the purity proof to the wrong \
+                             function and leaves the criterion resting on nothing. Paragraph \
+                             opens: `{head}`",
+                            fact.label, fact.decl, other.fields_fn, other.label, fact.fields_fn
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    // --- [emit/containment] ---------------------------------------------------
+    for fact in facts {
+        let evt = &fact.evt;
+        let mut from = 0usize;
+        while let Some(rel) = md[from..].find(evt.as_str()) {
+            let at = from + rel;
+            from = at + evt.len();
+            if in_section(at) {
+                continue;
+            }
+            if conseq.is_some_and(|(a, b)| at >= a && at < b) {
+                continue;
+            }
+            let line = lines
+                .iter()
+                .rposition(|(ls, _)| *ls <= at)
+                .map_or(0, |i| i + 1);
+            out.push(format!(
+                "[emit/containment]: the derived event literal for {} appears on line {line}, \
+                 outside both the gated section and the consequences section. An event name is \
+                 the string an operator greps and an alert matches, and a second, unreviewed \
+                 statement about it elsewhere in the document is a second place for it to go \
+                 stale -- with no clause here watching that place. The ceiling is on the EVENT \
+                 LITERAL alone: a ceiling on the emission point itself was measured to red an \
+                 honest consequences mention and was defeated by a backslash escape anyway.",
+                fact.label
+            ));
+        }
+    }
+
+    // --- [emit/no-stale-claim] ------------------------------------------------
+    // A BLACKLIST, and nothing more than one: it cannot read polarity and must
+    // never be presented as a semantic check. The four needles are the four
+    // sentences this slice RETRACTS. The failure message prints the LABEL and
+    // the LINE NUMBER and NOTHING ELSE -- a gate needle visible in its own
+    // failure message is a gate an editor satisfies by deleting exactly the
+    // bytes it printed, which is the opposite of reading the line and fixing
+    // the claim.
+    //
+    // Lines 1 to NINE are exempt, not one to ten. Round 1 exempted ten, and
+    // line ten of this document is the `**Decision:**` field -- the ONE line
+    // `adr-digest` republishes to readers, and so the most-read sentence in the
+    // file. MEASURED: rewriting it to carry a retracted claim survived. The
+    // exempt block is now exactly the digest-owned header ABOVE that line (the
+    // title through the subsystems field), which this slice leaves
+    // byte-identical by design.
+    //
+    // THE SCAN RUNS OVER A WHITESPACE-COLLAPSED, BACKTICK-STRIPPED k=2 WINDOW,
+    // and that is the whole point of this round's rewrite. As a per-line
+    // literal test, every one of these survived and every one is a routine
+    // edit: a HARD WRAP between the two halves of the sentence (four for four),
+    // a DOUBLE SPACE, a code span around one word, and -- worst -- an HTML
+    // comment between the words, where the stripper this collector runs first
+    // blanks the comment to nothing and LEAVES TWO SPACES BEHIND, so the
+    // normalisation step created the hole. Collapsing whitespace over the same
+    // two-line window the citation ban already uses closes all four at once.
+    let flattened = rb68p_strip_emphasis(md);
+    let needles = [
+        concat!("contains", " zero"),
+        concat!("emits no log", " line at all"),
+        concat!("holds by", " absence"),
+        concat!("the only logging transitively", " reachable"),
+    ];
+    let claim_lines: Vec<String> = flattened.split('\n').map(rb68p_scan_text).collect();
+    let stale_note = "restates a claim this ADR's evidence chain RETRACTED. Read the line against \
+                      accounts.rs and delete it -- do not reword it into an `an earlier draft \
+                      said ...` sentence, because a retraction that quotes the dead claim keeps \
+                      the dead claim in the document. The needle is deliberately NOT printed \
+                      here: a gate that shows an editor the exact bytes it objects to is a gate \
+                      they satisfy by deleting exactly those bytes.";
+    let mut claim_red: Vec<bool> = vec![false; claim_lines.len()];
+    for (idx, line) in claim_lines.iter().enumerate() {
+        let no = idx + 1;
+        if no <= 9 {
+            continue;
+        }
+        if needles.iter().any(|n| line.contains(n)) {
+            claim_red[idx] = true;
+            out.push(format!("[emit/no-stale-claim]: line {no} {stale_note}"));
+        }
+    }
+    for idx in 0..claim_lines.len().saturating_sub(1) {
+        let (a, b) = (idx + 1, idx + 2);
+        if a <= 9 || claim_red[idx] || claim_red[idx + 1] {
+            continue;
+        }
+        if claim_lines[idx].is_empty() || claim_lines[idx + 1].is_empty() {
+            continue;
+        }
+        let joined = format!("{} {}", claim_lines[idx], claim_lines[idx + 1]);
+        if needles.iter().any(|n| joined.contains(n)) {
+            out.push(format!(
+                "[emit/no-stale-claim]: lines {a}-{b} restate, ACROSS A HARD WRAP, a claim this \
+                 ADR's evidence chain RETRACTED -- neither line carries it alone. {stale_note}"
+            ));
+        }
+    }
+
+    out
+}
+
+/// The shipped judgement path, with the live facts, live sources and live
+/// roster every fixture below is judged through.
+fn rb68p_judge(md: &str, floors: (usize, usize)) -> Vec<String> {
+    rb68p_adr_violations(
+        md,
+        rb68p_live_emission_facts(),
+        rb68p_sources(),
+        rb68p_roster(),
+        floors,
+    )
+}
+
+/// rb-68 (residuals R-rb-40-ADR0230 / R-rb-65-ADR0230-PRV120): the emission
+/// facts ADR-0230 is judged against are DERIVED from accounts.rs, and their sum
+/// RECONCILES with the file-wide census.
+///
+/// THIS IS NOT A THIRD CENSUS. `rb40_claim_emits_one_purge_observation` and
+/// `rb65_reaper_emits_one_cascade_observation` already pin the call sites file
+/// wide, per body, and as arithmetic. What this test adds, and what neither of
+/// those makes, is the assertion that the DERIVATION feeding the document
+/// oracle still describes the whole file: the prefix-free count of the bare
+/// emission identifier over accounts.rs must equal the SUM of the per-site
+/// counts. A third emission site, in a third function, therefore reds HERE --
+/// inside the slice that owns the document correspondence -- rather than only
+/// in the two sibling censuses, and no document clause can ever be judged
+/// against a fact list that has quietly stopped covering the file.
+///
+/// Kills, in clause order: a decoy second declaration steering the body reads;
+/// an indirected event name (a `const` or a `concat!` in first-argument
+/// position, which a grep for the event never finds); a fragment builder that
+/// is not the one the emission actually hands over; an emission that is no
+/// longer the terminal statement of its reducer; a second emission inside one
+/// body; and a THIRD emission site anywhere else in the file, including one
+/// reached through an unqualified or aliased name.
+#[test]
+fn rb68p_emission_facts_reconcile_with_the_file_census() {
+    let facts = rb68p_live_emission_facts();
+    assert_eq!(
+        facts.len(),
+        2,
+        "rb68p [live/fact-count]: accounts.rs must yield EXACTLY two derived emission facts (the \
+         rb-40 claim-time purge line and the rb-65 cascade line); derived {}. Every clause in \
+         the document oracle is quantified over this list.",
+        facts.len()
+    );
+
+    // The derivation is checked against the SHIPPED needles rather than the
+    // other way round: these two constants are already gated by the rb-40 and
+    // rb-65 teeth, so a disagreement here means the SLICER is broken, not the
+    // source -- and a broken slicer yields facts a document could be judged
+    // green against while describing nothing.
+    let want_evt = [rb40_evt(), rb65_evt()];
+    let want_fields = [rb40_nd_fields_fn(), rb65_nd_cascade_fields_fn()];
+    for (i, fact) in facts.iter().enumerate() {
+        let label = &fact.label;
+        assert_eq!(
+            fact.evt, want_evt[i],
+            "rb68p [live/evt-derived]: the event literal SLICED out of {label}'s emission does \
+             not match the shipped evt pin. The slice is the SSOT for the document oracle; the \
+             shipped pin is what rb-40 and rb-65 gate. If they disagree, this test's slicer has \
+             stopped reading the call it thinks it is reading."
+        );
+        assert_eq!(
+            fact.fields_fn, want_fields[i],
+            "rb68p [live/fields-derived]: the fragment builder derived from {label}'s emission \
+             argument does not match the shipped builder needle. The two live shapes are an \
+             INLINE builder call and a builder BOUND to a local first; a third shape derives \
+             something else and every message pointing an editor at the builder would then name \
+             the wrong function."
+        );
+        assert_eq!(
+            fact.in_body, 1,
+            "rb68p [live/one-per-body]: {label} must carry EXACTLY one emission; found {}. Two \
+             in one body doubles every operator count of the event; zero is the pre-fix state \
+             ADR-0230 still describes.",
+            fact.in_body
+        );
+        assert!(
+            fact.terminal,
+            "rb68p [live/terminal]: {label}'s squashed body no longer ENDS with the shipped \
+             frozen emission tail. Terminality is asserted here by REUSING that literal and is \
+             deliberately not re-encoded: a host log line survives a later panic or Err rollback \
+             while the writes do not, so an emission with any fallible statement after it can \
+             record a cascade that rolled back. If this is red, fix the SOURCE -- and expect \
+             rb40_claim_emits_one_purge_observation or \
+             rb65_reaper_emits_one_cascade_observation to be red with it."
+        );
+    }
+
+    // --- THE RECONCILIATION -------------------------------------------------
+    let squashed = stripped_for_scan(ACCOUNTS_RS);
+    let ident = concat!("mr_", "log");
+
+    // ISOLATING FIXTURE for the PREFIX-FREE half of the census, over a
+    // synthetic haystack rather than the live file: accounts.rs carries no
+    // breadcrumb sibling today, so nothing in this tree would notice the
+    // prefix-free test being replaced by a plain occurrence count -- and the
+    // whole point of the test is the day somebody adds one. Two call sites, one
+    // of them a strict prefix of the other, must count as ONE.
+    let sibling = rb40_nd_mr_log_breadcrumb();
+    let synthetic = format!("{sibling}a);{}b,&c);{sibling}d);", rb40_nd_mr_log());
+    let counted = rb68p_prefix_free_count(&synthetic, ident);
+    assert_eq!(
+        counted, 1,
+        "rb68p [live/prefix-free]: a haystack with two `{ident}_breadcrumb` call sites and ONE \
+         `{ident}` call site must count as exactly one emission; counted {counted}. The \
+         breadcrumb name contains the emission name as a STRICT PREFIX, so a plain occurrence \
+         count reads three and the reconciliation below would then demand three derived facts -- \
+         or, with the arithmetic the other way round, would silently accept a real third \
+         emission. The breadcrumb construct is banned elsewhere in this file, but a census must \
+         never depend on another clause holding."
+    );
+
+    let file_wide = rb68p_prefix_free_count(&squashed, ident);
+    let scoped: usize = facts.iter().map(|f| f.in_body).sum();
+    assert_eq!(
+        file_wide, scoped,
+        "rb68p [live/reconcile]: accounts.rs names the bare emission identifier `{ident}` \
+         {file_wide} time(s) (prefix-free: the byte after it is not an identifier byte, which is \
+         what excludes the breadcrumb sibling), but the two DERIVED sites account for only \
+         {scoped}. The difference is an emission this slice's document oracle cannot see, and it \
+         is invisible to a qualified-call census as well -- an unqualified call through a local \
+         import, an aliased re-export, or a call inside a third reducer entirely all land here. \
+         Counting the bare IDENTIFIER rather than the call form also covers a function-POINTER \
+         channel, which spells no opening paren at all. Either add the new site to the derivation \
+         and to ADR-0230's evidence chain in the same commit, or delete it."
+    );
+    assert_eq!(
+        file_wide, 2,
+        "rb68p [live/census]: accounts.rs must name `{ident}` EXACTLY twice; found {file_wide}. \
+         The reconciliation above only proves the derivation and the file AGREE -- if both moved \
+         together (both emissions deleted, or both relocated into one body), they would still \
+         agree. This clause is the absolute floor underneath it."
+    );
+}
+
+/// rb-68: ADR-0230's `## PRV1-17 and PRV1-20` section must describe the
+/// emission sites accounts.rs actually has.
+///
+/// THIS IS THE DOCUMENT SIDE OF A CORRESPONDENCE, not a third census. The
+/// source side is already pinned by rb-40 and rb-65; what was ungated until
+/// rb-68 is whether the ADR that explains that source still agrees with it --
+/// and it did not. Four claims in one evidence chain went stale across two
+/// slices while every gate in this tree stayed green.
+///
+/// DIRECTION OF FIX -- THE SOURCE IS THE SSOT. This test is never evidence
+/// that an emission is wrong; it is evidence that the prose describing it is.
+#[test]
+fn rb68p_adr0230_prv117_matches_the_live_emission_sites() {
+    let facts = rb68p_live_emission_facts();
+    assert_eq!(
+        facts.len(),
+        2,
+        "rb68p [live/vacuity-pre]: the derived fact list is not the expected pair, so the oracle \
+         below would be judging ADR-0230 against a source view that has stopped describing \
+         accounts.rs. Asserted BEFORE the call on purpose: an empty list was MEASURED to make \
+         the entire oracle report a gutted document CLEAN."
+    );
+
+    let bytes = RB68_ADR_0230_MD.len();
+    assert!(
+        bytes > 8000,
+        "rb68p [adr/vacuity]: ADR-0230 reads as only {bytes} bytes. It is a multi-section \
+         document; at this size the include path is wrong or the file was truncated, and every \
+         clause below would pass over almost nothing."
+    );
+
+    // The BYTE floor lives HERE and not in the collector. A floor meaningful
+    // against gutting the live section is far larger than any control fixture,
+    // so putting it inside the collector would red every fixture and make an
+    // isolating one impossible. The collector carries the roster and
+    // declaration-span floors instead, which scale with the parameters it is
+    // given.
+    // NOT `.expect(...)`, and computed BEFORE the collector runs but asserted
+    // AFTER it. A missing or renamed section is a VIOLATION the collector
+    // reports under `[scope/section]`, with all three measured shapes and the
+    // fix; a panic here shadowed that message and -- MEASURED -- fired on the
+    // ADR's own documented `## 10. ` renumbering convention, which is a false
+    // RED that presents to a reader as a crash.
+    let normalised = rb68p_normalise(RB68_ADR_0230_MD);
+    let section_bytes = rb68p_section_body_range(&normalised, &rb68p_prv_heading())
+        .map_or(0, |(start, end)| end - start);
+
+    let violations = rb68p_judge(RB68_ADR_0230_MD, RB68_LIVE_FLOORS);
+    let found = violations.len();
+    let listed = violations.join("\n  - ");
+    let (evt_one, evt_two) = (&facts[0].evt, &facts[1].evt);
+    let (decl_one, decl_two) = (&facts[0].decl, &facts[1].decl);
+    let (fields_one, fields_two) = (&facts[0].fields_fn, &facts[1].fields_fn);
+    assert!(
+        violations.is_empty(),
+        "rb68p [adr/live-emissions]: \
+         docs/adr/0230-deletion-runbook-gates-with-declaration-shaped-cites.md describes \
+         accounts.rs's logging in a way accounts.rs contradicts. {found} violation(s):\n  \
+         - {listed}\n\
+         WHERE TO EDIT: the `## PRV1-17 and PRV1-20` section body, and the `## Consequences` \
+         bullets that restate it. The heading line and the header block are deliberately NOT in \
+         scope.\n\
+         THE LIVE EMISSION SITES, derived from accounts.rs during THIS run: `{decl_one}` emits \
+         `{evt_one}` with fragments from `{fields_one}`, and `{decl_two}` emits `{evt_two}` with \
+         fragments from `{fields_two}` -- both as the terminal statement of their reducer, both \
+         through the one blessed emission point.\n\
+         DIRECTION OF FIX -- THE SOURCE IS THE SSOT: fix the DOCUMENT from the CODE, never the \
+         code from the document. Cite each declaration inside a code span, with the file named \
+         in bare prose in the SAME paragraph, and never as a file-and-line pair.\n\
+         IF YOU BELIEVE AN EMISSION ITSELF CHANGED: a real change reds \
+         rb68p_emission_facts_reconcile_with_the_file_census, \
+         rb40_claim_emits_one_purge_observation and rb65_reaper_emits_one_cascade_observation. \
+         If those are GREEN and only this test is red, the source is fine and the prose is not."
+    );
+
+    assert!(
+        section_bytes >= 3000,
+        "rb68p [adr/section-floor]: the gated section is only {section_bytes} bytes. Every clause \
+         in the oracle above is quantified over the text that IS there, so a section deleted down \
+         to a sentence satisfies all of them at once. Correct the evidence chain; do not delete \
+         it. Zero here means the section could not be found at all -- see `[scope/section]`."
+    );
+}
+
+// --- rb-68 control fixtures: the oracle above, judged over documents whose
+// --- verdict is known by construction --------------------------------------
+
+/// The gated section's heading LINE, as a fixture spells it.
+fn rb68p_fx_heading() -> String {
+    format!("## {} \u{2014} Met by verification", rb68p_prv_heading())
+}
+
+/// The same heading under this ADR's own documented `## N. ` house style. A
+/// POSITIVE control: renumbering the headings is a convention the document
+/// describes about itself, and MEASURED, it used to panic the section lookup.
+fn rb68p_fx_numbered_heading() -> String {
+    format!(
+        "## 10. {} \u{2014} Met by verification",
+        rb68p_prv_heading()
+    )
+}
+
+/// A context paragraph carrying every PERMITTED non-ASCII character and an
+/// HTML comment in a NON-gated section -- both positive controls, both in the
+/// document every other fixture is derived from, so neither can rot unnoticed.
+fn rb68p_fx_context() -> String {
+    String::from(
+        "The evidence below was read directly \u{2014} see \u{00A7}9 \u{2014} and covers the \
+         operator\u{2019}s own audit over steps 1\u{2013}13. \
+         <!-- a comment in a NON-gated section is legal and this ADR carries one -->",
+    )
+}
+
+/// The emission bullet, built ENTIRELY from the live facts: both declaration
+/// markers, both event literals, both fragment builders, in the POSITIONAL
+/// order `[emit/pair]` requires, in a paragraph that names the file.
+fn rb68p_fx_emission_para() -> String {
+    let facts = rb68p_live_emission_facts();
+    let q = rb22_dq();
+    let file = &facts[0].file;
+    let decl_one = format!("pub {}", rb68p_spaced_decl(&facts[0].decl));
+    let decl_two = format!("pub {}", rb68p_spaced_decl(&facts[1].decl));
+    let fields_one = rb68p_spaced_decl(&facts[0].fields_fn);
+    let fields_two = rb68p_spaced_decl(&facts[1].fields_fn);
+    let evt_one = &facts[0].evt;
+    let evt_two = &facts[1].evt;
+    format!(
+        "- server-module/src/{file} publishes exactly two observability lines of its own. The \
+         claim-time one, added by rb-40, is emitted from `{decl_one}` under `{q}{evt_one}{q}`, \
+         its field fragment built by the pure `{fields_one}`. The cascade one, added by rb-65, \
+         is emitted from `{decl_two}` under `{q}{evt_two}{q}`, its fragment built by the pure \
+         `{fields_two}`. Each is the terminal statement of its reducer."
+    )
+}
+
+/// A second file, so the nearest-file binding has something to be wrong about.
+fn rb68p_fx_privacy_para() -> String {
+    let decl = concat!("pub(crate) fn purge_export", "_bundles(");
+    let file = concat!("privacy", ".rs");
+    format!(
+        "- The delegated export purge lives in {file} as `{decl}`, and the cascade calls it once."
+    )
+}
+
+/// The PRV1-20 evidence block: the paragraph that names the criterion and
+/// carries BOTH live fragment builders, which is what `[scope/presence]`
+/// requires and what residual R-rb-65-ADR0230-PRV120 is about. Built from the
+/// DERIVED builder needles, so a fixture cannot vouch for a builder the source
+/// does not have.
+fn rb68p_fx_prv20_para() -> String {
+    let facts = rb68p_live_emission_facts();
+    let file = &facts[0].file;
+    let fields_one = rb68p_spaced_decl(&facts[0].fields_fn);
+    let fields_two = rb68p_spaced_decl(&facts[1].fields_fn);
+    let criteria = rb68p_criteria();
+    let (a, b) = (&criteria[0], &criteria[1]);
+    format!(
+        "- {b} holds by content rather than otherwise: `{fields_two}` and `{fields_one}` are both \
+         pure, both declared in {file}, and each renders only an identity and a count. {a} is met \
+         by the same reading of the same two functions."
+    )
+}
+
+/// The HONEST sentences `[cite/no-line]` must never red, carried by the
+/// document every other fixture derives from so a tightening of that clause
+/// cannot pass unnoticed: a colon-list count, a parenthesised count, a
+/// parenthesised ADR number, and an enumeration of the two lines.
+fn rb68p_fx_census_para() -> String {
+    let accounts = concat!("accounts", ".rs");
+    let battle = concat!("battle", ".rs");
+    format!(
+        "- The write-back resolver named in {battle} is the only step-6a hop that logs, and the \
+         file census reads {accounts}: 2 emissions, with {accounts} (2 sanctioned sites) and \
+         {accounts} (ADR-0235) as the provenance; of the two, line 1 is the claim-time purge."
+    )
+}
+
+/// MORE honest count-shaped sentences, every one of them MEASURED as a false
+/// RED of round 1's citation rule. They are in the base document -- not in a
+/// one-off fixture -- so that any later tightening of `[cite/no-line]` has to
+/// walk past all of them.
+///
+/// `at 12 sites` and `row 12 of` are the locator WORDS introducing a count;
+/// `— 300 lines` and `: 123 emissions` are three-digit counts, told from a
+/// three-digit line number only by the plural noun that follows them; `: 2.`
+/// ends a sentence; `— 2, and privacy.rs — 1` puts a bare one-digit count at a
+/// comma and at a full stop; `lines 1-2` is a RANGE that is an enumeration.
+fn rb68p_fx_counts_para() -> String {
+    let accounts = concat!("accounts", ".rs");
+    let privacy = concat!("privacy", ".rs");
+    format!(
+        "- Counted rather than located: {accounts} at 12 sites, {accounts} \u{2014} 300 lines, \
+         {accounts} \u{2014} 2, and {privacy} \u{2014} 1. The emission total for {accounts}: 2. \
+         A busier module would read {accounts}: 123 emissions."
+    )
+}
+
+/// The two locator WORDS a reader uses for an enumeration rather than a
+/// citation, plus a range that means `the first and the second`.
+fn rb68p_fx_enumeration_para() -> String {
+    let accounts = concat!("accounts", ".rs");
+    format!(
+        "- The runbook table records {accounts} in row 12 of the runbook table, and lines 1-2 of \
+         the census cover the two emissions between them."
+    )
+}
+
+fn rb68p_fx_conseq() -> String {
+    String::from(
+        "(+) The correspondence tooth is planted beside the accounts source, and both criteria \
+         stay met by verification.",
+    )
+}
+
+/// Assemble a fixture document: a non-gated context section, the gated section
+/// carrying `paras`, and a consequences section.
+fn rb68p_fx_doc(heading: &str, context: &str, paras: &[String], conseq: &str) -> String {
+    let mut doc = String::from("# ADR fixture - the deletion evidence chain\n\n");
+    doc.push_str("## Context and problem statement\n\n");
+    doc.push_str(context);
+    doc.push_str("\n\n");
+    doc.push_str(heading);
+    doc.push_str("\n\n");
+    for para in paras {
+        doc.push_str(para);
+        doc.push_str("\n\n");
+    }
+    doc.push_str("## Consequences\n\n");
+    doc.push_str(conseq);
+    doc.push('\n');
+    doc
+}
+
+fn rb68p_fx_paras() -> Vec<String> {
+    vec![
+        rb68p_fx_emission_para(),
+        rb68p_fx_privacy_para(),
+        rb68p_fx_prv20_para(),
+        rb68p_fx_census_para(),
+        rb68p_fx_counts_para(),
+        rb68p_fx_enumeration_para(),
+    ]
+}
+
+/// The document the oracle must ACCEPT.
+fn rb68p_fx_good() -> String {
+    rb68p_fx_doc(
+        &rb68p_fx_heading(),
+        &rb68p_fx_context(),
+        &rb68p_fx_paras(),
+        &rb68p_fx_conseq(),
+    )
+}
+
+/// The good document with one extra paragraph spliced into the GATED section.
+fn rb68p_fx_plus(para: &str) -> String {
+    let mut paras = rb68p_fx_paras();
+    paras.push(para.to_string());
+    rb68p_fx_doc(
+        &rb68p_fx_heading(),
+        &rb68p_fx_context(),
+        &paras,
+        &rb68p_fx_conseq(),
+    )
+}
+
+/// The good document with an extra paragraph spliced in FIRST rather than
+/// last. Position matters to `[emit/pair]`: a rule that accepted any one
+/// working position was defeated by a contradicting bullet on either side of
+/// the true one.
+fn rb68p_fx_prepend(para: &str) -> String {
+    let mut paras = vec![para.to_string()];
+    paras.extend(rb68p_fx_paras());
+    rb68p_fx_doc(
+        &rb68p_fx_heading(),
+        &rb68p_fx_context(),
+        &paras,
+        &rb68p_fx_conseq(),
+    )
+}
+
+/// The good document with its EMISSION paragraph replaced. Every other
+/// paragraph -- including the PRV1-20 evidence block `[scope/presence]`
+/// requires -- is untouched, so a fixture built this way can isolate one label.
+fn rb68p_fx_replacing_emission(para: String) -> String {
+    let mut paras = rb68p_fx_paras();
+    paras[0] = para;
+    rb68p_fx_doc(
+        &rb68p_fx_heading(),
+        &rb68p_fx_context(),
+        &paras,
+        &rb68p_fx_conseq(),
+    )
+}
+
+/// The good document with the citation phrase under test spliced in.
+fn rb68p_fx_with_cite(cite: &str) -> String {
+    rb68p_fx_plus(&format!(
+        "- The rejecting call is at {cite} for a reader who wants the exact site."
+    ))
+}
+
+/// The oracle must ACCEPT this document, and say why if it does not.
+///
+/// `#[track_caller]` so the panic names the FIXTURE's line rather than this
+/// helper's: with more than fifty fixtures in one test, a location that is
+/// always the same line is no location at all.
+#[track_caller]
+fn rb68p_expect_clean(tooth: &str, md: &str, floors: (usize, usize)) {
+    let found = rb68p_judge(md, floors);
+    let listed = found.join("\n  - ");
+    assert!(
+        found.is_empty(),
+        "rb68p [control/{tooth}]: this fixture is a POSITIVE control -- every declaration span in \
+         it is built from a shipped needle and judged against the LIVE source, so the oracle must \
+         accept it. It did not:\n  - {listed}\n\
+         An over-tight rule reads exactly like a missing fix and sends the next reader \
+         reverse-engineering the test instead of correcting the document."
+    );
+}
+
+/// The oracle must REJECT this document WITH the named label.
+#[track_caller]
+fn rb68p_expect_label(tooth: &str, md: &str, floors: (usize, usize), label: &str) {
+    let found = rb68p_judge(md, floors);
+    let listed = found.join("\n  - ");
+    assert!(
+        found.iter().any(|v| v.starts_with(label)),
+        "rb68p [control/{tooth}]: this fixture is a MEASURED bypass and must raise `{label}`. \
+         The oracle returned:\n  - {listed}\n\
+         A control that no longer bites means the ORACLE was loosened, not that the fixture is \
+         wrong. Restore the clause; never relax the fixture to match the code."
+    );
+}
+
+/// The oracle must reject this document with the named label AND NOTHING ELSE.
+///
+/// This is the shape that proves a clause is not SHADOWED. The round-2 red team
+/// on the sibling oracle neutralised each clause to `if false` in turn and found
+/// three that no fixture could tell apart from their neighbours, because every
+/// fixture that reached them also tripped something louder. A clause with only
+/// a co-firing fixture is a clause that can be deleted silently.
+#[track_caller]
+fn rb68p_expect_only_label(tooth: &str, md: &str, floors: (usize, usize), label: &str) {
+    let found = rb68p_judge(md, floors);
+    let listed = found.join("\n  - ");
+    let others = found.iter().filter(|v| !v.starts_with(label)).count();
+    assert!(
+        !found.is_empty() && others == 0,
+        "rb68p [control/{tooth}]: this fixture must raise `{label}` and NOTHING ELSE, so that \
+         clause is proven to bite on its own rather than behind a louder neighbour. The oracle \
+         returned {} violation(s), {others} of them under a different label:\n  - {listed}",
+        found.len()
+    );
+}
+
+/// The isolating shape above, with the FACT LIST under the fixture's control.
+#[track_caller]
+fn rb68p_expect_only_label_with_facts(
+    tooth: &str,
+    md: &str,
+    facts: &[Rb68Fact],
+    floors: (usize, usize),
+    label: &str,
+) {
+    let found = rb68p_adr_violations(md, facts, rb68p_sources(), rb68p_roster(), floors);
+    let listed = found.join("\n  - ");
+    let others = found.iter().filter(|v| !v.starts_with(label)).count();
+    assert!(
+        !found.is_empty() && others == 0,
+        "rb68p [control/{tooth}]: this fixture must raise `{label}` and NOTHING ELSE. The oracle \
+         returned:\n  - {listed}"
+    );
+}
+
+/// CONTROL for `rb68p_adr0230_prv117_matches_the_live_emission_sites` -- GREEN
+/// before AND after the ADR is corrected, because it never reads the ADR.
+///
+/// DISCLOSED: this test is green by construction and is NOT a red arm of the
+/// proof-of-teeth. What it proves is that the oracle the live test uses BITES,
+/// clause by clause, on shapes that were MEASURED as clean bypasses of an
+/// earlier design of it -- and that every clause has at least one fixture whose
+/// violation list is EXACTLY that clause.
+///
+/// Every fixture is routed through the SAME `rb68p_adr_violations`, with the
+/// SAME live facts, sources and roster the shipped test uses, so what is proven
+/// here is proven about the shipped path rather than about a private copy.
+#[test]
+fn rb68p_adr0230_evidence_oracle_control() {
+    let facts = rb68p_live_emission_facts();
+    let q = rb22_dq();
+    let small = RB68_SMALL_FLOORS;
+    let good = rb68p_fx_good();
+
+    // ================= POSITIVE CONTROLS =================
+    rb68p_expect_clean("good-document", &good, small);
+    // The comment-placement PAIR. Round 1 called `rb68p_expect_clean` on the
+    // SAME BYTES twice under two labels, and the second proved nothing. These
+    // two vary ONLY where the comment sits: outside the gated section it is
+    // legal (this ADR carries one), and the isolating in-section case lives
+    // under `[doc/html-in-section]` below.
+    rb68p_expect_clean(
+        "html-comment-at-the-end-of-a-non-gated-paragraph",
+        &rb68p_fx_doc(
+            &rb68p_fx_heading(),
+            &format!(
+                "<!-- an editorial note above the prose -->\n{}",
+                rb68p_fx_context()
+            ),
+            &rb68p_fx_paras(),
+            &rb68p_fx_conseq(),
+        ),
+        small,
+    );
+    // This ADR documents a numbered-heading house style for its OWN `##`
+    // headings. Applying it here is an honest edit, and it used to PANIC.
+    rb68p_expect_clean(
+        "house-style-numbered-heading",
+        &rb68p_fx_doc(
+            &rb68p_fx_numbered_heading(),
+            &rb68p_fx_context(),
+            &rb68p_fx_paras(),
+            &rb68p_fx_conseq(),
+        ),
+        small,
+    );
+    // A FENCED code block and a whitespace-only line in a section this slice
+    // does not own. 63 of the 213 ADRs in this corpus carry a fence; round 1
+    // read both clauses whole-document and reddened on them.
+    rb68p_expect_clean(
+        "fence-and-blank-line-outside-the-gated-section",
+        &rb68p_fx_doc(
+            &rb68p_fx_heading(),
+            &rb68p_fx_context(),
+            &rb68p_fx_paras(),
+            &format!(
+                "{}\n \n{}\nlet x = 1;\n{}",
+                rb68p_fx_conseq(),
+                concat!("``", "`rust"),
+                concat!("``", "`")
+            ),
+        ),
+        small,
+    );
+    // GENERIC TYPES in code spans and in bare prose. MEASURED false RED: the
+    // round-1 tag rule read `Vec<u64>` as a raw HTML carrier, in a section
+    // whose subject is what an `Identity` and a `usize` render as.
+    rb68p_expect_clean(
+        "generic-types-are-not-html-tags",
+        &rb68p_fx_plus(
+            "- The fragment carries an `Identity` and a `Vec<u64>` of chunk ids; spelled bare in \
+             prose that is Vec<u64> and Option<Identity>, and the reaper takes an \
+             `Option<Identity>` in accounts.rs.",
+        ),
+        small,
+    );
+    // ARROWS, ELLIPSES, ACCENTS and CURLY QUOTES. 194 of the 213 ADRs in this
+    // corpus use a character outside round 1's four-character allow-list; the
+    // right arrow alone appears 1,150 times.
+    rb68p_expect_clean(
+        "ordinary-non-ascii-punctuation",
+        &rb68p_fx_plus(
+            "- The cascade runs reaper \u{2192} helper \u{2192} table, with \u{2264} 12 hops, \
+             \u{2026} and the r\u{00E9}sum\u{00E9} of the trace is \u{201C}one line\u{201D} \
+             \u{2713} for accounts.rs.",
+        ),
+        small,
+    );
+    // NEAREST-file binding, isolated: the FIRST `.rs` token in this paragraph
+    // is the WRONG file and the nearest one is right. A `min_by_key` replaced
+    // by `tokens[0]` reds here and nowhere else in this suite.
+    rb68p_expect_clean(
+        "nearest-file-is-not-the-first-file",
+        &rb68p_fx_plus(&format!(
+            "- Called from accounts.rs, the delegated export purge is declared in privacy.rs as \
+             `{}`.",
+            concat!("pub(crate) fn purge_export", "_bundles(")
+        )),
+        small,
+    );
+    // A SHOUTED file name beside a declaration span. `rb68p_rs_tokens`
+    // lowercases, so the span resolves; without that it would bind to a file
+    // no roster contains and raise `[cite/roster-coverage]`.
+    rb68p_expect_clean(
+        "shouted-file-name-beside-a-declaration",
+        &rb68p_fx_plus(&format!(
+            "- The delegated export purge lives in PRIVACY.RS as `{}`.",
+            concat!("pub(crate) fn purge_export", "_bundles(")
+        )),
+        small,
+    );
+    // A parenthesised enumeration WRAPPED onto the next line: the k=2 window
+    // joins it to a line ending in a file name, and it is still a count.
+    rb68p_expect_clean(
+        "wrapped-parenthesised-enumeration",
+        &rb68p_fx_plus(
+            "- The claim path is described in accounts.rs\n  (2) and the cascade path follows it.",
+        ),
+        small,
+    );
+    rb68p_expect_clean(
+        "bare-identifier-span",
+        &rb68p_fx_plus("- The rejecting helper in accounts.rs is `reject()`, which forwards on."),
+        small,
+    );
+    rb68p_expect_clean(
+        "module-qualified-span",
+        &rb68p_fx_plus(&format!(
+            "- The purge in privacy.rs is reached as `{}`.",
+            concat!("crate::privacy::purge_export", "_bundles")
+        )),
+        small,
+    );
+    rb68p_expect_clean(
+        "honest-battle-mention",
+        &rb68p_fx_plus(
+            "- Several of those files log elsewhere, battle.rs among them, in unrelated reducers.",
+        ),
+        small,
+    );
+    rb68p_expect_clean(
+        "permitted-non-ascii",
+        &rb68p_fx_plus(
+            "- Read directly \u{2014} see \u{00A7}7.2 \u{2014} covering the operator\u{2019}s \
+             audit over steps 1\u{2013}13.",
+        ),
+        small,
+    );
+    rb68p_expect_clean(
+        "unreadable-file-named-without-a-declaration",
+        &rb68p_fx_plus(&format!(
+            "- The census that keeps it so lives in {}.",
+            concat!("accounts", "_tests.rs")
+        )),
+        small,
+    );
+    rb68p_expect_clean(
+        "honest-hard-wrap",
+        &rb68p_fx_plus(
+            "- The rejecting call site lives in accounts.rs\n  and forwards to the guards \
+             helper, which logs one line.",
+        ),
+        small,
+    );
+    rb68p_expect_clean(
+        "evt-in-the-consequences-section",
+        &rb68p_fx_doc(
+            &rb68p_fx_heading(),
+            &rb68p_fx_context(),
+            &rb68p_fx_paras(),
+            &format!(
+                "{} The `{q}{}{q}` line stays census-pinned by the rb-40 tooth.",
+                rb68p_fx_conseq(),
+                facts[0].evt
+            ),
+        ),
+        small,
+    );
+
+    // ================= [cite/no-line] =================
+    // THIRTY-FOUR spellings, tuned JOINTLY with the TWELVE honest count-shaped
+    // sentences the good document above carries: the two sets pull in opposite
+    // directions and a rule that satisfies only one of them is not a rule.
+    // Several pairs across the two sets differ by ONE character (`row 773` and
+    // `row 12`, `lines 773-799` and `lines 1-2`, `— 773 for` and `— 300
+    // lines`), which is why they are authored together and must be edited
+    // together. The natural markdown spelling puts a backtick BETWEEN the path
+    // and the locator; the full-width digits defeat an ASCII-only reading; the
+    // entity form defeats a scan of the source bytes; the capitals defeat a
+    // case-sensitive one; and the bracketed, braced, signed, tilded, slashed
+    // and em-dashed forms all defeat a literal `.rs:`.
+    //
+    // The last block is round 2's: ORDINARY ABBREVIATIONS for exactly the
+    // artefact this ADR bans. Round 1's word list carried `line`, `lines`,
+    // `row` and `no.` and nothing else, so `ln 773`, `ll. 773`, `lineno 773`,
+    // `rows 773-799` and `No 773` all walked straight through -- and the
+    // BACKWARD arm carried a narrower list still, so every reversed locator
+    // (`L773 of accounts.rs`, `#773 in accounts.rs`, `at 773 of accounts.rs`)
+    // escaped both arms at once.
+    for cite in [
+        concat!("accounts", ".rs:773").to_string(),
+        concat!("accounts", ".rs (L773)").to_string(),
+        concat!("accounts", ".rs, l. 79").to_string(),
+        concat!("accounts", ".rs (79-92)").to_string(),
+        concat!("accounts", ".rs, L79").to_string(),
+        concat!("accounts", ".rs +773").to_string(),
+        concat!("accounts", ".rs ~773").to_string(),
+        concat!("accounts", ".rs [773]").to_string(),
+        concat!("accounts", ".rs {773}").to_string(),
+        concat!("accounts", ".rs at 773").to_string(),
+        concat!("accounts", ".rs row 773").to_string(),
+        concat!("accounts", ".rs no. 373").to_string(),
+        concat!("accounts", ".rs 773ff").to_string(),
+        concat!("accounts", ".rs, lines 773-799").to_string(),
+        concat!("accounts", ".rs/773").to_string(),
+        concat!("accounts", ".rs#L79").to_string(),
+        concat!("accounts", ".rs@79").to_string(),
+        format!("`{}`:773", concat!("accounts", ".rs")),
+        concat!("accounts", ".rs \u{2014} 773").to_string(),
+        concat!("PRIVACY", ".RS:79-92").to_string(),
+        concat!("accounts", ".rs&#58;773").to_string(),
+        concat!("accounts", "_tests.rs:14609").to_string(),
+        // --- round 2: abbreviations, plurals, and the REVERSED arm ---
+        concat!("accounts", ".rs ln 773").to_string(),
+        concat!("accounts", ".rs ln. 773").to_string(),
+        concat!("accounts", ".rs Ln 773").to_string(),
+        concat!("accounts", ".rs rows 773-799").to_string(),
+        concat!("accounts", ".rs No 773").to_string(),
+        concat!("accounts", ".rs ll. 773").to_string(),
+        concat!("accounts", ".rs lineno 773").to_string(),
+        concat!("accounts", ".rs \u{2014} (773)").to_string(),
+        concat!("#773 in accounts", ".rs").to_string(),
+        concat!("L773 of accounts", ".rs").to_string(),
+        concat!("at 773 of accounts", ".rs").to_string(),
+        concat!("lines 773-799 of accounts", ".rs").to_string(),
+        // The file name SPLIT BY ITS OWN MARKDOWN. It renders as one path, and
+        // the citation scan re-fuses it by dropping backticks before reading.
+        // This is the fixture that isolates that drop: with backticks kept, the
+        // ban roster never contains this token and the line is never examined.
+        concat!("accounts", "`.rs`:773").to_string(),
+    ] {
+        rb68p_expect_only_label(&cite, &rb68p_fx_with_cite(&cite), small, "[cite/no-line]");
+    }
+    // FULL-WIDTH DIGITS. In round 1 this reddened the hidden-character clause
+    // as well, because that clause was an allow-list of ASCII printables. It is
+    // now a ban on INVISIBLE classes, and a full-width digit is perfectly
+    // visible -- so this fixture proves what it always should have: that the
+    // CITATION rule reads digits by Unicode numeric value and not by byte.
+    rb68p_expect_only_label(
+        "full-width-digits",
+        &rb68p_fx_with_cite(concat!("accounts", ".rs:\u{FF17}\u{FF17}\u{FF13}")),
+        small,
+        "[cite/no-line]",
+    );
+    // THE HARD-WRAPPED STRADDLE: neither line carries a citation on its own,
+    // and the per-line arm was MEASURED to miss this shape 6 times out of 6.
+    rb68p_expect_only_label(
+        "hard-wrapped-straddle",
+        &rb68p_fx_plus(
+            "- The rejecting call site lives in accounts.rs\n  (515-518) for a reader who wants \
+             the exact bytes.",
+        ),
+        small,
+        "[cite/no-line]",
+    );
+
+    // ================= declaration clauses =================
+    let fields_one = rb68p_spaced_decl(&facts[0].fields_fn);
+    // A FABRICATION in its own bullet rather than spliced over a live builder
+    // span: substituting one INSIDE the emission bullet also breaks that
+    // bullet's builder pairing, and a fixture that raises two labels proves
+    // neither of them bites alone.
+    rb68p_expect_only_label(
+        "fabricated-declaration",
+        &rb68p_fx_plus(&format!(
+            "- The claim path also runs `{}` in accounts.rs.",
+            concat!("fn totally_invented", "_helper(")
+        )),
+        small,
+        "[cite/decl-real]",
+    );
+    rb68p_expect_only_label(
+        "declaration-attributed-to-the-wrong-file",
+        &rb68p_fx_plus(&format!(
+            "- The delegated export purge lives in accounts.rs as `{}`, though the module that \
+             owns and declares it is privacy.rs.",
+            concat!("pub(crate) fn purge_export", "_bundles(")
+        )),
+        small,
+        "[cite/decl-real]",
+    );
+    rb68p_expect_only_label(
+        "declaration-marker-that-is-not-sole",
+        &rb68p_fx_plus(&format!(
+            "- The connect-path reject reasons live in accounts.rs as `{}`.",
+            concat!("const REJECT", "_UNRECOGNIZED")
+        )),
+        small,
+        "[cite/decl-sole]",
+    );
+    rb68p_expect_only_label(
+        "declaration-bound-to-an-unreadable-file",
+        &rb68p_fx_plus(&format!(
+            "- The census that pins it lives in {} and reads `{fields_one}` directly.",
+            concat!("accounts", "_tests.rs")
+        )),
+        small,
+        "[cite/roster-coverage]",
+    );
+    rb68p_expect_only_label(
+        "declaration-in-a-paragraph-naming-no-file",
+        &rb68p_fx_plus(&format!(
+            "- The write-back helper is `{}` and it is the only step-6a hop that logs.",
+            concat!("pub(crate) fn resolve_wild_battle_on", "_disconnect(")
+        )),
+        small,
+        "[scope/paragraph]",
+    );
+
+    // ================= [emit/pair], positional =================
+    let decl_one = format!("pub {}", rb68p_spaced_decl(&facts[0].decl));
+    let decl_two = format!("pub {}", rb68p_spaced_decl(&facts[1].decl));
+    let fields_two = rb68p_spaced_decl(&facts[1].fields_fn);
+    let file = &facts[0].file;
+    let (evt_one, evt_two) = (&facts[0].evt, &facts[1].evt);
+    // THE PAYLOAD SWAP: each reducer described under the OTHER one's event
+    // literal. Both markers and both literals are still present, still real,
+    // still sole and still in a paragraph that names the file -- which is why
+    // co-occurrence pairing measured CLEAN on it in all four configurations.
+    rb68p_expect_only_label(
+        "evt-to-reducer-payload-swap",
+        &rb68p_fx_replacing_emission(format!(
+            "- server-module/src/{file} publishes exactly two observability lines of its own. The \
+             claim-time one, added by rb-40, is emitted from `{decl_one}` under `{q}{evt_two}{q}`, \
+             its field fragment built by the pure `{fields_one}`. The cascade one, added by \
+             rb-65, is emitted from `{decl_two}` under `{q}{evt_one}{q}`, its fragment built by \
+             the pure `{fields_two}`. Each is the terminal statement of its reducer."
+        )),
+        small,
+        "[emit/pair]",
+    );
+    // THE ADDED CONTRADICTING BULLET. The true bullet is untouched; this one is
+    // APPENDED beside it and says the opposite. MEASURED CLEAN against round
+    // 1's rule, which asked only whether SOME position of each marker paired
+    // correctly and stopped at the first one that did. Pairing is now checked
+    // at EVERY marker, inside the paragraph that carries it.
+    rb68p_expect_only_label(
+        "contradicting-bullet-added-beside-the-true-one",
+        &rb68p_fx_plus(&format!(
+            "- Restated for operators in {file}: `{decl_one}` emits under `{q}{evt_two}{q}`, and \
+             `{decl_two}` emits under `{q}{evt_one}{q}`."
+        )),
+        small,
+        "[emit/pair]",
+    );
+    // The same bullet PREPENDED rather than appended: round 1's first-position
+    // rule was order-sensitive in the attacker's favour either way.
+    rb68p_expect_only_label(
+        "contradicting-bullet-prepended",
+        &rb68p_fx_prepend(&format!(
+            "- Restated for operators in {file}: `{decl_one}` emits under `{q}{evt_two}{q}`, and \
+             `{decl_two}` emits under `{q}{evt_one}{q}`."
+        )),
+        small,
+        "[emit/pair]",
+    );
+    // ONE SPAN CARRYING BOTH EVENTS -- also measured clean, because a span that
+    // contains the right event also contains the wrong one, and a positional
+    // rule that asks `which fact does this span mention` gets an answer for
+    // free from whichever fact it scans first. A span that pairs with every
+    // fact identifies none of them, and is now its own violation.
+    rb68p_expect_only_label(
+        "one-span-carrying-both-events",
+        &rb68p_fx_plus(&format!(
+            "- Operators grep {file}: after `{decl_one}` runs they match \
+             `{q}{evt_two}{q} or {q}{evt_one}{q}` in the host log."
+        )),
+        small,
+        "[emit/pair]",
+    );
+    // THE BUILDER SWAP: the two fragment builders exchanged between the two
+    // paths, and NOTHING else changed. Both spans are real, both are sole, both
+    // are in a paragraph that names their file, and both events still pair --
+    // which is why this passed every clause in round 1: `fields_fn` was derived
+    // from the live emission's second argument and then never read by the
+    // collector at all. The swap is not cosmetic: the corrected PRV1-20
+    // argument says the CASCADE line is rendered by the cascade builder, and
+    // this document says it is rendered by the claim-path one.
+    rb68p_expect_only_label(
+        "fragment-builder-swap-between-the-two-paths",
+        &rb68p_fx_replacing_emission(format!(
+            "- server-module/src/{file} publishes exactly two observability lines of its own. The \
+             claim-time one, added by rb-40, is emitted from `{decl_one}` under `{q}{evt_one}{q}`, \
+             its field fragment built by the pure `{fields_two}`. The cascade one, added by \
+             rb-65, is emitted from `{decl_two}` under `{q}{evt_two}{q}`, its fragment built by \
+             the pure `{fields_one}`. Each is the terminal statement of its reducer."
+        )),
+        small,
+        "[emit/builder]",
+    );
+    // THE EXISTENCE ARM, isolated: the claim-path marker is gone from the
+    // document entirely. Nothing else in the paragraph moves, so the pairing
+    // arm has nothing to say and this arm is proven on its own.
+    rb68p_expect_only_label(
+        "declaration-marker-absent-from-the-document",
+        &good.replacen(&format!("`{decl_one}`"), "the claim-time reducer", 1),
+        small,
+        "[emit/pair]",
+    );
+
+    // ================= [emit/containment] =================
+    rb68p_expect_only_label(
+        "evt-parked-in-an-unrelated-section",
+        &rb68p_fx_doc(
+            &rb68p_fx_heading(),
+            &format!(
+                "{} The event `{q}{}{q}` is also named out here.",
+                rb68p_fx_context(),
+                facts[0].evt
+            ),
+            &rb68p_fx_paras(),
+            &rb68p_fx_conseq(),
+        ),
+        small,
+        "[emit/containment]",
+    );
+
+    // ================= [emit/no-stale-claim] =================
+    // The four RETRACTED sentences, each in its own fixture, plus the emphasis
+    // and entity spellings of the first: `contains **zero**` renders as the
+    // same sentence and MEASURED past a literal blacklist.
+    for (tooth, claim) in [
+        (
+            "stale-zero-emissions",
+            "- The accounts module contains zero emissions of its own.",
+        ),
+        (
+            "stale-zero-emissions-emphasised",
+            "- The accounts module contains **zero** emissions of its own.",
+        ),
+        (
+            "stale-zero-emissions-entity-encoded",
+            "- The accounts module contains&#32;zero emissions of its own.",
+        ),
+        (
+            "stale-reaper-is-silent",
+            "- In the pre-rb-65 tree the reaper emits no log line at all.",
+        ),
+        (
+            "stale-prv120-by-absence",
+            "- PRV1-20 holds by absence in that older reading of the cascade.",
+        ),
+        (
+            "stale-step-6a-is-the-only-hop",
+            "- The only logging transitively reachable from the cascade is through step 6a.",
+        ),
+    ] {
+        rb68p_expect_only_label(tooth, &rb68p_fx_plus(claim), small, "[emit/no-stale-claim]");
+    }
+    // THE WHITESPACE FAMILY. Every one of these MEASURED CLEAN against round
+    // 1's per-line literal test, and every one is a routine edit rather than an
+    // attack: a hard wrap, a double space, a code span around one word. The
+    // needle scan now runs over a whitespace-COLLAPSED, backtick-stripped k=2
+    // window, which is the same window the citation ban already uses.
+    for (tooth, claim) in [
+        (
+            "stale-claim-split-by-a-hard-wrap",
+            "- The accounts module contains\n  zero emissions of its own.",
+        ),
+        (
+            "stale-claim-split-by-a-double-space",
+            "- The accounts module contains  zero emissions of its own.",
+        ),
+        (
+            "stale-claim-split-by-a-code-span",
+            "- The accounts module contains `zero` emissions of its own.",
+        ),
+        (
+            "stale-reaper-claim-split-by-a-hard-wrap",
+            "- In the pre-rb-65 tree the reaper emits no log\n  line at all.",
+        ),
+        (
+            "stale-prv120-claim-split-by-a-hard-wrap",
+            "- PRV1-20 holds by\n  absence in that older reading of the cascade.",
+        ),
+        (
+            "stale-step-6a-claim-split-by-a-hard-wrap",
+            "- The only logging transitively\n  reachable from the cascade is step 6a.",
+        ),
+    ] {
+        rb68p_expect_only_label(tooth, &rb68p_fx_plus(claim), small, "[emit/no-stale-claim]");
+    }
+    // AN HTML COMMENT BETWEEN THE TWO WORDS, in a section this slice does not
+    // gate. This one is the sharpest of the family, because the NORMALISATION
+    // STEP CREATES IT: the stripper blanks the comment to nothing and leaves
+    // the two spaces that surrounded it behind, so the document a reader sees
+    // says the retracted sentence and the text the scan saw did not. It is
+    // also the fixture that isolates the stripper itself -- as an identity
+    // function the comment survives, the needle stays split, and this fixture
+    // is the only one in the suite that goes green.
+    rb68p_expect_only_label(
+        "stale-claim-split-by-an-html-comment-outside-the-section",
+        &rb68p_fx_doc(
+            &rb68p_fx_heading(),
+            &rb68p_fx_context(),
+            &rb68p_fx_paras(),
+            &format!(
+                "{} The accounts module contains <!-- an editorial note --> zero emissions of \
+                 its own.",
+                rb68p_fx_conseq()
+            ),
+        ),
+        small,
+        "[emit/no-stale-claim]",
+    );
+    // THE EXEMPTION BOUNDARY, pinned from both sides. Lines 1 to 9 are the
+    // digest-owned header block this slice leaves byte-identical; line 10 is
+    // the `**Decision:**` field, which is the ONE line `adr-digest` republishes
+    // and therefore the most-read sentence in the document. Round 1 exempted
+    // ten lines and a retracted claim on line 10 MEASURED CLEAN.
+    let claim_at = |n: usize| {
+        let mut ctx = String::new();
+        for _ in 5..n {
+            ctx.push_str("An ordinary line of header prose.\n");
+        }
+        ctx.push_str("The accounts module contains zero surprises for an operator.\n");
+        ctx.push_str(&rb68p_fx_context());
+        rb68p_fx_doc(
+            &rb68p_fx_heading(),
+            &ctx,
+            &rb68p_fx_paras(),
+            &rb68p_fx_conseq(),
+        )
+    };
+    rb68p_expect_clean("retracted-wording-on-line-9-is-exempt", &claim_at(9), small);
+    rb68p_expect_only_label(
+        "retracted-wording-on-line-10-is-not-exempt",
+        &claim_at(10),
+        small,
+        "[emit/no-stale-claim]",
+    );
+
+    // ================= document hygiene =================
+    rb68p_expect_only_label(
+        "word-joiner-in-prose",
+        &good.replacen("read directly", "read di\u{2060}rectly", 1),
+        small,
+        "[doc/no-hidden-char]",
+    );
+    // The SAME invisible character inside the EVENT SPAN: it reds the
+    // allow-list AND breaks the pairing, because the token an operator greps
+    // is no longer the token the source emits. A NAMED blacklist of invisible
+    // characters was MEASURED to miss nine of twelve, this one among them.
+    let joiner_in_evt = {
+        let evt = &facts[0].evt;
+        let span = format!("{q}{evt}{q}");
+        let mangled = format!("{q}{}\u{2060}{}{q}", &evt[..1], &evt[1..]);
+        good.replacen(span.as_str(), mangled.as_str(), 1)
+    };
+    rb68p_expect_label(
+        "word-joiner-in-the-event-span",
+        &joiner_in_evt,
+        small,
+        "[doc/no-hidden-char]",
+    );
+    rb68p_expect_label(
+        "word-joiner-in-the-event-span",
+        &joiner_in_evt,
+        small,
+        "[emit/pair]",
+    );
+    rb68p_expect_only_label(
+        "carriage-return",
+        &good.replacen("read directly", "read\u{000D} directly", 1),
+        small,
+        "[doc/no-hidden-char]",
+    );
+    rb68p_expect_only_label(
+        "link-reference-definition-carrier",
+        &rb68p_fx_plus("[//]: # (a carrier that renders as nothing at all)"),
+        small,
+        "[doc/no-hidden-carrier]",
+    );
+    rb68p_expect_only_label(
+        "hidden-div-carrier",
+        &rb68p_fx_plus("- A note <div hidden>parked out of sight</div> for the record."),
+        small,
+        "[doc/no-hidden-carrier]",
+    );
+    rb68p_expect_only_label(
+        "html-comment-inside-the-gated-section",
+        &rb68p_fx_plus("- A note about the census. <!-- parked -->"),
+        small,
+        "[doc/html-in-section]",
+    );
+    rb68p_expect_only_label(
+        "whitespace-only-separator",
+        &good.replacen("\n\n- The delegated", "\n \n- The delegated", 1),
+        small,
+        "[doc/no-blankish]",
+    );
+    // A TILDE fence carries no backtick, so it reaches the fence clause without
+    // tripping the parity guard: this is the fence fixture that ISOLATES. It is
+    // INSIDE the gated section, because that is now the only place a fence is
+    // this clause's business -- the paired positive control above puts one in
+    // the consequences section and requires it to stay green.
+    rb68p_expect_only_label(
+        "tilde-fence-inside-the-gated-section",
+        &rb68p_fx_plus("~~~\nparked text\n~~~"),
+        small,
+        "[doc/no-fence]",
+    );
+    rb68p_expect_label(
+        "backtick-fence-inside-the-gated-section",
+        &rb68p_fx_plus(&format!(
+            "{}\nparked text\n{}",
+            concat!("``", "`"),
+            concat!("``", "`")
+        )),
+        small,
+        "[doc/no-fence]",
+    );
+
+    // ================= the three RETURN-ALONE guards =================
+    // ONE unpaired delimiter, inside the section.
+    rb68p_expect_only_label(
+        "odd-backtick-count",
+        &rb68p_fx_plus("- A stray ` delimiter in the evidence chain."),
+        small,
+        "[doc/parity]",
+    );
+    // TWO unpaired delimiters on DIFFERENT lines: the section total is EVEN
+    // again, every span between them is inverted, and only the per-line arm
+    // sees it. This is the fixture that isolates that arm.
+    rb68p_expect_only_label(
+        "two-unpaired-delimiters-on-different-lines",
+        &rb68p_fx_plus(
+            "- A stray ` delimiter here in the evidence chain,\n  and another ` one on the next \
+             line, restoring the total.",
+        ),
+        small,
+        "[doc/parity]",
+    );
+    rb68p_expect_only_label_with_facts(
+        "empty-derived-fact-list",
+        &good,
+        &[],
+        small,
+        "[live/vacuity]",
+    );
+    rb68p_expect_only_label(
+        "renamed-section-heading",
+        &rb68p_fx_doc(
+            "## Deletion evidence \u{2014} met by verification",
+            &rb68p_fx_context(),
+            &rb68p_fx_paras(),
+            &rb68p_fx_conseq(),
+        ),
+        small,
+        "[scope/section]",
+    );
+    // A DUPLICATED heading: the body range ends at its own twin, so the section
+    // is whatever sits between them. Isolating the `n_headings != 1` arm, which
+    // no fixture reached in round 1.
+    rb68p_expect_only_label(
+        "duplicated-section-heading",
+        &{
+            let mut paras = rb68p_fx_paras();
+            paras.push(rb68p_fx_heading());
+            rb68p_fx_doc(
+                &rb68p_fx_heading(),
+                &rb68p_fx_context(),
+                &paras,
+                &rb68p_fx_conseq(),
+            )
+        },
+        small,
+        "[scope/section]",
+    );
+    // THE TRUNCATION, and the whole reason this guard grew a third shape. A new
+    // level-two heading part-way down the section ends the body there; MEASURED
+    // against round 1, everything below it -- a fabricated declaration and two
+    // banned file-and-line citations -- then went unjudged. The heading names a
+    // gated criterion, which is exactly what makes it plausible AND what makes
+    // it detectable.
+    rb68p_expect_only_label(
+        "second-heading-truncating-the-section",
+        &{
+            let criteria = rb68p_criteria();
+            let mut paras = rb68p_fx_paras();
+            paras.insert(2, format!("## {} evidence", criteria[1]));
+            rb68p_fx_doc(
+                &rb68p_fx_heading(),
+                &rb68p_fx_context(),
+                &paras,
+                &rb68p_fx_conseq(),
+            )
+        },
+        small,
+        "[scope/section]",
+    );
+
+    // ================= [scope/presence] =================
+    // The PRV1-20 evidence block DELETED, with every floor still satisfied.
+    // This is residual R-rb-65-ADR0230-PRV120's own target: the paragraph that
+    // argues the criterion from the purity of both fragment builders.
+    rb68p_expect_only_label(
+        "prv1-20-evidence-block-deleted",
+        &{
+            let paras: Vec<String> = rb68p_fx_paras()
+                .into_iter()
+                .filter(|p| *p != rb68p_fx_prv20_para())
+                .collect();
+            rb68p_fx_doc(
+                &rb68p_fx_heading(),
+                &rb68p_fx_context(),
+                &paras,
+                &rb68p_fx_conseq(),
+            )
+        },
+        small,
+        "[scope/presence]",
+    );
+    // The block KEPT but stripped of one builder: the criterion is still named
+    // and still argued, but the argument no longer covers both erasure-window
+    // lines. A presence rule that only looked for the criterion NAME would miss
+    // this, which is why it requires the derived builder set too.
+    rb68p_expect_only_label(
+        "prv1-20-block-missing-one-fragment-builder",
+        &good.replacen(
+            &format!("`{}`", rb68p_spaced_decl(&facts[1].fields_fn)),
+            "the cascade fragment builder",
+            2,
+        ),
+        small,
+        "[scope/presence]",
+    );
+
+    // ================= [scope/roster-floor] =================
+    // ISOLATING by varying ONE parameter at a time. Round 1 raised BOTH floors
+    // in one fixture, so either half of the `||` could be deleted with every
+    // fixture still green. These two vary the file floor and the span floor
+    // separately, against the same document the oracle accepts above.
+    rb68p_expect_only_label(
+        "file-floor-raised-past-a-good-document",
+        &good,
+        (99, RB68_SMALL_FLOORS.1),
+        "[scope/roster-floor]",
+    );
+    rb68p_expect_only_label(
+        "span-floor-raised-past-a-good-document",
+        &good,
+        (RB68_SMALL_FLOORS.0, 99),
+        "[scope/roster-floor]",
+    );
+    // And the attack the floor exists for: the section gutted to a denial,
+    // judged at the LIVE floors.
+    rb68p_expect_label(
+        "gutted-section-at-the-live-floors",
+        &rb68p_fx_doc(
+            &rb68p_fx_heading(),
+            &rb68p_fx_context(),
+            &[String::from(
+                "- The accounts module publishes nothing worth naming here any more.",
+            )],
+            &rb68p_fx_conseq(),
+        ),
+        RB68_LIVE_FLOORS,
+        "[scope/roster-floor]",
+    );
+}
