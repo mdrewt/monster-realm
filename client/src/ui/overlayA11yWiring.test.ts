@@ -288,15 +288,11 @@ const OPENERS: Readonly<Record<OverlayId, () => Opened>> = {
   // to open and again to `reopen`. A thunk rather than a hoisted `const vm` because the object
   // literals below are contextually typed by `render()`'s parameter, which a hoisted `const` would
   // widen (`shopAction: null`, `costCurrency: 0n`). It is also the shape production really drives:
-  // `main.ts`'s M12d store-batch listener builds a fresh view model on every batch (`:1627-1641`
-  // as of 2026-09-02 — the landmark is the listener, the number is only a hint). But that half is
-  // DEFENSIVE, not currently
-  // load-bearing: none of the three `render()` bodies compares `vm` by identity today, so a
-  // reused object would behave identically. Stated rather than left as an implied guarantee.
-  // (rb-18 cited `main.ts:1574` for this fact and recorded that `dialogueView.ts` and
-  // `dialogueView.test.ts` carried the same drifted number, flagged but untouched. rb-36 (PR#414)
-  // has since retargeted all of them onto the landmark above, so that note is retired here too —
-  // residual R-rb36-WIRINGCITE.)
+  // `main.ts`'s M12d `store.onBatchApplied` dialogue listener (`:1837-1887` today) builds a fresh
+  // view model on every batch, at its `buildDialogueViewModel(...)` call (`:1850` today) — the
+  // landmark is the listener, the numbers are only dated hints. But that half is DEFENSIVE, not
+  // currently load-bearing: none of the three `render()` bodies compares `vm` by identity today,
+  // so a reused object would behave identically.
   dialogueView: () => {
     const view = new DialogueView();
     const renderIt = (): void => {
