@@ -102,6 +102,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Window } from 'happy-dom';
 import { describe, expect, it } from 'vitest';
 
 /** The repo's only stylesheet. Path resolved from `import.meta.url`, exactly as
@@ -393,7 +394,14 @@ const CASCADE_FIXTURES: readonly CascadeFixture[] = [
 const PARSER_GAP_SHAPES: ReadonlyArray<{ readonly name: string; readonly css: string }> = [
   { name: 'layer-anonymous', css: '@layer{[id="help-overlay"]{display:none!important}}' },
   { name: 'layer-named', css: '@layer rb9{[id="help-overlay"]{display:none!important}}' },
-  { name: 'scope', css: '@scope (body){[id="help-overlay"]{display:none!important}}' },
+  // WHITESPACE-SENSITIVE, and measured rather than assumed: happy-dom DROPS `@scope(` and
+  // PARSES `@scope (`. The no-space form below is the genuinely blind one and is what red-team
+  // measured; the spaced form is applied, so it lives in CASCADE_FIXTURES above as a BAD row
+  // this oracle DOES catch (`bad/scope-spaced-is-caught`). Keeping both is deliberate: the pair
+  // records a real, narrow engine boundary instead of a tidy rule that is not true. An earlier
+  // draft of this table carried only the spaced form and asserted it was invisible — RB9-G4's
+  // own tripwire caught that transcription error, which is the behaviour this test documents.
+  { name: 'scope', css: '@scope(body){[id="help-overlay"]{display:none!important}}' },
   { name: 'nesting-ampersand', css: 'body{& [id="help-overlay"]{display:none!important}}' },
   { name: 'attr-case-insensitive', css: '[id="HELP-OVERLAY" i]{display:none!important}' },
   {
@@ -409,6 +417,202 @@ const PARSER_GAP_SHAPES: ReadonlyArray<{ readonly name: string; readonly css: st
     css: '@media (scripting: enabled){[id="help-overlay"]{display:none!important}}',
   },
 ];
+
+/** The real shipped markup this oracle renders. Resolved from `import.meta.url`, like the
+ *  stylesheet path above, so the oracle does not depend on the runner's cwd. */
+const INDEX_HTML_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'index.html');
+
+/** Loud-throwing reader, the twin of `readStylesCss()`. A `?? ''` fallback here would report a
+ *  perfectly clean cascade over an empty document — the exact vacuity this oracle exists to
+ *  refuse. */
+function readIndexHtml(): string {
+  try {
+    return readFileSync(INDEX_HTML_PATH, 'utf8');
+  } catch (err) {
+    throw new Error(`index.html could not be read at expected path: ${INDEX_HTML_PATH} — ${err}`);
+  }
+}
+
+/** The two render states. `shown` models `HelpView.show()` / `MenuView.show()`, which BOTH write
+ *  the EMPTY STRING to `style.display` — clearing the inline declaration rather than setting a
+ *  value. See ADR-0244 D5 for why writing `'block'` would blind this oracle. */
+const CASCADE_STATES: readonly string[] = ['shipped', 'shown'];
+
+/** The ids whose inline `display:none` `show()` clears. NOTHING else is mutated in either state. */
+const SHOWN_CLEARED_IDS: readonly string[] = ['help-overlay', 'menu-overlay'];
+
+/** Probe targets, in order. `html` and `body` are present because `display` is NOT inherited — an
+ *  ancestor rule hides the document while every descendant's own computed `display` is untouched.
+ *  The six child-payload ids are present because a rule reaching only the payload leaves all five
+ *  shell roots pristine while the overlay opens EMPTY and takes focus. */
+const CASCADE_TARGET_IDS: readonly string[] = [
+  'help-overlay',
+  'menu-overlay',
+  'help-hint',
+  'build-stamp',
+  'a11y-live',
+  'help-title',
+  'help-controls',
+  'help-goals',
+  'menu-heading',
+  'menu-rows',
+  'menu-back-hint',
+];
+
+/** Spelling for a property present on one side of the diff and absent on the other. */
+const ABSENT = '(absent)';
+
+/**
+ * The ONE legitimate delta the shipped stylesheet produces: `.sr-only` on `#a11y-live`.
+ *
+ * FROZEN, and subtracted by the FULL entry string INCLUDING ITS VALUE — never by property name.
+ * That is precisely what keeps `[id$="-live"]{position:static}` an offender: its entry is
+ * `(absent)->static`, which is not the allowed `(absent)->absolute`, so a value-blind map would
+ * absorb the attack while this one refuses it.
+ *
+ * Measured at 31 entries per state (62 total), stable across five consecutive runs. A deliberate
+ * future change to the live region's hiding contract is a two-place edit — `client/src/styles.css`
+ * and this map — which is the "the inline style attribute is the COMPLETE styling contract" claim
+ * being enforced, not friction.
+ */
+const SR_ONLY_ALLOWED_ON_A11Y_LIVE: readonly string[] = [
+  'border-bottom-color (absent)->initial',
+  'border-bottom-style (absent)->initial',
+  'border-bottom-width (absent)->0px',
+  'border-image-outset (absent)->initial',
+  'border-image-repeat (absent)->initial',
+  'border-image-slice (absent)->initial',
+  'border-image-source (absent)->initial',
+  'border-image-width (absent)->initial',
+  'border-left-color (absent)->initial',
+  'border-left-style (absent)->initial',
+  'border-left-width (absent)->0px',
+  'border-right-color (absent)->initial',
+  'border-right-style (absent)->initial',
+  'border-right-width (absent)->0px',
+  'border-top-color (absent)->initial',
+  'border-top-style (absent)->initial',
+  'border-top-width (absent)->0px',
+  'clip-path (absent)->inset(50%)',
+  'height (absent)->1px',
+  'margin-bottom (absent)->-1px',
+  'margin-left (absent)->-1px',
+  'margin-right (absent)->-1px',
+  'margin-top (absent)->-1px',
+  'overflow (absent)->hidden',
+  'padding-bottom (absent)->0px',
+  'padding-left (absent)->0px',
+  'padding-right (absent)->0px',
+  'padding-top (absent)->0px',
+  'position (absent)->absolute',
+  'white-space (absent)->nowrap',
+  'width (absent)->1px',
+];
+
+/** The allowed entries as FULL offender strings, both states — built once, compared by equality. */
+const CASCADE_ALLOWED: ReadonlySet<string> = new Set(
+  CASCADE_STATES.flatMap((state) =>
+    SR_ONLY_ALLOWED_ON_A11Y_LIVE.map((entry) => `${state}/a11y-live.${entry}`),
+  ),
+);
+
+/** One target's fully-enumerated computed style. No property roster: a roster is a blacklist with
+ *  the same convergence problem one level down. Custom properties are skipped — see ADR-0244. */
+function enumerateComputed(win: Window, el: Element): Map<string, string> {
+  const cs = win.getComputedStyle(el);
+  const out = new Map<string, string>();
+  for (let i = 0; i < cs.length; i += 1) {
+    const name = cs.item(i);
+    if (name.startsWith('--')) continue;
+    out.set(name, cs.getPropertyValue(name));
+  }
+  return out;
+}
+
+/**
+ * ONE render: the real markup, in `state`, with `cssText` injected as a `<style>` when non-null.
+ *
+ * All FOUR hermeticity settings are set on THIS window — they are not inherited from the ambient
+ * one, and `client/index.html` ships both a stylesheet `<link>` and a module `<script>`, either of
+ * which would otherwise be fetched over the network.
+ */
+async function renderShell(
+  cssText: string | null,
+  state: string,
+): Promise<Map<string, Map<string, string>>> {
+  const win = new Window({ url: 'http://localhost:3000/' });
+  try {
+    const settings = win.happyDOM.settings;
+    settings.disableCSSFileLoading = true;
+    settings.handleDisabledFileLoadingAsSuccess = true;
+    settings.disableJavaScriptFileLoading = true;
+    settings.disableJavaScriptEvaluation = true;
+
+    const doc = win.document;
+    doc.write(readIndexHtml());
+    doc.close();
+
+    if (cssText !== null) {
+      const styleEl = doc.createElement('style');
+      styleEl.textContent = cssText;
+      doc.head.appendChild(styleEl);
+    }
+
+    if (state === 'shown') {
+      for (const id of SHOWN_CLEARED_IDS) {
+        const el = doc.getElementById(id);
+        if (el === null) throw new Error(`shown-state target #${id} is missing from index.html`);
+        (el as unknown as { style: { display: string } }).style.display = '';
+      }
+    }
+
+    const snapshot = new Map<string, Map<string, string>>();
+    snapshot.set('html', enumerateComputed(win, doc.documentElement));
+    snapshot.set('body', enumerateComputed(win, doc.body));
+    for (const id of CASCADE_TARGET_IDS) {
+      const el = doc.getElementById(id);
+      // A target that does not resolve THROWS. Skipping it would silently shrink the oracle to
+      // whatever the markup still happens to contain.
+      if (el === null) throw new Error(`cascade target #${id} is missing from index.html`);
+      snapshot.set(id, enumerateComputed(win, el));
+    }
+    return snapshot;
+  } finally {
+    await win.happyDOM.close();
+  }
+}
+
+/**
+ * THE ORACLE. Every `(state, target, property)` whose computed value differs between a render with
+ * NO author sheet and a render with `cssText`, minus the frozen `.sr-only` allowance, sorted.
+ *
+ * The differential shape is what makes this technique-independent WITHIN the set of rules
+ * happy-dom applies: it never reads selector text, so it is indifferent to how a rule spells its
+ * reach. The set of rules happy-dom applies is strictly smaller than CSS — the eight shapes in
+ * `PARSER_GAP_SHAPES` are its measured blind spot, covered by the retained shape blacklist in
+ * `indexShell.test.ts` and pinned by RB9-G4 as an engine tripwire.
+ */
+async function cascadeOffenders(cssText: string): Promise<string[]> {
+  const offenders: string[] = [];
+  for (const state of CASCADE_STATES) {
+    const without = await renderShell(null, state);
+    const with_ = await renderShell(cssText, state);
+    for (const [target, baseProps] of without) {
+      const candProps = with_.get(target);
+      if (candProps === undefined) throw new Error(`target ${target} vanished between renders`);
+      const names = new Set<string>([...baseProps.keys(), ...candProps.keys()]);
+      for (const name of [...names].sort()) {
+        const a = baseProps.has(name) ? (baseProps.get(name) as string) : ABSENT;
+        const b = candProps.has(name) ? (candProps.get(name) as string) : ABSENT;
+        if (a === b) continue;
+        const entry = `${state}/${target}.${name} ${a}->${b}`;
+        if (CASCADE_ALLOWED.has(entry)) continue;
+        offenders.push(entry);
+      }
+    }
+  }
+  return offenders.sort();
+}
 
 describe('rb-9 (ADR-0244): the computed-cascade differential over the real index.html', () => {
   it('★ RB9-G1 CONTROL: the cascade is LIVE through cascadeOffenders — an empty sheet is clean, an !important author rule beats an inline declaration, and the SHOWN state clears rather than sets display', async () => {

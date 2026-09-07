@@ -96,12 +96,19 @@ oracle reports **zero offenders** for every one:
 | shape | happy-dom | Chromium |
 |---|---|---|
 | `@layer{[id="help-overlay"]{display:none!important}}` (named and anonymous) | 0 offenders | hidden, AX-ignored |
-| `@scope(body){…}` | 0 offenders | hidden, AX-ignored |
+| `@scope(body){…}` — NO space; `@scope (body)` IS parsed and caught | 0 offenders | hidden, AX-ignored |
 | CSS nesting — `body{& [id="help-overlay"]{…}}` | 0 offenders | hidden, AX-ignored |
 | `[id="HELP-OVERLAY" i]` (case-insensitive attribute) | 0 offenders | hidden, AX-ignored |
 | `@container (min-width:0px){…}` under a `container-type` ancestor | 0 offenders | hidden, AX-ignored |
 | `@media (prefers-contrast: more)` and `(no-preference)` | 0 offenders | hidden, AX-ignored |
 | `@media (prefers-color-scheme: dark)`, `@media (scripting: enabled)` | 0 offenders | hidden, AX-ignored |
+
+The `@scope` row is narrower than it looks, and the RB9-G4 tripwire is what found it: happy-dom's
+blindness there is **whitespace-sensitive**. `@scope(body){…}` is dropped; `@scope (body){…}` and bare
+`@scope{…}` are parsed and ARE caught by the cascade oracle. The implementer's first run of RB9-G4 failed on
+exactly that distinction — the tooth fired on its own authors within an hour of being written, which is the
+behaviour an engine tripwire is for. The spaced form is therefore a BAD fixture row with an exact offender
+set, and only the unspaced form is recorded as blind.
 
 The last two are **true for the default user with no emulation whatsoever**, and M23 §4 slice S9 is scheduled to
 ship `@media (prefers-contrast: more)` into this exact file — so the most plausible future carrier of a
