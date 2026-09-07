@@ -6604,9 +6604,12 @@ fn m22s4_reducer_statement_order() {
     assert_eq!(
         rb22p_count(&body, &purge_call),
         1,
-        "m22s4 [X9/purge-count]: the purge must be called exactly once, spelled exactly \
-         `{purge_call}`. Any other spelling hands a different owner to a body whose frozen-body \
-         pin still reports it as correct."
+        "m22s4 [X9/purge-count]: the purge must be called exactly once, and its call must be \
+         spelled exactly `{purge_call}`. Any other spelling hands a different owner to a body \
+         whose frozen-body pin still reports it as correct. Since rb-65 (ADR-0243) that spelling \
+         is the TAIL of a `let purged = ..` binding rather than a bare statement — this needle \
+         pins the callee and its argument list, and `rb65p_export_binds_the_purge_result` pins \
+         the binding form and the statement boundary in front of it."
     );
     assert_eq!(
         m22s4_brace_depth_at(&body, i_purge),
@@ -7195,9 +7198,12 @@ fn m22s4_purge_named_twice_declaration_and_call() {
         rb22p_count(&squashed, &call),
         1,
         "m22s4 [X11/call-spelling]: the second naming must be EXACTLY the sanctioned call \
-         `{call}` — the bound subject as its owner, as a bare statement. A one-token argument \
-         swap here deletes nothing (or deletes the wrong owner's chunks) while every count, \
-         region and ordering clause stays green."
+         `{call}` — the bound subject as its owner. A one-token argument swap here deletes \
+         nothing (or deletes the wrong owner's chunks) while every count, region and ordering \
+         clause stays green. Since rb-65 (ADR-0243) the call is the right-hand side of a \
+         `let purged = ..` binding rather than a bare statement, because the terminal \
+         `data_export` line publishes the count it returns; this clause still pins the callee \
+         and the owner argument, and `rb65p_export_binds_the_purge_result` pins the binding."
     );
 
     let body = m22s4_reducer_body(&squashed);
@@ -8699,27 +8705,39 @@ fn rb48_arm_declared_once_pub_crate_and_delegates() {
     );
 }
 
-/// E4: `request_data_export` arms the reaper as its LAST statement, immediately
-/// before the success tail.
+/// E4: `request_data_export` arms the reaper as its LAST WRITE, and rb-65's
+/// observation line is the only thing that may follow it.
 ///
 /// The ORDER and the DEPTH clauses live in `m22s4_reducer_statement_order` with
 /// the rest of that reducer's statement shape; this test owns the ADJACENCY —
-/// that nothing at all sits between the arm call and `Ok(())` — and the module's
-/// naming budget for the arm.
+/// that nothing but the two rb-65 statements sits between the arm call and
+/// `Ok(())` — and the module's naming budget for the arm.
 ///
 /// Arm-LAST is the invariant, not arm-somewhere: an `Err` anywhere in the walk
 /// aborts the whole transaction, so arming after the insert loop makes `a chunk
 /// exists implies the singleton is armed` true by construction.
 ///
+/// RE-FROZEN BY rb-65 (ADR-0243 D6), AND THE REPLACEMENT IS EXACT, NOT RELAXED.
+/// The tail literal grows from `{arm}Ok(())` to
+/// `{arm}{fields binding}{emission}Ok(())`, which is an equally-exact pin over a
+/// LONGER tail: nothing new is admitted, and the two statements it now names are
+/// spelled in full. The emission must FOLLOW the arm rather than precede it
+/// because `ensure_export_bundle_reaper` performs a plain `.insert(`, which
+/// panics on a constraint violation and aborts the transaction — ADR-0235 D2
+/// therefore requires the host log line, which SURVIVES a rollback, to come
+/// after it. The arm is the last WRITE; the emission is the last STATEMENT.
+///
 /// Kills: the arm call removed (the naming budget drops to one);
 ///        a second call site anywhere in the module (an unreviewed arm path);
-///        anything appended after the arm call — a late guard, a late write, a
-///        second arm — which is exactly where a statement that runs AFTER the
-///        chunks are durable would go.
+///        the two rb-65 statements re-ordered around the arm, so the line
+///        describes an export the arm can still abort;
+///        anything appended after the EMISSION — a late guard, a late write, a
+///        second arm — which is exactly where a statement that runs once the
+///        caller's whole personal-data dump is already durable, and already
+///        logged as durable, would go.
 #[test]
 fn rb48_export_reducer_arms_the_reaper_last() {
     let squashed = stripped_for_scan(PRIVACY_RS);
-    let call = rb48_arm_call_pin();
 
     let namings = rb22p_count(&squashed, &rb48_nd_arm_named());
     assert_eq!(
@@ -8732,16 +8750,22 @@ fn rb48_export_reducer_arms_the_reaper_last() {
     );
 
     let body = m22s4_reducer_body(&squashed);
-    let tail = format!("{call}Ok(())");
+    let tail = rb65p_frozen_export_tail();
     assert!(
         body.ends_with(tail.as_str()),
-        "rb48 [E4/arm-last]: the export reducer must END with `{tail}` — the self-arm call \
-         immediately followed by the success tail, with NOTHING between them and nothing after. \
-         Arm-last is what makes `a chunk exists implies the singleton is armed` true by \
-         construction: the insert loop and the arm share one transaction, so an Err anywhere rolls \
-         both back together. A statement wedged in after the arm is a statement that runs once the \
-         caller's whole personal-data dump is already durable. Body tail read: {:?}",
-        &body[body.len().saturating_sub(160)..]
+        "rb48 [E4/arm-last]: the export reducer must END with `{tail}` — the self-arm call, then \
+         rb-65's fragment binding, then rb-65's terminal emission, then the success tail, with \
+         NOTHING between them and nothing after. Arm-last is what makes `a chunk exists implies \
+         the singleton is armed` true by construction: the insert loop and the arm share one \
+         transaction, so an Err anywhere rolls both back together. RE-FROZEN BY rb-65 (ADR-0243 \
+         D6) over a LONGER tail, which is an equally exact pin rather than a relaxation: the arm \
+         performs a plain `.insert(` that PANICS on a constraint violation, so it is a statement \
+         that can still abort the transaction and the host log line — which SURVIVES a rollback \
+         while the rows do not — must follow it. The arm is the last WRITE; the emission is the \
+         last STATEMENT. A statement wedged in after the EMISSION runs once the caller's whole \
+         personal-data dump is already durable AND already logged as durable. Body tail read: \
+         {:?}",
+        &body[body.len().saturating_sub(240)..]
     );
 }
 
@@ -9098,5 +9122,742 @@ fn rb48_test_roster_is_closed() {
          counts derived from these names, so a nineteenth test has to move a literal in the ledger \
          in the same commit rather than quietly change what a gate measures.",
         roster.len()
+    );
+}
+
+// ===========================================================================
+// rb-65 (ADR-0243) — THE RE-EXPORT PURGE IS OBSERVABLE. RED ARM.
+//
+// EARS X2 (spec M-residual-backlog.spec.md#rb-65, promoted residual
+// R-rb-40-CASCADE): WHEN `request_data_export` purges the caller's prior bundle
+// and writes a new one THE SYSTEM SHALL emit exactly one `data_export` line as
+// its TERMINAL statement, carrying the subject, the purged count and the written
+// chunk count — while privacy.rs SHALL still carry no logging-crate path token,
+// no print or debug macro, no block comment, no raw string and no double-quote
+// byte beyond the one `#[path]` attribute.
+//
+// WHY AN EMISSION IN THIS FILE IS LEGAL AT ALL (ADR-0243 D5, and it is a
+// REVERSAL of ADR-0235's third rejection reason rather than a distinction):
+// `mr_log` is a FUNCTION (observability.rs:72), not a macro, and the emission
+// sits in the REDUCER that calls the helper — which is exactly what this
+// module's own header doctrine has always required ("the reducer that calls a
+// helper here owns any logging"). ADR-0235 rejected emitting from the
+// OWNER-GENERIC helper, which would have made the exactly-once emission census
+// a lie across three call sites. The evt is a `stringify!` token and the
+// fragment's quote is `JSON_QUOTE`, so the module keeps its zero-quote-byte
+// contract; that is the recorded hygiene exception.
+//
+// EVERYTHING IN THIS SECTION IS A SOURCE SCAN and therefore COMPILES ON THE
+// PRE-FIX TREE. The three tests that CALL `export_fields` land in the same
+// commit as the implementation.
+//
+// SCAN HYGIENE: this section obeys the module contract that `rb22p_scan_hygiene`
+// enforces over THIS FILE — line comments only, no raw-string prefix, no
+// logging-crate path token, no output macro, no backslash before a double quote.
+// Every dangerous needle below is assembled from `concat!` fragments, so this
+// file carries no contiguous emission call site and no contiguous evt token.
+// ===========================================================================
+
+/// The squashed, fully-qualified call form of the ONE blessed emission point
+/// (ADR-0180 D6). Split mid-token so this file never carries the contiguous
+/// emission call site.
+fn rb65p_nd_mr_log() -> String {
+    concat!("crate::observability::", "mr_", "log(").to_string()
+}
+
+/// The BARE emission token, with no module qualification. Counting this against
+/// the qualified count is what catches a call reached through a local import,
+/// which every qualified-spelling clause is blind to.
+fn rb65p_nd_mr_log_bare() -> String {
+    concat!("mr_", "log(").to_string()
+}
+
+/// The squashed shape an ALIASING import of the blessed wrapper leaves behind
+/// (`use crate::observability::mr_log as note;` squashes to a run containing
+/// exactly this).
+fn rb65p_nd_mr_log_alias() -> String {
+    concat!("mr_", "logas").to_string()
+}
+
+/// The breadcrumb-carrying sibling of the emission point, banned outright here:
+/// a `cause` would duplicate the subject field and drag the m20e G9f/G9h
+/// trace-pair machinery into a single causeless INFO line.
+fn rb65p_nd_mr_log_breadcrumb() -> String {
+    concat!("mr_", "log_breadcrumb(").to_string()
+}
+
+/// The evt, as privacy.rs must spell it: a `stringify!` token, never a string
+/// literal (this module carries exactly one double-quote pair, the `#[path]`
+/// attribute, and `rb22p_no_bare_quote_in_privacy` keeps it that way). Split
+/// mid-token so this file never carries the contiguous evt spelling.
+///
+/// BONUS PROPERTY, and the reason this module needs no strings-kept pass at all:
+/// because the evt is a `stringify!` token rather than a literal, it SURVIVES
+/// `strip_rust_strings` and is therefore visible in the ordinary
+/// `stripped_for_scan` view — unlike accounts.rs, whose evt exists only in a
+/// kept-strings view.
+fn rb65p_nd_evt() -> String {
+    concat!("stringify!(data", "_export)").to_string()
+}
+
+/// The squashed `fn` needle for the export fragment builder.
+fn rb65p_nd_fields_fn() -> String {
+    concat!("fnexport", "_fields(").to_string()
+}
+
+/// The frozen squashed signature slice `extract_squashed_fn_sig` returns for the
+/// export fragment builder. It starts at the `fn` needle, so the (absent)
+/// visibility keyword is not part of it and is pinned separately.
+fn rb65p_frozen_fields_sig() -> String {
+    concat!(
+        "fnexport",
+        "_fields(subject:Identity,purged:usize,written:u32)->String"
+    )
+    .to_string()
+}
+
+/// THE BOUND PURGE STATEMENT, squashed, `}`-ANCHORED.
+///
+/// The left anchor is a CLOSING BRACE, not a semicolon, and that is measured
+/// rather than stylistic: the cooldown guard's `if` block immediately precedes
+/// this statement, so a `;`-prefixed spelling of the same needle counts ZERO
+/// against the correct implementation and the pin would be unsatisfiable. The
+/// brace still pins STATEMENT POSITION — an operand of a closure or an iterator
+/// adaptor is brace depth 0 and satisfies every containment clause while never
+/// running.
+fn rb65p_nd_purge_binding() -> String {
+    concat!("}letpur", "ged=purge_export", "_bundles(ctx,me);").to_string()
+}
+
+/// THE FRAGMENT-BUILDER BINDING, squashed, `;`-prefixed (the rb-48 self-arm
+/// call's own terminating semicolon).
+///
+/// The `let fields` local is not style: it keeps the emission's argument list at
+/// 32 columns, well inside rustfmt's default `fn_call_width` of 60, so the call
+/// stays on one line and the statement pins below can spell it at all.
+fn rb65p_nd_fields_binding() -> String {
+    concat!(";letfie", "lds=export", "_fields(me,purged,total);").to_string()
+}
+
+/// The WHOLE emission statement, squashed. Unlike accounts.rs there is no
+/// strings-blanked / strings-kept fork here: the evt is a `stringify!` token, so
+/// one view carries both the call spelling AND the event name.
+fn rb65p_nd_emit_stmt() -> String {
+    [rb65p_nd_mr_log(), rb65p_nd_evt(), ",&fields);".to_string()].concat()
+}
+
+/// THE RE-FROZEN TERMINAL TAIL of `request_data_export`: the rb-48 self-arm, the
+/// fragment binding, the emission, then the success tail — nothing between them
+/// and nothing after.
+///
+/// THIS REPLACES rb-48's `{arm}Ok(())` TAIL, and the replacement is an equally
+/// exact pin over a LONGER tail, not a relaxation. The placement decision is
+/// ADR-0243 D6: `ensure_export_bundle_reaper` performs a plain `.insert(`, which
+/// PANICS on a constraint violation and aborts the transaction, so ADR-0235 D2
+/// REQUIRES the emission to follow it — a host log line survives a rollback
+/// while the rows do not, and a line emitted above a statement that can still
+/// abort would record an export that never became durable. The arm is the last
+/// WRITE; the emission is the last STATEMENT.
+///
+/// The leading `}` is the insert loop's closing brace, and it left-anchors the
+/// pin so the tail cannot be satisfied from inside that loop.
+fn rb65p_frozen_export_tail() -> String {
+    let arm = rb48_nd_arm_named();
+    let bind = rb65p_nd_fields_binding();
+    let emit = rb65p_nd_emit_stmt();
+    let ok = concat!("Ok", "(())");
+    format!("}}{arm}ctx){bind}{emit}{ok}")
+}
+
+/// THE FROZEN BODY of the export fragment builder, squashed.
+///
+/// EQUALITY, not containment, for the reason this module already records twice
+/// (`rb22p_purge_body_exact`, `rb48_reaper_body_exact`): containment pins were
+/// MEASURED insufficient for strictly simpler bodies — a correct body wrapped in
+/// a dead `if false`, a shadowed binding, an appended aliased write, all
+/// clippy-clean and green against every needle clause. Here the family is
+/// sharper still: the three encoder calls are interchangeable by type
+/// (`purged` and `written` are both integers), so an honest transposition
+/// type-checks and every containment clause survives it.
+fn rb65p_frozen_fields_body() -> String {
+    [
+        concat!("letmutout=Stri", "ng::new();"),
+        concat!("letmutfir", "st=true;"),
+        concat!(
+            "json_field",
+            "_into(&mutout,&mutfirst,stringify!(sub",
+            "ject));"
+        ),
+        concat!("json_identity", "_into(&mutout,sub", "ject);"),
+        concat!(
+            "json_field",
+            "_into(&mutout,&mutfirst,stringify!(pur",
+            "ged));"
+        ),
+        concat!("json_usize", "_into(&mutout,pur", "ged);"),
+        concat!(
+            "json_field",
+            "_into(&mutout,&mutfirst,stringify!(writ",
+            "ten));"
+        ),
+        concat!("json_u32", "_into(&mutout,writ", "ten);"),
+        "out",
+    ]
+    .concat()
+}
+
+/// The same body as WHITESPACE-BEARING source text, independently spelled from
+/// the squashed pin above.
+///
+/// Feeding this through the LIVE pipeline must reproduce
+/// `rb65p_frozen_fields_body()` byte for byte. That positive control is what
+/// makes the equality pin provably SATISFIABLE: a hand-typed squashed literal
+/// with one character wrong is an unsatisfiable gate, which reads exactly like a
+/// missing implementation and sends the implementer reverse-engineering the test
+/// instead of the ADR. Same role as `rb22p_frozen_body_source` (:301) and
+/// `rb48_reaper_body_source` (:7733).
+fn rb65p_fields_body_source() -> String {
+    [
+        "\n    let mut out = String::new();\n",
+        "    let mut first = true;\n",
+        concat!(
+            "    json_field",
+            "_into(&mut out, &mut first, stringify!(subject));\n"
+        ),
+        concat!("    json_identity", "_into(&mut out, subject);\n"),
+        concat!(
+            "    json_field",
+            "_into(&mut out, &mut first, stringify!(purged));\n"
+        ),
+        concat!("    json_usize", "_into(&mut out, purged);\n"),
+        concat!(
+            "    json_field",
+            "_into(&mut out, &mut first, stringify!(written));\n"
+        ),
+        concat!("    json_u32", "_into(&mut out, written);\n"),
+        "    out\n",
+    ]
+    .concat()
+}
+
+/// X2 (emission): `request_data_export` emits EXACTLY ONE observation of the
+/// re-export purge, and it is the TERMINAL statement of the reducer.
+///
+/// The twin of `rb65_reaper_emits_one_cascade_observation`, clause for clause,
+/// with two deliberate differences: the conditional-compilation census is NOT
+/// restated here (`rb48_privacy_has_exactly_one_cfg_attribute` :8484 already
+/// pins this file at exactly one `#[cfg` attribute and zero `cfg!` macros, and
+/// ADR-0224 forbids a second clause for zero marginal coverage), and the
+/// reachability clause is scoped BY DEPTH, because this reducer legitimately
+/// carries one nested `return Err(..)` AFTER the purge.
+///
+/// Kills (first killer of each, in clause order):
+///   (1) the emission dropped entirely — the pre-fix state, in which the count
+///       `purge_export_bundles` returns is discarded at this site;
+///   (2) a second emission anywhere in the module;
+///   (2') an ALIASING import followed by a call through the alias, which the
+///       qualified needle cannot see;
+///   (3) the emission written through the breadcrumb form;
+///   (5) the emission moved above the rb-48 self-arm (which can still abort the
+///       transaction), or anywhere else; the evt indirected through a `const`;
+///       either count argument dropped, re-argued or transposed;
+///   (6) the six success-path statements reordered while each still occurs once;
+///   (7) the emission nested one brace deep — an `if purged > 0` guard silences
+///       exactly the first-export case;
+///   (8) a DEPTH-0 `return` inserted between the purge binding and the trailing
+///       Ok, which makes the emission dead code or adds an exit that skips it;
+///   (9) a `let purged = 0;` or `let total = 0;` shadow, which re-points a
+///       textually PERFECT emission at a constant while the purge and the writes
+///       both still happen. `let total = 0;` is the MEASURED one: it also makes
+///       every written row claim `total_chunks: 0`, and no other clause in this
+///       module counts that binding.
+#[test]
+fn rb65p_export_emits_one_observation() {
+    let squashed = stripped_for_scan(PRIVACY_RS);
+    let body = m22s4_reducer_body(&squashed);
+    let emit = rb65p_nd_mr_log();
+
+    // --- (1) exactly one emission inside this reducer ------------------------
+    let n_body = rb22p_count(&body, &emit);
+    assert_eq!(
+        n_body, 1,
+        "rb65p [emit/count-in-fn]: request_data_export must call `{emit}` EXACTLY once; found \
+         {n_body}. ZERO is the pre-fix state this slice exists to close: the re-export purge \
+         destroys the caller's previous personal-data dump and DISCARDS the count the helper \
+         returns, so nothing anywhere records that it happened — the table is private, this \
+         reducer is its only non-reaper writer, and an erasure audit therefore cannot tell a \
+         purge that ran from one that never did. MORE THAN ONE is a second, unreviewed emission \
+         of the same event, which doubles every operator count of it."
+    );
+
+    // --- (2) exactly one emission in the WHOLE file --------------------------
+    let n_file = rb22p_count(&squashed, &emit);
+    assert_eq!(
+        n_file, 1,
+        "rb65p [emit/count-in-file]: privacy.rs must name `{emit}` EXACTLY once; found {n_file}. \
+         The single sanctioned site is the terminal emission inside request_data_export. A second \
+         call inside `purge_export_bundles` itself is the shape ADR-0235 rejected outright: that \
+         helper is OWNER-GENERIC and is reached from three ceremonies, so an emission there would \
+         publish one event name for three different flows. A call inside the PRV1-14 TTL reaper \
+         would publish a subject-scoped export event for a global sweep."
+    );
+
+    // --- (2') the alias channel ----------------------------------------------
+    let bare = rb65p_nd_mr_log_bare();
+    let n_bare = rb22p_count(&squashed, &bare);
+    assert_eq!(
+        n_bare, n_file,
+        "rb65p [emit/alias-unqualified]: privacy.rs spells the bare emission token `{bare}` \
+         {n_bare} time(s) but the FULLY QUALIFIED form `{emit}` only {n_file} time(s). The \
+         difference is a call reached through a local import — every count clause above keys on \
+         the qualified spelling, so an unqualified call is an emission channel none of them sees."
+    );
+    let aliased = rb65p_nd_mr_log_alias();
+    assert_eq!(
+        rb22p_count(&squashed, &aliased),
+        0,
+        "rb65p [emit/alias-import]: privacy.rs carries `{aliased}` — an aliasing import of the \
+         blessed wrapper. This module's hygiene contract bans the external logging crate's path \
+         token outright, but says nothing about a re-export of our OWN wrapper under a different \
+         name, which emits an identical line through a name no census here counts."
+    );
+
+    // --- (3) never the breadcrumb form ---------------------------------------
+    let breadcrumb = rb65p_nd_mr_log_breadcrumb();
+    let n_bc = rb22p_count(&squashed, &breadcrumb);
+    assert_eq!(
+        n_bc, 0,
+        "rb65p [emit/no-breadcrumb]: privacy.rs names `{breadcrumb}` {n_bc} time(s); zero is \
+         allowed. This line has no CAUSE that is not already the subject field, so a breadcrumb \
+         would duplicate the subject into a second key and put this module on the m20e trace-pair \
+         surface for a single causeless INFO line. `mr_log` is the blessed no-breadcrumb form."
+    );
+
+    // --- (4) conditional compilation: CITED, not restated --------------------
+    // `rb48_privacy_has_exactly_one_cfg_attribute` (:8484) already pins this
+    // file at EXACTLY ONE `#[cfg` attribute — the cfg-test-gated parent
+    // declaration of this very module — and at zero `cfg!` macros. That count is
+    // file-wide and unforgeable, so it already covers every new statement this
+    // slice adds; restating it here would be a second clause for zero marginal
+    // coverage (ADR-0224). The rb-65 ledger runs it in the same gate as this
+    // test for exactly that reason.
+
+    // --- (5) THE EMISSION IS THE TERMINAL STATEMENT --------------------------
+    let tail = rb65p_frozen_export_tail();
+    let n_chars = body.chars().count();
+    let shown: String = body.chars().skip(n_chars.saturating_sub(240)).collect();
+    assert!(
+        body.ends_with(tail.as_str()),
+        "rb65p [emit/terminal]: the squashed body of request_data_export must END with `{tail}`. \
+         A SpacetimeDB host log line is written as the reducer runs and SURVIVES a later panic or \
+         Err rollback, while the purge deletes and the chunk inserts do not — so an emission with \
+         any fallible statement after it can record a re-export for a transaction that rolled \
+         back. `ensure_export_bundle_reaper` uses a plain `.insert(`, which PANICS on a \
+         constraint violation, so it is exactly such a statement and the emission must follow it \
+         (ADR-0243 D6: the arm is the last WRITE, the emission the last STATEMENT). This one \
+         clause also pins the statement FORM, the `stringify!` evt (a `const` leaves different \
+         identifier bytes here), BOTH count arguments in order, and that NOTHING runs after the \
+         emission. Body tail read: {shown:?}"
+    );
+
+    // --- (6) ordering, COUNT BEFORE INDEX on every anchor --------------------
+    let purge_bind = rb65p_nd_purge_binding();
+    let total_bind = concat!("lettot", "al=");
+    let insert = m22s4_nd_bundle_insert();
+    let arm = rb48_arm_call_pin();
+    let fields_bind = rb65p_nd_fields_binding();
+    for (what, needle) in [
+        ("the bound purge", purge_bind.as_str()),
+        ("the chunk-count binding", total_bind),
+        ("the export_bundle insert", insert.as_str()),
+        ("the PRV1-14 self-arm", arm.as_str()),
+        ("the fragment-builder binding", fields_bind.as_str()),
+        ("the emission", emit.as_str()),
+    ] {
+        let n = rb22p_count(&body, needle);
+        assert_eq!(
+            n, 1,
+            "rb65p [emit/anchor-once]: {what} (`{needle}`) must occur EXACTLY once in the export \
+             reducer body; found {n}. The ordering clauses below take FIRST-hit offsets, so a \
+             decoy second occurrence steers them at a statement nobody reviewed — and zero would \
+             make every one of them compare a missing position."
+        );
+    }
+    let at_purge = m22s4_idx(&body, &purge_bind, "the bound purge statement");
+    let at_total = m22s4_idx(&body, total_bind, "the chunk-count binding");
+    let at_insert = m22s4_idx(&body, &insert, "the first export_bundle write");
+    let at_arm = m22s4_idx(&body, &arm, "the PRV1-14 self-arm call");
+    let at_fields = m22s4_idx(&body, &fields_bind, "the fragment-builder binding");
+    let at_emit = m22s4_idx(&body, &emit, "the emission");
+    let at_ok = body
+        .rfind(concat!("Ok", "(())"))
+        .expect("rb65p [emit/order-ok]: request_data_export must end in Ok(())");
+    assert!(
+        at_purge < at_total,
+        "rb65p [emit/order-purge-total]: the bound purge (offset {at_purge}) must still precede \
+         the chunk-count binding (offset {at_total}) — rb-65 binds the purge result and must not \
+         perturb the shipped ADR-0226 purge-before-write sequence."
+    );
+    assert!(
+        at_total < at_insert,
+        "rb65p [emit/order-total-insert]: the chunk-count binding (offset {at_total}) must \
+         precede the insert loop (offset {at_insert}); every written row stamps `total_chunks` \
+         from that binding, and the client's reassembly rule (group by request, wait for the full \
+         count) is what consumes it."
+    );
+    assert!(
+        at_insert < at_arm,
+        "rb65p [emit/order-insert-arm]: the insert loop (offset {at_insert}) must precede the \
+         PRV1-14 self-arm (offset {at_arm}). Arm-last is what makes `a chunk exists implies the \
+         singleton is armed` true by construction (rb-48, ADR-0238)."
+    );
+    assert!(
+        at_arm < at_fields,
+        "rb65p [emit/order-arm-fields]: the self-arm (offset {at_arm}) must precede the fragment \
+         binding (offset {at_fields}). The arm performs a plain `.insert(` that can panic and \
+         abort the transaction; a line built and emitted above it would describe an export that \
+         never became durable."
+    );
+    assert!(
+        at_fields < at_emit,
+        "rb65p [emit/order-fields-emit]: the fragment binding (offset {at_fields}) must precede \
+         the emission (offset {at_emit})."
+    );
+    assert!(
+        at_emit < at_ok,
+        "rb65p [emit/order-emit-ok]: the emission (offset {at_emit}) must precede the trailing \
+         Ok(()) (offset {at_ok})."
+    );
+
+    // --- (7) brace depth 0 at the emission -----------------------------------
+    assert_eq!(
+        m22s4_brace_depth_at(&body, at_emit),
+        0,
+        "rb65p [emit/depth0]: the emission must be a TOP-LEVEL statement of the reducer body. \
+         Wrapped in a conditional — `if purged > 0 {{ .. }}` is the obvious shape — it becomes a \
+         conditional audit record, and the condition is false on exactly the FIRST export a \
+         subject ever requests, which is the one case where `nothing was purged` and `the purge \
+         never ran` are hardest to tell apart. Depth is what separates `it is called` from `it is \
+         always called`."
+    );
+
+    // --- (8) REACHABILITY, SCOPED BY DEPTH -----------------------------------
+    // The region from the purge binding to the trailing Ok legitimately contains
+    // ONE `return`: the PRV1-11 `export_missing_exporter` fail-loud arm, which
+    // sits at depth 3 inside the manifest walk. A flat "no return token here"
+    // clause would therefore be unsatisfiable against the correct
+    // implementation, so the clause counts by DEPTH instead — and the depth-0
+    // count of zero is the property that actually matters: a top-level early
+    // exit below the purge is what makes the emission dead code.
+    let region = &body[at_purge..at_ok];
+    let region_bytes = region.as_bytes();
+    let mut depth0 = 0usize;
+    let mut nested = 0usize;
+    let mut scan = 0usize;
+    while let Some(rel) = region[scan..].find("return") {
+        let at = scan + rel;
+        // Word boundary on the LEFT ONLY, exactly as m22s4_left_bounded_count
+        // documents: squash_ws fuses `return Err(..)` into `returnErr(`, so a
+        // right-hand boundary would blind this to the very shape it counts.
+        let is_token = at == 0 || !is_word_byte(region_bytes[at - 1]);
+        let at_depth_zero = m22s4_brace_depth_at(&body, at_purge + at) == 0;
+        if is_token && at_depth_zero {
+            depth0 += 1;
+        } else if is_token {
+            nested += 1;
+        }
+        scan = at + "return".len();
+    }
+    assert_eq!(
+        depth0, 0,
+        "rb65p [emit/reachable]: {depth0} DEPTH-0 `return` token(s) sit between the bound purge \
+         and the trailing Ok(()). Every sanctioned reject in this reducer is one of the three \
+         guards that run BEFORE the purge, so a top-level return below it either makes the \
+         emission dead code or adds an exit that skips it — while the count, terminal, ordering \
+         and depth clauses above all stay GREEN, because every one of them reasons about POSITION \
+         and none about REACHABILITY. Region text: {region:?}"
+    );
+    assert_eq!(
+        nested, 1,
+        "rb65p [emit/reachable-nested]: exactly ONE nested `return` may sit between the purge and \
+         the trailing Ok — the PRV1-11 `export_missing_exporter` fail-loud arm inside the \
+         manifest walk; found {nested}. ZERO means that arm was deleted or turned into a silent \
+         `continue`, which is the shape that produces a SHORT export (a bundle missing a table \
+         the manifest promises) while returning success. MORE THAN ONE is an undeclared early \
+         exit hiding one brace deep, where the depth-0 clause above cannot see it."
+    );
+
+    // --- (9) no local is shadowed or rebound ---------------------------------
+    for (what, bind, why) in [
+        (
+            "purged",
+            concat!("letpur", "ged"),
+            "a second binding — `let purged = 0;` above the emission — re-points a textually \
+             PERFECT emission at a constant while the purge still deletes every prior chunk",
+        ),
+        (
+            "total",
+            concat!("lettot", "al"),
+            "a MEASURED shadow: `let total = 0;` inserted before the arm satisfies every count, \
+             ordering, depth and terminal clause in this module, makes the line report zero \
+             written chunks, AND stamps `total_chunks: 0` on every row it writes — so the S8 \
+             client's reassembly (group by request, wait for the full count) silently never \
+             completes",
+        ),
+        (
+            "fields",
+            concat!("letfie", "lds"),
+            "a second binding re-points the emission at a fragment built from other values \
+             entirely, which the terminal-tail pin cannot see because it reads only the LAST \
+             binding's argument text",
+        ),
+    ] {
+        let n = rb22p_count(&body, bind);
+        assert_eq!(
+            n, 1,
+            "rb65p [emit/no-rebind]: request_data_export binds `{what}` {n} time(s); exactly ONE \
+             is allowed. {why}. This is rb-22's `let guest = me;` shadow finding applied to the \
+             values that make this line observability rather than decoration."
+        );
+    }
+}
+
+/// X2 (data dependency): the purged count the line carries IS what
+/// `purge_export_bundles` returned, for the caller's own bound subject.
+///
+/// The emission clauses above pin WHERE the line is written; this one pins that
+/// the number in it came from the purge at all. Before rb-65 this call site
+/// discarded the return value outright — privacy.rs's own helper doc said so in
+/// as many words — so the site had no data dependency on the purge whatsoever.
+///
+/// Kills: the purge left as a bare statement with a hard-coded count, which
+///        leaves the X11 naming census at 2 and every m22-s4 clause green;
+///        the call re-argued away from the bound `me`, which purges another
+///        subject's chunks while the line still names the caller;
+///        the call demoted from a statement to an operand of a closure or an
+///        iterator adaptor, both of which sit at brace depth 0 and never run;
+///        the binding moved out of the reducer into a helper, where neither the
+///        export ceremony's reviewers nor this test can see it.
+#[test]
+fn rb65p_export_binds_the_purge_result() {
+    let squashed = stripped_for_scan(PRIVACY_RS);
+    let body = m22s4_reducer_body(&squashed);
+    let binding = rb65p_nd_purge_binding();
+    let n = rb22p_count(&body, &binding);
+    assert_eq!(
+        n, 1,
+        "rb65p [bind/statement]: request_data_export must contain the bare statement `{binding}` \
+         EXACTLY once; found {n}. Three things are pinned at once and each is a distinct wrong \
+         implementation: the RESULT IS BOUND (an unbound call leaves the line with no data \
+         dependency on the purge, so it reports a constant and observes nothing — the pre-fix \
+         state); the ARGUMENT is the caller's own bound subject `me` (re-argued to anything else \
+         it destroys another subject's export while the line names the caller); and the call is a \
+         bare STATEMENT at a statement boundary. The left anchor is the CLOSING BRACE of the \
+         cooldown guard, not a semicolon — a `;`-prefixed spelling of this needle measures ZERO \
+         against the correct implementation."
+    );
+}
+
+/// X2 (purity + payload): `export_fields` is a PURE private fn whose key set is
+/// exactly `subject` / `purged` / `written`, and the evt token lives in code.
+///
+/// A SOURCE SCAN and therefore compile-safe, which is why it joins the RED arm
+/// rather than the two behavioural tests that CALL the helper: on the pre-fix
+/// tree it fails LOUD on the missing declaration instead of failing the build.
+///
+/// There is no strings-kept pass in this module and none is needed: the builder
+/// contains NO string literal at all (every key is a `stringify!` token and the
+/// quote is the `JSON_QUOTE` char constant), so the ordinary squashed view
+/// carries the whole payload.
+///
+/// Kills: the helper missing entirely (the pre-fix state);
+///        a second declaration, which would make the body-scoped clauses read
+///        whichever one the extractor reaches first;
+///        a re-typed signature — `purged: u32` truncates a large count and is
+///        exactly the narrowing `json_u32_into(.. as u32)` would perform;
+///        a `pub` / `pub(crate)` helper, which puts a log-fragment builder on a
+///        surface a second module can reach;
+///        a fourth key, a renamed key, or a key spelled as a bare token instead
+///        of `stringify!` (this module carries exactly one double-quote pair);
+///        the evt moved into a comment or deleted;
+///        a builder that takes the context and READS a row to enrich the line;
+///        a builder that emits a line of its own;
+///        an `if false` wrapper, a shadowed binding, an appended statement, or an
+///        honest transposition of the two integer encoders — all clippy-clean,
+///        all green against every containment clause, all killed by the equality
+///        clause last.
+#[test]
+fn rb65p_export_fields_is_pure() {
+    let squashed = stripped_for_scan(PRIVACY_RS);
+    let needle = rb65p_nd_fields_fn();
+
+    let n = rb22p_count(&squashed, &needle);
+    assert_eq!(
+        n, 1,
+        "rb65p [fields/decl]: privacy.rs must declare `{needle}` EXACTLY once; found {n}. ZERO is \
+         the pre-fix state: with no pure fragment builder there is nothing to test by VALUE, and \
+         the emission collapses to a static line that observes nothing. TWO makes every \
+         body-scoped clause below read whichever declaration the extractor reaches first, leaving \
+         the other ungated."
+    );
+
+    let sig = extract_squashed_fn_sig(&squashed, &needle)
+        .expect("rb65p [fields/sig-read]: the export fragment builder signature has no brace");
+    assert_eq!(
+        sig,
+        rb65p_frozen_fields_sig(),
+        "rb65p [fields/sig]: the export fragment builder signature is not the frozen one. It \
+         takes the subject BY VALUE as `subject: Identity` (Identity is Copy), the purge count as \
+         `purged: usize` — the exact type `purge_export_bundles` returns, so no cast can silently \
+         truncate it — and the written count as `written: u32`, the type `plan.len() as u32` \
+         already produces. Freezing the PARAMETER TYPES is what stops a `&str` or `String` \
+         parameter being added later and smuggling a reserved envelope key or a player-authored \
+         value into the fragment: AM6's reserved-key `debug_assert` compiles out of the release \
+         wasm, so the type list is the production-side guarantee."
+    );
+
+    for (vis, what) in [
+        (
+            concat!("pubfnexport", "_fields("),
+            "bare `pub`, which puts a log-fragment builder on the crate's external surface",
+        ),
+        (
+            concat!("pub(crate)fnexport", "_fields("),
+            "`pub(crate)`, which invites a second module to render this module's audit line",
+        ),
+    ] {
+        assert!(
+            !squashed.contains(vis),
+            "rb65p [fields/vis]: export_fields is declared {what}. It must be PRIVATE: it exists \
+             to make ONE emission in this module testable by value, and every widening of its \
+             visibility is a widening of who can shape a privacy-audit record."
+        );
+    }
+
+    // --- the evt token, over RAW whitespace-PRESERVING source ----------------
+    // COMMENTS ARE STRIPPED so a doc comment naming the event cannot inflate the
+    // count; WHITESPACE IS NOT, because every other view in this module runs
+    // squash_ws and would therefore be blind to a spelling the formatter never
+    // produces. This module carries no block comment and no `//` inside a string
+    // literal (rb22p_scan_hygiene and rb22p_no_bare_quote_in_privacy both hold
+    // it there), so the comment stripper is sound on raw source here.
+    let clean = strip_rust_comments(PRIVACY_RS);
+    let evt = rb65p_nd_evt();
+    let n_evt = rb22p_count(&clean, &evt);
+    assert_eq!(
+        n_evt, 1,
+        "rb65p [fields/evt-raw]: the evt token `{evt}` must occur EXACTLY once in the \
+         comment-stripped source of privacy.rs; found {n_evt}. ZERO means the event was renamed, \
+         indirected through a `const`, or demoted into a comment — every operator alert, \
+         dashboard query and `just logs` grep keyed on the name goes silent with no other gate \
+         reddening. TWO means a second site emits the same event name from a flow this slice \
+         never reviewed. The count is taken with comments removed and whitespace INTACT, so \
+         neither a doc comment nor a formatter-invisible respelling can move it."
+    );
+
+    let body = extract_squashed_fn_body(&squashed, &needle)
+        .expect("rb65p [fields/body-read]: the export builder body is not brace-balanced");
+
+    // --- the key set is EXACTLY the three sanctioned keys --------------------
+    for (key, why) in [
+        (
+            concat!("stringify!(sub", "ject)"),
+            "the SUBJECT of the erasure, which is what an audit is keyed on",
+        ),
+        (
+            concat!("stringify!(pur", "ged)"),
+            "the count of prior chunks this request destroyed — the number this whole residual \
+             exists to publish",
+        ),
+        (
+            concat!("stringify!(writ", "ten)"),
+            "the count of chunks the request wrote, which is what makes `purged` legible (a \
+             purge of N followed by a write of M is a re-export, not a deletion)",
+        ),
+    ] {
+        assert_eq!(
+            rb22p_count(body, key),
+            1,
+            "rb65p [fields/key]: the builder must render `{key}` EXACTLY once — {why}. A key \
+             spelled as anything but a `stringify!` token needs a string literal, and this module \
+             carries exactly one double-quote pair (the `#[path]` attribute)."
+        );
+    }
+    let n_keys = rb22p_count(body, "stringify!(");
+    assert_eq!(
+        n_keys, 3,
+        "rb65p [fields/key-census]: the builder must render EXACTLY three keys; the `stringify!` \
+         census counts {n_keys}. A FOURTH key is either a reserved envelope key (AM6 — downstream \
+         parsing is last-key-wins, so it would forge the event type or a breadcrumb) or an \
+         unreviewed field on a privacy-audit record. The three named clauses above cannot see a \
+         fourth; this one can."
+    );
+
+    for (banned, why) in [
+        (
+            "ctx",
+            "the reducer context. A fragment builder that takes or names the context can READ a \
+             row to enrich the line, which is the PRV1-17 shape, and it makes the builder \
+             untestable off-instance — so this slice would ship source pins only",
+        ),
+        (
+            concat!(".db", "."),
+            "a database handle. Nothing in a pure string builder legitimately reads a table",
+        ),
+        (
+            concat!(".ins", "ert("),
+            "a row insert — the module write census closes this file at `export_bundle` and its \
+             own schedule, and a fragment builder writes nothing",
+        ),
+        (concat!(".upd", "ate("), "a row update — see the insert ban"),
+        (concat!(".del", "ete("), "a row delete — see the insert ban"),
+        (
+            concat!("lo", "g"),
+            "a logging segment. The builder RENDERS a fragment; the reducer that calls it owns \
+             the emission — this module's header doctrine, and the reason ADR-0243 D5 permits an \
+             emission in this file at all. A builder that emits its own line makes the \
+             exactly-once emission census a lie",
+        ),
+        (
+            concat!("Identity", "::"),
+            "an Identity constructor. The subject arrives as a parameter the reducer took from \
+             `ctx.sender()`; constructing one here would let the builder name a victim the \
+             request never touched (the rb22p_no_identity_constructor finding, applied to the \
+             new helper)",
+        ),
+    ] {
+        assert!(
+            !body.contains(banned),
+            "rb65p [fields/pure]: the export_fields body contains `{banned}` — {why}. Body read: \
+             {body:?}"
+        );
+    }
+
+    // --- POSITIVE CONTROL: the equality pin is SATISFIABLE -------------------
+    let control = stripped_for_scan(&rb65p_fields_body_source());
+    assert_eq!(
+        control,
+        rb65p_frozen_fields_body(),
+        "rb65p [fields/control]: the frozen body pin is UNSATISFIABLE — the LIVE pipeline derives \
+         something else from the sanctioned source text. A hand-typed squashed literal with one \
+         character wrong reads exactly like a missing implementation and sends the implementer \
+         reverse-engineering the test instead of ADR-0243. Fix the literal from the ADR, never \
+         the other way round."
+    );
+
+    // --- EQUALITY, last ------------------------------------------------------
+    assert_eq!(
+        body,
+        rb65p_frozen_fields_body(),
+        "rb65p [fields/body]: export_fields must be EXACTLY the frozen statement list — one \
+         `String::new()`, one `first` flag, and three (key, value) encoder pairs in the order \
+         subject, purged, written, then the bare tail expression. Containment was MEASURED \
+         insufficient for strictly simpler bodies in this very module (a dead `if false` wrapper, \
+         a shadowed binding, an appended aliased write — all clippy-clean, all green against \
+         every ban above), and here the family is sharper still: `purged` and `written` are both \
+         integers, so an honest transposition of the two encoder calls type-checks and satisfies \
+         every containment clause while every emitted line reports the two counts the wrong way \
+         round. If the sanctioned body legitimately changes, re-derive this literal FROM ADR-0243 \
+         and move the source control with it."
     );
 }
