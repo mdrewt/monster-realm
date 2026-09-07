@@ -32,7 +32,9 @@
 //! included, and strip comments naively — one unpaired opener here silently
 //! blanks later modules from their view. rb-40 (ADR-0235) is the worked example
 //! of that doctrine: `purge_export_bundles` REPORTS its purged count and never
-//! emits; the claim-time observation line lives in `accounts.rs`. STRENGTHENED
+//! emits; the observation lines live in the CALLING reducers (`complete_guest_claim`
+//! in accounts.rs, and since rb-65 / ADR-0243 `request_data_export` here, through
+//! `observability::mr_log` with a `stringify!` evt). STRENGTHENED
 //! for S4: this file carries exactly ONE double-quote pair — the `#[path]`
 //! attribute — and no other quote byte anywhere. Every constant string is
 //! `stringify!`; the quote character is the `JSON_QUOTE` unicode-escape char
@@ -71,9 +73,9 @@ use std::time::Duration;
 /// RETURNS the number of chunks it deleted (rb-40, ADR-0235): the count is the
 /// cardinality of the collected key set, taken before the loop moves it, so it
 /// is exactly what the loop then deletes. The helper never emits — the caller
-/// owns any observation of the purge (`complete_guest_claim` publishes this
-/// count; the deletion cascade and the re-export purge discard it, which is
-/// warning-free by design).
+/// owns any observation of the purge: `complete_guest_claim` (rb-40, ADR-0235),
+/// the deletion cascade and `request_data_export` (both rb-65, ADR-0243) each
+/// bind this count and publish it through `observability::mr_log`.
 pub(crate) fn purge_export_bundles(ctx: &ReducerContext, owner: Identity) -> usize {
     let ids: Vec<u64> = ctx
         .db
@@ -147,6 +149,13 @@ fn json_i64_into(out: &mut String, v: i64) {
 }
 
 fn json_u32_into(out: &mut String, v: u32) {
+    out.push_str(&v.to_string());
+}
+
+// A usize count is a bare number too (rb-65, ADR-0243): on wasm32 it is
+// u32-wide, and the log-line counts it carries are compared numerically in
+// a panel, never reassembled by the S8 client.
+fn json_usize_into(out: &mut String, v: usize) {
     out.push_str(&v.to_string());
 }
 
@@ -1479,7 +1488,8 @@ fn rows_character(ctx: &ReducerContext, owner: Identity) -> Result<Vec<String>, 
 // The reducer (ADR-0226 guard order — this shape IS the security boundary and
 // privacy_tests.rs pins it statement by statement):
 //   subject-existence guard, then deletion gate, then cooldown, then
-//   purge-before-write, then the manifest-order walk, then the insert loop.
+//   purge-before-write, then the manifest-order walk, then the insert loop,
+//   then the rb-48 self-arm, then the rb-65 observation line (terminal).
 // Exactly three reject returns precede the purge; a mid-walk Err aborts the
 // whole transaction, so the purged prior bundle rolls back (ADR-0106 D8).
 // ===========================================================================
@@ -1514,7 +1524,7 @@ pub fn request_data_export(ctx: &ReducerContext) -> Result<(), String> {
     if !export_cooldown_elapsed(last, now) {
         return Err(stringify!(export_reject_cooldown).to_string());
     }
-    purge_export_bundles(ctx, me);
+    let purged = purge_export_bundles(ctx, me);
     let mut per_table: Vec<(&'static str, Vec<String>)> = Vec::new();
     for entry in DATA_LIFECYCLE_MANIFEST {
         if !entry.exportable {
@@ -1553,7 +1563,33 @@ pub fn request_data_export(ctx: &ReducerContext) -> Result<(), String> {
         });
     }
     ensure_export_bundle_reaper(ctx);
+    // rb-65 (ADR-0243): ONE observation line, TERMINAL — after the self-arm,
+    // whose plain insert can still abort the transaction, so the line may
+    // only be written once nothing fallible follows it. The arm is the last
+    // WRITE; this is the last STATEMENT. Unconditional, never on a reject.
+    let fields = export_fields(me, purged, total);
+    crate::observability::mr_log(stringify!(data_export), &fields);
     Ok(())
+}
+
+/// The ONE field fragment of the export line (rb-65, ADR-0243) — the
+/// `purge_fields` shape from accounts.rs, spelled under this module's hygiene
+/// contract: PURE, no `ctx`, no table read, every key a `stringify!` token and
+/// the quote the `JSON_QUOTE` constant. `subject` is the caller (`ctx.sender()`,
+/// the owner of every chunk written), `purged` the count `purge_export_bundles`
+/// returned for the caller's PRIOR bundle, `written` the request's total chunk
+/// count. Counts are bare numbers (panels compare them); no player-authored
+/// field may ever join this fragment (PRV1-17/20 by analogy).
+fn export_fields(subject: Identity, purged: usize, written: u32) -> String {
+    let mut out = String::new();
+    let mut first = true;
+    json_field_into(&mut out, &mut first, stringify!(subject));
+    json_identity_into(&mut out, subject);
+    json_field_into(&mut out, &mut first, stringify!(purged));
+    json_usize_into(&mut out, purged);
+    json_field_into(&mut out, &mut first, stringify!(written));
+    json_u32_into(&mut out, written);
+    out
 }
 
 // Owner-scoped read path for export_bundle (the my_monster_pub idiom,

@@ -5,7 +5,7 @@ slug: tables/export_bundle_reaper_schedule
 updated: 2026-09-05
 tags: [schema, spacetimedb, private]
 abstract: "SpacetimeDB private table export_bundle_reaper_schedule."
-resource: server-module/src/privacy.rs#L1594
+resource: server-module/src/privacy.rs#L1630
 source: scripts/okf-export.mjs@server-module/src/privacy.rs
 visibility: private
 ---
