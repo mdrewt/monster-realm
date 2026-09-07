@@ -10270,7 +10270,6 @@ fn rb65p_export_line_composes_into_the_envelope() {
     );
 }
 
-
 // ===========================================================================
 // rb-67: ADR-0220's DOCUMENT text must match privacy.rs's LIVE declaration.
 //
@@ -10293,19 +10292,43 @@ fn rb65p_export_line_composes_into_the_envelope() {
 // assertion silently deletes the only tooth pointed at the ADR.
 //
 // HONEST LIMITS (accepted here, not closed by rb-67):
-//  1. These teeth pin the ADR's declaration SPANS and the sentences' file
-//     scope. The prose AROUND a correct span can still say something false
-//     about the helper -- no text scan reaches that -- and it stays a review
-//     responsibility.
+//  1. These teeth pin the ADR's declaration SPANS, the section each decision
+//     states them in, and the shape of its citations. The prose AROUND a
+//     correct span can still say something false about the helper -- no text
+//     scan reaches that -- and it stays a review responsibility.
 //  2. An attribute written on its own line ABOVE the declaration (a must-use
 //     or a cfg attribute, say) is invisible to `extract_squashed_fn_sig`,
 //     which starts its slice at the `fn` token. It is therefore invisible to
 //     these teeth AND to all three shipped declaration pins alike. Named
 //     here so a later slice can find the gap; unchanged by rb-67.
+//  3. TWO ROUND-2 RELAXATIONS, each with the attack it re-opens named and a
+//     fixture proving that attack still reds. (a) A module-QUALIFIED name is
+//     accepted, so a span can assert a path no compiler resolved -- bounded
+//     by requiring the LAST path segment to be this module, derived from the
+//     file name rather than hard-coded, so another module's name still reds
+//     (`wrong-module-qualifier`). (b) An indented line is rejected only when
+//     it names the helper OUTSIDE a code span, so this document can carry the
+//     nested list items its honest-limits section wants; an indented line
+//     making a false claim in PROSE is limit 1 again, not this clause.
+//  4. An HTML comment SPANNING A LINE BREAK can still split a needle. The
+//     stripper keeps the newlines inside a comment precisely so line numbers,
+//     paragraph breaks and section ranges stay honest, which means it cannot
+//     re-fuse text across them. `[doc/no-html-comment]` bans the construct
+//     outright, so what is left is a document that reds, not a silent bypass.
+//  5. UNPROVEN AFTER ROUND 2, and it is a BRANCH rather than a clause: every
+//     one of the sixteen labels is now asserted by at least one control
+//     fixture (the round-2 red team neutralised each clause to `if false` in
+//     turn; `[doc/no-cr]`, `[decl/full]` and `[decl/count]` survived that and
+//     now have isolating fixtures). What no fixture pins is the paragraph
+//     DE-DUPLICATION inside `[scope/distinct]` -- two byte-identical
+//     token-bearing paragraphs counted once. It fails SAFE: de-duplication
+//     can only lower the count and so only ADD a violation.
 //
-// NAMING: the helper's own name is never spelled contiguously below -- the
-// `concat!` fragment convention this module's header states under SCAN-HYGIENE
-// CONTRACT. The prose here says `the export purge helper` for that reason.
+// NAMING: the helper's own name is never spelled contiguously below. That is
+// this block's own convention, kept for consistency with the `concat!` fixture
+// style around it -- NOT a rule the module header states about the name, which
+// the header and a dozen other sites in this file spell out in full. The prose
+// here says `the export purge helper` for the same local reason.
 // ===========================================================================
 
 /// ADR-0220, read as TEXT. The `../../` reach out of `src/` is this file's
@@ -10324,22 +10347,228 @@ fn rb67p_path() -> &'static str {
     concat!("privacy", ".rs")
 }
 
+/// Blank every HTML comment, KEEPING the newlines inside it.
+///
+/// MEASURED bypass (round-2 red team): `privacy.<!-- -->rs:79-92` renders in
+/// every markdown viewer as an ordinary file-and-line citation while splitting
+/// the citation needle in two, so the scan saw no file name at all. Blanking
+/// the comment makes every clause judge the text a READER sees.
+///
+/// The newlines are kept on purpose: line numbers in messages, the paragraph
+/// splitter and the section ranges must all stay where they were. The cost is
+/// that a comment spanning a line break cannot be re-fused -- which is why
+/// `[doc/no-html-comment]` bans the construct outright rather than relying on
+/// this stripper alone.
+fn rb67p_strip_html_comments(md: &str) -> String {
+    let open = "<!--";
+    let close = "-->";
+    let mut out = String::with_capacity(md.len());
+    let mut rest = md;
+    loop {
+        let at = match rest.find(open) {
+            Some(at) => at,
+            None => {
+                out.push_str(rest);
+                return out;
+            }
+        };
+        out.push_str(&rest[..at]);
+        let tail = &rest[at + open.len()..];
+        match tail.find(close) {
+            Some(end) => {
+                for c in tail[..end].chars() {
+                    if c == '\n' {
+                        out.push('\n');
+                    }
+                }
+                rest = &tail[end + close.len()..];
+            }
+            None => {
+                for c in tail.chars() {
+                    if c == '\n' {
+                        out.push('\n');
+                    }
+                }
+                return out;
+            }
+        }
+    }
+}
+
+/// Every backticked code span in `md`, as (byte offset of the span text, span).
+///
+/// The offset is what makes a span attributable to a SECTION. Splitting a
+/// section's text on its own would re-derive parity from an arbitrary starting
+/// point; offsets are taken once, over the whole document, from the same split
+/// every other span clause uses.
+fn rb67p_code_spans(md: &str) -> Vec<(usize, &str)> {
+    let mut out: Vec<(usize, &str)> = Vec::new();
+    let mut at = 0usize;
+    for (idx, span) in md.split('`').enumerate() {
+        if idx % 2 == 1 {
+            out.push((at, span));
+        }
+        at += span.len() + 1;
+    }
+    out
+}
+
+/// The byte range of the BODY of the section opened by the first line starting
+/// with `heading` -- the lines AFTER that heading line, up to the next line
+/// starting with a level-two heading marker, or the end of the document.
+///
+/// The heading line is EXCLUDED deliberately: see `[scope/decision2]`.
+fn rb67p_section_body_range(md: &str, heading: &str) -> Option<(usize, usize)> {
+    let mut at = 0usize;
+    let mut start: Option<usize> = None;
+    for line in md.split('\n') {
+        let line_start = at;
+        at += line.len() + 1;
+        let clean = line.trim_end_matches('\r');
+        match start {
+            None => {
+                if clean.starts_with(heading) {
+                    start = Some(at.min(md.len()));
+                }
+            }
+            Some(s) => {
+                if clean.starts_with("## ") {
+                    return Some((s, line_start.min(md.len())));
+                }
+            }
+        }
+    }
+    start.map(|s| (s, md.len()))
+}
+
+/// Does the BODY of `heading`'s section carry a code span that contains the
+/// live signature?
+fn rb67p_section_declares(md: &str, heading: &str, live_sig: &str) -> bool {
+    let (start, end) = match rb67p_section_body_range(md, heading) {
+        Some(range) => range,
+        None => return false,
+    };
+    for (at, span) in rb67p_code_spans(md) {
+        if at >= start && at < end && squash_ws(span).contains(live_sig) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Is this squashed span the helper's NAME, optionally qualified by a module
+/// path whose LAST segment is this module (`privacy::<name>`,
+/// `crate::privacy::<name>`)?
+///
+/// A DELIBERATE RELAXATION (round-2 reviewer, MAJOR false RED): the qualified
+/// spelling is how this project names the helper in prose -- accounts.rs's
+/// module header, ADR-0243, this file's own header and the architecture doc
+/// all use it -- and reporting it as a FABRICATION that no compiler ever saw
+/// is the kind of false RED that gets a clause deleted rather than fixed.
+///
+/// WHAT THE RELAXATION RE-OPENS, and how far: a span may now assert a path
+/// without that path being resolved against anything. The bound is the
+/// LAST-SEGMENT check -- the module name is derived from the file name this
+/// gate already pins, so `bogus::<name>` is still a fabricated path and still
+/// reds (fixture `wrong-module-qualifier`), and so does any spelling that is
+/// not a pure `ident::` chain. A leading-`::` absolute path is rejected too;
+/// `crate::privacy::<name>` is the spelling this tree actually uses.
+fn rb67p_is_qualified_name(sq: &str, token: &str, path: &str) -> bool {
+    let prefix = match sq.strip_suffix(token) {
+        Some(prefix) => prefix,
+        None => return false,
+    };
+    if prefix.is_empty() {
+        return true;
+    }
+    let body = match prefix.strip_suffix("::") {
+        Some(body) => body,
+        None => return false,
+    };
+    let module = path.strip_suffix(".rs").unwrap_or(path);
+    let mut last = "";
+    for seg in body.split("::") {
+        if seg.is_empty() || !seg.bytes().all(is_word_byte) {
+            return false;
+        }
+        last = seg;
+    }
+    last == module
+}
+
+/// Does this ALREADY-NORMALISED line (backticks dropped, all whitespace
+/// dropped, lowercased) cite `path` by LINE NUMBER? Returns the fragment.
+///
+/// TWO-SIDED BY CONSTRUCTION, because the round-2 red team measured both
+/// directions and the fixed forward window only ever saw one:
+///   - `privacy.rs:79`, `privacy.rs#L79`, `privacy.rs@79`, `privacy.rs L79`
+///     and their full-width, spaced, capitalised and backticked spellings put
+///     the number AFTER the path;
+///   - `see line 42 of privacy.rs` and `privacy.rs, see line 42` put it
+///     BEFORE, or further away than any window worth having.
+/// A window ALSO rejected the honest `privacy.rs` (ADR-0126 idiom) -- a digit
+/// near the file name is not a citation, a LOCATOR is, so the test is on the
+/// SHAPE and not on proximity.
+fn rb67p_line_cites_by_number(line: &str, path: &str) -> Option<String> {
+    if !line.contains(path) {
+        return None;
+    }
+    let mut from = 0usize;
+    while let Some(rel) = line[from..].find(path) {
+        let at = from + rel + path.len();
+        let tail = &line[at..];
+        let mut chars = tail.chars();
+        let mut next = chars.next();
+        if matches!(next, Some(':') | Some('@') | Some('#') | Some('\u{FF1A}')) {
+            next = chars.next();
+        }
+        if next == Some('l') {
+            next = chars.next();
+        }
+        if next.is_some_and(char::is_numeric) {
+            return Some(tail.chars().take(8).collect());
+        }
+        from = at;
+    }
+    for word in [concat!("lin", "e"), concat!("lin", "es")] {
+        let mut scan = 0usize;
+        while let Some(rel) = line[scan..].find(word) {
+            let hit = scan + rel;
+            let after = hit + word.len();
+            if line[after..].chars().next().is_some_and(char::is_numeric) {
+                return Some(line[hit..].chars().take(10).collect());
+            }
+            scan = after;
+        }
+    }
+    None
+}
+
 /// The LIVE facts both tests are judged against: the squashed signature slice
 /// as `extract_squashed_fn_sig` reads it out of privacy.rs, and the whole
 /// squashed module source a claimed declaration must literally occur in.
 ///
 /// Derived, never transcribed: a hand-typed expectation here would drift on
 /// exactly the change this slice exists to notice.
-fn rb67p_live_declaration_facts() -> (String, String) {
-    let squashed_src = stripped_for_scan(PRIVACY_RS);
-    let live_sig = extract_squashed_fn_sig(&squashed_src, &rb22p_nd_fn())
-        .expect(
-            "rb67p [live/extract]: the export purge helper has no signature-to-brace slice in \
-             privacy.rs. Every ADR clause below compares against that slice, so there is no \
-             comparison to make and this test must never pass vacuously.",
-        )
-        .to_string();
-    (live_sig, squashed_src)
+///
+/// Computed ONCE. The control below judges more than thirty fixtures through
+/// the oracle, and re-running the three-stage stripper over the whole module
+/// for each of them cost more than every clause put together -- and left open
+/// the (theoretical) possibility of two fixtures being judged against
+/// different facts.
+fn rb67p_live_declaration_facts() -> &'static (String, String) {
+    static FACTS: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
+    FACTS.get_or_init(|| {
+        let squashed_src = stripped_for_scan(PRIVACY_RS);
+        let live_sig = extract_squashed_fn_sig(&squashed_src, &rb22p_nd_fn())
+            .expect(
+                "rb67p [live/extract]: the export purge helper has no signature-to-brace slice \
+                 in privacy.rs. Every ADR clause below compares against that slice, so there is \
+                 no comparison to make and this test must never pass vacuously.",
+            )
+            .to_string();
+        (live_sig, squashed_src)
+    })
 }
 
 /// EVERY way ADR-0220's text can contradict, or under-describe, the live
@@ -10361,6 +10590,17 @@ fn rb67p_adr_violations(md: &str, live_sig: &str, squashed_src: &str) -> Vec<Str
     let path = rb67p_path();
     let mut out: Vec<String> = Vec::new();
 
+    // MEASURED bypass (round-2 red team): `privacy.<!-- -->rs:79-92` renders
+    // as an ordinary file-and-line citation and split the needle in two. The
+    // comment is blanked FIRST and for EVERY clause below, not merely for the
+    // citation scan -- the same trick splits the helper's own name in bare
+    // prose, which would otherwise walk past `[cite/token-coverage]` as well.
+    // Newlines inside the comment are kept, so line numbers, paragraph breaks
+    // and section ranges are exactly where they were.
+    let had_html_comment = md.contains("<!--");
+    let stripped = rb67p_strip_html_comments(md);
+    let md: &str = stripped.as_str();
+
     let ticks = md.chars().filter(|c| *c == '`').count();
     if ticks % 2 != 0 {
         out.push(format!(
@@ -10372,11 +10612,32 @@ fn rb67p_adr_violations(md: &str, live_sig: &str, squashed_src: &str) -> Vec<Str
         return out;
     }
 
+    if had_html_comment {
+        out.push(String::from(
+            "[doc/no-html-comment]: the document carries an HTML comment. MEASURED: a comment \
+             placed INSIDE the file name renders as an ordinary file-and-line citation while \
+             splitting the needle every clause here scans for, and the same trick splits the \
+             helper's own name in bare prose. Comments are blanked before the scans, so this \
+             one is already defeated on a single line -- but the stripper keeps newlines (line \
+             numbers, paragraph breaks and section ranges must stay honest), so a comment \
+             spanning a line break cannot be re-fused. The construct is therefore banned \
+             outright rather than modelled: an ADR that needs to hide text from its readers is \
+             a review question, not a scanner question.",
+        ));
+    }
+
     if md.contains('\r') {
         out.push(String::from(
-            "[doc/no-cr]: the document carries a carriage return. The scans below split on the \
-             newline alone, so a CRLF `empty` line is not empty, and the paragraph splitter \
-             fuses two paragraphs the scope clauses mean to judge separately.",
+            "[doc/no-cr]: the document carries a carriage return. `str::lines()` ends a line at \
+             the NEWLINE and strips one trailing carriage return, so a LONE carriage return -- \
+             which renderers and diff viewers show as a line break -- is NOT a line break here: \
+             the two halves a reader sees as separate lines are judged as ONE. MEASURED \
+             consequence, and the reason this clause is not hygiene: a paragraph that never \
+             names the module, joined by a lone carriage return to one that does, is invisible \
+             to `[scope/paragraph]`; the control fixture pairs that document with its \
+             newline-separated twin, which reds. A CRLF document is refused with it -- no ADR \
+             in this tree uses one, and allowing it would give every line-scoped clause here \
+             two spellings to be right about.",
         ));
     }
 
@@ -10392,40 +10653,66 @@ fn rb67p_adr_violations(md: &str, live_sig: &str, squashed_src: &str) -> Vec<Str
                  document as well.",
             ));
         }
-        let rest = line.trim_start_matches(' ');
-        if !rest.is_empty() && line.len() - rest.len() >= 4 {
+        if line.trim_start().starts_with(concat!("``", "`")) {
             out.push(format!(
-                "[doc/no-indented-block]: line {no} begins with four or more spaces followed by \
-                 text -- a markdown INDENTED CODE BLOCK. It renders as code to a reader while \
-                 carrying no backtick at all, so a declaration parked there is code to a human \
-                 and invisible to every span clause below.",
+                "[doc/no-fence]: line {no} opens or closes a FENCED code block. Every clause \
+                 here reads inline code spans by splitting on the backtick, and a fence is \
+                 THREE of them: it desynchronises that split for the whole remainder of the \
+                 document -- swapping which side of the split is code and which is prose -- \
+                 while leaving the TOTAL count even, so the parity clause sees nothing wrong. \
+                 A declaration parked in a fence is then judged as part of whatever text \
+                 happens to neighbour it. Put the declaration in an INLINE code span.",
+            ));
+        }
+        let rest = line.trim_start_matches(' ');
+        if !rest.is_empty()
+            && line.len() - rest.len() >= 4
+            && rest.contains(token)
+            && !line.contains('`')
+        {
+            out.push(format!(
+                "[doc/no-indented-block]: line {no} names the helper in an INDENTED block (four \
+                 or more leading spaces) with no backtick anywhere on the line. It renders as \
+                 CODE to a reader and is invisible to every span clause below, which is how a \
+                 stale declaration hides in plain sight. RELAXED in round 2 from `any indented \
+                 line`: this document has to be able to carry nested list items and indented \
+                 continuations -- its own honest-limits list is the next thing likely to grow \
+                 sub-bullets -- so the clause fires only on the shape that hides a declaration. \
+                 An indented line naming the helper INSIDE a code span is a real span and is \
+                 judged as one by the declaration clauses.",
             ));
         }
     }
 
-    let normalised: String = md
-        .chars()
-        .filter(|c| *c != '`' && !c.is_whitespace())
-        .flat_map(char::to_lowercase)
-        .collect();
-    let mut from = 0usize;
-    while let Some(rel) = normalised[from..].find(path) {
-        let after = from + rel + path.len();
-        let window: String = normalised[after..].chars().take(8).collect();
-        if window.chars().any(char::is_numeric) {
+    // PER LINE, never across the whole document. Squashing the whole text
+    // fuses across newlines, which the round-2 reviewer measured as a false
+    // RED: a paragraph ending in the file name, followed by a numbered list
+    // item, read as a line citation. Each line is normalised on its own --
+    // backticks dropped, all whitespace dropped, lowercased -- so every
+    // spacing, punctuation and capitalisation spelling still collapses onto
+    // one form, and nothing is judged against text a reader sees elsewhere.
+    for (idx, line) in md.lines().enumerate() {
+        let no = idx + 1;
+        let norm: String = line
+            .chars()
+            .filter(|c| *c != '`' && !c.is_whitespace())
+            .flat_map(char::to_lowercase)
+            .collect();
+        if let Some(window) = rb67p_line_cites_by_number(&norm, path) {
             out.push(format!(
-                "[cite/no-line]: a `{path}` mention is followed within EIGHT characters by a \
-                 digit (window `{window}`). ADR-0230 bans file-and-line citations: line numbers \
-                 drift the moment anything is inserted above the target, and a drifted citation \
-                 points a reader at unrelated code while still looking precise. Cite the \
-                 DECLARATION inside a code span instead, and leave no digit within eight \
-                 characters after the file name (the view scanned here has backticks and ALL \
-                 whitespace removed and is lowercased, so `{path}` spelled with a backtick, a \
-                 space, an at sign, a hash, a full-width colon or in capitals is the same \
-                 citation)."
+                "[cite/no-line]: line {no} cites `{path}` by LINE NUMBER (at `{window}`). \
+                 ADR-0230 bans file-and-line citations: the number drifts the moment anything \
+                 is inserted above the target, and a drifted citation points a reader at \
+                 unrelated code while still looking precise -- which is the residual that \
+                 created this gate. Cite the DECLARATION inside a code span instead. \
+                 The test is on SHAPE and is TWO-SIDED: a locator glued to the file name (a \
+                 colon, an at sign, a hash, a full-width colon, an L, with or without spaces or \
+                 backticks) OR the word `line`/`lines` followed by a number anywhere on a line \
+                 that names the file -- so a number written BEFORE the path is caught too. An \
+                 ADR, spec or version number sitting NEAR the file name is fine: only those two \
+                 shapes are refused."
             ));
         }
-        from = after;
     }
 
     let mut selected: Vec<&str> = Vec::new();
@@ -10449,21 +10736,28 @@ fn rb67p_adr_violations(md: &str, live_sig: &str, squashed_src: &str) -> Vec<Str
     let mut has_full = false;
     for span in &selected {
         let sq = squash_ws(span);
-        if !sq.contains(live_sig) && sq != token {
+        // A NAME -- bare, or qualified by a module path whose last segment is
+        // this module -- is a legitimate way to refer to the helper and is not
+        // a claim about its signature. See `rb67p_is_qualified_name` for what
+        // this acceptance re-opens and what still bounds it.
+        let is_name = rb67p_is_qualified_name(&sq, token, path);
+        if !sq.contains(live_sig) && !is_name {
             out.push(format!(
                 "[decl/sig]: the code span `{span}` neither carries the live signature nor is \
-                 the bare helper name. The live signature, squashed, is `{live_sig}`. EVERY \
-                 span that names the helper is judged, not merely the first one that happens to \
-                 be right: a correct span sitting beside a stale one still leaves the stale one \
-                 telling a reader the wrong parameter list."
+                 the helper's name (bare, or qualified by this module). The live signature, \
+                 squashed, is `{live_sig}`. EVERY span that names the helper is judged, not \
+                 merely the first one that happens to be right: a correct span sitting beside a \
+                 stale one still leaves the stale one telling a reader the wrong parameter list."
             ));
         }
-        if !squashed_src.contains(sq.as_str()) {
+        if !is_name && !squashed_src.contains(sq.as_str()) {
             out.push(format!(
-                "[decl/real]: the code span `{span}` does not occur anywhere in privacy.rs, \
-                 whitespace ignored. It is a FABRICATION -- a plausible-looking declaration \
-                 that no compiler ever saw. A renamed parameter, a widened visibility or an \
-                 invented return type all land here."
+                "[decl/real]: the code span `{span}` does not occur in privacy.rs's CODE \
+                 (comments and string literals are blanked before the comparison, so a \
+                 declaration quoted in a doc comment there does not count as one). It is a \
+                 FABRICATION -- a plausible-looking declaration no compiler ever saw. A renamed \
+                 parameter, a widened visibility, an invented return type and a path naming the \
+                 wrong module all land here."
             ));
         }
         if sq.contains("pub(crate)") && sq.contains(live_sig) {
@@ -10481,31 +10775,48 @@ fn rb67p_adr_violations(md: &str, live_sig: &str, squashed_src: &str) -> Vec<Str
     let n_spans = selected.len();
     if n_spans < 2 {
         out.push(format!(
-            "[decl/count]: only {n_spans} code span(s) name the helper. Two decisions in this \
-             ADR describe it -- the delegation to the owning module and the owner-generic \
-             signature -- so one span means one of them stopped describing it, and the clauses \
-             above would then pass over whatever single span is left."
+            "[decl/count]: only {n_spans} code span(s) name the helper. TWO decisions in this \
+             ADR have to describe it -- the delegation to the owning module (Decision 1) and \
+             the owner-generic signature (Decision 2) -- which `[scope/decision1]` and \
+             `[scope/decision2]` below enforce section by section; this clause is the \
+             arithmetic floor underneath them. One span means one of those decisions has \
+             stopped describing the declaration, and every span clause above would then be \
+             judging whatever single span is left."
         ));
     }
 
-    let mut paragraphs: Vec<String> = Vec::new();
+    // Each paragraph carries the `## ` section it sits in. That tag is what
+    // makes `[scope/distinct]` mean `two DECISIONS describe this` instead of
+    // `two paragraphs somewhere do`: the round-2 red team deleted Decision 1's
+    // declaration clause and added a second declaration paragraph inside
+    // Decision 2, which satisfied a paragraph-only count exactly.
+    let mut paragraphs: Vec<(String, String)> = Vec::new();
     let mut current: Vec<&str> = Vec::new();
+    let mut title = String::from("(document preamble)");
     for line in md.lines() {
         if line.trim().is_empty() {
             if !current.is_empty() {
-                paragraphs.push(current.join("\n"));
+                paragraphs.push((title.clone(), current.join("\n")));
                 current.clear();
             }
-        } else {
-            current.push(line);
+            continue;
         }
+        if line.starts_with("## ") {
+            if !current.is_empty() {
+                paragraphs.push((title.clone(), current.join("\n")));
+                current.clear();
+            }
+            title = line.to_string();
+        }
+        current.push(line);
     }
     if !current.is_empty() {
-        paragraphs.push(current.join("\n"));
+        paragraphs.push((title, current.join("\n")));
     }
 
     let mut distinct: Vec<&str> = Vec::new();
-    for para in &paragraphs {
+    let mut sections: Vec<&str> = Vec::new();
+    for (sect, para) in &paragraphs {
         if !para.contains(token) {
             continue;
         }
@@ -10521,41 +10832,48 @@ fn rb67p_adr_violations(md: &str, live_sig: &str, squashed_src: &str) -> Vec<Str
         if !distinct.contains(&para.as_str()) {
             distinct.push(para.as_str());
         }
+        if !sections.contains(&sect.as_str()) {
+            sections.push(sect.as_str());
+        }
     }
     let n_paras = distinct.len();
-    if n_paras < 2 {
+    let n_sections = sections.len();
+    if n_paras < 2 || n_sections < 2 {
         out.push(format!(
-            "[scope/distinct]: only {n_paras} distinct paragraph(s) name the helper. Restating \
-             both spans inside ONE paragraph satisfies every count above while deleting the \
-             second decision's description of the declaration."
+            "[scope/distinct]: {n_paras} distinct paragraph(s), in {n_sections} distinct `## ` \
+             section(s), name the helper -- BOTH counts must be at least two. Restating both \
+             declarations inside ONE paragraph, or inside ONE section (measured: Decision 1 \
+             emptied of its declaration and a second declaration paragraph added to Decision \
+             2), satisfies every span count above while one of the two decisions stops \
+             describing the declaration entirely."
         ));
     }
 
-    let heading = concat!("## Decision", " 2");
-    let mut section = String::new();
-    let mut inside = false;
-    let mut seen = false;
-    for line in md.lines() {
-        if inside && line.starts_with("## ") {
-            inside = false;
+    // A section is the RECORD of a decision about the declaration only if its
+    // BODY carries the declaration. MEASURED bypass (round-2 red team): the
+    // helper's bare name moved into the `## Decision 2` HEADING satisfied a
+    // `contains(the name)` reading of the section -- and, because a heading is
+    // its own paragraph and that one named the file, three further clauses
+    // with it -- while the body was rewritten to say the helper takes a guest
+    // identity, returns nothing, sweeps the whole table and is declared `pub`.
+    // So: the heading LINE is excluded from the body, and the body must carry
+    // a code span containing the LIVE SIGNATURE, not merely the name.
+    for (heading, label) in [
+        (concat!("## Decision", " 1"), "[scope/decision1]"),
+        (concat!("## Decision", " 2"), "[scope/decision2]"),
+    ] {
+        if !rb67p_section_declares(md, heading, live_sig) {
+            out.push(format!(
+                "{label}: the `{heading}` section is absent, or its BODY -- the lines AFTER the \
+                 heading -- carries no code span containing the live signature `{live_sig}`. \
+                 Decision 1 is the record of WHICH MODULE owns the helper; Decision 2 is the \
+                 record of its OWNER-GENERIC signature, the one the S3 cascade reuses verbatim. \
+                 A decision that has stopped stating the declaration has stopped recording \
+                 itself, however many times the name appears elsewhere in the document. The \
+                 name in the HEADING does not satisfy this clause: that was a measured bypass \
+                 of the whole gate, not a hypothetical one."
+            ));
         }
-        if line.starts_with(heading) {
-            inside = true;
-            seen = true;
-        }
-        if inside {
-            section.push_str(line);
-            section.push('\n');
-        }
-    }
-    if !seen || !section.contains(token) {
-        out.push(String::from(
-            "[scope/decision2]: the `## Decision 2` section is absent, or it no longer names the \
-             helper. That section IS the record of the owner-generic signature -- the decision \
-             the S3 cascade reuses verbatim -- so a signature description that drifts out of it \
-             leaves the decision undocumented even while the document still mentions the name \
-             somewhere else.",
-        ));
     }
 
     out
@@ -10572,10 +10890,19 @@ fn rb67p_adr_violations(md: &str, live_sig: &str, squashed_src: &str) -> Vec<Str
 ///
 /// Kills, all MEASURED against the pre-fix document or against an earlier
 /// design of this oracle: a stale parameter list in a code span; a code span
-/// naming a parameter privacy.rs does not have; a `path:line` citation in any
-/// of nine spellings; a declaration described in prose with no code span at
-/// all; a correct span in a paragraph that never names the module; and both
-/// spans collapsed into one paragraph with the second decision's heading gone.
+/// naming a parameter privacy.rs does not have; a file-and-line citation in
+/// any of TWELVE spellings, in either direction (the number after the path, or
+/// before it); a declaration described in prose with no code span at all; a
+/// correct span in a paragraph that never names the module; and both spans
+/// collapsed into one paragraph with the second decision's heading gone.
+///
+/// ROUND-2 KILLS, every one of them CI-clean against the first version of this
+/// test: the helper's bare NAME moved into the `## Decision 2` heading while
+/// the body was rewritten to describe a different function entirely; Decision
+/// 1 emptied of its declaration and a second declaration paragraph added to
+/// Decision 2; an HTML comment splitting the file name inside a citation; and
+/// a citation written as `see line N of privacy.rs`, which no forward-looking
+/// window could see.
 #[test]
 fn rb67p_adr0220_cites_the_live_purge_declaration() {
     assert!(
@@ -10594,7 +10921,7 @@ fn rb67p_adr0220_cites_the_live_purge_declaration() {
          vacuously TRUE, which is the one failure mode a document gate cannot afford."
     );
 
-    let violations = rb67p_adr_violations(RB67_ADR_0220_MD, &live_sig, &squashed_src);
+    let violations = rb67p_adr_violations(RB67_ADR_0220_MD, live_sig, squashed_src);
     let found = violations.len();
     let listed = violations.join("\n  - ");
     assert!(
@@ -10660,9 +10987,14 @@ fn rb67p_doc_with_citation(cite: &str) -> String {
 }
 
 /// The oracle must ACCEPT this document, and say why if it does not.
+///
+/// `#[track_caller]` so the panic names the FIXTURE's line rather than this
+/// helper's: with more than thirty fixtures in one test, a location that is
+/// always the same line is no location at all.
+#[track_caller]
 fn rb67p_expect_clean(tooth: &str, md: &str) {
     let (live_sig, squashed_src) = rb67p_live_declaration_facts();
-    let found = rb67p_adr_violations(md, &live_sig, &squashed_src);
+    let found = rb67p_adr_violations(md, live_sig, squashed_src);
     let listed = found.join("\n  - ");
     assert!(
         found.is_empty(),
@@ -10677,9 +11009,12 @@ fn rb67p_expect_clean(tooth: &str, md: &str) {
 /// The oracle must REJECT this document with the named label. Asserting the
 /// LABEL and not merely non-emptiness is the point: a rule that reds for some
 /// other reason has stopped covering the defect the fixture encodes.
+///
+/// `#[track_caller]` for the same reason as its sibling above.
+#[track_caller]
 fn rb67p_expect_label(tooth: &str, md: &str, label: &str) {
     let (live_sig, squashed_src) = rb67p_live_declaration_facts();
-    let found = rb67p_adr_violations(md, &live_sig, &squashed_src);
+    let found = rb67p_adr_violations(md, live_sig, squashed_src);
     let listed = found.join("\n  - ");
     assert!(
         found.iter().any(|v| v.contains(label)),
@@ -10710,12 +11045,17 @@ fn rb67p_adr0220_citation_oracle_control() {
     // POSITIVE CONTROL: a document that says the true thing must be accepted.
     rb67p_expect_clean("good-document", &rb67p_doc_with_citation("privacy.rs"));
 
-    // Nine spellings of a file-and-line citation. The natural markdown one
+    // TWELVE spellings of a file-and-line citation. The natural markdown one
     // puts the backtick BETWEEN the path and the colon, which is invisible to
     // any scan that looks for the two adjacent; the full-width colon and the
     // full-width digits defeat an ASCII-only reading (`is_ascii_digit` would
-    // pass the last one); the capitals defeat a case-sensitive one; and the
+    // pass that one); the capitals defeat a case-sensitive one; and the
     // spaced, at-sign, hash and parenthesised forms defeat a literal `.rs:`.
+    //
+    // The last three are round-2 measurements against the SHIPPED version of
+    // this test: two put the number BEFORE the path, where no forward-looking
+    // window could ever see it, and one splits the file name with an HTML
+    // comment that every markdown renderer erases.
     for cite in [
         "`privacy.rs`:79-92",
         "privacy.rs#L79-L92",
@@ -10726,9 +11066,21 @@ fn rb67p_adr0220_citation_oracle_control() {
         "privacy.rs@79",
         "privacy.rs (lines 79-92)",
         "privacy.rs:\u{FF17}\u{FF19}-92",
+        "See line 42 of privacy.rs for the declaration.",
+        "The declaration sits in privacy.rs, see line 42.",
+        "privacy.<!-- -->rs:79-92",
     ] {
         rb67p_expect_label(cite, &rb67p_doc_with_citation(cite), "[cite/no-line]");
     }
+
+    // That last spelling is also a banned CONSTRUCT: the stripper defeats it
+    // on one line, and the ban closes the variant spanning a line break, which
+    // the stripper cannot re-fuse without lying about line numbers.
+    rb67p_expect_label(
+        "html-comment-split-needle",
+        &rb67p_doc_with_citation("privacy.<!-- -->rs:79-92"),
+        "[doc/no-html-comment]",
+    );
 
     // DECOY PAIR: one correct span AND one stale span. Proves the span rule is
     // ALL-equal, not ANY-equal, and that no first-hit anchor short-circuits
@@ -10752,7 +11104,11 @@ fn rb67p_adr0220_citation_oracle_control() {
              prose here."
         ),
     );
-    rb67p_expect_label("un-backticked-mention", &bare_prose, "[cite/token-coverage]");
+    rb67p_expect_label(
+        "un-backticked-mention",
+        &bare_prose,
+        "[cite/token-coverage]",
+    );
 
     // INDENTED CODE BLOCK: renders as code, carries no backtick.
     let stale_decl = concat!("pub(crate) fn purge_export", "_bundles(ctx, owner)");
@@ -10787,9 +11143,7 @@ fn rb67p_adr0220_citation_oracle_control() {
     );
     let invented = rb67p_fixture_doc(
         &format!("The owning module is privacy.rs and it defines `{decl}`."),
-        &format!(
-            "The signature `{fabricated}` is owner-generic, and privacy.rs pins it exactly."
-        ),
+        &format!("The signature `{fabricated}` is owner-generic, and privacy.rs pins it exactly."),
     );
     rb67p_expect_label("fabricated-parameter-name", &invented, "[decl/real]");
 
@@ -10853,7 +11207,7 @@ fn rb67p_adr0220_citation_oracle_control() {
     unpaired.push('`');
     rb67p_expect_label("odd-backtick-parity", &unpaired, "[cite/parity]");
     let (live_sig, squashed_src) = rb67p_live_declaration_facts();
-    let parity_only = rb67p_adr_violations(&unpaired, &live_sig, &squashed_src);
+    let parity_only = rb67p_adr_violations(&unpaired, live_sig, squashed_src);
     assert_eq!(
         parity_only.len(),
         1,
@@ -10873,4 +11227,177 @@ fn rb67p_adr0220_citation_oracle_control() {
         ),
     );
     rb67p_expect_clean("bare-name-span-allowed", &with_bare_name);
+
+    // ---- ROUND 2: one fixture per measured bypass, per reviewer false RED,
+    // ---- and per clause that no fixture asserted ---------------------------
+
+    let d1_para = format!("The owning module is privacy.rs and it defines `{decl}`.");
+    let d2_para = format!("The signature `{decl}` is owner-generic, and privacy.rs pins it.");
+
+    // ATTACK A -- the bypass with the widest blast radius, MEASURED green
+    // against the shipped test: the helper's bare NAME moved into the
+    // `## Decision 2` HEADING, with the section body rewritten to describe a
+    // different function entirely. The heading is its own paragraph, it names
+    // the file, and a bare-name span is legal -- so a `contains(the name)`
+    // reading of the section satisfied the section clause, the distinctness
+    // clause, the span count and the paragraph-scope clause at once, while the
+    // body said the helper takes a guest identity, returns nothing, sweeps the
+    // whole table and is public.
+    let heading_only = [
+        "# 0220 fixture - the pre-claim export orphan\n\n",
+        "## Decision 1 - the fix is delegated to a new owning module\n\n",
+        d1_para.as_str(),
+        "\n\n## Decision 2 - `",
+        token,
+        "` in privacy.rs is owner-generic\n\n",
+        "The helper takes the GUEST identity, returns nothing, sweeps the whole table and is \
+         declared public. Nothing in this section says otherwise.\n",
+        "\n## Consequences\n\nThe module keeps its assigned home.\n",
+    ]
+    .concat();
+    rb67p_expect_label("heading-name-only", &heading_only, "[scope/decision2]");
+
+    // ATTACK C (MEASURED green): Decision 1's declaration clause deleted, and
+    // a SECOND declaration paragraph added inside Decision 2. Two spans, two
+    // distinct paragraphs, every count satisfied -- and the DELEGATION
+    // decision no longer describes the helper at all.
+    let d1_emptied = [
+        "# 0220 fixture - the pre-claim export orphan\n\n",
+        "## Decision 1 - the fix is delegated to a new owning module\n\n",
+        "The owning module is privacy.rs, and the delegation is recorded here.\n",
+        "\n## Decision 2 - the helper is owner-generic\n\n",
+        d2_para.as_str(),
+        "\n\nA second note in the same section repeats that privacy.rs declares `",
+        decl.as_str(),
+        "` for the cascade.\n",
+        "\n## Consequences\n\nThe module keeps its assigned home.\n",
+    ]
+    .concat();
+    rb67p_expect_label("decision1-emptied", &d1_emptied, "[scope/decision1]");
+    rb67p_expect_label("decision1-emptied", &d1_emptied, "[scope/distinct]");
+
+    // `[doc/no-cr]`, which NO fixture asserted before round 2 -- the red team
+    // neutralised the clause to `if false` and nothing noticed.
+    let crlf = rb67p_doc_with_citation("privacy.rs").replace('\n', "\r\n");
+    rb67p_expect_label("crlf-document", &crlf, "[doc/no-cr]");
+
+    // ... and the attack that makes it a TOOTH rather than hygiene. A LONE
+    // carriage return is a line break to a reader and NOT to `str::lines()`,
+    // so the file-less paragraph here fuses into the one that names the file
+    // and `[scope/paragraph]` never sees it. The `exposed` twin is the same
+    // document with a real blank line, and it REDS -- which is what proves the
+    // carriage return was hiding a real violation rather than a cosmetic one.
+    let orphan_tail = format!("A later note repeats `{decl}` without naming the module.");
+    let fused = rb67p_fixture_doc(&d1_para, &format!("{d2_para}\r\r{orphan_tail}"));
+    rb67p_expect_label("lone-cr-paragraph-fusion", &fused, "[doc/no-cr]");
+    let exposed = rb67p_fixture_doc(&d1_para, &format!("{d2_para}\n\n{orphan_tail}"));
+    rb67p_expect_label("lone-cr-fusion-exposed", &exposed, "[scope/paragraph]");
+
+    // `[decl/full]`, likewise unasserted before round 2. BOTH spans carry the
+    // live signature and BOTH occur in the source, so `[decl/sig]` and
+    // `[decl/real]` are satisfied: this is the only clause left forcing the
+    // document to spell the crate-internal visibility it exists to record.
+    let sig_only = concat!(
+        "fn purge_export",
+        "_bundles(ctx: &ReducerContext, owner: Identity) -> usize"
+    );
+    let no_visibility = rb67p_fixture_doc(
+        &format!("The owning module is privacy.rs and it defines `{sig_only}`."),
+        &format!("The signature `{sig_only}` is owner-generic, and privacy.rs pins it."),
+    );
+    rb67p_expect_label("visibility-stripped", &no_visibility, "[decl/full]");
+
+    // `[decl/count]`, the third unasserted clause: one span left, the other
+    // decision reduced to bare prose.
+    let single_span = rb67p_fixture_doc(
+        &d1_para,
+        &format!("The signature is owner-generic; privacy.rs also names {token} in prose."),
+    );
+    rb67p_expect_label("single-span-document", &single_span, "[decl/count]");
+
+    // REVIEWER'S MAJOR FALSE RED: the module-qualified spelling is how this
+    // project names the helper in prose (accounts.rs's header, ADR-0243, this
+    // file's header, the architecture doc) and it was reported as a
+    // fabrication no compiler ever saw.
+    let qualified = concat!("privacy::purge_export", "_bundles");
+    let crate_qualified = concat!("crate::privacy::purge_export", "_bundles");
+    let qualified_ok = rb67p_fixture_doc(
+        &d1_para,
+        &format!(
+            "The signature `{decl}` is owner-generic; callers spell it `{qualified}`, or \
+             `{crate_qualified}` from another module, and privacy.rs owns it."
+        ),
+    );
+    rb67p_expect_clean("qualified-name-allowed", &qualified_ok);
+
+    // ... and the BOUND on that relaxation: a path naming some OTHER module is
+    // still a fabricated path, with or without an argument list. Without this
+    // fixture the relaxation would be unbounded.
+    let bogus_name = concat!("bogus::purge_export", "_bundles");
+    let bogus_call = concat!("bogus::purge_export", "_bundles(ctx, owner)");
+    let wrong_module = rb67p_fixture_doc(
+        &d1_para,
+        &format!(
+            "The signature `{decl}` is owner-generic; a reader is told to call `{bogus_name}` \
+             or `{bogus_call}`, and privacy.rs owns it."
+        ),
+    );
+    rb67p_expect_label("wrong-module-qualifier", &wrong_module, "[decl/sig]");
+    rb67p_expect_label("wrong-module-qualifier", &wrong_module, "[decl/real]");
+
+    // `[doc/no-fence]`: a fence is THREE backticks. It desynchronises the span
+    // split for the whole rest of the document while leaving the total count
+    // EVEN, so the parity clause reports nothing at all.
+    let fence = concat!("``", "`");
+    let fenced = rb67p_fixture_doc(
+        &d1_para,
+        &format!("{d2_para}\n\n{fence}rust\n{stale_decl}\n{fence}"),
+    );
+    rb67p_expect_label("fenced-code-block", &fenced, "[doc/no-fence]");
+
+    // REVIEWER'S SECOND FALSE RED: an ADR number sitting immediately after the
+    // file name is not a line citation. The eight-character window called it
+    // one, which is how a true clause acquires a reputation for lying.
+    rb67p_expect_clean(
+        "adr-number-after-path",
+        &rb67p_doc_with_citation("`privacy.rs` (ADR-0126 idiom)"),
+    );
+
+    // The other half of that report: squashing the WHOLE document fused a
+    // paragraph ending in the file name with the numbered list item on the
+    // next line. Per-line scanning ends that class. The nested sub-bullets
+    // also prove the relaxed `[doc/no-indented-block]`: four spaces are legal
+    // when the name sits INSIDE a code span, and an indented line naming
+    // nothing is legal outright -- this document's honest-limits list is the
+    // next thing likely to grow sub-bullets.
+    let listed = [
+        "# 0220 fixture - the pre-claim export orphan\n\n",
+        "## Decision 1 - the fix is delegated to a new owning module\n\n",
+        d1_para.as_str(),
+        "\n\n## Decision 2 - the helper is owner-generic\n\n",
+        d2_para.as_str(),
+        "\n\n## Honest limits\n\n",
+        "1. **The first limit.** It says something true about privacy.rs.\n",
+        "2. **The second limit.** It says something else entirely.\n",
+        "    - a nested sub-bullet naming `",
+        qualified,
+        "` at four spaces of indent\n",
+        "    - a nested sub-bullet naming nothing at all\n",
+        "\n## Consequences\n\nThe module keeps its assigned home.\n",
+    ]
+    .concat();
+    rb67p_expect_clean("nested-list-and-numbered-items", &listed);
+
+    // The section walker's end-of-document arm: `## Decision 2` with nothing
+    // after it. Otherwise that branch is only ever taken by accident.
+    let d2_last = [
+        "# 0220 fixture - the pre-claim export orphan\n\n",
+        "## Decision 1 - the fix is delegated to a new owning module\n\n",
+        d1_para.as_str(),
+        "\n\n## Decision 2 - the helper is owner-generic\n\n",
+        d2_para.as_str(),
+        "\n",
+    ]
+    .concat();
+    rb67p_expect_clean("decision-2-runs-to-end-of-document", &d2_last);
 }
