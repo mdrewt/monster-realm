@@ -95,6 +95,45 @@ groups:
         expr: |
           sum(rate(mr_log_events_total{evt="heartbeat"}[5m])) or vector(0)
 
+      # rb-40 / ADR-0235 privacy erasure — how often a guest claim purged its export chunks.
+      # Provenance is NUMBERED because four separate decisions meet in these three lines, and
+      # each of them has an obvious-looking "fix" that would be wrong.
+      #
+      #   (1) NO `by (reducer)`. Exactly one reducer (`complete_guest_claim`) emits this evt, so
+      #       a `reducer` grouping label would be single-valued: one more dimension carrying no
+      #       information. Contrast `mr:guard_reject:rate5m` above, which DOES group because
+      #       rejects come from many reducers. The asymmetry is deliberate, not an oversight.
+      #
+      #   (2) `chunks` is a log BODY field and must NEVER become a label. It is an unbounded
+      #       integer, so promoting it mints one series per distinct value (the D12/OBS-36
+      #       cardinality bound), and OBS-35 bars the identity half (`guest`) outright. The
+      #       consequence, stated plainly so nobody reads the panel wrong: this counter answers
+      #       "how OFTEN did a claim purge", never "how MANY chunks were purged". For the chunk
+      #       count, query the log line itself in Loki — `{evt="guest_claim_export_purge"}`
+      #       carries the field that cannot be carried here.
+      #
+      #   (3) `or vector(0)` is deliberate. Until the first guest claim completes, Alloy has
+      #       never minted this {reducer,evt} pair and the panel would render "No data" rather
+      #       than a zero line. That is safe HERE SPECIFICALLY because no alert consumes this
+      #       series, so a synthetic zero cannot silence a switch. Pipeline liveness is owned by
+      #       `mr:alloy_log_bytes_read:rate5m` and the AlloyIngestStalled dead-man's switch, not
+      #       by this rule. If an alert is ever wired onto this series, revisit this line FIRST.
+      #
+      #   (4) DELIBERATELY NO ALERT — decided, not deferred. Recorded here because rb-66 was
+      #       assigned no ADR number and the dashboard JSON carries no comments. There is no
+      #       failure event to alert on: ADR-0235 makes this line terminal, so it exists only
+      #       for a transaction that COMMITTED, and alerting on it is alerting on success. A
+      #       spike threshold would be invented rather than derived (claims are player-driven,
+      #       rare and bursty), and an absence switch would cry wolf every quiet night because
+      #       zero claims is the NORMAL state — the anti-pattern the noDataState note in
+      #       `grafana/provisioning/alerting/rules.yml` already names verbatim. The alert an
+      #       operator would actually want, "a claim completed but its chunks were not purged",
+      #       needs `chunks`, which (2) shows cannot be a label: it is a Loki query, not a
+      #       Prometheus rule. If an erasure FAILURE event is ever emitted, alert on THAT.
+      - record: mr:guest_claim_export_purge:rate5m
+        expr: |
+          sum(rate(mr_log_events_total{evt="guest_claim_export_purge"}[5m])) or vector(0)
+
   - name: mr-scheduler
     interval: 15s
     rules:

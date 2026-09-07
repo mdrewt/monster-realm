@@ -35,6 +35,7 @@ import {
   checkAlertRuleHasReceiver,
   checkCaddyDualPosture,
   checkDashboardPanelsReal,
+  checkEventHasQueriedConsumer,
   checkListenAddrsLoopback,
   checkModuleLogsMountReadOnly,
   checkNoAlertingBlock,
@@ -1755,4 +1756,577 @@ test('REAL FILES: checkNoQuotedCredential passes across every real ops/observabi
 test('REAL FILES: checkRunbookHasRunnableSteps passes against the real docs/observability-dr-runbook.md', () => {
   const runbookText = readRepoRoot('docs/observability-dr-runbook.md');
   assertOk(checkRunbookHasRunnableSteps(runbookText), 'real observability-dr-runbook.md');
+});
+
+// =============================================================================
+// 19. checkEventHasQueriedConsumer(recordingRulesText, dashboardJsonText, alertRulesText,
+//     evtName) — rb-66, promoted residual R-rb-40-DASH
+//
+// EARS: "No Grafana panel or alert consumes evt=guest_claim_export_purge". This is the INVERSE
+// closure of section 14: that predicate says nothing queries an UNDEFINED series; this one says
+// a DEFINED event reaches a real consumer. It lives after the REAL FILES group because the
+// predicate itself is appended at EOF of the checks module (rb-66 plan §C — every inbound line
+// citation into either file targets a line above, so appending drifts nothing).
+//
+// Contract under test (rb-66 plan §E as AMENDED by §J1/§J2):
+//   - the scanned rule body is the `expr:` SUB-BLOCK only; the `record:` NAME is never part of
+//     it (B5 — the shipped name literally contains the evt), and comments are stripped first;
+//   - evt -> rule matches on `evt="<name>"` WITH the closing quote (prefix-free), and must
+//     resolve to EXACTLY one rule (B2/B5 zero, B6 two);
+//   - §J1: the resolved `record:` NAME must be declared exactly once document-wide (B7);
+//   - a consumer is a panel target whose promqlIdentifiers(expr) CONTAINS the record name —
+//     never String.includes — with `hide !== true` (§J2, B8) and an effective datasource type
+//     (target.datasource?.type ?? panel.datasource?.type) of `prometheus` when one is present
+//     (§J2, B9); or an alert `expr:` under the same identifier test (A2);
+//   - `title`, `description`, `legendFormat` and `templating.list[].query` are NEVER consumers;
+//   - a dashboard JSON parse error fails LOUD (D1), never as "no consumer".
+// =============================================================================
+
+const PURGE_EVT = 'guest_claim_export_purge';
+const PURGE_SERIES = 'mr:guest_claim_export_purge:rate5m';
+const PURGE_SERIES_1M = 'mr:guest_claim_export_purge:rate1m';
+const HEARTBEAT_SERIES = 'mr:heartbeat:rate5m';
+const PURGE_RULE_EXPR = `sum(rate(mr_log_events_total{evt="${PURGE_EVT}"}[5m])) or vector(0)`;
+const PURGE_RULE_EXPR_1M = `sum(rate(mr_log_events_total{evt="${PURGE_EVT}"}[1m])) or vector(0)`;
+const HEARTBEAT_RULE_EXPR = 'sum(rate(mr_log_events_total{evt="heartbeat"}[5m])) or vector(0)';
+const CHAT_RULE_EXPR = 'sum(rate(mr_log_events_total{evt="chat"}[5m])) or vector(0)';
+
+// Detail needles. A BAD fixture must fail for the RIGHT clause: `assertNotOk` alone would let a
+// single over-broad rejection (an unconditional `fail()`, or one clause that swallows the rest)
+// satisfy every negative tooth at once, which would make most of this section vacuous.
+const NO_RULE_SELECTS = `no recording rule selects evt="${PURGE_EVT}"`;
+const NOT_A_CONSUMER = 'not a consumer';
+
+/**
+ * A recording-rules fixture in the SHAPE OF THE REAL FILE (rules/recording.rules.yml:71-96):
+ * `groups:` / `- name:` / `interval:` / `rules:`, each rule a `- record:` at indent 6 whose
+ * `expr: |` BLOCK SCALAR carries the PromQL on the NEXT line at indent 10. A single-line
+ * `expr: <promql>` fixture would never exercise the multi-line body parser the real file forces,
+ * and every tooth built on it would be vacuous against the shipped input.
+ *
+ * An optional `comment` is emitted as a `#` line INSIDE the block scalar (a legal PromQL
+ * comment): `stripComments` must blank it, so a comment naming ANOTHER rule's evt cannot forge
+ * a second match. A1 uses this — an implementation that skips stripComments resolves two rules
+ * there and fails, which is the point.
+ */
+function purgeRulesFixture(rules) {
+  const lines = ['groups:', '  - name: mr-meta', '    interval: 15s', '    rules:'];
+  for (const rule of rules) {
+    lines.push(`      - record: ${rule.record}`);
+    lines.push('        expr: |');
+    if (rule.comment) lines.push(`          # ${rule.comment}`);
+    lines.push(`          ${rule.expr}`);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * `assertNotOk` plus the clause pin: every needle must appear in the detail (case-insensitively),
+ * so a rejection that fires for the wrong reason cannot satisfy the tooth.
+ */
+function assertFailsWith(result, needles, msg) {
+  assertNotOk(result, msg);
+  const detail = result.detail.toLowerCase();
+  for (const needle of needles) {
+    assert.ok(
+      detail.includes(needle.toLowerCase()),
+      `${msg}: the detail must name the clause that fired (missing \`${needle}\`) — got: ${result.detail}`,
+    );
+  }
+}
+
+const RULES_WITH_PURGE = purgeRulesFixture([
+  {
+    record: HEARTBEAT_SERIES,
+    expr: HEARTBEAT_RULE_EXPR,
+    comment: `unlike evt="${PURGE_EVT}" below, heartbeat is emitted every tick`,
+  },
+  { record: PURGE_SERIES, expr: PURGE_RULE_EXPR },
+]);
+
+const RULES_WITHOUT_PURGE = purgeRulesFixture([
+  { record: HEARTBEAT_SERIES, expr: HEARTBEAT_RULE_EXPR },
+]);
+
+// B5: the shipped record NAME literally contains the evt name, but its BODY selects chat.
+const RULES_NAME_DECOY = purgeRulesFixture([
+  { record: HEARTBEAT_SERIES, expr: HEARTBEAT_RULE_EXPR },
+  { record: PURGE_SERIES, expr: CHAT_RULE_EXPR },
+]);
+
+// B6: two DIFFERENT rules select the evt — the evt -> series mapping is ambiguous.
+const RULES_TWO_MATCHES = purgeRulesFixture([
+  { record: PURGE_SERIES, expr: PURGE_RULE_EXPR },
+  { record: PURGE_SERIES_1M, expr: PURGE_RULE_EXPR_1M },
+]);
+
+// B7 (§J1): a SECOND `- record: mr:heartbeat:rate5m` whose body selects the purge evt. Exactly
+// one BODY matches, so the un-amended contract resolves the evt to the heartbeat series and
+// counts the pre-existing heartbeat panel as its consumer — with no purge panel anywhere.
+const RULES_DUPLICATE_RECORD_NAME = purgeRulesFixture([
+  { record: HEARTBEAT_SERIES, expr: HEARTBEAT_RULE_EXPR },
+  { record: HEARTBEAT_SERIES, expr: PURGE_RULE_EXPR },
+]);
+
+const PROM_DS = { type: 'prometheus', uid: 'mr-prometheus' };
+const LOKI_DS = { type: 'loki', uid: 'mr-loki' };
+
+const HEARTBEAT_PANEL = {
+  id: 12,
+  type: 'timeseries',
+  title: 'Heartbeat rate',
+  datasource: PROM_DS,
+  targets: [{ refId: 'A', editorMode: 'code', expr: HEARTBEAT_SERIES }],
+};
+
+const PURGE_PANEL_TITLE = 'Guest claim export purge rate';
+const PURGE_PANEL_DESCRIPTION = `ADR-0235 — counts evt="${PURGE_EVT}" EVENTS, never chunks.`;
+
+const DASHBOARD_WITH_PURGE_PANEL = JSON.stringify({
+  panels: [
+    HEARTBEAT_PANEL,
+    {
+      id: 15,
+      type: 'timeseries',
+      title: PURGE_PANEL_TITLE,
+      description: PURGE_PANEL_DESCRIPTION,
+      datasource: PROM_DS,
+      targets: [{ refId: 'A', editorMode: 'code', legendFormat: 'purges/s', expr: PURGE_SERIES }],
+    },
+  ],
+});
+
+const DASHBOARD_HEARTBEAT_ONLY = JSON.stringify({ panels: [HEARTBEAT_PANEL] });
+
+// A3: no `datasource` key anywhere. The §J2 datasource rule is "when present" — a panel that
+// inherits the dashboard default must still count, or the shipped tree would red on a dialect.
+const DASHBOARD_PURGE_PANEL_NO_DATASOURCE = JSON.stringify({
+  panels: [
+    {
+      id: 15,
+      type: 'timeseries',
+      title: PURGE_PANEL_TITLE,
+      targets: [{ refId: 'A', editorMode: 'code', expr: PURGE_SERIES }],
+    },
+  ],
+});
+
+const DASHBOARD_TITLE_DECOY_EMPTY_TARGETS = JSON.stringify({
+  panels: [
+    HEARTBEAT_PANEL,
+    {
+      id: 15,
+      type: 'timeseries',
+      title: `${PURGE_PANEL_TITLE} (evt="${PURGE_EVT}")`,
+      description: PURGE_PANEL_DESCRIPTION,
+      datasource: PROM_DS,
+      targets: [],
+    },
+  ],
+});
+
+const DASHBOARD_LEGENDFORMAT_DECOY = JSON.stringify({
+  panels: [
+    {
+      id: 15,
+      type: 'timeseries',
+      title: PURGE_PANEL_TITLE,
+      description: PURGE_PANEL_DESCRIPTION,
+      datasource: PROM_DS,
+      targets: [
+        {
+          refId: 'A',
+          editorMode: 'code',
+          legendFormat: `evt="${PURGE_EVT}"`,
+          expr: HEARTBEAT_SERIES,
+        },
+      ],
+    },
+  ],
+});
+
+const DASHBOARD_PURGE_PANEL_HIDDEN = JSON.stringify({
+  panels: [
+    HEARTBEAT_PANEL,
+    {
+      id: 15,
+      type: 'timeseries',
+      title: PURGE_PANEL_TITLE,
+      datasource: PROM_DS,
+      targets: [{ refId: 'A', editorMode: 'code', hide: true, expr: PURGE_SERIES }],
+    },
+  ],
+});
+
+const DASHBOARD_PURGE_PANEL_LOKI_PANEL_DS = JSON.stringify({
+  panels: [
+    HEARTBEAT_PANEL,
+    {
+      id: 15,
+      type: 'timeseries',
+      title: PURGE_PANEL_TITLE,
+      datasource: LOKI_DS,
+      targets: [{ refId: 'A', editorMode: 'code', expr: PURGE_SERIES }],
+    },
+  ],
+});
+
+const DASHBOARD_PURGE_PANEL_LOKI_TARGET_DS = JSON.stringify({
+  panels: [
+    HEARTBEAT_PANEL,
+    {
+      id: 15,
+      type: 'timeseries',
+      title: PURGE_PANEL_TITLE,
+      datasource: PROM_DS,
+      targets: [{ refId: 'A', editorMode: 'code', datasource: LOKI_DS, expr: PURGE_SERIES }],
+    },
+  ],
+});
+
+const TRUNCATED_DASHBOARD_JSON = '{ "panels": [ { "id": 15, "targets": [ ';
+
+// The real alerting file's shape (grafana/provisioning/alerting/rules.yml:43-61): the PromQL
+// lives at deep indent under `data[].model.expr`, which is what `yamlExprValues` reads.
+const ALERT_RULES_NO_PURGE = [
+  'apiVersion: 1',
+  'groups:',
+  '  - orgId: 1',
+  '    name: meta-monitoring',
+  '    folder: Monster Realm',
+  '    interval: 20s',
+  '    rules:',
+  '      - uid: mr-alloy-down',
+  '        title: AlloyDown',
+  '        condition: C',
+  '        data:',
+  '          - refId: A',
+  '            datasourceUid: mr-prometheus',
+  '            model:',
+  '              refId: A',
+  '              editorMode: code',
+  '              expr: up{job="alloy"}',
+].join('\n');
+
+const ALERT_RULES_CONSUMING_PURGE = [
+  'apiVersion: 1',
+  'groups:',
+  '  - orgId: 1',
+  '    name: meta-monitoring',
+  '    folder: Monster Realm',
+  '    interval: 20s',
+  '    rules:',
+  '      - uid: mr-guest-claim-export-purge-stalled',
+  '        title: GuestClaimExportPurgeStalled',
+  '        condition: C',
+  '        data:',
+  '          - refId: A',
+  '            datasourceUid: mr-prometheus',
+  '            model:',
+  '              refId: A',
+  '              editorMode: code',
+  `              expr: ${PURGE_SERIES} > 0`,
+].join('\n');
+
+test('checkEventHasQueriedConsumer: A1 GOOD — a block-scalar rule selects the evt and a panel target queries the series it records', () => {
+  const result = checkEventHasQueriedConsumer(
+    RULES_WITH_PURGE,
+    DASHBOARD_WITH_PURGE_PANEL,
+    ALERT_RULES_NO_PURGE,
+    PURGE_EVT,
+  );
+  assertOk(
+    result,
+    'GOOD — exactly one `expr: |` body selects evt="guest_claim_export_purge", the series it records is queried by a panel target, and the sibling PromQL comment naming the evt is stripped before matching',
+  );
+});
+
+test('checkEventHasQueriedConsumer: A2 GOOD — no panel consumer, but an alert expr: queries the recorded series', () => {
+  const result = checkEventHasQueriedConsumer(
+    RULES_WITH_PURGE,
+    DASHBOARD_HEARTBEAT_ONLY,
+    ALERT_RULES_CONSUMING_PURGE,
+    PURGE_EVT,
+  );
+  assertOk(
+    result,
+    'the EARS says "panel OR alert" — an alert rule consuming the recorded series satisfies it with no panel at all, so requiring BOTH halves would red a legitimate tree',
+  );
+});
+
+test('checkEventHasQueriedConsumer: A3 GOOD — an empty alertRulesText is legal, and a panel with no datasource key still consumes', () => {
+  const result = checkEventHasQueriedConsumer(
+    RULES_WITH_PURGE,
+    DASHBOARD_PURGE_PANEL_NO_DATASOURCE,
+    '',
+    PURGE_EVT,
+  );
+  assertOk(
+    result,
+    'a tree that ships NO alert file content is legal (rb-66 §D2 decides against an alert), and §J2 filters only on a datasource type that is PRESENT — an over-strict vacuity or datasource check would red the shipped tree',
+  );
+});
+
+test('checkEventHasQueriedConsumer: B1 BAD — the rule exists but the panel was deleted and no alert consumes it', () => {
+  const result = checkEventHasQueriedConsumer(
+    RULES_WITH_PURGE,
+    DASHBOARD_HEARTBEAT_ONLY,
+    ALERT_RULES_NO_PURGE,
+    PURGE_EVT,
+  );
+  assertFailsWith(
+    result,
+    [PURGE_SERIES, NOT_A_CONSUMER],
+    'deleting the rb-66 panel is the exact regression this gate exists to catch: the evt is recorded into nothing, and the detail must name the orphaned series',
+  );
+});
+
+test('checkEventHasQueriedConsumer: B2 BAD — the recording rule was deleted, leaving a dangling panel', () => {
+  const result = checkEventHasQueriedConsumer(
+    RULES_WITHOUT_PURGE,
+    DASHBOARD_WITH_PURGE_PANEL,
+    '',
+    PURGE_EVT,
+  );
+  assertFailsWith(
+    result,
+    [NO_RULE_SELECTS],
+    'with the rule deleted the panel queries a series nothing records — the two arms must fail INDEPENDENTLY, so this must report the missing rule, not the missing consumer',
+  );
+});
+
+test('checkEventHasQueriedConsumer: B3 BAD — a correctly-titled and described panel with targets: [] is a decoy', () => {
+  const result = checkEventHasQueriedConsumer(
+    RULES_WITH_PURGE,
+    DASHBOARD_TITLE_DECOY_EMPTY_TARGETS,
+    '',
+    PURGE_EVT,
+  );
+  assertFailsWith(
+    result,
+    [PURGE_SERIES, NOT_A_CONSUMER],
+    'a panel whose title AND description name the event but which issues no query draws nothing — a whole-text dashboardJsonText.includes(evtName) predicate would call this green',
+  );
+});
+
+test('checkEventHasQueriedConsumer: B4 BAD — a panel queries a DIFFERENT recorded series while legendFormat names the evt', () => {
+  const result = checkEventHasQueriedConsumer(
+    RULES_WITH_PURGE,
+    DASHBOARD_LEGENDFORMAT_DECOY,
+    '',
+    PURGE_EVT,
+  );
+  assertFailsWith(
+    result,
+    [PURGE_SERIES, NOT_A_CONSUMER],
+    'a copy-pasted sibling panel that still queries mr:heartbeat:rate5m while its legendFormat is relabelled to the purge evt renders a heartbeat line under a purge legend — legendFormat must never be read',
+  );
+});
+
+test('checkEventHasQueriedConsumer: B5 BAD — a rule NAMED for the evt whose body selects evt="chat"', () => {
+  const result = checkEventHasQueriedConsumer(
+    RULES_NAME_DECOY,
+    DASHBOARD_WITH_PURGE_PANEL,
+    '',
+    PURGE_EVT,
+  );
+  assertFailsWith(
+    result,
+    [NO_RULE_SELECTS],
+    'the shipped record NAME literally contains the evt name, so a predicate that scans the `- record:` line resolves this rule and finds its panel — only the `expr:` BODY may be scanned',
+  );
+});
+
+test('checkEventHasQueriedConsumer: B6 BAD — two different rules select the evt (ambiguous definition)', () => {
+  const result = checkEventHasQueriedConsumer(
+    RULES_TWO_MATCHES,
+    DASHBOARD_WITH_PURGE_PANEL,
+    '',
+    PURGE_EVT,
+  );
+  assertFailsWith(
+    result,
+    [PURGE_SERIES, PURGE_SERIES_1M],
+    'a first-match resolver silently picks one of two rules that select the same evt and validates the panel for whichever it happened to pick; the detail must name BOTH colliding rules',
+  );
+});
+
+test('checkEventHasQueriedConsumer: B7 BAD — a duplicate `- record: mr:heartbeat:rate5m` hijacks the heartbeat panel', () => {
+  const result = checkEventHasQueriedConsumer(
+    RULES_DUPLICATE_RECORD_NAME,
+    DASHBOARD_HEARTBEAT_ONLY,
+    '',
+    PURGE_EVT,
+  );
+  assertFailsWith(
+    result,
+    ['duplicate', HEARTBEAT_SERIES],
+    'the MEASURED CI-clean bypass (§J1): a second rule reusing an existing record name makes the pre-existing heartbeat panel read as the purge consumer with no purge panel at all, and promtool prints `duplicate rule(s)` while still exiting 0',
+  );
+});
+
+test('checkEventHasQueriedConsumer: B8 BAD — the only consuming target carries hide: true', () => {
+  const result = checkEventHasQueriedConsumer(
+    RULES_WITH_PURGE,
+    DASHBOARD_PURGE_PANEL_HIDDEN,
+    '',
+    PURGE_EVT,
+  );
+  assertFailsWith(
+    result,
+    [PURGE_SERIES, NOT_A_CONSUMER],
+    '§J2: `hide: true` is the Grafana disabled-query toggle — the query is never issued and the panel renders empty, so a target-shaped decoy with the right expr is not a consumer',
+  );
+});
+
+test('checkEventHasQueriedConsumer: B9 BAD — the consuming target or panel datasource is loki, not prometheus', () => {
+  const panelLevel = checkEventHasQueriedConsumer(
+    RULES_WITH_PURGE,
+    DASHBOARD_PURGE_PANEL_LOKI_PANEL_DS,
+    '',
+    PURGE_EVT,
+  );
+  assertFailsWith(
+    panelLevel,
+    [PURGE_SERIES, NOT_A_CONSUMER],
+    '§J2: a PromQL expr sent to a Loki datasource at PANEL level returns an error, not the series — reading only target.datasource would miss this, which is the real dashboard shape',
+  );
+  const targetLevel = checkEventHasQueriedConsumer(
+    RULES_WITH_PURGE,
+    DASHBOARD_PURGE_PANEL_LOKI_TARGET_DS,
+    '',
+    PURGE_EVT,
+  );
+  assertFailsWith(
+    targetLevel,
+    [PURGE_SERIES, NOT_A_CONSUMER],
+    '§J2: a target-level datasource OVERRIDES the panel default, so a prometheus-looking panel whose only target is pinned to Loki must fail too — reading only panel.datasource would miss this',
+  );
+});
+
+test('checkEventHasQueriedConsumer: C1 non-vacuity — a blank recordingRulesText is rejected, never default-true', () => {
+  const blankRules = checkEventHasQueriedConsumer(
+    '',
+    DASHBOARD_WITH_PURGE_PANEL,
+    ALERT_RULES_NO_PURGE,
+    PURGE_EVT,
+  );
+  assertFailsWith(
+    blankRules,
+    ['recording rules text is empty'],
+    'with no rules text there is nothing to resolve the evt against; scanning nothing must never read as green, and this vacuity clause needs its own message',
+  );
+  const whitespaceRules = checkEventHasQueriedConsumer(
+    '   \n  ',
+    DASHBOARD_WITH_PURGE_PANEL,
+    ALERT_RULES_NO_PURGE,
+    PURGE_EVT,
+  );
+  assertFailsWith(
+    whitespaceRules,
+    ['recording rules text is empty'],
+    'a whitespace-only rules file is blank for every purpose this predicate has and must be rejected the same way',
+  );
+  const noRules = checkEventHasQueriedConsumer(
+    'groups: []',
+    DASHBOARD_WITH_PURGE_PANEL,
+    ALERT_RULES_NO_PURGE,
+    PURGE_EVT,
+  );
+  assertFailsWith(
+    noRules,
+    ['nothing was scanned'],
+    'a non-blank rules document that parses to ZERO `- record:` rules scanned nothing either — the fail-closed half of the same non-vacuity requirement',
+  );
+});
+
+test('checkEventHasQueriedConsumer: C2 non-vacuity — a blank dashboardJsonText is rejected, never default-true', () => {
+  const blankDashboard = checkEventHasQueriedConsumer(
+    RULES_WITH_PURGE,
+    '',
+    ALERT_RULES_NO_PURGE,
+    PURGE_EVT,
+  );
+  assertFailsWith(
+    blankDashboard,
+    ['dashboard JSON text is empty'],
+    'an empty dashboard document cannot confirm a panel consumer and must fail with its OWN message, distinct from the blank-rules and empty-evt clauses',
+  );
+  const whitespaceDashboard = checkEventHasQueriedConsumer(
+    RULES_WITH_PURGE,
+    '   \n  ',
+    ALERT_RULES_NO_PURGE,
+    PURGE_EVT,
+  );
+  assertFailsWith(
+    whitespaceDashboard,
+    ['dashboard JSON text is empty'],
+    'a whitespace-only dashboard document is blank for every purpose this predicate has and must be rejected the same way',
+  );
+});
+
+test('checkEventHasQueriedConsumer: C3 non-vacuity — a blank or non-string evtName is rejected with its own message', () => {
+  const emptyEvt = checkEventHasQueriedConsumer(
+    RULES_WITH_PURGE,
+    DASHBOARD_WITH_PURGE_PANEL,
+    '',
+    '',
+  );
+  assertFailsWith(
+    emptyEvt,
+    ['event name'],
+    'an empty subject would match `evt=""` under a naive concatenation, or match every rule under a looser one — the empty evt name must be rejected by its own clause, not resolved',
+  );
+  const whitespaceEvt = checkEventHasQueriedConsumer(
+    RULES_WITH_PURGE,
+    DASHBOARD_WITH_PURGE_PANEL,
+    '',
+    '   ',
+  );
+  assertFailsWith(
+    whitespaceEvt,
+    ['event name'],
+    'a whitespace-only evt name is not a subject either and must be rejected by the same vacuity clause, never resolved against the rules',
+  );
+  const nullEvt = checkEventHasQueriedConsumer(
+    RULES_WITH_PURGE,
+    DASHBOARD_WITH_PURGE_PANEL,
+    '',
+    null,
+  );
+  assertFailsWith(
+    nullEvt,
+    ['event name'],
+    'a non-string evt name must be caught by the vacuity clause rather than concatenated into `evt="null"` and reported as a missing rule, which would blame the config for a caller bug',
+  );
+});
+
+test('checkEventHasQueriedConsumer: D1 BAD — unparsable dashboard JSON fails LOUD, never as "no consumer"', () => {
+  const result = checkEventHasQueriedConsumer(
+    RULES_WITH_PURGE,
+    TRUNCATED_DASHBOARD_JSON,
+    ALERT_RULES_CONSUMING_PURGE,
+    PURGE_EVT,
+  );
+  assertFailsWith(
+    result,
+    ['does not parse'],
+    'a truncated dashboard must be reported as a PARSE failure — swallowing the error and continuing would report the wrong defect, and swallowing it into a green result would hide a broken dashboard behind an alert consumer',
+  );
+});
+
+test('REAL FILES: checkEventHasQueriedConsumer — a real panel or alert consumes evt=guest_claim_export_purge', () => {
+  const recordingRulesText = readOps('rules/recording.rules.yml');
+  const dashboardJsonText = readOps('grafana/dashboards/monster-realm.json');
+  const alertRulesText = readOps('grafana/provisioning/alerting/rules.yml');
+  const result = checkEventHasQueriedConsumer(
+    recordingRulesText,
+    dashboardJsonText,
+    alertRulesText,
+    PURGE_EVT,
+  );
+  assertOk(
+    result,
+    'the rb-66 EARS criterion itself, against the committed rules + dashboard + alerting files: ADR-0235 emits evt=guest_claim_export_purge and some real panel or alert must consume it',
+  );
 });

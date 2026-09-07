@@ -251,6 +251,23 @@
           "expr": "mr:scheduled_function_late:ratio5m"
         }
       ]
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Guest-claim export purge rate (privacy erasure)",
+      "description": "ADR-0235 privacy erasure — how often a completed guest claim purged its export chunks, as a per-second rate over 5m. It counts EVENTS, never chunks: for the chunk count, pivot to Loki, where the log line {evt=\"guest_claim_export_purge\"} carries the field this series structurally cannot. A flat 0 is the NORMAL reading and is NOT a liveness signal for the log pipeline (that is AlloyIngestStalled over mr:alloy_log_bytes_read:rate5m). Why the label is impossible, why the rule reads `or vector(0)`, and why no alert consumes this series are all in the numbered provenance comment above the rule in rules/recording.rules.yml (group mr-meta).",
+      "datasource": { "type": "prometheus", "uid": "mr-prometheus" },
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 37 },
+      "fieldConfig": { "defaults": { "unit": "ops", "min": 0, "decimals": 4 } },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "legendFormat": "guest_claim_export_purge",
+          "expr": "mr:guest_claim_export_purge:rate5m"
+        }
+      ]
     }
   ]
 }

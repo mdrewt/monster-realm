@@ -1098,3 +1098,333 @@ export function checkRunbookHasRunnableSteps(runbookText) {
       'replay-metric RTO derivation, crash-consistency, and the 2x freshness rule',
   );
 }
+
+// ---------------------------------------------------------------------------
+// 19. rb-66 (promoted residual R-rb-40-DASH) — a DEFINED event reaches a real consumer
+// ---------------------------------------------------------------------------
+
+const indentOf = (line) => line.length - line.trimStart().length;
+
+/** PromQL with its `#` comments removed (quote-aware). `#` opens a comment in PromQL. */
+function promqlCode(expr) {
+  const out = [];
+  for (const line of expr.split('\n')) {
+    let quote = '';
+    let cut = -1;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (quote) {
+        if (ch === quote) quote = '';
+      } else if (ch === '"' || ch === "'") {
+        quote = ch;
+      } else if (ch === '#') {
+        cut = i;
+        break;
+      }
+    }
+    out.push(cut === -1 ? line : line.slice(0, cut));
+  }
+  return out.join('\n');
+}
+
+/**
+ * Alert `expr:` values Grafana actually EVALUATES: only inside a `model:` block, and only in a
+ * rule that is not `isPaused: true`. A bare `expr:` key under `labels:` or `annotations:` is a
+ * string Grafana never runs, and a paused rule never fires (RT-22).
+ */
+function alertModelExprs(text) {
+  const exprs = [];
+  let modelIndent = -1;
+  let ruleIndent = -1;
+  let paused = false;
+  const pending = [];
+  const flush = () => {
+    if (!paused) exprs.push(...pending);
+    pending.length = 0;
+  };
+  for (const line of stripComments(text).split('\n')) {
+    if (line.trim().length === 0) continue;
+    const indent = indentOf(line);
+    const opensRule = /^\s*-\s+\S/.test(line);
+    if (opensRule && (ruleIndent === -1 || indent <= ruleIndent)) {
+      flush();
+      ruleIndent = indent;
+      paused = false;
+      modelIndent = -1;
+    }
+    if (/^\s*isPaused:\s*true\s*$/.test(line)) paused = true;
+    if (modelIndent !== -1 && indent <= modelIndent) modelIndent = -1;
+    if (/^\s*model:\s*$/.test(line)) {
+      modelIndent = indent;
+      continue;
+    }
+    if (modelIndent === -1) continue;
+    const m = line.match(/^\s*expr:\s*(.+)$/);
+    if (m) pending.push(m[1].trim());
+  }
+  flush();
+  return exprs;
+}
+
+/**
+ * Recording rules as `{ name, body }`, where `body` is the `expr:` SUB-BLOCK ONLY: a rule opens
+ * at `- record: <name>` (indent R); inside it, an `expr:` key at indent > R opens the body; the
+ * body is the remainder of that line plus every following line at indent > the `expr:` indent;
+ * any non-blank line at indent <= R closes the rule. Scoping to the sub-block rather than to
+ * "everything under the rule" is correct today AND stays correct if a future rule grows
+ * `labels:`/`annotations:` siblings at the rule's own key level, which the naive form would
+ * swallow into the scanned PromQL. Comments are stripped first, so a `#` line naming an event
+ * cannot forge a match.
+ */
+function recordingRuleExprBodies(recordingRulesText) {
+  const rules = [];
+  let current = null;
+  // A YAML block scalar's CONTENT is a string, not structure. Without this, a `- record:` line
+  // parked inside a `labels:`/`annotations:` block scalar parses as a real rule (RT-16).
+  let scalarIndent = -1;
+  for (const line of stripComments(recordingRulesText).split('\n')) {
+    const blank = line.trim().length === 0;
+    const indent = indentOf(line);
+    const inScalar = scalarIndent !== -1 && (blank || indent > scalarIndent);
+    if (!inScalar) scalarIndent = -1;
+
+    if (!inScalar) {
+      const opened = line.match(/^(\s*-\s*)record:\s*(\S+)\s*$/);
+      // A rules list is FLAT: a `- record:` nested deeper than the open rule is inside that
+      // rule's own sub-block and cannot be a sibling rule.
+      if (opened && !(current !== null && opened[1].length > current.keyIndent)) {
+        current = {
+          name: opened[2],
+          indent: opened[1].trimEnd().length - 1,
+          keyIndent: opened[1].length,
+          exprIndent: -1,
+          bodyClosed: false,
+          body: [],
+        };
+        rules.push(current);
+        if (/:\s*[|>][-+]?[0-9]*\s*$/.test(line)) scalarIndent = indent;
+        continue;
+      }
+    }
+
+    if (current === null || blank) {
+      if (!inScalar && /:\s*[|>][-+]?[0-9]*\s*$/.test(line)) scalarIndent = indent;
+      continue;
+    }
+    if (indent <= current.indent) {
+      current = null;
+      scalarIndent = -1;
+      continue;
+    }
+    if (current.exprIndent === -1) {
+      // ONLY at the rule's own key column. An `expr:` nested under `labels:` or
+      // `annotations:` is a LABEL VALUE Prometheus never evaluates (RT-15).
+      if (!inScalar && indent === current.keyIndent) {
+        const expr = line.match(/^(\s*)expr:\s*(.*)$/);
+        if (expr) {
+          current.exprIndent = expr[1].length;
+          current.body.push(expr[2]);
+          if (/:\s*[|>][-+]?[0-9]*\s*$/.test(line)) scalarIndent = indent;
+          continue;
+        }
+      }
+      if (!inScalar && /:\s*[|>][-+]?[0-9]*\s*$/.test(line)) scalarIndent = indent;
+      continue;
+    }
+    if (current.bodyClosed) continue;
+    if (indent > current.exprIndent) current.body.push(line);
+    else current.bodyClosed = true;
+  }
+  return rules.map((rule) => ({ name: rule.name, body: rule.body.join('\n') }));
+}
+
+/**
+ * Grafana panel types that actually ISSUE their targets. Display-only types (`row`, `text`,
+ * `news`, `dashlist`, `canvas`, ...) carry a `targets` array that is never executed, so a panel
+ * of one of those types is not a consumer no matter what its query says.
+ */
+const QUERYING_PANEL_TYPES = new Set([
+  'timeseries',
+  'stat',
+  'gauge',
+  'bargauge',
+  'barchart',
+  'histogram',
+  'heatmap',
+  'piechart',
+  'table',
+  'trend',
+  'xychart',
+  'state-timeline',
+  'status-history',
+  'candlestick',
+  'logs',
+  'graph',
+]);
+
+/** The uid Grafana actually routes a Prometheus query on (provisioning/datasources.yml). */
+const PROMETHEUS_DATASOURCE_UID = 'mr-prometheus';
+
+/**
+ * EARS (rb-66): "No Grafana panel or alert consumes evt=guest_claim_export_purge". This is the
+ * INVERSE CLOSURE of item 14: `checkQueriedSeriesAreDefined` says nothing queries an UNDEFINED
+ * series; this says a DEFINED event reaches a consumer that actually draws or evaluates it.
+ *
+ * evt -> rule -> consumer, each hop forgery-resistant:
+ *   - only the `expr:` BODY is scanned. The `record:` NAME is never part of it, because the
+ *     shipped name literally contains the event name: a scan that read the `- record:` line
+ *     would happily resolve a rule whose body selects something else entirely.
+ *   - `evt="<name>"` is matched WITH the closing quote, so it is prefix-free (`..._v2` cannot
+ *     satisfy `...`). `evt=~"..."` is REFUSED deliberately, not merely unmatched: a regex
+ *     matcher admits `evt=~".*"`, under which every rule matches every event. If a future rule
+ *     must select several events at once, handle that case EXPLICITLY here rather than
+ *     loosening this matcher.
+ *   - the resolved name must be declared exactly once document-wide. A second rule reusing an
+ *     existing series name hijacks the panel already drawing that name as this event's
+ *     "consumer", and `promtool check rules` reports `duplicate rule(s) found` while still
+ *     EXITING 0, so nothing downstream of it catches that.
+ *   - consumers are found with `promqlIdentifiers`, never `String.includes`: the record name
+ *     appearing as a matcher VALUE (`up{job="mr:...:rate5m"}`) queries nothing.
+ *
+ * Deliberate disagreement with item 14 about `templating.list[].query`: that closure asks "does
+ * this reference RESOLVE", so a variable query is in scope there. This one asks "does a human
+ * SEE the event" — a variable draws no line on any panel, so it is not a consumer here. `title`,
+ * `description` and `legendFormat` are never read for the same reason.
+ *
+ * MEASURED, and left as the fail-closed direction: like `dashboardExprs`, the consumer scan does
+ * not recurse into a collapsed row's `panel.panels[]`. Reorganising the dashboard into rows will
+ * therefore RED this gate rather than let a row hide a deleted panel — widen the scan then, and
+ * do not delete the gate to make a reorganisation pass.
+ */
+export function checkEventHasQueriedConsumer(
+  recordingRulesText,
+  dashboardJsonText,
+  alertRulesText,
+  evtName,
+) {
+  if (isBlank(evtName)) {
+    return fail(
+      'no event name was given — a blank or non-string event name is a caller bug, and ' +
+        'resolving it would report the defect against the config instead',
+    );
+  }
+  if (isBlank(recordingRulesText)) {
+    return fail('recording rules text is empty — nothing was scanned');
+  }
+  if (isBlank(dashboardJsonText)) {
+    return fail('dashboard JSON text is empty — nothing was scanned');
+  }
+
+  const rules = recordingRuleExprBodies(recordingRulesText);
+  if (rules.length === 0) {
+    return fail(
+      'the recording rules document declares zero `- record:` rules — nothing was scanned, and ' +
+        'scanning nothing must never read as green',
+    );
+  }
+
+  const selector = `evt="${evtName}"`;
+  const matched = rules.filter((rule) => rule.body.includes(selector));
+  if (matched.length === 0) {
+    return fail(
+      `no recording rule selects ${selector} in its \`expr:\` body — the event is recorded into ` +
+        'no series at all, so nothing could consume it. A rule merely NAMED for the event does ' +
+        'not count, and `evt=~"..."` is refused deliberately',
+    );
+  }
+  if (matched.length > 1) {
+    return fail(
+      `${matched.length} recording rules select ${selector}, but exactly 1 may: ` +
+        `${matched.map((rule) => `\`${rule.name}\``).join(', ')} — with the mapping ambiguous a ` +
+        'first-match resolver would validate whichever of them it happened to pick',
+    );
+  }
+
+  const recordName = matched[0].name;
+  const declarations = rules.filter((rule) => rule.name === recordName).length;
+  if (declarations !== 1) {
+    return fail(
+      `\`${recordName}\` is declared by ${declarations} duplicate \`- record:\` rules; exactly 1 ` +
+        'may declare it. A second rule reusing an existing series name makes the panel already ' +
+        'drawing that name read as this event, with no new panel anywhere, and ' +
+        '`promtool check rules` reports the duplicate while still exiting 0',
+    );
+  }
+
+  // Parsed BEFORE any consumer is resolved (as item 14 does): a broken dashboard is its own
+  // defect and must be reported as one, never swallowed into a green result an alert happens
+  // to satisfy, and never mis-reported as a missing consumer.
+  let dashboard;
+  try {
+    dashboard = JSON.parse(dashboardJsonText);
+  } catch (err) {
+    return fail(`dashboard JSON does not parse: ${err.message}`);
+  }
+
+  const consumers = [];
+  for (const panel of dashboard.panels || []) {
+    // A `row` draws nothing and a `text` panel never issues its targets (RT-19).
+    // ALLOW-LIST, not a deny-list. `row`, `text`, `news`, `dashlist`, `canvas` and every future
+    // display-only type never issue their targets, and a two-name deny-list reads the next one
+    // added as a live consumer (measured by the verifier on `type: "news"`). An unknown type
+    // fails CLOSED: a panel type this gate has never heard of is not evidence a human sees the
+    // event. Absent `type` is Grafana's default and stays legal.
+    if (panel.type !== undefined && panel.type !== null && !QUERYING_PANEL_TYPES.has(panel.type)) {
+      continue;
+    }
+    // A zero-height or zero-width rectangle is a panel a human cannot read. Absent gridPos is
+    // Grafana auto-layout and stays legal (RT-18).
+    const gridPos = panel.gridPos;
+    if (gridPos !== undefined && gridPos !== null) {
+      if (!(gridPos.h > 0 && gridPos.w > 0)) continue;
+    }
+    const seenRefIds = new Set();
+    for (const target of panel.targets || []) {
+      if (typeof target.expr !== 'string') continue;
+      // Grafana's disabled-query toggle is TRUTHY, not `=== true`: `1` and `"true"` disable
+      // the query just as hard (RT-17).
+      if (target.hide !== undefined && target.hide !== false && target.hide !== null) continue;
+      // Grafana keys queries by refId; a repeated refId shadows the earlier target (RT-20).
+      const refId = typeof target.refId === 'string' ? target.refId : '';
+      if (seenRefIds.has(refId)) continue;
+      seenRefIds.add(refId);
+      // A datasource that is PRESENT must RESOLVE to Prometheus. A `${DS}` template string and
+      // a bare `{uid}` do not, and neither may be ASSUMED to (RT-17). Absent/null is the
+      // dashboard default and stays legal, as the shipped A3 tooth requires.
+      //
+      // `type` alone is NOT the resolution: Grafana routes a query on the `uid`, and `type` is
+      // advisory metadata a hand-edit can leave stale. `{type:'prometheus', uid:'mr-loki'}` names
+      // a REAL provisioned Loki datasource (provisioning/datasources/datasources.yml) and draws
+      // nothing — measured surviving the type-only check. So a declared uid must be the
+      // provisioned Prometheus one; a uid this file does not know is not evidence either.
+      const datasource = target.datasource ?? panel.datasource;
+      if (datasource !== undefined && datasource !== null) {
+        if (typeof datasource !== 'object' || datasource.type !== 'prometheus') continue;
+        const uid = datasource.uid;
+        if (uid !== undefined && uid !== null && uid !== PROMETHEUS_DATASOURCE_UID) continue;
+      }
+      // `#` opens a comment in PromQL too: the identifier must appear in code (RT-21).
+      if (!promqlIdentifiers(promqlCode(target.expr)).includes(recordName)) continue;
+      consumers.push(`panel "${panel.title || '(untitled)'}"`);
+    }
+  }
+  for (const expr of alertModelExprs(alertRulesText || '')) {
+    if (promqlIdentifiers(promqlCode(expr)).includes(recordName)) {
+      consumers.push('an alert `expr:`');
+    }
+  }
+
+  if (consumers.length === 0) {
+    return fail(
+      `${selector} resolves to \`${recordName}\`, but that series is recorded into nothing: zero ` +
+        'panel targets and zero alert `expr:` values query it. A `title`, a `description` or a ' +
+        '`legendFormat` naming the event is not a consumer, and neither is a hidden target, a ' +
+        'target on a non-Prometheus datasource, nor a templating variable — none of them draws ' +
+        'the event',
+    );
+  }
+  return pass(
+    `${selector} is recorded by \`${recordName}\` (declared once) and queried by ` +
+      `${consumers.length} consumer(s): ${consumers.join(', ')}`,
+  );
+}
