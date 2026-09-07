@@ -977,13 +977,34 @@ const POSITIONAL_SELECTOR_TOKENS: readonly string[] = [
  * !important }` — the last three reproducing ADR-0151 D1's exact below-the-fold regression
  * (`rect.top` 0 → 720 at a 720px viewport) with H6 and H7 still passing.
  *
- * DECLARED RESIDUAL — this is a SHAPE oracle, not a CASCADE oracle. It bans naming a pinned
- * id in any form, plus the two constructs that reach an element without naming it (`*` and
- * the positional pseudos). A sufficiently indirect selector (`body > div:last-of-type ~ div`,
- * say) still escapes it. The airtight oracle is a real browser cascade check — load
- * `index.html`, apply the sheet, and read `getComputedStyle` — which needs Playwright (already
- * a devDependency) and belongs with S10's `evals/a11y-static-shell.eval.mjs`, not in the
- * hermetic vitest suite. Recorded as residual R-m23-s2-X3.
+ * RESIDUAL R-m23-s2-X3 IS CLOSED (rb-9, ADR-0244), AND THIS FUNCTION IS NOT WHAT CLOSED IT.
+ * Three claims that stood here have been RETRACTED as measured-false, not merely reworded:
+ *   1. that the airtight oracle "belongs" with the eval rather than the hermetic vitest suite;
+ *   2. that it "needs Playwright" — happy-dom 20.10.6 implements the cascade for every
+ *      technique in the bypass set above, INCLUDING `!important` beating an inline declaration;
+ *   3. the present-tense record of the residual, which this slice closed.
+ * The cascade oracle now lives in `indexShellCascade.test.ts`: it renders the real markup with
+ * and without the sheet and diffs the fully-enumerated computed style, so it never reads
+ * selector text and is indifferent to how a rule spells its reach. It catches the indirect
+ * selectors this SHAPE oracle admits (a plain tag selector, `:last-of-type`, a sibling combinator)
+ * WHEN THEY APPEAR AT TOP LEVEL — but NOT when they are wrapped in an at-rule happy-dom cannot
+ * parse. MEASURED at `cascade=0, shape=0` and confirmed in real Chromium:
+ * `@layer{body > button{visibility:hidden}}` blanks `#help-hint`, and
+ * `@layer{body > div:last-of-type{display:none}}` drops `#a11y-live` out of the AX tree. That is a
+ * hole in the UNION of the two oracles, not in either alone; it is residual R-rb-9-UNIONHOLE, and
+ * it is why neither of these functions may be described as subsuming the other.
+ *
+ * SO WHY IS THIS STILL HERE? Because the two oracles cover DISJOINT bypass classes, and deleting
+ * this one would have weakened the gate. happy-dom's CSS parser silently DROPS eight at-rule and
+ * selector shapes that Chromium honours — `@layer` (named and anonymous), `@scope(`, CSS nesting,
+ * `[attr i]`, `@container`, and the `@media` features `prefers-contrast` and `scripting` (a ninth,
+ * `prefers-color-scheme: dark`, is measured-blind but deliberately unprobed) — each of which names
+ * a pinned id DIRECTLY and hides it in Chromium with
+ * `AX=IGNORED`. The cascade oracle reports ZERO offenders for every one of them; this prelude scan
+ * catches them, because reading selector TEXT is immune to what the engine can apply. Two of those
+ * `@media` features are true for the DEFAULT user, and §2.7 puts `prefers-contrast` rules in this
+ * very file, so they are the most plausible carriers of a future regression rather than exotica.
+ * The A6b arm below pins that coverage shape by shape. See ADR-0244 for the full table.
  */
 function findCascadeReachingSelectors(src: string): string[] {
   const offenders: string[] = [];
@@ -1657,6 +1678,42 @@ describe('m23-s2 (A11Y-12): styles.css declares ZERO #id selectors', () => {
         '`*` and the positional pseudos, which reach an element without naming it. ' +
         'Offenders: ' +
         JSON.stringify(reaching),
+    ).toEqual([]);
+
+    // rb-9 (ADR-0244) — THE PARSER-GAP PROBES. This is the coverage that keeps this function
+    // alive after the cascade oracle landed, so it is asserted here rather than asserted in
+    // prose. Each shape below names a pinned id DIRECTLY and was measured live in Chromium
+    // (`display:none`, `AX=IGNORED`), while `indexShellCascade.test.ts`'s computed-cascade
+    // differential reports ZERO offenders for it — happy-dom's CSS parser drops the construct.
+    // A prelude scan is immune to that, because it never asks the engine to apply anything.
+    //
+    // The `@scope(` spelling is deliberate and load-bearing: happy-dom's blindness there is
+    // WHITESPACE-SENSITIVE. It drops `@scope(body){...}` and PARSES `@scope (body){...}`, so
+    // only the unspaced form belongs in this list; the spaced one is a BAD fixture row in
+    // indexShellCascade.test.ts instead. That distinction was found by that file's own engine
+    // tripwire failing on its authors, not by inspection.
+    const parserGapShapes: readonly string[] = [
+      '@layer{[id="help-overlay"]{display:none!important}}',
+      '@layer rb9{[id="help-overlay"]{display:none!important}}',
+      '@scope(body){[id="help-overlay"]{display:none!important}}',
+      'body{& [id="help-overlay"]{display:none!important}}',
+      '[id="HELP-OVERLAY" i]{display:none!important}',
+      '@container (min-width:0px){[id="help-overlay"]{display:none!important}}',
+      '@media (prefers-contrast: more){[id="help-overlay"]{display:none!important}}',
+      '@media (scripting: enabled){[id="help-overlay"]{display:none!important}}',
+    ];
+    const unflaggedGapShapes = parserGapShapes.filter(
+      (shape) => findCascadeReachingSelectors(shape).length === 0,
+    );
+    expect(
+      unflaggedGapShapes,
+      'KILLS: narrowing this SHAPE oracle to the point where it no longer covers the cascade ' +
+        "oracle's measured blind spot. Every shape listed here names a pinned id directly and " +
+        'hides it in a real browser, while the computed-cascade differential in ' +
+        'indexShellCascade.test.ts sees NOTHING, because happy-dom does not parse the ' +
+        'construct. If this list stops being flagged, the two oracles no longer cover disjoint ' +
+        'classes and a whole family of rules ships unseen by BOTH. Unflagged: ' +
+        JSON.stringify(unflaggedGapShapes),
     ).toEqual([]);
 
     // B2 (red-team m23-s2) — THE SURFACE HALF, stylesheet side. A6b reads exactly one file;
