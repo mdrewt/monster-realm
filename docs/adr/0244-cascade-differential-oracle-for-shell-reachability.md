@@ -7,7 +7,7 @@
 **Amends:** —
 **Extends:** ADR-0224 (scanner-script gates retire into ordinary tests; this is a migration under its delete-on-touch rule), ADR-0205 (the a11y metadata `client/src/styles.css` serves), ADR-0215 (the sole-owner CSS comment stripper this leaves untouched), ADR-0151 D1 (the below-the-fold regression this re-closes), ADR-0213 (the `.hp-fill` reduced-motion guard whose rules the oracle must tolerate)
 **Subsystems:** client-ui, ci-gates
-**Decision:** "No rule in the shipped stylesheet may alter the reachability or the styling contract of a pinned shell id" is enforced by rendering the real `client/index.html` with the real `client/src/styles.css` in happy-dom and diffing fully-enumerated `getComputedStyle` output against a sheet-absent render, over `html`/`body`, the five pinned shell ids and their child payload, in two render states. The m23-s2 selector-shape blacklist is RETAINED beside it, not replaced: measured, the two cover disjoint bypass classes.
+**Decision:** A11Y-12's reachability half is enforced by diffing fully-enumerated `getComputedStyle` over the real shell against a sheet-absent render. The m23-s2 shape blacklist is RETAINED beside it: the two cover disjoint bypass classes.
 
 ## Context and problem statement
 
