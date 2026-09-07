@@ -120,21 +120,16 @@ groups:
       #       by this rule. If an alert is ever wired onto this series, revisit this line FIRST.
       #
       #   (4) DELIBERATELY NO ALERT — decided, not deferred. Recorded here because rb-66 was
-      #       assigned no ADR number and the dashboard JSON carries no comments:
-      #       (a) There is no failure event to alert on. ADR-0235 makes this log line terminal,
-      #           so it exists only for a transaction that COMMITTED; alerting on it is alerting
-      #           on success.
-      #       (b) A spike alert has no baseline. Guest claims are player-driven, rare and bursty,
-      #           so any threshold would be invented rather than derived — the exact trap the
-      #           mr-scheduler provenance block below exists to document.
-      #       (c) An absence / dead-man's switch would cry wolf every quiet night, because zero
-      #           guest claims is the NORMAL state. `grafana/provisioning/alerting/rules.yml`
-      #           (the noDataState note, lines 176-179) already names that anti-pattern verbatim.
-      #       (d) The alert an operator would actually want — "a claim completed but its chunks
-      #           were not purged" — needs `chunks`, which (2) shows cannot be a label by
-      #           construction. That alert is a Loki query, not a Prometheus rule.
-      #       (e) If an erasure FAILURE event is ever emitted, alert on THAT event; do not alert
-      #           on the absence of this one.
+      #       assigned no ADR number and the dashboard JSON carries no comments. There is no
+      #       failure event to alert on: ADR-0235 makes this line terminal, so it exists only
+      #       for a transaction that COMMITTED, and alerting on it is alerting on success. A
+      #       spike threshold would be invented rather than derived (claims are player-driven,
+      #       rare and bursty), and an absence switch would cry wolf every quiet night because
+      #       zero claims is the NORMAL state — the anti-pattern the noDataState note in
+      #       `grafana/provisioning/alerting/rules.yml` already names verbatim. The alert an
+      #       operator would actually want, "a claim completed but its chunks were not purged",
+      #       needs `chunks`, which (2) shows cannot be a label: it is a Loki query, not a
+      #       Prometheus rule. If an erasure FAILURE event is ever emitted, alert on THAT.
       - record: mr:guest_claim_export_purge:rate5m
         expr: |
           sum(rate(mr_log_events_total{evt="guest_claim_export_purge"}[5m])) or vector(0)
