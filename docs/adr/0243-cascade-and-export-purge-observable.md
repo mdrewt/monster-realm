@@ -121,7 +121,8 @@ land here.
    two new values are a closed, enumerable addition, never templated or derived. In accounts.rs the evt is a bare
    string literal (greppable; a `const`/`concat!` leaves identifier bytes where the blanked-view pin requires a bare
    comma). In privacy.rs it is `stringify!(data_export)` — the hygiene contract admits no quote byte — and the token
-   is pinned by an exact count over the raw, whitespace-preserving source, because the squashed views delete
+   is pinned by an exact count over the comment-stripped, whitespace-preserving source (accounts.rs's over the raw
+   `include_str!` text), because the squashed views delete
    whitespace INSIDE string literals and `stringify!` output alike (an evt with an interior space is byte-identical
    in every squashed view and CI-clean otherwise).
 
@@ -172,10 +173,12 @@ uniqueness; the scheduler guard at index 0 of the reaper body; one emission in t
 per body with zero elsewhere; alias clause; no breadcrumb; a file-wide cfg census — exactly one `#[cfg`, the tests-mod
 attribute, and zero `cfg!(` — which also closes `#[cfg_attr(not(test), cfg(any()))]`; the terminal tail pinned LEFTWARD
 through the `let fields` binding so `cascade_fields(args.account_identity, 0)` and `export_chunks.saturating_sub(1)`
-both fail; count-before-index ordering; depth 0; no `return` token and no `?` operator between the binding and `Ok(())` — a
-depth-0 `?` is an early exit a `return` census alone never sees, measured CI-clean; exactly ONE depth-0 `return` in
-the whole reaper body, at the scheduler guard — a prefix early return smuggled through the re-frozen literal is
-otherwise CI-clean, measured; each binding once),
+both fail; count-before-index ordering; depth 0; no `return` token between the binding and `Ok(())` and no `?` operator anywhere in the reaper body — a
+depth-0 `?` is an early exit a `return` census alone never sees, measured CI-clean; exactly THREE `return` tokens in
+the whole reaper body — ADR-0228 D2's three sanctioned exits, of which exactly ONE is an `Err` (the scheduler guard,
+which is also the first) and two are `Ok(())` — a prefix early return smuggled through the re-frozen literal is
+otherwise CI-clean, measured; a bare-identifier `mr_log` census equal to the qualified count (a function-pointer
+binding is otherwise CI-clean, measured); each binding once),
 `rb65_reaper_binds_the_purge_result`, `rb65_evt_and_fragment_literals_are_pinned` (kept-strings call + evt, the raw-source
 whitespace-preserving evt pin, the fragment literal scoped inside the builder, the PRV1-17/20 key ban),
 `rb65_cascade_fields_is_pure` (whole frozen signature, privacy, body bans, blanked-body equality);
@@ -205,6 +208,11 @@ Re-frozen: `rb24_frozen_reaper_body` (two independent transcriptions, guard pref
 4. **The runbook §9 caveat set omits the operational log** (D6) — residual R-rb-65-RUNBOOK-LOGCAVEAT.
 5. **No dashboard consumes either evt** — R-rb-40-DASH stays open; both lines are queryable in Loki under `{reducer, evt}`.
 6. **The line is pre-commit and at-least-once** (D5); it is a host-log signal, never a commit record.
+7. **One prefix-exit shape stays ungated, deliberately.** A `panic!()` planted above the cascade (with the frozen literal
+   regenerated around it) is neither a `return` nor a `?`, so the exit census and the `?` ban stay green (measured
+   CI-clean by the artifact red-team, its only remaining shape). It is fail-LOUD — the panic aborts the transaction and
+   the host records it — so under ADR-0224's amendment it is a reviewer-checklist note, not a clause; the exact close,
+   if ever wanted, is a macro-invocation census over the reaper body (measured zero today).
 
 ## Consequences
 
