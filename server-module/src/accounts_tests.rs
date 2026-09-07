@@ -16756,13 +16756,31 @@ fn rb65_cascade_line_composes_into_the_envelope() {
 //     evidence chain, and without a file in the paragraph no clause here can
 //     resolve the span at all.
 //  7. `[scope/roster-floor]` is a BOUND and not the instrument that closes the
-//     deletion residual. Four excisions were measured past its round-1
-//     headroom, so the span floor moved to four below today's count and
-//     `[scope/presence]` now pins the PRV1-20 evidence block by name and by
-//     its derived builder set. A floor still cannot say WHICH block went, and
-//     the presence pins cover the two CRITERIA and the PRV1-20 content
-//     argument only -- deleting, say, the step-6a resolver trace is caught by
-//     the floor's arithmetic and by nothing more specific.
+//     deletion residual. MEASURED at the time of writing: the live section
+//     names 17 roster files and carries 48 declaration-shaped spans, against
+//     floors of 14 and 44. An earlier draft of this note claimed the span
+//     floor sat four below today's count and that the step-6a resolver trace
+//     was caught by the floor's arithmetic; the verifier measured BOTH claims
+//     false -- the floor then stood at 31, seventeen below, and deleting the
+//     whole step-6a trace (3,574 bytes, 25.4% of the section, which is round
+//     2's headline correction) left every clause green. The span floor is now
+//     44, which reds that deletion. The bound is still a bound: it cannot say
+//     WHICH block went, and `[scope/presence]` -- which pins the PRV1-20
+//     evidence block by name and by its derived builder set -- covers the two
+//     CRITERIA and the PRV1-20 content argument only. An excision small
+//     enough to stay above 44 spans and 14 files is review's job, not this
+//     gate's.
+//  7b. `[doc/no-hidden-char]` bans invisible CLASSES (Unicode `Cc`, `Zs`/`Zl`/
+//     `Zp` other than a plain space, the format and zero-width ranges), not a
+//     named list -- a named list of a dozen codepoints was MEASURED to miss
+//     nine of the twelve it was aimed at, and a printable ALLOW-list was
+//     measured to red 194 of this repo's 213 ADRs, so neither is available.
+//     The price is that a VISIBLE HOMOGLYPH is legal, and the verifier
+//     measured the consequence: a retracted claim restated with one Cyrillic
+//     `U+0435` inside the needle rides through `[emit/no-stale-claim]` while
+//     the byte-identical ASCII sentence reds. Folding confusables before the
+//     needle scan would close it; that is not in this slice, and it is
+//     tracked as `R-rb-68-HOMOGLYPH` rather than left implicit.
 //  8. `[cite/no-line]`'s COUNT/LOCATOR split is heuristic, and it is tuned
 //     from both directions at once (see `rb68p_digit_run_is_a_locator`). Two
 //     shapes are knowingly conceded to keep the honest set green: a ONE- OR
@@ -16868,7 +16886,7 @@ fn rb68p_heading_anchor(line: &str) -> Option<&str> {
 /// transcription -- and it is deliberately NOT the only instrument, because a
 /// floor cannot tell WHICH block was deleted. `[scope/presence]` pins the
 /// PRV1-20 evidence block by name, which is what actually closes the residual.
-const RB68_LIVE_FLOORS: (usize, usize) = (14, 31);
+const RB68_LIVE_FLOORS: (usize, usize) = (14, 44);
 
 /// FLOORS for the control fixtures. The fixture documents are small by design
 /// -- one paragraph per shape -- so the live floors would red every one of
