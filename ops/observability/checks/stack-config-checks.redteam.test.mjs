@@ -18,6 +18,7 @@ import { test } from 'node:test';
 
 import {
   checkCaddyDualPosture,
+  checkEventHasQueriedConsumer,
   checkListenAddrsLoopback,
   checkNoExecLogSource,
   checkNoQuotedCredential,
@@ -294,4 +295,341 @@ test('REAL FILES: .env.example carries no credential, quoted or unquoted', () =>
   // making it the file most likely to acquire a "helpful default" that is secret-shaped.
   const result = checkNoQuotedCredential([{ name: '.env.example', text: readOps('.env.example') }]);
   assert.equal(result.ok, true, `real .env.example: ${result.detail}`);
+});
+
+// ===========================================================================
+// RT-14..RT-23 (rb-66) — checkEventHasQueriedConsumer. Every fixture below was
+// EXECUTED against the shipped predicate and returned ok=true for a config in
+// which no human can see evt=guest_claim_export_purge.
+//
+// The rb-66 REAL-FILES binding is duplicated here DELIBERATELY: the sibling
+// gating suite is tester-owned, and G9k's pass FLOOR had 17 tests of slack, so
+// deleting section 19 wholesale left `just eval` green with the panel and the
+// rule gone. A second, differently-owned binding costs one test and removes the
+// single-file kill.
+// ===========================================================================
+
+const PURGE_EVT = 'guest_claim_export_purge';
+const PURGE_SERIES = 'mr:guest_claim_export_purge:rate5m';
+
+const readPurgeInputs = () => [
+  readOps('rules/recording.rules.yml'),
+  readOps('grafana/dashboards/monster-realm.json'),
+  readOps('grafana/provisioning/alerting/rules.yml'),
+];
+
+/** The committed rule/panel/alert texts with ONE surgical mutation applied to the dashboard. */
+function dashboardWith(mutate) {
+  const dashboard = JSON.parse(readOps('grafana/dashboards/monster-realm.json'));
+  const panel = dashboard.panels.find((p) => p.id === 15);
+  assert.ok(panel, 'RT fixture drift: dashboard panel id 15 (the purge panel) is gone');
+  mutate(panel, dashboard);
+  return JSON.stringify(dashboard, null, 2);
+}
+
+/** The committed recording rules with the rb-66 rule stanza replaced verbatim. */
+function rulesWith(replacement) {
+  const text = readOps('rules/recording.rules.yml');
+  const shipped = [
+    '      - record: mr:guest_claim_export_purge:rate5m',
+    '        expr: |',
+    '          sum(rate(mr_log_events_total{evt="guest_claim_export_purge"}[5m])) or vector(0)',
+  ].join('\n');
+  assert.ok(text.includes(shipped), 'RT fixture drift: the shipped rb-66 rule stanza moved');
+  return text.replace(shipped, replacement);
+}
+
+const DASHBOARD_WITHOUT_PURGE_PANEL = (() => {
+  const dashboard = JSON.parse(readOps('grafana/dashboards/monster-realm.json'));
+  dashboard.panels = dashboard.panels.filter((p) => p.id !== 15);
+  return JSON.stringify(dashboard, null, 2);
+})();
+
+test('RT-14 (CRITICAL): REAL FILES — a visible panel or a live alert consumes the purge evt', () => {
+  const [rules, dashboard, alerts] = readPurgeInputs();
+  const result = checkEventHasQueriedConsumer(rules, dashboard, alerts, PURGE_EVT);
+  assert.equal(result.ok, true, `real committed config: ${result.detail}`);
+  // Named explicitly so a RENAME of the recorded series onto an existing, already-panelled
+  // name (which the uniqueness clause cannot see once the incumbent rule is commented out)
+  // stops being a green path.
+  assert.ok(
+    result.detail.includes(PURGE_SERIES),
+    `the evt must resolve to ${PURGE_SERIES} specifically, not to whatever name happens to have ` +
+      `a panel already: ${result.detail}`,
+  );
+});
+
+test('RT-15 (HIGH): an `expr:` key nested under labels:/annotations: is NOT the rule body', () => {
+  // Prometheus evaluates the rule's OWN `expr:`; a same-named key inside `labels:` is a label
+  // VALUE it never runs. The shipped parser took the first `expr:` at ANY depth, so this rule —
+  // which actually records a constant zero — resolved as the purge consumer.
+  for (const sibling of ['labels', 'annotations']) {
+    assertRejected(
+      checkEventHasQueriedConsumer(
+        rulesWith(
+          [
+            '      - record: mr:guest_claim_export_purge:rate5m',
+            `        ${sibling}:`,
+            '          expr: sum(rate(mr_log_events_total{evt="guest_claim_export_purge"}[5m]))',
+            '        expr: |',
+            '          vector(0)',
+          ].join('\n'),
+        ),
+        readOps('grafana/dashboards/monster-realm.json'),
+        '',
+        PURGE_EVT,
+      ),
+      `a decoy \`expr:\` under \`${sibling}:\` must not stand in for a rule body of vector(0)`,
+    );
+  }
+});
+
+test('RT-16 (HIGH): a `- record:` inside a YAML block scalar is a STRING, not a rule', () => {
+  // The rb-66 rule is DELETED here; a verbatim copy is parked inside a `labels:` block scalar,
+  // where Prometheus records nothing. `promtool` is not run by `just ci`, so nothing else looks.
+  assertRejected(
+    checkEventHasQueriedConsumer(
+      rulesWith(
+        [
+          '      - record: mr:heartbeat_seconds:rate5m',
+          '        expr: |',
+          '          sum(rate(mr_log_events_total{evt="heartbeat"}[5m]))',
+          '        labels:',
+          '          provenance: |',
+          '            kept for the record, no longer evaluated:',
+          '            - record: mr:guest_claim_export_purge:rate5m',
+          '              expr: sum(rate(mr_log_events_total{evt="guest_claim_export_purge"}[5m]))',
+        ].join('\n'),
+      ),
+      readOps('grafana/dashboards/monster-realm.json'),
+      '',
+      PURGE_EVT,
+    ),
+    'a phantom rule parked inside a YAML string must not satisfy the evt -> rule hop',
+  );
+});
+
+test('RT-17 (HIGH): a disabled target or an unresolvable datasource is not a consumer', () => {
+  // Grafana's `hide` toggle is TRUTHY-tested, not `=== true`.
+  for (const hide of [1, 'true']) {
+    assertRejected(
+      checkEventHasQueriedConsumer(
+        readOps('rules/recording.rules.yml'),
+        dashboardWith((panel) => {
+          panel.targets[0].hide = hide;
+        }),
+        '',
+        PURGE_EVT,
+      ),
+      `hide: ${JSON.stringify(hide)} disables the query in Grafana just as hard as hide: true`,
+    );
+  }
+  // A `${VAR}` datasource string and a bare `{uid}` do not RESOLVE to Prometheus, and must not
+  // be treated as "no datasource key, therefore inherited".
+  for (const datasource of ['${DS_LOKI}', { uid: '-100' }]) {
+    assertRejected(
+      checkEventHasQueriedConsumer(
+        readOps('rules/recording.rules.yml'),
+        dashboardWith((panel) => {
+          panel.datasource = datasource;
+          delete panel.targets[0].datasource;
+        }),
+        '',
+        PURGE_EVT,
+      ),
+      `datasource ${JSON.stringify(datasource)} is PRESENT but does not resolve to prometheus`,
+    );
+  }
+});
+
+test('RT-18 (MEDIUM): a zero-height or zero-width panel draws nothing', () => {
+  for (const gridPos of [
+    { h: 0, w: 24, x: 0, y: 37 },
+    { h: 6, w: 0, x: 0, y: 37 },
+  ]) {
+    assertRejected(
+      checkEventHasQueriedConsumer(
+        readOps('rules/recording.rules.yml'),
+        dashboardWith((panel) => {
+          panel.gridPos = gridPos;
+        }),
+        '',
+        PURGE_EVT,
+      ),
+      `gridPos ${JSON.stringify(gridPos)} is a rectangle with no area — nobody reads it`,
+    );
+  }
+});
+
+test('RT-19 (MEDIUM): a `row` or `text` panel never issues its targets', () => {
+  for (const type of ['row', 'text']) {
+    assertRejected(
+      checkEventHasQueriedConsumer(
+        readOps('rules/recording.rules.yml'),
+        dashboardWith((panel) => {
+          panel.type = type;
+        }),
+        '',
+        PURGE_EVT,
+      ),
+      `a "${type}" panel renders no series, whatever its targets say`,
+    );
+  }
+});
+
+test('RT-20 (MEDIUM): a duplicate refId shadows the target that carries the series', () => {
+  assertRejected(
+    checkEventHasQueriedConsumer(
+      readOps('rules/recording.rules.yml'),
+      dashboardWith((panel) => {
+        panel.targets = [
+          { refId: 'A', expr: 'vector(0)' },
+          { refId: 'A', expr: PURGE_SERIES },
+        ];
+      }),
+      '',
+      PURGE_EVT,
+    ),
+    'Grafana keys queries by refId: the second A never runs, so it draws nothing',
+  );
+});
+
+test('RT-21 (MEDIUM): `#` opens a comment in PromQL too — a commented expr queries nothing', () => {
+  for (const expr of [`# ${PURGE_SERIES}`, `vector(0) # ${PURGE_SERIES}`]) {
+    assertRejected(
+      checkEventHasQueriedConsumer(
+        readOps('rules/recording.rules.yml'),
+        dashboardWith((panel) => {
+          panel.targets[0].expr = expr;
+        }),
+        '',
+        PURGE_EVT,
+      ),
+      `the series is inside a PromQL comment in ${JSON.stringify(expr)}, so Prometheus never sees it`,
+    );
+  }
+});
+
+test('RT-22 (HIGH): a forged or paused alert `expr:` is not a consumer', () => {
+  // With the panel DELETED, a one-line `expr:` key inside an unrelated rule's labels/annotations
+  // satisfied the alert arm outright — and so did a rule Grafana will never evaluate.
+  const forged = [
+    [
+      'annotations',
+      'groups:\n  - name: x\n    rules:\n      - title: Unrelated\n        annotations:\n          expr: ' +
+        PURGE_SERIES +
+        '\n',
+    ],
+    [
+      'labels',
+      'groups:\n  - name: x\n    rules:\n      - title: Unrelated\n        labels:\n          expr: ' +
+        PURGE_SERIES +
+        '\n',
+    ],
+    [
+      'isPaused',
+      'groups:\n  - name: x\n    rules:\n      - title: Parked\n        isPaused: true\n        data:\n          - refId: A\n            model:\n              expr: ' +
+        PURGE_SERIES +
+        '\n',
+    ],
+  ];
+  for (const [why, alerts] of forged) {
+    assertRejected(
+      checkEventHasQueriedConsumer(
+        readOps('rules/recording.rules.yml'),
+        DASHBOARD_WITHOUT_PURGE_PANEL,
+        alerts,
+        PURGE_EVT,
+      ),
+      `an \`expr:\` reached via ${why} is not a query Grafana evaluates`,
+    );
+  }
+  // ...and the legitimate shape must still be ACCEPTED, or this tooth is just an outright ban.
+  const live =
+    'groups:\n  - name: x\n    rules:\n      - title: Live\n        isPaused: false\n' +
+    '        data:\n          - refId: A\n            model:\n              expr: ' +
+    PURGE_SERIES +
+    '\n';
+  const ok = checkEventHasQueriedConsumer(
+    readOps('rules/recording.rules.yml'),
+    DASHBOARD_WITHOUT_PURGE_PANEL,
+    live,
+    PURGE_EVT,
+  );
+  assert.equal(ok.ok, true, `a real, unpaused alert model expr IS a consumer: ${ok.detail}`);
+});
+
+test('RT-23 (MEDIUM): the shipped good shapes must still be ACCEPTED', () => {
+  // Non-vacuity for RT-15..RT-22: a predicate that rejected everything would satisfy all of
+  // them. `expr: >`, a single-line `expr:` and an absent gridPos are all legal Grafana/YAML.
+  for (const [why, rules] of [
+    [
+      'folded scalar',
+      rulesWith(
+        [
+          '      - record: mr:guest_claim_export_purge:rate5m',
+          '        expr: >',
+          '          sum(rate(mr_log_events_total{evt="guest_claim_export_purge"}[5m])) or vector(0)',
+        ].join('\n'),
+      ),
+    ],
+    [
+      'single-line expr',
+      rulesWith(
+        [
+          '      - record: mr:guest_claim_export_purge:rate5m',
+          '        expr: sum(rate(mr_log_events_total{evt="guest_claim_export_purge"}[5m])) or vector(0)',
+        ].join('\n'),
+      ),
+    ],
+  ]) {
+    const result = checkEventHasQueriedConsumer(
+      rules,
+      readOps('grafana/dashboards/monster-realm.json'),
+      '',
+      PURGE_EVT,
+    );
+    assert.equal(result.ok, true, `${why} is legal YAML and must stay green: ${result.detail}`);
+  }
+  const autoLayout = checkEventHasQueriedConsumer(
+    readOps('rules/recording.rules.yml'),
+    dashboardWith((panel) => {
+      delete panel.gridPos;
+    }),
+    '',
+    PURGE_EVT,
+  );
+  assert.equal(
+    autoLayout.ok,
+    true,
+    `an absent gridPos is Grafana auto-layout, not an invisible panel: ${autoLayout.detail}`,
+  );
+});
+
+test('RT-24 (MEDIUM): the purge rule body is DERIVED from its sibling, not re-spelled', () => {
+  // A text gate cannot evaluate PromQL, so `* 0`, `0 * sum(...)`, `[99999w]`, an extra
+  // unsatisfiable matcher and a base metric Alloy never mints ALL kept the shipped predicate
+  // green while the series recorded a constant (MEASURED, 6 shapes). Deriving the body from the
+  // heartbeat rule in the SAME document — the only other `mr-meta` per-evt rate rule — makes
+  // every one of them a byte difference instead of a semantic one nobody can see.
+  const rulesText = readOps('rules/recording.rules.yml');
+  const bodyFor = (evt) => {
+    const needle = `{evt="${evt}"}`;
+    const line = rulesText
+      .split('\n')
+      .find((l) => l.includes(needle) && l.trim().startsWith('sum('));
+    assert.ok(
+      line,
+      `no \`sum(...)\` rule body selects ${needle} — the rule was removed or reshaped`,
+    );
+    return line.trim();
+  };
+  const sibling = bodyFor('heartbeat');
+  assert.equal(
+    bodyFor(PURGE_EVT),
+    sibling.replace('heartbeat', PURGE_EVT),
+    'the purge rule must be the heartbeat rule with only the evt name changed: same base metric, ' +
+      'same aggregation, same range, same `or vector(0)` guard. Re-spell it here ONLY together ' +
+      'with a stated reason — a silent divergence is how a recorded constant ships',
+  );
 });

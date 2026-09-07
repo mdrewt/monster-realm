@@ -1105,6 +1105,67 @@ export function checkRunbookHasRunnableSteps(runbookText) {
 
 const indentOf = (line) => line.length - line.trimStart().length;
 
+/** PromQL with its `#` comments removed (quote-aware). `#` opens a comment in PromQL. */
+function promqlCode(expr) {
+  const out = [];
+  for (const line of expr.split('\n')) {
+    let quote = '';
+    let cut = -1;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (quote) {
+        if (ch === quote) quote = '';
+      } else if (ch === '"' || ch === "'") {
+        quote = ch;
+      } else if (ch === '#') {
+        cut = i;
+        break;
+      }
+    }
+    out.push(cut === -1 ? line : line.slice(0, cut));
+  }
+  return out.join('\n');
+}
+
+/**
+ * Alert `expr:` values Grafana actually EVALUATES: only inside a `model:` block, and only in a
+ * rule that is not `isPaused: true`. A bare `expr:` key under `labels:` or `annotations:` is a
+ * string Grafana never runs, and a paused rule never fires (RT-22).
+ */
+function alertModelExprs(text) {
+  const exprs = [];
+  let modelIndent = -1;
+  let ruleIndent = -1;
+  let paused = false;
+  const pending = [];
+  const flush = () => {
+    if (!paused) exprs.push(...pending);
+    pending.length = 0;
+  };
+  for (const line of stripComments(text).split('\n')) {
+    if (line.trim().length === 0) continue;
+    const indent = indentOf(line);
+    const opensRule = /^\s*-\s+\S/.test(line);
+    if (opensRule && (ruleIndent === -1 || indent <= ruleIndent)) {
+      flush();
+      ruleIndent = indent;
+      paused = false;
+      modelIndent = -1;
+    }
+    if (/^\s*isPaused:\s*true\s*$/.test(line)) paused = true;
+    if (modelIndent !== -1 && indent <= modelIndent) modelIndent = -1;
+    if (/^\s*model:\s*$/.test(line)) {
+      modelIndent = indent;
+      continue;
+    }
+    if (modelIndent === -1) continue;
+    const m = line.match(/^\s*expr:\s*(.+)$/);
+    if (m) pending.push(m[1].trim());
+  }
+  flush();
+  return exprs;
+}
+
 /**
  * Recording rules as `{ name, body }`, where `body` is the `expr:` SUB-BLOCK ONLY: a rule opens
  * at `- record: <name>` (indent R); inside it, an `expr:` key at indent > R opens the body; the
@@ -1118,31 +1179,56 @@ const indentOf = (line) => line.length - line.trimStart().length;
 function recordingRuleExprBodies(recordingRulesText) {
   const rules = [];
   let current = null;
+  // A YAML block scalar's CONTENT is a string, not structure. Without this, a `- record:` line
+  // parked inside a `labels:`/`annotations:` block scalar parses as a real rule (RT-16).
+  let scalarIndent = -1;
   for (const line of stripComments(recordingRulesText).split('\n')) {
-    const opened = line.match(/^(\s*)-\s*record:\s*(\S+)\s*$/);
-    if (opened) {
-      current = {
-        name: opened[2],
-        indent: opened[1].length,
-        exprIndent: -1,
-        bodyClosed: false,
-        body: [],
-      };
-      rules.push(current);
+    const blank = line.trim().length === 0;
+    const indent = indentOf(line);
+    const inScalar = scalarIndent !== -1 && (blank || indent > scalarIndent);
+    if (!inScalar) scalarIndent = -1;
+
+    if (!inScalar) {
+      const opened = line.match(/^(\s*-\s*)record:\s*(\S+)\s*$/);
+      // A rules list is FLAT: a `- record:` nested deeper than the open rule is inside that
+      // rule's own sub-block and cannot be a sibling rule.
+      if (opened && !(current !== null && opened[1].length > current.keyIndent)) {
+        current = {
+          name: opened[2],
+          indent: opened[1].trimEnd().length - 1,
+          keyIndent: opened[1].length,
+          exprIndent: -1,
+          bodyClosed: false,
+          body: [],
+        };
+        rules.push(current);
+        if (/:\s*[|>][-+]?[0-9]*\s*$/.test(line)) scalarIndent = indent;
+        continue;
+      }
+    }
+
+    if (current === null || blank) {
+      if (!inScalar && /:\s*[|>][-+]?[0-9]*\s*$/.test(line)) scalarIndent = indent;
       continue;
     }
-    if (current === null || line.trim().length === 0) continue;
-    const indent = indentOf(line);
     if (indent <= current.indent) {
       current = null;
+      scalarIndent = -1;
       continue;
     }
     if (current.exprIndent === -1) {
-      const expr = line.match(/^(\s*)expr:\s*(.*)$/);
-      if (expr) {
-        current.exprIndent = expr[1].length;
-        current.body.push(expr[2]);
+      // ONLY at the rule's own key column. An `expr:` nested under `labels:` or
+      // `annotations:` is a LABEL VALUE Prometheus never evaluates (RT-15).
+      if (!inScalar && indent === current.keyIndent) {
+        const expr = line.match(/^(\s*)expr:\s*(.*)$/);
+        if (expr) {
+          current.exprIndent = expr[1].length;
+          current.body.push(expr[2]);
+          if (/:\s*[|>][-+]?[0-9]*\s*$/.test(line)) scalarIndent = indent;
+          continue;
+        }
       }
+      if (!inScalar && /:\s*[|>][-+]?[0-9]*\s*$/.test(line)) scalarIndent = indent;
       continue;
     }
     if (current.bodyClosed) continue;
@@ -1250,20 +1336,40 @@ export function checkEventHasQueriedConsumer(
 
   const consumers = [];
   for (const panel of dashboard.panels || []) {
+    // A `row` draws nothing and a `text` panel never issues its targets (RT-19).
+    if (panel.type === 'row' || panel.type === 'text') continue;
+    // A zero-height or zero-width rectangle is a panel a human cannot read. Absent gridPos is
+    // Grafana auto-layout and stays legal (RT-18).
+    const gridPos = panel.gridPos;
+    if (gridPos !== undefined && gridPos !== null) {
+      if (!(gridPos.h > 0 && gridPos.w > 0)) continue;
+    }
+    const seenRefIds = new Set();
     for (const target of panel.targets || []) {
       if (typeof target.expr !== 'string') continue;
-      // `hide: true` is Grafana's disabled-query toggle: the query is never issued at all.
-      if (target.hide === true) continue;
-      // A target datasource OVERRIDES the panel default; PromQL sent to Loki returns an error,
-      // not the series. Absent everywhere, the panel inherits the dashboard default and counts.
-      const datasourceType = target.datasource?.type ?? panel.datasource?.type;
-      if (datasourceType !== undefined && datasourceType !== 'prometheus') continue;
-      if (!promqlIdentifiers(target.expr).includes(recordName)) continue;
+      // Grafana's disabled-query toggle is TRUTHY, not `=== true`: `1` and `"true"` disable
+      // the query just as hard (RT-17).
+      if (target.hide !== undefined && target.hide !== false && target.hide !== null) continue;
+      // Grafana keys queries by refId; a repeated refId shadows the earlier target (RT-20).
+      const refId = typeof target.refId === 'string' ? target.refId : '';
+      if (seenRefIds.has(refId)) continue;
+      seenRefIds.add(refId);
+      // A datasource that is PRESENT must RESOLVE to Prometheus. A `${DS}` template string and
+      // a bare `{uid}` do not, and neither may be ASSUMED to (RT-17). Absent/null is the
+      // dashboard default and stays legal, as the shipped A3 tooth requires.
+      const datasource = target.datasource ?? panel.datasource;
+      if (datasource !== undefined && datasource !== null) {
+        if (typeof datasource !== 'object' || datasource.type !== 'prometheus') continue;
+      }
+      // `#` opens a comment in PromQL too: the identifier must appear in code (RT-21).
+      if (!promqlIdentifiers(promqlCode(target.expr)).includes(recordName)) continue;
       consumers.push(`panel "${panel.title || '(untitled)'}"`);
     }
   }
-  for (const expr of yamlExprValues(alertRulesText || '')) {
-    if (promqlIdentifiers(expr).includes(recordName)) consumers.push('an alert `expr:`');
+  for (const expr of alertModelExprs(alertRulesText || '')) {
+    if (promqlIdentifiers(promqlCode(expr)).includes(recordName)) {
+      consumers.push('an alert `expr:`');
+    }
   }
 
   if (consumers.length === 0) {
