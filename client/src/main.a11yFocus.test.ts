@@ -778,9 +778,11 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     // RED against a WRONG implementation once the twelve conjuncts exist.
     // WRONG IMPL KILLED: dropping the `=== document.body` disjunct from worldHasFocus() —
     // every hotkey stays dead from this point forward for the rest of the session, exactly
-    // the "dead hotkeys forever after a dialogue ends" bug spec §2.3 names (the real trigger
-    // is client/src/main.ts:1574's `dialogueView?.render(null)`, which display:nones a
-    // focused choice <button> the same way this test simulates on renameView).
+    // the "dead hotkeys forever after a dialogue ends" bug spec §2.3 names. The real trigger
+    // is the M12d `store.onBatchApplied` dialogue listener (`client/src/main.ts:1837-1887`
+    // today), which calls `dialogueView?.render(dialogueVm)` on EVERY batch — `dialogueVm` is
+    // null once the conversation row is gone, and `render`'s `!vm` branch display:nones the
+    // overlay, blurring a focused choice <button> the same way this test does on renameView.
     pressKey({ code: 'KeyN' }); // renameView — GUARD_ONLY, no identity requirement
     // Flush the REAL setTimeout(0) deferred-focus macrotask (ui/overlayA11y.ts:111) before
     // touching focus ourselves. renameView is a STATIC shell: opening it schedules a focus
