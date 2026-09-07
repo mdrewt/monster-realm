@@ -2429,10 +2429,14 @@ export default async function () {
   if (realOffenders.length > 0) {
     return bad(
       `[A11Y-07] ${STYLES_CSS} declares ${realOffenders.length} #id selector(s): ` +
-        `${JSON.stringify(realOffenders)} — criterion A11Y-12. A rule reaching #help-overlay, ` +
-        '#help-hint or #build-stamp silently satisfies or defeats the inline-style pins in ' +
-        'indexShell.test.ts and main.wiring.test.ts, whose entire premise is that the inline ' +
-        'style attribute is the COMPLETE styling contract',
+        `${JSON.stringify(realOffenders)} — criterion A11Y-12, LITERAL half. This clause is the ` +
+        "single-file legibility contract: styles.css uses class and `:root` selectors only. It " +
+        'is NOT what proves the shell stays reachable — since rb-9 (ADR-0244) that is the ' +
+        'computed-cascade differential in client/src/indexShellCascade.test.ts, which renders ' +
+        'the real markup and diffs getComputedStyle instead of matching selector text. This ' +
+        'clause is RETAINED because the nightly `just a11y-e2e` tier runs eight NAMED spec ' +
+        'files and that cascade test is not among them, so deleting it here would drop the only ' +
+        'executing A11Y-12 check in that tier',
     );
   }
   teeth++;

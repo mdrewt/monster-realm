@@ -230,6 +230,20 @@ const CASCADE_FIXTURES: readonly CascadeFixture[] = [
       'evidence that enumeration does not converge',
   },
   {
+    name: 'bad/scope-spaced-is-caught',
+    kind: 'bad',
+    css: '@scope (body){[id="help-overlay"]{display:none!important}}',
+    offenders: ['shown/help-overlay.display block->none'],
+    kills:
+      'THE ENGINE-BOUNDARY ROW, and the half of `@scope` this oracle DOES see. happy-dom parses ' +
+      '`@scope (` and DROPS `@scope(` — the blindness ADR-0244 records is whitespace-sensitive, ' +
+      'not a property of the at-rule. So the two spellings live in two different tables: the ' +
+      'no-space form is a declared blind spot in PARSER_GAP_SHAPES, covered by the retained ' +
+      'shape oracle, and THIS one is an ordinary caught regression. Writing the boundary down ' +
+      'where it actually falls is the point — an earlier draft of this file assumed the ' +
+      'at-rule was uniformly invisible and asserted the wrong thing about this exact string',
+  },
+  {
     name: 'bad/tag-button',
     kind: 'bad',
     css: 'body > button{visibility:hidden}',
@@ -669,12 +683,12 @@ describe('rb-9 (ADR-0244): the computed-cascade differential over the real index
       CASCADE_FIXTURES.length,
       'ANTI-VACUITY: the fixture table has been shrunk. A `for..of` over an empty array is a ' +
         'passing test that asserts nothing',
-    ).toBe(18);
+    ).toBe(19);
     expect(
       CASCADE_FIXTURES.filter((r) => r.kind === 'bad').length,
       'ANTI-VACUITY: the BAD half of the table has been shrunk. GOOD rows alone are satisfied ' +
         'by a `() => []` stub',
-    ).toBe(12);
+    ).toBe(13);
     expect(
       CASCADE_FIXTURES.filter((r) => r.kind === 'good').length,
       'ANTI-VACUITY: the GOOD half of the table has been shrunk. BAD rows alone are satisfied ' +
