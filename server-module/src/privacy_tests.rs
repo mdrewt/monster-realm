@@ -10506,6 +10506,7 @@ fn rb67p_is_qualified_name(sq: &str, token: &str, path: &str) -> bool {
 ///     the number AFTER the path;
 ///   - `see line 42 of privacy.rs` and `privacy.rs, see line 42` put it
 ///     BEFORE, or further away than any window worth having.
+///
 /// A window ALSO rejected the honest `privacy.rs` (ADR-0126 idiom) -- a digit
 /// near the file name is not a citation, a LOCATOR is, so the test is on the
 /// SHAPE and not on proximity.
