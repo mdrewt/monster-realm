@@ -1994,7 +1994,7 @@ suite for the two scanners. ADR next-free = 0206 (no new ADR: ADR-0205 already c
 TWO mechanisms, and the deferred `.focus()` deleted from the view layer.** Seven views delegate from
 `show()`/`hide()`; the three with **no `show()`** (`dialogueView`, `questLogView`, `healView`) wire on
 the `render(vm | null)` **null↔non-null EDGE** instead (spec §2.2, A11Y-34) — `main.ts`'s M12d
-`store.onBatchApplied` listener (`:1627-1641` today) calls `dialogueView.render(vm)`
+`store.onBatchApplied` listener (`:1837-1887` today) calls `dialogueView.render(vm)`
 unconditionally on every store batch, so there is literally nothing for a
 `show()`-based design to attach to. **Both mechanisms detect the edge by reading the EXISTING `visible`
 getter BEFORE the `display` write, never from a new nullity field**, and that is the load-bearing call:
