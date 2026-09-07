@@ -19,8 +19,9 @@ are erasures of personal data that leave no trace in any host log, so an erasure
 from one that never fired, nor a re-export that replaced twelve stale chunks from one that replaced none.
 
 The residual asked for ONE cascade-wide line rather than thirteen: the cascade delegates to twelve `erase_*` /
-`anonymize_*` / purge helpers in eleven owning modules (ADR-0228 D1, every one of them deliberately `-> ()`), plus the
-live-interaction resolver, and a line per step would be thirteen unreviewed emissions in thirteen files. PRV1-17 and
+`anonymize_*` / purge helpers across twelve owning modules (ADR-0228 D1 made every one but the rb-40 purge
+deliberately `-> ()`), plus the live-interaction resolver, and a line per step would be thirteen unreviewed
+emissions in thirteen files. PRV1-17 and
 PRV1-20 (M22 §6) govern the reaper's log lines literally: no player-authored field, and never the erased identity's
 pre-tombstone `name` or `auth_issuer` at the moment of erasure. ADR-0230 recorded both criteria as met BY ABSENCE —
 "the reaper emits no log line at all" — and deferred their mechanical enforcement to "the next slice that holds
@@ -65,12 +66,13 @@ land here.
    `"subject":"<hex>","purged":N,"written":M` through the privacy.rs JSON micro-builder (`json_field_into`,
    `json_identity_into`, a new three-line `json_usize_into`, `json_u32_into`). `written` is the request's `total_chunks`.
    The lines compose to `{"evt":"account_deletion_cascade","subject":"…","export_bundle":N}` and
-   `{"evt":"data_export","subject":"…","purged":N,"written":M}`. The parameter types are the enforcement mechanism
-   against a forged envelope key: `mr_log_breadcrumb`'s AM6 reserved-key `debug_assert!` compiles out of the release
-   wasm (`Cargo.toml` leaves `debug-assertions` at its release default), so what prevents a fragment from smuggling
-   `"evt":` under last-key-wins parsing is that both builders take only `Identity` and integers — an alphabet of
-   lowercase hex, decimals and fixed key literals. The frozen signature pins therefore cover the WHOLE signature and
-   ban any `&str`/`String` parameter. The `json_usize_into` encoder exists so the ADR-0226 width→quote rule (64-bit
+   `{"evt":"data_export","subject":"…","purged":N,"written":M}`. Two pins together prevent a forged envelope key under last-key-wins parsing, because
+   `mr_log_breadcrumb`'s AM6 reserved-key `debug_assert!` compiles out of the release wasm (`Cargo.toml` leaves
+   `debug-assertions` at its release default) and cannot be delegated to: the frozen BODY plus the key census (a fourth
+   key, even one rendered from integer inputs, reds `[fields/key-census]` / `[fields/exact]` — measured), and the
+   whole-signature freeze that bans any `&str`/`String` parameter (necessary, not sufficient — an integer-only builder
+   can still be edited to render a reserved literal, which is what the body and key pins catch). Both builders take
+   only `Identity` and integers: an alphabet of lowercase hex, decimals and fixed key literals. The `json_usize_into` encoder exists so the ADR-0226 width→quote rule (64-bit
    quoted, 32-bit bare) stays in one place and the bare-decimal contract is host-testable; on `wasm32` `usize` is
    `u32`, so it prevents no production truncation and is not claimed to.
 
@@ -82,7 +84,8 @@ land here.
    count; the spec's "thirteen steps" counts it, so the key space is twelve. Table nouns were rejected as keys because
    eight of the helpers span several manifest tables (`erase_monsters` → `monster` + `monster_pub`, …) and
    `player_wallet` is not `wallet`. Landing the other eleven counts needs the eleven owning modules and an amendment
-   to ADR-0228 D1 — deferred as residual R-rb-65-STEPCOUNTS with that file list.
+   to ADR-0228 D1 — deferred through the rb-65 acceptance ledger's X8 `DEFER: -> backlog` line, which carries that file list and
+   from which the supervisor mints the residual.
 
 5. **What the cascade line means — and what it does not.** Presence of an `account_deletion_cascade` line means every
    delegated step and the terminal stamp returned `Ok` inside a transaction the host then attempted to commit. The
@@ -129,20 +132,24 @@ land here.
    still never emits from the helper. The third is exactly what this slice does, because the emission belongs to the
    REDUCER that calls the helper — privacy.rs's own header says so — and the hygiene contract is a set of measured
    scanner facts, every one of which the new code satisfies: zero quote bytes (measured before and after), no `log::`
-   token (`mr_log` is a function), no macro, no cfg. The contract keeps the module scanner-inert; it never said the
+   token (`mr_log` is a function), no print macro, no cfg, and no in-file `macro_rules!` definition — the evt IS a
+   macro invocation (`stringify!`), and a local `macro_rules! stringify` shadow that ships a different evt is the
+   measured bypass that `rb64p_paren_less_verb_and_in_file_macro_are_banned` closes. The contract keeps the module scanner-inert; it never said the
    module may not observe its own reducer.
 
 10. **The rb-40 emission census is widened 1→2 and repaid.** `rb40 [emit/count-in-file]` pinned `crate::observability::mr_log(`
     at exactly one in accounts.rs. A bare bump is a strict loosening; the widening is paid for as the m22-s3b purge
     census paid for its own 1→2: per-body counts (one in `complete_guest_claim`, one in the reaper), the file total,
-    and `total - scoped == 0` as arithmetic, plus an alias clause (unqualified `mr_log(` count equals the qualified
-    count; `mr_log as` banned) so a re-exported wrapper cannot add a third site the qualified needle never sees.
+    and `total - scoped == 0` as arithmetic, plus an alias clause — the unqualified `mr_log(` count AND the bare `mr_log` identifier count both equal the
+    qualified count, and `mr_log as` is banned — so neither a re-exported wrapper nor a function-pointer binding
+    (`let emit: fn(&str, &str) = crate::observability::mr_log;`, measured CI-clean against the paren-anchored
+    censuses alone) can add a site the qualified needle never sees. The same identifier census holds privacy.rs at one.
 
 ## Alternatives rejected
 
 - **Thirteen per-step lines.** Thirteen emissions in eleven files, each a separately reviewed privacy surface, for a
   fact ("this cascade ran") that is one fact.
-- **Widen the twelve helpers to `-> usize` now.** Eleven modules outside `touches:` — a hidden-dependency STOP — and a
+- **Widen the eleven remaining helpers to `-> usize` now.** Eleven modules outside `touches:` — a hidden-dependency STOP — and a
   reversal of ADR-0228 D1 that deserves its own ADR. Deferred with the file list (D4).
 - **A private audit table.** Needs `schema.rs` (declared but unmodified here), the ADR-0221 automigration freeze wants
   table + writer atomically, and it is oversized for two lines; the `account` row already IS the durable record (D5).
@@ -165,12 +172,17 @@ uniqueness; the scheduler guard at index 0 of the reaper body; one emission in t
 per body with zero elsewhere; alias clause; no breadcrumb; a file-wide cfg census — exactly one `#[cfg`, the tests-mod
 attribute, and zero `cfg!(` — which also closes `#[cfg_attr(not(test), cfg(any()))]`; the terminal tail pinned LEFTWARD
 through the `let fields` binding so `cascade_fields(args.account_identity, 0)` and `export_chunks.saturating_sub(1)`
-both fail; count-before-index ordering; depth 0; no `return` between the binding and `Ok(())`; each binding once),
+both fail; count-before-index ordering; depth 0; no `return` token and no `?` operator between the binding and `Ok(())` — a
+depth-0 `?` is an early exit a `return` census alone never sees, measured CI-clean; exactly ONE depth-0 `return` in
+the whole reaper body, at the scheduler guard — a prefix early return smuggled through the re-frozen literal is
+otherwise CI-clean, measured; each binding once),
 `rb65_reaper_binds_the_purge_result`, `rb65_evt_and_fragment_literals_are_pinned` (kept-strings call + evt, the raw-source
 whitespace-preserving evt pin, the fragment literal scoped inside the builder, the PRV1-17/20 key ban),
 `rb65_cascade_fields_is_pure` (whole frozen signature, privacy, body bans, blanked-body equality);
 `rb65p_export_emits_one_observation` (the same clauses against `m22s4_reducer_body`, the `}`-anchored tail through the
-arm, `let total` bound once, reachability scoped to depth 0 with the PRV1-11 fail-loud arm attributed at depth > 0),
+arm, `let total` bound once, reachability scoped to depth 0 — no depth-0 `return` and no depth-0 `?` — with the
+PRV1-11 fail-loud arm attributed at depth > 0 AND pinned as `return Err(`: an `Ok` there is a short export that
+reports success, measured CI-clean against a bare token census),
 `rb65p_export_binds_the_purge_result`, `rb65p_export_fields_is_pure` (whole signature, exact `stringify!` key set, the
 raw-source `stringify!(data_export)` pin). GREEN arm (calls the new builders — cannot compile pre-fix, the rb-22 EO-6
 precedent): `rb65_cascade_fields_is_exact`, `rb65_cascade_line_composes_into_the_envelope`, `rb65p_export_fields_is_exact`
@@ -180,7 +192,8 @@ Re-frozen: `rb24_frozen_reaper_body` (two independent transcriptions, guard pref
 
 ## Honest limits / residuals
 
-1. **Per-step counts are deferred** (R-rb-65-STEPCOUNTS → backlog, ledger X8 DEFER with the eleven-module list). The
+1. **Per-step counts are deferred** (ledger X8 `DEFER: -> backlog` with the eleven-module list; the supervisor mints the
+   residual row from that line at merge). The
    cascade line carries the one count already reported and the extension contract that makes the rest additive.
 2. **No live behavioural proof.** `native_host_tests.rs` models no datastore write, so neither reducer can be executed
    natively; the count's data dependency is proven by the statement pins and the fragment by value, the rb-40 shape.
@@ -201,5 +214,5 @@ Re-frozen: `rb24_frozen_reaper_body` (two independent transcriptions, guard pref
   `accounts.rs` gains a second backslash-escaped `format!` fragment, measured clean against `assertStripperSound` and the
   naive comment-first strippers (`evals/trade-escrow-guards.eval.mjs` family).
 - The OBS-2 ratchet is untouched: no bare `log::`, no `use log`, `server-module/src/.log-baseline` byte-identical.
-- The `purge_export_bundles` helper and its frozen-body pins are unchanged; only its three callers' use of the return
-  value changed.
+- The `purge_export_bundles` helper and its frozen-body pins are unchanged; only two of its three
+  callers' use of the return value changed (the claim site already bound and published it, rb-40).

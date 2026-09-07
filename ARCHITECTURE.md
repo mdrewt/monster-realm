@@ -568,6 +568,14 @@ from mid-grace; `set_profile_name` gained the §4.7 gate (a connected terminal
 session could otherwise un-tombstone itself). `join_game`'s equivalent
 exposure (movement.rs, out of touches) rides the S6 [DEL-06] enforcement
 residual.
+Since **rb-65** (ADR-0243) the reaper BINDS step 6b's `purge_export_bundles`
+count and, after the 6e stamp, emits ONE terminal `account_deletion_cascade`
+line through `observability::mr_log` (`subject` hex + `export_bundle` count,
+never a player-authored field — PRV1-17/20 now gated for that line);
+`request_data_export` likewise binds its purge-before-write count and emits a
+terminal `data_export` line under privacy.rs's hygiene contract. Per-step
+counts for the other eleven helpers ride the rb-65 ledger's X8 DEFER (ADR-0243
+D4: one unquoted key per helper noun, appended in cascade order).
 
 **m22-s9 (ADR-0232) — M22 CLOSED.** Post-integration verification, the
 milestone's real DoD (§7.3): `account-e2e.eval.mjs`'s live phase now patches
