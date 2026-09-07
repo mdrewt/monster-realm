@@ -2430,7 +2430,7 @@ export default async function () {
     return bad(
       `[A11Y-07] ${STYLES_CSS} declares ${realOffenders.length} #id selector(s): ` +
         `${JSON.stringify(realOffenders)} — criterion A11Y-12, LITERAL half. This clause is the ` +
-        "single-file legibility contract: styles.css uses class and `:root` selectors only. It " +
+        'single-file legibility contract: styles.css uses class and `:root` selectors only. It ' +
         'is NOT what proves the shell stays reachable — since rb-9 (ADR-0244) that is the ' +
         'computed-cascade differential in client/src/indexShellCascade.test.ts, which renders ' +
         'the real markup and diffs getComputedStyle instead of matching selector text. This ' +
