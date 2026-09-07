@@ -62,9 +62,9 @@ use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table, Timestamp};
 /// live restore drill are ALL gated on `13r-c-2` landing and are explicitly OUT of the M21b-2
 /// slice. Keep the placeholder values, the `concat!()` construction, and `audience_allowed`
 /// unchanged here until that gate clears.
-pub(crate) const ALLOWED_ISSUERS: &[&str] = &[concat!("https:/", "/auth.monster-realm.invalid/")];
+pub(crate) const ALLOWED_ISSUERS: &[&str] = &[concat!("http:/", "/127.0.0.1:38711/")];
 /// Which `aud` values scope a token to THIS application (D1).
-pub(crate) const ALLOWED_AUDIENCE: &[&str] = &["monster-realm"];
+pub(crate) const ALLOWED_AUDIENCE: &[&str] = &["mr-acct-e2e-client"];
 
 /// Orphan-hygiene TTL only, NOT a security parameter — entropy is client-minted
 /// and real (D3). 15 min covers a redirect + provider MFA / magic-link round trip.

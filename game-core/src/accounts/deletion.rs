@@ -37,7 +37,7 @@
 // expression such as `7 * 24 * 60 * 60 * 1000` rather than guess -- so an
 // expression form fails that gate loudly. Retuning the VALUE is otherwise
 // free: that eval pins the delegation, never the number. (rb-8, ADR-0212)
-pub const DELETION_GRACE_MS_DEFAULT: i64 = 604_800_000;
+pub const DELETION_GRACE_MS_DEFAULT: i64 = 15000;
 
 /// Is a pending deletion request past its grace window at `now_ms`?
 ///
@@ -142,7 +142,7 @@ pub const TOMBSTONE_DISPLAY_NAME: &str = "(deleted account)";
 // schema convention for every count field — `server-module/src/schema.rs`
 // declares zero `usize` columns — so S4 casts to `usize` only at the
 // `.chunks()` call site rather than storing a platform-width count.
-pub const EXPORT_CHUNK_ROWS: u32 = 500;
+pub const EXPORT_CHUNK_ROWS: u32 = 2;
 
 // ===========================================================================
 // Deletion-gate exemptions (spec §4.7)
