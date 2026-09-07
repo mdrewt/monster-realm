@@ -22,15 +22,15 @@ The manifest's own HONEST LIMIT reason text (evals/guest-claim-integrity.eval.mj
 
 **Measured on the fork:** module-write isolation (G5, ADR-0056 D0) bans `export_bundle` writes in `accounts.rs`. The spec (M22 §7.2) assigns the entire export machinery to `privacy.rs` — the single module that will own `request_data_export` and its chunk logic in S4. Creating the module now ahead of S4 allows the claim-time purge to live in its assigned home, not accounts.rs, and ensures S4's machinery arrives pre-wired.
 
-Consequence: `accounts.rs:1-30` documents this delegation at module scope; `accounts_tests.rs:2119` + the eval's `[W/*]` clauses enforce it; `privacy.rs:33-44` defines `pub(crate) fn purge_export_bundles(ctx, owner)`.
+Consequence: the `accounts.rs` module header documents this delegation at module scope; the accounts-arm gate `rb22_accounts_header_names_the_privacy_delegate` + the eval's `[W/*]` clauses enforce it; `privacy.rs` defines `pub(crate) fn purge_export_bundles(ctx: &ReducerContext, owner: Identity) -> usize`.
 
 ## Decision 2 — the helper is owner-generic for S3 cascade reuse
 
-The signature `purge_export_bundles(ctx: &ReducerContext, owner: Identity)` collects `export_bundle` rows via the `owner_identity` btree index (ADR-0126 idiom, mirroring `disarm_claim_reaper` accounts.rs:321-335) and deletes each by PK. The body is frozen contract: `privacy_tests.rs` pins it byte-exactly in squashed form.
+`privacy.rs` defines `pub(crate) fn purge_export_bundles(ctx: &ReducerContext, owner: Identity) -> usize` (cited by declaration rather than line number, per ADR-0230): it collects `export_bundle` rows via the `owner_identity` btree index (ADR-0126 idiom, mirroring `disarm_claim_reaper` in `accounts.rs`), deletes each by PK, and returns how many chunks it deleted — the `-> usize` arrived with rb-40 (ADR-0235). The body is frozen contract: `privacy_tests.rs` pins it byte-exactly in squashed form.
 
 **Why owner-generic:** The M22-S3 account-deletion cascade will reuse the same helper verbatim for the deleting account's own chunks — `export_bundle` is `Erase`-policy in `DATA_LIFECYCLE_MANIFEST` (schema.rs:1073-1079), so it is part of the standard cascade, and the cascade itself is not scope-of-this-slice. The helper must answer the cascade's reuse pattern without modification.
 
-**Consequence:** S3 still owns the full implementation of the cascade arm that calls this helper; this slice creates only the helper and the claim-time call site (accounts.rs:517).
+**Consequence:** rb-22 created only the helper and the claim-time call site in `complete_guest_claim` (`accounts.rs`); the S3 deletion-cascade arm that reuses the helper landed later, in rb-65 (ADR-0243).
 
 ## Decision 3 — Alternatives rejected
 
