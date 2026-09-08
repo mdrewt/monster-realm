@@ -1691,8 +1691,11 @@ test('X7 Extends/Extended-by dangling refs error and every reverse back-link is 
 // tree, so its default ADR_DIR and its default DIGEST_PATH both resolve inside
 // the temp dir. This is the ONE probe that deliberately passes NEITHER
 // --adr-dir NOR --out: a rule that only runs when --adr-dir is supplied, or
-// only below a corpus-size/id-band cutoff, or only on a fixture fingerprint, is
-// INDISTINGUISHABLE from the real thing in every other clause of this file.
+// only below a corpus-size/id-band cutoff, or only on a fixture's corpus
+// content, is INDISTINGUISHABLE from the real thing here. X9 is not always the
+// SOLE tooth -- X7's 120-ADR padding also catches a cutoff at 50 or 100 -- but
+// it is the only one that catches a cutoff above X7's corpus size, and the only
+// one that catches `adrDirOverride === null` at all.
 //
 // BOUND, stated because X9's failure message must not over-promise. X9 runs
 // from a COPY, so its corpus path can never be byte-identical to a production
@@ -1716,6 +1719,11 @@ function rb70WithRealCorpusCopy(mutate) {
   // both X7 and X9 while excluding production and went 9/9 green (MEASURED).
   // It does NOT close the general path-fingerprint class -- see the BOUND note.
   const dir = mkdtempSync(join(homedir(), '.rb70x9-'));
+  // Unreachable in this checkout and in CI, but if HOME ever equalled the repo
+  // root the scratch tree would be built INSIDE ROOT and the symlink loop below
+  // would link it into itself. Measured harmless, but fail loudly rather than
+  // leave the next reader to work out why the probe behaves oddly.
+  assert.ok(!dir.startsWith(ROOT), `X9 scratch dir ${dir} must live outside ${ROOT}`);
   try {
     cpSync(REAL_ADR_DIR, join(dir, 'docs', 'adr'), { recursive: true });
     cpSync(SCRIPT, join(dir, 'scripts', 'adr-digest.mjs'));
@@ -1798,7 +1806,8 @@ test('X9 the reverse rule is live on the REAL corpus, with no flags at all', () 
       'SILENT as shipped and must FIRE the instant a real **Extends:** leg is deleted. Every ' +
       'other probe in this file hands the generator a five-file synthetic corpus in a mkdtemp ' +
       'directory via --adr-dir; a rule gated on `adrDirOverride !== null`, on `adrs.length > N`, ' +
-      'on an id band, on a repo-root existsSync probe, on a fixture fingerprint, or hard-coded to ' +
+      "on an id band, on a repo-root existsSync probe, on a fixture's corpus CONTENT, or " +
+      'hard-coded to ' +
       `the 0952/0953 fixture pair passes all of them and is DEAD here. Expected:\n  ${expectedLine}` +
       // X9's clean arm also asserts exit 0, so a stale DIGEST.md or any dangling
       // reference anywhere in the corpus reds it under a message about
