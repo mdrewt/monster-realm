@@ -20007,3 +20007,262 @@ fn rb68p_adr0230_evidence_oracle_control() {
         "[scope/roster-floor]",
     );
 }
+
+// ---------------------------------------------------------------------------
+// rb-72 / ADR-0232 D2 correction — resolve_all_live_interactions is presence-
+// row-safe, both by execution (Leg A) and by a depth-1 source scan of its
+// four callees (Leg B).
+// ---------------------------------------------------------------------------
+
+/// rb-72 (ADR-0232 D2 correction): `resolve_all_live_interactions` (lib.rs,
+/// :246-251) — the four-call trade/PvP/wild-battle/challenge dispatcher
+/// shared by `on_disconnect` and the deletion cascade — deletes NEITHER the
+/// `player` NOR the `character` presence row for the identity it resolves.
+/// ADR-0232's D2 prose currently claims the opposite: that the disconnect
+/// flow's `client_disconnected` -> `resolve_all_live_interactions` "deletes
+/// their player/character presence rows". That is false: the dispatcher is
+/// EXACTLY the four resolver calls (its own doc comment says "Performs no row
+/// write itself; each callee owns its own tables' writes"), and it is
+/// `on_disconnect` itself (lib.rs, :265-279) that deletes the presence rows,
+/// strictly AFTER calling the dispatcher.
+///
+/// EXECUTED COUNTERPART OF `m22s3b_resolver_body_order` (above, :9742): that
+/// STATIC pin freezes the dispatcher's OWN squashed body in lib.rs to exactly
+/// the four calls and proves it performs no `.insert(`/`.update(`/`.delete(`
+/// verb ITSELF — a source-shape proof no execution can substitute for. What
+/// it structurally cannot see is a write smuggled into one of the four
+/// CALLEES' own bodies (trading::cancel_trades_on_disconnect,
+/// pvp::forfeit_on_disconnect, battle::resolve_wild_battle_on_disconnect,
+/// pvp::cancel_challenges_on_disconnect): every needle that test pins is
+/// still present, still ordered, still counted once, while a callee quietly
+/// deletes the presence rows underneath the dispatcher's clean shape. This
+/// test closes exactly that gap with two legs, both below in one `#[test]`.
+///
+/// LEG A (S0-S4) EXECUTES `resolve_all_live_interactions` for real against
+/// the in-memory host (`native_host_tests`), with a seeded `player` and
+/// `character` row for the subject identity, and asserts both rows are still
+/// readable through `ctx.db` afterwards — an EXECUTED behavioural pin no
+/// source scan can substitute for. It deliberately leaves `trade_offer` /
+/// `battle` / `battle_challenge` UNREGISTERED with this fixture, so the four
+/// callees' indexed `.filter()` scans read empty and every loop over their
+/// results is a no-op: reaching a write syscall on this host is
+/// `unmodelled()` (module doc) and ABORTS THE WHOLE TEST PROCESS rather than
+/// failing an assertion, so this leg can only ever execute the empty-table
+/// branch of all four callees.
+///
+/// LEG B is the DEPTH-1 STATIC counterpart that covers exactly the branch Leg
+/// A cannot execute. It scans the SHIPPED SOURCE of the four callees' own
+/// bodies (via the existing `M22_TRADING_RS` / `M22_PVP_RS` / `M22_BATTLE_RS`
+/// `include_str!` consts, and `extract_squashed_fn_body`) and asserts none of
+/// them names the `player` or `character` table accessor at all — reachable
+/// or not.
+///
+/// Kills: Leg A kills an unconditional `ctx.db.player().identity().delete(..)`
+/// (or the `character` equivalent) added directly to the DISPATCHER's own
+/// body — S3 POST goes red because the seeded row's real index read now
+/// reports absent (`m22s3b_resolver_body_order`'s no-write clause
+/// independently reds the same mutant from the source side). Leg B kills the
+/// red-team-measured bypass: a `player`/`character` delete added inside
+/// `pvp::cancel_challenges_on_disconnect`'s (or
+/// `trading::cancel_trades_on_disconnect`'s) `for` loop, guarded on the
+/// UNREGISTERED `battle_challenge`/`trade_offer` table so it never executes
+/// under Leg A. That mutant is invisible to Leg A (its branch never runs) and
+/// invisible to `m22s3b_resolver_body_order` (which reads only lib.rs), but
+/// the accessor token lands in the callee's own shipped source regardless of
+/// whether the branch ever executes, so Leg B's occurrence count goes from 0
+/// to 1 and reds.
+///
+/// THE HOST WALL (read before trusting a green Leg A on its own): the
+/// in-memory host's four write syscalls are all `unmodelled()` — a write
+/// reached through them PANICS INSIDE AN `extern "C"` FRAME, which cannot
+/// unwind, so it ABORTS THE WHOLE TEST PROCESS rather than failing an
+/// assertion (`#[should_panic]` cannot catch it; nextest reports a signal,
+/// not a failed test). A red-teamer who reaches a REAL delete through the
+/// dispatcher's own reachable body under this fixture's registered tables
+/// gets an aborted process, not a quietly-passing green — that IS a real
+/// failure of this test, but a DIFFERENT failure mode than the assertions
+/// below, and this comment says so rather than implying an `assert!` catches
+/// it.
+///
+/// DISCLOSED LIMITS. Leg B is DEPTH-1 ONLY: it reads the squashed body of the
+/// four callees THEMSELVES, not of any helper function one of them calls (a
+/// delete added inside `pvp::apply_pvp_forfeit` or
+/// `battle::write_back_battle_results`, both reached from a callee's body, is
+/// invisible to this leg). Leg A executes only the EMPTY-TABLE path through
+/// all four callees (`trade_offer` / `battle` / `battle_challenge` are never
+/// registered, by construction — see the host wall above); it says nothing
+/// about what those callees do to `player`/`character` on a non-empty
+/// branch, which is exactly the gap Leg B exists to close. Neither leg
+/// proves the CONVERSE — that `on_disconnect`'s OWN presence deletes still
+/// happen — which is a different criterion with its own coverage need, not
+/// this one.
+#[test]
+fn rb72_resolve_all_live_interactions_leaves_presence_rows() {
+    use crate::schema::{character, Character, Player};
+    use game_core::{ActionState, Direction};
+
+    // --- S0: seed the subject's player + character rows ---------------------
+    let fx = crate::native_host_tests::fixture();
+    let player_t = fx.table::<Player>("player", "identity", |r| r.identity);
+    let character_t = fx.table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id);
+    let ctx = fx.ctx();
+
+    // NEVER [0u8; 32]: that is ctx.sender() under __dummy() and equals
+    // crate::WILD_IDENTITY (lib.rs:89). NEVER entity_id 0: the #[auto_inc]
+    // sentinel — moot for `Handle::seed` (it bypasses the real insert path
+    // entirely), but a live tripwire for a future edit that switches this
+    // test to `ctx.db.<t>().insert(`.
+    let subject = Identity::from_byte_array([7u8; 32]);
+    const ENTITY_ID: u64 = 77;
+
+    player_t.seed(&Player {
+        identity: subject,
+        entity_id: ENTITY_ID,
+        name: "rb72-subject".to_string(),
+        online: true,
+        last_input_seq: 0,
+    });
+    character_t.seed(&Character {
+        entity_id: ENTITY_ID,
+        zone_id: 0,
+        tile_x: 0,
+        tile_y: 0,
+        facing: Direction::South,
+        action: ActionState::Idle,
+        move_started_at_ms: 0,
+        sprite_id: 0,
+        move_queue: Vec::new(),
+    });
+
+    // --- S1 PRE: both rows visible BEFORE the call ---------------------------
+    assert!(
+        ctx.db.player().identity().find(subject).is_some(),
+        "[rb72/pre-player] the seeded player row must be visible through ctx.db BEFORE \
+         resolve_all_live_interactions runs, or every assertion below is vacuous. Indexes \
+         requested so far: {:?}",
+        fx.requested_indexes()
+    );
+    assert!(
+        ctx.db.character().entity_id().find(ENTITY_ID).is_some(),
+        "[rb72/pre-character] the seeded character row must be visible through ctx.db BEFORE \
+         resolve_all_live_interactions runs, or every assertion below is vacuous. Indexes \
+         requested so far: {:?}",
+        fx.requested_indexes()
+    );
+
+    // --- S2: execute the shipped dispatcher ----------------------------------
+    // trade_offer / battle / battle_challenge are deliberately left
+    // UNREGISTERED (see the host-wall paragraph above): every write syscall
+    // on this host is unmodelled() and ABORTS THE PROCESS, so the four
+    // callees' indexed .filter() scans must read empty here for the test to
+    // run to completion at all.
+    crate::resolve_all_live_interactions(&ctx, subject);
+
+    // --- S3 POST: both rows still present AFTER the call ---------------------
+    assert!(
+        ctx.db.player().identity().find(subject).is_some(),
+        "[rb72/post-player] resolve_all_live_interactions must not delete the player row — \
+         ADR-0232 D2 is wrong that it does. It is on_disconnect's OWN body (lib.rs:275-278) \
+         that deletes presence rows, strictly AFTER this dispatcher returns."
+    );
+    assert!(
+        ctx.db.character().entity_id().find(ENTITY_ID).is_some(),
+        "[rb72/post-character] resolve_all_live_interactions must not delete the character \
+         row — same D2 correction as the player assertion above."
+    );
+
+    // --- S4 CONTROL: the read channel CAN observe an absence -----------------
+    assert_eq!(
+        player_t.remove(subject),
+        1,
+        "[rb72/control-remove-player] exactly one seeded player row must be removable, or the \
+         S1/S3 presence assertions above are not falsifiable by anything"
+    );
+    assert_eq!(
+        character_t.remove(ENTITY_ID),
+        1,
+        "[rb72/control-remove-character] exactly one seeded character row must be removable, \
+         or the S1/S3 presence assertions above are not falsifiable by anything"
+    );
+    assert!(
+        ctx.db.player().identity().find(subject).is_none(),
+        "[rb72/control-absent-player] after removal the SAME read must report absent — \
+         proving the S1/S3 `is_some()` reads are capable of failing, not vacuously true for \
+         any row state"
+    );
+    assert!(
+        ctx.db.character().entity_id().find(ENTITY_ID).is_none(),
+        "[rb72/control-absent-character] same falsifiability proof for the character read"
+    );
+
+    // --- Leg B: the four callees' SHIPPED SOURCE never names the player/character
+    // table accessor at all (depth-1 static counterpart to Leg A) -------------
+    //
+    // NEEDLE CHOICE: `.player()` / `.character()`, the exact squashed
+    // accessor CALL shape (`ctx.db.<table>()`), never a bare identifier —
+    // split with `concat!` per this file's scan-hygiene convention (header,
+    // :19-27). Measured against every legitimate token the four bodies
+    // actually carry: `battle().player_identity()`,
+    // `battle().opponent_identity()`, `battle_challenge()`, `trade_offer()`,
+    // `battle_wild()`, `player_conversation()`, and the `player`/`disconnected`
+    // PARAMETER NAMES themselves (`.filter(player)`) — none of those is
+    // followed by a bare `()` immediately after `player`/`character`, so none
+    // matches; the shape `ctx.db.player()` / `ctx.db.character()`
+    // (`erase_character_rows`, lib.rs:259-263, and `on_disconnect` itself
+    // both use it) matches exactly.
+    let player_needle = concat!(".play", "er()").to_string();
+    let character_needle = concat!(".chara", "cter()").to_string();
+
+    let callees: [(&str, &str, String); 4] = [
+        (
+            "trading::cancel_trades_on_disconnect",
+            M22_TRADING_RS,
+            concat!("fncancel_trades_on", "_disconnect(").to_string(),
+        ),
+        (
+            "pvp::forfeit_on_disconnect",
+            M22_PVP_RS,
+            concat!("fnforfeit_on", "_disconnect(").to_string(),
+        ),
+        (
+            "battle::resolve_wild_battle_on_disconnect",
+            M22_BATTLE_RS,
+            concat!("fnresolve_wild_battle_on", "_disconnect(").to_string(),
+        ),
+        (
+            "pvp::cancel_challenges_on_disconnect",
+            M22_PVP_RS,
+            concat!("fncancel_challenges_on", "_disconnect(").to_string(),
+        ),
+    ];
+
+    for (name, source, needle) in callees {
+        let squashed = stripped_for_scan(source);
+        let body = extract_squashed_fn_body(&squashed, &needle).unwrap_or_else(|| {
+            panic!(
+                "[rb72/callee-scope] `{name}` was not found via the needle `{needle}` in its \
+                 own source file — fail loud rather than pass vacuously; a renamed callee must \
+                 be re-derived here, not silently skipped"
+            )
+        });
+        let player_hits = m22_count_occurrences(body, &player_needle);
+        assert_eq!(
+            player_hits, 0,
+            "[rb72/callee-no-player] `{name}`'s own body names the `player` table accessor \
+             {player_hits} time(s). resolve_all_live_interactions's four callees own their \
+             tables' writes and must never reach the player/character presence rows \
+             (ADR-0232 D2 correction) — this is the red-team-measured bypass: a delete added \
+             inside a callee's own guarded branch is invisible to Leg A (the branch never \
+             executes against this fixture's unregistered tables) and to \
+             m22s3b_resolver_body_order (which reads only lib.rs), but it still lands in the \
+             callee's own shipped source."
+        );
+        let character_hits = m22_count_occurrences(body, &character_needle);
+        assert_eq!(
+            character_hits, 0,
+            "[rb72/callee-no-character] `{name}`'s own body names the `character` table \
+             accessor {character_hits} time(s) — same bypass class as the player assertion \
+             above."
+        );
+    }
+}
