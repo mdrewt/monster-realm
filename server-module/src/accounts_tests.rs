@@ -20059,9 +20059,14 @@ fn rb68p_adr0230_evidence_oracle_control() {
 ///
 /// Kills: Leg A kills an unconditional `ctx.db.player().identity().delete(..)`
 /// (or the `character` equivalent) added directly to the DISPATCHER's own
-/// body — S3 POST goes red because the seeded row's real index read now
-/// reports absent (`m22s3b_resolver_body_order`'s no-write clause
-/// independently reds the same mutant from the source side). Leg B kills the
+/// body — but NOT by reddening S3 POST. `player` and `character` ARE
+/// registered with this fixture, so such a delete reaches a real write
+/// syscall, which is `unmodelled()` and aborts the process before S3 ever
+/// runs (see THE HOST WALL below; measured as gate X5/M5). The kill is real,
+/// the mechanism is the abort, and an earlier draft of this very comment
+/// claimed "S3 POST goes red" — wrong, and worth naming in a test whose whole
+/// subject is a mis-stated mechanism. `m22s3b_resolver_body_order`'s no-write
+/// clause independently reds the same mutant from the source side. Leg B kills the
 /// red-team-measured bypass: a `player`/`character` delete added inside
 /// `pvp::cancel_challenges_on_disconnect`'s (or
 /// `trading::cancel_trades_on_disconnect`'s) `for` loop, guarded on the
@@ -20084,11 +20089,33 @@ fn rb68p_adr0230_evidence_oracle_control() {
 /// below, and this comment says so rather than implying an `assert!` catches
 /// it.
 ///
-/// DISCLOSED LIMITS. Leg B is DEPTH-1 ONLY: it reads the squashed body of the
-/// four callees THEMSELVES, not of any helper function one of them calls (a
-/// delete added inside `pvp::apply_pvp_forfeit` or
-/// `battle::write_back_battle_results`, both reached from a callee's body, is
-/// invisible to this leg). Leg A executes only the EMPTY-TABLE path through
+/// Leg B carries two further clauses, both added after a red-team MEASURED a
+/// CI-clean bypass of the body scan alone:
+///   - B2, DECLARATION UNIQUENESS: each callee is declared exactly ONCE in its
+///     file. `include_str!` embeds the raw text of BOTH halves of a
+///     `#[cfg(test)]` / `#[cfg(not(test))]` twin, while the test binary
+///     compiles only the `cfg(test)` half — so a harmless twin placed FIRST
+///     satisfies `extract_squashed_fn_body`'s first-occurrence `find` while
+///     the shipped wasm runs a hostile one. Measured green against every
+///     other clause here before B2 existed.
+///   - B3, NO PRESENCE-DELETE SITE ANYWHERE IN THE THREE CALLEE-OWNING FILES:
+///     `trading.rs` / `pvp.rs` / `battle.rs` contain zero
+///     `player().identity().delete(` and zero `character().entity_id().delete(`
+///     at ANY depth. This is what closes the depth-2 helper bypass — a
+///     `pub(crate) fn` defined beside a callee, called from inside its loop,
+///     is invisible to the body scan but cannot hide from a whole-file ban on
+///     the delete SITE itself.
+///
+/// DISCLOSED LIMITS. Leg B's body scan is DEPTH-1: it reads the squashed body
+/// of the four callees THEMSELVES, not of any helper one of them calls. B3
+/// narrows that to a helper defined OUTSIDE `trading.rs`/`pvp.rs`/`battle.rs`
+/// (say in `guards.rs`) and called from a callee — still uncovered, carried as
+/// residual `R-rb-72-DEPTH2-CROSSFILE`. Nor does any needle catch a UFCS or
+/// aliased spelling of the accessor (`Local::player(&ctx.db)`,
+/// `use crate::schema::player as p; ctx.db.p()`): B1's needles are the
+/// method-call shape, and B3's are the chained-delete shape, so an aliased
+/// delete inside one of the three files evades both — residual
+/// `R-rb-72-UFCS-ALIAS`. Leg A executes only the EMPTY-TABLE path through
 /// all four callees (`trade_offer` / `battle` / `battle_challenge` are never
 /// registered, by construction — see the host wall above); it says nothing
 /// about what those callees do to `player`/`character` on a non-empty
@@ -20236,8 +20263,48 @@ fn rb72_resolve_all_live_interactions_leaves_presence_rows() {
         ),
     ];
 
+    // B3: no presence-row DELETE SITE anywhere in the three callee-owning files,
+    // at any depth. Kills the depth-2 helper bypass a red-team measured green:
+    // a `pub(crate) fn` defined beside a callee and called from inside its loop
+    // is invisible to the per-body scan below, but its delete site is not.
+    let delete_sites = [
+        concat!("player().identity()", ".del", "ete("),
+        concat!("character().entity_id()", ".del", "ete("),
+    ];
+    for (file, source) in [
+        ("trading.rs", M22_TRADING_RS),
+        ("pvp.rs", M22_PVP_RS),
+        ("battle.rs", M22_BATTLE_RS),
+    ] {
+        let squashed = stripped_for_scan(source);
+        for site in delete_sites {
+            assert_eq!(
+                m22_count_occurrences(&squashed, site),
+                0,
+                "[rb72/no-presence-delete-site] `{file}` contains a `{site}` presence-row \
+                 delete site. The four resolve_all_live_interactions callees live in these \
+                 three files, so a delete reachable from any of them at ANY depth — including \
+                 from a helper defined beside a callee, which the per-body scan below cannot \
+                 see — lands here. Only `on_disconnect` and the deletion cascade delete \
+                 presence rows (ADR-0232 D2 correction)."
+            );
+        }
+    }
+
     for (name, source, needle) in callees {
         let squashed = stripped_for_scan(source);
+        // B2: declaration uniqueness. `include_str!` embeds BOTH halves of a
+        // `#[cfg(test)]`/`#[cfg(not(test))]` twin while the test binary compiles
+        // only one, so a harmless twin placed first satisfies the
+        // first-occurrence body extraction while the shipped wasm runs the other.
+        assert_eq!(
+            m22_count_occurrences(&squashed, &needle),
+            1,
+            "[rb72/callee-decl-sole] `{name}` is declared more than once (needle `{needle}`). \
+             A cfg-gated declaration twin lets the body scan below read the harmless half \
+             while the published module compiles the other one — measured CI-clean before \
+             this clause existed."
+        );
         let body = extract_squashed_fn_body(&squashed, &needle).unwrap_or_else(|| {
             panic!(
                 "[rb72/callee-scope] `{name}` was not found via the needle `{needle}` in its \
