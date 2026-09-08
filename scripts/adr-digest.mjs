@@ -188,6 +188,13 @@ function parseAdr(id, filePath) {
     extractBoldField(content, 'Superseded-by') || extractListField(content, 'Superseded-by');
   const amendedBy =
     extractBoldField(content, 'Amended-by') || extractListField(content, 'Amended-by');
+  // TWO READERS, ON PURPOSE — these two feed checkRefs (the dangling check) and
+  // use the SAME reader as Amends: whole-content, fence-blind, list-form
+  // tolerant. The *Backlink pair below feeds RECIPROCITY off the column-0,
+  // fence-stripped, preamble-bounded view. The pairs are not interchangeable:
+  // a fenced `**Extends:**` must still be dangling-checked but must NOT
+  // discharge a back-link. Gated by X7/G1 (list form) and X7/G4 + X7/G8 (view
+  // scoping) in scripts/adr-digest.test.mjs.
   const extendsField = extractBoldField(content, 'Extends') || extractListField(content, 'Extends');
   const extendedByField =
     extractBoldField(content, 'Extended-by') || extractListField(content, 'Extended-by');
@@ -447,27 +454,6 @@ function extractBacklinkField(view, fieldName) {
 }
 
 /**
- * Resolve the ADR ids named by a relation field (**Amends:** / **Amended-by:**).
- *
- * Deliberately NOT extractAllAdrIds(): that one is prefix-only (ADR-NNNN / H-NNNN)
- * and feeds the dangling-reference check, where widening it would newly drag
- * prose numbers into scope. Nine ADRs in the 0151-0164 era write bare ids
- * (`**Amends:** 0151, 0162`), so back-link resolution must accept both forms.
- *
- * Rules: split on commas; truncate each token at the first `(` so a parenthetical
- * aside cannot contribute ids; skip H- (the harness namespace aliases collide
- * with project numbers — H-0055 is project 0056); strip a leading `ADR-`; take
- * the leading 4-digit run only when the next character is a non-digit or the
- * token ends (so `ADR-0118 §3/A3` resolves and a 5-digit `01510` does not; a
- * date like `2026-07-20` passes that test and is dropped by the file filter
- * below instead); keep only
- * ids that are files in the scanned directory; dedup.
- *
- * "No relation" is an EMPTY result, never a string test against the em dash —
- * real values include `— (supersedes the literal wording of ...)`.
- */
-
-/**
  * Split a relation field on its TOP-LEVEL commas only, so a comma inside a
  * parenthetical aside does not start a new token. Without this,
  * `— (deferred, 0984 lands next slice)` splits into `—` and `0984 lands next
@@ -492,6 +478,27 @@ function splitTopLevelCommas(value) {
   tokens.push(value.slice(start));
   return tokens;
 }
+
+/**
+ * Resolve the ADR ids named by a relation field (**Amends:** / **Amended-by:**).
+ *
+ * Deliberately NOT extractAllAdrIds(): that one is prefix-only (ADR-NNNN / H-NNNN)
+ * and feeds the dangling-reference check, where widening it would newly drag
+ * prose numbers into scope. Nine ADRs in the 0151-0164 era write bare ids
+ * (`**Amends:** 0151, 0162`), so back-link resolution must accept both forms.
+ *
+ * Rules: split on TOP-LEVEL commas (splitTopLevelCommas, directly above);
+ * truncate each token at the first `(` so a parenthetical
+ * aside cannot contribute ids; skip H- (the harness namespace aliases collide
+ * with project numbers — H-0055 is project 0056); strip a leading `ADR-`; take
+ * the leading 4-digit run only when the next character is a non-digit or the
+ * token ends (so `ADR-0118 §3/A3` resolves and a 5-digit `01510` does not; a
+ * date like `2026-07-20` passes that test and is dropped by the file filter
+ * below instead); keep only ids that are files in the scanned directory; dedup.
+ *
+ * "No relation" is an EMPTY result, never a string test against the em dash —
+ * real values include `— (supersedes the literal wording of ...)`.
+ */
 function resolveRelationIds(fieldValue, localIds) {
   if (!fieldValue) return [];
   const found = new Set();
@@ -621,11 +628,14 @@ function validateBacklinks(adrs, localIds) {
  * or ratchet applies here, and its message strings are pinned by two evals.
  *
  * ONLY the reverse direction is enforced, and the asymmetry is deliberate.
- * Counted on the corpus 2026-09-07: 49 forward **Extends:** edges exist and 6
- * are reciprocated, so 43 are one-directional — 17 ADRs declare **Extends:**
- * and only 4 declare **Extended-by:**. **Extends:** is written as a many-to-one
+ * Counted on the corpus 2026-09-07: 49 raw ADR-NNNN references appear in
+ * **Extends:** values and 47 of them RESOLVE to a project ADR file (the other
+ * two name the harness range ADR-0004/ADR-0014, which resolveRelationIds drops
+ * because they are in allIds but not in localIds). Exactly 6 of those 47 are
+ * reciprocated, so 41 are one-directional — 17 ADRs declare **Extends:** and
+ * only 4 declare **Extended-by:**. **Extends:** is written as a many-to-one
  * CITATION ("this decision builds on ADR-NNNN"), not as a symmetric relation,
- * and repairing those 43 is a semantic claim per edge. An **Extended-by:** is
+ * and repairing those 41 is a semantic claim per edge. An **Extended-by:** is
  * the opposite: it is an assertion ABOUT ANOTHER FILE, so the file it names must
  * corroborate it or the assertion is simply false — which is checkable here and
  * costs the corpus nothing, since it is already clean in this direction.

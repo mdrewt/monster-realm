@@ -53,10 +53,12 @@
 //      preamble-bounded back-link view, so a fenced, indented or below-the-
 //      first-heading spelling is NOT a declaration.
 //   8. FORWARD reciprocity (**Extends:** ⇒ **Extended-by:**) is deliberately
-//      NOT enforced. COUNTED ON THE LIVE CORPUS, 2026-09-07: 49 forward
-//      **Extends:** edges exist, exactly 6 of them are reciprocated by an
-//      **Extended-by:** back-link, so 43 are one-directional. Repairing those
-//      43 is a semantic claim per edge, and rb-70 DEFERred it as wontfix. No
+//      NOT enforced. COUNTED ON THE LIVE CORPUS, 2026-09-07: 47 resolved forward
+//      **Extends:** edges exist (49 raw ADR-NNNN references, two of which name
+//      the harness range ADR-0004/ADR-0014 and are dropped by
+//      resolveRelationIds), exactly 6 of them are reciprocated by an
+//      **Extended-by:** back-link, so 41 are one-directional. Repairing those
+//      41 is a semantic claim per edge, and rb-70 DEFERred it as wontfix. No
 //      test here demands it, and the fixtures are built so that adding it
 //      would not be needed to pass — see the note on X7's G3 arms.
 //   9. Six REAL corpus edges are frozen by roster in X8, on BOTH legs. This is
@@ -121,6 +123,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -1180,8 +1183,9 @@ function rb70GapEntries() {
 //
 // NOT TESTED ON PURPOSE: forward reciprocity (**Extends:** ⇒ **Extended-by:**).
 // rb-70 DEFERred it as wontfix. Counted on the live corpus 2026-09-07: 49
-// forward **Extends:** edges exist and exactly 6 are reciprocated, so 43 are
-// one-directional and each repair is a semantic claim about two documents.
+// **Extends:** references exist, 47 of which RESOLVE to a project ADR file (the
+// other two name the harness range ADR-0004/ADR-0014, which resolveRelationIds
+// drops); exactly 6 of those 47 are reciprocated, so 41 are one-directional and each repair is a semantic claim about two documents.
 // No clause here demands the forward rule, and every RECIPROCITY fixture below
 // gives each RESOLVABLE **Extends:** target its reciprocal **Extended-by:**, so
 // those arms stay silent whether or not a future slice adds it — they neither
@@ -1392,6 +1396,23 @@ test('X7 Extends/Extended-by dangling refs error and every reverse back-link is 
         adr('0952', { extendedBy: 'ADR-0953' }),
         adr('0953', { extends: 'ADR-0954' }),
         adr('0954', { extendedBy: 'ADR-0953' }),
+      ],
+      expected: RB70_GAP_EXPECTED,
+    },
+    {
+      // DIRECTION of the membership test. 0952 declares BOTH legs and 0953
+      // declares no **Extends:** at all, so "0953 extends 0952" is FALSE while
+      // "0952 extends 0953" is true. A rule written
+      //   extendsOf.get(x)?.includes(y) || extendsOf.get(y)?.includes(x)
+      // accepts the wrong leg as satisfaction and goes silent here. MEASURED as
+      // a surviving mutant that flips the exit code on a real corpus edge. No
+      // other arm separates the two directions: G3's first arm pins only
+      // non-membership of a DIFFERENT id, which the bidirectional form reports
+      // too.
+      label: 'the reciprocal leg points the WRONG WAY — the gap stands',
+      entries: [
+        adr('0952', { extends: 'ADR-0953', extendedBy: 'ADR-0953' }),
+        adr('0953', { extendedBy: 'ADR-0952' }),
       ],
       expected: RB70_GAP_EXPECTED,
     },
@@ -1679,6 +1700,24 @@ function rb70WithRealCorpusCopy(mutate) {
   try {
     cpSync(REAL_ADR_DIR, join(dir, 'docs', 'adr'), { recursive: true });
     cpSync(SCRIPT, join(dir, 'scripts', 'adr-digest.mjs'));
+    // MIRROR EVERY OTHER REPO-ROOT ENTRY. Copying only docs/ and scripts/ left
+    // this tree trivially distinguishable from a production checkout, and a
+    // red-team MEASURED three CI-clean bypasses built on exactly that gap:
+    // `if (adrDirOverride === null && existsSync(join(PROJECT_ROOT, 'justfile')))
+    // return issues;` -- and the same with `evals/run.mjs` or `ARCHITECTURE.md`
+    // -- ran 9/9 green here AND passed all three ADR evals while the rule was
+    // DEAD on every real run. Symlinks, not copies: the script only ever reads
+    // docs/adr, so the link targets are never opened; they exist so existsSync
+    // cannot tell the two trees apart.
+    for (const entry of readdirSync(ROOT)) {
+      if (entry === 'docs' || entry === 'scripts') continue;
+      try {
+        symlinkSync(join(ROOT, entry), join(dir, entry));
+      } catch {
+        // An unsupported link target must not fail the probe for an unrelated
+        // reason. The discriminators that mattered are all plain entries.
+      }
+    }
     mutate(join(dir, 'docs', 'adr'));
     const result = spawnSync('node', [join(dir, 'scripts', 'adr-digest.mjs'), '--check'], {
       cwd: dir,
@@ -1741,7 +1780,13 @@ test('X9 the reverse rule is live on the REAL corpus, with no flags at all', () 
       'other probe in this file hands the generator a five-file synthetic corpus in a mkdtemp ' +
       'directory via --adr-dir; a rule gated on `adrDirOverride !== null`, on a tmpdir-shaped ' +
       'ADR_DIR, on `adrs.length > N`, on an id band, on a fixture fingerprint, or hard-coded to ' +
-      `the 0952/0953 fixture pair passes all of them and is DEAD here. Expected:\n  ${expectedLine}`,
+      `the 0952/0953 fixture pair passes all of them and is DEAD here. Expected:\n  ${expectedLine}` +
+      // X9's clean arm also asserts exit 0, so a stale DIGEST.md or any dangling
+      // reference anywhere in the corpus reds it under a message about
+      // reciprocity. Print what it actually judged on, or the next reader
+      // debugs the wrong gate.
+      `\n\nclean stderr: ${clean.stderr.slice(0, 400)}` +
+      `\nmutated stderr: ${mutated.stderr.slice(0, 400)}`,
   );
   console.log('RB70-G9:OK');
 });
@@ -1782,7 +1827,7 @@ test('X9 the reverse rule is live on the REAL corpus, with no flags at all', () 
 //
 // BOUND — the roster is a SUBSET of the live edge set BY CONSTRUCTION, and the
 // assertions below are membership checks only. Today the subset happens to be
-// the whole of it: counted on 2026-09-07 the corpus carries 49 forward
+// the whole of it: counted on 2026-09-07 the corpus carries 47 resolved forward
 // **Extends:** edges of which exactly 6 are reciprocated, and these six ARE
 // those six. That coincidence is NOT the contract and must not be asserted — a
 // future ADR that adds a new reciprocated **Extends:** edge must NOT red this
