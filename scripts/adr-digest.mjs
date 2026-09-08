@@ -188,6 +188,9 @@ function parseAdr(id, filePath) {
     extractBoldField(content, 'Superseded-by') || extractListField(content, 'Superseded-by');
   const amendedBy =
     extractBoldField(content, 'Amended-by') || extractListField(content, 'Amended-by');
+  const extendsField = extractBoldField(content, 'Extends') || extractListField(content, 'Extends');
+  const extendedByField =
+    extractBoldField(content, 'Extended-by') || extractListField(content, 'Extended-by');
 
   // Back-link resolution reads a FENCE-STRIPPED view so an illustrative
   // `**Amended-by:**` inside a code block cannot satisfy reciprocity. This is a
@@ -202,6 +205,8 @@ function parseAdr(id, filePath) {
   const backlinkView = stripFencedBlocks(headerPreamble(content));
   const amendsBacklink = extractBacklinkField(backlinkView, 'Amends');
   const amendedByBacklink = extractBacklinkField(backlinkView, 'Amended-by');
+  const extendsBacklink = extractBacklinkField(backlinkView, 'Extends');
+  const extendedByBacklink = extractBacklinkField(backlinkView, 'Extended-by');
 
   return {
     id,
@@ -218,6 +223,10 @@ function parseAdr(id, filePath) {
     amendedBy: amendedBy || null,
     amendsBacklink: amendsBacklink || null,
     amendedByBacklink: amendedByBacklink || null,
+    extendsField: extendsField || null,
+    extendedByField: extendedByField || null,
+    extendsBacklink: extendsBacklink || null,
+    extendedByBacklink: extendedByBacklink || null,
   };
 }
 
@@ -338,6 +347,11 @@ function validateAdr(adr, allIds) {
   checkRefs(adr.amendedBy, 'Amended-by');
   checkRefs(adr.supersedes, 'Supersedes');
   checkRefs(adr.amends, 'Amends');
+  // No matching "missing **Extends:** (use — if none)" clause above, unlike
+  // Supersedes/Amends: 190 of the 210 project ADRs declare neither relation, so
+  // requiring them would error the whole corpus. Absence is never an issue here.
+  checkRefs(adr.extendsField, 'Extends');
+  checkRefs(adr.extendedByField, 'Extended-by');
 
   return issues;
 }
@@ -594,6 +608,59 @@ function validateBacklinks(adrs, localIds) {
         `(KNOWN_BACKLINK_GAPS in scripts/adr-digest.mjs); ${belowEra} more below ` +
         `the ADR-${BACKLINK_ERA_MIN} enforcement era`,
     });
+  }
+
+  return issues;
+}
+
+/**
+ * REVERSE reciprocity for the **Extends:** / **Extended-by:** pair (rb-70):
+ * every extender an ADR names must corroborate the claim with its own
+ * **Extends:**. A SECOND function rather than a branch inside
+ * validateBacklinks() because none of that function's era window, tolerance set
+ * or ratchet applies here, and its message strings are pinned by two evals.
+ *
+ * ONLY the reverse direction is enforced, and the asymmetry is deliberate.
+ * Counted on the corpus 2026-09-07: 49 forward **Extends:** edges exist and 6
+ * are reciprocated, so 43 are one-directional — 17 ADRs declare **Extends:**
+ * and only 4 declare **Extended-by:**. **Extends:** is written as a many-to-one
+ * CITATION ("this decision builds on ADR-NNNN"), not as a symmetric relation,
+ * and repairing those 43 is a semantic claim per edge. An **Extended-by:** is
+ * the opposite: it is an assertion ABOUT ANOTHER FILE, so the file it names must
+ * corroborate it or the assertion is simply false — which is checkable here and
+ * costs the corpus nothing, since it is already clean in this direction.
+ *
+ * That is also why there is no era window, no tolerance set and no ratchet:
+ * those exist in validateBacklinks() to grandfather a backlog that predates
+ * mechanical enforcement, and this direction has no backlog to grandfather.
+ *
+ * The key arrow is `<=`. `->`/`<-` are the frozen vocabulary of
+ * KNOWN_BACKLINK_GAPS, and evals/adr-backlink-corpus.eval.mjs T14 asserts set
+ * EQUALITY over every quoted key-shaped literal in this file, so minting keys in
+ * that shape here — even inside a comment — reds an unrelated eval.
+ */
+function validateExtendsBacklinks(adrs, localIds) {
+  const issues = [];
+
+  const extendsOf = new Map();
+  const extendedByOf = new Map();
+  for (const adr of adrs) {
+    extendsOf.set(adr.id, resolveRelationIds(adr.extendsBacklink, localIds));
+    extendedByOf.set(adr.id, resolveRelationIds(adr.extendedByBacklink, localIds));
+  }
+
+  for (const [y, extenders] of extendedByOf) {
+    for (const x of extenders) {
+      // MEMBERSHIP of y, never "x extends something": 0208 and 0227 are each
+      // named by two extenders, so an emptiness test is invisible on the corpus.
+      if (extendsOf.get(x)?.includes(y)) continue;
+      issues.push({
+        level: 'error',
+        message:
+          `${y}: **Extended-by:** ADR-${x} but ADR-${x} has no reciprocal ` +
+          `**Extends:** ADR-${y} declaration (${y}<=${x})`,
+      });
+    }
   }
 
   return issues;
@@ -902,6 +969,13 @@ function main() {
   // and so could never gain a back-link.
   const localIds = new Set(adrEntries.map((e) => e.id));
   for (const issue of validateBacklinks(adrs, localIds)) {
+    if (issue.level === 'error') {
+      errors.push(issue.message);
+    } else {
+      warnings.push(issue.message);
+    }
+  }
+  for (const issue of validateExtendsBacklinks(adrs, localIds)) {
     if (issue.level === 'error') {
       errors.push(issue.message);
     } else {

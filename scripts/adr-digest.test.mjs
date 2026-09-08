@@ -1171,8 +1171,12 @@ function rb70GapEntries() {
 // legs, so an implementation that emits the expected line PLUS unrelated noise
 // fails. Zero warns and (for a gap arm) exactly one error are achievable on
 // every corpus below: no fixture here declares a non-reciprocal
-// **Amends:**/**Amended-by:** pair, so validateBacklinks' tolerated/below-era
-// WARN summary is never pushed and its ratchet never fires.
+// `Amends`/`Amended-by` pair, so validateBacklinks' tolerated/below-era WARN
+// summary is never pushed. Its RATCHET is a separate hazard and is avoided by
+// id choice, not by luck: every fixture id here sits outside 0154-0177, the band
+// holding all ten endpoints of the five KNOWN_BACKLINK_GAPS keys. Materialise
+// both endpoints of a baselined pair as files and the ratchet reports it
+// obsolete — see the band note in G6.
 //
 // NOT TESTED ON PURPOSE: forward reciprocity (**Extends:** ⇒ **Extended-by:**).
 // rb-70 DEFERred it as wontfix. Counted on the live corpus 2026-09-07: 49
@@ -1622,9 +1626,18 @@ test('X7 Extends/Extended-by dangling refs error and every reverse back-link is 
   // ---- G6: mode independence AND scale independence. --------------------
   const g6CheckRun = rb70Probe(rb70GapEntries(), { check: true });
 
+  // BAND 0300-0419, NOT 0100-0219. The five KNOWN_BACKLINK_GAPS keys in
+  // scripts/adr-digest.mjs have all ten of their endpoints inside 0154-0177, so
+  // a padding band starting at 0100 materialises both endpoints of every
+  // baselined pair as real files, the Amends ratchet then reports all five as
+  // "obsolete", and this arm reads 6 errors instead of 1. MEASURED 2026-09-07 on
+  // BOTH the pre-rb-70 script and this one (identical: band 0100-0219 -> 5
+  // ratchet ERRORs; band 0300-0419 -> 0), so it is a fixture/baseline collision,
+  // not anything rb-70 changed. Any band above 0177 and below the 0952-0955
+  // reciprocity fixtures works; 0300 leaves room for the baseline to grow.
   const g6Padded = rb70GapEntries();
   for (let n = 0; n < 120; n++) {
-    g6Padded.push(adr(String(100 + n).padStart(4, '0'), { subsystems: 'tooling-docs' }));
+    g6Padded.push(adr(String(300 + n).padStart(4, '0'), { subsystems: 'tooling-docs' }));
   }
   const g6ScaleRun = rb70Probe(g6Padded);
 

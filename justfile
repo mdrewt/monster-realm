@@ -83,14 +83,14 @@ test:
         echo "adr-digest test suite: $adr_skip skipped / $adr_todo todo test(s); both must be 0" >&2
         exit 1
     fi
-    # EQUALITY, not a floor: scripts/adr-digest.test.mjs is a frozen 6-test
+    # EQUALITY, not a floor: scripts/adr-digest.test.mjs is a frozen 9-test
     # contract, so a silently DROPPED test is as fatal as a failing one. Raise
     # this number in the SAME commit that adds a test.
-    if [ "$adr_pass" -ne 6 ]; then
-        echo "adr-digest test suite: $adr_pass test(s) passed, expected exactly 6" >&2
+    if [ "$adr_pass" -ne 9 ]; then
+        echo "adr-digest test suite: $adr_pass test(s) passed, expected exactly 9" >&2
         exit 1
     fi
-    echo "adr-digest test suite: 6 test(s) passed"
+    echo "adr-digest test suite: 9 test(s) passed"
 
 eval:
     node evals/run.mjs
