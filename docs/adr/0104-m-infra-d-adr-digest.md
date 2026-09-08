@@ -197,3 +197,73 @@ doc-keeper guidance still instruct an agent to read and update README's "Next
 free number" heading. That value no longer exists in README; the instruction now
 points at nothing and should be repointed at `docs/adr/DIGEST.md`. That edit is
 outside this repository and outside this slice's declared `touches:` set.
+
+## Amendment (rb-70, 2026-09-08)
+
+Self-amendment, following the rb-43 precedent above: no new ADR number was
+minted and no `Amends:` / `Amended-by:` header field was added on either side.
+
+**What changed.** `**Extends:**` and `**Extended-by:**` become first-class,
+modelled header fields. D1's "Conditional fields" block above lists only
+`**Superseded-by:**` and `**Amended-by:**`; the corpus has been writing
+`**Extends:**` since ADR-0208 without the generator knowing about it. Read that
+block as also admitting:
+
+```
+**Extends:** ADR-NNNN        (this decision builds on ADR-NNNN)
+**Extended-by:** ADR-MMMM    (when a later ADR extends this one)
+```
+
+Both are **conditional** — their absence is never an error. 190 of the 210
+project ADRs declare neither.
+
+`scripts/adr-digest.mjs` now enforces exactly two things about them:
+
+1. **Dangling references.** A `**Extends:**` / `**Extended-by:**` naming an id
+   that resolves nowhere is an error, on the same footing as a dangling
+   `**Supersedes:**`. Before rb-70 a `**Extends:** ADR-9999` passed
+   `just adr-digest-check` green (measured, rb-42).
+2. **Reverse reciprocity only.** `**Extended-by:** ADR-X` in ADR-Y obliges ADR-X
+   to declare `**Extends:** ADR-Y`. Corpus-wide: no era window, no tolerance
+   set, no ratchet. The corpus is already clean in this direction, so the rule
+   costs nothing and was adopted at full strength.
+
+**Why the asymmetry — FORWARD reciprocity is deliberately NOT enforced.**
+`**Extends:** ADR-Y` does **not** oblige ADR-Y to carry `**Extended-by:**`.
+Counted 2026-09-07: 49 raw ADR references appear in `**Extends:**` values, 47 of
+which resolve to a project ADR file; exactly 6 are reciprocated, so 41 are
+one-directional. 17 ADRs declare `**Extends:**` and only 4 declare
+`**Extended-by:**` — ADR-0224 alone is extended by eight ADRs and lists none.
+
+`**Extends:**` is used in this corpus as a many-to-one **citation** ("this
+decision builds on ADR-NNNN"), not as a symmetric relation, and it was adopted
+*precisely because it forces no reciprocal edit* — `**Amends:**` does, and under
+the supervised build loop that reciprocal edit is a hidden-dependency STOP when
+the target ADR is outside the slice's `touches:` set. Enforcing forward
+reciprocity would re-create that STOP for every future `**Extends:**` line and
+would demand 41 back-link edits that are each a semantic claim about two
+documents, not a formatting fix. rb-70 dispositions it `wontfix` under this
+ADR's own successor policy (ADR-0224: genuine uncertainty about whether a check
+is worth adding resolves toward not adding one).
+
+`**Extended-by:**` is the opposite kind of statement: it is an assertion *about
+another file*, so that file must corroborate it or the assertion is simply
+false. That is what the reverse rule checks.
+
+**Known limits, recorded rather than fixed.** Field matching is case-exact and
+column-0, so `**extends:**` or an indented marker declares nothing — the
+pre-existing behaviour for `**Amends:**`, deliberately not widened (widening a
+gate matcher loosens it). `extractBoldField` stops at end-of-line while
+`extractBacklinkField` absorbs indented continuations, so an id wrapped onto a
+continuation line is dangling-checked by neither. Two `NNNN-*.md` files sharing
+a four-digit prefix shadow each other in `collectAdrIds`; that predates rb-70
+and affects the `Amends` leg identically.
+
+**Confirmation.** `just adr-digest-check` (`node scripts/adr-digest.mjs --check`)
+fails on a dangling relation or a reverse-reciprocity gap. The proof-of-teeth is
+`scripts/adr-digest.test.mjs` — X7 (synthetic corpora: dangling, reverse gap,
+membership-not-emptiness, view scoping on both legs, multiplicity, mode and
+scale independence), X8 (the six committed edges frozen by roster, both legs),
+and X9 (the rule running against the real corpus with no flags at all, which is
+the only clause that can distinguish a live rule from one gated on test-shaped
+input). `justfile` pins that suite at exactly nine passing tests.

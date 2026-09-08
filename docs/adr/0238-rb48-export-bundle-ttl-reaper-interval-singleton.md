@@ -200,8 +200,14 @@ new clause.
 - Legacy chunks (any predating this slice) are swept at the first reaper tick after the singleton
   is armed; because `init` arms it on database creation and `sync_content` arms it when the owner runs the post-publish sync, that is the first tick after that sync, not
   the first tick after some account's next export.
-- `docs/adr/0226-*.md` gains an `Extended-by: ADR-0238` back-link. `Extends:`/`Extended-by:` are
-  unmodelled by `adr-digest` (no reciprocity gate), so this is convention-only, not gate-enforced.
+- `docs/adr/0226-*.md` gains an `Extended-by: ADR-0238` back-link. When this ADR was written,
+  `Extends:`/`Extended-by:` were unmodelled by `adr-digest` and the pairing was convention-only.
+  **Since rb-70 that is no longer true of this edge.** `adr-digest` now dangling-checks both fields
+  and enforces REVERSE reciprocity corpus-wide: an `**Extended-by:** ADR-X` obliges ADR-X to carry
+  the matching `**Extends:**`. This 0226/0238 pair is one of the six edges the gate freezes, so
+  deleting either leg now fails `just adr-digest-check`. What remains convention-only is the
+  FORWARD direction — writing `**Extends:** ADR-NNNN` still obliges nobody to add the back-link
+  (rb-70 deferred that as `wontfix`; see the `## Amendment (rb-70)` section of ADR-0104).
 
 ## Residuals
 
