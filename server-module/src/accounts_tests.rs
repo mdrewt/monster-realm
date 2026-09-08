@@ -20110,12 +20110,12 @@ fn rb68p_adr0230_evidence_oracle_control() {
 /// of the four callees THEMSELVES, not of any helper one of them calls. B3
 /// narrows that to a helper defined OUTSIDE `trading.rs`/`pvp.rs`/`battle.rs`
 /// (say in `guards.rs`) and called from a callee — still uncovered, carried as
-/// residual `R-rb-72-DEPTH2-CROSSFILE`. Nor does any needle catch a UFCS or
+/// residual `R-rb-72-DEPTH2CROSSFILE`. Nor does any needle catch a UFCS or
 /// aliased spelling of the accessor (`Local::player(&ctx.db)`,
 /// `use crate::schema::player as p; ctx.db.p()`): B1's needles are the
 /// method-call shape, and B3's are the chained-delete shape, so an aliased
 /// delete inside one of the three files evades both — residual
-/// `R-rb-72-UFCS-ALIAS`. Leg A executes only the EMPTY-TABLE path through
+/// `R-rb-72-UFCSALIAS`. Leg A executes only the EMPTY-TABLE path through
 /// all four callees (`trade_offer` / `battle` / `battle_challenge` are never
 /// registered, by construction — see the host wall above); it says nothing
 /// about what those callees do to `player`/`character` on a non-empty
