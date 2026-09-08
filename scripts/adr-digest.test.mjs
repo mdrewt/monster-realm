@@ -126,7 +126,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -1691,12 +1691,31 @@ test('X7 Extends/Extended-by dangling refs error and every reverse back-link is 
 // tree, so its default ADR_DIR and its default DIGEST_PATH both resolve inside
 // the temp dir. This is the ONE probe that deliberately passes NEITHER
 // --adr-dir NOR --out: a rule that only runs when --adr-dir is supplied, or
-// only under a tmpdir-shaped path, or only below a corpus-size/id-band cutoff,
-// is INDISTINGUISHABLE from the real thing in every other clause of this file.
+// only below a corpus-size/id-band cutoff, or only on a fixture fingerprint, is
+// INDISTINGUISHABLE from the real thing in every other clause of this file.
+//
+// BOUND, stated because X9's failure message must not over-promise. X9 runs
+// from a COPY, so its corpus path can never be byte-identical to a production
+// checkout's, and a rule gated on a path substring that is TRUE in production
+// and FALSE here survives X9 by construction. Rooting this copy outside
+// tmpdir() removes the one such substring every other corpus in this file
+// shares, but the class itself stays open and is disclosed as residual
+// R-rb-70-R5-PATH-FINGERPRINT-UNCLOSABLE.
 // --check so no byte is written anywhere.
 // ---------------------------------------------------------------------------
 function rb70WithRealCorpusCopy(mutate) {
-  const dir = mkdtempSync(join(tmpdir(), 'adr-digest-realcopy-'));
+  // NOT under tmpdir(). Every OTHER corpus in this file is built with
+  // mkdtempSync(join(tmpdir(), ...)), so `if (!ADR_DIR.includes('/tmp/'))
+  // return issues;` disables the rule in production and leaves it live in every
+  // probe here -- MEASURED by the verifier as 9/9 green, all three ADR evals
+  // exit 0, and the real corpus silent with a live **Extends:** leg deleted.
+  // Rooting X9 outside tmpdir kills that shape, which is the one a developer
+  // reaches for almost innocently ("only run under test"). The name deliberately
+  // shares NO token with the `adr-digest-corpus-` dirs X7 builds, either: with a
+  // shared `adr-digest-` token, `if (!ADR_DIR.includes('adr-digest-'))` covered
+  // both X7 and X9 while excluding production and went 9/9 green (MEASURED).
+  // It does NOT close the general path-fingerprint class -- see the BOUND note.
+  const dir = mkdtempSync(join(homedir(), '.rb70x9-'));
   try {
     cpSync(REAL_ADR_DIR, join(dir, 'docs', 'adr'), { recursive: true });
     cpSync(SCRIPT, join(dir, 'scripts', 'adr-digest.mjs'));
@@ -1778,8 +1797,8 @@ test('X9 the reverse rule is live on the REAL corpus, with no flags at all', () 
     'X9: run against the REAL corpus with NO --adr-dir and NO --out, the reverse rule must be ' +
       'SILENT as shipped and must FIRE the instant a real **Extends:** leg is deleted. Every ' +
       'other probe in this file hands the generator a five-file synthetic corpus in a mkdtemp ' +
-      'directory via --adr-dir; a rule gated on `adrDirOverride !== null`, on a tmpdir-shaped ' +
-      'ADR_DIR, on `adrs.length > N`, on an id band, on a fixture fingerprint, or hard-coded to ' +
+      'directory via --adr-dir; a rule gated on `adrDirOverride !== null`, on `adrs.length > N`, ' +
+      'on an id band, on a repo-root existsSync probe, on a fixture fingerprint, or hard-coded to ' +
       `the 0952/0953 fixture pair passes all of them and is DEAD here. Expected:\n  ${expectedLine}` +
       // X9's clean arm also asserts exit 0, so a stale DIGEST.md or any dangling
       // reference anywhere in the corpus reds it under a message about

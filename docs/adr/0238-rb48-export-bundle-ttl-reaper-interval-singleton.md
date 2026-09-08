@@ -204,8 +204,12 @@ new clause.
   `Extends:`/`Extended-by:` were unmodelled by `adr-digest` and the pairing was convention-only.
   **Since rb-70 that is no longer true of this edge.** `adr-digest` now dangling-checks both fields
   and enforces REVERSE reciprocity corpus-wide: an `**Extended-by:** ADR-X` obliges ADR-X to carry
-  the matching `**Extends:**`. This 0226/0238 pair is one of the six edges the gate freezes, so
-  deleting either leg now fails `just adr-digest-check`. What remains convention-only is the
+  the matching `**Extends:**`. This 0226/0238 pair is one of the six edges rb-70 freezes, and the
+  two legs are caught by different gates: deleting **this ADR's** `**Extends:** ADR-0226` fails
+  `just adr-digest-check` (the reciprocity rule), while deleting **ADR-0226's** `**Extended-by:**
+  ADR-0238` is invisible to that gate — the reverse rule's premise goes with it — and is caught
+  instead by the frozen roster in `scripts/adr-digest.test.mjs` (X8), i.e. by `just test`. What
+  remains convention-only is the
   FORWARD direction — writing `**Extends:** ADR-NNNN` still obliges nobody to add the back-link
   (rb-70 deferred that as `wontfix`; see the `## Amendment (rb-70)` section of ADR-0104).
 
