@@ -45,14 +45,30 @@ in the shipped source so the patch cannot silently rot.
 
 Rejected mechanism, recorded so it is not re-proposed: calling reducers over
 `POST /v1/database/<db>/call/<reducer>`. Each HTTP call is an ephemeral connection whose close
-fires `client_disconnected` → `resolve_all_live_interactions` → cancels the caller's live
-trades/challenges, resolves their battles, and deletes their `player`/`character` presence rows
+fires `client_disconnected` → `on_disconnect`, which force-resolves the caller's live trades,
+challenges and battles and then itself deletes their `player`/`character` presence rows
 — destroying exactly the seed state S9 exists to build (live-verified for this repo at
 `sim-harness/src/bin/mr_load_driver.rs:76-89`). `dev_reducers` + HTTP was rejected for the same
 reason; `spacetime call` executes as the CLI owner identity, not the subject. Every
 player-identity interaction therefore goes over the driver's persistent WebSocket connections
 using the committed bindings; `spacetime sql` (owner) is the only out-of-band channel, used for
 bulk fixture seeding and for reading server truth.
+
+Mechanism correction (rb-72): an earlier revision of this section routed those presence-row
+deletes through `resolve_all_live_interactions`. That attribution was wrong. The shared
+dispatcher performs no row write itself — it only calls `trading::cancel_trades_on_disconnect`,
+`pvp::forfeit_on_disconnect`, `battle::resolve_wild_battle_on_disconnect` and
+`pvp::cancel_challenges_on_disconnect`, each of which owns its own tables' writes. The presence
+deletes live in the body of `pub fn on_disconnect` in `server-module/src/lib.rs`, which — after
+the dispatcher returns — removes `player_conversation`, then `character` (via the live `player`
+anchor's `entity_id`), then `player`. Two precisions the old text also lacked:
+`pvp::cancel_challenges_on_disconnect` cancels only the caller's OUTGOING PENDING challenges
+(incoming challenges targeting them survive), and `pvp::forfeit_on_disconnect` excludes WILD
+battles — the wild leg is the separate `battle::resolve_wild_battle_on_disconnect` call. The
+executed pin is `rb72_resolve_all_live_interactions_leaves_presence_rows` in
+`accounts_tests.rs`: it seeds a `player`/`character` pair, runs the dispatcher, and asserts
+both rows survive (with a removal control proving those reads can observe an absence). Only
+the mechanism changes; the rejection recorded above is unchanged.
 
 ### D3 — seed shape: one live battle per subject; the anonymize target is a terminal PvP battle
 
