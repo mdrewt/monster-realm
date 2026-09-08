@@ -6051,3 +6051,970 @@ mod tests {
         assert_eq!(REJECTION_STORM_NOTE, "rejection_storm");
     }
 }
+
+// ===========================================================================
+// rb-71 -- docs/m8.5c-plan.md <-> AGENTS.md citation correspondence oracle.
+// ===========================================================================
+//
+// WHY THIS LIVES HERE (not a new eval, not a new bin, not the frozen `mod
+// tests` above): ADR-0224 bars a new `evals/*.eval.mjs` and bars growing an
+// existing one; a new `.mjs` test file is not auto-discovered by `just test`
+// (it enumerates exactly two files) and wiring one in needs `justfile`,
+// which sits outside this slice's `touches:` (a hidden-dependency STOP); a
+// new file under `sim-harness/src/bin/` becomes another cargo bin target;
+// and the `mod tests` module above this one is tester-frozen by its own
+// banner ("The implementer NEVER edits this module") -- so a SEPARATE
+// module, appended at EOF, changing nothing above it (`docs/adr/0232-*.md:51`
+// cites this file's `:76-89`; an EOF append shifts nothing).
+//
+// Disclosed residual (harness ledger R-rb71-TESTHOME): a docs-correspondence
+// test living in a load-driver binary is not this test's natural home; a
+// future slice that brings `justfile` into `touches:` should relocate it to
+// a `scripts/*.test.mjs` wired into `just test`.
+//
+// THE DEFECT THIS PROVES (measured, not the promoted-residual text -- see
+// `memory/projects/monster-realm-rb-71-plan.md` F1-F9 in the harness repo):
+// `docs/m8.5c-plan.md:85` cites `AGENTS.md:8` for AGENTS.md's `- **Done =**`
+// bullet. The citation was correct when written (commit 9c8521a); commit
+// 3c94216 (ADR-0197) inserted a bullet at AGENTS.md line 7, and the `- **Done
+// =**` bullet has sat at **line 9** ever since. `AGENTS.md:7` -- the text the
+// promoted residual claims is correct -- is WRONG: it is the ADR-0197
+// bullet, not `Done =`. Fixing the number is not enough on its own: Decision
+// 1 of the rb-71 plan requires the citation to carry the `**Done =**`
+// LANDMARK alongside the number, and a shipped tooth to RE-DERIVE the number
+// from that landmark at test time, so the citation can never again drift
+// silently -- it REDs instead.
+//
+// HARD PINS (a mutation-proof gate depends on these literally):
+//   - `rb71_violations`'s local accumulator is named `found`, declared
+//     `let mut found: Vec<String> = Vec::new();`, immediately followed by a
+//     single-line sentinel comment (its exact spelling lives ONLY at that
+//     one declaration site below -- deliberately not quoted a second time
+//     here, since a hand-typed second copy of a pinned marker is exactly
+//     the drift class this slice exists to close, rb-68 lesson) and BEFORE
+//     any push -- so a gate that splices `return found;` at that sentinel
+//     still type-checks (a compile error would mask a gutted oracle instead
+//     of failing its control fixtures).
+//   - The resolved AGENTS.md line number is NEVER hand-typed a second time
+//     anywhere below. A second hand-typed copy of `9` would drift in
+//     lockstep with the real bullet and prove nothing (rb-68 lesson).
+#[cfg(test)]
+mod rb71_doc_citation_tests {
+    /// One accepted `AGENTS.md:<digits>` citation found in a document.
+    /// `byte_pos` is carried purely for diagnostics (surfaced in `[cite/
+    /// count]` failure messages so a RED is self-locating); `digits` is the
+    /// raw digit-run text after the colon, and may be EMPTY if the token
+    /// isn't followed by a digit at all (a distinct bypass shape from a
+    /// wrong number -- see the `no-digit-citation` control fixture).
+    struct Rb71Citation {
+        byte_pos: usize,
+        digits: String,
+    }
+
+    /// Byte ranges of every excluded "hiding" region in `doc`: an HTML
+    /// comment (`<!-- ... -->`, allowed to span multiple lines; an
+    /// unterminated comment hides to EOF rather than being trusted as
+    /// visible) or a fenced code block (a line whose trimmed content starts
+    /// with three backticks, up to the next such line or EOF). A citation
+    /// whose start position falls inside any of these ranges is excluded
+    /// from the census below -- both render invisibly (or as unrelated
+    /// example code) to a human reader, yet are plain bytes to a byte-level
+    /// scanner (rb-71 red-team C2/C3).
+    ///
+    /// Honest limit, disclosed: a plain single-backtick INLINE code span
+    /// that tightly wraps nothing but the citation (`` `AGENTS.md:9` ``) is
+    /// NOT treated as hidden -- that is the established citation format
+    /// used throughout this corpus (and by every fixture below), and
+    /// excluding it would make the oracle uncloseable even by a correct
+    /// fix.
+    fn rb71_hidden_ranges(doc: &str) -> Vec<(usize, usize)> {
+        let mut ranges = Vec::new();
+
+        let mut search_start = 0usize;
+        while let Some(rel) = doc[search_start..].find("<!--") {
+            let start = search_start + rel;
+            let after = start + "<!--".len();
+            match doc[after..].find("-->") {
+                Some(rel_end) => {
+                    let end = after + rel_end + "-->".len();
+                    ranges.push((start, end));
+                    search_start = end;
+                }
+                None => {
+                    ranges.push((start, doc.len()));
+                    break;
+                }
+            }
+        }
+
+        let mut in_fence = false;
+        let mut fence_start = 0usize;
+        let mut byte_pos = 0usize;
+        for line in doc.split_inclusive('\n') {
+            if line.trim_start().starts_with("```") {
+                if in_fence {
+                    ranges.push((fence_start, byte_pos + line.len()));
+                    in_fence = false;
+                } else {
+                    in_fence = true;
+                    fence_start = byte_pos;
+                }
+            }
+            byte_pos += line.len();
+        }
+        if in_fence {
+            ranges.push((fence_start, doc.len()));
+        }
+
+        ranges
+    }
+
+    fn rb71_in_hidden_range(pos: usize, ranges: &[(usize, usize)]) -> bool {
+        ranges.iter().any(|&(s, e)| pos >= s && pos < e)
+    }
+
+    /// 1-based line number containing byte offset `pos` in `doc`
+    /// (diagnostics only).
+    fn rb71_line_number_at(doc: &str, pos: usize) -> usize {
+        doc[..pos.min(doc.len())].matches('\n').count() + 1
+    }
+
+    /// Census every `AGENTS.md:` occurrence in `doc` whose preceding byte
+    /// is outside `[A-Za-z0-9/._~-]` (so the real harness path
+    /// `../../AGENTS.md:9` is excluded by its preceding `.` -- rb-71
+    /// plan-review D2/D5), which is not markdown LINK TEXT of the shape
+    /// `[AGENTS.md:9](...)` (a link's visible label pointing somewhere else
+    /// is not a prose citation), and which does not sit inside an HTML
+    /// comment or fenced code block per `rb71_hidden_ranges` (rb-71
+    /// red-team C2/C3).
+    ///
+    /// Every byte-level comparison here is safe on non-ASCII input without
+    /// decoding chars: a UTF-8 continuation byte (0x80-0xBF) or a
+    /// multi-byte lead byte can never equal an ASCII allow/deny-set byte,
+    /// so the raw-byte read gives the same answer a full char decode would.
+    fn rb71_agents_citations(doc: &str) -> Vec<Rb71Citation> {
+        const TOKEN: &str = "AGENTS.md:";
+        let bytes = doc.as_bytes();
+        let hidden = rb71_hidden_ranges(doc);
+        let mut hits = Vec::new();
+        let mut search_start = 0usize;
+        while let Some(rel) = doc[search_start..].find(TOKEN) {
+            let pos = search_start + rel;
+            let preceding_excluded = pos > 0
+                && matches!(
+                    bytes[pos - 1],
+                    b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'.' | b'_' | b'~' | b'-'
+                );
+
+            let digit_start = pos + TOKEN.len();
+            let mut digit_end = digit_start;
+            while digit_end < bytes.len() && bytes[digit_end].is_ascii_digit() {
+                digit_end += 1;
+            }
+
+            let is_link_text = pos > 0
+                && bytes[pos - 1] == b'['
+                && digit_end + 1 < bytes.len()
+                && bytes[digit_end] == b']'
+                && bytes[digit_end + 1] == b'(';
+
+            let is_hidden = rb71_in_hidden_range(pos, &hidden);
+
+            if !preceding_excluded && !is_link_text && !is_hidden {
+                hits.push(Rb71Citation {
+                    byte_pos: pos,
+                    digits: doc[digit_start..digit_end].to_string(),
+                });
+            }
+
+            search_start = pos + TOKEN.len();
+        }
+        hits
+    }
+
+    /// The 1-based line numbers of every AGENTS.md line starting with the
+    /// literal `- **Done =**` bullet marker. Shared by leg A of
+    /// `rb71_violations` and by the live tests' own diagnostic messages, so
+    /// there is exactly one derivation of this number in the whole module.
+    fn rb71_anchor_lines(agents_md: &str) -> Vec<usize> {
+        agents_md
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| line.starts_with("- **Done =**"))
+            .map(|(idx, _)| idx + 1)
+            .collect()
+    }
+
+    /// Every Doc-reconciliation bullet block in `doc`: for EACH line
+    /// containing `**Doc reconciliation`, the `(start_byte, end_byte,
+    /// text)` of the block running from that line's start up to (excluding)
+    /// the next line starting with `- **` or `## ` (or EOF). Deliberately
+    /// plural and byte-ranged rather than "the first match" -- a decoy
+    /// landmark planted elsewhere in the doc (rb-71 red-team C1) must be
+    /// COUNTED, not silently shadowed by `.position()` picking the first
+    /// hit, and callers need byte ranges to test citation LOCALITY, not
+    /// just block text.
+    fn rb71_doc_reconciliation_blocks(doc: &str) -> Vec<(usize, usize, String)> {
+        let lines: Vec<&str> = doc.split_inclusive('\n').collect();
+        let mut line_starts = Vec::with_capacity(lines.len());
+        let mut acc = 0usize;
+        for line in &lines {
+            line_starts.push(acc);
+            acc += line.len();
+        }
+
+        let mut out = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            if !line.contains("**Doc reconciliation") {
+                continue;
+            }
+            let start_byte = line_starts[i];
+            let mut end_idx = lines.len();
+            for (j, l) in lines.iter().enumerate().skip(i + 1) {
+                if l.starts_with("- **") || l.starts_with("## ") {
+                    end_idx = j;
+                    break;
+                }
+            }
+            let end_byte = if end_idx < lines.len() {
+                line_starts[end_idx]
+            } else {
+                doc.len()
+            };
+            out.push((start_byte, end_byte, lines[i..end_idx].concat()));
+        }
+        out
+    }
+
+    /// Seam A: a NON-SHORT-CIRCUITING labelled collector. Every leg below
+    /// runs regardless of whether an earlier leg found a violation, and any
+    /// violation found is APPENDED to `found` -- never returned early --
+    /// so one RED lists every broken clause, and no leg is shadowed by an
+    /// earlier failure (the rb-67/rb-68 precedent).
+    fn rb71_violations(plan_md: &str, agents_md: &str) -> Vec<String> {
+        let mut found: Vec<String> = Vec::new();
+        // RB71-GUT-POINT
+
+        // Leg A -- the `- **Done =**` anchor must be unique.
+        let anchor_lines = rb71_anchor_lines(agents_md);
+        match anchor_lines.len() {
+            0 => found.push(format!(
+                "[anchor/missing] no line in AGENTS.md starts with the literal \
+                 `- **Done =**` bullet marker (scanned {} lines)",
+                agents_md.lines().count()
+            )),
+            1 => {}
+            n => found.push(format!(
+                "[anchor/not-unique] {n} lines in AGENTS.md start with `- **Done =**`, \
+                 expected exactly 1: 1-based lines {anchor_lines:?}"
+            )),
+        }
+
+        // Leg B -- exactly one accepted `AGENTS.md:<n>` citation in the plan.
+        let citations = rb71_agents_citations(plan_md);
+        if citations.len() != 1 {
+            let listed: Vec<String> = citations
+                .iter()
+                .map(|c| format!("AGENTS.md:{}@byte{}", c.digits, c.byte_pos))
+                .collect();
+            found.push(format!(
+                "[cite/count] expected exactly 1 `AGENTS.md:<n>` citation in the plan \
+                 doc (preceding char outside [A-Za-z0-9/._~-], not markdown link \
+                 text), found {}: {listed:?}",
+                citations.len()
+            ));
+        }
+
+        // Leg C -- the cited number must equal the resolved anchor line,
+        // by INTEGER equality against a value derived above, never a
+        // hand-typed literal.
+        if anchor_lines.len() == 1 && citations.len() == 1 {
+            let anchor_idx = anchor_lines[0];
+            let cited_digits = &citations[0].digits;
+            let cited = cited_digits.parse::<usize>().ok();
+            if cited != Some(anchor_idx) {
+                let cited_display = if cited_digits.is_empty() {
+                    "<no digits>".to_string()
+                } else {
+                    cited_digits.clone()
+                };
+                found.push(format!(
+                    "[cite/line-mismatch] plan cites AGENTS.md:{cited_display} but the \
+                     live `- **Done =**` bullet resolves to AGENTS.md:{anchor_idx} \
+                     (1-based, derived at test time)"
+                ));
+            }
+        }
+
+        // Leg D -- the `**Doc reconciliation` landmark line must be
+        // unique, the block it opens must name the `**Done =**` landmark,
+        // AND that SAME block must be the one containing the single
+        // accepted citation from leg B. A decoy landmark elsewhere in the
+        // doc (rb-71 red-team C1) trips the uniqueness arm below
+        // regardless of which copy happens to carry the citation or the
+        // landmark; a citation present in the document but sitting outside
+        // every block (C3) is rejected by the locality check even when it
+        // is plain, unhidden text (a hidden-in-comment/fenced-code
+        // citation never reaches `citations` at all -- C2, handled
+        // upstream by `rb71_hidden_ranges`).
+        let blocks = rb71_doc_reconciliation_blocks(plan_md);
+        match blocks.len() {
+            0 => found.push(
+                "[anchor/doc-missing] no `**Doc reconciliation` landmark line found \
+                 in the plan doc"
+                    .to_string(),
+            ),
+            1 => {
+                let (block_start, block_end, block_text) = &blocks[0];
+                if !block_text.contains("**Done =**") {
+                    found.push(format!(
+                        "[anchor/doc-missing] the Doc-reconciliation block cites a line \
+                         number but never names the `**Done =**` landmark it points at:\n{block_text}"
+                    ));
+                }
+                if citations.len() == 1 {
+                    let cite_pos = citations[0].byte_pos;
+                    if cite_pos < *block_start || cite_pos >= *block_end {
+                        found.push(format!(
+                            "[cite/out-of-block] the plan's single accepted \
+                             `AGENTS.md:<n>` citation is on line {}, but the \
+                             Doc-reconciliation block starts at line {} (block byte \
+                             range {block_start}..{block_end}) -- the citation and \
+                             the landmark that explains it must live in the SAME \
+                             block",
+                            rb71_line_number_at(plan_md, cite_pos),
+                            rb71_line_number_at(plan_md, *block_start),
+                        ));
+                    }
+                }
+            }
+            n => {
+                let landmark_lines: Vec<usize> = blocks
+                    .iter()
+                    .map(|(start, _, _)| rb71_line_number_at(plan_md, *start))
+                    .collect();
+                found.push(format!(
+                    "[block/not-unique] {n} lines in the plan doc contain \
+                     `**Doc reconciliation`, expected exactly 1 (a decoy landmark \
+                     elsewhere is a bypass, not a fix): plan doc lines \
+                     {landmark_lines:?}"
+                ));
+            }
+        }
+
+        // Leg E -- non-emptiness floors. Guards a vacuous pass on a gutted
+        // or missing file rather than trusting the legs above to notice.
+        if plan_md.trim().is_empty() {
+            found.push("[doc/empty] the plan doc is empty".to_string());
+        }
+        if agents_md.trim().is_empty() {
+            found.push("[doc/empty] AGENTS.md is empty".to_string());
+        }
+        // A third floor -- "AGENTS.md has at least as many lines as the
+        // resolved anchor index" -- is deliberately NOT a runtime check:
+        // `anchor_lines` above is derived by enumerating `agents_md.lines()`
+        // itself, so every index it contains is, by construction, already
+        // <= `agents_md.lines().count()`. A branch testing the opposite
+        // could never fire (rb-71 revision-round reviewer note); recorded
+        // here rather than shipped as unreachable code.
+
+        found
+    }
+
+    /// The text starting at the first occurrence of `needle` in `text` and
+    /// extending up to (excluding) the next `.` or `;` -- whichever comes
+    /// first -- or to the end of `text` if neither appears again. A coarse
+    /// proxy for "the clause that is actually about `needle`", so a LATER
+    /// clause on the same line/paragraph that happens to mention unrelated
+    /// tokens (e.g. AGENTS.md's own "...; the nightly workflow ... enforces
+    /// mutation + coverage ..." clause, which is about NIGHTLY, not `just
+    /// ci`) is not folded into the `needle` clause.
+    ///
+    /// Honest limit, disclosed: this is punctuation-based, not
+    /// grammar-based. A clause that relies on an em-dash or a comma instead
+    /// of `.`/`;` to separate an unrelated coverage/mutation mention from a
+    /// `just ci` mention would not be scoped out by this rule.
+    fn rb71_clause_after<'a>(text: &'a str, needle: &str) -> Option<&'a str> {
+        let start = text.find(needle)?;
+        let tail = &text[start..];
+        let end = tail.find(['.', ';']).unwrap_or(tail.len());
+        Some(&tail[..end])
+    }
+
+    /// Seam B: does the plan's Doc-reconciliation TENSE correspond to
+    /// whether AGENTS.md's `just ci` clause actually (mis)attributes
+    /// coverage/mutation to `just ci`?
+    ///
+    /// Non-lexical by construction (rb-71 red-team C4: a fixed phrase like
+    /// `FALSELY claim` is trivially paraphrased away -- e.g. "incorrectly
+    /// assert" -- while leaving the substantive claim intact). Both sides
+    /// are derived with the SAME technique (`rb71_clause_after`, scoped to
+    /// the `just ci` clause) applied to the two different documents, then
+    /// compared as booleans: a cross-check on the actual coverage/mutation
+    /// TOKENS each document's `just ci` clause carries, not on any one
+    /// fixed sentence. Consistent states (both true, or both false) are
+    /// accepted; a mismatch in either direction is flagged under its own
+    /// label.
+    fn rb71_claim_violations(plan_md: &str, agents_md: &str) -> Vec<String> {
+        let mut found: Vec<String> = Vec::new();
+
+        let Some(anchor_line) = agents_md.lines().find(|l| l.starts_with("- **Done =**")) else {
+            // Seam A already reports `[anchor/missing]`; nothing to correlate.
+            return found;
+        };
+        let agents_clause = rb71_clause_after(anchor_line, "just ci")
+            .unwrap_or("")
+            .to_string();
+        let attributes_coverage =
+            agents_clause.contains("coverage") || agents_clause.contains("mutation");
+
+        let blocks = rb71_doc_reconciliation_blocks(plan_md);
+        let plan_clause = if blocks.len() == 1 {
+            rb71_clause_after(&blocks[0].2, "just ci")
+                .unwrap_or("")
+                .to_string()
+        } else {
+            // Seam A already reports `[anchor/doc-missing]` or
+            // `[block/not-unique]`; nothing well-defined to correlate.
+            String::new()
+        };
+        let block_claims_coverage =
+            plan_clause.contains("coverage") || plan_clause.contains("mutation");
+
+        if !attributes_coverage && block_claims_coverage {
+            found.push(format!(
+                "[claim/stale-tense] AGENTS.md's `just ci` clause does NOT \
+                 attribute coverage/mutation to `just ci` ({agents_clause:?}), but \
+                 the plan's Doc-reconciliation block's `just ci` clause still does \
+                 ({plan_clause:?}) -- the claim was corrected, the prose was not"
+            ));
+        }
+        if attributes_coverage && !block_claims_coverage {
+            found.push(format!(
+                "[claim/premature-past] AGENTS.md's `just ci` clause DOES \
+                 attribute coverage/mutation to `just ci` ({agents_clause:?}), but \
+                 the plan's Doc-reconciliation block's `just ci` clause no longer \
+                 flags it ({plan_clause:?}) -- the prose moved past tense before \
+                 the underlying claim was actually fixed"
+            ));
+        }
+
+        found
+    }
+
+    /// Both seams, concatenated -- what every control fixture below is
+    /// actually judged against, so a fixture proves something about the
+    /// SAME shipped path the live tests exercise.
+    fn rb71_all_violations(plan_md: &str, agents_md: &str) -> Vec<String> {
+        let mut all = rb71_violations(plan_md, agents_md);
+        all.extend(rb71_claim_violations(plan_md, agents_md));
+        all
+    }
+
+    /// docs/m8.5c-plan.md:85's `AGENTS.md:<n>` citation must resolve to the
+    /// live `- **Done =**` bullet.
+    ///
+    /// RED now: the plan cites `AGENTS.md:8` (correct when m8.5c was
+    /// written); commit 3c94216 (ADR-0197) inserted a bullet at line 7 and
+    /// the `Done =` bullet has sat at line 9 ever since. Expect
+    /// `[cite/line-mismatch]` (and, until the landmark itself is added
+    /// alongside the number, `[anchor/doc-missing]` too -- this test is a
+    /// non-short-circuiting collector, so BOTH show up in one RED).
+    #[test]
+    fn rb71_m85c_cites_the_live_done_bullet_line() {
+        let plan_md = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../docs/m8.5c-plan.md"
+        ))
+        .expect(
+            "rb71: docs/m8.5c-plan.md must exist at the repo root, one level above \
+             sim-harness/",
+        );
+        let agents_md =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../AGENTS.md")).expect(
+                "rb71: AGENTS.md must exist at the repo root, one level above sim-harness/",
+            );
+
+        let anchor_lines = rb71_anchor_lines(&agents_md);
+        let cited = rb71_agents_citations(&plan_md)
+            .into_iter()
+            .map(|c| c.digits)
+            .collect::<Vec<_>>();
+
+        let violations = rb71_violations(&plan_md, &agents_md);
+        assert!(
+            violations.is_empty(),
+            "rb71 [seam-A]: docs/m8.5c-plan.md's `AGENTS.md:<n>` citation must resolve \
+             to the live `- **Done =**` bullet.\n\
+             Derived facts: the anchor resolves to AGENTS.md 1-based line(s) \
+             {anchor_lines:?}; the plan's accepted citation digit-run(s): {cited:?}.\n\
+             Violations:\n  - {}",
+            violations.join("\n  - ")
+        );
+    }
+
+    /// The plan's Doc-reconciliation prose tense must correspond to whether
+    /// AGENTS.md's `just ci` line actually (mis)attributes coverage/
+    /// mutation to `just ci` today.
+    ///
+    /// RED now: AGENTS.md's `just ci` parenthetical is already accurate
+    /// (`(lint + typecheck + test + eval + security + client checks)` --
+    /// no coverage/mutation), but the plan's block still reads `FALSELY
+    /// claim` in the present/imperative tense, as if the correction were
+    /// still outstanding. Expect `[claim/stale-tense]`. A SEPARATE `#[test]`
+    /// from the one above so first-failure-wins cannot shadow either.
+    #[test]
+    fn rb71_m85c_bullet_matches_the_live_ci_inventory() {
+        let plan_md = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../docs/m8.5c-plan.md"
+        ))
+        .expect(
+            "rb71: docs/m8.5c-plan.md must exist at the repo root, one level above \
+             sim-harness/",
+        );
+        let agents_md =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../AGENTS.md")).expect(
+                "rb71: AGENTS.md must exist at the repo root, one level above sim-harness/",
+            );
+
+        let violations = rb71_claim_violations(&plan_md, &agents_md);
+        assert!(
+            violations.is_empty(),
+            "rb71 [seam-B]: the plan's Doc-reconciliation tense must correspond to \
+             whether AGENTS.md's `just ci` line still (mis)attributes coverage/mutation \
+             to `just ci`.\nViolations:\n  - {}",
+            violations.join("\n  - ")
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // T3 -- synthetic control fixtures. Never reads the live tree, so this
+    // test is GREEN both before and after the citation fix (the rb-67
+    // `rb67p_adr0220_citation_oracle_control` precedent,
+    // server-module/src/privacy_tests.rs:10996-11208).
+    // -----------------------------------------------------------------
+
+    /// Roster floor: fixtures cannot be quietly deleted without this test
+    /// itself going RED (a `-E 'test(rb71_citation_oracle_control)'` filter
+    /// with zero matches is a separate, orthogonal gate -- this floor
+    /// guards the fixture COUNT inside a still-present test).
+    const RB71_FIXTURE_FLOOR: usize = 20;
+
+    /// The oracle must ACCEPT this fixture: it is judged against the SAME
+    /// `rb71_all_violations` path the live tests use.
+    #[track_caller]
+    fn rb71_expect_clean(tooth: &str, plan: &str, agents: &str) {
+        let found = rb71_all_violations(plan, agents);
+        assert!(
+            found.is_empty(),
+            "rb71 [control/{tooth}]: this fixture is a POSITIVE control and must be \
+             accepted. Violations:\n  - {}\n\
+             An over-tight rule reads exactly like a missing fix and sends the next \
+             reader reverse-engineering the test instead of correcting the document.",
+            found.join("\n  - ")
+        );
+    }
+
+    /// The oracle must REJECT this fixture WITH THE NAMED LABEL -- asserting
+    /// the label, not merely non-emptiness, is the point: a rule that reds
+    /// for some other reason has stopped covering the defect this fixture
+    /// encodes.
+    #[track_caller]
+    fn rb71_expect_label(tooth: &str, plan: &str, agents: &str, label: &str) {
+        let found = rb71_all_violations(plan, agents);
+        assert!(
+            found.iter().any(|v| v.contains(label)),
+            "rb71 [control/{tooth}]: this fixture is a MEASURED bypass shape and must \
+             raise `{label}`. The oracle returned:\n  - {}\n\
+             A control that no longer bites means the ORACLE was loosened, not that \
+             the fixture is wrong. Restore the clause; never relax the fixture to \
+             match the code.",
+            found.join("\n  - ")
+        );
+    }
+
+    /// Build a synthetic AGENTS.md: `total_lines` filler lines, with a
+    /// single `- **Done =**` bullet at 1-based `done_at` (or none, if
+    /// `done_at` is `None`), whose `just ci` parenthetical is `ci_scope`.
+    fn rb71_synth_agents(done_at: Option<usize>, total_lines: usize, ci_scope: &str) -> String {
+        let mut out = String::new();
+        for i in 1..=total_lines {
+            if Some(i) == done_at {
+                out.push_str(&format!(
+                    "- **Done =** `just ci` green and meaningful ({ci_scope}); fixture prose.\n"
+                ));
+            } else {
+                out.push_str(&format!("filler line {i} of the fixture\n"));
+            }
+        }
+        out
+    }
+
+    /// Same, but with the `- **Done =**` bullet DUPLICATED at two lines.
+    fn rb71_synth_agents_duplicate(
+        line_a: usize,
+        line_b: usize,
+        total_lines: usize,
+        ci_scope: &str,
+    ) -> String {
+        let mut out = String::new();
+        for i in 1..=total_lines {
+            if i == line_a || i == line_b {
+                out.push_str(&format!(
+                    "- **Done =** `just ci` green and meaningful ({ci_scope}); fixture prose.\n"
+                ));
+            } else {
+                out.push_str(&format!("filler line {i} of the fixture\n"));
+            }
+        }
+        out
+    }
+
+    /// Build a synthetic plan doc with a Doc-reconciliation bullet whose
+    /// citation clause is `citation_clause` and whose remaining prose is
+    /// `rest`, followed by an (optionally decoy-bearing) paragraph after a
+    /// `## ` heading -- out of the block, by construction.
+    fn rb71_synth_plan(citation_clause: &str, rest: &str, decoy: &str) -> String {
+        format!(
+            "# fixture plan\n\n\
+             ## 1. heading\n\
+             Some unrelated prose.\n\n\
+             - **Doc reconciliation (sanctioned, minimal):** {citation_clause} {rest}\n\n\
+             ## 2. next section\n\
+             {decoy}\n"
+        )
+    }
+
+    #[test]
+    fn rb71_citation_oracle_control() {
+        let mut fixture_count = 0usize;
+        let clean_ci_scope = "lint + typecheck + test";
+
+        // 1. CLEAN CORRESPONDING PAIR -- positive control.
+        {
+            let agents = rb71_synth_agents(Some(9), 10, clean_ci_scope);
+            let plan = rb71_synth_plan(
+                "the `- **Done =**` bullet at `AGENTS.md:9`",
+                "correctly states what `just ci` enforces.",
+                "No decoy here.",
+            );
+            rb71_expect_clean("clean-corresponding-pair", &plan, &agents);
+            fixture_count += 1;
+        }
+
+        // 2. WRONG DIGIT.
+        {
+            let agents = rb71_synth_agents(Some(9), 10, clean_ci_scope);
+            let plan = rb71_synth_plan(
+                "the `- **Done =**` bullet at `AGENTS.md:8`",
+                "correctly states what `just ci` enforces.",
+                "No decoy here.",
+            );
+            rb71_expect_label("wrong-digit", &plan, &agents, "[cite/line-mismatch]");
+            fixture_count += 1;
+        }
+
+        // 3. ZERO CITATIONS -- path typo (missing the trailing `S`).
+        {
+            let agents = rb71_synth_agents(Some(9), 10, clean_ci_scope);
+            let plan = rb71_synth_plan(
+                "the `- **Done =**` bullet at `AGENT.md:9`",
+                "correctly states what `just ci` enforces.",
+                "No decoy here.",
+            );
+            rb71_expect_label("path-typo-zero-citations", &plan, &agents, "[cite/count]");
+            fixture_count += 1;
+        }
+
+        // 4. HARNESS REPOINT -- `../../AGENTS.md:9`, excluded by its
+        //    preceding `.` (rb-71 plan-review D2/D5).
+        {
+            let agents = rb71_synth_agents(Some(9), 10, clean_ci_scope);
+            let plan = rb71_synth_plan(
+                "the `- **Done =**` bullet at `../../AGENTS.md:9`",
+                "correctly states what `just ci` enforces.",
+                "No decoy here.",
+            );
+            rb71_expect_label("harness-repoint", &plan, &agents, "[cite/count]");
+            fixture_count += 1;
+        }
+
+        // 5. DECOY SECOND CITATION.
+        {
+            let agents = rb71_synth_agents(Some(9), 10, clean_ci_scope);
+            let plan = rb71_synth_plan(
+                "the `- **Done =**` bullet at `AGENTS.md:9`",
+                "correctly states what `just ci` enforces.",
+                "Also see `AGENTS.md:9` again here for good measure.",
+            );
+            rb71_expect_label("decoy-second-citation", &plan, &agents, "[cite/count]");
+            fixture_count += 1;
+        }
+
+        // 6. ANCHOR MISSING.
+        {
+            let agents = rb71_synth_agents(None, 10, clean_ci_scope);
+            let plan = rb71_synth_plan(
+                "the `- **Done =**` bullet at `AGENTS.md:9`",
+                "correctly states what `just ci` enforces.",
+                "No decoy here.",
+            );
+            rb71_expect_label("anchor-missing", &plan, &agents, "[anchor/missing]");
+            fixture_count += 1;
+        }
+
+        // 7. ANCHOR DUPLICATED.
+        {
+            let agents = rb71_synth_agents_duplicate(4, 9, 10, clean_ci_scope);
+            let plan = rb71_synth_plan(
+                "the `- **Done =**` bullet at `AGENTS.md:9`",
+                "correctly states what `just ci` enforces.",
+                "No decoy here.",
+            );
+            rb71_expect_label("anchor-duplicated", &plan, &agents, "[anchor/not-unique]");
+            fixture_count += 1;
+        }
+
+        // 8. LANDMARK STRIPPED FROM THE BLOCK -- correct number, no
+        //    `**Done =**` mention.
+        {
+            let agents = rb71_synth_agents(Some(9), 10, clean_ci_scope);
+            let plan = rb71_synth_plan(
+                "see `AGENTS.md:9`",
+                "for what `just ci` enforces.",
+                "No decoy here.",
+            );
+            rb71_expect_label(
+                "landmark-stripped-from-block",
+                &plan,
+                &agents,
+                "[anchor/doc-missing]",
+            );
+            fixture_count += 1;
+        }
+
+        // 9. EMPTY PLAN.
+        {
+            let agents = rb71_synth_agents(Some(9), 10, clean_ci_scope);
+            rb71_expect_label("empty-plan", "", &agents, "[doc/empty]");
+            fixture_count += 1;
+        }
+
+        // 10. EMPTY AGENTS.
+        {
+            let plan = rb71_synth_plan(
+                "the `- **Done =**` bullet at `AGENTS.md:9`",
+                "correctly states what `just ci` enforces.",
+                "No decoy here.",
+            );
+            rb71_expect_label("empty-agents", &plan, "", "[doc/empty]");
+            fixture_count += 1;
+        }
+
+        // 11. STALE-TENSE -- AGENTS.md already accurate, plan block still
+        //     present-tense.
+        {
+            let agents = rb71_synth_agents(Some(9), 10, clean_ci_scope);
+            let plan = rb71_synth_plan(
+                "the `- **Done =**` bullet at `AGENTS.md:9`",
+                "FALSELY claim `just ci` includes coverage and mutation. Correct it.",
+                "No decoy here.",
+            );
+            rb71_expect_label("stale-tense", &plan, &agents, "[claim/stale-tense]");
+            fixture_count += 1;
+        }
+
+        // 12. PREMATURE-PAST -- AGENTS.md regressed to over-claiming, plan
+        //     block already moved past the present-tense flag.
+        {
+            let agents = rb71_synth_agents(
+                Some(9),
+                10,
+                "lint + typecheck + test + eval + security + coverage + mutation",
+            );
+            let plan = rb71_synth_plan(
+                "the `- **Done =**` bullet at `AGENTS.md:9`",
+                "correctly states what `just ci` enforces.",
+                "No decoy here.",
+            );
+            rb71_expect_label("premature-past", &plan, &agents, "[claim/premature-past]");
+            fixture_count += 1;
+        }
+
+        // 13. MARKDOWN-LINK-TEXT DECOY -- `[AGENTS.md:9](#anchor)` is a
+        //     link's visible label, not a prose citation; must not count.
+        {
+            let agents = rb71_synth_agents(Some(9), 10, clean_ci_scope);
+            let plan = rb71_synth_plan(
+                "see [AGENTS.md:9](#done-bullet)",
+                "for what `just ci` enforces.",
+                "No decoy here.",
+            );
+            rb71_expect_label("markdown-link-text-decoy", &plan, &agents, "[cite/count]");
+            fixture_count += 1;
+        }
+
+        // 14. NO-DIGIT CITATION -- the token is present but nothing
+        //     digit-shaped follows the colon; a distinct bypass shape from
+        //     a plain wrong number.
+        {
+            let agents = rb71_synth_agents(Some(9), 10, clean_ci_scope);
+            let plan = rb71_synth_plan(
+                "the `- **Done =**` bullet at `AGENTS.md:` (see below)",
+                "correctly states what `just ci` enforces.",
+                "No decoy here.",
+            );
+            rb71_expect_label("no-digit-citation", &plan, &agents, "[cite/line-mismatch]");
+            fixture_count += 1;
+        }
+
+        // -- rb-71 revision round: red-team C1-C4 (measured GREEN cheats) --
+
+        // 15. TWO `**Doc reconciliation` LANDMARKS (C1) -- a clean decoy
+        //     bullet planted near the top, citation stripped from the real,
+        //     still-broken bullet. Must be rejected on landmark
+        //     UNIQUENESS alone, independent of which copy carries the
+        //     citation or the `**Done =**` mention.
+        {
+            let agents = rb71_synth_agents(Some(9), 10, clean_ci_scope);
+            let plan = "# fixture plan\n\n\
+                 - **Doc reconciliation (decoy, clean):** the `- **Done =**` bullet \
+                 at `AGENTS.md:9` correctly states what `just ci` enforces.\n\n\
+                 ## 2. next section\n\
+                 Some unrelated prose.\n\n\
+                 - **Doc reconciliation (sanctioned, minimal):** the real bullet \
+                 reference was removed here; `just ci` still needs reconciling.\n\n\
+                 ## 3. final section\n\
+                 No decoy here.\n"
+                .to_string();
+            rb71_expect_label(
+                "two-doc-reconciliation-landmarks",
+                &plan,
+                &agents,
+                "[block/not-unique]",
+            );
+            fixture_count += 1;
+        }
+
+        // 16. CITATION HIDDEN IN AN HTML COMMENT, INSIDE THE BLOCK (C2
+        //     exact shape). Invisible when rendered; must not satisfy the
+        //     census.
+        {
+            let agents = rb71_synth_agents(Some(9), 10, clean_ci_scope);
+            let plan = "# fixture plan\n\n\
+                 ## 1. heading\n\
+                 Some unrelated prose.\n\n\
+                 - **Doc reconciliation (sanctioned, minimal):** the `- **Done =**` \
+                 bullet <!-- AGENTS.md:9 --> and `.github/PULL_REQUEST_TEMPLATE.md:5` \
+                 both correctly state what `just ci` enforces.\n\n\
+                 ## 2. next section\n\
+                 No decoy here.\n"
+                .to_string();
+            rb71_expect_label(
+                "citation-in-html-comment-in-block",
+                &plan,
+                &agents,
+                "[cite/count]",
+            );
+            fixture_count += 1;
+        }
+
+        // 17. CITATION HIDDEN IN AN HTML COMMENT, OUTSIDE THE BLOCK (C3
+        //     exact shape from the red-team report).
+        {
+            let agents = rb71_synth_agents(Some(9), 10, clean_ci_scope);
+            let plan = "# fixture plan\n\n\
+                 ## 1. heading\n\
+                 Some unrelated prose.\n\n\
+                 - **Doc reconciliation (sanctioned, minimal):** the `- **Done =**` \
+                 bullet correctly states what `just ci` enforces.\n\n\
+                 ## 2. next section\n\
+                 <!-- housekeeping ref AGENTS.md:9 --> several paragraphs away from \
+                 the reconciliation block.\n"
+                .to_string();
+            rb71_expect_label(
+                "citation-in-html-comment-out-of-block",
+                &plan,
+                &agents,
+                "[cite/count]",
+            );
+            fixture_count += 1;
+        }
+
+        // 18. CITATION MOVED OUT OF THE BLOCK, PLAIN TEXT (C3 generalised --
+        //     no comment trick at all, isolates the NEW locality leg from
+        //     the hidden-range exclusion that fixtures 16/17 exercise).
+        {
+            let agents = rb71_synth_agents(Some(9), 10, clean_ci_scope);
+            let plan = "# fixture plan\n\n\
+                 ## 1. heading\n\
+                 Some unrelated prose.\n\n\
+                 - **Doc reconciliation (sanctioned, minimal):** the `- **Done =**` \
+                 bullet correctly states what `just ci` enforces.\n\n\
+                 ## 2. next section\n\
+                 See `AGENTS.md:9` again here, several paragraphs away from the \
+                 reconciliation block.\n"
+                .to_string();
+            rb71_expect_label(
+                "citation-out-of-block-plaintext",
+                &plan,
+                &agents,
+                "[cite/out-of-block]",
+            );
+            fixture_count += 1;
+        }
+
+        // 19. CITATION INSIDE A FENCED CODE BLOCK -- the "fenced" half of
+        //     the hidden-range rule; renders as example code, not prose.
+        {
+            let agents = rb71_synth_agents(Some(9), 10, clean_ci_scope);
+            let plan = "# fixture plan\n\n\
+                 ## 1. heading\n\
+                 Some unrelated prose.\n\n\
+                 - **Doc reconciliation (sanctioned, minimal):** the `- **Done =**` \
+                 bullet correctly states what `just ci` enforces.\n\n\
+                 ```\n\
+                 AGENTS.md:9\n\
+                 ```\n\n\
+                 ## 2. next section\n\
+                 No decoy here.\n"
+                .to_string();
+            rb71_expect_label(
+                "citation-in-fenced-code-block",
+                &plan,
+                &agents,
+                "[cite/count]",
+            );
+            fixture_count += 1;
+        }
+
+        // 20. STALE-TENSE, PARAPHRASED (C4) -- the exact lexical marker
+        //     `FALSELY claim` is never used; the substantive claim
+        //     ("just ci includes coverage + mutation") is stated with a
+        //     synonym verb instead, proving the detector is non-lexical.
+        {
+            let agents = rb71_synth_agents(Some(9), 10, clean_ci_scope);
+            let plan = rb71_synth_plan(
+                "the `- **Done =**` bullet at `AGENTS.md:9`",
+                "both incorrectly assert `just ci` includes coverage + mutation. \
+                 Correct it.",
+                "No decoy here.",
+            );
+            rb71_expect_label(
+                "stale-tense-paraphrase",
+                &plan,
+                &agents,
+                "[claim/stale-tense]",
+            );
+            fixture_count += 1;
+        }
+
+        assert!(
+            fixture_count >= RB71_FIXTURE_FLOOR,
+            "rb71: fixture roster shrank to {fixture_count}, below the floor of \
+             {RB71_FIXTURE_FLOOR} -- a fixture was quietly deleted rather than a new \
+             bypass shape being added"
+        );
+    }
+}
