@@ -24,17 +24,85 @@
 // (2026-09-04), before the implementation landed, scripts/adr-digest.mjs
 // rendered no such line and had no band guard, and docs/adr/README.md still
 // carried a hand-maintained four-digit number in its "Resolving a reference"
-// paragraph; all six tests failed there, each for its own reason. The generator
+// paragraph; all six tests that existed at that commit failed there, each for
+// its own reason (the file has since grown to nine — see SUITE SIZE). The generator
 // now ships the feature and this suite is green — do not read the paragraph
 // above as a description of the current tree, and do not chase README:16.
 //
+// ---------------------------------------------------------------------------
+// rb-70 EXTENSION — X7, X8 and X9 gate a SECOND, unrelated contract: the
+// `**Extends:**` / `**Extended-by:**` relation pair, which adr-digest modelled
+// nowhere before this slice. X7 and X9 are the teeth on the GENERATOR and are
+// RED until it lands; X8 is a claim about the CORPUS and is green today.
+//
+//   6. Dangling-reference checks cover **Extends:** and **Extended-by:** the
+//      same way they already cover Amends/Supersedes — and read the same way
+//      Amends is read: `extractBoldField(...) || extractListField(...)`, NOT
+//      the back-link view (see X7/G1's list-form arm). BOTH fields stay
+//      OPTIONAL; their absence is never an error.
+//      COUNTED ON THE LIVE CORPUS, 2026-09-07 — 210 project ADRs, of which 17
+//      declare **Extends:**, 4 declare **Extended-by:** (0208, 0225, 0226,
+//      0227) and ADR-0227 declares BOTH. So 190 ADRs declare NEITHER field,
+//      and 193 ADRs carry no **Extends:** at all. A "**Extends:** is required
+//      (use — if none)" reading reds 193 files; requiring both reds 190.
+//   7. REVERSE reciprocity, corpus-wide: for every ADR Y and every X named by
+//      Y's **Extended-by:**, X must name Y in its **Extends:**. Corpus-wide
+//      means corpus-wide — no era window, no tolerance set, no size cutoff, in
+//      generate mode AND in --check mode, at ERROR level (non-zero exit), with
+//      no new WARN line. Relations are read off the fence-stripped,
+//      preamble-bounded back-link view, so a fenced, indented or below-the-
+//      first-heading spelling is NOT a declaration.
+//   8. FORWARD reciprocity (**Extends:** ⇒ **Extended-by:**) is deliberately
+//      NOT enforced. COUNTED ON THE LIVE CORPUS, 2026-09-07: 47 resolved forward
+//      **Extends:** edges exist (49 raw ADR-NNNN references, two of which name
+//      the harness range ADR-0004/ADR-0014 and are dropped by
+//      resolveRelationIds), exactly 6 of them are reciprocated by an
+//      **Extended-by:** back-link, so 41 are one-directional. Repairing those
+//      41 is a semantic claim per edge, and rb-70 DEFERred it as wontfix. No
+//      test here demands it, and the fixtures are built so that adding it
+//      would not be needed to pass — see the note on X7's G3 arms.
+//   9. Six REAL corpus edges are frozen by roster in X8, on BOTH legs. This is
+//      the only tooth on "delete an **Extended-by:** line from a real ADR" —
+//      rule 7 cannot see that deletion, because deleting the line deletes the
+//      premise of the reverse rule.
+//      X8 CONSTRAINS THE CORPUS, NEVER THE GENERATOR. It spawns nothing and
+//      reads nothing the generator produces: it is a statement about the bytes
+//      in docs/adr/*.md. Measured on 2026-09-07, `RB70-G5:OK` printed GREEN
+//      for all 12 implementation mutants and all 18 cheats in the red-team set.
+//      Nobody may count X8 as evidence that the feature exists — that evidence
+//      is X7 (synthetic corpora) and X9 (the real corpus, no flags), and only
+//      those two are RED before the implementation lands.
+//
+// X7 emits a `RB70-Gn:OK` marker on stdout at the end of each clause group;
+// X8 and X9 each emit one at their end. Each is printed AFTER that group's
+// assertion, so an absent marker means that group did not pass. Each
+// `RB70-...:OK` literal occurs exactly once in this file and appears in no
+// failure message. They are NOT themselves the acceptance-ledger EXPECT
+// strings: the ledger EXPECTs are the lowercase `rb70-Gn:OK` lines that the
+// CHECK wrapper prints, and `RB70-Gn:OK` is the needle each CHECK greps for in
+// THIS file's stdout before printing its lowercase counterpart.
+//
+// SUITE SIZE — `justfile`'s adr-digest recipe asserts the passing-test count by
+// EQUALITY (justfile:89 at the time of writing). This file is a NINE-test
+// contract: X1-X6, X7, X8, X9. That number, this sentence and the `justfile`
+// pin move together or not at all — adding or deleting a top-level `test(`
+// without editing the recipe reds `just test`.
+// ---------------------------------------------------------------------------
+//
 // SAFETY — every spawn passes BOTH --adr-dir AND --out into a mkdtemp dir, and
-// `--adr-dir` IS THE LOAD-BEARING ONE: DIGEST_PATH defaults to
-// join(ADR_DIR, 'DIGEST.md') (scripts/adr-digest.mjs:109), so a run with
+// `--adr-dir` IS THE LOAD-BEARING ONE: scripts/adr-digest.mjs declares its
+// output path in the `DIGEST_PATH` constant, and that constant falls back to a
+// DIGEST.md inside `ADR_DIR` whenever `--out` is absent. (Cited by declaration
+// rather than by line: it sat immediately below the CLI-argument block as of
+// 2026-09-07, and that hint is a hint, not the contract.) So a run with
 // --adr-dir but no --out writes into the temp corpus dir, while a run with
 // --out but no --adr-dir READS the real corpus (and a check-mode run compares
 // against it). Do not relax --adr-dir. Every temp dir is removed in a
-// `finally`. X5 and X6 only READ the real files; they never spawn.
+// `finally`. X5, X6 and X8 only READ the real files; they never spawn.
+//
+// NEVER `import` scripts/adr-digest.mjs from this file: it calls main() at
+// module scope, so an import would run the generator against the real corpus.
+// Every predicate below is a local re-implementation on purpose.
 //
 // IMPORTANT: NO new RegExp(...) anywhere — the remote-only Semgrep rule
 // detect-non-literal-regexp has bitten this project 3x. Literal /regex/ and
@@ -48,8 +116,17 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import {
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -108,11 +185,30 @@ function adrDoc(fields) {
     `**Decision:** ${fields.decision}`,
   ];
   // Status: Superseded additionally needs a REAL in-directory Superseded-by
-  // target, or adr-digest.mjs:260-265 errors and we never reach generation.
+  // target, or validateAdr() in scripts/adr-digest.mjs raises its "Status is
+  // Superseded but missing a real ... pointer" error and we never reach
+  // generation. (Cited by declaration, not by line: that check sat in the low
+  // 260s on 2026-09-07 and is expected to drift.)
   if (typeof fields.supersededBy === 'string') {
     lines.push(`**Superseded-by:** ${fields.supersededBy}`);
   }
+  // rb-70 passthroughs. Both are OMITTED unless asked for — that default IS the
+  // "the fields are optional" fixture, and it is what keeps X1-X4 byte-identical.
+  // Position within the preamble is irrelevant to both readers (the bold-field
+  // reader indexes the preamble; the back-link reader scans preamble lines), so
+  // appending here rather than beside **Amends:** costs nothing.
+  if (typeof fields.extends === 'string') {
+    lines.push(`**Extends:** ${fields.extends}`);
+  }
+  if (typeof fields.extendedBy === 'string') {
+    lines.push(`**Extended-by:** ${fields.extendedBy}`);
+  }
+  // Raw lines appended to the END of the preamble (X7/G4 plants a fenced or an
+  // indented relation line here) and to the END of the body (X7/G4 plants a
+  // column-0 relation line BELOW the first `## ` heading there).
+  for (const raw of fields.extraPreamble ?? []) lines.push(raw);
   lines.push('', '## Context', '', 'Synthetic fixture written by scripts/adr-digest.test.mjs.', '');
+  for (const raw of fields.extraBody ?? []) lines.push(raw);
   return lines.join('\n');
 }
 
@@ -131,6 +227,10 @@ function adr(id, options = {}) {
     subsystems: options.subsystems ?? 'tooling-docs',
     decision: options.decision ?? `Synthetic decision text for fixture ${id}; short and valid.`,
     supersededBy: options.supersededBy,
+    extends: options.extends,
+    extendedBy: options.extendedBy,
+    extraPreamble: options.extraPreamble,
+    extraBody: options.extraBody,
   };
   return { file: options.file ?? `${id}-synthetic-fixture.md`, content: adrDoc(fields) };
 }
@@ -871,4 +971,1147 @@ test('X6 README states no hand-maintained next-free number and still names DIGES
       `fix. Un-cited four-digit numbers found (years excluded): ${loud.join(', ') || '(none)'}. ` +
       `Offending paragraph(s):\n${stale.join('\n---\n') || '(none)'}`,
   );
+});
+
+// ===========================================================================
+// rb-70 SHARED APPARATUS — used by X7 (synthetic corpora) and X8 (real corpus).
+// ===========================================================================
+
+/** The prefix scripts/adr-digest.mjs' emitter puts on every error-level issue. */
+const RB70_ERROR_PREFIX = 'adr-digest ERROR: ';
+
+/** The prefix it puts on every warn-level issue. Nothing rb-70 emits may wear it. */
+const RB70_WARN_PREFIX = 'adr-digest WARN: ';
+
+/**
+ * The keyed suffix of the reverse-reciprocity message for the one synthetic gap
+ * every clause below re-uses. The arrow is `<=`, NOT `<-`: a sibling text
+ * scanner over scripts/adr-digest.mjs asserts set-EQUALITY over the quoted
+ * `NNNN->NNNN` / `NNNN<-NNNN` literals in that file, so the Extends gate must
+ * not mint keys in that shape. Asserting the arrow here is what stops an
+ * implementer from copying the Amends message wholesale.
+ */
+const RB70_GAP_KEY = '(0952<=0953)';
+
+/**
+ * The reverse-gap line, verbatim, prefix included. Template frozen by the slice
+ * brief.
+ *
+ * WHY WHOLE-SENTENCE EQUALITY AND NOT THE LEDGER'S THREE LEGS (rb-70 m8, a
+ * deliberate decision, not an oversight). Acceptance gate G2 demands only that
+ * the line start with `adr-digest ERROR: `, contain `reciprocal`, and contain
+ * the `(Y<=X)` key — those three legs are the FLOOR the ledger checks, not a
+ * ceiling on what this file may pin. The equality pin is KEPT because:
+ *   (a) the template is already contract elsewhere in this very file — X9
+ *       reconstructs the SAME sentence from `extender`/`extended` and demands
+ *       it verbatim out of the real corpus. Relaxing G2 alone would buy a
+ *       reworder no freedom at all while deleting G2's strongest leg;
+ *   (b) ADR-0104's `## Amendment (rb-70)` records this template as contract,
+ *       and that amendment lands in the SAME commit as the implementation;
+ *   (c) the three legs are individually weak: `...has no reciprocal **Extends:**
+ *       ADR-0952 declaration (0952<=0953)` and a mangled `0952: **Extended-by:**
+ *       ADR-0952 but ADR-0953 ...` (operands swapped in the prose while the key
+ *       stays right) both satisfy all three and only equality separates them.
+ * A future slice that legitimately rewords the sentence edits THIS constant and
+ * ADR-0104's amendment in one commit; it does not weaken the assertion to fit.
+ */
+const RB70_EXPECTED_GAP_LINE =
+  `${RB70_ERROR_PREFIX}0952: **Extended-by:** ADR-0953 but ADR-0953 has no reciprocal ` +
+  '**Extends:** ADR-0952 declaration (0952<=0953)';
+
+/** The two dangling-reference lines, verbatim — same template checkRefs already uses. */
+const RB70_EXPECTED_DANGLING_EXTENDS = `${RB70_ERROR_PREFIX}0952: dangling Extends reference "ADR-9999" (ADR-9999 not found)`;
+const RB70_EXPECTED_DANGLING_EXTENDED_BY = `${RB70_ERROR_PREFIX}0953: dangling Extended-by reference "ADR-9998" (ADR-9998 not found)`;
+/** A THIRD dangling shape: a different absent id, inside a list whose other id resolves. */
+const RB70_EXPECTED_DANGLING_MULTI = `${RB70_ERROR_PREFIX}0952: dangling Extends reference "ADR-0953, ADR-9901" (ADR-9901 not found)`;
+
+/**
+ * Run the generator over a throwaway corpus, in generate or --check mode, with
+ * BOTH --adr-dir and --out pointed into mkdtemp dirs (see the SAFETY note).
+ * The --out target is deliberately NOT pre-created: in check mode a run that
+ * reaches the compare exits 1 on "DIGEST.md not found", which is why every
+ * clause asserts on a stderr SUBSTRING and never on the exit code alone.
+ */
+function rb70Probe(entries, options = {}) {
+  return withCorpus(entries, (dir) => {
+    const outDir = mkdtempSync(join(tmpdir(), 'adr-digest-rb70-'));
+    try {
+      const base = ['--adr-dir', dir, '--out', join(outDir, 'DIGEST.md')];
+      return runDigest(options.check === true ? ['--check', ...base] : base);
+    } finally {
+      rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+}
+
+function rb70ErrorLines(stderr) {
+  return stderr.split('\n').filter((line) => line.startsWith(RB70_ERROR_PREFIX));
+}
+
+/**
+ * EVERY stderr line carrying `key`, whatever prefix it wears — so a warn-level
+ * downgrade is visible as "the key is there but the prefix is wrong". `key`
+ * defaults to the canonical 0952<=0953 gap; the G3 parenthetical arm passes its
+ * own, because its gap is keyed on a different pair.
+ */
+function rb70KeyLines(stderr, key = RB70_GAP_KEY) {
+  return stderr.split('\n').filter((line) => line.includes(key));
+}
+
+/**
+ * EVERY warn-level line, whatever it says. Deliberately NOT "warn lines that
+ * mention Extends": `**Extended-by:**` does not contain the substring
+ * `Extends`, and a summary line phrased "N Extended-by reciprocity gap(s)
+ * tolerated" or "... below the enforcement era" mentions neither. Contract §7
+ * says NO new WARN line, so the honest assertion is that the TOTAL is zero.
+ *
+ * Zero is achievable on every synthetic corpus in this file: the only warn
+ * producer in scripts/adr-digest.mjs is validateBacklinks' tolerated/below-era
+ * summary (plus LEGACY_TOLERANCE, which is empty), and no fixture here declares
+ * an `Amends`/`Amended-by` pair that is not already reciprocal — so
+ * `tolerated` and `belowEra` are both 0 and the summary is never pushed.
+ */
+function rb70WarnLines(stderr) {
+  return stderr.split('\n').filter((line) => line.startsWith(RB70_WARN_PREFIX));
+}
+
+/**
+ * Collapse one probe into the shape every reverse-gap clause compares.
+ *
+ * `errorCount` and `warnCount` are TOTALS over the whole run, not filtered by
+ * the key. Without them every arm below is blind to spurious extra output: an
+ * implementation that emits the one expected line PLUS five unrelated errors
+ * satisfies a key-filtered verdict exactly as well as a correct one does.
+ */
+function rb70GapVerdict(run, key = RB70_GAP_KEY) {
+  const keyLines = rb70KeyLines(run.stderr, key);
+  return {
+    exitNonZero: run.code !== 0,
+    keyLineCount: keyLines.length,
+    errorPrefixed: keyLines.length === 1 && keyLines[0].startsWith(RB70_ERROR_PREFIX),
+    saysReciprocal: keyLines.length === 1 && keyLines[0].includes('reciprocal'),
+    errorCount: rb70ErrorLines(run.stderr).length,
+    warnCount: rb70WarnLines(run.stderr).length,
+  };
+}
+
+const RB70_GAP_EXPECTED = {
+  exitNonZero: true,
+  keyLineCount: 1,
+  errorPrefixed: true,
+  saysReciprocal: true,
+  // ONE error in total: the gap itself and nothing else. Every corpus that
+  // spreads this constant is built so that no other check can fire.
+  errorCount: 1,
+  warnCount: 0,
+};
+
+const RB70_SILENT_EXPECTED = {
+  exitNonZero: false,
+  keyLineCount: 0,
+  errorPrefixed: false,
+  saysReciprocal: false,
+  errorCount: 0,
+  warnCount: 0,
+};
+
+/**
+ * The canonical reverse-gap corpus: 0952 declares 0953 as an extender, 0953
+ * declares nothing. Rebuilt per call so no clause can mutate another's fixture.
+ */
+function rb70GapEntries() {
+  return [adr('0952', { extendedBy: 'ADR-0953' }), adr('0953')];
+}
+
+// ===========================================================================
+// X7 — **Extends:** / **Extended-by:**, on synthetic corpora only.
+//
+// X7 carries SEVEN clause groups — in source order G1, G2, G3, G4, G7, G8, G6
+// — and each prints its `RB70-Gn:OK` marker on stdout ONLY after its own
+// assertion has passed (assert throws first, so the marker cannot lie).
+//
+// THE `Gn` LABELS ARE ACCEPTANCE-LEDGER GATE IDS, NOT SEQUENCE NUMBERS. G5 is
+// X8's and G9 is X9's, which is why X7 prints no `RB70-G5:OK`, why its own
+// markers do not come out in numeric order, and why X8 prints G5 after X7 has
+// already printed G6. Do not "tidy" them into order: the ledger CHECKs grep for
+// these exact literals.
+//
+// KILLS, group by group:
+//   G1 — the fields are unparsed (today's state); the mirror cheat of making
+//        them REQUIRED (which reds 190-193 real ADRs); wiring the dangling read
+//        to the back-link view instead of `extractBoldField ||
+//        extractListField`; and confusing the two id universes (`allIds`, which
+//        carries the synthetic 0002-0034 harness range, vs `localIds`, the
+//        scanned files).
+//   G2 — an always-red implementation (the guard arm), a warn-level downgrade
+//        (the ERROR-prefix leg), a `<-` arrow copied from the Amends message,
+//        a tolerance/era set (there is none to add), and an em-dash sentinel
+//        resolved as if it named an ADR.
+//   G3 — `if ((extendsOf.get(x)?.length ?? 0) > 0) continue;`, i.e. testing
+//        EMPTINESS instead of MEMBERSHIP. The highest-value mutant in the set:
+//        two real ADRs (0208, 0227) each name TWO extenders, so on the live
+//        corpus that mutant is invisible. Arm 2 additionally proves a
+//        comma-separated multi-id **Extends:** resolves, and the last arm
+//        proves the REVERSE field is split on TOP-LEVEL commas only — the real
+//        ADR-0227 shape, which no other clause feeds to the generator.
+//   G4 — reading relations with the RAW bold-field reader instead of the
+//        fence-stripped, preamble-bounded back-link view. That mutant survives
+//        every other group here; only the fenced / indented / below-the-heading
+//        arms see it. Arm 4 is the positive control that stops "always red"
+//        from passing G4.
+//   G7 — report-one (`if (issues.length > 0) return issues;`), a direction
+//        filter (`if (y > x) continue;`), self-satisfaction (`if (x === y)
+//        continue;`) and a reused ADR-0151 era window.
+//   G8 — the PREMISE leg: the **Extended-by:** that CREATES the obligation must
+//        be read off the same fence-stripped, column-0 view as the **Extends:**
+//        that discharges it.
+//   G6 — `if (!checkMode) return issues;` and its mirror (mode independence),
+//        and `if (adrs.length > 100) return issues;` and every other
+//        corpus-size time bomb (scale independence).
+//
+// EVERY GAP ARM IS COUNT-GATED. rb70GapVerdict reports the TOTAL number of
+// error-prefixed and warn-prefixed stderr lines alongside the key-filtered
+// legs, so an implementation that emits the expected line PLUS unrelated noise
+// fails. Zero warns and (for a gap arm) exactly one error are achievable on
+// every corpus below: no fixture here declares a non-reciprocal
+// `Amends`/`Amended-by` pair, so validateBacklinks' tolerated/below-era WARN
+// summary is never pushed. Its RATCHET is a separate hazard and is avoided by
+// id choice, not by luck: every fixture id here sits outside 0154-0177, the band
+// holding all ten endpoints of the five KNOWN_BACKLINK_GAPS keys. Materialise
+// both endpoints of a baselined pair as files and the ratchet reports it
+// obsolete — see the band note in G6.
+//
+// NOT TESTED ON PURPOSE: forward reciprocity (**Extends:** ⇒ **Extended-by:**).
+// rb-70 DEFERred it as wontfix. Counted on the live corpus 2026-09-07: 49
+// **Extends:** references exist, 47 of which RESOLVE to a project ADR file (the
+// other two name the harness range ADR-0004/ADR-0014, which resolveRelationIds
+// drops); exactly 6 of those 47 are reciprocated, so 41 are one-directional and each repair is a semantic claim about two documents.
+// No clause here demands the forward rule, and every RECIPROCITY fixture below
+// gives each RESOLVABLE **Extends:** target its reciprocal **Extended-by:**, so
+// those arms stay silent whether or not a future slice adds it — they neither
+// demand it nor forbid it. ONE EXCEPTION, named so it is not discovered as a
+// surprise: G1's `multi-id Extends, one id absent` arm counts errors over a
+// corpus where 0952 extends 0953 and 0953 back-links nothing. A slice that DID
+// add the forward rule would have to give 0953 an **Extended-by:** there.
+// ===========================================================================
+test('X7 Extends/Extended-by dangling refs error and every reverse back-link is reciprocal', () => {
+  // ---- G1: dangling references, both fields, both modes, plus the two
+  // false-positive arms that keep the fields OPTIONAL. --------------------
+  const danglingEntries = () => [
+    adr('0952', { extends: 'ADR-9999' }),
+    adr('0953', { extendedBy: 'ADR-9998' }),
+  ];
+  const g1Cases = [
+    { label: 'dangling, generate', entries: danglingEntries(), check: false, dangling: true },
+    { label: 'dangling, --check', entries: danglingEntries(), check: true, dangling: true },
+    {
+      label: 'every target present, generate',
+      entries: [adr('0952', { extends: 'ADR-0953' }), adr('0953', { extendedBy: 'ADR-0952' })],
+      check: false,
+      dangling: false,
+    },
+    // NOTE: there is deliberately no clean-corpus --check arm here. A --check
+    // run that finds no validation error walks on to the DIGEST compare and
+    // exits 1 on "DIGEST.md not found" at the (intentionally uncreated) --out
+    // path, so its exit code says nothing about Extends at all. Check-mode
+    // no-false-positive behaviour is proved where the exit code IS meaningful:
+    // G6 asserts the gap LINE, not the code.
+    {
+      // A SECOND dangling shape: a different absent id, inside a multi-id list
+      // whose OTHER entry resolves. The message must quote the WHOLE field
+      // value. Kills a checkRefs stub hard-coded to the 9999/9998 fixture ids.
+      label: 'multi-id Extends, one id absent, generate',
+      entries: [adr('0952', { extends: 'ADR-0953, ADR-9901' }), adr('0953')],
+      check: false,
+      dangling: false,
+      extraExpect: {
+        exitNonZero: true,
+        errorCount: 1,
+        namesMultiDangling: true,
+      },
+    },
+    {
+      // ID-UNIVERSE arm, biting in BOTH directions at once. The generator uses
+      // TWO different id sets and this fixture straddles the gap between them:
+      //   * checkRefs (the dangling check) resolves against `allIds`, which
+      //     carries the SYNTHETIC harness range 0002-0034 alongside the scanned
+      //     files — main() seeds it with a `for (let n = 2; n <= 34; n++)` loop
+      //     just after collectAdrIds. So a 0002-0034 target is NOT dangling.
+      //   * resolveRelationIds (reciprocity) resolves against `localIds`, the
+      //     SCANNED FILES ONLY, and additionally skips H- ids — because, in the
+      //     generator's own words, the harness range and the H- namespace "have
+      //     no file and so could never gain a back-link". So a 0002-0034 target
+      //     creates NO reciprocity obligation in either direction.
+      // Live shape, not hypothetical: ADR-0241 names ADR-0004 in a relation
+      // field and ADR-0231 names ADR-0014.
+      // Both mutants are killed here by errorCount === 0:
+      //   - resolving the DANGLING check against localIds reds `**Extends:**
+      //     ADR-0004` (and reds ADR-0241/ADR-0231 on the next real `just ci`);
+      //   - resolving the RECIPROCITY PREMISE against allIds resolves 0014 out
+      //     of `**Extended-by:** ADR-0014`, finds no file that could ever
+      //     declare `**Extends:** ADR-0952`, and invents the gap (0952<=0014).
+      // (The bare, un-prefixed reciprocal spelling `**Extends:** 0952` is
+      // covered by G3's last-but-one arm — deliberately not duplicated here.)
+      label: 'harness-range ids 0004/0014 — not dangling AND no reciprocity obligation',
+      entries: [adr('0952', { extends: 'ADR-0004', extendedBy: 'ADR-0014' }), adr('0953')],
+      check: false,
+      dangling: false,
+    },
+    {
+      // LIST-FORM arm. The dangling read is `extractBoldField(content,
+      // 'Extends') || extractListField(content, 'Extends')` — exactly how
+      // parseAdr() already reads **Amends:** and **Supersedes:**. It is NOT the
+      // back-link view: that view is column-0-only and fence-stripped and would
+      // see nothing here. An implementer who wires the DANGLING check to
+      // `backlinkView` instead passes every other arm in this file while
+      // quietly giving Extends different fenced/indented/list-form behaviour
+      // from every other relation field the check has covered since 12r-f.
+      // EXACTLY ONE error: `- Extends:` does not start with `**Extends:**`, so
+      // the list form creates no reciprocity obligation of its own.
+      label: 'list-form `- Extends:` dangling, generate',
+      entries: [adr('0952', { extraPreamble: ['- Extends: ADR-9999'] }), adr('0953')],
+      check: false,
+      dangling: false,
+      extraExpect: {
+        exitNonZero: true,
+        namesExtendsDangling: true,
+        errorCount: 1,
+      },
+    },
+    {
+      // The optionality arm. A `**Extends:** is required (use — if none)` reading
+      // of the contract reds here — and would red the 193 real ADRs that carry no
+      // **Extends:** (190 declare neither field).
+      label: 'neither field declared at all, generate',
+      entries: [adr('0952'), adr('0953')],
+      check: false,
+      dangling: false,
+    },
+  ];
+
+  const g1Observed = g1Cases.map((testCase) => {
+    const run = rb70Probe(testCase.entries, { check: testCase.check });
+    return {
+      label: testCase.label,
+      exitNonZero: run.code !== 0,
+      namesExtendsDangling: run.stderr.includes(RB70_EXPECTED_DANGLING_EXTENDS),
+      namesExtendedByDangling: run.stderr.includes(RB70_EXPECTED_DANGLING_EXTENDED_BY),
+      namesMultiDangling: run.stderr.includes(RB70_EXPECTED_DANGLING_MULTI),
+      errorCount: rb70ErrorLines(run.stderr).length,
+    };
+  });
+  const g1Expected = g1Cases.map((testCase) => ({
+    label: testCase.label,
+    exitNonZero: testCase.dangling,
+    namesExtendsDangling: testCase.dangling,
+    namesExtendedByDangling: testCase.dangling,
+    namesMultiDangling: false,
+    errorCount: testCase.dangling ? 2 : 0,
+    ...(testCase.extraExpect ?? {}),
+  }));
+  assert.deepEqual(
+    g1Observed,
+    g1Expected,
+    'X7/G1: **Extends:** and **Extended-by:** must join the dangling-reference checks — a ' +
+      'missing target is an ERROR naming the FIELD and the ID, in generate AND --check mode — ' +
+      'while BOTH fields stay OPTIONAL: a corpus that declares neither must exit 0. The read ' +
+      'is `extractBoldField(...) || extractListField(...)`, so the `- Extends:` list form is ' +
+      'checked too. The DANGLING check resolves against allIds (which carries the synthetic ' +
+      '0002-0034 harness range) while RECIPROCITY resolves against the scanned files only, so a ' +
+      'harness-range 0004/0014 target is neither dangling nor an obligation on either leg. The ' +
+      'expected lines are verbatim:\n' +
+      `  ${RB70_EXPECTED_DANGLING_EXTENDS}\n  ${RB70_EXPECTED_DANGLING_EXTENDED_BY}`,
+  );
+  console.log('RB70-G1:OK');
+
+  // ---- G2: the reverse gap itself, its exact wording, and the guard arm
+  // that an always-red implementation cannot survive. ---------------------
+  const g2GapRun = rb70Probe(rb70GapEntries());
+  const g2KeyLines = rb70KeyLines(g2GapRun.stderr);
+
+  // Guard arm. 0953 now declares the reciprocal **Extends:**; two further ADRs
+  // carry em-dash sentinels, which must satisfy nothing, produce no gap of
+  // their own, and not crash the resolver. 0955's parenthetical NAMES 0953 so
+  // that a resolver which reaches for the prefix-only id scanner (instead of
+  // truncating the token at its first `(`) invents a 0955<=0953 gap and reds.
+  const g2GuardRun = rb70Probe([
+    adr('0952', { extendedBy: 'ADR-0953' }),
+    adr('0953', { extends: 'ADR-0952' }),
+    adr('0954', { extendedBy: '—' }),
+    adr('0955', { extendedBy: '— (ADR-0953 pending)' }),
+  ]);
+
+  assert.deepEqual(
+    {
+      // The verdict already carries errorCount (total) and warnCount (total),
+      // so the gap arm is blind neither to a spurious extra ERROR nor to a WARN
+      // that never says the word "Extends".
+      gap: {
+        ...rb70GapVerdict(g2GapRun),
+        exactLine: g2KeyLines.length === 1 ? g2KeyLines[0] : g2KeyLines.join(' | '),
+      },
+      guard: {
+        exitCode: g2GuardRun.code,
+        errorCount: rb70ErrorLines(g2GuardRun.stderr).length,
+        mentions0952: g2GuardRun.stderr.includes('0952'),
+        mentions0953: g2GuardRun.stderr.includes('0953'),
+        warnCount: rb70WarnLines(g2GuardRun.stderr).length,
+      },
+    },
+    {
+      gap: {
+        ...RB70_GAP_EXPECTED,
+        exactLine: RB70_EXPECTED_GAP_LINE,
+      },
+      guard: {
+        exitCode: 0,
+        errorCount: 0,
+        mentions0952: false,
+        mentions0953: false,
+        warnCount: 0,
+      },
+    },
+    'X7/G2: an **Extended-by:** with no reciprocal **Extends:** must produce EXACTLY this ' +
+      `ERROR line:\n  ${RB70_EXPECTED_GAP_LINE}\n` +
+      '(note the `<=` arrow, not `<-`: the sibling corpus eval asserts set-EQUALITY over the ' +
+      '`->`/`<-` keyed literals in scripts/adr-digest.mjs). It must be an ERROR, not a WARN; ' +
+      'it must be the ONLY error line; and the run must emit ZERO warn-level lines of ANY ' +
+      'wording (a tolerance/era summary phrased with "Extended-by" or "reciprocity" says the ' +
+      'word "Extends" nowhere). The guard arm must be COMPLETELY silent — ' +
+      'reciprocal pair plus two em-dash sentinels — so "always red" cannot pass this clause.',
+  );
+  console.log('RB70-G2:OK');
+
+  // ---- G3: MEMBERSHIP, not emptiness. -----------------------------------
+  // 0952 names 0953 as its extender. 0953 declares **Extends:** — but at 0954,
+  // NOT at 0952. An implementation that skips X as soon as its Extends set is
+  // non-empty reports nothing and goes green on the live corpus too, because
+  // 0208 and 0227 each name two extenders. 0954 carries the reciprocal
+  // **Extended-by:** in both arms, so no forward edge is left dangling and the
+  // arms do not depend on forward reciprocity being absent.
+  const g3Arms = [
+    {
+      label: 'extends a DIFFERENT ADR — the gap stands',
+      entries: [
+        adr('0952', { extendedBy: 'ADR-0953' }),
+        adr('0953', { extends: 'ADR-0954' }),
+        adr('0954', { extendedBy: 'ADR-0953' }),
+      ],
+      expected: RB70_GAP_EXPECTED,
+    },
+    {
+      // DIRECTION of the membership test. 0952 declares BOTH legs and 0953
+      // declares no **Extends:** at all, so "0953 extends 0952" is FALSE while
+      // "0952 extends 0953" is true. A rule written
+      //   extendsOf.get(x)?.includes(y) || extendsOf.get(y)?.includes(x)
+      // accepts the wrong leg as satisfaction and goes silent here. MEASURED as
+      // a surviving mutant that flips the exit code on a real corpus edge. No
+      // other arm separates the two directions: G3's first arm pins only
+      // non-membership of a DIFFERENT id, which the bidirectional form reports
+      // too.
+      label: 'the reciprocal leg points the WRONG WAY — the gap stands',
+      entries: [
+        adr('0952', { extends: 'ADR-0953', extendedBy: 'ADR-0953' }),
+        adr('0953', { extendedBy: 'ADR-0952' }),
+      ],
+      expected: RB70_GAP_EXPECTED,
+    },
+    {
+      label: 'multi-id list containing 0952 — silent',
+      entries: [
+        adr('0952', { extendedBy: 'ADR-0953' }),
+        adr('0953', { extends: 'ADR-0954, ADR-0952' }),
+        adr('0954', { extendedBy: 'ADR-0953' }),
+      ],
+      expected: RB70_SILENT_EXPECTED,
+    },
+    {
+      // The id appears on the **Extends:** LINE but only inside a parenthetical
+      // aside, i.e. the declaration was WITHDRAWN. resolveRelationIds truncates
+      // each token at its first `(`, so this resolves to nothing and the gap
+      // stands. A `raw.includes('ADR-0952')` membership test goes silent here.
+      label: 'withdrawn, id survives only inside a parenthetical — the gap stands',
+      entries: [
+        adr('0952', { extendedBy: 'ADR-0953' }),
+        adr('0953', { extends: '— (withdrawn; formerly ADR-0952)' }),
+      ],
+      expected: RB70_GAP_EXPECTED,
+    },
+    {
+      // The reciprocal must be an **Extends:** declaration, not just ANY column-0
+      // relation naming 0952. 0953 amends 0952 (reciprocated, so no Amends gap
+      // is raised) but extends nothing — the Extends gap stands. Kills an
+      // `extractBacklinkField(view, 'Extends') || extractBacklinkField(view, 'Amends')`
+      // fallback and every "some relation field mentions it" reading.
+      label: 'reciprocal is an **Amends:**, not an **Extends:** — the gap stands',
+      entries: [
+        adr('0952', {
+          extendedBy: 'ADR-0953',
+          extraPreamble: ['**Amended-by:** ADR-0953'],
+        }),
+        adr('0953', { extraPreamble: ['**Amends:** ADR-0952'] }),
+      ],
+      expected: RB70_GAP_EXPECTED,
+    },
+    {
+      // The bare-id spelling. Nine ADRs in the 0151-0164 era write relations
+      // without the `ADR-` prefix and resolveRelationIds accepts both forms; a
+      // substring test against the literal `ADR-0952` invents a gap here.
+      label: 'bare four-digit id, no ADR- prefix — silent',
+      entries: [adr('0952', { extendedBy: 'ADR-0953' }), adr('0953', { extends: '0952' })],
+      expected: RB70_SILENT_EXPECTED,
+    },
+    {
+      // THE REAL ADR-0227 SHAPE, fed to the GENERATOR. Until this arm existed,
+      // that shape was exercised only through X8's own LOCAL parser, never
+      // through scripts/adr-digest.mjs — so nothing here required the generator
+      // to split the reverse field on TOP-LEVEL commas. The live value is:
+      //   **Extended-by:** ADR-0236 (rb-46 — the same gate reaches
+      //   `start_battle`, dev `start_wild_battle`, `buy`, `sell`; residual
+      //   R-m22-s5-X12 closed), ADR-0237 (rb-47 — ...)
+      // i.e. a multi-id list whose entries carry parentheticals full of
+      // top-level-LOOKING commas.
+      //
+      // Correct reading (splitTopLevelCommas): {0953, 0954}. 0953 declares the
+      // reciprocal **Extends:** ADR-0952, so exactly ONE gap survives, keyed
+      // (0952<=0954) — hence this arm's own `key`.
+      //
+      // WHAT IT KILLS, spelled out: `for (const t of fieldValue.split(','))`.
+      // That reader hands ` 0955 lands next slice)` to the id resolver as its
+      // OWN token. The fragment has no `(` left to truncate at, its leading
+      // four-digit run is 0955, and 0955 IS a file in this corpus — so the
+      // naive reader resolves a THIRD extender that nobody declared and emits a
+      // second gap, (0952<=0955). Note the live 0227 value does NOT bite that
+      // mutant (none of its fragments begins with a four-digit run), which is
+      // exactly why the synthetic fixture must place a bare id immediately
+      // after a parenthetical comma — the live shape in splitTopLevelCommas'
+      // own doc comment, `— (deferred, 0984 lands next slice)`.
+      // The `errorCount: 1` leg is what sees the extra gap; the key-filtered
+      // legs, on their own, would not.
+      label: 'multi-id **Extended-by:**, comma inside a parenthetical — exactly one gap',
+      entries: [
+        adr('0952', {
+          extendedBy:
+            'ADR-0953 (rb-x — the same gate reaches buy, sell; deferred, 0955 lands next slice), ADR-0954',
+        }),
+        adr('0953', { extends: 'ADR-0952' }),
+        adr('0954'),
+        adr('0955'),
+      ],
+      key: '(0952<=0954)',
+      expected: RB70_GAP_EXPECTED,
+    },
+  ];
+  assert.deepEqual(
+    g3Arms.map((arm) => ({
+      label: arm.label,
+      ...rb70GapVerdict(rb70Probe(arm.entries), arm.key),
+    })),
+    g3Arms.map((arm) => ({ label: arm.label, ...arm.expected })),
+    "X7/G3: reciprocity is MEMBERSHIP of the specific id in the extender's **Extends:** set, " +
+      'not "the extender declares SOMETHING". Arm 1 keeps a non-empty but wrong Extends set and ' +
+      'the gap must still be reported; arm 2 puts the right id in a comma-separated list and the ' +
+      'run must be silent (multi-id lists must resolve, as ADR-0238 already ships one); the last ' +
+      "arm feeds the REAL ADR-0227 reverse-field shape — a two-id list whose first entry's " +
+      'parenthetical contains commas — and demands EXACTLY ONE gap: a `fieldValue.split(",")` ' +
+      'reader liberates the bare id out of that parenthetical and reports a second, phantom gap.',
+  );
+  console.log('RB70-G3:OK');
+
+  // ---- G4: which spellings COUNT as a declaration. ----------------------
+  // Only a column-0 marker in the fence-free header preamble does. The three
+  // negative arms are the sole tooth on "read the relation with the raw
+  // bold-field reader" — that mutant passes G1, G2, G3 and G6 unchanged.
+  const g4Arms = [
+    {
+      label: 'fenced inside the preamble',
+      extenderOptions: {
+        extraPreamble: ['', '```text', '**Extends:** ADR-0952', '```'],
+      },
+      expected: RB70_GAP_EXPECTED,
+    },
+    {
+      label: 'indented four spaces (a markdown code block)',
+      extenderOptions: { extraPreamble: ['    **Extends:** ADR-0952'] },
+      expected: RB70_GAP_EXPECTED,
+    },
+    {
+      label: 'below the first `## ` heading (body prose, not a header field)',
+      extenderOptions: { extraBody: ['**Extends:** ADR-0952', ''] },
+      expected: RB70_GAP_EXPECTED,
+    },
+    {
+      label: 'plain column-0 declaration in the preamble — this one IS a declaration',
+      extenderOptions: { extends: 'ADR-0952' },
+      expected: RB70_SILENT_EXPECTED,
+    },
+  ];
+  assert.deepEqual(
+    g4Arms.map((arm) => ({
+      label: arm.label,
+      ...rb70GapVerdict(
+        rb70Probe([adr('0952', { extendedBy: 'ADR-0953' }), adr('0953', arm.extenderOptions)]),
+      ),
+    })),
+    g4Arms.map((arm) => ({ label: arm.label, ...arm.expected })),
+    'X7/G4: relations must be read off the FENCE-STRIPPED, PREAMBLE-BOUNDED back-link view ' +
+      'with the marker at column 0 — an illustrative **Extends:** inside a fence, an indented ' +
+      'copy (markdown renders it as a code block) and a line of body prose below the first ' +
+      '`## ` heading are NOT declarations and must leave the gap standing, while a plain ' +
+      'column-0 header line must silence it. Reading the field with the raw bold-field reader ' +
+      'passes every other clause in this test and fails only here.',
+  );
+  console.log('RB70-G4:OK');
+
+  // ---- G7: the rule fires for EVERY gap, in BOTH id directions, and a
+  // self-naming **Extended-by:** satisfies nothing. Three INDEPENDENT gaps in
+  // one corpus. Kills: `if (issues.length > 0) return issues;` (report-one),
+  // `if (y > x) continue;` (only backward/forward edges checked), `if (x === y)
+  // continue;` (self-satisfaction) and every "check adrs[0] only" shape. Every
+  // gap fixture elsewhere in this file is a single edge with y < x, so this is
+  // the only clause that sees any of them.
+  const g7Run = rb70Probe([
+    adr('0952', { extendedBy: 'ADR-0953' }),
+    adr('0953'),
+    // BACKWARD edge: the extended id (0956) is HIGHER than its extender (0955).
+    adr('0956', { extendedBy: 'ADR-0955' }),
+    adr('0955'),
+    // Self-reference: 0957 names itself and declares no **Extends:** at all.
+    adr('0957', { extendedBy: 'ADR-0957' }),
+    // BELOW the Amends gate's ADR-0151 era window. rb-70 has no era window;
+    // reusing BACKLINK_ERA_MIN here is invisible to every 09xx fixture.
+    adr('0102', { extendedBy: 'ADR-0101' }),
+    adr('0101'),
+  ]);
+  assert.deepEqual(
+    {
+      exitNonZero: g7Run.code !== 0,
+      errorCount: rb70ErrorLines(g7Run.stderr).length,
+      keys: [
+        g7Run.stderr.includes('(0952<=0953)'),
+        g7Run.stderr.includes('(0956<=0955)'),
+        g7Run.stderr.includes('(0957<=0957)'),
+        g7Run.stderr.includes('(0102<=0101)'),
+      ],
+    },
+    { exitNonZero: true, errorCount: 4, keys: [true, true, true, true] },
+    'X7/G7: every reverse gap in the corpus must be reported — not the first one, not only ' +
+      'the ones whose extender id is higher, and a **Extended-by:** that names its OWN ADR ' +
+      'satisfies nothing (0957 declares no **Extends:** at all), and there is no era window: ' +
+      "the 0102/0101 pair sits below the Amends gate's ADR-0151 cutoff and must still be " +
+      'reported. Exactly four ERROR lines.',
+  );
+  console.log('RB70-G7:OK');
+
+  // ---- G8: the PREMISE leg. G4 pins the spellings that count as a reciprocal
+  // **Extends:**; nothing pinned the spellings that count as the **Extended-by:**
+  // that CREATES the obligation. A raw-bold-field or whole-file reader on this
+  // leg invents obligations out of fenced/indented/body-prose text and reds a
+  // corpus whose ADRs merely QUOTE the marker in prose — a live shape here.
+  const g8Arms = [
+    {
+      label: 'premise fenced inside the preamble — no obligation',
+      premiseOptions: { extraPreamble: ['', '```text', '**Extended-by:** ADR-0953', '```'] },
+      expected: RB70_SILENT_EXPECTED,
+    },
+    {
+      label: 'premise indented four spaces — no obligation',
+      premiseOptions: { extraPreamble: ['    **Extended-by:** ADR-0953'] },
+      expected: RB70_SILENT_EXPECTED,
+    },
+    {
+      label: 'premise below the first `## ` heading — no obligation',
+      premiseOptions: { extraBody: ['**Extended-by:** ADR-0953', ''] },
+      expected: RB70_SILENT_EXPECTED,
+    },
+    {
+      label: 'premise at column 0 in the preamble — the obligation stands',
+      premiseOptions: { extendedBy: 'ADR-0953' },
+      expected: RB70_GAP_EXPECTED,
+    },
+  ];
+  assert.deepEqual(
+    g8Arms.map((arm) => ({
+      label: arm.label,
+      ...rb70GapVerdict(rb70Probe([adr('0952', arm.premiseOptions), adr('0953')])),
+    })),
+    g8Arms.map((arm) => ({ label: arm.label, ...arm.expected })),
+    'X7/G8: the **Extended-by:** that creates the reciprocity obligation must be read off the ' +
+      'SAME fence-stripped, preamble-bounded, column-0 back-link view as the **Extends:** that ' +
+      'discharges it. Reading the premise leg with extractBoldField (fence-blind) or with a ' +
+      'whole-file view (heading-blind) passes every other clause in this test and turns a ' +
+      'future ADR that merely quotes `**Extended-by:**` in its prose into a hard CI failure.',
+  );
+  console.log('RB70-G8:OK');
+
+  // ---- G6: mode independence AND scale independence. --------------------
+  const g6CheckRun = rb70Probe(rb70GapEntries(), { check: true });
+
+  // BAND 0300-0419, NOT 0100-0219. The five KNOWN_BACKLINK_GAPS keys in
+  // scripts/adr-digest.mjs have all ten of their endpoints inside 0154-0177, so
+  // a padding band starting at 0100 materialises both endpoints of every
+  // baselined pair as real files, the Amends ratchet then reports all five as
+  // "obsolete", and this arm reads 6 errors instead of 1. MEASURED 2026-09-07 on
+  // BOTH the pre-rb-70 script and this one (identical: band 0100-0219 -> 5
+  // ratchet ERRORs; band 0300-0419 -> 0), so it is a fixture/baseline collision,
+  // not anything rb-70 changed. Any band above 0177 and below the 0952-0955
+  // reciprocity fixtures works; 0300 leaves room for the baseline to grow.
+  const g6Padded = rb70GapEntries();
+  for (let n = 0; n < 120; n++) {
+    g6Padded.push(adr(String(300 + n).padStart(4, '0'), { subsystems: 'tooling-docs' }));
+  }
+  const g6ScaleRun = rb70Probe(g6Padded);
+
+  assert.deepEqual(
+    {
+      checkMode: rb70GapVerdict(g6CheckRun),
+      scale: rb70GapVerdict(g6ScaleRun),
+      // Guards the scale arm against silently shrinking into a small corpus.
+      corpusSize: g6Padded.length,
+    },
+    {
+      checkMode: RB70_GAP_EXPECTED,
+      scale: RB70_GAP_EXPECTED,
+      corpusSize: 122,
+    },
+    'X7/G6: the reverse-reciprocity check must be MODE-independent (`just ci` only ever runs ' +
+      '--check, so a check-mode-only or generate-mode-only guard is half dead) and ' +
+      'SIZE-independent (no `if (adrs.length > N) return issues;` escape hatch, no era window, ' +
+      'no tolerance set). The check-mode probe asserts the gap LINE, never the exit code alone: ' +
+      'a run that reaches the compare exits 1 anyway on a missing DIGEST.md.',
+  );
+  console.log('RB70-G6:OK');
+});
+
+// ---------------------------------------------------------------------------
+// X7/G9 apparatus — the real corpus, copied, run through a COPY of the script.
+//
+// SAFETY: nothing here touches the repo. `cpSync` copies docs/adr and
+// scripts/adr-digest.mjs into a mkdtemp tree; the COPY's PROJECT_ROOT is that
+// tree, so its default ADR_DIR and its default DIGEST_PATH both resolve inside
+// the temp dir. This is the ONE probe that deliberately passes NEITHER
+// --adr-dir NOR --out: a rule that only runs when --adr-dir is supplied, or
+// only below a corpus-size/id-band cutoff, or only on a fixture's corpus
+// content, is INDISTINGUISHABLE from the real thing here. X9 is not always the
+// SOLE tooth -- X7's 120-ADR padding also catches a cutoff at 50 or 100 -- but
+// it is the only one that catches a cutoff above X7's corpus size, and the only
+// one that catches `adrDirOverride === null` at all.
+//
+// BOUND, stated because X9's failure message must not over-promise. X9 runs
+// from a COPY, so its corpus path can never be byte-identical to a production
+// checkout's, and a rule gated on a path substring that is TRUE in production
+// and FALSE here survives X9 by construction. Rooting this copy outside
+// tmpdir() removes the one such substring every other corpus in this file
+// shares, but the class itself stays open and is disclosed as residual
+// R-rb-70-R5-PATH-FINGERPRINT-UNCLOSABLE.
+// --check so no byte is written anywhere.
+// ---------------------------------------------------------------------------
+function rb70WithRealCorpusCopy(mutate) {
+  // NOT under tmpdir(). Every OTHER corpus in this file is built with
+  // mkdtempSync(join(tmpdir(), ...)), so `if (!ADR_DIR.includes('/tmp/'))
+  // return issues;` disables the rule in production and leaves it live in every
+  // probe here -- MEASURED by the verifier as 9/9 green, all three ADR evals
+  // exit 0, and the real corpus silent with a live **Extends:** leg deleted.
+  // Rooting X9 outside tmpdir kills that shape, which is the one a developer
+  // reaches for almost innocently ("only run under test"). The name deliberately
+  // shares NO token with the `adr-digest-corpus-` dirs X7 builds, either: with a
+  // shared `adr-digest-` token, `if (!ADR_DIR.includes('adr-digest-'))` covered
+  // both X7 and X9 while excluding production and went 9/9 green (MEASURED).
+  // It does NOT close the general path-fingerprint class -- see the BOUND note.
+  const dir = mkdtempSync(join(homedir(), '.rb70x9-'));
+  // Unreachable in this checkout and in CI, but if HOME ever equalled the repo
+  // root the scratch tree would be built INSIDE ROOT and the symlink loop below
+  // would link it into itself. Measured harmless, but fail loudly rather than
+  // leave the next reader to work out why the probe behaves oddly.
+  assert.ok(!dir.startsWith(ROOT), `X9 scratch dir ${dir} must live outside ${ROOT}`);
+  try {
+    cpSync(REAL_ADR_DIR, join(dir, 'docs', 'adr'), { recursive: true });
+    cpSync(SCRIPT, join(dir, 'scripts', 'adr-digest.mjs'));
+    // MIRROR EVERY OTHER REPO-ROOT ENTRY. Copying only docs/ and scripts/ left
+    // this tree trivially distinguishable from a production checkout, and a
+    // red-team MEASURED three CI-clean bypasses built on exactly that gap:
+    // `if (adrDirOverride === null && existsSync(join(PROJECT_ROOT, 'justfile')))
+    // return issues;` -- and the same with `evals/run.mjs` or `ARCHITECTURE.md`
+    // -- ran 9/9 green here AND passed all three ADR evals while the rule was
+    // DEAD on every real run. Symlinks, not copies: the script only ever reads
+    // docs/adr, so the link targets are never opened; they exist so existsSync
+    // cannot tell the two trees apart.
+    for (const entry of readdirSync(ROOT)) {
+      if (entry === 'docs' || entry === 'scripts') continue;
+      try {
+        symlinkSync(join(ROOT, entry), join(dir, entry));
+      } catch {
+        // An unsupported link target must not fail the probe for an unrelated
+        // reason. The discriminators that mattered are all plain entries.
+      }
+    }
+    mutate(join(dir, 'docs', 'adr'));
+    const result = spawnSync('node', [join(dir, 'scripts', 'adr-digest.mjs'), '--check'], {
+      cwd: dir,
+      encoding: 'utf8',
+      stdio: 'pipe',
+    });
+    return {
+      code: result.status !== null ? result.status : 1,
+      stderr: `${result.stderr ?? ''}${result.error ? `\n[spawn error] ${result.error.message}` : ''}`,
+    };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** Drop every column-0 `**Extends:**` line from the real ADR file for `id`. */
+function rb70StripExtendsLine(adrDir, id) {
+  const prefix = `${id}-`;
+  for (const file of readdirSync(adrDir)) {
+    if (!file.startsWith(prefix) || !file.endsWith('.md')) continue;
+    const path = join(adrDir, file);
+    const kept = readFileSync(path, 'utf8')
+      .split('\n')
+      .filter((line) => !line.startsWith('**Extends:**'));
+    writeFileSync(path, kept.join('\n'), 'utf8');
+    return true;
+  }
+  return false;
+}
+
+test('X9 the reverse rule is live on the REAL corpus, with no flags at all', () => {
+  const clean = rb70WithRealCorpusCopy(() => {});
+  // Freeze one real edge — the first roster entry — and delete its forward leg.
+  const { extender, extended } = RB70_EXTENDS_ROSTER[0];
+  let stripped = false;
+  const mutated = rb70WithRealCorpusCopy((adrDir) => {
+    stripped = rb70StripExtendsLine(adrDir, extender);
+  });
+  const expectedLine =
+    `${RB70_ERROR_PREFIX}${extended}: **Extended-by:** ADR-${extender} but ADR-${extender} ` +
+    `has no reciprocal **Extends:** ADR-${extended} declaration (${extended}<=${extender})`;
+
+  assert.deepEqual(
+    {
+      strippedTheLine: stripped,
+      cleanExit: clean.code,
+      cleanGapLines: clean.stderr.split('\n').filter((line) => line.includes('<=')).length,
+      mutatedExitNonZero: mutated.code !== 0,
+      mutatedNamesTheGap: mutated.stderr.includes(expectedLine),
+    },
+    {
+      strippedTheLine: true,
+      cleanExit: 0,
+      cleanGapLines: 0,
+      mutatedExitNonZero: true,
+      mutatedNamesTheGap: true,
+    },
+    'X9: run against the REAL corpus with NO --adr-dir and NO --out, the reverse rule must be ' +
+      'SILENT as shipped and must FIRE the instant a real **Extends:** leg is deleted. Every ' +
+      'other probe in this file hands the generator a five-file synthetic corpus in a mkdtemp ' +
+      'directory via --adr-dir; a rule gated on `adrDirOverride !== null`, on `adrs.length > N`, ' +
+      "on an id band, on a repo-root existsSync probe, on a fixture's corpus CONTENT, or " +
+      'hard-coded to ' +
+      `the 0952/0953 fixture pair passes all of them and is DEAD here. Expected:\n  ${expectedLine}` +
+      // X9's clean arm also asserts exit 0, so a stale DIGEST.md or any dangling
+      // reference anywhere in the corpus reds it under a message about
+      // reciprocity. Print what it actually judged on, or the next reader
+      // debugs the wrong gate.
+      `\n\nclean stderr: ${clean.stderr.slice(0, 400)}` +
+      `\nmutated stderr: ${mutated.stderr.slice(0, 400)}`,
+  );
+  console.log('RB70-G9:OK');
+});
+
+// ===========================================================================
+// X8 — the FROZEN real-corpus **Extends:** roster.
+//
+// CHARTER — X8 CONSTRAINS THE CORPUS, NEVER THE GENERATOR. It spawns nothing,
+// runs nothing, and reads no generator output: every assertion below is a claim
+// about the BYTES of docs/adr/*.md. It is therefore NOT evidence that the rb-70
+// feature exists, and nobody may cite `RB70-G5:OK` as such. Measured 2026-09-07:
+// this test printed GREEN for all 12 implementation mutants and all 18 cheats in
+// the red-team set, including "the feature was never written". The teeth on the
+// GENERATOR are X7 (synthetic corpora) and X9 (the real corpus, no flags), and
+// those two are the only ones RED before the implementation lands.
+//
+// What X8 IS the sole tooth on is the second measured bypass: DELETING an
+// `**Extended-by:**` line from a real ADR reds nothing. X7's reverse rule
+// structurally cannot see it — deleting the line deletes the rule's premise.
+//
+// Read-only: no spawn, no temp dir, no import of the generator (see the header
+// note). The predicates below are a deliberate LOCAL re-implementation.
+//
+// KILLS, requirement by requirement:
+//   - whole-file `includes()`: live body-prose decoys exist. The header line of
+//     an edge can be deleted while a backticked or indented mention of the same
+//     marker survives further down the SAME file. Hence: preamble only, column
+//     0, case-exact.
+//   - `content.includes('**Extended-by:**')` (marker presence): 0208 names TWO
+//     extenders and 0227 names TWO. Dropping ONE id from either list leaves the
+//     marker in place. Hence: parse the id list and assert MEMBERSHIP.
+//     0227's value carries commas INSIDE parentheticals, so the split is
+//     top-level-only.
+//   - a roster DERIVED by walking the corpus's own **Extends:** lines: deleting
+//     the declaration deletes the pair, and the tooth passes vacuously. Hence:
+//     a hard-coded constant with a pinned length.
+//   - "go green by deleting the **Extends:** side instead": hence BOTH legs.
+//
+// BOUND — the roster is a SUBSET of the live edge set BY CONSTRUCTION, and the
+// assertions below are membership checks only. Today the subset happens to be
+// the whole of it: counted on 2026-09-07 the corpus carries 47 resolved forward
+// **Extends:** edges of which exactly 6 are reciprocated, and these six ARE
+// those six. That coincidence is NOT the contract and must not be asserted — a
+// future ADR that adds a new reciprocated **Extends:** edge must NOT red this
+// test; only a change to one of these six edges may.
+// ===========================================================================
+
+const RB70_EXTENDS_MARKER = '**Extends:**';
+const RB70_EXTENDED_BY_MARKER = '**Extended-by:**';
+
+// ---------------------------------------------------------------------------
+// FIDELITY NOTE (rb-70). The three functions below are a LOCAL MIRROR of
+// scripts/adr-digest.mjs' back-link reading path — `headerPreamble()`,
+// `stripFencedBlocks()` and `extractBacklinkField()` (cited by declaration, not
+// by line: they sat at :117-120, :390-400 and :415-433 on 2026-09-07). They stay
+// a local copy on purpose — this file must NEVER `import` the generator, which
+// calls main() at module scope — but a LOW-FIDELITY copy is worse than no copy,
+// because X8 then attests something the generator does not see. Both directions
+// were live before this mirror was completed:
+//
+//   FALSE GREEN — a column-0 Extends marker sitting inside a triple-backtick or
+//   triple-tilde fence in a real ADR's preamble satisfied a fence-BLIND X8,
+//   while the generator (which strips fences before reading) sees no
+//   declaration there and reports a reverse gap. X8 would have certified, as a
+//   frozen edge, one that reds `just ci`.
+//
+//   FALSE RED — a legitimately WRAPPED value, i.e. the marker line naming
+//   ADR-0236 with a four-space-indented continuation line naming ADR-0237,
+//   resolves to both ids for the generator (it absorbs indented continuation
+//   lines that carry no bold marker of their own) but only to the first for a
+//   single-line copy — and X8's failure message would then accuse the corpus of
+//   a silently deleted back-link that is right there on the next line.
+//
+// If the generator's reading path changes, this mirror changes with it.
+// ---------------------------------------------------------------------------
+
+/** The header preamble: everything above the first `## ` section heading. */
+function rb70Preamble(content) {
+  const boundary = content.indexOf('\n## ');
+  return boundary === -1 ? content : content.slice(0, boundary);
+}
+
+/**
+ * Drop every fenced block, backtick- and tilde-delimited. Mirrors
+ * stripFencedBlocks(): even split-indices are outside a fence, odd ones inside,
+ * and an unterminated fence swallows the rest of its input (the fail-closed
+ * direction — text whose position we cannot trust satisfies nothing).
+ */
+function rb70StripFencedBlocks(content) {
+  let out = content;
+  for (const marker of ['```', '~~~']) {
+    const parts = out.split(marker);
+    let kept = '';
+    for (let i = 0; i < parts.length; i += 2) kept += parts[i];
+    out = kept;
+  }
+  return out;
+}
+
+/**
+ * The generator's back-link VIEW, byte for byte: preamble FIRST, then strip.
+ * The order is load-bearing in the mirror exactly as it is in the original —
+ * stripping first can delete the `## ` that bounds the preamble and widen the
+ * view into the body.
+ */
+function rb70BacklinkView(content) {
+  return rb70StripFencedBlocks(rb70Preamble(content));
+}
+
+/**
+ * The joined value of `marker` in the back-link view, mirroring
+ * extractBacklinkField(): the marker must start at column 0, EVERY matching
+ * line contributes, and each is followed by its indented continuation lines —
+ * a line that is non-blank, starts with whitespace, and carries no `**` of its
+ * own. Collected pieces are joined with ', ' so a wrapped list parses as one
+ * comma-separated value. Empty string when the marker is absent.
+ */
+function rb70BacklinkValue(view, marker) {
+  const collected = [];
+  const lines = view.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].startsWith(marker)) continue;
+    collected.push(lines[i].slice(marker.length).trim());
+    for (let j = i + 1; j < lines.length; j++) {
+      const next = lines[j];
+      if (next.trim() === '' || !/^\s/.test(next) || next.indexOf('**') !== -1) break;
+      collected.push(next.trim());
+      i = j;
+    }
+  }
+  return collected.join(', ');
+}
+
+/**
+ * Split a relation value on TOP-LEVEL commas only. ADR-0227's **Extended-by:**
+ * value is `ADR-0236 (rb-46 — ..., residual ... closed), ADR-0237 (...)`: a
+ * naive split on every comma shreds the parentheticals into fragments that
+ * have no `(` left to truncate at, and those fragments then resolve stray
+ * four-digit runs out of the prose.
+ */
+function rb70SplitTopLevelCommas(value) {
+  const tokens = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < value.length; i++) {
+    const ch = value[i];
+    if (ch === '(') depth++;
+    else if (ch === ')') depth = depth > 0 ? depth - 1 : 0;
+    else if (ch === ',' && depth === 0) {
+      tokens.push(value.slice(start, i));
+      start = i + 1;
+    }
+  }
+  tokens.push(value.slice(start));
+  return tokens;
+}
+
+/**
+ * The set of ADR ids declared by `marker` in the HEADER of `content`, read off
+ * the same fence-stripped, preamble-bounded, column-0, case-exact view the
+ * generator uses — see the FIDELITY NOTE above. Token rules mirror
+ * resolveRelationIds(): truncate at the first `(`, accept an `ADR-` prefix or a
+ * bare id, take the leading four-digit run only when the next character is a
+ * non-digit or the token ends.
+ *
+ * ONE DELIBERATE DIVERGENCE: resolveRelationIds additionally drops H- ids and
+ * filters the result through `localIds`. Neither applies here — this roster
+ * names project ids whose files X8 has just resolved on disk — and adding the
+ * file filter would re-introduce exactly the vacuity the frozen roster exists
+ * to prevent (a missing file would make the edge silently unasserted instead of
+ * failing).
+ */
+function rb70DeclaredIds(content, marker) {
+  const ids = new Set();
+  const value = rb70BacklinkValue(rb70BacklinkView(content), marker);
+  for (const rawToken of rb70SplitTopLevelCommas(value)) {
+    const paren = rawToken.indexOf('(');
+    let token = (paren === -1 ? rawToken : rawToken.slice(0, paren)).trim();
+    if (token.startsWith('ADR-')) token = token.slice(4);
+    if (token.length < 4) continue;
+    let digits = 0;
+    while (digits < 4 && token[digits] >= '0' && token[digits] <= '9') digits++;
+    if (digits !== 4) continue;
+    const next = token[4];
+    if (next !== undefined && next >= '0' && next <= '9') continue;
+    ids.add(token.slice(0, 4));
+  }
+  return ids;
+}
+
+/** Resolve `NNNN` to its file in docs/adr/ by name prefix; null when absent. */
+function rb70RealAdrPath(id) {
+  const prefix = `${id}-`;
+  for (const file of readdirSync(REAL_ADR_DIR)) {
+    if (file.startsWith(prefix) && file.endsWith('.md')) return join(REAL_ADR_DIR, file);
+  }
+  return null;
+}
+
+/**
+ * FROZEN. Six real edges, hand-transcribed on 2026-09-07, read as
+ * "`extender` declares **Extends:** ADR-`extended`, and `extended` declares
+ * **Extended-by:** ADR-`extender`". Not derived from the corpus, ON PURPOSE —
+ * see the KILLS note above.
+ */
+const RB70_EXTENDS_ROSTER = [
+  { extender: '0222', extended: '0208' },
+  { extender: '0223', extended: '0208' },
+  { extender: '0227', extended: '0225' },
+  { extender: '0236', extended: '0227' },
+  { extender: '0237', extended: '0227' },
+  { extender: '0238', extended: '0226' },
+];
+
+// Appended to X8's failure message. A source comment is not good enough: the
+// person reading the CI log only ever sees the message.
+const RB70_ROSTER_REPIN_NOTE =
+  'IF THIS FAILED BECAUSE THE CORPUS LEGITIMATELY MOVED — an ADR was renumbered, or an ' +
+  '**Extends:** edge was deliberately withdrawn with BOTH headers edited in the same commit — ' +
+  'then there is no bug and "a back-link was silently deleted" is the wrong diagnosis. The fix ' +
+  'is to RE-PIN: edit RB70_EXTENDS_ROSTER in this file so it again names SIX DISTINCT real ' +
+  'edges over FOUR distinct extended ADRs (swap in a surviving pair for the withdrawn one, ' +
+  'keeping two ADRs that are each named by two extenders) and say in the commit message which ' +
+  'change moved it. Do NOT derive the roster from the corpus and do NOT delete the shape pin: a ' +
+  'roster read out of the corpus goes green the instant a declaration is deleted, which is ' +
+  'precisely the deletion this test exists to catch. The roster is a SUBSET of the live edge ' +
+  'set BY CONSTRUCTION — today it happens to name all six reciprocated edges the corpus has, ' +
+  'but that equality is a coincidence and is deliberately not asserted: a NEW **Extends:** edge ' +
+  'added by a later ADR needs no edit here and must never red this test.';
+
+test('X8 six real Extends/Extended-by edges resolve on both legs, frozen by roster', () => {
+  // The shape guard, in three legs. A bare length pin is satisfied by SIX
+  // COPIES OF ONE PAIR — the cheapest way to "keep the roster at six" while
+  // deleting five of the edges it is supposed to freeze. The distinct-pair leg
+  // kills that. The distinct-TARGET leg pins something stronger and specific:
+  // exactly four distinct extended ids means BOTH multi-extender lists are
+  // exercised (0208 is named by 0222 and 0223; 0227 by 0236 and 0237), which is
+  // the whole reason the roster exists — dropping one id from a two-id
+  // **Extended-by:** list leaves the marker, and only a membership assertion on
+  // BOTH ids of BOTH lists can see it. Six distinct pairs over four distinct
+  // targets forces the target multiplicities to be (2,2,1,1) or (3,1,1,1) —
+  // either way at least one target must carry a MULTI-extender back-link list,
+  // which is the property no bare length pin can express. Today's roster is the
+  // (2,2,1,1) case: 0208 and 0227 doubled, 0225 and 0226 single.
+  assert.deepEqual(
+    {
+      length: RB70_EXTENDS_ROSTER.length,
+      distinctPairs: new Set(RB70_EXTENDS_ROSTER.map((e) => `${e.extender}->${e.extended}`)).size,
+      distinctTargets: new Set(RB70_EXTENDS_ROSTER.map((e) => e.extended)).size,
+      distinctExtenders: new Set(RB70_EXTENDS_ROSTER.map((e) => e.extender)).size,
+    },
+    { length: 6, distinctPairs: 6, distinctTargets: 4, distinctExtenders: 6 },
+    'X8: the roster is FROZEN at six DISTINCT edges over FOUR distinct extended ADRs (two of ' +
+      'them named by two extenders each — the multi-id lists this tooth exists for) and six ' +
+      'distinct extenders. Shrinking it, or duplicating one pair to keep the count at six, is ' +
+      'how this tooth stops biting; if an edge legitimately went away, swap in a replacement ' +
+      `that preserves this shape. ${RB70_ROSTER_REPIN_NOTE}`,
+  );
+
+  const observed = RB70_EXTENDS_ROSTER.map(({ extender, extended }) => {
+    const extenderPath = rb70RealAdrPath(extender);
+    const extendedPath = rb70RealAdrPath(extended);
+    const extenderText = extenderPath === null ? '' : readFileSync(extenderPath, 'utf8');
+    const extendedText = extendedPath === null ? '' : readFileSync(extendedPath, 'utf8');
+    return {
+      edge: `${extender}->${extended}`,
+      extenderFileFound: extenderPath !== null,
+      extendedFileFound: extendedPath !== null,
+      // Forward leg: the extender's own header names the ADR it extends.
+      forwardLegDeclared: rb70DeclaredIds(extenderText, RB70_EXTENDS_MARKER).has(extended),
+      // Reverse leg: the extended ADR's header names it back. THIS is the leg
+      // the bypass deletes.
+      reverseLegDeclared: rb70DeclaredIds(extendedText, RB70_EXTENDED_BY_MARKER).has(extender),
+    };
+  });
+  const expected = RB70_EXTENDS_ROSTER.map(({ extender, extended }) => ({
+    edge: `${extender}->${extended}`,
+    extenderFileFound: true,
+    extendedFileFound: true,
+    forwardLegDeclared: true,
+    reverseLegDeclared: true,
+  }));
+
+  assert.deepEqual(
+    observed,
+    expected,
+    'X8: each frozen edge must resolve on BOTH legs, from a COLUMN-0, case-exact marker in the ' +
+      "file's FENCE-STRIPPED header preamble (above the first `## ` heading) — body prose and a " +
+      'fenced illustration do not count, indented continuation lines do — and the specific id ' +
+      'must be a MEMBER of the parsed list, not merely somewhere on the line. This is a claim ' +
+      'about docs/adr/*.md, NOT about scripts/adr-digest.mjs: it goes green whether or not the ' +
+      `rb-70 feature exists. ${RB70_ROSTER_REPIN_NOTE}`,
+  );
+  // `G5`, not `G10`: the marker names X8's ACCEPTANCE-LEDGER GATE ID, not its
+  // position in this file. X7 prints G1-G4 and G6-G8, X9 prints G9, and X8's
+  // gate is G5 — so the markers deliberately come out of numeric order, with G5
+  // last. Renumbering them to "tidy" the output breaks every ledger CHECK, each
+  // of which greps for its literal.
+  console.log('RB70-G5:OK');
 });
