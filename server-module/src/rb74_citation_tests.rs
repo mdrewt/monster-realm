@@ -254,7 +254,7 @@ const RB74_I_CHAR_BIND: &str = concat!(
 );
 
 /// CONTAINED statement: the scheduler-only guard, in its 2.x spelling. MEASURED:
-/// this line occurs 14x across `server-module/src/*.rs`, so a file-wide
+/// this line occurs 14 times across the module's own `.rs` sources, so a file-wide
 /// uniqueness pin would make an ordinary second scheduler-only reducer in
 /// `movement.rs` red a markdown-citation test. Scoped to `movement_tick`'s body.
 const RB74_I_SCHED_GUARD: &str = concat!("if ctx.sender", "() != ctx.database_identity", "() {");
