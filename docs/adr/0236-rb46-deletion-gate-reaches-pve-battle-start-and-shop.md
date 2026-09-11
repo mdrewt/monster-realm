@@ -201,4 +201,4 @@ byte-pinned, while the new sibling is contained by a crate-wide single-consumer 
 rb-46 bare-name count "kills a `require_not_deleting_for(ctx, opponent_identity)` sibling" is likewise
 qualified: the new wrapper's name is deliberately prefix-free, so that count still reads two and remains
 the pin it was; the new seam has its own census. `movement_tick` gains no gate — it learns only the reason
-constant, to keep a deletion-gated walker's refusal out of the `begin_encounter_error` limiter (ADR-0246 D5).
+constant, to keep a deletion-gated walker's refusal out of the `begin_encounter_error` limiter (ADR-0246 D4).

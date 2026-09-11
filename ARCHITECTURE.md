@@ -480,7 +480,9 @@ point both openers share — through `guards::require_subject_not_deleting(ctx, 
 first identity-PARAMETERISED guards wrapper (same fused delegation, NON-logging — the caller owns
 observability — keyed on the walker's server-derived identity, contained by a crate-wide bare-name census
 rather than by signature); the walker's step still lands, and `movement_tick` treats the refusal as
-routine (outside the encounter-error limiter, unlogged like a fainted party).
+routine (outside the encounter-error limiter, unlogged like a fainted party). The challenger-side accept
+path (`accept_challenge → start_pvp_battle` naming a mid-grace CHALLENGER, R-rb-76-CHALLENGERGRACE) and the
+other ERASE-policy writers (R-rb-46-ERASEWRITERS) are the remaining disclosed openers.
 
 **m22-s4** (ADR-0226) landed the §5 export: `request_data_export` walks the
 manifest's 17 `exportable: true` tables in manifest order (compile-locked

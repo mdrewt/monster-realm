@@ -92,10 +92,11 @@ pub(crate) fn require_subject_not_deleting(ctx: &ReducerContext, subject: Identi
   import binding of `begin_encounter` to `crate::battle`, because the subject is only as trustworthy as the
   caller that derives it, and a same-named twin in a third file would otherwise satisfy every pin. The
   load-bearing reason the grass gate is NOT the ADR-0227 D4 oracle is not containment alone but
-  NON-OBSERVABILITY: on the scheduler path the verdict is observable to nobody — the scheduler discards
-  it, `movement_tick` skips silently, nothing is logged, and the subject is the walker themselves; on the
-  `start_wild_battle` path the subject IS the caller. No player ever learns another player's lifecycle
-  state from this seam. Recorded honestly: the blanket
+  NON-DISCLOSURE: on the scheduler path no verdict is disclosed to any client — the scheduler discards
+  it, `movement_tick` skips silently, nothing is logged, no row is written, and the subject is the walker
+  themselves; the only effect, an absence of encounters, is indistinguishable from the routine
+  fainted-party / no-party / no-encounter-row / unlucky-roll cases. On the `start_wild_battle` path the
+  subject IS the caller. No player ever learns another player's lifecycle state from this seam. Recorded honestly: the blanket
   `is_pending_deletion` itself still has NO crate-wide census — it is contained by four-file bypass bans
   and has two sanctioned non-guards consumers (`complete_guest_claim`, `request_data_export`) — a
   pre-existing hole the same census closes in passing (consequences below).
