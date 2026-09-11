@@ -3890,8 +3890,9 @@ fn enqueue_move_growth_tail_does_not_depend_on_the_lead_level() {
 //
 // WHY THIS IS NOT COSMETIC. The refusal is CLIENT-REACHABLE AT TICK RATE: a
 // player who requests deletion and then walks through grass produces one refusal
-// per grass step, roughly five per second per character, for the whole seven-day
-// grace window. Routed into the begin-encounter limiter it would re-anchor the
+// per TRIGGERED encounter — the zone's encounter rate times five grass steps per
+// second, roughly one per second per character — for the whole seven-day grace
+// window. Routed into the begin-encounter limiter it would re-anchor the
 // window and reset the suppressed counter on every step, so the genuine faults
 // that limiter exists to surface — species-not-found, stat corruption, a
 // malformed encounter table — would be permanently masked behind a non-event.
@@ -4015,8 +4016,8 @@ fn rb76_grass_path_skips_the_deletion_refusal_before_the_limiter() {
          The source must read: `if e == crate::guards::REJECT_DELETION_GATED` then a block \
          whose only statement is `continue;`, then `if e != NO_CONSCIOUS_MONSTER_REASON`. \
          RED AT HEAD: the skip does not exist, so a deletion-gated walker's refusal — which \
-         a client produces on EVERY grass step, roughly five times a second for the whole \
-         seven-day grace window — burns the begin-encounter limiter's window and resets its \
+         a client produces on every TRIGGERED encounter, roughly once a second for the \
+         whole seven-day grace window — burns the begin-encounter limiter's window and resets its \
          suppressed counter, permanently masking the genuine content faults that limiter \
          exists to surface. \
          THIS ONE NEEDLE KILLS FIVE SHAPES: dropped (no match at all); INVERTED, which \
@@ -4117,5 +4118,47 @@ fn rb76_grass_path_skips_the_deletion_refusal_before_the_limiter() {
          encounter is ever opened — and it would end wild encounters everywhere while this \
          test reported success. The uppercase limiter static does not match this lowercase \
          needle, so the count is unambiguous."
+    );
+
+    // --- Layer 7 (desync-guard, ADR-0246 D3): the draw precedes the call -----
+    // The per-tick `ctx.random()` stream is the R-E fairness invariant: one draw
+    // per eligible character, taken BEFORE `begin_encounter` decides anything, so
+    // no walker's account state can shift a later walker's roll. rb-76 leans on
+    // that ordering — the deletion gate lives INSIDE `begin_encounter`, below the
+    // draw — and the natural "efficiency" refactor (hoist the gate into the grass
+    // block above the draw to save a DB read) would silently change the number of
+    // draws per tick for every later character in the zone while every layer
+    // above stays green. Pinning the draw as ONE contiguous statement pair with
+    // the resolve call, and exactly one draw in the region, makes that hoist RED.
+    let draw = ["ctx.ran", "dom()"].concat();
+    let n_draw = region.matches(draw.as_str()).count();
+    assert_eq!(
+        n_draw, 1,
+        "TEETH (rb-76 / ADR-0246 D3, R-E draw discipline): `movement_tick`'s grass region \
+         must draw `ctx.random()` EXACTLY ONCE; found {n_draw}. GREEN AT HEAD. Zero means \
+         the encounter seed was moved out of the region (a shared draw shifts every \
+         character's roll onto the tick's first walker); two means a second draw was added \
+         — for instance a gate that rolls before deciding — which shifts every LATER \
+         character's seed in the same tick."
+    );
+    let draw_then_resolve = [
+        "letseed:u32=ctx.ran",
+        "dom();ifletSome(w)=resolve",
+        "_encounter(&table,seed,player_level){",
+    ]
+    .concat();
+    let n_pair = region.matches(draw_then_resolve.as_str()).count();
+    assert_eq!(
+        n_pair, 1,
+        "TEETH (rb-76 / ADR-0246 D3, R-E draw discipline): the grass region must contain, \
+         as ONE contiguous whitespace-squashed sequence, \
+         `letseed:u32=ctx.random();ifletSome(w)=resolve_encounter(&table,seed,player_level){{` \
+         — i.e. the draw is the statement IMMEDIATELY before the resolve/begin call, with \
+         nothing between them; found {n_pair}. GREEN AT HEAD. THE MUTANT THIS KILLS: a \
+         deletion (or any other) check hoisted between the draw and the call, or ABOVE the \
+         draw with a `continue` — the latter changes how many draws the tick makes before \
+         the next character and so shifts every later walker's encounter seed, a \
+         cross-character coupling the R-E discipline exists to forbid. The gate belongs \
+         inside `begin_encounter`, below the draw, where it is."
     );
 }
