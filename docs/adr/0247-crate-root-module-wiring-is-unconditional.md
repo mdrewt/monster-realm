@@ -253,5 +253,10 @@ attribute). Neither note contains a double quote: one census strips strings BEFO
 
 ## Confirmation
 
-Filled at slice close from the ledger: the two `rb77_` tests green on the real tree, the fixture matrix
-count, the live mutant register result (KILLED / INVALID / controls GREEN), and the full `just ci`.
+Measured at slice close on the committed tree: `cargo nextest run -p monster-realm-module -E 'test(/rb77_/)'`
+→ `2 tests run: 2 passed`; the seventeen-fixture matrix green; the live mutant register (`memory/projects/gates/
+rb-77.mutants.py`, evidence `memory/projects/gates/rb-77.red-before.md` in the harness repo) → **13/13 KILLED,
+0 INVALID**, the three control rows GREEN, tree clean; the note-clause red-before reproduced by the verifier
+(bare `mod guards;` → `1 passed, 1 failed` on the D5 assertion, matrix still green); the full server-module suite
+`900 tests run: 900 passed, 0 skipped`; fmt, clippy `-D warnings`, `just knowledge-check` and `just
+adr-digest-check` clean; the full `just ci` recorded as ledger gate X4.
