@@ -4141,8 +4141,11 @@ fn rb76_grass_path_skips_the_deletion_refusal_before_the_limiter() {
          — for instance a gate that rolls before deciding — which shifts every LATER \
          character's seed in the same tick."
     );
+    // The left anchor `};` is the end of the `let table = match ..` statement:
+    // with it, a check hoisted ABOVE the draw (between the table match and the
+    // draw) breaks the sequence just as surely as one wedged below it.
     let draw_then_resolve = [
-        "letseed:u32=ctx.ran",
+        "};letseed:u32=ctx.ran",
         "dom();ifletSome(w)=resolve",
         "_encounter(&table,seed,player_level){",
     ]
@@ -4152,11 +4155,12 @@ fn rb76_grass_path_skips_the_deletion_refusal_before_the_limiter() {
         n_pair, 1,
         "TEETH (rb-76 / ADR-0246 D3, R-E draw discipline): the grass region must contain, \
          as ONE contiguous whitespace-squashed sequence, \
-         `letseed:u32=ctx.random();ifletSome(w)=resolve_encounter(&table,seed,player_level){{` \
-         — i.e. the draw is the statement IMMEDIATELY before the resolve/begin call, with \
-         nothing between them; found {n_pair}. GREEN AT HEAD. THE MUTANT THIS KILLS: a \
-         deletion (or any other) check hoisted between the draw and the call, or ABOVE the \
-         draw with a `continue` — the latter changes how many draws the tick makes before \
+         `}};letseed:u32=ctx.random();ifletSome(w)=resolve_encounter(&table,seed,player_level){{` \
+         — i.e. the draw is the statement IMMEDIATELY after the encounter-table match and \
+         IMMEDIATELY before the resolve/begin call, with nothing on either side; found \
+         {n_pair}. GREEN AT HEAD. THE MUTANT THIS KILLS: a deletion (or any other) check \
+         hoisted between the draw and the call, or ABOVE the draw (between the table match \
+         and the draw) with a `continue` — the latter changes how many draws the tick makes before \
          the next character and so shifts every later walker's encounter seed, a \
          cross-character coupling the R-E discipline exists to forbid. The gate belongs \
          inside `begin_encounter`, below the draw, where it is."
