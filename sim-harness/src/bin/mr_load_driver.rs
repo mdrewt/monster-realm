@@ -6127,7 +6127,7 @@ mod rb71_doc_citation_tests {
     /// used throughout this corpus (and by every fixture below), and
     /// excluding it would make the oracle uncloseable even by a correct
     /// fix.
-    fn rb71_hidden_ranges(doc: &str) -> Vec<(usize, usize)> {
+    pub(super) fn rb71_hidden_ranges(doc: &str) -> Vec<(usize, usize)> {
         let mut ranges = Vec::new();
 
         let mut search_start = 0usize;
@@ -6169,7 +6169,7 @@ mod rb71_doc_citation_tests {
         ranges
     }
 
-    fn rb71_in_hidden_range(pos: usize, ranges: &[(usize, usize)]) -> bool {
+    pub(super) fn rb71_in_hidden_range(pos: usize, ranges: &[(usize, usize)]) -> bool {
         ranges.iter().any(|&(s, e)| pos >= s && pos < e)
     }
 
@@ -7015,6 +7015,1083 @@ mod rb71_doc_citation_tests {
             "rb71: fixture roster shrank to {fixture_count}, below the floor of \
              {RB71_FIXTURE_FLOOR} -- a fixture was quietly deleted rather than a new \
              bypass shape being added"
+        );
+    }
+}
+
+// rb-75 -- five measured `ADR next-free` non-monotone/rewrite anomalies in
+// ARCHITECTURE.md (R-18r-b-LOGORDER) must each carry a correct, correctly
+// placed `[rb-75: ...]` annotation explaining WHY the numeral sequence at
+// that site is not what a naive reader would expect. This module never
+// asserts a rule over the whole log (18r-b's cut, R-A/R-3/R-4 below) -- only
+// that these five NAMED sites are annotated, and that the annotation's own
+// numeral claims stay truthful as the live document keeps growing.
+#[cfg(test)]
+mod rb75_archlog_tests {
+    use super::rb71_doc_citation_tests::{rb71_hidden_ranges, rb71_in_hidden_range};
+
+    // -----------------------------------------------------------------
+    // Doc model: a byte-indexed line table shared by every position-based
+    // check below, so "same line" / "last byte of line" (RULING R-5) has
+    // exactly one derivation.
+    // -----------------------------------------------------------------
+
+    /// `doc` split into physical lines (each retaining its own trailing
+    /// `\n`, if any) plus each line's starting byte offset, so any absolute
+    /// byte position can be mapped back to "which line is this on" and
+    /// "where does this line's visible content end" without re-scanning
+    /// `doc` from the start every time.
+    struct Rb75Lines<'a> {
+        doc: &'a str,
+        starts: Vec<usize>,
+        raw: Vec<&'a str>,
+    }
+
+    impl<'a> Rb75Lines<'a> {
+        fn new(doc: &'a str) -> Self {
+            let raw: Vec<&str> = doc.split_inclusive('\n').collect();
+            let mut starts = Vec::with_capacity(raw.len());
+            let mut pos = 0usize;
+            for line in &raw {
+                starts.push(pos);
+                pos += line.len();
+            }
+            Rb75Lines { doc, starts, raw }
+        }
+
+        /// The 0-based line index whose byte range contains `pos`.
+        fn line_of(&self, pos: usize) -> usize {
+            match self.starts.binary_search(&pos) {
+                Ok(i) => i,
+                Err(0) => 0,
+                Err(i) => i - 1,
+            }
+        }
+
+        /// The byte offset one past the last VISIBLE byte of line
+        /// `line_idx` -- i.e. excluding a trailing `\n` and, per RULING
+        /// R-5's explicit carve-out, a trailing `\r` immediately before it.
+        fn content_end(&self, line_idx: usize) -> usize {
+            let start = self.starts[line_idx];
+            let raw = self.raw[line_idx];
+            let mut end = start + raw.len();
+            if raw.ends_with('\n') {
+                end -= 1;
+                if self.doc[start..end].ends_with('\r') {
+                    end -= 1;
+                }
+            }
+            end
+        }
+
+        /// 1-based line number, diagnostics only.
+        fn line_number(&self, line_idx: usize) -> usize {
+            line_idx + 1
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Parser (RULING R-2 / R-1 / R-5): entries, headers, brackets, claims.
+    // -----------------------------------------------------------------
+
+    /// One `**<label>** ( ... )` entry opened at column 0. `entry_idx` is
+    /// this entry's position among ENTRIES ONLY (headers skipped) -- the
+    /// space `PrecededBy`/`RewrittenBy` adjacency checks live in, since an
+    /// intervening header must not silently break an otherwise-adjacent
+    /// pair. `seq_idx` is this entry's position in the COMBINED
+    /// entries+headers sequence -- the space `SectionCrossing` lives in,
+    /// since "does a header sit between these two entries" is meaningless
+    /// without headers sharing the same ordering axis.
+    struct Rb75Entry {
+        label: String,
+        entry_idx: usize,
+        seq_idx: usize,
+        label_line: usize,
+        label_line_text: String,
+        text_start: usize,
+        text_end: usize,
+        text: String,
+        /// The entry's trailing `ADR next-free` numeral: the LAST match in
+        /// `text` of the literal `ADR next-free`, zero or more `*`s, `=` or
+        /// `:`, whitespace, then exactly 4 digits not themselves followed by
+        /// a 5th digit (rb-75 plan note: three real entries carry the token
+        /// TWICE -- a prose quote plus the real trailing note -- so "last"
+        /// is load-bearing, not "first").
+        numeral: Option<u32>,
+        /// Absolute byte offset one past the last digit of that match, used
+        /// by the bracket-placement check (RULING R-5: the bracket must
+        /// start AFTER this point).
+        numeral_match_end: Option<usize>,
+    }
+
+    /// One column-0 `#`-led line, recorded purely so `SectionCrossing` can
+    /// ask "does this header sit between these two entries" on a shared
+    /// ordering axis (see `Rb75Entry::seq_idx`).
+    struct Rb75Header {
+        text: String,
+        seq_idx: usize,
+        line: usize,
+    }
+
+    /// One ` [rb-75: ... ]` bracket found outside every hidden range.
+    /// Brackets do not nest -- `close_pos` is the position of the FIRST
+    /// `]` after `open_pos`, per the ruling text verbatim.
+    struct Rb75Bracket {
+        open_pos: usize,
+        close_pos: usize,
+    }
+
+    /// One `**<label>** (= NNNN` numeral CLAIM found inside a bracket
+    /// (RULING R-1). `digit_start` is recorded so the unbound-numeral scan
+    /// below can exclude exactly this digit run and no other.
+    struct Rb75Claim {
+        label: String,
+        value: u32,
+        digit_start: usize,
+    }
+
+    /// True iff `line` (with any trailing `\n`/`\r` already stripped)
+    /// opens an entry: column-0 `**`, then 1+ of `[A-Za-z0-9.-]`, then a
+    /// closing `**`, then a single space, then `(`. Returns the label text.
+    fn rb75_entry_label(line: &str) -> Option<String> {
+        if !line.starts_with("**") {
+            return None;
+        }
+        let bytes = line.as_bytes();
+        let label_start = 2usize;
+        let mut pos = label_start;
+        while pos < bytes.len()
+            && matches!(bytes[pos], b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'-')
+        {
+            pos += 1;
+        }
+        if pos == label_start {
+            return None;
+        }
+        let label_end = pos;
+        if line[label_end..].starts_with("** (") {
+            Some(line[label_start..label_end].to_string())
+        } else {
+            None
+        }
+    }
+
+    /// The LAST `ADR next-free` numeral match in `text` (see
+    /// `Rb75Entry::numeral`'s doc comment for the exact grammar). Returns
+    /// `(byte offset one past the last digit, parsed value)`, both
+    /// RELATIVE to the start of `text`.
+    fn rb75_trailing_numeral(text: &str) -> Option<(usize, u32)> {
+        const TOKEN: &str = "ADR next-free";
+        let bytes = text.as_bytes();
+        let mut last = None;
+        let mut search_start = 0usize;
+        while let Some(rel) = text[search_start..].find(TOKEN) {
+            let tok_start = search_start + rel;
+            let mut pos = tok_start + TOKEN.len();
+            while pos < bytes.len() && bytes[pos] == b'*' {
+                pos += 1;
+            }
+            // The live doc spells this two ways: `ADR next-free = 0169`
+            // (a SPACE before the `=`, e.g. 11r-c/11r-f/rb-15/M15a/M14.5b/
+            // uxd2/uxd3-a/uxd3-b/11r-h/M15b/ux2/ux2b) and
+            // `**ADR next-free: 0162.**` (no space before the `:`, since
+            // the bold wraps the whole clause rather than closing right
+            // after `next-free`) -- skip that optional run of spaces/tabs
+            // too, so both spellings reach the `=`/`:` check below.
+            while pos < bytes.len() && (bytes[pos] == b' ' || bytes[pos] == b'\t') {
+                pos += 1;
+            }
+            if pos < bytes.len() && (bytes[pos] == b'=' || bytes[pos] == b':') {
+                pos += 1;
+                let ws_start = pos;
+                while pos < bytes.len() && (bytes[pos] == b' ' || bytes[pos] == b'\t') {
+                    pos += 1;
+                }
+                if pos > ws_start {
+                    let digit_start = pos;
+                    let mut digit_end = digit_start;
+                    while digit_end < bytes.len()
+                        && bytes[digit_end].is_ascii_digit()
+                        && digit_end - digit_start < 4
+                    {
+                        digit_end += 1;
+                    }
+                    if digit_end - digit_start == 4 {
+                        let next_is_digit = bytes.get(digit_end).is_some_and(u8::is_ascii_digit);
+                        if !next_is_digit {
+                            if let Ok(v) = text[digit_start..digit_end].parse::<u32>() {
+                                last = Some((digit_end, v));
+                            }
+                        }
+                    }
+                }
+            }
+            search_start = tok_start + TOKEN.len();
+        }
+        last
+    }
+
+    /// Every entry and every header in `doc`, outside every hidden range
+    /// (`rb71_hidden_ranges` -- rb-71's HTML-comment / fenced-code
+    /// exclusion, reused verbatim rather than re-derived). An entry's text
+    /// runs from its label line's start to the start of the next
+    /// entry-opening OR header line (or EOF).
+    fn rb75_parse_doc(
+        lines: &Rb75Lines,
+        hidden: &[(usize, usize)],
+    ) -> (Vec<Rb75Entry>, Vec<Rb75Header>) {
+        enum Raw {
+            EntryOpen { label: String, line_idx: usize },
+            Header { text: String, line_idx: usize },
+        }
+
+        let mut raws: Vec<Raw> = Vec::new();
+        for (i, line) in lines.raw.iter().enumerate() {
+            let start = lines.starts[i];
+            if rb71_in_hidden_range(start, hidden) {
+                continue;
+            }
+            let trimmed = line.trim_end_matches(['\n', '\r']);
+            if let Some(label) = rb75_entry_label(trimmed) {
+                raws.push(Raw::EntryOpen { label, line_idx: i });
+            } else if trimmed.starts_with('#') {
+                raws.push(Raw::Header {
+                    text: trimmed.to_string(),
+                    line_idx: i,
+                });
+            }
+        }
+
+        let mut entries = Vec::new();
+        let mut headers = Vec::new();
+        let mut entry_idx = 0usize;
+
+        for (seq_idx, raw) in raws.iter().enumerate() {
+            match raw {
+                Raw::EntryOpen { label, line_idx } => {
+                    let text_start = lines.starts[*line_idx];
+                    let text_end = raws
+                        .get(seq_idx + 1)
+                        .map(|next| match next {
+                            Raw::EntryOpen { line_idx, .. } => lines.starts[*line_idx],
+                            Raw::Header { line_idx, .. } => lines.starts[*line_idx],
+                        })
+                        .unwrap_or(lines.doc.len());
+                    let text = lines.doc[text_start..text_end].to_string();
+                    let label_line_text = lines.raw[*line_idx]
+                        .trim_end_matches(['\n', '\r'])
+                        .to_string();
+                    let (numeral, numeral_match_end) = match rb75_trailing_numeral(&text) {
+                        Some((end_rel, v)) => (Some(v), Some(text_start + end_rel)),
+                        None => (None, None),
+                    };
+                    entries.push(Rb75Entry {
+                        label: label.clone(),
+                        entry_idx,
+                        seq_idx,
+                        label_line: lines.line_number(*line_idx),
+                        label_line_text,
+                        text_start,
+                        text_end,
+                        text,
+                        numeral,
+                        numeral_match_end,
+                    });
+                    entry_idx += 1;
+                }
+                Raw::Header { text, line_idx } => {
+                    headers.push(Rb75Header {
+                        text: text.clone(),
+                        seq_idx,
+                        line: lines.line_number(*line_idx),
+                    });
+                }
+            }
+        }
+
+        (entries, headers)
+    }
+
+    /// Every ` [rb-75: ... ]` bracket in `doc` outside every hidden range --
+    /// the whole-file roster this module's `[rb75/bracket-roster]` check
+    /// counts, independent of which entry (if any) each one sits inside.
+    fn rb75_all_brackets(doc: &str, hidden: &[(usize, usize)]) -> Vec<Rb75Bracket> {
+        const TOKEN: &str = " [rb-75:";
+        let mut out = Vec::new();
+        let mut search_start = 0usize;
+        while let Some(rel) = doc[search_start..].find(TOKEN) {
+            let tok_pos = search_start + rel;
+            if !rb71_in_hidden_range(tok_pos, hidden) {
+                let open_pos = tok_pos + 1;
+                if let Some(close_rel) = doc[open_pos..].find(']') {
+                    out.push(Rb75Bracket {
+                        open_pos,
+                        close_pos: open_pos + close_rel,
+                    });
+                }
+            }
+            search_start = tok_pos + TOKEN.len();
+        }
+        out
+    }
+
+    /// RULING R-5: the bracket must start strictly after `numeral_match_end`,
+    /// on the SAME line as it, with no `<` byte between the two, and its
+    /// closing `]` must be the last visible byte of that line.
+    fn rb75_bracket_placement_ok(
+        lines: &Rb75Lines,
+        numeral_match_end: usize,
+        bracket: &Rb75Bracket,
+    ) -> bool {
+        if bracket.open_pos <= numeral_match_end {
+            return false;
+        }
+        if lines.doc[numeral_match_end..bracket.open_pos].contains('<') {
+            return false;
+        }
+        let numeral_line = lines.line_of(numeral_match_end.saturating_sub(1));
+        let bracket_line = lines.line_of(bracket.open_pos);
+        if numeral_line != bracket_line {
+            return false;
+        }
+        bracket.close_pos + 1 == lines.content_end(bracket_line)
+    }
+
+    /// RULING R-1: every `**<label>** (= NNNN` claim inside `inner` (a
+    /// bracket's content, brackets excluded). No other spelling binds a
+    /// numeral to a label -- an en-dash range, a bare mention, or a
+    /// "nearest preceding label" guess are all explicitly refused by this
+    /// grammar, per the plan-review finding that implicit binding mis-bound
+    /// 4 of the 5 original bracket drafts.
+    fn rb75_find_claims(inner: &str) -> Vec<Rb75Claim> {
+        let bytes = inner.as_bytes();
+        let mut out = Vec::new();
+        let mut search_start = 0usize;
+        while let Some(rel) = inner[search_start..].find("**") {
+            let start = search_start + rel;
+            let label_start = start + 2;
+            let mut pos = label_start;
+            while pos < bytes.len()
+                && matches!(bytes[pos], b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'-')
+            {
+                pos += 1;
+            }
+            let label_end = pos;
+            if label_end > label_start
+                && inner[label_end..].starts_with("**")
+                && inner[label_end + 2..].starts_with(" (= ")
+            {
+                let digit_start = label_end + 2 + " (= ".len();
+                if digit_start + 4 <= bytes.len() {
+                    // Check the raw BYTES first -- never slice a fixed-width
+                    // window into `&str` before confirming every byte in it
+                    // is single-byte ASCII, since `inner` also carries
+                    // em-dashes/en-dashes/`\u{2192}` and a blind `str` slice
+                    // at a non-boundary offset panics rather than mismatching.
+                    let digit_bytes = &bytes[digit_start..digit_start + 4];
+                    let next_is_digit = bytes.get(digit_start + 4).is_some_and(u8::is_ascii_digit);
+                    if !next_is_digit && digit_bytes.iter().all(|b| b.is_ascii_digit()) {
+                        let digits = &inner[digit_start..digit_start + 4];
+                        if let Ok(value) = digits.parse::<u32>() {
+                            out.push(Rb75Claim {
+                                label: inner[label_start..label_end].to_string(),
+                                value,
+                                digit_start,
+                            });
+                        }
+                    }
+                }
+            }
+            search_start = start + 2;
+        }
+        out
+    }
+
+    /// RULING R-1's residual clause: every OTHER maximal run of exactly 4
+    /// ASCII digits inside `inner`, excluding the digit runs already bound
+    /// by a claim (`exclude_starts`), whose preceding byte is outside
+    /// `[0-9A-Za-z#-]` and whose following byte is outside `[0-9A-Za-z-]`.
+    /// The asymmetric neighbour sets are exactly what excludes `PR #274`
+    /// (preceding `#`), `ADR-0171` (preceding `-`), and a date's trailing
+    /// `-07`/`-31` segments (following `-`) without excluding a bare,
+    /// sentence-embedded 4-digit mention.
+    fn rb75_unbound_numerals(
+        inner: &str,
+        exclude_starts: &std::collections::HashSet<usize>,
+    ) -> Vec<String> {
+        let bytes = inner.as_bytes();
+        let mut out = Vec::new();
+        let mut i = 0usize;
+        while i < bytes.len() {
+            if bytes[i].is_ascii_digit() {
+                let start = i;
+                let mut j = i;
+                while j < bytes.len() && bytes[j].is_ascii_digit() {
+                    j += 1;
+                }
+                if j - start == 4 && !exclude_starts.contains(&start) {
+                    let preceding_excluded = start > 0
+                        && matches!(
+                            bytes[start - 1],
+                            b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z' | b'#' | b'-'
+                        );
+                    let following_excluded = j < bytes.len()
+                        && matches!(bytes[j], b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z' | b'-');
+                    if !preceding_excluded && !following_excluded {
+                        out.push(inner[start..j].to_string());
+                    }
+                }
+                i = j;
+            } else {
+                i += 1;
+            }
+        }
+        out
+    }
+
+    fn rb75_entries_with_label<'a>(entries: &'a [Rb75Entry], label: &str) -> Vec<&'a Rb75Entry> {
+        entries.iter().filter(|e| e.label == label).collect()
+    }
+
+    /// Resolves one of the site table's NAMED labels (self or other -- never
+    /// a file-wide scan, per the plan-review finding that a file-wide
+    /// ambiguity census would false-red on pre-existing unrelated bold
+    /// phrases like `**per axis**`). Pushes `[rb75/label-ambiguous:<label>]`
+    /// or `[rb75/named-entry-missing:<label>]` and returns `None` when the
+    /// label does not resolve to exactly one entry.
+    fn rb75_resolve_named<'a>(
+        entries: &'a [Rb75Entry],
+        label: &str,
+        found: &mut Vec<String>,
+    ) -> Option<&'a Rb75Entry> {
+        let matches = rb75_entries_with_label(entries, label);
+        match matches.len() {
+            0 => {
+                found.push(format!(
+                    "[rb75/named-entry-missing:{label}] no entry opens with the label \
+                     `**{label}**`"
+                ));
+                None
+            }
+            1 => Some(matches[0]),
+            n => {
+                let lines: Vec<usize> = matches.iter().map(|e| e.label_line).collect();
+                found.push(format!(
+                    "[rb75/label-ambiguous:{label}] {n} entries open with the label \
+                     `**{label}**`, expected exactly 1: 1-based lines {lines:?}"
+                ));
+                None
+            }
+        }
+    }
+
+    /// The "Common checks" content-based rules (RULING R-1): the site's own
+    /// numeral must appear as a claim in its bracket, every claim's numeral
+    /// must equal the LIVE trailing numeral of the entry it claims to
+    /// describe, and every other bare 4-digit run is unbound.
+    fn rb75_check_bracket_content(
+        entries: &[Rb75Entry],
+        site_label: &str,
+        inner: &str,
+        found: &mut Vec<String>,
+    ) {
+        let claims = rb75_find_claims(inner);
+
+        if !claims.iter().any(|c| c.label == site_label) {
+            found.push(format!(
+                "[rb75/self-claim-missing:{site_label}] no `**{site_label}** (= NNNN` claim \
+                 found in this entry's own bracket"
+            ));
+        }
+
+        let mut claim_starts = std::collections::HashSet::new();
+        for claim in &claims {
+            claim_starts.insert(claim.digit_start);
+            let matches = rb75_entries_with_label(entries, &claim.label);
+            match matches.len() {
+                1 => {
+                    let live = matches[0].numeral;
+                    if live != Some(claim.value) {
+                        let live_display = live
+                            .map(|n| format!("{n:04}"))
+                            .unwrap_or_else(|| "<none>".to_string());
+                        found.push(format!(
+                            "[rb75/numeral-mismatch:{site_label}/{}] claimed {:04} live {live_display}",
+                            claim.label, claim.value
+                        ));
+                    }
+                }
+                _ => {
+                    found.push(format!(
+                        "[rb75/named-entry-missing:{}] a claim inside {site_label}'s bracket \
+                         names a label that does not resolve to exactly one entry",
+                        claim.label
+                    ));
+                }
+            }
+        }
+
+        for digits in rb75_unbound_numerals(inner, &claim_starts) {
+            found.push(format!(
+                "[rb75/unbound-numeral:{site_label}] bare 4-digit run `{digits}` inside the \
+                 bracket is not bound to any `**label** (= ...` claim"
+            ));
+        }
+    }
+
+    /// One row of the rb-75 site table (final, post-adjudication shape).
+    /// `Copy` so the dispatch below can `match site.kind` BY VALUE through
+    /// the `&Rb75Site` the site-table loop iterates -- matching `&site.kind`
+    /// instead would bind every `&'static str` field as `&&'static str`
+    /// under match ergonomics, and `&&str` implements neither `Pattern`
+    /// (`.starts_with`/`.contains`/`.find`) nor anything this dispatch
+    /// needs; every field here is already `Copy` (`&'static str`), so this
+    /// derive changes nothing about ownership, only which type the compiler
+    /// infers at the match arms.
+    #[derive(Clone, Copy)]
+    enum Rb75SiteKind {
+        /// 11r-c: the header's combined-sequence position must lie strictly
+        /// between the two entries', and the site's own numeral must exceed
+        /// the crossed section's.
+        SectionCrossing {
+            other: &'static str,
+            header_prefix: &'static str,
+        },
+        /// 11r-f<-11r-h, rb-15<-rb-17: `other` must be the entries-only
+        /// predecessor, with a strictly larger numeral.
+        PrecededBy { other: &'static str },
+        /// M15a<-M15b: `other` must be the entries-only successor, `other`'s
+        /// LABEL LINE must carry `by_pr`, and the bracket must carry both
+        /// `by_pr` and `own_pr`. All three collapse to one label.
+        RewrittenBy {
+            other: &'static str,
+            by_pr: &'static str,
+            own_pr: &'static str,
+        },
+        /// ux2<-ux2b: `other` need only exist (index+2, ux4 sits between --
+        /// no adjacency requirement); the bracket must carry both PR tokens
+        /// and `claim_text` must occur in the entry's own text BEFORE the
+        /// bracket starts.
+        ClaimCorrespondence {
+            other: &'static str,
+            by_pr: &'static str,
+            own_pr: &'static str,
+            claim_text: &'static str,
+        },
+    }
+
+    struct Rb75Site {
+        label: &'static str,
+        kind: Rb75SiteKind,
+    }
+
+    const RB75_SITES: &[Rb75Site] = &[
+        Rb75Site {
+            label: "11r-c",
+            kind: Rb75SiteKind::SectionCrossing {
+                other: "M14.5b",
+                header_prefix: "## M14 ",
+            },
+        },
+        Rb75Site {
+            label: "11r-f",
+            kind: Rb75SiteKind::PrecededBy { other: "11r-h" },
+        },
+        Rb75Site {
+            label: "rb-15",
+            kind: Rb75SiteKind::PrecededBy { other: "rb-17" },
+        },
+        Rb75Site {
+            label: "M15a",
+            kind: Rb75SiteKind::RewrittenBy {
+                other: "M15b",
+                by_pr: "PR #168",
+                own_pr: "PR #165",
+            },
+        },
+        Rb75Site {
+            label: "ux2",
+            kind: Rb75SiteKind::ClaimCorrespondence {
+                other: "ux2b",
+                by_pr: "PR #273",
+                own_pr: "PR #255",
+                claim_text: "DISCHARGED by ux2b",
+            },
+        },
+    ];
+
+    /// Seam: a NON-SHORT-CIRCUITING labelled collector over `doc` alone
+    /// (synthetic fixtures drive this directly, with no filesystem access).
+    /// Every leg below runs regardless of an earlier leg's outcome, and
+    /// every violation found is APPENDED -- never returned early -- so one
+    /// RED lists every broken clause (the rb-67/rb-68/rb-71 precedent).
+    fn rb75_violations(doc: &str) -> Vec<String> {
+        let mut found: Vec<String> = Vec::new();
+
+        let hidden = rb71_hidden_ranges(doc);
+        let lines = Rb75Lines::new(doc);
+        let (entries, headers) = rb75_parse_doc(&lines, &hidden);
+        let all_brackets = rb75_all_brackets(doc, &hidden);
+
+        // Whole-file roster (RULING adjudication /simplify: `bracket-foreign`
+        // was merged into per-site `bracket-missing` plus this ceiling-and-
+        // floor count).
+        if all_brackets.len() != 5 {
+            found.push(format!("[rb75/bracket-roster] {} != 5", all_brackets.len()));
+        }
+
+        for site in RB75_SITES {
+            let Some(self_entry) = rb75_resolve_named(&entries, site.label, &mut found) else {
+                continue;
+            };
+
+            let brackets_in_range: Vec<&Rb75Bracket> = all_brackets
+                .iter()
+                .filter(|b| b.open_pos >= self_entry.text_start && b.open_pos < self_entry.text_end)
+                .collect();
+
+            let bracket: Option<&Rb75Bracket> = match brackets_in_range.len() {
+                0 => {
+                    found.push(format!(
+                        "[rb75/bracket-missing:{}] no ` [rb-75: ... ]` bracket found in this \
+                         entry's text (outside hidden ranges)",
+                        site.label
+                    ));
+                    None
+                }
+                1 => Some(brackets_in_range[0]),
+                n => {
+                    found.push(format!(
+                        "[rb75/bracket-count:{}] {n} ` [rb-75: ... ]` brackets found in this \
+                         entry's text, expected exactly 1",
+                        site.label
+                    ));
+                    None
+                }
+            };
+
+            if let Some(b) = bracket {
+                let placement_ok = match self_entry.numeral_match_end {
+                    Some(end) => rb75_bracket_placement_ok(&lines, end, b),
+                    None => false,
+                };
+                if !placement_ok {
+                    found.push(format!(
+                        "[rb75/bracket-placement:{}] the bracket must start after the entry's \
+                         trailing `ADR next-free` numeral on the SAME line, contain no `<` \
+                         between them, and end (`]`) as the last byte of that line",
+                        site.label
+                    ));
+                } else {
+                    let inner = &doc[b.open_pos + 1..b.close_pos];
+                    rb75_check_bracket_content(&entries, site.label, inner, &mut found);
+                }
+            }
+
+            match site.kind {
+                Rb75SiteKind::SectionCrossing {
+                    other,
+                    header_prefix,
+                } => {
+                    if let Some(other_entry) = rb75_resolve_named(&entries, other, &mut found) {
+                        let header = headers.iter().find(|h| h.text.starts_with(header_prefix));
+                        let ok = match header {
+                            Some(h) => {
+                                self_entry.seq_idx < h.seq_idx
+                                    && h.seq_idx < other_entry.seq_idx
+                                    && self_entry.numeral.unwrap_or(0)
+                                        > other_entry.numeral.unwrap_or(0)
+                            }
+                            None => false,
+                        };
+                        if !ok {
+                            let header_line = header.map(|h| h.line);
+                            found.push(format!(
+                                "[rb75/section-crossing:{}] expected `{header_prefix}` (1-based \
+                                 line {header_line:?}) to sit strictly between this entry and \
+                                 `**{other}**`, with this entry's numeral strictly greater",
+                                site.label
+                            ));
+                        }
+                    }
+                }
+                Rb75SiteKind::PrecededBy { other } => {
+                    if let Some(other_entry) = rb75_resolve_named(&entries, other, &mut found) {
+                        if other_entry.entry_idx + 1 != self_entry.entry_idx {
+                            found.push(format!(
+                                "[rb75/not-adjacent:{}/{other}] expected `**{other}**` to be the \
+                                 entry immediately preceding this one (entry_idx {} vs {} - 1)",
+                                site.label, other_entry.entry_idx, self_entry.entry_idx
+                            ));
+                        }
+                        if other_entry.numeral.unwrap_or(0) <= self_entry.numeral.unwrap_or(0) {
+                            found.push(format!(
+                                "[rb75/inequality:{}/{other}] expected `**{other}**`'s numeral to \
+                                 be strictly greater than this entry's",
+                                site.label
+                            ));
+                        }
+                    }
+                }
+                Rb75SiteKind::RewrittenBy {
+                    other,
+                    by_pr,
+                    own_pr,
+                } => {
+                    if let Some(b) = bracket {
+                        if let Some(other_entry) = rb75_resolve_named(&entries, other, &mut found) {
+                            let idx_ok = other_entry.entry_idx == self_entry.entry_idx + 1;
+                            let label_line_ok = other_entry.label_line_text.contains(by_pr);
+                            let inner = &doc[b.open_pos + 1..b.close_pos];
+                            let bracket_ok = inner.contains(by_pr) && inner.contains(own_pr);
+                            if !(idx_ok && label_line_ok && bracket_ok) {
+                                found.push(format!(
+                                    "[rb75/rewrite-correspondence:{}] expected `**{other}**` to be \
+                                     the immediately-following entry, its label line to carry \
+                                     `{by_pr}`, and this entry's bracket to carry both `{by_pr}` \
+                                     and `{own_pr}`",
+                                    site.label
+                                ));
+                            }
+                        }
+                    }
+                }
+                Rb75SiteKind::ClaimCorrespondence {
+                    other,
+                    by_pr,
+                    own_pr,
+                    claim_text,
+                } => {
+                    if let Some(b) = bracket {
+                        if rb75_resolve_named(&entries, other, &mut found).is_some() {
+                            let inner = &doc[b.open_pos + 1..b.close_pos];
+                            let bracket_ok = inner.contains(by_pr) && inner.contains(own_pr);
+                            let claim_ok = self_entry
+                                .text
+                                .find(claim_text)
+                                .map(|rel| self_entry.text_start + rel < b.open_pos)
+                                .unwrap_or(false);
+                            if !(bracket_ok && claim_ok) {
+                                found.push(format!(
+                                    "[rb75/claim-correspondence:{}] expected this entry's own \
+                                     text to carry `{claim_text}` before its bracket, and the \
+                                     bracket to carry both `{by_pr}` and `{own_pr}`",
+                                    site.label
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        found
+    }
+
+    /// docs/adr/0232-*.md:52 and docs/adr/0245-*.md:13,144 cite
+    /// `mr_load_driver.rs:76-89` by RANGE, so this module is appended at
+    /// EOF and touches nothing above it except the two `pub(super)`
+    /// widenings this module needs.
+    #[test]
+    fn rb75_archlog_sites_are_annotated() {
+        let doc =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ARCHITECTURE.md"))
+                .expect(
+                "rb75: ARCHITECTURE.md must exist at the repo root, one level above sim-harness/",
+            );
+
+        let violations = rb75_violations(&doc);
+        assert!(
+            violations.is_empty(),
+            "rb75: every measured `ADR next-free` anomaly site (11r-c, 11r-f, rb-15, M15a, \
+             ux2) must carry a correct, correctly placed `[rb-75: ...]` annotation.\n\
+             Violations:\n  - {}",
+            violations.join("\n  - ")
+        );
+    }
+
+    /// Anti-lockstep anchor (rb-71 precedent): these thirteen numerals are
+    /// typed ONCE by hand from the 2026-09-11 git-verified measurement in
+    /// the rb-75 plan's adjudication section. They must NEVER be derived
+    /// from the live document -- doing so would make this test incapable of
+    /// catching a historical numeral silently drifting alongside an
+    /// unrelated doc edit, which is the exact defect class rb-75 exists to
+    /// annotate, not to correct.
+    #[test]
+    fn rb75_no_historical_numeral_changed() {
+        let doc =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ARCHITECTURE.md"))
+                .expect(
+                "rb75: ARCHITECTURE.md must exist at the repo root, one level above sim-harness/",
+            );
+
+        const EXPECTED: &[(&str, u32)] = &[
+            ("11r-c", 169),
+            ("11r-f", 172),
+            ("rb-15", 217),
+            ("M15a", 107),
+            ("ux2", 155),
+            ("11r-h", 173),
+            ("rb-17", 218),
+            ("M15b", 108),
+            ("ux2b", 170),
+            ("M14.5b", 100),
+            ("uxd2", 162),
+            ("uxd3-a", 163),
+            ("uxd3-b", 164),
+        ];
+
+        let hidden = rb71_hidden_ranges(&doc);
+        let lines = Rb75Lines::new(&doc);
+        let (entries, _headers) = rb75_parse_doc(&lines, &hidden);
+
+        let mut mismatches = Vec::new();
+        for (label, expected) in EXPECTED {
+            let matches = rb75_entries_with_label(&entries, label);
+            match matches.as_slice() {
+                [entry] => {
+                    if entry.numeral != Some(*expected) {
+                        mismatches.push(format!(
+                            "{label}: expected {expected:04}, live {:?}",
+                            entry.numeral
+                        ));
+                    }
+                }
+                other => mismatches.push(format!(
+                    "{label}: expected exactly 1 entry, found {} (1-based lines {:?})",
+                    other.len(),
+                    other.iter().map(|e| e.label_line).collect::<Vec<_>>()
+                )),
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "rb75: a historical `ADR next-free` numeral changed value since the 2026-09-11 \
+             measurement recorded in the rb-75 plan -- these numerals are byte-preserved \
+             history, never corrected in place:\n  - {}",
+            mismatches.join("\n  - ")
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // T3 -- synthetic control fixtures. Never reads the live tree, so this
+    // test is GREEN both before and after the doc annotation lands (the
+    // rb-67/rb-71 precedent).
+    // -----------------------------------------------------------------
+
+    const RB75_BRACKET_11RC: &str = " [rb-75: **11r-c** (= 0169) is this entry's own value; the \
+         notes below it -- **uxd2** (= 0162), **uxd3-a** (= 0163), **uxd3-b** (= 0164) and \
+         **M14.5b** (= 0100) -- all predate it.]";
+    const RB75_BRACKET_11RF: &str = " [rb-75: **11r-f** (= 0172) is this entry's pre-reserved \
+         value, computed before **11r-h** (= 0173, PR #276) merged; 11r-f merged after it as \
+         PR #277 the same day.]";
+    const RB75_BRACKET_11RF_BARE: &str = " [rb-75: **11r-f** (= 0172) is this entry's \
+         pre-reserved value, computed before **11r-h** (= 0173, PR #276) merged; 11r-f merged \
+         after it as PR #277 the same day. Also see 0173 for context.]";
+    const RB75_BRACKET_RB15: &str = " [rb-75: **rb-15** (= 0217, PR #391) and **rb-17** (= 0218, \
+         PR #393) both merged the same day; rb-17 merged AFTER rb-15 but its entry sits above \
+         this one.]";
+    const RB75_BRACKET_M15A: &str = " [rb-75: **M15a** (= 0107) was added by PR #165; rewritten \
+         the next day by **M15b** (= 0108, PR #168) to mark it complete. The numeral was \
+         unchanged.]";
+    const RB75_BRACKET_UX2: &str = " [rb-75: **ux2** (= 0155) was added by PR #255; the clause \
+         above was written into this entry by PR #273, 11r-e = **ux2b** (= 0170). The numeral \
+         was unchanged.]";
+
+    /// The positive-control fixture doc: a minimal synthetic ARCHITECTURE.md
+    /// carrying all ten site/neighbour labels, two headers, and all five
+    /// FINAL bracket texts from the rb-75 plan (adapted to this fixture's
+    /// own labels/numerals), correctly placed and internally consistent.
+    fn rb75_fixture_clean_doc() -> String {
+        format!(
+            "## M11 -- fixture section\n\n\
+             **11r-c** (fixture note) complete. ADR next-free = 0169.{RB75_BRACKET_11RC}\n\n\
+             **uxd2** (fixture note) complete. ADR next-free = 0162.\n\n\
+             **uxd3-a** (fixture note) complete. ADR next-free = 0163.\n\n\
+             **uxd3-b** (fixture note) complete. ADR next-free = 0164.\n\n\
+             ## M14 -- fixture section\n\n\
+             **M14.5b** (fixture note) complete. ADR next-free = 0100.\n\n\
+             **M15a** (fixture note, PR #165) complete. ADR next-free = 0107.{RB75_BRACKET_M15A}\n\n\
+             **M15b** (fixture note, PR #168) complete. ADR next-free = 0108.\n\n\
+             **ux2** (fixture note) complete; the clause above was DISCHARGED by ux2b already. \
+             ADR next-free = 0155.{RB75_BRACKET_UX2}\n\n\
+             **ux4** (fixture note) complete. ADR next-free = 0156.\n\n\
+             **ux2b** (fixture note) complete. ADR next-free = 0170.\n\n\
+             **11r-h** (fixture note) complete. ADR next-free = 0173.\n\n\
+             **11r-f** (fixture note) complete. ADR next-free = 0172.{RB75_BRACKET_11RF}\n\n\
+             **rb-17** (fixture note) complete. ADR next-free = 0218.\n\n\
+             **rb-15** (fixture note) complete (amended in-body). ADR next-free = 0217 \
+             (fixture parenthetical).{RB75_BRACKET_RB15}\n"
+        )
+    }
+
+    /// Swaps the physically-adjacent 11r-h/11r-f blocks so 11r-f now
+    /// precedes 11r-h instead of following it -- kills the PrecededBy
+    /// adjacency check without touching either entry's own numeral.
+    fn rb75_fixture_swapped_11rf_11rh_doc() -> String {
+        let before = format!(
+            "**11r-h** (fixture note) complete. ADR next-free = 0173.\n\n\
+             **11r-f** (fixture note) complete. ADR next-free = 0172.{RB75_BRACKET_11RF}\n\n"
+        );
+        let after = format!(
+            "**11r-f** (fixture note) complete. ADR next-free = 0172.{RB75_BRACKET_11RF}\n\n\
+             **11r-h** (fixture note) complete. ADR next-free = 0173.\n\n"
+        );
+        rb75_fixture_clean_doc().replacen(&before, &after, 1)
+    }
+
+    #[test]
+    fn rb75_archlog_oracle_control() {
+        const RB75_FIXTURE_FLOOR: usize = 8;
+        let mut fixture_count = 0usize;
+
+        // 1. CLEAN -- positive control.
+        {
+            let doc = rb75_fixture_clean_doc();
+            let found = rb75_violations(&doc);
+            assert!(
+                found.is_empty(),
+                "rb75 [control/clean]: this fixture is a POSITIVE control and must be \
+                 accepted. Violations:\n  - {}",
+                found.join("\n  - ")
+            );
+            fixture_count += 1;
+        }
+
+        // 2. BRACKET REMOVED -- 11r-f loses its whole bracket.
+        {
+            let doc = rb75_fixture_clean_doc().replace(RB75_BRACKET_11RF, "");
+            let found = rb75_violations(&doc);
+            assert!(
+                found
+                    .iter()
+                    .any(|v| v.contains("[rb75/bracket-missing:11r-f]")),
+                "rb75 [control/bracket-missing]: expected `[rb75/bracket-missing:11r-f]`, \
+                 found:\n  - {}",
+                found.join("\n  - ")
+            );
+            assert!(
+                found.iter().any(|v| v.contains("[rb75/bracket-roster]")),
+                "rb75 [control/bracket-missing]: expected `[rb75/bracket-roster]`, found:\n  - {}",
+                found.join("\n  - ")
+            );
+            fixture_count += 1;
+        }
+
+        // 3. NUMERAL-MISMATCH -- 11r-f's bracket claims 11r-h is 0174, but
+        //    11r-h's own live numeral is still 0173.
+        {
+            let doc = rb75_fixture_clean_doc().replace("**11r-h** (= 0173", "**11r-h** (= 0174");
+            let found = rb75_violations(&doc);
+            assert!(
+                found
+                    .iter()
+                    .any(|v| v.contains("[rb75/numeral-mismatch:11r-f/11r-h]")),
+                "rb75 [control/numeral-mismatch]: expected \
+                 `[rb75/numeral-mismatch:11r-f/11r-h]`, found:\n  - {}",
+                found.join("\n  - ")
+            );
+            fixture_count += 1;
+        }
+
+        // 4. UNBOUND-NUMERAL -- a bare `0173` sentence added inside 11r-f's
+        //    bracket, not bound by any `**label** (= ...` claim.
+        {
+            let doc = rb75_fixture_clean_doc().replace(RB75_BRACKET_11RF, RB75_BRACKET_11RF_BARE);
+            let found = rb75_violations(&doc);
+            assert!(
+                found
+                    .iter()
+                    .any(|v| v.contains("[rb75/unbound-numeral:11r-f]")),
+                "rb75 [control/unbound-numeral]: expected `[rb75/unbound-numeral:11r-f]`, \
+                 found:\n  - {}",
+                found.join("\n  - ")
+            );
+            fixture_count += 1;
+        }
+
+        // 5. NOT-ADJACENT -- 11r-h and 11r-f entries physically swapped.
+        {
+            let doc = rb75_fixture_swapped_11rf_11rh_doc();
+            let found = rb75_violations(&doc);
+            assert!(
+                found
+                    .iter()
+                    .any(|v| v.contains("[rb75/not-adjacent:11r-f/11r-h]")),
+                "rb75 [control/not-adjacent]: expected `[rb75/not-adjacent:11r-f/11r-h]`, \
+                 found:\n  - {}",
+                found.join("\n  - ")
+            );
+            fixture_count += 1;
+        }
+
+        // 6. LABEL-AMBIGUOUS -- a second column-0 `**11r-f** (decoy)` entry.
+        {
+            let doc = rb75_fixture_clean_doc().replacen(
+                "## M11 -- fixture section\n\n",
+                "## M11 -- fixture section\n\n\
+                 **11r-f** (decoy fixture entry) complete. ADR next-free = 0999.\n\n",
+                1,
+            );
+            let found = rb75_violations(&doc);
+            assert!(
+                found
+                    .iter()
+                    .any(|v| v.contains("[rb75/label-ambiguous:11r-f]")),
+                "rb75 [control/label-ambiguous]: expected `[rb75/label-ambiguous:11r-f]`, \
+                 found:\n  - {}",
+                found.join("\n  - ")
+            );
+            fixture_count += 1;
+        }
+
+        // 7. HTML-COMMENT-HIDDEN -- rb-15's bracket wrapped in `<!-- ... -->`,
+        //    invisible to the census that feeds `[rb75/bracket-missing]`.
+        {
+            let wrapped = format!("<!--{RB75_BRACKET_RB15}-->");
+            let doc = rb75_fixture_clean_doc().replace(RB75_BRACKET_RB15, &wrapped);
+            let found = rb75_violations(&doc);
+            assert!(
+                found
+                    .iter()
+                    .any(|v| v.contains("[rb75/bracket-missing:rb-15]")),
+                "rb75 [control/html-comment-hidden]: expected \
+                 `[rb75/bracket-missing:rb-15]`, found:\n  - {}",
+                found.join("\n  - ")
+            );
+            fixture_count += 1;
+        }
+
+        // 8. BRACKET-PLACEMENT -- rb-15's bracket moved to BEFORE its
+        //    trailing parenthetical, so the line no longer ends with `]`.
+        {
+            let before = format!(
+                "**rb-15** (fixture note) complete (amended in-body). ADR next-free = 0217 \
+                 (fixture parenthetical).{RB75_BRACKET_RB15}\n"
+            );
+            let after = format!(
+                "**rb-15** (fixture note) complete (amended in-body). ADR next-free = \
+                 0217.{RB75_BRACKET_RB15} (fixture parenthetical).\n"
+            );
+            let doc = rb75_fixture_clean_doc().replace(&before, &after);
+            let found = rb75_violations(&doc);
+            assert!(
+                found
+                    .iter()
+                    .any(|v| v.contains("[rb75/bracket-placement:rb-15]")),
+                "rb75 [control/bracket-placement]: expected \
+                 `[rb75/bracket-placement:rb-15]`, found:\n  - {}",
+                found.join("\n  - ")
+            );
+            fixture_count += 1;
+        }
+
+        assert!(
+            fixture_count >= RB75_FIXTURE_FLOOR,
+            "rb75: fixture roster shrank to {fixture_count}, below the floor of \
+             {RB75_FIXTURE_FLOOR} -- a fixture was quietly deleted rather than a new bypass \
+             shape being added"
         );
     }
 }
