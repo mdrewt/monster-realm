@@ -3865,3 +3865,257 @@ fn enqueue_move_growth_tail_does_not_depend_on_the_lead_level() {
          different monsters."
     );
 }
+
+// ===========================================================================
+// APPEND-AT-EOF FRAGMENT for server-module/src/movement_tests.rs (rb-76).
+//
+// This file is NOT a replacement for `movement_tests.rs` — it is the text to
+// append verbatim after its current last line (3868, the closing brace of
+// `enqueue_move_growth_tail_does_not_depend_on_the_lead_level`). It adds ONE
+// `#[test]` and changes nothing that already exists in that file.
+// ===========================================================================
+
+// ===========================================================================
+// rb-76 (residual R-rb-46-GRASSPATH, ADR-0246 D4) — a deletion-gated walker's
+// refused encounter is ROUTINE gameplay: it consumes neither the error log nor
+// the limiter window.
+//
+// EARS criterion covered here (movement half):
+//
+//   R-rb-46-GRASSPATH (D4)  WHEN `begin_encounter` refuses a grass encounter
+//   BECAUSE the walker's account is inside the para-4.7 deletion gate, the
+//   scheduled `movement_tick` SHALL skip the log-and-limiter arm entirely and
+//   continue to the next character — exactly as it already does for the routine
+//   fainted-party reason.
+//
+// WHY THIS IS NOT COSMETIC. The refusal is CLIENT-REACHABLE AT TICK RATE: a
+// player who requests deletion and then walks through grass produces one refusal
+// per grass step, roughly five per second per character, for the whole seven-day
+// grace window. Routed into the begin-encounter limiter it would re-anchor the
+// window and reset the suppressed counter on every step, so the genuine faults
+// that limiter exists to surface — species-not-found, stat corruption, a
+// malformed encounter table — would be permanently masked behind a non-event.
+// That is the exact attack the fainted-party filter one line below already
+// closes (`movement_tick_encounter_failures_are_logged_and_rate_limited`, layer
+// 2-filter), and it is why the new skip must sit OUTSIDE the `if let Some(..)`
+// gate rather than inside it: inside, the routine reason still calls `.check(`,
+// which is all a client needs to saturate the limiter.
+//
+// WHY THE SKIP IS SPELLED `continue`, AND WHY THAT SPELLING IS FORCED. The
+// obvious alternatives are unavailable here by a pin that already exists:
+// `movement_tick_grass_block_never_aborts_the_tick` asserts the grass tail
+// contains ZERO `?` operators and ZERO `return` statements, because either one
+// turns ONE character's refusal into a failure of the WHOLE zone tick — every
+// other character stops moving and the NPC-wander loop never runs (ADR-0066).
+// The encounter block is the LAST statement of the per-character loop, so
+// `continue` skips exactly the log-and-limiter arm and nothing else.
+//
+// COUPLING, stated so the next slice cannot miss it: the skip is keyed by
+// EQUALITY on the ONE static reason constant. ADR-0227 D2 fixes one reason per
+// gated shape precisely so no module outside `accounts` learns the mid-grace /
+// terminal state split — but if a future slice ever splits that reason per
+// state (the ADR-0227 D2 deferral), this skip and this test must be extended in
+// the SAME slice, or the new reason falls straight through into the limiter and
+// the masking attack reopens.
+//
+// Needles are assembled from fragments (house rule), so no needle exists
+// verbatim in this file and neither this scan nor any eval that concatenates the
+// crate's sources can be satisfied by the test's own text.
+// ===========================================================================
+
+/// **R-rb-46-GRASSPATH (D4)** — the deletion refusal is skipped IMMEDIATELY
+/// ABOVE the routine-reason filter, before either limiter can be consulted.
+///
+/// ASSERTION-RED at HEAD: the skip does not exist, so the contiguous needle and
+/// the bare-skip needle both count 0 and the constant is named 0 times in
+/// `movement.rs`. The three anti-vacuity clauses are GREEN at HEAD and must stay
+/// green.
+///
+/// LAYER BY LAYER, and what each kills:
+///
+///   1. **THE CONTIGUOUS SEQUENCE — skip, then the existing routine filter, as
+///      ONE whitespace-squashed string.** This single needle kills five distinct
+///      wrong implementations at once, which is why it is written as one
+///      assertion rather than as a presence check plus an ordering check:
+///        * DROPPED — the sequence simply does not occur (the HEAD state);
+///        * INVERTED — `if e != crate::guards::REJECT_DELETION_GATED` squashes
+///          to `ife!=…` and cannot match. Inverted, EVERY reason except the
+///          deletion refusal is skipped: genuine content faults go permanently
+///          silent while the one non-event that must never be logged becomes the
+///          only thing in the log. This is the same mutant class a cargo-mutants
+///          run found SURVIVING every other assertion in this file for the
+///          fainted-party filter (`replace != with ==` at movement.rs:433), so
+///          it is a measured shape, not a hypothetical;
+///        * RELOCATED — a skip placed INSIDE the `if let Some(suppressed) = ..`
+///          block, or below the filter, breaks contiguity. That placement still
+///          lets the refusal call `.check(`, which re-anchors the window and
+///          resets the suppressed counter: the client-driven masking attack
+///          survives in full while a presence-only needle reads green;
+///        * FOLDED — `if e != NO_CONSCIOUS_MONSTER_REASON && e != crate::guards::REJECT_DELETION_GATED`
+///          is a plausible and tempting simplification, and it is NOT equivalent:
+///          it merges two independently-reasoned skips into one condition, so the
+///          reason-split coupling recorded above has one place to be forgotten
+///          instead of two, and it breaks contiguity here;
+///        * UNQUALIFIED — a bare `REJECT_DELETION_GATED` reached through a
+///          widened `use crate::guards::{..}` import. ADR-0246 D4 fixes the
+///          fully-qualified spelling: the import line in this file is pinned
+///          elsewhere and unchanged by this slice, and a qualified path is
+///          unshadowable by a file-local constant of the same name.
+///
+///   2. **THE SKIP ALONE, EXACTLY ONCE.** Layer 1 proves a correct sequence
+///      EXISTS; only a count proves it is the only one. A second copy — on an
+///      unreachable path, or after the filter — would satisfy layer 1 while a
+///      reader could not tell which one decides.
+///
+///   3. **THE CONSTANT IS NAMED EXACTLY ONCE, FILE-WIDE.** The
+///      spelling-independent partner to layers 1 and 2: it forbids a SECOND
+///      consumer anywhere in `movement.rs` (a second skip, a decoy local
+///      constant of the same name, a comparison hoisted into a helper) without
+///      having to guess how it would be written. `movement.rs` must consult the
+///      deletion vocabulary in exactly ONE place — this is the module that
+///      PRV1-10 keeps account-state reasoning out of.
+///
+///   4-6. **ANTI-VACUITY (green at HEAD).** The region must still contain the
+///      existing filtered-gate sequence, exactly one `.check(` on the
+///      begin-encounter limiter, and exactly one `begin_encounter(` call.
+///      Without these three, the cheapest way to satisfy layers 1-3 is to delete
+///      the logging arm, the limiter, or the encounter path outright — which
+///      would end wild encounters entirely, or restore the silent swallow
+///      ADR-0170 D4 removed, while every needle above stayed green.
+///
+/// HONEST LIMITS. (a) Source scan, not execution (ADR-0156 P7): this crate has
+/// no harness that can run a scheduled reducer, so nothing here observes a
+/// suppressed log. The BEHAVIOUR being skipped — that the refusal is produced at
+/// all — is proven by execution next door, in
+/// `battle_tests.rs::rb76_begin_encounter_refuses_only_a_deletion_gated_walker`.
+/// (b) This pins the comparison, its position and its quantity, not the
+/// CONSTANT's VALUE: `REJECT_DELETION_GATED` is a `pub(crate) const` in
+/// `guards.rs`, outside this file's scan, and it is the SSOT precisely so the
+/// reason string cannot drift apart from the wrapper that produces it — the
+/// same trade the fainted-party filter's own pin records for
+/// `NO_CONSCIOUS_MONSTER_REASON`.
+#[test]
+fn rb76_grass_path_skips_the_deletion_refusal_before_the_limiter() {
+    let squashed = squashed_movement();
+    let body = movement_tick_body(&squashed);
+    let region = grass_region(body);
+
+    let constant = ["REJECT_DELETION", "_GATED"].concat();
+    let skip = ["ife==crate::guards::REJECT_DELETION", "_GATED{continue;}"].concat();
+    let routine_filter = ["ife!=NO_CONSCIOUS_MONSTER", "_REASON{"].concat();
+    let contiguous = [skip.as_str(), routine_filter.as_str()].concat();
+
+    // --- Layer 1: skip then filter, as ONE contiguous squashed sequence ------
+    let n_contiguous = region.matches(contiguous.as_str()).count();
+    assert_eq!(
+        n_contiguous, 1,
+        "TEETH (rb-76 / ADR-0246 D4): `movement_tick`'s grass region must contain, as ONE \
+         contiguous whitespace-squashed sequence, the deletion-refusal skip IMMEDIATELY \
+         followed by the existing routine-reason filter — found {n_contiguous}. \
+         The source must read: `if e == crate::guards::REJECT_DELETION_GATED` then a block \
+         whose only statement is `continue;`, then `if e != NO_CONSCIOUS_MONSTER_REASON`. \
+         RED AT HEAD: the skip does not exist, so a deletion-gated walker's refusal — which \
+         a client produces on EVERY grass step, roughly five times a second for the whole \
+         seven-day grace window — burns the begin-encounter limiter's window and resets its \
+         suppressed counter, permanently masking the genuine content faults that limiter \
+         exists to surface. \
+         THIS ONE NEEDLE KILLS FIVE SHAPES: dropped (no match at all); INVERTED, which \
+         squashes to `ife!=` and cannot match — inverted, every reason EXCEPT the deletion \
+         refusal is skipped, so real faults go silent and the one non-event becomes the only \
+         thing in the log (the same mutant class a cargo-mutants run found SURVIVING every \
+         other assertion in this file for the fainted-party filter at movement.rs:433); \
+         RELOCATED inside the `if let Some(suppressed)` block or below the filter, which \
+         still lets the refusal call `.check(` and leaves the masking attack fully live; \
+         FOLDED into the filter's condition with `&&`, which merges two independently \
+         reasoned skips so the reason-split coupling has one place to be forgotten instead \
+         of two; and UNQUALIFIED via a widened guards import, which a file-local constant of \
+         the same name could shadow. \
+         WHY `continue` AND NOT `?` OR `return`: `movement_tick_grass_block_never_aborts_the_tick` \
+         in this file pins ZERO of either in this region, because one character's refusal \
+         must never abort the whole zone tick (ADR-0066). The encounter block is the LAST \
+         statement of the per-character loop, so `continue` skips exactly the log-and-limiter \
+         arm. \
+         COUPLING: the skip is keyed by EQUALITY on the ONE static reason. If a future slice \
+         splits that reason per account state (the ADR-0227 D2 deferral), this skip and this \
+         test must be extended in the SAME slice or the new reason falls through into the \
+         limiter. \
+         Expected (squashed): {contiguous:?}"
+    );
+
+    // --- Layer 2: the skip alone, exactly once ------------------------------
+    let n_skip = region.matches(skip.as_str()).count();
+    assert_eq!(
+        n_skip, 1,
+        "TEETH (rb-76 / ADR-0246 D4): the grass region contains {n_skip} deletion-refusal \
+         skip(s) and must contain EXACTLY ONE. ZERO is the RED STATE AT HEAD. Layer 1 above \
+         proves a correctly-placed sequence EXISTS; it is blind to a SECOND copy sitting \
+         somewhere else in the region — on a path that never runs, or below the filter where \
+         it decides nothing — and under two copies no reader can say which one is live. \
+         Expected (squashed): {skip:?}"
+    );
+
+    // --- Layer 3: the constant is named exactly once, file-wide -------------
+    let n_constant = squashed.matches(constant.as_str()).count();
+    assert_eq!(
+        n_constant, 1,
+        "TEETH (rb-76 / ADR-0246 D4): `movement.rs` names `{constant}` {n_constant} time(s) \
+         file-wide and must name it EXACTLY once. ZERO is the RED STATE AT HEAD. This is the \
+         spelling-INDEPENDENT partner to the two layers above: it forbids a second consumer \
+         anywhere in the file — a second skip, a decoy file-local constant of the same name \
+         shadowing the guards one, a comparison hoisted into a private helper — without \
+         having to guess how it would be written. `movement.rs` must touch the deletion \
+         vocabulary in exactly ONE place: this is the module PRV1-10 keeps account-state \
+         reasoning out of, and the whole reason the decision itself lives behind a \
+         `guards.rs` wrapper."
+    );
+
+    // --- Layer 4 (anti-vacuity): the filtered gate it sits above survives ----
+    let gate_open = ["ifletSome(suppressed)", "="].concat();
+    let filtered_gate = [
+        routine_filter.as_str(),
+        gate_open.as_str(),
+        "BEGIN_ENCOUNTER_ERR",
+        "_LIMITER.check(",
+    ]
+    .concat();
+    let n_filtered = region.matches(filtered_gate.as_str()).count();
+    assert_eq!(
+        n_filtered, 1,
+        "ANTI-VACUITY (rb-76 / ADR-0246 D4): the grass region must still contain the \
+         EXISTING fainted-party filter immediately followed by the begin-encounter limiter \
+         gate, as one contiguous squashed sequence — found {n_filtered}. GREEN AT HEAD and \
+         it must stay green. This is the structure the new skip is inserted ABOVE, and \
+         layers 1-3 are all satisfiable by deleting it: with the filter and its gate gone, a \
+         deletion refusal is skipped and everything else is swallowed silently, which is the \
+         pre-ADR-0170 behaviour this file spent a whole slice removing. It is also the \
+         landmark layer 1's contiguity is measured against — if this sequence moves, layer 1 \
+         is pinning an adjacency that no longer means what it says."
+    );
+
+    // --- Layer 5 (anti-vacuity): the limiter is still consulted, once -------
+    let begin_check = ["BEGIN_ENCOUNTER_ERR", "_LIMITER.check("].concat();
+    let n_begin_check = region.matches(begin_check.as_str()).count();
+    assert_eq!(
+        n_begin_check, 1,
+        "ANTI-VACUITY (rb-76 / ADR-0246 D4): the begin-encounter limiter must be consulted \
+         EXACTLY ONCE inside the grass region; found {n_begin_check}. GREEN AT HEAD. Zero \
+         means the rate-limited reporting this slice routes AROUND was removed rather than \
+         preserved — the point of the skip is that genuine faults still reach the log, and \
+         with no `.check(` at all there is nothing left to protect. Two means a second, \
+         discarded consultation re-anchors the window and resets the suppressed counter, so \
+         the emitted count under-reports exactly the loss it exists to report."
+    );
+
+    // --- Layer 6 (anti-vacuity): the encounter path itself survives ---------
+    let begin_call = ["begin", "_encounter("].concat();
+    let n_begin_call = region.matches(begin_call.as_str()).count();
+    assert_eq!(
+        n_begin_call, 1,
+        "ANTI-VACUITY (rb-76 / ADR-0246 D4): `begin_encounter(` must still be called EXACTLY \
+         ONCE in the grass region; found {n_begin_call}. GREEN AT HEAD. Deleting the call is \
+         the cheapest way to satisfy every layer above — no encounter can be refused if no \
+         encounter is ever opened — and it would end wild encounters everywhere while this \
+         test reported success. The uppercase limiter static does not match this lowercase \
+         needle, so the count is unambiguous."
+    );
+}
