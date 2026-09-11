@@ -468,6 +468,11 @@ pub(crate) fn is_ranked_pvp(battle: &Battle) -> bool {
         && battle.opponent_identity != crate::WILD_IDENTITY
 }
 
+// rb-77 (ADR-0247): the attribute below is the only conditional-compilation
+// attribute this file carries, and cfg(test) is the only spelling the rb77
+// tests admit. A twin of a wrapper selected by target architecture, or a
+// textual source inclusion, would swap what the wasm build compiles while
+// every pin in guards_tests stays green — a review stop.
 #[cfg(test)]
 #[path = "guards_tests.rs"]
 mod guards_tests;

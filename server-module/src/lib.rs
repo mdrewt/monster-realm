@@ -28,7 +28,7 @@ mod content;
 mod content_cache;
 mod economy;
 mod evolution;
-mod guards;
+mod guards; // rb-77 (ADR-0247): bare and unconditional by contract — a target-selected wasm twin of this module is a review stop; gated by the rb77_ tests in guards_tests.rs
 mod inventory;
 mod marshal;
 mod monster_mgmt;
