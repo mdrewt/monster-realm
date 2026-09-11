@@ -4,7 +4,7 @@
 **Date:** 2026-09-11
 **Slice:** rb-73 (residual R-18r-b-DISCONNECTSELF, `M-residual-backlog.spec.md#rb-73`)
 **Supersedes:** —
-**Amends:** —
+**Amends:** ADR-0232, ADR-0228
 **Subsystems:** security-authz, schema-persistence
 **Decision:** A private `player_session` table keyed by `ConnectionId` records every live connection; `on_disconnect` runs its side effects only when the identity's LAST live connection ends.
 
@@ -95,6 +95,7 @@ SOURCE-SHAPE pins (the `Some(conn)` branches are structurally unexecutable):
 
 - `rb73_wiring_on_connect_body_is_frozen` — declaration-uniqueness + exact equality of the squashed body. Kills M8 "session insert moved inside the JWT branch" and M7 "insert deleted".
 - `rb73_wiring_open_session_body_is_frozen_and_single_purpose` — exact body equality plus zero `Err(`/`accounts::`/`unwrap(`/`expect(`/`panic!(` to compensate for the `ctx.db.` before the guard.
+- `rb73_schema_session_table_is_private_and_keyed` — the table attribute occurs once, is immediately followed by `pub struct PlayerSession {`, and the struct body is exactly the pinned key shape; a `public` flip or a key drift reds it.
 - `rb73_wiring_on_disconnect_guard_precedes_and_body_is_frozen` — counts/ordering first (guard index < resolver index, each exactly once), then exact body equality, mirroring `m22s3b_resolver_body_order` (accounts_tests.rs:9822–9876). Kills M1 "guard deleted", M2 "guard inverted", M3 "moved below", M9 "own-row delete dropped", M12 "bare `return` body".
 
 Squashed pins are whitespace-insensitive, so rustfmt's `fn_call_width` re-wrap cannot false-RED them.
@@ -132,11 +133,15 @@ Squashed pins are whitespace-insensitive, so rustfmt's `fn_call_width` re-wrap c
 - **R-rb-73-NOEXEC** — the `Some(conn)` branches of both hooks (own-row insert/delete) execute only under a real host; killed by source-freeze pins + mutant sweep + live proof.
 - **R-rb-73-HOSTWRITES** — modelling `datastore_delete_by_index_scan_point_bsatn` behind an opt-in `Handle::allow_deletes()` in `native_host_tests.rs` would make the own-row delete executed. Deferred (YAGNI here; rb-72/41/46/47 abort-wall kills must stay byte-identical).
 
-## Finalization on resume (hidden-dependency park, 2026-09-11)
+## Finalization (2026-09-11)
 
-1. Set `Amends: ADR-0232` in this ADR's header and add the reciprocal `Amended-by: ADR-0245` in ADR-0232 D2's header.
-2. Add step 6e "erase player_session rows" to ADR-0228 D2's cascade step list (beside 6d).
-3. Correct `sim-harness/src/bin/mr_load_driver.rs` AM25 prose (:76-89): strike the claim that an HTTP call "would also destroy a concurrent WS session's join state" (now false after the fix; the rest of AM25 stays true).
-4. Record the X8 live two-connection transcript (WS session + `spacetime call <db> join_game` + a second HTTP call; the `player` row survives and the WS session stays joined).
-5. Verify `docs/adr/0180-observability-stack-selection.md` for any AM25 twin claim and edit only if it repeats the falsified sentence.
-6. Run `just adr-digest` after all ADR edits are committed.
+The slice was first parked as a hidden-dependency STOP (the launched `touches:` named only
+`server-module/src/lib.rs`), then completed under a disclosed scope widening after the run loop
+re-invoked it twice; every out-of-touches file is listed in the PR body's `touches-delta:` with the
+gate that forced it. Done in this slice: `Amends: ADR-0232, ADR-0228` with the reciprocal
+`Amended-by:` lines; ADR-0232 D2 carries the rb-73 amendment paragraph below its rb-72 correction
+(its `mr_load_driver.rs:76-89` citation line is unmoved); ADR-0228 D2's step list gains the
+`erase_player_sessions` step beside `erase_character_rows`; `mr_load_driver.rs` AM25 and
+ADR-0180's twin sentence no longer claim that an HTTP call destroys a concurrent WS session's join
+state; the X8 live two-connection transcript is recorded beside the acceptance ledger
+(`memory/projects/gates/rb-73.x8-live-proof.md` in the harness repo).

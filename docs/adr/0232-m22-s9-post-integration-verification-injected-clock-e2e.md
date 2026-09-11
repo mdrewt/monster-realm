@@ -5,6 +5,7 @@
 **Slice:** m22-s9 (M22 §7.3 — post-integration verification, the milestone's real DoD)
 **Supersedes:** —
 **Amends:** —
+**Amended-by:** ADR-0245
 **Subsystems:** security-authz, ci-gates
 **Decision:** The S9 e2e patches the grace and chunk constants in its tmpdir module copy so the real reaper fires in CI; compile-level m22s9 contract pins land in accounts_tests.rs; HTTP reducer calls are banned in the rig.
 
@@ -69,6 +70,15 @@ executed pin is `rb72_resolve_all_live_interactions_leaves_presence_rows` in
 `accounts_tests.rs`: it seeds a `player`/`character` pair, runs the dispatcher, and asserts
 both rows survive (with a removal control proving those reads can observe an absence). Only
 the mechanism changes; the rejection recorded above is unchanged.
+
+Amendment (rb-73, ADR-0245): `on_disconnect` now runs the force-resolves and the presence deletes
+only when the disconnecting connection was the identity's LAST live one — a private
+`player_session` row per connection is deleted first, and `has_live_session` guards the rest. An
+HTTP reducer call made while the subject's WebSocket is live therefore no longer destroys the seed
+state; the live-verified failure above was measured before that guard existed. The rejection
+STANDS on its remaining grounds: `spacetime call` executes as the CLI owner identity, not the
+subject, and a lone ephemeral connection (no live WS for that identity) is still last-out, so a
+bare CLI call still gets exactly the pre-rb-73 behaviour.
 
 ### D3 — seed shape: one live battle per subject; the anonymize target is a terminal PvP battle
 

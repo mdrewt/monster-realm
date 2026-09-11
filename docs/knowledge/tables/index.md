@@ -33,6 +33,7 @@
 | tables/player_conversation | SpacetimeDB Table | player_conversation | In-progress dialogue node. Single row per player (PK = owner_identity). PRIVATE  |
 | tables/player_dialogue_state | SpacetimeDB Table | player_dialogue_state | PRIVATE per-player dialogue state: flags + done-quest history. Must-never-leak:  |
 | tables/player_quest | SpacetimeDB Table | player_quest | Active quest progress. Public (quest log is world-readable like `inventory`). Pe |
+| tables/player_session | SpacetimeDB Table | player_session | One row per LIVE client connection (rb-73, ADR-0245): the host-minted `Connectio |
 | tables/player_wallet | SpacetimeDB Table | player_wallet | PRIVATE per-player wallet — one row per player (PK = owner_identity). Balance is |
 | tables/playtest_event | SpacetimeDB Table | playtest_event | SpacetimeDB table playtest_event. |
 | tables/playtest_reaper_schedule | SpacetimeDB Table | playtest_reaper_schedule | SpacetimeDB table playtest_reaper_schedule. |

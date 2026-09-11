@@ -1139,9 +1139,9 @@ export function checkExportAssembly(chunks, expected) {
 export function checkCascadeTruth(input) {
   const { entries, pre, post, allowlist, allowlistCap, seededFloor, graceMs } = input;
   const fail = (reason) => ({ ok: false, reason, vacuous: [], detail: '' });
-  if (!Array.isArray(entries) || entries.length !== 41) {
+  if (!Array.isArray(entries) || entries.length !== 42) {
     return fail(
-      '[s9/census] transcription entries: ' + (entries ? entries.length : 'none') + ', expected 41',
+      '[s9/census] transcription entries: ' + (entries ? entries.length : 'none') + ', expected 42',
     );
   }
   if (!Array.isArray(allowlist) || allowlist.length > allowlistCap) {

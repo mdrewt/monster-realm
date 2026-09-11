@@ -3289,7 +3289,7 @@ function teethTick() {
 // export, and printed there instead of a hand-written sentence. Bump it in the
 // same commit that adds or removes a tooth — a bump is a one-line, reviewable
 // diff; a silent drift is the whole bug this closes.
-const TEETH_PINNED = 345;
+const TEETH_PINNED = 352;
 
 /**
  * Assert that a checker fired the EXPECTED clause (by tag), not merely that it

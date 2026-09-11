@@ -2,7 +2,7 @@
 type: SpacetimeDB Table
 title: export_bundle_reaper_schedule
 slug: tables/export_bundle_reaper_schedule
-updated: 2026-09-05
+updated: 2026-09-11
 tags: [schema, spacetimedb, private]
 abstract: "SpacetimeDB private table export_bundle_reaper_schedule."
 resource: server-module/src/privacy.rs#L1630

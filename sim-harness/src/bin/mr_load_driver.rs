@@ -79,9 +79,9 @@
 //! `POST /v1/database/<db>/call/<reducer>` is an ephemeral connection, and the
 //! `client_disconnected` reducer `on_disconnect` (in `server-module/src/lib.rs`) resolves its live
 //! trades/PvP/battles and deletes its presence rows BY IDENTITY. Live-verified: `join_game` returns
-//! 200, then `enqueue_move` 5 ms later returns 530 "not joined". An HTTP call
-//! would also destroy a concurrent WS session's join state for the same
-//! identity. On top of that, the dominant server cost at concurrency N is
+//! 200, then `enqueue_move` 5 ms later returns 530 "not joined"; until rb-73
+//! (ADR-0245) it also destroyed a concurrent WS session's join state. On top
+//! of that, the dominant server cost at concurrency N is
 //! subscription fan-out (every accepted move updates a `character` row broadcast
 //! to N subscribers); with zero subscriptions,
 //! `spacetime_subscription_send_queue_length` is flat at 0 forever and one of

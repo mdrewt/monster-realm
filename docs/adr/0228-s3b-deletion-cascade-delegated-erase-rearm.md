@@ -5,6 +5,7 @@
 **Slice:** m22-s3b
 **Supersedes:** —
 **Amends:** —
+**Amended-by:** ADR-0245
 **Subsystems:** security-authz, schema-persistence, ci-gates
 **Decision:** S3b lands the §4.4 cascade via per-module `erase_*`/`anonymize_*` delegation, re-arms the one-shot reaper (not-due branch + init/sync sweep), ships PRV1-8(b) fresh re-registration, and re-pins the reaper body pin.
 
@@ -42,7 +43,9 @@ should leave no orphaned data... treat all unrecognized OAuth identities like fr
    6a `resolve_all_live_interactions` (extracted into `lib.rs`, the four calls verbatim in the
    `on_disconnect` order; shared by both callers so a future fifth resolver is picked up by both) →
    6b the delegated ERASE calls in manifest order → `erase_character_rows` **before**
-   `anonymize_display_names` (the §4.4 character-before-player pin) → `battle::anonymize_battles` →
+   `anonymize_display_names` (the §4.4 character-before-player pin) → `erase_player_sessions`
+   (rb-73, ADR-0245: the `player_session` presence bookkeeping goes with the presence rows,
+   immediately after the character sweep) → `battle::anonymize_battles` →
    6e `update(terminal_account(anonymized_account(account), now))` **last**. Deviations: (a) a
    JOIN_ONLY *schedule* table is swept inside its parent's erase helper (the existing
    `disarm_trade_reaper`/challenge-disarm orphan-prevention idiom); (b) `battle`'s joins
