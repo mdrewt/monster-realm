@@ -91,7 +91,7 @@ impossible; the reducer must exist in the same publish as the table.
 
 - **R1** S3 replaces the no-op body (PRV1-5 recheck + PRV1-6 cascade) and deliberately retires
   `rb24_deletion_reaper_body_is_frozen_noop`; it must factor `resolve_all_live_interactions` from
-  `lib.rs:214-231`, never hand-roll the bundle (spec section 4.4 step 1).
+  `lib.rs:214-231` [rb-74: -> `pub fn on_disconnect(` in `server-module/src/lib.rs`; the bundle was factored OUT of this hook], never hand-roll the bundle (spec section 4.4 step 1).
 - **R2** Accounts left `PendingDeletion`-and-unarmed by a fired no-op reaper during the rb-24 era:
   S3 must define the re-arm/recovery path.
 - **R3** rb-21's terminal-cancel guard (PRV1-4) must be inserted BEFORE this slice's disarm in
@@ -104,3 +104,5 @@ impossible; the reducer must exist in the same publish as the table.
 - **R6** The scheduler-guard needle used by the shipped gates is prefix-forgeable (`{return`
   matches `{returned_...(...)`); this slice hardens its own test and the shared eval clause —
   measured against the shipped `guest_claim_reaper` gate too.
+
+**rb-74 retarget note (2026-09-11, ADR-0056):** the `lib.rs` line numbers cited above are HISTORICAL, against this document's base commit `5962b7a`; M8.9 split `server-module/src/lib.rs` into domain submodules, so each stale citation carries a bracketed live anchor immediately after it.

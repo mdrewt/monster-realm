@@ -28,13 +28,13 @@ Two dev/cheat reducers shipped **client-callable in every release build** with n
 build-time gate (third-review finding, spec §1.3; the debt ADR-0046 §116(c) flagged as
 "remove at M9" but left to memory, not mechanism):
 
-- **`start_wild_battle(zone_id)`** (`server-module/src/lib.rs:1484`) trusts the
+- **`start_wild_battle(zone_id)`** (`server-module/src/lib.rs:1484` [rb-74: -> `pub fn start_wild_battle(` in `server-module/src/battle.rs`]) trusts the
   client-supplied `zone_id` and rolls `ctx.db.encounter().zone_id().find(zone_id)` — the
   **PRIVATE** per-zone encounter table (ADR-0044). A client standing in zone 0 can call
   `start_wild_battle(5)` and roll zone 5's private encounter table from anywhere → a
   rare-encounter-table spoof (the exact threat ADR-0044's private table exists to deny).
   Its own dev-note only addressed the *seed* cheat, not the zone.
-- **`grant_bait(item_id, qty)`** (`server-module/src/lib.rs:2064`) mints bait into the
+- **`grant_bait(item_id, qty)`** (`server-module/src/lib.rs:2064` [rb-74: -> `pub fn grant_bait(` in `server-module/src/taming.rs`]) mints bait into the
   caller's own inventory. The `qty.min(99)` per-call cap is **cosmetic** — the reducer is
   callable in an unbounded loop, and `grant_item` `saturating_add`s to `u32::MAX`, driving
   `recruit_chance` to certainty.
@@ -83,13 +83,13 @@ encounter trigger (`window.__game().startWildBattle(0)`) — `movement_tick`'s
 probabilistic grass roll cannot give a test a guaranteed encounter; (b) `grant_bait` is
 retained-behind-gate for the same recruit e2e, so deleting `start_wild_battle` would leave
 the flow half-supported; (c) retaining lets this slice land the zone reject-not-clamp fix
-(§3) as the production hardening pattern. `movement_tick` (`lib.rs:939`) remains the sole
+(§3) as the production hardening pattern. `movement_tick` (`lib.rs:939` [rb-74: -> `pub fn movement_tick(` in `server-module/src/movement.rs`]) remains the sole
 **production** encounter entry.
 
 ### 3. Zone derived from the caller's `Character` — reject-not-clamp
 
 `start_wild_battle` now **binds** the caller's character at the existing existence-check
-(`lib.rs:1492-1502`, previously discarded) and **rejects** before any further DB work
+(`lib.rs:1492-1502` [rb-74: -> `let Some(character) = ctx.db.character().entity_id().find(player.entity_id) else {` inside `pub fn start_wild_battle(` in `server-module/src/battle.rs`], previously discarded) and **rejects** before any further DB work
 (before `lead_party`):
 
 ```rust
@@ -128,7 +128,7 @@ here.
 ### 5. Why gating only these two reducers is sufficient
 
 `movement_tick` runs the *same* encounter-roll path but is **not** a bypass: it is
-scheduler-only (`if ctx.sender != ctx.identity() { return Err }`, `lib.rs:940`) and its
+scheduler-only (`if ctx.sender != ctx.identity() { return Err }`, `lib.rs:940` [rb-74: -> `if ctx.sender() != ctx.database_identity() {` inside `pub fn movement_tick(` in `server-module/src/movement.rs`; same guard, respelled by the crate 1.x-to-2.x port (ADR-0197)]) and its
 zone comes from the `movement_tick_schedule` row (server-seeded at `init`), never from a
 client argument; clients cannot insert schedule rows. No other client-callable reducer
 rolls an arbitrary zone's encounter table or mints inventory. The two gated reducers are
@@ -144,7 +144,7 @@ M8.7a's new schema-snapshot PK-stability gate and violating ADR-0006. Per spec �
 sanctioned fallback hierarchy, the invariant is made mechanical by a **source-scan parity
 eval** (`evals/inventory-single-stack.eval.mjs`, modeled on `monster-dual-write`): it
 asserts that **every `ctx.db.inventory().insert(` call site lives inside the single
-`grant_item` helper** (`lib.rs:1868`, find-then-update). Any future reducer that inserts
+`grant_item` helper** (`lib.rs:1868` [rb-74: -> `pub(crate) fn grant_item(` in `server-module/src/inventory.rs`], find-then-update). Any future reducer that inserts
 into `inventory` directly trips the gate. The single-stack safety still rests on
 SpacetimeDB's per-reducer transaction serialization (find+insert is atomic within a call;
 `consume_one`/`grant_item` never mutate the key, so no update-path can fork a stack) — the
@@ -157,7 +157,7 @@ declared touch-set owns `0046`); this ADR does not edit `0046`.
 
 ### 7. `content_version` wired additively (version-gated re-seed)
 
-`Config.content_version` (`lib.rs:67`) was decorative — written hardcoded `1` at `init`,
+`Config.content_version` (`lib.rs:67` [rb-74: -> `pub content_version: u32,` in `server-module/src/schema.rs`]) was decorative — written hardcoded `1` at `init`,
 never incremented, never read (the client does not even subscribe to `config`). The spec
 §3 requires it be "incremented by `sync_content` (and read by re-derive/cache logic) or
 removed." **Wired**, not removed: removal is a **non-additive** change to a public table
@@ -235,7 +235,7 @@ consumer (a redundant `sync_content` is a version-gated no-op), not a decorative
     `recruit-reducer-security.eval.mjs` `checkConsumeOneUsesCheckedSub`; `checkWildBattleGuard`
     accepting `return Ok(())` as a rejection; schema-snapshot regex fragility) are **out of
     this slice's touch-set** — flagged for a follow-up gate-teeth hardening pass.
-  - **(d)** The false "RLS by `owner_identity`" `inventory` doc comment (`lib.rs:273-274`)
+  - **(d)** The false "RLS by `owner_identity`" `inventory` doc comment (`lib.rs:273-274` [rb-74: clause deleted by M8.7d; live table `pub struct Inventory {` in `server-module/src/schema.rs`])
     is **slice 7d's** fix; untouched here.
 - **References:** ADR-0044 (private encounter table — the spoofed asset), ADR-0046 (inventory
   model + the `grant_bait`/`start_wild_battle` dev-debt this hardens; single-stack clause
@@ -246,3 +246,5 @@ consumer (a redundant `sync_content` is a version-gated no-op), not a decorative
   doc comment; slice **7e** enables `dev_reducers` for the recruit e2e via `--bin-path`
   (§4); a gate-teeth hardening pass addresses residual (c); the dev reducers are superseded
   by the real M9 shop / encounter UX (then the feature + reducers can be deleted outright).
+
+**rb-74 retarget note (2026-09-11, ADR-0056):** the `lib.rs` line numbers cited above are HISTORICAL, against this document's base commit `6187102`; M8.9 split `server-module/src/lib.rs` into domain submodules, so each stale citation carries a bracketed live anchor immediately after it.
