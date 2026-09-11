@@ -4310,3 +4310,920 @@ fn rb76_subject_gate_answers_from_the_named_subject() {
     );
 }
 // rb76-compile-red-end
+
+// ===========================================================================
+// rb-77 — the crate root wires every module BARE and UNCONDITIONAL
+// (residual R-rb-46-LIBRSMOD, ADR-0247). Appended BELOW the rb-76 marker above;
+// no line an earlier slice wrote is touched.
+//
+// WHAT IS GATED. rb-46's artifact red-team executed PoC X4: give the crate
+// root's `guards` declaration a target-selected twin and the SHIPPED wasm
+// compiles the twin file while `cargo test` — a NATIVE build — compiles, scans
+// and executes the honest one. Every m22-s5 / rb-46 / rb-76 pin reads the FILE;
+// none reads how the crate root selects it. Five further routes leave rb-76
+// byte-identically green (single-line, attribute wrapper, alias, nested
+// re-export, in-file textual inclusion), plus raw identifiers and a nested
+// block comment that forges a declaration out of comment text.
+//
+// WHY CRATE-WIDE (ADR-0247 D1). Nothing about the class is specific to
+// `guards`, so the roster is DERIVED: a name ending in `tests` is a test module
+// and must carry exactly the squashed conditional+path prefix; everything else
+// must be bare. `guards` is the named anti-vacuity anchor. rb-76's clause (d)
+// names its modules line-by-line and EXCLUDES `guards`; this parse is
+// byte-level and INCLUDES it.
+//
+// SUBSTRATE RULES, as everywhere above (breaking them breaks OTHER slices'
+// gates): needles are fragment-assembled, every double quote comes from
+// `double_quote()`, a block-comment marker is never spelled contiguously — say
+// it in words — no raw-identifier prefix, no three-hash raw-string opener, and
+// no failure message quotes the needle it searched for.
+//
+// RED AT HEAD: ONE assertion — the live test's clause that `lib.rs` carries the
+// ADR-0247 D5 reviewer note on its `guards` declaration line. The wiring is
+// honest today, so every other clause is green at HEAD by design; the teeth are
+// the fixture matrix and the ledger's X5 live mutant register.
+// ===========================================================================
+
+/// The module keyword. Fragment-assembled like every other needle here.
+fn rb77_kw_mod() -> String {
+    ["mo", "d"].concat()
+}
+
+/// The visibility token the site parser looks back for.
+fn rb77_kw_pub() -> String {
+    ["pu", "b"].concat()
+}
+
+/// The conditional-compilation attribute marker WITHOUT its argument list — so
+/// it also matches the attribute-wrapper spelling, whose argument list differs.
+fn rb77_needle_cfg() -> String {
+    ["#[c", "fg"].concat()
+}
+
+/// The one conditional-compilation attribute either scanned file may carry.
+fn rb77_attr_cfg_test() -> String {
+    ["#[c", "fg(test)]"].concat()
+}
+
+/// A path-relocating attribute over `file`, spelled as source (fixtures only).
+fn rb77_attr_path(file: &str) -> String {
+    let q = double_quote();
+    format!("{open}{q}{file}{q}]", open = ["#", "[path = "].concat())
+}
+
+/// The test-module prefix in SQUASHED form: the conditional attribute followed
+/// by the path attribute whose string argument has been blanked.
+fn rb77_testmod_prefix() -> String {
+    format!(
+        "{cfg}{path}",
+        cfg = rb77_attr_cfg_test(),
+        path = ["#", "[path=]"].concat()
+    )
+}
+
+/// The INNER-attribute conditional marker (crate- or module-scoped).
+fn rb77_needle_cfg_inner() -> String {
+    ["#!", "[cfg"].concat()
+}
+
+/// The conditional-compilation MACRO marker.
+fn rb77_needle_cfg_macro() -> String {
+    ["cf", "g!("].concat()
+}
+
+/// The textual source-inclusion macro marker.
+fn rb77_needle_include() -> String {
+    ["inclu", "de!("].concat()
+}
+
+/// The two bytes that open a RAW IDENTIFIER. Raw STRINGS are blanked by the
+/// stripper before this is ever searched for, so a hit is an identifier.
+fn rb77_needle_raw_ident() -> String {
+    ["r", "#"].concat()
+}
+
+/// A block-comment CLOSE marker, assembled — never spelled contiguously.
+fn rb77_needle_close_marker() -> String {
+    ["*", "/"].concat()
+}
+
+/// A block-comment OPEN marker, assembled — never spelled contiguously.
+fn rb77_needle_open_marker() -> String {
+    ["/", "*"].concat()
+}
+
+/// The target-architecture predicate the measured module swaps select on.
+fn rb77_token_target_arch() -> String {
+    ["target_", "arch"].concat()
+}
+
+/// The RAW `lib.rs` line marker of the anchor declaration (ADR-0247 D5).
+fn rb77_line_guards_decl() -> String {
+    ["mod gu", "ards;"].concat()
+}
+
+/// The decision record the reviewer note must cite.
+fn rb77_note_adr() -> String {
+    ["ADR-0", "247"].concat()
+}
+
+/// The scan substrate, REUSED rather than re-implemented (ADR-0003): rb-76's
+/// comments-stripped, strings-blanked, whitespace-squashed view, including its
+/// two loud preconditions (a three-hash raw-string opener; unequal
+/// block-comment marker counts). The third precondition this grammar needs — a
+/// surviving CLOSE marker, i.e. a nested block comment — is raised by
+/// [`rb77_wiring_verdict`] as a LABEL rather than a panic, so a fixture can
+/// assert it.
+fn rb77_squash(label: &str, src: &str) -> String {
+    rb76_module_squashed(label, src)
+}
+
+/// One `mod` declaration read out of the squashed view at bracket depth zero.
+struct Rb77Site {
+    name: String,
+    /// The delimiter was an opening brace: an INLINE module body, not a file.
+    inline: bool,
+    /// The byte immediately before the keyword; `None` only at offset zero.
+    prev: Option<u8>,
+    /// Up to 24 squashed bytes before the keyword, for the failure message.
+    prefix: String,
+    /// Offset of the keyword in the squashed view (the prefix check needs it).
+    at: usize,
+}
+
+/// Every depth-zero `mod` declaration in `squashed`, plus the labels raised
+/// while reading it.
+///
+/// Bracket depth is tracked over all THREE bracket kinds: a conditional
+/// attribute closes its own brackets BEFORE the declaration it applies to, a
+/// macro invocation's token tree never reaches depth zero, and an inline module
+/// body's contents are not crate-root declarations. An unmatched closer
+/// saturates at zero, which fails toward seeing MORE sites, never fewer.
+///
+/// The parser never skips silently. A keyword at an item boundary whose
+/// name-plus-delimiter shape cannot be read raises `[rb77/mod-unparsed:<i>]`,
+/// because a raw identifier spells a declaration rustc accepts and a text scan
+/// cannot — and a silent `continue` there is exactly how a census goes blind.
+///
+/// OVER-APPROXIMATION, stated so nobody mistakes this for a Rust parser: the
+/// scan is byte-level over whitespace-squashed text, so a hypothetical squashed
+/// `;modes;` would be classified as a site named `es`. Nothing in this crate
+/// spells one (the live test's positive floors keep that honest), and the
+/// failure direction is a loud false alarm, never a silent miss.
+fn rb77_declaration_sites(squashed: &str) -> (Vec<Rb77Site>, Vec<String>) {
+    let bytes = squashed.as_bytes();
+    let len = bytes.len();
+    let keyword = rb77_kw_mod();
+    let keyword = keyword.as_bytes();
+    let visibility = rb77_kw_pub();
+    let visibility = visibility.as_bytes();
+    let mut sites: Vec<Rb77Site> = Vec::new();
+    let mut labels: Vec<String> = Vec::new();
+    let mut depth: usize = 0;
+    let mut i = 0usize;
+    while i < len {
+        match bytes[i] {
+            b'{' | b'(' | b'[' => depth += 1,
+            b'}' | b')' | b']' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        if depth != 0 || !bytes[i..].starts_with(keyword) {
+            i += 1;
+            continue;
+        }
+        let prev = if i == 0 { None } else { Some(bytes[i - 1]) };
+        let after_visibility =
+            i >= visibility.len() && &bytes[i - visibility.len()..i] == visibility;
+        let inside_word = match prev {
+            Some(p) => is_ident_byte(p) || p == b'.' || p == b':',
+            None => false,
+        };
+        // A visibility token is itself made of identifier bytes, so it must be
+        // recognised BEFORE the inside-a-longer-identifier skip; otherwise the
+        // one declaration shape that is visible crate-wide is the one shape
+        // this parser never sees.
+        if !after_visibility && inside_word {
+            i += 1;
+            continue;
+        }
+        let mut j = i + keyword.len();
+        while j < len && is_ident_byte(bytes[j]) {
+            j += 1;
+        }
+        let delim = if j < len { Some(bytes[j]) } else { None };
+        if j == i + keyword.len() || !matches!(delim, Some(b';' | b'{')) {
+            labels.push(format!(
+                "[rb77/mod-unparsed:{i}] a module declaration at that squashed byte offset \
+                 could not be read as a name followed by an item delimiter. A raw identifier \
+                 is the spelling that does this: the compiler accepts the declaration and \
+                 every literal needle in this grammar walks straight past it."
+            ));
+            i += 1;
+            continue;
+        }
+        sites.push(Rb77Site {
+            name: String::from_utf8_lossy(&bytes[i + keyword.len()..j]).into_owned(),
+            inline: delim == Some(b'{'),
+            prev,
+            prefix: String::from_utf8_lossy(&bytes[i.saturating_sub(24)..i]).into_owned(),
+            at: i,
+        });
+        i = j;
+    }
+    (sites, labels)
+}
+
+/// The whole rb-77 grammar (ADR-0247 D2/D3) as a pure function of both sources.
+///
+/// NON-SHORT-CIRCUITING: every clause runs and every violated clause contributes
+/// a label, so one applied module swap names every rule it breaks instead of
+/// only the first one a reader happens to reach. `Ok(())` is the shipped state.
+fn rb77_wiring_verdict(lib_src: &str, guards_src: &str) -> Result<(), String> {
+    let lib_name = "lib.rs";
+    let guards_name = "guards.rs";
+    let mut labels: Vec<String> = Vec::new();
+    let mut lib_sites: Vec<Rb77Site> = Vec::new();
+    let mut lib_squashed = String::new();
+    let testmod_prefix = rb77_testmod_prefix();
+    let cfg_needle = rb77_needle_cfg();
+    let cfg_test = rb77_attr_cfg_test();
+    let include_needle = rb77_needle_include();
+
+    for (file, raw) in [(lib_name, lib_src), (guards_name, guards_src)] {
+        let squashed = rb77_squash(file, raw);
+        if squashed.contains(rb77_needle_close_marker().as_str()) {
+            labels.push(format!(
+                "[rb77/scan-substrate:{file}] a block-comment CLOSE marker survived stripping: a \
+                 NESTED block comment. The stripper stops at the FIRST closer and hands the \
+                 outer comment's tail to this scan AS CODE — which is how a bare anchor \
+                 declaration is forged out of comment text. Refused, not scanned wrong."
+            ));
+        }
+        let (sites, parse_labels) = rb77_declaration_sites(&squashed);
+        for label in parse_labels {
+            labels.push(format!("{label} (in {file})"));
+        }
+        for site in &sites {
+            let name = &site.name;
+            if site.inline {
+                labels.push(format!(
+                    "[rb77/mod-inline-body:{name}] `{file}` declares that module with an inline \
+                     body, not as a file module. An inline body can relocate or re-export a \
+                     nested declaration, so the name a call resolves to is no longer the file \
+                     every source pin in this crate reads."
+                ));
+                continue;
+            }
+            if name.ends_with("tests") {
+                let bytes = squashed.as_bytes();
+                let plen = testmod_prefix.len();
+                let at = site.at;
+                let framed = at >= plen
+                    && &bytes[at - plen..at] == testmod_prefix.as_bytes()
+                    && (at == plen || matches!(bytes[at - plen - 1], b';' | b'}'));
+                if !framed {
+                    labels.push(format!(
+                        "[rb77/testmod-prefix:{name}] that test module in `{file}` is not \
+                         immediately preceded by exactly the test-configuration attribute plus \
+                         the path attribute, itself at an item boundary. Squashed bytes before \
+                         it: `{prefix}`. The class is derived from the name suffix, so anything \
+                         else wearing that suffix would inherit the relaxed rule.",
+                        prefix = site.prefix
+                    ));
+                }
+            } else if !matches!(site.prev, None | Some(b';' | b'}')) {
+                labels.push(format!(
+                    "[rb77/mod-not-bare:{name}] that production module in `{file}` is not \
+                     declared BARE — squashed bytes before it: `{prefix}`. It carries an \
+                     attribute, a visibility, or sits inside a macro or block, and every one of \
+                     those resolves the name to a file no scanner here reads.",
+                    prefix = site.prefix
+                ));
+            }
+        }
+        if squashed
+            .match_indices(cfg_needle.as_str())
+            .any(|(at, _)| !squashed[at..].starts_with(cfg_test.as_str()))
+        {
+            labels.push(format!(
+                "[rb77/cfg-not-test:{file}] a conditional-compilation attribute that is not the \
+                 exact test-configuration one — the clause an architecture-selected twin trips. \
+                 The marker stops before the argument list, so the wrapper spelling trips it too."
+            ));
+        }
+        if squashed.contains(rb77_needle_cfg_inner().as_str()) {
+            labels.push(format!(
+                "[rb77/cfg-inner:{file}] an INNER conditional-compilation attribute. Applied \
+                 from inside, it conditions the whole remaining file without ever appearing on \
+                 a declaration line."
+            ));
+        }
+        if squashed.contains(rb77_needle_cfg_macro().as_str()) {
+            labels.push(format!(
+                "[rb77/cfg-macro:{file}] the conditional-compilation MACRO. It selects an \
+                 expression by target instead of an item, which is the same swap one level down."
+            ));
+        }
+        if raw.contains(include_needle.as_str()) || squashed.contains(include_needle.as_str()) {
+            labels.push(format!(
+                "[rb77/include-macro:{file}] a textual source-inclusion macro. Counted on the RAW \
+                 source AND the squashed view: whitespace before the bang evades the raw count, \
+                 and squashing closes it back up."
+            ));
+        }
+        if squashed.contains(rb77_needle_raw_ident().as_str()) {
+            labels.push(format!(
+                "[rb77/raw-ident:{file}] a RAW IDENTIFIER survived into the squashed view. Raw \
+                 STRINGS are blanked first, so the only survivor is an identifier — the spelling \
+                 measured to compile, pass rustfmt and clippy, and turn every literal attribute \
+                 needle in this grammar into a no-op."
+            ));
+        }
+        if file == lib_name {
+            lib_sites = sites;
+            lib_squashed = squashed;
+        }
+    }
+
+    let production: Vec<&str> = lib_sites
+        .iter()
+        .filter(|s| !s.name.ends_with("tests"))
+        .map(|s| s.name.as_str())
+        .collect();
+    let anchors = production
+        .iter()
+        .copied()
+        .filter(|n| *n == "guards")
+        .count();
+    if anchors != 1 {
+        labels.push(format!(
+            "[rb77/guards-anchor] the crate root declares the authorization-wrapper module \
+             {anchors} time(s) at bracket depth zero; exactly once is required. ABSENCE is how \
+             the alias, the nested re-export and the macro token tree all present, and a second \
+             declaration would let a decoy carry this pin while the shipped one is relocated."
+        ));
+    }
+    let mut names: Vec<&str> = production.clone();
+    names.push("guards");
+    names.sort_unstable();
+    names.dedup();
+    let alias_bytes = lib_squashed.as_bytes();
+    for name in names {
+        let needle = format!("as{name}");
+        let aliased = lib_squashed.match_indices(needle.as_str()).any(|(at, _)| {
+            let end = at + needle.len();
+            end >= alias_bytes.len() || !is_ident_byte(alias_bytes[end])
+        });
+        if aliased {
+            labels.push(format!(
+                "[rb77/mod-alias:{name}] the crate root binds that module name as an ALIAS of \
+                 something else. No left word boundary is required on purpose — squashing glues \
+                 the rename keyword onto the identifier before it — while the right-hand side IS \
+                 bounded, so a longer identifier does not false-alarm."
+            ));
+        }
+    }
+
+    if labels.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "rb-77 ADR-0247 FAIL — {count} clause(s):\n  - {body}",
+        count = labels.len(),
+        body = labels.join("\n  - ")
+    ))
+}
+
+/// Assert that `case`'s wiring is rejected AND that each expected clause label
+/// is among the collected ones.
+///
+/// MEMBERSHIP, never whole-message equality: a genuinely broken wiring breaks
+/// several clauses at once (the two-line swap trips the conditional clause, the
+/// bare-declaration clause AND the anchor count), and pinning the whole message
+/// would turn every fixture into a transcription of the collector's prose.
+fn rb77_assert_rejected(case: &str, lib: &str, guards: &str, expected: &[&str]) {
+    let Err(message) = rb77_wiring_verdict(lib, guards) else {
+        panic!(
+            "rb-77 ADR-0247 TEETH FAIL ({case}): the verdict ACCEPTED this wiring. This fixture \
+             is a frozen module swap measured to compile, to ship a different file in the wasm \
+             build, and to leave every other pin in this crate green — accepting it is the whole \
+             defect this slice exists to close."
+        );
+    };
+    for label in expected {
+        assert!(
+            message.contains(label),
+            "rb-77 ADR-0247 TEETH FAIL ({case}): the wiring was rejected, but never by the \
+             clause `{label}` this fixture exists to exercise — so that clause is unproven and \
+             some other rule is carrying the rejection. Collected:\n{message}"
+        );
+    }
+}
+
+/// F0 — the clean control: three bare production modules (the anchor among
+/// them) and one correctly framed test module, beside a guards half with two
+/// ordinary items and the test-module hook. If this is rejected, every
+/// rejection below proves nothing.
+fn rb77_fx_clean() -> (String, String) {
+    let m = rb77_kw_mod();
+    let c = rb77_attr_cfg_test();
+    let lib = format!(
+        "{m} guards;\n{m} battle;\n{m} accounts;\n{c}\n{px}\n{m} x_tests;\n",
+        px = rb77_attr_path("x_tests.rs")
+    );
+    let guards = format!(
+        "pub(crate) fn alpha() -> bool {{ true }}\n\
+         pub(crate) fn beta() -> bool {{ false }}\n\
+         {c}\n{pg}\n{m} guards_tests;\n",
+        pg = rb77_attr_path("guards_tests.rs")
+    );
+    (lib, guards)
+}
+
+/// F1 — the literal rb-46 artifact red-team PoC X4, two lines, verbatim. Kills
+/// a grammar that only looks at the declaration line itself.
+fn rb77_fx_two_line_poc() -> (String, String) {
+    let m = rb77_kw_mod();
+    let c = rb77_attr_cfg_test();
+    let q = double_quote();
+    let cfg = rb77_needle_cfg();
+    let ta = rb77_token_target_arch();
+    let lib = format!(
+        "{m} accounts;\n{m} battle;\n\
+         {cfg}(not({ta} = {q}wasm32{q}))]\n{m} guards;\n\
+         {cfg}({ta} = {q}wasm32{q})]\n{pw}\n{m} guards;\n\
+         {c}\n{px}\n{m} x_tests;\n",
+        pw = rb77_attr_path("guards_wasm.rs"),
+        px = rb77_attr_path("x_tests.rs")
+    );
+    let guards = format!(
+        "pub(crate) fn alpha() -> bool {{ true }}\n{c}\n{pg}\n{m} guards_tests;\n",
+        pg = rb77_attr_path("guards_tests.rs")
+    );
+    (lib, guards)
+}
+
+/// F2 — the same swap on ONE line each. Kills a line-oriented look-back (the
+/// shape rb-76's own path-attribute parser documents as unparsed).
+fn rb77_fx_single_line() -> (String, String) {
+    let m = rb77_kw_mod();
+    let c = rb77_attr_cfg_test();
+    let q = double_quote();
+    let cfg = rb77_needle_cfg();
+    let ta = rb77_token_target_arch();
+    let lib = format!(
+        "{m} accounts;\n{m} battle;\n\
+         {cfg}(not({ta} = {q}wasm32{q}))] {m} guards;\n\
+         {cfg}({ta} = {q}wasm32{q})] {pw} {m} guards;\n\
+         {c}\n{px}\n{m} x_tests;\n",
+        pw = rb77_attr_path("guards_wasm.rs"),
+        px = rb77_attr_path("x_tests.rs")
+    );
+    let guards = format!(
+        "pub(crate) fn alpha() -> bool {{ true }}\n{c}\n{pg}\n{m} guards_tests;\n",
+        pg = rb77_attr_path("guards_tests.rs")
+    );
+    (lib, guards)
+}
+
+/// F3 — one attribute-WRAPPER line carrying the relocation as an argument.
+/// Kills a conditional needle that is spelled with its argument list attached,
+/// and a relocation needle that only knows the standalone attribute.
+fn rb77_fx_attribute_wrapper() -> (String, String) {
+    let m = rb77_kw_mod();
+    let c = rb77_attr_cfg_test();
+    let q = double_quote();
+    let cfg = rb77_needle_cfg();
+    let ta = rb77_token_target_arch();
+    let lib = format!(
+        "{m} accounts;\n{m} battle;\n\
+         {cfg}_attr({ta} = {q}wasm32{q}, path = {q}guards_wasm.rs{q})]\n{m} guards;\n\
+         {c}\n{px}\n{m} x_tests;\n",
+        px = rb77_attr_path("x_tests.rs")
+    );
+    let guards = format!(
+        "pub(crate) fn alpha() -> bool {{ true }}\n{c}\n{pg}\n{m} guards_tests;\n",
+        pg = rb77_attr_path("guards_tests.rs")
+    );
+    (lib, guards)
+}
+
+/// F4 — no anchor at all: a differently-named module plus a rename import, so
+/// every fully qualified call still resolves. Kills a grammar that only
+/// inspects declarations it can see and never notices the one that is GONE.
+fn rb77_fx_alias_trio() -> (String, String) {
+    let m = rb77_kw_mod();
+    let c = rb77_attr_cfg_test();
+    let lib = format!(
+        "{m} accounts;\n{m} battle;\n{m} guards_wasm;\n\
+         use guards_wasm as guards;\n\
+         {c}\n{px}\n{m} x_tests;\n",
+        px = rb77_attr_path("x_tests.rs")
+    );
+    let guards = format!(
+        "pub(crate) fn alpha() -> bool {{ true }}\n{c}\n{pg}\n{m} guards_tests;\n",
+        pg = rb77_attr_path("guards_tests.rs")
+    );
+    (lib, guards)
+}
+
+/// F5 — the anchor relocated into an inline module body and re-exported. Kills
+/// a grammar that counts declarations without tracking bracket depth: the
+/// nested declaration looks bare and even carries the right name.
+fn rb77_fx_nested_reexport() -> (String, String) {
+    let m = rb77_kw_mod();
+    let c = rb77_attr_cfg_test();
+    let lib = format!(
+        "{m} accounts;\n{m} battle;\n\
+         {m} native {{ {pn} pub {m} guards; }}\n\
+         use native::guards;\n\
+         {c}\n{px}\n{m} x_tests;\n",
+        pn = rb77_attr_path("guards.rs"),
+        px = rb77_attr_path("x_tests.rs")
+    );
+    let guards = format!(
+        "pub(crate) fn alpha() -> bool {{ true }}\n{c}\n{pg}\n{m} guards_tests;\n",
+        pg = rb77_attr_path("guards_tests.rs")
+    );
+    (lib, guards)
+}
+
+/// F6 — anchor FORGERY: a bare-looking declaration inside a macro
+/// invocation's token tree, with no real one anywhere. Kills a depth-blind
+/// anchor count, which would read this as a satisfied pin.
+fn rb77_fx_macro_token_tree() -> (String, String) {
+    let m = rb77_kw_mod();
+    let c = rb77_attr_cfg_test();
+    let lib = format!(
+        "{m} accounts;\n{m} battle;\n\
+         wire! {{ ; {m} guards; }}\n\
+         {c}\n{px}\n{m} x_tests;\n",
+        px = rb77_attr_path("x_tests.rs")
+    );
+    let guards = format!(
+        "pub(crate) fn alpha() -> bool {{ true }}\n{c}\n{pg}\n{m} guards_tests;\n",
+        pg = rb77_attr_path("guards_tests.rs")
+    );
+    (lib, guards)
+}
+
+/// F7 — the anchor given a visibility. Kills a look-back that skips whatever
+/// sits inside a longer identifier run: the visibility token is identifier
+/// bytes, so the naive skip makes exactly this shape invisible.
+fn rb77_fx_visible_anchor() -> (String, String) {
+    let m = rb77_kw_mod();
+    let c = rb77_attr_cfg_test();
+    let lib = format!(
+        "{m} accounts;\n{m} battle;\npub {m} guards;\n{c}\n{px}\n{m} x_tests;\n",
+        px = rb77_attr_path("x_tests.rs")
+    );
+    let guards = format!(
+        "pub(crate) fn alpha() -> bool {{ true }}\n{c}\n{pg}\n{m} guards_tests;\n",
+        pg = rb77_attr_path("guards_tests.rs")
+    );
+    (lib, guards)
+}
+
+/// F8 — the anchor wearing the TEST module's own framing, relocated to a twin
+/// file. Kills a grammar that keys the relaxed prefix rule on the attribute it
+/// finds rather than on the declared name's class.
+fn rb77_fx_testframed_anchor() -> (String, String) {
+    let m = rb77_kw_mod();
+    let c = rb77_attr_cfg_test();
+    let lib = format!(
+        "{m} accounts;\n{m} battle;\n{c}\n{pw}\n{m} guards;\n{c}\n{px}\n{m} x_tests;\n",
+        pw = rb77_attr_path("guards_wasm.rs"),
+        px = rb77_attr_path("x_tests.rs")
+    );
+    let guards = format!(
+        "pub(crate) fn alpha() -> bool {{ true }}\n{c}\n{pg}\n{m} guards_tests;\n",
+        pg = rb77_attr_path("guards_tests.rs")
+    );
+    (lib, guards)
+}
+
+/// F9 — the swap moved INSIDE the wrapper file: a conditional textual
+/// inclusion of a twin. Kills a crate-root-only grammar, and kills the
+/// inclusion ban rb-76 loops over a roster that excludes this very file.
+fn rb77_fx_guards_conditional_include() -> (String, String) {
+    let m = rb77_kw_mod();
+    let c = rb77_attr_cfg_test();
+    let q = double_quote();
+    let lib = format!(
+        "{m} guards;\n{m} battle;\n{m} accounts;\n{c}\n{px}\n{m} x_tests;\n",
+        px = rb77_attr_path("x_tests.rs")
+    );
+    let guards = format!(
+        "pub(crate) fn alpha() -> bool {{ true }}\n\
+         {cfg}({ta} = {q}wasm32{q})]\n{inc}{q}guards_wasm.rs{q});\n\
+         {c}\n{pg}\n{m} guards_tests;\n",
+        cfg = rb77_needle_cfg(),
+        ta = rb77_token_target_arch(),
+        inc = rb77_needle_include(),
+        pg = rb77_attr_path("guards_tests.rs")
+    );
+    (lib, guards)
+}
+
+/// F10 — the measured raw-identifier composite: raw attributes and a raw
+/// declaration name. Kills every literal attribute needle at once (the
+/// conditional clause does NOT fire here, by construction) and kills a site
+/// parser that answers an unreadable declaration with a silent skip.
+fn rb77_fx_raw_identifiers() -> (String, String) {
+    let m = rb77_kw_mod();
+    let c = rb77_attr_cfg_test();
+    let q = double_quote();
+    let r = rb77_needle_raw_ident();
+    let ta = rb77_token_target_arch();
+    let lib = format!(
+        "{m} accounts;\n{m} battle;\n\
+         #[{r}cfg(not({ta} = {q}wasm32{q}))]\n{m} {r}guards;\n\
+         #[{r}cfg({ta} = {q}wasm32{q})]\n#[{r}path = {q}guards_wasm.rs{q}]\n{m} {r}guards;\n\
+         {c}\n{px}\n{m} x_tests;\n",
+        px = rb77_attr_path("x_tests.rs")
+    );
+    let guards = format!(
+        "pub(crate) fn alpha() -> bool {{ true }}\n{c}\n{pg}\n{m} guards_tests;\n",
+        pg = rb77_attr_path("guards_tests.rs")
+    );
+    (lib, guards)
+}
+
+/// F11 — the nested block comment that FORGES a bare anchor: marker counts
+/// balance, so rb-76's precondition passes, and the stripper stops at the first
+/// closer and hands the tail to this scan as code. Kills a grammar that trusts
+/// its own substrate.
+fn rb77_fx_nested_comment_phantom() -> (String, String) {
+    let m = rb77_kw_mod();
+    let c = rb77_attr_cfg_test();
+    let open = rb77_needle_open_marker();
+    let close = rb77_needle_close_marker();
+    let lib = format!(
+        "{m} accounts;\n{m} battle;\n\
+         {open} {open} {close} ; {m} guards; {close}\n\
+         {c}\n{px}\n{m} x_tests;\n",
+        px = rb77_attr_path("x_tests.rs")
+    );
+    let guards = format!(
+        "pub(crate) fn alpha() -> bool {{ true }}\n{c}\n{pg}\n{m} guards_tests;\n",
+        pg = rb77_attr_path("guards_tests.rs")
+    );
+    (lib, guards)
+}
+
+/// F12 — the same in-file inclusion as F9 with one space before the bang.
+/// Kills an inclusion ban counted on the RAW source only; the squashed view is
+/// what closes the gap back up.
+fn rb77_fx_spaced_include() -> (String, String) {
+    let m = rb77_kw_mod();
+    let c = rb77_attr_cfg_test();
+    let q = double_quote();
+    let lib = format!(
+        "{m} guards;\n{m} battle;\n{m} accounts;\n{c}\n{px}\n{m} x_tests;\n",
+        px = rb77_attr_path("x_tests.rs")
+    );
+    let guards = format!(
+        "pub(crate) fn alpha() -> bool {{ true }}\n\
+         {spaced}{q}guards_wasm.rs{q});\n\
+         {c}\n{pg}\n{m} guards_tests;\n",
+        spaced = ["inclu", "de !("].concat(),
+        pg = rb77_attr_path("guards_tests.rs")
+    );
+    (lib, guards)
+}
+
+/// **ADR-0247 D4 (live oracle)** — the REAL crate root wires every module bare
+/// and unconditional, the REAL wrapper file carries nothing conditional beyond
+/// its test hook, and the reviewer note of D5 is on the anchor's own line.
+///
+/// WHAT EACH CLAUSE IS FOR:
+///
+///   * THE VERDICT IS `Ok` on the real sources — the invariant itself. Green at
+///     HEAD by design: the wiring is honest today, which is why the teeth live
+///     in the fixture matrix below and in the ledger's X5 live mutant register.
+///   * THE PARSE RAISED NO LABEL and the derived roster has at least twenty
+///     production sites, `guards` among them, with at least one test-class site
+///     in EACH file. These are positive controls, not floors for their own
+///     sake: they prove both needle families still match real text. rb-76's
+///     clause (d) names the same modules line-by-line but deliberately EXCLUDES
+///     `guards`; this parse is byte-level and INCLUDES it, so a future crate
+///     root that stopped being parseable would go quiet here rather than green.
+///   * THE REVIEWER NOTE — exactly one raw line beginning with the anchor
+///     declaration, and exactly one such line naming this ADR. THIS IS THE RED
+///     STATE AT HEAD: the note is a deliverable of this slice, so the first
+///     count passes today and the second is 0 until it lands. An assertion
+///     about a deliverable, not a ratchet.
+#[test]
+fn rb77_crate_root_wires_every_module_bare_and_unconditional() {
+    if let Err(message) = rb77_wiring_verdict(RB76_LIB_RS, GUARDS_RS) {
+        panic!(
+            "rb-77 ADR-0247 FAIL (live): the shipped crate root or the shipped wrapper file \
+             violates the module-wiring grammar. Every clause below names the rule it broke; a \
+             conditional or relocated declaration here means the wasm build compiles a file \
+             that no pin in this crate reads.\n{message}"
+        );
+    }
+
+    let (lib_sites, lib_parse_labels) = rb77_declaration_sites(&rb77_squash("lib.rs", RB76_LIB_RS));
+    assert!(
+        lib_parse_labels.is_empty(),
+        "rb-77 ADR-0247 FAIL (live parse): reading the crate root's declarations raised \
+         {count} label(s): {labels:?}. An unreadable declaration is not a formatting quirk — \
+         it is the one shape this grammar cannot classify, so it is never skipped.",
+        count = lib_parse_labels.len(),
+        labels = lib_parse_labels
+    );
+
+    let production: Vec<&str> = lib_sites
+        .iter()
+        .filter(|s| !s.name.ends_with("tests"))
+        .map(|s| s.name.as_str())
+        .collect();
+    assert!(
+        production.len() >= 20,
+        "rb-77 ADR-0247 FAIL (live floor): the byte-level parse found only {count} production \
+         module(s) in the crate root. The crate has had twenty-one since M8.9, so a count below \
+         twenty means the parse — not the crate — changed, and every ban above it is vacuous. \
+         Found: {production:?}",
+        count = production.len()
+    );
+    assert!(
+        production.contains(&"guards"),
+        "rb-77 ADR-0247 FAIL (live anchor): the derived production roster does not contain the \
+         authorization-wrapper module. That roster is what the anchor and alias clauses are \
+         keyed on, so its absence would make both silently vacuous. Found: {production:?}"
+    );
+    let lib_test_sites = lib_sites
+        .iter()
+        .filter(|s| s.name.ends_with("tests"))
+        .count();
+    assert!(
+        lib_test_sites >= 1,
+        "rb-77 ADR-0247 FAIL (live control): the crate root declares no test-class module, so \
+         the test-module framing rule matched nothing real and its clause proves nothing."
+    );
+
+    let (guards_sites, _guards_parse_labels) =
+        rb77_declaration_sites(&rb77_squash("guards.rs", GUARDS_RS));
+    let guards_test_sites = guards_sites
+        .iter()
+        .filter(|s| s.name.ends_with("tests"))
+        .count();
+    assert!(
+        guards_test_sites >= 1,
+        "rb-77 ADR-0247 FAIL (live control): the wrapper file declares no test-class module, so \
+         the one conditional attribute it is allowed to carry was not seen at all and the \
+         file-wide conditional bans are unproven against real text."
+    );
+
+    let decl = rb77_line_guards_decl();
+    let adr = rb77_note_adr();
+    let declared = RB76_LIB_RS
+        .lines()
+        .filter(|l| l.starts_with(decl.as_str()))
+        .count();
+    assert_eq!(
+        declared, 1,
+        "rb-77 ADR-0247 FAIL (note anchor): the crate root has {declared} line(s) beginning with \
+         the anchor declaration and must have exactly one. This is the positive control for the \
+         clause below: without it, a renamed or moved declaration would make the note check pass \
+         by looking at nothing."
+    );
+    let noted = RB76_LIB_RS
+        .lines()
+        .filter(|l| l.starts_with(decl.as_str()) && l.contains(adr.as_str()))
+        .count();
+    assert_eq!(
+        noted, 1,
+        "rb-77 ADR-0247 FAIL (reviewer note, D5): {noted} of the crate root's anchor declaration \
+         line(s) cite this slice's decision record; exactly one must. The note is half the \
+         residual's disposition — the half a reviewer reads without running anything — and it \
+         belongs on the declaration line itself, where a trailing comment shifts no later line \
+         and therefore moves no knowledge-bundle line stamp."
+    );
+}
+
+/// **ADR-0247 D4 (fixture matrix)** — thirteen frozen module-swap inputs, each
+/// rejected by the clause it exists to exercise, plus the clean control.
+///
+/// Every fixture writes its OWN full text from fragments: no shared builder and
+/// no base-plus-mutation, so one bad helper cannot make the whole matrix
+/// vacuous, and no contiguous production marker enters this file's source. The
+/// expected labels are written out by hand here and produced independently by
+/// the collector, so the pair is a transcription check rather than a tautology.
+///
+/// Each row and the wrong wiring it kills is named in the fixture's own doc
+/// comment above; F1 through F3 and F9 through F12 are the routes this slice's
+/// plan red-team MEASURED to compile, pass rustfmt and clippy, and leave rb-76
+/// and every other pin in this crate byte-identically green.
+#[test]
+fn rb77_module_swap_fixtures_are_rejected_by_clause() {
+    let (lib, guards) = rb77_fx_clean();
+    if let Err(message) = rb77_wiring_verdict(&lib, &guards) {
+        panic!(
+            "rb-77 ADR-0247 TEETH FAIL (F0 clean control): the verdict REJECTED an honest \
+             wiring. Every rejection below is meaningless while this is red — a grammar that \
+             refuses everything proves nothing about the swaps it is supposed to catch.\n\
+             {message}"
+        );
+    }
+
+    let (lib, guards) = rb77_fx_two_line_poc();
+    rb77_assert_rejected(
+        "F1 two-line architecture-selected twin",
+        &lib,
+        &guards,
+        &["[rb77/cfg-not-test:lib.rs]", "[rb77/mod-not-bare:guards]"],
+    );
+
+    let (lib, guards) = rb77_fx_single_line();
+    rb77_assert_rejected(
+        "F2 single-line architecture-selected twin",
+        &lib,
+        &guards,
+        &["[rb77/cfg-not-test:lib.rs]", "[rb77/mod-not-bare:guards]"],
+    );
+
+    let (lib, guards) = rb77_fx_attribute_wrapper();
+    rb77_assert_rejected(
+        "F3 attribute wrapper carrying the relocation",
+        &lib,
+        &guards,
+        &["[rb77/cfg-not-test:lib.rs]", "[rb77/mod-not-bare:guards]"],
+    );
+
+    let (lib, guards) = rb77_fx_alias_trio();
+    rb77_assert_rejected(
+        "F4 renamed module plus rename import",
+        &lib,
+        &guards,
+        &["[rb77/guards-anchor]", "[rb77/mod-alias:guards]"],
+    );
+
+    let (lib, guards) = rb77_fx_nested_reexport();
+    rb77_assert_rejected(
+        "F5 nested inline body re-exported",
+        &lib,
+        &guards,
+        &["[rb77/mod-inline-body:native]", "[rb77/guards-anchor]"],
+    );
+
+    let (lib, guards) = rb77_fx_macro_token_tree();
+    rb77_assert_rejected(
+        "F6 forged anchor inside a macro token tree",
+        &lib,
+        &guards,
+        &["[rb77/guards-anchor]"],
+    );
+
+    let (lib, guards) = rb77_fx_visible_anchor();
+    rb77_assert_rejected(
+        "F7 anchor given a visibility",
+        &lib,
+        &guards,
+        &["[rb77/mod-not-bare:guards]"],
+    );
+
+    let (lib, guards) = rb77_fx_testframed_anchor();
+    rb77_assert_rejected(
+        "F8 anchor wearing the test-module framing",
+        &lib,
+        &guards,
+        &["[rb77/mod-not-bare:guards]"],
+    );
+
+    let (lib, guards) = rb77_fx_guards_conditional_include();
+    rb77_assert_rejected(
+        "F9 conditional textual inclusion inside the wrapper file",
+        &lib,
+        &guards,
+        &[
+            "[rb77/cfg-not-test:guards.rs]",
+            "[rb77/include-macro:guards.rs]",
+        ],
+    );
+
+    let (lib, guards) = rb77_fx_raw_identifiers();
+    rb77_assert_rejected(
+        "F10 raw-identifier attributes and declaration name",
+        &lib,
+        &guards,
+        &["[rb77/raw-ident:lib.rs]", "[rb77/mod-unparsed:"],
+    );
+
+    let (lib, guards) = rb77_fx_nested_comment_phantom();
+    rb77_assert_rejected(
+        "F11 nested block comment forging a bare anchor",
+        &lib,
+        &guards,
+        &["[rb77/scan-substrate:lib.rs]"],
+    );
+
+    let (lib, guards) = rb77_fx_spaced_include();
+    rb77_assert_rejected(
+        "F12 textual inclusion with whitespace before the bang",
+        &lib,
+        &guards,
+        &["[rb77/include-macro:guards.rs]"],
+    );
+}
