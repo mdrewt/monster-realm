@@ -4032,7 +4032,7 @@ fn rb76_subject_gate_and_begin_encounter_are_contained_crate_wide() {
     // The roster above is derived from `lib.rs`'s `mod` lines. A production source
     // file that no `mod` line names is exactly a file this census never opens —
     // and `include!`-style inclusion (banned per module above) is the one way
-    // such a file still reaches the compiler. So every `src/*.rs` that is not a
+    // such a file still reaches the compiler. So every Rust source file directly under `src/` that is not a
     // sibling test module and not the exempt `guards.rs` MUST be on the roster;
     // an unknown file is a loud failure naming it, never a silent skip.
     let src_dir = format!("{root}/src");
