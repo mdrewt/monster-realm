@@ -3911,8 +3911,9 @@ fn enqueue_move_growth_tail_does_not_depend_on_the_lead_level() {
 // the masking attack reopens.
 //
 // Needles are assembled from fragments (house rule), so no needle exists
-// verbatim in this file and neither this scan nor any eval that concatenates the
-// crate's sources can be satisfied by the test's own text.
+// verbatim in this file's EXECUTABLE text; the constant and the skip are spelled
+// out only in prose and assertion messages, which every scan in this repo
+// strips or blanks before counting.
 // ===========================================================================
 
 /// **R-rb-46-GRASSPATH (D4)** — the deletion refusal is skipped IMMEDIATELY
@@ -4155,5 +4156,33 @@ fn rb76_grass_path_skips_the_deletion_refusal_before_the_limiter() {
          the next character and so shifts every later walker's encounter seed, a \
          cross-character coupling the R-E discipline exists to forbid. The gate belongs \
          inside `begin_encounter`, below the draw, where it is."
+    );
+
+    // --- Layer 8 (artifact red-team, MEASURED): no attribute in the body -------
+    // `#[cfg(test)]` placed on the skip statement leaves layer 1's needle a
+    // SUBSTRING of the squashed body (`#[cfg(test)]ife==…{continue;}ife!=…{`),
+    // so every layer above stays green while the published wasm is compiled
+    // WITHOUT the skip and the limiter-masking attack ADR-0170 D4 closes is
+    // back. Body-wide, not region-wide: the same attribute on any earlier grass
+    // statement has the same character. Mirrors battle_tests' clause E.
+    let attr_open = ["#", "["].concat();
+    let n_attr = body.matches(attr_open.as_str()).count();
+    assert_eq!(
+        n_attr, 0,
+        "TEETH (rb-76 / ADR-0246 D4, attribute ban): `movement_tick`'s body contains {n_attr} \
+         attribute opener(s) and must contain ZERO. GREEN AT HEAD. THE MUTANT THIS KILLS \
+         (measured CI-green without it): a conditional-compilation attribute on the \
+         deletion-refusal skip — every test in this file still sees the statement, while the \
+         published wasm drops it and a deleting walker's refusals flood the begin-encounter \
+         limiter again."
+    );
+    let cfg_macro = ["cfg", "!("].concat();
+    let n_cfg = body.matches(cfg_macro.as_str()).count();
+    assert_eq!(
+        n_cfg, 0,
+        "TEETH (rb-76 / ADR-0246 D4, attribute ban): `movement_tick`'s body contains {n_cfg} \
+         `cfg!(` macro(s) and must contain ZERO — the expression-position twin of the \
+         attribute above (`if cfg!(test) && e == …`), which keys the skip on the build \
+         rather than on the reason."
     );
 }

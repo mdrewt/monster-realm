@@ -3771,6 +3771,14 @@ fn rb76_subject_gate_wrapper_is_declared_once_fused_and_unconditional() {
 /// test — `guards.rs` by two, `battle.rs` by two, `movement.rs` by two,
 /// `accounts` and `privacy` by their predicate minima, `lib.rs` by the roster
 /// size — so a blanked file there is loud rather than silent.
+/// HONEST LIMITS. (1) `guards.rs` and `lib.rs` are read at compile time
+/// (`include_str!`) while the other rostered modules are read from disk at RUN
+/// time (`std::fs::read_to_string`), so a stale test binary run over edited
+/// sources reports on bytes it did not compile — relevant to mutation runners,
+/// which must rebuild between rows. (2) Since rb-76, `lib.rs` is subject to the
+/// scan-substrate preconditions (no deep raw string, balanced block-comment
+/// markers): an edit there that trips them reds this test from outside the
+/// slice's touch set, by design — it is a real stripper hazard in that file.
 #[test]
 fn rb76_subject_gate_and_begin_encounter_are_contained_crate_wide() {
     let bare = rb76_subject_gate_bare_name();
@@ -3876,6 +3884,19 @@ fn rb76_subject_gate_and_begin_encounter_are_contained_crate_wide() {
             )
         });
         let squashed = rb76_module_squashed(name.as_str(), &src);
+        let include_macro = ["inclu", "de!("].concat();
+        let n_include = src.matches(include_macro.as_str()).count();
+        assert_eq!(
+            n_include, 0,
+            "rb-76 ADR-0246 FAIL (containment, textual inclusion): `{name}.rs` pulls source in \
+             with the `include!` macro {n_include} time(s) and must do so ZERO times. An \
+             included fragment declares no `mod`, so it is invisible to this roster AND to the \
+             crate's `mod`-line censuses — the artifact red-team MEASURED a counterparty-keyed \
+             consumer of the subject gate hidden in such a fragment passing every clause here \
+             CI-green. (`include_str!` is a different token and stays allowed — it embeds \
+             data, not code.) Counted on the RAW source so a fragment in a string cannot hide \
+             it either."
+        );
         assert!(
             squashed.len() >= 200,
             "rb-76 ADR-0246 FAIL (containment, blanking canary): the stripped, squashed \
@@ -3953,15 +3974,32 @@ fn rb76_subject_gate_and_begin_encounter_are_contained_crate_wide() {
         // (c) the accounts predicate's crate-wide containment
         let n_predicate = squashed.matches(predicate.as_str()).count();
         match name.as_str() {
-            "accounts" => assert!(
-                n_predicate >= 2,
-                "rb-76 ADR-0246 FAIL (predicate containment, anti-vacuity): `accounts.rs` \
-                 names the context-bound deletion predicate {n_predicate} time(s) and must \
-                 name it at least TWICE — the declaration plus its own guest-claim consumer. \
-                 Fewer means the predicate was renamed or moved, so the crate-wide ban below \
-                 is banning a spelling nothing uses and would pass over every module. GREEN \
-                 AT HEAD."
-            ),
+            "accounts" => {
+                assert_eq!(
+                    n_predicate, 2,
+                    "rb-76 ADR-0246 FAIL (predicate containment): `accounts.rs` names the \
+                     context-bound deletion predicate {n_predicate} time(s) and must name it \
+                     EXACTLY twice — the declaration plus its own guest-claim consumer. Fewer \
+                     means the predicate was renamed or moved, so the crate-wide ban below is \
+                     banning a spelling nothing uses and would pass over every module. MORE is \
+                     the artifact red-team's MEASURED bypass: a `pub(crate) use \
+                     is_pending_deletion as <alias>;` re-export (or a one-line wrapper fn) in \
+                     this exempt file lets any other module consult the predicate about a \
+                     third party under a name this census never spells — a floor of two \
+                     admitted it CI-green. An exact count is what makes the exemption a \
+                     boundary rather than a hole. GREEN AT HEAD."
+                );
+                let alias = ["useis_pending_", "deletion"].concat();
+                let n_alias = squashed.matches(alias.as_str()).count();
+                assert_eq!(
+                    n_alias, 0,
+                    "rb-76 ADR-0246 FAIL (predicate containment): `accounts.rs` re-exports or \
+                     `use`-binds the context-bound deletion predicate {n_alias} time(s) and \
+                     must do so ZERO times — a re-export is a second spelling of an \
+                     identity-taking oracle that the bare-name census cannot see in the \
+                     consuming module."
+                );
+            }
             "privacy" => assert_eq!(
                 n_predicate, 1,
                 "rb-76 ADR-0246 FAIL (predicate containment, anti-vacuity): `privacy.rs` \
@@ -3989,6 +4027,45 @@ fn rb76_subject_gate_and_begin_encounter_are_contained_crate_wide() {
             ),
         }
     }
+
+    // --- the filesystem is the roster's SUPERSET check ------------------------
+    // The roster above is derived from `lib.rs`'s `mod` lines. A production source
+    // file that no `mod` line names is exactly a file this census never opens —
+    // and `include!`-style inclusion (banned per module above) is the one way
+    // such a file still reaches the compiler. So every `src/*.rs` that is not a
+    // sibling test module and not the exempt `guards.rs` MUST be on the roster;
+    // an unknown file is a loud failure naming it, never a silent skip.
+    let src_dir = format!("{root}/src");
+    let mut on_disk: Vec<String> = std::fs::read_dir(src_dir.as_str())
+        .unwrap_or_else(|err| panic!("rb-76: cannot list `{src_dir}` ({err})"))
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter_map(|file| file.strip_suffix(".rs").map(str::to_string))
+        .filter(|stem| !stem.ends_with("tests") && stem != "guards")
+        .collect();
+    on_disk.sort();
+    let unknown: Vec<&String> = on_disk
+        .iter()
+        .filter(|stem| !modules.iter().any(|m| m == *stem))
+        .collect();
+    assert!(
+        unknown.is_empty(),
+        "rb-76 ADR-0246 FAIL (containment, unrostered source): `src/` contains production \
+         source file(s) that no `lib.rs` `mod` line declares and this census therefore never \
+         scanned: {unknown:?}. Either declare the module in `lib.rs` (the roster is derived \
+         from those lines and will pick it up) or, if it is a test module, name it `*tests.rs` \
+         so the sibling-test exemption applies. A production file reachable only by textual \
+         inclusion is the artifact red-team's MEASURED hiding place for a third-party \
+         deletion-status oracle."
+    );
+    assert!(
+        on_disk.len() >= 10,
+        "rb-76 ADR-0246 FAIL (containment, anti-vacuity): only {} production source file(s) \
+         were listed under `src/`; the crate has far more. A short listing means the \
+         directory walk is looking in the wrong place, and a superset check over an empty set \
+         passes vacuously.",
+        on_disk.len()
+    );
 }
 
 // rb76-compile-red-begin
