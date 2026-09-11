@@ -89,7 +89,7 @@ the flow half-supported; (c) retaining lets this slice land the zone reject-not-
 ### 3. Zone derived from the caller's `Character` — reject-not-clamp
 
 `start_wild_battle` now **binds** the caller's character at the existing existence-check
-(`lib.rs:1492-1502` [rb-74: -> `let Some(character) = ctx.db.character().entity_id().find(player.entity_id) else {` in `server-module/src/battle.rs`], previously discarded) and **rejects** before any further DB work
+(`lib.rs:1492-1502` [rb-74: -> `let Some(character) = ctx.db.character().entity_id().find(player.entity_id) else {` inside `pub fn start_wild_battle(` in `server-module/src/battle.rs`], previously discarded) and **rejects** before any further DB work
 (before `lead_party`):
 
 ```rust
@@ -128,7 +128,7 @@ here.
 ### 5. Why gating only these two reducers is sufficient
 
 `movement_tick` runs the *same* encounter-roll path but is **not** a bypass: it is
-scheduler-only (`if ctx.sender != ctx.identity() { return Err }`, `lib.rs:940` [rb-74: -> `if ctx.sender() != ctx.database_identity() {` in `server-module/src/movement.rs`; same guard, respelled by the crate 1.x-to-2.x port (ADR-0197)]) and its
+scheduler-only (`if ctx.sender != ctx.identity() { return Err }`, `lib.rs:940` [rb-74: -> `if ctx.sender() != ctx.database_identity() {` inside `pub fn movement_tick(` in `server-module/src/movement.rs`; same guard, respelled by the crate 1.x-to-2.x port (ADR-0197)]) and its
 zone comes from the `movement_tick_schedule` row (server-seeded at `init`), never from a
 client argument; clients cannot insert schedule rows. No other client-callable reducer
 rolls an arbitrary zone's encounter table or mints inventory. The two gated reducers are
