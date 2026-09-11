@@ -7293,16 +7293,6 @@ fn rb46_start_wild_battle_carries_the_deletion_gate() {
 }
 
 // ===========================================================================
-// APPEND-AT-EOF FRAGMENT for server-module/src/battle_tests.rs (rb-76).
-//
-// This file is NOT a replacement for `battle_tests.rs` — it is the text to
-// append verbatim after its current last line (7285, the closing brace of
-// `rb46_start_wild_battle_carries_the_deletion_gate`). The ONE prose rider that
-// belongs inside `rb46_assert_gate_pinned`'s clause F message is delivered
-// separately as an exact old/new string; it changes no assertion.
-// ===========================================================================
-
-// ===========================================================================
 // rb-76 (residual R-rb-46-GRASSPATH, ADR-0246) — the scheduler-opened grass-path
 // wild encounter is a gated commitment, refused at the SHARED choke point.
 //
@@ -7680,7 +7670,8 @@ fn rb76_begin_encounter_refuses_only_a_deletion_gated_walker() {
 ///      executes the gate — including the behavioural test beside this one —
 ///      while the published wasm is compiled WITHOUT it.
 ///   I-b THE PREFIX IS FROZEN BY EQUALITY. This is the clause that does the most
-///      work, and it strictly subsumes the rb-46 helper's clauses C (top-level
+///      work (clause H's first bound, pure-cap-before-gate, is implied by it too
+///      and is kept only for its ADR-0166 D3 message), and it strictly subsumes the rb-46 helper's clauses C (top-level
 ///      depth), D (statement boundary) and I (the `return`-equals-`return Err`
 ///      census): everything above the gate must be EXACTLY the pure
 ///      `check_party_size` cap and the pure dedup block, byte for byte in the
@@ -7740,6 +7731,16 @@ fn rb76_begin_encounter_carries_the_subject_deletion_gate() {
          changed, and every clause below would scan a body this pin never meant; with two \
          the body extractor takes the FIRST match, so a decoy definition could carry the \
          gate while the shipped one stays open."
+    );
+    let bare_decl = ["fnbegin_", "encounter("].concat();
+    let n_bare_decl = file_squashed.matches(bare_decl.as_str()).count();
+    assert_eq!(
+        n_bare_decl, 1,
+        "rb-76 SCAN PRECONDITION: `battle.rs` declares a function named `{fn_name}` \
+         {n_bare_decl} time(s) at ANY visibility; it must be EXACTLY once. The body extractor \
+         locates the looser `fn begin_encounter(`, so a private same-named decoy in an inner \
+         module ABOVE the shipped one would be the body every clause below scans while the \
+         `pub(crate)` count above still reads one."
     );
 
     let body = squash_ws(&fn_body(fn_name.as_str()));

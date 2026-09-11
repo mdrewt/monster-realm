@@ -1,4 +1,4 @@
-# ADR-0246 — A scheduler-opened wild encounter is a §4.7 commitment; the grass path is gated at the `begin_encounter` choke point through the first identity-parameterised guards wrapper
+# ADR-0246 — A scheduler-opened wild encounter is a §4.7 commitment; the grass path is gated at the `begin_encounter` choke point through the first identity-parameterised member of the deletion-gate family
 
 **Status:** Accepted
 **Date:** 2026-09-11
@@ -47,7 +47,7 @@ respecting it: an encounter opened mid-grace is a live battle the §4.4 step-1 c
 boot, which is the very harm PRV1-10 forbids; refusing it at the door is what keeps the cascade from ever
 having to.
 
-### D2 — The seam: `guards::require_subject_not_deleting(ctx, subject)`, the first identity-parameterised wrapper — non-logging, contained by census
+### D2 — The seam: `guards::require_subject_not_deleting(ctx, subject)`, the first identity-parameterised member of the deletion-gate family — non-logging, contained by census
 
 ```rust
 pub(crate) fn require_subject_not_deleting(ctx: &ReducerContext, subject: Identity) -> Result<(), String> {
@@ -61,8 +61,8 @@ pub(crate) fn require_subject_not_deleting(ctx: &ReducerContext, subject: Identi
   status-or-marker disjunction) and the reject side stringifies the ONE static reason
   `REJECT_DELETION_GATED`. No new reason constant (the class ADR-0237's alternatives rejected), no new type,
   no new dependency. The body is pinned byte-for-byte (whole-body equality) like its siblings.
-- **It does NOT log, and therefore takes no `reducer` tag.** `begin_encounter` returns nine `Err`s and logs
-  none of them — its contract is that the CALLER owns observability, which is why the routine
+- **It does NOT log, and therefore takes no `reducer` tag.** `begin_encounter` logs none of its
+  `Err` returns — its contract is that the CALLER owns observability, which is why the routine
   `NO_CONSCIOUS_MONSTER_REASON` is a shared constant the scheduler filters on. A wrapper that emitted
   `log_reject` here would be the only logging `Err` in that function, would fire at roughly one warn line
   per second per deleting walker on grass for the whole grace window (5 steps/s × the zone encounter rate),
@@ -171,7 +171,7 @@ and GREEN after:
   on `movement_tick`: the skip and the existing filter as one contiguous squashed sequence.
 - **Census** — the crate-wide single-consumer census of D2, derived from `lib.rs` (the crate root seeded
   as a module, only `guards` exempted), with the same three anti-vacuity clauses as rb-47's (guards.rs count
-  exactly one, ≥10 modules derived, the six two-player modules plus `movement` present, an unreadable
+  exactly one, ≥10 modules derived, the six two-player modules plus `movement` and `accounts` present, an unreadable
   module panics by name), and the `begin_encounter` caller census beside it.
 
 The proof-of-teeth mutant register is executed one mutant at a time by a runner in the acceptance ledger
@@ -212,7 +212,8 @@ stay ungated (ADR-0227 D5, ADR-0236 D5); `require_not_deleting`'s signature and 
 
 - The gated set of §4.7 openers now closes at FUNCTION granularity in `battle.rs`: `start_battle`,
   `start_wild_battle` (caller-only wrapper, rb-46) and `begin_encounter` (subject wrapper, this ADR).
-  `guards.rs` gains its first identity-parameterised wrapper; ARCHITECTURE.md's guards row and the deletion
+  `guards.rs` gains the deletion-gate family's first identity-parameterised member (other guards helpers
+  such as `require_owner` and `is_in_ongoing_battle` already take an identity); ARCHITECTURE.md's guards row and the deletion
   paragraph are updated; ADR-0236's GRASSPATH residual is discharged by a dated amendment there.
 - A mid-grace or terminal walker keeps walking, keeps drawing an encounter roll per grass step, and is
   refused only when a roll would have opened a battle — silently, like a fainted party (D1/D2/D4): by
@@ -237,7 +238,9 @@ stay ungated (ADR-0227 D5, ADR-0236 D5); `require_not_deleting`'s signature and 
   not panic (the panic arm fires only when `src/<name>.rs` is missing). The census therefore also pins that
   every `#[path` attribute in `lib.rs` sits on a `*tests` module, which is the whole legitimate set today;
   a `#[cfg(target_arch)]`-selected module twin (ADR-0236's disclosed residual) remains the reviewer's to
-  catch in the touches-delta audit. (2) The native host's fixed sender is the all-zero identity, which is
+  catch in the touches-delta audit. The roster is `lib.rs`-derived, so a submodule declared inside another
+  production file (`mod helper;` in `battle.rs`, say) is unscanned until its declaration is hoisted or the
+  helper is taught the nesting — a class no census in this crate covers today. (2) The native host's fixed sender is the all-zero identity, which is
   also `WILD_IDENTITY` and `Identity::ZERO`, so a gate keyed on `ctx.sender()`, on `WILD_IDENTITY` or on a
   literal zero identity is indistinguishable under execution; the executed controls separate sender-keyed
   from subject-keyed only because the walker is non-zero, and the constant-keyed class rests on the body

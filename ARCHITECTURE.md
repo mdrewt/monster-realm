@@ -477,7 +477,7 @@ source pins. The scheduler
 grass path (`movement_tick → begin_encounter`, R-rb-46-GRASSPATH) was closed by **rb-76** (ADR-0246): a
 scheduler-opened wild encounter IS a §4.7 commitment, refused inside `battle::begin_encounter` — the choke
 point both openers share — through `guards::require_subject_not_deleting(ctx, player_identity)`, the
-first identity-PARAMETERISED guards wrapper (same fused delegation, NON-logging — the caller owns
+first identity-PARAMETERISED member of the deletion-gate family (same fused delegation, NON-logging — the caller owns
 observability — keyed on the walker's server-derived identity, contained by a crate-wide bare-name census
 rather than by signature); the walker's step still lands, and `movement_tick` treats the refusal as
 routine (outside the encounter-error limiter, unlogged like a fainted party). The challenger-side accept

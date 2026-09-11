@@ -3203,16 +3203,6 @@ fn rb46_gated_reducer_census_battle_and_economy() {
 }
 
 // ===========================================================================
-// APPEND-AT-EOF FRAGMENT for server-module/src/guards_tests.rs (rb-76).
-//
-// This file is NOT a replacement for `guards_tests.rs` — it is the text to
-// append verbatim after its current last line (3186, the closing brace of
-// `rb46_gated_reducer_census_battle_and_economy`). The two PROSE RIDERS that
-// belong INSIDE the existing rb-46 census block are delivered separately as
-// exact old/new strings; they change no assertion.
-// ===========================================================================
-
-// ===========================================================================
 // rb-76 (residual R-rb-46-GRASSPATH, ADR-0246) — the scheduler-opened grass-path
 // wild encounter is a GATED commitment, refused for a mid-grace or terminal
 // WALKER through the crate's first identity-PARAMETERISED deletion wrapper.
@@ -3398,6 +3388,10 @@ fn rb76_scanned_module_names() -> Vec<String> {
 /// this file. Attribute and blank lines between the attribute and the
 /// declaration are skipped (the conditional-compilation attribute sits above the
 /// path attribute in three of the four live cases, and below it in none).
+/// ASSUMES the attribute and its `mod` declaration sit on SEPARATE lines (true
+/// of all four live cases); a single-line `#[path = ..] mod x;` would be read as
+/// an attribute whose target is the NEXT declaration — extend the parser before
+/// writing one.
 fn rb76_path_attribute_targets() -> Vec<String> {
     let clean = m22s5_strip_comments_only(RB76_LIB_RS);
     let attr = ["#", "[path"].concat();
@@ -3856,6 +3850,15 @@ fn rb76_subject_gate_and_begin_encounter_are_contained_crate_wide() {
          would mean a third consumer appeared in the file that clause (c) exempts from its \
          crate-wide ban, which is the one place such a consumer could hide from it."
     );
+    let n_guards_begin = guards.matches(begin.as_str()).count();
+    assert_eq!(
+        n_guards_begin, 0,
+        "rb-76 ADR-0246 D2 FAIL (containment, caller census): `guards.rs` calls \
+         `begin_encounter(` {n_guards_begin} time(s) and must call it ZERO times. `guards.rs` \
+         is the one module the derived roster below exempts, so clause (b)'s per-module \
+         count never sees it; this assertion closes that gap — a wild-battle opener hidden in \
+         the guards module would otherwise be a third caller the census reports as absent."
+    );
 
     // --- the derived modules -------------------------------------------------
     let root = env!("CARGO_MANIFEST_DIR");
@@ -3994,9 +3997,17 @@ fn rb76_subject_gate_and_begin_encounter_are_contained_crate_wide() {
 /// and consults neither `ctx.sender()` nor the table at large.
 ///
 /// The shipped wrapper runs under the rb-41 native host (`native_host_tests`,
-/// ADR-0222 amendment) against real `account` rows through six states, with the
+/// ADR-0222 amendment) against real `account` rows through seven calls — five
+/// subject states plus two sender-vs-subject controls — with the
 /// exact verdict pinned in each. The three admitted states are the positive
 /// control, and they are what make the two refused states mean anything.
+///
+/// SCOPE NOTE: today this matrix overlaps the `begin_encounter` matrix in
+/// `battle_tests.rs` almost entirely, because that reducer helper is the seam's
+/// ONLY consumer. It is kept as a DECOUPLING FENCE — the wrapper's own truth
+/// table, independent of any consumer — so that if a second consumer is ever
+/// sanctioned (and the census widened deliberately) the seam still has a
+/// consumer-free witness. Do not re-widen the battle-side test to carry this.
 ///
 /// TWO CONTROLS CARRY THE WHOLE POINT OF THIS SLICE, and neither exists in the
 /// rb-46 matrix this test is modelled on:

@@ -3867,15 +3867,6 @@ fn enqueue_move_growth_tail_does_not_depend_on_the_lead_level() {
 }
 
 // ===========================================================================
-// APPEND-AT-EOF FRAGMENT for server-module/src/movement_tests.rs (rb-76).
-//
-// This file is NOT a replacement for `movement_tests.rs` — it is the text to
-// append verbatim after its current last line (3868, the closing brace of
-// `enqueue_move_growth_tail_does_not_depend_on_the_lead_level`). It adds ONE
-// `#[test]` and changes nothing that already exists in that file.
-// ===========================================================================
-
-// ===========================================================================
 // rb-76 (residual R-rb-46-GRASSPATH, ADR-0246 D4) — a deletion-gated walker's
 // refused encounter is ROUTINE gameplay: it consumes neither the error log nor
 // the limiter window.

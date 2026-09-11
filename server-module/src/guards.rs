@@ -174,7 +174,7 @@ pub(crate) fn require_commitment_predates_deletion(
 ///
 /// It deliberately does NOT log, and therefore takes no `reducer` tag: on this
 /// path the CALLER owns observability — `battle::begin_encounter` logs none of
-/// its nine `Err`s — and a `log_reject` call here would be an unbounded,
+/// its `Err` returns — and a `log_reject` call here would be an unbounded,
 /// client-triggered warn stream, roughly one line per second per deleting walker
 /// on grass for the whole grace window, on a refusal the scheduler treats as a
 /// routine non-event. The client-facing path is unaffected: `start_wild_battle`'s
