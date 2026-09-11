@@ -3106,10 +3106,13 @@ fn m22s5_propose_trade_carries_the_deletion_gate() {
 /// silently re-point link 2 at a body nobody reviewed.
 ///
 /// HONEST LIMIT: a source scan sees the call, never the execution. What makes
-/// this the right shape anyway is that both links are unconditional statements
-/// in bodies whose own reachability is pinned elsewhere — `on_disconnect` is a
-/// lifecycle reducer with no guards at all, and the resolver's four calls are
-/// pinned as a flat sequence by `m22s3b_resolver_body_order` in accounts_tests.
+/// this the right shape anyway is that both links are statements in bodies
+/// whose own reachability is pinned elsewhere — since rb-73 (ADR-0245 D3) the
+/// resolver call in `on_disconnect` sits behind ONE guard, `has_live_session`,
+/// whose position before the call and sole occurrence are frozen by
+/// `rb73_wiring_on_disconnect_guard_precedes_and_body_is_frozen`, and the
+/// resolver's four calls are pinned as a flat sequence by
+/// `m22s3b_resolver_body_order` in accounts_tests.
 #[test]
 fn m22s3b_resolver_extraction_chain() {
     let lib = strip_rust_strings_trading(&strip_rust_comments_trading(M22S3B_LIB_RS));

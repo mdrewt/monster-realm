@@ -1949,6 +1949,20 @@ export const REKEY_MANIFEST = freezeManifest({
       'not exist yet and a TTL is not a substitute for cascade erasure anyway (the ' +
       'playtest_event doctrine)',
   },
+  // rb-73 (ADR-0245 D4): one row per LIVE connection, keyed by the host-minted
+  // ConnectionId, written only by the lifecycle hooks in lib.rs. A row belongs to
+  // the SOCKET that opened it, not to the account: the claimed identity opens its
+  // own row on its next connect, so nothing is re-keyed.
+  'player_session.identity': {
+    policy: 'EXEMPT',
+    reason:
+      'per-connection presence bookkeeping keyed by the host-minted ConnectionId; a row ' +
+      'belongs to the socket that opened it, not to the account, and the claimed identity ' +
+      'opens its own row on its next connect. HONEST LIMIT: a row the guest opened survives ' +
+      'the claim until that socket closes (<=30 s after a severed socket, or the next module ' +
+      'launch replay of dangling st_client rows), briefly referencing the retired guest ' +
+      'identity; the deletion cascade erases it (Erase policy, ADR-0245 D1)',
+  },
 });
 
 // ---------------------------------------------------------------------------

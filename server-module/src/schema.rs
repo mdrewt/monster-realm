@@ -17,7 +17,7 @@ use game_core::{
     ActionState, Affinity, BattleState, Direction, MoveInput, NatureKind, NpcInteraction, StatKind,
     StatusKind, TrustTier,
 };
-use spacetimedb::Identity;
+use spacetimedb::{ConnectionId, Identity};
 
 // --- Tables (additive, ADR-0006; world tables carry an indexed zone_id, ADR-0007) ---
 
@@ -943,6 +943,29 @@ pub struct ExportBundle {
     pub created_at_ms: i64,
 }
 
+/// One row per LIVE client connection (rb-73, ADR-0245): the host-minted
+/// `ConnectionId` of the socket and the identity it authenticated as. Written
+/// ONLY by the two lifecycle hooks in `lib.rs` (`on_connect` inserts,
+/// `on_disconnect` deletes its own row) and erased by the deletion cascade;
+/// read by `has_live_session`, which is what lets `on_disconnect` run the
+/// trade, PvP, wild-battle and challenge force-resolves only when an
+/// identity's LAST live connection ends — an ephemeral HTTP reducer call
+/// (one connection per call) can no longer fire them under a live session.
+/// PRIVATE: connection ids are per-session secrets in spirit and must never
+/// leak through a subscription (ADR-0015). Key shape is final on first ship
+/// (ADR-0006): the PK is the connection id (one row per socket, so a
+/// re-entrant `client_connected` can never collide on identity), the btree
+/// index on `identity` serves the sole reader. No timestamp column: a stale
+/// row self-heals when the host replays `client_disconnected` for dangling
+/// `st_client` rows at module launch, so a TTL reaper is not needed.
+#[spacetimedb::table(accessor = player_session)]
+pub struct PlayerSession {
+    #[primary_key]
+    pub connection_id: ConnectionId,
+    #[index(btree)]
+    pub identity: Identity,
+}
+
 /// Deletion policy for one table's rows at account-cascade time (M22 §3).
 ///
 /// `ViaJoin` carries the OWNING PARENT table's accessor name: the row has no
@@ -989,8 +1012,8 @@ pub struct DataLifecycleEntry {
 /// The classification is spec §3's exhaustive partition (12 ERASE + 4
 /// ANONYMIZE + 5 JOIN-ONLY + 17 NOT-OWNED over the 38 pre-M22 tables) plus
 /// m22-s2's `export_bundle` (ERASE), rb-24's `account_deletion_reaper_schedule`
-/// (NOT-OWNED, ADR-0221) and rb-48's `export_bundle_reaper_schedule` (NOT-OWNED,
-/// ADR-0238) — 41 entries. Do not re-partition: add new tables with their own entry. The claim-flow
+/// (NOT-OWNED, ADR-0221), rb-48's `export_bundle_reaper_schedule` (NOT-OWNED,
+/// ADR-0238) and rb-73's `player_session` (ERASE, ADR-0245) — 42 entries. Do not re-partition: add new tables with their own entry. The claim-flow
 /// re-key axis lives separately as `REKEY_MANIFEST` in
 /// `evals/guest-claim-integrity.eval.mjs` (per-column, consumed by G6); a
 /// cross-manifest gate test ties the two together.
@@ -1079,6 +1102,12 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
         policy: DeletionPolicy::Erase,
         basis: "an export snapshot is itself personal data: swept at cascade time in \
                 addition to its own S4 TTL reaper",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "player_session",
+        policy: DeletionPolicy::Erase,
+        basis: "per-connection presence bookkeeping naming a live socket and its identity, erased with the presence rows at cascade time (rb-73)",
         exportable: false,
     },
     // --- ANONYMIZE: rows survive; identity or PII fields are tombstoned. ---

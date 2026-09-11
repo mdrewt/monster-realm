@@ -14,7 +14,9 @@
 
 use crate::content::sync_content_inner;
 use crate::movement::{movement_tick_schedule, MovementTickSchedule};
-use crate::schema::{character, config, player, player_conversation, zone_def, Config};
+use crate::schema::{
+    character, config, player, player_conversation, player_session, zone_def, Config, PlayerSession,
+};
 use game_core::STEP_MS;
 use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 use std::time::Duration;
@@ -216,16 +218,22 @@ pub fn sync_content(ctx: &ReducerContext) -> Result<(), String> {
     Ok(())
 }
 
-/// Lifecycle: lazy-provision or touch an `account` on connect (M21, ADR-0179 D4).
-/// Anonymous play is FIRST-CLASS. Returning `Err` from this hook DISCONNECTS the
-/// client (crate doc), so the very first statement is the `has_jwt()` early
-/// return with no prior `Err` path (AUTH-1 / G3). The vendor's canonical example
-/// for this hook REJECTS JWT-less connections — that pattern is NOT copied here.
-/// All provisioning logic lives in `accounts.rs` (D0 write-isolation); this hook
-/// only branches on presence of a JWT and delegates.
+/// Lifecycle: record the live connection, then lazy-provision or touch an
+/// `account` (M21, ADR-0179 D4). Anonymous play is FIRST-CLASS. Returning `Err`
+/// from this hook DISCONNECTS the client (crate doc), so no fallible statement
+/// precedes the `has_jwt()` early return (AUTH-1 / G3): the JWT test is hoisted
+/// into a bool, the session record (`open_player_session`, rb-73 / ADR-0245 D2 —
+/// infallible by construction, pinned single-purpose) runs for EVERY connection
+/// including anonymous ones, and only then does the JWT-less path return `Ok`.
+/// The vendor's canonical example for this hook REJECTS JWT-less connections —
+/// that pattern is NOT copied here. All provisioning logic lives in
+/// `accounts.rs` (D0 write-isolation); this hook only branches on presence of a
+/// JWT and delegates.
 #[spacetimedb::reducer(client_connected)]
 pub fn on_connect(ctx: &ReducerContext) -> Result<(), String> {
-    if !ctx.sender_auth().has_jwt() {
+    let jwt = ctx.sender_auth().has_jwt();
+    open_player_session(ctx);
+    if !jwt {
         return Ok(());
     }
     accounts::provision_or_touch_account(ctx)
@@ -266,9 +274,67 @@ pub(crate) fn erase_character_rows(ctx: &ReducerContext, owner: Identity) {
     }
 }
 
+/// Record the connection that just opened (rb-73, ADR-0245 D2). Infallible on
+/// purpose — it runs BEFORE `on_connect`'s anonymous early return, where an
+/// `Err` or a panic would reject the connection. `client_connected` always
+/// carries a connection id (vendor lifecycle contract); the `None` arm is the
+/// native-test/`init`-style context and records nothing. Delete-before-insert
+/// keeps a re-entrant hook for an id that already holds a row from panicking on
+/// the PK (the vendor's `insert_or_update` is `unstable`-gated). Names ONLY the
+/// `player_session` accessor — the wiring pin freezes that.
+fn open_player_session(ctx: &ReducerContext) {
+    let Some(conn) = ctx.connection_id() else {
+        return;
+    };
+    ctx.db.player_session().connection_id().delete(conn);
+    ctx.db.player_session().insert(PlayerSession {
+        connection_id: conn,
+        identity: ctx.sender(),
+    });
+}
+
+/// Does `identity` still have a live connection on record? THE decision
+/// `on_disconnect` makes (rb-73, ADR-0245 D3): the disconnecting connection's
+/// own row is deleted first, so a `true` here means ANOTHER socket — a second
+/// tab, a reconnect that overlapped the old socket's lagging close, or a real
+/// session shadowed by an ephemeral HTTP reducer call — is still live and the
+/// force-resolves must not fire. Read-only, so the native host executes it.
+pub(crate) fn has_live_session(ctx: &ReducerContext, identity: Identity) -> bool {
+    ctx.db
+        .player_session()
+        .identity()
+        .filter(identity)
+        .next()
+        .is_some()
+}
+
+/// M22 §4.4 step 6e (ADR-0228 D2 as amended by ADR-0245): erase every
+/// `player_session` row `owner` holds — presence bookkeeping goes with the
+/// presence rows. A subject deleted while connected keeps such a row until
+/// this step; afterwards that socket's own close is last-out and runs the
+/// legacy cleanup, which is right for a tombstoned account.
+pub(crate) fn erase_player_sessions(ctx: &ReducerContext, owner: Identity) {
+    ctx.db.player_session().identity().delete(owner);
+}
+
+/// Lifecycle: the disconnecting socket's row goes first; the trade / PvP /
+/// wild-battle / challenge force-resolves and the presence deletes run ONLY
+/// when no other connection of this identity is on record (rb-73, ADR-0245 D3
+/// — "last connection out"). Before rb-73 every `client_disconnected` ran them
+/// unconditionally, and since each HTTP reducer call is its own ephemeral
+/// connection, any identity-token holder could fire them on demand under a
+/// live session (R-18r-b-DISCONNECTSELF). A lone ephemeral connection is still
+/// last-out, so a CLI `join_game` still leaves no presence row.
 #[spacetimedb::reducer(client_disconnected)]
 pub fn on_disconnect(ctx: &ReducerContext) {
     let me = ctx.sender();
+    let leaving = ctx.connection_id();
+    if let Some(conn) = leaving {
+        ctx.db.player_session().connection_id().delete(conn);
+    }
+    if has_live_session(ctx, me) {
+        return;
+    }
     // Resolve live trades / PvP / wild battles / challenges (extracted m22-s3b;
     // ordering rationale lives on the shared fn above). Must run before the
     // player-row deletion below so identity lookups still resolve.

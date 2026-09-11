@@ -2550,12 +2550,13 @@ pub struct Inventory {
   const realVisTableNames = Object.keys(realVisAll);
   const realPublicCount = realVisTableNames.filter((t) => realVisAll[t] === 'public').length;
   const realPrivateCount = realVisTableNames.filter((t) => realVisAll[t] === 'private').length;
-  if (realPublicCount !== 18 || realPrivateCount !== 23) {
+  if (realPublicCount !== 18 || realPrivateCount !== 24) {
     teeth.push(
       `T-VIS-ANCHORS FAILED: the real corpus derives ${realPublicCount} public / ` +
-        `${realPrivateCount} private table(s), expected 18/23 (measured a6ae43c; +export_bundle ` +
+        `${realPrivateCount} private table(s), expected 18/24 (measured a6ae43c; +export_bundle ` +
         `private, M22-S2/ADR-0207; +account_deletion_reaper_schedule private, rb-24/ADR-0221; ` +
-        `+export_bundle_reaper_schedule private, rb-48/ADR-0238) — ` +
+        `+export_bundle_reaper_schedule private, rb-48/ADR-0238; +player_session private, ` +
+        `rb-73/ADR-0245) — ` +
         `if a table's ` +
         `declared visibility legitimately changed, update this tooth's pinned counts DELIBERATELY ` +
         `from ADR-0199, not to silence a red`,
@@ -2636,6 +2637,11 @@ pub struct Inventory {
     // schedule row — scheduler bookkeeping, private like every other
     // *_schedule table here.
     'export_bundle_reaper_schedule',
+    // rb-73 (ADR-0245): one row per live connection — the host-minted
+    // ConnectionId and the identity behind it. A connection id is a
+    // per-session secret in spirit and must never reach a subscription
+    // (ADR-0015); read only by `has_live_session` in the disconnect hook.
+    'player_session',
   ];
   for (const t of pinnedPrivateTables) {
     if (realVisAll[t] !== 'private') {

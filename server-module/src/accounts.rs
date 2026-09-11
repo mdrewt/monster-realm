@@ -1054,6 +1054,7 @@ pub fn account_deletion_reaper(
     crate::pvp::erase_pvp_rows(ctx, args.account_identity);
     let export_chunks = crate::privacy::purge_export_bundles(ctx, args.account_identity);
     crate::erase_character_rows(ctx, args.account_identity);
+    crate::erase_player_sessions(ctx, args.account_identity);
     crate::ranking::anonymize_display_names(ctx, args.account_identity);
     crate::battle::anonymize_battles(ctx, args.account_identity);
     ctx.db
