@@ -470,6 +470,18 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
                 w.level.as_u8(),
                 w.individuality_seed,
             ) {
+                // rb-76 (ADR-0246 D4): a deletion-gated walker is refused the encounter as ROUTINE
+                // gameplay, like a fainted party, so this reason must consume neither the error
+                // log nor the limiter window (client-reachable at tick rate: request deletion,
+                // walk grass). The skip is a SEPARATE statement because the filter below is
+                // pinned as one contiguous sequence; it skips ONLY the log/limiter arm — the
+                // encounter block is the last statement of the per-character loop, so re-examine
+                // if per-character work is ever appended after it. COUPLING: keyed by equality on
+                // the ONE reason constant, so a per-state reason split (the ADR-0227 D2 deferral)
+                // must extend this skip and its pin in the same slice.
+                if e == crate::guards::REJECT_DELETION_GATED {
+                    continue;
+                }
                 // Routine fainted-party reason filtered at source (shared const,
                 // ADR-0170 D4): normal gameplay, a non-event like a None roll —
                 // it must consume neither the limiter window nor the suppressed

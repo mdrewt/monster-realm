@@ -404,6 +404,11 @@ pub(crate) fn begin_encounter(
             }
         }
     }
+    // rb-76 (ADR-0246 D3): a scheduler-opened wild encounter is a para-4.7 new commitment, so
+    // refuse it for a mid-grace or terminal walker. Keyed on the SERVER-derived
+    // `player_identity` (the walker), never `ctx.sender()`, which is the module identity on the
+    // `movement_tick` path. Placed after the pure caps, before the first DB read (ADR-0236 D2).
+    crate::guards::require_subject_not_deleting(ctx, player_identity)?;
     // Reject if the player is already in an ongoing battle — EITHER role
     // (ADR-0122): a side-B PvP participant must not spawn a wild encounter.
     if is_in_ongoing_battle(ctx, player_identity) {
