@@ -7,7 +7,7 @@
 **Amends:** —
 **Extends:** ADR-0236 (rb-46 — the caller-only gate on PvE battle start; reciprocal `Extended-by:` in its header, and its GRASSPATH residual bullet is discharged by a dated amendment there)
 **Subsystems:** security-authz, battle, movement-netcode
-**Decision:** rb-76 refuses a grass-path wild encounter for a mid-grace or terminal walker inside `battle::begin_encounter` via `guards::require_subject_not_deleting(ctx, subject)`, a non-logging identity-parameterised wrapper contained by a crate-wide census.
+**Decision:** rb-76 refuses a grass-path wild encounter for a mid-grace or terminal walker inside `battle::begin_encounter` via `guards::require_subject_not_deleting(ctx, subject)`, a non-logging identity-parameterised wrapper contained by census.
 
 ---
 
