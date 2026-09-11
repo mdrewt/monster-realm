@@ -132,7 +132,7 @@ different branch. That is the residual recorded below, not a defect in this scan
   `guards`, which rb-76's roster deliberately excludes); and the raw `lib.rs` carries exactly one line
   beginning `mod guards;` that names this ADR — the reviewer note of D5 is a deliverable, and this is an
   ordinary assertion that it exists, not a ratchet.
-- **Fixture matrix** `rb77_module_swap_fixtures_are_rejected_by_clause`: sixteen frozen inputs — the
+- **Fixture matrix** `rb77_module_swap_fixtures_are_rejected_by_clause`: seventeen frozen inputs — the
   literal rb-46 PoC, `cfg_attr`, the alias trio, the nested re-export, the macro token tree, `pub`,
   test-framing on a production name, a cfg'd `include!` alongside a paren-delimited `cfg!`, raw
   identifiers, the nested-comment phantom, a
@@ -146,7 +146,7 @@ different branch. That is the residual recorded below, not a defect in this scan
   return value against known inputs (ADR-0224's endorsed shape); it carries no numeric floor, because a
   floor whose only job is to notice a deleted fixture is the meta-check ADR-0224's amendment retires by
   name.
-- **Live mutant register** (ledger gate X5, MANUAL): twelve compilable mutants applied to the REAL
+- **Live mutant register** (ledger gate X5, MANUAL): thirteen compilable mutants applied to the REAL
   `lib.rs` / `guards.rs` one at a time and restored from a byte copy, plus three control rows — a pristine
   baseline plus two benign mutations — that must stay GREEN. Fixture-only teeth never prove the test reads
   the real tree; a mutant
@@ -158,7 +158,7 @@ different branch. That is the residual recorded below, not a defect in this scan
 `mod guards; // rb-77 (ADR-0247): …` on `lib.rs:31`. A comment block above the line would shift every
 later line, which moves the four `docs/knowledge/reducers/*.md` line stamps (`lib.rs#L168/189/233/329`)
 and forces a bundle regeneration for prose — the cost rb-74 paid explicitly to avoid in this file. rustfmt
-defaults (`wrap_comments = false`) leave a long trailing comment untouched. A matching four-line `//`
+defaults (`wrap_comments = false`) leave a long trailing comment untouched. A matching five-line `//`
 block sits directly above the `#[cfg(test)]` hook in `guards.rs`, never between it and `mod
 guards_tests;` (an eval outside this slice's touches looks back 160 bytes from that declaration for the
 attribute). Neither note contains a double quote: one census strips strings BEFORE comments.

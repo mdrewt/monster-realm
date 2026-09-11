@@ -4969,6 +4969,20 @@ fn rb77_fx_bracket_char_literal() -> (String, String) {
     (lib, String::new())
 }
 
+/// F17 — an extra outer attribute stacked above the test hook; kills a prefix
+/// check that ignores what precedes the framing — the mutant the verifier measured surviving.
+fn rb77_fx_stacked_attribute_on_test_hook() -> (String, String) {
+    let lib = format!("{m} guards;\n", m = rb77_kw_mod());
+    let guards = format!(
+        "{extra}\n{c}\n{pg}\n{m} guards_tests;\n",
+        m = rb77_kw_mod(),
+        c = rb77_attr_cfg_test(),
+        extra = ["#[al", "low(dead_code)]"].concat(),
+        pg = rb77_attr_path("guards_tests.rs")
+    );
+    (lib, guards)
+}
+
 /// **ADR-0247 D4 (live oracle)** — the REAL crate root wires every module bare
 /// and unconditional, the REAL wrapper file carries nothing conditional beyond
 /// its test hook, and the D5 reviewer note is on the anchor's own line.
@@ -5057,7 +5071,7 @@ fn rb77_crate_root_wires_every_module_bare_and_unconditional() {
     );
 }
 
-/// **ADR-0247 D4 (fixture matrix)** — fifteen frozen module-swap inputs, each
+/// **ADR-0247 D4 (fixture matrix)** — sixteen frozen module-swap inputs, each
 /// rejected by the clause it exists to exercise, plus the clean control.
 ///
 /// Every fixture writes its OWN full text from fragments: no shared builder and
@@ -5159,5 +5173,10 @@ fn rb77_module_swap_fixtures_are_rejected_by_clause() {
         "F16 bracket char literal",
         rb77_fx_bracket_char_literal(),
         &["[rb77/char-literal-bracket:lib.rs]"],
+    );
+    rb77_assert_rejected(
+        "F17 stacked attribute on the test hook",
+        rb77_fx_stacked_attribute_on_test_hook(),
+        &["[rb77/testmod-prefix:guards_tests]"],
     );
 }
