@@ -7312,23 +7312,37 @@ mod rb75_archlog_tests {
         (entries, headers)
     }
 
-    /// Every ` [rb-75: ... ]` bracket in `doc` outside every hidden range --
+    /// Every `[rb-75: ... ]` bracket in `doc` outside every hidden range --
     /// the whole-file roster this module's `[rb75/bracket-roster]` check
     /// counts, independent of which entry (if any) each one sits inside.
-    fn rb75_all_brackets(doc: &str, hidden: &[(usize, usize)]) -> Vec<Rb75Bracket> {
-        const TOKEN: &str = " [rb-75:";
+    ///
+    /// The token is matched with NO required leading byte (artifact
+    /// red-team HIGH finding: a leading-space requirement made a bracket
+    /// planted at column 0, or right after a tab, invisible to both this
+    /// roster and the per-site scan -- a fabricated bracket measured
+    /// GREEN). And per RULING R-5 / artifact red-team MED finding, the
+    /// bracket's span is NOT "up to the first `]` after the token" --
+    /// that truncates on an embedded code span like `` `arr[0]` `` and
+    /// false-REDs `[rb75/bracket-placement]` on an otherwise-correct
+    /// bracket. Since R-5 already requires the closing `]` to be the LAST
+    /// byte of the line, the span is defined as token-start -> end of that
+    /// line; `close_pos` is that line's last byte position, WHATEVER byte
+    /// that is -- `rb75_bracket_placement_ok` below is what actually
+    /// checks it equals `]`.
+    fn rb75_all_brackets(lines: &Rb75Lines, hidden: &[(usize, usize)]) -> Vec<Rb75Bracket> {
+        const TOKEN: &str = "[rb-75:";
+        let doc = lines.doc;
         let mut out = Vec::new();
         let mut search_start = 0usize;
         while let Some(rel) = doc[search_start..].find(TOKEN) {
             let tok_pos = search_start + rel;
             if !rb71_in_hidden_range(tok_pos, hidden) {
-                let open_pos = tok_pos + 1;
-                if let Some(close_rel) = doc[open_pos..].find(']') {
-                    out.push(Rb75Bracket {
-                        open_pos,
-                        close_pos: open_pos + close_rel,
-                    });
-                }
+                let line_idx = lines.line_of(tok_pos);
+                let close_pos = lines.content_end(line_idx) - 1;
+                out.push(Rb75Bracket {
+                    open_pos: tok_pos,
+                    close_pos,
+                });
             }
             search_start = tok_pos + TOKEN.len();
         }
@@ -7338,6 +7352,12 @@ mod rb75_archlog_tests {
     /// RULING R-5: the bracket must start strictly after `numeral_match_end`,
     /// on the SAME line as it, with no `<` byte between the two, and its
     /// closing `]` must be the last visible byte of that line.
+    ///
+    /// `bracket.close_pos` is CONSTRUCTED by `rb75_all_brackets` to already
+    /// be that line's last byte position, so the "is it the last byte"
+    /// half of R-5 collapses to "is that byte actually `]`" -- a bracket
+    /// whose line ends in something else (an unterminated/truncated
+    /// bracket) fails here rather than being silently mis-scoped upstream.
     fn rb75_bracket_placement_ok(
         lines: &Rb75Lines,
         numeral_match_end: usize,
@@ -7354,7 +7374,7 @@ mod rb75_archlog_tests {
         if numeral_line != bracket_line {
             return false;
         }
-        bracket.close_pos + 1 == lines.content_end(bracket_line)
+        lines.doc.as_bytes().get(bracket.close_pos) == Some(&b']')
     }
 
     /// RULING R-1: every `**<label>** (= NNNN` claim inside `inner` (a
@@ -7451,6 +7471,28 @@ mod rb75_archlog_tests {
 
     fn rb75_entries_with_label<'a>(entries: &'a [Rb75Entry], label: &str) -> Vec<&'a Rb75Entry> {
         entries.iter().filter(|e| e.label == label).collect()
+    }
+
+    /// True iff `token` (e.g. `PR #168`) occurs in `haystack` at a position
+    /// whose NEXT byte is not itself an ASCII digit (the same boundary
+    /// technique `rb75_trailing_numeral` already uses). A plain
+    /// `str::contains` lets `PR #168` be satisfied by a live `PR #1680`
+    /// substring match -- an artifact red-team HIGH finding -- so every
+    /// PR-token correspondence check below goes through this instead of
+    /// `.contains`.
+    fn rb75_contains_token_boundary(haystack: &str, token: &str) -> bool {
+        let bytes = haystack.as_bytes();
+        let mut search_start = 0usize;
+        while let Some(rel) = haystack[search_start..].find(token) {
+            let start = search_start + rel;
+            let end = start + token.len();
+            let next_is_digit = bytes.get(end).is_some_and(u8::is_ascii_digit);
+            if !next_is_digit {
+                return true;
+            }
+            search_start = start + token.len();
+        }
+        false
     }
 
     /// Resolves one of the site table's NAMED labels (self or other -- never
@@ -7631,7 +7673,7 @@ mod rb75_archlog_tests {
         let hidden = rb71_hidden_ranges(doc);
         let lines = Rb75Lines::new(doc);
         let (entries, headers) = rb75_parse_doc(&lines, &hidden);
-        let all_brackets = rb75_all_brackets(doc, &hidden);
+        let all_brackets = rb75_all_brackets(&lines, &hidden);
 
         // Whole-file roster (RULING adjudication /simplify: `bracket-foreign`
         // was merged into per-site `bracket-missing` plus this ceiling-and-
@@ -7741,9 +7783,11 @@ mod rb75_archlog_tests {
                     if let Some(b) = bracket {
                         if let Some(other_entry) = rb75_resolve_named(&entries, other, &mut found) {
                             let idx_ok = other_entry.entry_idx == self_entry.entry_idx + 1;
-                            let label_line_ok = other_entry.label_line_text.contains(by_pr);
+                            let label_line_ok =
+                                rb75_contains_token_boundary(&other_entry.label_line_text, by_pr);
                             let inner = &doc[b.open_pos + 1..b.close_pos];
-                            let bracket_ok = inner.contains(by_pr) && inner.contains(own_pr);
+                            let bracket_ok = rb75_contains_token_boundary(inner, by_pr)
+                                && rb75_contains_token_boundary(inner, own_pr);
                             if !(idx_ok && label_line_ok && bracket_ok) {
                                 found.push(format!(
                                     "[rb75/rewrite-correspondence:{}] expected `**{other}**` to be \
@@ -7765,12 +7809,26 @@ mod rb75_archlog_tests {
                     if let Some(b) = bracket {
                         if rb75_resolve_named(&entries, other, &mut found).is_some() {
                             let inner = &doc[b.open_pos + 1..b.close_pos];
-                            let bracket_ok = inner.contains(by_pr) && inner.contains(own_pr);
-                            let claim_ok = self_entry
-                                .text
-                                .find(claim_text)
-                                .map(|rel| self_entry.text_start + rel < b.open_pos)
-                                .unwrap_or(false);
+                            let bracket_ok = rb75_contains_token_boundary(inner, by_pr)
+                                && rb75_contains_token_boundary(inner, own_pr);
+                            // Loop over EVERY occurrence of `claim_text` in
+                            // this entry's own text until one is found that
+                            // is both outside every hidden range and sits
+                            // before the bracket -- a raw `.find` accepted
+                            // the FIRST occurrence unconditionally, so
+                            // wrapping the clause in `<!-- -->` (artifact
+                            // red-team HIGH finding) stayed GREEN.
+                            let mut claim_ok = false;
+                            let mut search_start = 0usize;
+                            while let Some(rel) = self_entry.text[search_start..].find(claim_text) {
+                                let match_rel = search_start + rel;
+                                let abs_pos = self_entry.text_start + match_rel;
+                                if !rb71_in_hidden_range(abs_pos, &hidden) && abs_pos < b.open_pos {
+                                    claim_ok = true;
+                                    break;
+                                }
+                                search_start = match_rel + claim_text.len();
+                            }
                             if !(bracket_ok && claim_ok) {
                                 found.push(format!(
                                     "[rb75/claim-correspondence:{}] expected this entry's own \
@@ -7898,6 +7956,15 @@ mod rb75_archlog_tests {
     const RB75_BRACKET_UX2: &str = " [rb-75: **ux2** (= 0155) was added by PR #255; the clause \
          above was written into this entry by PR #273, 11r-e = **ux2b** (= 0170). The numeral \
          was unchanged.]";
+    /// Same content as `RB75_BRACKET_11RF`, plus an embedded inline code
+    /// span containing a literal `]` (`` `arr[0]` ``) BEFORE the bracket's
+    /// real, end-of-line closing `]`. Positive control for the artifact
+    /// red-team MED finding: closing at the FIRST `]` after the token
+    /// truncates here and false-REDs `[rb75/bracket-placement:11r-f]` on an
+    /// otherwise-correct bracket.
+    const RB75_BRACKET_11RF_CODESPAN: &str = " [rb-75: **11r-f** (= 0172) is this entry's \
+         pre-reserved value (see `arr[0]` for context), computed before **11r-h** (= 0173, \
+         PR #276) merged; 11r-f merged after it as PR #277 the same day.]";
 
     /// The positive-control fixture doc: a minimal synthetic ARCHITECTURE.md
     /// carrying all ten site/neighbour labels, two headers, and all five
@@ -7943,7 +8010,7 @@ mod rb75_archlog_tests {
 
     #[test]
     fn rb75_archlog_oracle_control() {
-        const RB75_FIXTURE_FLOOR: usize = 8;
+        const RB75_FIXTURE_FLOOR: usize = 12;
         let mut fixture_count = 0usize;
 
         // 1. CLEAN -- positive control.
@@ -8082,6 +8149,82 @@ mod rb75_archlog_tests {
                     .any(|v| v.contains("[rb75/bracket-placement:rb-15]")),
                 "rb75 [control/bracket-placement]: expected \
                  `[rb75/bracket-placement:rb-15]`, found:\n  - {}",
+                found.join("\n  - ")
+            );
+            fixture_count += 1;
+        }
+
+        // 9. COLUMN-0 BRACKET (no leading space) -- a decoy bracket planted
+        //    right after uxd2's note, at the very start of its own line.
+        //    Must still be COUNTED by the whole-file roster.
+        {
+            let doc = rb75_fixture_clean_doc().replacen(
+                "**uxd2** (fixture note) complete. ADR next-free = 0162.\n\n",
+                "**uxd2** (fixture note) complete. ADR next-free = 0162.\n\n\
+                 [rb-75: decoy bracket planted at column 0, no leading space]\n\n",
+                1,
+            );
+            let found = rb75_violations(&doc);
+            assert!(
+                found
+                    .iter()
+                    .any(|v| v.contains("[rb75/bracket-roster] 6 != 5")),
+                "rb75 [control/column-0-bracket]: expected \
+                 `[rb75/bracket-roster] 6 != 5`, found:\n  - {}",
+                found.join("\n  - ")
+            );
+            fixture_count += 1;
+        }
+
+        // 10. PR-TOKEN BOUNDARY -- M15b's heading `PR #168` becomes
+        //     `PR #1680`, which must NOT satisfy a plain-substring match.
+        {
+            let doc = rb75_fixture_clean_doc().replace(
+                "**M15b** (fixture note, PR #168) complete.",
+                "**M15b** (fixture note, PR #1680) complete.",
+            );
+            let found = rb75_violations(&doc);
+            assert!(
+                found
+                    .iter()
+                    .any(|v| v.contains("[rb75/rewrite-correspondence:M15a]")),
+                "rb75 [control/pr-token-boundary]: expected \
+                 `[rb75/rewrite-correspondence:M15a]`, found:\n  - {}",
+                found.join("\n  - ")
+            );
+            fixture_count += 1;
+        }
+
+        // 11. CLAUSE HIDDEN IN AN HTML COMMENT -- ux2's own `DISCHARGED by
+        //     ux2b` clause wrapped in `<!-- ... -->`, so its only
+        //     occurrence is invisible to the claim-correspondence scan.
+        {
+            let doc =
+                rb75_fixture_clean_doc().replace("DISCHARGED by ux2b", "<!--DISCHARGED by ux2b-->");
+            let found = rb75_violations(&doc);
+            assert!(
+                found
+                    .iter()
+                    .any(|v| v.contains("[rb75/claim-correspondence:ux2]")),
+                "rb75 [control/clause-hidden-in-html-comment]: expected \
+                 `[rb75/claim-correspondence:ux2]`, found:\n  - {}",
+                found.join("\n  - ")
+            );
+            fixture_count += 1;
+        }
+
+        // 12. EMBEDDED CODE-SPAN BRACKET -- positive control: 11r-f's
+        //     bracket carries an inline code span containing a literal `]`
+        //     (`` `arr[0]` ``) before its own real, end-of-line `]`. Must
+        //     NOT false-RED `[rb75/bracket-placement]`.
+        {
+            let doc =
+                rb75_fixture_clean_doc().replace(RB75_BRACKET_11RF, RB75_BRACKET_11RF_CODESPAN);
+            let found = rb75_violations(&doc);
+            assert!(
+                found.is_empty(),
+                "rb75 [control/embedded-codespan-bracket]: this fixture is a POSITIVE \
+                 control and must be accepted. Violations:\n  - {}",
                 found.join("\n  - ")
             );
             fixture_count += 1;
