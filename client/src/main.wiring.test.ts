@@ -1137,6 +1137,136 @@ describe('★ main.ts wiring (pt-c2 tradePropose): D7 fan-out checklist (PTC2-14
   });
 });
 
+// ===========================================================================
+// rb-73 (ADR-0245 desync-guard H1) — the reconnect reset for the dialogue
+// dismiss lock. Sited HERE, beside W-TP-RECONNECT, because it is the same
+// onReconnect body and the same defect class that tooth was written for: a
+// client-local lock the link drop strands with no UI and no recovery.
+// ===========================================================================
+
+describe('★ main.ts wiring (rb-73/ADR-0245): onReconnect clears the dialogue dismiss lock (desync-guard H1)', () => {
+  it('★ W-DISMISS-RECONNECT BITES: dismissPending = false in onReconnect — kills stranded dialogue-dismiss lock after an overlapping reconnect (rb-73 / ADR-0245 desync-guard H1)', () => {
+    // THE DEFECT, concretely. `dismissPending` (main.ts:335) is the client-local double-send
+    // guard for dismissDialogue. It is cleared in exactly two places today: the send's own
+    // `.catch` (main.ts:1632) and the M12d batch listener's `if (!conv)` arm (main.ts:1858).
+    // That second one IS the reconnect self-heal, and main.ts:1852-1856 says so in as many
+    // words — it relies on the server's `on_disconnect` deleting the sender's
+    // `player_conversation` row, so the post-reconnect snapshot carries no conversation.
+    //
+    // rb-73 removes exactly that guarantee. ADR-0245 D3 makes `on_disconnect` SKIP its side
+    // effects while ANOTHER session for the same identity is live — and an overlapping
+    // reconnect (the new socket opens before the old socket's close lands) is precisely that
+    // state, the one the whole slice exists for. `player_conversation` therefore survives,
+    // `conv` is defined on the first post-reconnect batch, the `if (!conv)` self-heal never
+    // runs, and `dismissPending` stays true for the life of the page: Escape on a dialogue
+    // becomes a dead key with no error, no status line and no recovery short of a reload.
+    // The server-side fix is correct; this one client-local latch has to stop free-riding on
+    // it, which is what desync-guard H1 asks for.
+    //
+    // WRONG IMPL KILLED (1): the reset omitted entirely — the state of the tree today, and
+    //   the reason this tooth starts RED.
+    // WRONG IMPL KILLED (2): the reset added to the WRONG handler (onReady, onHydrated, or
+    //   the batch listener). Only onReconnect runs on the edge that strands the flag; a
+    //   region-scoped count is the only thing that can tell those sites apart.
+    // WRONG IMPL KILLED (3) — why the region scope is load-bearing, and it is MEASURED, not
+    //   argued: a whole-file `includes('dismissPending = false;')` is GREEN on the UNPATCHED
+    //   tree, because main.ts:1632 and main.ts:1858 already spell it. The `outside` census
+    //   below states that as an assertion instead of leaving it to a reader's trust.
+    //
+    // DELIBERATELY NOT ASSERTED: placement within the body. The reset is order-immaterial
+    // (it touches no view and no store), so pinning it after `tradeProposeView?.hide();`
+    // would over-constrain a correct implementation. The COUNT and the SCOPE are the
+    // criterion; W-RECONNECT-HIDES-MENU owns the one ordering claim this body has.
+    const RESET = 'dismissPending = false;';
+    const TP_HIDE = 'tradeProposeView?.hide();';
+    // The ONE checker, used for the live region AND for both fixtures below, so they cannot
+    // drift apart — a fixture judged by a different predicate proves nothing about the
+    // assertion above it.
+    const resetCount = (regionText: string): number => countOccurrences(regionText, RESET);
+
+    const src = readMainTs();
+    // The two-endpoint region every onReconnect tooth in this file uses (W-TP-RECONNECT,
+    // W-RN-FANOUT-RECONNECT, W-HELP-NO-RECONNECT-HIDE, W-RECONNECT-HIDES-MENU): `onReconnect:`
+    // to the NEXT `onOwnWarp` searched FROM startIdx — a bare indexOf('onOwnWarp') resolves to
+    // the unrelated comment ABOVE onReconnect and yields an empty/negative slice. Taken here
+    // through the file's own `regionOrThrow`, which has exactly that from-startIdx END search
+    // and throws LOUD when either endpoint goes missing rather than passing vacuously. NEVER a
+    // fixed `+N` window (T1a / hazard H1): the body is ~2.3k chars, so a statement appended at
+    // the bottom of it must still bite.
+    const region = stripLineComments(regionOrThrow(src, 'onReconnect:', 'onOwnWarp'));
+
+    // ANTI-VACUITY: the slice really is the onReconnect body, and the fixture anchor below is
+    // unique inside it (a second occurrence would make the injection produce two resets and
+    // the `toBe(1)` fixture clause fail for an unrelated reason).
+    expect(
+      countOccurrences(region, TP_HIDE),
+      `the onReconnect region must contain exactly one \`${TP_HIDE}\` — the same anti-vacuity ` +
+        'control W-TP-RECONNECT and W-RECONNECT-HIDES-MENU use. Without it this tooth could be ' +
+        'judging an empty or mis-anchored slice, and the fixture injection below would have no ' +
+        'unique site to attach to.',
+    ).toBe(1);
+
+    // --- THE CRITERION (desync-guard H1) -------------------------------------------------
+    expect(
+      resetCount(region),
+      'main.ts onReconnect must reset the dialogue dismiss lock exactly once — the literal ' +
+        `\`${RESET}\` inside the handler body. ADR-0245 D3 stops on_disconnect from deleting ` +
+        'player_conversation while a sibling session is live, so the M12d `if (!conv)` ' +
+        'self-heal (main.ts:1858) no longer fires after an overlapping reconnect and the flag ' +
+        'is stranded true forever: Escape on a dialogue is then a dead key for the life of the ' +
+        'page. A count of 0 is the unfixed tree; a count above 1 means the reset was written ' +
+        'twice (harmless at runtime, but evidence the edit was applied by hand in two places ' +
+        'and one of them will drift).',
+    ).toBe(1);
+
+    // --- SCOPE CONTROL: a whole-file needle is satisfied WITHOUT the fix ------------------
+    const outside = countOccurrences(stripLineComments(src), RESET) - resetCount(region);
+    expect(
+      outside,
+      `main.ts must still spell \`${RESET}\` at least twice OUTSIDE onReconnect — the send's ` +
+        'own rejection reset (main.ts:1632) and the M12d no-conversation self-heal ' +
+        '(main.ts:1858). This is not a style check: it is the proof that the REGION SCOPE ' +
+        'above is load-bearing, because it means a whole-file `includes()` spelling of this ' +
+        'tooth would have been GREEN on the unfixed tree. If this ever drops below 2, the two ' +
+        'original clear paths were refactored and BOTH this tooth and the H1 reasoning behind ' +
+        'it must be re-derived from ADR-0245 before the number is lowered.',
+    ).toBeGreaterThanOrEqual(2);
+
+    // --- PROOF OF TEETH, on the REAL handler text ----------------------------------------
+    // Both fixtures are derived from the live region rather than hand-written, so the
+    // discrimination is proved against the very text the criterion judges. `base` is the
+    // handler with the statement REMOVED (whatever the tree state), `patched` is `base` with
+    // it re-inserted at the unique anchor — so this pair flips the checker in BOTH directions
+    // on the unfixed tree AND on the fixed one, which a bare deletion mutant cannot do
+    // (pre-fix it deletes nothing and passes for free).
+    const base = region.split(RESET).join('');
+    const patched = base.split(TP_HIDE).join(`${TP_HIDE} ${RESET}`);
+    expect(
+      resetCount(base),
+      'PROOF OF TEETH (missing half): with the reset statement removed from the real ' +
+        'onReconnect text, the checker must report ZERO. A non-zero count here means the ' +
+        'needle is matching something other than the statement — a substring of a longer ' +
+        'assignment, or text the deletion did not reach — and the criterion above would be ' +
+        'unfalsifiable.',
+    ).toBe(0);
+    expect(
+      resetCount(patched),
+      'PROOF OF TEETH (present half): with the reset re-inserted after the unique ' +
+        `\`${TP_HIDE}\` anchor, the checker must report exactly ONE. Without this half the ` +
+        'clause above is satisfied by a checker that always returns 0 — i.e. by a needle that ' +
+        'can never match at all (a typo in RESET), which would make the criterion silently ' +
+        'unsatisfiable rather than merely red.',
+    ).toBe(1);
+    expect(
+      countOccurrences(base, TP_HIDE),
+      'PROOF OF TEETH (surgical): the deletion must remove ONLY the reset — the sibling ' +
+        `\`${TP_HIDE}\` teardown must survive it. If this fails, the deleted fixture is not ` +
+        '"the handler minus one statement" but a mangled slice, and neither half above says ' +
+        'anything.',
+    ).toBe(1);
+  });
+});
+
 describe('main.ts wiring (pt-c2 tradePropose): onSubmit — frozen-gate + Identity/bigint + reduceErrorMessage (PTC2-15 / D4)', () => {
   it('W-TP-ERRMSG BITES: main.ts contains "reduceErrorMessage(" used in the tradePropose wiring — kills no-error-msg impl', () => {
     // PTC2-15: WHEN proposeTrade rejects, show reduceErrorMessage(err,'propose-trade').

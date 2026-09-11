@@ -804,8 +804,8 @@ fn rb73_wiring_on_connect_body_is_frozen() {
 }
 
 /// ADR-0245 D2: `open_player_session` is a SINGLE-PURPOSE helper — it guards on
-/// the connection id first, and it touches nothing but the `player_session`
-/// table.
+/// the connection id first, it touches nothing but the `player_session` table,
+/// and its body is FROZEN by exact equality.
 ///
 /// This pin is the compensating control ADR-0245 D2 promises for a deliberate
 /// widening: `on_connect` now reaches the database BEFORE the anonymous
@@ -819,12 +819,44 @@ fn rb73_wiring_on_connect_body_is_frozen() {
 /// disconnect), it never names the `accounts` module, and EVERY `ctx.db.`
 /// accessor call in it is `player_session()`.
 ///
-/// The body is deliberately NOT pinned by exact equality: ADR-0245 §A3 leaves
-/// the implementer a genuine choice between delete-before-insert and a
-/// `try_insert`, and both are safe. The clauses here bound the space instead of
-/// picking a winner — which is also why the accessor clause is a universally
-/// quantified walk over every `ctx.db.` site rather than a needle count that a
-/// second, unrelated write could slip past.
+/// The accessor clause is a universally quantified walk over every `ctx.db.`
+/// site rather than a needle count, so a second, unrelated write cannot slip
+/// past it.
+///
+/// THE BODY IS FROZEN TOO (red-team CRITICAL, measured). Bounding the SHAPE is
+/// not enough: TWO implementations that satisfy every clause above were measured
+/// CI-clean — all 9 rb73 tests, all 885 module tests and clippy green — and each
+/// breaks the feature outright.
+///
+/// BYPASS 1 — the row write DELETED, with a `let _unused = PlayerSession ..;`
+/// binding left behind so the `PlayerSession` import stays used. The own-row
+/// delete survives, so the guard clause, the universally quantified accessor
+/// walk and even the `sites > 0` writes-something clause all still pass. No
+/// session row is EVER recorded, `has_live_session` can then only answer false,
+/// and the whole D3 guard no-ops — mutant M7, one level down inside the helper.
+///
+/// BYPASS 2 — the row written with `identity: Identity::__dummy()`, or any other
+/// constant, in place of `ctx.sender()`. Counts, accessors, ordering and failure
+/// vocabulary are all unchanged; the row is simply keyed to a player who does
+/// not exist, so every `has_live_session` lookup for the real identity misses
+/// while rows pile up under an identity no client owns.
+///
+/// Both are invisible to PRESENCE / POSITION / VOCABULARY reasoning by
+/// construction — the same lesson
+/// `rb73_wiring_on_disconnect_guard_precedes_and_body_is_frozen` records one
+/// test down. Only equality sees them.
+///
+/// DELETE-BEFORE-INSERT IS THE PINNED SHAPE, and pinning it does not retract
+/// ADR-0245 §A3's choice: the `try_insert` variant stays permitted, it simply
+/// re-derives this literal from the new body in the SAME change — a deliberate,
+/// reviewed re-freeze rather than a silent drift, which is the review a helper
+/// that reaches `ctx.db.` ahead of `on_connect`'s anonymous early return earns.
+///
+/// Clause ORDER is deliberate (the `m22s3b_resolver_body_order` idiom the
+/// disconnect pin below also follows): the shape clauses stay FIRST so a failure
+/// names the specific drift — which needle, which accessor — and the equality is
+/// the finale, the one clause that reads the WHOLE body and the one that cannot
+/// name a cause.
 #[test]
 fn rb73_wiring_open_session_body_is_frozen_and_single_purpose() {
     let squashed = stripped_for_scan(LIB_RS);
@@ -904,6 +936,66 @@ fn rb73_wiring_open_session_body_is_frozen_and_single_purpose() {
              'a helper launders ctx.db. past the anon guard' bypass ADR-0245 D2 names."
         );
     }
+
+    // The frozen body: the CURRENT shipped helper verbatim (lib.rs:285-294), re-derived
+    // here under the same strip pipeline. Transcribed independently of the needles above
+    // and split at DIFFERENT points, so a silent edit to one artefact cannot drag the
+    // other with it.
+    let expected = [
+        concat!("letSome(conn)=ctx.conn", "ection_id()else{return;};"),
+        concat!(
+            "ctx.db.player_sess",
+            "ion().connect",
+            "ion_id()",
+            ".del",
+            "ete(conn);"
+        ),
+        concat!(
+            "ctx.db.player_sess",
+            "ion()",
+            ".ins",
+            "ert(Player",
+            "Session{connect",
+            "ion_id:conn,identity:ctx.sender(),});"
+        ),
+    ]
+    .concat();
+
+    for needle in [guard, accessor, "ctx.db."] {
+        assert!(
+            expected.contains(needle),
+            "[rb73/open-session-literal-independence] the clause needle `{needle}` is not a \
+             substring of the frozen body literal. The two are transcribed separately and split \
+             at different points on purpose, so a mismatch means one artefact was edited alone \
+             and the equality below is now asserting something other than the clauses above."
+        );
+    }
+    assert!(
+        expected.starts_with(guard),
+        "[rb73/open-session-literal-guard-first] the frozen body literal does not itself OPEN \
+         with the `None` connection-id guard, so the equality below would CONTRADICT the \
+         guard-first clause above instead of reinforcing it."
+    );
+
+    assert_eq!(
+        body, expected,
+        "[rb73/open-session-body-exact] `open_player_session`'s squashed body is not EXACTLY \
+         the shipped delete-before-insert pair behind the `None` guard. Every OTHER clause \
+         here reasons about PRESENCE, POSITION or VOCABULARY, and TWO bodies that satisfy all \
+         of them were MEASURED CI-clean (9 rb73 tests + 885 module tests + clippy) while \
+         breaking the feature. (1) The row write DELETED, with a \
+         `let _unused = PlayerSession {{ .. }};` left behind so the import stays used: the \
+         own-row delete survives, so the guard clause, the sole-accessor walk and even the \
+         writes-something clause all still pass — and NO session row is ever recorded, so \
+         `has_live_session` can only answer false and the whole D3 guard no-ops. (2) The row \
+         written with `identity: Identity::__dummy()`, or any constant, in place of \
+         `ctx.sender()`: counts, accessors and ordering are untouched, but the row is keyed \
+         to a player who does not exist, so every lookup for the real identity misses while \
+         rows pile up under an identity no client owns. Only equality sees either one. If the \
+         sanctioned body legitimately changes — ADR-0245 §A3's `try_insert` variant is still \
+         allowed — re-derive this literal FROM the new shipped body in the SAME change: the \
+         freeze is deliberate, not incidental."
+    );
 }
 
 /// ADR-0245 D3: `on_disconnect` deletes its OWN row, then asks the guard, then
