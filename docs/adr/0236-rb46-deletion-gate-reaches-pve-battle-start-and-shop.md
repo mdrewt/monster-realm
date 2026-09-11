@@ -6,6 +6,7 @@
 **Supersedes:** —
 **Amends:** —
 **Extends:** ADR-0227 (the S5 caller-only gate; reciprocal `Extended-by:` in its header, and its stale "still-ungated §4.7 targets" bullet is discharged by a dated amendment there)
+**Extended-by:** ADR-0246 (rb-76 — the scheduler grass path is gated at the `begin_encounter` choke point through the first identity-parameterised member of the deletion-gate family; residual R-rb-46-GRASSPATH closed)
 **Subsystems:** security-authz, battle, economy-quests
 **Decision:** rb-46 gates `start_battle`, dev `start_wild_battle`, `buy`, `sell` with `guards::require_not_deleting` as the first check after caller standing, proven by native-host execution plus source pins; the grass path is a disclosed residual.
 
@@ -182,3 +183,22 @@ debug-asserts state legality, so the shape is unconstructible without an `Accoun
 `rb46_sell_carries_the_deletion_gate`), all inside `just ci`. The wrapper itself stays pinned by the
 m22-s5 tests in `server-module/src/guards_tests.rs`; the `dev_reducers` call site is compiled by
 `just lint` (`--all-features`).
+
+## Amendment (2026-09-11, rb-76 — residual R-rb-46-GRASSPATH closed)
+
+The "Residual (backlog, R-rb-46-GRASSPATH): the scheduler grass path" bullet above is discharged by
+ADR-0246. Two things this ADR left open are answered there rather than rewritten here: the design question
+the "Gate the grass-path encounter" alternative deferred to the PRV1-7 crate-wide slice — whether a
+scheduler-driven encounter is a §4.7 commitment at all — is answered YES (ADR-0246 D1: a wild `battle` row
+the §4.4 cascade would otherwise have to force-resolve, whoever opened it), and the gate lands inside
+`battle::begin_encounter` keyed on its server-derived `player_identity`, exactly the placement that
+alternative said was writable, through a NEW identity-parameterised guards wrapper
+(`require_subject_not_deleting`) rather than through the identity-taking accounts primitive directly.
+D5's sentence that caller-only gating is "grounded in the wrapper's signature (no identity parameter)" now
+reads with one qualification: that guarantee still holds for `require_not_deleting`, which is unchanged and
+byte-pinned, while the new sibling is contained by a crate-wide single-consumer census derived from
+`lib.rs`'s module declarations (the ADR-0237 D2/D6 mechanism one level up). D4's observation that the
+rb-46 bare-name count "kills a `require_not_deleting_for(ctx, opponent_identity)` sibling" is likewise
+qualified: the new wrapper's name is deliberately prefix-free, so that count still reads two and remains
+the pin it was; the new seam has its own census. `movement_tick` gains no gate — it learns only the reason
+constant, to keep a deletion-gated walker's refusal out of the `begin_encounter_error` limiter (ADR-0246 D4).

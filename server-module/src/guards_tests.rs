@@ -2915,6 +2915,18 @@ fn rb46_gated_names() -> [String; 4] {
 ///      private helper, to a duplicate inside one body, and to a `..._for(ctx,
 ///      other)` sibling of the wrapper. The bare NAME is the needle, so an alias
 ///      binding or a wrapper around the wrapper is counted too.
+///      SCOPE, since rb-76 (ADR-0246): `battle.rs` now also carries a
+///      SUBJECT-parameterised deletion wrapper, called once from
+///      `begin_encounter`. Its bare name is PREFIX-FREE against this one (that
+///      is asserted, in both directions, by
+///      `rb76_subject_gate_wrapper_is_declared_once_fused_and_unconditional`),
+///      so this count deliberately does not see it and correctly stays at two.
+///      That sibling takes an identity, so it cannot borrow ADR-0227 D2's
+///      structural caller-only guarantee; its containment is a crate-wide
+///      census of its own,
+///      `rb76_subject_gate_and_begin_encounter_are_contained_crate_wide`. Do
+///      not widen this needle to cover it — the two wrappers have different
+///      allowed call sets, and one count cannot state both.
 ///   3. THE LOG TAG, on the string-BEARING view, with the site required to sit
 ///      inside its OWN reducer's declaration region. The count alone kills a
 ///      single wrong tag; the region check is what kills a SWAP (buy tagged for
@@ -3072,7 +3084,12 @@ fn rb46_gated_reducer_census_battle_and_economy() {
              catches a gate call hoisted into a private helper (where the body-keyed set \
              cannot attribute it), a second call duplicated inside one body, and a \
              differently-named sibling wrapper — the needle is the BARE NAME, so an alias \
-             binding or a re-export is counted here too."
+             binding or a re-export is counted here too. \
+             SCOPE, since rb-76 (ADR-0246): the SUBJECT-parameterised sibling this file's \
+             `rb76_subject_gate_and_begin_encounter_are_contained_crate_wide` contains has a \
+             PREFIX-FREE bare name, so it can neither raise nor lower this number. If this \
+             count ever reads three in `battle.rs`, it is a real third call site of the \
+             CALLER-ONLY wrapper — investigate it; it is not the rb-76 gate."
         );
 
         // --- the bypass bans (green at HEAD; keep them green) ----------------
@@ -3184,3 +3201,1112 @@ fn rb46_gated_reducer_census_battle_and_economy() {
         );
     }
 }
+
+// ===========================================================================
+// rb-76 (residual R-rb-46-GRASSPATH, ADR-0246) — the scheduler-opened grass-path
+// wild encounter is a GATED commitment, refused for a mid-grace or terminal
+// WALKER through the crate's first identity-PARAMETERISED deletion wrapper.
+//
+// EARS criterion encoded by this block:
+//
+//   R-rb-46-GRASSPATH  WHILE the WALKING PLAYER's account is inside the para-4.7
+//                      deletion gate, WHEN the scheduled `movement_tick` opens a
+//                      grass encounter for that player, the server module SHALL
+//                      refuse the encounter before any write, keyed on the
+//                      SERVER-DERIVED walker identity — never on `ctx.sender()`,
+//                      which on the scheduler path is the MODULE identity and
+//                      would make a caller-only gate answer about an account no
+//                      player owns.
+//
+// WHY A SECOND WRAPPER, AND WHY IT CANNOT REUSE THE m22-s5 ONE.
+// `require_not_deleting` is caller-only BY SIGNATURE (ADR-0227 D2): it takes no
+// identity, so no call site can ever point it at a third party. That structural
+// guarantee is exactly what makes it useless on the scheduler path, where the
+// caller IS the database. ADR-0246 D2 therefore ships a sibling that takes the
+// SUBJECT as a parameter and consequently CANNOT claim that guarantee. Two
+// things replace it, and both live below:
+//   * the whole-body byte pin plus the exact signature
+//     (`rb76_subject_gate_wrapper_is_declared_once_fused_and_unconditional`),
+//     which is what stops the parameterised wrapper from growing a second
+//     behaviour or a conditional-compilation switch;
+//   * a CRATE-WIDE containment census
+//     (`rb76_subject_gate_and_begin_encounter_are_contained_crate_wide`), which
+//     is what stops a SECOND consumer pointing it at a counterparty — the
+//     deletion-status oracle ADR-0227 D4 forbids.
+// The executed matrix (`rb76_subject_gate_answers_from_the_named_subject`) is
+// the third leg: it proves the wrapper answers from the NAMED SUBJECT rather
+// than from `ctx.sender()` or from the table, which no source scan can see.
+//
+// RED STATE OF THIS BLOCK AT HEAD:
+//   * `rb76_subject_gate_wrapper_is_declared_once_fused_and_unconditional` —
+//     RED: the wrapper is declared ZERO times in `guards.rs`, so the very first
+//     clause fails and body extraction would fail LOUD behind it.
+//   * `rb76_subject_gate_and_begin_encounter_are_contained_crate_wide` — RED:
+//     the anti-vacuity count of the new bare name in `guards.rs` is 0 and must
+//     be 1, and the accounts-predicate count there is 1 and must be 2. Every
+//     BAN clause in that test is GREEN at HEAD by design (nothing names a
+//     symbol that does not exist yet) and must stay green afterwards.
+//   * `rb76_subject_gate_answers_from_the_named_subject` — COMPILE-RED: the
+//     symbol does not exist, so `crate::guards::require_subject_not_deleting`
+//     does not resolve and the crate's test build fails. That is the established
+//     house precedent for a new seam (`content_cache_tests.rs:14-25`, the 11r-g
+//     `json_escape` block above). It is fenced by the
+//     `rb76-compile-red-begin` / `rb76-compile-red-end` markers so the
+//     assertion-RED of the other five tests can be recorded at HEAD with it
+//     temporarily excised.
+//
+// SCAN SUBSTRATE RULES honoured throughout, exactly as in the m22-s5 and rb-46
+// blocks above (breaking them breaks OTHER slices' gates, not this one): every
+// needle naming a production symbol is assembled from fragments, no raw
+// double-quote CHARACTER literal is written anywhere, and no block-comment
+// marker is ever spelled contiguously.
+// ===========================================================================
+
+/// The crate root, for the rb-76 crate-wide containment census. `lib.rs` is a
+/// module file like any other — it declares reducers of its own — so it is
+/// SCANNED as well as parsed for the `mod` roster.
+const RB76_LIB_RS: &str = include_str!("lib.rs");
+
+/// The bare name of the new subject-parameterised wrapper (ADR-0246 D2).
+///
+/// The BARE name is the census needle on purpose: a `use` alias, a re-export, a
+/// function-pointer binding and a fully-qualified call all mention it, while a
+/// needle anchored on `crate::guards::` would see only the last of the four.
+fn rb76_subject_gate_bare_name() -> String {
+    ["require_subject_not_", "deleting"].concat()
+}
+
+/// The squashed declaration marker of the new wrapper.
+fn rb76_subject_gate_marker() -> String {
+    ["fnrequire_subject_not_", "deleting("].concat()
+}
+
+/// The accounts-side context predicate, by bare name — the seam whose
+/// crate-wide containment ADR-0246 closes in passing (it takes an IDENTITY, so
+/// any module that calls it directly is a deletion-status oracle about whatever
+/// account it names).
+fn rb76_accounts_predicate_bare_name() -> String {
+    ["is_pending_", "deletion"].concat()
+}
+
+/// The grass-path choke point both wild-encounter callers share, as a CALL
+/// (the trailing paren keeps the `use crate::battle::{begin_encounter, ..}`
+/// import binding out of the count — that binding is pinned separately).
+fn rb76_begin_encounter_call() -> String {
+    ["begin_", "encounter("].concat()
+}
+
+/// Comments-stripped, string-blanked, whitespace-squashed view of an ARBITRARY
+/// module in this crate.
+///
+/// Deliberately NOT [`m22s5_stripped_squashed`], and the difference is
+/// load-bearing rather than stylistic: that helper additionally asserts there is
+/// no brace CHAR literal and that braces balance, because its caller
+/// brace-MATCHES reducer bodies. `privacy.rs` legitimately spells `'{'` and
+/// `'}'` as char literals all through its hand-rolled JSON builder, so those two
+/// preconditions would fail LOUD on a file this census only ever substring-counts.
+/// The stripping pipeline itself is this file's own
+/// [`strip_comments_and_strings`] and [`m22s5_squash`], byte-for-byte — no
+/// second stripper is introduced (ADR-0003).
+///
+/// The two preconditions that DO matter for a substring count are kept, through
+/// this file's own [`m22s5_assert_source_is_scannable`]: a raw-string opener
+/// with three or more hashes (which the byte-sequential stripper mis-parses) and
+/// unbalanced block-comment markers (which make the stripper swallow real code
+/// and turn every ban below silently vacuous).
+fn rb76_module_squashed(label: &str, src: &str) -> String {
+    m22s5_assert_source_is_scannable(label, src);
+    m22s5_squash(&strip_comments_and_strings(src))
+}
+
+/// Every module `lib.rs` declares, MINUS `guards` (which HOLDS the wrapper and
+/// is therefore scanned separately, with its own exact counts) and minus the
+/// `#[path]`-included sibling test modules (whose names all end in `tests`),
+/// PLUS the crate root itself.
+///
+/// `accounts` and `schema` are deliberately IN the list, unlike the rb-47
+/// roster this helper is copied from: rb-76's bans are about the new
+/// subject-keyed wrapper and about `begin_encounter`, neither of which either
+/// module may name, and `accounts` additionally carries the only sanctioned
+/// declaration of the deletion predicate so it doubles as an anti-vacuity anchor.
+///
+/// Line-oriented over the comment-blanked view, mirroring
+/// `trading_tests.rs`'s `rb47_scanned_module_names` and
+/// `accounts_tests.rs`'s `m22_declared_mod_names` — COPIED, never imported, per
+/// this crate's local-machinery-per-module convention (the same call ADR-0166
+/// recorded as residual R5). A commented-out `mod` is invisible, `pub mod` and
+/// `pub(crate) mod` are both seen, and an inline `mod x { .. }` block declares
+/// no FILE so it is correctly ignored (no trailing semicolon). The comments-only
+/// view is deliberate: it preserves every newline byte-for-byte, which a
+/// line-oriented parse depends on.
+///
+/// DERIVED, never enumerated. A hand-written roster is exactly the hole this
+/// closes: the next module added to the crate would simply not be on it.
+fn rb76_scanned_module_names() -> Vec<String> {
+    let clean = m22s5_strip_comments_only(RB76_LIB_RS);
+    let mut out: Vec<String> = vec!["lib".to_string()];
+    for line in clean.lines() {
+        let mut text = line.trim();
+        if let Some(rest) = text.strip_prefix("pub(crate)") {
+            text = rest.trim_start();
+        } else if let Some(rest) = text.strip_prefix("pub ") {
+            text = rest.trim_start();
+        }
+        let Some(rest) = text.strip_prefix("mod ") else {
+            continue;
+        };
+        let Some(name) = rest.trim().strip_suffix(';') else {
+            continue;
+        };
+        let name = name.trim();
+        if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            continue;
+        }
+        if name.ends_with("tests") || name == "guards" {
+            continue;
+        }
+        out.push(name.to_string());
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// For every path-relocating attribute in `lib.rs`, the name of the `mod` it
+/// relocates — or an EMPTY string when the attribute is not followed by a module
+/// declaration at all.
+///
+/// THE HOLE THIS EXISTS FOR. [`rb76_scanned_module_names`] maps a declared name
+/// `x` to the file `src/x.rs`. A path-relocating attribute breaks that mapping:
+/// `mod battle;` relocated to some other file would make this census read
+/// `battle.rs` while the compiler reads something else, so every count below
+/// would be about a file the crate does not build. Today every such attribute in
+/// `lib.rs` relocates a `*tests` module — which the roster excludes anyway — and
+/// this helper is what keeps that true.
+///
+/// The attribute marker is assembled from fragments, like every other needle in
+/// this file. Attribute and blank lines between the attribute and the
+/// declaration are skipped (the conditional-compilation attribute sits above the
+/// path attribute in three of the four live cases, and below it in none).
+/// ASSUMES the attribute and its `mod` declaration sit on SEPARATE lines (true
+/// of all four live cases); a single-line `#[path = ..] mod x;` would be read as
+/// an attribute whose target is the NEXT declaration — extend the parser before
+/// writing one.
+fn rb76_path_attribute_targets() -> Vec<String> {
+    let clean = m22s5_strip_comments_only(RB76_LIB_RS);
+    let attr = ["#", "[path"].concat();
+    let lines: Vec<&str> = clean.lines().collect();
+    let mut out: Vec<String> = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if !line.trim_start().starts_with(attr.as_str()) {
+            continue;
+        }
+        let mut target = String::new();
+        let mut j = i + 1;
+        while j < lines.len() {
+            let mut text = lines[j].trim();
+            if text.is_empty() || text.starts_with('#') {
+                j += 1;
+                continue;
+            }
+            if let Some(rest) = text.strip_prefix("pub(crate)") {
+                text = rest.trim_start();
+            } else if let Some(rest) = text.strip_prefix("pub ") {
+                text = rest.trim_start();
+            }
+            if let Some(rest) = text.strip_prefix("mod ") {
+                if let Some(name) = rest.trim().strip_suffix(';') {
+                    target = name.trim().to_string();
+                }
+            }
+            break;
+        }
+        out.push(target);
+    }
+    out
+}
+
+/// **ADR-0246 D2 (declaration)** — the subject gate exists EXACTLY once, with
+/// the exact signature, and its body IS the fused delegation and nothing else.
+///
+/// WHY EACH CLAUSE, AND WHAT IT KILLS:
+///
+///   * DECLARED ONCE — zero is the RED STATE AT HEAD and is what this slice
+///     exists to fix; two lets the body extractor take the FIRST match, so a
+///     decoy definition could carry the delegation while the shipped one
+///     re-derives the account-state disjunction.
+///   * THE EXACT SQUASHED SIGNATURE — the parameter LIST is the security
+///     surface of this wrapper. Its caller-only sibling takes no identity at
+///     all (ADR-0227 D2), so its signature carries the guarantee; this one
+///     takes a subject, so the signature is instead what pins that it takes
+///     exactly ONE identity, by value, and returns the same `Result<(), String>`
+///     shape every gated call site propagates with `?`. A second identity
+///     parameter, an `Option<Identity>`, or a `bool` return would each be a
+///     different contract wearing the same name.
+///   * WHOLE-BODY EQUALITY — the tooth. `contains` is satisfied by a body that
+///     computes the fused call and then negates it, rebinds it, diverts around
+///     it, or appends a recovery combinator that converts every reject back into
+///     success. That last shape is not hypothetical: it is a MEASURED CI-green
+///     bypass of the m22-s5 wrapper, recorded at
+///     `m22s5_gate_delegates_fused_and_unconditional` above, and a prefix pin
+///     alone could not see it. Whole-body equality rejects leading AND trailing
+///     text of any spelling.
+///   * NO ALWAYS-FALSE CONDITIONAL, NO CONDITIONAL-COMPILATION ATTRIBUTE, NO
+///     CONDITIONAL-COMPILATION MACRO — the unconditional claim's three standard
+///     evasions. The attribute form in particular keeps the exact statement text
+///     in the file and in every source scan while compiling it OUT of the
+///     shipped wasm: present in review, absent in production (the ADR-0189
+///     red-team F3 finding).
+///   * NO LOGGING, IN EITHER SPELLING — this is the one place this wrapper
+///     deliberately DIFFERS from both siblings, and the ban is the decision.
+///     `begin_encounter`'s contract gives observability to the CALLER, and the
+///     grass path calls it at tick rate: a warn per refused encounter is roughly
+///     one per second per deleting walker for the whole seven-day grace window,
+///     an unbounded client-triggered emitter that would also retain the
+///     identities of accounts the cascade is about to erase (ADR-0246 D2; the
+///     rate-limited alternative is what `movement.rs` already owns for the
+///     arms that SHOULD log). A `log_reject(` here would additionally need a
+///     reducer TAG, and there is no reducer name to give it — the refusing
+///     frame is a scheduler tick.
+///   * PREFIX-FREENESS AGAINST BOTH SIBLINGS — asserted in BOTH directions, not
+///     as mere inequality. Every deletion-gate census in this crate counts a
+///     BARE NAME as a substring: `rb46_gated_reducer_census_battle_and_economy`
+///     pins `require_not_deleting` at exactly two occurrences in `battle.rs`,
+///     and `m22s5_already_open_reducers_are_not_gated` pins it at zero inside
+///     nine reducer bodies. A new name CONTAINING either sibling's name would
+///     silently inflate every one of those counts and force somebody to "fix"
+///     a correct number; a name CONTAINED BY one would be invisible to its own
+///     census. This clause is what makes the census arithmetic in both files
+///     stay true without either of them being edited.
+///   * THE ADR-0227 D2 WITNESS — the caller-only sibling's full squashed
+///     signature, counted once. This slice's whole argument is that the
+///     structural caller-only guarantee is SIGNATURE-BORNE and is NOT claimed
+///     for the new wrapper. If somebody later adds an identity parameter to the
+///     caller-only one, that argument evaporates and every containment claim
+///     here is about the wrong world — so the premise is pinned, here, where the
+///     reader is standing.
+///
+/// RED AT HEAD: the declaration count is ZERO and the first assertion names it.
+/// The prefix-freeness clause and the ADR-0227 D2 witness are GREEN at HEAD by
+/// design (they are properties of names that already exist) and must stay green.
+///
+/// HONEST LIMIT: source scan. It says the wrapper is written, is fused, is
+/// unconditional and is silent; it cannot say it DECIDES correctly. That is
+/// `rb76_subject_gate_answers_from_the_named_subject` below, which executes it.
+#[test]
+fn rb76_subject_gate_wrapper_is_declared_once_fused_and_unconditional() {
+    let squashed = m22s5_stripped_squashed("guards.rs", GUARDS_RS);
+    let marker = rb76_subject_gate_marker();
+
+    let n_decl = squashed.matches(marker.as_str()).count();
+    assert_eq!(
+        n_decl, 1,
+        "rb-76 ADR-0246 D2 FAIL (declared exactly once): `guards.rs` declares the \
+         subject-parameterised deletion wrapper {n_decl} time(s) and must declare it \
+         EXACTLY ONCE. ZERO IS THE RED STATE AT HEAD — the wrapper does not exist yet, \
+         so a mid-grace or terminal walker still opens a grass-path wild battle that the \
+         para-4.4 cascade will later have to boot. TWO would let the body extractor below \
+         take the FIRST match, so a decoy definition could carry the byte-pinned \
+         delegation while the shipped one re-derives the account-state disjunction \
+         `accounts` owns."
+    );
+
+    // --- the exact signature -------------------------------------------------
+    // Both param-list forms are accepted. The declaration line is 106 columns, so
+    // rustfmt breaks the parameters vertically exactly as it does for
+    // `require_commitment_predates_deletion`; the squashed view is whitespace-free,
+    // which makes that break invisible, and the trailing-comma form is what a
+    // vertical break leaves behind.
+    let sig_plain = [
+        "pub(crate)fnrequire_subject_not_",
+        "deleting(ctx:&Reducer",
+        "Context,subject:Identity)->Result<(),String>{",
+    ]
+    .concat();
+    let sig_trailing = [
+        "pub(crate)fnrequire_subject_not_",
+        "deleting(ctx:&Reducer",
+        "Context,subject:Identity,)->Result<(),String>{",
+    ]
+    .concat();
+    let n_sig = squashed.matches(sig_plain.as_str()).count()
+        + squashed.matches(sig_trailing.as_str()).count();
+    assert_eq!(
+        n_sig, 1,
+        "rb-76 ADR-0246 D2 FAIL (signature): `guards.rs` carries {n_sig} declaration(s) of \
+         the subject gate with the sanctioned signature; it must carry EXACTLY ONE. ZERO is \
+         the RED STATE AT HEAD. The PARAMETER LIST is this wrapper's entire security \
+         surface: its caller-only sibling takes no identity at all, so ADR-0227 D2's \
+         guarantee is carried by that sibling's signature, and this one — which takes a \
+         subject — can only be held to taking exactly ONE identity, by value, and returning \
+         the same `Result<(), String>` every gated call site propagates with the try \
+         operator. A second identity parameter, an optional subject, a `bool` return or a \
+         borrowed identity would each be a DIFFERENT contract wearing the same name, and \
+         every containment count in this file would still read correct. Expected (squashed, \
+         inline form): {sig_plain:?}"
+    );
+
+    let body = m22s5_squashed_fn_body(&squashed, marker.as_str()).unwrap_or_else(|| {
+        panic!(
+            "rb-76 ADR-0246 D2 FAIL (extraction): the subject gate is declared in \
+             `guards.rs` but its brace-bounded body could not be sliced. Either the braces \
+             are unbalanced from the declaration onward, or the declaration is followed by \
+             something other than a body. Fail LOUD: a pin that silently skips when its \
+             anchor moves is worth nothing."
+        )
+    });
+
+    // --- whole-body equality -------------------------------------------------
+    let fused_plain = [
+        "deletion_gate(crate::accounts::is_pending_",
+        "deletion(ctx,subject",
+    ]
+    .concat();
+    let fused_trailing = [
+        "deletion_gate(crate::accounts::is_pending_",
+        "deletion(ctx,subject,",
+    ]
+    .concat();
+    let tail = [")).map_err(|e|e.to", "_string())"].concat();
+    let body_plain = [fused_plain.as_str(), tail.as_str()].concat();
+    let body_trailing = [fused_trailing.as_str(), tail.as_str()].concat();
+    assert!(
+        body == body_plain || body == body_trailing,
+        "rb-76 ADR-0246 D2 FAIL (whole-body equality): the subject gate's body must BE the \
+         fused delegation into the accounts SSOT, mapped straight onto the module's single \
+         static reason, byte-for-byte in the squashed view, with NOTHING before it and \
+         NOTHING after it. \
+         WHAT LEADING TEXT KILLS: a short-circuit return above the delegation deadens the \
+         gate for every real caller while the delegation text survives every containment \
+         needle — a MEASURED CI-green bypass of the sibling seam, recorded at \
+         `m22s5_is_pending_deletion_delegates_to_should_reject` above. \
+         WHAT TRAILING TEXT KILLS: a recovery combinator appended after the mapping closure \
+         converts every reject the gate produces back into success, and a prefix pin cannot \
+         see it — also MEASURED, at `m22s5_gate_delegates_fused_and_unconditional`. \
+         WHAT THE MAPPING PINS: the reject leaves as the module's ONE static reason, so the \
+         wrapper never learns the mid-grace / terminal state split that PRV1-10 keeps in \
+         `accounts`. Expected (squashed): {body_plain:?}. Got: {body:?}"
+    );
+
+    // --- unconditional -------------------------------------------------------
+    let if_false = ["if", "false"].concat();
+    let n_if_false = body.matches(if_false.as_str()).count();
+    assert_eq!(
+        n_if_false, 0,
+        "rb-76 ADR-0246 D2 FAIL (unconditional): the subject gate's body contains \
+         {n_if_false} always-false conditional(s) and must contain ZERO. A never-taken \
+         branch leaves every needle in this test satisfiable while the gate decides nothing \
+         for anybody."
+    );
+
+    let attr_open = ["#", "["].concat();
+    let n_attr = body.matches(attr_open.as_str()).count();
+    assert_eq!(
+        n_attr, 0,
+        "rb-76 ADR-0246 D2 FAIL (unconditional): the subject gate's body carries {n_attr} \
+         attribute(s) and must carry ZERO. A conditional-compilation attribute keeps the \
+         exact statement text in the file and in every source scan while compiling it OUT \
+         of the shipped wasm — the gate would be present in review and absent in \
+         production, and the executed matrix below would run it happily because tests build \
+         with the test configuration."
+    );
+
+    let cfg_macro = ["cfg", "!("].concat();
+    let n_cfg = body.matches(cfg_macro.as_str()).count();
+    assert_eq!(
+        n_cfg, 0,
+        "rb-76 ADR-0246 D2 FAIL (unconditional): the subject gate's body uses the \
+         conditional-compilation MACRO {n_cfg} time(s) and must use it ZERO times. Same \
+         defect as the attribute form in the clause above, reached through an expression \
+         instead of an attribute, and the whole-body equality clause names it only as a \
+         byte difference — this clause is what says WHY."
+    );
+
+    // --- the non-logging decision (ADR-0246 D2) ------------------------------
+    let log_path = ["log", "::"].concat();
+    let n_log_path = body.matches(log_path.as_str()).count();
+    assert_eq!(
+        n_log_path, 0,
+        "rb-76 ADR-0246 D2 FAIL (non-logging): the subject gate's body reaches the logging \
+         facade {n_log_path} time(s) and must reach it ZERO times. This wrapper is SILENT \
+         BY DECISION, and that is the one place it deliberately differs from both siblings. \
+         The grass path calls it at TICK RATE: a line per refused encounter is roughly one \
+         per second per deleting walker for the whole seven-day grace window — an unbounded \
+         CLIENT-TRIGGERED emitter that also retains, in the operator's log, the identities \
+         of accounts the deletion cascade is about to erase. `begin_encounter`'s contract \
+         gives observability to its CALLER, and `movement.rs` already owns the \
+         rate-limited arms for the failures that SHOULD be reported."
+    );
+
+    let log_call = ["log_re", "ject("].concat();
+    let n_log_call = body.matches(log_call.as_str()).count();
+    assert_eq!(
+        n_log_call, 0,
+        "rb-76 ADR-0246 D2 FAIL (non-logging): the subject gate's body calls the shared \
+         reject logger {n_log_call} time(s) and must call it ZERO times. Beyond the \
+         tick-rate flood the clause above describes, this spelling cannot even be written \
+         honestly here: the reject logger takes a reducer TAG, and the refusing frame is a \
+         SCHEDULER TICK with no reducer name to give it — every candidate tag would be a \
+         fiction filed under somebody else's reducer."
+    );
+
+    // --- prefix-freeness against both siblings (green at HEAD) ---------------
+    let new_bare = rb76_subject_gate_bare_name();
+    let sibling_caller = ["require_not_", "deleting"].concat();
+    let sibling_stamp = ["require_commitment_predates_", "deletion"].concat();
+    for sibling in [sibling_caller.as_str(), sibling_stamp.as_str()] {
+        assert!(
+            !new_bare.contains(sibling) && !sibling.contains(new_bare.as_str()),
+            "rb-76 ADR-0246 D2 FAIL (prefix-freeness): the subject gate's bare name and the \
+             existing wrapper `{sibling}` contain one another. Every deletion-gate census in \
+             this crate counts a BARE NAME as a SUBSTRING — \
+             `rb46_gated_reducer_census_battle_and_economy` in this file pins the caller-only \
+             name at exactly two occurrences in `battle.rs`, and \
+             `m22s5_already_open_reducers_are_not_gated` pins it at zero inside nine reducer \
+             bodies. A containing name silently inflates every one of those counts and forces \
+             somebody to 'fix' a number that was right; a contained name is invisible to its \
+             own census. GREEN AT HEAD and after the slice — this is a constraint on the NAME \
+             CHOICE, and the remedy when it fires is to rename the new wrapper, never to \
+             relax a sibling's count."
+        );
+    }
+
+    // --- the ADR-0227 D2 premise this whole slice rests on (green at HEAD) ---
+    let d2_witness = [
+        "fnrequire_not_",
+        "deleting(ctx:&ReducerContext,reducer:&str)->Result<(),String>",
+    ]
+    .concat();
+    let n_d2 = squashed.matches(d2_witness.as_str()).count();
+    assert_eq!(
+        n_d2, 1,
+        "rb-76 ADR-0246 D2 FAIL (premise witness): `guards.rs` declares the CALLER-ONLY \
+         deletion wrapper with its no-identity signature {n_d2} time(s); it must declare it \
+         EXACTLY ONCE. This slice's entire argument is that ADR-0227 D2's structural \
+         caller-only guarantee is SIGNATURE-BORNE — it holds because that wrapper takes a \
+         reducer tag and nothing else — and that the guarantee is therefore NOT claimed for \
+         the subject-parameterised sibling, which is why containment for the sibling is a \
+         crate-wide census instead. If somebody adds an identity parameter to the \
+         caller-only wrapper, that premise evaporates and every containment claim in this \
+         block is about a world that no longer exists. GREEN AT HEAD; it is pinned here, \
+         beside the reasoning, rather than left implicit."
+    );
+}
+
+/// **ADR-0246 D2/D3 (containment)** — the subject gate reaches exactly TWO
+/// production files, `begin_encounter` reaches exactly two, and the
+/// accounts-side deletion predicate stays inside its three sanctioned modules.
+///
+/// WHY A CENSUS AND NOT A SIGNATURE. The caller-only wrapper is contained BY
+/// CONSTRUCTION: it has no identity parameter, so a second consumer can only
+/// ever ask about its own caller. The subject-parameterised one has no such
+/// defence — a call in `pvp.rs` keyed on the CHALLENGE TARGET would refuse a
+/// challenge based on a stranger's account lifecycle state, which is both a
+/// privacy leak and the D4 violation ADR-0227 argued through in full. Nothing
+/// in the wrapper can prevent that; only a census over every module can see it.
+///
+/// FIVE CLAUSES, none of which the others can stand in for:
+///
+///   (a) THE SUBJECT GATE'S FOOTPRINT — `guards.rs` exactly 1 (the declaration;
+///       the body does not recurse), `battle.rs` exactly 1 (the single call site
+///       inside `begin_encounter`), every other scanned module exactly 0. The
+///       needle is the BARE NAME, so an alias import, a re-export and a
+///       function-pointer binding are all counted; a needle anchored on the
+///       qualified path would see none of them.
+///   (b) `begin_encounter`'s FOOTPRINT — `movement.rs` 1 (the grass-path call),
+///       `battle.rs` 2 (the declaration plus the dev-only `start_wild_battle`
+///       call), every other module 0. This is what makes clause (a) mean
+///       something: gating the ONE choke point is only equivalent to gating the
+///       grass path while that choke point has no third caller. A new caller
+///       elsewhere in the crate would be a wild encounter opened outside the
+///       gate, and the count is what forces it to be argued. `movement.rs` must
+///       additionally carry the import BINDING exactly once — the grass path
+///       calls the function unqualified, so the binding is the only text that
+///       says which `begin_encounter` it is.
+///   (c) THE ACCOUNTS PREDICATE — allowed only in `accounts` (which DECLARES it,
+///       at least twice counting its own guest-claim consumer), `guards` (whose
+///       two wrappers are its only sanctioned gameplay consumers, so exactly 2
+///       after this slice) and `privacy` (exactly 1, the export gate). ZERO
+///       everywhere else. It takes an IDENTITY: a module that calls it directly
+///       chooses the subject and is gated by a rule NO fence in this crate
+///       constrains — it can invert the polarity, refuse silently, or answer
+///       about a third party. ADR-0227 D4 stated this for the caller-only
+///       wrapper; ADR-0246 closes it crate-wide in passing, which is only
+///       coherent because the three allowances are asserted as MINIMA, not
+///       merely exempted.
+///   (d) ANTI-VACUITY ON THE ROSTER — at least ten modules, eight of them named,
+///       and an unreadable module PANICS by name rather than being skipped. A
+///       ban applied to a short list is a ban that passes because it looked
+///       nowhere, and skipping is how a census goes quietly blind.
+///   (e) THE PATH-RELOCATION HOLE — this census maps a declared name `x` onto
+///       the file `src/x.rs`. A path-relocating attribute breaks that mapping
+///       silently: the census would read one file while the compiler reads
+///       another, and every count above would be about a file the crate does not
+///       build. Every such attribute in `lib.rs` must relocate a `*tests`
+///       module, which the roster excludes anyway, and at least one must exist
+///       so the check is not scanning for a spelling nothing uses.
+///
+/// RED AT HEAD: clause (a)'s anti-vacuity count in `guards.rs` is 0 and must be
+/// 1, and clause (c)'s `guards.rs` count is 1 and must be 2. Every BAN in this
+/// test is GREEN at HEAD — a symbol that does not exist is named nowhere — and
+/// the whole point is that they stay green as the slice lands and as modules are
+/// added afterwards.
+///
+/// kills:
+///   - a SECOND consumer of the subject gate anywhere in the crate, including
+///     the counterparty-keyed `pvp.rs` shape ADR-0227 D4 forbids, and including
+///     one reached through a `use` alias or a function pointer;
+///   - the gate wired into `movement.rs` directly instead of into the shared
+///     choke point (clause (a) reads 1 in `movement.rs`, which must be 0);
+///   - a new third caller of `begin_encounter` — a wild encounter opened outside
+///     the gate, invisible to every pin in `battle_tests.rs`;
+///   - a module reaching the accounts predicate itself to re-derive the gate;
+///   - a path-relocated module that would make this whole census scan the wrong
+///     files.
+///
+/// HONEST LIMIT: substring counts over a stripped view. The per-module
+/// length floor catches a WHOLESALE blanking of a file (the class a stray
+/// quote in a char literal produces), not a partial one; the load-bearing
+/// files are each independently anchored by a POSITIVE count in this same
+/// test — `guards.rs` by two, `battle.rs` by two, `movement.rs` by two,
+/// `accounts` and `privacy` by their predicate minima, `lib.rs` by the roster
+/// size — so a blanked file there is loud rather than silent.
+/// HONEST LIMITS. (1) `guards.rs` and `lib.rs` are read at compile time
+/// (`include_str!`) while the other rostered modules are read from disk at RUN
+/// time (`std::fs::read_to_string`), so a stale test binary run over edited
+/// sources reports on bytes it did not compile — relevant to mutation runners,
+/// which must rebuild between rows. (2) Since rb-76, `lib.rs` is subject to the
+/// scan-substrate preconditions (no deep raw string, balanced block-comment
+/// markers): an edit there that trips them reds this test from outside the
+/// slice's touch set, by design — it is a real stripper hazard in that file.
+#[test]
+fn rb76_subject_gate_and_begin_encounter_are_contained_crate_wide() {
+    let bare = rb76_subject_gate_bare_name();
+    let begin = rb76_begin_encounter_call();
+    let predicate = rb76_accounts_predicate_bare_name();
+
+    // --- (d) anti-vacuity on the derived roster ------------------------------
+    let modules = rb76_scanned_module_names();
+    assert!(
+        modules.len() >= 10,
+        "rb-76 ADR-0246 FAIL (containment, anti-vacuity): only {} module(s) were derived \
+         from the crate root's `mod` declarations: {modules:?}. The crate declares far more \
+         than ten. A short list means the line-oriented parse stopped matching — a block \
+         comment swallowing declarations, a re-spelling, or a move of the module wiring — \
+         and a ban applied to a short list is a ban that passes because it looked nowhere.",
+        modules.len()
+    );
+    for required in [
+        "trading", "pvp", "battle", "economy", "ranking", "privacy", "movement", "accounts",
+    ] {
+        assert!(
+            modules.iter().any(|m| m.as_str() == required),
+            "rb-76 ADR-0246 FAIL (containment, anti-vacuity): the derived module list does \
+             not contain `{required}`; it is {modules:?}. These eight are named explicitly: \
+             six own reducers that act between two players (where a counterparty-keyed \
+             deletion-status oracle would be written), `movement` owns the grass path this \
+             slice gates, and `accounts` owns the predicate clause (c) contains. A list \
+             missing any of them is not scanning what this test claims to scan."
+        );
+    }
+
+    // --- (e) the path-relocation hole ----------------------------------------
+    let targets = rb76_path_attribute_targets();
+    assert!(
+        !targets.is_empty(),
+        "rb-76 ADR-0246 FAIL (containment, anti-vacuity): `lib.rs` carries ZERO \
+         path-relocating attributes, so this clause is scanning for a spelling that no \
+         longer exists and would pass over any number of relocated modules. The crate \
+         declares its sibling test modules that way today; if that wiring changed, this \
+         check must be re-derived against the new shape, never deleted."
+    );
+    for target in &targets {
+        assert!(
+            target.ends_with("tests"),
+            "rb-76 ADR-0246 FAIL (containment, path relocation): a path-relocating attribute \
+             in `lib.rs` relocates `{target}` (an EMPTY name means the attribute is not \
+             followed by a module declaration at all), and every one of them must relocate a \
+             module whose name ends in `tests`. THE HOLE THIS CLOSES: this census maps a \
+             declared name `x` onto the file `src/x.rs`. A relocated PRODUCTION module would \
+             make every count in this test read a file the crate does not build — the bans \
+             would all pass, over the wrong bytes, silently. Teach \
+             `rb76_scanned_module_names` the path DELIBERATELY; never drop the module and \
+             never widen this clause."
+        );
+    }
+
+    // --- guards.rs: the declaring file, excluded from the bans below ---------
+    let guards = rb76_module_squashed("guards.rs", GUARDS_RS);
+    let n_guards_bare = guards.matches(bare.as_str()).count();
+    assert_eq!(
+        n_guards_bare, 1,
+        "rb-76 ADR-0246 D2 FAIL (containment, anti-vacuity): the subject gate's bare name \
+         matches `guards.rs` {n_guards_bare} time(s) and must match EXACTLY once — the \
+         declaration. ZERO IS THE RED STATE AT HEAD, and it is what makes every ban below \
+         currently vacuous: a census that bans a spelling nothing uses proves nothing at \
+         all. TWO means the body recurses or a second wrapper appeared in the very file the \
+         bans trust, which \
+         `rb76_subject_gate_wrapper_is_declared_once_fused_and_unconditional` owns in full."
+    );
+    let n_guards_predicate = guards.matches(predicate.as_str()).count();
+    assert_eq!(
+        n_guards_predicate, 2,
+        "rb-76 ADR-0246 D2 FAIL (containment, sanctioned consumers): `guards.rs` names the \
+         accounts-side deletion predicate {n_guards_predicate} time(s) and must name it \
+         EXACTLY twice — once in the caller-only wrapper, once in the subject-parameterised \
+         one. ONE IS THE RED STATE AT HEAD (only the caller-only wrapper exists). THREE \
+         would mean a third consumer appeared in the file that clause (c) exempts from its \
+         crate-wide ban, which is the one place such a consumer could hide from it."
+    );
+    let n_guards_begin = guards.matches(begin.as_str()).count();
+    assert_eq!(
+        n_guards_begin, 0,
+        "rb-76 ADR-0246 D2 FAIL (containment, caller census): `guards.rs` calls \
+         `begin_encounter(` {n_guards_begin} time(s) and must call it ZERO times. `guards.rs` \
+         is the one module the derived roster below exempts, so clause (b)'s per-module \
+         count never sees it; this assertion closes that gap — a wild-battle opener hidden in \
+         the guards module would otherwise be a third caller the census reports as absent."
+    );
+
+    // --- the derived modules -------------------------------------------------
+    let root = env!("CARGO_MANIFEST_DIR");
+    let import = ["usecrate::battle::{begin_", "encounter,"].concat();
+    for name in &modules {
+        let path = format!("{root}/src/{name}.rs");
+        let src = std::fs::read_to_string(path.as_str()).unwrap_or_else(|err| {
+            panic!(
+                "rb-76 ADR-0246 FAIL (containment, unscanned module): `lib.rs` declares \
+                 module `{name}` but its source could not be read at `{path}` ({err}). An \
+                 unreadable module is an UNSCANNED module, and this census refuses to skip \
+                 one: skipping is how a ban goes quietly blind. If the module is \
+                 path-relocated, teach `rb76_scanned_module_names` the path — never drop \
+                 the module."
+            )
+        });
+        let squashed = rb76_module_squashed(name.as_str(), &src);
+        let include_macro = ["inclu", "de!("].concat();
+        let n_include = src.matches(include_macro.as_str()).count();
+        assert_eq!(
+            n_include, 0,
+            "rb-76 ADR-0246 FAIL (containment, textual inclusion): `{name}.rs` pulls source in \
+             with the `include!` macro {n_include} time(s) and must do so ZERO times. An \
+             included fragment declares no `mod`, so it is invisible to this roster AND to the \
+             crate's `mod`-line censuses — the artifact red-team MEASURED a counterparty-keyed \
+             consumer of the subject gate hidden in such a fragment passing every clause here \
+             CI-green. (`include_str!` is a different token and stays allowed — it embeds \
+             data, not code.) Counted on the RAW source so a fragment in a string cannot hide \
+             it either."
+        );
+        assert!(
+            squashed.len() >= 200,
+            "rb-76 ADR-0246 FAIL (containment, blanking canary): the stripped, squashed \
+             view of `{name}.rs` is only {} byte(s) long. Every module in this crate is \
+             hundreds of lines; a view this short means the stripping pipeline blanked the \
+             file — a char literal holding a double quote inverts string/code polarity for \
+             everything after it (guards_tests G-5a records the measured blast radius) — \
+             and every count below would be a vacuous zero. Investigate the stripper \
+             against that file; never relax a count downstream of this.",
+            squashed.len()
+        );
+
+        // (a) the subject gate's footprint
+        let want_bare = usize::from(name.as_str() == "battle");
+        let n_bare = squashed.matches(bare.as_str()).count();
+        assert_eq!(
+            n_bare, want_bare,
+            "rb-76 ADR-0246 D2/D3 FAIL (containment): `{name}.rs` names the \
+             subject-parameterised deletion gate {n_bare} time(s) and must name it exactly \
+             {want_bare} time(s). `battle.rs` is the ONE sanctioned consumer — the single \
+             call inside `begin_encounter`, the choke point both wild-encounter callers \
+             share (ADR-0246 D3) — and every other module must name it ZERO times. \
+             AT HEAD `battle.rs` reads 0 and must read 1: that is the red half of this \
+             clause and the wiring this slice exists to add. \
+             A NON-ZERO COUNT ANYWHERE ELSE is the defect this census exists for: unlike \
+             its caller-only sibling, this wrapper TAKES A SUBJECT, so a call site chooses \
+             whose account it asks about. A counterparty-keyed call in `pvp.rs` would refuse \
+             a challenge on the strength of a STRANGER's account lifecycle state — a privacy \
+             leak and the ADR-0227 D4 violation restated by ADR-0246 — and it would red \
+             nothing else in this slice: the wrapper is untouched, every pin on it still \
+             passes, and the reducer would even behave 'sensibly'. The needle is the BARE \
+             NAME, so an alias import, a re-export and a function-pointer binding are all \
+             counted here."
+        );
+
+        // (b) the choke point's footprint
+        let want_begin = match name.as_str() {
+            "movement" => 1,
+            "battle" => 2,
+            _ => 0,
+        };
+        let n_begin = squashed.matches(begin.as_str()).count();
+        assert_eq!(
+            n_begin, want_begin,
+            "rb-76 ADR-0246 D3 FAIL (choke point): `{name}.rs` calls `begin_encounter(` \
+             {n_begin} time(s) and must call it exactly {want_begin} time(s). THE \
+             ARITHMETIC: `battle.rs` 2 (the declaration plus the dev-only `start_wild_battle` \
+             call), `movement.rs` 1 (the scheduled grass path), everything else 0. \
+             WHY THIS CLAUSE EXISTS: gating the one choke point is equivalent to gating the \
+             grass path ONLY while that choke point has no third caller. A new caller \
+             anywhere in the crate is a wild-battle commitment opened somewhere this slice \
+             never reasoned about, and NOTHING in `battle_tests.rs` would see it — the pins \
+             there read `begin_encounter`'s own body, not who calls it. If a later slice \
+             adds a legitimate caller, re-derive this number DELIBERATELY and re-argue the \
+             gate's placement; never lower it to make a build green. GREEN AT HEAD."
+        );
+
+        if name.as_str() == "movement" {
+            let n_import = squashed.matches(import.as_str()).count();
+            assert_eq!(
+                n_import, 1,
+                "rb-76 ADR-0246 D3/D4 FAIL (import binding): `movement.rs` binds \
+                 `begin_encounter` from the battle module {n_import} time(s) and must bind \
+                 it EXACTLY once — squashed, `usecrate::battle::{{begin_encounter,`. The \
+                 grass path calls the function UNQUALIFIED, so this binding is the only text \
+                 in the file that says WHICH `begin_encounter` runs there. With zero, the \
+                 call in clause (b) is resolving to something else — a file-local shim \
+                 answering whatever it likes, which would route the whole grass path around \
+                 the gate while every other count in this test stays correct. GREEN AT HEAD \
+                 and it must stay green: ADR-0246 D4 changes the arm INSIDE the error \
+                 handler, not the import."
+            );
+        }
+
+        // (c) the accounts predicate's crate-wide containment
+        let n_predicate = squashed.matches(predicate.as_str()).count();
+        match name.as_str() {
+            "accounts" => {
+                assert_eq!(
+                    n_predicate, 2,
+                    "rb-76 ADR-0246 FAIL (predicate containment): `accounts.rs` names the \
+                     context-bound deletion predicate {n_predicate} time(s) and must name it \
+                     EXACTLY twice — the declaration plus its own guest-claim consumer. Fewer \
+                     means the predicate was renamed or moved, so the crate-wide ban below is \
+                     banning a spelling nothing uses and would pass over every module. MORE is \
+                     the artifact red-team's MEASURED bypass: a `pub(crate) use \
+                     is_pending_deletion as <alias>;` re-export (or a one-line wrapper fn) in \
+                     this exempt file lets any other module consult the predicate about a \
+                     third party under a name this census never spells — a floor of two \
+                     admitted it CI-green. An exact count is what makes the exemption a \
+                     boundary rather than a hole. GREEN AT HEAD."
+                );
+                let alias = ["useis_pending_", "deletion"].concat();
+                let n_alias = squashed.matches(alias.as_str()).count();
+                assert_eq!(
+                    n_alias, 0,
+                    "rb-76 ADR-0246 FAIL (predicate containment): `accounts.rs` re-exports or \
+                     `use`-binds the context-bound deletion predicate {n_alias} time(s) and \
+                     must do so ZERO times — a re-export is a second spelling of an \
+                     identity-taking oracle that the bare-name census cannot see in the \
+                     consuming module."
+                );
+            }
+            "privacy" => assert_eq!(
+                n_predicate, 1,
+                "rb-76 ADR-0246 FAIL (predicate containment, anti-vacuity): `privacy.rs` \
+                 names the context-bound deletion predicate {n_predicate} time(s) and must \
+                 name it EXACTLY once — `request_data_export`'s PRV1-7 grace-window reject, \
+                 the one sanctioned non-guards consumer in the crate. ZERO means that gate \
+                 was removed or re-spelled and a mid-grace caller can export again; TWO \
+                 means a second, unreviewed subject-choosing call appeared in the file this \
+                 clause exempts. GREEN AT HEAD."
+            ),
+            _ => assert_eq!(
+                n_predicate, 0,
+                "rb-76 ADR-0246 FAIL (predicate containment): `{name}.rs` reaches the \
+                 context-bound deletion predicate directly {n_predicate} time(s) and must \
+                 reach it ZERO times. That predicate takes an IDENTITY: a module calling it \
+                 itself chooses BOTH the subject and what to do with the verdict, and NO \
+                 fence in this crate constrains either — it can invert the polarity, refuse \
+                 silently, run after the write, or answer about a third party (the \
+                 deletion-status oracle ADR-0227 D4 forbids). Only the two `guards.rs` \
+                 wrappers and `privacy.rs`'s export gate may consume it. ADR-0227 D4 stated \
+                 this for the caller-only wrapper over four files; ADR-0246 closes it \
+                 CRATE-WIDE, which is what makes the subject-parameterised wrapper's \
+                 containment argument complete. GREEN AT HEAD; the whole point is that it \
+                 stays that way as modules are added."
+            ),
+        }
+    }
+
+    // --- the filesystem is the roster's SUPERSET check ------------------------
+    // The roster above is derived from `lib.rs`'s `mod` lines. A production source
+    // file that no `mod` line names is exactly a file this census never opens —
+    // and `include!`-style inclusion (banned per module above) is the one way
+    // such a file still reaches the compiler. So every Rust source file directly under `src/` that is not a
+    // sibling test module and not the exempt `guards.rs` MUST be on the roster;
+    // an unknown file is a loud failure naming it, never a silent skip.
+    let src_dir = format!("{root}/src");
+    let mut on_disk: Vec<String> = std::fs::read_dir(src_dir.as_str())
+        .unwrap_or_else(|err| panic!("rb-76: cannot list `{src_dir}` ({err})"))
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter_map(|file| file.strip_suffix(".rs").map(str::to_string))
+        .filter(|stem| !stem.ends_with("tests") && stem != "guards")
+        .collect();
+    on_disk.sort();
+    let unknown: Vec<&String> = on_disk
+        .iter()
+        .filter(|stem| !modules.iter().any(|m| m == *stem))
+        .collect();
+    assert!(
+        unknown.is_empty(),
+        "rb-76 ADR-0246 FAIL (containment, unrostered source): `src/` contains production \
+         source file(s) that no `lib.rs` `mod` line declares and this census therefore never \
+         scanned: {unknown:?}. Either declare the module in `lib.rs` (the roster is derived \
+         from those lines and will pick it up) or, if it is a test module, name it `*tests.rs` \
+         so the sibling-test exemption applies. A production file reachable only by textual \
+         inclusion is the artifact red-team's MEASURED hiding place for a third-party \
+         deletion-status oracle."
+    );
+    assert!(
+        on_disk.len() >= 10,
+        "rb-76 ADR-0246 FAIL (containment, anti-vacuity): only {} production source file(s) \
+         were listed under `src/`; the crate has far more. A short listing means the \
+         directory walk is looking in the wrong place, and a superset check over an empty set \
+         passes vacuously.",
+        on_disk.len()
+    );
+}
+
+// rb76-compile-red-begin
+/// **ADR-0246 D2 (behaviour)** — the subject gate answers from the NAMED
+/// SUBJECT: it refuses the two deletion-gated states, ADMITS the three others,
+/// and consults neither `ctx.sender()` nor the table at large.
+///
+/// The shipped wrapper runs under the rb-41 native host (`native_host_tests`,
+/// ADR-0222 amendment) against real `account` rows through seven calls — five
+/// subject states plus two sender-vs-subject controls — with the
+/// exact verdict pinned in each. The three admitted states are the positive
+/// control, and they are what make the two refused states mean anything.
+///
+/// SCOPE NOTE: today this matrix overlaps the `begin_encounter` matrix in
+/// `battle_tests.rs` almost entirely, because that reducer helper is the seam's
+/// ONLY consumer. It is kept as a DECOUPLING FENCE — the wrapper's own truth
+/// table, independent of any consumer — so that if a second consumer is ever
+/// sanctioned (and the census widened deliberately) the seam still has a
+/// consumer-free witness. Do not re-widen the battle-side test to carry this.
+///
+/// TWO CONTROLS CARRY THE WHOLE POINT OF THIS SLICE, and neither exists in the
+/// rb-46 matrix this test is modelled on:
+///
+///   * A STRANGER'S MID-GRACE ROW IS SEEDED FIRST AND NEVER REMOVED. Without it
+///     the table only ever holds the subject's row, so a TABLE-keyed gate —
+///     refuse if ANYBODY is deleting — is observationally identical to a
+///     subject-keyed one in every state. With it, the three admitted states are
+///     reachable only by a gate that keys on the identity it was HANDED.
+///   * THE SENDER'S OWN ROW IS DRIVEN INDEPENDENTLY OF THE SUBJECT'S, in both
+///     directions. `ctx.sender()` under this host is the all-zero identity, and
+///     on the real grass path it is the MODULE identity — never the walker. A
+///     wrapper that quietly reads `ctx.sender()` instead of its parameter (the
+///     single most plausible copy-paste from the caller-only sibling one screen
+///     above it in the same file) would pass a matrix that only ever moves the
+///     subject's row: the sender has no row, so it would admit everybody, and
+///     the three admitted states would all be green for the wrong reason. The
+///     sender-mid-grace-while-subject-Active row makes that wrapper REFUSE an
+///     admitted state; the sender-Active-while-subject-mid-grace row makes it
+///     ADMIT a refused one. One of the two fires whichever way the mistake is
+///     spelled.
+///
+/// Rows are built with the shipped pure constructors only, so this test can
+/// never assemble a state the module itself cannot; `terminal_account`
+/// debug-asserts legality, which is why the illegal active-plus-marker shape is
+/// not reachable here and is left to `accounts_tests`' truth table (ADR-0236
+/// D5). `seed` PUSHES rather than upserting, so each state removes the previous
+/// row and asserts that exactly one row went — and because `remove` is
+/// `Identity`-keyed, neither the stranger's row nor the sender's affects that
+/// count.
+///
+/// WHY THIS IS SAFE TO EXECUTE AT ALL: the wrapper is READ-ONLY. Every write
+/// syscall aborts the process under this host (uncatchable, so `#[should_panic]`
+/// cannot be used), and this seam performs a single indexed point read.
+///
+/// COMPILE-RED AT HEAD: `crate::guards::require_subject_not_deleting` does not
+/// exist, so the crate's test build fails to resolve it. Excise this test
+/// between its two marker comments to observe the assertion-RED of the five
+/// tests that do compile.
+///
+/// kills:
+///   - the dropped gate and any later deletion of it;
+///   - INVERTED POLARITY, which no source scan in this slice can see: the
+///     `Active` and no-row states would start returning the deletion reject.
+///     Inverted, this gate refuses EVERY walker — a total outage of wild
+///     encounters — while every text pin in this block stays byte-identical;
+///   - A SENDER-KEYED READ (`ctx.sender()` in place of the parameter): the two
+///     sender-driven controls above catch it in both spellings;
+///   - A TABLE-WIDE OR ANY-ROW-PENDING FAKE: the three admitted states fail
+///     while the stranger is mid-grace. (Written as a full-table iteration it
+///     aborts the process on the unmodelled scan syscall instead — also a
+///     failure, and a louder one.);
+///   - a row-EXISTS-keyed fake (`is_some()` in place of the status test): the
+///     `Active` state fails;
+///   - a latched or memoised answer that never returns to admitting: the final
+///     removed-row state fails;
+///   - a gate keyed on the mid-grace status alone that ignores the terminal
+///     marker: that row still passes today (the marker implies the status on a
+///     legal row) — recorded honestly, it is a fail-closed regression fence, not
+///     an independent kill.
+#[test]
+fn rb76_subject_gate_answers_from_the_named_subject() {
+    let fx = crate::native_host_tests::fixture();
+    let acct = fx.table::<crate::schema::Account>("account", "identity", |r| r.identity);
+    let ctx = fx.ctx();
+    let sender = ctx.sender();
+    let subject = spacetimedb::Identity::from_byte_array([7u8; 32]);
+    let stranger = spacetimedb::Identity::from_byte_array([9u8; 32]);
+
+    let call = || crate::guards::require_subject_not_deleting(&ctx, subject);
+
+    let admitted: Result<(), String> = Ok(());
+    let gated: Result<(), String> = Err(crate::guards::REJECT_DELETION_GATED.to_string());
+
+    let subject_active = crate::accounts::new_account_row(subject, String::new(), 0);
+    let subject_pending = crate::accounts::requested_deletion(subject_active.clone(), 1);
+    let subject_terminal = crate::accounts::terminal_account(subject_pending.clone(), 2);
+    let sender_active = crate::accounts::new_account_row(sender, String::new(), 0);
+    let sender_pending = crate::accounts::requested_deletion(sender_active.clone(), 1);
+
+    // A mid-grace STRANGER, seeded once and never removed: the account table is
+    // never empty of deleting rows, so an any-row-pending gate cannot masquerade
+    // as a subject-keyed one in the three admitted states below.
+    acct.seed(&crate::accounts::requested_deletion(
+        crate::accounts::new_account_row(stranger, String::new(), 0),
+        1,
+    ));
+
+    // --- State 1: the subject has no account row (a guest) ------------------
+    let got = call();
+    assert_eq!(
+        got,
+        admitted,
+        "rb-76 ADR-0246 D2 FAIL (admitted, no subject row): the subject gate returned \
+         {got:?} for a subject with NO account row, while a STRANGER's row is mid-grace. A \
+         walker who never authenticated is not inside the para-4.7 deletion gate and must be \
+         admitted; a reject here means the gate answers from the TABLE rather than from the \
+         row belonging to the identity it was handed. Indexes the generated code asked the \
+         host for: {:?}",
+        fx.requested_indexes()
+    );
+
+    // --- State 2: the subject's row is Active -------------------------------
+    acct.seed(&subject_active);
+    let got = call();
+    assert_eq!(
+        got, admitted,
+        "rb-76 ADR-0246 D2 FAIL (admitted, Active subject): the subject gate returned \
+         {got:?} for a subject whose account row is `Active` (a stranger's row is \
+         mid-grace). This is the ordinary player walking through grass, and refusing them is \
+         a TOTAL OUTAGE of wild encounters that every source pin in this slice would report \
+         as correctly gated — the call text is byte-identical whichever way the decision \
+         runs. It is also what a row-EXISTS-keyed fake produces, what an any-row-pending \
+         table scan produces, and what an inverted branch produces."
+    );
+
+    // --- Control A: the SENDER is mid-grace while the subject is Active -----
+    // `ctx.sender()` is the all-zero identity here and the MODULE identity on the
+    // real grass path — never the walker. A wrapper that reads the context sender
+    // instead of its parameter is the most plausible copy-paste from the
+    // caller-only sibling one screen above it in `guards.rs`, and every state that
+    // moves only the SUBJECT's row is blind to it.
+    acct.seed(&sender_pending);
+    let got = call();
+    assert_eq!(
+        got, admitted,
+        "rb-76 ADR-0246 D2 FAIL (subject-keyed, sender mid-grace): the subject gate returned \
+         {got:?} while the SUBJECT's row is `Active` and the CONTEXT SENDER's own row is \
+         mid-grace. The gate must answer about the identity it was HANDED. This row is the \
+         reason the wrapper takes a subject at all: on the scheduled grass path \
+         `ctx.sender()` is the MODULE identity, so a sender-keyed read there asks about an \
+         account no player owns — and would refuse, or admit, every walker in the zone \
+         together. Nothing in the wrapper's signature can prevent that spelling; only this \
+         row can see it."
+    );
+    assert_eq!(
+        acct.remove(sender),
+        1,
+        "rb-76 fixture: exactly one mid-grace row was seeded for the CONTEXT SENDER and must \
+         be removed before the refused states below — `seed` appends rather than upserting, \
+         so a miscount would leave two rows for one identity and the unique-index lookup \
+         would assert instead of answering. `remove` is Identity-keyed, so the stranger's \
+         and the subject's rows are deliberately untouched and must never be counted here."
+    );
+
+    // --- State 3: the subject is mid-grace ----------------------------------
+    assert_eq!(
+        acct.remove(subject),
+        1,
+        "rb-76 fixture: exactly one `Active` row was seeded for the SUBJECT and must be \
+         removed before the mid-grace row is pushed (`seed` appends, it never upserts)."
+    );
+    acct.seed(&subject_pending);
+    let got = call();
+    assert_eq!(
+        got, gated,
+        "rb-76 ADR-0246 D2 FAIL (refused, subject mid-grace): the subject gate returned \
+         {got:?} for a subject whose account is inside the deletion grace window; it must \
+         return the module's single static deletion reject. THIS IS THE CRITERION: a \
+         mid-grace walker must not open a new wild-battle commitment, because the para-4.4 \
+         cascade would then have to boot a live battle it never created. The expected value \
+         is compared against the CONSTANT, never a re-typed literal, so a reworded reason \
+         cannot drift silently into text no client ever receives."
+    );
+
+    // --- Control B: the SENDER is Active while the subject is mid-grace -----
+    // The mirror image of control A: a sender-keyed read now ADMITS a state that
+    // must be refused.
+    acct.seed(&sender_active);
+    let got = call();
+    assert_eq!(
+        got, gated,
+        "rb-76 ADR-0246 D2 FAIL (subject-keyed, sender Active): the subject gate returned \
+         {got:?} while the SUBJECT is mid-grace and the CONTEXT SENDER's own row is \
+         `Active`. This is the mirror of the control above and it is the sharper half: a \
+         sender-keyed read ADMITS the state that must be refused, so the feature looks \
+         present in review, passes every source pin, and gates nothing at all on the path it \
+         was written for."
+    );
+    assert_eq!(
+        acct.remove(sender),
+        1,
+        "rb-76 fixture: exactly one `Active` row was seeded for the CONTEXT SENDER and must \
+         be removable; the stranger's and the subject's rows stay."
+    );
+
+    // --- State 4: the subject carries the terminal marker -------------------
+    assert_eq!(
+        acct.remove(subject),
+        1,
+        "rb-76 fixture: exactly one mid-grace row was seeded for the SUBJECT and must be \
+         removed before the terminal row is pushed."
+    );
+    acct.seed(&subject_terminal);
+    let got = call();
+    assert_eq!(
+        got, gated,
+        "rb-76 ADR-0246 D2 FAIL (refused, subject terminal): the subject gate returned \
+         {got:?} for a subject whose account carries the M22 terminal marker. An \
+         already-erased account must never open a new commitment: its game data is gone, so \
+         the encounter would be opened against rows the cascade has already deleted. The \
+         pure decision is an explicit disjunction precisely so this state is fail-closed \
+         even on the illegal active-plus-marker shape."
+    );
+
+    // --- State 5: the subject's row is gone again ---------------------------
+    assert_eq!(
+        acct.remove(subject),
+        1,
+        "rb-76 fixture: exactly one terminal row was seeded for the SUBJECT and must be \
+         removable; the stranger's mid-grace row stays."
+    );
+    let got = call();
+    assert_eq!(
+        got, admitted,
+        "rb-76 ADR-0246 D2 FAIL (admitted, subject row removed): the subject gate returned \
+         {got:?} once the subject's account row was gone again (the stranger's mid-grace row \
+         is still there). The verdict must track LIVE rows FOR THE NAMED SUBJECT: an answer \
+         that latches on a row it has already seen — a memoised predicate, a cached \
+         decision, a process-wide flag — would keep refusing this identity forever, and an \
+         any-row-pending answer would refuse it because of somebody else. No state above can \
+         distinguish either of those from a correct gate on its own."
+    );
+}
+// rb76-compile-red-end
