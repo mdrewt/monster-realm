@@ -934,6 +934,15 @@ const PROVISION_FN = 'provision_or_touch_account';
 // `if !ctx.sender_auth().has_jwt() {`, so `ctx.sender_auth()` legitimately comes
 // first and a "has_jwt is the first statement" phrasing false-REDs on arrival.
 const ANON_AFTER_TOKENS = ['accounts::', 'ctx.db.', 'Err('];
+// rb-73 (ADR-0245 D2): on_connect now records the live connection BEFORE the
+// anonymous early-out through the bare helper call `open_player_session(ctx)`,
+// which this token set structurally cannot see. The compensating controls are
+// two Rust pins in server-module/src/rb73_session_tests.rs:
+// `rb73_wiring_on_connect_body_is_frozen` (exact body equality — a second
+// laundering call reds) and
+// `rb73_wiring_open_session_body_is_frozen_and_single_purpose` (sole
+// declaration, cfg-free, None-guard first, no Err(/unwrap(/expect(/panic!(/
+// accounts::, every ctx.db. site is player_session()).
 
 // The ONE sanctioned audience guard, whitespace-compacted. Pinned by SHAPE
 // because a red-team beat a presence-only check with

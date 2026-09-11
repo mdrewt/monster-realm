@@ -1340,7 +1340,7 @@ export function checkCascadeTruth(input) {
   }
   return {
     ok: true,
-    reason: 'cascade truth held over 41 classified entries',
+    reason: 'cascade truth held over 42 classified entries',
     vacuous,
     detail: 'seeded=' + seededSum + ' vacuous=[' + vacuous.join(',') + ']',
   };
@@ -4512,7 +4512,7 @@ export default async function () {
     {
       const mkFix = () => {
         const entries = [];
-        for (let i = 1; i <= 13; i++)
+        for (let i = 1; i <= 14; i++)
           entries.push({
             table: 'e' + i,
             policy: 'Erase',

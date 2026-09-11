@@ -664,8 +664,10 @@ export function connect(opts: ConnectionOptions): Connection {
   ): void {
     conn.reducers.joinGame({ name }).catch((err) => {
       const msg = (err as Error)?.message ?? '';
-      // "already joined" is benign: the server has not processed the old session's drop yet — the
-      // rows still live and the new subscription re-hydrates them (ADR-0085 A4). EXACT match.
+      // "already joined" is benign: either the server has not processed the old session's drop
+      // yet, or (since rb-73 / ADR-0245) it processed it and kept the rows because this rebuilt
+      // connection was still live — either way the rows live and the new subscription
+      // re-hydrates them (ADR-0085 A4). EXACT match.
       if (msg !== 'already joined') onError('join', msg || 'join failed');
     });
   }
@@ -712,7 +714,8 @@ export function connect(opts: ConnectionOptions): Connection {
             // ADR-0182 D16 join gate, re-evaluated FRESH every applied snapshot. The claim-code
             // veto is the SOLE veto and is scoped to account-kind builds; my_account presence is
             // NEVER consulted in it (AUTH-52). Anon builds always join — the idempotent A4 re-join
-            // (server on_disconnect deletes the player + character rows, so a reconnect must join).
+            // (server on_disconnect deletes the player + character rows when the identity's LAST
+            // live connection ends — rb-73 / ADR-0245 — so a reconnect must still attempt the join).
             const codeUnconsumed = claimCode.hasUnconsumed(globalThis, opts.uri, opts.db);
             const shouldJoin = credential.kind !== 'account' || !codeUnconsumed;
             if (shouldJoin) {

@@ -384,10 +384,12 @@ export class Predictor {
    * review, nh3): on a zone warp the rebuild is followed in the SAME microtask flush by a
    * reconcile (the warp's own row burst → MicrotaskBatcher → reconcileFromStore), which
    * rewrites `#lastAuthQueueLen` from the authoritative queue; on a RECONNECT that reconcile
-   * is deferred (the server's on_disconnect deleted the player/character rows, so
-   * reconcileFromStore early-returns until joinGame round-trips), and the guarantee rests on
-   * `held.clear()` ALONE — no held continuation survives the rebuild, so nothing emits into
-   * the gap. That makes `held.clear()` load-bearing for the reconnect arm: an nh5-style
+   * may be deferred (when the server's on_disconnect deleted the player/character rows —
+   * since rb-73 / ADR-0245 only if the old socket was the identity's LAST live connection —
+   * reconcileFromStore early-returns until joinGame round-trips; when the rows survived the
+   * overlap it runs on the first post-reconnect batch instead), and in the deferred case the
+   * guarantee rests on `held.clear()` ALONE — no held continuation survives the rebuild, so
+   * nothing emits into the gap. That makes `held.clear()` load-bearing for the reconnect arm: an nh5-style
    * change to held-key retention across rebuilds must revisit this residual. Bounded and
    * self-correcting on the next reconcile either way.
    */

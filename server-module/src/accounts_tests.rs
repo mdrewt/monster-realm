@@ -1251,10 +1251,14 @@ fn auth15_shared_reject_reason_constant() {
 // production; each has a documented proof-of-teeth mutation that flips it RED.
 // ===========================================================================
 
-/// AUTH-1 / G3 (ANON_PASSTHROUGH): `on_connect` (lib.rs) makes the `has_jwt()`
-/// early return the FIRST statement — an anonymous connection can never reach an
-/// `Err` path (returning `Err` disconnects the client). The provisioning
-/// delegation runs strictly AFTER the guard.
+/// AUTH-1 / G3 (ANON_PASSTHROUGH): in `on_connect` (lib.rs) the `has_jwt()` test
+/// precedes both the anonymous early return and the provisioning delegation, and
+/// the body carries no `Err(` — an anonymous connection can never reach an `Err`
+/// path (returning `Err` disconnects the client). Since rb-73 (ADR-0245 D2) the
+/// infallible `open_player_session(ctx)` call sits between the hoisted JWT read
+/// and the early return; `rb73_wiring_on_connect_body_is_frozen` and
+/// `rb73_wiring_open_session_body_is_frozen_and_single_purpose` freeze that
+/// whole shape, this test pins the relative order and the `Err(` ban.
 ///
 /// Kills (proof-of-teeth): move `provision_or_touch_account(ctx)` above the
 /// `has_jwt()` return — then an unrecognized-audience `Err` becomes reachable for
@@ -3943,9 +3947,9 @@ fn data_lifecycle_manifest_totality_bidirectional() {
 /// `ViaJoin` PAYLOADS pinned by exact parent value.
 ///
 /// The four sets START from spec §3's own recount — "38 = 12 ERASE +
-/// 4 ANONYMIZE, 5 JOIN-ONLY, 17 NOT-OWNED" — and the live tree is now 41
-/// entries (13 ERASE, 4 ANONYMIZE, 5 JOIN-ONLY, 19 NOT-OWNED), because M22 and
-/// rb-48 add three tables the §3 recount predates.
+/// 4 ANONYMIZE, 5 JOIN-ONLY, 17 NOT-OWNED" — and the live tree is now 42
+/// entries (14 ERASE, 4 ANONYMIZE, 5 JOIN-ONLY, 19 NOT-OWNED), because M22, rb-48
+/// and rb-73 add four tables the §3 recount predates.
 ///
 /// The `Erase` list carries one table beyond the spec's twelve: `export_bundle`.
 /// A snapshot of personal data is itself personal data, so the export bundle is
@@ -5761,13 +5765,13 @@ fn rb24_frozen_disarm_sig() -> String {
 /// be edited in one place, and the consumer test asserts they still agree.
 ///
 /// THE SUBJECT IS SPELLED OUT AT EVERY DELEGATED CALL (ADR-0228, RT-3): each of
-/// the thirteen calls passes `(ctx, args.account_identity)` directly, never a
+/// the fourteen calls passes `(ctx, args.account_identity)` directly, never a
 /// local binding, so a single re-pointed `let` cannot silently retarget the
 /// whole cascade at another identity while every call site still reads right.
 /// That is a rule about the ARGUMENT, and rb-65 does not touch it: the export
 /// purge's RESULT is now bound (`let export_chunks = ..`) because the cascade
 /// line publishes that count, but the subject it is called with is still spelled
-/// out in full, so `m22s3b_nd_subject` still counts thirteen.
+/// out in full, so `m22s3b_nd_subject` still counts fourteen.
 ///
 /// WIDENED BY rb-65 (ADR-0243): the literal gains the `let export_chunks =`
 /// prefix on the purge fragment and two statements before `Ok(())` — the
@@ -6900,7 +6904,7 @@ fn rb24_deletion_reaper_scheduler_guard_is_first_statement() {
 /// bound now (`let export_chunks = crate::privacy::purge_export_bundles(ctx,
 /// args.account_identity);`), because the cascade line publishes that count —
 /// but the needle matches the ARGUMENT list, which is unchanged, so the census
-/// below is still exactly thirteen. rb-65's own binding pin
+/// below is still exactly fourteen. rb-65's own binding pin
 /// (`rb65_reaper_binds_the_purge_result`) spells the whole statement, prefix
 /// included, and `cascade_fields(args.account_identity, export_chunks)` does NOT
 /// contain this needle (no `(ctx,` prefix), so the new statement cannot inflate
@@ -7020,7 +7024,7 @@ fn m22s3b_delegated_calls() -> Vec<(&'static str, String)> {
 
 /// S3B CASCADE (m22-s3b, PRV1-6a..6e + PRV1-5 re-arm): the deletion reaper body
 /// is EXACTLY the rejecting scheduler guard, the scheduler-keyed row lookup, ONE
-/// clock read, the recheck WITH its re-arm branch, the thirteen delegated
+/// clock read, the recheck WITH its re-arm branch, the fourteen delegated
 /// cascade calls in spec para-4.4 order, the terminal stamp, and `Ok(())`.
 ///
 /// WHAT CHANGED, AND WHY THE PIN SURVIVED IT AGAIN. rb-24 froze a bare no-op;
@@ -7146,7 +7150,7 @@ fn rb24_deletion_reaper_body_is_pinned_cascade() {
     );
 
     // The ROW LOOKUP subject, carried forward from the m22-s3 pin this test
-    // re-derives (r2). The 13-count census above proves every DELEGATED call
+    // re-derives (r2). The 14-count census above proves every DELEGATED call
     // names the scheduler-supplied identity; it says nothing about the lookup
     // that decides WHICH ROW the cascade is about, because that call spells
     // `find(args.account_identity)` with no `ctx,` prefix and therefore matches
@@ -11593,7 +11597,7 @@ fn m22s6_nd_anonymize_battles_decl() -> String {
     concat!("fnanonymize", "_battles(").to_string()
 }
 
-/// The manifest-driven chain map itself: one row per classified table (22),
+/// The manifest-driven chain map itself: one row per classified table (23),
 /// AUTHORED FROM THE PLAN (ADR-0228's own delegation map), never derived by
 /// printing what an implementation produced.
 fn m22s6_cascade_chain() -> Vec<M22s6ChainEntry> {
@@ -13299,7 +13303,7 @@ fn m22s9_bindings_expose_m22_surface() {
 ///        red-team's CRITICAL-1 kill);
 ///        a decoy second mention of the constant steering a first-hit anchor
 ///        onto text the eval never uses;
-///        a census that quietly shrank below the 41 live tables;
+///        a census that quietly shrank below the 42 live tables;
 ///        an exportable flag flipped on one side only (the flag is the fourth
 ///        field of every entry, so the export-scope axis is inside the compare).
 #[test]
@@ -14661,7 +14665,7 @@ fn rb40_claim_emits_one_purge_observation() {
         "rb40 [emit/count-in-cascade]: account_deletion_reaper must call `{emit}` EXACTLY \
          once; found {n_cascade}. This clause is half the price of the file-wide widening \
          above: without it, `two somewhere` is satisfied by two claim-time emissions and the \
-         cascade — thirteen irreversible steps — goes back to being silent."
+         cascade — fourteen irreversible steps — goes back to being silent."
     );
     let scoped = n_body + n_cascade;
     assert_eq!(
@@ -15784,7 +15788,7 @@ fn rb65_reaper_emits_one_cascade_observation() {
     assert_eq!(
         n_body, 1,
         "rb65 [emit/count-in-fn]: account_deletion_reaper must call `{emit}` EXACTLY once; found \
-         {n_body}. ZERO is the pre-fix state this slice exists to close: thirteen irreversible \
+         {n_body}. ZERO is the pre-fix state this slice exists to close: fourteen irreversible \
          erase/anonymize steps and the PRV1-6e terminal stamp run and leave NO signal anywhere, \
          so an erasure audit cannot tell a cascade that ran from one that never fired — and the \
          export purge's returned count (rb-40) is discarded on this path. MORE THAN ONE is a \
@@ -15921,7 +15925,7 @@ fn rb65_reaper_emits_one_cascade_observation() {
         body.ends_with(tail.as_str()),
         "rb65 [emit/terminal]: the squashed body of account_deletion_reaper must END with \
          `{tail}`. A SpacetimeDB host log line is written as the reducer runs and SURVIVES a \
-         later panic or Err rollback, while the thirteen delegated erases and the terminal stamp \
+         later panic or Err rollback, while the fourteen delegated calls and the terminal stamp \
          do not — so an emission with any fallible statement after it can record a completed \
          cascade for a transaction that rolled back, which is worse than no signal. This one \
          clause also pins: the statement FORM (a bare statement, not a closure or iterator \
@@ -16114,7 +16118,7 @@ fn rb65_reaper_emits_one_cascade_observation() {
     // A SECOND measured early-exit channel, and one that spells no `return`
     // token at all, so both reachability clauses above are blind to it by
     // construction. The ban is TOTAL rather than region-scoped because it can
-    // be: all thirteen delegated steps are `-> ()` by ADR-0228 D1 and both
+    // be: all fourteen delegated steps are `-> ()` by ADR-0228 D1 and both
     // recheck seams are pure, so the sanctioned body carries ZERO `?` today.
     let n_try = body.matches('?').count();
     assert_eq!(
@@ -16174,7 +16178,7 @@ fn rb65_reaper_emits_one_cascade_observation() {
 ///        `args.account_identity` — one re-pointed `let` above the cascade would
 ///        retarget the purge at another account while the call site still reads
 ///        correctly (ADR-0228 RT-3, and the reason the subject is spelled out at
-///        all thirteen delegated call sites);
+///        all fourteen delegated call sites);
 ///        the binding moved out of the reducer into a helper, where neither the
 ///        cascade's reviewers nor this test can see it;
 ///        the call demoted from a statement to an operand of a closure or an

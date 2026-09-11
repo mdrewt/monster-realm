@@ -955,9 +955,14 @@ pub struct ExportBundle {
 /// leak through a subscription (ADR-0015). Key shape is final on first ship
 /// (ADR-0006): the PK is the connection id (one row per socket, so a
 /// re-entrant `client_connected` can never collide on identity), the btree
-/// index on `identity` serves the sole reader. No timestamp column: a stale
-/// row self-heals when the host replays `client_disconnected` for dangling
-/// `st_client` rows at module launch, so a TTL reaper is not needed.
+/// index on `identity` serves the sole reader. No timestamp column: a row left
+/// behind by a crashed host self-heals when the launch replays
+/// `client_disconnected` for every dangling `st_client` row. NOT covered: a
+/// `client_disconnected` transaction that aborts AFTER its own-row delete rolls
+/// that delete back while the host still drops the `st_client` row, and the
+/// phantom then keeps `has_live_session` true for that identity (residual
+/// R-rb-73-ABORT-PHANTOM, ADR-0245; the mitigation path is an additive
+/// `connected_at_ms` tail column + an idle-session reaper).
 #[spacetimedb::table(accessor = player_session)]
 pub struct PlayerSession {
     #[primary_key]
