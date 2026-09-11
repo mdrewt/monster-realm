@@ -674,7 +674,7 @@ fn rb74_preceding_span(doc: &str, at: usize) -> Result<Option<String>, String> {
     let line_start = doc[..at].rfind('\n').map_or(0, |i| i + 1);
     let left = &doc[line_start..at];
     let ticks = rb74_count(left, "`");
-    if ticks % 2 != 0 {
+    if !ticks.is_multiple_of(2) {
         return Err(format!(
             "the text left of the citation has {ticks} backticks and cannot be paired"
         ));
