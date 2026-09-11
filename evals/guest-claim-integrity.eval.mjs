@@ -934,6 +934,15 @@ const PROVISION_FN = 'provision_or_touch_account';
 // `if !ctx.sender_auth().has_jwt() {`, so `ctx.sender_auth()` legitimately comes
 // first and a "has_jwt is the first statement" phrasing false-REDs on arrival.
 const ANON_AFTER_TOKENS = ['accounts::', 'ctx.db.', 'Err('];
+// rb-73 (ADR-0245 D2): on_connect now records the live connection BEFORE the
+// anonymous early-out through the bare helper call `open_player_session(ctx)`,
+// which this token set structurally cannot see. The compensating controls are
+// two Rust pins in server-module/src/rb73_session_tests.rs:
+// `rb73_wiring_on_connect_body_is_frozen` (exact body equality — a second
+// laundering call reds) and
+// `rb73_wiring_open_session_body_is_frozen_and_single_purpose` (sole
+// declaration, cfg-free, None-guard first, no Err(/unwrap(/expect(/panic!(/
+// accounts::, every ctx.db. site is player_session()).
 
 // The ONE sanctioned audience guard, whitespace-compacted. Pinned by SHAPE
 // because a red-team beat a presence-only check with
@@ -1948,6 +1957,20 @@ export const REKEY_MANIFEST = freezeManifest({
       'sweep owner_identity == account.claimed_from in the cascade; the S4 TTL reaper does ' +
       'not exist yet and a TTL is not a substitute for cascade erasure anyway (the ' +
       'playtest_event doctrine)',
+  },
+  // rb-73 (ADR-0245 D4): one row per LIVE connection, keyed by the host-minted
+  // ConnectionId, written only by the lifecycle hooks in lib.rs. A row belongs to
+  // the SOCKET that opened it, not to the account: the claimed identity opens its
+  // own row on its next connect, so nothing is re-keyed.
+  'player_session.identity': {
+    policy: 'EXEMPT',
+    reason:
+      'per-connection presence bookkeeping keyed by the host-minted ConnectionId; a row ' +
+      'belongs to the socket that opened it, not to the account, and the claimed identity ' +
+      'opens its own row on its next connect. HONEST LIMIT: a row the guest opened survives ' +
+      'the claim until that socket closes (<=30 s after a severed socket, or the next module ' +
+      'launch replay of dangling st_client rows), briefly referencing the retired guest ' +
+      'identity; the deletion cascade erases it (Erase policy, ADR-0245 D1)',
   },
 });
 
@@ -3275,7 +3298,7 @@ function teethTick() {
 // export, and printed there instead of a hand-written sentence. Bump it in the
 // same commit that adds or removes a tooth — a bump is a one-line, reviewable
 // diff; a silent drift is the whole bug this closes.
-const TEETH_PINNED = 345;
+const TEETH_PINNED = 352;
 
 /**
  * Assert that a checker fired the EXPECTED clause (by tag), not merely that it

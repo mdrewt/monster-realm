@@ -123,11 +123,13 @@ function storageMethod(host: TokenStorageHost | undefined, name: 'getItem' | 'se
  * Build the per-connection-target credential gate.
  *
  * `host` is the object that may expose `sessionStorage` — per-TAB storage, deliberately not
- * `localStorage` (ADR-0150 D3): the server's `on_disconnect` keys purely on identity with no
- * live-connection check, so two tabs sharing one identity would let closing either one
- * forfeit the other's PvP battle and delete its character row. Per-tab storage keeps a second
- * tab behaving exactly as it does today — an independent identity — while still surviving
- * the page reload nh4 exists to fix.
+ * `localStorage` (ADR-0150 D3). When D3 was decided the server's `on_disconnect` keyed purely
+ * on identity with no live-connection check, so two tabs sharing one identity would have let
+ * closing either one forfeit the other's PvP battle and delete its character row; since rb-73
+ * (ADR-0245) the server runs those side effects only when the identity's LAST live connection
+ * ends. Per-tab storage still keeps a second tab an independent identity (identity hygiene, and
+ * one token per tab bounds the R-rb-73-TOKEN-WEDGE surface) while surviving the page reload nh4
+ * exists to fix.
  */
 export function createAuthTokenGate(
   uri: string,

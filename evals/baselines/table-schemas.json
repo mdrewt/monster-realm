@@ -866,5 +866,17 @@
       "id",
       "scheduled_at"
     ]
+  },
+  "player_session": {
+    "pk": "connection_id",
+    "visibility": "private",
+    "columns": {
+      "connection_id": "ConnectionId",
+      "identity": "Identity"
+    },
+    "order": [
+      "connection_id",
+      "identity"
+    ]
   }
 }

@@ -812,10 +812,13 @@ export class AuthoritativeStore {
     this.#shops.clear();
     this.#shopItems.clear();
     // m15b: trade_offer rows — cleared on disconnect; no escrow survives a drop
-    // (on_disconnect deletes the player's active offer server-side per TR-18).
+    // (on_disconnect cancels the player's active offer server-side per TR-18 when the
+    // identity's LAST live connection ends — rb-73 / ADR-0245; otherwise the snapshot
+    // re-delivers it).
     this.#tradeOffers.clear();
-    // m16b: battle_challenge rows — cleared on disconnect; server cancels/declines
-    // pending challenges via on_disconnect hooks (pvp.rs cancel_challenges_on_disconnect).
+    // m16b: battle_challenge rows — cleared on disconnect; server cancels the player's
+    // outgoing pending challenges via on_disconnect (pvp.rs cancel_challenges_on_disconnect)
+    // when the identity's LAST live connection ends — rb-73 / ADR-0245.
     this.#challenges.clear();
     // m17b: profile rows — cleared on disconnect; repopulated from the initial
     // onInsert burst when the subscription re-applies on reconnect.

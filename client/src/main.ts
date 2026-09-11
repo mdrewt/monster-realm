@@ -1849,11 +1849,11 @@ store.onBatchApplied(() => {
     const npcsMap = new Map(allNpcs.map((n) => [n.entityId, n]));
     const dialogueVm = buildDialogueViewModel(conv, npcsMap, DIALOGUE_TREES);
     dialogueView?.render(dialogueVm);
-    // Reset on server-side dismiss. This is also the RECONNECT self-heal for
-    // dismissPending: it relies on on_disconnect deleting the sender's
-    // player_conversation row (lib.rs on_disconnect) so the post-reconnect
-    // snapshot has no conversation — removing that server-side delete would
-    // silently strand dismissPending=true across a mid-dismiss drop.
+    // Reset on server-side dismiss. NOT the reconnect self-heal any more: since
+    // rb-73 (ADR-0245) on_disconnect keeps the sender's player_conversation row
+    // when another connection of the identity is still live (a reconnect that
+    // overlapped the old socket), so the post-reconnect snapshot CAN carry the
+    // conversation — onReconnect clears dismissPending itself.
     if (!conv) {
       dismissPending = false;
       // UXD2-SHOPOPEN-BEGIN (ADR-0161 D4): the deferred greet-then-shop open.
@@ -2959,6 +2959,12 @@ async function main(): Promise<void> {
       // reconnect too. WITHOUT this, the view's #pending lock survives the link drop (the SDK
       // never settles the in-flight proposeTrade promise) → dead submit button forever.
       tradeProposeView?.hide();
+      // rb-73 (ADR-0245, desync-guard H1): the same never-settling-promise class for the
+      // dialogue dismiss lock. It used to self-heal through the server deleting the
+      // player_conversation row on disconnect; that delete now runs only when the identity's
+      // LAST live connection ends, so an overlapping reconnect re-delivers the row and the
+      // lock would stay held forever (dead Escape-dismiss + dead greet-then-shop button).
+      dismissPending = false;
       menuView?.hide(); // uxd3: grey-out reads store state that the reset invalidated
       // pt-b1 (red-team M-1): re-baseline a surviving Ongoing battle on the next batch
       // instead of re-emitting a spurious battleStart for it. 17r-b: armed until onHydrated —

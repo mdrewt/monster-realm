@@ -523,6 +523,12 @@ export const PlayerQuestRow = __t.object("PlayerQuestRow", {
 });
 export type PlayerQuestRow = __Infer<typeof PlayerQuestRow>;
 
+export const PlayerSession = __t.object("PlayerSession", {
+  connectionId: __t.connectionId(),
+  identity: __t.identity(),
+});
+export type PlayerSession = __Infer<typeof PlayerSession>;
+
 export const PlayerWallet = __t.object("PlayerWallet", {
   ownerIdentity: __t.identity(),
   balance: __t.u64(),

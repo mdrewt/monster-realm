@@ -4830,13 +4830,13 @@ fn m22s4_no_exportable_false_table_is_named() {
         checked += 1;
     }
     assert!(
-        checked >= 22,
+        checked >= 23,
         "m22s4 [X3/floor]: only {checked} non-exportable accessors were checked; the live \
-         manifest classifies 24 (41 entries minus the 17 exportable ones), which is 22 after the \
-         module's own two write targets are exempted. RATCHETED from 20 by rb-48: the \
-         non-exportable population grew from 23 to 24 with the schedule table, so a floor left at \
-         20 would have loosened by standing still. A shrunken ban set is a ban set that stopped \
-         looking."
+         manifest classifies 25 (42 entries minus the 17 exportable ones), which is 23 after the \
+         module's own two write targets are exempted. RATCHETED from 20 by rb-48 and from 22 by \
+         rb-73: the non-exportable population grew to 24 with the schedule table and to 25 with \
+         `player_session`, so a floor left behind would have loosened by standing still. A \
+         shrunken ban set is a ban set that stopped looking."
     );
 
     // The compensating pin for the second exemption: the schedule accessor is

@@ -2,7 +2,7 @@
 type: SpacetimeDB Table
 title: pvp_deadline_schedule
 slug: tables/pvp_deadline_schedule
-updated: 2026-09-05
+updated: 2026-09-11
 tags: [schema, spacetimedb, private]
 abstract: "One-shot reaper: fires `PVP_TURN_DEADLINE_MS` after a PvP turn starts. PRIVATE (no `public`) — scheduling information i…"
 resource: server-module/src/pvp.rs#L130

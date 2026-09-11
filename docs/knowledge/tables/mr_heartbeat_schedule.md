@@ -2,7 +2,7 @@
 type: SpacetimeDB Table
 title: mr_heartbeat_schedule
 slug: tables/mr_heartbeat_schedule
-updated: 2026-09-05
+updated: 2026-09-11
 tags: [schema, spacetimedb, private]
 abstract: "SpacetimeDB private table mr_heartbeat_schedule."
 resource: server-module/src/observability.rs#L104
