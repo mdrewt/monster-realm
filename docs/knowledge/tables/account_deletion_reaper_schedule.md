@@ -5,7 +5,7 @@ slug: tables/account_deletion_reaper_schedule
 updated: 2026-09-11
 tags: [schema, spacetimedb, private]
 abstract: "PRIVATE scheduled table colocated with its reducer (ADR-0056 exception), mirroring `guest_claim_reaper_schedule` exactl…"
-resource: server-module/src/accounts.rs#L990
+resource: server-module/src/accounts.rs#L1024
 source: scripts/okf-export.mjs@server-module/src/accounts.rs
 visibility: private
 ---
