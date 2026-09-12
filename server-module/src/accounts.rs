@@ -446,6 +446,29 @@ pub(crate) fn plan_deletion_rearms(
         .collect()
 }
 
+/// rb-83 (ADR-0252 D1): which of the caller's live INCOMING trade offers must
+/// be declined when a pending deletion is cancelled — given the row as it
+/// stands BEFORE the cancel writes it, and the offers as `(trade_id,
+/// created_at_ms)` pairs, the ids of every offer the rb-47 stamp gate refuses
+/// for that row, in input order. Composed DIRECTLY over
+/// `opened_commitment_is_refused` (ADR-0225 delegation, never re-derived): the
+/// inclusive boundary, the terminal arm and the fail-closed missing-stamp arm
+/// are all inherited, so on the illegal stamp-less `PendingDeletion` shape every
+/// incoming offer is swept, and on an `Active` row nothing is. Judged after the
+/// row has flipped to `Active` it would sweep nothing — which is why the call
+/// site reads `&account` before `cancelled_deletion(account)` moves it. Mirrors
+/// the `plan_deletion_rearms` pure-planner shape; the ctx halves live in
+/// `trading` (`open_offers_addressed_to` / `decline_offers`) because only that
+/// module reads and writes `trade_offer` (D0). Body byte-frozen by
+/// `rb83_new_seams_are_declared_once_and_frozen`; change it with ADR-0252.
+pub(crate) fn plan_declines_at_cancel(account: &Account, offers: &[(u64, i64)]) -> Vec<u64> {
+    offers
+        .iter()
+        .filter(|(_, opened_at_ms)| opened_commitment_is_refused(account, *opened_at_ms))
+        .map(|(trade_id, _)| *trade_id)
+        .collect()
+}
+
 // --- Context-bound predicates (SSOT) ------------------------------------------
 
 /// The load-bearing "is this an account holder?" gate (D4′). Only a verified
@@ -922,6 +945,17 @@ pub fn cancel_account_deletion(ctx: &ReducerContext) -> Result<(), String> {
     if !needs_cancel_write(account.status) {
         return Ok(());
     }
+    // rb-83 (ADR-0252 D3): decline every incoming offer the rb-47 stamp gate
+    // refused for THIS pre-cancel row — the confederate's post-request
+    // proposals — so the cancel cannot launder them into an accept. Behind the
+    // AUTH-38 gate (an Active caller sweeps nothing) and before the status
+    // write, because `account` is moved into the constructor below and a row
+    // judged after the flip refuses nothing. Pinned by
+    // `rb83_cancel_declines_refused_offers_before_the_status_write`.
+    crate::trading::decline_offers(
+        ctx,
+        &plan_declines_at_cancel(&account, &crate::trading::open_offers_addressed_to(ctx, me)),
+    );
     ctx.db
         .account()
         .identity()
