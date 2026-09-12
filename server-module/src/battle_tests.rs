@@ -7973,3 +7973,488 @@ fn rb76_begin_encounter_carries_the_subject_deletion_gate() {
          thing that owns the gate-after-write mutant."
     );
 }
+
+// ===========================================================================
+// rb-81 (R-rb-47-ROSTER-PVP) — ADR-0251: battle.rs's REDUCER ROSTER IS CLOSED.
+//
+// EARS E1: WHEN a reducer file other than trading.rs gains a new bare reducer
+// attribute THE SYSTEM SHALL fail a closed-roster test NAMING THE FILE.
+//
+// Clause order (ADR-0251 D3), one label each: [rb81/substrate] P1 block-comment
+// markers, P2 the quote char literal, P3 raw-string openers, P4 quote parity per
+// comment region, P5 stripper-order equality · [rb81/tail] · [rb81/cfg-roster] ·
+// [rb81/roster] (+ the LOUD [rb81/roster-parse] walker) · [rb81/attr-any] ·
+// [rb81/attr-path] · [rb81/attr-partition] · [rb81/mod-census] ·
+// [rb81/include-ban] + [rb81/macro-ban] · [rb81/attr-raw] LAST.
+// ===========================================================================
+
+/// Bytes that CONTINUE a Rust identifier — the boundary rule the raw-opener and
+/// module censuses below share.
+fn rb81_is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// Raw-string OPENERS — an `r` or `br` prefix, any number of hashes, then the
+/// opening quote — whose first byte is not preceded by an identifier byte.
+///
+/// Never spelled literally in this file: a `//` comment is read verbatim by any
+/// strings-first scanner, so writing one here would plant the construct the
+/// clause bans. `strip_rust_strings` (:93) has no raw lexer, so ONE of these
+/// leaves the byte-walker half a literal out of phase for the rest of the file.
+fn rb81_raw_string_openers(src: &str) -> usize {
+    let quote = 0x22u8;
+    let bytes = src.as_bytes();
+    let len = bytes.len();
+    let mut n = 0usize;
+    let mut i = 0usize;
+    while i < len {
+        let body = if bytes[i] == b'r' {
+            Some(i + 1)
+        } else if bytes[i] == b'b' && i + 1 < len && bytes[i + 1] == b'r' {
+            Some(i + 2)
+        } else {
+            None
+        };
+        if let Some(start) = body {
+            let after_ident = i > 0 && rb81_is_ident_byte(bytes[i - 1]);
+            let mut j = start;
+            while j < len && bytes[j] == b'#' {
+                j += 1;
+            }
+            if !after_ident && j < len && bytes[j] == quote {
+                n += 1;
+            }
+        }
+        i += 1;
+    }
+    n
+}
+
+/// 1-based start lines of every `//` comment REGION — each contiguous run of
+/// full-line comments, and each trailing comment on its own — carrying an ODD
+/// number of double quotes. An odd region opens a phantom string literal that
+/// swallows real code under a strings-first pass; even parity is what lets P5
+/// below be an equality instead of a hope.
+fn rb81_odd_quote_comment_regions(src: &str) -> Vec<usize> {
+    let quote = char::from(0x22u8);
+    let slashes = ["/", "/"].concat();
+    let mut odd: Vec<usize> = Vec::new();
+    let mut run_line = 0usize;
+    let mut run_quotes = 0usize;
+    let mut in_run = false;
+    for (idx, line) in src.lines().enumerate() {
+        let lineno = idx + 1;
+        let trimmed = line.trim_start();
+        if trimmed.starts_with(slashes.as_str()) {
+            if !in_run {
+                in_run = true;
+                run_line = lineno;
+                run_quotes = 0;
+            }
+            run_quotes += trimmed.matches(quote).count();
+        } else {
+            if in_run && run_quotes % 2 == 1 {
+                odd.push(run_line);
+            }
+            in_run = false;
+            if let Some(at) = line.find(slashes.as_str()) {
+                if line[at..].matches(quote).count() % 2 == 1 {
+                    odd.push(lineno);
+                }
+            }
+        }
+    }
+    if in_run && run_quotes % 2 == 1 {
+        odd.push(run_line);
+    }
+    odd
+}
+
+/// Every conditional-compilation attribute of `view` in FILE ORDER, each read by
+/// paren-depth from its own opener so a nested predicate cannot truncate it.
+fn rb81_cfg_predicates(view: &str) -> Vec<String> {
+    let open = ["#", "[cfg("].concat();
+    let bytes = view.as_bytes();
+    let mut out: Vec<String> = Vec::new();
+    let mut from = 0usize;
+    while let Some(rel) = view[from..].find(open.as_str()) {
+        let at = from + rel;
+        let mut depth = 1usize;
+        let mut k = at + open.len();
+        while k < bytes.len() && depth > 0 {
+            if bytes[k] == b'(' {
+                depth += 1;
+            } else if bytes[k] == b')' {
+                depth -= 1;
+            }
+            k += 1;
+        }
+        if depth == 0 && k < bytes.len() && bytes[k] == b']' {
+            k += 1;
+        }
+        out.push(view[at..k].to_string());
+        from = at + open.len();
+    }
+    out
+}
+
+/// Occurrences of `needle` in `hay` bounded by non-identifier bytes on BOTH
+/// sides — so `module` never counts as the module keyword.
+fn rb81_ident_boundary_count(hay: &str, needle: &str) -> usize {
+    let bytes = hay.as_bytes();
+    let mut n = 0usize;
+    let mut from = 0usize;
+    while let Some(rel) = hay[from..].find(needle) {
+        let at = from + rel;
+        let after = at + needle.len();
+        let left = at == 0 || !rb81_is_ident_byte(bytes[at - 1]);
+        let right = after >= bytes.len() || !rb81_is_ident_byte(bytes[after]);
+        if left && right {
+            n += 1;
+        }
+        from = after;
+    }
+    n
+}
+
+/// Every function name carrying a BARE reducer attribute in `squashed`, in file
+/// order. A PARSE, not a needle list: an attribute this walk cannot resolve to a
+/// PUBLIC declaration PANICS rather than being skipped, because an unparsed
+/// reducer is an UNROSTERED reducer (rb-47's shape, trading_tests.rs:5200).
+fn rb81_reducer_names(squashed: &str) -> Vec<String> {
+    let attr = ["#[spacetimedb", "::reducer]"].concat();
+    let public_fn = ["pub", "fn"].concat();
+    let lparen = char::from(0x28u8);
+    let mut out: Vec<String> = Vec::new();
+    let mut from = 0usize;
+    while let Some(rel) = squashed[from..].find(attr.as_str()) {
+        let at = from + rel + attr.len();
+        let rest = &squashed[at..];
+        let tail = rest.strip_prefix(public_fn.as_str()).unwrap_or_else(|| {
+            let preview: String = rest.chars().take(60).collect();
+            panic!(
+                "[rb81/roster-parse] E1 FAIL: a bare reducer attribute in `battle.rs` is not \
+                 followed by a PUBLIC function declaration. Fail LOUD rather than skip: an \
+                 attribute this walk cannot parse is a reducer that never reaches the roster, \
+                 which is a silent absence instead of a loud failure. A crate-visible or \
+                 private declaration, or a second attribute stacked under the reducer one, \
+                 lands here. Text after the attribute: {preview:?}"
+            )
+        });
+        let name: String = tail
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        assert!(
+            !name.is_empty() && tail[name.len()..].starts_with(lparen),
+            "[rb81/roster-parse] E1 FAIL: a bare reducer attribute in `battle.rs` is followed by \
+             a declaration this walk cannot name (empty identifier, or no argument list). An \
+             unnamed reducer cannot be classified, so it must never be skipped."
+        );
+        out.push(name);
+        from = at;
+    }
+    out
+}
+
+/// **E1 (roster closure)** — `battle.rs` declares EXACTLY the six reducers this
+/// slice reasoned about, over a view whose substrate is pinned FIRST, and its
+/// build-visibility predicates are enumerated.
+///
+/// WHY. rb-47 closed `trading.rs` and rb-80 closed the raising cluster;
+/// `battle.rs` had NOTHING. T0 measured the gap on the pristine tree: a plain
+/// bare twin appended above the test-module tail SURVIVED 915/915. Every census
+/// in this file, in `guards_tests.rs` and in `evals/` fences only the names it
+/// enumerates, so a seventh reducer here is constrained by nothing at all.
+///
+/// SIX IN TEXT, FIVE IN THE DEFAULT BUILD. `start_wild_battle` is dev-gated
+/// (battle.rs:546), which is exactly why `[rb81/cfg-roster]` enumerates the
+/// predicates IN ORDER rather than counting them: widening that one to an
+/// always-true form publishes a dev entry point in the shipped wasm while the
+/// text roster below stays byte-identical, and no count can see that.
+///
+/// SUBSTRATE FIRST, AND NOT AS CEREMONY: every clause reads text produced by
+/// this file's own two strippers, and neither models raw strings, the quote CHAR
+/// literal, or a quote inside a comment. Any one of those inverts string/code
+/// polarity for the rest of the file and the roster walk then reads a twin as
+/// string payload.
+///
+/// GREEN AT HEAD and after the slice: ZERO production edits — an ADR-0224
+/// hardening pin whose teeth are T0 plus the live mutant register on the REAL
+/// file, never a red-then-green flip of the equality itself.
+///
+/// sole kills (`memory/projects/gates/rb-81.mutants.py`): M1b the plain twin ·
+/// M2b a conditional-compilation-hidden twin · M18 the RENAMED reducer (the SET
+/// moves while the count does not) · M25 the build-visibility flip on
+/// `start_wild_battle`.
+#[test]
+fn rb81_battle_reducer_roster_is_closed() {
+    // --- 1 [rb81/substrate] -------------------------------------------------
+    let quote = char::from(0x22u8);
+    let open_block = ["/", "*"].concat();
+    let close_block = ["*", "/"].concat();
+    let n_open = MODULE_SOURCE.matches(open_block.as_str()).count();
+    let n_close = MODULE_SOURCE.matches(close_block.as_str()).count();
+    assert_eq!(
+        (n_open, n_close),
+        (0, 0),
+        "[rb81/substrate] P1 FAIL: `battle.rs` carries {n_open} block-comment opener(s) and \
+         {n_close} closer(s); both must be ZERO. `strip_rust_comments` (:49) reads an UNPAIRED \
+         marker inside a string literal as a real comment and blanks code to the next closer — \
+         which is how a twin reducer disappears from every clause below."
+    );
+
+    let tick = char::from(0x27u8);
+    let char_quote: String = [tick, quote, tick].iter().collect();
+    let n_char_quote = MODULE_SOURCE.matches(char_quote.as_str()).count();
+    assert_eq!(
+        n_char_quote, 0,
+        "[rb81/substrate] P2 FAIL: `battle.rs` spells the double-quote CHAR literal \
+         {n_char_quote} time(s) and must spell it ZERO. Every text-level stripper in this repo \
+         reads that lone quote as a STRING OPENER and inverts string/code polarity for \
+         everything after it. Spell it as the numeric byte instead."
+    );
+
+    let n_raw_open = rb81_raw_string_openers(MODULE_SOURCE);
+    assert_eq!(
+        n_raw_open, 0,
+        "[rb81/substrate] P3 FAIL: `battle.rs` opens {n_raw_open} raw string(s) and must open \
+         ZERO. `strip_rust_strings` (:93) has no raw-string lexer, so a raw literal holding a \
+         bare quote leaves the walker half a literal out of phase for the rest of the file."
+    );
+
+    let odd_regions = rb81_odd_quote_comment_regions(MODULE_SOURCE);
+    assert!(
+        odd_regions.is_empty(),
+        "[rb81/substrate] P4 FAIL: the comment region(s) starting at line(s) {odd_regions:?} of \
+         `battle.rs` carry an ODD number of double quotes. An odd region opens a phantom string \
+         literal that swallows real code under a strings-first pass — the desynchronisation P5 \
+         then cannot see, because both orders are equally wrong."
+    );
+
+    let stripped = strip_rust_strings(&strip_rust_comments(MODULE_SOURCE));
+    let order_a = squash_ws(&stripped);
+    let order_b = squash_ws(&strip_rust_comments(&strip_rust_strings(MODULE_SOURCE)));
+    let diverge = order_a
+        .char_indices()
+        .zip(order_b.chars())
+        .find(|((_, a), b)| a != b)
+        .map(|((i, _), _)| i);
+    let (len_a, len_b) = (order_a.len(), order_b.len());
+    assert!(
+        order_a == order_b,
+        "[rb81/substrate] P5 FAIL: comments-then-strings and strings-then-comments disagree on \
+         `battle.rs` (lengths {len_a}/{len_b}, first divergence at byte {diverge:?}). The orders \
+         can only differ when a comment marker lives inside a string literal or a quote lives \
+         unbalanced inside a comment — i.e. when the scanned view is no longer the file."
+    );
+    let file = order_a;
+
+    // --- 2 [rb81/tail] ------------------------------------------------------
+    let comments_only = squash_ws(&strip_rust_comments(MODULE_SOURCE));
+    let q = quote.to_string();
+    let path_attr = [
+        "#",
+        "[path=",
+        q.as_str(),
+        "battle_tests.rs",
+        q.as_str(),
+        "]",
+    ]
+    .concat();
+    let tail = [
+        ["#", "[cfg(test)]"].concat(),
+        path_attr,
+        ["mod", "battle", "_tests;"].concat(),
+    ]
+    .concat();
+    let n_chars = comments_only.chars().count();
+    let seen: String = comments_only
+        .chars()
+        .skip(n_chars.saturating_sub(90))
+        .collect();
+    assert!(
+        comments_only.ends_with(tail.as_str()),
+        "[rb81/tail] FAIL: the comment-stripped, strings-INTACT view of `battle.rs` must END \
+         with `{tail}`; it ends with `{seen}`. Non-vacuity guard AND relocation guard: an \
+         always-true conditional plus a retargeted module path compiles THIS test module out \
+         of a different file, leaving every clause below asserting properties of source nobody \
+         ships. Anything appended after the tail lands here too."
+    );
+
+    // --- 3 [rb81/cfg-roster] ------------------------------------------------
+    let dev_cfg = [
+        "#",
+        "[cfg(feature=",
+        q.as_str(),
+        "dev_",
+        "reducers",
+        q.as_str(),
+        ")]",
+    ]
+    .concat();
+    let cfgs = rb81_cfg_predicates(comments_only.as_str());
+    let want_cfgs = [
+        dev_cfg.clone(),
+        dev_cfg.clone(),
+        dev_cfg.clone(),
+        dev_cfg,
+        ["#", "[cfg(test)]"].concat(),
+    ];
+    assert_eq!(
+        cfgs, want_cfgs,
+        "[rb81/cfg-roster] FAIL: `battle.rs` carries the conditional-compilation predicates \
+         {cfgs:?} and must carry exactly {want_cfgs:?}, IN THAT ORDER — the three dev-gated \
+         imports (:40/:42/:44), the dev gate on `start_wild_battle` (:546), and the test \
+         module. THE ROSTER BELOW IS A CLAIM ABOUT THE DEFAULT BUILD: relaxing the fourth \
+         predicate publishes a dev-only entry point in the shipped wasm while the text roster \
+         stays byte-identical, and a predicate ADDED to a production item is how a gate is \
+         present in review and absent in the wasm."
+    );
+
+    // --- 4 [rb81/roster] ----------------------------------------------------
+    // The WALK runs before the count on purpose: an attribute it cannot parse is
+    // a LOUD [rb81/roster-parse] panic, and a count mismatch must not pre-empt it.
+    let got: std::collections::BTreeSet<String> =
+        rb81_reducer_names(file.as_str()).into_iter().collect();
+    let attr_bare = ["#[spacetimedb", "::reducer]"].concat();
+    let n_bare = file.matches(attr_bare.as_str()).count();
+    assert_eq!(
+        n_bare, 6,
+        "[rb81/roster] FAIL (count): `battle.rs` carries {n_bare} bare reducer attribute(s) and \
+         must carry exactly 6 (five in the default build — the cfg-roster clause above pins \
+         which one is gated); the names this walk resolved are {got:?}. Reported BEFORE the SET \
+         comparison because it is not implied by it: a twin the walk resolves to an existing \
+         name leaves the SET equal while the file publishes one more entry point."
+    );
+    let want: std::collections::BTreeSet<String> = [
+        ["start_", "battle"].concat(),
+        ["start_wild_", "battle"].concat(),
+        ["submit_", "attack"].concat(),
+        ["swap_", "active"].concat(),
+        ["fl", "ee"].concat(),
+        ["use_battle_", "item"].concat(),
+    ]
+    .into_iter()
+    .collect();
+    let missing: Vec<&String> = want.difference(&got).collect();
+    let extra: Vec<&String> = got.difference(&want).collect();
+    assert!(
+        missing.is_empty() && extra.is_empty(),
+        "[rb81/roster] FAIL (set): the reducers `battle.rs` publishes are {got:?}; the roster \
+         this slice reasoned about is {want:?}. Missing: {missing:?}. UNEXPECTED: {extra:?}. AN \
+         UNEXPECTED NAME IS THE DANGEROUS DIRECTION — a twin of any turn reducer minus its \
+         ownership guard, its PvP-reject guard or its deletion gate passes every other pin in \
+         this file (they all scope to the names they mention) and every eval name list. A \
+         MISSING name means a reducer was renamed or removed and every pin scoped to it is now \
+         vacuous — a rename leaves the count at 6 and moves ONLY this set. Classify a new \
+         reducer DELIBERATELY and add it here AND to the censuses that must fence it; never \
+         delete a name to make a build green."
+    );
+
+    // --- 5 [rb81/attr-any] --------------------------------------------------
+    let attr_any = ["#[spacetimedb", "::reducer"].concat();
+    let n_any = file.matches(attr_any.as_str()).count();
+    assert_eq!(
+        n_any, n_bare,
+        "[rb81/attr-any] FAIL: `battle.rs` carries {n_any} reducer attribute(s) but only \
+         {n_bare} are the BARE form. A PARAMETERISED attribute is a wire-name twin: it \
+         publishes a reducer under the name clients call while the Rust item every pin here \
+         reads is a different, possibly ungated, function."
+    );
+
+    // --- 6 [rb81/attr-path] -------------------------------------------------
+    let path_token = ["::red", "ucer"].concat();
+    let n_path_token = file.matches(path_token.as_str()).count();
+    assert_eq!(
+        n_path_token, n_bare,
+        "[rb81/attr-path] FAIL: `battle.rs` spells the path-qualified reducer token \
+         {n_path_token} time(s) while carrying {n_bare} bare attribute(s); the two must AGREE. \
+         Every bare attribute contains this token, so the count can only ever be GREATER — \
+         which means this really asserts the macro is reached NOWHERE ELSE: not imported by \
+         name, not through an aliased crate path, not through a leading-`::` path."
+    );
+
+    // --- 7 [rb81/attr-partition] --------------------------------------------
+    let kinds: [(&str, String, usize); 3] = [
+        ("reducer", attr_any.clone(), 6),
+        ("cfg", ["#", "[cfg("].concat(), 5),
+        ("path", ["#", "[path"].concat(), 1),
+    ];
+    let mut census = String::new();
+    let mut want_total = 0usize;
+    let mut found: Vec<usize> = Vec::new();
+    for (label, needle, want_n) in kinds.iter() {
+        let n = file.matches(needle.as_str()).count();
+        found.push(n);
+        want_total += *want_n;
+        census.push_str(&format!("{label}={n}/{want_n} "));
+    }
+    for (i, (label, _, want_n)) in kinds.iter().enumerate() {
+        let n = found[i];
+        assert_eq!(
+            n, *want_n,
+            "[rb81/attr-partition] FAIL ({label}): found/expected per kind: {census}. THE \
+             PARTITION IS THE ONLY CLAUSE THAT SEES AN ENTRY POINT SPELLED SOME OTHER WAY — the \
+             attribute imported by name, the crate aliased on its import line, the attribute \
+             renamed inside a braced import, a neighbouring entry-point macro that is not the \
+             reducer one at all, a conditional attribute expanding to it. Each needs an \
+             attribute opener, so none can be added without moving a number here. THIS IS A \
+             SECURITY CENSUS: add the attribute deliberately, then bump this kind's pin and the \
+             total in the SAME edit; never relax a number alone."
+        );
+    }
+    let attr_open = ["#", "["].concat();
+    let n_all = file.matches(attr_open.as_str()).count();
+    assert_eq!(
+        n_all, want_total,
+        "[rb81/attr-partition] FAIL (total): `battle.rs` carries {n_all} attribute opener(s) on \
+         the stripped view while the pinned kinds account for {want_total} ({census}). The \
+         difference is an UNKNOWN kind: the unknown bucket must be ZERO, which is what stops a \
+         net-zero swap (delete one pinned attribute, add an unpinned one) balancing. Same \
+         remedy — add it deliberately and bump both numbers in one edit."
+    );
+
+    // --- 8 [rb81/mod-census] ------------------------------------------------
+    let mod_kw = ["m", "od"].concat();
+    let n_mod = rb81_ident_boundary_count(stripped.as_str(), mod_kw.as_str());
+    assert_eq!(
+        n_mod, 1,
+        "[rb81/mod-census] FAIL: `battle.rs` declares {n_mod} module(s) and must declare exactly \
+         ONE — the test module in its tail. A second declaration moves a twin reducer into a \
+         file NO clause here reads (with or without a relocation attribute), and a shadowing \
+         module re-exporting the reducer macro under another name defeats the path clause too."
+    );
+
+    // --- 9 [rb81/include-ban] + [rb81/macro-ban] ----------------------------
+    let inc = ["inc", "lude"].concat();
+    let n_inc = stripped.matches(inc.as_str()).count();
+    assert_eq!(
+        n_inc, 0,
+        "[rb81/include-ban] FAIL: `battle.rs` mentions the source-inlining macro family {n_inc} \
+         time(s) and must mention it ZERO. It splices another file's tokens into THIS module at \
+         compile time, so the spliced reducer is published while no view built from this file's \
+         text can ever see it."
+    );
+    let mac = ["macro", "_rules"].concat();
+    let n_mac = stripped.matches(mac.as_str()).count();
+    assert_eq!(
+        n_mac, 0,
+        "[rb81/macro-ban] FAIL: `battle.rs` defines {n_mac} declarative macro(s) and must define \
+         ZERO. A macro assembling the attribute from fragments publishes an entry point every \
+         literal needle here counts as zero. A macro defined in ANOTHER module and invoked here \
+         is outside this file's window: R-rb-81-CROSSFILEMACRO."
+    );
+
+    // --- 10 [rb81/attr-raw] -------------------------------------------------
+    let n_raw_attrs = MODULE_SOURCE.matches(attr_open.as_str()).count();
+    assert_eq!(
+        n_raw_attrs, 13,
+        "[rb81/attr-raw] FAIL: the RAW text of `battle.rs` carries {n_raw_attrs} attribute \
+         opener(s) and must carry 13 — the 12 the partition accounts for plus the ONE inside a \
+         comment (battle.rs:1604, the note explaining the relocation attribute). The only \
+         clause reading NO stripper output, so it still bites if the strippers are ever fooled. \
+         Adding an attribute moves the raw and the stripped numbers TOGETHER; editing that \
+         comment moves only this one."
+    );
+}
