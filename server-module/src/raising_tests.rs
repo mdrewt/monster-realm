@@ -3418,6 +3418,36 @@ fn rb80_assert_no_brace_char_landmines(raw: &str) {
              literals; never delete this check."
         );
     }
+    // rb-80 (verifier V1): a PLAIN raw string, not only the `r#` opener, also
+    // defeats this file's blanker (no raw-string lexer: the backslash before the
+    // real closer is read as an escape, the closer is swallowed, and every byte up
+    // to the next quote is blanked). MEASURED: it hid a below-gate early exit from
+    // the return census while every other clause stayed green. Reject any `r`
+    // directly followed by a double quote whose preceding byte is not an
+    // identifier byte (a byte-string `br` opener counts too).
+    let rdq = char::from(0x22u8).to_string();
+    let raw_str_opener = ["r", rdq.as_str()].concat();
+    let raw_bytes = raw.as_bytes();
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == 0x5Fu8;
+    for (at, _) in raw.match_indices(raw_str_opener.as_str()) {
+        let opener = match at {
+            0 => true,
+            1 => raw_bytes[0] == 0x62u8,
+            _ => {
+                !is_ident(raw_bytes[at - 1])
+                    || (raw_bytes[at - 1] == 0x62u8 && !is_ident(raw_bytes[at - 2]))
+            }
+        };
+        assert!(
+            !opener,
+            "rb-80 [rb80/scan-substrate] SCAN PRECONDITION: `raising.rs` spells a raw-string opener at \
+             byte {at}. This file's blanker has no raw-string lexer: a backslash before the real \
+             closer is read as an escape, the closer is swallowed, and every byte up to the next \
+             quote is blanked — MEASURED (verifier V1) to hide a below-gate early exit from the \
+             return census while every other clause stayed green. Spell the literal as an \
+             ordinary string, or teach the blanker raw strings; never delete this check."
+        );
+    }
 }
 
 /// The FROZEN statement prefix above `heal_party`'s deletion gate: comments
@@ -3641,8 +3671,10 @@ fn rb80_assert_gate_pinned(
          {n_return_err} of them return an `Err`. Every early exit in a gated reducer must be a \
          REJECTION; one that returns anything else routes the caller AROUND the rest of the \
          body, and clause P only constrains the region ABOVE the gate — this is the BELOW-gate \
-         half (registered as R-rb-80-BELOWGATE for the delegation shape a write-verb census, not \
-         a return census, is what catches). HONEST LIMIT: a `macro_rules!` expanding to a \
+         half (the BELOW-gate region is otherwise UNPINNED — an else-wrapped delegation with no `return`, a \
+         delegation reaching a write helper through a fn-pointer binding, a raw table-accessor write \
+         and an identity rebinding all pass every clause here: R-rb-80-BELOWGATE, \
+         R-rb-80-FNPTRDELEGATE, R-rb-80-RAWWRITE, each measured). HONEST LIMIT: a `macro_rules!` expanding to a \
          conditional return contains no textual `return` and evades this clause — that is \
          rb-78's crate-wide grammar (ADR-0248), which refuses every bang macro between the item \
          boundary and the gate. Never widen the needle to make this green."

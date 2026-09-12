@@ -943,8 +943,10 @@ fn rb80_assert_gate_pinned(
          {n_return_err} of them return an `Err`. Every early exit in a gated reducer must be a \
          REJECTION; one that returns anything else routes the caller AROUND the rest of the body, \
          and clause P only constrains the region ABOVE the gate — this is the BELOW-gate half \
-         (registered as R-rb-80-BELOWGATE for the delegation shape a write-verb census, not a \
-         return census, is what catches). HONEST LIMIT: a `macro_rules!` expanding to a \
+         (the BELOW-gate region is otherwise UNPINNED — an else-wrapped delegation with no `return`, a \
+         delegation reaching a write helper through a fn-pointer binding, a raw table-accessor write \
+         and an identity rebinding all pass every clause here: R-rb-80-BELOWGATE, \
+         R-rb-80-FNPTRDELEGATE, R-rb-80-RAWWRITE, each measured). HONEST LIMIT: a `macro_rules!` expanding to a \
          conditional return contains no textual `return` and evades this clause — that is rb-78's \
          crate-wide grammar (ADR-0248), which refuses every bang macro between the item boundary \
          and the gate. Never widen the needle to make this green."

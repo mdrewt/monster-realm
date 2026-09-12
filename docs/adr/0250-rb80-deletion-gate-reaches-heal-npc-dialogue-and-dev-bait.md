@@ -192,7 +192,10 @@ error; a type swap of an existing parameter is disclosed under R-rb-80-BELOWGATE
   comment-quote substrate attack — with a comment above a gate, a deleted site comment and a below-gate `let me =`
   rebinding as the three CONTROL-GREEN rows. Two verifier-class rows chosen by the red-team SURVIVE and are registered
   rather than pinned: a sender-keyed raw `ctx.db.player_wallet()` / `ctx.db.inventory()` write below a gate
-  (R-rb-80-RAWWRITE).
+  (R-rb-80-RAWWRITE). The verifier's own two rows: a plain `r"` raw string below a gate inverted the string/code
+  polarity of the raising and npc blankers and hid a sender-keyed early `Ok` from the return census — SURVIVED at
+  172ef50, KILLED after both rb-80 substrate preconditions were widened from the `r#` opener to any raw-string
+  opener; and the fn-pointer delegation above (R-rb-80-FNPTRDELEGATE), which SURVIVES and is registered.
 
 ## Residuals registered (targets: backlog)
 
@@ -221,6 +224,11 @@ error; a type swap of an existing parameter is disclosed under R-rb-80-BELOWGATE
   `require_commitment_predates_deletion` (ADR-0237). Not exploitable with shipped content (the one quest completes
   inside a single `talk`), but a future multi-turn tree or multi-step Talk quest would lose its progress the moment
   the player requests deletion; `player_conversation` carries no opened-at stamp to key the sibling on.
+- **R-rb-80-FNPTRDELEGATE (MED)** — measured by the verifier: an `else`-wrapped below-gate delegation to a
+  prefix-free in-file twin that reaches `crate::economy::spend_currency` through a fn-pointer BINDING (no
+  `spend_currency(` token, no `return`, no shared name prefix) passes every rb-80 pin and the full suite while every
+  real caller is debited without a heal. The write-verb census counts the paren form; the closed form is a BARE-name
+  census of the write helpers per gated file (the rb-46/rb-76 lesson) or the per-body closed write set.
 - **R-rb-80-CITEDRIFT (LOW)** — pre-existing `raising.rs:NNN`/`npc.rs:NNN` comment citations in
   `raising_tests.rs`, `npc_tests.rs`, `content_cache_tests.rs`, `battle_tests.rs`, `economy_tests.rs`,
   `guards_tests.rs`, `evals/monster-dual-write.eval.mjs`, `client/e2e/wallet-balance.spec.ts`, `ARCHITECTURE.md:1284`
