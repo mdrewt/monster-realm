@@ -5687,9 +5687,11 @@ fn rb78_assert_rejected(case: &str, sources: Vec<(String, String)>, expected: &[
     let Err(message) = rb78_macro_verdict(&sources) else {
         panic!(
             "rb-78 ADR-0248 TEETH FAIL ({case}): the verdict ACCEPTED this source. Every shape \
-             in this matrix routes a real caller around an authorization gate while leaving the \
-             gate statement, its log tag and rb-46's textual return census byte-identically \
-             green — an accepted fixture means the clause it exercises is not there."
+             in this matrix either routes a real caller around an authorization gate while \
+             leaving the gate statement, its log tag and rb-46's textual return census \
+             byte-identically green, or is a scan-integrity hazard that would let such a route \
+             go undetected. An accepted fixture means the clause guarding against one of these \
+             is missing."
         );
     };
     for label in expected {
