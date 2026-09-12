@@ -184,12 +184,15 @@ error; a type swap of an existing parameter is disclosed under R-rb-80-BELOWGATE
   features; `clippy --all-features` compiles it without running it) — the ADR-0236 D3 posture, now made explicit by
   the ledger's dev-feature full-suite gate (X2) and R-rb-80-DEVFEATURETEST.
 - Proof-of-teeth on the REAL files is the ledger's X6 mutant register (`memory/projects/gates/rb-80.mutants.py`,
-  record in `rb-80.red-before.md`): each gate dropped, a discarded verdict, a tag swap, a gate below its site's first
-  write, an attribute on the statement, an import-shadowed call, a duplicate, a constant or inverted verdict in the
-  pure seam, the seven ADR-0249 above-the-gate shapes, a wire-name twin, an aliased-attribute twin, a below-gate
-  delegation duplicating a write, a gate added to each deliberately-open or deferred reducer, an anchor deleted from
-  the roster, and the comment-quote substrate attack — every row expected KILLED; a below-gate `let me =` rebinding is
-  the disclosed CONTROL-GREEN row (R-rb-80-BELOWGATE).
+  record in `rb-80.red-before.md` §5-§6): 28 of 28 M-rows KILLED on a designated clause — each gate dropped, a
+  discarded verdict, a tag swap, a gate moved below its site's first write (all four sites), an attribute on the
+  statement, an import-shadowed call, a duplicate, a constant or inverted verdict in the pure seam, the seven
+  ADR-0249 above-the-gate shapes, a wire-name twin, an aliased-attribute twin, a below-gate delegation duplicating a
+  write, a gate added to each deliberately-open or deferred reducer, an anchor deleted from the roster, and the
+  comment-quote substrate attack — with a comment above a gate, a deleted site comment and a below-gate `let me =`
+  rebinding as the three CONTROL-GREEN rows. Two verifier-class rows chosen by the red-team SURVIVE and are registered
+  rather than pinned: a sender-keyed raw `ctx.db.player_wallet()` / `ctx.db.inventory()` write below a gate
+  (R-rb-80-RAWWRITE).
 
 ## Residuals registered (targets: backlog)
 
@@ -199,8 +202,25 @@ error; a type swap of an existing parameter is disclosed under R-rb-80-BELOWGATE
   below-gate `let me = <other identity>;` rebinding, or a type swap on an existing parameter carrying an identity,
   passes every pin (R-rb-79-BELOWGATE's class, two new shapes).
 - **R-rb-80-CRATEWIDEBARE (MED)** — the caller gate's bare name and the reducer roster are censused per file (eight
-  files now); no crate-wide census enumerates client entry points, so an ungated `ERASE` writer added to any other
-  module — in any attribute spelling — is invisible to every rb-80 pin.
+  files now); no crate-wide census enumerates client entry points, so an ungated `ERASE`/`ANONYMIZE`/`JOIN_ONLY`
+  writer in any other module — added later, in any attribute spelling, OR ALREADY PRESENT — is invisible to every
+  rb-80 pin. The reducer-security-auditor enumerated the present ones against the manifest: `movement::join_game`
+  (inserts `character`/`player` and, after the cascade emptied the account, a fresh starter `monster`/`monster_pub`
+  — the sharp one, but its reachability is the operator-blocked PRV1-8 ruling, spec §4.1), `evolution::evolve`,
+  `monster_mgmt::set_nickname`, `monster_mgmt::set_party_slot`, `movement::enqueue_move`/`set_move`/`clear_queue`
+  (in-flight hot path; a gate there is a trap state) and `privacy::request_data_export` (writes `export_bundle`;
+  deliberately OPEN — the §5 export right exists because deletion was requested). The next slice inherits this list.
+- **R-rb-80-RAWWRITE (MED)** — the D8 write-verb census counts helper NAMES; a below-gate statement writing through
+  a raw table accessor (`ctx.db.player_wallet()..update(..)`, `ctx.db.inventory().insert(..)`), sender-keyed so the
+  fixed native-host sender never takes it, duplicates no counted verb, adds no `return`, and sits outside the frozen
+  prefix. Measured against the shipped suite: see the register record (rows M24/M25) for which gates caught it; the
+  ADR-0081 single-surface evals are the compensating control for `player_wallet` and the closed form is a per-body
+  closed write set, which no census in this crate has yet.
+- **R-rb-80-DIALOGUECOMMITMENT (LOW)** — `advance_dialogue` uses the BLANKET gate on what can be an already-open
+  conversation (opened by `talk` while the account was still `Active`), where `respond_trade` uses the stamp-aware
+  `require_commitment_predates_deletion` (ADR-0237). Not exploitable with shipped content (the one quest completes
+  inside a single `talk`), but a future multi-turn tree or multi-step Talk quest would lose its progress the moment
+  the player requests deletion; `player_conversation` carries no opened-at stamp to key the sibling on.
 - **R-rb-80-CITEDRIFT (LOW)** — pre-existing `raising.rs:NNN`/`npc.rs:NNN` comment citations in
   `raising_tests.rs`, `npc_tests.rs`, `content_cache_tests.rs`, `battle_tests.rs`, `economy_tests.rs`,
   `guards_tests.rs`, `evals/monster-dual-write.eval.mjs`, `client/e2e/wallet-balance.spec.ts`, `ARCHITECTURE.md:1284`
