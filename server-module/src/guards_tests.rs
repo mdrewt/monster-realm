@@ -5199,15 +5199,19 @@ fn rb77_module_swap_fixtures_are_rejected_by_clause() {
 //                     rb-46 textual return census cannot see.
 //
 // WHY THIS IS MATERIAL, not hypothetical. rb-46 clause I
-// (`battle_tests.rs:6903-6940`) counts textual `return` tokens in a reducer
+// (`battle_tests.rs:6886-6929`) counts textual `return` tokens in a reducer
 // prefix and requires each to be the tagged reject spelling. A macro's
 // `return` lives in the macro DEFINITION, outside every prefix, so that count
 // stays byte-identically correct while the expansion diverts every real caller
-// around the gate. The literal proof-of-concept — a module-scope two-line rule
-// invoked one line above `battle.rs`'s `start_battle` gate, admitting every
-// sender that is not the all-zero wild sentinel — was MEASURED at this slice's
-// base commit to pass `cargo fmt --check`, all 900 tests, and clippy with
-// warnings denied (`memory/projects/gates/rb-78.red-before.md` section 1).
+// around the gate. That clause says so ITSELF, in the HONEST RESIDUAL sentence
+// of its own failure message (`battle_tests.rs:6922-6924`): this block is the
+// disposition of the residual that sentence registered.
+//
+// The literal proof-of-concept — a module-scope two-line rule invoked one line
+// above `battle.rs`'s `start_battle` gate, admitting every sender that is not
+// the all-zero wild sentinel — was MEASURED at this slice's base commit to pass
+// `cargo fmt --check`, all 900 tests, and clippy with warnings denied
+// (`memory/projects/gates/rb-78.red-before.md` section 1).
 // Eight of the ten live gate sites are open to that shape; the other two are
 // already closed by whole-prefix equality (rb-76 on `begin_encounter`, rb-47 on
 // `respond_trade`).
@@ -5402,9 +5406,10 @@ fn rb78_region_texts(squashed: &str) -> Vec<String> {
 /// name, so `== !(x)` and an inner attribute's `#!` are both unary, not calls.
 ///
 /// DISCLOSED AND FAIL-CLOSED, in this order of likelihood: a builder call glued
-/// to a preceding keyword (`return format!(..)`) reads as a macro named
-/// `returnformat` and is LABELLED; the brace and square delimiter forms of the
-/// builder are NOT allow-listed; and a C-string literal, which this crate's
+/// to a preceding keyword — an early return of a built string — reads as a macro
+/// whose name is that keyword and the builder run together, and is LABELLED (see
+/// the F20 fixture, which asserts it); the brace and square delimiter forms of
+/// the builder are NOT allow-listed; and a C-string literal, which this crate's
 /// shared stripper does not model, would leave a stray prefix byte before the
 /// name. All three are loud false REDs on honest code, all three are zero on the
 /// tree today, and the remedy for each is to re-derive the allow-list
@@ -6253,10 +6258,10 @@ fn rb78_fx_glob_import() -> Vec<(String, String)> {
 /// Squashing glues a preceding keyword onto the builder's name, so an honest
 /// `return` of a built string above a gate reads as a macro named
 /// `returnformat` and IS rejected. This is deliberate: the alternative is to
-/// admit the six admitted bytes as a SUFFIX, which would admit every
-/// `<anything>format!(` spelling an attacker can choose. When this fires on
-/// honest code the remedy is to bind the string to a local first — never to
-/// loosen the byte sequence.
+/// match the six admitted bytes as a SUFFIX, which would then admit the
+/// builder's name wearing ANY prefix an attacker cares to glue in front of it.
+/// When this fires on honest code the remedy is to bind the string to a local
+/// first — never to loosen the byte sequence.
 fn rb78_fx_keyword_glued_builder() -> Vec<(String, String)> {
     let q = double_quote();
     let attr = rb78_attr_reducer();
@@ -6273,6 +6278,73 @@ fn rb78_fx_keyword_glued_builder() -> Vec<(String, String)> {
         glued.as_str(),
         "    }",
         "    let label = describe(1u64);",
+        gate.as_str(),
+        "    Ok(())",
+        "}",
+    ]
+    .join("\n");
+    vec![("battle.rs".to_string(), src)]
+}
+
+/// F21 — a raw-string opener with THREE hashes in a gate-bearing module.
+///
+/// The second of the three substrate triggers, and the only one measured on the
+/// RAW text rather than on the stripped view — which is why the literal may sit
+/// ANYWHERE in the file rather than above the gate. The crate's shared
+/// byte-sequential stripper carries a conservative refusal for this construct
+/// (`assert_stripper_preconditions`, `m22s5_assert_source_is_scannable`) because
+/// a hash depth it mis-parses blanks the WRONG byte range: every clause in this
+/// grammar would then read text nobody wrote, and a divert parked in the
+/// mis-blanked span would be invisible while the verdict reported Ok. Re-raised
+/// here as a LABEL rather than a panic so this row can observe it — and the
+/// remedy when it fires is to extend the stripper's hash-depth handling and
+/// re-derive, never to drop the precondition.
+fn rb78_fx_deep_raw_string() -> Vec<(String, String)> {
+    let attr = rb78_attr_reducer();
+    let gate = rb78_gate_line("gated");
+    let deep = format!(
+        "pub(crate) const DOC: &str = {r}{q}note{q}{h};",
+        r = ["r#", "##"].concat(),
+        q = double_quote(),
+        h = ["#", "##"].concat()
+    );
+    let src = [
+        "use crate::schema::player;",
+        deep.as_str(),
+        attr.as_str(),
+        "pub fn gated(ctx: &ReducerContext) -> Result<(), String> {",
+        gate.as_str(),
+        "    Ok(())",
+        "}",
+    ]
+    .join("\n");
+    vec![("battle.rs".to_string(), src)]
+}
+
+/// F22 — an UNPAIRED block-comment opener above the gate, in a gate-bearing
+/// module. The third substrate trigger, and the sharpest of the three.
+///
+/// WHAT THIS ROW ACTUALLY PROVES. The stripper scans forward from the opener for
+/// a closer that never comes, so it blanks the file to its LAST BYTE. The gate
+/// needle is gone with it, the region set is EMPTY, and every macro clause below
+/// is therefore skipped — meaning that WITHOUT this clause the verdict would
+/// return `Ok(())` for a file whose entire contents, diverts included, it never
+/// looked at. That is the one failure mode a source-scan gate cannot survive:
+/// silent, total vacuity that reads exactly like a clean file. The marker-count
+/// check is deliberately taken on the RAW text, because by the time the scan has
+/// the stripped view there is nothing left to count.
+fn rb78_fx_unpaired_block_comment() -> Vec<(String, String)> {
+    let attr = rb78_attr_reducer();
+    let gate = rb78_gate_line("gated");
+    let opener = format!(
+        "{open} the closer is missing on purpose",
+        open = rb77_needle_open_marker()
+    );
+    let src = [
+        "use crate::schema::player;",
+        opener.as_str(),
+        attr.as_str(),
+        "pub fn gated(ctx: &ReducerContext) -> Result<(), String> {",
         gate.as_str(),
         "    Ok(())",
         "}",
@@ -6317,19 +6389,36 @@ fn rb78_live_sources() -> Vec<(String, String)> {
     out
 }
 
-/// Five squashed function markers that MUST each fall inside some live gate
-/// region. Not a floor and not the site set (rb-46 and rb-76 own those): a
-/// positive control that the region slicer still reaches real prefixes in three
-/// different files, across all three wrapper needles, and through all three
-/// awkward framings the live tree carries — a conditional attribute, an
-/// argument-count attribute, and a crate-private helper with no attribute.
-fn rb78_region_anchors() -> [String; 5] {
+/// Seven squashed function markers that MUST each fall inside some live gate
+/// region — at least one per GATE-BEARING MODULE: battle, economy, pvp, ranking,
+/// trading. Not a floor and not the site set (rb-46 and rb-76 own those).
+///
+/// WHY PER-MODULE COVERAGE, AND NOT FEWER ANCHORS. The per-needle control above
+/// only asks that each of the three wrapper needles matches somewhere in the
+/// crate, and `battle.rs` alone satisfies all three. So with anchors in three
+/// files, `pvp.rs`'s two sites and `ranking.rs`'s one could stop being spelled
+/// fully qualified — an import-shadowed or aliased call — and they would simply
+/// DROP OUT of the region scan: no region, no macro clause, no complaint, while
+/// every other assertion in this test stayed green. One anchor per gate-bearing
+/// module is what makes "the slicer reached this file" an assertion rather than
+/// an assumption. The set also spans all three wrapper needles and the two
+/// awkward framings the live tree carries: a conditional attribute above the
+/// reducer attribute (`start_wild_battle`), and a crate-private helper with no
+/// reducer attribute at all (`begin_encounter`). The third framing — an
+/// argument-count attribute — sits on `propose_trade`, which is deliberately
+/// NOT anchored here: `trading.rs` is already covered by `respond_trade`, and
+/// this list is one anchor per MODULE, not a second site census. If a later
+/// slice removes one of these reducers, re-derive that module's anchor
+/// DELIBERATELY; never just delete the row.
+fn rb78_region_anchors() -> [String; 7] {
     [
         ["fnstart_", "battle("].concat(),
         ["fnbegin_", "encounter("].concat(),
         ["fnstart_wild_", "battle("].concat(),
         ["fnrespond_", "trade("].concat(),
         ["fnb", "uy("].concat(),
+        ["fnchallenge_", "pvp("].concat(),
+        ["fnset_profile_", "name("].concat(),
     ]
 }
 
@@ -6359,10 +6448,14 @@ fn rb78_line_caller_wrapper() -> String {
 /// substrate label. The assertions after it are POSITIVE CONTROLS, not floors
 /// for their own sake, and they are what stop this test passing over nothing:
 /// each of the three wrapper needles must still match live text, and the region
-/// slicer must still reach five named reducer prefixes in three different files.
-/// Without them a renamed wrapper, a re-spelled qualification or a stranded
-/// depth counter would leave the region set EMPTY and every macro clause would
-/// report Ok about a crate it never looked at.
+/// slicer must still reach seven named reducer prefixes covering EVERY
+/// gate-bearing module — battle, economy, pvp, ranking, trading. The per-module
+/// spread is the load-bearing half: `battle.rs` alone satisfies all three
+/// needles, so without it an entire other module could stop being scanned and
+/// only the anchors would notice. Without either, a renamed wrapper, a
+/// re-spelled qualification or a stranded depth counter would leave the region
+/// set EMPTY and every macro clause would report Ok about a crate it never
+/// looked at.
 ///
 /// THE NOTE CLAUSE IS THE ONLY THING RED AT HEAD, and that is the honest shape
 /// of this slice: the shipped tree is clean, so every macro clause is green by
@@ -6421,13 +6514,19 @@ fn rb78_no_macro_expands_above_any_deletion_gate() {
         let found = regions.iter().any(|r| r.contains(anchor.as_str()));
         assert!(
             found,
-            "rb-78 ADR-0248 FAIL (live control): no gate region contains the declaration of one \
-             of the five named reducers, so the region slicer is no longer reaching a prefix it \
-             reached when this grammar was written. The likely causes, in order: a brace CHAR \
-             literal stranded the depth counter above zero (which makes every later region \
-             start at the wrong boundary), a reducer was renamed, or its gate stopped being \
-             fully qualified. Investigate the slicer against the file; never shorten this list \
-             to make a build green — a region that reaches nothing bans nothing."
+            "rb-78 ADR-0248 FAIL (live control): no gate region contains the squashed \
+             declaration `{anchor}`, so EVERY GATE-BEARING MODULE NO LONGER CONTRIBUTES AT \
+             LEAST ONE REGION — which is exactly what this control asserts, one anchor per \
+             module across battle, economy, pvp, ranking and trading. The needle control above \
+             cannot see this: `battle.rs` alone satisfies all three wrapper needles, so a whole \
+             other module can fall out of the scan while that count stays happy, and every \
+             macro clause for it is then skipped in silence. The likely causes, in order: that \
+             reducer's gate stopped being fully qualified (an import-shadowed or aliased call), \
+             a brace CHAR literal stranded the depth counter above zero so every later region \
+             starts at the wrong boundary, or the reducer was renamed. Investigate the slicer \
+             against the file, and if the reducer really is gone re-derive that module's anchor \
+             deliberately; never shorten this list to make a build green — a region that \
+             reaches nothing bans nothing."
         );
     }
 
@@ -6491,8 +6590,13 @@ fn rb78_no_macro_expands_above_any_deletion_gate() {
     );
 }
 
-/// **ADR-0248 D4 (fixture matrix)** — twenty frozen macro-divert inputs, each
-/// rejected by the clause it exists to exercise, plus two clean controls.
+/// **ADR-0248 D4 (fixture matrix)** — twenty-one frozen macro-divert inputs
+/// (F1-F18, F20, F21, F22), each rejected by the clause it exists to exercise,
+/// plus two clean controls (F0, F19). All three substrate triggers now have a
+/// row of their own: F16 the nested block comment, F21 the deep raw-string
+/// opener, F22 the unpaired opener that blanks the file to its last byte. No
+/// numeric floor stands on that count anywhere in the code — this sentence is
+/// prose, and it is the reader's map, so keep it true when a row is added.
 ///
 /// Every fixture writes its OWN full text from fragments: no shared builder and
 /// no base-plus-mutation, so one bad helper cannot make the whole matrix
@@ -6631,5 +6735,15 @@ fn rb78_macro_divert_fixtures_are_rejected_by_clause() {
         "F20 disclosed keyword-glued builder (fail-closed false RED)",
         rb78_fx_keyword_glued_builder(),
         &["[rb78/macro-above-gate:battle.rs:returnformat]"],
+    );
+    rb78_assert_rejected(
+        "F21 deep raw-string opener in a gate-bearing file",
+        rb78_fx_deep_raw_string(),
+        &["[rb78/scan-substrate:battle.rs]"],
+    );
+    rb78_assert_rejected(
+        "F22 unpaired block-comment opener above the gate",
+        rb78_fx_unpaired_block_comment(),
+        &["[rb78/scan-substrate:battle.rs]"],
     );
 }
