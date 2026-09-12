@@ -8005,7 +8005,7 @@ fn rb81_attr_openers(src: &str) -> usize {
 }
 
 /// Raw-string OPENERS (`r`/`br`, any hashes, then the quote) not preceded by an
-/// identifier byte. Never spelled literally: that would plant what it bans.
+/// identifier byte. Never spelled literally, so a future self-scan of this test file never trips on it.
 fn rb81_raw_string_openers(src: &str) -> usize {
     let quote = 0x22u8;
     let bytes = src.as_bytes();

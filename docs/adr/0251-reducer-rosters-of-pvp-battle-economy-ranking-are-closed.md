@@ -30,7 +30,9 @@ full default suite — `915 tests run: 915 passed, 0 skipped` — three times ov
 only by `pvp_tests.rs::m17a_rl7_server_ranking_module_invariants`, a cross-file COUNT of the attribute prefix, which
 sees neither a rename nor any of the aliased, wire-named or neighbouring-macro spellings measured below. The gap was
 also confirmed from both code graphs: the twelve roster/census symbols in the crate read `trading.rs`, `raising.rs`,
-`npc.rs`, `taming.rs`, `accounts.rs`, `evolution.rs` and `privacy.rs`; none reads these four files.
+`npc.rs`, `taming.rs`, `accounts.rs`, `evolution.rs` and `privacy.rs`; none of them is a closed ROSTER over these four — the only census reading one of them is the
+cross-file attribute COUNT in `pvp_tests.rs` over `ranking.rs` (D5), beside the m22-s5 / rb-46 censuses that constrain
+only the names they enumerate.
 
 ## Decision
 
@@ -40,7 +42,7 @@ also confirmed from both code graphs: the twelve roster/census symbols in the cr
 `rb81_economy_reducer_roster_is_closed` (`economy_tests.rs`) and `rb81_ranking_reducer_roster_is_closed`
 (`ranking_tests.rs`). The criterion says the failure names the FILE: with one test per file the test NAME names it before
 any message is read, whereas a parametrized loop stops at its first failing row and names only that one. Each test file
-already reads its own module source, and each file's strippers have their own blind spots (ADR-0003: copied per module,
+already reads its own module source, and each file's strippers have their own blind spots (ADR-0003: copied per module — the seven new scan helpers too, so a correction to any of them lands in all four files in the same edit;
 never shared); a single test would have to carry the union of four substrate hazards through one pipeline. rb-47 and
 rb-80 set the same per-file precedent.
 
@@ -165,9 +167,10 @@ names the remedy (bump the kind and the total together) instead of inviting a re
 
 - **A rule defined in another module and invoked in a censused file** has no file-local window: R-rb-81-CROSSFILEMACRO.
 - **A twin in a NEW module file** (`src/twin.rs` plus a declaration in `lib.rs`) is invisible to all four tests and to
-  the derived `rb47_scanned_module_names`. Not built here; folded into R-rb-80-CRATEWIDEBARE together with the nine
-  un-rostered reducer files it already names — `accounts.rs` 6, `lib.rs` 4, `evolution.rs` 1, `monster_mgmt.rs` 2,
-  `movement.rs` 5, `observability.rs` 1, `playtest.rs` 1, `privacy.rs` 2.
+  the derived `rb47_scanned_module_names`. Not built here; folded into R-rb-80-CRATEWIDEBARE together with the eight un-rostered reducer files — `accounts.rs` 6, `lib.rs` 4, `evolution.rs` 1,
+  `monster_mgmt.rs` 2, `movement.rs` 5, `observability.rs` 1, `playtest.rs` 1, `privacy.rs` 2 — four of which that
+  residual already names by reducer (`movement`, `evolution`, `monster_mgmt`, `privacy`; ADR-0250 D6); the file-level
+  roster is derived here.
 - **The four string strippers have no char-literal branch.** P2 bans the only two spellings that carry a quote byte
   between ticks; the durable fix is a char-literal branch in each stripper: R-rb-81-CHARLITERAL.
 - **P4 takes the first `//` on a code line**, so a `//` sequence inside a string literal can false-RED it. Fail-closed
@@ -179,8 +182,8 @@ names the remedy (bump the kind and the total together) instead of inviting a re
   R-rb-81-TABLEPUBLIC.
 - **These rosters are TEXT.** They are what the four files SPELL, not the reducer table the compiled wasm publishes.
 - **`ranking.rs` was not uncovered before this slice**, unlike its three siblings: `m17a_rl7_server_ranking_module_invariants`
-  (`pvp_tests.rs:1260-1271`) counts the attribute prefix cross-file. That is a COUNT, never a set, and rows M6 and M9
-  are `rb81_ranking_reducer_roster_is_closed`'s SOLE kills.
+  (`pvp_tests.rs:1260-1271`) counts the attribute prefix cross-file. That is a COUNT, never a set, and rows M6, M9, M29d and M29e are the register rows only
+  `rb81_ranking_reducer_roster_is_closed` kills.
 - **The reciprocal header line this ADR adds to ADR-0237 shifts every citation below it by one.**
   `ARCHITECTURE.md:2279`'s `ADR-0237:203-204` and ADR-0249's two copies of the same citation (its own `:29` and
   `:160`) are repointed to `:204-205` in this slice (docs companions, listed under touches-delta). One carrier is NOT
@@ -197,8 +200,7 @@ names the remedy (bump the kind and the total together) instead of inviting a re
 - **R-rb-81-TABLEPUBLIC (LOW)** — a private-to-`public` table flip moves no clause in these tests.
 - **R-rb-81-SPECCITE (LOW)** — the harness spec's `ADR-0237:108` citation drifts by one with this slice's reciprocal
   header line and is not edited (D5).
-- **R-rb-80-CRATEWIDEBARE (MED, inherited and widened)** — these four files now carry a roster; the nine
-  reducer-bearing files listed in D5 still carry none, and a twin in a NEW module file is invisible to every per-file
+- **R-rb-80-CRATEWIDEBARE (MED, inherited and widened)** — these four files now carry a roster; the eight reducer-bearing files listed in D5 still carry none, and a twin in a NEW module file is invisible to every per-file
   census in the crate.
 
 Proof-of-teeth on the REAL files is the ledger's X6 live mutant register (`memory/projects/gates/rb-81.mutants.py`,

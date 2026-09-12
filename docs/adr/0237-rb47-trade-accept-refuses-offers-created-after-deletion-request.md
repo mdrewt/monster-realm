@@ -229,6 +229,5 @@ plain bare twin reducer appended to the first three passed the full default suit
 `ranking.rs`'s twin was caught only by a cross-file COUNT of the attribute prefix, never by a set. `rb47_trading_reducer_roster_is_closed`'s
 shape is carried over and widened there — name SET plus an attribute partition whose unknown-kind bucket is zero, substrate
 preconditions on the raw source, a tail pin and a conditional-compilation roster — because `procedure` and `view` are
-re-exported entry-point macros carrying no `reducer` token (ADR-0251 D4). The bullet's remaining scope, the nine
-reducer-bearing files with no roster and a twin planted in a NEW module file, is re-scoped to R-rb-80-CRATEWIDEBARE
+re-exported entry-point macros carrying no `reducer` token (ADR-0251 D4). The bullet's remaining scope, the eight reducer-bearing files with no roster and a twin planted in a NEW module file, is re-scoped to R-rb-80-CRATEWIDEBARE
 rather than left here; the "PRV1-7 crate-wide slice's territory" attribution is unchanged.

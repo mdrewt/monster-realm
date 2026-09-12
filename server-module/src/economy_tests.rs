@@ -3202,7 +3202,7 @@ fn rb81_attr_openers(src: &str) -> usize {
 }
 
 /// Raw-string OPENERS (`r`/`br`, any hashes, then the quote) not preceded by an
-/// identifier byte. Never spelled literally: that would plant what it bans.
+/// identifier byte. Never spelled literally, so a future self-scan of this test file never trips on it.
 fn rb81_raw_string_openers(src: &str) -> usize {
     let quote = 0x22u8;
     let bytes = src.as_bytes();
@@ -3478,8 +3478,7 @@ fn rb81_economy_reducer_roster_is_closed() {
         "[rb81/roster] FAIL (set): the reducers `economy.rs` publishes are {got:?}; the roster \
          this slice reasoned about is {want:?}. Missing: {missing:?}. UNEXPECTED: {extra:?}. \
          AN UNEXPECTED NAME IS THE DANGEROUS DIRECTION — this module is the single \
-         wallet-mutation surface, so a third reducer is an unreviewed path to `spend_currency` \
-         / `grant_currency` / `consume_one`, and a copy of either shipped reducer minus its \
+         wallet-mutation surface, so a third reducer is an unreviewed path to `spend_currency` / `grant_currency` (this module's wallet seam) and to `inventory::consume_one`, and a copy of either shipped reducer minus its \
          ownership guard, escrow guard, headroom check or deletion gate passes every other pin \
          here (they all scope to the two names they mention) — while a MISSING name means a \
          reducer was renamed or removed and every pin scoped to it is now vacuous. Classify a \
