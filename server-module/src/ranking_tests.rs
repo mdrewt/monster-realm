@@ -3015,7 +3015,7 @@ fn rb81_reducer_names(squashed: &str) -> Vec<String> {
 /// **E1 (roster closure)** — `ranking.rs` publishes EXACTLY 1 reducer. T0
 /// (measured): a plain bare twin here was KILLED ONLY by the pre-existing
 /// cross-file COUNT pin `m17a_rl7_server_ranking_module_invariants`
-/// (pvp_tests.rs:1246) — a count, never a set. GREEN AT HEAD: ZERO production
+/// (pvp_tests.rs:1260-1271) — a count, never a set. GREEN AT HEAD: ZERO production
 /// edits, an ADR-0224 hardening pin whose teeth are T0 plus the live register.
 ///
 /// Designated register rows (`memory/projects/gates/rb-81.mutants.py`): M6 the

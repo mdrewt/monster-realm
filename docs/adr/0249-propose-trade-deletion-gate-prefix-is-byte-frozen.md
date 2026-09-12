@@ -26,7 +26,7 @@ before the gate needle is `;` or `}`, zero `#[` and zero `cfg!(` in the reducer 
 file) and `rb47_respond_trade_carries_the_offer_age_gate`'s file-wide `#[cfg` == 1 count
 (`trading_tests.rs:4549-4559`). Executed at be3ff53 before any rb-79 test existed
 (`memory/projects/gates/rb-79.red-before.md` §1, harness repo): `#[cfg(test)]` and
-`#[cfg(debug_assertions)]` on the statement are KILLED by those two tests. ADR-0237:203-204 (shifted one line by the reciprocal header line this ADR adds) therefore
+`#[cfg(debug_assertions)]` on the statement are KILLED by those two tests. ADR-0237:204-205 (shifted one line by the reciprocal header line this ADR adds) therefore
 says rb-47 closed the residual, and ADR-0248 D6 (:286-289) says rb-79 "owns that class" — both are
 half-right, and this ADR corrects both (D6 below). The residual row itself was never closed
 administratively, which is why the aging rule promoted it.
@@ -157,7 +157,7 @@ clause, so the note cannot affect the pins it describes.
 ### D6 — Relationships, and the two corrections
 
 `**Extends:** ADR-0236` (the residual family; reciprocal `Extended-by:` appended). `**Amends:** ADR-0237`
-with the reciprocal `**Amended-by:**` header line, because its Consequences (`:203-204`, shifted +1 by the reciprocal header line this ADR adds) state that rb-47
+with the reciprocal `**Amended-by:**` header line, because its Consequences (`:204-205`, shifted +1 by the reciprocal header line this ADR adds) state that rb-47
 closed R-rb-46-TRADINGCFG: it closed the attribute and statement-boundary half, and this ADR closes the
 rest. ADR-0248 D6 (`:286-289`) states the converse error — that rb-79 owns the `#[cfg` / statement-boundary
 class for `trading.rs` — while the measured M1/M2 rows show rb-47 already owns it; that sentence is in
