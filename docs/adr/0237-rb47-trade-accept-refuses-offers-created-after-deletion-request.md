@@ -7,6 +7,7 @@
 **Amends:** —
 **Extends:** ADR-0227 (the S5 caller-only gate; reciprocal `Extended-by:` in its header, and its confederate role-swap residual bullet is discharged by a dated amendment there)
 **Amended-by:** ADR-0249 (rb-79 — narrows the Consequences claim that rb-47 closed R-rb-46-TRADINGCFG: the attribute and statement-boundary half was closed here; the macro-free early-exit half stayed open and is closed by the byte-frozen prefix there)
+**Extended-by:** ADR-0251 (rb-81 — the closed reducer roster reaches pvp.rs, battle.rs, economy.rs and ranking.rs; its R-rb-47-ROSTER-PVP residual bullet is discharged by a dated amendment below)
 **Subsystems:** security-authz, economy-quests
 **Decision:** rb-47 gates the accept path of `respond_trade` on the offer's stamp: a deletion-gated caller cannot accept an offer created at or after their own deletion request; predating offers stay completable (PRV1-10).
 
@@ -217,3 +218,16 @@ silently double every count pin.
 `rb47_respond_trade_carries_the_offer_age_gate`, `rb47_propose_trade_gate_has_no_attribute_or_cfg_escape`,
 `rb47_respond_trade_refuses_a_post_request_accept`, `rb47_no_reducer_module_reaches_the_stamp_seam_directly`,
 `rb47_trading_reducer_roster_is_closed`, plus the widened bypass arrays in `server-module/src/guards_tests.rs`.
+
+## Amendment (2026-09-12, rb-81 — residual R-rb-47-ROSTER-PVP closed)
+
+The "Residual R-rb-47-ROSTER-PVP (backlog). The closed reducer roster covers `trading.rs`; `pvp.rs` and the other
+reducer files keep the census shape that constrains only the names it lists" bullet above is discharged by ADR-0251 for
+FOUR of those files — `pvp.rs`, `battle.rs`, `economy.rs` and `ranking.rs` — each with its own closed-roster test in
+its own sibling test module. The bullet's premise was re-measured on the pristine tree before planning and held: a
+plain bare twin reducer appended to the first three passed the full default suite (`915 tests run: 915 passed`), and
+`ranking.rs`'s twin was caught only by a cross-file COUNT of the attribute prefix, never by a set. `rb47_trading_reducer_roster_is_closed`'s
+shape is carried over and widened there — name SET plus an attribute partition whose unknown-kind bucket is zero, substrate
+preconditions on the raw source, a tail pin and a conditional-compilation roster — because `procedure` and `view` are
+re-exported entry-point macros carrying no `reducer` token (ADR-0251 D4). The bullet's remaining scope, the eight reducer-bearing files with no roster and a twin planted in a NEW module file, is re-scoped to R-rb-80-CRATEWIDEBARE
+rather than left here; the "PRV1-7 crate-wide slice's territory" attribution is unchanged.
