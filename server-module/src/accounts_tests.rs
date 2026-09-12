@@ -20372,3 +20372,549 @@ fn rb72_resolve_all_live_interactions_leaves_presence_rows() {
         );
     }
 }
+
+// ===========================================================================
+// rb-83 (ADR-0252, residual R-rb-47-CANCELLAUNDER) — CANCELLING A DELETION
+// DECLINES THE INCOMING OFFERS THE rb-47 STAMP GATE ALREADY REFUSED.
+//
+// EARS criterion (ADR-0252 D1/D3): WHEN `cancel_account_deletion` is called by
+// an identity the AUTH-38 gate admits to the write path THE SYSTEM SHALL,
+// BEFORE flipping the row to `Active`, decline (disarm + delete) every active
+// `trade_offer` naming that identity as COUNTERPARTY whose `created_at_ms` the
+// pre-cancel row refuses under `accounts::opened_commitment_is_refused`.
+//
+// TWO TESTS LIVE HERE:
+//   * the WIRING pin on `cancel_account_deletion` (the statement, its depth, its
+//     placement between the AUTH-38 gate and the status write, and the whole
+//     squashed prefix above it, frozen byte for byte);
+//   * the pure planner's truth table, which is the only place the boundary, the
+//     fail-closed arms, the input order and the laundering SEQUENCE are
+//     observable at all.
+//
+// SUBSTRATE FINDING, MEASURED BY THE rb-83 PLAN RED-TEAM (registered as
+// R-rb-83-SCANORDER). This file's own `stripped_for_scan` blanks STRING
+// literals BEFORE comments, so a bare double-quote character inside a slash-slash
+// comment opens a phantom string that swallows the real code after it — including
+// a same-name rebinding of `account` to the POST-cancel row placed above the
+// sweep, which would make the planner judge the wrong row while every positional
+// clause in this file still reads green. Every rb-83 positional clause therefore
+// reads a SAFE view built comments-first
+// (`strip_comments_keep_strings` then `strip_rust_strings` then `squash_ws`), and
+// the first clause is a POLARITY PRECONDITION that the cancel body reads
+// identically under both pipelines. The pre-existing rb-24 and m22-s3 clauses in
+// this file are NOT re-cut here; that is the registered residual.
+//
+// SCAN HYGIENE — the file header rule restated: every needle below is assembled
+// from `concat!` fragments, so this file carries no contiguous accessor call, no
+// contiguous write-verb chain and no contiguous cancel-time call site that a
+// whole-tree scanner could count as a real one. This section contains no block
+// comment, no raw string, and no bare double-quote character inside any comment.
+// ===========================================================================
+
+/// **ADR-0252 D3 (wiring)** — `cancel_account_deletion` declines the refused
+/// incoming offers as ONE depth-0 statement, after the AUTH-38 gate and before
+/// the status write, on a body whose whole prefix above that statement is frozen.
+///
+/// THE VIEW IS THE FIRST THING THIS TEST DECIDES. `[rb83/scan-polarity]` proves
+/// the cancel body reads the SAME under the safe comments-first pipeline and
+/// under this file's legacy strings-first `stripped_for_scan`. That equality is
+/// not decoration: the measured red-team payload is a pair of comments, the first
+/// ending in a bare double-quote and the second opening with one, with
+/// `let account = cancelled_deletion(account.clone());` between them. Under the
+/// legacy pipeline the quote pair reads as a string literal and the rebinding
+/// VANISHES from the scanned body, so the planner would be handed the post-cancel
+/// row — which admits every offer — while `[rb83/no-account-rebind]`,
+/// `[rb83/cancel-prefix-frozen]` and every rb-24 clause on this body stayed
+/// green. Under the safe view the comments are removed first and the rebinding is
+/// plainly there. Divergence between the two views IS the attack.
+///
+/// WHAT EACH LATER CLAUSE KILLS:
+///
+///   * `[rb83/sweep-statement]` — the whole statement, argument list included,
+///     exactly once, on the STRING-BLANKED view. Zero is the mutant this slice
+///     exists to kill (M1: the statement deleted, so a cancel launders the
+///     confederate's post-request offer straight back into a completable one).
+///     Counting on the STRING-BLANKED view also kills M13, a decoy literal
+///     carrying the statement text in place of the statement. It does NOT kill
+///     M11, a `#[cfg(test)]`-attributed statement — the needle still matches and
+///     the count still reads one; that mutant dies on the conditional-compilation
+///     census in `trading_tests.rs` and on the frozen prefix below, whose last
+///     byte would become a closing square bracket.
+///     The argument list is part of the needle because it is the whole
+///     behavioural claim: `&account` is the PRE-cancel row, `me` is the caller,
+///     and the inner call is the counterparty-column read.
+///   * `[rb83/sweep-depth0]` — every other clause here is POSITION-based and
+///     blind to reachability. A conditional sweep is a conditional decline: an
+///     always-false guard keeps the count, the ordering and the prefix intact
+///     while nothing is ever declined.
+///   * `[rb83/sweep-after-gate]` — M2: hoisted above the AUTH-38 gate the sweep
+///     also runs on the idempotent already-`Active` no-op path. It would delete
+///     nothing there today (an `Active` row admits every stamp, ADR-0252 D1), but
+///     the placement is what makes that a structural guarantee rather than a
+///     coincidence of the planner's polarity, and the second half of this clause
+///     pins the sweep below the gate's whole closing brace rather than merely
+///     below the gate CALL.
+///   * `[rb83/sweep-before-write]` — the sweep must judge the PRE-cancel row.
+///     Below the update, `account` has been moved into `cancelled_deletion` and
+///     every offer reads as admitted; the compiler refuses the borrow today, so
+///     this clause is what keeps the ordering pinned textually if the body is
+///     ever restructured around a clone.
+///   * `[rb83/no-account-rebind]` — M15, the payload above, in its plain form:
+///     any `let account` / `let mut account` inside this body re-points the row
+///     the planner judges while the statement text stays byte-identical.
+///   * `[rb83/no-clock-in-cancel]` — M8's accounts-side twin: a clock read in
+///     this body is the first move of any implementation that decides which
+///     offers to sweep from `now` rather than from the row's own request stamp.
+///   * `[rb83/no-return-between]` — M12: an early `return Ok(())` between the
+///     gate's closing brace and the sweep leaves the status write and the disarm
+///     unreached AND the sweep unrun, while every position-based clause here
+///     still passes.
+///   * `[rb83/cancel-prefix-frozen]` — the rb-79 shape, and the only clause that
+///     is blind to nothing above the statement: it closes the early-return class,
+///     a sender-keyed shadow (the native host's sender is the all-zero identity,
+///     so such a twin keeps every behavioural test in this slice green), a
+///     cfg-keyed constant consulted above the sweep, and a hoisted second sweep.
+///
+/// RE-DERIVATION CONTRACT: the statement and the frozen prefix come from
+/// ADR-0252 D3 and the reducer's specified guard order (JWT, lookup, PRV1-4
+/// terminal guard, AUTH-38 gate, sweep, status write, reaper disarm). If a
+/// legitimate refactor reds a clause, re-derive it from the ADR — never paste the
+/// current body in, which turns the strongest clause in this slice into a
+/// tautology.
+///
+/// RED AT HEAD BY ASSERTION: `[rb83/sweep-statement]` counts zero.
+#[test]
+fn rb83_cancel_declines_refused_offers_before_the_status_write() {
+    // The SAFE view: comments removed FIRST (string-aware, so a URL's
+    // slash-slash is not mistaken for a comment), then string payloads blanked,
+    // then all whitespace squashed.
+    let safe_view = squash_ws(&strip_rust_strings(&strip_comments_keep_strings(
+        ACCOUNTS_RS,
+    )));
+    // This file's pre-existing pipeline, kept ONLY to prove the two agree.
+    let legacy_view = stripped_for_scan(ACCOUNTS_RS);
+
+    let decl = rb24_nd_cancel_decl();
+    let body = extract_squashed_fn_body(&safe_view, &decl).unwrap_or_else(|| {
+        panic!(
+            "[rb83/scope] fn cancel_account_deletion was not found in accounts.rs over the \
+             comments-first safe view (marker {decl:?}), or its body is not brace-balanced. \
+             Every clause below would have no scope and would pass VACUOUSLY, so this is a \
+             hard failure rather than a skip."
+        )
+    });
+    let legacy_body = extract_squashed_fn_body(&legacy_view, &decl).unwrap_or_else(|| {
+        panic!(
+            "[rb83/scope] fn cancel_account_deletion was not found in accounts.rs over this \
+             file's legacy strings-first view (marker {decl:?}). A body that is readable under \
+             one pipeline and not the other is already the polarity divergence the clause \
+             below exists to detect — fail LOUD."
+        )
+    });
+
+    // --- [rb83/scan-polarity] the precondition every later clause rests on ---
+    assert_eq!(
+        body, legacy_body,
+        "[rb83/scan-polarity] the cancel body reads DIFFERENTLY under the two strip \
+         pipelines. The safe view removes comments first; this file's legacy \
+         `stripped_for_scan` blanks STRING literals first, so a bare double-quote character \
+         inside a slash-slash comment opens a phantom string that swallows every byte of real \
+         code until the next one. The MEASURED red-team payload is exactly that: a comment \
+         ending in a quote, a same-name rebinding of `account` to the post-cancel row, and a \
+         comment opening with a quote — which makes the planner judge a row that admits every \
+         offer while the legacy view reports a body with no rebinding in it at all. This \
+         clause is a PRECONDITION, not a behaviour: if it fires, do not relax it, find the \
+         quote. Safe view body: {body:?}. Legacy view body: {legacy_body:?}"
+    );
+
+    // --- [rb83/sweep-statement] the whole statement, exactly once -------------
+    // Assembled from fragments so this test file never carries a contiguous
+    // cancel-time call site a whole-tree scanner could count as a real one.
+    let sweep = [
+        concat!("crate::trading::decline_", "offers(ctx,"),
+        concat!("&plan_declines_", "at_cancel(&account,"),
+        concat!("&crate::trading::open_offers_", "addressed_to(ctx,me)),);"),
+    ]
+    .concat();
+    let n_sweep = m22_count_occurrences(body, sweep.as_str());
+    assert_eq!(
+        n_sweep, 1,
+        "[rb83/sweep-statement] cancel_account_deletion must carry the decline sweep EXACTLY \
+         once, as the whole statement `{sweep}` in the squashed, string-blanked view; found \
+         {n_sweep}. \
+         RED AT HEAD: zero — a cancel flips the row to Active and leaves every offer the rb-47 \
+         gate refused standing, so the confederate's post-request offer becomes acceptable the \
+         instant the caller is momentarily Active (residual R-rb-47-CANCELLAUNDER, Flow B). \
+         THE ARGUMENT LIST IS PART OF THE PIN: `&account` is the PRE-cancel row (judged after \
+         the flip every offer reads as admitted and the sweep is a no-op), `me` is the caller \
+         whose counterparty column is read, and the trailing comma is the one rustfmt inserts \
+         when it breaks the call vertically. \
+         The count runs on the STRING-BLANKED view, so a decoy literal carrying this text \
+         cannot satisfy it and a commented-out statement reads as absent. TWO is a second, \
+         unreviewed sweep. Body was: {body:?}"
+    );
+    let at_stmt = idx(body, sweep.as_str());
+
+    // --- [rb83/sweep-depth0] reachability -------------------------------------
+    assert_eq!(
+        rb24_brace_depth(&body[..at_stmt]),
+        0,
+        "[rb83/sweep-depth0] the decline sweep sits inside a nested block of \
+         cancel_account_deletion rather than at the top level of the fn body. Every other \
+         clause in this test reasons about POSITION and none about REACHABILITY: an \
+         always-false guard around this statement keeps the count, the ordering clauses and \
+         the frozen prefix exactly as they are while not one offer is ever declined. A \
+         conditional sweep is a conditional decline."
+    );
+
+    // --- [rb83/sweep-after-gate] behind the AUTH-38 idempotency gate ----------
+    let gate_call = concat!("needs_cancel", "_write(");
+    let at_gate = idx(body, gate_call);
+    assert!(
+        at_gate < at_stmt,
+        "[rb83/sweep-after-gate] the decline sweep (offset {at_stmt}) must run AFTER the \
+         AUTH-38 idempotency gate (offset {at_gate}). Ahead of the gate it also runs on the \
+         already-Active no-op path, where the caller has nothing the rb-47 gate ever refused. \
+         The placement is what makes the no-op path structurally sweep-free rather than \
+         sweep-free only because an Active row happens to admit every stamp (ADR-0252 D1) — \
+         two independent reasons is the design, not one."
+    );
+    // The gate BLOCK, transcribed independently of the frozen prefix below (a
+    // literal built from its own needle helper moves with it and proves nothing).
+    let gate_block = concat!("if!needs_cancel_wri", "te(account.status){returnOk(());}");
+    let n_gate_block = m22_count_occurrences(body, gate_block);
+    assert_eq!(
+        n_gate_block, 1,
+        "[rb83/sweep-after-gate] cancel_account_deletion must carry the AUTH-38 gate exactly \
+         once, as the whole block `{gate_block}`; found {n_gate_block}. The region clause below \
+         measures from this block's CLOSING BRACE, so a gate the pin cannot locate leaves the \
+         no-return region undefined and every reachability claim here vacuous."
+    );
+    let gate_close = idx(body, gate_block) + gate_block.len();
+    assert!(
+        gate_close <= at_stmt,
+        "[rb83/sweep-after-gate] the decline sweep (offset {at_stmt}) does not sit below the \
+         AUTH-38 gate's whole closing brace (which ends at offset {gate_close}). The clause \
+         above pins the sweep after the gate CALL, which is also satisfied by a sweep placed \
+         INSIDE the gate's early-return branch — where it runs only on the path that writes \
+         nothing."
+    );
+
+    // --- [rb83/sweep-before-write] the PRE-cancel row is what gets judged -----
+    let update = concat!(".upd", "ate(cancelled_deletion(account))");
+    let at_update = idx(body, update);
+    assert!(
+        at_stmt < at_update,
+        "[rb83/sweep-before-write] the decline sweep (offset {at_stmt}) must run BEFORE the \
+         status write (offset {at_update}). The planner judges the row it is handed: after the \
+         flip to Active with the request stamp cleared, `opened_commitment_is_refused` admits \
+         EVERY offer and the sweep declines nothing at all — a mutant that reads correct, \
+         compiles once a clone is introduced, and closes no residual. The compiler enforces \
+         this today (the row is moved into the constructor); this clause is what keeps the \
+         order pinned if the body is ever restructured around a clone."
+    );
+
+    // --- [rb83/no-account-rebind] the measured payload, in its plain form -----
+    for needle in ["letaccount", "letmutaccount"] {
+        let n = m22_count_occurrences(body, needle);
+        assert_eq!(
+            n, 0,
+            "[rb83/no-account-rebind] cancel_account_deletion rebinds the account row \
+             (`{needle}` occurs {n} time(s)). The sweep's whole correctness is WHICH row the \
+             planner is handed: a same-name rebinding to `cancelled_deletion(account.clone())` \
+             above the statement leaves the statement text byte-identical, compiles, is \
+             clippy-clean, and hands the planner a row that admits every offer. This is the \
+             red-team payload whose HIDDEN form the polarity clause at the top of this test \
+             owns; this clause owns the form that is not hidden at all."
+        );
+    }
+
+    // --- [rb83/no-clock-in-cancel] no second source of truth for the stamp ----
+    let clock = concat!("now", "_ms(");
+    let n_clock = m22_count_occurrences(body, clock);
+    assert_eq!(
+        n_clock, 0,
+        "[rb83/no-clock-in-cancel] cancel_account_deletion reads the transaction clock \
+         {n_clock} time(s) and must read it ZERO times. The sweep's only decision input is the \
+         pre-cancel row's own `deletion_requested_at_ms`, delegated through the rb-47 SSOT; a \
+         clock read in this body is the first move of every implementation that decides which \
+         offers to decline from `now` instead — which refuses offers that PREDATE the request \
+         (the PRV1-10 break) or none at all, depending on the comparison. The cancel path has \
+         never needed a clock: it clears the stamp rather than setting one."
+    );
+
+    // --- [rb83/no-return-between] reachability of the sweep itself ------------
+    let region = &body[gate_close..at_stmt];
+    assert!(
+        !rb24_has_return_token(region),
+        "[rb83/no-return-between] a `return` token sits between the AUTH-38 gate's closing \
+         brace and the decline sweep. Every other clause here reasons about POSITION and none \
+         about REACHABILITY, so an early `return Ok(());` there reports a successful cancel to \
+         the client while the sweep, the status write and the rb-24 reaper disarm all fail to \
+         run — the account stays PendingDeletion with its cascade still armed AND the \
+         laundering offer still standing. Region text: {region:?}"
+    );
+
+    // --- [rb83/cancel-prefix-frozen] the whole prefix, byte for byte ----------
+    // Derived by hand from ADR-0252 D3 and the reducer's specified guard order.
+    // String PAYLOADS and their delimiters are blanked by this file's stripper,
+    // so both reject reasons read as nothing at all between the commas.
+    let expected_prefix = [
+        "letme=ctx.sender();",
+        "if!ctx.sender_auth().has_jwt(){returnreject(,me,);}",
+        concat!(
+            "letSome(account)=",
+            "ctx",
+            ".db.acc",
+            "ount().identity().find(me)else{returnreject(,me,);};"
+        ),
+        concat!(
+            "ifaccount_has_terminal_",
+            "marker(&account){returnreject(,me,REJECT_ALREADY_DELETED);}"
+        ),
+        concat!(
+            "if!needs_cancel",
+            "_write(account.status){return",
+            "Ok(());}"
+        ),
+    ]
+    .concat();
+    let prefix = &body[..at_stmt];
+    assert_eq!(
+        prefix,
+        expected_prefix.as_str(),
+        "[rb83/cancel-prefix-frozen] everything ABOVE the decline sweep in \
+         cancel_account_deletion must be EXACTLY the specified guard prefix. \
+         Got: {prefix:?}. Expected: {expected_prefix:?}. \
+         This is the SOLE clause that is blind to nothing above the statement, and it closes a \
+         family every count-, depth- and ordering-based clause here admits: an early \
+         `return Ok(())` on any condition rustc cannot constant-fold; a SENDER-KEYED twin (the \
+         rb-41 native host's sender is the all-zero identity, so such a twin keeps every \
+         behavioural test in this slice green); a file-scope conditional constant consulted \
+         above the sweep; a hoisted SECOND sweep that runs on the pre-gate path; and a macro \
+         divert. It also pins that the PRV1-4 terminal guard still PRECEDES the AUTH-38 gate \
+         (m22-s3, ADR-0225), which is what keeps a terminal row off this write path entirely. \
+         RE-DERIVATION CONTRACT: this literal comes from ADR-0252 D3. If a legitimate refactor \
+         reds it, re-derive it from the ADR and re-argue the placement — NEVER paste the \
+         current body in, which turns the strongest clause in this slice into a tautology."
+    );
+}
+
+/// **ADR-0252 D1 (pure planner)** — `plan_declines_at_cancel` returns, in INPUT
+/// ORDER, the ids of exactly the offers the rb-47 SSOT refuses for the row it is
+/// handed.
+///
+/// The planner is the only place the sweep's decision is observable: the cancel
+/// reducer cannot be executed to its write under the rb-41 native host (every
+/// write syscall aborts the process), so the behavioural half of this criterion
+/// lives here and the wiring half lives in the source pins beside it.
+///
+/// FIVE ACCOUNT SHAPES, built from the shipped constructors wherever the module
+/// can produce them, so this test can never assemble a state `accounts.rs` itself
+/// cannot reach. The two ILLEGAL shapes are struct-update literals because
+/// `account_state_is_legal` forbids them — but only under a `debug_assert`, so
+/// the shipped wasm can hold them and every marker call site in `accounts.rs` is
+/// deliberately fail-closed on them.
+///
+/// THE REQUEST STAMP IS NON-ZERO AND THE OFFER STAMPS STRADDLE IT, including two
+/// negatives and both `i64` extremes: at a request stamp of zero an `unwrap_or(0)`
+/// mis-spelling of the fail-closed arm is byte-invisible, because every wrong
+/// implementation agrees with the right one.
+///
+/// THE IDS ARE DELIBERATELY OUT OF ASCENDING ORDER (`17, 9, 7, 13, 3, 11`), so
+/// the expected output `[17, 7, 3]` is strictly DESCENDING. A planner that sorts,
+/// dedups or collects into a set returns `[3, 7, 17]` and reds only
+/// `[rb83/table-order]`.
+///
+/// WHAT EACH CLAUSE KILLS:
+///
+///   * `[rb83/table-multi]` — M6: a planner that returns the FIRST refused id
+///     (`.find(..).into_iter()`, `.next()`, `.take(1)`) declines one offer and
+///     leaves every other confederate's standing. The count is asserted before
+///     the equality so a failure attributes.
+///   * `[rb83/table-boundary]` — M4 and M5: the id stamped at EXACTLY the request
+///     millisecond must be swept (ADR-0237 D1's boundary is inclusive; a
+///     strict-greater-than flip drops it and nothing else), and the id stamped
+///     one millisecond earlier must NOT be (that is PRV1-10, and a blanket sweep
+///     that ignores the stamp is the break this slice exists to avoid).
+///   * `[rb83/table-order]` — the full vector, in input order.
+///   * `[rb83/table-empty]` — a planner handed no offers must return no ids; this
+///     is also what makes `[rb83/decline-empty]` in `trading_tests.rs` a
+///     reachable state rather than a hypothetical.
+///   * `[rb83/table-fail-closed]` — the illegal stamp-less `PendingDeletion`
+///     shape and the terminal shape refuse at EVERY stamp, `i64::MIN` included,
+///     so every incoming offer is swept. `None => false` admits everything for
+///     such a row; `unwrap_or(0)` admits exactly the negative stamps. Both
+///     mis-spellings are byte-invisible to every source pin.
+///   * `[rb83/table-active-admits]` — the ordinary player. An `Active` row is
+///     outside the para-4.7 gate at every stamp including `i64::MAX`, so the
+///     sweep can never fire on the AUTH-38 no-op path: an inverted polarity here
+///     would delete every incoming offer of every player who ever cancels.
+///   * `[rb83/table-laundering]` — the residual, as data. The SAME offers judged
+///     against the pre-cancel row return ids and judged against
+///     `cancelled_deletion(row)` return none. That pair is why the sweep must be
+///     sequenced BEFORE the status write, and it is the behavioural twin of
+///     `[rb83/sweep-before-write]` one test above.
+///
+/// RED AT HEAD BY NON-COMPILATION: `accounts::plan_declines_at_cancel` does not
+/// exist yet, and that compile failure is the red state for this whole slice.
+#[test]
+fn rb83_plan_declines_at_cancel_truth_table() {
+    let req: i64 = 1_700_000_000_000;
+    let me = ident(1);
+
+    let active = crate::accounts::new_account_row(me, "rb83-caller".to_string(), 42_000);
+    let pending = crate::accounts::requested_deletion(active.clone(), req);
+    let terminal = crate::accounts::terminal_account(pending.clone(), req + 1_000);
+    let cancelled = crate::accounts::cancelled_deletion(pending.clone());
+
+    // Illegal shapes: unreachable through the constructors BY CONSTRUCTION (their
+    // debug_asserts forbid them), so a struct-update literal is the only way to
+    // observe the fail-closed arms the shipped wasm still has to answer for.
+    let illegal_marker = crate::schema::Account {
+        terminal_at_ms: Some(5),
+        ..active.clone()
+    };
+    let illegal_no_stamp = crate::schema::Account {
+        status: crate::schema::AccountStatus::PendingDeletion,
+        ..active.clone()
+    };
+
+    // (trade_id, created_at_ms). Ids deliberately unsorted; stamps straddle the
+    // request instant and reach both i64 extremes and two negatives.
+    let offers: [(u64, i64); 6] = [
+        (17, i64::MAX),
+        (9, req - 1),
+        (7, req + 1),
+        (13, i64::MIN),
+        (3, req),
+        (11, -1),
+    ];
+    let every_id: Vec<u64> = vec![17, 9, 7, 13, 3, 11];
+
+    // --- the mid-grace row: the criterion itself -----------------------------
+    let swept = crate::accounts::plan_declines_at_cancel(&pending, &offers);
+
+    assert_eq!(
+        swept.len(),
+        3,
+        "[rb83/table-multi] the planner returned {swept:?} for a mid-grace row requested at \
+         {req}; exactly THREE of the six offers are stamped at or after that instant, so it \
+         must return three ids. ONE means the planner stops at the first refused offer \
+         (`.find(..)`, `.next()`, `.take(1)` all compile and read correctly) — the cancel then \
+         declines one confederate's offer and leaves every other one standing, which closes \
+         nothing. SIX means the stamp is not consulted at all: a blanket sweep destroys the \
+         PREDATING offers PRV1-10 protects."
+    );
+    assert!(
+        swept.contains(&3) && !swept.contains(&9),
+        "[rb83/table-boundary] the planner returned {swept:?} for a mid-grace row requested at \
+         {req}. Offer 3 is stamped at EXACTLY the request millisecond and MUST be swept: both \
+         stamps come from the same ms-floored transaction clock, so an offer created in the \
+         request millisecond does not PREDATE the request, and the attack this closes is \
+         `request deletion, then have a confederate propose immediately` (ADR-0237 D1, \
+         inherited verbatim by ADR-0252 D1 — never re-derived). A strict-greater-than flip in \
+         the SSOT drops offer 3 and nothing else in this suite. Offer 9 is stamped one \
+         millisecond EARLIER and must NOT be swept: that is the predating commitment PRV1-10 \
+         keeps completable, and sweeping it is the spec break this whole design avoids."
+    );
+    assert_eq!(
+        swept,
+        vec![17u64, 7, 3],
+        "[rb83/table-order] the planner returned {swept:?} and must return the refused ids in \
+         INPUT ORDER, which for this fixture is the strictly DESCENDING `[17, 7, 3]`. The \
+         input ids are deliberately unsorted so this clause discriminates: a planner that \
+         sorts, dedups, or collects through a set returns `[3, 7, 17]` and satisfies every \
+         other clause in this test. Order is behaviour here, not tidiness — `decline_offers` \
+         disarms and deletes in the order it is handed, and a planner free to reorder is a \
+         planner free to drop."
+    );
+
+    // --- the empty input ------------------------------------------------------
+    assert_eq!(
+        crate::accounts::plan_declines_at_cancel(&pending, &[]),
+        Vec::<u64>::new(),
+        "[rb83/table-empty] the planner must return NO ids when handed no offers, whatever the \
+         row's state. A planner that fabricates an id from the row (its own identity read as a \
+         number, a sentinel, a default) hands `decline_offers` a trade_id nobody proposed, and \
+         the delete that follows is a write nothing in this slice reviewed. This is also the \
+         state `[rb83/decline-empty]` in trading_tests.rs executes against the live host."
+    );
+
+    // --- the fail-closed shapes ----------------------------------------------
+    for (label, account, why) in [
+        (
+            "ILLEGAL PendingDeletion with no request stamp",
+            &illegal_no_stamp,
+            "the SSOT spells the missing-stamp case as an explicit match arm returning TRUE \
+             precisely so the gated-but-stamp-less row refuses at every instant. `None => \
+             false` admits every offer for such a row, and `unwrap_or(0)` admits exactly the \
+             NEGATIVE stamps — which is why this fixture carries `i64::MIN` and minus one as \
+             well as the boundary",
+        ),
+        (
+            "legal terminal row (PendingDeletion plus the marker)",
+            &terminal,
+            "the terminal marker is tested FIRST and OUTSIDE the stamp comparison: an \
+             already-erased account is refused every commitment however old, so every incoming \
+             offer it still names is swept. Dropping that leading clause admits every offer \
+             older than the row's own request stamp",
+        ),
+        (
+            "ILLEGAL Active-plus-marker row (a resurrected tombstone)",
+            &illegal_marker,
+            "`account_state_is_legal` forbids this shape but only under a `debug_assert`, so \
+             the shipped wasm can hold it; every marker call site in accounts.rs is fail-closed \
+             on it deliberately, and this planner inherits that by delegating rather than \
+             re-deriving",
+        ),
+    ] {
+        let got = crate::accounts::plan_declines_at_cancel(account, &offers);
+        assert_eq!(
+            got, every_id,
+            "[rb83/table-fail-closed] the planner returned {got:?} for the {label}; it must \
+             sweep EVERY offer, in input order — {why}. This is the fail-closed direction by \
+             DELEGATION: the planner never inspects the stamp itself, so widening or narrowing \
+             the SSOT moves this row with it (ADR-0225), and any answer here other than the \
+             whole list means the planner grew a decision of its own."
+        );
+    }
+
+    // --- the ordinary player --------------------------------------------------
+    let admitted = crate::accounts::plan_declines_at_cancel(&active, &offers);
+    assert_eq!(
+        admitted,
+        Vec::<u64>::new(),
+        "[rb83/table-active-admits] the planner returned {admitted:?} for an `Active` row that \
+         never requested deletion; it must return NOTHING, even for the offer stamped at \
+         `i64::MAX`. An Active account is outside the para-4.7 gate at every stamp, so this is \
+         the SECOND reason (after the statement's placement behind the AUTH-38 gate) that the \
+         sweep can never fire on the idempotent no-op path. An inverted polarity here deletes \
+         every incoming trade offer of every player who cancels a deletion — a silent \
+         data-destroying outage that every source pin in this slice reports as correctly \
+         wired, because the call text is byte-identical whichever way the decision runs."
+    );
+
+    // --- the residual, as data ------------------------------------------------
+    let before = crate::accounts::plan_declines_at_cancel(&pending, &offers);
+    let after = crate::accounts::plan_declines_at_cancel(&cancelled, &offers);
+    assert!(
+        !before.is_empty(),
+        "[rb83/table-laundering] the same offers judged against the PRE-cancel row returned \
+         {before:?}; they must return the post-request ids. With nothing to sweep before the \
+         write, the pair below is vacuous and proves nothing about sequencing."
+    );
+    assert_eq!(
+        after,
+        Vec::<u64>::new(),
+        "[rb83/table-laundering] the SAME offers judged against `cancelled_deletion(row)` \
+         returned {after:?} and must return NOTHING — this pair IS residual \
+         R-rb-47-CANCELLAUNDER written as data. Before the write the row still carries \
+         `PendingDeletion` and its request stamp, so the post-request offers are refused and \
+         swept; after the write the row is `Active` with the stamp cleared (AUTH-29 / PRV1-3, \
+         which this slice does NOT change), so every one of those offers reads as admitted and \
+         a sweep placed there declines nothing at all. That is precisely why the read and the \
+         plan must both precede the status write, and it is the behavioural twin of \
+         `[rb83/sweep-before-write]`. Judged before: {before:?}. Judged after: {after:?}"
+    );
+}
