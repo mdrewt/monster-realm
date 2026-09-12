@@ -21,12 +21,12 @@ to rb-79 on 2026-09-11.
 
 **Measured before planning (memory `promoted-residual-may-be-already-closed`): the residual was half
 closed and half open.** rb-47 (ADR-0237, PR #429) ported the first two parts —
-`rb47_propose_trade_gate_has_no_attribute_or_cfg_escape` (`trading_tests.rs:4731-4820`: the character
+`rb47_propose_trade_gate_has_no_attribute_or_cfg_escape` (`trading_tests.rs:4730-4819`: the character
 before the gate needle is `;` or `}`, zero `#[` and zero `cfg!(` in the reducer body, zero `#![cfg` in the
 file) and `rb47_respond_trade_carries_the_offer_age_gate`'s file-wide `#[cfg` == 1 count
-(`trading_tests.rs:4549-4560`). Executed at be3ff53 before any rb-79 test existed
+(`trading_tests.rs:4549-4559`). Executed at be3ff53 before any rb-79 test existed
 (`memory/projects/gates/rb-79.red-before.md` §1, harness repo): `#[cfg(test)]` and
-`#[cfg(debug_assertions)]` on the statement are KILLED by those two tests. ADR-0237:202-203 therefore
+`#[cfg(debug_assertions)]` on the statement are KILLED by those two tests. ADR-0237:203-204 (shifted one line by the reciprocal header line this ADR adds) therefore
 says rb-47 closed the residual, and ADR-0248 D6 (:286-289) says rb-79 "owns that class" — both are
 half-right, and this ADR corrects both (D6 below). The residual row itself was never closed
 administratively, which is why the aging rule promoted it.
@@ -47,7 +47,7 @@ placed directly above `trading.rs:252` are CI-clean at be3ff53 — `cargo fmt --
 | M10 | `let me = crate::WILD_IDENTITY;` | no `return` at all; every later check answers about the wild sentinel |
 
 The mechanism is the one ADR-0236 and ADR-0248 record: `ReducerContext::__dummy()` answers `ctx.sender()`
-with the all-zero identity, which is `crate::WILD_IDENTITY` (`lib.rs:89`), so a sender-keyed
+with the all-zero identity, which is `crate::WILD_IDENTITY` (`lib.rs:95`), so a sender-keyed
 predecessor routes every real player around the gate while the native host still reaches it, and every
 executed test keeps observing the gate fire. Two controls stayed green as they must: a comment above the
 gate, and the same early `Ok` BELOW the gate (a deleting caller never reaches it). ADR-0248 §Residuals
@@ -106,8 +106,10 @@ Three defences against the "regenerate the pin from the body" tautology (memorie
   blank-literal constructor rather than `m22s5_blank_string_literal`;
 - a RUNTIME TIE asserted on the literal itself with a third set of splits: the cap needle exactly twice,
   the joined-lookup needle exactly once, the sender read exactly once, the caller binding `letme=`
-  exactly once, `crate::` zero times, `return` zero times. The last three are what a lockstep
-  regeneration carrying M3-M8 (a `return`) or M10 (a `crate::` path) cannot satisfy;
+  exactly once, `crate::` zero times, `return` zero times, and `?;` exactly three times (the statement
+  count, which a bare-named fallible helper call — invisible to every other tie — would have to change).
+  The last four are what a lockstep regeneration carrying M3-M8 (a `return`), M10 (a `crate::` path) or
+  a bare helper call cannot satisfy;
 - a RE-DERIVATION CONTRACT in the failure message: a red `[rb79/prefix]` means a statement moved above a
   security gate — re-derive from ADR-0166 D3 / ADR-0227 and re-argue the placement in an ADR; never
   paste the current body in, never relax to `starts_with`/`contains`.
@@ -140,26 +142,28 @@ harmless). `trading.rs` carries zero `/*` and zero `r#` today.
 ### D5 — The reviewer note is an in-place rewrite, not an insertion
 
 Forty `trading.rs:NNN` citations in `docs/` and the harness specs, and three of the six knowledge-bundle
-stamps (`#L439`, `#L490`, `#L765`), sit BELOW the gate; two of the citations (ADR-0248's `:252` and
-`:468`) are one day old. Inserting lines would manufacture the rb-74 defect class in files this slice
+stamps (`#L439`, `#L490`, `#L765`), sit BELOW the gate; ADR-0248's `:468`, plus its two `:252` pointers at the gate line itself, are
+one day old. Inserting lines would manufacture the rb-74 defect class in files this slice
 may not edit. So the existing Guard-1a comment block (`trading.rs:248-251`) plus the blank line above it
 (`:247`) is rewritten in place — the same line budget in, the same out, no line at or below `:252`
 moving; ledger X3 pins all six stamps. Exactly ONE line begins with the marker `// rb-79 (ADR-0249)`;
 the live test asserts that count and that the line sits strictly between the unique `pub fn
 propose_trade(` line and the unique gate line — ORDERING ONLY, never a line-distance window. Wording:
 the four existing claims kept in substance (fully-qualified path, `?;`, post-caps placement, caller-state
-preamble); no double quote, no `#[`, no `cfg!`, no comment markers, no `r#`, no apostrophe, and no
+preamble); no double quote, no `#[`, no `cfg!`, no block-comment markers, no `r#`, no apostrophe, and no
 contiguous production needle any raw-text scan in the crate reads. Comments are stripped before every
 clause, so the note cannot affect the pins it describes.
 
 ### D6 — Relationships, and the two corrections
 
 `**Extends:** ADR-0236` (the residual family; reciprocal `Extended-by:` appended). `**Amends:** ADR-0237`
-with the reciprocal `**Amended-by:**` header line, because its Consequences (`:202-203`) state that rb-47
+with the reciprocal `**Amended-by:**` header line, because its Consequences (`:203-204`, shifted +1 by the reciprocal header line this ADR adds) state that rb-47
 closed R-rb-46-TRADINGCFG: it closed the attribute and statement-boundary half, and this ADR closes the
 rest. ADR-0248 D6 (`:286-289`) states the converse error — that rb-79 owns the `#[cfg` / statement-boundary
 class for `trading.rs` — while the measured M1/M2 rows show rb-47 already owns it; that sentence is in
-an ADR outside this slice's docs scope and is registered as R-rb-79-ADR0248D6 rather than edited here.
+an ADR outside this slice's docs scope; the same attribution recurs in a code comment at
+`server-module/src/guards_tests.rs:5220`, also outside the declared touches — both carriers are registered
+as R-rb-79-ADR0248D6 rather than edited here.
 
 ### D7 — Anti-decisions (each measured or argued, not assumed)
 
@@ -192,17 +196,36 @@ an ADR outside this slice's docs scope and is registered as R-rb-79-ADR0248D6 ra
 ## Consequences
 
 - The bound: a source scan of one prefix proves what the file SPELLS above the gate, not what runs.
-  Classes already owned elsewhere and out of scope here: a predecessor BELOW the gate (control C2;
-  m22-s5's gate-before-insert ordering), a macro in the prefix (ADR-0248), an attribute on the statement
-  or a `#[cfg` anywhere in the file (rb-47), a `lib.rs` module swap (ADR-0247), R-rb-78-NESTEDMOD,
-  R-rb-78-PROCMACRO (a proc-macro attribute could inject a return into the compiled body while the
-  source stays frozen — needs a manifest edit, the CARGOSWAP class), R-rb-77-CFGROSTER.
+  Classes already owned elsewhere and out of scope here: a macro in the prefix (ADR-0248), an attribute
+  on the statement or a `#[cfg` anywhere in the file (rb-47), a `lib.rs` module swap (ADR-0247),
+  R-rb-78-NESTEDMOD, R-rb-78-PROCMACRO (a proc-macro attribute could inject a return into the compiled
+  body while the source stays frozen — needs a manifest edit, the CARGOSWAP class), R-rb-77-CFGROSTER;
+  and the gate's own BODY, about which the prefix says nothing — owned by
+  `m22s5_gate_delegates_fused_and_unconditional` and `m22s5_deletion_gate_truth_table` in `guards_tests.rs`.
+- NOT owned by anything, admitted on purpose as control C2 and registered as **R-rb-79-BELOWGATE**
+  (backlog, HIGH): a predecessor BELOW the gate. `m22s5_gate_precedes_first_write_in_every_gated_reducer`
+  proves only that the gate precedes the escrow write, so a below-gate sender-keyed delegation to an
+  ungated helper that performs its own insert keeps every pin green — the gate statement, its `?`, its
+  depth, the three m22-s5 anchors, this slice's insert control — while routing every real caller past
+  ownership (`build_cards`), self-trade, one-active-offer, `validate_proposal`, both balance-net-of-escrow
+  ladders and the battle interlock. The construct is measured row M8, one statement lower; found by the
+  reducer-security auditor of this slice. Candidate remedy, in a slice that owns the class: freeze the
+  region from the body start to the first insert, or pin the statement roster between gate and insert.
 - Inherent to every frozen pin in this crate, reviewer-checklist class under ADR-0224: a lockstep edit
   of the literal in the test AND the body in the source is visible only in the PR diff, and editing a
-  gating test to fit a change is what the split-ownership rule forbids.
+  gating test to fit a change is what the split-ownership rule forbids. In the same class: the runtime
+  tie and the insert control are live-test-only assertions with no fixture behind them (the artifact
+  red-team measured that deleting a tie row or inverting the insert control prints the same green
+  summary); they are guarded by the verifier's diff review, and the register's T1 row covers the note,
+  not the tie.
 - Accepted friction: a new statement above this gate must re-derive the literal and argue an ADR.
-- Residual registered: **R-rb-79-ADR0248D6** (backlog, LOW — the stale attribution sentence at
-  ADR-0248 `:286-289`).
+- Residuals registered (backlog): **R-rb-79-BELOWGATE** (HIGH, above); **R-rb-79-ADR0248D6** (LOW — the
+  stale attribution at ADR-0248 `:286-289` and its code-comment twin at `guards_tests.rs:5220`);
+  **R-rb-79-LIBRS89** (LOW — three pre-existing citations place `WILD_IDENTITY` at `lib.rs:89`
+  (`rb73_session_tests.rs:268`, `:476`, `accounts_tests.rs:20177`); it is declared at `lib.rs:95`);
+  **R-rb-79-XFILEINSERT** (LOW — nothing pins crate-wide that `trade_offer().insert(` occurs exactly once
+  (`trading.rs:408` today); every trading census is `trading.rs`-scoped, so a new reducer in a third file
+  that escrows a trade is outside all of them).
 - Touches beyond the declared `trading.rs` + `trading_tests.rs`: this ADR; one reciprocal header line
   each in `docs/adr/0236-*.md` and `docs/adr/0237-*.md`; the generated `docs/adr/DIGEST.md`; one
   `ARCHITECTURE.md` paragraph; the harness-side ledger, plan memo, red-before record and register runner.
