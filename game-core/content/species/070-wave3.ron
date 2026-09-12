@@ -14,8 +14,8 @@
 // a LINE identity: a special glass cannon and a special wall. The type chart
 // forces the split — Light and Dark are mutually super-effective with no resist
 // either way, so a Light line reads glassy against the doubled Dark roster
-// unless its bulk carries it; Electric resists nothing but its own mirror, so
-// it has to win before it is hit.
+// unless its bulk carries it; Electric resists only Water and its own mirror,
+// so it has to win before it is hit.
 //
 // These are base forms with NO encounter row: wild placement and level/weight
 // banding are slice rw3c. A species absent from every encounter table is valid

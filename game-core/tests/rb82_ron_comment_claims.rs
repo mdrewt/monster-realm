@@ -108,7 +108,7 @@ fn comment_sentences(src: &str) -> Vec<String> {
     sentences
 }
 
-fn flush_run<'a>(run: &mut Vec<&'a str>, out: &mut Vec<String>) {
+fn flush_run(run: &mut Vec<&str>, out: &mut Vec<String>) {
     if run.is_empty() {
         return;
     }
