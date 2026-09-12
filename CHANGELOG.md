@@ -246,6 +246,13 @@
 - PRV1-1 ticking deletion-grace countdown — pure privacyBanner label + main.ts frame-tick HUD reading the wasm grace (closes R-m22-s8-X9) (#432)
 - PRV1-3/PRV1-4 privacy surface — the 17th overlay wires delete/cancel/export to conn.reducers and renders the distinct terminal notice (closes R-m22-s8-X10) (#435)
 - PRV1-11/12/13 live export transport — my_export_bundle joins the subscribe array, assembles on the batch edge, and ships as a downloadable file (closes R-m22-s8-X11) (#436)
+- Prove enum-roster totality at content-sync time from the SpacetimeType derive (closes R-m23-s8-postmerge) (#439)
+- Render skill affinity as a persistent visible label, not a hover-only title (#441)
+- Give the canvas sprite's action a monochrome glyph cue, not colour alone (#442)
+- Hash the whole status tag, so fallback badge collisions stop being systematic (#443)
+- Cue the battle card roles by border style, not by hue alone (#444)
+- The deletion cascade and the data export emit one terminal observability line carrying the purge count they discarded (ADR-0243, closes R-rb-40-CASCADE) (#449)
+- A Grafana panel and recording rule consume evt=guest_claim_export_purge (closes R-rb-40-DASH) (#450)
 
 ### Fixes
 
@@ -331,6 +338,25 @@
 - Four stale doc/comment citations retargeted onto landmarks (M-postgate-eighteenth-review-residuals) (#427)
 - Comment-truth micro-sweep — retract the overlayA11y "share ONE root" claim and drop the stale playtest-report EXPECTED RED qualifiers (M-postgate-seventeenth-review-residuals) (#431)
 - Frame-loop errors reach the error overlay/ring and the F9 bundle — tagged, consecutive-deduped, re-arm intact (M-postgate-seventeenth-review-residuals) (#437)
+- Retarget ADR-0206's drifted main.ts citations onto stable landmarks (closes R-rb36-ADR0206CITE) (#445)
+- Port privacy_tests.rs's write attribution onto ADR-0234's rooted receiver-chain walk (closes R-rb-39-PRIVACY-LOCAL-PORT) (#446)
+- Retarget overlayA11yWiring's drifted M12d citation and retire its meta-citation (closes R-rb36-WIRINGCITE) (#447)
+- Retarget main.a11yFocus.test.ts's drifted citation and its fabricated render(null) call (closes R-rb36-FOCUSCITE) (#448)
+- Retarget ADR-0220's stale purge_export_bundles signature onto declaration-shaped citations, gated by an ADR-to-source correspondence tooth (closes R-rb-40-ADR0220) (#451)
+- Enforce A11Y-12 by a computed-cascade differential oracle, not by matching '#' (ADR-0244, closes R-m23-s2-X3) (#452)
+- Correct ADR-0230's PRV1-17/PRV1-20 evidence chain onto declaration-shaped citations, gated by a document↔source correspondence oracle (closes R-rb-40-ADR0230, R-rb-65-ADR0230-PRV120) (#453)
+- Model Extends/Extended-by in adr-digest — dangling checks + reverse-only reciprocity, with forward reciprocity refused on measured grounds (ADR-0104 amendment, closes R-rb-42-X10) (#454)
+- Retarget docs/m8.5c-plan.md's AGENTS.md citation onto the **Done =** landmark, gated by a re-derived line number (closes R-18r-b-B1) (#455)
+- Correct ADR-0232 D2's disconnect mechanism onto on_disconnect, gated by an executed presence-row pin (closes R-18r-b-ADR0232MECH) (#456)
+- Gate disconnect side effects on the identity's last live connection — private player_session table maintained by the lifecycle hooks (ADR-0245, closes R-18r-b-DISCONNECTSELF) (#457)
+- Retarget 15 stale server-module/src/lib.rs doc citations onto dated live anchors, gated by a citation-correspondence oracle (closes R-18r-b-LIBRSCITES) (#458)
+- Annotate the five measured ADR next-free anomalies in ARCHITECTURE.md with re-derived brackets, gated by an ordinary Rust oracle (closes R-18r-b-LOGORDER) (#459)
+- Refuse a grass-path wild encounter for a mid-grace or terminal walker at the begin_encounter choke point via the first identity-parameterised deletion-gate member, contained by a crate-wide census (ADR-0246, closes R-rb-46-GRASSPATH) (#460)
+- Gate the crate-root module wiring and the guards seam's cfg-freedom with one ordinary Rust test — a target-selected wasm twin of guards is a review stop (ADR-0247, closes R-rb-46-LIBRSMOD) (#461)
+- Refuse every bang-macro invocation between a reducer's item boundary and a deletion-gate call with one ordinary Rust test — format!( is the one admitted spelling with exactly one legal spelling crate-wide (ADR-0248, closes R-rb-46-MACRORET) (#462)
+- Byte-freeze the statement prefix above propose_trade's deletion gate with one ordinary Rust test — the attribute half of R-rb-46-TRADINGCFG was already rb-47's; the seven measured macro-free early exits are the closed class (ADR-0249, closes R-rb-46-TRADINGCFG) (#463)
+- Reach the caller-only deletion gate into heal_party, talk, advance_dialogue and dev grant_bait with twelve ordinary Rust tests — the quest turn-in grants measured to live in talk, the remaining writers pinned open by census (ADR-0250, closes R-rb-46-ERASEWRITERS) (#464)
+- Pin the reducer rosters of pvp.rs, battle.rs, economy.rs and ranking.rs closed with one ordinary Rust test each — a plain twin measured to survive 915/915 in three of them; substrate, tail, cfg-binding and attribute-partition clauses close the measured aliased, phantom-string and decoy-cfg spellings (ADR-0251, closes R-rb-47-ROSTER-PVP) (#466)
 
 ### M8.5d
 
@@ -438,6 +464,7 @@
 - Exclude github-actions-mutable-action-tag from Semgrep gate (#348)
 - Regenerate OKF bundle drifted by battle_action comment fix (#356)
 - Regenerate via git-cliff — nightly changelog-freshness was 36 entries / 6.5d stale (#382)
+- Refresh CHANGELOG.md via git cliff (nightly changelog-freshness red, 50 entries/7.5d stale) (#438)
 
 ### Refactor
 
@@ -468,6 +495,7 @@
 - Pin guest-claim rekey delegate reach in accounts.rs (residual R-rb-7-X8) (#405)
 - Make overlayA11yWiring.test.ts safe under vitest --sequence.concurrent (R-rb18-CONCURRENT) (#415)
 - Gate A11Y-27's renderer arm with a real-browser reduced-motion e2e + nightly wiring (R-rb-20-RM-7) (#416)
+- Correlate the client status badge to game-core's A11Y_TOKENS SSOT (closes R-m23-s8-TSDUP correlation half) (#440)
 
 ### Wip
 
