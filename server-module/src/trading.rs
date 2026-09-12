@@ -244,11 +244,11 @@ pub fn propose_trade(
         .identity()
         .find(me)
         .ok_or_else(|| "not joined".to_string())?;
-
     // Guard 1a (ADR-0227): reject opening a NEW commitment for a deletion-gated caller.
-    // Fully-qualified + `?;` on purpose — both are pinned (unshadowable path, no
-    // discarded verdict). Placement: after the caps (ADR-0166 D3 bound-before-DB-read
-    // is preserved) and with the caller-state preamble, before any counterparty read.
+    // Fully-qualified + `?;` on purpose — both are pinned (unshadowable path, no discarded
+    // verdict). Placed after the caps (ADR-0166 D3 bound-before-DB-read is preserved) and
+    // with the caller-state preamble, before any counterparty read. Review stop:
+    // rb-79 (ADR-0249) byte-freezes the whole prefix above this statement in trading_tests.rs.
     crate::guards::require_not_deleting(ctx, "propose_trade")?;
 
     // Counterparty must be a joined player (prevents phantom-offer DoS, ADR-0106).

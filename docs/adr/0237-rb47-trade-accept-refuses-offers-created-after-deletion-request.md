@@ -6,6 +6,7 @@
 **Supersedes:** —
 **Amends:** —
 **Extends:** ADR-0227 (the S5 caller-only gate; reciprocal `Extended-by:` in its header, and its confederate role-swap residual bullet is discharged by a dated amendment there)
+**Amended-by:** ADR-0249 (rb-79 — narrows the Consequences claim that rb-47 closed R-rb-46-TRADINGCFG: the attribute and statement-boundary half was closed here; the macro-free early-exit half stayed open and is closed by the byte-frozen prefix there)
 **Subsystems:** security-authz, economy-quests
 **Decision:** rb-47 gates the accept path of `respond_trade` on the offer's stamp: a deletion-gated caller cannot accept an offer created at or after their own deletion request; predating offers stay completable (PRV1-10).
 
