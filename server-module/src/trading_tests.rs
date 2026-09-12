@@ -14,6 +14,9 @@ use game_core::{
 // TradeStatus
 // ---------------------------------------------------------------------------
 
+/// rb-83 (ADR-0252 D4): because BOTH variants are active, the `is_active()` filter in
+/// `open_offers_addressed_to` is forward-defensive against a future terminal variant, not live
+/// protection — the day a third variant lands, this assertion is where that claim is re-examined.
 #[test]
 // TEETH(TradeStatus::is_active): kills:TR-active-covers-both-variants
 fn trade_status_is_active_covers_both_variants() {
@@ -3219,7 +3222,7 @@ fn m22s3b_resolver_extraction_chain() {
 /// offer-deletion site in this module disarms the reaper, and an orphaned
 /// one-shot fires later against a `trade_id` that no longer exists — or, worse,
 /// against a recycled one. `ea_reaper_02_disarm_called_at_all_offer_deletion_sites`
-/// pins the four pre-existing sites; this is the fifth.
+/// pins the five sites (rb-83 added `decline_offers` as its fifth); this is the sixth.
 ///
 /// Kills: an initiator-only sweep; a counterparty-only sweep; an `is_active`
 ///        filter copied from the disconnect helper; a sweep that deletes offers
@@ -3338,7 +3341,7 @@ fn m22s3b_erase_trade_offers_shape() {
          erased offer. `trade_offer_reaper_schedule` is JOIN-ONLY via `trade_offer` (the \
          manifest pins that parent by value), so the cascade sweeps it at its parent's step — \
          the same orphan-prevention idiom every other offer-deletion site in this module \
-         already follows (ea_reaper_02 pins those four). An orphaned one-shot fires later \
+         already follows (ea_reaper_02 pins those five). An orphaned one-shot fires later \
          against a trade_id that no longer exists, or against a recycled one. Body was: \
          {squashed:?}"
     );
@@ -6841,34 +6844,5 @@ fn rb83_new_seams_are_declared_once_and_frozen() {
          correctness requirement of the runtime, and pinning it is what keeps the fifth site \
          in `ea_reaper_02_disarm_called_at_all_offer_deletion_sites` reading the same shape as \
          the four it already guards."
-    );
-}
-
-/// **ADR-0252 D4 (liveness, stated honestly)** — `is_active()` is TOTAL over
-/// `TradeStatus` today, so the liveness filter in `open_offers_addressed_to` is
-/// forward-defensive rather than live protection.
-///
-/// This is a documented vacuity, kept as an assertion rather than as a comment so
-/// that the day `TradeStatus` grows a terminal third variant the claim is
-/// re-examined by a failing test instead of by whoever happens to read the ADR.
-/// `cancel_trades_on_disconnect` carries the same filter for the same reason, and
-/// `erase_trade_offers` deliberately does NOT (the manifest policy there is
-/// ERASE: whatever row exists must go).
-///
-/// GREEN AT HEAD and after the slice.
-#[test]
-fn rb83_game_core_liveness_is_total_today() {
-    assert!(
-        TradeStatus::Pending.is_active() && TradeStatus::ConfirmedByCounterparty.is_active(),
-        "[rb83/liveness-total] `TradeStatus` has exactly two variants today and `is_active()` \
-         is true for BOTH, so the `is_active()` filter in `open_offers_addressed_to` removes \
-         nothing at present: it is FORWARD-DEFENSIVE against a future terminal variant, not \
-         live protection, and no rb-83 test can distinguish a body that carries it from one \
-         that does not (the frozen body pin is what keeps it there). If this assertion ever \
-         fails, a variant for which `is_active()` is false now exists — at which point the \
-         filter becomes load-bearing and ADR-0252 D4's scope argument must be re-derived: an \
-         offer in that new state naming the cancelling player as counterparty would be \
-         silently excluded from the sweep, and whether that is correct depends entirely on \
-         what the new state means. Re-argue it from the spec; do not delete this line."
     );
 }

@@ -20512,6 +20512,33 @@ fn rb83_cancel_declines_refused_offers_before_the_status_write() {
         )
     });
 
+    // --- [rb83/no-quote-char-literal] substrate: no quote-bearing char literal ---
+    // Neither strip pipeline knows char literals, so a single-quoted double
+    // quote opens a phantom string in BOTH views at once: framed by two of
+    // them, a hidden statement vanishes from every squashed clause below AND
+    // from the polarity comparison (the two views agree on the same blanked
+    // text). Measured by the artifact red-team on this exact body. Whole-file
+    // count on the RAW source, all three spellings, zero at HEAD.
+    for spelling in [
+        concat!("'", "\"", "'"),
+        concat!("'\\", "\"", "'"),
+        concat!("b'", "\"", "'"),
+    ] {
+        let n = ACCOUNTS_RS.matches(spelling).count();
+        assert_eq!(
+            n, 0,
+            "[rb83/no-quote-char-literal] accounts.rs carries {n} occurrence(s) of the char \
+             literal {spelling:?} and must carry ZERO. Every squashed clause in this file blanks \
+             strings by scanning for double-quote characters and has no char-literal branch, so \
+             a quote CHARACTER literal opens a phantom string that swallows real code until the \
+             next quote; two of them frame a statement that no view can see, including the \
+             polarity comparison right below (both pipelines are blind in the same way). The \
+             measured shape hides a same-name rebinding of `account` to the post-cancel row \
+             above the sweep. A legitimate quote character belongs in a string literal, never \
+             a char literal, in this file."
+        );
+    }
+
     // --- [rb83/scan-polarity] the precondition every later clause rests on ---
     assert_eq!(
         body, legacy_body,

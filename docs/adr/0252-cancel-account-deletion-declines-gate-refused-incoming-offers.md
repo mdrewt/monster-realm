@@ -134,8 +134,11 @@ red-team:** `accounts_tests.rs`'s `stripped_for_scan` blanks strings BEFORE comm
 a `//` comment opens a phantom string that hides a real statement — including a same-name rebinding of `account`
 to the post-cancel row placed above the sweep — from every positional clause in that file. The rb-83 clauses
 therefore read a comments-first view (`strip_comments_keep_strings` → `strip_rust_strings` → `squash_ws`) and carry
-a polarity precondition (the cancel body must read identically under both pipelines). The pre-existing clauses in
-that file are not re-cut here; the class is registered as R-rb-83-SCANORDER.
+a polarity precondition (the cancel body must read identically under both pipelines). The artifact red-team then
+measured the sibling shape neither pipeline can see — a hidden rebinding framed by two quote CHAR literals (`'"'`),
+which blanks identically under both views and was caught only by the byte-exact prefix freeze — so the headline test
+also bans every quote-bearing char-literal spelling from the raw `accounts.rs` (zero at HEAD). The pre-existing
+clauses in that file are not re-cut here; both classes are registered as R-rb-83-SCANORDER.
 
 ## Considered alternatives
 
@@ -174,8 +177,10 @@ that file are not re-cut here; the class is registered as R-rb-83-SCANORDER.
   naming the sweep so the spec describes shipped behaviour.
 - **Residual R-rb-83-SCANORDER (backlog, MED).** Every pre-existing positional pin built on
   `accounts_tests.rs::stripped_for_scan` (the rb-24 arm/disarm pins, the m22-s3 guard pins) is blind to a bare
-  double quote inside a comment in the scanned body; the repo-wide fix is to swap that pipeline to comments-first
-  (the `trading_tests.rs` order) or to add a per-body polarity precondition as rb-83 does.
+  double quote inside a comment in the scanned body, and every stripper in the crate's test modules is blind to a
+  quote-bearing char literal; the repo-wide fix is to swap that pipeline to comments-first (the `trading_tests.rs`
+  order) and give the string strippers a char-literal branch, or to add the per-body polarity precondition and the
+  raw char-literal ban as rb-83 does.
 - The cost to a confederate — an offer destroyed without consent, escrow released, re-proposal needed once D is
   Active — is bounded and smaller than the TTL death the same offer already faced.
 - New code comments in `accounts.rs` and `trading.rs` contain no double-quote character.
@@ -183,10 +188,12 @@ that file are not re-cut here; the class is registered as R-rb-83-SCANORDER.
 
 ## Confirmation
 
-`just ci` runs, inside `cargo nextest run -p monster-realm-module`, the five `rb83_` tests —
+`just ci` runs, inside `cargo nextest run -p monster-realm-module`, the four `rb83_` tests —
 `rb83_cancel_declines_refused_offers_before_the_status_write` and `rb83_plan_declines_at_cancel_truth_table` in
-`server-module/src/accounts_tests.rs`; `rb83_open_offers_addressed_to_reads_only_the_counterparty_column`,
-`rb83_new_seams_are_declared_once_and_frozen` and `rb83_game_core_liveness_is_total_today` in
-`server-module/src/trading_tests.rs` — plus the fifth site in `ea_reaper_02_disarm_called_at_all_offer_deletion_sites`.
+`server-module/src/accounts_tests.rs`; `rb83_open_offers_addressed_to_reads_only_the_counterparty_column` and
+`rb83_new_seams_are_declared_once_and_frozen` in `server-module/src/trading_tests.rs` — plus the fifth site in
+`ea_reaper_02_disarm_called_at_all_offer_deletion_sites` and the D4 liveness note on
+`trade_status_is_active_covers_both_variants` (a fifth `rb83_` test restating that fact was cut at tests review as a
+duplicate).
 The proof-of-teeth register (`memory/projects/gates/rb-83.mutants.py`, record in `rb-83.red-before.md`, harness
 repo) is cited from ledger gate X7, never from this ADR body.
