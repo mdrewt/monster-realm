@@ -93,6 +93,14 @@ pub(crate) fn deletion_gate(rejected: bool) -> Result<(), &'static str> {
     Ok(())
 }
 
+// rb-78 (ADR-0248): REVIEW STOP for the three deletion-gate wrappers below. A macro
+// invoked above one of their call sites can expand to a conditional early return that
+// carries no textual return keyword at the call site, so the rb-46 early-exit census
+// cannot see it. The rb78 grammar in guards_tests.rs refuses every bang-macro invocation
+// between the enclosing item boundary and a deletion-gate call, admitting only the bare
+// standard string-builder spelling — re-derive that allow-list deliberately before adding
+// a second. A proc-macro attribute is outside it: residual R-rb-78-PROCMACRO (ADR-0248).
+
 /// Reducer preamble for the para-4.7 deletion gate (ADR-0225 §2, ADR-0227,
 /// PRV1-9): reject the CALLER when their account is mid-grace or carries the
 /// terminal marker — such an account may not OPEN a new trade, battle or

@@ -5180,3 +5180,1572 @@ fn rb77_module_swap_fixtures_are_rejected_by_clause() {
         &["[rb77/testmod-prefix:guards_tests]"],
     );
 }
+
+// ===========================================================================
+// rb-78 — NO MACRO EXPANDS ABOVE A DELETION GATE (residual R-rb-46-MACRORET).
+// ADR-0248 carries the rationale, the clause list and the measured bypasses;
+// this block is the grammar. Appended BELOW the rb-77 matrix above; no line an
+// earlier slice wrote is touched.
+//
+// EARS criterion encoded by this block:
+//
+//   R-rb-46-MACRORET  WHERE a reducer prefix precedes one of the three
+//                     fully-qualified deletion-gate wrapper calls, the server
+//                     module SHALL expand NO macro above that gate other than
+//                     the standard-library string builder, and SHALL NOT
+//                     re-spell, alias, glob-import or macro-import that
+//                     builder's name in ANY crate module — so that no early
+//                     `return` can reach a gated prefix from a DEFINITION the
+//                     rb-46 textual return census cannot see.
+//
+// WHY THIS IS MATERIAL, not hypothetical. rb-46 clause I
+// (`battle_tests.rs:6886-6929`) counts textual `return` tokens in a reducer
+// prefix and requires each to be the tagged reject spelling. A macro's
+// `return` lives in the macro DEFINITION, outside every prefix, so that count
+// stays byte-identically correct while the expansion diverts every real caller
+// around the gate. That clause says so ITSELF, in the HONEST RESIDUAL sentence
+// of its own failure message (`battle_tests.rs:6922-6924`): this block is the
+// disposition of the residual that sentence registered.
+//
+// The literal proof-of-concept — a module-scope two-line rule invoked one line
+// above `battle.rs`'s `start_battle` gate, admitting every sender that is not
+// the all-zero wild sentinel — was MEASURED at this slice's base commit to pass
+// `cargo fmt --check`, all 900 tests, and clippy with warnings denied
+// (`memory/projects/gates/rb-78.red-before.md` section 1).
+// Eight of the ten live gate sites are open to that shape; the other two are
+// already closed by whole-prefix equality (rb-76 on `begin_encounter`, rb-47 on
+// `respond_trade`).
+//
+// SCOPE, stated so nobody widens it later. This block says NOTHING about the
+// gate STATEMENT itself (a conditional attribute on that line is rb-79's), and
+// it pins NO site total — rb-46's and rb-76's censuses own the call-site sets.
+// It bans no macro DEFINITION crate-wide either: every route that matters
+// passes either through a gate REGION or through the re-spelling clauses, and
+// a definition ban would red the first legitimate helper macro for no reach.
+//
+// RED STATE of this block at HEAD:
+//   * `rb78_no_macro_expands_above_any_deletion_gate` — RED on the NOTE clause
+//     ONLY. `guards.rs` carries no reviewer note citing this slice's decision
+//     record between the pure decision seam and the caller-only wrapper. Every
+//     macro clause is GREEN at HEAD BY CONSTRUCTION (the shipped tree is
+//     clean), which is exactly why the teeth are the fixture matrix below plus
+//     the ledger's X5 live mutant register on the REAL files — a source-scan
+//     gate whose only evidence is "the clean tree passes" has no teeth at all.
+//   * `rb78_macro_divert_fixtures_are_rejected_by_clause` — GREEN at HEAD and
+//     after the slice. It is the tooth, not the ratchet.
+//
+// SCAN SUBSTRATE RULES, as everywhere above (breaking them breaks OTHER
+// slices' gates, not this one): every needle naming a production symbol or a
+// banned spelling is assembled from fragments, every double quote inside
+// fixture text comes from `double_quote()`, a block-comment marker is never
+// spelled contiguously — say it in words — no raw double-quote CHARACTER
+// literal is written anywhere, and no failure message quotes a needle this
+// grammar searches for IN ITS OWN SOURCE (the reviewer note is searched for in
+// `guards.rs` only, so the note's decision-record number is spelled out only
+// in fragments).
+// ===========================================================================
+
+/// The six bytes of the one macro name admitted above a deletion gate.
+fn rb78_token_format() -> String {
+    ["for", "mat"].concat()
+}
+
+/// The admitted macro name PLUS the one admitted delimiter.
+fn rb78_needle_format_bang() -> String {
+    [rb78_token_format().as_str(), "!("].concat()
+}
+
+/// The caller-only wrapper, as a FULLY-QUALIFIED call (ADR-0227 D2).
+fn rb78_needle_caller_gate() -> String {
+    ["crate::guards::require_not_", "deleting("].concat()
+}
+
+/// The subject-parameterised wrapper, as a fully-qualified call (ADR-0246 D2).
+fn rb78_needle_subject_gate() -> String {
+    ["crate::guards::require_subject_not_", "deleting("].concat()
+}
+
+/// The stamp-aware wrapper, as a fully-qualified call (ADR-0237 D3).
+fn rb78_needle_stamp_gate() -> String {
+    ["crate::guards::require_commitment_predates_", "deletion("].concat()
+}
+
+/// All three deletion-gate call needles.
+///
+/// The QUALIFIED spelling is the needle on purpose, and this is the one place
+/// in the crate where that is the right choice rather than the bare name: the
+/// region this grammar slices is defined by a CALL SITE, and the qualified form
+/// is what every site is independently pinned to carry (rb-46 clause A, rb-47,
+/// rb-76, m22-s3b). A bare-name needle would additionally match the three
+/// declarations in `guards.rs`, which have no prefix to scan.
+fn rb78_gate_needles() -> [String; 3] {
+    [
+        rb78_needle_caller_gate(),
+        rb78_needle_subject_gate(),
+        rb78_needle_stamp_gate(),
+    ]
+}
+
+/// The path roots a glob import may legitimately carry, in SQUASHED form.
+///
+/// Squashing removes the space between the import keyword and the path root, so
+/// `use super::*;` reaches this scan glued as `usesuper::*`. The glued spellings
+/// are therefore listed EXPLICITLY rather than stripped off, so a longer
+/// identifier merely ENDING in one of the three (`mysuper`, `notcrate`) is still
+/// rejected. All three name files this very scan already reads, which is the
+/// whole reason they are safe: a macro re-exported from inside the crate cannot
+/// hide from a crate-wide census.
+fn rb78_glob_roots() -> [&'static str; 9] {
+    [
+        "super",
+        "self",
+        "crate",
+        "usesuper",
+        "useself",
+        "usecrate",
+        "pubusesuper",
+        "pubuseself",
+        "pubusecrate",
+    ]
+}
+
+/// Comments-stripped, string-blanked, whitespace-squashed view.
+///
+/// Deliberately NOT [`rb76_module_squashed`], and the difference is the whole
+/// reason this helper exists: that one ASSERTS its preconditions and therefore
+/// PANICS, which a fixture matrix cannot observe. The stripping pipeline is this
+/// file's own [`strip_comments_and_strings`] and [`m22s5_squash`], byte for
+/// byte — no third stripper is introduced (ADR-0003) — and the preconditions
+/// are re-raised as LABELS inside [`rb78_macro_verdict`] instead.
+fn rb78_squashed(raw: &str) -> String {
+    m22s5_squash(&strip_comments_and_strings(raw))
+}
+
+/// Every qualified deletion-gate REGION in `squashed`, in file order.
+///
+/// REGION = from one past the last `;` or `}` at BRACE depth zero before a gate
+/// needle, up to the needle itself. That boundary is the enclosing ITEM's start,
+/// so the region holds the reducer's attributes, its whole signature AND its
+/// body prefix. Three consequences, each load-bearing:
+///
+///   * a WHOLE-FUNCTION wrapper macro puts its own bang-plus-brace inside the
+///     region (the gate is nested in the macro's token tree, so no item
+///     boundary intervenes);
+///   * a function GENERATED from a rule definition does the same, because the
+///     definition's braces never return the depth counter to zero;
+///   * a macro in SIGNATURE position (`v: ty!()`) is inside the region too,
+///     which a body-only scan would walk straight past.
+///
+/// THE DEPTH COUNTER IS BRACE-ONLY. Parentheses and square brackets are
+/// deliberately not counted: an attribute closes its own square brackets before
+/// the item it applies to, and counting them would make an unbalanced attribute
+/// argument strand the region start. The cost of brace-only counting is exactly
+/// one hazard — a brace CHAR literal — and that hazard is closed by the
+/// `[rb78/char-literal-bracket]` clause, which is why the two must never be
+/// separated. The failure DIRECTION is also asymmetric and safe: an unmatched
+/// opener strands the counter above zero, which makes regions LONGER (loud,
+/// over-approximating), never shorter.
+fn rb78_region_texts(squashed: &str) -> Vec<String> {
+    let mut sites: Vec<usize> = Vec::new();
+    for needle in &rb78_gate_needles() {
+        for (at, _) in squashed.match_indices(needle.as_str()) {
+            sites.push(at);
+        }
+    }
+    if sites.is_empty() {
+        return Vec::new();
+    }
+    sites.sort_unstable();
+    sites.dedup();
+
+    let bytes = squashed.as_bytes();
+    let mut boundaries: Vec<usize> = Vec::new();
+    let mut depth = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'{' {
+            depth += 1;
+        } else if b == b'}' {
+            depth = depth.saturating_sub(1);
+        }
+        if depth == 0 && (b == b';' || b == b'}') {
+            boundaries.push(i + 1);
+        }
+        i += 1;
+    }
+
+    let mut out: Vec<String> = Vec::new();
+    for at in sites {
+        let start = boundaries
+            .iter()
+            .rev()
+            .find(|&&b| b <= at)
+            .copied()
+            .unwrap_or(0);
+        out.push(String::from_utf8_lossy(&bytes[start..at]).into_owned());
+    }
+    out
+}
+
+/// Every macro expansion inside one gate region, as clause labels.
+///
+/// THE ALLOW-LIST IS A BYTE SEQUENCE, not a concept: the six bytes of the
+/// standard string builder, immediately followed by an opening PAREN, with the
+/// byte before the name neither an identifier byte nor a colon. Everything else
+/// that is a bang followed by one of the three delimiters is labelled, with the
+/// macro's own name in the label so the failure names the divert rather than the
+/// rule.
+///
+/// THE KEYWORD EXEMPTIONS ARE NOT A HOLE. `if`, `while`, `match`, `return`,
+/// `break` and `in` can legitimately precede a parenthesised unary negation
+/// (`if !(a && b)`), and squashing glues the keyword onto the bang. A macro
+/// cannot bear a keyword name — that requires a raw identifier, which is its own
+/// clause on this same region — so an attacker cannot claim any exemption on
+/// this list. An EMPTY name is exempt for the same reason: a macro must have a
+/// name, so `== !(x)` and an inner attribute's `#!` are both unary, not calls.
+///
+/// DISCLOSED AND FAIL-CLOSED, in this order of likelihood: a builder call glued
+/// to a preceding keyword — an early return of a built string — reads as a macro
+/// whose name is that keyword and the builder run together, and is LABELLED (see
+/// the F20 fixture, which asserts it); the brace and square delimiter forms of
+/// the builder are NOT allow-listed; and a C-string literal, which this crate's
+/// shared stripper does not model, would leave a stray prefix byte before the
+/// name. All three are loud false REDs on honest code, all three are zero on the
+/// tree today, and the remedy for each is to re-derive the allow-list
+/// DELIBERATELY — never to widen the byte sequence so that a whole class slips
+/// through with it.
+fn rb78_region_macro_labels(file: &str, region: &str) -> Vec<String> {
+    let admitted_name = rb78_token_format();
+    let exempt = ["if", "while", "match", "return", "break", "in"];
+    let bytes = region.as_bytes();
+    let head = String::from_utf8_lossy(&bytes[..bytes.len().min(48)]).into_owned();
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] != b'!' {
+            i += 1;
+            continue;
+        }
+        let delim = match bytes.get(i + 1) {
+            Some(&d) if d == b'(' || d == b'{' || d == b'[' => d,
+            _ => {
+                i += 1;
+                continue;
+            }
+        };
+        let mut s = i;
+        while s > 0 && is_ident_byte(bytes[s - 1]) {
+            s -= 1;
+        }
+        let name = String::from_utf8_lossy(&bytes[s..i]).into_owned();
+        if name.is_empty() || exempt.iter().any(|k| name == *k) {
+            i += 1;
+            continue;
+        }
+        let before = if s == 0 { None } else { Some(bytes[s - 1]) };
+        let admitted = name == admitted_name
+            && delim == b'('
+            && !matches!(before, Some(b) if is_ident_byte(b) || b == b':');
+        if !admitted {
+            out.push(format!(
+                "[rb78/macro-above-gate:{file}:{name}] a macro expands between the enclosing \
+                 item boundary and a fully-qualified deletion-gate call, so whatever it emits \
+                 runs BEFORE the gate. Its expansion is not in this file, is not in that \
+                 reducer's prefix, and is therefore invisible to rb-46 clause I's textual \
+                 return census — the measured, CI-clean shape this whole block exists for. \
+                 Only the standard string builder spelled with a paren and reached without a \
+                 path qualifier is admitted; NEVER widen that byte sequence to quiet a new \
+                 macro, add the macro's own gating instead. Region begins: {head:?}"
+            ));
+        }
+        i += 1;
+    }
+    out
+}
+
+/// The whole rb-78 grammar (ADR-0248 D2/D3) as a pure function of the sources.
+///
+/// NON-SHORT-CIRCUITING: every clause runs over every file, so one applied
+/// divert names every rule it breaks instead of only the first a reader reaches.
+/// `Ok(())` is the shipped state.
+///
+/// `file` is a ROLE name, not a path: the fixtures pass synthetic sources under
+/// the same role names the live test uses, so a fixture failure reads exactly
+/// like a live one.
+///
+/// THE CLAUSES, and what each one kills:
+///
+///   * `[rb78/scan-substrate:<file>]` — a deep raw-string opener, unbalanced
+///     block-comment markers, or a surviving CLOSE marker (a NESTED comment).
+///     Each makes the shared stripper blank the wrong byte range, which turns
+///     every clause below it silently vacuous. Raised as a LABEL rather than the
+///     panic its sibling helpers use, so the matrix can prove it fires.
+///   * `[rb78/format-respelt:<file>]` — the builder's name reached through a
+///     PATH (`std::` / `crate::`), imported by name, or DEFINED locally as a
+///     rule. Each of those makes the allow-listed byte sequence resolve to
+///     something else entirely, so the one admitted macro becomes the divert.
+///   * `[rb78/format-alias:<file>]` — the builder's NAME bound to some other
+///     item by a rename import. No left word boundary is required on purpose
+///     (squashing glues the rename keyword onto the identifier before it) while
+///     the right-hand side IS bounded, so a longer identifier does not
+///     false-alarm. The respelt clause CANNOT see this shape: the name there
+///     sits directly after an identifier byte.
+///   * `[rb78/macro-use:<file>]` — a legacy macro import, which drops a
+///     dependency's exported rules into this crate's root namespace under names
+///     no import line in any module mentions.
+///   * `[rb78/glob-import:<file>]` — a glob whose path root is not one of the
+///     three in-crate roots. This is the ONE route by which a dependency's
+///     exported rule can shadow the admitted builder without any module naming
+///     it; the crate's only production glob today re-imports a parent module
+///     this same scan reads.
+///   * `[rb78/char-literal-bracket:<file>]`, gate-bearing files only — a brace
+///     CHAR literal survives the stripper and strands the region's depth
+///     counter. `privacy.rs` legitimately spells both and carries no gate, which
+///     is exactly why this clause is scoped to files that DO.
+///   * `[rb78/raw-ident:<file>]` — a raw identifier inside a region. It is the
+///     spelling that lets a macro wear a keyword name, which is the only way the
+///     exemption list above could ever be claimed by an attacker.
+///   * `[rb78/macro-above-gate:<file>:<macro>]` — the clause itself.
+fn rb78_macro_verdict(sources: &[(String, String)]) -> Result<(), String> {
+    let mut labels: Vec<String> = Vec::new();
+
+    let deep_raw = ["r#", "##"].concat();
+    let open_marker = rb77_needle_open_marker();
+    let close_marker = rb77_needle_close_marker();
+    let raw_ident = rb77_needle_raw_ident();
+    let token_format = rb78_token_format();
+    let format_bang = rb78_needle_format_bang();
+    let alias_format = ["as", token_format.as_str()].concat();
+    let macro_use = ["macro_", "use"].concat();
+    let glob = [":", ":*"].concat();
+    let glob_roots = rb78_glob_roots();
+    let bracket_chars = [["'", "{", "'"].concat(), ["'", "}", "'"].concat()];
+
+    for (file, raw) in sources {
+        // --- substrate, as labels rather than panics -------------------------
+        if raw.contains(deep_raw.as_str()) {
+            labels.push(format!(
+                "[rb78/scan-substrate:{file}] a raw-string opener with three or more hashes. \
+                 The crate's shared byte-sequential stripper does not handle it, so it blanks \
+                 the wrong byte range and every clause below reads text nobody wrote. Extend \
+                 the stripper's hash-depth handling before adding such a literal."
+            ));
+        }
+        let opens = raw.matches(open_marker.as_str()).count();
+        let closes = raw.matches(close_marker.as_str()).count();
+        if opens != closes {
+            labels.push(format!(
+                "[rb78/scan-substrate:{file}] {opens} block-comment opener(s) against {closes} \
+                 closer(s) in the RAW source. The stripper stops at the first closer, so an \
+                 unpaired opener swallows real reducer prefixes — the one failure that makes a \
+                 macro ban pass because it looked at nothing."
+            ));
+        }
+        let squashed = rb78_squashed(raw);
+        if squashed.contains(close_marker.as_str()) {
+            labels.push(format!(
+                "[rb78/scan-substrate:{file}] a block-comment CLOSE marker survived stripping: \
+                 a NESTED block comment. The stripper stops at the FIRST closer and hands the \
+                 outer comment's tail to this scan AS CODE, which is how a whole gate region \
+                 gets forged — or hidden — out of comment text."
+            ));
+        }
+        let bytes = squashed.as_bytes();
+
+        // --- the builder's name, re-spelled ----------------------------------
+        let mut respelt = false;
+        for (at, _) in squashed.match_indices(token_format.as_str()) {
+            let before = if at == 0 { None } else { Some(bytes[at - 1]) };
+            let end = at + token_format.len();
+            let inside_word = matches!(before, Some(b) if is_ident_byte(b))
+                || (end < bytes.len() && is_ident_byte(bytes[end]));
+            if inside_word {
+                continue;
+            }
+            if before == Some(b':') || !squashed[at..].starts_with(format_bang.as_str()) {
+                respelt = true;
+            }
+        }
+        if respelt {
+            labels.push(format!(
+                "[rb78/format-respelt:{file}] the one admitted macro name appears path-qualified, \
+                 or bounded as an identifier without the admitted paren delimiter after it. Both \
+                 shapes mean the allow-listed byte sequence no longer resolves to the standard \
+                 builder: a path form reaches somebody else's item, an import binds the name, and \
+                 a local rule definition shadows it outright — after which the ONE macro this \
+                 grammar lets through above a gate is the divert. The remedy is to spell the \
+                 builder plainly; never widen this clause to admit a qualifier."
+            ));
+        }
+
+        // --- the builder's name, aliased -------------------------------------
+        let aliased = squashed
+            .match_indices(alias_format.as_str())
+            .any(|(at, _)| {
+                let end = at + alias_format.len();
+                end >= bytes.len() || !is_ident_byte(bytes[end])
+            });
+        if aliased {
+            labels.push(format!(
+                "[rb78/format-alias:{file}] the admitted macro name is bound as an ALIAS of some \
+                 other item. No left word boundary is required on purpose — squashing glues the \
+                 rename keyword onto the identifier before it — while the right-hand side IS \
+                 bounded, so a longer identifier does not false-alarm. The re-spelling clause \
+                 above cannot see this shape at all: there the name sits directly after an \
+                 identifier byte and is skipped as part of a longer word."
+            ));
+        }
+
+        // --- legacy macro import ---------------------------------------------
+        if squashed.contains(macro_use.as_str()) {
+            labels.push(format!(
+                "[rb78/macro-use:{file}] a legacy macro import. It drops every exported rule of \
+                 a dependency into this crate's root namespace, so a divert above a gate needs \
+                 no import line in the module that uses it and no module in this crate ever \
+                 names the macro it expands."
+            ));
+        }
+
+        // --- glob imports -----------------------------------------------------
+        let mut globbed: Option<String> = None;
+        for (at, _) in squashed.match_indices(glob.as_str()) {
+            let mut s = at;
+            while s > 0 && is_ident_byte(bytes[s - 1]) {
+                s -= 1;
+            }
+            let root = String::from_utf8_lossy(&bytes[s..at]).into_owned();
+            if !glob_roots.iter().any(|k| root == *k) {
+                globbed = Some(root);
+            }
+        }
+        if let Some(root) = globbed {
+            labels.push(format!(
+                "[rb78/glob-import:{file}] a glob import rooted at `{root}`, which is not one of \
+                 the three in-crate roots. THE ROUTE THIS CLOSES: a dependency that exports a \
+                 rule named exactly like the admitted builder shadows it in this module, with no \
+                 line anywhere in this crate naming the macro — the path form, the by-name import \
+                 and the legacy macro import are each closed by a clause above, and this was the \
+                 last one left. The in-crate roots stay allowed because everything they can \
+                 re-export lives in a file this same census already reads."
+            ));
+        }
+
+        // --- everything below needs at least one gate site in this file -------
+        let regions = rb78_region_texts(&squashed);
+        if regions.is_empty() {
+            continue;
+        }
+
+        if bracket_chars
+            .iter()
+            .any(|needle| squashed.contains(needle.as_str()))
+        {
+            labels.push(format!(
+                "[rb78/char-literal-bracket:{file}] a brace CHAR literal survived stripping in a \
+                 file that CARRIES a deletion gate. The stripper consumes char literals \
+                 atomically and KEEPS them, so that brace reaches the region parser's depth \
+                 counter as a real one and strands it — after which the region boundary for \
+                 every gate below is wrong. Scoped to gate-bearing files deliberately: the \
+                 privacy module spells both braces in its hand-rolled serializer and carries no \
+                 gate at all. Spell the character with a Unicode escape; never delete this \
+                 check, and never separate it from the brace-only depth counter it guards."
+            ));
+        }
+
+        for region in &regions {
+            if region.contains(raw_ident.as_str()) {
+                labels.push(format!(
+                    "[rb78/raw-ident:{file}] a RAW IDENTIFIER inside a deletion-gate region (raw \
+                     STRINGS are blanked first, so an identifier is the only survivor). It is \
+                     the one spelling that lets a macro wear a keyword NAME, which is the only \
+                     way the unary-negation exemptions in this grammar could ever be claimed by \
+                     an attacker rather than by honest code."
+                ));
+                break;
+            }
+        }
+
+        for region in &regions {
+            labels.extend(rb78_region_macro_labels(file, region));
+        }
+    }
+
+    if labels.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "rb-78 ADR-0248 FAIL — {count} clause(s):\n  - {body}",
+        count = labels.len(),
+        body = labels.join("\n  - ")
+    ))
+}
+
+/// Assert that `sources` is rejected AND that each expected clause label is
+/// among the collected ones.
+fn rb78_assert_rejected(case: &str, sources: Vec<(String, String)>, expected: &[&str]) {
+    let Err(message) = rb78_macro_verdict(&sources) else {
+        panic!(
+            "rb-78 ADR-0248 TEETH FAIL ({case}): the verdict ACCEPTED this source. Every shape \
+             in this matrix either routes a real caller around an authorization gate while \
+             leaving the gate statement, its log tag and rb-46's textual return census \
+             byte-identically green, or is a scan-integrity hazard that would let such a route \
+             go undetected. An accepted fixture means the clause guarding against one of these \
+             is missing."
+        );
+    };
+    for label in expected {
+        assert!(
+            message.contains(label),
+            "rb-78 ADR-0248 TEETH FAIL ({case}): rejected, but never by the clause `{label}` \
+             this fixture exists to exercise — that clause is unproven and some other rule is \
+             carrying the rejection. Collected:\n{message}"
+        );
+    }
+}
+
+/// The bare reducer attribute, assembled.
+fn rb78_attr_reducer() -> String {
+    ["#[spacetimedb::", "reducer]"].concat()
+}
+
+/// One fully-qualified CALLER-ONLY gate statement, as an indented body line.
+fn rb78_gate_line(tag: &str) -> String {
+    let q = double_quote();
+    format!(
+        "    {call}ctx, {q}{tag}{q})?;",
+        call = rb78_needle_caller_gate()
+    )
+}
+
+/// One fully-qualified SUBJECT-keyed gate statement, as an indented body line.
+fn rb78_subject_gate_line() -> String {
+    format!(
+        "    {call}ctx, subject)?;",
+        call = rb78_needle_subject_gate()
+    )
+}
+
+/// One fully-qualified STAMP-aware gate statement, as an indented body line.
+fn rb78_stamp_gate_line(tag: &str) -> String {
+    let q = double_quote();
+    format!(
+        "    {call}ctx, {q}{tag}{q}, offer.created_at_ms)?;",
+        call = rb78_needle_stamp_gate()
+    )
+}
+
+/// F0 — the clean control; if this is rejected, no rejection below proves
+/// anything.
+///
+/// Carries, on purpose, every shape an over-eager matcher would trip on: a
+/// macro-laden reducer ABOVE the gated one (which the item-boundary region rule
+/// must exclude — a whole-file scan would red here), the admitted builder INSIDE
+/// the gated prefix, a logging macro BELOW the gate, parenthesised unary
+/// negation glued to a keyword, a not-equals comparison, a negated method call,
+/// a closure argument, two attributes on the gated reducer, an in-crate glob in
+/// an inline test module, and a PAREN char literal — which is inert to a
+/// brace-only depth counter and must stay admitted.
+fn rb78_fx_clean() -> Vec<(String, String)> {
+    let q = double_quote();
+    let attr = rb78_attr_reducer();
+    let gate = rb78_gate_line("gated");
+    let cfg = format!("#[cfg(feature = {q}dev_reducers{q})]");
+    let builder = format!(
+        "            let e = {b}{q}dup{q});",
+        b = rb78_needle_format_bang()
+    );
+    let info = format!("    log::info!({q}admitted{q});");
+    let paren_char = format!("    let open = {c};", c = ["'", "(", "'"].concat());
+    let src = [
+        "use crate::schema::player;",
+        attr.as_str(),
+        "pub fn noisy(ctx: &ReducerContext) -> Result<(), String> {",
+        "    let v = vec![1u8, 2u8];",
+        "    assert!(v.len() == 2);",
+        "    debug_assert!(!v.is_empty());",
+        "    Ok(())",
+        "}",
+        "#[allow(clippy::too_many_arguments)]",
+        cfg.as_str(),
+        attr.as_str(),
+        "pub fn gated(ctx: &ReducerContext, a: bool, b: bool) -> Result<(), String> {",
+        "    let me = ctx.sender();",
+        "    if !(a && b) {",
+        "        return Err(REJECT.to_string());",
+        "    }",
+        "    if a != b {",
+        "        return Err(REJECT.to_string());",
+        "    }",
+        "    let ids: Vec<u64> = Vec::new();",
+        "    let mut seen = std::collections::HashSet::new();",
+        "    for &id in &ids {",
+        "        if !seen.insert(id) {",
+        builder.as_str(),
+        "            return Err(e);",
+        "        }",
+        "    }",
+        "    let p = ctx.db.player().identity().find(me).ok_or_else(|| REJECT.to_string())?;",
+        gate.as_str(),
+        info.as_str(),
+        paren_char.as_str(),
+        "    Ok(())",
+        "}",
+        "#[cfg(test)]",
+        "mod tests {",
+        "    use super::*;",
+        "}",
+    ]
+    .join("\n");
+    vec![("battle.rs".to_string(), src)]
+}
+
+/// F19 — parenthesised unary negation after a keyword, ABOVE a gate: admitted.
+///
+/// The second control, and it exists for the exemption list specifically. A
+/// macro cannot bear the name `break` without a raw identifier (its own clause),
+/// so exempting the keyword costs nothing — but only a fixture can prove the
+/// exemption is reachable and that it does not swallow the file.
+fn rb78_fx_unary_break() -> Vec<(String, String)> {
+    let attr = rb78_attr_reducer();
+    let gate = rb78_gate_line("gated");
+    let src = [
+        "use crate::schema::player;",
+        attr.as_str(),
+        "pub fn gated(ctx: &ReducerContext, flag: bool) -> Result<(), String> {",
+        "    let stop = loop {",
+        "        break !(flag);",
+        "    };",
+        "    if stop {",
+        "        return Err(REJECT.to_string());",
+        "    }",
+        gate.as_str(),
+        "    Ok(())",
+        "}",
+    ]
+    .join("\n");
+    vec![("battle.rs".to_string(), src)]
+}
+
+/// F1 — the literal measured proof-of-concept shape: a STATEMENT-position macro
+/// one line above the gate. Kills a grammar that only reads expressions.
+fn rb78_fx_statement_macro() -> Vec<(String, String)> {
+    let attr = rb78_attr_reducer();
+    let gate = rb78_gate_line("gated");
+    let src = [
+        "use crate::schema::player;",
+        attr.as_str(),
+        "pub fn gated(ctx: &ReducerContext) -> Result<(), String> {",
+        "    let me = ctx.sender();",
+        "    bail!(ctx);",
+        gate.as_str(),
+        "    Ok(())",
+        "}",
+    ]
+    .join("\n");
+    vec![("battle.rs".to_string(), src)]
+}
+
+/// F2 — EXPRESSION position, above the SUBJECT-keyed gate. Two claims in one
+/// row: a bound expansion diverts exactly as a bare statement does, and the
+/// region rule is driven by all three wrapper needles, not only the caller-only
+/// one (a grammar wired to a single needle would accept this file whole).
+fn rb78_fx_expression_macro() -> Vec<(String, String)> {
+    let gate = rb78_subject_gate_line();
+    let src = [
+        "use crate::schema::player;",
+        "pub(crate) fn begin(ctx: &ReducerContext, subject: Identity) -> Result<u64, String> {",
+        "    let _x = admit!(ctx);",
+        gate.as_str(),
+        "    Ok(0)",
+        "}",
+    ]
+    .join("\n");
+    vec![("battle.rs".to_string(), src)]
+}
+
+/// F3 — a macro nested inside the ADMITTED builder's own argument list. The row
+/// the allow-list must not shelter: a needle that stopped at the first admitted
+/// name, or that skipped the rest of the call, would read this file as clean.
+fn rb78_fx_nested_in_builder() -> Vec<(String, String)> {
+    let q = double_quote();
+    let attr = rb78_attr_reducer();
+    let gate = rb78_gate_line("gated");
+    let builder = format!(
+        "    let e = {b}{q}{{}}{q}, evil!(ctx));",
+        b = rb78_needle_format_bang()
+    );
+    let src = [
+        "use crate::schema::player;",
+        attr.as_str(),
+        "pub fn gated(ctx: &ReducerContext) -> Result<(), String> {",
+        builder.as_str(),
+        gate.as_str(),
+        "    Ok(())",
+        "}",
+    ]
+    .join("\n");
+    vec![("battle.rs".to_string(), src)]
+}
+
+/// F4 — the BRACE delimiter form, above the STAMP-aware gate. A macro accepts
+/// all three bracket kinds; rb-77 MEASURED the brace spelling shipping a bypass
+/// past a paren-anchored needle, which is why this grammar is delimiter-agnostic
+/// everywhere except the one admitted builder.
+fn rb78_fx_brace_macro() -> Vec<(String, String)> {
+    let attr = rb78_attr_reducer();
+    let gate = rb78_stamp_gate_line("respond");
+    let src = [
+        "use crate::schema::trade_offer;",
+        attr.as_str(),
+        "pub fn respond(ctx: &ReducerContext, offer: TradeOffer) -> Result<(), String> {",
+        "    admit! { ctx }",
+        gate.as_str(),
+        "    Ok(())",
+        "}",
+    ]
+    .join("\n");
+    vec![("trading.rs".to_string(), src)]
+}
+
+/// F5 — the SQUARE delimiter form. Same class as F4, third bracket kind; square
+/// brackets are additionally invisible to the brace-only depth counter, so this
+/// also proves the counter does not need them.
+fn rb78_fx_square_macro() -> Vec<(String, String)> {
+    let attr = rb78_attr_reducer();
+    let gate = rb78_gate_line("gated");
+    let src = [
+        "use crate::schema::player;",
+        attr.as_str(),
+        "pub fn gated(ctx: &ReducerContext) -> Result<(), String> {",
+        "    admit![ctx];",
+        gate.as_str(),
+        "    Ok(())",
+        "}",
+    ]
+    .join("\n");
+    vec![("battle.rs".to_string(), src)]
+}
+
+/// F6 — the rule DEFINED inside the reducer body, directly above its own
+/// invocation.
+///
+/// TWO THINGS THIS KILLS, neither of them F1's. First, the definition's braces
+/// and its arm-separating semicolon all sit at brace depth one or deeper, so a
+/// region rule that took the last semicolon ANYWHERE (rather than the last one
+/// at depth zero) would start the region BELOW the divert and read the file as
+/// clean. Second, the definition's own bang is followed by an identifier, not a
+/// delimiter, so the grammar must find the INVOCATION rather than the keyword.
+fn rb78_fx_inbody_rule_definition() -> Vec<(String, String)> {
+    let attr = rb78_attr_reducer();
+    let gate = rb78_gate_line("gated");
+    let src = [
+        "use crate::schema::player;",
+        attr.as_str(),
+        "pub fn gated(ctx: &ReducerContext) -> Result<(), String> {",
+        "    macro_rules! rb78_admit {",
+        "        ($c:expr) => {",
+        "            if $c.sender() != crate::WILD_IDENTITY {",
+        "                return Ok(());",
+        "            }",
+        "        };",
+        "    }",
+        "    rb78_admit!(ctx);",
+        gate.as_str(),
+        "    Ok(())",
+        "}",
+    ]
+    .join("\n");
+    vec![("battle.rs".to_string(), src)]
+}
+
+/// F7 — the WHOLE REDUCER wrapped in a macro invocation. The gate statement, its
+/// log tag and its `?` are all still written verbatim, so every per-site pin in
+/// this crate stays green; what the wrapper emits around them is not in the
+/// file. Caught because the region reaches back to the enclosing ITEM boundary,
+/// which is above the wrapper's own bang.
+fn rb78_fx_whole_fn_wrapper() -> Vec<(String, String)> {
+    let attr = rb78_attr_reducer();
+    let gate = rb78_gate_line("buy");
+    let indented_attr = format!("    {attr}");
+    let src = [
+        "use crate::schema::player;",
+        "wrap! {",
+        indented_attr.as_str(),
+        "    pub fn buy(ctx: &ReducerContext) -> Result<(), String> {",
+        "        let me = ctx.sender();",
+        gate.as_str(),
+        "        Ok(())",
+        "    }",
+        "}",
+    ]
+    .join("\n");
+    vec![("economy.rs".to_string(), src)]
+}
+
+/// F8 — the reducer GENERATED from a rule body, with the divert inside the
+/// generated prefix.
+///
+/// HONEST SCOPE, and it is the reason this row is a fixture rather than a live
+/// mutant: a generated reducer whose prefix invokes NO macro is not caught here,
+/// because the rule keyword's own bang is followed by an identifier. That shape
+/// is already owned elsewhere — the reducer attribute and the signature appear
+/// verbatim inside the rule body, so rb-46's body extractor parses the generated
+/// reducer exactly as it parses a hand-written one and its clause I counts the
+/// textual return. What is NEW here, and what this row pins, is that the region
+/// reaches INTO a rule body at all.
+fn rb78_fx_generated_reducer() -> Vec<(String, String)> {
+    let q = double_quote();
+    let attr = rb78_attr_reducer();
+    let indented_attr = format!("        {attr}");
+    let gate = format!(
+        "            {call}ctx, $tag)?;",
+        call = rb78_needle_caller_gate()
+    );
+    let invoke = format!("gen_buy!({q}buy{q});");
+    let src = [
+        "use crate::schema::player;",
+        "macro_rules! gen_buy {",
+        "    ($tag:expr) => {",
+        indented_attr.as_str(),
+        "        pub fn buy(ctx: &ReducerContext) -> Result<(), String> {",
+        "            admit!(ctx);",
+        gate.as_str(),
+        "            Ok(())",
+        "        }",
+        "    };",
+        "}",
+        invoke.as_str(),
+    ]
+    .join("\n");
+    vec![("economy.rs".to_string(), src)]
+}
+
+/// F9 — the builder reached through a PATH. Two clauses, deliberately: the
+/// crate-wide re-spelling ban sees the qualifier anywhere in the file, and the
+/// region clause refuses to admit it above a gate. Either alone would leave the
+/// other's blind spot open — a qualified call outside any region, and an
+/// unqualified shadow inside one.
+fn rb78_fx_path_qualified_builder() -> Vec<(String, String)> {
+    let q = double_quote();
+    let attr = rb78_attr_reducer();
+    let gate = rb78_gate_line("gated");
+    let builder = format!(
+        "    let e = std::{b}{q}dup{q});",
+        b = rb78_needle_format_bang()
+    );
+    let src = [
+        "use crate::schema::player;",
+        attr.as_str(),
+        "pub fn gated(ctx: &ReducerContext) -> Result<(), String> {",
+        builder.as_str(),
+        gate.as_str(),
+        "    Ok(())",
+        "}",
+    ]
+    .join("\n");
+    vec![("battle.rs".to_string(), src)]
+}
+
+/// F10 — the builder SHADOWED by a local rule definition, in a SECOND file that
+/// carries no gate at all. Kills a verdict that only scans gate-bearing files:
+/// the shadow lives in the crate root, the divert it enables lives in a reducer
+/// module, and no single file is suspicious on its own.
+fn rb78_fx_shadow_rule_in_second_file() -> Vec<(String, String)> {
+    let attr = rb78_attr_reducer();
+    let gate = rb78_gate_line("gated");
+    let battle = [
+        "use crate::schema::player;",
+        attr.as_str(),
+        "pub fn gated(ctx: &ReducerContext) -> Result<(), String> {",
+        gate.as_str(),
+        "    Ok(())",
+        "}",
+    ]
+    .join("\n");
+    let shadow = format!("macro_rules! {f} {{", f = rb78_token_format());
+    let root = [
+        "mod battle;",
+        shadow.as_str(),
+        "    ($($t:tt)*) => {",
+        "        String::new()",
+        "    };",
+        "}",
+    ]
+    .join("\n");
+    vec![
+        ("battle.rs".to_string(), battle),
+        ("lib.rs".to_string(), root),
+    ]
+}
+
+/// F11 — the builder's NAME bound to another item by a rename import. The
+/// re-spelling clause cannot see this: the name sits directly after an
+/// identifier byte there and is skipped as part of a longer word. This row is
+/// the whole reason the alias clause requires no LEFT boundary.
+fn rb78_fx_rename_import() -> Vec<(String, String)> {
+    let attr = rb78_attr_reducer();
+    let gate = rb78_gate_line("gated");
+    let alias = format!("use game_core::evil as {f};", f = rb78_token_format());
+    let src = [
+        "use crate::schema::player;",
+        alias.as_str(),
+        attr.as_str(),
+        "pub fn gated(ctx: &ReducerContext) -> Result<(), String> {",
+        gate.as_str(),
+        "    Ok(())",
+        "}",
+    ]
+    .join("\n");
+    vec![("battle.rs".to_string(), src)]
+}
+
+/// F12 — the builder's name imported BY NAME from a dependency. The mirror of
+/// F11: here the alias clause is blind (no rename keyword) and the re-spelling
+/// clause carries the rejection, because the name is preceded by a path colon.
+fn rb78_fx_by_name_import() -> Vec<(String, String)> {
+    let attr = rb78_attr_reducer();
+    let gate = rb78_gate_line("gated");
+    let imported = format!("use game_core::{f};", f = rb78_token_format());
+    let src = [
+        "use crate::schema::player;",
+        imported.as_str(),
+        attr.as_str(),
+        "pub fn gated(ctx: &ReducerContext) -> Result<(), String> {",
+        gate.as_str(),
+        "    Ok(())",
+        "}",
+    ]
+    .join("\n");
+    vec![("battle.rs".to_string(), src)]
+}
+
+/// F13 — a RAW IDENTIFIER macro name above the gate. Both clauses must fire: the
+/// region's raw-identifier ban (the spelling that lets a macro wear a keyword
+/// name, which is the only route to claiming an exemption) and the macro clause
+/// itself, which reads the name with the raw prefix stripped off by the
+/// identifier-byte walk.
+fn rb78_fx_raw_identifier_macro() -> Vec<(String, String)> {
+    let attr = rb78_attr_reducer();
+    let gate = rb78_gate_line("gated");
+    let raw = format!("    {r}bail!(ctx);", r = rb77_needle_raw_ident());
+    let src = [
+        "use crate::schema::player;",
+        attr.as_str(),
+        "pub fn gated(ctx: &ReducerContext) -> Result<(), String> {",
+        raw.as_str(),
+        gate.as_str(),
+        "    Ok(())",
+        "}",
+    ]
+    .join("\n");
+    vec![("battle.rs".to_string(), src)]
+}
+
+/// F14 — the legacy macro import in the crate root. Every exported rule of the
+/// dependency lands in the root namespace, so the divert in the reducer module
+/// needs no import line and names nothing importable.
+fn rb78_fx_legacy_macro_import() -> Vec<(String, String)> {
+    let attr = rb78_attr_reducer();
+    let gate = rb78_gate_line("gated");
+    let battle = [
+        "use crate::schema::player;",
+        attr.as_str(),
+        "pub fn gated(ctx: &ReducerContext) -> Result<(), String> {",
+        gate.as_str(),
+        "    Ok(())",
+        "}",
+    ]
+    .join("\n");
+    let legacy = format!("#[{m}]", m = ["macro_", "use"].concat());
+    let root = ["mod battle;", legacy.as_str(), "extern crate game_core;"].join("\n");
+    vec![
+        ("battle.rs".to_string(), battle),
+        ("lib.rs".to_string(), root),
+    ]
+}
+
+/// F15 — a brace CHAR literal in a GATE-BEARING file. It survives the stripper
+/// and strands the region parser's depth counter, so every region below it is
+/// computed from the wrong boundary. The clause is what keeps the brace-only
+/// depth counter honest, and it is scoped to gate-bearing files because the
+/// privacy module spells both braces legitimately and carries no gate.
+fn rb78_fx_brace_char_literal() -> Vec<(String, String)> {
+    let attr = rb78_attr_reducer();
+    let gate = rb78_gate_line("gated");
+    let ch = format!(
+        "pub(crate) const OPEN: char = {c};",
+        c = ["'", "{", "'"].concat()
+    );
+    let src = [
+        "use crate::schema::player;",
+        ch.as_str(),
+        attr.as_str(),
+        "pub fn gated(ctx: &ReducerContext) -> Result<(), String> {",
+        gate.as_str(),
+        "    Ok(())",
+        "}",
+    ]
+    .join("\n");
+    vec![("battle.rs".to_string(), src)]
+}
+
+/// F16 — a NESTED block comment in a gate-bearing file. The stripper stops at
+/// the first closer, so the outer comment's tail reaches this scan as code: a
+/// region boundary, a declaration, anything. Raised as a label rather than the
+/// panic the sibling helpers use, precisely so this row can observe it.
+fn rb78_fx_nested_block_comment() -> Vec<(String, String)> {
+    let attr = rb78_attr_reducer();
+    let gate = rb78_gate_line("gated");
+    let comment = format!(
+        "{open} outer {open} inner {close} ; pub fn decoy() {{}} {close}",
+        open = rb77_needle_open_marker(),
+        close = rb77_needle_close_marker()
+    );
+    let src = [
+        "use crate::schema::player;",
+        comment.as_str(),
+        attr.as_str(),
+        "pub fn gated(ctx: &ReducerContext) -> Result<(), String> {",
+        gate.as_str(),
+        "    Ok(())",
+        "}",
+    ]
+    .join("\n");
+    vec![("battle.rs".to_string(), src)]
+}
+
+/// F17 — a macro in SIGNATURE position. Nothing in the body is touched, so a
+/// body-only scan reads the prefix as empty; the type the macro expands to can
+/// carry the divert through a `From` impl or a default. Caught only because the
+/// region starts at the item boundary rather than at the body brace.
+fn rb78_fx_signature_macro() -> Vec<(String, String)> {
+    let attr = rb78_attr_reducer();
+    let gate = rb78_gate_line("gated");
+    let src = [
+        "use crate::schema::player;",
+        attr.as_str(),
+        "pub fn gated(ctx: &ReducerContext, v: ty!()) -> Result<(), String> {",
+        gate.as_str(),
+        "    Ok(())",
+        "}",
+    ]
+    .join("\n");
+    vec![("battle.rs".to_string(), src)]
+}
+
+/// F18 — a GLOB import from a dependency. The last route by which an exported
+/// rule can shadow the admitted builder with no line in this crate naming it:
+/// the path form, the by-name import and the legacy macro import are each closed
+/// by their own clause above, and none of them sees this one.
+fn rb78_fx_glob_import() -> Vec<(String, String)> {
+    let attr = rb78_attr_reducer();
+    let gate = rb78_gate_line("gated");
+    let src = [
+        "use crate::schema::player;",
+        "use game_core::*;",
+        attr.as_str(),
+        "pub fn gated(ctx: &ReducerContext) -> Result<(), String> {",
+        gate.as_str(),
+        "    Ok(())",
+        "}",
+    ]
+    .join("\n");
+    vec![("battle.rs".to_string(), src)]
+}
+
+/// F20 — the DISCLOSED fail-closed false RED, asserted so the disclosure is
+/// measured rather than promised.
+///
+/// Squashing glues a preceding keyword onto the builder's name, so an honest
+/// `return` of a built string above a gate reads as a macro named
+/// `returnformat` and IS rejected. This is deliberate: the alternative is to
+/// match the six admitted bytes as a SUFFIX, which would then admit the
+/// builder's name wearing ANY prefix an attacker cares to glue in front of it.
+/// When this fires on honest code the remedy is to bind the string to a local
+/// first — never to loosen the byte sequence.
+fn rb78_fx_keyword_glued_builder() -> Vec<(String, String)> {
+    let q = double_quote();
+    let attr = rb78_attr_reducer();
+    let gate = rb78_gate_line("gated");
+    let glued = format!(
+        "        return {b}{q}id{q});",
+        b = rb78_needle_format_bang()
+    );
+    let src = [
+        "use crate::schema::player;",
+        attr.as_str(),
+        "pub fn gated(ctx: &ReducerContext) -> Result<(), String> {",
+        "    fn describe(id: u64) -> String {",
+        glued.as_str(),
+        "    }",
+        "    let label = describe(1u64);",
+        gate.as_str(),
+        "    Ok(())",
+        "}",
+    ]
+    .join("\n");
+    vec![("battle.rs".to_string(), src)]
+}
+
+/// F21 — a raw-string opener with THREE hashes in a gate-bearing module.
+///
+/// The second of the three substrate triggers, and the only one measured on the
+/// RAW text rather than on the stripped view — which is why the literal may sit
+/// ANYWHERE in the file rather than above the gate. The crate's shared
+/// byte-sequential stripper carries a conservative refusal for this construct
+/// (`assert_stripper_preconditions`, `m22s5_assert_source_is_scannable`) because
+/// a hash depth it mis-parses blanks the WRONG byte range: every clause in this
+/// grammar would then read text nobody wrote, and a divert parked in the
+/// mis-blanked span would be invisible while the verdict reported Ok. Re-raised
+/// here as a LABEL rather than a panic so this row can observe it — and the
+/// remedy when it fires is to extend the stripper's hash-depth handling and
+/// re-derive, never to drop the precondition.
+fn rb78_fx_deep_raw_string() -> Vec<(String, String)> {
+    let attr = rb78_attr_reducer();
+    let gate = rb78_gate_line("gated");
+    let deep = format!(
+        "pub(crate) const DOC: &str = {r}{q}note{q}{h};",
+        r = ["r#", "##"].concat(),
+        q = double_quote(),
+        h = ["#", "##"].concat()
+    );
+    let src = [
+        "use crate::schema::player;",
+        deep.as_str(),
+        attr.as_str(),
+        "pub fn gated(ctx: &ReducerContext) -> Result<(), String> {",
+        gate.as_str(),
+        "    Ok(())",
+        "}",
+    ]
+    .join("\n");
+    vec![("battle.rs".to_string(), src)]
+}
+
+/// F22 — an UNPAIRED block-comment opener above the gate, in a gate-bearing
+/// module. The third substrate trigger, and the sharpest of the three.
+///
+/// WHAT THIS ROW ACTUALLY PROVES. The stripper scans forward from the opener for
+/// a closer that never comes, so it blanks the file to its LAST BYTE. The gate
+/// needle is gone with it, the region set is EMPTY, and every macro clause below
+/// is therefore skipped — meaning that WITHOUT this clause the verdict would
+/// return `Ok(())` for a file whose entire contents, diverts included, it never
+/// looked at. That is the one failure mode a source-scan gate cannot survive:
+/// silent, total vacuity that reads exactly like a clean file. The marker-count
+/// check is deliberately taken on the RAW text, because by the time the scan has
+/// the stripped view there is nothing left to count.
+fn rb78_fx_unpaired_block_comment() -> Vec<(String, String)> {
+    let attr = rb78_attr_reducer();
+    let gate = rb78_gate_line("gated");
+    let opener = format!(
+        "{open} the closer is missing on purpose",
+        open = rb77_needle_open_marker()
+    );
+    let src = [
+        "use crate::schema::player;",
+        opener.as_str(),
+        attr.as_str(),
+        "pub fn gated(ctx: &ReducerContext) -> Result<(), String> {",
+        gate.as_str(),
+        "    Ok(())",
+        "}",
+    ]
+    .join("\n");
+    vec![("battle.rs".to_string(), src)]
+}
+
+/// Every source this grammar scans: the crate root, every module `lib.rs`
+/// declares, and the wrapper file itself.
+///
+/// The roster is DERIVED from the crate root's own declarations
+/// ([`rb76_scanned_module_names`], which already includes `lib` and excludes
+/// `guards` plus the sibling test modules), never enumerated — a hand-written
+/// list is exactly the hole a newly added module would walk through. The crate
+/// root and the wrapper file come from the compile-time embeds the sibling
+/// blocks already use; every other module is read from disk at RUN time, which
+/// means a STALE TEST BINARY run over edited sources reports on bytes it did not
+/// compile. That matters only to mutation runners, which must rebuild between
+/// rows.
+fn rb78_live_sources() -> Vec<(String, String)> {
+    let root = env!("CARGO_MANIFEST_DIR");
+    let mut out: Vec<(String, String)> = vec![("lib.rs".to_string(), RB76_LIB_RS.to_string())];
+    for name in rb76_scanned_module_names() {
+        if name == "lib" {
+            continue;
+        }
+        let path = format!("{root}/src/{name}.rs");
+        let src = std::fs::read_to_string(path.as_str()).unwrap_or_else(|err| {
+            panic!(
+                "rb-78 ADR-0248 FAIL (unscanned module): the crate root declares module \
+                 `{name}` but its source could not be read at `{path}` ({err}). An unreadable \
+                 module is an UNSCANNED module and this grammar refuses to skip one: a legacy \
+                 macro import or a glob in ANY module shadows the one admitted builder for the \
+                 whole crate. If the module is path-relocated, teach the derived roster the \
+                 path — never drop the module."
+            )
+        });
+        out.push((format!("{name}.rs"), src));
+    }
+    out.push(("guards.rs".to_string(), GUARDS_RS.to_string()));
+    out
+}
+
+/// Seven squashed function markers that MUST each fall inside some live gate
+/// region — at least one per GATE-BEARING MODULE: battle, economy, pvp, ranking,
+/// trading. Not a floor and not the site set (rb-46 and rb-76 own those).
+///
+/// WHY PER-MODULE COVERAGE, AND NOT FEWER ANCHORS. The per-needle control above
+/// only asks that each of the three wrapper needles matches somewhere in the
+/// crate, and `battle.rs` alone satisfies all three. So with anchors in three
+/// files, `pvp.rs`'s two sites and `ranking.rs`'s one could stop being spelled
+/// fully qualified — an import-shadowed or aliased call — and they would simply
+/// DROP OUT of the region scan: no region, no macro clause, no complaint, while
+/// every other assertion in this test stayed green. One anchor per gate-bearing
+/// module is what makes "the slicer reached this file" an assertion rather than
+/// an assumption. The set also spans all three wrapper needles and the two
+/// awkward framings the live tree carries: a conditional attribute above the
+/// reducer attribute (`start_wild_battle`), and a crate-private helper with no
+/// reducer attribute at all (`begin_encounter`). The third framing — an
+/// argument-count attribute — sits on `propose_trade`, which is deliberately
+/// NOT anchored here: `trading.rs` is already covered by `respond_trade`, and
+/// this list is one anchor per MODULE, not a second site census. If a later
+/// slice removes one of these reducers, re-derive that module's anchor
+/// DELIBERATELY; never just delete the row.
+fn rb78_region_anchors() -> [String; 7] {
+    [
+        ["fnstart_", "battle("].concat(),
+        ["fnbegin_", "encounter("].concat(),
+        ["fnstart_wild_", "battle("].concat(),
+        ["fnrespond_", "trade("].concat(),
+        ["fnb", "uy("].concat(),
+        ["fnchallenge_", "pvp("].concat(),
+        ["fnset_profile_", "name("].concat(),
+    ]
+}
+
+/// The RAW `guards.rs` line marker of this slice's reviewer note (ADR-0248 D5).
+fn rb78_note_marker() -> String {
+    ["// rb-78 (ADR-0", "248)"].concat()
+}
+
+/// The RAW `guards.rs` declaration line of the pure decision seam — the note's
+/// UPPER anchor.
+fn rb78_line_decision_seam() -> String {
+    ["pub(crate) fn deletion_", "gate("].concat()
+}
+
+/// The RAW `guards.rs` declaration line of the caller-only wrapper — the note's
+/// LOWER anchor.
+fn rb78_line_caller_wrapper() -> String {
+    ["pub(crate) fn require_not_", "deleting("].concat()
+}
+
+/// **ADR-0248 D4 (live oracle)** — no macro expands above any of the crate's
+/// fully-qualified deletion gates, the admitted builder's name is neither
+/// re-spelled nor re-bound in any module, and the D5 reviewer note sits between
+/// the pure decision seam and the caller-only wrapper.
+///
+/// The verdict IS the invariant; it already folds in every clause and every
+/// substrate label. The assertions after it are POSITIVE CONTROLS, not floors
+/// for their own sake, and they are what stop this test passing over nothing:
+/// each of the three wrapper needles must still match live text, and the region
+/// slicer must still reach seven named reducer prefixes covering EVERY
+/// gate-bearing module — battle, economy, pvp, ranking, trading. The per-module
+/// spread is the load-bearing half: `battle.rs` alone satisfies all three
+/// needles, so without it an entire other module could stop being scanned and
+/// only the anchors would notice. Without either, a renamed wrapper, a
+/// re-spelled qualification or a stranded depth counter would leave the region
+/// set EMPTY and every macro clause would report Ok about a crate it never
+/// looked at.
+///
+/// THE NOTE CLAUSE IS THE ONLY THING RED AT HEAD, and that is the honest shape
+/// of this slice: the shipped tree is clean, so every macro clause is green by
+/// construction. Proof-of-teeth therefore lives in the fixture matrix below and
+/// in the ledger's X5 live mutant register on the REAL files — a source-scan
+/// gate whose only evidence is "the clean tree passes" has proved nothing.
+///
+/// HONEST LIMIT: source scan. It says no macro is WRITTEN above a gate; it
+/// cannot say the gate runs, that nothing above it returns early by ordinary
+/// means (rb-46 clause I), or that the verdict is correct (the executed
+/// matrices in `battle_tests.rs` / `economy_tests.rs` / this file's rb-76
+/// matrix). It is also blind to a procedural macro, which needs a manifest
+/// dependency and is therefore a different residual class.
+#[test]
+fn rb78_no_macro_expands_above_any_deletion_gate() {
+    let sources = rb78_live_sources();
+
+    if let Err(message) = rb78_macro_verdict(&sources) {
+        panic!(
+            "rb-78 ADR-0248 FAIL (live): the shipped crate violates the macro-expansion \
+             grammar above at least one deletion gate. Every clause below names the rule it \
+             broke. A macro above a gate is the MEASURED CI-clean bypass this block exists \
+             for: it routes every real caller around an authorization check while the gate \
+             statement, its log tag, its `?` and rb-46's textual return census all stay \
+             byte-identically green.\n{message}"
+        );
+    }
+
+    // --- positive controls: the needles and the slicer still reach real text --
+    let squashed: Vec<(String, String)> = sources
+        .iter()
+        .map(|(file, raw)| (file.clone(), rb78_squashed(raw)))
+        .collect();
+    for needle in &rb78_gate_needles() {
+        let hits: usize = squashed
+            .iter()
+            .map(|(_, text)| text.matches(needle.as_str()).count())
+            .sum();
+        assert!(
+            hits >= 1,
+            "rb-78 ADR-0248 FAIL (live control): one of the three fully-qualified deletion-gate \
+             wrapper calls matches NOTHING in the whole crate. This grammar slices its regions \
+             from those call sites, so a needle that matches nothing contributes no region and \
+             every macro clause behind it is vacuous. Either a wrapper was renamed — in which \
+             case re-derive the needle here and re-argue its call sites — or a site stopped \
+             being fully qualified, which is its own defect and is pinned per file by rb-46, \
+             rb-47, rb-76 and m22-s3b. Never delete a needle to make this green."
+        );
+    }
+
+    let regions: Vec<String> = squashed
+        .iter()
+        .flat_map(|(_, text)| rb78_region_texts(text))
+        .collect();
+    for anchor in &rb78_region_anchors() {
+        let found = regions.iter().any(|r| r.contains(anchor.as_str()));
+        assert!(
+            found,
+            "rb-78 ADR-0248 FAIL (live control): no gate region contains the squashed \
+             declaration `{anchor}`, so EVERY GATE-BEARING MODULE NO LONGER CONTRIBUTES AT \
+             LEAST ONE REGION — which is exactly what this control asserts, one anchor per \
+             module across battle, economy, pvp, ranking and trading. The needle control above \
+             cannot see this: `battle.rs` alone satisfies all three wrapper needles, so a whole \
+             other module can fall out of the scan while that count stays happy, and every \
+             macro clause for it is then skipped in silence. The likely causes, in order: that \
+             reducer's gate stopped being fully qualified (an import-shadowed or aliased call), \
+             a brace CHAR literal stranded the depth counter above zero so every later region \
+             starts at the wrong boundary, or the reducer was renamed. Investigate the slicer \
+             against the file, and if the reducer really is gone re-derive that module's anchor \
+             deliberately; never shorten this list to make a build green — a region that \
+             reaches nothing bans nothing."
+        );
+    }
+
+    // --- the D5 reviewer note (the only RED clause at HEAD) ------------------
+    let lines: Vec<&str> = GUARDS_RS.lines().collect();
+    let seam = rb78_line_decision_seam();
+    let wrapper = rb78_line_caller_wrapper();
+    let note = rb78_note_marker();
+    let at = |needle: &str| -> Vec<usize> {
+        lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| line.starts_with(needle))
+            .map(|(i, _)| i)
+            .collect()
+    };
+    let seam_at = at(seam.as_str());
+    let wrapper_at = at(wrapper.as_str());
+    let note_at = at(note.as_str());
+    let n_seam = seam_at.len();
+    let n_wrapper = wrapper_at.len();
+    let n_note = note_at.len();
+
+    assert_eq!(
+        n_seam, 1,
+        "rb-78 ADR-0248 FAIL (note anchor): `guards.rs` has {n_seam} line(s) beginning with the \
+         pure decision seam's declaration and must have exactly one. This is half the positive \
+         control for the clause below: without both anchors the note check would pass by \
+         looking between nothing and nothing."
+    );
+    assert_eq!(
+        n_wrapper, 1,
+        "rb-78 ADR-0248 FAIL (note anchor): `guards.rs` has {n_wrapper} line(s) beginning with \
+         the caller-only wrapper's declaration and must have exactly one. The other half of the \
+         positive control for the clause below."
+    );
+    assert_eq!(
+        n_note, 1,
+        "rb-78 ADR-0248 FAIL (reviewer note, D5): {n_note} line(s) of `guards.rs` begin with \
+         this slice's reviewer note and exactly one must. ZERO IS THE RED STATE AT HEAD and it \
+         is what this slice exists to fix. The note is half the residual's disposition — the \
+         half a reviewer reads without running anything: `guards.rs` is where somebody stands \
+         when they wonder why these wrappers are called the way they are, and the \
+         machine-checked half lives in a test file they may never open. It goes MID-FILE rather \
+         than at the end because `guards.rs` carries no knowledge-bundle line stamp, so an \
+         inserted comment block shifts nothing gated."
+    );
+
+    let note_line = note_at[0];
+    let seam_line = seam_at[0];
+    let wrapper_line = wrapper_at[0];
+    assert!(
+        seam_line < note_line && note_line < wrapper_line,
+        "rb-78 ADR-0248 FAIL (reviewer note, D5 placement): the note sits at line index \
+         {note_line} of `guards.rs`, outside the range between the pure decision seam \
+         ({seam_line}) and the caller-only wrapper ({wrapper_line}). The position is the point: \
+         the note explains why NO macro may expand above a call to the wrappers below it, and a \
+         reader meets it immediately before the first of them. Parked at the top of the file it \
+         is a banner nobody reads; parked at the bottom it is behind every wrapper it \
+         describes."
+    );
+}
+
+/// **ADR-0248 D4 (fixture matrix)** — twenty-one frozen macro-divert inputs
+/// (F1-F18, F20, F21, F22), each rejected by the clause it exists to exercise,
+/// plus two clean controls (F0, F19). All three substrate triggers now have a
+/// row of their own: F16 the nested block comment, F21 the deep raw-string
+/// opener, F22 the unpaired opener that blanks the file to its last byte. No
+/// numeric floor stands on that count anywhere in the code — this sentence is
+/// prose, and it is the reader's map, so keep it true when a row is added.
+///
+/// Every fixture writes its OWN full text from fragments: no shared builder and
+/// no base-plus-mutation, so one bad helper cannot make the whole matrix
+/// vacuous, and no contiguous production marker enters this file's source. The
+/// expected labels are hand-written here and produced independently by the
+/// collector, so the pair is a transcription check rather than a tautology, and
+/// they are asserted by MEMBERSHIP — a genuinely broken source breaks several
+/// clauses at once, and the fixture only claims the one it was written for. The
+/// wrong source each row kills is named in the fixture's own doc comment above.
+///
+/// THE TWO CONTROLS CARRY THE WHOLE MATRIX. F0 holds every shape an over-eager
+/// matcher trips on — a macro-laden reducer ABOVE the gated one, the admitted
+/// builder inside the gated prefix, a logging macro below the gate, three
+/// spellings of a negation, two attributes, an in-crate glob and a paren char
+/// literal — and F19 holds the one keyword exemption that is reachable from
+/// honest code. A grammar that refuses everything proves nothing about the
+/// diverts it is supposed to catch.
+#[test]
+fn rb78_macro_divert_fixtures_are_rejected_by_clause() {
+    if let Err(message) = rb78_macro_verdict(&rb78_fx_clean()) {
+        panic!(
+            "rb-78 ADR-0248 TEETH FAIL (F0 clean control): the verdict REJECTED an honest \
+             source. Every rejection below is meaningless while this is red — and on the real \
+             tree it would be a false RED that invites somebody to widen a clause rather than \
+             fix a defect, which is the one outcome this whole block must not produce.\n\
+             {message}"
+        );
+    }
+    if let Err(message) = rb78_macro_verdict(&rb78_fx_unary_break()) {
+        panic!(
+            "rb-78 ADR-0248 TEETH FAIL (F19 unary-negation control): the verdict REJECTED a \
+             parenthesised unary negation after a keyword. The exemption list exists for \
+             exactly this, it is safe because a macro cannot bear a keyword name without a raw \
+             identifier (its own clause), and it must stay reachable — otherwise the first \
+             honest `break !(flag)` in a gated prefix reds the build.\n{message}"
+        );
+    }
+
+    rb78_assert_rejected(
+        "F1 statement-position macro",
+        rb78_fx_statement_macro(),
+        &["[rb78/macro-above-gate:battle.rs:bail]"],
+    );
+    rb78_assert_rejected(
+        "F2 expression-position macro above the subject gate",
+        rb78_fx_expression_macro(),
+        &["[rb78/macro-above-gate:battle.rs:admit]"],
+    );
+    rb78_assert_rejected(
+        "F3 macro nested in the admitted builder's argument",
+        rb78_fx_nested_in_builder(),
+        &["[rb78/macro-above-gate:battle.rs:evil]"],
+    );
+    rb78_assert_rejected(
+        "F4 brace delimiter above the stamp-aware gate",
+        rb78_fx_brace_macro(),
+        &["[rb78/macro-above-gate:trading.rs:admit]"],
+    );
+    rb78_assert_rejected(
+        "F5 square delimiter",
+        rb78_fx_square_macro(),
+        &["[rb78/macro-above-gate:battle.rs:admit]"],
+    );
+    rb78_assert_rejected(
+        "F6 in-body rule definition plus invocation",
+        rb78_fx_inbody_rule_definition(),
+        &["[rb78/macro-above-gate:battle.rs:rb78_admit]"],
+    );
+    rb78_assert_rejected(
+        "F7 whole-reducer wrapper macro",
+        rb78_fx_whole_fn_wrapper(),
+        &["[rb78/macro-above-gate:economy.rs:wrap]"],
+    );
+    rb78_assert_rejected(
+        "F8 reducer generated from a rule body",
+        rb78_fx_generated_reducer(),
+        &["[rb78/macro-above-gate:economy.rs:admit]"],
+    );
+    rb78_assert_rejected(
+        "F9 path-qualified builder",
+        rb78_fx_path_qualified_builder(),
+        &[
+            "[rb78/format-respelt:battle.rs]",
+            "[rb78/macro-above-gate:battle.rs:format]",
+        ],
+    );
+    rb78_assert_rejected(
+        "F10 builder shadowed by a rule in a second file",
+        rb78_fx_shadow_rule_in_second_file(),
+        &["[rb78/format-respelt:lib.rs]"],
+    );
+    rb78_assert_rejected(
+        "F11 builder name bound by a rename import",
+        rb78_fx_rename_import(),
+        &["[rb78/format-alias:battle.rs]"],
+    );
+    rb78_assert_rejected(
+        "F12 builder name imported by name",
+        rb78_fx_by_name_import(),
+        &["[rb78/format-respelt:battle.rs]"],
+    );
+    rb78_assert_rejected(
+        "F13 raw-identifier macro name",
+        rb78_fx_raw_identifier_macro(),
+        &[
+            "[rb78/raw-ident:battle.rs]",
+            "[rb78/macro-above-gate:battle.rs:bail]",
+        ],
+    );
+    rb78_assert_rejected(
+        "F14 legacy macro import in the crate root",
+        rb78_fx_legacy_macro_import(),
+        &["[rb78/macro-use:lib.rs]"],
+    );
+    rb78_assert_rejected(
+        "F15 brace char literal in a gate-bearing file",
+        rb78_fx_brace_char_literal(),
+        &["[rb78/char-literal-bracket:battle.rs]"],
+    );
+    rb78_assert_rejected(
+        "F16 nested block comment in a gate-bearing file",
+        rb78_fx_nested_block_comment(),
+        &["[rb78/scan-substrate:battle.rs]"],
+    );
+    rb78_assert_rejected(
+        "F17 macro in signature position",
+        rb78_fx_signature_macro(),
+        &["[rb78/macro-above-gate:battle.rs:ty]"],
+    );
+    rb78_assert_rejected(
+        "F18 glob import from a dependency",
+        rb78_fx_glob_import(),
+        &["[rb78/glob-import:battle.rs]"],
+    );
+    rb78_assert_rejected(
+        "F20 disclosed keyword-glued builder (fail-closed false RED)",
+        rb78_fx_keyword_glued_builder(),
+        &["[rb78/macro-above-gate:battle.rs:returnformat]"],
+    );
+    rb78_assert_rejected(
+        "F21 deep raw-string opener in a gate-bearing file",
+        rb78_fx_deep_raw_string(),
+        &["[rb78/scan-substrate:battle.rs]"],
+    );
+    rb78_assert_rejected(
+        "F22 unpaired block-comment opener above the gate",
+        rb78_fx_unpaired_block_comment(),
+        &["[rb78/scan-substrate:battle.rs]"],
+    );
+}

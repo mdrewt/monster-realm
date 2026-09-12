@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** —
 **Extends:** ADR-0227 (the S5 caller-only gate; reciprocal `Extended-by:` in its header, and its stale "still-ungated §4.7 targets" bullet is discharged by a dated amendment there)
-**Extended-by:** ADR-0246 (rb-76 — the scheduler grass path is gated at the `begin_encounter` choke point through the first identity-parameterised member of the deletion-gate family; residual R-rb-46-GRASSPATH closed), ADR-0247 (rb-77 — the crate-root module wiring every rb-46 pin assumes is now gated by an ordinary Rust test; residual R-rb-46-LIBRSMOD closed)
+**Extended-by:** ADR-0246 (rb-76 — the scheduler grass path is gated at the `begin_encounter` choke point through the first identity-parameterised member of the deletion-gate family; residual R-rb-46-GRASSPATH closed), ADR-0247 (rb-77 — the crate-root module wiring every rb-46 pin assumes is now gated by an ordinary Rust test; residual R-rb-46-LIBRSMOD closed), ADR-0248 (rb-78 — clause I's macro residual: no macro invocation may sit between a reducer's item boundary and a deletion-gate call, and `format!(` is the one admitted spelling; residual R-rb-46-MACRORET closed)
 **Subsystems:** security-authz, battle, economy-quests
 **Decision:** rb-46 gates `start_battle`, dev `start_wild_battle`, `buy`, `sell` with `guards::require_not_deleting` as the first check after caller standing, proven by native-host execution plus source pins; the grass path is a disclosed residual.
 
