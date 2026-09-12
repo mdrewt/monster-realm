@@ -5270,3 +5270,997 @@ fn rb47_trading_reducer_roster_is_closed() {
          reducer was renamed or removed and every pin scoped to it is now vacuous."
     );
 }
+
+// ===========================================================================
+// rb-79 (R-rb-46-TRADINGCFG) — ADR-0249: NOTHING MAY PRECEDE `propose_trade`'S
+// DELETION GATE. THE STATEMENT PREFIX ABOVE IT IS BYTE-FROZEN.
+//
+// EARS criteria (ADR-0249 D2 / D5), one label per clause:
+//   RB79-1  `[rb79/twin]`       the squashed FILE spells the gated reducer's
+//                               paren-free declaration exactly once.
+//   RB79-2  `[rb79/extract]`    that reducer's brace-bounded body extracts.
+//   RB79-3  `[rb79/gate-count]` the deletion-gate statement occurs exactly once
+//                               in the body, in either legal spelling.
+//   RB79-4  `[rb79/prefix]`     the squashed text ABOVE the gate EQUALS the
+//                               literal derived from ADR-0166 D3 + ADR-0227
+//                               D3/D4, byte for byte.
+//   RB79-5                      exactly one RAW line of `trading.rs` carries
+//                               this slice's reviewer note, ordered strictly
+//                               between the reducer's declaration line and the
+//                               gate line.
+//
+// WHY EQUALITY, AND NOT A RETURN CENSUS. Measured at be3ff53 before any of this
+// existed (harness `memory/projects/gates/rb-79.red-before.md` §1): seven
+// macro-free predecessors placed directly above the gate are CI-clean — fmt 0,
+// clippy 0, `902 tests run: 902 passed, 0 skipped`. The native host answers the
+// reducer's sender read with the all-zero identity, which IS the wild sentinel
+// (`lib.rs:89`), so a sender-keyed early exit routes every real player around an
+// authorization gate while every executed test still watches the gate fire. Two
+// of the seven beat the cheaper clause a sibling slice uses: one returns a
+// rejection SHAPE, so rb-46's clause-I census reads 1 == 1 and PASSES (fixture
+// F5 proves that in-crate), and one contains no `return` token at all.
+//
+// RED AT HEAD: the note clause of the live test, and only that clause. Every
+// other clause here is GREEN at HEAD by construction — the shipped prefix IS the
+// specified prefix — which is what ADR-0224 calls a hardening pin: its teeth are
+// the executed fixture matrix below plus the live mutant register in the harness
+// repo, not a red-then-green flip of the equality itself.
+// ===========================================================================
+
+/// A blank string literal as [`rb47_stripped`] leaves one: both quote bytes
+/// survive, the payload is swallowed.
+///
+/// Built from the numeric byte on purpose. rb-79 never spells a bare
+/// double-quote CHARACTER anywhere in its source, because a lone quote inside a
+/// char literal is read as a STRING OPENER by every text-level stripper in this
+/// repo and inverts string/code polarity for everything after it — the measured
+/// blast radius is recorded in `m22s5_blank_string_literal`'s doc comment
+/// (:2857). Deliberately NOT that helper: the frozen literal below must not
+/// share a constructor with the pins it is measured against, or a single wrong
+/// edit to one constructor would move the pin and the thing it pins together.
+fn rb79_blank_literal() -> String {
+    let q = char::from(0x22u8).to_string();
+    [q.as_str(), q.as_str()].concat()
+}
+
+/// The gated reducer's bare name, assembled. Split at `propo|se_trade`, which is
+/// neither m22-s5's `propose_|trade` nor rb-47's, so nothing in this file spells
+/// the production symbol contiguously and no clause here can self-match.
+fn rb79_token_propose() -> String {
+    ["propo", "se_trade"].concat()
+}
+
+/// The deletion-gate statement, in BOTH spellings rustfmt can produce: plain and
+/// with a trailing comma, on the strings-blanked view (so the payload reads as an
+/// empty literal — the TAG itself is pinned from `guards_tests.rs` on the
+/// strings-intact view, and no clause here claims it).
+///
+/// Two needles rather than one is not defensive noise: the trailing-comma form is
+/// what rustfmt writes when the argument list wraps, and a pin that knows only
+/// the plain form is defeated by an honest re-wrap — which would silently drop
+/// the gate count to zero and make the prefix slice below meaningless. Control C3
+/// proves the twin form is admitted. Split at `require_|not_deleting(`, which is
+/// neither m22-s5's nor rb-47's split point.
+fn rb79_gate_needles() -> [String; 2] {
+    let blank = rb79_blank_literal();
+    let call = concat!("crate::guar", "ds::require_", "not_deleting(");
+    [
+        [call, "ctx,", blank.as_str(), ")?;"].concat(),
+        [call, "ctx,", blank.as_str(), ",)?;"].concat(),
+    ]
+}
+
+/// The frozen statement prefix above `propose_trade`'s deletion gate: comments
+/// stripped, string payloads blanked, all whitespace squashed. 239 bytes, ZERO
+/// `return` tokens, ZERO braces.
+///
+/// HAND-DERIVED, NEVER READ FROM THE FILE (ADR-0249 D3). The derivation, in the
+/// order the reducer must spell it:
+///
+///   1. the caller binding — the gate is a CALLER-state check, so the identity it
+///      judges is read first (ADR-0227 D3/D4, PRV1-9);
+///   2. both per-side size caps — ADR-0166 D3 decided these are the reducer's
+///      FIRST statements, ahead of ANY DB read, so an unbounded client vector can
+///      never reach a database round trip before something bounds it;
+///   3. the caller-joined lookup with its `ok_or_else` rejection — the gate
+///      belongs with the caller-state preamble, below `who are you` and above
+///      anything about the counterparty;
+///   4. nothing else. That is the whole claim of this slice.
+///
+/// Three defences against the "regenerate the pin from the body" tautology
+/// (memories `pin-literal-built-from-needle-helper`,
+/// `regenerated-freeze-admits-prefix-early-return`): the `concat!` split points
+/// differ from EVERY other needle helper in this file (m22-s5's `propose_|trade`,
+/// `require_not_|deleting(`, `check_trade_|side_size(`,
+/// `player().identity().|find(me)`; rb-47 clause F's `letme=ctx.sen|der();`
+/// family); the blank-literal constructor is this slice's own; and the live test
+/// ties this literal at RUNTIME with a third set of splits — the cap needle twice,
+/// the joined lookup once, the sender read once, the caller binding once,
+/// `crate::` zero times and `return` zero times. Those last three are what a
+/// lockstep regeneration carrying a measured survivor cannot satisfy.
+fn rb79_expected_prefix() -> String {
+    let blank = rb79_blank_literal();
+    [
+        concat!("letme=ctx.send", "er();"),
+        concat!(
+            "check_trade_si",
+            "de_size(initiator_monster_ids.len(),initiator_items.len())?;"
+        ),
+        concat!(
+            "check_trade_si",
+            "de_size(counterparty_monster_ids.len(),counterparty_items.len())?;"
+        ),
+        concat!("ctx.db.pla", "yer().ide", "ntity().fi", "nd(me)"),
+        concat!(".ok_or_el", "se(||"),
+        blank.as_str(),
+        concat!(".to_s", "tring())?;"),
+    ]
+    .concat()
+}
+
+/// The four clauses of ADR-0249 D2 over one source, as a PURE verdict: every
+/// clause that fires contributes a LABEL, and the caller decides what a label
+/// means. No `unwrap`, no `expect`, no `panic!` anywhere in here — a fixture must
+/// be able to observe an extraction failure as a label, and the live test needs
+/// every clause's text in one message rather than the first one under
+/// first-failure-wins.
+///
+/// SKIP SEMANTICS, deliberately not "evaluate everything": extraction failure
+/// skips the two clauses below it (there is no body to read, and a missing
+/// landmark must never read as a satisfied one), and a gate count other than one
+/// skips the prefix clause (the prefix is sliced UP TO the gate, so with no gate
+/// there is no prefix and the strongest clause in this slice would pass by looking
+/// at nothing). The twin clause is independent and always evaluated.
+fn rb79_prefix_verdict(file: &str, raw: &str) -> Result<(), String> {
+    let mut labels: Vec<String> = Vec::new();
+    let stripped = rb47_stripped(raw);
+    let squashed_file = rb47_squash(&stripped);
+    let propose = rb79_token_propose();
+
+    let paren_free = ["fn", propose.as_str()].concat();
+    let n_decl = squashed_file.matches(paren_free.as_str()).count();
+    if n_decl != 1 {
+        labels.push(format!(
+            "[rb79/twin:{file}] the squashed, paren-free declaration bytes of the gated reducer \
+             occur {n_decl} time(s) in the file and must occur exactly ONCE. MORE THAN ONE means \
+             a declaration whose NAME EXTENDS the reducer's sits above it: every body extractor \
+             in this file takes the FIRST hit, so all three clauses below would read the twin's \
+             gate-less body, pass, and say nothing at all about the reducer clients call \
+             (measured register row M8a). ZERO means the reducer was renamed or removed and every \
+             pin scoped to it is vacuous — re-derive them DELIBERATELY from ADR-0249 and the \
+             spec, never by relaxing this count."
+        ));
+    }
+
+    let extracted = m22s5_trading_fn_body(&stripped, propose.as_str());
+    if extracted.is_none() {
+        labels.push(format!(
+            "[rb79/extract:{file}] the brace-bounded body of the gated reducer could not be \
+             sliced out. Raised as a LABEL rather than the LOUD panic `rb47_body` uses, so the \
+             fixture matrix can prove this clause fires at all; on the real file it means the \
+             declaration, its opening brace or its matching close is gone. The two clauses below \
+             are SKIPPED on purpose: there is no body to read, and an absent landmark must never \
+             read as a satisfied pin."
+        ));
+    }
+    if let Some(body) = extracted {
+        let squashed = rb47_squash(&body);
+        let needles = rb79_gate_needles();
+        let n_gate: usize = needles
+            .iter()
+            .map(|n| squashed.matches(n.as_str()).count())
+            .sum();
+        let gate_at = needles
+            .iter()
+            .filter_map(|n| squashed.find(n.as_str()))
+            .min();
+        if n_gate != 1 || gate_at.is_none() {
+            labels.push(format!(
+                "[rb79/gate-count:{file}] the deletion-gate statement occurs {n_gate} time(s) in \
+                 the reducer body, counting BOTH legal spellings, and must occur exactly ONCE. \
+                 ZERO means the gate itself is gone — `m22s5_propose_trade_carries_the_deletion_\
+                 gate` owns that claim and says it louder; it matters HERE because the prefix \
+                 clause slices UP TO the gate, so a missing gate would hand that clause an empty \
+                 comparison and the strongest pin in this slice would pass by looking at nothing. \
+                 TWO means the slice would silently anchor on the first, leaving everything above \
+                 the second unconstrained. The prefix clause is SKIPPED."
+            ));
+        } else if let Some(at) = gate_at {
+            let got = &squashed[..at];
+            let expected = rb79_expected_prefix();
+            if got != expected.as_str() {
+                labels.push(format!(
+                    "[rb79/prefix:{file}] the squashed text ABOVE the deletion gate is not the \
+                     frozen guard prefix.\n      Got:      {got:?}\n      Expected: \
+                     {expected:?}\n      WHAT THIS KILLS: every statement that can run before a \
+                     caller reaches \
+                     the gate. Seven measured CI-clean survivors live in this gap — a sender-keyed \
+                     early `Ok`, a file-scope conditional constant consulted here, a plain `false` \
+                     constant, a combinator that looks like a rejection and evaluates to `Ok`, a \
+                     rejection-SHAPED `return Err(e);` that satisfies rb-46's textual census 1 == \
+                     1, a delegation to an ungated file-scope twin, and a shadow binding of the \
+                     caller to the wild sentinel, which introduces no `return` token at all. It \
+                     incidentally also refuses an attribute on the statement and a hoisted gate; \
+                     `rb47_propose_trade_gate_has_no_attribute_or_cfg_escape` and \
+                     `m22s5_propose_trade_carries_the_deletion_gate` remain the OWNERS of those \
+                     two claims.\n      RE-DERIVATION CONTRACT: this literal comes from ADR-0166 \
+                     D3 and ADR-0227 D3/D4 plus PRV1-9. If a legitimate refactor reds it, \
+                     re-derive it from those decisions and re-argue the placement in a new ADR. \
+                     NEVER paste the current body in to make it green, and never relax the \
+                     equality to `starts_with` or `contains`: both turn the strongest clause in \
+                     this slice into a tautology that admits exactly the seven survivors above."
+                ));
+            }
+        }
+    }
+
+    if labels.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "rb-79 ADR-0249 FAIL — {count} clause(s):\n  - {body}",
+        count = labels.len(),
+        body = labels.join("\n  - ")
+    ))
+}
+
+/// Assert that one fixture is REJECTED, and that each label it exists to exercise
+/// is among the collected ones (MEMBERSHIP, not equality: a genuinely broken
+/// source breaks several clauses at once, and a row only claims the one it was
+/// written for).
+fn rb79_assert_rejected(case: &str, file: &str, raw: &str, expected: &[&str]) {
+    let Err(message) = rb79_prefix_verdict(file, raw) else {
+        panic!(
+            "rb-79 ADR-0249 TEETH FAIL ({case}): the verdict ACCEPTED this source. Every row in \
+             this matrix either routes a real caller around the deletion gate while the gate \
+             statement, its `?`, its brace depth, both ordering anchors and rb-46's textual \
+             return census all stay byte-identically green, or it is an anti-vacuity branch \
+             proving one clause can fire at all. An accepted fixture means the clause it \
+             exercises is missing, was widened, or is shadowed by an earlier one."
+        );
+    };
+    for label in expected {
+        assert!(
+            message.contains(label),
+            "rb-79 ADR-0249 TEETH FAIL ({case}): rejected, but never by the clause `{label}` this \
+             row exists to exercise — that clause is UNPROVEN and some other rule is carrying the \
+             rejection. Collected:\n{message}"
+        );
+    }
+}
+
+/// Assert that one honest fixture is ACCEPTED. The controls carry the whole
+/// matrix: a verdict that refuses everything proves nothing about the bypasses it
+/// is supposed to catch, and on the real tree a false RED invites somebody to
+/// widen a clause instead of fixing a defect.
+fn rb79_assert_accepted(case: &str, file: &str, raw: &str) {
+    let verdict = rb79_prefix_verdict(file, raw);
+    assert_eq!(
+        verdict,
+        Ok(()),
+        "rb-79 ADR-0249 TEETH FAIL ({case}): the verdict REJECTED an honest source. Every \
+         rejection in this matrix is meaningless while a control is red. Collected: {verdict:?}"
+    );
+}
+
+/// The gate statement exactly as `trading.rs:252` spells it — fully qualified,
+/// this reducer's own name as the tag, `?;` — as one indented body line.
+///
+/// Spelled from a DIFFERENT split than `rb79_gate_needles`, so the fixture and the
+/// needle are two independent transcriptions of the same bytes: a typo in either
+/// one reds the F0 control loudly instead of quietly making every rejecting row
+/// vacuous. Shared with the rows that DELETE or re-spell the gate so no row can
+/// drift from the line the builder actually wrote.
+fn rb79_fx_gate_line() -> String {
+    let q = char::from(0x22u8).to_string();
+    let name = rb79_token_propose();
+    let call = concat!("    crate::gua", "rds::require_no", "t_deleting(");
+    let tag = [q.as_str(), name.as_str(), q.as_str()].concat();
+    [call, "ctx, ", tag.as_str(), ")?;"].concat()
+}
+
+/// The reducer's declaration line, as the builder writes it and as the renaming
+/// row locates it.
+fn rb79_fx_decl_line() -> String {
+    let name = rb79_token_propose();
+    ["pub fn ", name.as_str(), "("].concat()
+}
+
+/// A minimal `trading.rs`-shaped source: an unrelated leading function,
+/// `file_scope_extra`, the two real attributes, the reducer's real parameter list,
+/// the five real prefix statements as rustfmt spells them at `trading.rs:234-246`,
+/// `above_gate`, the gate line, `below_gate`, the success tail, and the file's
+/// inline-test-module tail.
+///
+/// Assembled from ITS OWN fragments and NEVER from [`rb79_expected_prefix`]: if
+/// the fixture were built out of the frozen literal, the F0 control would be a
+/// tautology and every rejecting row would be measuring the literal against
+/// itself. The two spellings meet only in the F0 assertion, which is exactly where
+/// a transcription error should surface.
+///
+/// The unrelated leading function is not decoration: it proves the body extractor
+/// reaches the RIGHT function rather than the first one in the file. The line
+/// comment above the gate proves comments are stripped before every clause — so a
+/// reviewer note like the one this slice adds to the real file cannot move a pin
+/// that describes it. Lines are joined with an explicit separator so rustfmt never
+/// reflows the fixture text.
+fn rb79_fx_source(file_scope_extra: &str, above_gate: &str, below_gate: &str) -> String {
+    let q = char::from(0x22u8).to_string();
+    let attr = concat!("#[space", "timedb::reducer]");
+    let decl = rb79_fx_decl_line();
+    let bind = concat!("    let me = ctx.s", "ender();");
+    let cap_a = concat!(
+        "    check_tra",
+        "de_side_size(initiator_monster_ids.len(), initiator_items.len())?;"
+    );
+    let cap_b = concat!(
+        "    check_tra",
+        "de_side_size(counterparty_monster_ids.len(), counterparty_items.len())?;"
+    );
+    let find = concat!("        .f", "ind(me)");
+    let joined = [
+        "        .ok_or_else(|| ",
+        q.as_str(),
+        "not joined",
+        q.as_str(),
+        concat!(".to_", "string())?;"),
+    ]
+    .concat();
+    let gate = rb79_fx_gate_line();
+    let cfg_test = concat!("#", "[cfg(test)]");
+    let tests_path = [q.as_str(), "trading_tests.rs", q.as_str()].concat();
+    let path_attr = ["#[path = ", tests_path.as_str(), "]"].concat();
+    [
+        "fn fixture_unrelated_helper(n: usize) -> usize {",
+        "    n + 1",
+        "}",
+        file_scope_extra,
+        "#[allow(clippy::too_many_arguments)]",
+        attr,
+        decl.as_str(),
+        "    ctx: &ReducerContext,",
+        "    counterparty: Identity,",
+        "    initiator_monster_ids: Vec<u64>,",
+        "    initiator_items: Vec<TradeItem>,",
+        "    initiator_currency: u64,",
+        "    counterparty_monster_ids: Vec<u64>,",
+        "    counterparty_items: Vec<TradeItem>,",
+        "    counterparty_currency: u64,",
+        ") -> Result<(), String> {",
+        bind,
+        "",
+        "    // Guard 0 (ADR-0166 D3): bound both sides BEFORE any DB read.",
+        cap_a,
+        cap_b,
+        "",
+        "    // Must be joined.",
+        "    ctx.db",
+        "        .player()",
+        "        .identity()",
+        find,
+        joined.as_str(),
+        above_gate,
+        "    // Guard 1a (ADR-0227): no NEW commitment for a deletion-gated caller.",
+        gate.as_str(),
+        below_gate,
+        "    Ok(())",
+        "}",
+        cfg_test,
+        path_attr.as_str(),
+        "mod trading_tests;",
+    ]
+    .join("\n")
+}
+
+/// The sender-keyed branch every measured early-exit survivor is built on, with
+/// `body` inside it.
+///
+/// WHY THE COMPARISON IS AGAINST THE WILD SENTINEL: the native host answers the
+/// reducer's sender read with the all-zero identity, which IS that sentinel, so this
+/// branch is never taken under test and is ALWAYS taken for a real player. That
+/// asymmetry is the whole mechanism behind rows F1, F4, F5, F6 and control C2 —
+/// and the reason a behavioural test can never see them. Braces come from numeric
+/// bytes so this file spells no brace-bearing format template.
+fn rb79_fx_sender_branch(body: &str) -> String {
+    let wild = concat!("crate::WILD_", "IDENTITY");
+    let open = char::from(0x7Bu8);
+    let close = char::from(0x7Du8);
+    let head = format!("    if me != {wild} {open}");
+    let tail = format!("    {close}");
+    [head.as_str(), body, tail.as_str()].join("\n")
+}
+
+/// F0 — the pristine control. If this is rejected, no rejection below proves
+/// anything, and on the real tree it would be a false RED inviting somebody to
+/// widen a clause. It also carries the two shapes an over-eager matcher trips on:
+/// an unrelated function ABOVE the reducer and a comment directly above the gate.
+fn rb79_fx_pristine() -> String {
+    rb79_fx_source("", "", "")
+}
+
+/// F1 — register row M3: `if me != <wild> { return Ok(()); }` directly above the
+/// gate. CI-clean at be3ff53 with 902/902 green.
+///
+/// HAND-WRITTEN IN FULL, with split points of its own, as the builder's
+/// transcription check: if `rb79_fx_source` ever drifted from the five real prefix
+/// statements, F0 and this row would disagree about which text the frozen literal
+/// describes. Kills the wrong implementation that keeps the gate statement,
+/// its `?`, its depth 0, both ordering anchors and rb-46's census green while
+/// every real player returns success above it.
+fn rb79_fx_sender_keyed_early_ok() -> String {
+    let q = char::from(0x22u8).to_string();
+    let name = concat!("prop", "ose_trade");
+    let attr = concat!("#[spacetim", "edb::reducer]");
+    let decl = ["pub fn ", name, "("].concat();
+    let bind = concat!("    let me = ctx.sen", "der();");
+    let cap_a = concat!(
+        "    check_trade_",
+        "side_size(initiator_monster_ids.len(), initiator_items.len())?;"
+    );
+    let cap_b = concat!(
+        "    check_trade_",
+        "side_size(counterparty_monster_ids.len(), counterparty_items.len())?;"
+    );
+    let joined = [
+        "        .ok_or_else(|| ",
+        q.as_str(),
+        "not joined",
+        q.as_str(),
+        concat!(".to_st", "ring())?;"),
+    ]
+    .concat();
+    let gate = [
+        concat!("    crate::guards::requi", "re_not_deleting("),
+        "ctx, ",
+        q.as_str(),
+        name,
+        q.as_str(),
+        ")?;",
+    ]
+    .concat();
+    let early = concat!("    if me != crate::WILD_", "IDENTITY { return Ok(()); }");
+    let cfg_test = concat!("#", "[cfg(test)]");
+    [
+        "fn fixture_unrelated_helper(n: usize) -> usize {",
+        "    n + 1",
+        "}",
+        "#[allow(clippy::too_many_arguments)]",
+        attr,
+        decl.as_str(),
+        "    ctx: &ReducerContext,",
+        "    counterparty: Identity,",
+        "    initiator_monster_ids: Vec<u64>,",
+        "    initiator_items: Vec<TradeItem>,",
+        "    initiator_currency: u64,",
+        "    counterparty_monster_ids: Vec<u64>,",
+        "    counterparty_items: Vec<TradeItem>,",
+        "    counterparty_currency: u64,",
+        ") -> Result<(), String> {",
+        bind,
+        "",
+        "    // Guard 0 (ADR-0166 D3): bound both sides BEFORE any DB read.",
+        cap_a,
+        cap_b,
+        "",
+        "    // Must be joined.",
+        "    ctx.db",
+        "        .player()",
+        "        .identity()",
+        concat!("        .fi", "nd(me)"),
+        joined.as_str(),
+        early,
+        "    // Guard 1a (ADR-0227): no NEW commitment for a deletion-gated caller.",
+        gate.as_str(),
+        "    Ok(())",
+        "}",
+        cfg_test,
+        "mod trading_tests;",
+    ]
+    .join("\n")
+}
+
+/// F2 — register row M4: a file-scope constant whose value is a compile-time
+/// configuration test, consulted directly above the gate.
+///
+/// The constant is what makes this survive the sibling pins: rb-47's
+/// conditional-compilation-macro ban is scoped to the reducer BODY and rb-78's
+/// macro ban starts at the reducer's item boundary, so a const above the reducer
+/// is outside both. ADR-0249 D7 records why no file-wide ban on that macro was
+/// added instead: the CONSUMER is what routes the caller, and the consumer is in
+/// the prefix.
+fn rb79_fx_cfg_const_early_ok() -> String {
+    let extra = concat!("const RB79_ENFORCE: bool = cfg", "!(test);");
+    let above = "    if !RB79_ENFORCE {\n        return Ok(());\n    }";
+    rb79_fx_source(extra, above, "")
+}
+
+/// F3 — register row M5: the same consumer behind a plain `false` constant. No
+/// attribute, no macro, no conditional compilation anywhere — the shape that
+/// proves the prefix clause, not a `cfg` census, is what owns this class.
+fn rb79_fx_false_const_early_ok() -> String {
+    let above = "    if !RB79_ENFORCE {\n        return Ok(());\n    }";
+    rb79_fx_source("const RB79_ENFORCE: bool = false;", above, "")
+}
+
+/// F4 — register row M6: `return Err(e).or(Ok(()));` behind the sender test. A
+/// combinator that READS as a rejection and evaluates to success; a reviewer
+/// skimming the diff for `Err` sees a guard.
+fn rb79_fx_err_or_ok() -> String {
+    let body = "        let e = String::new();\n        return Err(e).or(Ok(()));";
+    rb79_fx_source("", rb79_fx_sender_branch(body).as_str(), "")
+}
+
+/// F5 — register row M7: a rejection-SHAPED `return Err(e);` behind the sender
+/// test. THE ROW THAT DOCUMENTS WHY A CENSUS IS NOT ENOUGH: rb-46's clause I
+/// counts `return` tokens against `returnErr(e);` tokens, and on this text both
+/// are one, so that census PASSES while the release wasm routes every real player
+/// around the gate. The matrix proves that arithmetic in-crate rather than
+/// asserting it in prose.
+fn rb79_fx_rejection_shaped_return() -> String {
+    let body = "        let e = String::new();\n        return Err(e);";
+    rb79_fx_source("", rb79_fx_sender_branch(body).as_str(), "")
+}
+
+/// F6 — register row M8: delegation to an ungated file-scope twin (rb-46's shape
+/// 1, ADR-0236). The twin's name does NOT extend the reducer's, so the body
+/// extractor still reads the real reducer and only the prefix clause can see this.
+fn rb79_fx_ungated_delegate() -> String {
+    let extra = "fn open_offer_ungated(_ctx: &ReducerContext) -> Result<(), String> { Ok(()) }";
+    let body = "        return open_offer_ungated(ctx);";
+    rb79_fx_source(extra, rb79_fx_sender_branch(body).as_str(), "")
+}
+
+/// F7 — register row M10: `let me = <wild>;` directly above the gate. It contains
+/// no `return` token at all, so a ported return census cannot see it; every later
+/// check, the gate included, then answers about the wild sentinel instead of about
+/// the caller.
+fn rb79_fx_wild_shadow() -> String {
+    let above = concat!("    let me = crate::WILD_", "IDENTITY;");
+    rb79_fx_source("", above, "")
+}
+
+/// F8 — a conditional-compilation ATTRIBUTE on the gate statement.
+///
+/// OVERLAP DISCLOSED: `rb47_propose_trade_gate_has_no_attribute_or_cfg_escape`
+/// OWNS this class and kills it at HEAD (measured rows M1/M2). The row exists only
+/// to record that the prefix clause refuses it too — an attribute is text above
+/// the gate — so a future reader does not assume the two pins are independent
+/// coverage of one another.
+fn rb79_fx_cfg_attr_on_gate() -> String {
+    let above = concat!("    #", "[cfg(test)]");
+    rb79_fx_source("", above, "")
+}
+
+/// F9 — register row M8a: a file-scope twin whose NAME EXTENDS the reducer's,
+/// declared above it. Every body extractor in this file takes the first hit, so
+/// without the twin clause all three clauses below it would read this twin's
+/// gate-less body and pass. At HEAD this was a scan artifact that nobody had
+/// designed; here it is a named kill. The gate-count label fires too, for the same
+/// reason — the twin's body carries no gate — and the row asserts the twin label
+/// because that is the clause it exists to prove.
+fn rb79_fx_prefix_named_twin() -> String {
+    let name = rb79_token_propose();
+    let twin = [
+        "fn ",
+        name.as_str(),
+        "_ungated(_ctx: &ReducerContext) -> Result<(), String> { Ok(()) }",
+    ]
+    .concat();
+    rb79_fx_source(twin.as_str(), "", "")
+}
+
+/// F10 — the gate statement deleted outright: the anti-vacuity branch for the
+/// prefix clause. A prefix sliced UP TO a gate that is not there would be an empty
+/// comparison, so the count clause must fire FIRST and the prefix clause must be
+/// skipped rather than passing on nothing.
+fn rb79_fx_gate_deleted() -> String {
+    let src = rb79_fx_source("", "", "");
+    let gate = rb79_fx_gate_line();
+    let out = src.replace(gate.as_str(), "    let _ = ctx;");
+    assert_ne!(
+        out, src,
+        "rb-79 ADR-0249 FIXTURE FAIL (F10): the gate line this row deletes was not present in the \
+         builder's output, so the row would assert about a source nobody mutated — the silent \
+         no-op-replace class. Both spellings come from `rb79_fx_gate_line`; keep them that way."
+    );
+    out
+}
+
+/// F11 — the reducer renamed. Two clauses must fire: the twin count drops to zero
+/// and the body extraction fails. A renamed reducer is the failure mode in which
+/// EVERY pin scoped to the old name passes while nothing is pinned at all, so
+/// both clauses have to be loud rather than silently absent.
+fn rb79_fx_renamed_reducer() -> String {
+    let src = rb79_fx_source("", "", "");
+    let decl = rb79_fx_decl_line();
+    let out = src.replace(decl.as_str(), "pub fn open_trade(");
+    assert_ne!(
+        out, src,
+        "rb-79 ADR-0249 FIXTURE FAIL (F11): the declaration line this row rewrites was not \
+         present in the builder's output, so the row would assert about a source nobody mutated."
+    );
+    out
+}
+
+/// C1 — a comment line directly above the gate: ADMITTED. Comments are stripped
+/// before every clause, which is what lets this slice's reviewer note sit in the
+/// prefix region of the real file without moving the pin that describes it.
+fn rb79_fx_comment_above_gate() -> String {
+    let above = "    // a bare comment above the gate — stripped before every clause";
+    rb79_fx_source("", above, "")
+}
+
+/// C2 — the sender-keyed early `Ok` moved BELOW the gate: ADMITTED, and the honest
+/// limit of this whole block. A deleting caller never reaches it, because the gate
+/// above has already returned. Below-the-gate predecessors are m22-s5's
+/// gate-before-the-escrow-insert ordering claim, not this slice's, and a row that
+/// refused them would be claiming coverage this pin does not have.
+fn rb79_fx_early_ok_below_gate() -> String {
+    let body = "        return Ok(());";
+    rb79_fx_source("", "", rb79_fx_sender_branch(body).as_str())
+}
+
+/// C3 — the gate spelled with a trailing comma: ADMITTED. This is what rustfmt
+/// writes when the argument list wraps, so a pin that knew only the plain spelling
+/// would red on an honest re-wrap — and, worse, would report it as a MISSING gate.
+fn rb79_fx_trailing_comma_gate() -> String {
+    let src = rb79_fx_source("", "", "");
+    let gate = rb79_fx_gate_line();
+    let twin = gate.replace(")?;", ",)?;");
+    let out = src.replace(gate.as_str(), twin.as_str());
+    assert_ne!(
+        out, src,
+        "rb-79 ADR-0249 FIXTURE FAIL (C3): the plain gate spelling was not present in the \
+         builder's output, so this control would prove nothing about the trailing-comma form."
+    );
+    out
+}
+
+/// **ADR-0249 D4 (fixture matrix)** — the frozen inputs, each rejected by the
+/// clause it exists to exercise, plus three controls that must be ADMITTED.
+///
+/// THE MAP (prose, so keep it true when a row is added — no numeric row floor
+/// stands on it anywhere in the code): F0 pristine and F1 the hand-written
+/// transcription check; F1-F7 are the seven measured CI-clean survivors M3, M4,
+/// M5, M6, M7, M8 and M10, in register order; F8 records rb-47's attribute class
+/// as overlap; F9, F10 and F11 are the anti-vacuity branches for the twin,
+/// gate-count and extraction clauses; C1, C2 and C3 are the comment, the
+/// below-the-gate predecessor and the trailing-comma gate spelling, all admitted.
+///
+/// Expected labels are hand-written at each call site and produced independently
+/// by the collector, so the pair is a transcription check rather than a tautology,
+/// and they are asserted by MEMBERSHIP: a genuinely broken source breaks several
+/// clauses at once and a row only claims the one it was written for. The wrong
+/// implementation each row kills is named in that row's own doc comment.
+///
+/// THE CONTROLS CARRY THE MATRIX. A verdict that refused everything would pass
+/// every rejecting row here and red the real file on the first honest re-wrap.
+#[test]
+fn rb79_prefix_bypass_fixtures_are_rejected_by_clause() {
+    rb79_assert_accepted(
+        "F0 pristine — the builder transcribes the five real prefix statements",
+        "fixture.rs",
+        &rb79_fx_pristine(),
+    );
+
+    rb79_assert_rejected(
+        "F1 M3 sender-keyed early Ok, hand-written in full",
+        "fixture.rs",
+        &rb79_fx_sender_keyed_early_ok(),
+        &["[rb79/prefix:fixture.rs]"],
+    );
+    rb79_assert_rejected(
+        "F2 M4 file-scope conditional-compilation constant, consumed above the gate",
+        "fixture.rs",
+        &rb79_fx_cfg_const_early_ok(),
+        &["[rb79/prefix:fixture.rs]"],
+    );
+    rb79_assert_rejected(
+        "F3 M5 plain false constant, same consumer",
+        "fixture.rs",
+        &rb79_fx_false_const_early_ok(),
+        &["[rb79/prefix:fixture.rs]"],
+    );
+    rb79_assert_rejected(
+        "F4 M6 rejection-looking combinator that evaluates to Ok",
+        "fixture.rs",
+        &rb79_fx_err_or_ok(),
+        &["[rb79/prefix:fixture.rs]"],
+    );
+    rb79_assert_rejected(
+        "F5 M7 rejection-SHAPED early return that satisfies rb-46's census",
+        "fixture.rs",
+        &rb79_fx_rejection_shaped_return(),
+        &["[rb79/prefix:fixture.rs]"],
+    );
+
+    // F5, second half — the measured reason a census cannot own this class: on the
+    // very text the prefix clause rejects, rb-46's clause I (count of `return`
+    // tokens against count of rejection tokens) reads 1 == 1 and PASSES. Computed
+    // in-crate rather than asserted in prose, with this slice's own splits.
+    let f5 = rb79_fx_rejection_shaped_return();
+    let f5_stripped = rb47_stripped(&f5);
+    let f5_body = rb47_body("fixture.rs", &f5_stripped, rb79_token_propose().as_str());
+    let f5_gate_at = rb79_gate_needles()
+        .iter()
+        .filter_map(|n| f5_body.find(n.as_str()))
+        .min()
+        .unwrap_or_else(|| {
+            panic!(
+                "rb-79 ADR-0249 TEETH FAIL (F5 census): the fixture carries no gate statement, so \
+                 there is no prefix to census and this row's second half would prove nothing. \
+                 Fail LOUD rather than pass vacuously."
+            )
+        });
+    let f5_prefix = &f5_body[..f5_gate_at];
+    let token_return = concat!("ret", "urn");
+    let token_reject = concat!("ret", "urnErr(e);");
+    let n_return = f5_prefix.matches(token_return).count();
+    let n_reject = f5_prefix.matches(token_reject).count();
+    assert_eq!(
+        n_return, 1,
+        "rb-79 ADR-0249 TEETH FAIL (F5 census): the F5 prefix carries {n_return} early-exit \
+         token(s) and this row is built to carry exactly one. Without it the comparison below is \
+         vacuous and the row stops documenting anything."
+    );
+    assert_eq!(
+        n_reject, n_return,
+        "rb-79 ADR-0249 TEETH FAIL (F5 census): rb-46's clause-I census reads {n_reject} == \
+         {n_return} on this text, and this row exists to prove those two numbers AGREE — i.e. \
+         that a ported return census ACCEPTS a prefix which routes every real player around the \
+         gate, while `[rb79/prefix]` refuses it. If they ever disagree, the fixture stopped being \
+         rejection-SHAPED and the argument in ADR-0249 D2 for choosing equality over a census is \
+         no longer demonstrated by this matrix. Do not repair this by editing the census: repair \
+         the fixture."
+    );
+
+    rb79_assert_rejected(
+        "F6 M8 delegation to an ungated file-scope twin",
+        "fixture.rs",
+        &rb79_fx_ungated_delegate(),
+        &["[rb79/prefix:fixture.rs]"],
+    );
+    rb79_assert_rejected(
+        "F7 M10 caller shadowed by the wild sentinel, no return token at all",
+        "fixture.rs",
+        &rb79_fx_wild_shadow(),
+        &["[rb79/prefix:fixture.rs]"],
+    );
+    rb79_assert_rejected(
+        "F8 conditional-compilation attribute on the gate statement (rb-47 owns this class)",
+        "fixture.rs",
+        &rb79_fx_cfg_attr_on_gate(),
+        &["[rb79/prefix:fixture.rs]"],
+    );
+    rb79_assert_rejected(
+        "F9 M8a declaration twin whose name extends the reducer's",
+        "fixture.rs",
+        &rb79_fx_prefix_named_twin(),
+        &["[rb79/twin:fixture.rs]"],
+    );
+    rb79_assert_rejected(
+        "F10 the gate statement deleted",
+        "fixture.rs",
+        &rb79_fx_gate_deleted(),
+        &["[rb79/gate-count:fixture.rs]"],
+    );
+    rb79_assert_rejected(
+        "F11 the reducer renamed",
+        "fixture.rs",
+        &rb79_fx_renamed_reducer(),
+        &["[rb79/twin:fixture.rs]", "[rb79/extract:fixture.rs]"],
+    );
+
+    rb79_assert_accepted(
+        "C1 a comment line directly above the gate",
+        "fixture.rs",
+        &rb79_fx_comment_above_gate(),
+    );
+    rb79_assert_accepted(
+        "C2 the same early Ok BELOW the gate — m22-s5 owns the ordering class",
+        "fixture.rs",
+        &rb79_fx_early_ok_below_gate(),
+    );
+    rb79_assert_accepted(
+        "C3 the gate spelled with a trailing comma, as rustfmt wraps it",
+        "fixture.rs",
+        &rb79_fx_trailing_comma_gate(),
+    );
+}
+
+/// **RB79-1..RB79-5** — the live oracle over the shipped `trading.rs`: nothing
+/// precedes `propose_trade`'s deletion gate, and this slice's reviewer note says so
+/// in the file itself.
+///
+/// WHAT EACH CLAUSE KILLS, in the order they report (weakest claim LAST, because
+/// first-failure-wins means a real violation must be the thing that speaks):
+///
+///   * THE VERDICT. The four clauses of ADR-0249 D2 over the real file, reported
+///     together. This is the security claim: seven macro-free predecessors above
+///     this gate were measured CI-clean at be3ff53 (fmt 0, clippy 0, 902/902), each
+///     routing every real player around an authorization gate while the native
+///     host's all-zero sender kept every executed test watching the gate fire.
+///   * THE ESCROW-INSERT CONTROL. A prefix EQUALITY over the wrong body — or an
+///     empty one — passes while proving nothing, and the extractor takes the first
+///     declaration whose name starts with the reducer's. One insert in the body
+///     read here is what proves the body IS the reducer that escrows assets.
+///   * THE RUNTIME TIE on the frozen literal, with a third set of split spellings.
+///     It exists against ONE failure mode: a lockstep regeneration of the literal
+///     from a body somebody already changed. A literal carrying an early exit, a
+///     path-qualified shadow, a second caller binding or a missing cap cannot
+///     satisfy it, so the frozen text cannot quietly become a photograph of a
+///     defect.
+///   * THE NOTE CLAUSE (ADR-0249 D5) — the only clause that is RED at HEAD. The
+///     ordering is asserted, never a line distance: the note must sit between the
+///     declaration and the gate, and both anchors are asserted UNIQUE so the
+///     ordering cannot pass by looking between nothing and nothing.
+///
+/// ON THE THREE GATE-NEEDLE COPIES IN THIS FILE. The needle helper, the fixture
+/// builder and the note anchor each spell the gate call from their own fragments.
+/// That is the house rule for independent pins, not a DRY defect: a single shared
+/// constructor means one wrong edit moves the pin, the fixture it is proven
+/// against, and the anchor it is ordered against, all at once — and the matrix
+/// would stay green while the file stopped being pinned.
+///
+/// DISCLOSED DEPENDENCY (measured, register row M13). A WIRE-NAME RENAME —
+/// publishing an ungated reducer under this reducer's wire name with a parameterised
+/// reducer attribute, while the Rust item this block reads is demoted to a dead but
+/// still gated function — keeps EVERY clause in this slice green by design, because
+/// every clause here scopes to that item's NAME rather than to the wire name clients
+/// call. It is killed by `rb47_trading_reducer_roster_is_closed`
+/// (:5200) and the m22-s5 gated-reducer censuses in `guards_tests.rs`. ADR-0249 D7
+/// records the decision not to duplicate those pins here.
+///
+/// HONEST LIMITS. A source scan proves what the file SPELLS above the gate, never
+/// what runs. Owned elsewhere and deliberately out of scope: a predecessor BELOW
+/// the gate (control C2; m22-s5's gate-before-the-escrow-insert ordering), a macro
+/// in the prefix (ADR-0248), an attribute on the statement or a conditional-
+/// compilation attribute anywhere in the file (rb-47), a `lib.rs` module swap
+/// (ADR-0247), and a procedural macro,
+/// which needs a manifest edit and is a different residual class.
+#[test]
+fn rb79_propose_trade_admits_no_predecessor_above_its_deletion_gate() {
+    if let Err(message) = rb79_prefix_verdict("trading.rs", TRADING_RS) {
+        panic!(
+            "rb-79 ADR-0249 FAIL (live): the shipped reducer no longer spells the frozen guard \
+             prefix above its deletion gate, or the pin can no longer find what it reads. Every \
+             clause below names the rule it broke. THE MEASURED CLASS: seven macro-free \
+             predecessors in this gap were CI-clean at be3ff53 — fmt 0, clippy 0, `902 tests run: \
+             902 passed` — because the native host answers the sender read with the all-zero \
+             identity, which IS the wild sentinel, so a sender-keyed early exit routes every real \
+             player around the gate while every executed test still watches it fire.\n{message}"
+        );
+    }
+
+    let stripped = rb47_stripped(TRADING_RS);
+    let propose = rb79_token_propose();
+    let body = rb47_body("trading.rs", &stripped, propose.as_str());
+
+    let insert = concat!("(", ").insert(");
+    let n_insert = body.matches(insert).count();
+    assert_eq!(
+        n_insert, 1,
+        "rb-79 ADR-0249 FAIL (live control): the body this pin read performs {n_insert} table \
+         insert(s); the shipped reducer performs exactly one, the escrow write. This is the \
+         anti-vacuity half of the clause above: a prefix EQUALITY over an empty or wrong body \
+         passes while proving nothing, and the extractor takes the FIRST declaration whose name \
+         starts with the reducer's. Zero means this pin stopped reading the reducer that escrows \
+         a player's monsters, items and currency — re-derive the needle deliberately rather than \
+         deleting the control."
+    );
+
+    let expected = rb79_expected_prefix();
+    for (needle, want, what) in [
+        (
+            concat!("check_", "trade_side_size("),
+            2usize,
+            "BOTH per-side DoS caps. ADR-0166 D3 made them the reducer's first statements, ahead \
+             of any DB read; a regeneration that carried only one would freeze a prefix in which \
+             an unbounded client vector reaches a database round trip",
+        ),
+        (
+            concat!("player().ide", "ntity().find(me)"),
+            1usize,
+            "the caller-joined lookup. ADR-0227 D3/D4 puts the gate with the caller-state \
+             preamble, below `who are you`; a literal without it would freeze a prefix that gates \
+             identities which are not players at all",
+        ),
+        (
+            concat!("ctx.se", "nder()"),
+            1usize,
+            "the single read of the caller's identity. Two reads in a frozen prefix would mean a \
+             second, unexamined binding had been accepted into it",
+        ),
+        (
+            concat!("let", "me="),
+            1usize,
+            "the caller binding, exactly once. A second binding of the same name is a SHADOW, \
+             which is how measured row M10 answers every later check about the wild sentinel \
+             while introducing no early exit for a census to find",
+        ),
+        (
+            concat!("crate", "::"),
+            0usize,
+            "no path-qualified item anywhere in the prefix. This is what a lockstep regeneration \
+             carrying M10's `let me = <wild>;` shadow would have to add, and M10 contains no \
+             `return` token, so the next tie is the only other thing that could see it",
+        ),
+        (
+            concat!("ret", "urn"),
+            0usize,
+            "no early exit of ANY shape. This is what a lockstep regeneration carrying M3-M8 \
+             would have to add: a sender-keyed `Ok`, a conditional constant's consumer, a \
+             rejection-shaped `Err`, or a delegation to an ungated twin",
+        ),
+    ] {
+        let n = expected.matches(needle).count();
+        assert_eq!(
+            n, want,
+            "rb-79 ADR-0249 FAIL (runtime tie): the frozen literal contains `{needle}` {n} \
+             time(s) and the derivation in ADR-0249 D3 requires {want}. THIS CLAUSE GUARDS ONE \
+             FAILURE MODE: a literal regenerated from a body somebody already changed, which \
+             would make the strongest pin in this slice a photograph of the defect. The \
+             derivation requires {what}. Re-derive from ADR-0166 D3 and ADR-0227 D3/D4, never \
+             from the file."
+        );
+    }
+
+    let lines: Vec<&str> = TRADING_RS.lines().collect();
+    let decl = concat!("pub fn propo", "se_trade(");
+    let gate_head = concat!("crate::guards::require_", "not_deleting(ctx,");
+    let marker = ["// rb-79 (ADR-0", "249)"].concat();
+    let at = |needle: &str| -> Vec<usize> {
+        lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| line.trim_start().starts_with(needle))
+            .map(|(i, _)| i)
+            .collect()
+    };
+    let decl_at = at(decl);
+    let gate_at = at(gate_head);
+    let note_at = at(marker.as_str());
+    let n_decl = decl_at.len();
+    let n_gate = gate_at.len();
+    let n_note = note_at.len();
+
+    assert_eq!(
+        n_decl, 1,
+        "rb-79 ADR-0249 FAIL (note anchor): {n_decl} raw line(s) of `trading.rs` begin with the \
+         gated reducer's declaration and exactly one must. This is half the positive control for \
+         the note clause below: without both anchors that clause would pass by looking between \
+         nothing and nothing."
+    );
+    assert_eq!(
+        n_gate, 1,
+        "rb-79 ADR-0249 FAIL (note anchor): {n_gate} raw line(s) of `trading.rs` begin with the \
+         deletion-gate call and exactly one must. The other half of the positive control. Note \
+         this anchor reads the RAW line, so it is the one clause here that would also see a gate \
+         moved into a string or a comment."
+    );
+    assert_eq!(
+        n_note, 1,
+        "rb-79 ADR-0249 FAIL (reviewer note, D5): {n_note} line(s) of `trading.rs` begin with \
+         this slice's reviewer note and exactly one must. ZERO IS THE RED STATE AT HEAD and it is \
+         what the production edit of this slice supplies. The note is the half of the residual's \
+         disposition a reviewer reads without running anything: `trading.rs:252` is where \
+         somebody stands when they wonder what may be written above this gate, and the \
+         machine-checked half lives in a test file they may never open. MORE THAN ONE is refused \
+         too — a second marker line is how the clause below would be satisfied by a forgery \
+         parked anywhere convenient."
+    );
+
+    let decl_line = decl_at[0];
+    let note_line = note_at[0];
+    let gate_line = gate_at[0];
+    assert!(
+        decl_line < note_line && note_line < gate_line,
+        "rb-79 ADR-0249 FAIL (reviewer note, D5 placement): the note sits at line index \
+         {note_line}, outside the range between the reducer's declaration ({decl_line}) and its \
+         deletion gate ({gate_line}). ORDERING ONLY, never a line distance: a window would break \
+         on the next honest edit to the guard prose, and the claim is about what a reader meets \
+         on the way from the signature to the gate — parked above the declaration the note is a \
+         banner attached to nothing, parked below the gate it explains a statement the reader has \
+         already passed."
+    );
+}
