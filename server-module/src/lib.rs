@@ -82,7 +82,9 @@ pub(crate) const ZONE_0: u32 = 0;
 ///   +12 / SpeciesRow.tier columns, new public evolution_path table seeded from
 ///   the evolution_paths registry; fusion content removed (stale fusion rows
 ///   cleared, no reseed) and the evolutions trigger registry deleted.
-pub(crate) const CONTENT_VERSION: u32 = 21;
+/// v22 (rb-82): comment-only correction in two species .ron files — no row
+///   change; bumped only because the content hash covers raw bytes.
+pub(crate) const CONTENT_VERSION: u32 = 22;
 pub(crate) const SPRITE_PLAYER: u32 = 0;
 pub(crate) const MAX_NAME_LEN: usize = 24;
 pub(crate) const MAX_PARTY_SIZE: u8 = game_core::PARTY_SIZE; // SSOT (ADR-0052)

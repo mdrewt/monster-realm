@@ -33,8 +33,9 @@
     // Aurelith (Light, special wall) — hp 88, defense 92 and sp_defense 92 all
     // sit under Stoneward's 90/105/100 and Tempestrix's 92/-/96 on purpose:
     // wave 3 completes the roster, it does not top it. Ability 3 is NOT taken —
-    // Tempestrix owns the Regeneration pivot, and a second copy would make the
-    // two walls interchangeable. Skill id=5 Vine Whip is added so the wall has
+    // Sproutlet, Stoneward and Tempestrix already share the Regeneration pivot,
+    // and a fourth copy on the other wall would make the two walls
+    // interchangeable. Skill id=5 Vine Whip is added so the wall has
     // a non-Light attacking option that is not blanked by the Dark matchup.
     // BST 476, high in the 450..=479 tier-1 span but still under Pyroleo's 479.
     (
