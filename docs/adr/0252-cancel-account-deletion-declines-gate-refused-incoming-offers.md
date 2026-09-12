@@ -45,7 +45,9 @@ Given the caller's row **before** the cancel writes it and the caller's live inc
 `opened_commitment_is_refused(account, created_at_ms)` refuses. Composed DIRECTLY over the rb-47 SSOT — the
 comparison, the inclusive boundary, the terminal arm and the fail-closed `None` arm are all inherited, never
 re-derived (ADR-0225, ADR-0237 D1). On the illegal stamp-less `PendingDeletion` shape the SSOT refuses at every
-stamp, so every incoming offer is swept: the fail-closed direction. On an `Active` row the SSOT admits everything,
+stamp, so every incoming offer is swept — including a `ConfirmedByCounterparty` one the initiator was about to
+confirm; that collateral is the fail-closed direction, and the shape is one `account_state_is_legal` forbids. On
+an `Active` row the SSOT admits everything,
 which is the second reason (after placement) that the sweep can never fire on the AUTH-38 no-op path. Mirrors the
 `plan_deletion_rearms` shape (a pure filter/map over rows, executed in tests by truth table).
 
@@ -129,7 +131,9 @@ Pinned: the call-site statement exactly once at depth 0, after the gate and befo
 `return` token between, no rebinding of `account`, no clock read in the body, and the whole squashed prefix above
 it frozen byte for byte (rb-79 shape); whole-body equality on all three new functions (ADR-0237 D6's lesson);
 declaration counts; the `#[cfg` / `#![cfg` file counts; the seam bans on `trading.rs`; the disarm-before-delete
-order inside `decline_offers`; and a fifth site in EA-REAPER-02. **Substrate finding, measured by the plan
+order inside `decline_offers`; and a fifth site in EA-REAPER-02. A planned separate "no new bare `log::`" clause
+was not written: the three frozen bodies contain no log call, so whole-body equality subsumes it, and the
+`.log-baseline` rows are unchanged. **Substrate finding, measured by the plan
 red-team:** `accounts_tests.rs`'s `stripped_for_scan` blanks strings BEFORE comments, so a bare double quote inside
 a `//` comment opens a phantom string that hides a real statement — including a same-name rebinding of `account`
 to the post-cancel row placed above the sweep — from every positional clause in that file. The rb-83 clauses
@@ -169,10 +173,20 @@ clauses in that file are not re-cut here; both classes are registered as R-rb-83
 - **Residual R-rb-83-CHALLENGELAUNDER (backlog, MED).** `pvp::accept_challenge` is BLANKET-gated with no stamp-aware
   sibling, so the identical cancel-then-accept-while-momentarily-Active shape exists for `battle_challenge`;
   bounded by the two-minute challenge TTL; `pvp.rs` is outside this slice's touches.
-- **Residual R-rb-83-CANCELORACLE (backlog, LOW).** The sweep deletes, in one transaction, every refused offer
-  naming the caller — a confederate who planted probe offers at known stamps learns, from which vanish together,
-  both that D cancelled and roughly where D's request stamp fell: a sharper timing channel than a per-offer
-  decline or TTL death. Not closable without abandoning the cancel-time design; recorded for a privacy audit.
+- **Residual R-rb-83-CANCELORACLE (backlog, MED per the reducer-security auditor).** Before this slice a cancel
+  transaction wrote only private rows (`account`, read through the owner-scoped `my_account` view, and the private
+  reaper schedule), so no third party ever received a transaction update for it. The sweep makes the cancel
+  transaction delete a row of the PUBLIC `trade_offer` table, which every client subscribes to unfiltered
+  (ADR-0106 W3 — per-row RLS is a future), so a cancel becomes observable to non-callers for the first time: a
+  confederate whose post-request offer disappears at an instant that is neither its TTL nor any action of their
+  own learns that D held a pending deletion stamped at or before the offer and cancelled it then. One bit per
+  cancel, not a batch — TR-20 (one active offer per identity) means at most one offer ever names D. Not closable
+  without abandoning the cancel-time design (deferring the sweep to a scheduled reducer would leave D `Active` with
+  the refused offer live and reopen the residual). Acceptance step for the audit: measure whether the pinned host
+  attaches the reducer name and caller identity to the transaction update delivered to non-callers.
+- **Residual R-rb-83-TRADEOFFER-RLS (backlog, LOW).** `trade_offer` is public and subscribed unfiltered by every
+  client, so every offer in the game is world-readable — pre-existing (ADR-0106 W3), but rb-83 is the first change
+  to route a privacy-milestone state transition through that table; the per-row RLS future should cite M22.
 - **Residual R-rb-83-SPECPRV13 (backlog, LOW, supervisor-owned).** The harness spec's PRV1-3 needs a sibling clause
   naming the sweep so the spec describes shipped behaviour.
 - **Residual R-rb-83-SCANORDER (backlog, MED).** Every pre-existing positional pin built on
