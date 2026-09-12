@@ -5,7 +5,7 @@ slug: reducers/essence_train
 updated: 2026-09-11
 tags: [reducer, spacetimedb, raising]
 abstract: "Essence-train a monster: +ESSENCE_TRAIN_AMOUNT to ONE pool, gated by the shared 5 h cooldown (EG2-3). Full care-shaped …"
-resource: server-module/src/raising.rs#L625
+resource: server-module/src/raising.rs#L627
 source: scripts/okf-export.mjs@server-module/src/raising.rs
 ---
 

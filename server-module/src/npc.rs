@@ -235,6 +235,8 @@ pub fn talk(ctx: &ReducerContext, npc_entity_id: u64) -> Result<(), String> {
     let Some(p) = ctx.db.player().identity().find(me) else {
         return Err("not joined".to_string());
     };
+    // Deletion gate (ADR-0250 D2, spec para 4.7): right after the joined check, before any NPC read.
+    crate::guards::require_not_deleting(ctx, "talk")?;
     let Some(player_char) = ctx.db.character().entity_id().find(p.entity_id) else {
         return Err("character not found".to_string());
     };
@@ -334,6 +336,8 @@ pub fn advance_dialogue(ctx: &ReducerContext, choice_idx: u32) -> Result<(), Str
     let Some(p) = ctx.db.player().identity().find(me) else {
         return Err("not joined".to_string());
     };
+    // Deletion gate (ADR-0250 D3, spec para 4.7): after the joined check, before the dismissing NPC reads.
+    crate::guards::require_not_deleting(ctx, "advance_dialogue")?;
     let Some(player_char) = ctx.db.character().entity_id().find(p.entity_id) else {
         return Err("character not found".to_string());
     };

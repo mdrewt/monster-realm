@@ -162,9 +162,9 @@ recorded here so it is not re-run:
 | Shop purchase | Cheapest stocked item is 150g (`game-core/content/shops/000-core.ron:19`); the only currency faucet yields 50g. Unreachable. |
 | `quest_001` reward | `xp: 0, items: [], currency: 50` (`game-core/content/quests/000-core.ron:12-16`) — **no items**. |
 | Starter loadout | No starter items are granted. |
-| Battle drops | No such path: the production `grant_item` call sites are `npc.rs:140` (dialogue `GrantItem`), `npc.rs:215` (quest-completion reward items), `economy.rs:165` (buy), `trading.rs:713` (the swap itself) and `taming.rs:295` (`grant_bait`). None is battle-driven. |
+| Battle drops | No such path: the production `grant_item` call sites are `npc.rs:140` (dialogue `GrantItem`), `npc.rs:215` (quest-completion reward items), `economy.rs:165` (buy), `trading.rs:713` (the swap itself) and `taming.rs:297` (`grant_bait`). None is battle-driven. |
 | Dialogue `GrantItem` effect | The route exists (`npc.rs:140`) but **zero shipped content uses it** — no `GrantItem` occurrence anywhere under `game-core/content/`. |
-| `grant_bait` | Doubly blocked: `#[cfg(feature = "dev_reducers")]` (`taming.rs:280`) **and** self-scoped to `ctx.sender` (`taming.rs:283`, `:295`), so a CLI-identity call cannot seed a browser identity. |
+| `grant_bait` | Doubly blocked: `#[cfg(feature = "dev_reducers")]` (`taming.rs:280`) **and** self-scoped to `ctx.sender` (`taming.rs:283`, `:297`), so a CLI-identity call cannot seed a browser identity. |
 | `qty == 0` proposals | Rejected upstream (`game-core/src/trading/rules.rs:93`), so the degenerate boundary is not a probe. |
 
 Unblocker for both: a **`client/src` grant hook** slice (which also revives

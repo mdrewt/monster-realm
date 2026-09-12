@@ -3304,3 +3304,933 @@ fn rb41_has_heal_cooldown_tracks_real_cooldown_rows() {
         fx.requested_indexes()
     );
 }
+
+// ===========================================================================
+// rb-80 — R-rb-46-ERASEWRITERS (ADR-0250 D1/D7/D8): the para-4.7 deletion gate
+// on `heal_party`.
+//
+// E1 (spec M22 §4.7): WHEN `raising::heal_party` writes an ERASE-policy table
+// for a mid-grace or terminal caller THE SYSTEM SHALL refuse BEFORE the write.
+// `heal_party` debits `player_wallet` through the shop's own `spend_currency`
+// (raising.rs:364), consumes `inventory` (:372), writes `monster` /
+// `monster_pub` (:395-396) and `heal_cooldown` (:412) — four ERASE-policy
+// tables the cascade is about to erase, so §4.7's trigger predicate selects it
+// exactly as it selected `buy` / `sell` ("the builder does not get to re-decide
+// this").
+//
+// THREE WITNESSES, ONE CRITERION:
+//   * the EXECUTED five-state matrix — the verdict really does change with the
+//     CALLER's own account row (rb-41 native host);
+//   * the SOURCE pins — the facts execution cannot see: the fully-qualified
+//     spelling, `?;`, brace depth zero, the statement boundary, the FROZEN
+//     prefix above the gate, the ordering against the first write, the tag;
+//   * the FILE census — what this slice deliberately leaves open, mechanically.
+//
+// SCAN SUBSTRATE. Every scan reuses THIS file's existing helpers only
+// (`RAISING_SOURCE`, `strip_raising_comments`, `blank_heal_scan_strings`,
+// `assert_no_heal_scan_landmines`, `reducer_body`, `eg2_scan_body`) — no third
+// stripper (ADR-0003). Every production needle is assembled from fragments and
+// the double quote and both braces are spelled as NUMBERS: four evals
+// concatenate every `.rs` under `server-module/src` and take the FIRST hit of a
+// declaration needle, and this file sorts before `taming.rs`.
+//
+// HONEST LIMITS, stated once for the block. The source pins read text, never
+// behaviour. The executed matrix reads behaviour but stops at the first guard
+// PAST the gate: `Fixture::table` keys rows by the indexed column, so the
+// `u64`-keyed `character` index is never seeded, an unregistered index yields
+// no rows in this host, and every write syscall ABORTS the process (uncatchable,
+// so `#[should_panic]` is not available). What it proves is that a
+// deletion-gated caller is REFUSED exactly where an admitted one is let
+// through — not that a wallet moved.
+// ===========================================================================
+
+/// The fully-qualified gate call, up to and including its open paren.
+fn rb80_gate_opener() -> String {
+    ["crate::guards::require_not_", "deleting("].concat()
+}
+
+/// The bare wrapper name — what an alias, a re-export, a function-pointer
+/// binding or a differently-argued sibling all still mention.
+fn rb80_gate_bare_name() -> String {
+    ["require_not_", "deleting"].concat()
+}
+
+/// The gate STATEMENT in both spellings rustfmt can produce, on the view
+/// `blank_heal_scan_strings` leaves behind.
+///
+/// That blanker discards the string DELIMITERS as well as the payload, so the
+/// reducer tag reads as nothing at all on this view — which is why the tag is
+/// pinned separately, on the strings-INTACT view, by clause T. Two needles
+/// rather than one: the trailing-comma form is what rustfmt writes when the
+/// argument list wraps, and a pin that knows only the plain form is defeated by
+/// an honest re-wrap, which would silently drop the gate count to zero and make
+/// every clause below it meaningless.
+fn rb80_gate_needles() -> (String, String) {
+    let call = rb80_gate_opener();
+    (
+        [call.as_str(), "ctx,)?;"].concat(),
+        [call.as_str(), "ctx,,)?;"].concat(),
+    )
+}
+
+/// `raising.rs` with comments stripped, string literals blanked and ALL
+/// whitespace removed — the three stages `eg2_scan_body` applies to one body,
+/// applied to the whole file.
+fn rb80_squashed_file() -> String {
+    assert_no_heal_scan_landmines(RAISING_SOURCE);
+    let stripped = blank_heal_scan_strings(&strip_raising_comments(RAISING_SOURCE));
+    stripped.split_whitespace().collect()
+}
+
+/// The comments-stripped, strings-INTACT, whitespace-squashed body of a
+/// `raising.rs` reducer: `eg2_scan_body`'s view MINUS the string blanking, and
+/// the only view on which the reducer TAG inside the gate call is visible.
+///
+/// Sound here for the same reason the H-3 fence at :1168 is sound on it: the
+/// braces inside `heal_party`'s one hand-built JSON log line are BALANCED, so
+/// `reducer_body`'s depth walk still closes on the body's own brace.
+fn rb80_intact_body(fn_needle: &str) -> String {
+    let stripped = strip_raising_comments(RAISING_SOURCE);
+    let body = reducer_body(&stripped, fn_needle);
+    body.split_whitespace().collect()
+}
+
+/// The two brace CHAR literals this file's blanker KEEPS and `reducer_body`'s
+/// depth walk would mis-count.
+///
+/// `assert_no_heal_scan_landmines` (:1013) already owns the raw-string and
+/// double-quote-char hazards; these are the third and fourth, and they are
+/// asserted on the RAW file for the same reason: on a blanked view the check is
+/// tautologically true and proves nothing.
+fn rb80_assert_no_brace_char_landmines(raw: &str) {
+    let sq = char::from(0x27u8).to_string();
+    for code in [0x7Bu8, 0x7Du8] {
+        let brace = char::from(code).to_string();
+        let landmine = [sq.as_str(), brace.as_str(), sq.as_str()].concat();
+        assert!(
+            !raw.contains(landmine.as_str()),
+            "rb-80 [rb80/scan-substrate] SCAN PRECONDITION: `raising.rs` contains the character \
+             literal {landmine} , which this file's blanker keeps. Its brace desynchronises \
+             `reducer_body`'s depth walk and clause C's depth count by exactly one — enough to \
+             slice the wrong body, and enough to make a gate nested inside a never-taken branch \
+             report as a top-level statement. Spell the character with a Unicode escape \
+             (`guards.rs::json_escape` is the in-tree precedent) or teach the walker about char \
+             literals; never delete this check."
+        );
+    }
+    // rb-80 (verifier V1): a PLAIN raw string, not only the `r#` opener, also
+    // defeats this file's blanker (no raw-string lexer: the backslash before the
+    // real closer is read as an escape, the closer is swallowed, and every byte up
+    // to the next quote is blanked). MEASURED: it hid a below-gate early exit from
+    // the return census while every other clause stayed green. Reject any `r`
+    // directly followed by a double quote whose preceding byte is not an
+    // identifier byte (a byte-string `br` opener counts too).
+    let rdq = char::from(0x22u8).to_string();
+    let raw_str_opener = ["r", rdq.as_str()].concat();
+    let raw_bytes = raw.as_bytes();
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == 0x5Fu8;
+    for (at, _) in raw.match_indices(raw_str_opener.as_str()) {
+        let opener = match at {
+            0 => true,
+            1 => raw_bytes[0] == 0x62u8,
+            _ => {
+                !is_ident(raw_bytes[at - 1])
+                    || (raw_bytes[at - 1] == 0x62u8 && !is_ident(raw_bytes[at - 2]))
+            }
+        };
+        assert!(
+            !opener,
+            "rb-80 [rb80/scan-substrate] SCAN PRECONDITION: `raising.rs` spells a raw-string opener at \
+             byte {at}. This file's blanker has no raw-string lexer: a backslash before the real \
+             closer is read as an escape, the closer is swallowed, and every byte up to the next \
+             quote is blanked — MEASURED (verifier V1) to hide a below-gate early exit from the \
+             return census while every other clause stayed green. Spell the literal as an \
+             ordinary string, or teach the blanker raw strings; never delete this check."
+        );
+    }
+}
+
+/// The FROZEN statement prefix above `heal_party`'s deletion gate: comments
+/// stripped, string literals AND their delimiters blanked, all whitespace
+/// removed.
+///
+/// HAND-DERIVED, NEVER READ FROM THE FILE (ADR-0250 D1, ADR-0227 D3/D4,
+/// PRV1-9). The derivation, in the order the reducer must spell it:
+///   1. the caller binding — the gate is a CALLER-state check, so the identity
+///      it judges is read first;
+///   2. Step 1's joined let-else with its rejection — the gate belongs with the
+///      caller-state preamble, below "who are you" and above the character row,
+///      the heal-location content read and every write;
+///   3. nothing else. That is the whole claim of this test.
+///
+/// Compared by EQUALITY, never `starts_with`/`contains`: an equality is the only
+/// shape that refuses a statement nobody thought to enumerate. The split points
+/// differ from every other needle helper in this file (`pub fn heal|_party(ctx:`,
+/// `content_cache::cached_heal|_locations(`, `spend|_currency(ctx,`) so a single
+/// wrong edit cannot move the pin and the text it is compared against together.
+fn rb80_heal_party_prefix() -> String {
+    let open = char::from(0x7Bu8).to_string();
+    let close = char::from(0x7Du8).to_string();
+    [
+        concat!("letme=ctx.sen", "der();"),
+        concat!(
+            "letSome(p)=ctx.db.pla",
+            "yer().ide",
+            "ntity().fin",
+            "d(me)else"
+        ),
+        open.as_str(),
+        concat!("returnErr(.to_st", "ring());"),
+        close.as_str(),
+        ";",
+    ]
+    .concat()
+}
+
+/// Assert that `fn_name`'s body in `raising.rs` carries the deletion gate
+/// exactly once, as a reachable top-level `?`-propagating statement that nothing
+/// above it can skip, with the FROZEN prefix above it and the ordering anchors
+/// around it.
+///
+/// A per-file copy of the `economy_tests.rs` / `battle_tests.rs` helpers of the
+/// same shape, and deliberately so: every `*_tests.rs` is a `cfg(test)`
+/// submodule of its own production file and none can reach another's bare `fn`
+/// items, so sharing would need a new `pub(crate) mod` (the precedent
+/// `content_cache_tests.rs:361-368` records for its own stripper copies). The
+/// copies differ in SUBSTRATE: this one runs on a view where the string
+/// delimiters are gone.
+///
+/// Not a `#[test]`: it is driven once per gated reducer so each failure names
+/// its own reducer. EVERY clause is required and NONE may be relaxed to make a
+/// build green — a pin that cannot be satisfied is a plan defect, to be
+/// re-derived from ADR-0250 and the spec.
+///
+/// CLAUSE ORDER IS DELIBERATE. Clause A (the gate exists) reports FIRST because
+/// it is the security claim and first-failure-wins; the prefix freeze and the
+/// ordering clauses are meaningless while the gate is absent.
+fn rb80_assert_gate_pinned(
+    fn_name: &str,
+    expected_prefix: &str,
+    ties: &[(&str, usize)],
+    above: &[(&str, &str)],
+    below: &[(&str, &str)],
+) {
+    // --- Clause 0b/0c: the substrate landmines, on the RAW file --------------
+    assert_no_heal_scan_landmines(RAISING_SOURCE);
+    rb80_assert_no_brace_char_landmines(RAISING_SOURCE);
+
+    // --- Clause 0a: exactly ONE declaration to scan, paren-free --------------
+    let squashed_file = rb80_squashed_file();
+    let paren_free = ["fn", fn_name].concat();
+    let n_decl = squashed_file.matches(paren_free.as_str()).count();
+    assert_eq!(
+        n_decl, 1,
+        "rb-80 [rb80/twin] SCAN PRECONDITION: the squashed, paren-free declaration bytes of \
+         `{fn_name}` occur {n_decl} time(s) in `raising.rs` and must occur EXACTLY once. MORE \
+         THAN ONE means a second declaration whose NAME EXTENDS this one's exists in the file; \
+         `reducer_body` takes the FIRST hit, so a twin placed above would hand every clause \
+         below a gate-less body that passes and says nothing about the reducer clients call. \
+         ZERO means the reducer was renamed or removed and every pin scoped to it is vacuous — \
+         re-derive them from ADR-0250, never by relaxing this count."
+    );
+
+    // --- Clause A: the gate statement is present EXACTLY once ----------------
+    let decl = ["fn ", fn_name, "("].concat();
+    let body = eg2_scan_body(decl.as_str());
+    let (plain, trailing) = rb80_gate_needles();
+    let n_gate = body.matches(plain.as_str()).count() + body.matches(trailing.as_str()).count();
+    let head: String = body.chars().take(320).collect();
+    assert_eq!(
+        n_gate, 1,
+        "rb-80 [rb80/gate-count] E1 FAIL: `{fn_name}` contains {n_gate} deletion-gate \
+         statement(s) and must contain EXACTLY ONE. ZERO IS THE RED STATE AT HEAD — the gate has \
+         not been wired into this reducer yet, so a mid-grace or terminal account still moves \
+         currency and items into and out of tables the deletion cascade is about to erase. The \
+         needle is the FULLY QUALIFIED call ending in `?;`, in either the inline or the \
+         trailing-comma form, so an unqualified call reached through an import — behaviourally \
+         identical, and therefore invisible to the executed matrix beside this test — reads as \
+         ZERO here. So does a discarded verdict (`let _ = ..`, `.ok();`), which compiles, lints \
+         clean under -D warnings and gates nothing. TWO means a duplicate, under which every \
+         ordering clause anchors on a first hit a second call can sit behind. Body (first 320 \
+         chars):\n{head}"
+    );
+
+    let gate_at = body
+        .find(plain.as_str())
+        .or_else(|| body.find(trailing.as_str()))
+        .expect("rb-80: the gate statement counted 1 but could not be located");
+
+    // --- Clause C: the gate sits at the body's TOP level ---------------------
+    let open = char::from(0x7Bu8);
+    let close = char::from(0x7Du8);
+    let opens = body[..gate_at].matches(open).count();
+    let closes = body[..gate_at].matches(close).count();
+    assert_eq!(
+        opens, closes,
+        "rb-80 [rb80/depth] E1 FAIL (unconditional): the deletion gate in `{fn_name}` sits at \
+         brace depth {opens} minus {closes} — INSIDE a nested block — and must sit at the body's \
+         top level. A gate wrapped in a never-satisfied condition, a loop or a match arm no real \
+         call enters leaves every text needle here satisfied while the reducer decides nothing. \
+         This is the shape a whole-body `contains` check cannot see."
+    );
+
+    // --- Clause D: the gate is its own statement, not an attributed one ------
+    let semi = char::from(0x3Bu8);
+    let prev = body[..gate_at].chars().next_back();
+    assert!(
+        prev.is_none_or(|c| c == semi || c == close),
+        "rb-80 [rb80/boundary] E1 FAIL: in `{fn_name}` the deletion gate is preceded by \
+         {prev:?}, which is not a statement boundary (a semicolon, a closing brace, or the start \
+         of the body). THE CASE THIS EXISTS FOR: a conditional-compilation attribute on the gate \
+         statement leaves a closing square bracket here — under it every test in this crate \
+         executes the gate while the published wasm is compiled WITHOUT it (present in review, \
+         absent in production). The same clause kills a discarded binding (an equals sign), a \
+         combinator that swallows the verdict (a dot) and a macro that swallows the whole call \
+         (an open paren). Re-derive the placement from ADR-0250 D1; never widen this clause."
+    );
+
+    // --- Clause E: no conditional compilation anywhere in the body -----------
+    let attr_open = ["#", "["].concat();
+    let cfg_macro = ["cfg", "!("].concat();
+    for needle in [attr_open.as_str(), cfg_macro.as_str()] {
+        let n = body.matches(needle).count();
+        assert_eq!(
+            n, 0,
+            "rb-80 [rb80/cfg] E1 FAIL: `{fn_name}` contains {n} occurrence(s) of {needle} and \
+             must contain ZERO — a conditional-compilation attribute or macro on ANY statement \
+             here is the deployment-dependent gate clause D describes, reached from further \
+             away. Raising guards must compile into every build. Green at HEAD; keep it that \
+             way. NOTE this clause is BODY-scoped and cannot see a FILE-scope switch; the cfg \
+             census in `rb80_raising_reducer_roster_and_open_writers_are_pinned` is what closes \
+             that."
+        );
+    }
+
+    // --- Clause F: exactly ONE mention of the wrapper, by bare name ----------
+    let bare = rb80_gate_bare_name();
+    let n_bare = body.matches(bare.as_str()).count();
+    assert_eq!(
+        n_bare, 1,
+        "rb-80 [rb80/bare-name] E1 FAIL (caller-only): `{fn_name}` mentions the deletion-gate \
+         wrapper {n_bare} time(s) by BARE NAME and must mention it EXACTLY once. WHAT TWO \
+         ACTUALLY IS: clause A already pins the fully-qualified `?;` STATEMENT at exactly one, so \
+         a SECOND bare mention is a second decision path spelled some other way — an alias, a \
+         re-export or a function-pointer binding of the wrapper; a local wrapper AROUND the \
+         wrapper (a closure or a nested fn in this body, which clause A's statement needle walks \
+         straight past); or a duplicated call whose verdict is swallowed instead of propagated \
+         (`let _ = ..`, `.ok();`, a call inside a closure). NOT the identity-parameterised \
+         sibling: ADR-0227 D2 makes THIS wrapper caller-only by SIGNATURE, and rb-76 pins the two \
+         bare names prefix-free precisely so neither census inflates the other — so the sibling's \
+         name does not contain this one and this clause is blind to it BY CONSTRUCTION. Its \
+         containment is owned crate-wide by `guards_tests.rs`'s \
+         `rb76_subject_gate_and_begin_encounter_are_contained_crate_wide` clause (a), which pins \
+         that name at ZERO in every scanned module but `guards.rs` and `battle.rs`. The executed \
+         matrix cannot see any of this: the native host's dummy sender is the only identity that \
+         ever calls. ZERO means clause A matched a qualified call without the name, which is a \
+         scan defect."
+    );
+
+    // --- Clause P: the WHOLE prefix above the gate is frozen ----------------
+    let got = &body[..gate_at];
+    assert_eq!(
+        got, expected_prefix,
+        "rb-80 [rb80/prefix] E1 FAIL: the squashed text ABOVE `{fn_name}`'s deletion gate is not \
+         the frozen guard prefix.\n      Got:      {got:?}\n      Expected: {expected_prefix:?}\n \
+         WHAT THIS KILLS: every statement that can run before a caller reaches the gate — the \
+         seven CI-clean survivors rb-79 measured, enumerated once in ADR-0249 D2, each of which \
+         keeps the gate statement, its `?`, its depth, its tag and rb-46's textual return census \
+         byte-identically green. RE-DERIVATION CONTRACT: this literal comes from ADR-0250 D1 and \
+         ADR-0227 D3/D4 plus PRV1-9. If an honest refactor reds it, re-derive it from those \
+         decisions in a new ADR. NEVER paste the current body in to make it green, and never \
+         relax the equality to `starts_with` or `contains` — both readmit every survivor \
+         ADR-0249 D2 names."
+    );
+
+    // --- Clause P's runtime ties, on the FROZEN literal ---------------------
+    for &(needle, want) in ties {
+        let n = expected_prefix.matches(needle).count();
+        assert_eq!(
+            n, want,
+            "rb-80 [rb80/tie] E1 FAIL: the frozen prefix for `{fn_name}` contains `{needle}` \
+             {n} time(s) and the derivation requires {want}. THIS CLAUSE GUARDS ONE FAILURE \
+             MODE: a literal regenerated from a body somebody already changed, which would turn \
+             the strongest pin in this slice into a photograph of the defect. The ties are \
+             spelled from a THIRD set of split points on purpose. Re-derive from ADR-0250 D1, \
+             never from the file."
+        );
+    }
+
+    // --- Clause R: every early exit in the WHOLE body is a rejection ---------
+    let return_kw = ["ret", "urn"].concat();
+    let return_err = ["ret", "urnErr("].concat();
+    let n_return = body.matches(return_kw.as_str()).count();
+    let n_return_err = body.matches(return_err.as_str()).count();
+    assert_eq!(
+        n_return, n_return_err,
+        "rb-80 [rb80/early-exit] E1 FAIL: `{fn_name}` contains {n_return} early exit(s) but only \
+         {n_return_err} of them return an `Err`. Every early exit in a gated reducer must be a \
+         REJECTION; one that returns anything else routes the caller AROUND the rest of the \
+         body, and clause P only constrains the region ABOVE the gate — this is the BELOW-gate \
+         half (the BELOW-gate region is otherwise UNPINNED — an else-wrapped delegation with no `return`, a \
+         delegation reaching a write helper through a fn-pointer binding, a raw table-accessor write \
+         and an identity rebinding all pass every clause here: R-rb-80-BELOWGATE, \
+         R-rb-80-FNPTRDELEGATE, R-rb-80-RAWWRITE, each measured). HONEST LIMIT: a `macro_rules!` expanding to a \
+         conditional return contains no textual `return` and evades this clause — that is \
+         rb-78's crate-wide grammar (ADR-0248), which refuses every bang macro between the item \
+         boundary and the gate. Never widen the needle to make this green."
+    );
+
+    // --- Clause G: every ordering anchor occurs EXACTLY once -----------------
+    // --- Clause H: above < gate < below, in the listed order -----------------
+    let mut cursor = 0usize;
+    for &(needle, role) in above {
+        let n = body.matches(needle).count();
+        assert_eq!(
+            n, 1,
+            "rb-80 [rb80/anchor] E1 FAIL (anti-vacuity): the anchor `{needle}` — {role} — occurs \
+             {n} time(s) in `{fn_name}` and must occur EXACTLY once. ZERO makes every ordering \
+             clause unfireable, so the pin would pass over a reducer whose landmark moved or was \
+             renamed; TWO makes the comparison depend on which copy is found first. RE-DERIVE \
+             THE PIN AGAINST THE CURRENT BODY AND ADR-0250 D1; never delete an anchor to make \
+             this green."
+        );
+        let at = body
+            .find(needle)
+            .unwrap_or_else(|| panic!("rb-80: anchor `{needle}` counted 1 but was not located"));
+        assert!(
+            cursor <= at && at < gate_at,
+            "rb-80 [rb80/order] E1 FAIL (placement): in `{fn_name}` the anchor `{needle}` — \
+             {role} — is at offset {at}, which is not between the previous anchor ({cursor}) and \
+             the deletion gate ({gate_at}). ADR-0227 D3/D4 orders the gate immediately AFTER \
+             caller standing is established, so a caller with no standing is told THAT, not \
+             something about their account lifecycle."
+        );
+        cursor = at;
+    }
+    cursor = gate_at;
+    for &(needle, role) in below {
+        let n = body.matches(needle).count();
+        assert_eq!(
+            n, 1,
+            "rb-80 [rb80/anchor] E1 FAIL (anti-vacuity): the anchor `{needle}` — {role} — occurs \
+             {n} time(s) in `{fn_name}` and must occur EXACTLY once. With zero the landmark this \
+             pin orders the gate against is gone and the ordering claim is vacuous; with two the \
+             comparison depends on which copy is found first (the duplicated-site hazard this \
+             file's H-3 fence already records)."
+        );
+        let at = body
+            .find(needle)
+            .unwrap_or_else(|| panic!("rb-80: anchor `{needle}` counted 1 but was not located"));
+        assert!(
+            cursor < at,
+            "rb-80 [rb80/order] E1 FAIL (decision before irreversible effect): in `{fn_name}` \
+             the anchor `{needle}` — {role} — is at offset {at}, at or BEFORE the previous \
+             landmark ({cursor}); the deletion gate is at {gate_at}. A gate that runs once the \
+             wallet has been debited or the stack consumed gates nothing: the transaction still \
+             rolls back on the reject, but the reducer has reordered its own guards so a later \
+             refactor — or a partial-failure path — commits value movement for an account that \
+             may not open new commitments. The executed matrix cannot see this: the native host \
+             aborts the process on any write syscall, so it never reaches the effect at all."
+        );
+        cursor = at;
+    }
+
+    // --- Clause T: the tag is this reducer's own fn name ---------------------
+    let dq = char::from(0x22u8).to_string();
+    let tagged = [
+        rb80_gate_opener().as_str(),
+        "ctx,",
+        dq.as_str(),
+        fn_name,
+        dq.as_str(),
+        ")?;",
+    ]
+    .concat();
+    let tagged_wrapped = [
+        rb80_gate_opener().as_str(),
+        "ctx,",
+        dq.as_str(),
+        fn_name,
+        dq.as_str(),
+        ",)?;",
+    ]
+    .concat();
+    let intact = rb80_intact_body(decl.as_str());
+    let n_tag =
+        intact.matches(tagged.as_str()).count() + intact.matches(tagged_wrapped.as_str()).count();
+    assert_eq!(
+        n_tag, 1,
+        "rb-80 [rb80/tag] E1 FAIL: on the strings-INTACT view `{fn_name}` carries {n_tag} gate \
+         call(s) tagged with its OWN function name and must carry exactly one. The tag is the \
+         only thing that names the refusing reducer in `log_reject`'s structured warn, so a \
+         copy-pasted sibling's tag makes every mid-grace refusal here indistinguishable from the \
+         other reducer's in the logs — and no other clause in this slice can see it, because the \
+         view every other clause runs on has the string payload blanked."
+    );
+}
+
+/// Seed the one `player` row `heal_party`'s Step 1 joined check needs.
+///
+/// The handle is registered against the SAME fixture the caller's account handle
+/// comes from — rows live in the host store, not in the handle. The row is a
+/// plain struct literal, the house pattern for `Player`: unlike `Account` it has
+/// no pure constructor to route through and carries no legal-state invariant.
+fn rb80_seed_player(fx: &crate::native_host_tests::Fixture, me: Identity) {
+    let players = fx.table::<crate::schema::Player>("player", "identity", |r| r.identity);
+    players.seed(&crate::schema::Player {
+        identity: me,
+        entity_id: 7,
+        name: String::new(),
+        online: true,
+        last_input_seq: 0,
+    });
+}
+
+/// A mid-grace account row for somebody who is NOT the caller.
+///
+/// Seeded once and never removed, so the account table is never empty of
+/// deleting rows. Without it a TABLE-keyed gate — refuse if ANYBODY is deleting
+/// — is observationally identical to the caller-keyed one in all five states.
+/// `remove` and `find` are `Identity`-keyed, so this row never disturbs the
+/// per-state `remove(me) == 1` assertions.
+fn rb80_seed_deleting_stranger(
+    acct: &crate::native_host_tests::Handle<'_, crate::schema::Account>,
+) {
+    let stranger = Identity::from_byte_array([9u8; 32]);
+    acct.seed(&crate::accounts::requested_deletion(
+        crate::accounts::new_account_row(stranger, String::new(), 0),
+        1,
+    ));
+}
+
+/// **E1 (source)** — `heal_party` carries the para-4.7 deletion gate, in the
+/// house spelling, at depth zero, with NOTHING above it but the caller binding
+/// and the joined check, and above every write.
+///
+/// RED AT HEAD on clause `[rb80/gate-count]`: `heal_party` carries no deletion
+/// gate at all, so the count is ZERO.
+///
+/// kills: M1 (the dropped `heal_party` gate) · M5 (`let _ = ..` discard —
+/// clause A's needle ends in `?;`) · M7 (the gate moved below `spend_currency`)
+/// · M8 (a `cfg(test)` attribute on the gate statement — clauses D and E) · M9 (an
+/// unqualified, import-shadowed call) · M10 (a duplicate gate) · M13 (a
+/// sender-keyed early `Ok` above the gate — clause P) · M15 (a
+/// rejection-SHAPED `return Err(e);` above the gate, which a return census
+/// accepts at 1 == 1 — clause P) · M16 (`let me = crate::WILD_IDENTITY;` —
+/// clause P, no `return` token anywhere) · M6 (the tag swapped for a sibling's
+/// — clause T).
+#[test]
+fn rb80_heal_party_carries_the_deletion_gate() {
+    let name = ["heal_", "party"].concat();
+    let expected = rb80_heal_party_prefix();
+    let open = char::from(0x7Bu8).to_string();
+    let close = char::from(0x7Du8).to_string();
+    let ties: [(&str, usize); 9] = [
+        (concat!("letm", "e="), 1),
+        (concat!("ctx.sen", "der()"), 1),
+        (concat!("player().ident", "ity().find(me)"), 1),
+        (concat!("returnE", "rr("), 1),
+        (concat!(".to_str", "ing());"), 1),
+        (concat!("cra", "te::"), 0),
+        (concat!("?", ";"), 0),
+        (open.as_str(), 1),
+        (close.as_str(), 1),
+    ];
+    let above: [(&str, &str); 1] = [(
+        concat!("player().ident", "ity().find(me)"),
+        "Step 1's caller-joined lookup — standing is established exactly there, so the preamble \
+         reads joined, then not-deleting (ADR-0227 D3)",
+    )];
+    let below: [(&str, &str); 2] = [
+        (
+            concat!("character().entity_id()", ".find(p.entity_id)"),
+            "Step 2's character lookup, the first read that must run AFTER the gate",
+        ),
+        (
+            concat!("spend_", "currency("),
+            "the shop's own currency debit (raising.rs:364) — the irreversible ERASE-table \
+             effect the whole ordering exists to sit above, and this site's anti-transposition \
+             landmark: `talk`'s frozen prefix is byte-identical to this one, so without a \
+             landmark the two literals could be swapped without a single clause noticing",
+        ),
+    ];
+    rb80_assert_gate_pinned(name.as_str(), expected.as_str(), &ties, &above, &below);
+}
+
+/// **E1 (behaviour)** — `heal_party` refuses a deletion-gated caller, ADMITS
+/// everybody else, and answers from the CALLER's own row.
+///
+/// The shipped reducer runs under the rb-41 native host through five account
+/// states with the exact verdict pinned in each: no row, `Active`,
+/// `PendingDeletion`, `PendingDeletion` + the terminal marker, and row removed.
+/// The three admitted states are the positive control and they are what make
+/// the two refused states mean anything. A mid-grace STRANGER row is present in
+/// all five, so the admitted states additionally prove the gate keys on
+/// `ctx.sender()`.
+///
+/// WHY THE ADMITTED STATES ERR, and why that is the honest claim. `Fixture::table`
+/// keys rows by the indexed column, so the `u64`-keyed `character` index is
+/// never registered; an unregistered index yields no rows in this host, so the
+/// character lookup finds nothing and the reducer stops there — ONE guard past
+/// the gate and well before the heal-location read, the spend, the consume and
+/// the cooldown upsert. Every write syscall ABORTS the process (uncatchable, so
+/// `#[should_panic]` is unavailable), which is exactly why this test can assert
+/// REFUSALS and admissions and nothing deeper. The ordinary error is pinned
+/// EXACTLY rather than as any-error: otherwise a regression in the joined check
+/// (which returns a different error) would masquerade as a pass in all three
+/// admitted states and the whole positive control would go quietly vacuous.
+/// Ordering relative to the spend is owned by the source pin above.
+///
+/// RED AT HEAD on the `PendingDeletion` state: with no gate the reducer returns
+/// the ordinary next-guard error there.
+///
+/// kills: M1 (the dropped gate) · M5 (a discarded verdict) · M8 (an unreachable
+/// placement) · M11 (a constant reject in `guards` — the three admitted states)
+/// · M12 (inverted polarity, invisible to every source pin here — the `Active`
+/// and no-row states would return the deletion reject, a total heal outage for
+/// every honest player) · a row-EXISTS-keyed fake (`is_some()` instead of the
+/// status test — the `Active` state) · a TABLE-WIDE or any-row-pending fake (the
+/// three admitted states, while the stranger is mid-grace; written as a real
+/// iteration it aborts the process on the unmodelled scan syscall instead — also
+/// a failure, and a louder one) · a latched or memoised answer (the removed-row
+/// state).
+#[test]
+fn rb80_heal_party_is_refused_only_while_the_caller_is_deletion_gated() {
+    let fx = crate::native_host_tests::fixture();
+    let acct = fx.table::<crate::schema::Account>("account", "identity", |r| r.identity);
+    let ctx = fx.ctx();
+    let me = ctx.sender();
+    rb80_seed_player(&fx, me);
+
+    let call = || crate::raising::heal_party(&ctx, 1);
+
+    let ordinary: Result<(), String> = Err("character not found".to_string());
+    let gated: Result<(), String> = Err(crate::guards::REJECT_DELETION_GATED.to_string());
+
+    let active = crate::accounts::new_account_row(me, String::new(), 0);
+    let pending = crate::accounts::requested_deletion(active.clone(), 1);
+    let terminal = crate::accounts::terminal_account(pending.clone(), 2);
+
+    rb80_seed_deleting_stranger(&acct);
+
+    // --- State 1: no account row for the caller (a guest) -------------------
+    let got = call();
+    assert_eq!(
+        got,
+        ordinary,
+        "rb-80 E1 FAIL (admitted state, no account row): `heal_party` returned {got:?} for a \
+         joined caller with NO account row, while a STRANGER's row is mid-grace. A caller who \
+         never authenticated is not inside the deletion gate and must be admitted into the \
+         ordinary guard chain; the expected error is the character lookup's, and pinning it \
+         EXACTLY is what stops a regression in the joined check from masquerading as a pass. A \
+         deletion reject here means the gate answers from the TABLE rather than from the \
+         caller's own row. Indexes the generated code asked the host for: {:?}",
+        fx.requested_indexes()
+    );
+
+    // --- State 2: an Active account row --------------------------------------
+    acct.seed(&active);
+    let got = call();
+    assert_eq!(
+        got, ordinary,
+        "rb-80 E1 FAIL (admitted state, Active account): `heal_party` returned {got:?} for a \
+         caller whose account row is `Active` (a stranger's row is mid-grace). This is the \
+         ordinary player, and refusing them is a TOTAL HEAL OUTAGE that every source pin in this \
+         slice would report as correctly gated — the call text is byte-identical whichever way \
+         the decision runs. It is also exactly what a row-EXISTS-keyed fake produces, what an \
+         any-row-pending TABLE scan produces, and what an inverted branch produces."
+    );
+
+    // --- State 3: mid-grace (PendingDeletion) --------------------------------
+    assert_eq!(
+        acct.remove(me),
+        1,
+        "rb-80 fixture: exactly one `Active` account row was seeded for the CALLER and must be \
+         removed before the next state is pushed — `seed` appends rather than upserting, so a \
+         miscount would leave two rows for one identity and the unique-index lookup would assert \
+         instead of answering. `remove` is Identity-keyed, so the stranger's row is deliberately \
+         untouched and must never be counted here."
+    );
+    acct.seed(&pending);
+    let got = call();
+    assert_eq!(
+        got, gated,
+        "rb-80 E1 FAIL (refused state, mid-grace): `heal_party` returned {got:?} for a caller \
+         whose account is `PendingDeletion`; it must return the module's single static deletion \
+         reject. THIS IS THE RED STATE AT HEAD — at HEAD `heal_party` carries no deletion gate, \
+         so a mid-grace account still spends currency and burns items into and out of tables the \
+         cascade is about to erase. The expected value is compared against the CONSTANT, never a \
+         re-typed literal, so a reworded reason cannot drift silently into text no client ever \
+         receives."
+    );
+
+    // --- State 4: terminal (PendingDeletion + the marker) -------------------
+    assert_eq!(
+        acct.remove(me),
+        1,
+        "rb-80 fixture: exactly one `PendingDeletion` account row was seeded for the CALLER and \
+         must be removed before the terminal row is pushed (`seed` appends, it never upserts; \
+         the stranger's row is Identity-keyed and stays put)."
+    );
+    acct.seed(&terminal);
+    let got = call();
+    assert_eq!(
+        got, gated,
+        "rb-80 E1 FAIL (refused state, terminal): `heal_party` returned {got:?} for a caller \
+         whose account carries the M22 terminal marker. An already-erased account has no wallet, \
+         no inventory and no monsters left — the cascade deleted them — so a heal here would \
+         recreate rows the deletion just removed. The pure decision is an explicit disjunction \
+         (`accounts::should_reject_for_deletion`) precisely so this state is fail-closed even on \
+         the illegal `Active`-plus-marker shape."
+    );
+
+    // --- State 5: the caller's row is gone again -----------------------------
+    assert_eq!(
+        acct.remove(me),
+        1,
+        "rb-80 fixture: exactly one terminal account row was seeded for the CALLER and must be \
+         removable; the stranger's mid-grace row stays."
+    );
+    let got = call();
+    assert_eq!(
+        got, ordinary,
+        "rb-80 E1 FAIL (admitted state, row removed): `heal_party` returned {got:?} once the \
+         caller's account row was gone again (the stranger's mid-grace row is still there). The \
+         verdict must track LIVE rows FOR THE CALLER: an answer that latches on a row it has \
+         already seen — a memoised predicate, a cached decision, a process-wide flag — would keep \
+         refusing this identity forever, and an any-row-pending answer would refuse it because of \
+         somebody else. No state above can distinguish either of those from a correct gate on \
+         its own."
+    );
+}
+
+/// Every `fn` name that carries a BARE reducer attribute in `squashed`, in file
+/// order: after each attribute occurrence, skip to the next `fn` token and take
+/// the identifier up to its opening paren.
+///
+/// A parse, not a needle list: the SET it returns is compared against the
+/// hand-written roster, so a reducer ADDED to this file without a gate decision
+/// reds the census instead of slipping in behind a per-name pin that was never
+/// written for it.
+fn rb80_reducer_names(squashed: &str) -> Vec<String> {
+    let attr = ["#[spacetimedb", "::reducer]"].concat();
+    let fn_kw = ["f", "n"].concat();
+    let lparen = char::from(0x28u8);
+    let mut out: Vec<String> = Vec::new();
+    for (at, _) in squashed.match_indices(attr.as_str()) {
+        let rest = &squashed[at + attr.len()..];
+        let Some(kw) = rest.find(fn_kw.as_str()) else {
+            continue;
+        };
+        let after = &rest[kw + fn_kw.len()..];
+        let Some(paren) = after.find(lparen) else {
+            continue;
+        };
+        out.push(after[..paren].to_string());
+    }
+    out
+}
+
+/// **E1 (the second arm, mechanically)** — `raising.rs` carries EXACTLY ONE
+/// deletion gate, its reducer roster is closed, it compiles unconditionally, and
+/// its ERASE-table write verbs are the ones this slice reasoned about.
+///
+/// THE DEFERRED RAISING WRITERS ARE A SCOPE DEFERRAL, NOT A DESIGN DECISION.
+/// `train`, `care`, `essence_train` and `consume_crystalized_essence` all write
+/// ERASE-policy tables (`inventory` via `consume_one`, `monster` /
+/// `monster_pub`) and §4.7's trigger predicate selects them exactly as it
+/// selects `heal_party`; no "value creation" class line is claimed for them.
+/// They are NOT gated by this slice because E1 names three sites and their only
+/// precedented placement sits below a `u64`-keyed `monster` lookup, where the
+/// native-host five-state matrix is unreachable (admitted and refused states
+/// both return "monster not found") — they need a different proof vehicle, i.e.
+/// their own slice, and they are registered as R-rb-80-RAISINGWRITERS. The
+/// FILE-WIDE count below is what makes their ungated state VISIBLE: it is
+/// exactly 1, so the day one of them is gated this census reds and the roster
+/// decision is re-argued deliberately instead of drifting in.
+///
+/// RED AT HEAD on clause `[rb80/file-count]`: the file mentions the wrapper ZERO
+/// times.
+///
+/// kills: M19 (a gate quietly added to `train`, `care`, `essence_train` or
+/// `consume_crystalized_essence` — the file count goes to 2) · a gate hoisted
+/// into a file-local helper or reached through a `..._for(ctx, other)` sibling
+/// (same count) · M17 (a wire-name twin — a PARAMETERISED reducer attribute
+/// republishing this reducer's wire name over an ungated fn while the gated Rust
+/// item is demoted: the bare and any-form attribute counts disagree and the name
+/// SET changes) · M14 (a file-scope `cfg(debug_assertions)` constant whose
+/// consumer early-returns below the gate — clause E is body-scoped and cannot see
+/// the constant; this census can) · M18 (a below-gate sender-keyed delegation to
+/// a twin that duplicates the writes — the write-verb census counts 2
+/// `spend_currency(` or 4 `consume_one(`) · a `grant_item` call appearing in this
+/// module at all, which would be a new ERASE-table writer nobody decided about.
+#[test]
+fn rb80_raising_reducer_roster_and_open_writers_are_pinned() {
+    let squashed = rb80_squashed_file();
+
+    // --- (a) the file-wide bare-name count ----------------------------------
+    let bare = rb80_gate_bare_name();
+    let n_bare = squashed.matches(bare.as_str()).count();
+    assert_eq!(
+        n_bare, 1,
+        "rb-80 [rb80/file-count] E1 FAIL: `raising.rs` mentions the deletion-gate wrapper \
+         {n_bare} time(s) by BARE NAME and must mention it EXACTLY once — `heal_party`'s call and \
+         nothing else. ZERO IS THE RED STATE AT HEAD. TWO or more means either a second reducer \
+         in this file was gated without the roster decision being re-argued (the four deferred \
+         writers are R-rb-80-RAISINGWRITERS, a SCOPE deferral) or the gate was hoisted into a \
+         file-local helper where no per-body pin can see it. The needle is the BARE name, so it \
+         also catches an alias, a re-export and a function-pointer binding."
+    );
+
+    // --- (b0) the file's WHOLE attribute budget -----------------------------
+    let attr_open = ["#", "["].concat();
+    let n_attrs = squashed.matches(attr_open.as_str()).count();
+    assert_eq!(
+        n_attrs, 8,
+        "rb-80 [rb80/attr-budget] E1 FAIL: `raising.rs` carries {n_attrs} attribute opener(s) and \
+         must carry exactly EIGHT. WHY A TOTAL AND NOT JUST THE ROSTER: the roster clauses below \
+         key on the LITERAL `spacetimedb`-qualified attribute text, and four measured spellings \
+         publish a client-callable reducer while counting ZERO there — the attribute imported by \
+         name, the crate aliased on its `use` line, the attribute renamed inside a braced import, \
+         and a NEIGHBOURING macro that is not `reducer` at all. Every one of them needs an \
+         attribute opener, so a sixth raising entry point cannot be added without moving this \
+         number. THE BUDGET IS FULLY ACCOUNTED, which is what stops it being balanced by a \
+         deletion: two `cfg(test)` attributes (clause (c) pins that count exactly), five bare \
+         reducer attributes (clause (b)), and the ONE `path` attribute that wires this test module \
+         to its file — delete that and this census stops being compiled at all. GREEN AT HEAD and \
+         after the fix: an anti-bypass clause, not part of this slice's RED."
+    );
+
+    // --- (b) the reducer roster is closed -----------------------------------
+    let attr_bare = ["#[spacetimedb", "::reducer]"].concat();
+    let attr_any = ["#[spacetimedb", "::reducer"].concat();
+    let n_bare_attr = squashed.matches(attr_bare.as_str()).count();
+    let n_any_attr = squashed.matches(attr_any.as_str()).count();
+
+    // --- (b0b) the reducer macro is reached through the crate path, nowhere else
+    let path_token = ["::red", "ucer"].concat();
+    let n_path_token = squashed.matches(path_token.as_str()).count();
+    assert_eq!(
+        n_path_token, n_bare_attr,
+        "rb-80 [rb80/attr-path] E1 FAIL: `raising.rs` spells the path-qualified reducer token \
+         {n_path_token} time(s) while carrying {n_bare_attr} bare reducer attribute(s); the two \
+         must AGREE. Every bare attribute contains this token, so the count can only ever be \
+         GREATER — which means what this clause really asserts is that the file mentions the \
+         reducer macro NOWHERE ELSE: not on a `use` line that imports it by name (then \
+         `#[reducer]` publishes an entry point the roster clause below cannot see), and not \
+         through an aliased crate path (`#[<alias>::reducer]`, same result). The braced-rename \
+         and wrong-macro spellings leave this count alone and are caught by the attribute budget \
+         above instead; the two clauses are a pair and neither is redundant. GREEN AT HEAD and \
+         after the fix."
+    );
+    assert_eq!(
+        n_any_attr, n_bare_attr,
+        "rb-80 [rb80/roster] E1 FAIL: `raising.rs` carries {n_any_attr} reducer attribute(s) but \
+         only {n_bare_attr} of them are the BARE form. A parameterised attribute is a WIRE-NAME \
+         twin: it publishes a reducer under a name clients call while the Rust item every pin in \
+         this slice reads is a different, possibly gated, function (rb-79 register row M13). \
+         Re-derive the roster deliberately if a wire name is ever genuinely needed."
+    );
+    assert_eq!(
+        n_bare_attr, 5,
+        "rb-80 [rb80/roster] E1 FAIL: `raising.rs` carries {n_bare_attr} bare reducer \
+         attribute(s) and must carry 5. Reported BEFORE the name set because it is the clearer \
+         signal and because it is not implied by it: the parse below SKIPS an attribute it cannot \
+         resolve to a declaration, so a sixth reducer written in a shape the parser walks past \
+         would leave the set equal to the roster while the file published one more."
+    );
+    let mut got = rb80_reducer_names(squashed.as_str());
+    got.sort();
+    let mut want_names = vec![
+        ["ca", "re"].concat(),
+        ["tra", "in"].concat(),
+        ["heal_", "party"].concat(),
+        ["essence_", "train"].concat(),
+        ["consume_crystalized_", "essence"].concat(),
+    ];
+    want_names.sort();
+    assert_eq!(
+        got, want_names,
+        "rb-80 [rb80/roster] E1 FAIL: the reducers `raising.rs` publishes are {got:?} and the \
+         roster this slice reasoned about is {want_names:?}. A reducer ADDED here is an \
+         ERASE-table writer nobody made a gate decision about, and a reducer REMOVED makes the \
+         pin that names it vacuous. Both are re-derived from §4.7's trigger predicate and \
+         ADR-0250, never by editing this list to match the file."
+    );
+
+    // --- (c) the file compiles unconditionally ------------------------------
+    let cfg_attr = ["#", "[cfg"].concat();
+    let cfg_macro = ["cfg", "!("].concat();
+    let debug_flag = ["debug_", "assertions"].concat();
+    let arch_flag = ["target_", "arch"].concat();
+    for (needle, want, why) in [
+        (
+            cfg_attr.as_str(),
+            2usize,
+            "the two `cfg(test)` attributes (:273 the test-only cooldown constant, :781 the \
+             child test module) and NOTHING else. A third is a conditional-compilation switch on \
+             production code, which is how a gate becomes present in review and absent in the \
+             published wasm",
+        ),
+        (
+            cfg_macro.as_str(),
+            0usize,
+            "the expression form of the same defect, which clause C would report only as a \
+             nested block",
+        ),
+        (
+            debug_flag.as_str(),
+            0usize,
+            "the measured file-scope constant pair (rb-46 clause I's second survivor): tests \
+             build with debug assertions on, the shipped wasm is `--release`, so a constant \
+             consulted above or below the gate is true here and false in production",
+        ),
+        (
+            arch_flag.as_str(),
+            0usize,
+            "the cross-target twin of the same shape — a body selected for wasm32 that the \
+             native test binary never compiles (the class ADR-0247 closes for `lib.rs`)",
+        ),
+    ] {
+        let n = squashed.matches(needle).count();
+        assert_eq!(
+            n, want,
+            "rb-80 [rb80/cfg-census] E1 FAIL: `raising.rs` contains `{needle}` {n} time(s) and \
+             must contain {want} — {why}. Green at HEAD; keep it that way."
+        );
+    }
+
+    // --- (d) the ERASE-table write verbs ------------------------------------
+    for (needle, want, why) in [
+        (
+            concat!("spend_", "currency("),
+            1usize,
+            "ONE wallet debit in this module, inside `heal_party`'s currency block. A second is \
+             the below-gate delegation shape: a twin that repeats the debit for every caller the \
+             gate would have refused",
+        ),
+        (
+            concat!("consume_", "one("),
+            3usize,
+            "exactly three inventory burns — `train` (:242), `heal_party` (:372) and \
+             `consume_crystalized_essence` (:731). A fourth is an unreviewed ERASE-table write; \
+             three is also the measured floor that makes R-rb-80-RAISINGWRITERS concrete rather \
+             than prose",
+        ),
+        (
+            concat!("grant_", "item("),
+            0usize,
+            "this module grants no items at all, so a `grant_item` call here is a NEW \
+             ERASE-policy writer that never passed through §4.7's trigger predicate",
+        ),
+    ] {
+        let n = squashed.matches(needle).count();
+        assert_eq!(
+            n, want,
+            "rb-80 [rb80/write-census] E1 FAIL: `raising.rs` calls `{needle}` {n} time(s) and \
+             must call it {want} — {why}. This census is what kills the in-file ungated twin: \
+             every clause of the source pin above is scoped to ONE body, so a duplicated write \
+             in a second function is invisible to all of them."
+        );
+    }
+}

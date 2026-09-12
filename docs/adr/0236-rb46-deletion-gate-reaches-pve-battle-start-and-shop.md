@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** —
 **Extends:** ADR-0227 (the S5 caller-only gate; reciprocal `Extended-by:` in its header, and its stale "still-ungated §4.7 targets" bullet is discharged by a dated amendment there)
-**Extended-by:** ADR-0246 (rb-76 — the scheduler grass path is gated at the `begin_encounter` choke point through the first identity-parameterised member of the deletion-gate family; residual R-rb-46-GRASSPATH closed), ADR-0247 (rb-77 — the crate-root module wiring every rb-46 pin assumes is now gated by an ordinary Rust test; residual R-rb-46-LIBRSMOD closed), ADR-0248 (rb-78 — clause I's macro residual: no macro invocation may sit between a reducer's item boundary and a deletion-gate call, and `format!(` is the one admitted spelling; residual R-rb-46-MACRORET closed), ADR-0249 (rb-79 — the trading site clause I never reached: the whole statement prefix above `propose_trade`'s gate is byte-frozen; residual R-rb-46-TRADINGCFG closed, its attribute half having been rb-47's)
+**Extended-by:** ADR-0246 (rb-76 — the scheduler grass path is gated at the `begin_encounter` choke point through the first identity-parameterised member of the deletion-gate family; residual R-rb-46-GRASSPATH closed), ADR-0247 (rb-77 — the crate-root module wiring every rb-46 pin assumes is now gated by an ordinary Rust test; residual R-rb-46-LIBRSMOD closed), ADR-0248 (rb-78 — clause I's macro residual: no macro invocation may sit between a reducer's item boundary and a deletion-gate call, and `format!(` is the one admitted spelling; residual R-rb-46-MACRORET closed), ADR-0249 (rb-79 — the trading site clause I never reached: the whole statement prefix above `propose_trade`'s gate is byte-frozen; residual R-rb-46-TRADINGCFG closed, its attribute half having been rb-47's), ADR-0250 (rb-80 — the same caller-only gate reaches the heal spend, both NPC dialogue openers and the dev bait grant; residual R-rb-46-ERASEWRITERS closed)
 **Subsystems:** security-authz, battle, economy-quests
 **Decision:** rb-46 gates `start_battle`, dev `start_wild_battle`, `buy`, `sell` with `guards::require_not_deleting` as the first check after caller standing, proven by native-host execution plus source pins; the grass path is a disclosed residual.
 
@@ -202,3 +202,15 @@ rb-46 bare-name count "kills a `require_not_deleting_for(ctx, opponent_identity)
 qualified: the new wrapper's name is deliberately prefix-free, so that count still reads two and remains
 the pin it was; the new seam has its own census. `movement_tick` gains no gate — it learns only the reason
 constant, to keep a deletion-gated walker's refusal out of the `begin_encounter_error` limiter (ADR-0246 D4).
+
+## Amendment (2026-09-12, rb-80 — residual R-rb-46-ERASEWRITERS closed)
+
+The "Residual (backlog, R-rb-46-ERASEWRITERS): the other ERASE-policy writers" bullet above is discharged by
+ADR-0250. Two of its three attributions are corrected there rather than rewritten here: the quest turn-in grants it
+attributes to `advance_dialogue` are MEASURED to happen in `talk` — `apply_quest_trigger`'s only caller — so ADR-0250
+gates both dialogue openers; and "the taming recruit path (`grant_item`)" is a misattribution — no recruit path calls
+`grant_item`, and the gated site is the dev-only `grant_bait`, by this ADR's own D3 reasoning for `start_wild_battle`.
+The bullet's remaining members in `raising.rs` (`train`/`care`/`essence_train`/`consume_crystalized_essence`) are
+re-scoped to R-rb-80-RAISINGWRITERS and are now PINNED as deliberately open (a file-wide gate count of exactly one)
+rather than merely unread. D1's census claim is unchanged: the rb-46 censuses still scan `battle.rs` and `economy.rs`
+only; the three new files carry their own.

@@ -6391,28 +6391,28 @@ fn rb78_live_sources() -> Vec<(String, String)> {
     out
 }
 
-/// Seven squashed function markers that MUST each fall inside some live gate
-/// region — at least one per GATE-BEARING MODULE: battle, economy, pvp, ranking,
-/// trading. Not a floor and not the site set (rb-46 and rb-76 own those).
+/// TEN squashed function markers that MUST each fall inside some live gate
+/// region — at least one per GATE-BEARING MODULE: battle, economy, npc, pvp,
+/// raising, ranking, taming, trading. Not a floor, and not the site set
+/// (rb-46, rb-76 and rb-80 own those).
 ///
-/// WHY PER-MODULE COVERAGE, AND NOT FEWER ANCHORS. The per-needle control above
-/// only asks that each of the three wrapper needles matches somewhere in the
-/// crate, and `battle.rs` alone satisfies all three. So with anchors in three
-/// files, `pvp.rs`'s two sites and `ranking.rs`'s one could stop being spelled
-/// fully qualified — an import-shadowed or aliased call — and they would simply
-/// DROP OUT of the region scan: no region, no macro clause, no complaint, while
-/// every other assertion in this test stayed green. One anchor per gate-bearing
-/// module is what makes "the slicer reached this file" an assertion rather than
-/// an assumption. The set also spans all three wrapper needles and the two
-/// awkward framings the live tree carries: a conditional attribute above the
-/// reducer attribute (`start_wild_battle`), and a crate-private helper with no
-/// reducer attribute at all (`begin_encounter`). The third framing — an
-/// argument-count attribute — sits on `propose_trade`, which is deliberately
-/// NOT anchored here: `trading.rs` is already covered by `respond_trade`, and
-/// this list is one anchor per MODULE, not a second site census. If a later
-/// slice removes one of these reducers, re-derive that module's anchor
-/// DELIBERATELY; never just delete the row.
-fn rb78_region_anchors() -> [String; 7] {
+/// WHY PER-MODULE COVERAGE, AND NOT FEWER ANCHORS. The per-needle control
+/// above only asks that each of the three wrapper needles matches somewhere in
+/// the crate, and `battle.rs` alone satisfies all three. So an entire other
+/// module's sites could stop being spelled fully qualified — an
+/// import-shadowed or aliased call — and would simply DROP OUT of the region
+/// scan: no region, no macro clause, no complaint, while every other assertion
+/// in this test stayed green. One anchor per gate-bearing module is what makes
+/// "the slicer reached this file" an assertion rather than an assumption. The
+/// set spans all three wrapper needles and every awkward framing the tree
+/// carries: a conditional attribute above the reducer attribute
+/// (`start_wild_battle`, `grant_bait`) and a helper with no reducer attribute
+/// at all (`begin_encounter`). It is one anchor per MODULE, never a second
+/// site census — which is why `propose_trade` and `advance_dialogue` are
+/// absent (their files are covered by `respond_trade` and `talk`). rb-80
+/// RE-DERIVED the last three rows when ADR-0250 D1-D4 made `raising.rs`,
+/// `npc.rs` and `taming.rs` gate-bearing; never just delete a row.
+fn rb78_region_anchors() -> [String; 10] {
     [
         ["fnstart_", "battle("].concat(),
         ["fnbegin_", "encounter("].concat(),
@@ -6421,6 +6421,9 @@ fn rb78_region_anchors() -> [String; 7] {
         ["fnb", "uy("].concat(),
         ["fnchallenge_", "pvp("].concat(),
         ["fnset_profile_", "name("].concat(),
+        ["fnheal_", "party("].concat(),
+        ["fnt", "alk("].concat(),
+        ["fngrant_", "bait("].concat(),
     ]
 }
 
@@ -6450,9 +6453,9 @@ fn rb78_line_caller_wrapper() -> String {
 /// substrate label. The assertions after it are POSITIVE CONTROLS, not floors
 /// for their own sake, and they are what stop this test passing over nothing:
 /// each of the three wrapper needles must still match live text, and the region
-/// slicer must still reach seven named reducer prefixes covering EVERY
-/// gate-bearing module — battle, economy, pvp, ranking, trading. The per-module
-/// spread is the load-bearing half: `battle.rs` alone satisfies all three
+/// slicer must still reach ten named reducer prefixes covering EVERY
+/// gate-bearing module — battle, economy, npc, pvp, raising, ranking, taming and
+/// trading. The per-module spread is the load-bearing half: `battle.rs` satisfies all three
 /// needles, so without it an entire other module could stop being scanned and
 /// only the anchors would notice. Without either, a renamed wrapper, a
 /// re-spelled qualification or a stranded depth counter would leave the region
@@ -6519,8 +6522,8 @@ fn rb78_no_macro_expands_above_any_deletion_gate() {
             "rb-78 ADR-0248 FAIL (live control): no gate region contains the squashed \
              declaration `{anchor}`, so EVERY GATE-BEARING MODULE NO LONGER CONTRIBUTES AT \
              LEAST ONE REGION — which is exactly what this control asserts, one anchor per \
-             module across battle, economy, pvp, ranking and trading. The needle control above \
-             cannot see this: `battle.rs` alone satisfies all three wrapper needles, so a whole \
+             module across battle, economy, npc, pvp, raising, ranking, taming and trading. \
+             The needle control above cannot see this: `battle.rs` satisfies all three, so a whole \
              other module can fall out of the scan while that count stays happy, and every \
              macro clause for it is then skipped in silence. The likely causes, in order: that \
              reducer's gate stopped being fully qualified (an import-shadowed or aliased call), \
@@ -6748,4 +6751,160 @@ fn rb78_macro_divert_fixtures_are_rejected_by_clause() {
         rb78_fx_unpaired_block_comment(),
         &["[rb78/scan-substrate:battle.rs]"],
     );
+}
+
+// ===========================================================================
+// rb-80 (ADR-0250 D1-D4) — the rb-78 ANCHOR-ROSTER control for the three
+// modules this slice turns into gate-bearing ones.
+//
+// rb-78's live oracle (`rb78_no_macro_expands_above_any_deletion_gate`) asserts
+// that no bang macro expands between a reducer's item boundary and its
+// fully-qualified deletion gate, in EVERY module `lib.rs` declares. Its
+// coverage, however, is only as wide as `rb78_region_anchors()`: a module whose
+// gate stops being fully qualified contributes NO region, and a region that does
+// not exist bans nothing. That is why the roster's own doc comment requires a new
+// gate-bearing module's anchor to be re-derived DELIBERATELY rather than noticed
+// later.
+//
+// This test is that re-derivation, made mechanical: `raising.rs`, `npc.rs` and
+// `taming.rs` each gain a caller-gate call in this slice, so each must appear in
+// the roster AND each must actually contribute a live region. Two clauses, in
+// this order, because they fail for different reasons and the first is a
+// transcription check while the second is the implementation claim.
+// ===========================================================================
+
+/// **rb-80 (ADR-0250 D1-D4)** — rb-78's anchor roster covers the three modules
+/// this slice makes gate-bearing, and each of them contributes at least one LIVE
+/// region to the macro grammar.
+///
+/// WHAT EACH CLAUSE KILLS, in the order they report:
+///   * THE ROSTER SIZE. Ten anchors, one per gate-bearing module (battle,
+///     economy, npc, pvp, raising, ranking, taming, trading). Seven is the state
+///     before this slice's roster edit and is a RED here: three modules would be
+///     gated and invisible to rb-78's grammar, so a macro expanded above any of
+///     the four new gates would pass CI in silence.
+///   * THE ROSTER'S TEN ROWS ARE DISTINCT. Size alone is forgeable, and register
+///     row M20 is the measured shape: drop `respond_trade` and write `buy` twice.
+///     The count stays at ten, the size clause stays green, and `trading.rs`
+///     contributes no anchor at all — so rb-78's live control stops asserting
+///     that the region slicer ever reached that file. A sorted, de-duplicated
+///     roster of ten refuses that trade.
+///   * THE ROSTER CONTENT — ALL TEN, not only this slice's three. Every anchor is
+///     asserted PRESENT by equality, so swapping one module's row for another's
+///     is a failure instead of a silent narrowing. The fragments are split at
+///     DIFFERENT points from the roster's own rows, one by one: with identical
+///     splits, one transcription error copied into both places would satisfy this
+///     clause while the roster pointed at a declaration that does not exist.
+///   * THE LIVE REGIONS. Each new anchor must fall inside a region the slicer
+///     actually cut out of a live source. This is the clause the implementation
+///     has to satisfy: it is RED until the four gates are wired, because a
+///     module with no fully-qualified gate call yields no region at all.
+///
+/// WHY `npc.rs` IS ANCHORED ONCE. `rb78_region_anchors()` is one anchor per
+/// MODULE, never a site census: `advance_dialogue`'s own region is pinned by
+/// rb-80's `npc_tests.rs` clauses, and adding a second npc row here would start a
+/// site list this roster deliberately is not (the same reasoning that keeps
+/// `propose_trade` out of it while `trading.rs` is covered by `respond_trade`).
+///
+/// HONEST LIMIT: this test proves COVERAGE, never cleanliness. Whether a macro
+/// actually expands above one of the new gates is rb-78's verdict, which this
+/// roster edit brings to bear on three more files; and it says nothing about
+/// whether the gates are correct, which is rb-80's business in the three sibling
+/// test files.
+#[test]
+fn rb80_rb78_anchor_roster_covers_the_new_gate_bearing_modules() {
+    let anchors = rb78_region_anchors();
+    assert_eq!(
+        anchors.len(),
+        10,
+        "rb-80 [rb80/anchor-roster] FAIL: `rb78_region_anchors()` carries {} anchor(s) and must \
+         carry 10 — one per GATE-BEARING MODULE, and this slice makes `raising.rs`, `npc.rs` and \
+         `taming.rs` three more of them (ADR-0250 D1-D4). SEVEN IS THE PRE-SLICE STATE: under it \
+         the three new modules contribute no anchor, so rb-78's live control would stay green \
+         while a macro-divert above any of the four new gates went unexamined — the region scan \
+         only bans what it reaches. Never shrink this roster to make a build green; re-derive the \
+         module's anchor instead.",
+        anchors.len()
+    );
+
+    // --- the roster's ten rows are DISTINCT ----------------------------------
+    let mut distinct: Vec<String> = anchors.to_vec();
+    distinct.sort();
+    distinct.dedup();
+    let n_distinct = distinct.len();
+    assert_eq!(
+        n_distinct, 10,
+        "rb-80 [rb80/anchor-roster] FAIL: the roster's ten rows collapse to {n_distinct} DISTINCT \
+         anchor(s) and must stay TEN. SIZE ALONE IS FORGEABLE, and register row M20 is the \
+         measured shape: drop `respond_trade` and write `buy` twice. The count stays at ten, the \
+         size clause above stays green, and `trading.rs` contributes no anchor at all — so \
+         rb-78's live control no longer asserts that the region slicer ever reached that file, and \
+         a macro expanded above that module's gate goes unexamined. Sorted and de-duplicated \
+         rather than compared pairwise so the failure prints what survived: {distinct:?}"
+    );
+
+    // --- every gate-bearing module's anchor is PRESENT, by equality ----------
+    // Split at DIFFERENT bytes than the roster's own rows, one by one: with
+    // identical splits, a single transcription error copied into both places
+    // would satisfy this clause while the roster pointed at a declaration that
+    // does not exist — which is exactly the hole a membership check closes.
+    let a_heal = ["fnheal_p", "arty("].concat();
+    let a_talk = ["fnta", "lk("].concat();
+    let a_bait = ["fngrant_b", "ait("].concat();
+    let expected: [String; 10] = [
+        ["fnsta", "rt_battle("].concat(),
+        ["fnbeg", "in_encounter("].concat(),
+        ["fnstart_w", "ild_battle("].concat(),
+        ["fnresp", "ond_trade("].concat(),
+        ["fnbu", "y("].concat(),
+        ["fnchall", "enge_pvp("].concat(),
+        ["fnset_pro", "file_name("].concat(),
+        a_heal.clone(),
+        a_talk.clone(),
+        a_bait.clone(),
+    ];
+    for wanted in &expected {
+        let present = anchors.iter().any(|a| a == wanted);
+        assert!(
+            present,
+            "rb-80 [rb80/anchor-roster] FAIL: `rb78_region_anchors()` does not contain the \
+             squashed declaration `{wanted}`. ALL TEN are asserted here, not only this slice's \
+             three: a roster that swaps one module's anchor for another's keeps its size, keeps \
+             its distinctness, and still stops covering a file (register row M20). Membership is \
+             compared by EQUALITY against fragments split at different bytes from the roster's \
+             own, so a transcription error in either place surfaces as this failure rather than as \
+             silence. Re-derive the module's anchor from the reducer that carries its gate; never \
+             delete a row to make a build green — a region that reaches nothing bans nothing."
+        );
+    }
+
+    let new_anchors = [a_heal, a_talk, a_bait];
+
+    let sources = rb78_live_sources();
+    let squashed: Vec<(String, String)> = sources
+        .iter()
+        .map(|(file, raw)| (file.clone(), rb78_squashed(raw)))
+        .collect();
+    let regions: Vec<String> = squashed
+        .iter()
+        .flat_map(|(_, text)| rb78_region_texts(text))
+        .collect();
+
+    for wanted in &new_anchors {
+        let found = regions.iter().any(|r| r.contains(wanted.as_str()));
+        assert!(
+            found,
+            "rb-80 [rb80/anchor-region] E1 FAIL: no live rb-78 gate region contains the squashed \
+             declaration `{wanted}`, so that module contributes NO region to the macro-expansion \
+             grammar. THIS IS THE RED STATE AT HEAD: `raising.rs`, `npc.rs` and `taming.rs` carry \
+             no fully-qualified deletion-gate call yet, and the slicer cuts its regions from those \
+             call sites — no call, no region, no macro clause, no complaint. After the fix the \
+             likely causes, in order: that reducer's gate stopped being fully qualified (an \
+             import-shadowed or aliased call), a brace CHAR literal stranded the depth counter \
+             above zero so every later region starts at the wrong boundary, or the reducer was \
+             renamed. Investigate the slicer against the file; if the reducer really is gone, \
+             re-derive that module's anchor deliberately. Regions found: {}.",
+            regions.len()
+        );
+    }
 }
