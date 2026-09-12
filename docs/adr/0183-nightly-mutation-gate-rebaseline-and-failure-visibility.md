@@ -155,7 +155,7 @@ lookup rather than a re-derivation:
 |---|---|---|---|
 | 1–7 | `marshal.rs:208` (7 instances, lines 214–217) | `pub_from_monster(m: &Monster, tier: u8) -> MonsterPub` | assert `nutrition_pct` with ALL SIX `ev_*` columns set to distinct nonzero values |
 | 8 | `marshal.rs:253` (line 284) | `monster_to_instance(m: &Monster) -> Result<MonsterInstance, String>` | assert `.party_slot` is `None` for `PARTY_SLOT_NONE` and `Some(n)` for a partied row |
-| 9 | `raising.rs:503` (line 505) | `apply_quality_time_credit(m: &mut Monster, now: i64) -> bool` | `now == quality_time_window_start_ms` boundary must NOT take the backwards-clock branch |
+| 9 | `raising.rs:505` (line 505) | `apply_quality_time_credit(m: &mut Monster, now: i64) -> bool` | `now == quality_time_window_start_ms` boundary must NOT take the backwards-clock branch |
 | 10 | `accounts.rs:286` | `reject(reducer, &str, sender, reason) -> Result<(), String>` (no ctx) | direct call-and-assert on the returned message |
 | 11 | `observability.rs:72` | `mr_log(evt, &str extra_fields_json)` (no ctx) | log-capture test on the emitted line |
 

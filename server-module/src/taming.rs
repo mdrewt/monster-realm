@@ -281,6 +281,8 @@ pub fn attempt_recruit(
 #[spacetimedb::reducer]
 pub fn grant_bait(ctx: &ReducerContext, item_id: u32, qty: u32) -> Result<(), String> {
     let me = ctx.sender();
+    // Deletion gate (ADR-0250 D4, spec para 4.7): the first check, before the item read; no joined check exists.
+    crate::guards::require_not_deleting(ctx, "grant_bait")?;
     let Some(item) = ctx.db.item_row().id().find(item_id) else {
         let e = "item not found".to_string();
         log_reject("grant_bait", me, &e);

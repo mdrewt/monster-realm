@@ -304,6 +304,8 @@ pub fn heal_party(ctx: &ReducerContext, location_id: u32) -> Result<(), String> 
     let Some(p) = ctx.db.player().identity().find(me) else {
         return Err("not joined".to_string());
     };
+    // Deletion gate (ADR-0250 D1, spec para 4.7): right after the joined check, before any further read.
+    crate::guards::require_not_deleting(ctx, "heal_party")?;
     let Some(ch) = ctx.db.character().entity_id().find(p.entity_id) else {
         return Err("character not found".to_string());
     };

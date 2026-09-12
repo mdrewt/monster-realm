@@ -162,7 +162,7 @@ a slice that owns an ADR — never to widen a needle:
 
 ### D4 — Vehicle: the pure verdict, one live test, one fixture matrix, one live mutant register
 
-**Live test** `rb78_no_macro_expands_above_any_deletion_gate` (`guards_tests.rs:6475`): the verdict is
+**Live test** `rb78_no_macro_expands_above_any_deletion_gate` (`guards_tests.rs:6478`): the verdict is
 `Ok` over the live sources, and three positive controls stand behind it — controls, not floors, because
 nothing is pinned whose only job is to notice a deleted assertion (ADR-0224's amendment).
 
@@ -192,7 +192,7 @@ about which file each declared module maps to. Its one consequence: a STALE test
 sources reports on bytes it did not compile, which constrains mutation runners (they must rebuild between
 rows), not CI.
 
-**Fixture matrix** `rb78_macro_divert_fixtures_are_rejected_by_clause` (`guards_tests.rs:6620`) —
+**Fixture matrix** `rb78_macro_divert_fixtures_are_rejected_by_clause` (`guards_tests.rs:6623`) —
 TWENTY-THREE rows: two clean controls asserted `Ok`, and twenty-one rejecting rows asserted by label
 MEMBERSHIP, each written from fragments as its own full text (no shared builder can make the matrix
 vacuous), with the expected labels hand-written in the test and produced independently by the collector.
