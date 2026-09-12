@@ -3312,8 +3312,8 @@ fn rb41_has_heal_cooldown_tracks_real_cooldown_rows() {
 // E1 (spec M22 §4.7): WHEN `raising::heal_party` writes an ERASE-policy table
 // for a mid-grace or terminal caller THE SYSTEM SHALL refuse BEFORE the write.
 // `heal_party` debits `player_wallet` through the shop's own `spend_currency`
-// (raising.rs:362), consumes `inventory` (:370), writes `monster` /
-// `monster_pub` (:393-394) and `heal_cooldown` (:410) — four ERASE-policy
+// (raising.rs:364), consumes `inventory` (:372), writes `monster` /
+// `monster_pub` (:395-396) and `heal_cooldown` (:412) — four ERASE-policy
 // tables the cascade is about to erase, so §4.7's trigger predicate selects it
 // exactly as it selected `buy` / `sell` ("the builder does not get to re-decide
 // this").
@@ -3582,13 +3582,22 @@ fn rb80_assert_gate_pinned(
     assert_eq!(
         n_bare, 1,
         "rb-80 [rb80/bare-name] E1 FAIL (caller-only): `{fn_name}` mentions the deletion-gate \
-         wrapper {n_bare} time(s) by BARE NAME and must mention it EXACTLY once. TWO is the \
-         third-party gate: a sibling taking an identity argument, called beside the caller gate, \
-         points the gate at somebody who is not the caller — and the blanket wrapper takes no \
-         identity precisely so that cannot be written (ADR-0227 D2; the rb-76 subject wrapper is \
-         census-contained to `battle::begin_encounter` alone). The executed matrix cannot see \
-         it: the native host's dummy sender is the only identity that ever calls. ZERO means \
-         clause A matched a qualified call without the name, which is a scan defect."
+         wrapper {n_bare} time(s) by BARE NAME and must mention it EXACTLY once. WHAT TWO \
+         ACTUALLY IS: clause A already pins the fully-qualified `?;` STATEMENT at exactly one, so \
+         a SECOND bare mention is a second decision path spelled some other way — an alias, a \
+         re-export or a function-pointer binding of the wrapper; a local wrapper AROUND the \
+         wrapper (a closure or a nested fn in this body, which clause A's statement needle walks \
+         straight past); or a duplicated call whose verdict is swallowed instead of propagated \
+         (`let _ = ..`, `.ok();`, a call inside a closure). NOT the identity-parameterised \
+         sibling: ADR-0227 D2 makes THIS wrapper caller-only by SIGNATURE, and rb-76 pins the two \
+         bare names prefix-free precisely so neither census inflates the other — so the sibling's \
+         name does not contain this one and this clause is blind to it BY CONSTRUCTION. Its \
+         containment is owned crate-wide by `guards_tests.rs`'s \
+         `rb76_subject_gate_and_begin_encounter_are_contained_crate_wide` clause (a), which pins \
+         that name at ZERO in every scanned module but `guards.rs` and `battle.rs`. The executed \
+         matrix cannot see any of this: the native host's dummy sender is the only identity that \
+         ever calls. ZERO means clause A matched a qualified call without the name, which is a \
+         scan defect."
     );
 
     // --- Clause P: the WHOLE prefix above the gate is frozen ----------------
@@ -3597,19 +3606,14 @@ fn rb80_assert_gate_pinned(
         got, expected_prefix,
         "rb-80 [rb80/prefix] E1 FAIL: the squashed text ABOVE `{fn_name}`'s deletion gate is not \
          the frozen guard prefix.\n      Got:      {got:?}\n      Expected: {expected_prefix:?}\n \
-         WHAT THIS KILLS: every statement that can run before a caller reaches the gate. The \
-         measured class (rb-79, ADR-0249 D2) is seven CI-clean survivors that all keep the gate \
-         statement, its `?`, its depth, its tag and rb-46's textual return census \
-         byte-identically green: a sender-keyed early `Ok` (the native host's sender IS \
-         `WILD_IDENTITY`, so only the harness ever reaches the gate), a file-scope \
-         conditional-compilation constant consulted here, a plain `false` constant, a \
-         combinator that looks like a rejection and evaluates to `Ok`, a rejection-SHAPED \
-         `return Err(e);`, a delegation to an ungated file-scope twin, and a shadow binding of \
-         the caller to the wild sentinel (which introduces no `return` token at all). \
-         RE-DERIVATION CONTRACT: this literal comes from ADR-0250 D1 and ADR-0227 D3/D4 plus \
-         PRV1-9. If an honest refactor reds it, re-derive it from those decisions in a new ADR. \
-         NEVER paste the current body in to make it green, and never relax the equality to \
-         `starts_with` or `contains` — both readmit exactly the seven survivors above."
+         WHAT THIS KILLS: every statement that can run before a caller reaches the gate — the \
+         seven CI-clean survivors rb-79 measured, enumerated once in ADR-0249 D2, each of which \
+         keeps the gate statement, its `?`, its depth, its tag and rb-46's textual return census \
+         byte-identically green. RE-DERIVATION CONTRACT: this literal comes from ADR-0250 D1 and \
+         ADR-0227 D3/D4 plus PRV1-9. If an honest refactor reds it, re-derive it from those \
+         decisions in a new ADR. NEVER paste the current body in to make it green, and never \
+         relax the equality to `starts_with` or `contains` — both readmit every survivor \
+         ADR-0249 D2 names."
     );
 
     // --- Clause P's runtime ties, on the FROZEN literal ---------------------
@@ -3789,14 +3793,10 @@ fn rb80_heal_party_carries_the_deletion_gate() {
     let expected = rb80_heal_party_prefix();
     let open = char::from(0x7Bu8).to_string();
     let close = char::from(0x7Du8).to_string();
-    let ties: [(&str, usize); 10] = [
+    let ties: [(&str, usize); 9] = [
         (concat!("letm", "e="), 1),
         (concat!("ctx.sen", "der()"), 1),
         (concat!("player().ident", "ity().find(me)"), 1),
-        (
-            concat!("player_conver", "sation().owner_identity().find(me)"),
-            0,
-        ),
         (concat!("returnE", "rr("), 1),
         (concat!(".to_str", "ing());"), 1),
         (concat!("cra", "te::"), 0),
@@ -3816,7 +3816,7 @@ fn rb80_heal_party_carries_the_deletion_gate() {
         ),
         (
             concat!("spend_", "currency("),
-            "the shop's own currency debit (raising.rs:362) — the irreversible ERASE-table \
+            "the shop's own currency debit (raising.rs:364) — the irreversible ERASE-table \
              effect the whole ordering exists to sit above, and this site's anti-transposition \
              landmark: `talk`'s frozen prefix is byte-identical to this one, so without a \
              landmark the two literals could be swapped without a single clause noticing",
@@ -4050,11 +4050,47 @@ fn rb80_raising_reducer_roster_and_open_writers_are_pinned() {
          also catches an alias, a re-export and a function-pointer binding."
     );
 
+    // --- (b0) the file's WHOLE attribute budget -----------------------------
+    let attr_open = ["#", "["].concat();
+    let n_attrs = squashed.matches(attr_open.as_str()).count();
+    assert_eq!(
+        n_attrs, 8,
+        "rb-80 [rb80/attr-budget] E1 FAIL: `raising.rs` carries {n_attrs} attribute opener(s) and \
+         must carry exactly EIGHT. WHY A TOTAL AND NOT JUST THE ROSTER: the roster clauses below \
+         key on the LITERAL `spacetimedb`-qualified attribute text, and four measured spellings \
+         publish a client-callable reducer while counting ZERO there — the attribute imported by \
+         name, the crate aliased on its `use` line, the attribute renamed inside a braced import, \
+         and a NEIGHBOURING macro that is not `reducer` at all. Every one of them needs an \
+         attribute opener, so a sixth raising entry point cannot be added without moving this \
+         number. THE BUDGET IS FULLY ACCOUNTED, which is what stops it being balanced by a \
+         deletion: two `cfg(test)` attributes (clause (c) pins that count exactly), five bare \
+         reducer attributes (clause (b)), and the ONE `path` attribute that wires this test module \
+         to its file — delete that and this census stops being compiled at all. GREEN AT HEAD and \
+         after the fix: an anti-bypass clause, not part of this slice's RED."
+    );
+
     // --- (b) the reducer roster is closed -----------------------------------
     let attr_bare = ["#[spacetimedb", "::reducer]"].concat();
     let attr_any = ["#[spacetimedb", "::reducer"].concat();
     let n_bare_attr = squashed.matches(attr_bare.as_str()).count();
     let n_any_attr = squashed.matches(attr_any.as_str()).count();
+
+    // --- (b0b) the reducer macro is reached through the crate path, nowhere else
+    let path_token = ["::red", "ucer"].concat();
+    let n_path_token = squashed.matches(path_token.as_str()).count();
+    assert_eq!(
+        n_path_token, n_bare_attr,
+        "rb-80 [rb80/attr-path] E1 FAIL: `raising.rs` spells the path-qualified reducer token \
+         {n_path_token} time(s) while carrying {n_bare_attr} bare reducer attribute(s); the two \
+         must AGREE. Every bare attribute contains this token, so the count can only ever be \
+         GREATER — which means what this clause really asserts is that the file mentions the \
+         reducer macro NOWHERE ELSE: not on a `use` line that imports it by name (then \
+         `#[reducer]` publishes an entry point the roster clause below cannot see), and not \
+         through an aliased crate path (`#[<alias>::reducer]`, same result). The braced-rename \
+         and wrong-macro spellings leave this count alone and are caught by the attribute budget \
+         above instead; the two clauses are a pair and neither is redundant. GREEN AT HEAD and \
+         after the fix."
+    );
     assert_eq!(
         n_any_attr, n_bare_attr,
         "rb-80 [rb80/roster] E1 FAIL: `raising.rs` carries {n_any_attr} reducer attribute(s) but \
@@ -4099,7 +4135,7 @@ fn rb80_raising_reducer_roster_and_open_writers_are_pinned() {
         (
             cfg_attr.as_str(),
             2usize,
-            "the two `cfg(test)` attributes (:273 the test-only cooldown constant, :779 the \
+            "the two `cfg(test)` attributes (:273 the test-only cooldown constant, :781 the \
              child test module) and NOTHING else. A third is a conditional-compilation switch on \
              production code, which is how a gate becomes present in review and absent in the \
              published wasm",
@@ -4144,8 +4180,8 @@ fn rb80_raising_reducer_roster_and_open_writers_are_pinned() {
         (
             concat!("consume_", "one("),
             3usize,
-            "exactly three inventory burns — `train` (:242), `heal_party` (:370) and \
-             `consume_crystalized_essence` (:729). A fourth is an unreviewed ERASE-table write; \
+            "exactly three inventory burns — `train` (:242), `heal_party` (:372) and \
+             `consume_crystalized_essence` (:731). A fourth is an unreviewed ERASE-table write; \
              three is also the measured floor that makes R-rb-80-RAISINGWRITERS concrete rather \
              than prose",
         ),

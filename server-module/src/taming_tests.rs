@@ -550,7 +550,7 @@ fn taming_rs_carries_no_remaining_adr_0089_park_marker() {
 //
 // E1 names "the taming recruit grant_item path". MEASURED FINDING (ADR-0250 D4):
 // that path is a MISATTRIBUTION — no recruit path calls `grant_item`. The ONE
-// `grant_item(` call in `taming.rs` is at :295, inside `grant_bait`, a
+// `grant_item(` call in `taming.rs` is at :297, inside `grant_bait`, a
 // `cfg(feature = "dev_reducers")` DEV reducer that credits the CALLER's own
 // `inventory` (an ERASE-policy table) with up to 99 items per call. It is gated
 // here on the `battle::start_wild_battle` precedent (ADR-0236 D2/D3: a dev-only
@@ -731,6 +731,25 @@ fn rb80_assert_scan_substrate(raw: &str) {
          a missing tag for a reducer that carries one. Run the string stripper first (the house \
          order) or spell the marker differently."
     );
+    let n_dq_raw = raw.matches(dq.as_str()).count();
+    let n_dq_outside_comments = strip_rust_comments(raw).matches(dq.as_str()).count();
+    assert_eq!(
+        n_dq_raw, n_dq_outside_comments,
+        "rb-80 [rb80/scan-substrate] SCAN PRECONDITION: `taming.rs` spells {n_dq_raw} double \
+         quote(s) in its raw text but only {n_dq_outside_comments} of them survive comment \
+         stripping, so at least one lives INSIDE A COMMENT. THIS FILE STRIPS STRINGS BEFORE \
+         COMMENTS (`stripped_taming_for_scan`, :277-279), so a comment carrying an ODD number of \
+         quotes opens a PHANTOM STRING LITERAL in `strip_rust_strings_taming`, which then blanks \
+         every byte — NEWLINES INCLUDED — up to the next quote anywhere in the file. Two such \
+         comments make all the code between them vanish leaving NO RESIDUE: no line-comment \
+         marker, no brace, no unpaired block comment, nothing for any other precondition here to \
+         trip on. The gate statement, the frozen prefix above it and every early exit below it \
+         would simply not be in the text, and clause P and the return census would be reporting \
+         about a haystack that was blanked out from under them. MEASURED 68 == 68 on the shipped \
+         file. The remedy is to move the quote out of the comment (backticks read better in prose \
+         anyway) or to teach this file's pipeline comments-before-strings; never delete this \
+         check, and never satisfy it by deleting the clauses it protects."
+    );
 }
 
 /// The FROZEN statement prefix above `grant_bait`'s deletion gate: comments
@@ -865,14 +884,22 @@ fn rb80_assert_gate_pinned(
     assert_eq!(
         n_bare, 1,
         "rb-80 [rb80/bare-name] E1 FAIL (caller-only): `{fn_name}` mentions the deletion-gate \
-         wrapper {n_bare} time(s) by BARE NAME and must mention it EXACTLY once. TWO is the \
-         third-party gate: a sibling taking an identity argument, called beside the caller gate, \
-         points the gate at somebody who is not the caller — and the blanket wrapper takes no \
-         identity precisely so that cannot be written (ADR-0227 D2; the rb-76 subject wrapper is \
-         census-contained to `battle::begin_encounter` alone, so using it here would red that \
-         census too). The executed matrix cannot see it: the native host's dummy sender is the \
-         only identity that ever calls. ZERO means clause A matched a qualified call without the \
-         name, which is a scan defect."
+         wrapper {n_bare} time(s) by BARE NAME and must mention it EXACTLY once. WHAT TWO \
+         ACTUALLY IS: clause A already pins the fully-qualified `?;` STATEMENT at exactly one, so \
+         a SECOND bare mention is a second decision path spelled some other way — an alias, a \
+         re-export or a function-pointer binding of the wrapper; a local wrapper AROUND the \
+         wrapper (a closure or a nested fn in this body, which clause A's statement needle walks \
+         straight past); or a duplicated call whose verdict is swallowed instead of propagated \
+         (`let _ = ..`, `.ok();`, a call inside a closure). NOT the identity-parameterised \
+         sibling: ADR-0227 D2 makes THIS wrapper caller-only by SIGNATURE, and rb-76 pins the two \
+         bare names prefix-free precisely so neither census inflates the other — so the sibling's \
+         name does not contain this one and this clause is blind to it BY CONSTRUCTION. Its \
+         containment is owned crate-wide by `guards_tests.rs`'s \
+         `rb76_subject_gate_and_begin_encounter_are_contained_crate_wide` clause (a), which pins \
+         that name at ZERO in every scanned module but `guards.rs` and `battle.rs`. The executed \
+         matrix cannot see any of this: the native host's dummy sender is the only identity that \
+         ever calls. ZERO means clause A matched a qualified call without the name, which is a \
+         scan defect."
     );
 
     // --- Clause P: the WHOLE prefix above the gate is frozen ----------------
@@ -881,19 +908,14 @@ fn rb80_assert_gate_pinned(
         got, expected_prefix,
         "rb-80 [rb80/prefix] E1 FAIL: the squashed text ABOVE `{fn_name}`'s deletion gate is not \
          the frozen guard prefix.\n      Got:      {got:?}\n      Expected: {expected_prefix:?}\n \
-         WHAT THIS KILLS: every statement that can run before a caller reaches the gate. The \
-         measured class (rb-79, ADR-0249 D2) is seven CI-clean survivors that all keep the gate \
-         statement, its `?`, its depth, its tag and rb-46's textual return census \
-         byte-identically green: a sender-keyed early `Ok` (the native host's sender IS \
-         `WILD_IDENTITY`, so only the harness ever reaches the gate), a file-scope \
-         conditional-compilation constant consulted here, a plain `false` constant, a combinator \
-         that looks like a rejection and evaluates to `Ok`, a rejection-SHAPED `return Err(e);`, \
-         a delegation to an ungated file-scope twin, and a shadow binding of the caller to the \
-         wild sentinel (which introduces no `return` token at all). This reducer has no standing \
-         guard of its own, so the frozen prefix is ONE statement and this equality is the whole \
-         above-the-gate claim. RE-DERIVATION CONTRACT: the literal comes from ADR-0250 D4 and \
-         PRV1-9. NEVER paste the current body in to make it green, and never relax the equality \
-         to `starts_with` or `contains` — both readmit exactly the seven survivors above."
+         WHAT THIS KILLS: every statement that can run before a caller reaches the gate — the \
+         seven CI-clean survivors rb-79 measured, enumerated once in ADR-0249 D2, each of which \
+         keeps the gate statement, its `?`, its depth, its tag and rb-46's textual return census \
+         byte-identically green. This reducer has no standing guard of its own, so the frozen \
+         prefix is ONE statement and this equality is the whole above-the-gate claim. \
+         RE-DERIVATION CONTRACT: the literal comes from ADR-0250 D4 and PRV1-9. NEVER paste the \
+         current body in to make it green, and never relax the equality to `starts_with` or \
+         `contains` — both readmit every survivor ADR-0249 D2 names."
     );
 
     // --- Clause P's runtime ties, on the FROZEN literal ---------------------
@@ -1037,14 +1059,20 @@ fn rb80_grant_bait_carries_the_deletion_gate() {
     let expected = rb80_grant_bait_prefix();
     let open = char::from(0x7Bu8).to_string();
     let close = char::from(0x7Du8).to_string();
-    let ties: [(&str, usize); 10] = [
+    // Eight ties, not ten. The frozen literal is ONE 19-byte statement, so the
+    // two DB-lookup rows the sibling sites carry cannot occur in it at any count
+    // — 28 and 46 bytes — and the transposition they nominally guarded is caught
+    // twice over by the brace and rejection rows below, which fire on both
+    // sibling literals. The SIX zero-rows that remain are not decoration: the
+    // threat this clause names is a literal REGENERATED from an altered body, and
+    // each of them fires on one — a crate path (a sender-keyed early `Ok`, a
+    // wild-sentinel shadow), a brace pair (any inserted block), a rejection-shaped
+    // early exit, a second fallible call. Here clause P is an equality against one
+    // statement, so these six are the whole defence against a re-photographed
+    // literal.
+    let ties: [(&str, usize); 8] = [
         (concat!("let", "me="), 1),
         (concat!("ctx.", "sender()"), 1),
-        (concat!("player().", "identity().find(me)"), 0),
-        (
-            concat!("player_conversation().", "owner_identity().find(me)"),
-            0,
-        ),
         (concat!("returnErr", "("), 0),
         (concat!(".to_string", "());"), 0),
         (concat!("c", "rate::"), 0),
@@ -1055,12 +1083,12 @@ fn rb80_grant_bait_carries_the_deletion_gate() {
     let below: [(&str, &str); 2] = [
         (
             concat!("item_row().id().", "find(item_id)"),
-            "the item-content lookup (taming.rs:284) — the first DB read, and the first thing \
+            "the item-content lookup (taming.rs:286) — the first DB read, and the first thing \
              that must run AFTER the gate",
         ),
         (
             concat!("grant_", "item("),
-            "the inventory credit (taming.rs:295) — the irreversible ERASE-table effect the whole \
+            "the inventory credit (taming.rs:297) — the irreversible ERASE-table effect the whole \
              ordering exists to sit above, and the ONE `grant_item` call E1's misattributed \
              'recruit grant_item path' actually refers to",
         ),
@@ -1101,19 +1129,7 @@ fn rb80_reducer_names(squashed: &str) -> Vec<String> {
 /// `attempt_recruit` keeps exactly the one bait burn its PRV1-10 classification
 /// is argued from.
 ///
-/// THE DEFERRED RAISING WRITERS ARE A SCOPE DEFERRAL, NOT A DESIGN DECISION.
-/// `raising::train`, `care`, `essence_train` and `consume_crystalized_essence`
-/// all write ERASE-policy tables and §4.7's trigger predicate selects them
-/// exactly as it selects the three sites E1 names; no "value creation" class line
-/// is claimed for them. They are out of scope here only because E1 names three
-/// sites and their only precedented gate placement sits below a `u64`-keyed
-/// `monster` lookup, where the native-host five-state matrix is unreachable —
-/// they are registered as R-rb-80-RAISINGWRITERS and need their own slice. The
-/// FILE-WIDE counts (this clause here, and its siblings in `raising_tests.rs` and
-/// `npc_tests.rs`) are what make their ungated state VISIBLE rather than
-/// forgotten.
-///
-/// `attempt_recruit` is different: it is CLASSIFIED OPEN (PRV1-10, ADR-0250 D6)
+/// `attempt_recruit` is CLASSIFIED OPEN (PRV1-10, ADR-0250 D6)
 /// because its bait `consume_one` and its success-path monster insert happen
 /// INSIDE an already-open wild battle behind the ownership and `Ongoing` guards
 /// — the `submit_attack` / `use_battle_item` class (`battle.rs:1063`'s
@@ -1155,11 +1171,47 @@ fn rb80_taming_reducer_roster_and_open_writers_are_pinned() {
          function-pointer binding."
     );
 
+    // --- (b0) the file's WHOLE attribute budget -----------------------------
+    let attr_open = ["#", "["].concat();
+    let n_attrs = squashed.matches(attr_open.as_str()).count();
+    assert_eq!(
+        n_attrs, 6,
+        "rb-80 [rb80/attr-budget] E1 FAIL: `taming.rs` carries {n_attrs} attribute opener(s) and \
+         must carry exactly SIX. WHY A TOTAL AND NOT JUST THE ROSTER: the roster clauses below \
+         key on the LITERAL `spacetimedb`-qualified attribute text, and four measured spellings \
+         publish a client-callable reducer while counting ZERO there — the attribute imported by \
+         name, the crate aliased on its `use` line, the attribute renamed inside a braced import, \
+         and a NEIGHBOURING macro that is not `reducer` at all. Every one of them needs an \
+         attribute opener, so a fifth entry point cannot be added without moving this number. THE \
+         BUDGET IS FULLY ACCOUNTED, which is what stops it being balanced by a deletion: three \
+         `cfg` attributes (clause (c) pins that count exactly), two bare reducer attributes \
+         (clause (b)), and the ONE `path` attribute that wires this test module to its file — \
+         delete that and this census stops being compiled at all. GREEN AT HEAD and after the \
+         fix: an anti-bypass clause, not part of this slice's RED."
+    );
+
     // --- (b) the reducer roster is closed -----------------------------------
     let attr_bare = concat!("#[spacetimedb", "::reducer]");
     let attr_any = concat!("#[spacetimedb", "::reducer");
     let n_bare_attr = squashed.matches(attr_bare).count();
     let n_any_attr = squashed.matches(attr_any).count();
+
+    // --- (b0b) the reducer macro is reached through the crate path, nowhere else
+    let path_token = ["::red", "ucer"].concat();
+    let n_path_token = squashed.matches(path_token.as_str()).count();
+    assert_eq!(
+        n_path_token, n_bare_attr,
+        "rb-80 [rb80/attr-path] E1 FAIL: `taming.rs` spells the path-qualified reducer token \
+         {n_path_token} time(s) while carrying {n_bare_attr} bare reducer attribute(s); the two \
+         must AGREE. Every bare attribute contains this token, so the count can only ever be \
+         GREATER — which means what this clause really asserts is that the file mentions the \
+         reducer macro NOWHERE ELSE: not on a `use` line that imports it by name (then \
+         `#[reducer]` publishes an entry point the roster clause below cannot see), and not \
+         through an aliased crate path (`#[<alias>::reducer]`, same result). The braced-rename \
+         and wrong-macro spellings leave this count alone and are caught by the attribute budget \
+         above instead; the two clauses are a pair and neither is redundant. GREEN AT HEAD and \
+         after the fix."
+    );
     assert_eq!(
         n_any_attr, n_bare_attr,
         "rb-80 [rb80/roster] E1 FAIL: `taming.rs` carries {n_any_attr} reducer attribute(s) but \
@@ -1203,7 +1255,7 @@ fn rb80_taming_reducer_roster_and_open_writers_are_pinned() {
             "EXACTLY the three the dev-reducer gate needs: the feature attribute on the \
              `grant_item` import (:18), the one on `grant_bait` itself (:280, which \
              `evals/dev-reducer-gating` requires to sit directly above the reducer attribute) \
-             and the `cfg(test)` attribute on the child test module (:299). A FOURTH is the \
+             and the `cfg(test)` attribute on the child test module (:301). A FOURTH is the \
              shape that takes the deletion gate out of the wasm CI publishes while every \
              body-scoped clause stays green",
         ),
@@ -1240,7 +1292,7 @@ fn rb80_taming_reducer_roster_and_open_writers_are_pinned() {
         (
             concat!("grant_", "item("),
             1usize,
-            "ONE inventory credit in this whole module, `grant_bait`'s (:295). A second is the \
+            "ONE inventory credit in this whole module, `grant_bait`'s (:297). A second is the \
              below-gate delegation shape: a twin that repeats the credit for every caller the \
              gate would have refused",
         ),

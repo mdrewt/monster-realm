@@ -6783,10 +6783,18 @@ fn rb78_macro_divert_fixtures_are_rejected_by_clause() {
 ///     before this slice's roster edit and is a RED here: three modules would be
 ///     gated and invisible to rb-78's grammar, so a macro expanded above any of
 ///     the four new gates would pass CI in silence.
-///   * THE ROSTER CONTENT. Each of the three new anchors must be PRESENT by
-///     equality, not merely counted — a roster grown to ten by duplicating an
-///     existing row, or by anchoring a module on a reducer that carries no gate,
-///     satisfies a size check and covers nothing (register row M20).
+///   * THE ROSTER'S TEN ROWS ARE DISTINCT. Size alone is forgeable, and register
+///     row M20 is the measured shape: drop `respond_trade` and write `buy` twice.
+///     The count stays at ten, the size clause stays green, and `trading.rs`
+///     contributes no anchor at all — so rb-78's live control stops asserting
+///     that the region slicer ever reached that file. A sorted, de-duplicated
+///     roster of ten refuses that trade.
+///   * THE ROSTER CONTENT — ALL TEN, not only this slice's three. Every anchor is
+///     asserted PRESENT by equality, so swapping one module's row for another's
+///     is a failure instead of a silent narrowing. The fragments are split at
+///     DIFFERENT points from the roster's own rows, one by one: with identical
+///     splits, one transcription error copied into both places would satisfy this
+///     clause while the roster pointed at a declaration that does not exist.
 ///   * THE LIVE REGIONS. Each new anchor must fall inside a region the slicer
 ///     actually cut out of a live source. This is the clause the implementation
 ///     has to satisfy: it is RED until the four gates are wired, because a
@@ -6819,25 +6827,58 @@ fn rb80_rb78_anchor_roster_covers_the_new_gate_bearing_modules() {
         anchors.len()
     );
 
-    let new_anchors = [
-        ["fnheal_", "party("].concat(),
-        ["fnt", "alk("].concat(),
-        ["fngrant_", "bait("].concat(),
-    ];
+    // --- the roster's ten rows are DISTINCT ----------------------------------
+    let mut distinct: Vec<String> = anchors.to_vec();
+    distinct.sort();
+    distinct.dedup();
+    let n_distinct = distinct.len();
+    assert_eq!(
+        n_distinct, 10,
+        "rb-80 [rb80/anchor-roster] FAIL: the roster's ten rows collapse to {n_distinct} DISTINCT \
+         anchor(s) and must stay TEN. SIZE ALONE IS FORGEABLE, and register row M20 is the \
+         measured shape: drop `respond_trade` and write `buy` twice. The count stays at ten, the \
+         size clause above stays green, and `trading.rs` contributes no anchor at all — so \
+         rb-78's live control no longer asserts that the region slicer ever reached that file, and \
+         a macro expanded above that module's gate goes unexamined. Sorted and de-duplicated \
+         rather than compared pairwise so the failure prints what survived: {distinct:?}"
+    );
 
-    for wanted in &new_anchors {
+    // --- every gate-bearing module's anchor is PRESENT, by equality ----------
+    // Split at DIFFERENT bytes than the roster's own rows, one by one: with
+    // identical splits, a single transcription error copied into both places
+    // would satisfy this clause while the roster pointed at a declaration that
+    // does not exist — which is exactly the hole a membership check closes.
+    let a_heal = ["fnheal_p", "arty("].concat();
+    let a_talk = ["fnta", "lk("].concat();
+    let a_bait = ["fngrant_b", "ait("].concat();
+    let expected: [String; 10] = [
+        ["fnsta", "rt_battle("].concat(),
+        ["fnbeg", "in_encounter("].concat(),
+        ["fnstart_w", "ild_battle("].concat(),
+        ["fnresp", "ond_trade("].concat(),
+        ["fnbu", "y("].concat(),
+        ["fnchall", "enge_pvp("].concat(),
+        ["fnset_pro", "file_name("].concat(),
+        a_heal.clone(),
+        a_talk.clone(),
+        a_bait.clone(),
+    ];
+    for wanted in &expected {
         let present = anchors.iter().any(|a| a == wanted);
         assert!(
             present,
             "rb-80 [rb80/anchor-roster] FAIL: `rb78_region_anchors()` does not contain the \
-             squashed declaration `{wanted}`. A roster grown to ten by duplicating an existing \
-             row, or by anchoring one of the new modules on a reducer that carries no gate, \
-             satisfies the size clause above and covers NOTHING (register row M20). Membership is \
-             asserted by equality against fragments spelled here independently of the roster's \
-             own, so a transcription error in either place surfaces as this failure rather than \
-             as silence."
+             squashed declaration `{wanted}`. ALL TEN are asserted here, not only this slice's \
+             three: a roster that swaps one module's anchor for another's keeps its size, keeps \
+             its distinctness, and still stops covering a file (register row M20). Membership is \
+             compared by EQUALITY against fragments split at different bytes from the roster's \
+             own, so a transcription error in either place surfaces as this failure rather than as \
+             silence. Re-derive the module's anchor from the reducer that carries its gate; never \
+             delete a row to make a build green — a region that reaches nothing bans nothing."
         );
     }
+
+    let new_anchors = [a_heal, a_talk, a_bait];
 
     let sources = rb78_live_sources();
     let squashed: Vec<(String, String)> = sources

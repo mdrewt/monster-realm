@@ -2123,7 +2123,7 @@ fn rb41_dialogue_state_tracks_real_dialogue_rows() {
 // E1 (spec M22 §4.7) names "quest turn-in grants" as the harm. MEASURED FINDING
 // (ADR-0250 D2): the turn-in grants do NOT happen in `advance_dialogue`.
 // `apply_quest_trigger` (npc.rs:154-222, whose `QuestComplete` arm grants items
-// at :215 and currency at :217) has EXACTLY ONE caller — `talk` (npc.rs:306) —
+// at :215 and currency at :217) has EXACTLY ONE caller — `talk` (npc.rs:308) —
 // and the only shipped quest completes on a `Talk` trigger, so the reward lands
 // in `talk`. Gating `advance_dialogue` alone would leave the path the criterion
 // names open one reducer over. BOTH are gated; both write ERASE-policy tables
@@ -2322,9 +2322,9 @@ fn rb80_talk_prefix() -> String {
 ///
 /// HAND-DERIVED (ADR-0250 D3): the caller binding, Step 1's PK-scoped
 /// conversation let-else, then Step 1.5's joined let-else — and nothing else.
-/// The gate is NECESSARILY above npc.rs:341, the first write in this body (a
+/// The gate is NECESSARILY above npc.rs:345, the first write in this body (a
 /// conversation delete in the npc-missing arm), and above the two `log::warn!`
-/// dismiss arms at :350/:359, which is what keeps rb-78's macro grammar
+/// dismiss arms at :354/:363, which is what keeps rb-78's macro grammar
 /// (ADR-0248 D4) green for this region.
 ///
 /// The two rejection fragments are spelled with DIFFERENT split points on
@@ -2480,14 +2480,22 @@ fn rb80_assert_gate_pinned(
     assert_eq!(
         n_bare, 1,
         "rb-80 [rb80/bare-name] E1 FAIL (caller-only): `{fn_name}` mentions the deletion-gate \
-         wrapper {n_bare} time(s) by BARE NAME and must mention it EXACTLY once. TWO is the \
-         third-party gate: a sibling taking an identity argument, called beside the caller gate, \
-         points the gate at somebody who is not the caller — and the blanket wrapper takes no \
-         identity precisely so that cannot be written (ADR-0227 D2; the rb-76 subject wrapper is \
-         census-contained to `battle::begin_encounter` alone, so using it here would red that \
-         census too). The executed matrix cannot see it: the native host's dummy sender is the \
-         only identity that ever calls. ZERO means clause A matched a qualified call without the \
-         name, which is a scan defect."
+         wrapper {n_bare} time(s) by BARE NAME and must mention it EXACTLY once. WHAT TWO \
+         ACTUALLY IS: clause A already pins the fully-qualified `?;` STATEMENT at exactly one, so \
+         a SECOND bare mention is a second decision path spelled some other way — an alias, a \
+         re-export or a function-pointer binding of the wrapper; a local wrapper AROUND the \
+         wrapper (a closure or a nested fn in this body, which clause A's statement needle walks \
+         straight past); or a duplicated call whose verdict is swallowed instead of propagated \
+         (`let _ = ..`, `.ok();`, a call inside a closure). NOT the identity-parameterised \
+         sibling: ADR-0227 D2 makes THIS wrapper caller-only by SIGNATURE, and rb-76 pins the two \
+         bare names prefix-free precisely so neither census inflates the other — so the sibling's \
+         name does not contain this one and this clause is blind to it BY CONSTRUCTION. Its \
+         containment is owned crate-wide by `guards_tests.rs`'s \
+         `rb76_subject_gate_and_begin_encounter_are_contained_crate_wide` clause (a), which pins \
+         that name at ZERO in every scanned module but `guards.rs` and `battle.rs`. The executed \
+         matrix cannot see any of this: the native host's dummy sender is the only identity that \
+         ever calls. ZERO means clause A matched a qualified call without the name, which is a \
+         scan defect."
     );
 
     // --- Clause P: the WHOLE prefix above the gate is frozen ----------------
@@ -2496,19 +2504,14 @@ fn rb80_assert_gate_pinned(
         got, expected_prefix,
         "rb-80 [rb80/prefix] E1 FAIL: the squashed text ABOVE `{fn_name}`'s deletion gate is not \
          the frozen guard prefix.\n      Got:      {got:?}\n      Expected: {expected_prefix:?}\n \
-         WHAT THIS KILLS: every statement that can run before a caller reaches the gate. The \
-         measured class (rb-79, ADR-0249 D2) is seven CI-clean survivors that all keep the gate \
-         statement, its `?`, its depth, its tag and rb-46's textual return census \
-         byte-identically green: a sender-keyed early `Ok` (the native host's sender IS \
-         `WILD_IDENTITY`, so only the harness ever reaches the gate), a file-scope \
-         conditional-compilation constant consulted here, a plain `false` constant, a combinator \
-         that looks like a rejection and evaluates to `Ok`, a rejection-SHAPED `return Err(e);`, \
-         a delegation to an ungated file-scope twin, and a shadow binding of the caller to the \
-         wild sentinel (which introduces no `return` token at all). RE-DERIVATION CONTRACT: this \
-         literal comes from ADR-0250 D2/D3 and ADR-0227 D3/D4 plus PRV1-9. If an honest refactor \
-         reds it, re-derive it from those decisions in a new ADR. NEVER paste the current body in \
-         to make it green, and never relax the equality to `starts_with` or `contains` — both \
-         readmit exactly the seven survivors above."
+         WHAT THIS KILLS: every statement that can run before a caller reaches the gate — the \
+         seven CI-clean survivors rb-79 measured, enumerated once in ADR-0249 D2, each of which \
+         keeps the gate statement, its `?`, its depth, its tag and rb-46's textual return census \
+         byte-identically green. RE-DERIVATION CONTRACT: this literal comes from ADR-0250 D2/D3 \
+         and ADR-0227 D3/D4 plus PRV1-9. If an honest refactor reds it, re-derive it from those \
+         decisions in a new ADR. NEVER paste the current body in to make it green, and never \
+         relax the equality to `starts_with` or `contains` — both readmit every survivor \
+         ADR-0249 D2 names."
     );
 
     // --- Clause P's runtime ties, on the FROZEN literal ---------------------
@@ -2824,14 +2827,10 @@ fn rb80_talk_carries_the_deletion_gate() {
     let expected = rb80_talk_prefix();
     let open = char::from(0x7Bu8).to_string();
     let close = char::from(0x7Du8).to_string();
-    let ties: [(&str, usize); 10] = [
+    let ties: [(&str, usize); 9] = [
         (concat!("letme", "="), 1),
         (concat!("ctx.se", "nder()"), 1),
         (concat!("player().id", "entity().find(me)"), 1),
-        (
-            concat!("player_conversa", "tion().owner_identity().find(me)"),
-            0,
-        ),
         (concat!("return", "Err("), 1),
         (concat!(".to_s", "tring());"), 1),
         (concat!("crat", "e::"), 0),
@@ -2851,12 +2850,12 @@ fn rb80_talk_carries_the_deletion_gate() {
         ),
         (
             concat!("apply_effects", "_to_db("),
-            "the auto-effects router (npc.rs:287) — the `GrantItem` path into `inventory`, an \
+            "the auto-effects router (npc.rs:289) — the `GrantItem` path into `inventory`, an \
              ERASE-policy table",
         ),
         (
             concat!("apply_quest", "_trigger("),
-            "the quest-trigger call (npc.rs:306), whose `QuestComplete` arm grants items and \
+            "the quest-trigger call (npc.rs:308), whose `QuestComplete` arm grants items and \
              currency — the harm E1 names, and this site's anti-transposition landmark: `talk`'s \
              frozen prefix is byte-identical to `heal_party`'s, so without a landmark inside this \
              body the two literals could be swapped between files unnoticed",
@@ -2874,7 +2873,7 @@ fn rb80_talk_carries_the_deletion_gate() {
 /// DELETE the caller's conversation row), so "above the first write" is a
 /// stronger and different claim here than "above the happy-path effect". The
 /// gate must precede ALL FIVE conversation deletes, which is also what puts it
-/// above the two `log::warn!` arms at npc.rs:350/:359 and keeps rb-78's
+/// above the two `log::warn!` arms at npc.rs:354/:363 and keeps rb-78's
 /// macro-expansion grammar (ADR-0248 D4) green for this region.
 ///
 /// RED AT HEAD on clause `[rb80/gate-count]`: the count is ZERO.
@@ -2916,16 +2915,25 @@ fn rb80_advance_dialogue_carries_the_deletion_gate() {
             "Step 1.5's caller-joined lookup — where standing is established (ADR-0227 D3)",
         ),
     ];
-    let below: [(&str, &str); 2] = [
+    let below: [(&str, &str); 3] = [
         (
             concat!("character().entity_id()", ".find(p.entity_id)"),
             "the character lookup, the first read that must run AFTER the gate",
         ),
         (
             concat!("apply_", "choice("),
-            "the dialogue security gate (npc.rs:381) whose effects reach `player_quest`, \
+            "the dialogue security gate (npc.rs:385) whose effects reach `player_quest`, \
              `player_dialogue_state` and `inventory` — and this site's anti-transposition \
              landmark",
+        ),
+        (
+            concat!("apply_effects", "_to_db("),
+            "the DB-side effects router (npc.rs:392) — the `GrantItem` path into `inventory` and \
+             the `StartQuest` path into `player_quest`. Pinned HERE, inside this body, because \
+             the file-wide write census CANNOT see it: that count (3) folds the declaration in \
+             with both call sites, so a call MOVED out of this reducer into a helper below the \
+             gate nets ZERO there. Exactly-once-in-this-body, ordered after the gate, is what \
+             notices",
         ),
     ];
     let (body, gate_at) =
@@ -2938,8 +2946,8 @@ fn rb80_advance_dialogue_carries_the_deletion_gate() {
         n_delete, 5,
         "rb-80 [rb80/first-write] E1 FAIL (anti-vacuity): `advance_dialogue` deletes the caller's \
          conversation row {n_delete} time(s) and the body this pin was derived against does it \
-         FIVE times — the npc-missing arm (npc.rs:341), the npc-character-missing arm (:345), the \
-         wrong-zone arm (:349), the walked-away arm (:358) and the end-of-dialogue arm (:401). \
+         FIVE times — the npc-missing arm (npc.rs:345), the npc-character-missing arm (:349), the \
+         wrong-zone arm (:353), the walked-away arm (:362) and the end-of-dialogue arm (:405). \
          FEWER means a reject path stopped cleaning up and the ordering claim below covers less \
          than it says; MORE means a sixth write this pin never reasoned about. Re-derive against \
          the current body, never by loosening the count."
@@ -3063,18 +3071,7 @@ fn rb80_reducer_names(squashed: &str) -> Vec<String> {
 /// `dismiss_dialogue`'s whole body is frozen as the PRV1-10 classification it
 /// claims to be.
 ///
-/// THE DEFERRED RAISING WRITERS ARE A SCOPE DEFERRAL, NOT A DESIGN DECISION.
-/// `raising::train`, `care`, `essence_train` and `consume_crystalized_essence`
-/// all write ERASE-policy tables and §4.7's trigger predicate selects them
-/// exactly as it selects the three sites E1 names; no "value creation" class line
-/// is claimed for them. They are out of scope here only because E1 names three
-/// sites and their only precedented gate placement sits below a `u64`-keyed
-/// `monster` lookup, where the native-host five-state matrix is unreachable —
-/// they are registered as R-rb-80-RAISINGWRITERS and need their own slice. The
-/// FILE-WIDE counts (this clause here, and its sibling in `raising_tests.rs`)
-/// are what make their ungated state VISIBLE rather than forgotten.
-///
-/// `dismiss_dialogue` is different: it is CLASSIFIED OPEN (PRV1-10, ADR-0250
+/// `dismiss_dialogue` is CLASSIFIED OPEN (PRV1-10, ADR-0250
 /// D5) because its whole body deletes only the caller's own transient
 /// conversation row, and gating it once `talk` and `advance_dialogue` are gated
 /// would STRAND that row for the rest of the grace window. The body freeze below
@@ -3115,11 +3112,47 @@ fn rb80_npc_reducer_roster_and_open_writers_are_pinned() {
          a re-export and a function-pointer binding."
     );
 
+    // --- (b0) the file's WHOLE attribute budget -----------------------------
+    let attr_open = ["#", "["].concat();
+    let n_attrs = squashed.matches(attr_open.as_str()).count();
+    assert_eq!(
+        n_attrs, 5,
+        "rb-80 [rb80/attr-budget] E1 FAIL: `npc.rs` carries {n_attrs} attribute opener(s) and \
+         must carry exactly FIVE. WHY A TOTAL AND NOT JUST THE ROSTER: the roster clauses below \
+         key on the LITERAL `spacetimedb`-qualified attribute text, and four measured spellings \
+         publish a client-callable reducer while counting ZERO there — the attribute imported by \
+         name, the crate aliased on its `use` line, the attribute renamed inside a braced import, \
+         and a NEIGHBOURING macro that is not `reducer` at all. Every one of them needs an \
+         attribute opener, so a fourth dialogue entry point cannot be added without moving this \
+         number. THE BUDGET IS FULLY ACCOUNTED, which is what stops it being balanced by a \
+         deletion: one `cfg(test)` attribute (clause (c) pins that count exactly), three bare \
+         reducer attributes (clause (b)), and the ONE `path` attribute that wires this test module \
+         to its file — delete that and this census stops being compiled at all. GREEN AT HEAD and \
+         after the fix: an anti-bypass clause, not part of this slice's RED."
+    );
+
     // --- (b) the reducer roster is closed -----------------------------------
     let attr_bare = ["#[spacetimedb", "::reducer]"].concat();
     let attr_any = ["#[spacetimedb", "::reducer"].concat();
     let n_bare_attr = squashed.matches(attr_bare.as_str()).count();
     let n_any_attr = squashed.matches(attr_any.as_str()).count();
+
+    // --- (b0b) the reducer macro is reached through the crate path, nowhere else
+    let path_token = ["::red", "ucer"].concat();
+    let n_path_token = squashed.matches(path_token.as_str()).count();
+    assert_eq!(
+        n_path_token, n_bare_attr,
+        "rb-80 [rb80/attr-path] E1 FAIL: `npc.rs` spells the path-qualified reducer token \
+         {n_path_token} time(s) while carrying {n_bare_attr} bare reducer attribute(s); the two \
+         must AGREE. Every bare attribute contains this token, so the count can only ever be \
+         GREATER — which means what this clause really asserts is that the file mentions the \
+         reducer macro NOWHERE ELSE: not on a `use` line that imports it by name (then \
+         `#[reducer]` publishes an entry point the roster clause below cannot see), and not \
+         through an aliased crate path (`#[<alias>::reducer]`, same result). The braced-rename \
+         and wrong-macro spellings leave this count alone and are caught by the attribute budget \
+         above instead; the two clauses are a pair and neither is redundant. GREEN AT HEAD and \
+         after the fix."
+    );
     assert_eq!(
         n_any_attr, n_bare_attr,
         "rb-80 [rb80/roster] E1 FAIL: `npc.rs` carries {n_any_attr} reducer attribute(s) but only \
@@ -3161,7 +3194,7 @@ fn rb80_npc_reducer_roster_and_open_writers_are_pinned() {
         (
             cfg_attr.as_str(),
             1usize,
-            "the ONE `cfg(test)` attribute on the child test module (:499) and nothing else. A \
+            "the ONE `cfg(test)` attribute on the child test module (:503) and nothing else. A \
              second is a conditional-compilation switch on production code, which is how a gate \
              becomes present in review and absent in the published wasm",
         ),
@@ -3211,14 +3244,17 @@ fn rb80_npc_reducer_roster_and_open_writers_are_pinned() {
         (
             concat!("apply_effects", "_to_db("),
             3usize,
-            "the declaration (:114) plus exactly two call sites, `talk` (:287) and \
-             `advance_dialogue` (:388). A fourth call site is an effects router reached from a \
-             body no gate pin covers",
+            "the declaration (:114) plus exactly two call sites, `talk` (:289) and \
+             `advance_dialogue` (:392). A fourth call site is an effects router reached from a \
+             body no gate pin covers. HONEST LIMIT: this number folds the declaration in with \
+             both calls, so a call MOVED from a gated body into a below-gate helper leaves it at \
+             three — which is why each gated body ALSO pins its own `apply_effects_to_db(` at \
+             exactly once, ordered after the gate",
         ),
         (
             concat!("apply_quest", "_trigger("),
             2usize,
-            "the declaration (:154) plus EXACTLY ONE call site, `talk` (:306). This count is the \
+            "the declaration (:154) plus EXACTLY ONE call site, `talk` (:308). This count is the \
              measured finding ADR-0250 D2 rests on: a second call site would mean the quest \
              turn-in grants can also be reached from a reducer this slice did not gate",
         ),
