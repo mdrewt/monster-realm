@@ -175,15 +175,41 @@ groups:
       #       no error — so "harmonising" these selectors to `reducer=` would record a
       #       permanently empty series that reads exactly like a quiet game. Do not harmonise it.
       #
-      #   (5) The four in-scope functions are `movement_tick` (the interval tick whose lateness
-      #       is player-visible as stutter) plus the `trade_offer_reaper`, `pvp_deadline_reaper`
-      #       and `battle_challenge_reaper` one-shot deadline reapers (a late reap is a stale
-      #       offer or a missed deadline). DELIBERATELY EXCLUDED, listed so the exclusion is
-      #       auditable rather than an oversight: `guest_claim_reaper` (a long-horizon account
-      #       sweep where minutes of lateness are harmless), `mr_heartbeat` (the pipeline's own
-      #       dead-man's-switch feed — its liveness is already watched by mr:heartbeat:rate5m
-      #       above, and alerting on the watchdog's own lateness is circular) and
-      #       `playtest_reaper` (a dev-fixture sweep that does not run in a real deployment).
+      #   (5) The in-scope functions are `movement_tick` (the interval tick whose lateness is
+      #       player-visible as stutter) plus the `trade_offer_reaper`, `pvp_deadline_reaper` and
+      #       `battle_challenge_reaper` one-shot deadline reapers (a late reap is a stale offer or a
+      #       missed deadline). That sentence is a reader's gloss: the two `function=~` selectors
+      #       below are the allowlist's only SSOT. DELIBERATELY EXCLUDED, one bullet per function so
+      #       the exclusion is auditable and machine-readable rather than an oversight:
+      #         - `guest_claim_reaper`: a long-horizon account sweep where minutes of lateness are
+      #           harmless.
+      #         - `mr_heartbeat`: the pipeline's own dead-man's-switch feed — its liveness is
+      #           already watched by mr:heartbeat:rate5m above, and alerting on the watchdog's own
+      #           lateness is circular.
+      #         - `playtest_reaper`: a dev-fixture sweep that does not run in a real deployment.
+      #         - `export_bundle_reaper` (ADR-0238, rb-48): the hourly interval-singleton TTL sweep
+      #           of `export_bundle` chunks — the same long-horizon class as `guest_claim_reaper`;
+      #           an hourly sweep that starts minutes late is invisible to the player and to the
+      #           operator.
+      #         - `account_deletion_reaper` (ADR-0221, rb-24): the one-shot armed at delete time for
+      #           the end of the deletion grace period (days ahead, off the account row's own
+      #           request stamp); a start delayed by minutes on a multi-day grace period is
+      #           invisible.
+      #           Scope of the last two, stated so the next reader does not mistake the exclusion
+      #           for a blind spot: `spacetime_scheduled_function_delay_seconds_bucket` measures
+      #           SCHEDULER DISPATCH delay only (due time -> actual start). Excluding these two
+      #           reapers forfeits no observability of whether an export bundle or an account was
+      #           actually reaped on time — no instrument here measures that, and its absence is a
+      #           separate, already-disclosed gap (R-rb-48-OBS, promoted as rb-87).
+      #
+      #       RULE (rb-84 — assigned no ADR number, so recorded here as mr-meta (4) did for rb-66):
+      #       every scheduled function the module declares (a `scheduled(...)` table attribute in
+      #       server-module/src) appears in EXACTLY ONE of the two lists — the selectors below or
+      #       the bullets above. `server-module/src/observability_tests.rs` (the rb84_ tests)
+      #       derives the roster from those attributes and cross-checks both lists, so a new
+      #       scheduled function fails CI until it is classified here. The block is the run of `#`
+      #       lines from the marker down to the bare `#` line that closes it; keep the bullets
+      #       contiguous inside it, and the marker phrase must appear exactly once in this file.
       #
       # The allowlist appears EXACTLY TWICE below — once in the starts selector, once in the
       # on-time selector. The ratio rule DERIVES from the two recorded series and carries no
