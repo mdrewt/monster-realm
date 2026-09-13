@@ -187,6 +187,19 @@ groups:
       #           already watched by mr:heartbeat:rate5m above, and alerting on the watchdog's own
       #           lateness is circular.
       #         - `playtest_reaper`: a dev-fixture sweep that does not run in a real deployment.
+      #         - `export_bundle_reaper` (ADR-0238, rb-48): the hourly interval-singleton TTL sweep
+      #           of `export_bundle` chunks — the same long-horizon class as `guest_claim_reaper`;
+      #           an hourly sweep that starts minutes late is invisible to the player and to the
+      #           operator.
+      #         - `account_deletion_reaper` (ADR-0228, rb-24): the M22 deletion-grace one-shot,
+      #           armed days ahead off the account row's own request stamp; a start delayed by
+      #           minutes on a multi-day grace period is invisible.
+      #           Scope of the last two, stated so the next reader does not mistake the exclusion
+      #           for a blind spot: `spacetime_scheduled_function_delay_seconds_bucket` measures
+      #           SCHEDULER DISPATCH delay only (due time -> actual start). Excluding these two
+      #           reapers forfeits no observability of whether an export bundle or an account was
+      #           actually reaped on time — no instrument here measures that, and its absence is a
+      #           separate, already-disclosed gap (R-rb-48-OBS, promoted as rb-87).
       #       RULE (rb-84 — assigned no ADR number, so recorded here as mr-meta (4) did for rb-66):
       #       every scheduled function the module declares (a `scheduled(...)` table attribute in
       #       server-module/src) appears in EXACTLY ONE of the two lists — the selectors below or
