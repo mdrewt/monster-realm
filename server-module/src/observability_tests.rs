@@ -2273,3 +2273,764 @@ fn scanner_teeth_json_reader_is_strict() {
         "TEETH: the reader's escape table does not match the fixture's"
     );
 }
+
+// ===========================================================================
+// rb-84 — every scheduled function is CLASSIFIED in recording.rules.yml.
+//
+// Closes R-rb-48-SLOCLASS. No ADR number assigned — the rationale for which
+// scheduled functions sit on the lateness allowlist and which are excluded
+// lives in `ops/observability/rules/recording.rules.yml`, mr-scheduler group,
+// numbered-provenance item (5).
+//
+// THE RULE. WHEN the module declares a scheduled function (a table attribute
+// carrying a `scheduled` argument in a non-test `server-module/src` file), THE
+// SYSTEM SHALL classify that name in EXACTLY ONE of two places in the yml:
+//   (a) the lateness ALLOWLIST — the `function` regex matcher of the starts
+//       selector and of the on-time selector, which must agree; or
+//   (b) the EXCLUSION bullet block — the `#`-comment lines directly under the
+//       single comment line carrying the marker phrase in item (5), each bullet
+//       being a dash, a space and a backticked identifier.
+// Checked in all three directions: unclassified (declared, listed nowhere),
+// double-listed (allowed AND excluded) and phantom (listed, never declared).
+//
+// The yml grammar parsed here (the implementer ships it; the teeth below define
+// it): the allowlist is read ONLY from the comment-stripped text (a matcher in
+// a comment is not live), with quote-aware `#` stripping that mirrors
+// `stripHashComments` in `evals/observability-stack-config.eval.mjs`; the
+// bullet block ends at the first bare `#` line or the first non-comment line;
+// any other comment line inside the block is a continuation of the previous
+// bullet's reason and is ignored even when it carries backticks.
+//
+// Every needle below is `concat!`-assembled (module-header hygiene), and the
+// fixtures are built FROM those same constants.
+// ===========================================================================
+
+use std::collections::BTreeSet;
+
+/// The lateness-allowlist marker of item (5) — a `#` comment line carrying it
+/// opens the exclusion bullet block.
+const RB84_MARKER: &str = concat!("DELIBERATELY ", "EXCLUDED");
+
+/// Prefix of one exclusion bullet, after the leading `#` and whitespace.
+const RB84_BULLET: &str = concat!("- ", "`");
+
+/// Opening of the live `function` regex matcher inside a selector.
+const RB84_SELECTOR: &str = concat!("function=", "~\"");
+
+/// Every scheduled function the module declares today. A NEW scheduled function
+/// must be classified in recording.rules.yml item (5) AND added to this pin.
+const RB84_SCHEDULED_FUNCTIONS: [&str; 9] = [
+    "account_deletion_reaper",
+    "battle_challenge_reaper",
+    "export_bundle_reaper",
+    "guest_claim_reaper",
+    "movement_tick",
+    "mr_heartbeat",
+    "playtest_reaper",
+    "pvp_deadline_reaper",
+    "trade_offer_reaper",
+];
+
+/// GATE mirror of eval G13a's `SCHEDULED_FN_NAMES` — defense in depth so a
+/// consistent allow<->exclude SWAP (every name still classified exactly once)
+/// cannot pass the union/disjoint check below. This is NOT a consumer copy of
+/// the allowlist (ADR-0180's drift trap is about consumers): the rule set is
+/// still the SSOT, and this pin only refuses to let it change silently.
+const RB84_LATENESS_ALLOWLIST: [&str; 4] = [
+    "movement_tick",
+    "trade_offer_reaper",
+    "pvp_deadline_reaper",
+    "battle_challenge_reaper",
+];
+
+fn rb84_set(names: &[&str]) -> BTreeSet<String> {
+    names.iter().map(|n| (*n).to_string()).collect()
+}
+
+fn rb84_is_ident(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// Every scheduled function NAME declared across `tree`, read out of the table
+/// attribute's `scheduled` argument after `scrub_comment_lines`. The paren walk
+/// is the shape of `evolution_tests::scheduled_reducer_names`, ported so both
+/// scanners agree on what "scheduled" means. Panics (fail loud) on a name that
+/// is declared twice: the roster pin could not say which one the yml classifies.
+fn rb84_scheduled_roster(tree: &BTreeMap<String, String>) -> BTreeSet<String> {
+    const ATTR: &str = concat!("#[spacetimedb::", "table(");
+    const SCHED: &str = concat!("scheduled", "(");
+    let mut seen: BTreeMap<String, String> = BTreeMap::new();
+    for (file, raw) in tree {
+        let text = scrub_comment_lines(raw);
+        let mut pos = 0usize;
+        while let Some(idx) = text[pos..].find(ATTR) {
+            let args_start = pos + idx + ATTR.len();
+            // Walk to the `)` that closes the attribute's own paren.
+            let mut depth: usize = 1;
+            let mut attr_end = text.len();
+            for (off, ch) in text[args_start..].char_indices() {
+                if ch == '(' {
+                    depth += 1;
+                } else if ch == ')' {
+                    depth -= 1;
+                    if depth == 0 {
+                        attr_end = args_start + off;
+                        break;
+                    }
+                }
+            }
+            let args = &text[args_start..attr_end];
+            if let Some(sched_idx) = args.find(SCHED) {
+                let name: String = args[sched_idx + SCHED.len()..]
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect();
+                if !name.is_empty() {
+                    if let Some(prev) = seen.insert(name.clone(), file.clone()) {
+                        panic!(
+                            "rb84: scheduled function `{name}` is declared twice ({prev} and \
+                             {file}) — the roster cannot say which declaration the yml classifies"
+                        );
+                    }
+                }
+            }
+            pos = attr_end.max(args_start);
+        }
+    }
+    seen.into_keys().collect()
+}
+
+/// Quote-aware YAML comment stripping, mirroring `stripHashComments` in the
+/// eval: a line whose trimmed form starts with `#` is blanked; every other line
+/// is cut at the first `#` that sits outside single or double quotes. A `#`
+/// INSIDE a quoted string is never a comment. Byte-wise, because every
+/// character that matters is ASCII and cutting at an ASCII byte is always a
+/// char boundary; the quote bytes are spelled numerically (module hygiene).
+fn rb84_strip_yml_comments(raw: &str) -> String {
+    const DQ: u8 = 0x22;
+    const SQ: u8 = 0x27;
+    let mut out = String::with_capacity(raw.len());
+    for (i, line) in raw.split('\n').enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        if line.trim_start().starts_with('#') {
+            continue;
+        }
+        let bytes = line.as_bytes();
+        let mut quote: u8 = 0;
+        let mut cut = bytes.len();
+        for (at, &b) in bytes.iter().enumerate() {
+            if quote != 0 {
+                if b == quote {
+                    quote = 0;
+                }
+            } else if b == DQ || b == SQ {
+                quote = b;
+            } else if b == b'#' {
+                cut = at;
+                break;
+            }
+        }
+        out.push_str(&line[..cut]);
+    }
+    out
+}
+
+/// Every `function` regex matcher in `stripped`, in file order, each as the set
+/// of its `|`-separated alternatives (trimmed, empties dropped). Panics on a
+/// matcher whose closing quote is missing — a malformed selector must fail
+/// loud, never read as an empty allowlist.
+fn rb84_function_selectors(stripped: &str) -> Vec<BTreeSet<String>> {
+    const DQ_STR: &str = "\"";
+    let mut out = Vec::new();
+    for (at, _) in stripped.match_indices(RB84_SELECTOR) {
+        let rest = &stripped[at + RB84_SELECTOR.len()..];
+        let end = rest.find(DQ_STR).unwrap_or_else(|| {
+            panic!("rb84: a `function` regex matcher at byte {at} has no closing quote")
+        });
+        let set: BTreeSet<String> = rest[..end]
+            .split('|')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect();
+        out.push(set);
+    }
+    out
+}
+
+/// The exclusion bullet block of item (5), parsed from the RAW yml (it lives in
+/// comments). Err on: zero marker lines, more than one, zero bullets, a
+/// duplicate bullet, or a bullet name that is empty or not `[a-z0-9_]+`.
+fn rb84_exclusions(raw: &str) -> Result<BTreeSet<String>, String> {
+    let lines: Vec<&str> = raw.split('\n').collect();
+    let markers: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.trim_start().starts_with('#') && l.contains(RB84_MARKER))
+        .map(|(i, _)| i + 1)
+        .collect();
+    let start = match markers.as_slice() {
+        [one] => *one,
+        [] => {
+            return Err(format!(
+                "no `#` comment line carries the `{RB84_MARKER}` marker, so there is no \
+                 exclusion bullet block to read"
+            ));
+        }
+        many => {
+            return Err(format!(
+                "{} comment lines carry the `{RB84_MARKER}` marker (lines {many:?}); exactly \
+                 one is required or the bullet block is ambiguous",
+                many.len()
+            ));
+        }
+    };
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    for (offset, line) in lines[start..].iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed == "#" || !trimmed.starts_with('#') {
+            break;
+        }
+        let body = trimmed[1..].trim_start();
+        let after = match body.strip_prefix(RB84_BULLET) {
+            Some(after) => after,
+            None => continue,
+        };
+        let lineno = start + offset + 1;
+        let name = match after.find('`') {
+            Some(end) => &after[..end],
+            None => {
+                return Err(format!(
+                    "exclusion bullet on line {lineno} has no closing backtick: {trimmed}"
+                ));
+            }
+        };
+        if !rb84_is_ident(name) {
+            return Err(format!(
+                "exclusion bullet on line {lineno} names `{name}`, which is not a bare \
+                 [a-z0-9_]+ identifier"
+            ));
+        }
+        if !names.insert(name.to_string()) {
+            return Err(format!(
+                "exclusion bullet on line {lineno} lists `{name}` a second time"
+            ));
+        }
+    }
+    if names.is_empty() {
+        return Err(format!(
+            "the `{RB84_MARKER}` marker on line {start} is followed by no bullet of the form \
+             `- `name`` before the block ends (bare `#` line or non-comment line)"
+        ));
+    }
+    Ok(names)
+}
+
+/// Exactly-once classification, ALL THREE directions, one message naming every
+/// offender (sorted) under its own heading. Never folded into a single set
+/// equality: an unclassified name and a phantom name cancel out in one.
+fn rb84_classify(
+    roster: &BTreeSet<String>,
+    allow: &BTreeSet<String>,
+    excl: &BTreeSet<String>,
+) -> Result<(), String> {
+    let unclassified: Vec<&str> = roster
+        .iter()
+        .filter(|n| !allow.contains(*n) && !excl.contains(*n))
+        .map(String::as_str)
+        .collect();
+    let both: Vec<&str> = allow
+        .iter()
+        .filter(|n| excl.contains(*n))
+        .map(String::as_str)
+        .collect();
+    let phantom: Vec<&str> = allow
+        .union(excl)
+        .filter(|n| !roster.contains(*n))
+        .map(String::as_str)
+        .collect();
+    let mut sections: Vec<String> = Vec::new();
+    if !unclassified.is_empty() {
+        sections.push(format!(
+            "unclassified (declared, in neither the allowlist nor the exclusion block): \
+             {unclassified:?}"
+        ));
+    }
+    if !both.is_empty() {
+        sections.push(format!(
+            "both (allowlisted AND excluded — a name is classified exactly once): {both:?}"
+        ));
+    }
+    if !phantom.is_empty() {
+        sections.push(format!(
+            "phantom (listed in the yml but no scheduled table declares it): {phantom:?}"
+        ));
+    }
+    if sections.is_empty() {
+        Ok(())
+    } else {
+        Err(sections.join("; "))
+    }
+}
+
+fn rb84_recording_rules_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("ops")
+        .join("observability")
+        .join("rules")
+        .join("recording.rules.yml")
+}
+
+/// The REAL rule file, read at test time. ABSENCE IS NOT THE EMPTY SET.
+fn rb84_read_recording_rules() -> String {
+    let path = rb84_recording_rules_path();
+    fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "rb84: cannot read {} ({e}). The rule file is the SSOT for the scheduled-function \
+             lateness allowlist; an unreadable SSOT must FAIL here, never read as empty.",
+            path.display()
+        )
+    })
+}
+
+/// Minimal yml in the shape item (5) will ship: a `#` provenance block carrying
+/// the marker line, `bullets` (an empty entry renders as a bare `#` line), a
+/// bare `#` terminator, then the starts and on-time rules whose selectors carry
+/// `allow_starts` / `allow_on_time` as the `function` regex alternation.
+fn rb84_fixture(bullets: &[&str], allow_starts: &str, allow_on_time: &str) -> String {
+    let mut lines: Vec<String> = vec![
+        "groups:".to_string(),
+        "  - name: mr-scheduler".to_string(),
+        "    interval: 15s".to_string(),
+        "    rules:".to_string(),
+        "      #   (5) The in-scope functions are the ones in the matcher below.".to_string(),
+        format!("      #       {RB84_MARKER}, listed so the exclusion is auditable:"),
+    ];
+    for bullet in bullets {
+        if bullet.is_empty() {
+            lines.push("      #".to_string());
+        } else {
+            lines.push(format!("      #       {bullet}"));
+        }
+    }
+    lines.push("      #".to_string());
+    for (name, alternation, le) in [
+        ("starts", allow_starts, "+Inf"),
+        ("on_time", allow_on_time, "0.05"),
+    ] {
+        lines.push(format!(
+            "      - record: mr:scheduled_function_{name}:rate5m"
+        ));
+        lines.push("        expr: |".to_string());
+        lines.push(format!(
+            "          sum by (function) (rate(x_bucket{{{RB84_SELECTOR}{alternation}\",\
+             le=\"{le}\"}}[5m]))"
+        ));
+    }
+    lines.push("      - record: mr:scheduled_function_late:ratio5m".to_string());
+    lines.push("        expr: |".to_string());
+    lines.push("          1 - (a / b)".to_string());
+    lines.join("\n")
+}
+
+/// **rb-84 core** — the module's scheduled-function roster and the rule file
+/// agree, exactly once per name, in both directions.
+///
+/// RED on the pristine yml: item (5) names its exclusions in prose, so the
+/// bullet block is empty and `rb84_exclusions` returns Err; and
+/// `export_bundle_reaper` / `account_deletion_reaper` are in neither list.
+///
+/// Kills: a yml that drops a name from one selector but not the other (drift);
+/// a swap that moves an excluded name onto the allowlist while keeping every
+/// name classified once (the literal allowlist pin); a NEW scheduled table that
+/// nobody classified (the roster pin AND the unclassified direction); a stale
+/// bullet for a deleted reaper (phantom); a name that is both allowed and
+/// excluded (both).
+#[test]
+fn rb84_every_scheduled_function_is_classified_in_recording_rules() {
+    let roster = rb84_scheduled_roster(&scan_tree());
+    assert_eq!(
+        roster,
+        rb84_set(&RB84_SCHEDULED_FUNCTIONS),
+        "rb84: the set of scheduled functions declared under server-module/src changed. A new \
+         scheduled function must be classified in recording.rules.yml item (5) — allowlisted in \
+         BOTH selectors or listed as an exclusion bullet — AND added to RB84_SCHEDULED_FUNCTIONS"
+    );
+
+    let raw = rb84_read_recording_rules();
+    let selectors = rb84_function_selectors(&rb84_strip_yml_comments(&raw));
+    assert_eq!(
+        selectors.len(),
+        2,
+        "rb84: expected exactly two live `function` regex matchers (starts + on-time) in \
+         recording.rules.yml, found {}: {selectors:?}",
+        selectors.len()
+    );
+    assert_eq!(
+        selectors[0], selectors[1],
+        "rb84: DRIFT — the starts selector and the on-time selector carry different allowlists; \
+         the ratio rule divides one by the other, so a name in only one side records nonsense"
+    );
+    assert_eq!(
+        selectors[0],
+        rb84_set(&RB84_LATENESS_ALLOWLIST),
+        "rb84: the lateness allowlist changed (gate mirror of eval G13a's SCHEDULED_FN_NAMES; \
+         a consistent allow<->exclude swap would otherwise pass the exactly-once check). If \
+         the change is deliberate, update item (5)'s rationale, the eval pin and this pin."
+    );
+
+    let exclusions = rb84_exclusions(&raw).unwrap_or_else(|e| {
+        panic!(
+            "rb84: recording.rules.yml item (5) has no parseable exclusion bullet block: {e}. \
+             Every scheduled function that is NOT on the lateness allowlist must appear as a \
+             `- `name`` bullet directly under the marker line."
+        )
+    });
+    rb84_classify(&roster, &selectors[0], &exclusions).unwrap_or_else(|e| {
+        panic!(
+            "rb84: scheduled functions are not classified exactly once in \
+             recording.rules.yml item (5): {e}"
+        )
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Teeth — pure, on inline fixtures. Each names the wrong implementation it
+// kills; together they DEFINE the item (5) grammar the implementer ships.
+// ---------------------------------------------------------------------------
+
+/// Kills: a classifier that only checks `allow ∪ excl ⊇ roster` by COUNT, or
+/// that folds the three directions into one set equality where an unclassified
+/// name and a phantom name cancel out.
+#[test]
+fn rb84_tooth_unclassified_name_is_named() {
+    let roster = rb84_set(&["a_tick", "b_reaper", "x_reaper"]);
+    let err = rb84_classify(&roster, &rb84_set(&["a_tick"]), &rb84_set(&["b_reaper"]))
+        .expect_err("TEETH: a declared-but-unlisted name was accepted");
+    assert!(
+        err.contains("unclassified") && err.contains("x_reaper"),
+        "TEETH: the unclassified offender is not named under its heading: {err}"
+    );
+    assert!(
+        !err.contains("both") && !err.contains("phantom"),
+        "TEETH: a purely unclassified case reported other directions: {err}"
+    );
+    // Non-vacuity: the fully classified sibling is Ok.
+    rb84_classify(
+        &rb84_set(&["a_tick", "b_reaper"]),
+        &rb84_set(&["a_tick"]),
+        &rb84_set(&["b_reaper"]),
+    )
+    .expect("TEETH: a correctly classified roster was rejected");
+}
+
+/// Kills: a classifier that checks only `roster ⊆ allow ∪ excl` — a name that
+/// is BOTH allowlisted and excluded satisfies the union and must still fail.
+#[test]
+fn rb84_tooth_double_listed_name_is_named() {
+    let roster = rb84_set(&["dup_reaper", "other_tick"]);
+    let err = rb84_classify(
+        &roster,
+        &rb84_set(&["dup_reaper", "other_tick"]),
+        &rb84_set(&["dup_reaper"]),
+    )
+    .expect_err("TEETH: a name listed on both sides was accepted");
+    assert!(
+        err.contains("both") && err.contains("dup_reaper"),
+        "TEETH: the double-listed offender is not named under `both`: {err}"
+    );
+    assert!(
+        !err.contains("unclassified") && !err.contains("phantom"),
+        "TEETH: a purely double-listed case reported other directions: {err}"
+    );
+}
+
+/// Kills: a classifier that never checks the reverse direction — a stale bullet
+/// for a reaper that no longer exists would otherwise sit in the yml forever.
+#[test]
+fn rb84_tooth_phantom_listed_name_is_named() {
+    let roster = rb84_set(&["a_tick"]);
+    let err = rb84_classify(
+        &roster,
+        &rb84_set(&["a_tick"]),
+        &rb84_set(&["ghost_reaper"]),
+    )
+    .expect_err("TEETH: a listed-but-undeclared name was accepted");
+    assert!(
+        err.contains("phantom") && err.contains("ghost_reaper"),
+        "TEETH: the phantom offender is not named under `phantom`: {err}"
+    );
+    assert!(
+        !err.contains("unclassified") && !err.contains("both"),
+        "TEETH: a purely phantom case reported other directions: {err}"
+    );
+}
+
+/// Kills: a parser that reads only the FIRST selector (or dedups the two), so
+/// a name dropped from the on-time side alone would still pass.
+#[test]
+fn rb84_tooth_selector_drift_is_detected() {
+    let raw = rb84_fixture(&["- `e_reaper` (harmless)"], "a|b|c|d", "a|b|c");
+    let selectors = rb84_function_selectors(&rb84_strip_yml_comments(&raw));
+    assert_eq!(
+        selectors.len(),
+        2,
+        "TEETH: both selectors must be found: {selectors:?}"
+    );
+    assert_eq!(selectors[0], rb84_set(&["a", "b", "c", "d"]));
+    assert_eq!(selectors[1], rb84_set(&["a", "b", "c"]));
+    assert_ne!(
+        selectors[0], selectors[1],
+        "TEETH: a four-name starts selector and a three-name on-time selector parsed equal"
+    );
+}
+
+/// Kills: a selector reader that scans the RAW yml — a matcher left behind in a
+/// comment, or in a trailing `#` remark on a live line, would count as live.
+/// Also pins the quote-awareness: a `#` inside a quoted label value must not
+/// truncate the live line that follows it.
+#[test]
+fn rb84_tooth_commented_out_selector_is_not_live() {
+    let raw = [
+        rb84_fixture(&["- `e_reaper` (harmless)"], "a|b", "a|b"),
+        format!("      # legacy matcher, kept for history: {RB84_SELECTOR}decoy\""),
+        "      - record: mr:something_else".to_string(),
+        format!("        expr: vector(0) # was {RB84_SELECTOR}decoy2\""),
+    ]
+    .join("\n");
+
+    let unstripped = rb84_function_selectors(&raw);
+    assert_eq!(
+        unstripped.len(),
+        4,
+        "TEETH: the fixture must carry two live and two commented matchers: {unstripped:?}"
+    );
+
+    let live = rb84_function_selectors(&rb84_strip_yml_comments(&raw));
+    assert_eq!(
+        live.len(),
+        2,
+        "TEETH: comment stripping is not load-bearing — a commented-out matcher counted as \
+         live: {live:?}"
+    );
+    for set in &live {
+        assert!(
+            !set.contains("decoy") && !set.contains("decoy2"),
+            "TEETH: a decoy name from a comment leaked into a live selector: {set:?}"
+        );
+    }
+
+    // Quote-awareness: a `#` INSIDE a quoted string is not a comment, so the
+    // matcher AFTER it on the same line is still live; the trailing `#` remark
+    // after the closing brace IS cut.
+    let quoted =
+        format!("          up{{job=\"a#b\",{RB84_SELECTOR}live_x\"}} # {RB84_SELECTOR}decoy3\"");
+    let stripped = rb84_strip_yml_comments(&quoted);
+    assert_eq!(
+        stripped,
+        format!("          up{{job=\"a#b\",{RB84_SELECTOR}live_x\"}} "),
+        "TEETH: the stripper cut at a `#` inside a quoted string, or kept the trailing remark"
+    );
+    assert_eq!(
+        rb84_function_selectors(&stripped),
+        vec![rb84_set(&["live_x"])],
+        "TEETH: the live matcher after a quoted `#` was lost, or the trailing decoy survived"
+    );
+    assert_eq!(
+        rb84_strip_yml_comments("   # whole-line comment\nkey: v # tail\nplain: 1"),
+        "\nkey: v \nplain: 1",
+        "TEETH: whole-line comments must blank, trailing comments must cut, plain lines must \
+         survive byte-for-byte"
+    );
+}
+
+/// Kills: a bullet reader that scans the WHOLE comment block (or the whole
+/// file) for `- \`name\`` lines instead of stopping at the block terminator —
+/// a bullet after the bare `#` line, or after the rules, would be counted.
+/// The mid-block blank `#` line dropping the trailing bullets is the documented
+/// false-RED-safe direction: a split block makes the integration test fail
+/// loud (unclassified), never silently pass.
+#[test]
+fn rb84_tooth_bullet_block_ends_at_bare_hash_line() {
+    let raw = rb84_fixture(&["- `a_reaper` x", "- `b_reaper` y"], "m", "m");
+    assert_eq!(
+        rb84_exclusions(&raw).expect("TEETH: a two-bullet block was rejected"),
+        rb84_set(&["a_reaper", "b_reaper"]),
+        "TEETH: the positive control lost a bullet"
+    );
+
+    // A blank `#` line mid-block ends it: only the bullets BEFORE it count.
+    let split = rb84_fixture(&["- `a_reaper` x", "", "- `late_reaper` z"], "m", "m");
+    assert_eq!(
+        rb84_exclusions(&split).expect("TEETH: a block cut short by a bare `#` was rejected"),
+        rb84_set(&["a_reaper"]),
+        "TEETH: a bullet AFTER the bare `#` terminator was counted"
+    );
+
+    // A bullet-shaped comment after the rules (past a non-comment line) is not
+    // part of the block either.
+    let tail = [
+        rb84_fixture(&["- `a_reaper` x"], "m", "m"),
+        "      # - `tail_reaper` q".to_string(),
+    ]
+    .join("\n");
+    assert_eq!(
+        rb84_exclusions(&tail).expect("TEETH: a block followed by rules was rejected"),
+        rb84_set(&["a_reaper"]),
+        "TEETH: a bullet-shaped comment after the rules was counted as an exclusion"
+    );
+}
+
+/// Kills: a reader that extracts EVERY backticked token from the block (item
+/// (5)'s reasons cite series names and fields in backticks), or one that looks
+/// for the bullet prefix ANYWHERE in the line rather than at its start.
+#[test]
+fn rb84_tooth_continuation_lines_are_not_bullets() {
+    let raw = rb84_fixture(
+        &[
+            "- `a_reaper` (a long-horizon sweep whose reason cites `chunks` and",
+            "the series `mr:heartbeat:rate5m`; the reason goes on - `fake` mid-line)",
+            "- `b_reaper` y",
+        ],
+        "m",
+        "m",
+    );
+    assert_eq!(
+        rb84_exclusions(&raw).expect("TEETH: a block with continuation lines was rejected"),
+        rb84_set(&["a_reaper", "b_reaper"]),
+        "TEETH: a continuation line's backticked token or mid-line bullet fragment was read as \
+         an exclusion"
+    );
+}
+
+/// Kills: a reader that tolerates a missing marker (reads as "no exclusions",
+/// letting the integration test pass on a yml with the block deleted), one that
+/// takes the FIRST of two marker lines, and one that accepts an empty block.
+#[test]
+fn rb84_tooth_marker_must_be_unique_and_present() {
+    let good = rb84_fixture(&["- `a_reaper` x"], "m", "m");
+    rb84_exclusions(&good).expect("TEETH: the positive control was rejected");
+
+    let no_marker = good.replace(RB84_MARKER, "deliberately omitted");
+    let err = rb84_exclusions(&no_marker).expect_err("TEETH: a yml without the marker parsed");
+    assert!(
+        err.contains("marker"),
+        "TEETH: the zero-marker error does not say so: {err}"
+    );
+
+    let two_markers = [
+        format!("      # a stray earlier {RB84_MARKER} mention"),
+        good,
+    ]
+    .join("\n");
+    let err = rb84_exclusions(&two_markers).expect_err("TEETH: two marker lines parsed");
+    assert!(
+        err.contains("2 comment lines"),
+        "TEETH: the duplicate-marker error does not count them: {err}"
+    );
+
+    let no_bullets = rb84_fixture(&[], "m", "m");
+    let err = rb84_exclusions(&no_bullets).expect_err("TEETH: a marker with no bullets parsed");
+    assert!(
+        err.contains("no bullet"),
+        "TEETH: the empty-block error does not say so: {err}"
+    );
+}
+
+/// Kills: a reader that accepts an empty name (`- \`\``), a non-identifier
+/// (a hyphenated or capitalised token can never match a scheduled function, so
+/// it would be a permanent phantom that reads like a real exclusion), or a
+/// duplicated bullet (which a set-based reader silently collapses).
+#[test]
+fn rb84_tooth_bullet_name_must_be_an_identifier() {
+    let empty = rb84_fixture(&["- `` x"], "m", "m");
+    let err = rb84_exclusions(&empty).expect_err("TEETH: an empty bullet name parsed");
+    assert!(
+        err.contains("identifier"),
+        "TEETH: the empty-name error does not say so: {err}"
+    );
+
+    let bad = rb84_fixture(&["- `Bad-Name` x"], "m", "m");
+    let err = rb84_exclusions(&bad).expect_err("TEETH: a non-identifier bullet name parsed");
+    assert!(
+        err.contains("Bad-Name") && err.contains("identifier"),
+        "TEETH: the bad-name error does not name the offender: {err}"
+    );
+
+    let dup = rb84_fixture(&["- `a_reaper` x", "- `a_reaper` y"], "m", "m");
+    let err = rb84_exclusions(&dup).expect_err("TEETH: a duplicated bullet parsed");
+    assert!(
+        err.contains("a_reaper") && err.contains("second time"),
+        "TEETH: the duplicate-bullet error does not name the offender: {err}"
+    );
+
+    let unclosed = rb84_fixture(&["- `a_reaper x"], "m", "m");
+    let err = rb84_exclusions(&unclosed).expect_err("TEETH: an unclosed backtick parsed");
+    assert!(
+        err.contains("closing backtick"),
+        "TEETH: the unclosed-backtick error does not say so: {err}"
+    );
+
+    assert_eq!(
+        rb84_exclusions(&rb84_fixture(&["- `ok_1` x"], "m", "m"))
+            .expect("TEETH: a valid identifier with a digit was rejected"),
+        rb84_set(&["ok_1"])
+    );
+}
+
+/// THE tooth that makes the exact-9 roster pin honest: a synthetic multi-line
+/// attribute IS found, a `//`-commented decoy is NOT, a plain (unscheduled)
+/// table contributes nothing, and an empty tree yields the empty set — so the
+/// caller's exact-9 pin is what fails loud, never a scanner that sees nothing.
+///
+/// Kills: a scanner that only matches single-line attributes, one that skips
+/// comment scrubbing, and one that takes every table's accessor as a name.
+#[test]
+fn rb84_tooth_roster_scanner_finds_a_synthetic_attribute() {
+    let attr = concat!("#[spacetimedb::", "table(");
+    let sched = concat!("scheduled", "(");
+    let slashes = concat!("/", "/");
+    let src = [
+        attr.to_string(),
+        "    accessor = x_schedule,".to_string(),
+        format!("    {sched}x_reaper)"),
+        ")]".to_string(),
+        "pub struct XSchedule { pub id: u64 }".to_string(),
+        format!("{slashes} {attr}accessor = decoy_schedule, {sched}decoy_reaper))]"),
+        format!("{attr}accessor = plain_rows, public)]"),
+        "pub struct PlainRow { pub id: u64 }".to_string(),
+    ]
+    .join("\n");
+    let mut tree: BTreeMap<String, String> = BTreeMap::new();
+    tree.insert("synthetic.rs".to_string(), src);
+    assert_eq!(
+        rb84_scheduled_roster(&tree),
+        rb84_set(&["x_reaper"]),
+        "TEETH: the multi-line attribute was missed, the commented decoy was counted, or the \
+         unscheduled table contributed a name"
+    );
+    assert!(
+        rb84_scheduled_roster(&BTreeMap::new()).is_empty(),
+        "TEETH: an empty tree must yield the empty roster (the caller's exact pin bites)"
+    );
+}
+
+/// Kills: a scanner that dedups silently — two declarations of one scheduled
+/// name would make the roster pin pass while the yml could only classify one.
+#[test]
+#[should_panic(expected = "is declared twice")]
+fn rb84_tooth_roster_scanner_rejects_a_duplicate_declaration() {
+    let attr = concat!("#[spacetimedb::", "table(");
+    let sched = concat!("scheduled", "(");
+    let decl = format!("{attr}accessor = s, {sched}dup_reaper))]");
+    let mut tree: BTreeMap<String, String> = BTreeMap::new();
+    tree.insert("a.rs".to_string(), decl.clone());
+    tree.insert("b.rs".to_string(), decl);
+    let _ = rb84_scheduled_roster(&tree);
+}
