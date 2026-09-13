@@ -248,3 +248,24 @@ new clause.
 `server-module/src/accounts_tests.rs` (manifest rosters), `evals/battle-schema-snapshot.eval.mjs`
 (T-VIS-ANCHORS + baseline), `evals/account-e2e.eval.mjs` (transcription + G24 clause 4), the
 acceptance ledger `memory/projects/gates/rb-48.gates.md` (harness), `just ci`.
+
+## Amendment (2026-09-13, rb-84 — residual R-rb-48-SLOCLASS closed)
+
+The "R-rb-48-SLOCLASS" bullet under Residuals above is discharged by rb-84, which was assigned no
+ADR number; the classification and its rationale are recorded in the artifact itself, the rb-66
+precedent (`ops/observability/rules/recording.rules.yml`, mr-scheduler provenance item (5)). Both
+reapers are now EXPLICITLY EXCLUDED from the scheduled-function lateness allowlist:
+`export_bundle_reaper` (this ADR's hourly interval singleton) and rb-24's `account_deletion_reaper`
+(ADR-0221's one-shot, armed at delete time for the end of the days-long deletion grace) are the same
+long-horizon class as the already-excluded `guest_claim_reaper` — a start delayed by minutes is
+invisible on an hourly or multi-day cadence — and the instrument the allowlist feeds,
+`spacetime_scheduled_function_delay_seconds_bucket`, measures scheduler dispatch delay only, so the
+exclusion forfeits no observability of whether a bundle or an account was actually reaped (that gap
+is R-rb-48-OBS, promoted as rb-87). Allowlisting was also out of reach: the eval G13a pin
+(`evals/observability-stack-config.eval.mjs` `SCHEDULED_FN_NAMES`) is outside rb-84's touches. The
+exclusion prose became a machine-readable bullet block, and one ordinary Rust test
+(`server-module/src/observability_tests.rs`,
+`rb84_every_scheduled_function_is_classified_in_recording_rules`) derives the module's
+scheduled-function roster from its `scheduled(...)` table attributes and asserts every name appears
+in exactly one of the two lists, so a tenth scheduled function fails CI until it is classified
+there.
