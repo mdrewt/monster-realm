@@ -161,6 +161,44 @@ fn disarm_trade_reaper(ctx: &ReducerContext, trade_id: u64) {
     }
 }
 
+/// rb-83 (ADR-0252 D2): the caller's live INCOMING offers — every active
+/// `trade_offer` naming `counterparty` on the counterparty column, read through
+/// its btree index — projected to `(trade_id, created_at_ms)` so the accounts
+/// module can judge them against the deletion request without this module ever
+/// reading account state (the m22-s5 bypass bans). Counterparty column ONLY:
+/// `propose_trade` is blanket-gated, so a deletion-gated caller can never have
+/// originated a post-request offer, and every initiator-side offer predates the
+/// request and stays completable (PRV1-10). `is_active()` is the shared liveness
+/// spelling (`cancel_trades_on_disconnect`); both variants are active today, so
+/// the filter is forward-defensive against a future terminal variant. Body
+/// byte-frozen by `rb83_new_seams_are_declared_once_and_frozen`.
+pub(crate) fn open_offers_addressed_to(
+    ctx: &ReducerContext,
+    counterparty: Identity,
+) -> Vec<(u64, i64)> {
+    ctx.db
+        .trade_offer()
+        .counterparty()
+        .filter(counterparty)
+        .filter(|o| o.status.is_active())
+        .map(|o| (o.trade_id, o.created_at_ms))
+        .collect()
+}
+
+/// rb-83 (ADR-0252 D2): decline the given offers — disarm each TTL schedule row
+/// first, then delete the offer (the `erase_trade_offers` order). Called only
+/// from `accounts::cancel_account_deletion` with the ids
+/// `accounts::plan_declines_at_cancel` selected; the policy lives there, this
+/// is the write half kept inside the module that owns `trade_offer` (D0). No
+/// assets move: escrow is guard-in-place (ADR-0106 D8), so a delete here is the
+/// same effect as the counterparty declining. EA-REAPER-02 site 5.
+pub(crate) fn decline_offers(ctx: &ReducerContext, trade_ids: &[u64]) {
+    for &trade_id in trade_ids {
+        disarm_trade_reaper(ctx, trade_id);
+        ctx.db.trade_offer().trade_id().delete(trade_id);
+    }
+}
+
 /// Scheduled reaper: delete a trade offer that has outlived `TRADE_OFFER_TTL_MS`.
 ///
 /// This is a SCHEDULER-ONLY reducer — clients must never call it directly.

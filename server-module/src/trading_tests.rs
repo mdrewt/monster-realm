@@ -14,6 +14,9 @@ use game_core::{
 // TradeStatus
 // ---------------------------------------------------------------------------
 
+/// rb-83 (ADR-0252 D4): because BOTH variants are active, the `is_active()` filter in
+/// `open_offers_addressed_to` is forward-defensive against a future terminal variant, not live
+/// protection — the day a third variant lands, this assertion is where that claim is re-examined.
 #[test]
 // TEETH(TradeStatus::is_active): kills:TR-active-covers-both-variants
 fn trade_status_is_active_covers_both_variants() {
@@ -1840,7 +1843,7 @@ fn ea_reaper_01_propose_arms_reaper_after_offer_insert() {
 }
 
 // ===========================================================================
-// EA-REAPER-02: disarm_trade_reaper called at ALL four offer-deletion sites
+// EA-REAPER-02: disarm_trade_reaper called at ALL five offer-deletion sites
 //               (m16.5f, ADR-0117 — stale-schedule cleanup)
 //
 // EARS criterion: every code path that deletes a trade_offer row SHALL also
@@ -1849,13 +1852,15 @@ fn ea_reaper_01_propose_arms_reaper_after_offer_insert() {
 // attempts to delete a non-existent row (benign but wastes scheduler slots
 // and leaves orphaned schedule rows).
 //
-// The four sites are:
+// The five sites are:
 //   1. respond_trade — reject branch (accepted=false → row deleted)
 //   2. cancel_trade — unconditional delete
 //   3. confirm_trade — post-swap delete (TR-16 terminal GC)
 //   4. cancel_trades_on_disconnect — bulk delete loop
+//   5. decline_offers — the cancel-time sweep of gate-refused incoming offers
+//      (rb-83, ADR-0252 D2)
 //
-// TEETH: kills an impl that adds disarm_trade_reaper to only some of the four
+// TEETH: kills an impl that adds disarm_trade_reaper to only some of the five
 //        sites.  A single missed site leaves an orphaned reaper row that either
 //        fires a no-op (wasting scheduler capacity) or, if the trade_id is
 //        recycled, incorrectly reapers a new offer.
@@ -1927,6 +1932,24 @@ fn ea_reaper_02_disarm_called_at_all_offer_deletion_sites() {
          for each deleted offer are left orphaned. \
          Fix: call disarm_trade_reaper(ctx, trade_id) for each trade_id deleted in the \
          cancel_trades_on_disconnect loop."
+    );
+
+    // 5. decline_offers body (ends at the TTL reaper reducer that follows it).
+    //    rb-83 / ADR-0252 D2: the cancel-time sweep is a new offer-deletion path
+    //    and therefore a new orphan source. The end marker is the next function
+    //    declaration in the file; the doc block between the two is blanked by
+    //    strip_rust_comments_trading before this slice is taken.
+    let decline_body = extract_fn_body(&stripped, "decline_offers", "fn trade_offer_reaper(");
+    assert!(
+        decline_body.contains(disarm_needle),
+        "EA-REAPER-02 FAIL: `decline_offers` does not call `disarm_trade_reaper`. \
+         Cancelling a deletion declines every active offer the rb-47 stamp gate refused for \
+         the pre-cancel row (ADR-0252 D2); each of those deletes leaves a live one-shot TTL \
+         schedule row behind unless it is disarmed. The orphan then fires against a trade_id \
+         that no longer exists — or, once the auto_inc counter has moved on and a row is \
+         recycled, against an offer nobody meant to reap. \
+         Fix: call disarm_trade_reaper(ctx, trade_id) before the delete in decline_offers, \
+         matching the erase_trade_offers order one function group away in the same file."
     );
 }
 
@@ -3199,7 +3222,7 @@ fn m22s3b_resolver_extraction_chain() {
 /// offer-deletion site in this module disarms the reaper, and an orphaned
 /// one-shot fires later against a `trade_id` that no longer exists — or, worse,
 /// against a recycled one. `ea_reaper_02_disarm_called_at_all_offer_deletion_sites`
-/// pins the four pre-existing sites; this is the fifth.
+/// pins the five sites (rb-83 added `decline_offers` as its fifth); this is the sixth.
 ///
 /// Kills: an initiator-only sweep; a counterparty-only sweep; an `is_active`
 ///        filter copied from the disconnect helper; a sweep that deletes offers
@@ -3318,7 +3341,7 @@ fn m22s3b_erase_trade_offers_shape() {
          erased offer. `trade_offer_reaper_schedule` is JOIN-ONLY via `trade_offer` (the \
          manifest pins that parent by value), so the cascade sweeps it at its parent's step — \
          the same orphan-prevention idiom every other offer-deletion site in this module \
-         already follows (ea_reaper_02 pins those four). An orphaned one-shot fires later \
+         already follows (ea_reaper_02 pins those five). An orphaned one-shot fires later \
          against a trade_id that no longer exists, or against a recycled one. Body was: \
          {squashed:?}"
     );
@@ -6300,5 +6323,526 @@ fn rb79_propose_trade_admits_no_predecessor_above_its_deletion_gate() {
          on the way from the signature to the gate — parked above the declaration the note is a \
          banner attached to nothing, parked below the gate it explains a statement the reader has \
          already passed."
+    );
+}
+
+// ===========================================================================
+// rb-83 (ADR-0252, residual R-rb-47-CANCELLAUNDER) — THE TRADING-SIDE HALF OF
+// THE CANCEL-TIME DECLINE SWEEP.
+//
+// EARS criterion (ADR-0252 D2): `trading::open_offers_addressed_to(ctx, who)`
+// SHALL return, through the `counterparty` btree index and the shared
+// `is_active()` liveness spelling, the `(trade_id, created_at_ms)` pair of every
+// live offer naming `who` as COUNTERPARTY and nothing else; and
+// `trading::decline_offers(ctx, &ids)` SHALL, for each id IN THE ORDER GIVEN,
+// disarm that offer's TTL schedule row and then delete the offer.
+//
+// WHY BOTH HELPERS LIVE IN `trading.rs`: only this module writes `trade_offer`
+// (D0 write isolation) and `disarm_trade_reaper` is private to it. Neither may
+// name ANY account-state seam — the m22-s5 bypass bans and rb-47's
+// seam-containment scan both fence this file — so the decision stays in
+// `accounts.rs` and this side only reads rows and deletes them.
+//
+// THREE TESTS HERE plus a FIFTH SITE appended to
+// `ea_reaper_02_disarm_called_at_all_offer_deletion_sites`:
+//   * the read function, EXECUTED under the rb-41 native host (the counterparty
+//     point scan is one of the five syscalls that host models, so this is real
+//     execution rather than a scan);
+//   * the three new seams, declared once and BYTE-FROZEN (ADR-0237 D6's lesson:
+//     containment pins were MEASURED insufficient against leading and trailing
+//     code on this exact family of seams);
+//   * the liveness filter's honest status today.
+//
+// SCAN SUBSTRATE RULES OBEYED HERE (this file is read by text scanners that
+// concatenate `_tests.rs` files): every production-symbol needle and every frozen
+// body literal is assembled from `concat!` fragments, split at points that differ
+// from the needle helpers they are checked against, so no contiguous accessor
+// call, write-verb chain or account-state seam spelling appears in this file. No
+// raw strings, no block-comment delimiter, and no bare double-quote character
+// inside any comment.
+// ===========================================================================
+
+/// `accounts.rs`, read at compile time for the rb-83 planner pin. DISTINCT name
+/// from `RB47_ACCOUNTS_RS`: each slice owns its own source constant so a later
+/// re-point of one cannot silently move the other.
+const RB83_ACCOUNTS_RS: &str = include_str!("accounts.rs");
+
+/// `guards.rs`, read at compile time for the rb-83 conditional-compilation
+/// census. DISTINCT name from `RB47_GUARDS_RS`, for the same reason.
+const RB83_GUARDS_RS: &str = include_str!("guards.rs");
+
+/// **ADR-0252 D2 (read function, EXECUTED)** — `open_offers_addressed_to` reads
+/// the COUNTERPARTY column of `trade_offer` and nothing else, and projects
+/// exactly `(trade_id, created_at_ms)`.
+///
+/// THE FIXTURE IS THE ARGUMENT. Four rows are seeded and only two may come back:
+///
+///   * id 21 names a STRANGER as counterparty. It is what makes the answer
+///     row-keyed rather than table-keyed: a helper that returns every active
+///     offer in the table (or that filters on the wrong value) returns it too.
+///   * id 5 names the CALLER as INITIATOR and the stranger as counterparty. This
+///     is the whole of ADR-0252 D4 executed: `propose_trade` is blanket-gated for
+///     a deletion-gated caller, so every initiator-side offer of theirs PREDATES
+///     the request and is exactly the in-flight commitment PRV1-10 protects.
+///     Sweeping that column would be a real spec break, and a
+///     `.initiator()`-keyed or both-column helper (M7) returns this row.
+///   * ids 3 and 7 name the CALLER as counterparty, with DIFFERENT ids, DIFFERENT
+///     stamps and DIFFERENT statuses (one `ConfirmedByCounterparty`, one
+///     `Pending`). Two rows, not one, is what kills a `.find(..)`-shaped helper
+///     that returns the first match; the differing stamps are what prove the
+///     projection carries the OFFER's own `created_at_ms` rather than a constant,
+///     a clock read or the id again.
+///
+/// THE COMPARISON IS AS A SET, deliberately. The order this host returns matching
+/// rows in is its own seeding order, which is a property of the in-memory shim
+/// and not of the shipped btree index, so pinning it would pin the fixture rather
+/// than the criterion. Order where it IS behaviour — the order the planner hands
+/// ids to `decline_offers` — is owned by `[rb83/table-order]` in
+/// `accounts_tests.rs` and by the frozen bodies in the test below.
+///
+/// THE INDEX NAME IS ASSERTED because a mis-spelled column in the helper resolves
+/// to an index this host has no rows behind, which yields an EMPTY result that
+/// reads exactly like `no offers addressed to this caller`. The failure message
+/// prints every index name the generated code actually asked for, so a wrong
+/// column is diagnosed rather than guessed at.
+///
+/// `[rb83/decline-empty]` then runs the writer with an EMPTY slice. Every write
+/// syscall in this host aborts the PROCESS uncatchably, so this is the one
+/// direction of `decline_offers` that can be executed at all — and it is not a
+/// smoke test: a writer that ignores its argument and sweeps the caller's column
+/// itself (M14) takes the process down here, and the re-read afterwards proves
+/// execution continued AND that nothing was deleted.
+///
+/// RED AT HEAD BY NON-COMPILATION: neither `trading::open_offers_addressed_to`
+/// nor `trading::decline_offers` exists yet.
+#[test]
+fn rb83_open_offers_addressed_to_reads_only_the_counterparty_column() {
+    let fx = crate::native_host_tests::fixture();
+    let offers = fx.table_keyed::<crate::schema::TradeOffer, spacetimedb::Identity>(
+        "trade_offer",
+        "counterparty",
+        |r| r.counterparty,
+    );
+    let ctx = fx.ctx();
+    let me = ctx.sender();
+    let stranger = spacetimedb::Identity::from_byte_array([9u8; 32]);
+    let req = RB47_REQUESTED_AT_MS;
+
+    // Addressed to somebody else entirely.
+    offers.seed(&rb47_offer(21, stranger, TradeStatus::Pending, req));
+    // The caller is the INITIATOR here, never the counterparty (ADR-0252 D4).
+    offers.seed(&crate::schema::TradeOffer {
+        initiator: me,
+        ..rb47_offer(5, stranger, TradeStatus::Pending, req + 2)
+    });
+    // The two rows that must come back: different ids, stamps and statuses.
+    offers.seed(&rb47_offer(
+        3,
+        me,
+        TradeStatus::ConfirmedByCounterparty,
+        req - 1,
+    ));
+    offers.seed(&rb47_offer(7, me, TradeStatus::Pending, req + 1));
+
+    let mut got = crate::trading::open_offers_addressed_to(&ctx, me);
+    got.sort();
+    let mut want: Vec<(u64, i64)> = vec![(3, req - 1), (7, req + 1)];
+    want.sort();
+    assert_eq!(
+        got,
+        want,
+        "[rb83/read-counterparty-only] `open_offers_addressed_to` returned {got:?}; it must \
+         return exactly {want:?} (compared as a SET — the order this in-memory host hands back \
+         matching rows is its own seeding order, not a property of the shipped btree index, so \
+         pinning it would pin the fixture). \
+         Offer 21 is addressed to a STRANGER: returning it means the answer comes from the \
+         TABLE rather than from the named identity's own column, and the cancel sweep would \
+         then delete offers belonging to players who never cancelled anything. \
+         Offer 5 names the caller as INITIATOR: returning it is the PRV1-10 break ADR-0252 D4 \
+         argues through in full — `propose_trade` is blanket-gated for a deletion-gated \
+         caller, so every initiator-side offer of theirs PREDATES the request and is precisely \
+         the in-flight commitment the spec protects. A `.initiator()`-keyed helper, or one \
+         that chains BOTH columns the way `erase_trade_offers` correctly does, returns it. \
+         A single pair means the helper stops at the first match; a pair whose second element \
+         is not the offer's own `created_at_ms` means the projection reads a constant, a clock \
+         or the id again — and the planner would then judge every offer against the same \
+         stamp. Indexes the generated code asked this host about: {:?}",
+        fx.requested_indexes()
+    );
+
+    let index = "trade_offer_counterparty_idx_btree";
+    let asked = fx.requested_indexes();
+    assert!(
+        asked.iter().any(|name| name.as_str() == index),
+        "[rb83/read-counterparty-index] the generated code never asked this host for the \
+         `{index}` index; it asked for {asked:?}. The helper must read through the \
+         COUNTERPARTY btree index (schema.rs declares one on that column and \
+         `erase_trade_offers` already uses it), which is an O(offers-for-this-player) point \
+         scan. A different index name means a different column — and a column this fixture \
+         registered no rows behind yields an EMPTY result that reads exactly like `no offers \
+         are addressed to this caller`, which is the quietest possible way for the whole sweep \
+         to become a no-op. A full-table scan would not appear here at all: it is unmodelled \
+         and would have aborted the process."
+    );
+
+    // --- [rb83/decline-empty]: the one executable direction of the writer ----
+    crate::trading::decline_offers(&ctx, &[]);
+    let after = crate::trading::open_offers_addressed_to(&ctx, me);
+    assert_eq!(
+        after.len(),
+        2,
+        "[rb83/decline-empty] after `decline_offers(&ctx, &[])` the caller still has \
+         {after:?}; both counterparty-side offers must survive an EMPTY id list. Every write \
+         syscall in the rb-41 native host aborts the PROCESS uncatchably (nextest reports a \
+         signal, not a failed assertion), so this is the only direction of the writer that can \
+         be executed here — and it is not decoration: a writer that IGNORES its `trade_ids` \
+         argument and sweeps the caller's column itself, or one that deletes unconditionally \
+         before consulting the list, takes the process down on this line. Reaching the re-read \
+         at all proves execution continued past the call; the count proves nothing was \
+         deleted. The populated direction is owned by the frozen body in \
+         `rb83_new_seams_are_declared_once_and_frozen` and by the fifth site in \
+         `ea_reaper_02_disarm_called_at_all_offer_deletion_sites`."
+    );
+}
+
+/// **ADR-0252 D1/D2 (seam shape)** — the three new functions are DECLARED exactly
+/// once, in the module that owns their side of the split, and their bodies are
+/// pinned by WHOLE-BODY EQUALITY.
+///
+/// WHY EQUALITY AND NOT CONTAINMENT, restated because this is the third slice in
+/// a row to need it: rb-47 MEASURED two CI-green bypasses of containment-only
+/// pins on this exact family of seams — `cfg!(test) &&` prepended to a decision
+/// (A1) and a short-circuit `if !account.auth_issuer.is_empty() { return false; }`
+/// above it (A34), the second needing no conditional compilation at all, only a
+/// column no fixture varies. Containment clauses are blind to LEADING and
+/// TRAILING code; equality kills the whole family in one assertion.
+///
+/// WHAT EACH CLAUSE KILLS:
+///
+///   * Declaration count 1 in the owning file and 0 in the other. TWO is the
+///     conditional-compilation twin pair: the test build links the honest twin
+///     while the published wasm links one that sweeps nothing. ZERO in the owning
+///     file is the red state at HEAD.
+///   * `#[cfg` == 1 and `#![cfg` == 0 across `accounts.rs`, `trading.rs` AND
+///     `guards.rs`. A REGRESSION FENCE (green at HEAD, and rb-47 asserts the same
+///     three counts) restated here because this slice ADDS code to two of those
+///     three files, and a file-scope conditional constant is exactly how a new
+///     seam is deadened from OUTSIDE every body-scoped clause. `#![cfg` does not
+///     contain `#[cfg`, so the outer census is blind to it — two same-named inline
+///     modules with an inner attribute in each is how a banned twin comes back.
+///   * The planner's WHOLE BODY. This is where M4 (a complemented filter, which
+///     sweeps exactly the offers PRV1-10 protects), M9 (an `unwrap_or` re-spelling
+///     of the stamp comparison, which hides the fail-closed arm inside a value)
+///     and M16-by-analogy all die textually, alongside the truth table that kills
+///     them behaviourally.
+///   * The planner names the rb-47 SSOT exactly once and NEVER names the stamp
+///     field, `unwrap_or`, or the clock. ADR-0225: the comparison has ONE home, so
+///     a third disjunct added there widens this consumer with it. A planner that
+///     re-derives the stamp test passes the truth table today and diverges
+///     silently the day the SSOT grows an arm.
+///   * `trading.rs` names NEITHER account-state seam and never reads the `account`
+///     table. A regression fence on rb-47's containment scan and the guards_tests
+///     bypass arrays: the moment this file learns the account-state vocabulary,
+///     the read/plan/write split that makes the sweep reviewable is gone.
+///   * The reader's body names `.counterparty()` once and `.initiator()` never
+///     (M7, the column swap — which the native-host test above also owns, one
+///     behaviourally and one textually).
+///   * The writer's body names `disarm_trade_reaper(` once and BEFORE its delete
+///     (M10). An orphaned one-shot fires later against a trade_id that no longer
+///     exists, or against a recycled one.
+///
+/// RE-DERIVATION CONTRACT: every literal here is derived from ADR-0252 §B/D1/D2.
+/// If a legitimate refactor reds a clause, re-derive it from the ADR — never
+/// paste the current body in.
+///
+/// RED AT HEAD: every declaration count is zero, and the body extractions panic
+/// LOUDLY by name rather than passing vacuously.
+#[test]
+fn rb83_new_seams_are_declared_once_and_frozen() {
+    let accounts_stripped = rb47_stripped(RB83_ACCOUNTS_RS);
+    let accounts_file = rb47_squash(&accounts_stripped);
+    let trading_stripped = rb47_stripped(TRADING_RS);
+    let trading_file = rb47_squash(&trading_stripped);
+    let guards_file = rb47_squash(&rb47_stripped(RB83_GUARDS_RS));
+
+    let planner = concat!("plan_declines_", "at_cancel");
+    let reader = concat!("open_offers_", "addressed_to");
+    let decliner = concat!("decline_", "offers");
+
+    // --- declaration census: one home each, zero everywhere else -------------
+    for (owner, name, what) in [
+        (
+            "accounts.rs",
+            planner,
+            "the PURE planner (ADR-0252 D1), which is the only place the sweep's decision is \
+             observable and which must live beside the rb-47 SSOT it delegates to",
+        ),
+        (
+            "trading.rs",
+            reader,
+            "the counterparty-column READ (ADR-0252 D2), which must live in the module that \
+             owns the `trade_offer` table (D0 write isolation)",
+        ),
+        (
+            "trading.rs",
+            decliner,
+            "the WRITER (ADR-0252 D2), which must live beside the module-private \
+             `disarm_trade_reaper` it is required to call",
+        ),
+    ] {
+        let decl = ["fn", name, "("].concat();
+        for (file_label, file) in [
+            ("accounts.rs", &accounts_file),
+            ("trading.rs", &trading_file),
+        ] {
+            let expected = usize::from(file_label == owner);
+            let n = file.matches(decl.as_str()).count();
+            assert_eq!(
+                n, expected,
+                "[rb83/seam-declared-once] `{file_label}` declares `{decl}` {n} time(s); \
+                 exactly {expected} is allowed. Its one home is `{owner}` — it is {what}. \
+                 RED AT HEAD: zero in the owning file, because the seam does not exist yet. \
+                 TWO is the dangerous count, not a typo: a `#[cfg(test)]` plus \
+                 `#[cfg(not(test))]` twin pair keeps every behavioural test in this slice \
+                 green (the test build links the honest twin) while the PUBLISHED wasm links \
+                 one that declines nothing. A declaration in the WRONG file breaks the \
+                 read/plan/write split the whole design rests on: a planner in `trading.rs` \
+                 would have to learn the account-state vocabulary this file is fenced away \
+                 from, and a writer in `accounts.rs` would write a table it does not own."
+            );
+        }
+    }
+
+    // --- conditional-compilation census, three files -------------------------
+    let cfg_attr = concat!("#", "[cfg");
+    let inner_cfg = concat!("#!", "[cfg");
+    for (file_label, file) in [
+        ("accounts.rs", &accounts_file),
+        ("trading.rs", &trading_file),
+        ("guards.rs", &guards_file),
+    ] {
+        let n_cfg = file.matches(cfg_attr).count();
+        assert_eq!(
+            n_cfg, 1,
+            "[rb83/seam-unconditional] `{file_label}` carries {n_cfg} \
+             conditional-compilation attribute(s); exactly ONE is expected — the test-module \
+             declaration at the end of the file, which is the count MEASURED at HEAD. GREEN AT \
+             HEAD and restated here because this slice ADDS code to two of these three files: \
+             a second attribute is how a twin of any new seam, or a file-scope \
+             `cfg(not(test))` constant that deadens the sweep from outside every body-scoped \
+             clause, would enter. Do not bump the number to match the file — re-derive the \
+             clause and say why in the slice notes."
+        );
+        let n_inner = file.matches(inner_cfg).count();
+        assert_eq!(
+            n_inner, 0,
+            "[rb83/seam-unconditional] `{file_label}` carries {n_inner} INNER \
+             conditional-compilation attribute(s) (`{inner_cfg}`) and must carry ZERO. \
+             MEASURED: `{inner_cfg}` does NOT contain `{cfg_attr}`, so the outer census above \
+             is blind to it — and that is the whole trick. Two same-named inline modules, an \
+             inner attribute inside each, one re-exported by a `use`, and the file ships two \
+             implementations of the same seam while every declaration count still reads one."
+        );
+    }
+
+    // --- the planner: whole body, delegation, and the bans -------------------
+    let planner_body = rb47_body("accounts.rs", &accounts_stripped, planner);
+    let expected_planner = [
+        concat!("offers.iter().fil", "ter(|(_,opened_at_ms)|"),
+        concat!("opened_commitment_is_", "refused(account,*opened_at_ms))"),
+        concat!(".m", "ap(|(trade_id,_)|*trade_id).coll", "ect()"),
+    ]
+    .concat();
+    assert_eq!(
+        planner_body, expected_planner,
+        "[rb83/planner-frozen] the planner's body must BE the specified filter-map, \
+         byte-for-byte in the squashed view. Got: {planner_body:?}. Expected: \
+         {expected_planner:?}. \
+         Equality, not containment, and rb-47 measured why on this exact family of seams: a \
+         `cfg!(test) &&` prefix and a short-circuit early return above a textually intact body \
+         were both CI-green bypasses, and execution can close neither (the test build defines \
+         `test`, and a fixture suite cannot vary a column it does not know is being read). \
+         What dies here: a COMPLEMENTED filter, which sweeps exactly the predating offers \
+         PRV1-10 protects and leaves the laundering ones standing; an `unwrap_or` re-spelling \
+         of the stamp comparison, which hides the fail-closed arm inside a value; a planner \
+         that collects into a set or sorts, losing the input order `decline_offers` acts on; \
+         and any leading or trailing statement at all. \
+         RE-DERIVATION CONTRACT: from ADR-0252 D1, never pasted from the file."
+    );
+
+    let ssot = concat!("opened_commitment_is_", "refused(");
+    let n_ssot = planner_body.matches(ssot).count();
+    assert_eq!(
+        n_ssot, 1,
+        "[rb83/planner-delegates] the planner names the rb-47 SSOT `{ssot}` {n_ssot} time(s) \
+         and must name it exactly once. ZERO means the decision was re-derived where the \
+         rb-47 truth table cannot see it — and a re-derivation passes the rb-83 truth table \
+         today while diverging silently the day the SSOT grows an arm (ADR-0225: the \
+         disjunction, the inclusive boundary, the terminal clause and the fail-closed \
+         missing-stamp arm are all INHERITED by this planner, never restated). TWO means the \
+         row is judged twice and only one of the answers can reach the output."
+    );
+    for (needle, what) in [
+        (
+            concat!("deletion_requested_", "at_ms"),
+            "the request stamp itself. The planner must never touch it: the comparison, the \
+             boundary and the missing-stamp arm all live in the SSOT it delegates to, and a \
+             second spelling here is a second source of truth that only one test can be \
+             pointed at",
+        ),
+        (
+            concat!("unwrap", "_or"),
+            "a default for the fail-closed arm. Every `unwrap_or` spelling hides the \
+             missing-stamp decision inside a value — `unwrap_or(0)` silently admits every \
+             negative stamp — which is exactly why the SSOT spells that case as an explicit \
+             match arm",
+        ),
+        (
+            concat!("now", "_ms("),
+            "a clock read. The sweep's only decision input is the pre-cancel row's own request \
+             stamp; a planner that consults `now` refuses offers that PREDATE the request, or \
+             none at all, depending on the comparison",
+        ),
+    ] {
+        let n = planner_body.matches(needle).count();
+        assert_eq!(
+            n, 0,
+            "[rb83/planner-delegates] the planner's body names `{needle}` {n} time(s) and must \
+             name it ZERO times — that is {what}. The equality clause above also rejects it; \
+             this one names the mutant. Body was: {planner_body:?}"
+        );
+    }
+
+    // --- trading.rs stays fenced away from the account-state vocabulary ------
+    for (needle, what) in [
+        (
+            concat!("opened_commitment_is_", "refused("),
+            "the PURE stamp-aware decision, which a reducer could feed a hand-built or re-read \
+             row to reach whatever answer it wants",
+        ),
+        (
+            concat!("refuses_commitment_", "opened_at("),
+            "the ctx-bound stamp-aware predicate, which takes an IDENTITY and will answer \
+             about whatever account the caller names — the third-party deletion-status oracle \
+             ADR-0227 D4 forbids",
+        ),
+        (
+            concat!("ctx.db.acc", "ount("),
+            "a direct read of the `account` table from the module that owns `trade_offer`. \
+             The whole point of the read/plan/write split is that this side never learns what \
+             an account row is",
+        ),
+    ] {
+        let n = trading_file.matches(needle).count();
+        assert_eq!(
+            n, 0,
+            "[rb83/trading-seam-free] `trading.rs` names `{needle}` {n} time(s) and must name \
+             it ZERO times — that is {what}. GREEN AT HEAD, and this slice must keep it that \
+             way: the two functions it adds here read `trade_offer` rows and delete them, and \
+             the moment either one spells an account-state seam it reds rb-47's \
+             seam-containment census and the canonical bypass arrays in `guards_tests.rs` \
+             alongside this clause. Comments count too — never name the seam in this file."
+        );
+    }
+
+    // --- the reader: whole body plus the column clauses ----------------------
+    let reader_body = rb47_body("trading.rs", &trading_stripped, reader);
+    let expected_reader = [
+        concat!(
+            "ctx.db.trade_off",
+            "er().counterp",
+            "arty().fil",
+            "ter(counterparty)"
+        ),
+        concat!(".fil", "ter(|o|o.status.is_ac", "tive())"),
+        concat!(".m", "ap(|o|(o.trade_id,o.created_at_ms)).coll", "ect()"),
+    ]
+    .concat();
+    assert_eq!(
+        reader_body, expected_reader,
+        "[rb83/reader-frozen] the read function's body must BE the counterparty point scan, \
+         the liveness filter and the pair projection, byte-for-byte in the squashed view. \
+         Got: {reader_body:?}. Expected: {expected_reader:?}. \
+         What dies here that the native-host test beside it cannot see: a filter keyed on a \
+         value other than the `counterparty` PARAMETER (the host would happily answer for \
+         whichever identity the body names, and only a body pin says WHICH); a liveness filter \
+         dropped or inverted; a projection that carries a clock read or a constant in place of \
+         the offer's own `created_at_ms`; and any leading statement at all. \
+         RE-DERIVATION CONTRACT: from ADR-0252 D2, never pasted from the file."
+    );
+    let counterparty_col = concat!(".counterp", "arty()");
+    let n_cp = reader_body.matches(counterparty_col).count();
+    assert_eq!(
+        n_cp, 1,
+        "[rb83/reader-column] the read function names `{counterparty_col}` {n_cp} time(s) and \
+         must name it exactly once. This is the column the sweep is scoped to, and the scoping \
+         IS the PRV1-10 argument."
+    );
+    let initiator_col = concat!(".initi", "ator()");
+    let n_init = reader_body.matches(initiator_col).count();
+    assert_eq!(
+        n_init, 0,
+        "[rb83/reader-column] the read function names `{initiator_col}` {n_init} time(s) and \
+         must name it ZERO times. Sweeping the initiator column destroys the offers the \
+         cancelling player PROPOSED — every one of which necessarily PREDATES their deletion \
+         request, because `propose_trade` is blanket-gated for a deletion-gated caller \
+         (ADR-0227) — and those are exactly the in-flight commitments PRV1-10 protects. The \
+         asymmetry against `erase_trade_offers`, which correctly chains BOTH columns, is \
+         deliberate: that sweep runs after erasure, where nothing may survive naming the row."
+    );
+
+    // --- the writer: whole body plus the disarm-before-delete order ----------
+    let decliner_body = rb47_body("trading.rs", &trading_stripped, decliner);
+    let expected_decliner = [
+        concat!(
+            "for&trade_idintrade_ids{disarm_trade_re",
+            "aper(ctx,trade_id);"
+        ),
+        concat!("ctx.db.trade_off", "er().trade_id().del", "ete(trade_id);}"),
+    ]
+    .concat();
+    assert_eq!(
+        decliner_body, expected_decliner,
+        "[rb83/decliner-frozen] the writer's body must BE the per-id disarm-then-delete loop, \
+         byte-for-byte in the squashed view. Got: {decliner_body:?}. Expected: \
+         {expected_decliner:?}. \
+         What dies here: a writer that IGNORES its `trade_ids` argument and re-derives the set \
+         itself (which would move the decision out of the planner the truth table covers and \
+         into a body nothing constrains); a delete keyed on anything but the primary key; an \
+         unfiltered sweep, which deletes every trade offer in the database and which no \
+         containment pin distinguishes from the correct body; a collect-then-nothing helper; \
+         and any extra statement, dead branch or shadowed binding. \
+         RE-DERIVATION CONTRACT: from ADR-0252 D2 — the `erase_trade_offers` order, one \
+         function away in the same file."
+    );
+    let disarm = concat!("disarm_trade_re", "aper(");
+    let n_disarm = decliner_body.matches(disarm).count();
+    assert_eq!(
+        n_disarm, 1,
+        "[rb83/decliner-disarm-order] the writer names `{disarm}` {n_disarm} time(s) and must \
+         name it exactly once, inside the loop so it runs for EVERY declined offer. Zero \
+         orphans one TTL schedule row per swept offer; the one-shot then fires later against a \
+         trade_id that no longer exists, or against a recycled one."
+    );
+    let delete = concat!(".del", "ete(");
+    let at_disarm = decliner_body.find(disarm).unwrap_or_else(|| {
+        panic!("[rb83/decliner-disarm-order] the disarm counted 1 but could not be located")
+    });
+    let at_delete = decliner_body.find(delete).unwrap_or_else(|| {
+        panic!(
+            "[rb83/decliner-disarm-order] the writer performs no delete at all, so `disarm \
+             before delete` is trivially true and this clause proves nothing. A helper that \
+             disarms every schedule row and leaves the offers themselves in place satisfies \
+             every containment clause above while declining nothing — fail LOUD."
+        )
+    });
+    assert!(
+        at_disarm < at_delete,
+        "[rb83/decliner-disarm-order] the writer disarms at squashed offset {at_disarm} and \
+         deletes at {at_delete}; the disarm must come FIRST, matching `erase_trade_offers` one \
+         function away in this same file. The order is the in-file precedent rather than a \
+         correctness requirement of the runtime, and pinning it is what keeps the fifth site \
+         in `ea_reaper_02_disarm_called_at_all_offer_deletion_sites` reading the same shape as \
+         the four it already guards."
     );
 }

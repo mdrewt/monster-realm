@@ -5,7 +5,7 @@ slug: reducers/cancel_trade
 updated: 2026-09-11
 tags: [reducer, spacetimedb, trading]
 abstract: "Cancel a trade offer. Either party may cancel before the swap executes. Deletes the row → escrow released, no assets mo…"
-resource: server-module/src/trading.rs#L765
+resource: server-module/src/trading.rs#L803
 source: scripts/okf-export.mjs@server-module/src/trading.rs
 ---
 
