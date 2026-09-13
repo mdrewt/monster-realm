@@ -920,10 +920,15 @@ pub struct BattleAction {
 /// caller can supply it. Since rb-85 (the dated ADR-0238 amendment) that
 /// column also carries a FIELD-level btree index: it is what lets the TTL reaper
 /// read a bounded `..=cutoff` range of expired chunks instead of the whole table
-/// on every tick, and the column accessor that range is taken through exists
-/// ONLY because of the attribute. The index is invisible to clients — the table
-/// is private, so `spacetime generate` emits no bindings change and
-/// `evals/baselines/table-schemas.json` records no index information at all.
+/// on every tick. Removing the index is NOT compile-coupled (a hand-written
+/// accessor of the same name compiles), so the privacy_tests.rs index pin is
+/// what keeps it; and the generated `created_at_ms()` accessor is a new
+/// crate-wide time-ordered read over EVERY owner's chunks, census-guarded there
+/// (seven sanctioned uses, all in privacy.rs). Row-invisible to clients: the
+/// table is private, `spacetime generate` emits no bindings change and
+/// `evals/baselines/table-schemas.json` records no index information — only the
+/// unauthenticated schema endpoint publishes index METADATA, as it does for
+/// every table, which discloses nothing beyond the column names already there.
 /// Synthetic `chunk_id` PK: views strip primary keys, and
 /// a `#[primary_key]`+`#[auto_inc]` column may carry no default, so the row
 /// needs its own key. `request_id` is MINTED BY S4 (generation strategy is
