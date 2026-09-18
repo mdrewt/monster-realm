@@ -665,6 +665,20 @@ describe('rb-89 — every citation of overlayA11y.ts contract (a) agrees with wh
       'line 54 of overlayA11y.ts must include S4-CROSS-VIEW-DISTINCT-ROOTS — if it moved, the ' +
         "four citing paragraphs' :52-54 cite must be re-adjudicated",
     ).toContain('S4-CROSS-VIEW-DISTINCT-ROOTS');
+    expect(
+      lines[51],
+      'line 52 of overlayA11y.ts must include the negation do NOT "share ONE root" — a rewrite ' +
+        'that kept the RETRACTED label but flipped the meaning (e.g. "DO in fact share ONE ' +
+        'root") would pass the assertions above vacuously; if this negation is gone, the four ' +
+        "citing paragraphs' :52-54 cite must be re-adjudicated",
+    ).toContain('do NOT "share ONE root"');
+    expect(
+      lines[53],
+      'line 54 of overlayA11y.ts must include the negation must NOT close-before-open — a ' +
+        'rewrite that kept the S4-CROSS-VIEW-DISTINCT-ROOTS pin but flipped the prescription ' +
+        '(e.g. "must ALWAYS close-before-open") would pass the assertions above vacuously; if ' +
+        "this negation is gone, the four citing paragraphs' :52-54 cite must be re-adjudicated",
+    ).toContain('must NOT close-before-open');
   });
 
   it.each(['battleView.ts', 'boxView.ts', 'raisingView.ts', 'evolutionView.ts'])(
