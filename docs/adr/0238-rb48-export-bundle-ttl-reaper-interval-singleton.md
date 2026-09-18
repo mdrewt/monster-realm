@@ -450,9 +450,12 @@ bundle, and if a future slice ever breaks that (a guest-claim RE-KEY instead of 
 the owner's FRESH, unexpired export — silent personal-data loss, strictly worse than the tear it fixes.
 The stamp-keyed delete fails safe: every stamp the seam returns is expired under the SSOT predicate, so the
 helper can only ever delete expired rows; the only invariant its ATOMICITY needs is one request ⇔ one
-stamp (pinned by `m22s4_now_bound_once`'s one-clock-read and `created_at_ms: now,` clauses, the latter
-retightened by rb-86 from a prefix match that admitted a per-chunk offset), and a break of that invariant
-degrades to the status-quo k-of-N tear, never to destruction of a live export. It also keeps the window
+stamp — pinned by `m22s4_now_bound_once`'s one-clock-read and `created_at_ms: now,` clauses (the latter
+retightened by rb-86 from a prefix match that admitted a per-chunk offset) and, because a `let now = now +
+…` shadow, a `zip(now..)` and a closure parameter were each MEASURED to pass those clauses, by an rb-86
+test that freezes the export reducer's whole insert-loop write site by adjacency and pins its single `now`
+binding — and a break of that invariant degrades to the status-quo k-of-N tear, never to destruction of a
+live export. It also keeps the window
 row shape and the rb-85 read chain byte-identical, serves the read and the delete from one index, and makes
 ordering independent of the btree range's order (the seam sorts).
 
@@ -463,8 +466,13 @@ and is reaped in the same delete (all of them expired, all of them whole), so th
 bundles committed in each of those milliseconds), soft-bounded rather than hard-bounded in the attacker's
 direction: `request_data_export` is cheap for a low-state identity and the host serialises reducers at
 millisecond granularity, so a burst of N same-millisecond anonymous exports expires as one unit seven days
-later (residual R-rb-86-SAMEMS, MED — the operator alarm rb-87 owns is the watch). Storage growth under
-sybil pressure is still NOT closed (R-rb-85-EXPORTADMIT); the drain is now measured in stamps.
+later (residual R-rb-86-SAMEMS, MED — the operator alarm rb-87 owns is the watch). And the write set is
+counted in stamps, not rows: rb-85's 256-row delete cap is gone, and sixteen large bundles (a bundle can run
+to hundreds of chunks at `EXPORT_CHUNK_ROWS`) are more rows than one tick used to delete — if that ever
+exceeds the transaction budget the tick aborts and retries the identical head-of-range work every hour
+(residual R-rb-86-TICKBOUND, MED; the mitigation is a smaller stamp cap or a row-aware cap, and the alarm
+is the watch). Storage growth under sybil pressure is still NOT closed (R-rb-85-EXPORTADMIT); the drain is
+now measured in stamps.
 
 **Rejected.** (a) The one-shot `ScheduleAt::Time` drain the residual proposed: it still COMMITS the k-of-N
 state (the client would see `incomplete` for seconds instead of an hour), and a second row in
@@ -486,8 +494,12 @@ all-or-nothing SIMULATION over oversized populations at a toy cap and at the shi
 progress and no-collateral clauses and an old-rule split control, two proptests (plan-agrees-with-the-seam;
 tick-leaves-every-bundle-whole under shuffled window order), the seam declared once and private with a
 frozen signature and body, the helper's delete attributed by stamp and by argument with zero chunk-id
-deletes, one loop and no conditional, the stamp index reached exactly twice, seam scope crate-wide, a value
-pin on the bundle cap, and a closed roster. The rb-85 helper-body equality pin is re-frozen (the one-comma
-twin now keys on the bundle constant); `m22s4_now_bound_once` is TIGHTENED; every other rb48_/rb85_ pin is
-byte-identical. The native execution proof stays deferred (R-rb-85-X9: the range syscall is undefined in
+deletes, one loop with no conditional and no `break`/`continue`, the stamp index reached exactly twice, seam
+scope crate-wide, a value pin on the stamp cap (its throughput floor derived from the manifest's exportable
+count), the export reducer's whole insert-loop write site frozen by adjacency with exactly one `now`
+binding (the tests red-team MEASURED three CI-clean per-chunk-stamp spellings that passed every earlier
+pin), and a closed roster — ten tests. The rb-85 helper-body equality pin is re-frozen (the one-comma twin
+now keys on the stamp constant); `m22s4_now_bound_once` is TIGHTENED; the module's `.iter()` budget stays
+at exactly three because the seam is written as a loop (its first iterator-chain spelling was measured to
+trip that receiver-agnostic census); every other rb48_/rb85_ pin is byte-identical. The native execution proof stays deferred (R-rb-85-X9: the range syscall is undefined in
 the native host and the point delete aborts there).
