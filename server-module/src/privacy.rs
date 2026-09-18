@@ -32,16 +32,16 @@
 //! that contains one; no raw strings; no logging or print macros (the reducer
 //! that calls a helper here owns any logging); no escaped or char-literal double
 //! quote. A dozen evals concatenate every source file in this crate, test files
-//! included, and strip comments naively — one unpaired opener here silently
-//! blanks later modules from their view. rb-40 (ADR-0235) is the worked example
-//! of that doctrine: `purge_export_bundles` REPORTS its purged count and never
-//! emits; the observation lines live in the CALLING reducers (`complete_guest_claim`
-//! in accounts.rs, and since rb-65 / ADR-0243 `request_data_export` here, through
-//! `observability::mr_log` with a `stringify!` evt). STRENGTHENED
-//! for S4: this file carries exactly ONE double-quote pair — the `#[path]`
-//! attribute — and no other quote byte anywhere. Every constant string is
-//! `stringify!`; the quote character is the `JSON_QUOTE` unicode-escape char
-//! constant.
+//! included, and strip comments naively — one unpaired opener silently blanks
+//! later modules from their view. rb-40 (ADR-0235) is the worked example of that
+//! doctrine: `purge_export_bundles` REPORTS its purged count and never emits;
+//! the observation lines live in the CALLING reducers — `complete_guest_claim`
+//! in accounts.rs, `request_data_export` here (rb-65 / ADR-0243), and since
+//! rb-87 the scheduled `export_bundle_reaper`, its own calling reducer — all
+//! through `observability::mr_log` with a `stringify!` evt. STRENGTHENED for S4:
+//! this file carries exactly ONE double-quote pair — the `#[path]` attribute —
+//! and no other quote byte anywhere. Every constant string is `stringify!` and
+//! the quote is the `JSON_QUOTE` unicode-escape char constant.
 
 use crate::marshal::now_ms;
 use crate::playtest::{playtest_event, PlaytestEvent};
@@ -1625,7 +1625,12 @@ fn my_export_bundle(ctx: &spacetimedb::ViewContext) -> Vec<ExportBundle> {
 // native test host models no table scan, no range scan and no writes. The shell,
 // the bundle-selection seam and the private helper that delegates to both are
 // each pinned byte-exactly in squashed form by privacy_tests.rs, so any
-// reshaping is a deliberate, test-visible change.
+// reshaping is a deliberate, test-visible change. Since rb-87 (a third dated
+// amendment) the tick also PUBLISHES what it did: the helper reports a
+// three-count record — the rows the window read, the stamps it planned, the rows
+// it reaped — the pure `reap_fields` seam renders that record, and the reducer
+// emits it as ONE terminal observation whose fragment privacy_tests.rs pins BY
+// VALUE, the first executable oracle this section has had.
 // ===========================================================================
 
 // Retention ceiling for an export snapshot (spec M22 section 5: seven days).
@@ -1724,6 +1729,22 @@ fn plan_export_reap_stamps(
 // clock is read HERE, once per tick, and passed down: one instant per tick for
 // every row the tick weighs, and the helper's cutoff is injectable by a future
 // native test (rb-85). The reducer itself reaches no table.
+//
+// rb-87 (ADR-0238 amendment; closes R-rb-48-OBS) gives the tick a VOICE. A
+// scheduled reducer has no caller, so it is ITS OWN calling reducer under the
+// rb-40 / ADR-0235 doctrine, and ADR-0243 D9 already recorded that the hygiene
+// contract above never said this module may not observe its own reducer. ONE
+// line, TERMINAL: the helper runs, the pure fragment seam renders the tick it
+// reported, the line is written, and nothing fallible follows it before Ok. The
+// guard REJECT emits nothing — any client can invoke this reducer, so a line on
+// the reject path would be an unauthenticated log-amplification vector into a
+// 30-day store. ABSENCE of the hourly line is therefore the abort-loop dead-man
+// signal (the mr_heartbeat idiom, at an hourly cadence): a tick that aborts
+// before the last statement writes no line at all. A cap at its bound is a
+// backlog HINT, never a proof — the stamp cap may have been reached exactly
+// rather than truncated, and a full read window may still have drained
+// everything, because a whole-stamp delete takes its tail beyond the window, so
+// `reaped` can exceed `read`.
 #[spacetimedb::reducer]
 pub fn export_bundle_reaper(
     ctx: &ReducerContext,
@@ -1732,8 +1753,59 @@ pub fn export_bundle_reaper(
     if ctx.sender() != ctx.database_identity() {
         return Err(stringify!(export_reaper_scheduler_only).to_string());
     }
-    reap_expired_export_bundles(ctx, now_ms(ctx));
+    let tick = reap_expired_export_bundles(ctx, now_ms(ctx));
+    let fields = reap_fields(tick);
+    crate::observability::mr_log(stringify!(export_bundle_reap), &fields);
     Ok(())
+}
+
+// The one-tick observation record (rb-87, ADR-0238 amendment; closes
+// R-rb-48-OBS). PRIVATE, with private fields: privacy_tests.rs is a child module
+// and reads them directly, and nothing else in the crate has business seeing a
+// tick's shape (the BattleSideOwnership / PlannedChunk precedent above).
+//
+// THREE RAW COUNTS, never a derived verdict. `read` is how many chunk rows the
+// bounded window decoded, at most EXPORT_REAP_MAX_DELETE_PER_TICK; `planned` is
+// how many creation stamps the bundle seam selected, at most
+// EXPORT_REAP_MAX_STAMPS_PER_TICK; `reaped` is the datastore's own count of the
+// rows the tick deleted, tails beyond the window included. A derived `backlog`
+// flag was REJECTED: the thresholds belong in ops/observability, where they can
+// change without a module publish, and a boolean the module derives is a second
+// retention policy nobody reviewed. A cap at its bound is a HINT, not a proof:
+// `planned` at the stamp cap may be exactly-that-many rather than truncated, and
+// a full window may still have drained everything, because a stamp delete takes
+// its tail beyond the window (so `reaped` can exceed `read`). Sound only across
+// consecutive ticks; the exact pre-truncation stamp count is R-rb-87-BACKLOGAMBIG.
+//
+// Debug feeds the test failure messages; Copy (hence Clone) lets one tick reach
+// both reap_fields and the envelope builder in the same test. Nothing compares
+// two ticks, so no equality derive (/simplify, YAGNI).
+#[derive(Debug, Clone, Copy)]
+struct ExportReapTick {
+    read: usize,
+    planned: usize,
+    reaped: usize,
+}
+
+// The ONE field fragment of the reaper line (rb-87, ADR-0238 amendment) — the
+// export_fields shape above, spelled under this module's hygiene contract: PURE,
+// no ctx, no table read, every key a stringify! token and the quote the
+// JSON_QUOTE constant. NO SUBJECT, deliberately: a scheduled tick has no caller,
+// and the rows it deletes belong to whoever happened to expire — a subject here
+// would be either the module identity (noise) or a per-tick list of who
+// exported, which is a disclosure in a 30-day store for a job that is about none
+// of them. Counts are bare numbers (panels compare them); no player-authored
+// field may ever join this fragment (PRV1-17/20 by analogy).
+fn reap_fields(tick: ExportReapTick) -> String {
+    let mut out = String::new();
+    let mut first = true;
+    json_field_into(&mut out, &mut first, stringify!(read));
+    json_usize_into(&mut out, tick.read);
+    json_field_into(&mut out, &mut first, stringify!(planned));
+    json_usize_into(&mut out, tick.planned);
+    json_field_into(&mut out, &mut first, stringify!(reaped));
+    json_usize_into(&mut out, tick.reaped);
+    out
 }
 
 // Cutoff seam (rb-85): the NEWEST creation stamp a chunk may carry and still be
@@ -1757,7 +1829,8 @@ fn export_reap_cutoff_ms(now_ms: i64, ttl_ms: i64) -> i64 {
 // does), and `.take` caps the read at EXPORT_REAP_MAX_DELETE_PER_TICK, so the
 // module decodes at most that many rows per tick however large the table grows
 // (the host may fill at most one further iterator buffer beyond the last decoded
-// row). The bound is on ROWS, not bytes (rb-87 owns the byte-level residual).
+// row). The bound is on ROWS, not bytes (the byte-level bound is
+// R-rb-85-EXPORTADMIT; rb-87 ships the counts an operator alarm reads).
 //
 // WHOLE BUNDLES, never a fraction of one (rb-86). A bundle is every chunk
 // sharing one creation stamp: `request_data_export` stamps all of a request's
@@ -1810,11 +1883,13 @@ fn export_reap_cutoff_ms(now_ms: i64, ttl_ms: i64) -> i64 {
 //
 // PRIVATE on purpose: the scheduler-only posture lives in the reducer's guard,
 // and nothing else in the crate may reach this delete path — the compiler, not a
-// convention, is what enforces that. It REPORTS its count and never emits (the
-// rb-40 / ADR-0235 idiom; the calling reducer owns any observation line). The
-// count it reports is the datastore's, summed over the tick's point deletes, and
-// its named consumer is the deferred native execution test (ledger R-rb-85-X9).
-fn reap_expired_export_bundles(ctx: &ReducerContext, now_ms: i64) -> usize {
+// convention, is what enforces that. It REPORTS the whole tick (`read` /
+// `planned` / `reaped`) and never emits (the rb-40 / ADR-0235 idiom; the calling
+// reducer owns the line), and its named consumer is that reducer's terminal
+// `mr_log`. `reaped` is the datastore's own count, summed over the tick's point
+// deletes; `read` is what the bounded window decoded and `planned` what the
+// bundle seam selected, so one number can no longer stand for all three.
+fn reap_expired_export_bundles(ctx: &ReducerContext, now_ms: i64) -> ExportReapTick {
     let cutoff = export_reap_cutoff_ms(now_ms, EXPORT_BUNDLE_TTL_MS);
     let rows: Vec<(u64, i64)> = ctx
         .db
@@ -1830,11 +1905,16 @@ fn reap_expired_export_bundles(ctx: &ReducerContext, now_ms: i64) -> usize {
         EXPORT_BUNDLE_TTL_MS,
         EXPORT_REAP_MAX_STAMPS_PER_TICK,
     );
+    let planned = stamps.len();
     let mut reaped = 0usize;
     for stamp in stamps {
         reaped += ctx.db.export_bundle().created_at_ms().delete(stamp) as usize;
     }
-    reaped
+    ExportReapTick {
+        read: rows.len(),
+        planned,
+        reaped,
+    }
 }
 
 // Idempotent self-healing singleton arm (delegates to playtest::plan_reaper_arm,

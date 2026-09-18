@@ -7724,7 +7724,7 @@ fn rb48_reaper_guard_pin() -> String {
 /// BINDS the tick the helper reports, renders it through the pure `reap_fields`
 /// seam and writes ONE terminal observation before the tail — so the body is five
 /// statements at depth zero: the guard, the delegation, the fragment binding, the
-/// emission, and `Ok`. That is also what makes the containment clauses rb-85 and
+/// emission, and `Ok` — five statements at depth zero. That is also what makes the containment clauses rb-85 and
 /// rb-87 would otherwise have needed (`the helper is called exactly once, below
 /// the guard, with the bound clock; the reducer touches no table; exactly one
 /// line is written, last`) redundant: an equality pin already says all five. The
@@ -9521,7 +9521,7 @@ fn rb65p_export_emits_one_observation() {
          `rb87_module_emits_exactly_two_observations_attributed` OWNS the attribution — one \
          emission in each of those two named bodies, and the file total minus that roster equal to \
          zero, so a third site in a helper nobody scoped shows up there as a gap even while this \
-         total is moved to match it. That test runs in the same X1/X2/X3/X6 gates as this one. The \
+         total is moved to match it. That test runs in X1 and in the same X2/X3/X6 gates as this one. The \
          two BANS are unchanged. A call inside `purge_export_bundles` itself is the shape ADR-0235 \
          rejected outright: that helper is OWNER-GENERIC and is reached from three ceremonies, so \
          an emission there would publish one event name for three different flows. And the reaper \
@@ -17422,7 +17422,8 @@ fn rb87_tick(read: usize, planned: usize, reaped: usize) -> super::ExportReapTic
 /// X1 (behavioural, the payload): `reap_fields` renders EXACTLY the three
 /// sanctioned keys with BARE counts, in the order read, planned, reaped.
 ///
-/// The counts are PAIRWISE DISTINCT on every row that can carry distinct values,
+/// The counts are PAIRWISE DISTINCT on the three middle rows (the quiet-hour zero
+/// row and the all-MAX width row are deliberately uniform),
 /// on purpose: all three are `usize`, so an honest transposition of two encoder
 /// calls type-checks, is clippy-clean and satisfies every source-scan clause in
 /// this slice. Equal fixture values would make this test green on it.
@@ -17918,10 +17919,18 @@ fn rb87_helper_reports_the_whole_tick() {
              {got} occurrence(s) of {what} (`{needle}`); it must read {want}. Every clause below \
              is an exact count against one of these needles, so a single wrong literal here would \
              be a permanently red gate that reads exactly like a missing implementation — and the \
-             three ZERO rows are what prove the constant-count ban is strict rather than \
-             unsatisfiable."
+             three ZERO rows are what prove the constant-count ban is SATISFIABLE by the \
+             sanctioned text — its strictness is what register M15 measures."
         );
     }
+
+    let n_lets_control = m22s4_left_bounded_count(control_body, "let");
+    assert_eq!(
+        n_lets_control, 5,
+        "[rb87/tick-needle-control]: over the SANCTIONED helper body text the left-bounded `let` \
+         census reads {n_lets_control}; it must read 5, or the binding census below is a \
+         permanently red gate that reads exactly like a missing implementation."
+    );
 
     let body = rb85_helper_body(&squashed);
 
@@ -17970,6 +17979,20 @@ fn rb87_helper_reports_the_whole_tick() {
     );
 
     // --- (4) the plan size is taken BEFORE the loop that MOVES the plan -------
+    let n_lets = m22s4_left_bounded_count(&body, "let");
+    assert_eq!(
+        n_lets, 5,
+        "[rb87/tick-sources]: the helper body must carry EXACTLY five `let` bindings — the cutoff, \
+         the window, the stamp plan, the plan size and the mutable delete count; found {n_lets} \
+         (left-bounded, so `.delete(` does not count). MEASURED (register M28, tests red-team): a \
+         second `let stamps: Vec<i64> = Vec::new();` planted between the plan-size binding and the \
+         delete loop leaves the tail expression, the plan-size binding, the loop header and their \
+         ordering all intact — every other clause in this test green — while the tick publishes \
+         `planned` from the REAL plan and deletes NOTHING, forever. A needle keyed on `let stamps =` \
+         was measured blind to that spelling (the shadow carries a type annotation); a binding \
+         CENSUS is not. Only the inherited helper-body equality pin saw it; this clause says WHICH \
+         property broke."
+    );
     let loop_head = rb87_nd_delete_loop_head();
     let n_loop = rb22p_count(&body, &loop_head);
     assert_eq!(
@@ -18016,8 +18039,14 @@ fn rb87_helper_reports_the_whole_tick() {
 ///     that had not happened yet (respelled by the red-team so every order anchor
 ///     still occurs exactly once, which is why the COUNTS come before the
 ///     offsets);
-///   an emission inside the guard region, which would make a client-invocable
-///     reject path an unauthenticated amplification vector;
+///   M21, the WHOLE tail (delegation, binding, emission) hoisted above the
+///     guard, so a client-invocable reject path reaps AND emits before it is
+///     refused — the unauthenticated amplification vector; an emission merely
+///     ADDED inside the guard arm (M22) dies earlier, on the count;
+///   M23, a statement appended after the emission — the ADR-0243 D2 hazard
+///     shape, caught by the terminal backstop;
+///   M29, a diverging call (`abort`, `panic!`, `unreachable!`) planted above the
+///     emission, which spells neither `return` nor `?`;
 ///   M19, an early exit between the guard and the tail, which makes the emission
 ///     dead on exactly the ticks an operator needs to see — counted at ANY depth,
 ///     because a nested early return is the MEASURED escape from a depth-0-only
@@ -18209,6 +18238,27 @@ fn rb87_reaper_emits_one_terminal_observation() {
          that skips the emission entirely."
     );
 
+    for diverging in [
+        concat!("abo", "rt("),
+        concat!("pan", "ic!("),
+        concat!("unreach", "able!("),
+        concat!("to", "do!("),
+        concat!("unimplem", "ented!("),
+        concat!("ex", "it("),
+    ] {
+        let n_div = rb22p_count(region, diverging);
+        assert_eq!(
+            n_div, 0,
+            "[rb87/emit-reachable]: {n_div} `{diverging}` token(s) sit between the guard and the \
+             trailing Ok(()); ZERO is allowed. A diverging call is an early exit that spells \
+             neither a `return` token nor a `?`, so both censuses above are blind to it — MEASURED \
+             (register M29, tests red-team): `if tick.planned == 0 {{ std::process::abort(); }}` \
+             above the fragment binding was clippy-clean and green on every clause but the terminal \
+             backstop. `panic!` is not among this module's banned print macros, so this clause is \
+             the only thing that names it here. Region text: {region:?}"
+        );
+    }
+
     // --- (7) never the breadcrumb form ---------------------------------------
     let breadcrumb = rb65p_nd_mr_log_breadcrumb();
     let n_bc = rb22p_count(&body, &breadcrumb);
@@ -18252,7 +18302,7 @@ fn rb87_reaper_emits_one_terminal_observation() {
 /// RESTATEMENT BAN, stated so a reader does not go looking for missing clauses:
 /// the file-wide TOTAL, the unqualified-call equality, the fn-POINTER equality
 /// and the alias-import ban all live in `rb65p_export_emits_one_observation`,
-/// which runs in the same X1/X2/X3/X6 gates and whose `[emit/count-in-file]`
+/// which runs in the same X2/X3/X6 gates (X1 filters on `rb87_`) and whose `[emit/count-in-file]`
 /// message CITES this test as the attribution owner. Restating them here would be
 /// four clauses for zero marginal coverage (ADR-0224).
 ///
@@ -18354,6 +18404,18 @@ fn rb87_module_emits_exactly_two_observations_attributed() {
          direction is deliberately NOT claimed here: this view KEEPS string literals, and it can, \
          because privacy.rs carries exactly one double-quote pair — the path attribute — which \
          `rb22p_no_bare_quote_in_privacy` holds it to.)"
+    );
+
+    let reject = concat!("stringify!(export_reaper_", "scheduler_only)");
+    let n_reject = rb22p_count(&clean, reject);
+    assert_eq!(
+        n_reject, 1,
+        "[rb87/evt-partition]: the reaper's reject token `{reject}` must occur EXACTLY once in the \
+         comment-stripped, whitespace-PRESERVING source of privacy.rs; found {n_reject}. MEASURED \
+         (register M30, tests red-team): `stringify!(export_reaper_scheduler _only)` squashes to \
+         the identical bytes, so the guard pin, the body equality and the terminal tail are all \
+         blind to it, and there is no value oracle for the reject path — this raw-view count is \
+         the one instrument that sees a respelled reject reason."
     );
 
     let export_evt = rb65p_nd_evt();
