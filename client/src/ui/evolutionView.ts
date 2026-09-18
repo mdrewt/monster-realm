@@ -16,6 +16,19 @@
 //   * Nicknames and species names are PLAYER-CONTROLLED (`set_nickname`). Every string
 //     reaches the DOM through `textContent` / `createElement` — NEVER `innerHTML`.
 //
+// m23-s9 (M23 §2.7, ADR-0253) — COLOURS AND SIZES ARE A CONTRACT, NOT DECORATION. Every colour
+// below is a `var(--mr-evo-*)` token declared in `client/src/styles.css`, never a literal: a
+// literal is unreachable by the sheet's `@media (prefers-contrast: more)` override, so one stray
+// hex would leave that string un-recoloured for a high-contrast user. Backgrounds use the
+// `background-color` LONGHAND (the shorthand hides the value from the DOM oracle). Font sizes are
+// `px` like every sibling view — the old `em` sizes mis-applied WCAG's large-text threshold and
+// scaled differently from the rest of the UI. Only declarations on a fixed allow-list may appear
+// (no `opacity`/`filter`/`text-shadow`/… — each is a way to dim text the contrast oracle cannot
+// see), and no element may carry a `class` or `id` (a stylesheet rule is the other way around
+// the inline colours). All of it is measured from the rendered DOM by `evolutionView.test.ts`
+// (m23s9 X1–X4), with the four fixture states named there; a new element or colour here must
+// be added to those censuses in the same change.
+//
 // m23-s4 (M23 §2.2, ADR-0205 D1/D2/A3) — overlay a11y wiring. This view is a CONSTRUCTED shell:
 // its root is `document.createElement`'d here and appended into the shared `#app` MOUNT, so unlike
 // the ten static shells S3 wired it ships NO ARIA of its own from `client/index.html` — every
@@ -42,19 +55,6 @@
 // in place (A12, ui/overlayA11y.ts:52-54); (a) now agrees with this code: each view creates its
 // OWN root under the shared MOUNT — four roots, four `OverlayId`s, four records. Closing a sibling
 // here would close an overlay the player still has open. Pinned by `S4-CROSS-VIEW-DISTINCT-ROOTS`.
-//
-// m23-s9 (M23 §2.7, ADR-0253) — COLOURS AND SIZES ARE A CONTRACT, NOT DECORATION. Every colour
-// below is a `var(--mr-evo-*)` token declared in `client/src/styles.css`, never a literal: a
-// literal is unreachable by the sheet's `@media (prefers-contrast: more)` override, so one stray
-// hex would leave that string un-recoloured for a high-contrast user. Backgrounds use the
-// `background-color` LONGHAND (the shorthand hides the value from the DOM oracle). Font sizes are
-// `px` like every sibling view — the old `em` sizes mis-applied WCAG's large-text threshold and
-// scaled differently from the rest of the UI. Only declarations on a fixed allow-list may appear
-// (no `opacity`/`filter`/`text-shadow`/… — each is a way to dim text the contrast oracle cannot
-// see), and no element may carry a `class` or `id` (a stylesheet rule is the other way around
-// the inline colours). All of it is measured from the rendered DOM by `evolutionView.test.ts`
-// (m23s9 X1–X4), with the four fixture states named there; a new element or colour here must
-// be added to those censuses in the same change.
 import type {
   EvolutionGateViewModel,
   EvolutionMonsterViewModel,
