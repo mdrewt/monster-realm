@@ -20,9 +20,12 @@
 //! hourly interval-singleton schedule (`export_bundle_reaper_schedule`, no
 //! Identity column) drives the scheduler-only `export_bundle_reaper`, which
 //! deletes every `export_bundle` chunk older than `EXPORT_BUNDLE_TTL_MS` (7
-//! days) through the pure `plan_export_reap` seam. `request_data_export` arms
-//! the singleton as its last statement, and `init` / `sync_content` re-arm it
-//! on publish, so a chunk can never exist without its expiry armed.
+//! days) through the pure `plan_export_reap` seam. Since rb-86 (a second dated
+//! ADR-0238 amendment) a tick deletes WHOLE BUNDLES: the delete unit is the
+//! creation stamp every chunk of one request shares, so a bundle is never
+//! committed part-gone. `request_data_export` arms the singleton as its last
+//! statement, and `init` / `sync_content` re-arm it on publish, so a chunk can
+//! never exist without its expiry armed.
 //!
 //! SCAN HYGIENE (gate-enforced by `privacy_tests.rs`, which scans this file AND
 //! itself): line comments only — never a block comment or a path glob spelling
@@ -1608,31 +1611,48 @@ fn my_export_bundle(ctx: &spacetimedb::ViewContext) -> Vec<ExportBundle> {
 }
 
 // ===========================================================================
-// PRV1-14 TTL reaper (rb-48, ADR-0238; bounded read since rb-85, the dated
-// amendment). A GLOBAL hourly interval singleton — not a per-request one-shot:
-// no Identity column (so NotOwned in the manifest, no re-key entry) and
-// reachability-independent. Its read is a BOUNDED btree range over
+// PRV1-14 TTL reaper (rb-48, ADR-0238; bounded read since rb-85 and whole-bundle
+// deletes since rb-86, two dated amendments). A GLOBAL hourly interval singleton
+// — not a per-request one-shot: no Identity column (so NotOwned in the manifest,
+// no re-key entry) and reachability-independent. Its read is a BOUNDED btree range over
 // `created_at_ms`, so this module no longer sweeps `export_bundle` at all: the
 // one full-table read of the chunk table that rb-48 had to sanction is gone.
 // (The module's three remaining `.iter()` reads — the schedule singleton in the
 // arm and the two unindexed own-row export scans of ADR-0226 — are unaffected
-// and are censused by privacy_tests.rs.) The behavioural proof is the pure
-// `plan_export_reap` seam (the native test host models no table scan, no range
-// scan and no writes); the shell below and the private helper it delegates to
-// are both pinned byte-exactly in squashed form by privacy_tests.rs, so any
+// and are censused by privacy_tests.rs.) The behavioural proof is the pair of
+// pure seams below — `plan_export_reap` (which rows have expired) and
+// `plan_export_reap_stamps` (which whole bundles this tick may delete); the
+// native test host models no table scan, no range scan and no writes. The shell,
+// the bundle-selection seam and the private helper that delegates to both are
+// each pinned byte-exactly in squashed form by privacy_tests.rs, so any
 // reshaping is a deliberate, test-visible change.
 // ===========================================================================
 
 // Retention ceiling for an export snapshot (spec M22 section 5: seven days).
 pub(crate) const EXPORT_BUNDLE_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 // Sweep cadence: an hour is 168 times finer than the TTL, and every tick is one
-// bounded range read plus at most EXPORT_REAP_MAX_DELETE_PER_TICK deletes under
-// the global write lock — so the cadence argument is about transaction COUNT,
-// not about scan cost.
+// bounded range read of at most EXPORT_REAP_MAX_DELETE_PER_TICK rows plus at most
+// EXPORT_REAP_MAX_STAMPS_PER_TICK index-point deletes under the global write lock
+// — so the cadence argument is about transaction COUNT, not about scan cost.
 pub(crate) const EXPORT_REAP_INTERVAL: Duration = Duration::from_secs(3600);
-// Per-tick delete cap: export rows carry whole payload chunks, so a small batch
-// that always commits beats a large one that could abort every tick forever.
+// Per-tick READ window: how many chunk rows a tick may decode. Export rows carry
+// whole payload chunks, so a small batch that always commits beats a large one
+// that could abort every tick forever. Since rb-86 this bounds the READ ONLY —
+// the write bound is EXPORT_REAP_MAX_STAMPS_PER_TICK below, because a creation
+// stamp selected from inside this window carries a tail beyond its edge. The
+// name is therefore a misnomer, DISCLOSED rather than fixed: it is pinned in
+// roughly ten tests and three documents, and a crate-visible rename is its own
+// slice (residual R-rb-86-READCAP-NAME).
 pub(crate) const EXPORT_REAP_MAX_DELETE_PER_TICK: usize = 256;
+// Per-tick STAMP cap (rb-86, ADR-0238 amendment): the WRITE bound. The row cap
+// above bounds what a tick READS; every creation stamp the window touches is then
+// deleted whole — its tail may lie beyond the window — so the write set is at
+// most this many stamps. A stamp is one request's bundle, or every bundle that
+// committed inside the same millisecond (all expired together). Sixteen
+// minimum-size bundles (17 chunks, one per exportable table) is 272 rows, the
+// drain rate of the 256-row cap it replaces; a 256-row window in ascending stamp
+// order holds at most fifteen whole bundles and one straddler anyway.
+pub(crate) const EXPORT_REAP_MAX_STAMPS_PER_TICK: usize = 16;
 
 // PRIVATE scheduled table colocated with its reducer (ADR-0056 exception).
 #[spacetimedb::table(accessor = export_bundle_reaper_schedule, scheduled(export_bundle_reaper))]
@@ -1664,6 +1684,41 @@ pub(crate) fn plan_export_reap(
     expired
 }
 
+// Pure BUNDLE selection for a per-bundle atomic reap (rb-86, ADR-0238 amendment;
+// closes R-rb-48-PARTIALREAP). A bundle is every chunk sharing one creation
+// stamp: request_data_export stamps all of a request's chunks with its single
+// `now`, so deleting a stamp deletes a whole bundle and never part of one.
+// `plan_export_reap` above stays the SSOT expiry predicate — it is run over the
+// WHOLE window (`rows.len()`, not a row cap: the read is already bounded) and
+// only the stamps of the ids it plans are kept — then the stamps are made
+// distinct, ordered oldest first regardless of the window's order, and capped
+// at `max_stamps`: the tick's write bound.
+//
+// The projection is an EXPLICIT loop over the borrowed window rather than an
+// iterator chain, matching `plan_export_reap` above. That is this module's
+// idiom, and it is load-bearing: `[rb85/iter-census]` budgets `.iter()` in this
+// file against a closed list of three sanctioned TABLE reads, spelled against
+// the verb and against no receiver at all, so a chain here would spend a slot
+// reserved for the thing that census exists to bound.
+fn plan_export_reap_stamps(
+    rows: &[(u64, i64)],
+    now_ms: i64,
+    ttl_ms: i64,
+    max_stamps: usize,
+) -> Vec<i64> {
+    let planned = plan_export_reap(rows, now_ms, ttl_ms, rows.len());
+    let mut stamps: Vec<i64> = Vec::new();
+    for &(id, created) in rows {
+        if planned.contains(&id) {
+            stamps.push(created);
+        }
+    }
+    stamps.sort_unstable();
+    stamps.dedup();
+    stamps.truncate(max_stamps);
+    stamps
+}
+
 // Scheduler-only reducer. GUARD FIRST (before any read). Interval singleton:
 // the runtime keeps the row and re-fires it every EXPORT_REAP_INTERVAL. The
 // clock is read HERE, once per tick, and passed down: one instant per tick for
@@ -1691,23 +1746,59 @@ fn export_reap_cutoff_ms(now_ms: i64, ttl_ms: i64) -> i64 {
     now_ms.saturating_sub(ttl_ms)
 }
 
-// The TTL sweep itself (rb-85, ADR-0238 amendment; closes R-rb-48-SCANCOST).
+// The TTL sweep itself (rb-85, ADR-0238 amendment; closes R-rb-48-SCANCOST —
+// and, as re-shaped by rb-86, R-rb-48-PARTIALREAP).
+//
 // A BOUNDED INDEX READ, not a full scan: the btree range on the creation stamp
 // yields only rows at or below the cutoff, ascending in key order (btree-backed
 // and therefore expected; neither a documented SDK contract nor something this
 // slice observed — the execution proof is deferred, ledger X9. Progress never
-// depends on it, since every row taken is deleted; only FAIRNESS does), and
-// `.take` caps the read at the SAME constant that caps the delete, so the module
-// decodes at most EXPORT_REAP_MAX_DELETE_PER_TICK rows per tick however large
-// the table grows (the host may fill at most one further iterator buffer beyond
-// the last decoded row). The bound is on ROWS, not bytes (rb-87 owns the
-// byte-level residual).
+// depends on it, since every planned bundle is deleted whole; only FAIRNESS
+// does), and `.take` caps the read at EXPORT_REAP_MAX_DELETE_PER_TICK, so the
+// module decodes at most that many rows per tick however large the table grows
+// (the host may fill at most one further iterator buffer beyond the last decoded
+// row). The bound is on ROWS, not bytes (rb-87 owns the byte-level residual).
+//
+// WHOLE BUNDLES, never a fraction of one (rb-86). A bundle is every chunk
+// sharing one creation stamp: `request_data_export` stamps all of a request's
+// chunks with its single `now`, which is also the `request_id` the S8 client
+// assembles on. So the tick plans STAMPS, through `plan_export_reap_stamps`, and
+// deletes each one with a single index-POINT delete on the `created_at_ms` btree
+// index — which takes the chunks the bounded window never read as well. That
+// tail is exactly what a per-chunk key delete used to strand, committing a
+// bundle k-of-N and leaving the client an export it reports incomplete.
 //
 // `plan_export_reap` remains the SSOT expiry predicate, applied to the
 // PRE-FILTERED rows: the range is an OPTIMISATION constrained to be a superset
 // of the seam's expired set (property-tested), never a second retention policy.
 // The seam's own `truncate(batch)` can no longer bind and is retained as
-// defence in depth.
+// defence in depth. Every stamp the bundle seam returns is one that predicate
+// planned, hence at or below the cutoff, so a point delete here can only ever
+// destroy EXPIRED rows: the whole-bundle reap rests on no reachability and no
+// purge-before-insert invariant.
+//
+// TWO bounds with two different jobs. EXPORT_REAP_MAX_DELETE_PER_TICK bounds the
+// READ at 256 rows; EXPORT_REAP_MAX_STAMPS_PER_TICK bounds the WRITE at 16
+// stamps, because a stamp selected from inside the window carries a tail past
+// its edge. A stamp is one request's bundle, or every bundle committed in that
+// same millisecond (residual R-rb-86-SAMEMS). The atomicity invariant is
+// precisely `one request, one stamp`, and `m22s4_now_bound_once` pins it three
+// ways: `[X9/now-bind]` (the reducer binds the clock once), `[X9/now-file]` (two
+// clock calls file-wide) and `[X9/now-stamp]` (the insert writes that binding
+// into `created_at_ms`, the field separator included, so no per-chunk offset can
+// creep in). A break there degrades to the status-quo tear, never to destroying
+// a live export.
+//
+// The delete is a RANGED-index point delete, not the unique-column delete this
+// module used until rb-86: it lowers to
+// `datastore_delete_by_index_scan_point_bsatn`, decodes nothing, and returns the
+// datastore's own count of the rows it removed. Every OTHER `.<col>().delete(x)`
+// in this module is `UniqueColumn::delete -> bool` on a `#[primary_key]` column
+// and the chain text is indistinguishable from this one, which is why
+// privacy_tests.rs pins the ARGUMENT as the point `stamp` rather than merely
+// matching the chain: the same accessor with a range argument is a cross-bundle
+// wipe. (`erase_player_sessions` in lib.rs is the crate's existing precedent for
+// the ranged form, on the non-unique `player_session.identity` btree.)
 //
 // `now_ms` is a PARAMETER — a trust input. It deliberately SHADOWS the imported
 // fn of the same name (the file's existing idiom in `plan_export_reap`), which
@@ -1718,8 +1809,8 @@ fn export_reap_cutoff_ms(now_ms: i64, ttl_ms: i64) -> i64 {
 // and nothing else in the crate may reach this delete path — the compiler, not a
 // convention, is what enforces that. It REPORTS its count and never emits (the
 // rb-40 / ADR-0235 idiom; the calling reducer owns any observation line). The
-// named consumers of that count are the deferred native execution test and
-// rb-86's one-shot drain.
+// count it reports is the datastore's, summed over the tick's point deletes, and
+// its named consumer is the deferred native execution test (ledger R-rb-85-X9).
 fn reap_expired_export_bundles(ctx: &ReducerContext, now_ms: i64) -> usize {
     let cutoff = export_reap_cutoff_ms(now_ms, EXPORT_BUNDLE_TTL_MS);
     let rows: Vec<(u64, i64)> = ctx
@@ -1730,15 +1821,15 @@ fn reap_expired_export_bundles(ctx: &ReducerContext, now_ms: i64) -> usize {
         .take(EXPORT_REAP_MAX_DELETE_PER_TICK)
         .map(|c| (c.chunk_id, c.created_at_ms))
         .collect();
-    let ids = plan_export_reap(
+    let stamps = plan_export_reap_stamps(
         &rows,
         now_ms,
         EXPORT_BUNDLE_TTL_MS,
-        EXPORT_REAP_MAX_DELETE_PER_TICK,
+        EXPORT_REAP_MAX_STAMPS_PER_TICK,
     );
-    let reaped = ids.len();
-    for id in ids {
-        ctx.db.export_bundle().chunk_id().delete(id);
+    let mut reaped = 0usize;
+    for stamp in stamps {
+        reaped += ctx.db.export_bundle().created_at_ms().delete(stamp) as usize;
     }
     reaped
 }

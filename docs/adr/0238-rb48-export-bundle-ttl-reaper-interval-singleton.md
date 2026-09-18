@@ -426,10 +426,12 @@ equals the delete cap", and "outgrows the unchanged 256/h drain (≈361 bundles/
   the btree index rb-85 added, which the SDK routes to `datastore_delete_by_index_scan_point_bsatn`: every
   row carrying that stamp is deleted in the same transaction, window rows and tail alike, and NOTHING is
   decoded. It returns the datastore's own row count (`u64`, cast to the frozen `usize` signature). This is
-  the crate's first `RangedIndex::delete` on a non-unique index — every other `.<column>().delete(x)` site
-  in the module sits on a `#[primary_key]` column and is `UniqueColumn::delete -> bool` — and the chain
-  text is indistinguishable from the unique form, which is why privacy_tests.rs pins the delete's
-  ARGUMENT by equality (`stamp`, a point: a range there would be an uncapped delete).
+  this MODULE's first `RangedIndex::delete` on a non-unique index (the crate's precedent is rb-73's
+  `erase_player_sessions` in lib.rs, `player_session().identity().delete(owner)`) — every other
+  `.<column>().delete(x)` site in privacy.rs sits on a `#[primary_key]` column and is
+  `UniqueColumn::delete -> bool` — and the chain text is indistinguishable from the unique form, which is
+  why privacy_tests.rs pins the delete's ARGUMENT by equality (`stamp`, a point: a range there would be an
+  uncapped delete).
 - A new constant `EXPORT_REAP_MAX_STAMPS_PER_TICK: usize = 16` — the tick's WRITE bound, counted in
   creation STAMPS: one stamp is one request's bundle, or every bundle committed inside that same
   millisecond (see Bounds). The row cap `EXPORT_REAP_MAX_DELETE_PER_TICK` (name retained; it is pinned in
