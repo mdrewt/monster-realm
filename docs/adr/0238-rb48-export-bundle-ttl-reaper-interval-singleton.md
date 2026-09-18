@@ -390,3 +390,122 @@ stamps regenerated. Residual candidates: R-rb-85-EXPORTADMIT (no global admissio
 `request_data_export`; the write side of the sybil vector), and a correction to rb-86's deferral premise —
 "no client subscribes to `my_export_bundle`" has been false since rb-53 (`client/src/net/connection.ts:653`),
 so the k-of-N tear is client-observable today.
+
+## Amendment (2026-09-18, rb-86 — residual R-rb-48-PARTIALREAP closed)
+
+The "R-rb-48-PARTIALREAP" bullet under Residuals above is discharged by rb-86, which was assigned no
+usable ADR number (the supervisor-reserved 0251 had already been taken by rb-81 when the slice ran — the
+same reservation race ADR-0225 hit — so, per the rb-84/rb-85 precedent, this dated amendment is the
+decision record). Two facts in that bullet were already false when the slice started and are corrected
+here: the tear has been CLIENT-OBSERVABLE since rb-53 (`client/src/net/connection.ts` subscribes
+`my_export_bundle`; `client/src/ui/exportAssembly.ts` reports a bundle with a missing chunk index as
+`incomplete`, a wait state that could only resolve at the next hourly tick), and the "one-shot
+`ScheduleAt::Time` drain" follow-up the bullet proposed is not a fix at all — see Rejected below.
+
+**The defect, precisely.** Every chunk of one `request_data_export` call carries the reducer's single `now`
+as both `request_id` and `created_at_ms`, so a BUNDLE is the set of chunks sharing one creation stamp — and
+that is also the client's own notion of a bundle (`exportAssembly.ts` groups by `request_id`). rb-85's
+helper deleted the first 256 EXPIRED CHUNKS by primary key, so a tick could commit k of a bundle's N
+chunks deleted and leave the rest for an hour.
+
+**Decision: reap per BUNDLE, atomically, keyed on the creation stamp.** Three sentences of the rb-85
+amendment above are SUPERSEDED and left in place as history: "deletes by primary key, and REPORTS its
+count (… consumers: the deferred native execution test and rb-86's one-shot drain)", "The read bound
+equals the delete cap", and "outgrows the unchanged 256/h drain (≈361 bundles/day)". What ships:
+
+- A new PRIVATE pure seam, `plan_export_reap_stamps(rows: &[(u64, i64)], now_ms, ttl_ms, max_stamps)
+  -> Vec<i64>`, directly below `plan_export_reap`: it runs `plan_export_reap` — still the SSOT expiry
+  predicate — over the WHOLE window (`rows.len()`, not a row cap: the read is already bounded), keeps only
+  the creation stamps of the ids the seam plans, makes them distinct, sorts them oldest first regardless
+  of the window's order, and truncates to `max_stamps`. Every stamp it returns is at or below the cutoff,
+  i.e. expired.
+- `reap_expired_export_bundles(ctx, now_ms) -> usize` keeps rb-85's bounded range read byte-for-byte as
+  the WINDOW (`.created_at_ms().filter(..=cutoff).take(EXPORT_REAP_MAX_DELETE_PER_TICK)`, ≤ 256 decoded
+  rows) and then, for each planned stamp, issues ONE
+  `ctx.db.export_bundle().created_at_ms().delete(stamp)` — a `RangedIndex::delete` with a point key on
+  the btree index rb-85 added, which the SDK routes to `datastore_delete_by_index_scan_point_bsatn`: every
+  row carrying that stamp is deleted in the same transaction, window rows and tail alike, and NOTHING is
+  decoded. It returns the datastore's own row count (`u64`, cast to the frozen `usize` signature). This is
+  this MODULE's first `RangedIndex::delete` on a non-unique index (the crate's precedent is rb-73's
+  `erase_player_sessions` in lib.rs, `player_session().identity().delete(owner)`) — every other
+  `.<column>().delete(x)` site in privacy.rs sits on a `#[primary_key]` column and is
+  `UniqueColumn::delete -> bool` — and the chain text is indistinguishable from the unique form, which is
+  why privacy_tests.rs pins the delete's ARGUMENT by equality (`stamp`, a point: a range there would be an
+  uncapped delete).
+- A new constant `EXPORT_REAP_MAX_STAMPS_PER_TICK: usize = 16` — the tick's WRITE bound, counted in
+  creation STAMPS: one stamp is one request's bundle, or every bundle committed inside that same
+  millisecond (see Bounds). The row cap `EXPORT_REAP_MAX_DELETE_PER_TICK` (name retained; it is pinned in
+  ten places and three documents, and a crate-visible rename is its own slice) is now the READ window
+  only, and its doc comment says so. Sixteen minimum-size bundles (17 chunks each, one per exportable
+  table, empty tables included) is 272 rows — the drain rate of the 256-row cap it replaces (≈384
+  bundles/day, was ≈361) — and a 256-row window in ascending stamp order holds at most fifteen whole
+  bundles and one straddler anyway, so the cap binds only when the window's order is not what the btree
+  is expected to give.
+- The reducer shell (guard → helper → `Ok(())`), `plan_export_reap`, `export_reap_cutoff_ms`,
+  `purge_export_bundles`, `request_data_export`, the arm, schema.rs and the client are unchanged.
+
+**Why the stamp and not the owner.** An owner-keyed whole-bundle delete (`owner_identity().delete(owner)`)
+was the planned shape and was rejected at plan review: it is atomic only while one owner holds at most one
+bundle, and if a future slice ever breaks that (a guest-claim RE-KEY instead of a purge, say) it deletes
+the owner's FRESH, unexpired export — silent personal-data loss, strictly worse than the tear it fixes.
+The stamp-keyed delete fails safe: every stamp the seam returns is expired under the SSOT predicate, so the
+helper can only ever delete expired rows; the only invariant its ATOMICITY needs is one request ⇔ one
+stamp — pinned by `m22s4_now_bound_once`'s one-clock-read and `created_at_ms: now,` clauses (the latter
+retightened by rb-86 from a prefix match that admitted a per-chunk offset) and, because a `let now = now +
+…` shadow, a `zip(now..)` and a closure parameter were each MEASURED to pass those clauses, by an rb-86
+test that freezes the export reducer's whole insert-loop write site by adjacency and pins its single `now`
+binding — and a break of that invariant degrades to the status-quo k-of-N tear, never to destruction of a
+live export. It also keeps the window
+row shape and the rb-85 read chain byte-identical, serves the read and the delete from one index, and makes
+ordering independent of the btree range's order (the seam sorts).
+
+**Bounds, stated honestly.** READ: at most 256 decoded rows per tick, unchanged. WRITE: at most 16
+creation stamps per tick. A stamp is normally one bundle — the size of the single `request_data_export`
+transaction that created it — but every bundle committed inside the SAME millisecond shares that stamp
+and is reaped in the same delete (all of them expired, all of them whole), so the write set is 16 × (the
+bundles committed in each of those milliseconds), soft-bounded rather than hard-bounded in the attacker's
+direction: `request_data_export` is cheap for a low-state identity and the host serialises reducers at
+millisecond granularity, so a burst of N same-millisecond anonymous exports expires as one unit seven days
+later (residual R-rb-86-SAMEMS, MED — the operator alarm rb-87 owns is the watch). And the write set is
+counted in stamps, not rows: rb-85's 256-row delete cap is gone, and sixteen large bundles (a bundle can run
+to hundreds of chunks at `EXPORT_CHUNK_ROWS`) are more rows than one tick used to delete — if that ever
+exceeds the transaction budget the tick aborts and retries the identical head-of-range work every hour
+(residual R-rb-86-TICKBOUND, MED). The security audit sharpened that: a smaller stamp cap helps only the
+aggregate case — the stamp is the atomic unit, so a single oversized stamp wedges the reaper at any cap —
+and the real mitigations are admission control at write time (R-rb-85-EXPORTADMIT) or a row-aware cap that
+gives the atomicity back; and no watch exists yet — rb-84 classified this reaper as an SLO EXCLUSION and
+the reducer emits nothing, so an abort loop is silent until rb-87 lands, and its consequence is expired
+personal data retained past the seven-day ceiling. Reachability is low: a bundle is Σ over the exportable
+tables of max(1, ⌈rows / EXPORT_CHUNK_ROWS⌉), and the 60 s per-identity cooldown keeps a same-millisecond
+burst a multi-identity move. Storage growth under sybil pressure is still NOT closed (R-rb-85-EXPORTADMIT); the drain is
+now measured in stamps.
+
+**Rejected.** (a) The one-shot `ScheduleAt::Time` drain the residual proposed: it still COMMITS the k-of-N
+state (the client would see `incomplete` for seconds instead of an hour), and a second row in
+`export_bundle_reaper_schedule` is surplus by construction under `playtest::plan_reaper_arm`, which keeps
+`existing_ids[0]` and deletes the rest — if the collect order ever put the one-shot first, the next
+`request_data_export` would delete the hourly interval row and silently disarm the retention control. (b1)
+Reusing `purge_export_bundles` per owner: it collects primary keys through the owner index, decoding every
+purged row's `payload_json` — the byte cost rb-85 exists to remove, paid a second time. (c) Widening the
+read window to finish a straddling bundle: a second decode of the same payloads. (d) The owner-keyed delete:
+above. (e) `created_at_ms().delete(..=cutoff)` as a single range delete: uncapped, and it drops
+`plan_export_reap` as SSOT — the rejection recorded by rb-48 still stands.
+
+**Proof of teeth (ADR-0224: ordinary Rust tests, no eval).** Recorded at slice close in the rb-86 paragraph
+of ARCHITECTURE.md and the harness ledger (`memory/projects/gates/rb-86.gates.md`, RED record
+`rb-86.red-before.md`, register `rb-86.mutants.py` / `rb-86.x7-register.md`): a `rb86_` block in
+privacy_tests.rs — the seam's value table (cap+1 straddle, same-millisecond tie, mixed expired/fresh
+window, the 16-of-17 cap, the whole-window plan), its distinct/oldest-first/subset structure, an
+all-or-nothing SIMULATION over oversized populations at a toy cap and at the shipped constants with
+progress and no-collateral clauses and an old-rule split control, two proptests (plan-agrees-with-the-seam;
+tick-leaves-every-bundle-whole under shuffled window order), the seam declared once and private with a
+frozen signature and body, the helper's delete attributed by stamp and by argument with zero chunk-id
+deletes, one loop with no conditional and no `break`/`continue`, the stamp index reached exactly twice, seam
+scope crate-wide, a value pin on the stamp cap (its throughput floor derived from the manifest's exportable
+count), the export reducer's whole insert-loop write site frozen by adjacency with exactly one `now`
+binding (the tests red-team MEASURED three CI-clean per-chunk-stamp spellings that passed every earlier
+pin), and a closed roster — ten tests. The rb-85 helper-body equality pin is re-frozen (the one-comma twin
+now keys on the stamp constant); `m22s4_now_bound_once` is TIGHTENED; the module's `.iter()` budget stays
+at exactly three because the seam is written as a loop (its first iterator-chain spelling was measured to
+trip that receiver-agnostic census); every other rb48_/rb85_ pin is byte-identical. The native execution proof stays deferred (R-rb-85-X9: the range syscall is undefined in
+the native host and the point delete aborts there).
