@@ -343,10 +343,12 @@ original ban; its two per-body clauses were provably unreachable at zero and wer
 `rb48_reaper_body_exact` re-frozen with its twin deleted (accepted set 2 → 1), prose-only retruths
 elsewhere. RED-before: 949 run / 941 passed / 8 failed on the predicted clauses with the cutoff-calling
 tests cfg-stripped, then a build failure (E0425 ×5) with all ten enabled; GREEN: 951 run (942 + 10 with
-`dev_reducers`). Register (harness `memory/projects/gates/rb-85.mutants.py`, 27 rows): every mutant killed
-on its designated clause, two INVALID by mechanism (bare index removal → E0599; a test calling the helper →
-`rust-lld: undefined symbol: datastore_index_scan_range_bsatn`, the whole lib-test binary), three controls
-green.
+`dev_reducers`). Register (harness `memory/projects/gates/rb-85.mutants.py`, 33 rows, run 2026-09-17 on the
+final tree): 28 mutants killed on their designated clause — including the four round-3 rows: the band-keyed
+clock (band opening one second past T10's sampled row, so only the body pin sees it), the band-keyed seam, the
+comment-split call and the fn-item path from observability.rs — two INVALID by mechanism (bare index removal →
+E0599; a test calling the helper → `rust-lld: undefined symbol: datastore_index_scan_range_bsatn`, the whole
+lib-test binary), three controls green; evidence `memory/projects/gates/rb-85.x7-register.md`.
 
 **Rejected here.** `RangedIndex::delete(..=cutoff)` — deletes by range without materialising a row, but
 is uncapped and drops `plan_export_reap` as SSOT. A per-request one-shot, `playtest::plan_reap` reuse, and a
