@@ -470,8 +470,14 @@ later (residual R-rb-86-SAMEMS, MED — the operator alarm rb-87 owns is the wat
 counted in stamps, not rows: rb-85's 256-row delete cap is gone, and sixteen large bundles (a bundle can run
 to hundreds of chunks at `EXPORT_CHUNK_ROWS`) are more rows than one tick used to delete — if that ever
 exceeds the transaction budget the tick aborts and retries the identical head-of-range work every hour
-(residual R-rb-86-TICKBOUND, MED; the mitigation is a smaller stamp cap or a row-aware cap, and the alarm
-is the watch). Storage growth under sybil pressure is still NOT closed (R-rb-85-EXPORTADMIT); the drain is
+(residual R-rb-86-TICKBOUND, MED). The security audit sharpened that: a smaller stamp cap helps only the
+aggregate case — the stamp is the atomic unit, so a single oversized stamp wedges the reaper at any cap —
+and the real mitigations are admission control at write time (R-rb-85-EXPORTADMIT) or a row-aware cap that
+gives the atomicity back; and no watch exists yet — rb-84 classified this reaper as an SLO EXCLUSION and
+the reducer emits nothing, so an abort loop is silent until rb-87 lands, and its consequence is expired
+personal data retained past the seven-day ceiling. Reachability is low: a bundle is Σ over the exportable
+tables of max(1, ⌈rows / EXPORT_CHUNK_ROWS⌉), and the 60 s per-identity cooldown keeps a same-millisecond
+burst a multi-identity move. Storage growth under sybil pressure is still NOT closed (R-rb-85-EXPORTADMIT); the drain is
 now measured in stamps.
 
 **Rejected.** (a) The one-shot `ScheduleAt::Time` drain the residual proposed: it still COMMITS the k-of-N
