@@ -52,6 +52,9 @@
 // overlay legitimately earns 'alertdialog', that test reds and forces a real per-id role
 // assertion to be added alongside it.
 
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { a11yCopy } from './a11yCopy';
 import { LIVE_REGION_ID } from './liveRegion';
@@ -598,4 +601,121 @@ describe('openOverlayA11y/closeOverlayA11y — live-region custody: no-op edges 
 
     closeOverlayA11y('claimView', null);
   });
+});
+
+// ---------------------------------------------------------------------------
+// rb-89 — R-17r-e-VIEWHDR: four view files' "NO CLOSE-BEFORE-OPEN" comment
+// paragraphs must agree with overlayA11y.ts's now-RETRACTED contract (a),
+// not narrate the pre-retraction claim in the present tense.
+// ---------------------------------------------------------------------------
+//
+// SOURCE OF TRUTH: memory/projects/monster-realm-rb-89-plan.md §B;
+//   overlayA11y.ts:51-54 (contract (a), A12 — RETRACTED);
+//   battleView.ts:29-33, boxView.ts:29-33, raisingView.ts:30-34, evolutionView.ts:40-44.
+//
+// RED REASON: the four view files still carry the byte-identical, PRE-RETRACTION paragraph
+// ("contract (a) says the four ... share ONE root ... must therefore close-before-open. That is
+// a misstatement..."). The implementer rewrites those 5 lines (5 in / 5 out) to agree with (a) as
+// it reads TODAY. Do NOT edit these tests to match the current stale paragraphs — correct them
+// from the plan only.
+
+function readUiSource(fileName: string): string {
+  const filePath = path.join(path.dirname(fileURLToPath(import.meta.url)), fileName);
+  try {
+    return readFileSync(filePath, 'utf8');
+  } catch (err) {
+    // File must exist — throw so the test is RED for a missing-file reason, never vacuously
+    // green (renameView.test.ts:872-876 precedent).
+    throw new Error(`${fileName} could not be read — the file must exist: ${String(err)}`);
+  }
+}
+
+/** Returns the marker line plus every immediately-following line that also starts (after
+ *  trimming) with `//` — stops at the first non-`//` line. */
+function commentWindowAfterMarker(lines: string[], marker: string): string[] {
+  const startIndex = lines.findIndex((line) => line.trim().startsWith(marker));
+  if (startIndex === -1) return [];
+  const commentBlock: string[] = [];
+  for (let i = startIndex; i < lines.length; i += 1) {
+    if (!lines[i].trim().startsWith('//')) break;
+    commentBlock.push(lines[i]);
+  }
+  return commentBlock;
+}
+
+describe('rb-89 — every citation of overlayA11y.ts contract (a) agrees with what (a) now says (R-17r-e-VIEWHDR)', () => {
+  it('rb-89-CONTRACT-A-RETRACTED-GROUND-TRUTH: overlayA11y.ts line 52 carries the "(a) A12 — RETRACTED" cite and line 54 carries S4-CROSS-VIEW-DISTINCT-ROOTS — a lock the four view paragraphs\' ":52-54" cite depends on', () => {
+    const lines = readUiSource('overlayA11y.ts').split('\n');
+    const retractedLineNumbers = lines
+      .map((line, i) => (line.includes('(a) A12 — RETRACTED') ? i + 1 : -1))
+      .filter((lineNumber) => lineNumber !== -1);
+
+    expect(
+      retractedLineNumbers.length,
+      'exactly one line of overlayA11y.ts must include "(a) A12 — RETRACTED" — if this count ' +
+        "changed, the four citing paragraphs' :52-54 cite must be re-adjudicated",
+    ).toBe(1);
+    expect(
+      retractedLineNumbers[0],
+      'the "(a) A12 — RETRACTED" line must stay at line 52 — if it moved, the four citing ' +
+        "paragraphs' :52-54 cite must be re-adjudicated",
+    ).toBe(52);
+    expect(
+      lines[53],
+      'line 54 of overlayA11y.ts must include S4-CROSS-VIEW-DISTINCT-ROOTS — if it moved, the ' +
+        "four citing paragraphs' :52-54 cite must be re-adjudicated",
+    ).toContain('S4-CROSS-VIEW-DISTINCT-ROOTS');
+  });
+
+  it.each(['battleView.ts', 'boxView.ts', 'raisingView.ts', 'evolutionView.ts'])(
+    'rb-89-VIEWHDR-AGREES-WITH-CONTRACT-A %s: the NO CLOSE-BEFORE-OPEN paragraph agrees with the ' +
+      'RETRACTED contract (a), not the pre-retraction claim',
+    (fileName) => {
+      const src = readUiSource(fileName);
+      const lines = src.split('\n');
+
+      const markerCount = lines.filter((line) =>
+        line.trim().startsWith('// NO CLOSE-BEFORE-OPEN.'),
+      ).length;
+      expect(
+        markerCount,
+        `${fileName}: exactly one "// NO CLOSE-BEFORE-OPEN." marker line must exist`,
+      ).toBe(1);
+
+      const commentBlock = commentWindowAfterMarker(lines, '// NO CLOSE-BEFORE-OPEN.');
+      expect(
+        commentBlock.length,
+        `${fileName}: the NO CLOSE-BEFORE-OPEN comment paragraph must be exactly 5 lines`,
+      ).toBe(5);
+
+      const windowText = commentBlock.join('\n');
+      expect(
+        windowText.includes('RETRACTED'),
+        `${fileName}: the paragraph must cite the RETRACTED contract (a) — it still narrates the ` +
+          'pre-retraction claim in the present tense',
+      ).toBe(true);
+      expect(
+        windowText.includes('S4-CROSS-VIEW-DISTINCT-ROOTS'),
+        `${fileName}: the paragraph must cite the S4-CROSS-VIEW-DISTINCT-ROOTS pin`,
+      ).toBe(true);
+      expect(
+        windowText.includes('OWN root'),
+        `${fileName}: the paragraph must say each view creates its OWN root`,
+      ).toBe(true);
+      expect(
+        windowText.includes('overlayA11y.ts:52-54'),
+        `${fileName}: the paragraph must cite overlayA11y.ts:52-54, where (a) was retracted`,
+      ).toBe(true);
+
+      expect(
+        src.includes('contract (a) says'),
+        `${fileName}: the file must not narrate contract (a), in the present tense, as still ` +
+          'saying the retracted "share ONE root" claim — even parked outside the 5-line window',
+      ).toBe(false);
+      expect(
+        src.includes('must therefore close-before-open'),
+        `${fileName}: the file must not still prescribe close-before-open anywhere in the file`,
+      ).toBe(false);
+    },
+  );
 });
