@@ -37,11 +37,11 @@
 // `.focus()` on a `display:none` node is a silent no-op, so an open-before-paint overlay announces
 // itself and then never receives focus.
 //
-// NO CLOSE-BEFORE-OPEN. `ui/overlayA11y.ts`'s cross-slice contract (a) says the four `#app`-mounted
-// views "share ONE root" and that S4 must therefore close-before-open. That is a misstatement of
-// this code: each view creates its OWN root and appends it into the shared MOUNT, so there are four
-// distinct roots, four distinct `OverlayId`s and four distinct records. Closing a sibling here would
-// close an overlay the player still has open. Pinned by `S4-CROSS-VIEW-DISTINCT-ROOTS`.
+// NO CLOSE-BEFORE-OPEN. `ui/overlayA11y.ts`'s cross-slice contract (a) once claimed the four
+// `#app`-mounted views "share ONE root" and prescribed close-before-open; 17r-e RETRACTED it
+// in place (A12, ui/overlayA11y.ts:52-54); (a) now agrees with this code: each view creates its
+// OWN root under the shared MOUNT — four roots, four `OverlayId`s, four records. Closing a sibling
+// here would close an overlay the player still has open. Pinned by `S4-CROSS-VIEW-DISTINCT-ROOTS`.
 import type {
   EvolutionGateViewModel,
   EvolutionMonsterViewModel,
