@@ -2,7 +2,7 @@
 type: SpacetimeDB Reducer
 title: mr_heartbeat
 slug: reducers/mr_heartbeat
-updated: 2026-09-13
+updated: 2026-09-18
 tags: [reducer, spacetimedb, observability]
 abstract: "Scheduler-only, write-free dead-man beat (OBS-1/OBS-3). GUARD FIRST (`playtest_reaper` precedent); exactly one emission…"
 resource: server-module/src/observability.rs#L115
