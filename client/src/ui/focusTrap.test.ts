@@ -468,3 +468,157 @@ describe('installTrap — full focusable-type coverage (FOCUSABLE_SELECTOR regre
     uninstall();
   });
 });
+
+// ---------------------------------------------------------------------------
+// rb-88 (R-17r-e-E3): refutes focusTrap.ts's now-retracted header claim (module header, lines
+// 58-62 — corrected in place by rb-88, not moved) that the four #app-mounted views share ONE
+// root and that opening the next overlay before closing the previous one stacks two capture
+// listeners on ONE node. The three tests below prove: sibling roots never stack (test 1), the
+// SAME node installed twice DOES double-move focus — what the old comment mis-attributed to
+// siblings (test 2, a characterisation, not a design mandate), and installTrap attaches exactly
+// one capture keydown listener per passed root and none to the shared mount, document, or window
+// (test 3).
+//
+// WRONG-IMPL-KILLED for this block (see the file header's existing index for the rest):
+//   - attach-to-parentElement/mount instead of the passed root           -> test 1, test 3
+//   - attach-to-document (delegate) instead of the passed root           -> test 1, test 3
+//   - module-level "already installed" singleton guard (one trap globally) -> test 1
+//   - {once:true} on the keydown listener                                -> test 1 (B's 3rd Tab)
+//   - Map/Set same-node dedupe collapsing a double-install to one listener -> test 2
+//   - delegate-to-document with any kind of dedupe                       -> test 3
+// ---------------------------------------------------------------------------
+
+describe('rb-88: sibling #app roots vs. the same root installed twice (R-17r-e-E3)', () => {
+  it('rb-88-SIBLING-ROOTS-NO-STACK BITES: installing a SECOND sibling root before uninstalling the first (open-before-close) never double-moves focus in the second root, and the first root is untouched', () => {
+    // Real topology: battleView.ts:81->225, boxView.ts:60->120, raisingView.ts and
+    // evolutionView.ts each create their OWN root element under the shared #app mount.
+    // installTrap(root) attaches to the PASSED root, never to #app, so two sibling roots'
+    // capture listeners never coexist on the same node no matter the open/close order.
+    const app = document.createElement('div');
+    app.id = 'app';
+    document.body.appendChild(app);
+
+    const rootA = document.createElement('div');
+    const [a1, a2, a3] = makeButtons(3);
+    rootA.append(a1, a2, a3);
+    app.appendChild(rootA);
+
+    const rootB = document.createElement('div');
+    const [b1, b2, b3] = makeButtons(3);
+    rootB.append(b1, b2, b3);
+    app.appendChild(rootB);
+
+    const uninstallA = installTrap(rootA);
+    // Opens B BEFORE closing A — exactly the "open-before-close" sequencing the retracted header
+    // comment blamed for double-moving focus.
+    const uninstallB = installTrap(rootB);
+
+    b1.focus();
+    const evtB1 = tabKeydown(false);
+    b1.dispatchEvent(evtB1);
+    expect(
+      document.activeElement,
+      'ONE step within B: under the retracted claim (two capture listeners stacked on one ' +
+        'node) this would land on b3, not b2',
+    ).toBe(b2);
+    expect(evtB1.defaultPrevented).toBe(true);
+
+    a1.focus();
+    a1.dispatchEvent(tabKeydown(false));
+    expect(document.activeElement, "A's own ring is untouched by B's later install").toBe(a2);
+
+    uninstallA();
+    b2.focus();
+    const evtB2 = tabKeydown(false);
+    b2.dispatchEvent(evtB2);
+    expect(
+      document.activeElement,
+      'uninstalling A AFTER B was already installed is harmless to B (close-after-open works ' +
+        'too, not just close-before-open)',
+    ).toBe(b3);
+
+    uninstallB();
+  });
+
+  it('rb-88-SAME-ROOT-TWICE-STACKS BITES: installing the SAME root twice without uninstalling between DOES double-move focus per Tab — the behaviour the retracted comment mis-attributed to sibling roots', () => {
+    // CHARACTERISES observed per-node behaviour, for contrast with rb-88-SIBLING-ROOTS-NO-STACK:
+    // this is what the old header comment wrongly attributed to opening a SIBLING root before
+    // closing the previous one. It is NOT a design mandate here — a future slice that adds a
+    // same-node dedupe guard to installTrap (e.g. a Map/Set keyed by root) may legitimately
+    // rewrite this test to assert a single step instead of two.
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    const [x1, x2, x3, x4] = makeButtons(4);
+    root.append(x1, x2, x3, x4);
+
+    const uninstall1 = installTrap(root);
+    const uninstall2 = installTrap(root);
+
+    x1.focus();
+    x1.dispatchEvent(tabKeydown(false));
+    expect(
+      document.activeElement,
+      'two capture listeners stacked on the SAME node each advance focus once per Tab press: ' +
+        'x1 -> x2 -> x3',
+    ).toBe(x3);
+
+    uninstall1();
+    uninstall2();
+  });
+
+  it('rb-88-ONE-LISTENER-PER-ROOT-ZERO-ON-MOUNT BITES: installTrap registers exactly ONE capture keydown listener on the PASSED root, and none on the shared #app mount, document, or window', () => {
+    const app = document.createElement('div');
+    app.id = 'app';
+    document.body.appendChild(app);
+
+    const rootA = document.createElement('div');
+    const rootB = document.createElement('div');
+    app.append(rootA, rootB);
+
+    const addA = vi.spyOn(rootA, 'addEventListener');
+    const addB = vi.spyOn(rootB, 'addEventListener');
+    const addMount = vi.spyOn(app, 'addEventListener');
+    const addDoc = vi.spyOn(document, 'addEventListener');
+    const addWin = vi.spyOn(window, 'addEventListener');
+
+    const uninstallA = installTrap(rootA);
+    const uninstallB = installTrap(rootB);
+
+    function countCaptureKeydown(calls: unknown[][]): number {
+      return calls.filter((call) => {
+        const [type, , opts] = call;
+        if (type !== 'keydown') return false;
+        if (opts === true) return true;
+        return (
+          typeof opts === 'object' &&
+          opts !== null &&
+          (opts as { capture?: boolean }).capture === true
+        );
+      }).length;
+    }
+
+    expect(
+      countCaptureKeydown(addA.mock.calls),
+      'rootA gets exactly one capture keydown listener',
+    ).toBe(1);
+    expect(
+      countCaptureKeydown(addB.mock.calls),
+      'rootB gets exactly one capture keydown listener',
+    ).toBe(1);
+    expect(
+      countCaptureKeydown(addMount.mock.calls),
+      'the shared #app mount gets none — installTrap never attaches to the mount',
+    ).toBe(0);
+    expect(
+      countCaptureKeydown(addDoc.mock.calls),
+      'document gets none — no delegate-to-document implementation',
+    ).toBe(0);
+    expect(
+      countCaptureKeydown(addWin.mock.calls),
+      'window gets none — no delegate-to-window implementation',
+    ).toBe(0);
+
+    uninstallA();
+    uninstallB();
+  });
+});
