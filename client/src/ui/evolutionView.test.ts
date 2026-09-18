@@ -1110,3 +1110,990 @@ describe('EvolutionView V7 (totality): show/hide/refresh in any order, no throw'
     expect(parent.querySelectorAll(READY_NOTE_SELECTOR)).toHaveLength(0);
   });
 });
+
+// ===========================================================================
+// m23-s9 (M23 §2.7) — contrast tokens, `prefers-contrast: more`, em → px
+// ===========================================================================
+//
+// SOURCE OF TRUTH: memory/projects/monster-realm-m23-s9-plan.md ("Design (D1–D3) — AMENDED",
+// the token table, "Extra assertions the red-team demanded") and
+// memory/projects/gates/m23-s9.gates.md X1–X4. S8 precedent: battleView.test.ts's s8Rgb /
+// s8Luminance / s8Contrast oracle and its `m23s8 status badge contrast` case.
+//
+// ORACLE = the RENDERED DOM + WCAG 2.x arithmetic — never the view's source text. Every colour
+// operand is read off a LIVE element through happy-dom's CSSStyleDeclaration LONGHANDS
+// (`style.color`, `style.backgroundColor`), resolved against the two `:root` token scopes parsed
+// out of client/src/styles.css by the hp-bar eval's exported CSS parser (`parseCssStyleRules` +
+// `atStack` + `normaliseMediaPrelude` — never text slicing), alpha-composited from the innermost
+// surface outward onto BOTH a white and a black page, and ratioed here.
+//
+// RED REASON (verified against client/src/ui/evolutionView.ts and client/src/styles.css in this
+// worktree): the view ships hex literals inline (`#666` empties at 2.2:1 over the worst-case
+// `#333` the translucent root composites to on white; `#fff` on the `#059669` Evolve button at
+// 3.77:1), `em` font sizes (0.85 / 0.8 / 0.75em) and NO `--mr-evo-*` tokens; styles.css has no
+// `:root` block and no `@media (prefers-contrast: more)` block — its header merely MENTIONS that
+// prelude in prose, which is why the census below runs on comment-STRIPPED text.
+//
+// HAPPY-DOM 20.10.6 FACTS THIS SECTION LEANS ON (read from client/node_modules/happy-dom/lib/css/
+// declaration/CSSStyleDeclaration.js and property-manager/*.js — NOT assumed):
+//   * `style.cssText = …` REWRITES the `style` attribute from the property manager's own
+//     serialisation, so `getAttribute('style')` is happy-dom's canonical spelling, not the
+//     author's. A declaration happy-dom cannot parse is DROPPED from both the object model and the
+//     attribute — invisible to this oracle (declared residual; see the report).
+//   * `rgba(0,0,0,0.8)` reads back re-spaced as `rgba(0, 0, 0, 0.8)`; 4/8-digit hex and named
+//     colours pass happy-dom and are REFUSED here.
+//   * `background: var(--x)` (SHORTHAND) is stored under the `background` key only and leaves
+//     `style.backgroundColor` EMPTY — the longhand is the only var()-safe surface. For today's
+//     hex/rgba-literal shorthands the longhand IS populated (getBackground → getBackgroundColor
+//     per part), and `s9OwnBg` additionally falls back to a bare-colour `style.background` so X1
+//     reds on CONTRAST rather than on a thrown read. X3 enforces the longhand.
+//   * `border: 1px solid var(--x)`: the var() PART matches happy-dom's width, style AND colour
+//     part-parsers, so the manager holds `border-width` / `border-style` / `border-color` =
+//     `var(--x)` beside the four literal sides; `style.border` reconstructs `1px solid` (colour
+//     initial → omitted) and `style.borderColor` carries the var(). `border-left: 3px solid …`
+//     is ALWAYS serialised as the three `border-left-*` longhands. The declaration allow-list
+//     admits exactly those serialisations.
+//
+// CI HYGIENE: literal regexes and indexOf/includes only (`new RegExp` is Semgrep-banned); no
+// `innerHTML`; plain `describe(` / `it(` (an eval scans for the literal); the four `it` titles
+// below are the ONLY names in this file carrying the ledger's `-t` prefixes.
+
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import {
+  declarations,
+  normaliseMediaPrelude,
+  parseCssStyleRules,
+  stripCssComments,
+} from '../../../evals/reduced-motion-hp-bar.eval.mjs';
+
+type S9Rgba = readonly [number, number, number, number];
+type S9Rgb = readonly [number, number, number];
+
+interface S9CssRule {
+  readonly prelude: string;
+  readonly body: string;
+  readonly atStack: readonly string[];
+}
+interface S9Declaration {
+  readonly prop: string;
+  readonly value: string;
+}
+
+// The .mjs module is untyped from a .ts spec (client/tsconfig excludes specs); these are the
+// shapes read from evals/reduced-motion-hp-bar.eval.mjs at `parseCssStyleRules` (`{ prelude,
+// body, atStack, startIndex, endIndex }`), `declarations` (`{ prop, value, important, custom }`),
+// `normaliseMediaPrelude` and `stripCssComments`.
+const s9ParseRules = parseCssStyleRules as unknown as (css: string) => readonly S9CssRule[];
+const s9Declarations = declarations as unknown as (body: string) => readonly S9Declaration[];
+const s9NormalisePrelude = normaliseMediaPrelude as unknown as (prelude: string) => string;
+const s9StripComments = stripCssComments as unknown as (css: string) => string;
+
+const S9_TOKEN_PREFIX = '--mr-evo-';
+const S9_VAR_PREFIX = 'var(--mr-evo-';
+const S9_MORE_PRELUDE = '@media (prefers-contrast: more)';
+const S9_WHITE: S9Rgb = [255, 255, 255];
+const S9_BLACK: S9Rgb = [0, 0, 0];
+const S9_PAGES: readonly (readonly [string, S9Rgb])[] = [
+  ['white', S9_WHITE],
+  ['black', S9_BLACK],
+];
+/** WCAG 1.4.3 AA for text — every string here is far below the 24px / 18.67px-bold "large" tier. */
+const S9_AA = 4.5;
+/** WCAG 1.4.6 AAA — the plan's tier for the `prefers-contrast: more` override. */
+const S9_AAA = 7.0;
+/** WCAG 1.4.11 non-text — the card boundary under `more` (default scope is out of scope, §3.1). */
+const S9_NON_TEXT = 3.0;
+/** 0.85em → 14px, 0.8em → 13px, 0.75em → 12px (plan D2). */
+const S9_PX_SIZES: readonly number[] = [12, 13, 14];
+
+// ---------------------------------------------------------------------------
+// Colour reader — REFUSES, never defaults
+// ---------------------------------------------------------------------------
+
+const S9_HEX3 = /^#([0-9a-f]{3})$/i;
+const S9_HEX6 = /^#([0-9a-f]{6})$/i;
+const S9_RGB = /^rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$/;
+const S9_RGBA = /^rgba\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d*\.?\d+)\s*\)$/;
+const S9_VAR = /^var\(\s*(--[a-z0-9-]+)\s*\)$/i;
+
+function s9Refuse(raw: string, where: string, why: string): never {
+  throw new Error(
+    `m23s9 COLOUR REFUSED (${where}): ${JSON.stringify(raw)} — ${why}. Only #rgb, #rrggbb, ` +
+      'rgb(r, g, b) and rgba(r, g, b, a) with integer 0–255 channels and 0 ≤ a ≤ 1 are ' +
+      'admissible. This reader never defaults (an empty value defaulted to black would pass ' +
+      'the gate by DELETING the colour) and never parses alpha-blind (an 8-digit hex read as 6 ' +
+      'digits scores an invisible colour as opaque)',
+  );
+}
+
+/** `[r, g, b, a]` from a bare colour literal, or a THROW. Whitespace-tolerant (happy-dom re-spaces). */
+function s9Rgb(raw: string, where: string): S9Rgba {
+  const value = raw.trim();
+  if (value === '') s9Refuse(raw, where, 'empty');
+  const hex3 = S9_HEX3.exec(value);
+  if (hex3 !== null) {
+    const body = hex3[1]!;
+    return [
+      Number.parseInt(body.charAt(0).repeat(2), 16),
+      Number.parseInt(body.charAt(1).repeat(2), 16),
+      Number.parseInt(body.charAt(2).repeat(2), 16),
+      1,
+    ];
+  }
+  const hex6 = S9_HEX6.exec(value);
+  if (hex6 !== null) {
+    const body = hex6[1]!;
+    return [
+      Number.parseInt(body.slice(0, 2), 16),
+      Number.parseInt(body.slice(2, 4), 16),
+      Number.parseInt(body.slice(4, 6), 16),
+      1,
+    ];
+  }
+  const fn = S9_RGB.exec(value) ?? S9_RGBA.exec(value);
+  if (fn === null) s9Refuse(raw, where, 'not a bare #rgb / #rrggbb / rgb() / rgba() literal');
+  const channels = [fn[1]!, fn[2]!, fn[3]!].map((c) => Number.parseInt(c, 10));
+  for (const c of channels) {
+    if (c > 255) s9Refuse(raw, where, `channel ${c} exceeds 255`);
+  }
+  const alpha = fn[4] === undefined ? 1 : Number.parseFloat(fn[4]);
+  if (!(alpha >= 0 && alpha <= 1)) s9Refuse(raw, where, `alpha ${fn[4]} is outside 0..1`);
+  return [channels[0]!, channels[1]!, channels[2]!, alpha];
+}
+
+/** WCAG 2.x sRGB channel linearisation (identical to S8's s8ChannelLuminance). */
+function s9Channel(value: number): number {
+  const c = value / 255;
+  return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+}
+
+/** WCAG 2.x relative luminance. Alpha, if present, is ignored — callers composite first. */
+function s9Luminance(rgb: S9Rgba | S9Rgb): number {
+  const lum = 0.2126 * s9Channel(rgb[0]) + 0.7152 * s9Channel(rgb[1]) + 0.0722 * s9Channel(rgb[2]);
+  if (!Number.isFinite(lum)) {
+    throw new Error(`m23s9 LUMINANCE: ${JSON.stringify(rgb)} produced a non-finite L`);
+  }
+  return lum;
+}
+
+/** WCAG 2.x contrast ratio between two relative luminances, order-independent. */
+function s9Contrast(a: number, b: number): number {
+  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+}
+
+/** Source-over: `top` painted onto `under`; both may be translucent. Unrounded. */
+function s9Over(top: S9Rgba, under: S9Rgba): S9Rgba {
+  const at = top[3];
+  const au = under[3] * (1 - at);
+  const a = at + au;
+  if (a === 0) return [0, 0, 0, 0];
+  const mix = (i: 0 | 1 | 2): number => (top[i] * at + under[i] * au) / a;
+  return [mix(0), mix(1), mix(2), a];
+}
+
+/** A translucent colour flattened onto an opaque page: `c = a·fg + (1−a)·page`, rounded. */
+function s9Composite(fg: S9Rgba, page: S9Rgb): S9Rgb {
+  const out = s9Over(fg, [page[0], page[1], page[2], 1]);
+  return [Math.round(out[0]), Math.round(out[1]), Math.round(out[2])];
+}
+
+function s9Hex(rgb: S9Rgba | S9Rgb): string {
+  const two = (v: number): string => Math.round(v).toString(16).padStart(2, '0');
+  return `#${two(rgb[0])}${two(rgb[1])}${two(rgb[2])}`;
+}
+
+// ---------------------------------------------------------------------------
+// Token scopes — client/src/styles.css, located by atStack, never by text slicing
+// ---------------------------------------------------------------------------
+
+interface S9Scopes {
+  readonly css: string;
+  /** `:root { … }` at at-rule depth 0 — the DEFAULT scope. */
+  readonly base: ReadonlyMap<string, string>;
+  /** `:root { … }` whose ONLY enclosing at-rule normalises to `@media (prefers-contrast: more)`. */
+  readonly more: ReadonlyMap<string, string>;
+  /** Declaration COUNTS per name (a Map silently dedupes a double declaration). */
+  readonly baseCounts: ReadonlyMap<string, number>;
+  readonly moreCounts: ReadonlyMap<string, number>;
+  /** How many `:root` rules in each scope declare at least one `--mr-evo-*` token. */
+  readonly baseRules: number;
+  readonly moreRules: number;
+  /** Every OTHER rule that declares a `--mr-evo-*` token, described for the failure message. */
+  readonly outside: readonly string[];
+}
+
+function s9TokenScopes(): S9Scopes {
+  // The spec lives in client/src/ui/, the sheet in client/src/ — resolved from THIS file's URL so
+  // the read does not depend on vitest's cwd.
+  const sheetPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'styles.css');
+  const css = readFileSync(sheetPath, 'utf8');
+  const expectedMore = s9NormalisePrelude(S9_MORE_PRELUDE);
+  const base = new Map<string, string>();
+  const more = new Map<string, string>();
+  const baseCounts = new Map<string, number>();
+  const moreCounts = new Map<string, number>();
+  const outside: string[] = [];
+  let baseRules = 0;
+  let moreRules = 0;
+  for (const rule of s9ParseRules(css)) {
+    const tokens = s9Declarations(rule.body).filter((d) => d.prop.startsWith(S9_TOKEN_PREFIX));
+    const isRoot = rule.prelude === ':root';
+    const inBase = isRoot && rule.atStack.length === 0;
+    const inMore =
+      isRoot && rule.atStack.length === 1 && s9NormalisePrelude(rule.atStack[0]!) === expectedMore;
+    if (inBase || inMore) {
+      if (tokens.length === 0) continue;
+      const map = inBase ? base : more;
+      const counts = inBase ? baseCounts : moreCounts;
+      if (inBase) baseRules += 1;
+      else moreRules += 1;
+      for (const t of tokens) {
+        map.set(t.prop, t.value);
+        counts.set(t.prop, (counts.get(t.prop) ?? 0) + 1);
+      }
+    } else if (tokens.length > 0) {
+      const where = [...rule.atStack, rule.prelude].join(' > ');
+      outside.push(`${where} declares ${tokens.map((t) => t.prop).join(', ')}`);
+    }
+  }
+  return { css, base, more, baseCounts, moreCounts, baseRules, moreRules, outside };
+}
+
+/** The token name inside a bare `var(--name)` reference, or null (a fallback comma → null). */
+function s9TokenName(raw: string): string | null {
+  const matched = S9_VAR.exec(raw.trim());
+  return matched === null ? null : matched[1]!;
+}
+
+/**
+ * A DOM colour source resolved in `scope`: `var(--mr-evo-x)` → the token's declared value; a bare
+ * literal → itself (so X1 is evaluable against TODAY's hex-literal tree and reds on CONTRAST; X3
+ * is where "must be a token" is asserted). THROWS on a fallback (`var(--x, #fb)`) or a token the
+ * scope does not declare — the browser would render the fallback / initial colour while this
+ * gate measured nothing.
+ */
+function s9Resolve(raw: string, scope: ReadonlyMap<string, string>, where: string): string {
+  const value = raw.trim();
+  if (!value.startsWith('var(')) return value;
+  const name = s9TokenName(value);
+  if (name === null) {
+    throw new Error(
+      `m23s9 TOKEN REFUSED (${where}): ${JSON.stringify(raw)} is not a bare var(--name) reference` +
+        ' — a fallback would let a deleted token render the fallback while this gate measured' +
+        ' nothing',
+    );
+  }
+  const resolved = scope.get(name);
+  if (resolved === undefined) {
+    throw new Error(
+      `m23s9 TOKEN MISSING (${where}): ${name} is referenced by the DOM but declared in no :root ` +
+        'scope of client/src/styles.css that this scope reads — the browser would render the ' +
+        'initial colour',
+    );
+  }
+  return resolved;
+}
+
+// ---------------------------------------------------------------------------
+// DOM walk — every element with a direct non-blank text node, fg/bg by ancestor walk
+// ---------------------------------------------------------------------------
+
+type S9StateName = 'S_EMPTY' | 'S_NOPATHS' | 'S_READY' | 'S_CHOICES';
+const S9_STATES: readonly S9StateName[] = ['S_EMPTY', 'S_NOPATHS', 'S_READY', 'S_CHOICES'];
+
+/**
+ * Text-element census per state, derived BY HAND from evolutionView.ts's structure (root =
+ * title h2 + hint p + list div; a card = name + stats [+ "No evolution paths."] + path rows +
+ * [ready note] + [prompt + picker of buttons]; a path row = heading + status + one row per gate;
+ * containers — root, list, card, path row, picker — carry no direct text):
+ *   S_EMPTY    title, hint, "No monsters yet."                                         = 3
+ *   S_NOPATHS  title, hint, name, stats, "No evolution paths."                         = 5
+ *   S_READY    title, hint, name, stats, heading, status, gate×2 (met + unmet), ready  = 9
+ *   S_CHOICES  title, hint, name, stats, rowA (heading, status, gate) 3, rowB 3,
+ *              rowC (heading, status, FIVE_GATES) 7, prompt, button×2                  = 20
+ * A shrunk walk (e.g. `children.length === 0`, which drops nothing here but would drop any
+ * future element that carries both text and a child) cannot pass these pins vacuously.
+ */
+const S9_CENSUS: Readonly<Record<S9StateName, number>> = {
+  S_EMPTY: 3,
+  S_NOPATHS: 5,
+  S_READY: 9,
+  S_CHOICES: 20,
+};
+
+function s9StateVm(state: S9StateName): EvolutionViewModel {
+  switch (state) {
+    case 'S_EMPTY':
+      return viewModel();
+    case 'S_NOPATHS':
+      return viewModel(monsterVm({ paths: [] }));
+    case 'S_READY':
+      // One MET path with MIXED gates so BOTH gate-row colours render, plus the ready note.
+      return viewModel(
+        monsterVm({
+          paths: [
+            metPathVm({
+              edgeId: 2,
+              toSpecies: 2,
+              toSpeciesName: 'Pyrodrake',
+              gates: [
+                gate('level', 'Level', 'Lv 30', 'Lv 20', true),
+                gate('essence', 'Fire essence', 'Fire 33', 'Fire 120', false),
+              ],
+            }),
+          ],
+          eligibleCount: 1,
+          choices: [],
+          readyPathName: 'Pyrodrake',
+        }),
+      );
+    case 'S_CHOICES': {
+      // Two MET paths offered as choices (two Evolve buttons) plus one UNMET path (unmet heading,
+      // warn status, five unmet gates) — the V3 fixture shape.
+      const met: readonly EvolutionPathViewModel[] = [
+        metPathVm({ edgeId: 3, toSpecies: 2, toSpeciesName: 'Pyrodrake' }),
+        metPathVm({ edgeId: 6, toSpecies: 3, toSpeciesName: 'Cindermaw' }),
+      ];
+      return viewModel(
+        monsterVm({
+          paths: [...met, pathVm({ edgeId: 9, toSpecies: 4, toSpeciesName: 'Emberwing' })],
+          eligibleCount: 2,
+          choices: met,
+          readyPathName: null,
+        }),
+      );
+    }
+  }
+}
+
+interface S9Pair {
+  readonly state: S9StateName;
+  readonly label: string;
+  readonly el: HTMLElement;
+  /** The nearest inline `color` up the chain (root inclusive), verbatim from the DOM. */
+  readonly fgRaw: string;
+  /** Every inline background from the element up to the root, INNERMOST FIRST, verbatim. */
+  readonly bgRaws: readonly string[];
+}
+
+interface S9Render {
+  readonly state: S9StateName;
+  readonly root: HTMLElement;
+  readonly listEl: HTMLElement;
+  readonly pairs: readonly S9Pair[];
+}
+
+function s9Label(el: HTMLElement): string {
+  const testid = el.getAttribute('data-testid');
+  const text = (el.textContent ?? '').trim().slice(0, 40);
+  return testid === null ? `"${text}"` : `${testid} "${text}"`;
+}
+
+/** EVERY element in the subtree (root included) with at least one direct non-blank text node. */
+function s9TextElements(root: HTMLElement): HTMLElement[] {
+  const all = [root, ...root.querySelectorAll('*')] as HTMLElement[];
+  return all.filter((el) =>
+    [...el.childNodes].some((n) => n.nodeType === 3 && (n.textContent ?? '').trim() !== ''),
+  );
+}
+
+/**
+ * An element's OWN inline background: the `background-color` LONGHAND (the only surface happy-dom
+ * reads a `var()` back through). Falls back to a bare-colour `background` SHORTHAND ONLY so that
+ * today's literal tree is measurable and X1 reds on contrast; the implementation is REQUIRED to
+ * use the longhand and X3's coherence + allow-list assertions enforce it (a `background: var(…)`
+ * shorthand leaves this read empty AND names `background` in the attribute).
+ */
+function s9OwnBg(el: HTMLElement): string {
+  const longhand = el.style.backgroundColor;
+  if (longhand !== '') return longhand;
+  const shorthand = el.style.background;
+  if (shorthand.startsWith('#') || shorthand.startsWith('rgb')) return shorthand;
+  return '';
+}
+
+function s9FgRaw(el: HTMLElement, root: HTMLElement): string {
+  let cur: HTMLElement | null = el;
+  while (cur !== null) {
+    const colour = cur.style.color;
+    if (colour !== '') return colour;
+    if (cur === root) break;
+    cur = cur.parentElement;
+  }
+  throw new Error(
+    `m23s9 NO COLOUR (${s9Label(el)}): no inline \`color\` on the element or any ancestor up to ` +
+      'the overlay root — the text would render in the page default, which this gate refuses to ' +
+      'guess at',
+  );
+}
+
+function s9BgRaws(el: HTMLElement, root: HTMLElement): string[] {
+  const out: string[] = [];
+  let cur: HTMLElement | null = el;
+  while (cur !== null) {
+    const raw = s9OwnBg(cur);
+    if (raw !== '') out.push(raw);
+    if (cur === root) break;
+    cur = cur.parentElement;
+  }
+  return out;
+}
+
+function s9Render(state: S9StateName): S9Render {
+  const { parent, view } = mount();
+  view.refresh(s9StateVm(state));
+  view.show();
+  expect(parent.children.length, `${state}: mount() must hold exactly the overlay root`).toBe(1);
+  const root = parent.children[0] as HTMLElement;
+  expect(root.children.length, `${state}: the root must hold title, hint and list`).toBe(3);
+  const listEl = root.children[2] as HTMLElement;
+  const pairs = s9TextElements(root).map(
+    (el): S9Pair => ({
+      state,
+      label: s9Label(el),
+      el,
+      fgRaw: s9FgRaw(el, root),
+      bgRaws: s9BgRaws(el, root),
+    }),
+  );
+  return { state, root, listEl, pairs };
+}
+
+/** The per-state census + marker pins that make every "for each pair" loop non-vacuous. */
+function s9AssertCensus(r: S9Render): void {
+  const labels = r.pairs.map((p) => p.label);
+  expect(
+    r.pairs.length,
+    `${r.state} CENSUS: the walk must find exactly ${S9_CENSUS[r.state]} text elements (hand ` +
+      `derivation in the S9_CENSUS comment); found ${r.pairs.length}: ${labels.join(' | ')}`,
+  ).toBe(S9_CENSUS[r.state]);
+  expect(
+    s9OwnBg(r.root) !== '',
+    `${r.state}: the overlay root must declare its OWN background — every ratio composites onto it`,
+  ).toBe(true);
+  switch (r.state) {
+    case 'S_EMPTY':
+      expect(
+        labels.some((l) => l.includes('No monsters yet.')),
+        `${r.state} marker`,
+      ).toBe(true);
+      break;
+    case 'S_NOPATHS':
+      expect(
+        labels.some((l) => l.includes('No evolution paths.')),
+        `${r.state} marker`,
+      ).toBe(true);
+      break;
+    case 'S_READY': {
+      expect(
+        r.root.querySelectorAll(READY_NOTE_SELECTOR),
+        `${r.state}: one ready note`,
+      ).toHaveLength(1);
+      expect(
+        r.pairs.filter((p) => p.el.matches(READY_NOTE_SELECTOR)),
+        `${r.state}: the ready note must be a walked text element`,
+      ).toHaveLength(1);
+      const gates = r.pairs.filter((p) => p.el.matches(GATE_ROW_SELECTOR));
+      expect(gates, `${r.state}: one met + one unmet gate row`).toHaveLength(2);
+      expect(
+        gates[0]!.fgRaw !== gates[1]!.fgRaw,
+        `${r.state}: met and unmet gate rows must carry DIFFERENT colours, so both gate colours ` +
+          'are evaluated (a single-colour fixture would leave one token unmeasured)',
+      ).toBe(true);
+      break;
+    }
+    case 'S_CHOICES': {
+      expect(
+        r.root.querySelectorAll(CHOICE_SELECTOR),
+        `${r.state}: two Evolve buttons`,
+      ).toHaveLength(2);
+      expect(
+        r.pairs.filter((p) => p.el.matches(CHOICE_SELECTOR)),
+        `${r.state}: both buttons must be walked text elements`,
+      ).toHaveLength(2);
+      expect(
+        r.root.querySelectorAll(PATH_ROW_SELECTOR),
+        `${r.state}: met×2 + unmet×1 rows`,
+      ).toHaveLength(3);
+      const metStatus = r.pairs.filter((p) => p.label.includes('All requirements met.'));
+      const unmetStatus = r.pairs.filter((p) => p.label.includes('requires level 20'));
+      expect(metStatus, `${r.state}: two met statuses`).toHaveLength(2);
+      expect(unmetStatus, `${r.state}: one unmet (warn) status`).toHaveLength(1);
+      expect(
+        metStatus[0]!.fgRaw !== unmetStatus[0]!.fgRaw,
+        `${r.state}: the met (ok) and unmet (warn) statuses must carry DIFFERENT colours`,
+      ).toBe(true);
+      break;
+    }
+  }
+}
+
+interface S9Reading {
+  readonly ratio: number;
+  readonly fg: S9Rgba;
+  readonly bg: S9Rgba;
+}
+
+/** One pair's ratio in `scope` on `page`: bg stack composited innermost-out until opaque. */
+function s9Read(pair: S9Pair, scope: ReadonlyMap<string, string>, page: S9Rgb): S9Reading {
+  const where = `${pair.state}/${pair.label}`;
+  let acc: S9Rgba | null = null;
+  for (const raw of pair.bgRaws) {
+    const layer = s9Rgb(s9Resolve(raw, scope, `${where} background`), `${where} background`);
+    acc = acc === null ? layer : s9Over(acc, layer);
+    if (acc[3] >= 1) break;
+  }
+  const opaquePage: S9Rgba = [page[0], page[1], page[2], 1];
+  const bg = acc === null ? opaquePage : s9Over(acc, opaquePage);
+  const fgRead = s9Rgb(s9Resolve(pair.fgRaw, scope, `${where} color`), `${where} color`);
+  const fg = fgRead[3] >= 1 ? fgRead : s9Over(fgRead, bg);
+  return { ratio: s9Contrast(s9Luminance(fg), s9Luminance(bg)), fg, bg };
+}
+
+function s9Describe(pair: S9Pair, reading: S9Reading, pageName: string): string {
+  return (
+    `${pair.state}/${pair.label}: fg ${pair.fgRaw} → ${s9Hex(reading.fg)} on bg ` +
+    `[${pair.bgRaws.join(' over ')}] → ${s9Hex(reading.bg)} over a ${pageName} page measures ` +
+    `${reading.ratio.toFixed(2)}:1`
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Inline-declaration hygiene helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Every declaration NAME the shipped view may carry inline, as happy-dom SERIALISES it (see the
+ * section header). Absent on purpose — and each is a measured or plan-named cheat: `background`
+ * (shorthand: the var()-blind read AND `background-image`), `opacity`, `filter`,
+ * `mix-blend-mode`, `text-shadow`, `-webkit-text-fill-color`, `font` (shorthand), `zoom`,
+ * `transform`, `visibility`, `clip-path`.
+ */
+const S9_ALLOWED_DECLARATIONS: ReadonlySet<string> = new Set([
+  'position',
+  'inset',
+  'z-index',
+  'background-color',
+  'display',
+  'flex-direction',
+  'align-items',
+  'padding',
+  'overflow-y',
+  'font-family',
+  'color',
+  'margin',
+  'margin-top',
+  'margin-bottom',
+  'font-size',
+  'max-width',
+  'grid-template-columns',
+  'gap',
+  'width',
+  'border-radius',
+  'border',
+  // happy-dom serialises the var() colour part of `border: 1px solid var(--x)` as these three
+  // beside `border: 1px solid` (measured in CSSStyleDeclarationPropertySetParser.getBorder).
+  'border-width',
+  'border-style',
+  'border-color',
+  // `border-left: …` is ALWAYS serialised as its three longhands; `border-left` itself is kept
+  // for the day happy-dom starts reconstructing it.
+  'border-left',
+  'border-left-width',
+  'border-left-style',
+  'border-left-color',
+  'font-weight',
+  'flex-wrap',
+  'cursor',
+]);
+
+/** Declaration names in the element's (happy-dom-serialised) `style` attribute, lowercased. */
+function s9DeclaredNames(el: HTMLElement): string[] {
+  const out: string[] = [];
+  for (const chunk of (el.getAttribute('style') ?? '').split(';')) {
+    const colon = chunk.indexOf(':');
+    if (colon === -1) continue;
+    const name = chunk.slice(0, colon).trim().toLowerCase();
+    if (name !== '') out.push(name);
+  }
+  return out;
+}
+
+/** Every read through which happy-dom can surface the card's `border` colour part. */
+function s9BorderText(el: HTMLElement): string {
+  return [el.style.border, el.style.borderColor, el.style.borderTopColor].join(' ');
+}
+
+/** Every read through which happy-dom can surface a row's `border-left` colour part. */
+function s9BorderLeftText(el: HTMLElement): string {
+  return [el.style.borderLeft, el.style.borderLeftColor].join(' ');
+}
+
+/** Distinct `--mr-evo-*` names referenced as `var(…)` anywhere in `text`. */
+function s9VarNamesIn(text: string): string[] {
+  const out = new Set<string>();
+  let from = 0;
+  for (;;) {
+    const at = text.indexOf(S9_VAR_PREFIX, from);
+    if (at === -1) break;
+    const close = text.indexOf(')', at);
+    if (close === -1) break;
+    out.add(text.slice(at + 'var('.length, close).trim());
+    from = close + 1;
+  }
+  return [...out];
+}
+
+function s9AllElements(root: HTMLElement): HTMLElement[] {
+  return [root, ...root.querySelectorAll('*')] as HTMLElement[];
+}
+
+/** The layout containers that must declare NO font-size (plan: "containers declare no font-size"). */
+function s9Containers(r: S9Render): { readonly label: string; readonly el: HTMLElement }[] {
+  const out: { readonly label: string; readonly el: HTMLElement }[] = [
+    { label: 'root', el: r.root },
+    { label: 'list', el: r.listEl },
+  ];
+  for (const card of r.root.querySelectorAll(CARD_SELECTOR)) {
+    out.push({ label: 'card', el: card as HTMLElement });
+  }
+  for (const row of r.root.querySelectorAll(PATH_ROW_SELECTOR)) {
+    out.push({ label: 'path row', el: row as HTMLElement });
+  }
+  const pickers = new Set<HTMLElement>();
+  for (const choice of r.root.querySelectorAll(CHOICE_SELECTOR)) {
+    const picker = choice.parentElement;
+    if (picker !== null) pickers.add(picker);
+  }
+  for (const picker of pickers) out.push({ label: 'picker', el: picker });
+  return out;
+}
+
+// ===========================================================================
+// The four gates
+// ===========================================================================
+
+describe('EvolutionView — m23-s9 contrast tokens, prefers-contrast: more, em→px', () => {
+  it('m23s9 X1 every text element reaches 4.5:1 in the default token scope, over a white and a black page', () => {
+    // WRONG IMPLEMENTATIONS KILLED: the shipped `#666` empties (2.2:1 on the worst-case `#333`
+    // the translucent root composites to over white, 2.86:1 on the `#1e1e2e` card); `#fff` on
+    // the `#059669` Evolve button (3.77:1); any palette that only clears 4.5:1 over a black page
+    // (the white page is the worst case for a dark translucent root); a walk that skips nested
+    // text; a reader that defaults an unparseable colour.
+
+    // ---- PRECONDITIONS: the oracle's arithmetic is proven before it judges anything ----
+    expect(
+      s9Composite([0, 0, 0, 0.8], S9_WHITE),
+      'PRECONDITION: rgba(0,0,0,0.8) over white composites to #333 (51,51,51) — the worst-case ' +
+        'backdrop every root-level string sits on',
+    ).toEqual([51, 51, 51]);
+    const badPair = s9Contrast(
+      s9Luminance(s9Rgb('#777', 'precondition BAD fg')),
+      s9Luminance(s9Rgb('#0b0d12', 'precondition BAD bg')),
+    );
+    expect(
+      badPair,
+      'PRECONDITION: the spec §5.3 BAD pair #777 on #0b0d12 must measure BELOW 4.5 (hand: 4.34) ' +
+        '— an oracle that passes it passes anything',
+    ).toBeLessThan(S9_AA);
+    expect(badPair, 'PRECONDITION: …and above 4.3 (hand: 4.34)').toBeGreaterThan(4.3);
+    const goodPair = s9Contrast(
+      s9Luminance(s9Rgb('#b5c9b5', 'precondition GOOD fg')),
+      s9Luminance(s9Rgb('#2a3a2a', 'precondition GOOD bg')),
+    );
+    expect(
+      goodPair,
+      'PRECONDITION: a hostile GOOD pair far from black/white (#b5c9b5 on #2a3a2a, hand: 6.90) ' +
+        'must PASS — an oracle that only passes white-on-black is not measuring contrast',
+    ).toBeGreaterThanOrEqual(S9_AA);
+    expect(goodPair, 'PRECONDITION: …at 6.90 ± 0.05').toBeCloseTo(6.9, 1);
+    const hostileInputs: readonly string[] = [
+      '',
+      'var(--mr-evo-fg, #fff)',
+      'white',
+      'hsl(0, 0%, 50%)',
+      'color-mix(in srgb, #000, #fff)',
+      '#ffff',
+      '#ffffff80',
+      'rgba(0, 0, 0, 1.5)',
+      'rgb(50%, 50%, 50%)',
+    ];
+    for (const hostile of hostileInputs) {
+      expect(
+        () => s9Rgb(hostile, 'precondition'),
+        `PRECONDITION: the colour reader must THROW on ${JSON.stringify(hostile)} — never default`,
+      ).toThrow();
+    }
+    expect(
+      s9Rgb('rgba(0, 0, 0, 0.8)', 'precondition re-spaced'),
+      "PRECONDITION: happy-dom's re-spaced rgba(0, 0, 0, 0.8) must read with alpha 0.8",
+    ).toEqual([0, 0, 0, 0.8]);
+
+    // ---- THE WALK: four states × two pages × every text element ----
+    const { base } = s9TokenScopes();
+    for (const state of S9_STATES) {
+      const render = s9Render(state);
+      s9AssertCensus(render);
+      for (const [pageName, page] of S9_PAGES) {
+        for (const pair of render.pairs) {
+          const reading = s9Read(pair, base, page);
+          expect(
+            reading.ratio,
+            `m23s9 X1 CONTRAST ${s9Describe(pair, reading, pageName)}; WCAG 1.4.3 AA needs ` +
+              `≥ ${S9_AA}:1 for the small text every string here is. KILLS: the shipped #666 ` +
+              'empties (2.2:1 on #333) and #fff on the #059669 Evolve button (3.77:1)',
+          ).toBeGreaterThanOrEqual(S9_AA);
+        }
+      }
+    }
+  });
+
+  it('m23s9 X2 under prefers-contrast: more every pair reaches 7:1 on an OPAQUE backdrop, never below its default ratio, and the card border keeps 3:1', () => {
+    // WRONG IMPLEMENTATIONS KILLED: no override block at all (the header comment's prose mention
+    // would satisfy a RAW census — hence the STRIPPED one); an override located by text slicing
+    // that a nested or renamed at-rule fools; a block that re-declares the default values (7:1
+    // fails); a `more` backdrop that stays translucent; an override that LOWERS a pair (the
+    // per-pair more ≥ default assertion); a `more` border that vanishes into the card.
+    const scopes = s9TokenScopes();
+    const stripped = s9StripComments(scopes.css);
+    expect(
+      stripped.split(S9_MORE_PRELUDE).length - 1,
+      `m23s9 X2 CENSUS: client/src/styles.css must carry exactly ONE \`${S9_MORE_PRELUDE}\` on ` +
+        'COMMENT-STRIPPED text. The file header mentions that prelude in prose, so a raw census ' +
+        'reads 1 with no block at all — the stripped count is the only honest one',
+    ).toBe(1);
+    expect(
+      scopes.moreRules,
+      'm23s9 X2 SCOPE: exactly ONE `:root` rule whose sole enclosing at-rule normalises to ' +
+        `\`${S9_MORE_PRELUDE}\` declares --mr-evo-* tokens (located by atStack, never text)`,
+    ).toBe(1);
+    expect(
+      scopes.baseRules,
+      'm23s9 X2 SCOPE: exactly ONE depth-0 `:root` rule declares --mr-evo-* tokens',
+    ).toBe(1);
+    // Cascade semantics: under `more` the override wins where it speaks; X3 separately pins that it
+    // speaks for EVERY name.
+    const moreScope = new Map<string, string>([...scopes.base, ...scopes.more]);
+
+    for (const state of S9_STATES) {
+      const render = s9Render(state);
+      s9AssertCensus(render);
+      const rootBg = s9Rgb(
+        s9Resolve(s9OwnBg(render.root), moreScope, `${state} root backdrop (more)`),
+        `${state} root backdrop (more)`,
+      );
+      expect(
+        rootBg[3],
+        `m23s9 X2 OPAQUE: ${state} root backdrop resolves to ${s9OwnBg(render.root)} → alpha ` +
+          `${rootBg[3]} under more; a high-contrast user must not see the game through the overlay`,
+      ).toBe(1);
+      for (const [pageName, page] of S9_PAGES) {
+        for (const pair of render.pairs) {
+          const more = s9Read(pair, moreScope, page);
+          const base = s9Read(pair, scopes.base, page);
+          expect(
+            more.ratio,
+            `m23s9 X2 AAA ${s9Describe(pair, more, pageName)} under more; needs ≥ ${S9_AAA}:1`,
+          ).toBeGreaterThanOrEqual(S9_AAA);
+          expect(
+            more.ratio,
+            `m23s9 X2 MONOTONE ${pair.state}/${pair.label}: more (${more.ratio.toFixed(2)}) must ` +
+              `not fall below default (${base.ratio.toFixed(2)}) over a ${pageName} page — an ` +
+              'override is not allowed to make anything WORSE for the user who asked for more',
+          ).toBeGreaterThanOrEqual(base.ratio);
+        }
+      }
+      for (const cardNode of render.root.querySelectorAll(CARD_SELECTOR)) {
+        const card = cardNode as HTMLElement;
+        const borderTokens = s9VarNamesIn(s9BorderText(card));
+        expect(
+          borderTokens,
+          `m23s9 X2 BORDER: the card border must reference exactly one --mr-evo-* token; read ` +
+            `${JSON.stringify(s9BorderText(card))}`,
+        ).toHaveLength(1);
+        const ref = `var(${borderTokens[0]!})`;
+        const baseBorder = s9Rgb(
+          s9Resolve(ref, scopes.base, 'card border (default)'),
+          'card border',
+        );
+        expect(
+          baseBorder[3],
+          'm23s9 X2 BORDER: the border token must resolve to a VISIBLE colour in the default scope',
+        ).toBeGreaterThan(0);
+        const moreBorder = s9Rgb(s9Resolve(ref, moreScope, 'card border (more)'), 'card border');
+        const cardOwn = s9Rgb(s9Resolve(s9OwnBg(card), moreScope, 'card bg (more)'), 'card bg');
+        const cardBg = cardOwn[3] >= 1 ? cardOwn : s9Over(cardOwn, rootBg);
+        expect(
+          s9Contrast(s9Luminance(moreBorder), s9Luminance(cardBg)),
+          `m23s9 X2 BORDER: ${ref} → ${s9Hex(moreBorder)} vs the more card ${s9Hex(cardBg)} must ` +
+            `reach ≥ ${S9_NON_TEXT}:1 (WCAG 1.4.11) so a high-contrast user keeps the card boundary`,
+        ).toBeGreaterThanOrEqual(S9_NON_TEXT);
+        expect(
+          s9Contrast(s9Luminance(moreBorder), s9Luminance(rootBg)),
+          `m23s9 X2 BORDER: ${ref} → ${s9Hex(moreBorder)} vs the more backdrop ${s9Hex(rootBg)} ` +
+            `must reach ≥ ${S9_NON_TEXT}:1`,
+        ).toBeGreaterThanOrEqual(S9_NON_TEXT);
+      }
+    }
+  });
+
+  it('m23s9 X3 token hygiene: every inline colour is a var(--mr-evo-*), both scopes declare the same names exactly once, every token is consumed, and only allow-listed declarations ship', () => {
+    // WRONG IMPLEMENTATIONS KILLED: a hex literal left inline (today's tree); a token declared in
+    // the default scope but missing from `more` (the override would be PARTIAL — the browser
+    // falls through to the default value); a token declared twice (the Map dedupes, the count does
+    // not); a decoy token nothing reads; a `--mr-evo-*` smuggled into another rule/at-rule;
+    // `opacity` / `filter` / `mix-blend-mode` / `text-shadow` / `-webkit-text-fill-color` /
+    // `background-image` / bare `background` / `font` / `zoom` / `transform`, which all change
+    // rendered contrast without touching `color` or `background-color`; a `background: var(…)`
+    // SHORTHAND (empty longhand read → the pair silently measures against the wrong surface).
+    const consumed = new Set<string>();
+    const scopes = s9TokenScopes();
+
+    for (const state of S9_STATES) {
+      const render = s9Render(state);
+      s9AssertCensus(render);
+      for (const el of s9AllElements(render.root)) {
+        const label = `${state}/${s9Label(el)}`;
+        const colour = el.style.color;
+        if (colour !== '') {
+          expect(
+            colour.startsWith(S9_VAR_PREFIX),
+            `m23s9 X3 TOKEN ${label}: inline color ${JSON.stringify(colour)} must be a ` +
+              `${S9_VAR_PREFIX}…) reference — a literal is invisible to the prefers-contrast override`,
+          ).toBe(true);
+        }
+        const bg = el.style.backgroundColor;
+        if (bg !== '') {
+          expect(
+            bg.startsWith(S9_VAR_PREFIX),
+            `m23s9 X3 TOKEN ${label}: inline background-color ${JSON.stringify(bg)} must be a ` +
+              `${S9_VAR_PREFIX}…) reference`,
+          ).toBe(true);
+        }
+        const names = s9DeclaredNames(el);
+        for (const name of names) {
+          expect(
+            S9_ALLOWED_DECLARATIONS.has(name),
+            `m23s9 X3 ALLOW-LIST ${label}: inline declaration \`${name}\` is not in the allow-list ` +
+              `(style="${el.getAttribute('style') ?? ''}"). Every name outside it is a way to change ` +
+              'rendered contrast that no colour read can see',
+          ).toBe(true);
+        }
+        expect(
+          names.includes('background-color'),
+          `m23s9 X3 COHERENCE ${label}: the attribute names background-color ⇔ ` +
+            `style.backgroundColor is non-empty (read ${JSON.stringify(bg)}; names: ${names.join(', ')})` +
+            ' — a shorthand `background` fails both halves of this equivalence',
+        ).toBe(bg !== '');
+      }
+      // Consumption: every fg / bg source the walk EVALUATED.
+      for (const pair of render.pairs) {
+        for (const raw of [pair.fgRaw, ...pair.bgRaws]) {
+          const name = s9TokenName(raw);
+          if (name !== null) consumed.add(name);
+        }
+      }
+      // Border references — the two consumers that are not text pairs.
+      for (const cardNode of render.root.querySelectorAll(CARD_SELECTOR)) {
+        const text = s9BorderText(cardNode as HTMLElement);
+        expect(
+          text.includes(S9_VAR_PREFIX) && !text.includes('#') && !text.includes('rgb'),
+          `m23s9 X3 BORDER ${state}/card: the card border colour must be a ${S9_VAR_PREFIX}…) ` +
+            `reference and no literal (read ${JSON.stringify(text)})`,
+        ).toBe(true);
+        for (const name of s9VarNamesIn(text)) consumed.add(name);
+      }
+      for (const rowNode of render.root.querySelectorAll(PATH_ROW_SELECTOR)) {
+        const row = rowNode as HTMLElement;
+        const text = s9BorderLeftText(row);
+        expect(
+          text.includes(S9_VAR_PREFIX) && !text.includes('#') && !text.includes('rgb'),
+          `m23s9 X3 BORDER ${state}/${s9Label(row)}: the row's border-left colour must be a ` +
+            `${S9_VAR_PREFIX}…) reference and no literal (read ${JSON.stringify(text)})`,
+        ).toBe(true);
+        for (const name of s9VarNamesIn(text)) consumed.add(name);
+      }
+    }
+
+    // ---- stylesheet hygiene ----
+    const baseNames = [...scopes.base.keys()].sort();
+    const moreNames = [...scopes.more.keys()].sort();
+    expect(
+      baseNames.length,
+      'm23s9 X3 ANTI-VACUITY: the default `:root` scope must declare at least one --mr-evo-* ' +
+        'token (the plan table has nine)',
+    ).toBeGreaterThanOrEqual(1);
+    expect(
+      moreNames,
+      'm23s9 X3 TOTAL OVERRIDE: the `prefers-contrast: more` scope must declare EXACTLY the same ' +
+        'SET of names as the default scope — a missing name falls through to the default value ' +
+        'and the override is partial',
+    ).toEqual(baseNames);
+    for (const [name, count] of scopes.baseCounts) {
+      expect(count, `m23s9 X3 ONCE: ${name} declared ${count}× in the default scope`).toBe(1);
+    }
+    for (const [name, count] of scopes.moreCounts) {
+      expect(count, `m23s9 X3 ONCE: ${name} declared ${count}× in the more scope`).toBe(1);
+    }
+    expect(
+      scopes.outside,
+      'm23s9 X3 SCOPE: no rule outside the two `:root` scopes may declare a --mr-evo-* token',
+    ).toEqual([]);
+    for (const name of baseNames) {
+      expect(
+        consumed.has(name),
+        `m23s9 X3 CONSUMED: ${name} is declared but no evaluated fg/bg pair or border reference ` +
+          `across the four states reads it — a decoy token. Consumed: ${[...consumed].sort().join(', ')}`,
+      ).toBe(true);
+    }
+  });
+
+  it('m23s9 X4 every inline font-size is 12, 13 or 14 px, no font shorthand, and the layout containers declare none', () => {
+    // WRONG IMPLEMENTATIONS KILLED: today's `0.85em` / `0.8em` / `0.75em` (WCAG 1.4.3's large-text
+    // threshold is stated in px/pt, and an em chain is unauditable without layout); `rem` / `%`;
+    // a `font:` shorthand hiding the size; a container `font-size` that rescales every child at
+    // once (defeats per-element auditing and browser zoom uniformity, WCAG 1.4.4); a size outside
+    // the plan's three values.
+    let declared = 0;
+    for (const state of S9_STATES) {
+      const render = s9Render(state);
+      s9AssertCensus(render);
+      for (const el of s9AllElements(render.root)) {
+        const label = `${state}/${s9Label(el)}`;
+        const names = s9DeclaredNames(el);
+        expect(
+          names.includes('font'),
+          `m23s9 X4 SHORTHAND ${label}: a \`font\` shorthand hides the size from this audit`,
+        ).toBe(false);
+        const size = el.style.fontSize;
+        if (size === '') continue;
+        declared += 1;
+        expect(
+          size.endsWith('px'),
+          `m23s9 X4 UNIT ${label}: font-size ${JSON.stringify(size)} must be in px (plan D2: ` +
+            '0.85em→14px, 0.8em→13px, 0.75em→12px)',
+        ).toBe(true);
+        const px = Number.parseFloat(size.slice(0, -'px'.length));
+        expect(
+          S9_PX_SIZES.includes(px),
+          `m23s9 X4 SIZE ${label}: font-size ${JSON.stringify(size)} must be one of ` +
+            `${S9_PX_SIZES.join(' / ')}px`,
+        ).toBe(true);
+      }
+      for (const { label, el } of s9Containers(render)) {
+        expect(
+          el.style.fontSize,
+          `m23s9 X4 CONTAINER ${state}/${label}: layout containers declare NO font-size, so every ` +
+            'text element carries its own auditable px size and zoom scales them uniformly',
+        ).toBe('');
+      }
+    }
+    expect(
+      declared,
+      'm23s9 X4 ANTI-VACUITY: at least six text elements across the four states must declare an ' +
+        'inline font-size (hint, stats, headings, statuses, gates, ready note, prompt, buttons)',
+    ).toBeGreaterThanOrEqual(6);
+  });
+});
