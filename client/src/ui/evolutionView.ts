@@ -92,7 +92,7 @@ export class EvolutionView {
     // frozen in ui/overlayRegistry.ts and the DOM moves to it, never the reverse.
     title.setAttribute('data-testid', 'evolution-title');
     title.setAttribute('tabindex', '-1');
-    title.style.cssText = 'margin:0 0 8px;color:var(--mr-evo-fg);';
+    title.style.cssText = 'margin:0 0 8px;'; // colour inherits --mr-evo-fg from the root
     this.#root.appendChild(title);
 
     const hint = document.createElement('p');
@@ -194,7 +194,7 @@ export class EvolutionView {
     if (mon.choices.length > 0) {
       const prompt = document.createElement('div');
       prompt.textContent = 'Two or more paths are ready — pick one:';
-      prompt.style.cssText = 'margin-top:6px;font-size:14px;color:var(--mr-evo-fg);';
+      prompt.style.cssText = 'margin-top:6px;font-size:14px;'; // inherits --mr-evo-fg
       card.appendChild(prompt);
 
       const picker = document.createElement('div');
