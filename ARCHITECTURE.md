@@ -1999,7 +1999,7 @@ a durable constraint for every later slice that extends it (S9). It holds **clas
 selectors ONLY, zero `#id` selectors**: `indexShell.test.ts` and `main.wiring.test.ts` pin
 `#help-overlay`/`#help-hint`/`#build-stamp`'s inline positioning BY TEXT, so a rule reaching one of
 those ids could silently satisfy or defeat those assertions without touching the markup they read.
-Today it holds two rules. `.sr-only` hides visually via `clip-path` while STAYING IN THE
+Today it holds two class rules plus the S9 `:root` token block and its `prefers-contrast: more` override (ADR-0253). `.sr-only` hides visually via `clip-path` while STAYING IN THE
 ACCESSIBILITY TREE — `display:none`/`visibility:hidden` would remove the node entirely and make the
 live region decorative. `.hp-fill` (slice rb-10, residual R-m23-s2-X4, ADR-0213) carries the battle
 HP bar's width transition plus a `@media (prefers-reduced-motion: reduce)` guard that sets
@@ -2008,9 +2008,9 @@ assigned in `ui/battleView.ts` `#renderMonsterCard` (which keeps the per-render 
 inline and declares no animation at all). The guard's position **AFTER** the base rule is
 load-bearing — both selectors are specificity (0,1,0) and a media query adds none, so a guard
 written first is completely inert — and that ordering is gated by `[A11Y-RM3/order]` in
-`evals/reduced-motion-hp-bar.eval.mjs`. `:root` tokens and the `prefers-contrast` media query are
-deliberately absent: S9 already owns this file and lands them beside the contrast work that
-consumes them. Gates: 10
+`evals/reduced-motion-hp-bar.eval.mjs`. `:root` tokens (`--mr-evo-*`) and the trailing `prefers-contrast: more`
+override landed with S9 (ADR-0253); every token is consumed by an inline `var()` in `ui/evolutionView.ts` and
+measured from the rendered DOM by `evolutionView.test.ts` (m23s9 X1–X4). Gates: 10
 co-located teeth appended to `indexShell.test.ts` (append-only, proven by a difflib opcode pass — zero
 original lines changed), 13 mutation bite-proofs red and 1 must-stay-green, plus a hostile-CSS fixture
 suite for the two scanners. ADR next-free = 0206 (no new ADR: ADR-0205 already carries this design).
