@@ -509,3 +509,119 @@ now keys on the stamp constant); `m22s4_now_bound_once` is TIGHTENED; the module
 at exactly three because the seam is written as a loop (its first iterator-chain spelling was measured to
 trip that receiver-agnostic census); every other rb48_/rb85_ pin is byte-identical. The native execution proof stays deferred (R-rb-85-X9: the range syscall is undefined in
 the native host and the point delete aborts there).
+
+## Amendment (2026-09-18, rb-87 — residual R-rb-48-OBS closed)
+
+The "R-rb-48-OBS" bullet under Residuals above, and decision **D6** that it records, are discharged by
+rb-87, which was assigned no usable ADR number (the supervisor-reserved 0251 had already been taken by
+rb-81 when the slice ran — the same reservation race ADR-0225 and rb-86 hit — so, per the rb-84/85/86
+precedent, this dated amendment is the decision record).
+
+**The premise of D6 was wrong, and this amendment reverses it.** D6 said privacy.rs's header contract
+"bans logging in this module" and that "there is no other module here to carry" the observation. Neither
+half holds. The contract (`privacy.rs:29-44`) bans bare `log::` tokens, print macros, block comments,
+raw strings and every `"` byte beyond the one `#[path]` attribute — it has never banned the blessed
+wrapper: `crate::observability::mr_log` is a function, not a `log::` token, and `request_data_export` has
+called it from this file since rb-65 (ADR-0243 D9: "the contract keeps the module scanner-inert; it never
+said the module may not observe its own reducer"). And the crate doctrine that "the helper REPORTS, the
+CALLING REDUCER owns the observation line" (rb-40 / ADR-0235, generalised by ADR-0243) needs no other
+module here, because **for a scheduled reducer the calling reducer is the scheduled reducer itself**. So
+the "crate-level decision" the residual asked for is neither of the two options it named: no
+`observability.rs` hook is added (privacy.rs would still have to name it — every census cost identical,
+plus a crate API with one caller), and no ban is lifted (nothing was in the way).
+
+**Decision: `export_bundle_reaper` emits ONE terminal observation line.** What ships in privacy.rs:
+
+- A private `#[derive(Debug, Clone, Copy)] struct ExportReapTick { read: usize, planned: usize, reaped:
+  usize }` — the one-tick record. `read` is how many chunk rows the bounded window decoded (at most
+  `EXPORT_REAP_MAX_DELETE_PER_TICK`, 256); `planned` how many creation stamps the bundle seam selected
+  (at most `EXPORT_REAP_MAX_STAMPS_PER_TICK`, 16); `reaped` the datastore's own count of the rows the
+  tick deleted, tails beyond the window included. Three RAW counts, never a derived verdict.
+- `reap_expired_export_bundles(ctx, now_ms) -> ExportReapTick` (was `-> usize`). Its read, plan and
+  delete text is byte-identical to rb-86's; it binds `planned` from the stamp plan BEFORE the delete loop
+  moves it and returns the record. It still never emits — the rb-40 posture is unchanged — and its named
+  consumer is now the reducer's line, not the deferred native execution test (that sentence of the rb-85
+  amendment above is superseded).
+- A pure private `reap_fields(tick) -> String`, the `export_fields` shape, rendering
+  `"read":N,"planned":K,"reaped":M` through the module's JSON micro-builder (every key a `stringify!`
+  token; bare numbers, the ADR-0226 width rule). NO SUBJECT: a scheduled tick has no caller, and the rows
+  it deletes belong to whoever happened to expire — a per-tick list of who exported would be a disclosure
+  in a 30-day store for a job that is about none of them (PRV1-17/20 by analogy).
+- The reducer shell becomes guard → `let tick = reap_expired_export_bundles(ctx, now_ms(ctx));` →
+  `let fields = reap_fields(tick);` → `crate::observability::mr_log(stringify!(export_bundle_reap),
+  &fields);` → `Ok(())`. The line composes to `{"evt":"export_bundle_reap","read":N,"planned":K,"reaped":M}`.
+  It is UNCONDITIONAL on the success path (a zero-count line is the negative an operator needs and the
+  beat the dead-man reads), placed after the helper — the last WRITE, whose point deletes can still abort
+  the transaction — and before `Ok(())`, the last STATEMENT: ADR-0243 D2's rollback rule, applied to a
+  scheduled reducer. The guard-reject path emits nothing, and ADR-0243 D7's amplification argument is
+  STRONGER here than for the export reducer: `export_bundle_reaper` is a plain `#[spacetimedb::reducer]`
+  any client can invoke — the `ctx.sender() != ctx.database_identity()` guard is what makes it
+  scheduler-only — so its reject path is client-drivable at will, and a line there would be an
+  unauthenticated log-amplification vector into a 30-day store.
+- The evt vocabulary grows by one closed value, `export_bundle_reap`, mirroring the shipped
+  `{reducer="mr_heartbeat", evt="heartbeat"}` pair; Alloy labels `{reducer, evt}` dynamically and no evt
+  roster exists in `ops/` or `evals/`, so no ops-side edit accompanies it.
+
+**What the line means — and what it does not.** *Abort loop → ABSENCE of the hourly line.* Because the
+emission is the LAST statement, a tick that aborts anywhere before it — a point delete past the
+transaction budget (R-rb-86-TICKBOUND), a panic — writes no line, so the hourly `export_bundle_reap` beat
+stops: the `mr_heartbeat` dead-man idiom applied to one scheduled function, at an hourly rather than a
+60 s cadence (so a different alert instrument than `mr:heartbeat:rate5m`, and one that needs a startup
+grace — the singleton is armed by `init`/`sync_content`, so a fresh publish's first beat is up to an hour
+out). That is what makes the abort loop R-rb-48-OBS called invisible observable. *Backlog → a cap at its
+bound, as a HINT that is necessary-not-sufficient and sound only across consecutive ticks.* `planned` at
+16 means the stamp plan MAY have been truncated — or exactly sixteen stamps expired; `read` at 256 means
+the window filled, but whole-stamp deletes take the tails beyond it, so the tick may still have drained
+every expired row (`reaped` can EXCEED `read`); and a saturated stamp cap can show `read` far below 256
+(twenty expired stamps of five chunks). The one unambiguous signal — the window's distinct-stamp count
+BEFORE `truncate(max_stamps)` — is swallowed inside rb-86's frozen `plan_export_reap_stamps` and is
+deliberately not reshaped here (residual R-rb-87-BACKLOGAMBIG). The thresholds are NOT derived in the
+module: a `backlog: bool` was rejected because the caps belong to ops/observability, where they can change
+without a module publish, and a boolean the module computes is a second retention policy nobody reviewed.
+Like the ADR-0243 D5 lines, the beat is written PRE-COMMIT and is AT-LEAST-ONCE: a host crash after the
+reducer returns leaves a line for a reap that did not durably land. Absence of a line means nothing while
+the log pipeline is down — the pipeline's own liveness is `mr:heartbeat:rate5m`, not this beat. And a line is an OBSERVATION, not an alarm: nothing consumes `evt="export_bundle_reap"` yet. The
+alarm half — the missing-beat rule, the consecutive-cap rule, and R-rb-85-X10's row/byte growth threshold
+— is a distinct file family (`ops/observability/rules`, Grafana alerting provisioning, their
+stack-config-checks and the G13a eval pin) outside this slice's inherited touches, and it cannot precede
+the line it consumes; it is deferred through the rb-87 acceptance ledger's X10 `DEFER: -> backlog` line,
+from which the supervisor mints the residual. R-rb-86-SAMEMS and R-rb-86-TICKBOUND stay open as bounds;
+what changes is that both are now VISIBLE — `planned` counts same-millisecond bundles as one stamp and a
+wedged tick shows as a missing beat.
+
+**Rejected.** (a) An `observability.rs` hook: above. (b) Lifting the privacy.rs ban for scheduled reducers:
+above — it would delete measured protections (`rb22p_no_bare_quote_in_privacy`) to solve a problem that
+does not exist. (c) An enter/exit breadcrumb pair to make the abort itself positive: `mr_log_breadcrumb(`
+is pinned at zero in this file (`rb65p [emit/no-breadcrumb]`), privacy.rs cannot spell the `"enter"` /
+`"exit"` literals m20e's G9 scanner requires at the call site, and a causeless INFO line does not belong
+on the trace-pair surface. (d) A pre-delete "planned" line: the host writes a line as the reducer runs and
+it survives a later rollback, so a line above the deletes records ticks that aborted, and two lines double
+every operator count of one event. (e) Emitting on the guard reject: ADR-0243 D7, and the reject is client-drivable (above). (f) A derived `backlog`
+flag: above. (g) A counter instead of a line: Alloy derives `mr_log_events_total{reducer,evt}` from the
+line — the line IS the metric.
+
+**ADR-0243 D10 is superseded on one sentence.** "The same identifier census holds privacy.rs at one" was
+true of rb-65's tree; since rb-87 the module makes exactly TWO emissions, attributed per body (one
+`data_export` in `request_data_export`, one `export_bundle_reap` in `export_bundle_reaper`), with the D10
+repayment re-applied in privacy_tests.rs: per-body counts, the file total, `total − scoped == 0` as
+arithmetic, the bare-call and bare-identifier equalities and the alias ban all at two. ADR-0243 itself is
+outside this slice's touches and is not edited; the supervisor may widen touches for a one-paragraph
+dated amendment there.
+
+**Proof of teeth (ADR-0224: ordinary Rust tests, no eval).** Recorded at slice close in the rb-87 paragraph
+of ARCHITECTURE.md and the harness ledger (`memory/projects/gates/rb-87.gates.md`, RED record
+`rb-87.red-before.md`, register `rb-87.mutants.py` / `rb-87.x7-register.md`): a `rb87_` block in
+privacy_tests.rs — the fields fragment BY VALUE (a value table with pairwise-distinct counts, including the
+cap row) and the exact composed envelope through the shipped `build_log_line` (the first executable oracle
+this reaper has had — the native host still cannot run the reducer, R-rb-85-X9); the tick record and the
+fields builder each declared once, private, with frozen shape/signature/body; the helper's signature
+re-frozen to return the record with `planned` bound before the loop and no constant counts; the reducer's
+ONE emission terminal at depth zero, after the guard, with the fields binding and no breadcrumb; the
+module's two emissions attributed with the alias / fn-pointer equalities and a two-evt partition over the
+whitespace-preserving view (the interior-space evt spelling is byte-identical in every squashed view); and
+a closed roster. The rb-48 reducer-shell and rb-85 helper-body equality pins are re-frozen in place over
+MORE text; `rb65p [emit/count-in-file]` is widened 1 → 2 and repaid as above; the privacy.rs header
+contract's calling-reducer sentence gains the reaper as a LINE-COUNT-NEUTRAL reflow, because sixteen
+inbound `privacy.rs:<line>` citations (ADR-0231, ADR-0252, the client export-assembly tests) point below
+it and thirteen of them live outside this slice's touches. The final test names, counts
+and the register's row verdicts are appended here at slice close.
