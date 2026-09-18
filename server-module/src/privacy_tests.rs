@@ -11401,8 +11401,12 @@ fn rb67p_adr0220_citation_oracle_control() {
 //   once with frozen signatures; helper body equality with its rustfmt twin;
 //   zero full-table sweeps file-wide with the one range chain attributed to the
 //   helper at the inclusive cutoff; bundle-accessor arithmetic and scope; the
-//   crate-wide accessor ownership ratchet, counting CALLS and PATH segments
-//   alike; the helper never named outside privacy.rs; a closed roster of ten.
+//   crate-wide accessor ownership ratchet, counting CALLS, PATH segments and
+//   brace-list IMPORTS alike, beside the three bans that close the spellings
+//   which name the accessor nowhere at all — no macro metavariable in a method
+//   or path position, no glob of the schema module in production code, and no
+//   macro or re-export in the exempt owning module; the helper never named
+//   outside privacy.rs; a closed roster of ten tests and forty-eight helpers.
 //
 // THE SPLIT, restated. The ONLY new LOGIC this slice ships is the cutoff
 // arithmetic, and it is a PURE fn — so T1 and T2 EXECUTE it (T2 against the
@@ -11427,11 +11431,18 @@ fn rb67p_adr0220_citation_oracle_control() {
 // second) and for `marshal::now_ms` (closed by T10's). A band branch is invisible
 // to a value table, to a property over a huge domain and to every containment
 // clause in the file; BODY EQUALITY is the one instrument that sees it, which is
-// why all three now have one. The two further measured shapes were ACCESSOR
-// REACHES no adjacent-paren needle can count: a call with a comment between the
-// name and its parentheses, and the method taken as a fn ITEM through a path,
-// which has no parenthesis after the name at all — hence the call-or-path counter
-// behind the crate-wide ratchet, and its fourteen-shape control.
+// why all three now have one. The further measured shapes were ACCESSOR REACHES
+// no adjacent-paren needle can count: a call with a comment between the name and
+// its parentheses; the method taken as a fn ITEM through a path, which has no
+// parenthesis after the name at all; and a brace-list IMPORT reached through a
+// declarative-macro splice, where the name is bounded by a brace and a comma and
+// the receiver chain is assembled from metavariables. Hence the call-or-path-or-import
+// counter behind the crate-wide ratchet, its twenty-one-shape control, and the
+// splice, glob and owning-module bans that stand beside it. And the last measured
+// shape was a ROSTER escape: a legal multi-line attribute whose continuation lines
+// stopped the attribute-block walker, so an eleventh test ran while every census
+// reported ten — closed by an attribute-aware walker with its own control and by
+// an exact declaration total over two closed rosters.
 //
 // SCAN HYGIENE (rb22p_scan_hygiene scans THIS FILE): line comments only, never
 // a block-comment delimiter; no raw-string prefix; no output or debug macro
@@ -11963,10 +11974,165 @@ const RB85_EXTREMES: [(i64, i64, i64, bool); 7] = [
     (i64::MIN, 0, i64::MAX, false),
 ];
 
-// --- the CALL-AWARE accessor counter (round 3, RT-A3) ------------------------
+// --- the CALL-AWARE accessor counter (round 3 RT-A3/RT-A4, round 4 RT-A5) ----
 
-/// How many times `ident` is REACHED — called OR taken as a path segment — in
-/// RAW, unstripped source.
+/// The index a FORWARD scan from `from` reaches after skipping whitespace, line
+/// comments and (nesting) block comments.
+///
+/// Byte comparisons rather than string needles, so this file never carries a
+/// contiguous comment delimiter (the module's hygiene contract) and so a
+/// multi-byte scalar can never be sliced through the middle.
+fn rb85_skip_fwd(bytes: &[u8], from: usize) -> usize {
+    let mut k = from;
+    loop {
+        while k < bytes.len() && bytes[k].is_ascii_whitespace() {
+            k += 1;
+        }
+        if k + 1 < bytes.len() && bytes[k] == b'/' && bytes[k + 1] == b'/' {
+            k += 2;
+            while k < bytes.len() && bytes[k] != b'\n' {
+                k += 1;
+            }
+        } else if k + 1 < bytes.len() && bytes[k] == b'/' && bytes[k + 1] == b'*' {
+            let mut depth = 1usize;
+            k += 2;
+            while depth > 0 && k + 1 < bytes.len() {
+                if bytes[k] == b'/' && bytes[k + 1] == b'*' {
+                    depth += 1;
+                    k += 2;
+                } else if bytes[k] == b'*' && bytes[k + 1] == b'/' {
+                    depth -= 1;
+                    k += 2;
+                } else {
+                    k += 1;
+                }
+            }
+            if depth > 0 {
+                k = bytes.len();
+            }
+        } else {
+            return k;
+        }
+    }
+}
+
+/// The index a BACKWARD scan from `from` reaches after skipping the same three.
+///
+/// Each iteration either returns or strictly decreases the cursor, so the walk
+/// terminates on any input. A line comment is recognised by finding the first `//`
+/// on the line the cursor sits in, which is why the cursor lands OUTSIDE a comment
+/// it started inside — deliberate: what the callers ask is what token precedes a
+/// position, and a comment is not a token.
+fn rb85_skip_back(bytes: &[u8], from: usize) -> usize {
+    let mut b = from;
+    loop {
+        while b > 0 && bytes[b - 1].is_ascii_whitespace() {
+            b -= 1;
+        }
+        if b >= 2 && bytes[b - 1] == b'/' && bytes[b - 2] == b'*' {
+            let mut depth = 1usize;
+            b -= 2;
+            while depth > 0 && b >= 2 {
+                if bytes[b - 1] == b'/' && bytes[b - 2] == b'*' {
+                    depth += 1;
+                    b -= 2;
+                } else if bytes[b - 1] == b'*' && bytes[b - 2] == b'/' {
+                    depth -= 1;
+                    b -= 2;
+                } else {
+                    b -= 1;
+                }
+            }
+            if depth > 0 {
+                b = 0;
+            }
+            continue;
+        }
+        let mut line_start = b;
+        while line_start > 0 && bytes[line_start - 1] != b'\n' {
+            line_start -= 1;
+        }
+        let mut opener: Option<usize> = None;
+        let mut i = line_start;
+        while i + 1 < b {
+            if bytes[i] == b'/' && bytes[i + 1] == b'/' {
+                opener = Some(i);
+                break;
+            }
+            i += 1;
+        }
+        match opener {
+            Some(i) => b = i,
+            None => return b,
+        }
+    }
+}
+
+/// How many `$` sigils sit in a METHOD or PATH position — the shape a DECLARATIVE
+/// MACRO body uses to splice a metavariable into a receiver chain.
+///
+/// MEASURED (round-4 RT-A5). A macro whose body expands to `$ctx.db.$name()`, plus
+/// a call site spelling `reach!(ctx, export_bundle).iter().count()`, reaches the
+/// export chunk table from any module in the crate while the accessor name at the
+/// call site is bounded by a comma and a close paren — no parenthesis after it, no
+/// `::` before it, no brace list around it — so the call-or-path counter reads
+/// ZERO. The splice site is the part that cannot be spelled any other way: to
+/// reach a table the metavariable must land after a `.` or after a `::`, which is
+/// exactly what this counts. MEASURED at the same time: zero such sigils in every
+/// file under `server-module/src` except this one, whose pre-rb-85 fixture string
+/// in the rb64p attribution controls spells `$r.$m($a)` — which is why this file
+/// is the one exemption, and why that exemption is stated rather than assumed.
+///
+/// (The macro-definition keyword itself is never spelled contiguously anywhere in
+/// this module, here or in the clause that bans it from privacy.rs; the rb64p
+/// controls above established that convention and the needle is assembled from
+/// fragments for the same reason every other dangerous token here is.)
+fn rb85_splice_count(raw: &str) -> usize {
+    let bytes = raw.as_bytes();
+    let mut n = 0usize;
+    for (i, byte) in bytes.iter().enumerate() {
+        if *byte != b'$' {
+            continue;
+        }
+        let p = rb85_skip_back(bytes, i);
+        let after_dot = p > 0 && bytes[p - 1] == b'.';
+        let after_path = p >= 2 && bytes[p - 1] == b':' && bytes[p - 2] == b':';
+        if after_dot || after_path {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// How many GLOB imports of the schema module `raw` carries: `schema`, then (past
+/// whitespace and comments) `::`, then (past the same) `*`.
+///
+/// A glob is the other way a module acquires the accessor trait without ever
+/// spelling a `::` before its name or a brace list around it, which is what makes
+/// it worth its own clause rather than a note under the counter above.
+fn rb85_glob_count(raw: &str) -> usize {
+    let bytes = raw.as_bytes();
+    let needle = "schema";
+    let mut n = 0usize;
+    let mut start = 0usize;
+    while let Some(rel) = raw[start..].find(needle) {
+        let at = start + rel;
+        let end = at + needle.len();
+        start = end;
+        let k = rb85_skip_fwd(bytes, end);
+        if !(k + 1 < bytes.len() && bytes[k] == b':' && bytes[k + 1] == b':') {
+            continue;
+        }
+        let m = rb85_skip_fwd(bytes, k + 2);
+        if bytes.get(m) == Some(&b'*') {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// How many times `ident` is REACHED — called, taken as a path segment, or
+/// imported in a use-tree brace list — in RAW, unstripped source.
 ///
 /// One occurrence counts AT MOST ONCE, and it counts when the identifier is
 /// bounded by a non-identifier byte on BOTH sides and EITHER
@@ -11992,31 +12158,50 @@ const RB85_EXTREMES: [(i64, i64, i64, bool); 7] = [
 /// that way ALWAYS costs a `::` immediately before the name, in one of the two
 /// path spellings, which is what makes the backward rule complete for the family.
 /// MEASURED at the same time: `::` + this accessor occurs ZERO times anywhere
-/// under `server-module/src` today, privacy.rs included — its own import spells
-/// the trait inside a brace list, after a comma — so the rule costs no false red
-/// on the tree as it stands.
+/// under `server-module/src` today.
+///
+/// WHY THE BRACE-LIST FORM TOO, MEASURED (round-4 RT-A5). A module can also
+/// acquire the accessor with the name bounded by nothing interesting at all —
+/// `use crate::schema::{export_bundle};` puts a `{` before it and a `;` after it —
+/// and then reach the table through a `macro_rules!` splice whose call site spells
+/// `reach!(ctx, export_bundle)`, where the name sits between a comma and a close
+/// paren. Neither occurrence is a call or a path segment. So the backward walk
+/// gets a THIRD arm: over whitespace, comments, identifier bytes and commas (which
+/// is the whole alphabet of a use-tree group, `as` alias text included) to a `{`
+/// that a `::` opens. The splice half of that attack is closed separately and
+/// file-wide by `[rb85/splice-ban]`, because an import alone reaches nothing.
 ///
 /// BOTH word boundaries are load-bearing, and each kills a different neighbour:
 /// the LEFT one rejects `my_export_bundle(` and `purge_export_bundles(`, the RIGHT
-/// one rejects `export_bundle_reaper_schedule(`, `export_bundles(` and the
-/// generated `export_bundle__TableHandle`. `rb85_ratchet_control_cases` asserts
-/// fourteen shapes, so no rule here can be dropped without a red.
+/// one rejects `export_bundle_reaper_schedule(`, `export_bundles(`, the generated
+/// `export_bundle__TableHandle` and the `export_bundle__view` sitting beside the
+/// accessor in privacy.rs's own import list. `rb85_ratchet_control_cases` asserts
+/// twenty-one shapes, so no rule here can be dropped without a red.
 ///
 /// RAW input by design (see T6's honest-limits note): the strip pipeline is blind
 /// in ways a ratchet must never be, so a prose mention that happens to sit before
-/// a parenthesis, or after a `::`, is a FALSE POSITIVE this counter accepts
-/// deliberately — naming this accessor in another module is a reviewed event
-/// either way, and the fix is to name it in prose without either neighbour. A
-/// BACKTICKED prose mention is already safe on both sides, and a fixture pins
-/// that, because it is how this repo actually writes such a mention.
+/// a parenthesis, after a `::`, or inside a schema use-list, is a FALSE POSITIVE
+/// this counter accepts deliberately — naming this accessor in another module is a
+/// reviewed event either way, and the fix is to name it in prose without any of
+/// the three neighbours. A BACKTICKED prose mention is already safe on all sides,
+/// and a fixture pins that, because it is how this repo actually writes one.
 ///
-/// HONEST LIMITS: whitespace is skipped by the ASCII rule only, so a non-ASCII
+/// HONEST LIMITS. Whitespace is skipped by the ASCII rule only, so a non-ASCII
 /// space between the accessor and its paren would not be skipped — not a hole,
-/// because rustc rejects such a token sequence outright. And the BACKWARD walk
-/// treats the first `//` on a line as a comment opener without knowing whether it
-/// sits inside a string literal; the only way that could mislead is a line whose
-/// code ends in `::` immediately before a string containing a double slash, which
-/// does not parse as Rust.
+/// because rustc rejects such a token sequence outright. The BACKWARD walk treats
+/// the first `//` on a line as a comment opener without knowing whether it sits
+/// inside a string literal; the only way that could mislead is a line whose code
+/// ends in `::` immediately before a string containing a double slash, which does
+/// not parse as Rust. The DECLARATIVE-MACRO splice class is NOT a limit of this
+/// counter and is not left open: it is CLOSED crate-wide by `[rb85/splice-ban]`
+/// (no metavariable in a method or path position, in any file but this one),
+/// `[rb85/glob-ban]` (no glob import of the schema module), and the two privacy.rs
+/// clauses that keep the owning module from becoming the laundering point. What
+/// REMAINS disclosed is a PROC-MACRO splice: a derive or attribute macro that
+/// generates the receiver chain from tokens no text scan in this crate can see.
+/// That is not a paren-adjacency question at all — it needs a new dependency in
+/// `server-module/Cargo.toml` and therefore an ADR, which is a reviewed event by
+/// construction, and it is recorded here rather than gated.
 fn rb85_call_count(raw: &str, ident: &str) -> usize {
     if ident.is_empty() {
         return 0;
@@ -12035,112 +12220,59 @@ fn rb85_call_count(raw: &str, ident: &str) -> usize {
             continue;
         }
 
-        // FORWARD to an open parenthesis. Byte comparisons rather than string
-        // needles, so this file never carries a contiguous comment delimiter (the
-        // module's hygiene contract) and so a multi-byte scalar can never be
-        // sliced through the middle.
-        let mut k = end;
+        // (1) FORWARD to an open parenthesis — the CALL form.
+        let k = rb85_skip_fwd(bytes, end);
+        let called = bytes.get(k) == Some(&b'(');
+
+        // (2) BACKWARD to a path separator — the fn-ITEM / qualified-path form.
+        let b = rb85_skip_back(bytes, at);
+        let path_qualified = b >= 2 && bytes[b - 1] == b':' && bytes[b - 2] == b':';
+
+        // (3) BACKWARD over the alphabet of a use-tree group — identifier bytes,
+        // commas, whitespace and comments, which covers every `as` alias and every
+        // sibling name — to a `{` that a `::` opens. The IMPORT form.
+        let mut c = at;
         loop {
-            while k < bytes.len() && bytes[k].is_ascii_whitespace() {
-                k += 1;
-            }
-            if k + 1 < bytes.len() && bytes[k] == b'/' && bytes[k + 1] == b'/' {
-                k += 2;
-                while k < bytes.len() && bytes[k] != b'\n' {
-                    k += 1;
-                }
-            } else if k + 1 < bytes.len() && bytes[k] == b'/' && bytes[k + 1] == b'*' {
-                let mut depth = 1usize;
-                k += 2;
-                while depth > 0 && k + 1 < bytes.len() {
-                    if bytes[k] == b'/' && bytes[k + 1] == b'*' {
-                        depth += 1;
-                        k += 2;
-                    } else if bytes[k] == b'*' && bytes[k + 1] == b'/' {
-                        depth -= 1;
-                        k += 2;
-                    } else {
-                        k += 1;
-                    }
-                }
-                if depth > 0 {
-                    k = bytes.len();
-                }
+            c = rb85_skip_back(bytes, c);
+            if c > 0 && (is_word_byte(bytes[c - 1]) || bytes[c - 1] == b',') {
+                c -= 1;
             } else {
                 break;
             }
         }
-        let called = bytes.get(k) == Some(&b'(');
-
-        // BACKWARD to a path separator. Each iteration either breaks or strictly
-        // decreases the cursor, so the walk terminates on any input.
-        let mut b = at;
-        loop {
-            while b > 0 && bytes[b - 1].is_ascii_whitespace() {
-                b -= 1;
-            }
-            if b >= 2 && bytes[b - 1] == b'/' && bytes[b - 2] == b'*' {
-                let mut depth = 1usize;
-                b -= 2;
-                while depth > 0 && b >= 2 {
-                    if bytes[b - 1] == b'/' && bytes[b - 2] == b'*' {
-                        depth += 1;
-                        b -= 2;
-                    } else if bytes[b - 1] == b'*' && bytes[b - 2] == b'/' {
-                        depth -= 1;
-                        b -= 2;
-                    } else {
-                        b -= 1;
-                    }
-                }
-                if depth > 0 {
-                    b = 0;
-                }
-                continue;
-            }
-            let mut line_start = b;
-            while line_start > 0 && bytes[line_start - 1] != b'\n' {
-                line_start -= 1;
-            }
-            let mut opener: Option<usize> = None;
-            let mut i = line_start;
-            while i + 1 < b {
-                if bytes[i] == b'/' && bytes[i + 1] == b'/' {
-                    opener = Some(i);
-                    break;
-                }
-                i += 1;
-            }
-            match opener {
-                Some(i) => b = i,
-                None => break,
-            }
+        let mut list_qualified = false;
+        if c > 0 && bytes[c - 1] == b'{' {
+            let d = rb85_skip_back(bytes, c - 1);
+            list_qualified = d >= 2 && bytes[d - 1] == b':' && bytes[d - 2] == b':';
         }
-        let path_qualified = b >= 2 && bytes[b - 1] == b':' && bytes[b - 2] == b':';
 
-        if called || path_qualified {
+        if called || path_qualified || list_qualified {
             n += 1;
         }
     }
     n
 }
 
-/// The `[rb85/ratchet-control]` corpus: fourteen spellings with a KNOWN
-/// call-or-path count, NINE reaches in all, as `(what, source text, expected)`.
+/// The `[rb85/ratchet-control]` corpus: twenty-one spellings with a KNOWN
+/// call-or-path count, FOURTEEN reaches in all, as `(what, source text, expected)`.
 ///
 /// Four fixtures are the accessor CALLED — the ordinary chain, the measured
-/// comment-split shape, a block-comment split and a bare line break. Four more
-/// take it as a PATH SEGMENT, which is how a fn-ITEM binding reaches the table
-/// with no parenthesis after the name anywhere (RT-A4), including the qualified
+/// comment-split shape, a block-comment split and a bare line break. Four take it
+/// as a PATH SEGMENT, which is how a fn-ITEM binding reaches the table with no
+/// parenthesis after the name anywhere (RT-A4), including the qualified
 /// `<T as Trait>::` spelling and one with a line comment between the separator and
-/// the name. Six are neighbours and prose that must never be counted. Without this
-/// corpus a counter that returned zero for everything would make the crate-wide
-/// ratchet below pass over every file in the tree while proving nothing at all.
-fn rb85_ratchet_control_cases() -> [(&'static str, String, usize); 14] {
+/// the name. Five IMPORT it in a use-tree brace list, which is how the RT-A5
+/// macro-splice attack acquired the trait with the name bounded by a brace and a
+/// semicolon. Eight are neighbours, look-alike braces and prose that must never be
+/// counted. Without this corpus a counter that returned zero for everything would
+/// make the crate-wide ratchet below pass over every file in the tree while
+/// proving nothing at all.
+fn rb85_ratchet_control_cases() -> [(&'static str, String, usize); 21] {
     let ident = rb85_nd_bundle_ident();
     let receiver = concat!("ctx", ".db.");
     let open = concat!("/", "*");
     let close = concat!("*", "/");
+    let dq = rb22p_dq();
     [
         (
             "the ordinary receiver chain",
@@ -12214,6 +12346,47 @@ fn rb85_ratchet_control_cases() -> [(&'static str, String, usize); 14] {
              shipped schema.rs deletion-policy shape, and the reason prose in this \
              repo does not red the ratchet",
             format!("`{ident}` (ERASE)"),
+            0,
+        ),
+        (
+            "the RT-A5 import: a use-tree brace list holding nothing else",
+            format!("use crate::schema::{{{ident}}};"),
+            1,
+        ),
+        (
+            "the same with SIBLING names around it, so the walk has to cross \
+             identifier bytes and commas to reach the brace",
+            format!("use crate::schema::{{account, {ident}, player}};"),
+            1,
+        ),
+        (
+            "the same spread over LINES, which is how rustfmt writes a list this \
+             long and how the owning module actually spells it",
+            format!("use crate::schema::{{\n    account,\n    {ident},\n    player,\n}};"),
+            1,
+        ),
+        (
+            "the same under an ALIAS, where the accessor arrives in this module \
+             under a name no census in this file knows",
+            format!("use crate::schema::{{{ident} as eb}};"),
+            1,
+        ),
+        (
+            "the same NESTED inside an outer group, where the opening brace is \
+             preceded by the inner path rather than by the module name",
+            format!("use crate::{{schema::{{{ident}}}}};"),
+            1,
+        ),
+        (
+            "a MATCH arm whose brace is preceded by a scrutinee and not by a path \
+             separator — the look-alike the brace rule must refuse",
+            format!("match x {{ {ident} => 0 }}"),
+            0,
+        ),
+        (
+            "a STRING item inside a brace, where the byte before the name is a \
+             quote and the walk stops there rather than reaching the brace",
+            format!("{{ {dq}{ident}{dq} }}"),
             0,
         ),
     ]
@@ -13068,8 +13241,10 @@ fn rb85_helper_body_exact() {
 /// through the new accessor, by the census plus the inclusive-terminator clause
 /// (the measured shape: no `.iter()`, no `..=`, and `RangeFull` does not
 /// compile); and a NEW module reaching the export chunk accessor at all —
-/// aliased, UFCS-spelled, comment-split, taken as a fn item through a path, or
-/// through the handle type — by the crate-wide ratchet.
+/// aliased, UFCS-spelled, comment-split, taken as a fn item through a path,
+/// imported in a brace list and reached through a macro splice, glob-imported,
+/// re-exported from the owning module, or through the handle type — by the
+/// crate-wide ratchet and the three bans that stand with it.
 ///
 /// A literal or re-derived cutoff, and the seam's argument order, are killed by
 /// `rb85_helper_body_exact` instead: the frozen body carries the cutoff call with
@@ -13114,6 +13289,19 @@ fn rb85_helper_body_exact() {
 /// counting costs a false positive on a prose mention in another module, and
 /// that is the trade taken deliberately: a new module that so much as names this
 /// accessor is a reviewed event.
+///
+/// SINCE ROUND 4 the ratchet is FOUR clauses rather than one, because RT-A5
+/// measured a sweep that no single counter could see: a brace-list import of the
+/// accessor trait (`use crate::schema::{export_bundle};` — the name bounded by a
+/// brace and a semicolon), a declarative-macro body splicing a metavariable into a
+/// receiver chain, and a call site spelling `reach!(ctx, export_bundle)`, where the
+/// name sits between a comma and a close paren. `[rb85/accessor-ratchet]` now
+/// counts the IMPORT; `[rb85/splice-ban]` bans the metavariable position in every
+/// file including the owning one, since an exempt file is exactly where such a
+/// macro would be planted; `[rb85/glob-ban]` closes the import spelling that names
+/// nothing at all; and `[rb85/privacy-no-macro]` plus `[rb85/privacy-no-reexport]`
+/// keep the exempt module from becoming the laundering point for either. Each of
+/// the three counters carries its own control clause.
 ///
 /// SINCE ROUND 3 the ratchet counts REACHES — calls OR path segments — rather
 /// than the accessor-plus-paren needle, because that needle was MEASURED blind
@@ -13392,10 +13580,10 @@ fn rb85_reaper_reads_a_bounded_range_and_never_sweeps() {
     let ident = rb85_nd_bundle_ident();
 
     // (10a) the COUNTER's own control, over fixtures rather than over the tree:
-    // eight reach spellings that must count — four CALLS and four PATHS — and six
-    // neighbours and prose shapes that must not. A counter returning zero for
-    // everything would make the per-file clause below pass over all forty-six
-    // files while proving nothing at all.
+    // thirteen reach spellings that must count — four CALLS, four PATHS and five
+    // IMPORTS — and eight neighbours, look-alike braces and prose shapes that must
+    // not. A counter returning zero for everything would make the per-file clause
+    // below pass over all forty-six files while proving nothing at all.
     let control_cases = rb85_ratchet_control_cases();
     for (what, text, want) in &control_cases {
         let got = rb85_call_count(text, &ident);
@@ -13403,12 +13591,13 @@ fn rb85_reaper_reads_a_bounded_range_and_never_sweeps() {
             got, *want,
             "[rb85/ratchet-control]: over {what} the call-or-path counter reads {got} reach(es); \
              it must read {want}. Each fixture here is a shape the ratchet lives or dies on. The \
-             eight that must COUNT carry the two MEASURED families: the comment-split CALL \
+             thirteen that must COUNT carry the three MEASURED families: the comment-split CALL \
              (`.export_bundle`, a line comment, a newline, then the parentheses — rustfmt-stable, \
-             and invisible to any needle carrying the paren) and the fn-ITEM PATH, which reaches \
-             the table with no parenthesis after the name anywhere and is therefore invisible to \
-             a call-only counter. The six that must NOT are the neighbours whose names extend or \
-             contain this one, and prose. Fixture: {text:?}"
+             and invisible to any needle carrying the paren); the fn-ITEM PATH, which reaches the \
+             table with no parenthesis after the name anywhere; and the use-tree IMPORT, where the \
+             name is bounded by a brace and a comma and the reach happens later, through a macro \
+             splice. The eight that must NOT are the neighbours whose names extend or contain this \
+             one, a match arm whose brace no path opens, and prose. Fixture: {text:?}"
         );
     }
     let joined = control_cases
@@ -13418,15 +13607,93 @@ fn rb85_reaper_reads_a_bounded_range_and_never_sweeps() {
         .join("\n");
     assert_eq!(
         rb85_call_count(&joined, &ident),
-        9,
-        "[rb85/ratchet-control]: over the fourteen fixtures CONCATENATED the counter must read \
-         exactly NINE reaches — the same nine the per-fixture clauses above account for one at a \
-         time. This is the clause that proves the scan CONTINUES past a rejected match and resumes \
-         in the right place after a counted one: a counter that stopped, or that double-counted an \
-         occurrence matched by both the forward and the backward rule, satisfies most \
+        14,
+        "[rb85/ratchet-control]: over the twenty-one fixtures CONCATENATED the counter must read \
+         exactly FOURTEEN reaches — the same fourteen the per-fixture clauses above account for \
+         one at a time. This is the clause that proves the scan CONTINUES past a rejected match \
+         and resumes in the right place after a counted one: a counter that stopped, or that \
+         double-counted an occurrence matched by more than one of the three rules, satisfies most \
          single-fixture clauses above and then misreads every real file, which is the only way \
          this counter is ever actually used."
     );
+
+    // (10a-ii) the SPLICE counter's own control. Three metavariable positions that
+    // reach a table and three that cannot, so neither half of the rule can be
+    // dropped or widened without a red.
+    let splice_cases: [(&str, &str, usize); 6] = [
+        (
+            "a metavariable spliced as a METHOD on a receiver chain",
+            "$ctx.db.$name()",
+            1,
+        ),
+        (
+            "the same with whitespace around the dot, which rustfmt inside a macro \
+             body does not normalise",
+            "$db . $name()",
+            1,
+        ),
+        (
+            "two metavariables spliced as PATH segments in a qualified path",
+            "<L as crate::schema::$t>::$t",
+            2,
+        ),
+        ("a shell variable inside a string literal", "$HOME/x", 0),
+        (
+            "a metavariable in an ordinary expression position",
+            "$x + 1",
+            0,
+        ),
+        (
+            "a metavariable whose dot FOLLOWS it — the receiver, not the method",
+            "$a.len()",
+            0,
+        ),
+    ];
+    for (what, text, want) in splice_cases {
+        let got = rb85_splice_count(text);
+        assert_eq!(
+            got, want,
+            "[rb85/splice-control]: over {what} the splice counter reads {got}; it must read \
+             {want}. The rule is POSITIONAL on purpose — a sigil is only interesting where a \
+             method name or a path segment belongs — because that is the only place a \
+             metavariable can stand and still reach a table, and because a counter that flagged \
+             every sigil would be unsatisfiable in any file that quotes a shell variable. \
+             Fixture: {text:?}"
+        );
+    }
+
+    // (10a-iii) the GLOB counter's own control.
+    let glob_open = concat!("/", "*");
+    let glob_close = concat!("*", "/");
+    let glob_spaced = format!("use crate::schema :: {glob_open} c {glob_close} *;");
+    let glob_cases: [(&str, &str, usize); 4] = [
+        ("the ordinary glob import", "use crate::schema::*;", 1),
+        (
+            "a glob with whitespace and a block comment inside the path",
+            glob_spaced.as_str(),
+            1,
+        ),
+        (
+            "a NAMED import of one item from the same module",
+            "use crate::schema::config;",
+            0,
+        ),
+        (
+            "a multiplication that has nothing to do with imports",
+            "a * b",
+            0,
+        ),
+    ];
+    for (what, text, want) in glob_cases {
+        let got = rb85_glob_count(text);
+        assert_eq!(
+            got, want,
+            "[rb85/glob-control]: over {what} the glob counter reads {got}; it must read {want}. \
+             A glob is the third way a module acquires the accessor trait without spelling its \
+             name at all, so a counter blind to a spaced or comment-split path would leave the \
+             per-file clause below asserting nothing. Fixture: {text:?}"
+        );
+    }
 
     let tree = rb85_src_tree();
     assert!(
@@ -13455,40 +13722,119 @@ fn rb85_reaper_reads_a_bounded_range_and_never_sweeps() {
     assert!(
         privacy_calls >= 7,
         "[rb85/ratchet-vacuity]: the RAW call-or-path counter reads {privacy_calls} reach(es) of \
-         the export chunk accessor in privacy.rs; it must read AT LEAST SEVEN — the same seven the \
-         squashed census above attributes body by body. This is the ratchet's own control: a \
-         counter that cannot see the calls in the ONE file that has them would report a clean \
-         crate for any spelling at all, in every other file, forever. The bound is a FLOOR and the \
-         exact seven is owned by the census above, deliberately: this counter also sees a prose \
-         mention that happens to sit before a parenthesis or after a path separator, and a doc \
-         comment in the owning module must not be able to red its own vacuity control."
+         the export chunk accessor in privacy.rs; it must read AT LEAST SEVEN — the seven the \
+         squashed census above attributes body by body, plus the module's own use-tree import of \
+         the accessor trait, which the round-4 brace-list rule now counts as well (EIGHT today). \
+         This is the ratchet's own control: a counter that cannot see the reaches in the ONE file \
+         that has them would report a clean crate for any spelling at all, in every other file, \
+         forever. The bound is a FLOOR and the exact seven is owned by the census above, \
+         deliberately: this counter also sees the import, and a prose mention that happens to sit \
+         before a parenthesis or after a path separator, and neither a new import line nor a doc \
+         comment in the owning module must be able to red its own vacuity control."
     );
+
+    // (10b) the OWNING module is not a laundering point. Both of these are about
+    // privacy.rs and nothing else: it is the one file the accessor ratchet
+    // exempts, so it is the one file from which another module could be handed
+    // the table without naming it.
+    let macro_def = concat!("macro_", "rules!");
+    let macro_defs = rb22p_count(privacy_src, macro_def);
+    assert_eq!(
+        macro_defs, 0,
+        "[rb85/privacy-no-macro]: privacy.rs defines `{macro_def}` {macro_defs} time(s); it must \
+         define NONE. A macro declared in the exempt module is reachable from every later module \
+         in the crate by textual scope, and `#[macro_export]` makes it reachable from anywhere at \
+         all — so its body would be an accessor chain that the per-file splice ban below cannot \
+         see, because the file it lives in is the file this ratchet exempts. privacy.rs holds \
+         reducers, two private seams and a delete helper; it has no use for one."
+    );
+    for vis in ["pub use ", "pub(crate) use ", "pub(super) use "] {
+        let n = rb22p_count(privacy_src, vis);
+        assert_eq!(
+            n, 0,
+            "[rb85/privacy-no-reexport]: privacy.rs carries {n} `{vis}` item(s); it must carry \
+             NONE. A re-export hands the accessor trait to any module that names THIS module \
+             instead of the schema one — the same reach wearing a different path, invisible to a \
+             glob ban and to an import census keyed on the schema module, and invisible to the \
+             accessor ratchet because the file it is spelled in is the file the ratchet exempts. \
+             The needles carry ONE space because that is rustfmt's only canonical spelling of \
+             them and `cargo fmt` gates this tree, so a wider gap is caught before this clause \
+             ever runs; the count is RAW, which also reports a mention in a comment, and that is \
+             the same reviewed-event trade the ratchet above takes."
+        );
+    }
+
     for (rel, text) in &tree {
-        if rel.as_str() == "privacy.rs" || rel.as_str() == "privacy_tests.rs" {
+        if rel.as_str() == "privacy_tests.rs" {
             continue;
         }
+
+        // (10c) no macro splice in a method or path position — EVERY file, the
+        // owning module INCLUDED, since an exempt file is exactly where such a
+        // macro would be planted.
+        let splices = rb85_splice_count(text);
+        assert_eq!(
+            splices, 0,
+            "[rb85/splice-ban]: `{rel}` splices a macro metavariable into {splices} method or \
+             path position(s); it must splice NONE. MEASURED (round-4 RT-A5): a declarative-macro \
+             body expanding to `$ctx.db.$name()` plus a call site spelling `reach!(ctx, \
+             export_bundle)` reaches the export chunk table with the accessor name bounded by a \
+             comma and a close paren — no parenthesis after it, no path separator before it — so \
+             every counter in this slice reads ZERO and the table is swept from a module that \
+             owns none of it. The splice POSITION is the part of that shape which cannot be \
+             spelled another way, which is why it is what this bans. This crate has no \
+             metavariable in either position today; the one exemption is privacy_tests.rs, whose \
+             pre-rb-85 write-attribution fixtures quote such a chain as a STRING, and that \
+             exemption is why this file is skipped above rather than silently passing."
+        );
+
+        // (10d) no glob import of the schema module in production code.
+        if rel.as_str() != "privacy.rs" && !rel.ends_with("_tests.rs") {
+            let globs = rb85_glob_count(text);
+            assert_eq!(
+                globs, 0,
+                "[rb85/glob-ban]: `{rel}` glob-imports the schema module {globs} time(s); a \
+                 production module must name what it imports. A glob brings in EVERY table \
+                 accessor trait, this one included, without the module ever spelling the name — \
+                 so the import census the brace-list rule performs sees nothing and the file is \
+                 one method call away from the table. `_tests.rs` files are exempt from THIS \
+                 clause only, and for a stated reason: `#[cfg(test)]` code cannot reach \
+                 production, a test that actually called the accessor is the M18 link-failure \
+                 class rather than a silent reach, and the crate's only occurrence today is the \
+                 path spelled inside a STRING in a session-test fixture, which would otherwise be \
+                 a permanent false red."
+            );
+        }
+
+        if rel.as_str() == "privacy.rs" {
+            continue;
+        }
+
+        // (10e) the accessor itself is never reached from another module.
         assert_eq!(
             rb85_call_count(text, &ident),
             0,
-            "[rb85/accessor-ratchet]: `{rel}` REACHES the export chunk accessor — it either calls \
-             it or takes it as a path segment. This module is the OWNING module for export chunk \
-             reads and writes (spec M22 section 7.2, G5/D0 module-write isolation), and the \
-             arithmetic above is a complete account of the uses only while that stays true. The \
-             count is RAW and receiver-agnostic on purpose: it sees the accessor through an \
-             aliased handle, in its UFCS spelling, and inside a comment alike. TWO round-3 \
-             corrections make it complete for the measured families: it is COMMENT-AWARE between \
-             the name and its parentheses, because `.export_bundle`, a line comment, a newline and \
-             then `()` is a rustfmt-STABLE call the previous adjacent-paren needle counted ZERO \
-             times from every module in the crate; and it counts a PATH occurrence, because \
-             binding the method as a fn ITEM puts no parenthesis after the name anywhere, infers \
-             the handle type instead of naming it, and reaches the table through a local binding \
-             that no clause in this slice can see. A prose mention sitting immediately before a \
-             parenthesis or immediately after a path separator is a false positive BY DESIGN — a \
-             module that so much as names this accessor is a reviewed event, the fix is to \
-             backtick it or reword it, and the alternative (counting a stripped view) was MEASURED \
-             blind: one raw-string opener in a doc comment blanks hundreds of lines of the file \
-             that follows it."
+            "[rb85/accessor-ratchet]: `{rel}` REACHES the export chunk accessor — it calls it, \
+             takes it as a path segment, or imports it in a use-tree brace list. This module is \
+             the OWNING module for export chunk reads and writes (spec M22 section 7.2, G5/D0 \
+             module-write isolation), and the arithmetic above is a complete account of the uses \
+             only while that stays true. The count is RAW and receiver-agnostic on purpose: it \
+             sees the accessor through an aliased handle, in its UFCS spelling, and inside a \
+             comment alike. THREE corrections make it complete for the measured families: it is \
+             COMMENT-AWARE between the name and its parentheses, because `.export_bundle`, a line \
+             comment, a newline and then `()` is a rustfmt-STABLE call the original adjacent-paren \
+             needle counted ZERO times from every module in the crate; it counts a PATH \
+             occurrence, because binding the method as a fn ITEM puts no parenthesis after the \
+             name anywhere and infers the handle type instead of naming it; and it counts an \
+             IMPORT, because acquiring the trait and then reaching the table through a macro \
+             splice leaves the name bounded by a brace and a comma and nothing else. A prose \
+             mention sitting immediately before a parenthesis, immediately after a path separator, \
+             or inside a schema use-list is a false positive BY DESIGN — a module that so much as \
+             names this accessor is a reviewed event, the fix is to backtick it or reword it, and \
+             the alternative (counting a stripped view) was MEASURED blind: one raw-string opener \
+             in a doc comment blanks hundreds of lines of the file that follows it."
         );
+        // (10f) nor is the generated handle type that needs no accessor at all.
         assert_eq!(
             rb22p_count(text, &handle),
             0,
@@ -13571,60 +13917,136 @@ fn rb85_test_roster() -> [&'static str; 10] {
     ]
 }
 
-/// How many `rb85_` fn DECLARATIONS in this file carry a `#[test]` attribute.
-///
-/// Counted by walking each declaration's attribute block upward — every line
-/// that is an attribute, a comment OR BLANK belongs to the block, and the first
-/// line that is none of the three ends it — so the count is immune to WHAT ELSE
-/// sits between `#[test]` and `fn`, and to how much of it there is. That is the
-/// whole point: the two adjacency needles in the census below are blind to an
-/// `#[ignore]`, a `#[should_panic]` or an `#[allow(..)]` wedged in there, and an
-/// eleventh test that never runs is exactly the shape this roster exists to make
-/// visible.
-///
-/// BLANK LINES CONTINUE THE WALK (round-3 reviewer finding), and that is the
-/// difference between a census and a formatting convention: a declaration written
-/// as `#[test]`, an EMPTY line, then `fn rb85_x` is a perfectly ordinary Rust test
-/// that rustfmt preserves verbatim, and under the older rule — which ended the
-/// block at the first line that was neither an attribute nor a comment, and an
-/// empty line is neither — it was invisible to ALL THREE censuses at once: the two
-/// adjacency needles need `#[test]` on the line immediately above, and this walk
-/// stopped one line short of it. An eleventh test could therefore ship, run, and
-/// leave the roster reporting a closed set of ten.
+/// The line-start offset of every `rb85_` fn DECLARATION in `src`.
 ///
 /// Only true declarations count: the text before `fn` on its own line must be
-/// blank, which excludes this file's own string fixtures (`fn rb85_decoy()` is
-/// spelled inside a `push_str` argument) and every prose mention. Helper fns are
-/// still excluded by construction, blank-line rule and all — the walk upward from
-/// one reaches the previous item's closing brace or its own declaration line, both
-/// of which end the block, before it can reach any `#[test]`.
-fn rb85_attributed_test_declarations() -> usize {
+/// blank, at any indentation — which admits the one test that lives inside a
+/// `proptest!` block and excludes this file's own string fixtures (a
+/// `fn rb85_decoy()` spelled inside a `push_str` argument) and every prose
+/// mention.
+fn rb85_declaration_starts(src: &str) -> Vec<usize> {
     let needle = "fn rb85_";
-    let mut found = 0usize;
+    let mut out: Vec<usize> = Vec::new();
     let mut scan = 0usize;
-    while let Some(rel) = PRIVACY_TESTS_RS[scan..].find(needle) {
+    while let Some(rel) = src[scan..].find(needle) {
         let at = scan + rel;
         scan = at + needle.len();
-        let line_start = match PRIVACY_TESTS_RS[..at].rfind('\n') {
+        let line_start = match src[..at].rfind('\n') {
             Some(i) => i + 1,
             None => 0,
         };
-        if !PRIVACY_TESTS_RS[line_start..at].chars().all(|c| c == ' ') {
-            continue;
+        if src[line_start..at].chars().all(|c| c == ' ') {
+            out.push(line_start);
         }
+    }
+    out
+}
+
+/// Is the line beginning at `line_start` the CONTINUATION of a multi-line
+/// attribute opened above it?
+///
+/// MEASURED (round-4 RT-A6). `#[test]`, then `#[cfg(`, then `    test`, then `)]`,
+/// then the declaration, is a legal multi-line attribute that rustfmt preserves —
+/// and under the older rule, which ended the block at the first line that was
+/// neither blank, `#[`-prefixed nor `//`-prefixed, the walk stopped dead on `)]`
+/// and never reached the `#[test]` two lines above. The two adjacency needles in
+/// T9 miss it for the same reason, so an ELEVENTH test shipped, RAN, and left all
+/// three roster censuses reporting a closed set of ten.
+///
+/// The rule is `the attribute is still open here`: find the nearest `#[`-prefixed
+/// line above (a blank or a comment line ends the search, since neither can be the
+/// opener), then walk back DOWN from it counting `[` minus `]`, and require the
+/// running balance to be POSITIVE at every line boundary between the two. That
+/// second half is what keeps ordinary code out: `#[test]` is balanced on its own
+/// line, so the balance is already zero at the next boundary and a function body
+/// below it can never be mistaken for attribute text.
+///
+/// The balance counts raw bracket BYTES, string literals included — deliberately
+/// not modelled, and stated rather than hidden. The only shape that could mislead
+/// is an attribute carrying an unbalanced bracket inside a quoted argument, which
+/// would make the line below it look like a continuation; that direction
+/// OVER-counts attributed declarations and reds loudly, and the exact total in
+/// `[rb85/decl-total]` is the backstop either way.
+fn rb85_attr_block_line(src: &str, line_start: usize) -> bool {
+    let mut cursor = line_start;
+    while cursor > 0 {
+        let prev_end = cursor - 1;
+        let prev_start = match src[..prev_end].rfind('\n') {
+            Some(i) => i + 1,
+            None => 0,
+        };
+        let line = src[prev_start..prev_end].trim();
+        if line.is_empty() || line.starts_with("//") {
+            return false;
+        }
+        if line.starts_with("#[") {
+            let mut balance = 0i64;
+            let mut p = prev_start;
+            while p < line_start {
+                let step = match src[p..line_start].find('\n') {
+                    Some(i) => p + i + 1,
+                    None => line_start,
+                };
+                for byte in src[p..step].bytes() {
+                    if byte == b'[' {
+                        balance += 1;
+                    } else if byte == b']' {
+                        balance -= 1;
+                    }
+                }
+                if balance <= 0 {
+                    return false;
+                }
+                p = step;
+            }
+            return balance > 0;
+        }
+        cursor = prev_start;
+    }
+    false
+}
+
+/// How many `rb85_` fn DECLARATIONS in `src` carry a `#[test]` attribute.
+///
+/// Counted by walking each declaration's attribute block upward — every line that
+/// is an attribute, a comment, BLANK, or the continuation of an attribute still
+/// open above it belongs to the block, and the first line that is none of the four
+/// ends it — so the count is immune to WHAT ELSE sits between `#[test]` and `fn`,
+/// and to how much of it there is. That is the whole point: the two adjacency
+/// needles in the census below are blind to an `#[ignore]`, a `#[should_panic]` or
+/// an `#[allow(..)]` wedged in there, and an eleventh test that never runs — or,
+/// worse, one that runs — is exactly the shape this roster exists to make visible.
+///
+/// BLANK LINES CONTINUE THE WALK (round-3 reviewer finding) and so do ATTRIBUTE
+/// CONTINUATION LINES (round-4 RT-A6): both were measured, both let a declaration
+/// hide from all three censuses at once, and `rb85_attr_block_line` records the
+/// second in full. Helper fns stay excluded by construction under both rules — the
+/// walk upward from one reaches the previous item's closing brace, whose own
+/// upward search hits a doc comment or a balanced attribute and stops.
+///
+/// Takes its source as an ARGUMENT so the walk itself can be gated: the shipped
+/// call passes this file, and `[rb85/walker-control]` passes fixtures whose
+/// attributed count is known.
+fn rb85_attributed_test_declarations(src: &str) -> usize {
+    let mut found = 0usize;
+    for line_start in rb85_declaration_starts(src) {
         let mut cursor = line_start;
         let mut is_test = false;
         while cursor > 0 {
             let prev_end = cursor - 1;
-            let prev_start = match PRIVACY_TESTS_RS[..prev_end].rfind('\n') {
+            let prev_start = match src[..prev_end].rfind('\n') {
                 Some(i) => i + 1,
                 None => 0,
             };
-            let line = PRIVACY_TESTS_RS[prev_start..prev_end].trim();
+            let line = src[prev_start..prev_end].trim();
             if line == concat!("#[te", "st]") {
                 is_test = true;
             }
-            if !(line.is_empty() || line.starts_with("#[") || line.starts_with("//")) {
+            if !(line.is_empty()
+                || line.starts_with("#[")
+                || line.starts_with("//")
+                || rb85_attr_block_line(src, prev_start))
+            {
                 break;
             }
             cursor = prev_start;
@@ -13634,6 +14056,68 @@ fn rb85_attributed_test_declarations() -> usize {
         }
     }
     found
+}
+
+/// The forty-eight `rb85_` HELPER fn names this slice ships — every `rb85_`
+/// declaration in this file that is not one of the ten tests.
+///
+/// CLOSED, exactly like the test roster, and for the same reason one step removed:
+/// `[rb85/decl-total]` asserts that the file declares exactly these plus the ten,
+/// so an ELEVENTH test cannot hide behind an attribute the walker misreads, and a
+/// new helper cannot arrive without a reviewer seeing it. Every name here is also
+/// asserted DECLARED, exactly once, so the roster cannot drift into a list of
+/// names that no longer exist.
+fn rb85_helper_roster() -> [&'static str; 48] {
+    [
+        "rb85_nd_helper_fn",
+        "rb85_nd_helper_named",
+        "rb85_nd_cutoff_fn",
+        "rb85_nd_clock_fn",
+        "rb85_nd_bundle_struct_opener",
+        "rb85_nd_bundle_table_attr",
+        "rb85_nd_index_attr",
+        "rb85_nd_created_field",
+        "rb85_nd_sweep",
+        "rb85_nd_bundle_handle",
+        "rb85_nd_bundle_ident",
+        "rb85_nd_iter_call",
+        "rb85_nd_range_chain",
+        "rb85_range_terminator",
+        "rb85_nd_take",
+        "rb85_helper_sig_pin",
+        "rb85_cutoff_sig_pin",
+        "rb85_helper_body_pin",
+        "rb85_helper_body_pin_flat",
+        "rb85_cutoff_body_pin",
+        "rb85_seam_body_pin",
+        "rb85_clock_body_pin",
+        "rb85_helper_decl_source",
+        "rb85_helper_body_source",
+        "rb85_cutoff_decl_source",
+        "rb85_cutoff_body_source",
+        "rb85_seam_decl_source",
+        "rb85_seam_body_source",
+        "rb85_clock_decl_source",
+        "rb85_clock_body_source",
+        "rb85_bundle_decl_source",
+        "rb85_helper_body",
+        "rb85_cutoff_body",
+        "rb85_bundle_fields",
+        "rb85_seam_says_expired",
+        "rb85_skip_fwd",
+        "rb85_skip_back",
+        "rb85_splice_count",
+        "rb85_glob_count",
+        "rb85_call_count",
+        "rb85_ratchet_control_cases",
+        "rb85_src_tree",
+        "rb85_collect_rs",
+        "rb85_test_roster",
+        "rb85_declaration_starts",
+        "rb85_attr_block_line",
+        "rb85_attributed_test_declarations",
+        "rb85_helper_roster",
+    ]
 }
 
 /// T9 (ledger X1, X2, X3 anchor): this file declares EXACTLY the TEN `rb85_`
@@ -13660,12 +14144,25 @@ fn rb85_attributed_test_declarations() -> usize {
 /// needles require `#[test]` to be the line IMMEDIATELY above the declaration,
 /// so an eleventh test carrying `#[test]` + `#[ignore]` + `fn rb85_...` is
 /// invisible to them — it would ship, never run, and the ledger would still
-/// report a closed roster of ten.
+/// report a closed roster of ten. It is gated by its own control fixtures
+/// (`[rb85/walker-control]`), because a walker is a scanner like any other and a
+/// scanner that sees nothing passes everything.
+///
+/// THE FOURTH CENSUS is the arithmetic one, and it exists because the third was
+/// MEASURED insufficient (round-4 RT-A6): a LEGAL multi-line attribute — `#[test]`
+/// then `#[cfg(` then an indented `test` then `)]` — stopped the walk on a
+/// continuation line that is neither blank, attribute-prefixed nor a comment, and
+/// an eleventh test ran with all three censuses above still reporting ten.
+/// `[rb85/decl-total]` does not ask WHY a declaration is invisible to a walker: it
+/// counts every `rb85_` declaration in the file and compares that to the two
+/// CLOSED rosters, so any eleventh test and any unlisted helper moves a literal
+/// here whatever attribute it hides behind.
 ///
 /// Kills: a test renamed out of the ledger's `test(/rb85_/)` filter (the gate
 /// would then run fewer tests and still print `N passed`); a planned test never
 /// written; an eleventh test slipped in without moving a literal in the ledger,
-/// including one hidden behind an extra attribute.
+/// including one hidden behind an extra attribute, behind a multi-line attribute,
+/// or behind no attribute at all.
 #[test]
 fn rb85_test_roster_is_closed() {
     let roster = rb85_test_roster();
@@ -13714,7 +14211,106 @@ fn rb85_test_roster_is_closed() {
         roster.len()
     );
 
-    let attributed = rb85_attributed_test_declarations();
+    // --- the WALKER's own control (round-4 RT-A6) ----------------------------
+    let test_attr = concat!("#[te", "st]");
+    let decl = concat!("fn rb85", "_");
+    let cfg_open = concat!("#[c", "fg(");
+    let cfg_test = concat!("#[c", "fg(test)]");
+    let ignore_attr = concat!("#[ign", "ore]");
+    let walker_cases: [(&str, String, usize); 6] = [
+        (
+            "the MEASURED multi-line attribute: a test attribute, then an \
+             attribute whose bracket stays open across two further lines, then \
+             the declaration",
+            format!("{test_attr}\n{cfg_open}\n    test\n)]\n{decl}probe() {{}}\n"),
+            1,
+        ),
+        (
+            "a BLANK line between the test attribute and the declaration",
+            format!("{test_attr}\n\n{decl}a() {{}}\n"),
+            1,
+        ),
+        (
+            "an attributed declaration that is NOT a test",
+            format!("{cfg_test}\n{decl}b() {{}}\n"),
+            0,
+        ),
+        (
+            "a declaration under a closing brace and a blank line — an ordinary \
+             helper, which must never be counted however far the walk continues",
+            format!("}}\n\n{decl}c() {{}}\n"),
+            0,
+        ),
+        (
+            "a SECOND attribute wedged between the test attribute and the \
+             declaration, which both adjacency needles above are blind to",
+            format!("{test_attr}\n{ignore_attr}\n{decl}d() {{}}\n"),
+            1,
+        ),
+        (
+            "a declaration needle with TEXT before it on its line — this file's \
+             own string fixtures, which are prose and not declarations",
+            format!("{test_attr}\n    let s = mk({decl}decoy());\n"),
+            0,
+        ),
+    ];
+    let mut walker_total = 0usize;
+    for (what, text, want) in &walker_cases {
+        let got = rb85_attributed_test_declarations(text);
+        assert_eq!(
+            got, *want,
+            "[rb85/walker-control]: over {what} the attribute-block walker finds {got} \
+             test-attributed declaration(s); it must find {want}. The first fixture is the \
+             MEASURED round-4 survivor: a legal multi-line attribute whose continuation lines are \
+             neither blank, attribute-prefixed nor comments, so a walker that stopped there never \
+             reached the test attribute above and an eleventh test RAN while all three censuses \
+             reported a closed roster of ten. The fourth is the bound on that relaxation — if \
+             continuing past ordinary code were free, every helper in this file would count. \
+             Fixture: {text:?}"
+        );
+        walker_total += got;
+    }
+    assert_eq!(
+        walker_total, 3,
+        "[rb85/walker-control]: the six fixtures together must yield exactly three attributed \
+         declarations; the walker found {walker_total}. The per-fixture clauses above already \
+         separate every shape from every other; this total is what catches a walker wrong in two \
+         directions at once, and what makes the pair fail loud rather than cancel out."
+    );
+
+    // --- the DECLARATION TOTAL: tests plus a CLOSED helper roster ------------
+    let helpers = rb85_helper_roster();
+    for name in helpers {
+        let needle = format!("\nfn {name}(");
+        let n = rb22p_count(PRIVACY_TESTS_RS, &needle);
+        assert_eq!(
+            n, 1,
+            "[rb85/decl-total]: the helper `{name}` must be declared exactly once at the top \
+             level of privacy_tests.rs; found {n}. The needle carries a leading newline so this \
+             test's own literals are not counted (the `rb48_test_roster_is_closed` trick). ZERO \
+             means the roster below names a helper that no longer exists, which would make the \
+             total arithmetic pass over a file that is missing one."
+        );
+    }
+    let declared = rb85_declaration_starts(PRIVACY_TESTS_RS).len();
+    assert_eq!(
+        declared,
+        roster.len() + helpers.len(),
+        "[rb85/decl-total]: privacy_tests.rs declares {} `rb85_` fn(s) whose line carries nothing \
+         but indentation before them; the two CLOSED rosters name {} tests plus {} helpers. This \
+         is the backstop for the attribute walker above and it does not care WHY a declaration is \
+         invisible to it: an eleventh test — attributed, un-attributed, hidden behind a multi-line \
+         attribute, or spelled in any way a future reader invents — moves this number, as does an \
+         unlisted helper. If it reds after an honest addition, add the name to the roster it \
+         belongs to in the same diff, which is the reviewed event this clause exists to force. (A \
+         DUPLICATE entry in either roster reds here too, since each name is asserted declared \
+         exactly once above while the length grew.)",
+        declared,
+        roster.len(),
+        helpers.len()
+    );
+
+    let attributed = rb85_attributed_test_declarations(PRIVACY_TESTS_RS);
     assert_eq!(
         attributed,
         roster.len(),
