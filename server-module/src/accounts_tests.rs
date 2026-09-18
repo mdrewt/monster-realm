@@ -4431,6 +4431,7 @@ fn data_lifecycle_cross_manifest_consistency() {
 ///        on the synthetic primary key;
 ///        dropping the btree index on `owner_identity` (the owner-scoped view
 ///        and the cascade both filter on it);
+///        dropping the btree index on `created_at_ms` (rb-85: the reaper's bounded range read);
 ///        declaring the derive after the table attribute;
 ///        declaring a second `export_bundle` table.
 #[test]
@@ -4501,6 +4502,7 @@ fn export_bundle_struct_shape_and_privacy() {
         "pubchunk_index:u32,",
         "pubtotal_chunks:u32,",
         "pubpayload_json:String,",
+        "#[index(btree)]",
         "pubcreated_at_ms:i64,",
     );
     assert_eq!(

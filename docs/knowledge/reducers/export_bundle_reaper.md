@@ -2,10 +2,10 @@
 type: SpacetimeDB Reducer
 title: export_bundle_reaper
 slug: reducers/export_bundle_reaper
-updated: 2026-09-11
+updated: 2026-09-13
 tags: [reducer, spacetimedb, privacy]
 abstract: "SpacetimeDB reducer export_bundle_reaper."
-resource: server-module/src/privacy.rs#L1662
+resource: server-module/src/privacy.rs#L1673
 source: scripts/okf-export.mjs@server-module/src/privacy.rs
 ---
 
