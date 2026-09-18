@@ -323,8 +323,10 @@ condition the operator alarm must watch. Removing the index is NOT compile-coupl
 providing `created_at_ms()` over a full sweep compiles clippy-clean with the helper body byte-identical, so
 the index pin in privacy_tests.rs is what keeps it. The generated `created_at_ms()` accessor is a new
 crate-wide time-ordered read over every owner's chunks; it is census-guarded (seven sanctioned
-`ctx.db.export_bundle()` uses, all in privacy.rs, attributed body by body; a RAW-text, call-aware,
-per-file ratchet asserts no other module spells the accessor call or the generated handle type).
+`ctx.db.export_bundle()` uses, all in privacy.rs, attributed body by body; a RAW-text, call-or-path-aware,
+per-file ratchet asserts no other module spells the accessor call, a `::export_bundle` path to it, or the
+generated handle type — a comment-split call and a fn-item binding through that path were each measured
+green under a contiguous needle).
 
 **Proof of teeth (ADR-0224: ordinary Rust tests, no eval).** Ten `rb85_` tests in privacy_tests.rs: the
 cutoff value table (with a realistic wall-clock row), the proptest above, body-equality pins on the cutoff,
@@ -359,12 +361,16 @@ the helper fails the whole lib-test binary at link time, and `ReducerContext::__
 `rb85_helper_is_never_named_outside_privacy_rs` must be re-attributed 0 → 1 by that slice. X10 → rb-87: the
 operator alarm on `export_bundle` row/byte counts (ops/observability, outside touches).
 
-**Disclosed.** Hidden dependency NOT edited by rb-85: `server-module/src/accounts_tests.rs:4491-4517`
-(`export_bundle_struct_shape_and_privacy`) pins the ExportBundle field span by squashed equality and reds
-on the new attribute — the sanctioned widening is one `"#[index(btree)]",` fragment before
-`"pubcreated_at_ms:i64,"` plus three prose citations that drift by one line (:11230, :11343, :11504). Stale
-by one line and left as history: ADR-0220:15,31 (`schema.rs:1073-1079`). `docs/knowledge/**` stamps
-regenerated. Residual candidates: R-rb-85-EXPORTADMIT (no global admission control on
+**Disclosed.** Hidden dependency found at planning and APPLIED on the 2026-09-17 resume, once the
+supervisor added the file to `touches:`: `server-module/src/accounts_tests.rs:4491-4517`
+(`export_bundle_struct_shape_and_privacy`) pins the ExportBundle field span by squashed equality and
+redded on the new attribute; the widening is one `"#[index(btree)]",` fragment before
+`"pubcreated_at_ms:i64,"` plus one `Kills:` line (numstat 2 added, 0 deleted). The plan's three "prose
+citations that drift by one line" (:11230, :11343, :11504, and a fourth at :12789) were already stale on
+master before rb-85 — rb-73's `player_session` insertion had moved those schema.rs lines — so they are
+left as history rather than chased. Also stale and left: ADR-0220:15,31 (`schema.rs:1073-1079`, now
+thirteen lines lower — the ExportBundle doc block grew, not just the attribute line). `docs/knowledge/**`
+stamps regenerated. Residual candidates: R-rb-85-EXPORTADMIT (no global admission control on
 `request_data_export`; the write side of the sybil vector), and a correction to rb-86's deferral premise —
 "no client subscribes to `my_export_bundle`" has been false since rb-53 (`client/src/net/connection.ts:653`),
 so the k-of-N tear is client-observable today.

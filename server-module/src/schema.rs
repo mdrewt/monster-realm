@@ -1286,7 +1286,7 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
     DataLifecycleEntry {
         table: "export_bundle_reaper_schedule",
         policy: DeletionPolicy::NotOwned,
-        basis: "global hourly TTL reaper schedule for export_bundle (rb-48, ADR-0238): an \
+        basis: "global hourly TTL reaper schedule for the export_bundle table (rb-48, ADR-0238): an \
                 interval singleton with no Identity column, armed by request_data_export \
                 and by init and sync_content, never keyed to any player",
         exportable: false,

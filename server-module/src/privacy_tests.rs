@@ -8241,7 +8241,14 @@ fn rb48_reaper_guard_first_and_rejecting() {
 }
 
 /// E1 / E3 / E5 (THE BACKSTOP TOOTH): the reaper body is EXACTLY the frozen
-/// guard-sweep-plan-delete sequence, byte for byte in squashed form.
+/// guard, delegate and Ok sequence, byte for byte in squashed form.
+///
+/// RETRUTHED BY rb-85 (ADR-0238 amendment), PROSE ONLY: the shell stopped
+/// sweeping, planning and deleting when the read, the bounded range, the per-tick
+/// cap and the delete moved WHOLE into the private helper, so the older
+/// guard-sweep-plan-delete wording named a body this literal has not pinned since
+/// that slice landed. Every assertion below is byte-identical; the pin itself is
+/// `rb48_reaper_body_pin`, which already carries the delegating shell.
 ///
 /// This module has already MEASURED that containment pins are insufficient for a
 /// strictly simpler body (`rb22p_purge_body_exact`'s four clippy-clean, green
@@ -8342,6 +8349,17 @@ fn rb48_reaper_body_exact() {
 /// while these say WHICH property broke. Every needle is spelled against the
 /// seam's PARAMETER names, which the signature fixes, never against a local
 /// binding name the implementer is free to choose.
+///
+/// DIAGNOSTIC SINCE rb-85 (ADR-0238 amendment), and kept for exactly that reason.
+/// `rb85_cutoff_body_exact` now pins this seam's WHOLE body by EQUALITY, because
+/// the artifact red-team MEASURED a `plan_export_reap` whose expiry test was gated
+/// to the live wall-clock band: every containment clause below stayed green (an
+/// added band branch leaves the saturating call, the composed predicate, the sort,
+/// the cap and the straight-line census all untouched), the behavioural rows above
+/// are toys and extremes that never land in the band, and the range property
+/// samples it about one case in a hundred. So the EQUALITY pin is what kills that
+/// family; these clauses are what say WHICH property broke when it fires. Prose
+/// only — every assertion below is byte-identical to the rb-48 original.
 #[test]
 fn rb48_seam_body_saturating_and_sorted() {
     let squashed = stripped_for_scan(PRIVACY_RS);
@@ -11377,24 +11395,43 @@ fn rb67p_adr0220_citation_oracle_control() {
 //   WHEN the rb85_ tests run against the fixed tree THE SYSTEM SHALL pass every
 //   one of them — cutoff arithmetic oracle including a wall-clock row; the
 //   two-sided range-equals-seam property on the reachable domain plus the
-//   all-i64 superset; cutoff body equality; the field-level btree index
-//   adjacency pin; private seams declared once with frozen signatures; helper
-//   body equality with its rustfmt twin; zero full-table sweeps file-wide with
-//   the one range chain attributed to the helper at the inclusive cutoff;
-//   bundle-accessor arithmetic and scope; the crate-wide accessor ownership
-//   ratchet; the helper never named outside privacy.rs; a closed roster.
+//   all-i64 superset; BODY EQUALITY over all three fns the retention rule reads
+//   through — the cutoff seam, the pure expiry seam and the injected clock
+//   marshal; the field-level btree index adjacency pin; private seams declared
+//   once with frozen signatures; helper body equality with its rustfmt twin;
+//   zero full-table sweeps file-wide with the one range chain attributed to the
+//   helper at the inclusive cutoff; bundle-accessor arithmetic and scope; the
+//   crate-wide accessor ownership ratchet, counting CALLS and PATH segments
+//   alike; the helper never named outside privacy.rs; a closed roster of ten.
 //
 // THE SPLIT, restated. The ONLY new LOGIC this slice ships is the cutoff
 // arithmetic, and it is a PURE fn — so T1 and T2 EXECUTE it (T2 against the
 // shipped `plan_export_reap` seam, never against a predicate this file
-// re-derives). Everything ctx-bound is a SOURCE-STRUCTURE pin over PRIVACY_RS
-// and RB85_SCHEMA_RS through this module's three-stage strip pipeline, and says
-// so. The behavioural execution proof over an oversized population is DEFERRED
-// (ledger X9 -> backlog): `datastore_index_scan_range_bsatn` is undefined in
-// native_host_tests.rs, so a Rust test that CALLED the helper would fail the
-// whole lib-test binary at LINK time — which is why T7 bans naming it here at
-// all, and why the helper ships as `(ctx, now_ms) -> usize` so the deferred
-// slice can inject its instant below the guard.
+// re-derives). Everything ctx-bound is a SOURCE-STRUCTURE pin over PRIVACY_RS,
+// RB85_SCHEMA_RS and RB85_MARSHAL_RS through this module's three-stage strip
+// pipeline, and says so. The behavioural execution proof over an oversized
+// population is DEFERRED (ledger X9 -> backlog):
+// `datastore_index_scan_range_bsatn` is undefined in native_host_tests.rs, so a
+// Rust test that CALLED the helper would fail the whole lib-test binary at LINK
+// time — which is why T7 bans naming it here at all, and why the helper ships as
+// `(ctx, now_ms) -> usize` so the deferred slice can inject its instant below the
+// guard.
+//
+// THE BAND-KEYED FAMILY, MEASURED THREE TIMES, AND WHAT CLOSES IT. Every clock
+// this slice compares is a wall-clock millisecond, and every behavioural
+// instrument it owns samples that band with vanishing probability: T1 is a value
+// table of extremes and toys, T2 draws from 2^53, and T10 was a value table too.
+// So a fn that is CORRECT everywhere the tests look and wrong only inside the
+// live band passes the whole suite. The red-team measured exactly that for the
+// cutoff seam (closed by T8's first pin), for `plan_export_reap` (closed by T8's
+// second) and for `marshal::now_ms` (closed by T10's). A band branch is invisible
+// to a value table, to a property over a huge domain and to every containment
+// clause in the file; BODY EQUALITY is the one instrument that sees it, which is
+// why all three now have one. The two further measured shapes were ACCESSOR
+// REACHES no adjacent-paren needle can count: a call with a comment between the
+// name and its parentheses, and the method taken as a fn ITEM through a path,
+// which has no parenthesis after the name at all — hence the call-or-path counter
+// behind the crate-wide ratchet, and its fourteen-shape control.
 //
 // SCAN HYGIENE (rb22p_scan_hygiene scans THIS FILE): line comments only, never
 // a block-comment delimiter; no raw-string prefix; no output or debug macro
@@ -11425,6 +11462,18 @@ fn rb67p_adr0220_citation_oracle_control() {
 /// including file, and this file sits beside schema.rs in `server-module/src/`.
 const RB85_SCHEMA_RS: &str = include_str!("schema.rs");
 
+/// marshal.rs, for the injected-clock body pin in T10.
+///
+/// WHOLE-FILE, and that is sound here rather than merely convenient. The strip
+/// pipeline runs strings BEFORE comments, so a raw-string prefix or a bare double
+/// quote inside a comment desynchronises it and blanks a span — but marshal.rs
+/// carries NEITHER today, the clock is its FIRST item (line 24, above every string
+/// literal in the file), and every way a future desync could go is fail-LOUD: a
+/// blanked span can only make the declaration census read ZERO, or shorten the
+/// extracted body, and both red under a label that names the reason. A desync
+/// cannot fabricate the frozen body, which is the only direction that would matter.
+const RB85_MARSHAL_RS: &str = include_str!("marshal.rs");
+
 /// How many squashed bytes before a `fn` needle the visibility ban inspects.
 ///
 /// Twenty-four rather than the three a bare `pub` needs: it must also cover
@@ -11453,9 +11502,14 @@ fn rb85_nd_cutoff_fn() -> String {
     concat!("fnexport_reap", "_cutoff_ms(").to_string()
 }
 
-/// The bare naming needle for the cutoff seam (the call-site census form).
-fn rb85_nd_cutoff_named() -> String {
-    concat!("export_reap", "_cutoff_ms(").to_string()
+/// The squashed `fn` needle for the injected-clock marshal in marshal.rs.
+///
+/// Fragmented like every other declaration needle in this block: a dozen evals
+/// concatenate every `.rs` under `server-module/src`, this file included, and a
+/// raw-corpus scanner must never be able to mistake a pinned literal here for a
+/// live declaration of a fn that really lives in another module.
+fn rb85_nd_clock_fn() -> String {
+    concat!("fnnow", "_ms(").to_string()
 }
 
 /// The squashed struct opener for the export chunk row. Split so this file
@@ -11510,13 +11564,22 @@ fn rb85_nd_bundle_handle() -> String {
     concat!("export_bundle__Table", "Handle").to_string()
 }
 
-/// The BARE accessor-call needle, for RAW receiver-agnostic counting.
+/// The BARE accessor IDENTIFIER — no call parenthesis — for RAW receiver-agnostic
+/// counting by `rb85_call_count`.
 ///
-/// Left-bounded by the caller (`m22s4_left_bounded_count`), which is what makes
-/// it immune to `purge_export_bundles(` and `my_export_bundle(`: in both the
-/// byte before this needle would be an identifier byte.
-fn rb85_nd_bundle_named() -> String {
-    concat!("export", "_bundle(").to_string()
+/// NO PAREN, since rb-85 round 3, and the reason is MEASURED TWICE. `ctx.db`
+/// newline `.export_bundle // c` newline `()` is a rustfmt-STABLE call spelling in
+/// which the accessor and its parenthesis are not adjacent; and a fn-ITEM binding
+/// of the same method — `<Local as Trait>::export_bundle` handed to a local and
+/// called through that — has no parenthesis after the name at all. A needle that
+/// carries the paren counts BOTH of them ZERO times from any module in the crate.
+/// The counter that consumes this needle bounds it on BOTH sides and then looks
+/// forward for a call parenthesis and backward for a path separator, skipping
+/// whitespace and comments in each direction, which is what makes the ratchet
+/// immune to `purge_export_bundles(`, `my_export_bundle(`,
+/// `export_bundle_reaper_schedule(` and the generated handle type alike.
+fn rb85_nd_bundle_ident() -> String {
+    concat!("export", "_bundle").to_string()
 }
 
 /// The iterator verb, spelled against the VERB and not against any receiver.
@@ -11611,6 +11674,43 @@ fn rb85_cutoff_body_pin() -> String {
     "now_ms.saturating_sub(ttl_ms)".to_string()
 }
 
+/// THE FROZEN EXPIRY-SEAM BODY, squashed (rb-48's `plan_export_reap`, re-pinned
+/// by rb-85 round 3 against the MEASURED band-keyed predicate).
+///
+/// The seam was containment-pinned only: `rb48_seam_body_saturating_and_sorted`
+/// names the saturating call, the composed predicate, the sort, the cap and the
+/// absence of an early exit, and an added `if now_ms > BAND_LO && now_ms < BAND_HI`
+/// arm around the push leaves every one of those clauses green. The behavioural
+/// rows are toys and extremes; T2 samples the live band about one case in a
+/// hundred. Equality is what closes the family.
+///
+/// Four statements and a tail expression, every line far under fn_call_width, so
+/// rustfmt has exactly one canonical spelling and no twin is accepted.
+fn rb85_seam_body_pin() -> String {
+    [
+        "letmutexpired:Vec<u64>=Vec::new();",
+        "for&(id,created)inrows{",
+        "ifnow_ms.saturating_sub(created)>=ttl_ms{",
+        "expired.push(id);",
+        "}}",
+        "expired.sort_unstable();",
+        "expired.truncate(batch);",
+        "expired",
+    ]
+    .concat()
+}
+
+/// THE FROZEN INJECTED-CLOCK BODY, squashed (`marshal::now_ms`).
+///
+/// One expression: the context timestamp in MICROseconds, clamped at zero, divided
+/// into milliseconds. Pinned by equality for the reason T10's doc records — a
+/// value table cannot see a body that is right on every row it lists and wrong
+/// inside the live wall-clock band, and this fn stamps every export chunk the
+/// retention rule then measures.
+fn rb85_clock_body_pin() -> String {
+    "ctx.timestamp.to_micros_since_unix_epoch().max(0)/1000".to_string()
+}
+
 // --- whitespace-bearing control inputs, spelled INDEPENDENTLY of the pins ----
 
 /// The helper DECLARATION as source text (positive-control input).
@@ -11668,6 +11768,48 @@ fn rb85_cutoff_decl_source() -> String {
 /// The cutoff seam BODY as whitespace-bearing source text (control input).
 fn rb85_cutoff_body_source() -> String {
     "\n    now_ms.saturating_sub(ttl_ms)\n".to_string()
+}
+
+/// The expiry seam DECLARATION as source text (positive-control input).
+///
+/// Spelled FLAT here on purpose: the control exists to prove the BODY pin
+/// reachable through the live pipeline, and the signature's own frozen form is
+/// rb-48's business (`rb48_seam_body_saturating_and_sorted` and the seam's
+/// visibility clause). Squashing erases the difference in any case.
+fn rb85_seam_decl_source() -> String {
+    concat!(
+        "fn plan_export",
+        "_reap(rows: &[(u64, i64)], now_ms: i64, ttl_ms: i64, batch: usize) -> Vec<u64> "
+    )
+    .to_string()
+}
+
+/// The expiry seam BODY as whitespace-bearing SOURCE text (control input),
+/// spelled independently of `rb85_seam_body_pin`. Feeding this through the LIVE
+/// pipeline must reproduce that pin byte for byte.
+fn rb85_seam_body_source() -> String {
+    [
+        "\n    let mut expired: Vec<u64> = Vec::new();\n",
+        "    for &(id, created) in rows {\n",
+        "        if now_ms.saturating_sub(created) >= ttl_ms {\n",
+        "            expired.push(id);\n",
+        "        }\n",
+        "    }\n",
+        "    expired.sort_unstable();\n",
+        "    expired.truncate(batch);\n",
+        "    expired\n",
+    ]
+    .concat()
+}
+
+/// The injected-clock DECLARATION as source text (positive-control input).
+fn rb85_clock_decl_source() -> String {
+    concat!("fn now", "_ms(ctx: &ReducerContext) -> i64 ").to_string()
+}
+
+/// The injected-clock BODY as whitespace-bearing source text (control input).
+fn rb85_clock_body_source() -> String {
+    "\n    ctx.timestamp.to_micros_since_unix_epoch().max(0) / 1000\n".to_string()
 }
 
 /// The export chunk row DECLARATION as whitespace-bearing source text — the
@@ -11821,6 +11963,262 @@ const RB85_EXTREMES: [(i64, i64, i64, bool); 7] = [
     (i64::MIN, 0, i64::MAX, false),
 ];
 
+// --- the CALL-AWARE accessor counter (round 3, RT-A3) ------------------------
+
+/// How many times `ident` is REACHED — called OR taken as a path segment — in
+/// RAW, unstripped source.
+///
+/// One occurrence counts AT MOST ONCE, and it counts when the identifier is
+/// bounded by a non-identifier byte on BOTH sides and EITHER
+///   * FOLLOWED, after any run of whitespace, line comments and (nesting) block
+///     comments, by an open parenthesis — the CALL form; or
+///   * PRECEDED, after the same run scanned BACKWARD, by a `::` path separator —
+///     the PATH form.
+///
+/// WHY NOT AN ADJACENT-PAREN NEEDLE, MEASURED (round-3 artifact red-team, RT-A3).
+/// `ctx.db` newline `.export_bundle // c` newline `()` is a rustfmt-STABLE call
+/// spelling: the formatter keeps the comment where the author put it and never
+/// re-fuses the accessor with its parenthesis. A needle carrying the paren counts
+/// that ZERO times, so any module in the crate could sweep the export chunk table
+/// while the crate-wide ratchet reported a clean tree. Skipping comments is
+/// therefore not a nicety — it is the whole point of this counter.
+///
+/// WHY THE PATH FORM TOO, MEASURED (RT-A4). A method taken as a fn ITEM never has
+/// a parenthesis after its name at all: bind `<spacetimedb::Local as
+/// crate::schema::export_bundle>::export_bundle` to a local and call the BINDING,
+/// and the accessor is reached with the handle type inferred and never named — so
+/// the handle ban is green, every body pin is privacy.rs-scoped and green, and
+/// both occurrences of the name are followed by `>` and `;`. Taking the method
+/// that way ALWAYS costs a `::` immediately before the name, in one of the two
+/// path spellings, which is what makes the backward rule complete for the family.
+/// MEASURED at the same time: `::` + this accessor occurs ZERO times anywhere
+/// under `server-module/src` today, privacy.rs included — its own import spells
+/// the trait inside a brace list, after a comma — so the rule costs no false red
+/// on the tree as it stands.
+///
+/// BOTH word boundaries are load-bearing, and each kills a different neighbour:
+/// the LEFT one rejects `my_export_bundle(` and `purge_export_bundles(`, the RIGHT
+/// one rejects `export_bundle_reaper_schedule(`, `export_bundles(` and the
+/// generated `export_bundle__TableHandle`. `rb85_ratchet_control_cases` asserts
+/// fourteen shapes, so no rule here can be dropped without a red.
+///
+/// RAW input by design (see T6's honest-limits note): the strip pipeline is blind
+/// in ways a ratchet must never be, so a prose mention that happens to sit before
+/// a parenthesis, or after a `::`, is a FALSE POSITIVE this counter accepts
+/// deliberately — naming this accessor in another module is a reviewed event
+/// either way, and the fix is to name it in prose without either neighbour. A
+/// BACKTICKED prose mention is already safe on both sides, and a fixture pins
+/// that, because it is how this repo actually writes such a mention.
+///
+/// HONEST LIMITS: whitespace is skipped by the ASCII rule only, so a non-ASCII
+/// space between the accessor and its paren would not be skipped — not a hole,
+/// because rustc rejects such a token sequence outright. And the BACKWARD walk
+/// treats the first `//` on a line as a comment opener without knowing whether it
+/// sits inside a string literal; the only way that could mislead is a line whose
+/// code ends in `::` immediately before a string containing a double slash, which
+/// does not parse as Rust.
+fn rb85_call_count(raw: &str, ident: &str) -> usize {
+    if ident.is_empty() {
+        return 0;
+    }
+    let bytes = raw.as_bytes();
+    let mut n = 0usize;
+    let mut start = 0usize;
+    while let Some(rel) = raw[start..].find(ident) {
+        let at = start + rel;
+        let end = at + ident.len();
+        start = end;
+        if at > 0 && is_word_byte(bytes[at - 1]) {
+            continue;
+        }
+        if end < bytes.len() && is_word_byte(bytes[end]) {
+            continue;
+        }
+
+        // FORWARD to an open parenthesis. Byte comparisons rather than string
+        // needles, so this file never carries a contiguous comment delimiter (the
+        // module's hygiene contract) and so a multi-byte scalar can never be
+        // sliced through the middle.
+        let mut k = end;
+        loop {
+            while k < bytes.len() && bytes[k].is_ascii_whitespace() {
+                k += 1;
+            }
+            if k + 1 < bytes.len() && bytes[k] == b'/' && bytes[k + 1] == b'/' {
+                k += 2;
+                while k < bytes.len() && bytes[k] != b'\n' {
+                    k += 1;
+                }
+            } else if k + 1 < bytes.len() && bytes[k] == b'/' && bytes[k + 1] == b'*' {
+                let mut depth = 1usize;
+                k += 2;
+                while depth > 0 && k + 1 < bytes.len() {
+                    if bytes[k] == b'/' && bytes[k + 1] == b'*' {
+                        depth += 1;
+                        k += 2;
+                    } else if bytes[k] == b'*' && bytes[k + 1] == b'/' {
+                        depth -= 1;
+                        k += 2;
+                    } else {
+                        k += 1;
+                    }
+                }
+                if depth > 0 {
+                    k = bytes.len();
+                }
+            } else {
+                break;
+            }
+        }
+        let called = bytes.get(k) == Some(&b'(');
+
+        // BACKWARD to a path separator. Each iteration either breaks or strictly
+        // decreases the cursor, so the walk terminates on any input.
+        let mut b = at;
+        loop {
+            while b > 0 && bytes[b - 1].is_ascii_whitespace() {
+                b -= 1;
+            }
+            if b >= 2 && bytes[b - 1] == b'/' && bytes[b - 2] == b'*' {
+                let mut depth = 1usize;
+                b -= 2;
+                while depth > 0 && b >= 2 {
+                    if bytes[b - 1] == b'/' && bytes[b - 2] == b'*' {
+                        depth += 1;
+                        b -= 2;
+                    } else if bytes[b - 1] == b'*' && bytes[b - 2] == b'/' {
+                        depth -= 1;
+                        b -= 2;
+                    } else {
+                        b -= 1;
+                    }
+                }
+                if depth > 0 {
+                    b = 0;
+                }
+                continue;
+            }
+            let mut line_start = b;
+            while line_start > 0 && bytes[line_start - 1] != b'\n' {
+                line_start -= 1;
+            }
+            let mut opener: Option<usize> = None;
+            let mut i = line_start;
+            while i + 1 < b {
+                if bytes[i] == b'/' && bytes[i + 1] == b'/' {
+                    opener = Some(i);
+                    break;
+                }
+                i += 1;
+            }
+            match opener {
+                Some(i) => b = i,
+                None => break,
+            }
+        }
+        let path_qualified = b >= 2 && bytes[b - 1] == b':' && bytes[b - 2] == b':';
+
+        if called || path_qualified {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// The `[rb85/ratchet-control]` corpus: fourteen spellings with a KNOWN
+/// call-or-path count, NINE reaches in all, as `(what, source text, expected)`.
+///
+/// Four fixtures are the accessor CALLED — the ordinary chain, the measured
+/// comment-split shape, a block-comment split and a bare line break. Four more
+/// take it as a PATH SEGMENT, which is how a fn-ITEM binding reaches the table
+/// with no parenthesis after the name anywhere (RT-A4), including the qualified
+/// `<T as Trait>::` spelling and one with a line comment between the separator and
+/// the name. Six are neighbours and prose that must never be counted. Without this
+/// corpus a counter that returned zero for everything would make the crate-wide
+/// ratchet below pass over every file in the tree while proving nothing at all.
+fn rb85_ratchet_control_cases() -> [(&'static str, String, usize); 14] {
+    let ident = rb85_nd_bundle_ident();
+    let receiver = concat!("ctx", ".db.");
+    let open = concat!("/", "*");
+    let close = concat!("*", "/");
+    [
+        (
+            "the ordinary receiver chain",
+            format!("{receiver}{ident}()"),
+            1,
+        ),
+        (
+            "a LINE comment between the accessor and its parentheses",
+            format!(".{ident} // c\n()"),
+            1,
+        ),
+        (
+            "a BLOCK comment between the accessor and its parentheses",
+            format!("{ident} {open} c {close} ()"),
+            1,
+        ),
+        (
+            "a bare line break between the accessor and its parentheses",
+            format!("{ident}\n()"),
+            1,
+        ),
+        (
+            "the schedule accessor, whose name EXTENDS this one",
+            format!("{ident}_reaper_schedule()"),
+            0,
+        ),
+        (
+            "the owner-scoped view accessor, whose name CONTAINS this one",
+            format!("my_{ident}()"),
+            0,
+        ),
+        (
+            "the generated table-handle TYPE, which is never called",
+            rb85_nd_bundle_handle(),
+            0,
+        ),
+        ("a bare prose mention", format!("{ident};"), 0),
+        (
+            "a bare prose mention followed by a comment and a statement end",
+            format!("{ident} // c\n;"),
+            0,
+        ),
+        (
+            "the method taken as a fn ITEM through a type path, which is the RT-A4 \
+             sweep and carries no parenthesis after the name at all",
+            format!("Local::{ident};"),
+            1,
+        ),
+        (
+            "the same through a FULLY QUALIFIED path — the trait-name occurrence \
+             here is preceded by a space and followed by an angle bracket, so it is \
+             NOT counted and only the path segment after the separator is",
+            format!("<Local as {ident}>::{ident};"),
+            1,
+        ),
+        (
+            "a module path whose LAST TWO segments are both this name — two \
+             separate reaches, which is what proves the scan resumes correctly \
+             after a counted occurrence",
+            format!("crate::schema::{ident}::{ident}(&db)"),
+            2,
+        ),
+        (
+            "a LINE comment between the path separator and the name, which is the \
+             backward twin of the measured comment-split call",
+            format!("Local:: // c\n{ident};"),
+            1,
+        ),
+        (
+            "a BACKTICKED prose mention followed by a parenthesised note — the \
+             shipped schema.rs deletion-policy shape, and the reason prose in this \
+             repo does not red the ratchet",
+            format!("`{ident}` (ERASE)"),
+            0,
+        ),
+    ]
+}
+
 // --- the crate-wide source tree, read at runtime -----------------------------
 
 /// Every `.rs` file under `server-module/src`, keyed by path relative to that
@@ -11841,6 +12239,12 @@ fn rb85_src_tree() -> Vec<(String, String)> {
 /// Recursive walk backing `rb85_src_tree`. `_tests.rs` files are INCLUDED (the
 /// ratchet is about who may reach the table, and a test module reaching it
 /// off-instance is exactly the link failure the deferred X9 gate records).
+///
+/// SYMLINKS ARE SKIPPED (reviewer NIT): a link is followed by `is_dir`, so a loop
+/// back to an ancestor would recurse forever and a link to a file already in the
+/// tree would double-count it. Skipping is safe because the walk's own vacuity
+/// clauses assert the file count and name the two files the ratchet depends on —
+/// a real module that went missing behind a link cannot pass quietly.
 fn rb85_collect_rs(dir: &std::path::Path, prefix: &str, out: &mut Vec<(String, String)>) {
     let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
         panic!(
@@ -11853,19 +12257,31 @@ fn rb85_collect_rs(dir: &std::path::Path, prefix: &str, out: &mut Vec<(String, S
         let path = entry
             .expect("[rb85/accessor-ratchet]: unreadable dir entry")
             .path();
+        let meta = std::fs::symlink_metadata(&path).unwrap_or_else(|e| {
+            panic!(
+                "[rb85/accessor-ratchet]: cannot stat {}: {e}",
+                path.display()
+            )
+        });
+        if meta.file_type().is_symlink() {
+            continue;
+        }
         let name = path
             .file_name()
             .expect("[rb85/accessor-ratchet]: entry with no file name")
-            .to_string_lossy()
-            .to_string();
+            .to_string_lossy();
+        let is_dir = meta.is_dir();
+        if !is_dir && !name.ends_with(".rs") {
+            continue;
+        }
         let rel = if prefix.is_empty() {
-            name.clone()
+            name.into_owned()
         } else {
             format!("{prefix}/{name}")
         };
-        if path.is_dir() {
+        if is_dir {
             rb85_collect_rs(&path, &rel, out);
-        } else if name.ends_with(".rs") {
+        } else {
             let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
                 panic!(
                     "[rb85/accessor-ratchet]: cannot read {}: {e}",
@@ -12064,10 +12480,12 @@ proptest! {
     }
 }
 
-/// T8 (plan §11 F1; ledger X1, X7, X8): the cutoff seam's body is EXACTLY the
-/// saturating subtraction, byte for byte in squashed form.
+/// T8 (plan §11 F1, round-3 RT-A2; ledger X1, X7, X8): BOTH pure predicates the
+/// retention rule is made of — the cutoff seam AND `plan_export_reap` — have
+/// bodies that are EXACTLY the sanctioned arithmetic, byte for byte in squashed
+/// form.
 ///
-/// WHY THIS TEST EXISTS, MEASURED. The plan red-team applied a band-keyed
+/// WHY THIS TEST EXISTS, MEASURED, TWICE. The plan red-team applied a band-keyed
 /// cutoff — an early return of `now_ms` whenever the clock sits inside the live
 /// wall-clock band — and the whole suite stayed GREEN: `.filter(..=now)` yields
 /// EVERY row, so the full-table read this slice exists to close was back, the
@@ -12078,12 +12496,24 @@ proptest! {
 /// equality pin closes the whole family at once, which is what a body pin is
 /// for.
 ///
-/// Kills: M-RT1, the band-keyed early return; any added binding, branch or
-/// second statement; a body that reads a clock of its own; a body that returns
-/// a constant. It does NOT need a formatter twin: one expression on one line,
-/// far under every width limit, has exactly one fmt-canonical spelling.
+/// ROUND 3 (RT-A2) measured the SAME attack one seam down. `plan_export_reap` is
+/// the SSOT expiry predicate this slice's range is only ever allowed to optimise,
+/// and it was pinned by CONTAINMENT only: gate its `expired.push(id)` on the live
+/// band and `rb48_seam_body_saturating_and_sorted` stays green in every clause
+/// (the saturating call, the composed predicate, the sort, the cap, the
+/// straight-line census), the rb-48 behavioural rows stay green (toys and
+/// extremes, never in the band), T2 hits the band about one case in a hundred, and
+/// the reaper quietly stops expiring anything at all during the hours that matter.
+/// So the seam gets the same instrument, in the same test, for the same reason.
 ///
-/// HONEST LIMIT: this is a SOURCE pin over the stripped text. It is blind to a
+/// Kills: M-RT1, the band-keyed cutoff early return; RT-A2, the band-keyed seam
+/// predicate; any added binding, branch or second statement in either; a body that
+/// reads a clock of its own; a body that returns a constant; the seam's sort, cap
+/// or push removed. NEITHER needs a formatter twin: the cutoff is one expression
+/// on one line and every statement of the seam is far under fn_call_width, so each
+/// has exactly one fmt-canonical spelling.
+///
+/// HONEST LIMIT: these are SOURCE pins over the stripped text. They are blind to a
 /// `saturating_sub` re-pointed by an import alias — the instrument for that
 /// family is `m22s4_now_bound_once`'s import-identity clause, which pins the
 /// one import this module's clock name may come from.
@@ -12120,6 +12550,57 @@ fn rb85_cutoff_body_exact() {
          full-table read while the value table, the property and every other source pin in this \
          slice stay green."
     );
+
+    // --- RT-A2: the SSOT expiry seam gets the same instrument ----------------
+    let seam_needle = rb48_nd_seam_fn();
+    let seam_control_source = format!(
+        "{}{}{}{}",
+        rb85_seam_decl_source(),
+        '{',
+        rb85_seam_body_source(),
+        '}'
+    );
+    let seam_control = stripped_for_scan(&seam_control_source);
+    let seam_control_body = extract_squashed_fn_body(&seam_control, &seam_needle)
+        .expect("[rb85/seam-control]: the control fixture has no body");
+    assert_eq!(
+        seam_control_body,
+        rb85_seam_body_pin(),
+        "[rb85/seam-control]: the frozen EXPIRY-SEAM body pin is UNSATISFIABLE — the live pipeline \
+         derives something else from the sanctioned body text, which is spelled independently of \
+         the pin for exactly this reason. A hand-typed squashed literal with one character wrong \
+         is a permanently red gate that reads like a missing implementation. Revise the literal \
+         FROM THE SPEC, never to match whatever the code happens to say."
+    );
+
+    let seam_decls = rb22p_count(&squashed, &seam_needle);
+    assert_eq!(
+        seam_decls, 1,
+        "[rb85/seam-scope]: privacy.rs must define `{seam_needle}` exactly once; found \
+         {seam_decls}. ZERO means the SSOT expiry predicate this slice's range is only allowed to \
+         OPTIMISE is gone, so the range became the retention policy; TWO makes the behavioural \
+         tests, the range property and the equality clause below disagree about which function \
+         they describe."
+    );
+    let seam_body = extract_squashed_fn_body(&squashed, &seam_needle).unwrap_or_else(|| {
+        panic!(
+            "[rb85/seam-scope]: `{seam_needle}` was found but its body is not brace-balanced, so \
+             the equality clause below would run over an arbitrary span and pass VACUOUSLY."
+        )
+    });
+    assert_eq!(
+        seam_body,
+        rb85_seam_body_pin(),
+        "[rb85/seam-body-exact]: the expiry seam's body must be EXACTLY the frozen collect, sort, \
+         truncate and yield sequence — no added branch, no added binding, no second predicate. \
+         MEASURED (round-3 RT-A2): gating the push on the LIVE wall-clock band leaves every \
+         containment clause in `rb48_seam_body_saturating_and_sorted` green, leaves the rb-48 \
+         value rows green (they are toys and extremes, never in the band), and is sampled by the \
+         range property about one case in a hundred — while the reaper expires NOTHING during the \
+         only hours a production database is ever in. This seam is the SSOT the range is allowed \
+         to optimise, so a second retention policy hidden inside it is the worst shape available \
+         here. Read: {seam_body:?}"
+    );
 }
 
 // ===========================================================================
@@ -12127,8 +12608,9 @@ fn rb85_cutoff_body_exact() {
 // by one four-token fn that had no test at all.
 // ===========================================================================
 
-/// T10 (plan §13 RT-F5; ledger X1): `marshal::now_ms` converts the injected
-/// MICROSECOND timestamp to MILLISECONDS and clamps at zero, by value.
+/// T10 (plan §13 RT-F5, round-3 RT-A1; ledger X1): `marshal::now_ms` converts the
+/// injected MICROSECOND timestamp to MILLISECONDS and clamps at zero, by value —
+/// and its BODY is frozen, because a value table alone cannot say so.
 ///
 /// WHY THIS IS rb-85's BUSINESS. Every other pin in this slice is RELATIVE: the
 /// cutoff is `now - ttl`, the seam compares `now - created` against the ttl, and
@@ -12144,16 +12626,31 @@ fn rb85_cutoff_body_exact() {
 /// This test reads no table, so it reaches no host syscall and cannot link-fail
 /// the way a table read in a native test would.
 ///
+/// THE BODY PIN IS ROUND 3, AND IT IS THE CRITICAL HALF (RT-A1). The value table
+/// below is nine rows: zero, three sub-second toys, one wall-clock sample, three
+/// negatives and the i64 ceiling. A `now_ms` that returns SECONDS — or anything at
+/// all — whenever the clock sits inside the LIVE wall-clock band is correct on
+/// every one of those rows except the single sampled one, and moving that one row
+/// by a thousandth is enough to dodge it. Nothing else in this crate would notice:
+/// every other clock instrument in this slice is RELATIVE, so a uniformly scaled
+/// stamp keeps every difference proportional, and a band-keyed one simply is not
+/// sampled. The test therefore takes the same instrument the two seams take —
+/// EQUALITY over the squashed body, through the same live pipeline, with the same
+/// independently-spelled positive control proving the pin satisfiable.
+///
 /// Kills: M19, the divisor scaled (`/1_000_000`) — the wall-clock row separates
 /// them by three orders of magnitude; M20, the zero clamp dropped — caught by
 /// the two LARGE negative rows, and NOT by `-1`, because integer division
 /// truncates toward zero and `-1 / 1000` is already `0`; that row is carried
 /// precisely to record why it is not a tooth. Also: a pass-through returning
-/// microseconds; a constant; a clock read from anywhere but the context.
+/// microseconds; a constant; a clock read from anywhere but the context; and
+/// RT-A1, the band-keyed unit swap, which ONLY the body equality sees.
 ///
-/// HONEST LIMIT: this pins the CONVERSION, not the clock. Nothing runnable in
-/// this crate can prove the host fills `ctx.timestamp` with the transaction
-/// instant.
+/// HONEST LIMITS: this pins the CONVERSION and the source text, not the clock.
+/// Nothing runnable in this crate can prove the host fills `ctx.timestamp` with
+/// the transaction instant, and the body pin is blind to a `to_micros...` or a
+/// `max` re-pointed by an import alias or a shadowing trait in marshal.rs — the
+/// value table above is what covers that direction, which is why both halves ship.
 #[test]
 fn rb85_marshal_now_ms_is_millis_clamped_at_zero() {
     let cases: [(i64, i64); 9] = [
@@ -12182,6 +12679,63 @@ fn rb85_marshal_now_ms_is_millis_clamped_at_zero() {
              one thing the range property's reachable domain assumes cannot happen."
         );
     }
+
+    // --- RT-A1: the body itself, by equality ---------------------------------
+    let clock_needle = rb85_nd_clock_fn();
+    let control_source = format!(
+        "{}{}{}{}",
+        rb85_clock_decl_source(),
+        '{',
+        rb85_clock_body_source(),
+        '}'
+    );
+    let control = stripped_for_scan(&control_source);
+    let control_body = extract_squashed_fn_body(&control, &clock_needle)
+        .expect("[rb85/clock-control]: the control fixture has no body");
+    assert_eq!(
+        control_body,
+        rb85_clock_body_pin(),
+        "[rb85/clock-control]: the frozen CLOCK body pin is UNSATISFIABLE — the live pipeline \
+         derives something else from the sanctioned body text, which is spelled independently of \
+         the pin for exactly this reason. An unsatisfiable equality pin reads like a missing \
+         implementation and sends the next reader to reverse-engineer the test instead of the \
+         spec. Revise the literal FROM THE SPEC, never to match whatever the code happens to say."
+    );
+
+    let squashed = stripped_for_scan(RB85_MARSHAL_RS);
+    assert!(
+        squashed.len() > 400,
+        "[rb85/clock-scope]: marshal.rs strips to only {} squashed byte(s) — the scan is reading \
+         the wrong file, or the strip pipeline desynchronised on it, and every clause below would \
+         then pass over nothing.",
+        squashed.len()
+    );
+    let clock_decls = rb22p_count(&squashed, &clock_needle);
+    assert_eq!(
+        clock_decls, 1,
+        "[rb85/clock-scope]: marshal.rs must define `{clock_needle}` exactly once; found \
+         {clock_decls}. ZERO means the one fn that stamps every export chunk was renamed, so the \
+         equality clause below would describe nothing; TWO makes the value table above and that \
+         clause read whichever definition comes first in the file."
+    );
+    let clock_body = extract_squashed_fn_body(&squashed, &clock_needle).unwrap_or_else(|| {
+        panic!(
+            "[rb85/clock-scope]: `{clock_needle}` was found but its body is not brace-balanced, so \
+             the equality clause below would run over an arbitrary span and pass VACUOUSLY."
+        )
+    });
+    assert_eq!(
+        clock_body,
+        rb85_clock_body_pin(),
+        "[rb85/clock-body-exact]: the injected clock's body must be EXACTLY the context timestamp \
+         in microseconds, clamped at zero, divided into milliseconds — one expression, no branch, \
+         no binding, no second statement. MEASURED (round-3 RT-A1): a body that returns SECONDS, \
+         or anything else, ONLY while the clock sits inside the live wall-clock band passes the \
+         value table above (its rows are toys, negatives and the i64 ceiling, and the single \
+         wall-clock row is one point a mutant can step around), passes every relative comparison \
+         in this slice, and re-scales the seven-day retention ceiling in production only. This pin \
+         is what closes that family. Read: {clock_body:?}"
+    );
 }
 
 // ===========================================================================
@@ -12510,12 +13064,18 @@ fn rb85_helper_body_exact() {
 /// constructed table handle behind an extension trait, with no chain and no
 /// accessor name, by the handle ban and by the receiver-agnostic iterator
 /// arithmetic; M1 the `.take` bound dropped, and a cap applied to the wrong
-/// iterator, by the adjacency arithmetic; a literal or re-derived cutoff, by the
-/// argument pin; a `.filter(i64::MIN..)` full INDEX scan through the new
-/// accessor, by the census plus the inclusive-terminator clause (the measured
-/// shape: no `.iter()`, no `..=`, and `RangeFull` does not compile); and a NEW
-/// module reaching the export chunk accessor at all — aliased, UFCS-spelled or
+/// iterator, by the adjacency arithmetic; a `.filter(i64::MIN..)` full INDEX scan
+/// through the new accessor, by the census plus the inclusive-terminator clause
+/// (the measured shape: no `.iter()`, no `..=`, and `RangeFull` does not
+/// compile); and a NEW module reaching the export chunk accessor at all —
+/// aliased, UFCS-spelled, comment-split, taken as a fn item through a path, or
 /// through the handle type — by the crate-wide ratchet.
+///
+/// A literal or re-derived cutoff, and the seam's argument order, are killed by
+/// `rb85_helper_body_exact` instead: the frozen body carries the cutoff call with
+/// its two arguments and the constant in both of its places, so the argument pin
+/// and the constant census this test used to spell were two restatements of one
+/// equality and were removed in round 3 rather than left to drift from it.
 ///
 /// THE ACCESSOR ARITHMETIC, derived by reading privacy.rs rather than by
 /// counting what the code happens to say. The module reaches the export chunk
@@ -12548,12 +13108,33 @@ fn rb85_helper_body_exact() {
 /// RT-F2/F4): a doc comment in `movement_tests.rs` containing a raw-string
 /// opener makes the strings-first stripper blank 539 following lines, and a
 /// single quote-inside-a-char-literal blanks the remainder of a file — so the
-/// earlier claim in this doc that stripping "can only hide a violation, never
-/// invent one" was TRUE about the direction and WRONG about the consequence: a
+/// earlier claim in this doc, that stripping can only hide a violation and never
+/// invent one, was TRUE about the direction and WRONG about the consequence: a
 /// hidden violation is exactly the failure mode a ratchet exists to prevent. Raw
 /// counting costs a false positive on a prose mention in another module, and
 /// that is the trade taken deliberately: a new module that so much as names this
 /// accessor is a reviewed event.
+///
+/// SINCE ROUND 3 the ratchet counts REACHES — calls OR path segments — rather
+/// than the accessor-plus-paren needle, because that needle was MEASURED blind
+/// twice. RT-A3: `ctx.db` newline `.export_bundle // c` newline `()` is a
+/// rustfmt-stable spelling in which the name and the paren are not adjacent.
+/// RT-A4: the same method taken as a fn ITEM — `<spacetimedb::Local as
+/// crate::schema::export_bundle>::export_bundle` bound to a local and called
+/// through the binding — carries no parenthesis after the name ANYWHERE, infers
+/// the handle type rather than naming it, and so passes the handle ban, every
+/// privacy.rs-scoped body pin and a call-only counter alike. Either one lets a
+/// module outside this one sweep the table with the ratchet reporting a clean
+/// tree. `rb85_call_count` bounds the identifier on both sides, then looks FORWARD
+/// for the paren and BACKWARD for a `::`, skipping whitespace and comments in each
+/// direction and counting an occurrence at most once;
+/// `[rb85/ratchet-control]` proves it over fourteen spellings, eight of which must
+/// count and six of which must not. The counter is strictly MORE sensitive than
+/// the needle it replaces, so the shapes it newly reports in another module are
+/// prose that names the accessor immediately before a parenthesis or immediately
+/// after a path separator — false positives of the same reviewed-event family the
+/// raw count already accepts, and the fix is to backtick the mention, which a
+/// fixture pins as safe.
 #[test]
 fn rb85_reaper_reads_a_bounded_range_and_never_sweeps() {
     let squashed = stripped_for_scan(PRIVACY_RS);
@@ -12587,18 +13168,6 @@ fn rb85_reaper_reads_a_bounded_range_and_never_sweeps() {
         c_after + c_term.len(),
         "[rb85/needle-control]: the read-bound ADJACENCY arithmetic is unsatisfiable against the \
          sanctioned body text, so the clause that uses it below would be permanently red."
-    );
-    let c_args = m22s4_call_arg_lists(control_body, &rb85_nd_cutoff_named());
-    assert_eq!(
-        c_args.len(),
-        1,
-        "[rb85/needle-control]: the sanctioned body text must contain exactly one cutoff call, or \
-         the argument clause below pins something nothing can satisfy."
-    );
-    assert_eq!(
-        c_args[0], "now_ms,EXPORT_BUNDLE_TTL_MS",
-        "[rb85/needle-control]: the cutoff ARGUMENT pin is unsatisfiable against the sanctioned \
-         body text."
     );
 
     // --- (1) the sweep is GONE, file-wide ------------------------------------
@@ -12643,15 +13212,12 @@ fn rb85_reaper_reads_a_bounded_range_and_never_sweeps() {
     );
 
     // --- (3) and it is INSIDE the helper, INCLUSIVE, at the bound cutoff ------
+    //
+    // The ATTRIBUTION is carried by the indexing call below rather than by a
+    // count clause of its own: `m22s4_idx` fails LOUD when the needle is absent
+    // from the scoped body, so `exactly one file-wide` plus `and it is in this
+    // body` is already said by the two lines together.
     let body = rb85_helper_body(&squashed);
-    assert_eq!(
-        rb22p_count(&body, &range),
-        ranges,
-        "[rb85/range-scope]: the one creation-stamp read must sit INSIDE the bounded-read helper. \
-         This clause is the other half of the census above: together they say not merely `one \
-         range read` but `one range read, and it is the reviewed one`. An unattributed index read \
-         is an ungated global read of a private personal-data table."
-    );
     let at = m22s4_idx(&body, &range, "the bounded range read");
     let terminator = rb85_range_terminator();
     let after_filter = at + range.len();
@@ -12688,52 +13254,12 @@ fn rb85_reaper_reads_a_bounded_range_and_never_sweeps() {
          to remove, with a cap bolted on downstream of the cost."
     );
 
-    // --- (5) the cutoff is computed from the BOUND clock and the shipped TTL --
-    let cutoff_call = rb85_nd_cutoff_named();
-    let args = m22s4_call_arg_lists(&body, &cutoff_call);
-    assert_eq!(
-        args.len(),
-        1,
-        "[rb85/cutoff-args]: the helper must call the cutoff seam EXACTLY once; found {} call \
-         site(s). Two calls are two cutoffs, and only one of them is the one the range is taken \
-         over.",
-        args.len()
-    );
-    assert_ne!(
-        args[0], M22S4_UNBALANCED,
-        "[rb85/cutoff-args]: the cutoff call's argument list is not paren-balanced. Refusing to \
-         classify is the safe direction: an unclassifiable call is an ungated call."
-    );
-    assert_eq!(
-        args[0], "now_ms,EXPORT_BUNDLE_TTL_MS",
-        "[rb85/cutoff-args]: the cutoff must be computed from the PASSED instant and the SHIPPED \
-         retention constant, in that order, and from nothing else. A literal, a second clock read \
-         or a scaled ttl here silently re-points the range at a different retention rule while \
-         the seam below still reports the sanctioned one."
-    );
-
-    // --- (6) each constant is named TWICE, and only twice ---------------------
-    for (name, why) in [
-        (
-            "EXPORT_BUNDLE_TTL_MS",
-            "once to derive the cutoff the range is taken over, and once as the seam's ttl \
-             argument, so the range and the SSOT predicate can never be keyed on two different \
-             retention ceilings",
-        ),
-        (
-            "EXPORT_REAP_MAX_DELETE_PER_TICK",
-            "once as the READ bound and once as the DELETE cap, which is what makes the two \
-             equal by construction rather than by comment",
-        ),
-    ] {
-        let n = rb22p_count(&body, name);
-        assert_eq!(
-            n, 2,
-            "[rb85/const-census]: the helper must name `{name}` exactly twice; found {n}. It is \
-             named {why}. This clause is what turns the equality pin's `something moved` into \
-             `this property broke`."
-        );
-    }
+    // --- (5) the cutoff ARGUMENTS and the two constant censuses that used to
+    // --- stand here are carried by `rb85_helper_body_exact`: its frozen literal
+    // --- spells the cutoff call with both arguments, the retention constant in
+    // --- both of its places and the per-tick cap in both of its places, so three
+    // --- clauses here were three restatements of one equality. Removed in round
+    // --- 3 rather than left to drift from the pin they restate.
 
     // --- (7) the bodies every scoped clause below reads, bound ONCE ----------
     let purge_body = rb22p_body(&squashed);
@@ -12794,7 +13320,10 @@ fn rb85_reaper_reads_a_bounded_range_and_never_sweeps() {
              These three are the module's WHOLE sanctioned iterator budget: the schedule \
              singleton holds one row by construction, and the two tables named here carry no \
              identity index and are bounded, so each takes one scan narrowed IMMEDIATELY by a \
-             pure own-row predicate. Naming them is what lets the total below be exact."
+             pure own-row predicate. Naming them is what lets the total below be exact. WHEN THIS \
+             CLAUSE MAY BE REVISED: only in a diff that NAMES a new sanctioned iterator in this \
+             list AND moves the file-wide total below by the same amount — one without the other \
+             is how a budget stops being a budget."
         );
         sanctioned_iters += n;
     }
@@ -12804,7 +13333,10 @@ fn rb85_reaper_reads_a_bounded_range_and_never_sweeps() {
         file_iters, 3,
         "[rb85/iter-census]: privacy.rs must call `{iter_call}` exactly three times; found \
          {file_iters}. FOUR was the count before this slice — the fourth was the TTL sweep the \
-         bounded btree range replaces."
+         bounded btree range replaces. WHEN THIS CLAUSE MAY BE REVISED: only in a diff that also \
+         NAMES the new iterator in the sanctioned list above, so the total and the attribution \
+         move together; moving this number alone converts a reviewed budget into whatever the \
+         code happens to do."
     );
     assert_eq!(
         sanctioned_iters, file_iters,
@@ -12857,7 +13389,45 @@ fn rb85_reaper_reads_a_bounded_range_and_never_sweeps() {
     );
 
     // --- (10) the crate-wide ownership ratchet, over RAW source ---------------
-    let named = rb85_nd_bundle_named();
+    let ident = rb85_nd_bundle_ident();
+
+    // (10a) the COUNTER's own control, over fixtures rather than over the tree:
+    // eight reach spellings that must count — four CALLS and four PATHS — and six
+    // neighbours and prose shapes that must not. A counter returning zero for
+    // everything would make the per-file clause below pass over all forty-six
+    // files while proving nothing at all.
+    let control_cases = rb85_ratchet_control_cases();
+    for (what, text, want) in &control_cases {
+        let got = rb85_call_count(text, &ident);
+        assert_eq!(
+            got, *want,
+            "[rb85/ratchet-control]: over {what} the call-or-path counter reads {got} reach(es); \
+             it must read {want}. Each fixture here is a shape the ratchet lives or dies on. The \
+             eight that must COUNT carry the two MEASURED families: the comment-split CALL \
+             (`.export_bundle`, a line comment, a newline, then the parentheses — rustfmt-stable, \
+             and invisible to any needle carrying the paren) and the fn-ITEM PATH, which reaches \
+             the table with no parenthesis after the name anywhere and is therefore invisible to \
+             a call-only counter. The six that must NOT are the neighbours whose names extend or \
+             contain this one, and prose. Fixture: {text:?}"
+        );
+    }
+    let joined = control_cases
+        .iter()
+        .map(|(_, text, _)| text.as_str())
+        .collect::<Vec<&str>>()
+        .join("\n");
+    assert_eq!(
+        rb85_call_count(&joined, &ident),
+        9,
+        "[rb85/ratchet-control]: over the fourteen fixtures CONCATENATED the counter must read \
+         exactly NINE reaches — the same nine the per-fixture clauses above account for one at a \
+         time. This is the clause that proves the scan CONTINUES past a rejected match and resumes \
+         in the right place after a counted one: a counter that stopped, or that double-counted an \
+         occurrence matched by both the forward and the backward rule, satisfies most \
+         single-fixture clauses above and then misreads every real file, which is the only way \
+         this counter is ever actually used."
+    );
+
     let tree = rb85_src_tree();
     assert!(
         tree.len() >= 40,
@@ -12881,32 +13451,43 @@ fn rb85_reaper_reads_a_bounded_range_and_never_sweeps() {
                  directory entirely."
             )
         });
-    let privacy_named = m22s4_left_bounded_count(privacy_src, &named);
-    assert_eq!(
-        privacy_named, 7,
-        "[rb85/ratchet-vacuity]: the RAW left-bounded counter reads {privacy_named} occurrence(s) \
-         of `{named}` in privacy.rs; it must read SEVEN — the same seven the squashed census \
-         above attributes body by body. This is the ratchet's own control: a counter that cannot \
-         see the chain in the ONE file that has it would report a clean crate for any spelling at \
-         all, in every other file, forever. (If a NEW doc comment in privacy.rs names the \
-         accessor WITH its call parenthesis this number moves: name it without parens in prose.)"
+    let privacy_calls = rb85_call_count(privacy_src, &ident);
+    assert!(
+        privacy_calls >= 7,
+        "[rb85/ratchet-vacuity]: the RAW call-or-path counter reads {privacy_calls} reach(es) of \
+         the export chunk accessor in privacy.rs; it must read AT LEAST SEVEN — the same seven the \
+         squashed census above attributes body by body. This is the ratchet's own control: a \
+         counter that cannot see the calls in the ONE file that has them would report a clean \
+         crate for any spelling at all, in every other file, forever. The bound is a FLOOR and the \
+         exact seven is owned by the census above, deliberately: this counter also sees a prose \
+         mention that happens to sit before a parenthesis or after a path separator, and a doc \
+         comment in the owning module must not be able to red its own vacuity control."
     );
     for (rel, text) in &tree {
         if rel.as_str() == "privacy.rs" || rel.as_str() == "privacy_tests.rs" {
             continue;
         }
         assert_eq!(
-            m22s4_left_bounded_count(text, &named),
+            rb85_call_count(text, &ident),
             0,
-            "[rb85/accessor-ratchet]: `{rel}` names `{named}`. This module is the OWNING module \
-             for export chunk reads and writes (spec M22 section 7.2, G5/D0 module-write \
-             isolation), and the arithmetic above is a complete account of the uses only while \
-             that stays true. The count is RAW and receiver-agnostic on purpose: it sees the \
-             accessor through an aliased handle, in its UFCS spelling, and in a comment alike. \
-             The last is a false positive BY DESIGN — a module that so much as names this \
-             accessor is a reviewed event, and the alternative (counting a stripped view) was \
-             MEASURED blind: one raw-string opener in a doc comment blanks hundreds of lines of \
-             the file that follows it."
+            "[rb85/accessor-ratchet]: `{rel}` REACHES the export chunk accessor — it either calls \
+             it or takes it as a path segment. This module is the OWNING module for export chunk \
+             reads and writes (spec M22 section 7.2, G5/D0 module-write isolation), and the \
+             arithmetic above is a complete account of the uses only while that stays true. The \
+             count is RAW and receiver-agnostic on purpose: it sees the accessor through an \
+             aliased handle, in its UFCS spelling, and inside a comment alike. TWO round-3 \
+             corrections make it complete for the measured families: it is COMMENT-AWARE between \
+             the name and its parentheses, because `.export_bundle`, a line comment, a newline and \
+             then `()` is a rustfmt-STABLE call the previous adjacent-paren needle counted ZERO \
+             times from every module in the crate; and it counts a PATH occurrence, because \
+             binding the method as a fn ITEM puts no parenthesis after the name anywhere, infers \
+             the handle type instead of naming it, and reaches the table through a local binding \
+             that no clause in this slice can see. A prose mention sitting immediately before a \
+             parenthesis or immediately after a path separator is a false positive BY DESIGN — a \
+             module that so much as names this accessor is a reviewed event, the fix is to \
+             backtick it or reword it, and the alternative (counting a stripped view) was MEASURED \
+             blind: one raw-string opener in a doc comment blanks hundreds of lines of the file \
+             that follows it."
         );
         assert_eq!(
             rb22p_count(text, &handle),
@@ -12993,17 +13574,30 @@ fn rb85_test_roster() -> [&'static str; 10] {
 /// How many `rb85_` fn DECLARATIONS in this file carry a `#[test]` attribute.
 ///
 /// Counted by walking each declaration's attribute block upward — every line
-/// that is an attribute or a comment belongs to the block, and the first line
-/// that is neither ends it — so the count is immune to WHAT ELSE sits between
-/// `#[test]` and `fn`, and to how much of it there is. That is the whole point:
-/// the two adjacency needles in the census below are blind to an `#[ignore]`, a
-/// `#[should_panic]` or an `#[allow(..)]` wedged in there, and a tenth test that
-/// never runs is exactly the shape this roster exists to make visible.
+/// that is an attribute, a comment OR BLANK belongs to the block, and the first
+/// line that is none of the three ends it — so the count is immune to WHAT ELSE
+/// sits between `#[test]` and `fn`, and to how much of it there is. That is the
+/// whole point: the two adjacency needles in the census below are blind to an
+/// `#[ignore]`, a `#[should_panic]` or an `#[allow(..)]` wedged in there, and an
+/// eleventh test that never runs is exactly the shape this roster exists to make
+/// visible.
+///
+/// BLANK LINES CONTINUE THE WALK (round-3 reviewer finding), and that is the
+/// difference between a census and a formatting convention: a declaration written
+/// as `#[test]`, an EMPTY line, then `fn rb85_x` is a perfectly ordinary Rust test
+/// that rustfmt preserves verbatim, and under the older rule — which ended the
+/// block at the first line that was neither an attribute nor a comment, and an
+/// empty line is neither — it was invisible to ALL THREE censuses at once: the two
+/// adjacency needles need `#[test]` on the line immediately above, and this walk
+/// stopped one line short of it. An eleventh test could therefore ship, run, and
+/// leave the roster reporting a closed set of ten.
 ///
 /// Only true declarations count: the text before `fn` on its own line must be
 /// blank, which excludes this file's own string fixtures (`fn rb85_decoy()` is
 /// spelled inside a `push_str` argument) and every prose mention. Helper fns are
-/// excluded by construction — they carry no `#[test]`.
+/// still excluded by construction, blank-line rule and all — the walk upward from
+/// one reaches the previous item's closing brace or its own declaration line, both
+/// of which end the block, before it can reach any `#[test]`.
 fn rb85_attributed_test_declarations() -> usize {
     let needle = "fn rb85_";
     let mut found = 0usize;
@@ -13030,7 +13624,7 @@ fn rb85_attributed_test_declarations() -> usize {
             if line == concat!("#[te", "st]") {
                 is_test = true;
             }
-            if !(line.starts_with("#[") || line.starts_with("//")) {
+            if !(line.is_empty() || line.starts_with("#[") || line.starts_with("//")) {
                 break;
             }
             cursor = prev_start;
@@ -13042,8 +13636,8 @@ fn rb85_attributed_test_declarations() -> usize {
     found
 }
 
-/// T9 (ledger X1, X2, X3 anchor): this file declares EXACTLY the nine `rb85_`
-/// tests the roster names, each exactly once, and no tenth.
+/// T9 (ledger X1, X2, X3 anchor): this file declares EXACTLY the TEN `rb85_`
+/// tests the roster names, each exactly once, and no eleventh.
 ///
 /// A test cannot prove its own existence, but a file CAN prove which tests it
 /// declares — this module already includes its own source for the hygiene scan,
@@ -13056,7 +13650,10 @@ fn rb85_attributed_test_declarations() -> usize {
 /// and the count is taken in TWO parts because one of the ten lives inside a
 /// `proptest!` block and is therefore indented by four spaces. Counting only
 /// the flush-left form would let the property test be deleted while the roster
-/// still reported a closed set.
+/// still reported a closed set, so the two parts are SUMMED against the roster
+/// length: the split numbers themselves were two literals restating one total
+/// (a deleted proptest moves the sum exactly as it moves the split), and they
+/// were removed in round 3 rather than left to drift from it.
 ///
 /// THE THIRD CENSUS is attribute-block based rather than adjacency based, and it
 /// is the one that closes the gap the other two leave (plan §13 RT-F7): both
@@ -13086,7 +13683,7 @@ fn rb85_test_roster_is_closed() {
         assert_ne!(
             pair[0], pair[1],
             "[rb85/roster-dup]: the roster names `{}` twice, so the total-count clause below is \
-             satisfied by eight distinct tests plus a duplicate entry.",
+             satisfied by NINE distinct tests plus a duplicate entry.",
             pair[0]
         );
     }
@@ -13106,18 +13703,6 @@ fn rb85_test_roster_is_closed() {
 
     let flush = rb22p_count(PRIVACY_TESTS_RS, "#[test]\nfn rb85_");
     let indented = rb22p_count(PRIVACY_TESTS_RS, "#[test]\n    fn rb85_");
-    assert_eq!(
-        flush, 9,
-        "[rb85/roster-closed]: privacy_tests.rs declares {flush} flush-left `rb85_` test(s); \
-         nine of the ten are declared that way."
-    );
-    assert_eq!(
-        indented, 1,
-        "[rb85/roster-closed]: privacy_tests.rs declares {indented} INDENTED `rb85_` test(s); \
-         exactly one of the ten — the range-versus-seam property — lives inside a `proptest!` \
-         block and is indented by four spaces. Counting only the flush-left form would let the \
-         property test be deleted while the total below still read as closed."
-    );
     assert_eq!(
         flush + indented,
         roster.len(),
