@@ -18,10 +18,12 @@
  * `just ci` has no client build step, vitest never applies CSS, and there is no e2e
  * console-error gate.
  *
+ * PRESENT since slice S9 (spec §2.7, ADR-0253): the `:root` colour tokens and the
+ * `@media (prefers-contrast: more)` override at the END of this file. Every token is
+ * consumed by an inline `var()` in `ui/evolutionView.ts` — a token nothing reads is a
+ * decoy, and `evolutionView.test.ts` (m23s9 X3) reds on one.
+ *
  * DELIBERATELY ABSENT, and a later reader should NOT helpfully add them here:
- *   - `:root` colour tokens and `@media (prefers-contrast: more)` — spec §4 already lists
- *     this file in slice S9's own `touches:`, so S9 adds them beside the contrast
- *     remediation that consumes them. A token nothing reads is a decoy.
  *   - NOTHING further for the battle HP bar. That guard SHIPPED below (slice rb-10,
  *     residual R-m23-s2-X4): `ui/battleView.ts` now assigns `className = 'hp-fill'` and its
  *     `cssText` carries no animation declaration, so the rule is reachable. Do NOT re-add an
@@ -95,5 +97,57 @@
 @media (prefers-reduced-motion: reduce) {
   .hp-fill {
     transition: none;
+  }
+}
+
+/*
+ * Colour tokens for the evolution overlay (slice m23-s9, spec §2.7, ADR-0253).
+ *
+ * WHY TOKENS AND NOT LITERALS. `ui/evolutionView.ts` styles every element inline, like its
+ * twelve sibling views, and an inline literal is unreachable by any media query. Declaring the
+ * palette here and consuming it as `var(--mr-evo-*)` in that file's `cssText` is the ONE seam
+ * that lets `prefers-contrast: more` below re-colour the whole overlay without a class rule
+ * (a class rule would need `!important` to beat inline styles — banned by that view's tests).
+ *
+ * EVERY VALUE IS MEASURED, NOT CHOSEN. `ui/evolutionView.test.ts` (m23s9 X1) renders the view
+ * in four states, composites the translucent backdrop over a white AND a black page, and
+ * requires ≥ 4.5:1 (WCAG 1.4.3 AA) for every text/background pair it finds. The shipped
+ * defaults: fg 9.6:1 on the worst-case backdrop, muted 5.4:1, fg 5.8:1 on the button.
+ * The old `#666` empties (2.2:1) and `#fff` on `#059669` (3.8:1) are what this block fixes.
+ *
+ * NO `!important`, NO element selectors, NO `#id` — the same test bans all three sheet-wide
+ * because each is a route around the inline colours it measures.
+ */
+:root {
+  --mr-evo-backdrop: rgba(0, 0, 0, 0.8);
+  --mr-evo-card: #1e1e2e;
+  --mr-evo-row: #181826;
+  --mr-evo-border: #333;
+  --mr-evo-fg: #e0e0e0;
+  --mr-evo-muted: #aaa;
+  --mr-evo-ok: #34d399;
+  --mr-evo-warn: #f59e0b;
+  --mr-evo-button: #065f46;
+}
+
+/*
+ * High-contrast override (WCAG 1.4.6 AAA tier, ≥ 7:1 for every text pair, ≥ 3:1 for the
+ * card and row boundaries). ORDER IS LOAD-BEARING: this block MUST stay the LAST rule in the
+ * file — it has the same specificity as the `:root` block above, so if it were written first
+ * the default block would win and the override would be inert while every value still parsed.
+ * Pinned by m23s9 X2 (start index after the default block's end). The backdrop goes OPAQUE:
+ * a translucent dimmer over an arbitrary canvas has no guaranteed contrast at all.
+ */
+@media (prefers-contrast: more) {
+  :root {
+    --mr-evo-backdrop: #000;
+    --mr-evo-card: #101018;
+    --mr-evo-row: #000;
+    --mr-evo-border: #bbb;
+    --mr-evo-fg: #fff;
+    --mr-evo-muted: #ddd;
+    --mr-evo-ok: #6ee7b7;
+    --mr-evo-warn: #fcd34d;
+    --mr-evo-button: #022c22;
   }
 }
