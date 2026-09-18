@@ -8276,9 +8276,11 @@ fn rb48_reaper_guard_first_and_rejecting() {
     assert!(
         body.starts_with(guard.as_str()),
         "rb48 [E3/guard-first]: the reaper body must OPEN with the complete rejecting scheduler \
-         guard `{guard}` at offset zero. A scheduled reducer is a public entry point like any \
-         other in this toolchain: without the guard any client can call it and delete every \
-         account's export chunks past the TTL on demand. Containment is not enough — a guard \
+         guard `{guard}` at offset zero. On the 2.x host a scheduled function is private by \
+         default (owner/collaborators only), so the guard is belt-and-braces — but it is the \
+         crate's uniform scheduler posture and the only in-module check, and without it an \
+         owner-driven call deletes every account's export chunks past the TTL on demand \
+         (rb-87 retruth; the original said `any client`). Containment is not enough — a guard \
          placed after the sweep has already read the whole table, and one placed after the delete \
          loop has already deleted. Body read: {body:?}"
     );
@@ -17191,9 +17193,10 @@ fn rb86_test_roster_is_closed() {
 // FUNCTION, not a logging-crate path token and not a macro; the evt is a
 // `stringify!` token and the fragment quote is the JSON_QUOTE constant. Every
 // needle of this module scan-hygiene contract is satisfied unchanged. The REJECT
-// path emits NOTHING: the reaper is an ordinary client-invocable reducer whose
-// sender check is the only thing making it scheduler-only, so a line there would
-// be an unauthenticated log-amplification vector into a thirty-day store.
+// path emits NOTHING: on the 2.x host the reaper is a private scheduled fn
+// (owner/collaborators only; the sender check is belt-and-braces), and an
+// owner-driven reject line is still a thirty-day-store write for ticks that
+// never ran (ADR-0243 D7 in its authenticated form).
 //
 // WHAT THE LINE CARRIES, AND WHAT IT DELIBERATELY DOES NOT. Three RAW counts and
 // no subject. `read` is how many chunk rows the bounded window decoded; `planned`
@@ -18040,8 +18043,8 @@ fn rb87_helper_reports_the_whole_tick() {
 ///     still occurs exactly once, which is why the COUNTS come before the
 ///     offsets);
 ///   M21, the WHOLE tail (delegation, binding, emission) hoisted above the
-///     guard, so a client-invocable reject path reaps AND emits before it is
-///     refused — the unauthenticated amplification vector; an emission merely
+///     guard, so an owner-driven reject path reaps AND emits before it is
+///     refused — a log write for ticks that never ran; an emission merely
 ///     ADDED inside the guard arm (M22) dies earlier, on the count;
 ///   M23, a statement appended after the emission — the ADR-0243 D2 hazard
 ///     shape, caught by the terminal backstop;
@@ -18199,18 +18202,18 @@ fn rb87_reaper_emits_one_terminal_observation() {
         n_guard, 1,
         "[rb87/emit-after-guard]: the reaper body must carry the complete rejecting scheduler \
          guard `{guard}` exactly once; found {n_guard}. This clause needs it as the ANCHOR that \
-         separates the client-drivable reject path from the success path."
+         separates the owner-drivable reject path from the success path."
     );
     let guard_end = m22s4_idx(&body, &guard, "the rejecting scheduler guard") + guard.len();
     assert!(
         at_emit >= guard_end,
         "[rb87/emit-after-guard]: the emission (offset {at_emit}) sits at or inside the guard, \
-         which ends at offset {guard_end}. The reject path must emit NOTHING: export_bundle_reaper \
-         is an ordinary reducer ANY client can invoke — the sender check is the only thing making \
-         it scheduler-only — so a line on the reject is an unauthenticated log-amplification \
-         vector into a thirty-day store, written at whatever rate an anonymous identity cares to \
-         call it. That is the ADR-0243 D7 argument, and it is STRONGER here, because this path is \
-         client-drivable at will rather than behind a ceremony."
+         which ends at offset {guard_end}. The reject path must emit NOTHING: on the deployed 2.x \
+         host a scheduled function is PRIVATE by default (owner and collaborators only — the sender \
+         check is belt-and-braces, kept because rb-48 and the crate-wide censuses pin it), and an \
+         owner-drivable reject line is still an unbounded write into a thirty-day store that records \
+         ticks which never ran. That is the ADR-0243 D7 argument in its authenticated form (the \
+         security audit corrected an earlier `any client` draft — 1.x behaviour, not 2.x)."
     );
 
     // --- (6) REACHABLE: no early exit between the guard and the tail ----------

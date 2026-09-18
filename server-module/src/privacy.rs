@@ -1736,9 +1736,10 @@ fn plan_export_reap_stamps(
 // contract above never said this module may not observe its own reducer. ONE
 // line, TERMINAL: the helper runs, the pure fragment seam renders the tick it
 // reported, the line is written, and nothing fallible follows it before Ok. The
-// guard REJECT emits nothing — any client can invoke this reducer, so a line on
-// the reject path would be an unauthenticated log-amplification vector into a
-// 30-day store. ABSENCE of the hourly line is therefore the abort-loop dead-man
+// guard REJECT emits nothing: on the 2.x host a scheduled function is private
+// (owner/collaborators only; the guard is belt-and-braces), and an owner-driven
+// reject line is still an unbounded 30-day-store write for ticks that never
+// ran. ABSENCE of the hourly line is therefore the abort-loop dead-man
 // signal (the mr_heartbeat idiom, at an hourly cadence): a tick that aborts
 // before the last statement writes no line at all. A cap at its bound is a
 // backlog HINT, never a proof — the stamp cap may have been reached exactly

@@ -553,11 +553,19 @@ plus a crate API with one caller), and no ban is lifted (nothing was in the way)
   It is UNCONDITIONAL on the success path (a zero-count line is the negative an operator needs and the
   beat the dead-man reads), placed after the helper — the last WRITE, whose point deletes can still abort
   the transaction — and before `Ok(())`, the last STATEMENT: ADR-0243 D2's rollback rule, applied to a
-  scheduled reducer. The guard-reject path emits nothing, and ADR-0243 D7's amplification argument is
-  STRONGER here than for the export reducer: `export_bundle_reaper` is a plain `#[spacetimedb::reducer]`
-  any client can invoke — the `ctx.sender() != ctx.database_identity()` guard is what makes it
-  scheduler-only — so its reject path is client-drivable at will, and a line there would be an
-  unauthenticated log-amplification vector into a 30-day store.
+  scheduled reducer. The guard-reject path emits nothing. On the deployed 2.x host a scheduled function
+  is PRIVATE by default — only the database owner and team collaborators can bypass the schedule table
+  and invoke it manually (the 2.0 migration guide; the repo's own `spacetimedb-reducer` skill card) — so
+  the `ctx.sender() != ctx.database_identity()` guard is belt-and-braces rather than the sole defence
+  (it stays: it is pinned by rb-48 and by the crate-wide scheduler-guard censuses, and removing it is an
+  ADR-level posture change). The reject line stays absent for ADR-0243 D7's reason in its weaker,
+  authenticated form: an owner-drivable reject line is still an unbounded write into a 30-day store,
+  and a line there would record ticks that never ran. (The rb-87 security audit corrected an earlier
+  draft of this paragraph that called the reduction client-drivable — 1.x behaviour, not 2.x.)
+  This beat is a RETENTION / LIVENESS signal and deliberately NOT per-subject erasure evidence: with
+  aggregate counts only it cannot say that subject X's snapshot was destroyed at time T — that evidence
+  is the subject-bearing `data_export` / cascade lines (ADR-0243) plus the TTL invariant, never this
+  line, and a subject must not be added here (audit N1).
 - The evt vocabulary grows by one closed value, `export_bundle_reap`, mirroring the shipped
   `{reducer="mr_heartbeat", evt="heartbeat"}` pair; Alloy labels `{reducer, evt}` dynamically and no evt
   roster exists in `ops/` or `evals/`, so no ops-side edit accompanies it.
@@ -596,7 +604,7 @@ is pinned at zero in this file (`rb65p [emit/no-breadcrumb]`), privacy.rs cannot
 `"exit"` literals m20e's G9 scanner requires at the call site, and a causeless INFO line does not belong
 on the trace-pair surface. (d) A pre-delete "planned" line: the host writes a line as the reducer runs and
 it survives a later rollback, so a line above the deletes records ticks that aborted, and two lines double
-every operator count of one event. (e) Emitting on the guard reject: ADR-0243 D7, and the reject is client-drivable (above). (f) A derived `backlog`
+every operator count of one event. (e) Emitting on the guard reject: ADR-0243 D7 in its authenticated form (above). (f) A derived `backlog`
 flag: above. (g) A counter instead of a line: Alloy derives `mr_log_events_total{reducer,evt}` from the
 line — the line IS the metric.
 
