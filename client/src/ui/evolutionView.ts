@@ -42,6 +42,19 @@
 // in place (A12, ui/overlayA11y.ts:52-54); (a) now agrees with this code: each view creates its
 // OWN root under the shared MOUNT — four roots, four `OverlayId`s, four records. Closing a sibling
 // here would close an overlay the player still has open. Pinned by `S4-CROSS-VIEW-DISTINCT-ROOTS`.
+//
+// m23-s9 (M23 §2.7, ADR-0253) — COLOURS AND SIZES ARE A CONTRACT, NOT DECORATION. Every colour
+// below is a `var(--mr-evo-*)` token declared in `client/src/styles.css`, never a literal: a
+// literal is unreachable by the sheet's `@media (prefers-contrast: more)` override, so one stray
+// hex would leave that string un-recoloured for a high-contrast user. Backgrounds use the
+// `background-color` LONGHAND (the shorthand hides the value from the DOM oracle). Font sizes are
+// `px` like every sibling view — the old `em` sizes mis-applied WCAG's large-text threshold and
+// scaled differently from the rest of the UI. Only declarations on a fixed allow-list may appear
+// (no `opacity`/`filter`/`text-shadow`/… — each is a way to dim text the contrast oracle cannot
+// see), and no element may carry a `class` or `id` (a stylesheet rule is the other way around
+// the inline colours). All of it is measured from the rendered DOM by `evolutionView.test.ts`
+// (m23s9 X1–X4), with the four fixture states named there; a new element or colour here must
+// be added to those censuses in the same change.
 import type {
   EvolutionGateViewModel,
   EvolutionMonsterViewModel,
@@ -67,9 +80,9 @@ export class EvolutionView {
 
     this.#root = document.createElement('div');
     this.#root.style.cssText =
-      'position:fixed;inset:0;z-index:100;background:rgba(0,0,0,0.8);' +
+      'position:fixed;inset:0;z-index:100;background-color:var(--mr-evo-backdrop);' +
       'display:none;flex-direction:column;align-items:center;padding:24px;' +
-      'overflow-y:auto;font-family:monospace;color:#e0e0e0;';
+      'overflow-y:auto;font-family:monospace;color:var(--mr-evo-fg);';
 
     const title = document.createElement('h2');
     title.textContent = 'Evolution';
@@ -79,14 +92,15 @@ export class EvolutionView {
     // frozen in ui/overlayRegistry.ts and the DOM moves to it, never the reverse.
     title.setAttribute('data-testid', 'evolution-title');
     title.setAttribute('tabindex', '-1');
-    title.style.cssText = 'margin:0 0 8px;color:#fff;';
+    title.style.cssText = 'margin:0 0 8px;color:var(--mr-evo-fg);';
     this.#root.appendChild(title);
 
     const hint = document.createElement('p');
     hint.textContent =
       'Each path lists what it needs and how close this monster is. When two or more ' +
       'paths are ready at once, you choose which one to take.';
-    hint.style.cssText = 'margin:0 0 16px;color:#aaa;font-size:0.85em;max-width:700px;';
+    hint.style.cssText =
+      'margin:0 0 16px;color:var(--mr-evo-muted);font-size:14px;max-width:700px;';
     this.#root.appendChild(hint);
 
     this.#listEl = document.createElement('div');
@@ -127,7 +141,7 @@ export class EvolutionView {
     if (vm.monsters.length === 0) {
       const empty = document.createElement('p');
       empty.textContent = 'No monsters yet.';
-      empty.style.color = '#666';
+      empty.style.cssText = 'color:var(--mr-evo-muted);';
       this.#listEl.appendChild(empty);
       return;
     }
@@ -139,7 +153,9 @@ export class EvolutionView {
   #renderCard(mon: EvolutionMonsterViewModel): HTMLDivElement {
     const card = document.createElement('div');
     card.setAttribute('data-testid', 'evo-monster-card');
-    card.style.cssText = 'background:#1e1e2e;border-radius:6px;padding:10px;border:1px solid #333;';
+    card.style.cssText =
+      'background-color:var(--mr-evo-card);border-radius:6px;padding:10px;' +
+      'border:1px solid var(--mr-evo-border);';
 
     const name = document.createElement('div');
     // Explicit check avoids falsy-coercion: an empty nickname ("") shows the species name.
@@ -152,13 +168,13 @@ export class EvolutionView {
     stats.textContent =
       `Lv.${mon.level} · Stage ${mon.tier} · Trust ${mon.trustTier} · ` +
       `Quality time ${mon.qualityTimeTier} · Nutrition ${mon.nutritionPct}%`;
-    stats.style.cssText = 'font-size:0.8em;color:#aaa;margin-bottom:6px;';
+    stats.style.cssText = 'font-size:13px;color:var(--mr-evo-muted);margin-bottom:6px;';
     card.appendChild(stats);
 
     if (mon.paths.length === 0) {
       const none = document.createElement('div');
       none.textContent = 'No evolution paths.';
-      none.style.cssText = 'font-size:0.8em;color:#666;';
+      none.style.cssText = 'font-size:13px;color:var(--mr-evo-muted);';
       card.appendChild(none);
     }
     for (const path of mon.paths) {
@@ -170,7 +186,7 @@ export class EvolutionView {
       const ready = document.createElement('div');
       ready.setAttribute('data-testid', 'evo-ready-note');
       ready.textContent = `Ready — evolves into ${mon.readyPathName} on your next action.`;
-      ready.style.cssText = 'margin-top:6px;font-size:0.85em;color:#34d399;';
+      ready.style.cssText = 'margin-top:6px;font-size:14px;color:var(--mr-evo-ok);';
       card.appendChild(ready);
     }
 
@@ -178,7 +194,7 @@ export class EvolutionView {
     if (mon.choices.length > 0) {
       const prompt = document.createElement('div');
       prompt.textContent = 'Two or more paths are ready — pick one:';
-      prompt.style.cssText = 'margin-top:6px;font-size:0.85em;color:#e0e0e0;';
+      prompt.style.cssText = 'margin-top:6px;font-size:14px;color:var(--mr-evo-fg);';
       card.appendChild(prompt);
 
       const picker = document.createElement('div');
@@ -196,18 +212,18 @@ export class EvolutionView {
     const row = document.createElement('div');
     row.setAttribute('data-testid', 'evo-path-row');
     row.style.cssText =
-      'margin-top:6px;padding:6px;border-radius:4px;background:#181826;' +
-      `border-left:3px solid ${path.met ? '#34d399' : '#555'};`;
+      'margin-top:6px;padding:6px;border-radius:4px;background-color:var(--mr-evo-row);' +
+      `border-left:3px solid ${path.met ? 'var(--mr-evo-ok)' : 'var(--mr-evo-border)'};`;
 
     const heading = document.createElement('div');
     heading.textContent = `→ ${path.toSpeciesName}`;
-    heading.style.cssText = `font-size:0.85em;color:${path.met ? '#34d399' : '#ccc'};`;
+    heading.style.cssText = `font-size:14px;color:${path.met ? 'var(--mr-evo-ok)' : 'var(--mr-evo-fg)'};`;
     row.appendChild(heading);
 
     const status = document.createElement('div');
     // `unmetReason` is null exactly when the path is reachable, so this is total.
     status.textContent = path.unmetReason ?? 'All requirements met.';
-    status.style.cssText = `font-size:0.75em;margin-bottom:4px;color:${path.met ? '#34d399' : '#f59e0b'};`;
+    status.style.cssText = `font-size:12px;margin-bottom:4px;color:${path.met ? 'var(--mr-evo-ok)' : 'var(--mr-evo-warn)'};`;
     row.appendChild(status);
 
     for (const gate of path.gates) {
@@ -223,7 +239,7 @@ export class EvolutionView {
     const row = document.createElement('div');
     row.setAttribute('data-testid', 'evo-gate-row');
     row.textContent = `${gate.met ? '✓' : '•'} ${gate.label}: ${gate.currentText} / ${gate.requiredText}`;
-    row.style.cssText = `font-size:0.75em;color:${gate.met ? '#8fbc8f' : '#999'};`;
+    row.style.cssText = `font-size:12px;color:${gate.met ? 'var(--mr-evo-ok)' : 'var(--mr-evo-muted)'};`;
     return row;
   }
 
@@ -232,8 +248,8 @@ export class EvolutionView {
     btn.setAttribute('data-testid', 'evo-choice');
     btn.textContent = `Evolve into ${choice.toSpeciesName}`;
     btn.style.cssText =
-      'padding:4px 12px;background:#059669;border:none;border-radius:4px;color:#fff;' +
-      'cursor:pointer;font-size:0.85em;';
+      'padding:4px 12px;background-color:var(--mr-evo-button);border:none;border-radius:4px;' +
+      'color:var(--mr-evo-fg);cursor:pointer;font-size:14px;';
     btn.addEventListener('click', () => {
       btn.disabled = true; // debounce: re-enabled on the next server-tick refresh
       this.#callbacks.onEvolve(monsterId, choice.toSpecies);
