@@ -11401,12 +11401,15 @@ fn rb67p_adr0220_citation_oracle_control() {
 //   once with frozen signatures; helper body equality with its rustfmt twin;
 //   zero full-table sweeps file-wide with the one range chain attributed to the
 //   helper at the inclusive cutoff; bundle-accessor arithmetic and scope; the
-//   crate-wide accessor ownership ratchet, counting CALLS, PATH segments and
-//   brace-list IMPORTS alike, beside the three bans that close the spellings
-//   which name the accessor nowhere at all — no macro metavariable in a method
-//   or path position, no glob of the schema module in production code, and no
-//   macro or re-export in the exempt owning module; the helper never named
-//   outside privacy.rs; a closed roster of ten tests and forty-eight helpers.
+//   crate-wide accessor ownership ratchet, over a source tree first PROVEN whole
+//   (no path attribute leaves the scanned directory, no file is include!d),
+//   counting CALLS, PATH segments and brace-list IMPORTS alike, beside the bans
+//   that close the spellings which name the accessor nowhere at all — no macro
+//   metavariable in a method or path position, no glob of the schema module in
+//   production code, and no macro or re-export in the exempt owning module; the
+//   helper never named outside privacy.rs; a closed roster of ten tests and
+//   fifty-two helpers, over a file that may neither synthesize a declaration nor
+//   import one.
 //
 // THE SPLIT, restated. The ONLY new LOGIC this slice ships is the cutoff
 // arithmetic, and it is a PURE fn — so T1 and T2 EXECUTE it (T2 against the
@@ -12131,6 +12134,128 @@ fn rb85_glob_count(raw: &str) -> usize {
     n
 }
 
+/// Every path ATTRIBUTE in `raw` — the `#[path]` form carrying an assignment — as
+/// the literal it names.
+///
+/// An attribute whose `=` is followed by something other than a double quote
+/// contributes an EMPTY entry, so the LENGTH of this vector answers `how many
+/// path attributes does this file carry` — which is what the privacy_tests.rs
+/// clause asks — while the escape clause judges the literals it could read. A
+/// `#[path]` with no `=` at all is PROSE and contributes nothing: this module
+/// mentions the attribute in three doc comments and must go on being able to.
+///
+/// The needle is assembled from fragments like every other dangerous token here,
+/// and that is load-bearing twice over: the ban below scans THIS file too, and the
+/// control fixtures spell the very shape it forbids.
+fn rb85_path_literals(raw: &str) -> Vec<String> {
+    let bytes = raw.as_bytes();
+    let needle = concat!("#[pa", "th");
+    // The double-quote BYTE, never spelled as a char literal (module hygiene: the
+    // file that carries a string stripper may not carry a quote inside a char).
+    let dq = 34u8;
+    let mut out: Vec<String> = Vec::new();
+    let mut start = 0usize;
+    while let Some(rel) = raw[start..].find(needle) {
+        let at = start + rel;
+        let end = at + needle.len();
+        start = end;
+        if end < bytes.len() && is_word_byte(bytes[end]) {
+            continue;
+        }
+        let eq = rb85_skip_fwd(bytes, end);
+        if bytes.get(eq) != Some(&b'=') {
+            continue;
+        }
+        let open = rb85_skip_fwd(bytes, eq + 1);
+        if bytes.get(open) != Some(&dq) {
+            out.push(String::new());
+            continue;
+        }
+        let mut k = open + 1;
+        while k < bytes.len() && bytes[k] != dq {
+            k += 1;
+        }
+        out.push(raw[open + 1..k].to_string());
+    }
+    out
+}
+
+/// How many `#[path]` attributes in `raw` name a file the source-tree walk cannot
+/// reach: one that climbs out of its own directory, or an absolute one.
+///
+/// MEASURED (round-5 RT-A7, CRITICAL). A production module placed at
+/// `server-module/extra/` and wired in from a module under `src/` by a path
+/// attribute naming a parent-relative file, beside an ordinary `pub(crate) mod`
+/// declaration — no cfg, no macro, a plain `ctx.db` chain inside — is compiled
+/// into the wasm and is INVISIBLE to every crate-wide clause in this
+/// slice, because `rb85_src_tree` walks `server-module/src` and nothing else. The
+/// whole ratchet rests on the claim that the walk sees every production module;
+/// this clause and the `include!` ban beside it are what make that claim TRUE
+/// rather than conventional.
+///
+/// LITERAL-scoped, not line-scoped: a `..` elsewhere on a line that also mentions
+/// the attribute (a doc comment, a relative path in prose) is not an escape and is
+/// not counted. What is counted is the path the compiler would actually open.
+fn rb85_path_escape_count(raw: &str) -> usize {
+    rb85_path_literals(raw)
+        .iter()
+        .filter(|literal| literal.contains("..") || literal.starts_with('/'))
+        .count()
+}
+
+/// How many `include!` macro CALLS `raw` carries.
+///
+/// The OTHER way a file the walk never reads becomes part of the crate: `include!`
+/// pastes source at the point of call, so the pasted file needs no module
+/// declaration and no `#[path]` at all. `include_str!` and `include_bytes!` are
+/// DATA rather than code — this module itself reads three source files that way —
+/// and neither matches the needle, because neither contains it: the bang follows
+/// `include` directly only in the code form.
+fn rb85_include_count(raw: &str) -> usize {
+    let bytes = raw.as_bytes();
+    let needle = concat!("incl", "ude!");
+    let mut n = 0usize;
+    let mut start = 0usize;
+    while let Some(rel) = raw[start..].find(needle) {
+        let at = start + rel;
+        let end = at + needle.len();
+        start = end;
+        if at > 0 && is_word_byte(bytes[at - 1]) {
+            continue;
+        }
+        if bytes.get(rb85_skip_fwd(bytes, end)) == Some(&b'(') {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// How many FILE-LEVEL module declarations `raw` carries — `mod <name>;` at any
+/// indentation, with or without a visibility keyword.
+///
+/// An INLINE module (`mod x {`) declares no file and is not counted; neither is a
+/// fragmented pin of the token, whose line starts with the assembling call rather
+/// than with the keyword.
+fn rb85_mod_decl_count(raw: &str) -> usize {
+    raw.lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            let rest = trimmed
+                .strip_prefix("pub(crate) ")
+                .or_else(|| trimmed.strip_prefix("pub(super) "))
+                .or_else(|| trimmed.strip_prefix("pub "))
+                .unwrap_or(trimmed);
+            match rest.strip_prefix("mod ") {
+                Some(tail) => match tail.strip_suffix(';') {
+                    Some(name) => !name.is_empty() && name.chars().all(m22s4_is_word_char),
+                    None => false,
+                },
+                None => false,
+            }
+        })
+        .count()
+}
+
 /// How many times `ident` is REACHED — called, taken as a path segment, or
 /// imported in a use-tree brace list — in RAW, unstripped source.
 ///
@@ -12163,8 +12288,8 @@ fn rb85_glob_count(raw: &str) -> usize {
 /// WHY THE BRACE-LIST FORM TOO, MEASURED (round-4 RT-A5). A module can also
 /// acquire the accessor with the name bounded by nothing interesting at all —
 /// `use crate::schema::{export_bundle};` puts a `{` before it and a `;` after it —
-/// and then reach the table through a `macro_rules!` splice whose call site spells
-/// `reach!(ctx, export_bundle)`, where the name sits between a comma and a close
+/// and then reach the table through a declarative-macro splice whose call site
+/// spells `reach!(ctx, export_bundle)`, where the name sits between a comma and a close
 /// paren. Neither occurrence is a call or a path segment. So the backward walk
 /// gets a THIRD arm: over whitespace, comments, identifier bytes and commas (which
 /// is the whole alphabet of a use-tree group, `as` alias text included) to a `{`
@@ -12196,8 +12321,19 @@ fn rb85_glob_count(raw: &str) -> usize {
 /// counter and is not left open: it is CLOSED crate-wide by `[rb85/splice-ban]`
 /// (no metavariable in a method or path position, in any file but this one),
 /// `[rb85/glob-ban]` (no glob import of the schema module), and the two privacy.rs
-/// clauses that keep the owning module from becoming the laundering point. What
-/// REMAINS disclosed is a PROC-MACRO splice: a derive or attribute macro that
+/// clauses that keep the owning module from becoming the laundering point.
+///
+/// THE SCOPE CLAIM, stated precisely because everything here rests on it: this
+/// counter is applied to every `.rs` file the walk returns, and the walk reads
+/// `server-module/src` and nothing else. That is a complete account of the crate's
+/// production modules BECAUSE two further clauses make it one — `[rb85/path-escape-ban]`
+/// (no module declaration whose `#[path]` climbs out of that directory or names an
+/// absolute file) and `[rb85/include-ban]` (no `include!`, which would paste a file
+/// into the crate with no declaration at all). Without that pair the sentence
+/// `every module of this crate is scanned` is a convention; with it, it is a gate,
+/// and RT-A7 measured exactly what its absence costs.
+///
+/// What REMAINS disclosed is a PROC-MACRO splice: a derive or attribute macro that
 /// generates the receiver chain from tokens no text scan in this crate can see.
 /// That is not a paren-adjacency question at all — it needs a new dependency in
 /// `server-module/Cargo.toml` and therefore an ADR, which is a reviewed event by
@@ -12401,6 +12537,14 @@ fn rb85_ratchet_control_cases() -> [(&'static str, String, usize); 21] {
 /// (:438-481) and it is the point: a ratchet spelled as a list of file names
 /// this file maintains by hand would be silently defeated by the one thing it
 /// exists to catch — a NEW module reaching the accessor.
+///
+/// THIS DIRECTORY IS THE WHOLE CRATE, and that is asserted rather than assumed:
+/// every production module lives under `server-module/src` BECAUSE
+/// `[rb85/path-escape-ban]` forbids a module declaration whose `#[path]` climbs
+/// out of it or names an absolute file, and `[rb85/include-ban]` forbids pasting a
+/// file in with no declaration at all. Both run over every file this walk returns,
+/// before any other per-file clause, because a tree that is not whole does not
+/// make the clauses after it wrong — it makes them vacuous.
 fn rb85_src_tree() -> Vec<(String, String)> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut out: Vec<(String, String)> = Vec::new();
@@ -13290,6 +13434,18 @@ fn rb85_helper_body_exact() {
 /// that is the trade taken deliberately: a new module that so much as names this
 /// accessor is a reviewed event.
 ///
+/// SINCE ROUND 5 the ratchet first proves it is reading the WHOLE crate. RT-A7
+/// measured the cheapest bypass of all: a production module at
+/// `server-module/extra/`, holding an ordinary `ctx.db` chain over the export
+/// chunk table with no macro, no alias and no cfg, wired in from a module under
+/// `src/` by a parent-relative `#[path]`. The walk reads `src/`, so every clause
+/// below read past it and the suite stayed green. `[rb85/path-escape-ban]` and
+/// `[rb85/include-ban]` are applied to EVERY file the walk returns, privacy.rs and
+/// privacy_tests.rs included, and they are what turn `the walk sees every
+/// production module` from a convention into a gate. They run FIRST in the
+/// per-file loop for the same reason: a tree that is not whole makes every clause
+/// after it vacuous rather than wrong.
+///
 /// SINCE ROUND 4 the ratchet is FOUR clauses rather than one, because RT-A5
 /// measured a sweep that no single counter could see: a brace-list import of the
 /// accessor trait (`use crate::schema::{export_bundle};` — the name bounded by a
@@ -13695,6 +13851,87 @@ fn rb85_reaper_reads_a_bounded_range_and_never_sweeps() {
         );
     }
 
+    // (10a-iv) the PATH-ESCAPE counter's own control. Every clause in this test
+    // reads a tree; these fixtures are what say the tree is the whole crate.
+    let dq = rb22p_dq();
+    let path_attr = concat!("#[pa", "th");
+    let path_cases: [(&str, String, usize); 6] = [
+        (
+            "a parent-directory escape — the RT-A7 shape",
+            format!("{path_attr} = {dq}../extra/x.rs{dq}]"),
+            1,
+        ),
+        (
+            "an ABSOLUTE path, which escapes without a single dot",
+            format!("{path_attr} = {dq}/tmp/x.rs{dq}]"),
+            1,
+        ),
+        (
+            "the ordinary sibling-file form every test module in this crate uses",
+            format!("{path_attr} = {dq}movement_tests.rs{dq}]"),
+            0,
+        ),
+        (
+            "a path into a SUBdirectory, which the walk still reaches and which \
+             must therefore stay legal",
+            format!("{path_attr} = {dq}sub/x.rs{dq}]"),
+            0,
+        ),
+        (
+            "a PROSE mention with no assignment at all — three doc comments in \
+             this very file spell it that way",
+            format!("`{path_attr}]` in a doc comment"),
+            0,
+        ),
+        (
+            "a line comment between the attribute and its assignment",
+            format!("{path_attr} // c\n = {dq}../a.rs{dq}]"),
+            1,
+        ),
+    ];
+    for (what, text, want) in &path_cases {
+        let got = rb85_path_escape_count(text);
+        assert_eq!(
+            got, *want,
+            "[rb85/path-control]: over {what} the path-escape counter reads {got}; it must read \
+             {want}. The rule is LITERAL-scoped rather than line-scoped on purpose: what matters \
+             is the file the compiler would open, so a relative path mentioned in prose beside the \
+             attribute is not an escape, while an absolute path with no dots in it is. Fixture: \
+             {text:?}"
+        );
+    }
+
+    // (10a-v) the INCLUDE counter's own control.
+    let inc = concat!("incl", "ude!");
+    let include_cases: [(&str, String, usize); 3] = [
+        (
+            "a code include of a file outside the scanned tree",
+            format!("{inc}({dq}../x.rs{dq})"),
+            1,
+        ),
+        (
+            "the same with a space before the argument list",
+            format!("{inc} ({dq}x{dq})"),
+            1,
+        ),
+        (
+            "a DATA include, which is allowed and which this module itself uses \
+             three times",
+            format!("include_str!({dq}schema.rs{dq})"),
+            0,
+        ),
+    ];
+    for (what, text, want) in &include_cases {
+        let got = rb85_include_count(text);
+        assert_eq!(
+            got, *want,
+            "[rb85/include-control]: over {what} the include counter reads {got}; it must read \
+             {want}. The data forms are deliberately NOT counted — this file reads privacy.rs, \
+             schema.rs and marshal.rs that way, and a ban that caught them would be unsatisfiable \
+             rather than strict. Fixture: {text:?}"
+        );
+    }
+
     let tree = rb85_src_tree();
     assert!(
         tree.len() >= 40,
@@ -13765,11 +14002,44 @@ fn rb85_reaper_reads_a_bounded_range_and_never_sweeps() {
     }
 
     for (rel, text) in &tree {
+        // (10c) THE WALK'S OWN COMPLETENESS, asserted over every file without a
+        // single exemption — privacy.rs and privacy_tests.rs included. Every
+        // clause in this test reads the tree this walk returns, so a module wired
+        // in from OUTSIDE the walked directory is not one more bypass among many:
+        // it is the one that makes all of them vacuous.
+        let escapes = rb85_path_escape_count(text);
+        assert_eq!(
+            escapes,
+            0,
+            "[rb85/path-escape-ban]: `{rel}` declares a module with a `#[path]` that leaves the \
+             directory this walk reads ({escapes} of them). MEASURED (round-5 RT-A7, CRITICAL): a \
+             production file at `server-module/extra/`, holding a plain `ctx.db` chain over the \
+             export chunk table and wired in from a module under `src/` by a parent-relative path \
+             attribute with no cfg on it, compiles into the wasm and is read by NOTHING here — \
+             every accessor, handle, splice and glob clause in this test walks `src/` and stops. \
+             The fix is to put the module under `src/` where the crate's own conventions and this \
+             ratchet can both see it. Path attributes read in this file: {:?}",
+            rb85_path_literals(text)
+        );
+
+        // (10d) ... and the other way in, which needs no module declaration at all.
+        let includes = rb85_include_count(text);
+        assert_eq!(
+            includes, 0,
+            "[rb85/include-ban]: `{rel}` carries {includes} `include!` macro call(s); it must \
+             carry NONE. That macro pastes another file's SOURCE at the point of call, so the \
+             pasted code joins the crate with no module declaration, no path attribute and no \
+             entry in any directory walk — the same escape as the one above, wearing no attribute \
+             at all. The DATA forms are untouched and remain the ordinary way to read a file: this \
+             module reads three source files with one of them, and the crate uses it well over a \
+             hundred times."
+        );
+
         if rel.as_str() == "privacy_tests.rs" {
             continue;
         }
 
-        // (10c) no macro splice in a method or path position — EVERY file, the
+        // (10e) no macro splice in a method or path position — EVERY file, the
         // owning module INCLUDED, since an exempt file is exactly where such a
         // macro would be planted.
         let splices = rb85_splice_count(text);
@@ -13788,7 +14058,7 @@ fn rb85_reaper_reads_a_bounded_range_and_never_sweeps() {
              exemption is why this file is skipped above rather than silently passing."
         );
 
-        // (10d) no glob import of the schema module in production code.
+        // (10f) no glob import of the schema module in production code.
         if rel.as_str() != "privacy.rs" && !rel.ends_with("_tests.rs") {
             let globs = rb85_glob_count(text);
             assert_eq!(
@@ -13810,7 +14080,7 @@ fn rb85_reaper_reads_a_bounded_range_and_never_sweeps() {
             continue;
         }
 
-        // (10e) the accessor itself is never reached from another module.
+        // (10g) the accessor itself is never reached from another module.
         assert_eq!(
             rb85_call_count(text, &ident),
             0,
@@ -13834,7 +14104,7 @@ fn rb85_reaper_reads_a_bounded_range_and_never_sweeps() {
              the alternative (counting a stripped view) was MEASURED blind: one raw-string opener \
              in a doc comment blanks hundreds of lines of the file that follows it."
         );
-        // (10f) nor is the generated handle type that needs no accessor at all.
+        // (10h) nor is the generated handle type that needs no accessor at all.
         assert_eq!(
             rb22p_count(text, &handle),
             0,
@@ -14058,7 +14328,7 @@ fn rb85_attributed_test_declarations(src: &str) -> usize {
     found
 }
 
-/// The forty-eight `rb85_` HELPER fn names this slice ships — every `rb85_`
+/// The fifty-two `rb85_` HELPER fn names this slice ships — every `rb85_`
 /// declaration in this file that is not one of the ten tests.
 ///
 /// CLOSED, exactly like the test roster, and for the same reason one step removed:
@@ -14067,7 +14337,7 @@ fn rb85_attributed_test_declarations(src: &str) -> usize {
 /// new helper cannot arrive without a reviewer seeing it. Every name here is also
 /// asserted DECLARED, exactly once, so the roster cannot drift into a list of
 /// names that no longer exist.
-fn rb85_helper_roster() -> [&'static str; 48] {
+fn rb85_helper_roster() -> [&'static str; 52] {
     [
         "rb85_nd_helper_fn",
         "rb85_nd_helper_named",
@@ -14108,6 +14378,10 @@ fn rb85_helper_roster() -> [&'static str; 48] {
         "rb85_skip_back",
         "rb85_splice_count",
         "rb85_glob_count",
+        "rb85_path_literals",
+        "rb85_path_escape_count",
+        "rb85_include_count",
+        "rb85_mod_decl_count",
         "rb85_call_count",
         "rb85_ratchet_control_cases",
         "rb85_src_tree",
@@ -14147,6 +14421,17 @@ fn rb85_helper_roster() -> [&'static str; 48] {
 /// report a closed roster of ten. It is gated by its own control fixtures
 /// (`[rb85/walker-control]`), because a walker is a scanner like any other and a
 /// scanner that sees nothing passes everything.
+///
+/// THE CENSUSES CAN ONLY CLOSE OVER TEXT THAT EXISTS, which is why two clauses
+/// here are about the FILE rather than about any declaration in it (round-5
+/// RT-A8). A declarative macro expanding to a test attribute plus `fn $name()`,
+/// invoked once with an `rb85_` name, ships an eleventh test that RUNS while the
+/// declaration needle appears nowhere — every census below misses it together, not
+/// one by one. `[rb85/tests-no-macro]` bans the generator; `[rb85/tests-no-mod-file]`
+/// bans the other way to add declarations this file cannot see, a module
+/// declaration or a path assignment pulling in a file no roster names. The
+/// `include!` spelling of that same escape is banned crate-wide, this file
+/// included, by `[rb85/include-ban]` in T6.
 ///
 /// THE FOURTH CENSUS is the arithmetic one, and it exists because the third was
 /// MEASURED insufficient (round-4 RT-A6): a LEGAL multi-line attribute — `#[test]`
@@ -14276,6 +14561,79 @@ fn rb85_test_roster_is_closed() {
          declarations; the walker found {walker_total}. The per-fixture clauses above already \
          separate every shape from every other; this total is what catches a walker wrong in two \
          directions at once, and what makes the pair fail loud rather than cancel out."
+    );
+
+    // --- this file may not SYNTHESIZE a declaration, nor import one ----------
+    //
+    // Everything above counts DECLARATIONS spelled in this file's own text. A
+    // macro that expands to one is spelled nowhere, and a module declaration
+    // brings in a file nothing here reads.
+    let macro_kw = concat!("macro_", "rules!");
+    let macro_defs = rb22p_count(PRIVACY_TESTS_RS, macro_kw);
+    assert_eq!(
+        macro_defs, 0,
+        "[rb85/tests-no-macro]: privacy_tests.rs defines {macro_defs} declarative macro(s); it \
+         must define NONE. MEASURED (round-5 RT-A8): a three-line macro taking an identifier and \
+         expanding to a test attribute plus `fn $name()`, invoked once with an `rb85_`-prefixed \
+         name, ships an ELEVENTH test that RUNS — while the declaration needle never appears \
+         contiguously, so the declaration census, both adjacency needles, the attribute walker and \
+         the declaration total above are ALL blind to it at once. The rosters in this file can \
+         only be closed over text that exists, which is why the text may not be generated. (The \
+         keyword itself is assembled from fragments here, exactly as the rb64p controls already \
+         do, so this clause cannot trip on its own needle.)"
+    );
+
+    let dq = rb22p_dq();
+    let mod_cases: [(&str, String, usize); 6] = [
+        (
+            "a bare file-module declaration",
+            "mod extra;".to_string(),
+            1,
+        ),
+        ("a public one", "pub mod extra;".to_string(), 1),
+        (
+            "a crate-visible one",
+            "pub(crate) mod extra;".to_string(),
+            1,
+        ),
+        ("an INDENTED one", "    mod extra;".to_string(), 1),
+        (
+            "an INLINE module, which declares no file and must not count",
+            "mod extra {".to_string(),
+            0,
+        ),
+        (
+            "a fragmented PIN of the token, which is this file's own idiom",
+            format!("concat!({dq}mod{dq}, {dq}extra;{dq})"),
+            0,
+        ),
+    ];
+    for (what, text, want) in &mod_cases {
+        let got = rb85_mod_decl_count(text);
+        assert_eq!(
+            got, *want,
+            "[rb85/tests-no-mod-file]: over {what} the module-declaration counter reads {got}; it \
+             must read {want}. Without these fixtures the zero below would be satisfied by a \
+             matcher that recognises nothing. Fixture: {text:?}"
+        );
+    }
+    let mods = rb85_mod_decl_count(PRIVACY_TESTS_RS);
+    assert_eq!(
+        mods, 0,
+        "[rb85/tests-no-mod-file]: privacy_tests.rs declares {mods} file-level module(s); it must \
+         declare NONE. It is a LEAF: it is itself declared by privacy.rs through the cfg-test-gated \
+         path attribute that `rb48_privacy_has_exactly_one_cfg_attribute` pins, and a module \
+         declared from HERE would pull in a file that no roster in this test names and no census \
+         reads — an eleventh test, or a hundred, in a file the walk above never opens."
+    );
+    let path_attrs = rb85_path_literals(PRIVACY_TESTS_RS).len();
+    assert_eq!(
+        path_attrs, 0,
+        "[rb85/tests-no-mod-file]: privacy_tests.rs carries {path_attrs} `#[path]` ASSIGNMENT(s); \
+         it must carry none. The three prose mentions of the attribute in this file are untouched \
+         and must stay legal — what separates an attribute from prose is the `=`, and that is what \
+         this counts. The `include!` spelling of the same escape is banned crate-wide, this file \
+         included, by `[rb85/include-ban]` in the ratchet above."
     );
 
     // --- the DECLARATION TOTAL: tests plus a CLOSED helper roster ------------
