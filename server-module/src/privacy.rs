@@ -1782,12 +1782,15 @@ fn export_reap_cutoff_ms(now_ms: i64, ttl_ms: i64) -> i64 {
 // stamps, because a stamp selected from inside the window carries a tail past
 // its edge. A stamp is one request's bundle, or every bundle committed in that
 // same millisecond (residual R-rb-86-SAMEMS). The atomicity invariant is
-// precisely `one request, one stamp`, and `m22s4_now_bound_once` pins it three
-// ways: `[X9/now-bind]` (the reducer binds the clock once), `[X9/now-file]` (two
-// clock calls file-wide) and `[X9/now-stamp]` (the insert writes that binding
-// into `created_at_ms`, the field separator included, so no per-chunk offset can
-// creep in). A break there degrades to the status-quo tear, never to destroying
-// a live export.
+// precisely `one request, one stamp`, and privacy_tests.rs pins it four ways:
+// `m22s4_now_bound_once`'s `[X9/now-bind]` (the reducer binds the clock once),
+// `[X9/now-file]` (two clock calls file-wide) and `[X9/now-stamp]` (the insert
+// writes that binding into `created_at_ms`, field separator included), plus
+// rb-86's `[rb86/stamp-site]`, which freezes the export reducer's whole insert
+// loop by adjacency with exactly one `now` binding — a shadowing `let now`, a
+// `zip(now..)` and a closure parameter were each MEASURED to pass the first
+// three. A break there degrades to the status-quo tear, never to destroying a
+// live export.
 //
 // The delete is a RANGED-index point delete, not the unique-column delete this
 // module used until rb-86: it lowers to

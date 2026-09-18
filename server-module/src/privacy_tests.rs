@@ -13224,11 +13224,13 @@ fn rb85_export_bundle_created_at_ms_carries_the_btree_index() {
 /// its contract, since the deferred X9 native test injects the second one; the
 /// `-> usize` count dropped, which would strand its one named consumer, the
 /// deferred X9 native execution test. (rb-86 shipped NO second consumer: the
-/// one-shot drain this line used to name was REJECTED on the `plan_reaper_arm`
-/// surplus-row hazard, and the per-bundle reap keeps the hourly interval
-/// singleton exactly as it is. Since rb-86 the returned count is the datastore's
-/// actual deleted-ROW count rather than the planned key count, because a stamp
-/// deletes its whole bundle including rows the window never read.)
+/// `ScheduleAt::Time` follow-up this line used to name was REJECTED on the
+/// `plan_reaper_arm` surplus-row hazard — a second schedule row is surplus by
+/// construction and the next arm would delete the hourly interval row instead —
+/// so the per-bundle reap keeps the hourly singleton exactly as it is. Since
+/// rb-86 the returned count is the datastore's actual deleted-ROW count rather
+/// than the planned key count, because a stamp deletes its whole bundle
+/// including rows the bounded window never read.)
 ///
 /// SCOPE, since rb-86: the two seams this test walks are rb-85's. The third
 /// private seam in the module, `plan_export_reap_stamps`, is declared, scoped,
@@ -14805,9 +14807,15 @@ fn rb85_test_roster_is_closed() {
 // tick over a simulated table. Nothing here calls the ctx-bound TTL helper —
 // that is a LINK failure of the whole lib-test binary, not a red test, which is
 // why rb-85's naming ban stands and why the helper's own atomicity is proven by
-// the revised body-equality pin plus the structural census in T7 instead. T6-T9
-// are SOURCE pins over privacy.rs through this module's strip pipeline and say
-// so.
+// the revised body-equality pin plus the structural census in T7 instead. T6,
+// T7, T9 and T10 are SOURCE pins over privacy.rs through this module's strip
+// pipeline and say so.
+//
+// AND THE INVARIANT THE DESIGN RESTS ON IS GATED TOO. `one request <=> one
+// stamp` is what makes a creation stamp a BUNDLE; T10 freezes the export
+// reducer's whole insert loop because three clippy-clean per-chunk-stamp shapes
+// were MEASURED green against every field-level and count-level clause this
+// module had, including rb-86's own tightening of `m22s4 [X9/now-stamp]`.
 //
 // SCAN HYGIENE (rb22p_scan_hygiene scans THIS FILE): line comments only, no
 // block-comment delimiter, no raw-string prefix, no output or debug macro token,
@@ -14871,6 +14879,28 @@ fn rb86_nd_delete_loop() -> String {
     "forstampinstamps{".to_string()
 }
 
+/// The WHOLE insert loop of `request_data_export`, squashed — the module's one
+/// creation-stamp MINT, pinned as a single adjacency needle.
+///
+/// Whole rather than field by field, and that is a measurement rather than a
+/// preference: a per-CHUNK stamp passes every field-level and count-level clause
+/// this module owns. `rb86_export_write_site_is_frozen_to_one_stamp` records the
+/// three shapes. The dangerous tokens are assembled from fragments like every
+/// other needle here, so a raw-corpus scanner concatenating this file cannot
+/// mistake the literal for a live write site.
+fn rb86_nd_insert_loop() -> String {
+    [
+        "forcinplan{".to_string(),
+        m22s4_nd_bundle_insert(),
+        concat!("Export", "Bundle{").to_string(),
+        "chunk_id:0,owner_identity:me,request_id:nowasu64,".to_string(),
+        "table_name:c.table.to_string(),chunk_index:c.chunk_index,".to_string(),
+        "total_chunks:total,payload_json:c.payload,created_at_ms:now,".to_string(),
+        "});}".to_string(),
+    ]
+    .concat()
+}
+
 // --- frozen pins and their independently spelled control inputs --------------
 
 /// THE FROZEN squashed signature of the bundle-selection seam.
@@ -14896,14 +14926,26 @@ fn rb86_seam_sig_pin() -> String {
 /// be taken over the WHOLE window, because a cap applied there would plan a
 /// PREFIX of the expired ids and the stamps of the rows it dropped would never
 /// be reaped — a bundle split by the seam instead of by the delete loop.
+///
+/// THE PROJECTION IS AN EXPLICIT LOOP, not an iterator chain, and that is a
+/// CONSTRAINT rather than a style choice. `[rb85/iter-census]` budgets `.iter()`
+/// in privacy.rs against a closed list of three sanctioned TABLE reads, spelled
+/// against the VERB and against no receiver at all — precisely so a sweep with
+/// no nameable receiver still counts. A `rows.iter()` here is invisible to that
+/// distinction and spends a slot the budget reserves, taking the file-wide count
+/// to four; the loop form mirrors `plan_export_reap` directly above it and keeps
+/// the census byte-identical at three.
 fn rb86_seam_body_pin() -> String {
     [
         concat!(
             "letplanned=plan_export",
             "_reap(rows,now_ms,ttl_ms,rows.len());"
         ),
-        "letmutstamps:Vec<i64>=rows.iter().filter(|r|planned.contains(&r.0))",
-        ".map(|r|r.1).collect();",
+        "letmutstamps:Vec<i64>=Vec::new();",
+        "for&(id,created)inrows{",
+        "ifplanned.contains(&id){",
+        "stamps.push(created);",
+        "}}",
         "stamps.sort_unstable();stamps.dedup();stamps.truncate(max_stamps);stamps",
     ]
     .concat()
@@ -14932,15 +14974,43 @@ fn rb86_seam_body_source() -> String {
             "\n    let planned = plan_export",
             "_reap(rows, now_ms, ttl_ms, rows.len());\n"
         ),
-        "    let mut stamps: Vec<i64> = rows\n",
-        "        .iter()\n",
-        "        .filter(|r| planned.contains(&r.0))\n",
-        "        .map(|r| r.1)\n",
-        "        .collect();\n",
+        "    let mut stamps: Vec<i64> = Vec::new();\n",
+        "    for &(id, created) in rows {\n",
+        "        if planned.contains(&id) {\n",
+        "            stamps.push(created);\n",
+        "        }\n",
+        "    }\n",
         "    stamps.sort_unstable();\n",
         "    stamps.dedup();\n",
         "    stamps.truncate(max_stamps);\n",
         "    stamps\n",
+    ]
+    .concat()
+}
+
+/// The export reducer's insert loop as whitespace-bearing SOURCE text (control
+/// input), spelled INDEPENDENTLY of the needle above rather than derived from it.
+///
+/// Feeding this through the LIVE pipeline must reproduce `rb86_nd_insert_loop()`
+/// exactly once. A needle built out of its own helper proves nothing, and a
+/// hand-typed squashed literal with one character wrong is a permanently red gate
+/// that reads exactly like a missing implementation.
+fn rb86_insert_loop_source() -> String {
+    [
+        "\n    for c in plan {\n        ",
+        concat!("ctx", ".db."),
+        concat!("export", "_bundle()"),
+        concat!(".ins", "ert(Export"),
+        "Bundle {\n",
+        "            chunk_id: 0,\n",
+        "            owner_identity: me,\n",
+        "            request_id: now as u64,\n",
+        "            table_name: c.table.to_string(),\n",
+        "            chunk_index: c.chunk_index,\n",
+        "            total_chunks: total,\n",
+        "            payload_json: c.payload,\n",
+        "            created_at_ms: now,\n",
+        "        });\n    }\n",
     ]
     .concat()
 }
@@ -15100,14 +15170,26 @@ fn rb86_groups(table: &[(u64, i64, u8)]) -> Vec<((i64, u8), usize)> {
 /// is designated to die on come first and are not shadowed by a neighbour that
 /// happens to red earlier for the same reason.
 ///
-/// Kills: M2 the `planned.contains` filter dropped and M5 the same filter
-/// INVERTED, by `[rb86/only-expired]`; M3 `truncate(max_stamps)` dropped, by
-/// `[rb86/stamps-cap]`; M4 the seam handing `max_stamps` to `plan_export_reap`
-/// instead of `rows.len()` and M17 a seam that returns only the first stamp, by
-/// `[rb86/plan-over-whole-window]` — whose ids are GROUPED per stamp on purpose,
-/// since an interleaved fixture lets both mutants survive; M6 `sort_unstable`
-/// dropped, by `[rb86/oldest-stamp-first]`; M1 the dedup dropped, by
-/// `[rb86/same-ms-tie]`.
+/// Kills, each named with the row it ACTUALLY first-fails on (first failure
+/// wins, so a designation a neighbouring row shadows is worth nothing):
+/// * M2 the `planned.contains` guard dropped, and M5 the same guard INVERTED →
+///   `[rb86/only-expired]`.
+/// * M17 a seam that returns only the first stamp → `[rb86/only-expired]` as
+///   well: that row expects two stamps, so it fires a row earlier than the
+///   three-bundle row does.
+/// * M3 `truncate(max_stamps)` dropped → `[rb86/stamps-cap]`.
+/// * M4 the seam handing `max_stamps` to `plan_export_reap` instead of
+///   `rows.len()` → `[rb86/plan-over-whole-window]`, whose ids are GROUPED per
+///   stamp on purpose: an interleaved fixture lets that mutant survive.
+/// * M6 `sort_unstable` dropped → `[rb86/oldest-stamp-first]`, and ONLY there in
+///   this test: the three rows above it all happen to present their planned
+///   stamps in ascending window order. It is also why T2's distinctness clause
+///   cannot be relied on for M6 — `dedup` collapses ADJACENT equals only, so an
+///   unsorted plan reds T2 on ordering rather than on repetition.
+/// * M1 the dedup dropped → `[rb86/plan-over-whole-window]` here (the plan grows
+///   to `[s1, s1, s2]` under a budget of three). Its DESIGNATED kill is T2
+///   `[rb86/stamps-distinct]`, which names the property directly;
+///   `[rb86/same-ms-tie]` below is the same tooth in its smallest form.
 ///
 /// HONEST LIMIT / PRECONDITION: the seam is total, but the post-condition `every
 /// returned stamp is expired` holds only for a window whose ids are DISTINCT,
@@ -15712,11 +15794,12 @@ proptest! {
         let now: i64 = 1_000_000;
         let ttl: i64 = 1_000;
 
+        // `zip` over an unbounded counter rather than a hand-rolled `id += 1`:
+        // clippy's `explicit_counter_loop` fires on the latter under
+        // `-D warnings`, which `just lint` applies to the test target too.
         let mut rows: Vec<(u64, i64)> = Vec::new();
-        let mut id = 1u64;
-        for stamp in &stamps {
+        for (id, stamp) in (1u64..).zip(stamps.iter()) {
             rows.push((id, *stamp));
-            id += 1;
         }
 
         let planned = crate::privacy::plan_export_reap(&rows, now, ttl, rows.len());
@@ -15795,6 +15878,14 @@ proptest! {
     /// rest on the btree's ascending yield, which rb-85 records as an
     /// expectation and not an SDK contract: the same window reversed must
     /// produce the same post-tick table.
+    ///
+    /// THE SHIPPED-CAP ARM IS MADE TO BIND. A drawn population of at most eleven
+    /// small bundles cannot reach either shipped constant, so an arm that simply
+    /// re-ran the tick at 256/16 would be inert — green over a cap that never
+    /// applied. A deterministic block of twenty single-chunk bundles is appended
+    /// for that arm alone, which puts more than sixteen distinct expired stamps
+    /// in front of the plan on every case while the table stays under the read
+    /// cap, so `[rb86/stamps-cap-prop]` measures the write bound doing its job.
     #[test]
     fn rb86_tick_leaves_every_bundle_whole(
         bundles in proptest::collection::vec(
@@ -15874,16 +15965,27 @@ proptest! {
              claim resting on undocumented behaviour"
         );
 
-        let shipped = rb86_tick(
-            &table,
-            now,
-            ttl,
-            crate::privacy::EXPORT_REAP_MAX_DELETE_PER_TICK,
-            crate::privacy::EXPORT_REAP_MAX_STAMPS_PER_TICK,
-            false,
-        );
+        // The SHIPPED-cap arm. The drawn population alone is at most eleven
+        // bundles of at most six chunks, so NEITHER shipped cap could bind and
+        // the arm would assert nothing at all about the numbers that actually
+        // ship. A DETERMINISTIC block of twenty single-chunk bundles is appended
+        // — deterministic so CI sees the same arm on every run — which makes the
+        // WRITE cap bind on every case while the whole table stays far under the
+        // READ cap (66 + 20 is well below 256). The window is therefore the whole
+        // expired population and the plan is exactly the sixteen oldest distinct
+        // stamps in it, which is what the two clauses below pin.
+        let read_cap = crate::privacy::EXPORT_REAP_MAX_DELETE_PER_TICK;
+        let write_cap = crate::privacy::EXPORT_REAP_MAX_STAMPS_PER_TICK;
+        let mut shipped_table = table.clone();
+        for (det_owner, det_stamp) in (100u8..120u8).zip(1i64..) {
+            shipped_table.push((next_id, det_stamp, det_owner));
+            next_id += 1;
+        }
+        let shipped = rb86_tick(&shipped_table, now, ttl, read_cap, write_cap, false);
+
+        let shipped_pre = rb86_groups(&shipped_table);
         let shipped_groups = rb86_groups(&shipped);
-        for (key, before) in &pre {
+        for (key, before) in &shipped_pre {
             let after = shipped_groups
                 .iter()
                 .find(|(k, _)| k == key)
@@ -15898,12 +16000,44 @@ proptest! {
                 after
             );
         }
+
+        let before_stamps: std::collections::BTreeSet<i64> =
+            shipped_table.iter().map(|(_, stamp, _)| *stamp).collect();
+        let after_stamps: std::collections::BTreeSet<i64> =
+            shipped.iter().map(|(_, stamp, _)| *stamp).collect();
+        let gone: Vec<i64> = before_stamps.difference(&after_stamps).copied().collect();
+        let oldest: Vec<i64> = before_stamps
+            .iter()
+            .copied()
+            .filter(|stamp| *stamp <= cutoff)
+            .take(write_cap)
+            .collect();
+        prop_assert_eq!(
+            gone.len(),
+            write_cap,
+            "[rb86/stamps-cap-prop]: at the shipped caps the tick must reap EXACTLY {} distinct \
+             creation stamps — the write bound — from a population that always holds more than \
+             that many expired ones. Fewer is throughput the constant's own rationale promises; \
+             more is an unbounded write set, and a bundle's size is not bounded by the read window",
+            write_cap
+        );
+        prop_assert_eq!(
+            &gone,
+            &oldest,
+            "[rb86/stamps-cap-prop]: the stamps reaped at the shipped caps must be the OLDEST \
+             expired ones. Keeping an arbitrary subset leaves the oldest personal data in the \
+             table indefinitely under sustained load, which is the fairness property the seam's \
+             sort exists for and the one thing the btree's ascending yield is NOT allowed to be \
+             responsible for"
+        );
     }
 }
 
 // ===========================================================================
-// T6 / T7 / T9 — THE SOURCE PINS. Structure over privacy.rs, through this
-// module's three-stage strip pipeline.
+// T6 / T7 / T9 / T10 — THE SOURCE PINS. Structure over privacy.rs, through this
+// module's three-stage strip pipeline. T6 and T7 pin the REAP side (the seam and
+// the helper that spends its plan); T9 pins the two bounds and their wiring; T10
+// pins the WRITE side — the one site that mints the creation stamps a bundle IS.
 // ===========================================================================
 
 /// T6 (plan §9.4; ledger X1, X7, X8): the bundle-selection seam is declared
@@ -16043,9 +16177,11 @@ fn rb86_reap_bundles_seam_declared_once_private_with_frozen_signature_and_body()
         "[rb86/seam-body-exact]: the seam body must be EXACTLY the frozen plan-project-sort-dedup-\
          truncate sequence — the expiry pass run over the WHOLE window (`rows.len()`, never a cap, \
          because a cap there plans a PREFIX of the expired ids and silently strands the stamps of \
-         the rows it dropped), the stamps of the planned rows and nothing else, then distinct, \
-         then oldest first, then capped at the caller's budget. Containment was MEASURED \
-         insufficient three times in this module for strictly simpler bodies. Read: {body:?}"
+         the rows it dropped), the stamps of the planned rows and nothing else collected by an \
+         EXPLICIT loop (an iterator chain here spends a slot in the closed `.iter()` budget \
+         `[rb85/iter-census]` keeps for table reads), then distinct, then oldest first, then \
+         capped at the caller's budget. Containment was MEASURED insufficient three times in this \
+         module for strictly simpler bodies. Read: {body:?}"
     );
 }
 
@@ -16068,17 +16204,30 @@ fn rb86_reap_bundles_seam_declared_once_private_with_frozen_signature_and_body()
 /// register (a delete appended BESIDE the correct one), because a mutant that
 /// REPLACES the stamp delete reds the presence clause first.
 ///
-/// Kills: the rb-85 delete-by-primary-key restored in the helper, by
-/// `[rb86/delete-by-stamp]` and, additively, `[rb86/no-pk-delete-in-helper]`; a
-/// range or cutoff delete argument, by `[rb86/delete-is-a-point]` — the shape
-/// `.delete(..=stamp)` is a CROSS-BUNDLE wipe that every count and adjacency
-/// clause is green over; the rejected owner keying, by `[rb86/no-owner-delete]`;
-/// a helper that deletes only the first planned stamp, or guards the loop on the
-/// window size, by `[rb86/delete-loop]` and `[rb86/no-early-exit]`, neither of
-/// which is the equality pin; a third reach of the stamp index, by
-/// `[rb86/stamp-index-reaches]`; the caller's identity smuggled into a scheduled
-/// tick, by `[rb86/no-sender-in-helper]`; and a second caller of the seam
-/// anywhere in the crate, by `[rb86/seam-scope]`.
+/// Kills, with the clause each shape ACTUALLY first-fails on (first failure wins,
+/// so a designation that is shadowed is worth nothing):
+/// * the rb-85 delete-by-primary-key restored in the helper → `[rb86/delete-by-stamp]`
+///   (no stamp-keyed delete is left to extract); a PK delete APPENDED beside the
+///   correct one is what isolates `[rb86/no-pk-delete-in-helper]`.
+/// * `.delete(..=stamp)` or `.delete(cutoff)` → `[rb86/delete-is-a-point]`. A range
+///   argument is a CROSS-BUNDLE wipe: it erases every bundle at or below that
+///   stamp in one syscall, none of which the seam planned or the write budget
+///   counted, and every presence, count and adjacency clause is green over it.
+/// * the owner keying this slice rejected → `[rb86/delete-by-stamp]` when it
+///   REPLACES the stamp delete; an APPENDED owner delete isolates
+///   `[rb86/no-owner-delete]`.
+/// * `stamps.first()` instead of the loop → `[rb86/delete-is-a-point]` in its
+///   `if let Some(&stamp)`-free spelling (the argument reads `*stamp`), and
+///   `[rb86/delete-loop]` in the spelling that keeps the argument a plain binding.
+/// * a `break` (or `continue`) inside the loop, which reaps exactly ONE bundle a
+///   tick → `[rb86/delete-loop]`. MEASURED as green under every other clause here.
+/// * an `if` guard on the window size → `[rb86/delete-loop]`'s conditional count.
+///   `[rb86/no-early-exit]` is DEFENCE IN DEPTH and says so: a guarded `return`
+///   trips the `if` clause first, and an unguarded one is `unreachable_code`
+///   under `-D warnings` before any test runs.
+/// * a third reach of the stamp index → `[rb86/stamp-index-reaches]`; the caller's
+///   identity smuggled into a scheduled tick → `[rb86/no-sender-in-helper]`; a
+///   second caller of the seam anywhere in the crate → `[rb86/seam-scope]`.
 ///
 /// HONEST LIMITS: source structure. It cannot prove the host issues an
 /// index-point delete rather than a scan, and it is blind to an import alias
@@ -16185,10 +16334,14 @@ fn rb86_reaper_deletes_whole_bundles_by_stamp_and_never_by_chunk_id() {
     let file_wide = rb22p_count(&squashed, &stamp_delete);
     assert_eq!(
         file_wide, 1,
-        "[rb86/delete-census]: privacy.rs must carry the whole delete statement `{stamp_delete}` \
-         exactly once; found {file_wide}. The count is file-wide and exact so a SECOND \
-         stamp-keyed delete — in a new helper, or appended to an existing one — cannot hide behind \
-         a correct in-helper count."
+        "[rb86/delete-census]: privacy.rs must carry the whole delete STATEMENT `{stamp_delete}` \
+         exactly once; found {file_wide}. HONEST SCOPE, so this clause is not read as more than \
+         it is: the needle carries the accumulator binding and the widening cast as well as the \
+         chain, so it pins the SHAPE of the sanctioned statement and is BLIND to a second \
+         stamp-keyed delete spelled any other way — `...created_at_ms().delete(other) as usize;` \
+         with a different argument, or one whose result is discarded, is invisible here. What \
+         closes that is `[rb86/stamp-index-reaches]` below, which counts every reach of the \
+         creation-stamp index in the file and requires exactly two."
     );
     assert_eq!(
         rb22p_count(&helper, &stamp_delete),
@@ -16274,6 +16427,19 @@ fn rb86_reaper_deletes_whole_bundles_by_stamp_and_never_by_chunk_id() {
          where a short circuit hides: the tick reaps nothing under some condition while the plan, \
          the loop and the delete all remain present and correct."
     );
+    for tok in ["break", "continue"] {
+        let jumps = m22s4_left_bounded_count(&helper, tok);
+        assert_eq!(
+            jumps, 0,
+            "[rb86/delete-loop]: the helper carries {jumps} `{tok}` token(s); it must carry NONE. \
+             MEASURED: `for stamp in stamps {{ reaped += ...; break; }}` reaps exactly ONE bundle \
+             per tick and is green under every other clause in this test — the loop is present, \
+             the delete is inside it at brace depth one, the argument is the loop binding, and no \
+             `if` appears anywhere. Only the body equality pin saw it, and an equality pin reports \
+             that something moved rather than WHICH property broke, which is why this clause \
+             exists beside it."
+        );
+    }
 
     // --- (7) ... with no early exit above it ---------------------------------
     let returns = m22s4_left_bounded_count(&helper, "return");
@@ -16369,9 +16535,10 @@ fn rb86_reaper_deletes_whole_bundles_by_stamp_and_never_by_chunk_id() {
 /// new constant exists: the row cap bounds what a tick DECODES, and a creation
 /// stamp selected from inside that window carries a tail beyond its edge, so the
 /// write set needs a bound of its own. The throughput claim is asserted as an
-/// executable fact rather than left in a comment: sixteen minimum-size bundles
-/// (seventeen chunks, one per exportable table) is at least the 256 rows per
-/// tick the old cap drained.
+/// executable fact rather than left in a comment, and the minimum bundle size it
+/// rests on is DERIVED from `DATA_LIFECYCLE_MANIFEST` rather than transcribed as
+/// a literal: sixteen minimum-size bundles (one chunk per exportable table) is
+/// at least the 256 rows per tick the old cap drained.
 ///
 /// Kills: M18 the stamp cap widened back to the row cap, by
 /// `[rb86/stamp-cap-value]`; the row cap silently reduced, by
@@ -16397,14 +16564,29 @@ fn rb86_bundle_cap_is_sixteen_and_the_read_cap_is_unchanged() {
          changes what a tick WRITES and nothing about what it decodes; moving this number here \
          would silently re-open the byte-cost residual rb-85 closed."
     );
+    // The minimum bundle size is DERIVED from the manifest, never transcribed:
+    // `plan_export_chunks` emits one chunk per EXPORTABLE entry even when that
+    // table holds no rows for the subject, so the smallest bundle a request can
+    // commit is exactly that count. `m22s4_manifest_exportable` is the same
+    // reader m22s4's own export-scope census uses (which pins the number to
+    // seventeen), so if export scope legitimately changes, this arithmetic
+    // follows it in the same diff instead of going quietly false.
+    let min_bundle = m22s4_manifest_exportable().len();
     assert!(
-        write_cap * 17 >= read_cap,
-        "[rb86/stamp-cap-throughput]: sixteen stamps must drain at least as fast as the 256-row \
-         cap they replace. A bundle is at least seventeen chunks — one per exportable table in the \
+        min_bundle > 0,
+        "[rb86/stamp-cap-throughput]: the manifest reader returned ZERO exportable tables, so the \
+         throughput arithmetic below would pass over nothing and the floor would be satisfied by \
+         any cap at all."
+    );
+    assert!(
+        write_cap * min_bundle >= read_cap,
+        "[rb86/stamp-cap-throughput]: the stamp cap must drain at least as fast as the row cap it \
+         replaced. A bundle is at least {min_bundle} chunks — one per exportable table in the \
          lifecycle manifest — so {write_cap} bundles is {} rows against the old {read_cap}. A \
          write bound below this turns the retention ceiling into a backlog under sustained export \
-         load.",
-        write_cap * 17
+         load, which is the one way the per-bundle reap could be a regression on the shape it \
+         replaced.",
+        write_cap * min_bundle
     );
 
     // --- the constants are wired to the right place, read by ARGUMENT --------
@@ -16453,12 +16635,135 @@ fn rb86_bundle_cap_is_sixteen_and_the_read_cap_is_unchanged() {
     );
 }
 
+/// T10 (round-2 red-team F1, MEASURED three ways; ledger X1, X7): the export
+/// reducer's ONE write site is frozen WHOLE, so every chunk of a request carries
+/// the SAME creation stamp.
+///
+/// THIS IS THE ATOMICITY INVARIANT'S GUARD. The whole per-bundle design rests on
+/// `one request ⇔ one stamp`, because since rb-86 the reap's delete unit IS the
+/// creation stamp. rb-86 already tightened `m22s4 [X9/now-stamp]` from
+/// `created_at_ms:now` to `created_at_ms:now,` — and that is still only a PREFIX
+/// pin on ONE FIELD. Three clippy-clean shapes were measured green against the
+/// tightened needle, against both clock censuses, against all three binding
+/// clauses and against every count in this module:
+///
+/// * (B1) a shadowing binding inside the loop — `for c in plan { let now = now +
+///   c.chunk_index as i64; ...insert... }`;
+/// * (B1') the same offset supplied by the loop header itself — `for (c, now) in
+///   plan.into_iter().zip(now..) { ...insert... }`, which adds no `let now =` at
+///   all and so is invisible to a binding count;
+/// * (B1'') the insert lifted into a closure that takes its own `now`, called
+///   with the offset.
+///
+/// Each one ships an export whose chunks carry N DIFFERENT stamps. The reaper
+/// then deletes that single bundle in N pieces across N ticks — the exact k-of-N
+/// tear this slice exists to close, restored one field expression at a time, and
+/// invisible to every clause that reads a single field or counts a single token.
+///
+/// The instrument is therefore the WHOLE loop as ONE adjacency needle: the
+/// iteration, the rooted receiver chain, the row type and all eight fields in
+/// order. B1 breaks it with the extra binding, B1' with the changed `for` header,
+/// B1'' by moving the insert out of the loop entirely — all three read ZERO.
+/// `[rb86/one-now-binding]` is the second, independent tooth: exactly one binding
+/// named `now` in the whole reducer, where `[X9/now-bind]` only requires that the
+/// SANCTIONED one exists. It is asserted FIRST, deliberately — first failure
+/// wins, so B1 dies on the clause that names its cause and the adjacency needle
+/// is left owning B1' and B1'', neither of which adds a binding at all. Each
+/// clause therefore has a bypass it uniquely reports.
+///
+/// HONEST LIMITS: a source pin on the reducer that MINTS the stamps. It says
+/// nothing about the host, it cannot see an import alias re-pointing `now_ms`
+/// (closed by `m22s4_now_bound_once`'s import-identity clause), and it is
+/// deliberately BRITTLE — any honest reshaping of the export write site is a
+/// reviewed event that must move this literal in the same diff, because that
+/// write site is where a bundle's identity is decided.
+#[test]
+fn rb86_export_write_site_is_frozen_to_one_stamp() {
+    let needle = rb86_nd_insert_loop();
+
+    // --- positive control: the whole-loop needle is SATISFIABLE --------------
+    let control = stripped_for_scan(&rb86_insert_loop_source());
+    assert_eq!(
+        rb22p_count(&control, &needle),
+        1,
+        "[rb86/stamp-site-control]: the whole-loop needle is UNSATISFIABLE — the live pipeline \
+         derives something else from the independently spelled loop text. An unsatisfiable \
+         adjacency needle reads exactly like a missing implementation and sends the next reader to \
+         reverse-engineer the test instead of the spec. Fix the literal FROM THE SPEC, never the \
+         other way round. Control: {control:?}"
+    );
+
+    // --- blindness: the needle must not be satisfiable by PROSE --------------
+    let mut prose = String::new();
+    prose.push_str("fn rb86_site_decoy() ");
+    prose.push('{');
+    prose.push_str("\n    ");
+    prose.push_str(concat!("/", "/ "));
+    prose.push_str(&needle);
+    prose.push_str("\n    let s = ");
+    prose.push(rb22p_dq());
+    prose.push_str(&needle);
+    prose.push(rb22p_dq());
+    prose.push_str(";\n");
+    prose.push('}');
+    prose.push('\n');
+    assert!(
+        prose.contains(needle.as_str()),
+        "[rb86/stamp-site-blind]: the blindness fixture does not carry the needle, so the \
+         assertion below would prove nothing."
+    );
+    let stripped_prose = stripped_for_scan(&prose);
+    assert_eq!(
+        rb22p_count(&stripped_prose, &needle),
+        0,
+        "[rb86/stamp-site-blind]: the strip pipeline still sees the sanctioned write site after it \
+         was placed ONLY inside a line comment and inside a string literal, so this clause would be \
+         satisfiable by a doc comment naming the right loop. Stripped: {stripped_prose:?}"
+    );
+
+    // --- the shipped reducer -------------------------------------------------
+    //
+    // CLAUSE ORDER IS LOAD-BEARING (first failure wins). The binding count runs
+    // FIRST so B1 — the shadowed `let now` inside the loop — dies on the clause
+    // that names its cause, instead of being swallowed by the adjacency needle
+    // that also happens to see it. The needle then owns B1' and B1'', neither of
+    // which adds a binding at all.
+    let squashed = stripped_for_scan(PRIVACY_RS);
+    let body = m22s4_reducer_body(&squashed);
+
+    let bindings = rb22p_count(&body, "letnow=");
+    assert_eq!(
+        bindings, 1,
+        "[rb86/one-now-binding]: `request_data_export` must bind the name `now` EXACTLY once; \
+         found {bindings}. `m22s4 [X9/now-bind]` pins that the SANCTIONED binding \
+         `let now = now_ms(ctx);` EXISTS — it says nothing about a SECOND one, and a shadowing \
+         `let now = now + c.chunk_index as i64;` inside the insert loop (B1) leaves it, both clock \
+         censuses and the field-level `[X9/now-stamp]` pin all green while every chunk of the \
+         request lands on a DIFFERENT stamp. One request must mint one instant, because since \
+         rb-86 that instant is the bundle's identity and the reaper's delete unit."
+    );
+
+    let sites = rb22p_count(&body, &needle);
+    assert_eq!(
+        sites, 1,
+        "[rb86/stamp-site]: `request_data_export` must carry EXACTLY the frozen insert loop, once; \
+         found {sites}. This is the clause that catches the two bypasses which add no binding for \
+         the count above to see: B1', the offset zipped into the loop HEADER \
+         (`for (c, now) in plan.into_iter().zip(now..)`), and B1'', the insert lifted into a \
+         closure that takes its own instant. Both ship an export whose chunks carry N different \
+         stamps, so the reaper removes that one bundle in N pieces over N hours — the exact k-of-N \
+         tear this slice exists to close. The needle is the WHOLE loop because every narrower \
+         instrument in this module was MEASURED green over all three shapes. Reducer body: {body:?}"
+    );
+}
+
 // ===========================================================================
 // THE ROSTER CENSUS — what anchors the ledger's literal test counts.
 // ===========================================================================
 
-/// The nine `rb86_` test names this slice ships, in the plan §9.4 order.
-fn rb86_test_roster() -> [&'static str; 9] {
+/// The ten `rb86_` test names this slice ships, in the plan §9.4 order (T10 is
+/// the round-2 addition the red-team's per-chunk-stamp finding forced).
+fn rb86_test_roster() -> [&'static str; 10] {
     [
         "rb86_reap_bundle_plan_value_table",
         "rb86_reap_bundle_plan_is_distinct_and_oldest_first",
@@ -16468,18 +16773,19 @@ fn rb86_test_roster() -> [&'static str; 9] {
         "rb86_reap_bundles_seam_declared_once_private_with_frozen_signature_and_body",
         "rb86_reaper_deletes_whole_bundles_by_stamp_and_never_by_chunk_id",
         "rb86_bundle_cap_is_sixteen_and_the_read_cap_is_unchanged",
+        "rb86_export_write_site_is_frozen_to_one_stamp",
         "rb86_test_roster_is_closed",
     ]
 }
 
-/// The twenty-three `rb86_` HELPER fn names this slice ships — every `rb86_`
-/// declaration in this file that is not one of the nine tests.
+/// The twenty-five `rb86_` HELPER fn names this slice ships — every `rb86_`
+/// declaration in this file that is not one of the ten tests.
 ///
 /// CLOSED, exactly like the test roster, so `[rb86/decl-total]` can assert that
-/// the file declares exactly these plus the nine: a tenth test cannot hide behind
-/// an attribute the walker misreads, and a new helper cannot arrive without a
-/// reviewer seeing it.
-fn rb86_helper_roster() -> [&'static str; 23] {
+/// the file declares exactly these plus the ten: an eleventh test cannot hide
+/// behind an attribute the walker misreads, and a new helper cannot arrive
+/// without a reviewer seeing it.
+fn rb86_helper_roster() -> [&'static str; 25] {
     [
         "rb86_nd_seam_fn",
         "rb86_nd_seam_named",
@@ -16489,10 +16795,12 @@ fn rb86_helper_roster() -> [&'static str; 23] {
         "rb86_nd_owner_delete",
         "rb86_nd_stamp_index",
         "rb86_nd_delete_loop",
+        "rb86_nd_insert_loop",
         "rb86_seam_sig_pin",
         "rb86_seam_body_pin",
         "rb86_seam_decl_source",
         "rb86_seam_body_source",
+        "rb86_insert_loop_source",
         "rb86_seam_body",
         "rb86_plan",
         "rb86_bundle_rows",
@@ -16569,8 +16877,8 @@ fn rb86_attributed_test_declarations(src: &str) -> usize {
     found
 }
 
-/// T8 (ledger X1, X2, X3 anchor): this file declares EXACTLY the nine `rb86_`
-/// tests the roster names, each exactly once, and no tenth.
+/// T8 (ledger X1, X2, X3 anchor): this file declares EXACTLY the ten `rb86_`
+/// tests the roster names, each exactly once, and no eleventh.
 ///
 /// A test cannot prove its own existence, but a file CAN prove which tests it
 /// declares. Four censuses, for the four escapes rb-85 MEASURED one round at a
@@ -16583,8 +16891,8 @@ fn rb86_attributed_test_declarations(src: &str) -> usize {
 /// declaration is invisible to a walker.
 ///
 /// Kills: a test renamed out of the ledger's `test(/rb86_/)` filter; a planned
-/// test never written; a tenth test slipped in without moving a literal in the
-/// ledger, including one hidden behind an extra or a multi-line attribute.
+/// test never written; an eleventh test slipped in without moving a literal in
+/// the ledger, including one hidden behind an extra or a multi-line attribute.
 #[test]
 fn rb86_test_roster_is_closed() {
     let roster = rb86_test_roster();
@@ -16628,7 +16936,7 @@ fn rb86_test_roster_is_closed() {
         flush + indented,
         roster.len(),
         "[rb86/roster-closed]: privacy_tests.rs declares {} `rb86_` test(s) by adjacency; the \
-         roster names {}. Two of the nine live inside `proptest!` blocks and are indented by four \
+         roster names {}. Two of the ten live inside `proptest!` blocks and are indented by four \
          spaces, so the two forms are SUMMED — counting only the flush-left one would let a \
          property test be deleted while the roster still reported a closed set.",
         flush + indented,
@@ -16641,7 +16949,7 @@ fn rb86_test_roster_is_closed() {
     let cfg_open = concat!("#[c", "fg(");
     let cfg_test = concat!("#[c", "fg(test)]");
     let ignore_attr = concat!("#[ign", "ore]");
-    let walker_cases: [(&str, String, usize); 5] = [
+    let walker_cases: [(&str, String, usize); 6] = [
         (
             "the MEASURED multi-line attribute: a test attribute, then an \
              attribute whose bracket stays open across two further lines, then \
@@ -16671,6 +16979,12 @@ fn rb86_test_roster_is_closed() {
             format!("}}\n\n{decl}c() {{}}\n"),
             0,
         ),
+        (
+            "a declaration needle with TEXT before it on its line — this file's \
+             own string fixtures, which are prose and not declarations",
+            format!("{test_attr}\n    let s = mk({decl}decoy());\n"),
+            0,
+        ),
     ];
     let mut walker_total = 0usize;
     for (what, text, want) in &walker_cases {
@@ -16679,13 +16993,17 @@ fn rb86_test_roster_is_closed() {
             got, *want,
             "[rb86/walker-control]: over {what} the attribute-block walker finds {got} \
              test-attributed declaration(s); it must find {want}. A walker is a scanner like any \
-             other and a scanner that sees nothing passes everything. Fixture: {text:?}"
+             other and a scanner that sees nothing passes everything. The LAST fixture is the one \
+             that keeps this block honest about itself: T6's blindness fixture builds the text \
+             `fn rb86_decoy()` at runtime, and the only thing that stops the declaration walk \
+             counting it is the rule that the bytes before `fn` on its line must all be spaces. \
+             Fixture: {text:?}"
         );
         walker_total += got;
     }
     assert_eq!(
         walker_total, 3,
-        "[rb86/walker-control]: the five fixtures together must yield exactly three attributed \
+        "[rb86/walker-control]: the six fixtures together must yield exactly three attributed \
          declarations; the walker found {walker_total}. The per-fixture clauses above separate \
          every shape from every other; this total is what catches a walker wrong in two directions \
          at once, and what makes the pair fail loud rather than cancel out."
@@ -16710,8 +17028,8 @@ fn rb86_test_roster_is_closed() {
         "[rb86/decl-total]: privacy_tests.rs declares {} `rb86_` fn(s) whose line carries nothing \
          but indentation before them; the two CLOSED rosters name {} tests plus {} helpers. This \
          is the backstop for the attribute walker above and it does not care WHY a declaration is \
-         invisible to it: a tenth test — attributed, un-attributed, or hidden behind a multi-line \
-         attribute — moves this number, as does an unlisted helper. If it reds after an honest \
+         invisible to it: an eleventh test — attributed, un-attributed, or hidden behind a \
+         multi-line attribute — moves this number, as does an unlisted helper. If it reds after an honest \
          addition, add the name to the roster it belongs to in the same diff, which is the \
          reviewed event this clause exists to force.",
         declared,
