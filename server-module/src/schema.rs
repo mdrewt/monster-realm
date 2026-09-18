@@ -917,7 +917,19 @@ pub struct BattleAction {
 /// like `account`, `public` here would hand one player's whole personal-data
 /// dump to every client. `created_at_ms` is server-stamped at insert; the S4
 /// TTL reaper (rb-48) re-derives staleness from it plus the injected clock, so no
-/// caller can supply it. Synthetic `chunk_id` PK: views strip primary keys, and
+/// caller can supply it. Since rb-85 (the dated ADR-0238 amendment) that
+/// column also carries a FIELD-level btree index: it is what lets the TTL reaper
+/// read a bounded `..=cutoff` range of expired chunks instead of the whole table
+/// on every tick. Removing the index is NOT compile-coupled (a hand-written
+/// accessor of the same name compiles), so the privacy_tests.rs index pin is
+/// what keeps it; and the generated `created_at_ms()` accessor is a new
+/// crate-wide time-ordered read over EVERY owner's chunks, census-guarded there
+/// (seven sanctioned uses, all in privacy.rs). Row-invisible to clients: the
+/// table is private, `spacetime generate` emits no bindings change and
+/// `evals/baselines/table-schemas.json` records no index information — only the
+/// unauthenticated schema endpoint publishes index METADATA, as it does for
+/// every table, which discloses nothing beyond the column names already there.
+/// Synthetic `chunk_id` PK: views strip primary keys, and
 /// a `#[primary_key]`+`#[auto_inc]` column may carry no default, so the row
 /// needs its own key. `request_id` is MINTED BY S4 (generation strategy is
 /// S4's decision); chunk-tuple uniqueness (owner, request, table, chunk_index)
@@ -940,6 +952,7 @@ pub struct ExportBundle {
     pub chunk_index: u32,
     pub total_chunks: u32,
     pub payload_json: String,
+    #[index(btree)]
     pub created_at_ms: i64,
 }
 
@@ -1273,7 +1286,7 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
     DataLifecycleEntry {
         table: "export_bundle_reaper_schedule",
         policy: DeletionPolicy::NotOwned,
-        basis: "global hourly TTL reaper schedule for export_bundle (rb-48, ADR-0238): an \
+        basis: "global hourly TTL reaper schedule for the export_bundle table (rb-48, ADR-0238): an \
                 interval singleton with no Identity column, armed by request_data_export \
                 and by init and sync_content, never keyed to any player",
         exportable: false,

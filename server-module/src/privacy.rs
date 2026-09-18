@@ -1608,19 +1608,27 @@ fn my_export_bundle(ctx: &spacetimedb::ViewContext) -> Vec<ExportBundle> {
 }
 
 // ===========================================================================
-// PRV1-14 TTL reaper (rb-48, ADR-0238). A GLOBAL hourly interval singleton —
-// not a per-request one-shot: no Identity column (so NotOwned in the manifest,
-// no re-key entry), reachability-independent, and the only sanctioned
-// full-table sweep in this module. The behavioural proof is the pure
-// `plan_export_reap` seam (the native test host models no table scan and no
-// writes); the shell below is pinned byte-exactly in squashed form by
-// privacy_tests.rs, so any reshaping is a deliberate, test-visible change.
+// PRV1-14 TTL reaper (rb-48, ADR-0238; bounded read since rb-85, the dated
+// amendment). A GLOBAL hourly interval singleton — not a per-request one-shot:
+// no Identity column (so NotOwned in the manifest, no re-key entry) and
+// reachability-independent. Its read is a BOUNDED btree range over
+// `created_at_ms`, so this module no longer sweeps `export_bundle` at all: the
+// one full-table read of the chunk table that rb-48 had to sanction is gone.
+// (The module's three remaining `.iter()` reads — the schedule singleton in the
+// arm and the two unindexed own-row export scans of ADR-0226 — are unaffected
+// and are censused by privacy_tests.rs.) The behavioural proof is the pure
+// `plan_export_reap` seam (the native test host models no table scan, no range
+// scan and no writes); the shell below and the private helper it delegates to
+// are both pinned byte-exactly in squashed form by privacy_tests.rs, so any
+// reshaping is a deliberate, test-visible change.
 // ===========================================================================
 
 // Retention ceiling for an export snapshot (spec M22 section 5: seven days).
 pub(crate) const EXPORT_BUNDLE_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
-// Sweep cadence: an hour is 168 times finer than the TTL, and every tick is an
-// unindexed scan of export_bundle under the global write lock.
+// Sweep cadence: an hour is 168 times finer than the TTL, and every tick is one
+// bounded range read plus at most EXPORT_REAP_MAX_DELETE_PER_TICK deletes under
+// the global write lock — so the cadence argument is about transaction COUNT,
+// not about scan cost.
 pub(crate) const EXPORT_REAP_INTERVAL: Duration = Duration::from_secs(3600);
 // Per-tick delete cap: export rows carry whole payload chunks, so a small batch
 // that always commits beats a large one that could abort every tick forever.
@@ -1657,7 +1665,10 @@ pub(crate) fn plan_export_reap(
 }
 
 // Scheduler-only reducer. GUARD FIRST (before any read). Interval singleton:
-// the runtime keeps the row and re-fires it every EXPORT_REAP_INTERVAL.
+// the runtime keeps the row and re-fires it every EXPORT_REAP_INTERVAL. The
+// clock is read HERE, once per tick, and passed down: one instant per tick for
+// every row the tick weighs, and the helper's cutoff is injectable by a future
+// native test (rb-85). The reducer itself reaches no table.
 #[spacetimedb::reducer]
 pub fn export_bundle_reaper(
     ctx: &ReducerContext,
@@ -1666,21 +1677,70 @@ pub fn export_bundle_reaper(
     if ctx.sender() != ctx.database_identity() {
         return Err(stringify!(export_reaper_scheduler_only).to_string());
     }
+    reap_expired_export_bundles(ctx, now_ms(ctx));
+    Ok(())
+}
+
+// Cutoff seam (rb-85): the NEWEST creation stamp a chunk may carry and still be
+// expired. SATURATING for the reason `plan_export_reap` above records: a panic
+// in a scheduled reducer silently rolls back every tick forever. PURE and ONE
+// LINE on purpose — that is what gives the only new arithmetic this slice ships
+// a return-value oracle as well as a body-equality pin (privacy_tests.rs T1/T2/T8
+// record the measured band-keyed bypass the equality pin closes).
+fn export_reap_cutoff_ms(now_ms: i64, ttl_ms: i64) -> i64 {
+    now_ms.saturating_sub(ttl_ms)
+}
+
+// The TTL sweep itself (rb-85, ADR-0238 amendment; closes R-rb-48-SCANCOST).
+// A BOUNDED INDEX READ, not a full scan: the btree range on the creation stamp
+// yields only rows at or below the cutoff, ascending in key order (btree-backed
+// and therefore expected; neither a documented SDK contract nor something this
+// slice observed — the execution proof is deferred, ledger X9. Progress never
+// depends on it, since every row taken is deleted; only FAIRNESS does), and
+// `.take` caps the read at the SAME constant that caps the delete, so the module
+// decodes at most EXPORT_REAP_MAX_DELETE_PER_TICK rows per tick however large
+// the table grows (the host may fill at most one further iterator buffer beyond
+// the last decoded row). The bound is on ROWS, not bytes (rb-87 owns the
+// byte-level residual).
+//
+// `plan_export_reap` remains the SSOT expiry predicate, applied to the
+// PRE-FILTERED rows: the range is an OPTIMISATION constrained to be a superset
+// of the seam's expired set (property-tested), never a second retention policy.
+// The seam's own `truncate(batch)` can no longer bind and is retained as
+// defence in depth.
+//
+// `now_ms` is a PARAMETER — a trust input. It deliberately SHADOWS the imported
+// fn of the same name (the file's existing idiom in `plan_export_reap`), which
+// turns an in-helper clock read into a compile error rather than something a
+// text census must catch.
+//
+// PRIVATE on purpose: the scheduler-only posture lives in the reducer's guard,
+// and nothing else in the crate may reach this delete path — the compiler, not a
+// convention, is what enforces that. It REPORTS its count and never emits (the
+// rb-40 / ADR-0235 idiom; the calling reducer owns any observation line). The
+// named consumers of that count are the deferred native execution test and
+// rb-86's one-shot drain.
+fn reap_expired_export_bundles(ctx: &ReducerContext, now_ms: i64) -> usize {
+    let cutoff = export_reap_cutoff_ms(now_ms, EXPORT_BUNDLE_TTL_MS);
     let rows: Vec<(u64, i64)> = ctx
         .db
         .export_bundle()
-        .iter()
+        .created_at_ms()
+        .filter(..=cutoff)
+        .take(EXPORT_REAP_MAX_DELETE_PER_TICK)
         .map(|c| (c.chunk_id, c.created_at_ms))
         .collect();
-    for id in plan_export_reap(
+    let ids = plan_export_reap(
         &rows,
-        now_ms(ctx),
+        now_ms,
         EXPORT_BUNDLE_TTL_MS,
         EXPORT_REAP_MAX_DELETE_PER_TICK,
-    ) {
+    );
+    let reaped = ids.len();
+    for id in ids {
         ctx.db.export_bundle().chunk_id().delete(id);
     }
-    Ok(())
+    reaped
 }
 
 // Idempotent self-healing singleton arm (delegates to playtest::plan_reaper_arm,

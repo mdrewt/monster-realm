@@ -2,10 +2,10 @@
 type: SpacetimeDB Table
 title: export_bundle
 slug: tables/export_bundle
-updated: 2026-09-11
+updated: 2026-09-18
 tags: [schema, spacetimedb, private]
 abstract: "PRIVATE per-owner data-export chunk (M22 §5, ADR-0207). One row per `(owner_identity, request_id, table_name)`, sub-chu…"
-resource: server-module/src/schema.rs#L931
+resource: server-module/src/schema.rs#L943
 source: scripts/okf-export.mjs@server-module/src/schema.rs
 visibility: private
 ---

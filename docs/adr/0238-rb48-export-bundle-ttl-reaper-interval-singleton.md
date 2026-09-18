@@ -269,3 +269,124 @@ exclusion prose became a machine-readable bullet block, and one ordinary Rust te
 scheduled-function roster from its `scheduled(...)` table attributes and asserts every name appears
 in exactly one of the two lists, so a tenth scheduled function fails CI until it is classified
 there.
+
+## Amendment (2026-09-13, rb-85 — residual R-rb-48-SCANCOST closed)
+
+The "R-rb-48-SCANCOST" bullet under Residuals above (the paragraph beginning "The hourly
+`export_bundle().iter()` scan is unindexed and full-table") is discharged by rb-85, which was assigned no
+ADR number; this amendment is its decision record. Three sentences of the body above are SUPERSEDED and
+left in place as history: D3's "12× fewer unindexed full-table scans", the Consequences bullet "The hourly,
+unindexed `export_bundle().iter()` scan runs in perpetuity under the crate's single global write lock",
+and the Rejected alternative "A `created_at_ms` btree index + range filter … pushes the expiry decision
+into the database where no native test can observe it". That rejection is REVERSED, and the reason it
+was given no longer holds: the expiry decision did not move. `plan_export_reap` stays the SSOT expiry
+predicate over the PRE-FILTERED rows, and the index range is an optimisation constrained to be a
+superset of the seam's expired set — proved as a property (`rb85_cutoff_range_matches_the_seam_expired_set`:
+two-sided on the reachable domain `0..=2^53` with the shipped TTL, superset over all of `i64`), so the
+pure-seam proof rb-48 valued is untouched. What outweighed it is that the cost was never a tuning matter:
+`join_game` needs no JWT, so unlimited anonymous identities can each write ≥17 chunks, the scan
+materialised every `payload_json` under the global write lock, and its failure mode was a retention
+control silently disabled every tick.
+
+**Decision.** `ExportBundle.created_at_ms` carries a FIELD-level `#[index(btree)]` (schema.rs) — adding an
+index is an always-allowed automigration; the table is private, so `spacetime generate` emits no
+bindings change and `evals/baselines/table-schemas.json` (pk/visibility/columns/order only) does not move;
+the attribute is field-level and not a table-level `index(...)` argument because the out-of-touches
+account-e2e citation marker `accessor = export_bundle)` must stay byte-identical. `export_bundle_reaper`'s
+body is re-frozen to guard → `reap_expired_export_bundles(ctx, now_ms(ctx));` → `Ok(())`. Two PRIVATE fns
+(plain `fn`, compiler-enforced unreachability from every other module; the descendant test module reaches
+them as `crate::privacy::…`) sit between the reducer and the arm: `export_reap_cutoff_ms(now_ms, ttl_ms) =
+now_ms.saturating_sub(ttl_ms)` — pure and one line so it has a return-value oracle AND a body-equality pin
+(a band-keyed cutoff that returns the clock inside the live wall-clock band was MEASURED to re-open the
+full read with every value table and text pin green); and `reap_expired_export_bundles(ctx, now_ms) ->
+usize`, which reads `ctx.db.export_bundle().created_at_ms().filter(..=cutoff).take(EXPORT_REAP_MAX_DELETE_PER_TICK)`
+— the FIRST range-terminated index read in the crate — runs the seam over those rows, deletes by primary
+key, and REPORTS its count (rb-40 idiom; consumers: the deferred native execution test and rb-86's
+one-shot drain). The read bound equals the delete cap, so a tick decodes at most 256 rows however large
+the table grows (the host may fill at most one further iterator buffer beyond the last decoded row); the
+seam's own `truncate(batch)` can no longer bind and is kept as defence in depth. `now_ms` is a PARAMETER
+(a trust input) so the reducer stays the single clock reader (`m22s4_now_bound_once` is byte-identical)
+and a future native test can inject its instant below the guard; the parameter deliberately shadows the
+imported fn, which makes an in-helper clock read a compile error.
+
+**What this changes and does not change.** The bound is on ROWS, not bytes: a sybil still costs
+256 × max chunk bytes per tick (≈25 MB in the pathological `EXPORT_CHUNK_ROWS` = 500 case, ≈25 KB for
+empty anonymous exports) — reduced, not eliminated. Selection shifts from "lowest ids among all expired"
+to "oldest `created_at_ms` among expired, then id"; `chunk_id` is `#[auto_inc]` and every chunk of one
+request shares its stamp, so the orders agree except inside a same-millisecond tie group; progress never
+depends on order (every row taken is deleted), only fairness does, and fairness now rests on the btree
+range's ascending key order — btree-backed and therefore expected, but neither a documented SDK contract
+nor something this slice observed (the execution proof is deferred, below). Storage growth is NOT
+closed: unlimited anonymous identities × one 17-chunk bundle each outgrows the unchanged 256/h drain
+(≈361 bundles/day); the failure mode becomes "bounded drain with unbounded storage growth", which is the
+condition the operator alarm must watch. Removing the index is NOT compile-coupled: an extension trait
+providing `created_at_ms()` over a full sweep compiles clippy-clean with the helper body byte-identical, so
+the index pin in privacy_tests.rs is what keeps it. The generated `created_at_ms()` accessor is a new
+crate-wide time-ordered read over every owner's chunks; it is census-guarded (seven sanctioned
+`ctx.db.export_bundle()` uses, all in privacy.rs, attributed body by body; a RAW-text, call-or-path-aware,
+per-file ratchet asserts no other module spells the accessor call, a `::export_bundle` path to it, or the
+generated handle type — a comment-split call and a fn-item binding through that path were each measured
+green under a contiguous needle. A second artifact-lens pass then measured a brace-list trait import plus a
+`macro_rules!` splice of the accessor name into a receiver position sweeping the table from movement.rs under
+that rule; closed by a brace-list-aware path rule, a crate-wide ban on a metavariable in method or path
+position, a ban on glob-importing the schema module from production files, and no-macro / no-re-export pins
+on privacy.rs itself. A bounded re-probe of those closures then measured a production module placed OUTSIDE
+`src/` through a `#[path = "../…"]` declaration (the walk never reads it) — closed by a path-escape ban (no `..`
+or leading `/` in any `#[path]` literal) and an `include!` ban over every file, which is what makes the `src/`
+walk a complete account of the crate's modules. The disclosed remaining limit is a proc-macro splice, which needs
+a new dependency — a Cargo.toml diff and an ADR, a reviewed event).
+
+**Proof of teeth (ADR-0224: ordinary Rust tests, no eval).** Ten `rb85_` tests in privacy_tests.rs: the
+cutoff value table (with a realistic wall-clock row), the proptest above, body-equality pins on the cutoff,
+the helper (with its one-comma rustfmt twin), `plan_export_reap` and `marshal::now_ms` (the last two closed
+MEASURED band-keyed bypasses one level outside the frozen bodies: a seam predicate gated to the live band
+and a clock returning seconds inside it both passed the whole suite), the field-level index adjacency pin,
+private seams declared once with frozen signatures, the zero-sweep census with the range chain attributed
+to the helper and the receiver-agnostic `.iter()` arithmetic (a full sweep through the constructible
+`export_bundle__TableHandle` ZST behind an extension trait was measured green until the handle-type ban
+landed), the crate-wide ratchet, the helper-never-named-outside-privacy.rs clause, a value table for
+`marshal::now_ms` (the crate's first), and a closed roster with an attribute-AWARE walker plus a declaration
+total pinned to the ten tests and a closed helper roster (an eleventh test behind a multi-line attribute was
+measured to run unseen by a line-prefix walker), and the test file itself pinned macro-free with no file-level
+module or `#[path =` declarations (a `macro_rules!`-synthesized eleventh test was measured to run with the roster
+green). Pin revisions:
+`rb22p_owner_scoped_filter_never_iter`'s file-wide sweep census 1 → 0 (a tightening that restores rb-22's
+original ban; its two per-body clauses were provably unreachable at zero and were deleted),
+`rb48_reaper_body_exact` re-frozen with its twin deleted (accepted set 2 → 1), prose-only retruths
+elsewhere. RED-before: 949 run / 941 passed / 8 failed on the predicted clauses with the cutoff-calling
+tests cfg-stripped, then a build failure (E0425 ×5) with all ten enabled; GREEN: 951 run (942 + 10 with
+`dev_reducers`). Register (harness `memory/projects/gates/rb-85.mutants.py`, 37 rows, run 2026-09-18 on the
+final tree, runner exit 0): 32 mutants killed on their designated clause — including the eight lens-measured
+survivors closed on the resume: the band-keyed clock (band opening one second past T10's sampled row, so only
+the body pin sees it), the band-keyed seam, the comment-split call and the fn-item path from observability.rs,
+the brace-list import plus macro splice from movement.rs, the multi-line-attribute eleventh test, the
+`#[path]`-escaped module outside src/, and the macro-synthesized eleventh test — two INVALID by mechanism (bare index removal →
+E0599; a test calling the helper → `rust-lld: undefined symbol: datastore_index_scan_range_bsatn`, the whole
+lib-test binary), three controls green; evidence `memory/projects/gates/rb-85.x7-register.md`.
+
+**Rejected here.** `RangedIndex::delete(..=cutoff)` — deletes by range without materialising a row, but
+is uncapped and drops `plan_export_reap` as SSOT. A per-request one-shot, `playtest::plan_reap` reuse, and a
+native end-to-end test remain rejected for the reasons above. Widening the helper to `pub(crate)` — an
+unguarded delete path with a caller-supplied clock would then be reachable from any module.
+
+**Deferred (ledger gates/rb-85.gates.md).** X9 → backlog: the oversized-population EXECUTION proof needs
+`server-module/src/native_host_tests.rs` (outside rb-85's touches) to model `datastore_index_scan_range_bsatn`
+over its row store in key order and `datastore_delete_by_index_scan_point_bsatn`; today a test reaching
+the helper fails the whole lib-test binary at link time, and `ReducerContext::__dummy()` cannot pass
+`ctx.database_identity()`; the helper's `(ctx, now_ms) -> usize` shape is built for that test, and
+`rb85_helper_is_never_named_outside_privacy_rs` must be re-attributed 0 → 1 by that slice. X10 → rb-87: the
+operator alarm on `export_bundle` row/byte counts (ops/observability, outside touches).
+
+**Disclosed.** Hidden dependency found at planning and APPLIED on the 2026-09-17 resume, once the
+supervisor added the file to `touches:`: `server-module/src/accounts_tests.rs:4491-4517`
+(`export_bundle_struct_shape_and_privacy`) pins the ExportBundle field span by squashed equality and
+redded on the new attribute; the widening is one `"#[index(btree)]",` fragment before
+`"pubcreated_at_ms:i64,"` plus one `Kills:` line (numstat 2 added, 0 deleted). The plan's three "prose
+citations that drift by one line" (:11230, :11343, :11504, and a fourth at :12789) were already stale on
+master before rb-85 — rb-73's `player_session` insertion had moved those schema.rs lines — so they are
+left as history rather than chased. Also stale and left: ADR-0220:15,31 (`schema.rs:1073-1079`, now
+thirteen lines lower — the ExportBundle doc block grew, not just the attribute line). `docs/knowledge/**`
+stamps regenerated. Residual candidates: R-rb-85-EXPORTADMIT (no global admission control on
+`request_data_export`; the write side of the sybil vector), and a correction to rb-86's deferral premise —
+"no client subscribes to `my_export_bundle`" has been false since rb-53 (`client/src/net/connection.ts:653`),
+so the k-of-N tear is client-observable today.

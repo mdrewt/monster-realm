@@ -2,7 +2,7 @@
 type: SpacetimeDB Table
 title: playtest_reaper_schedule
 slug: tables/playtest_reaper_schedule
-updated: 2026-09-11
+updated: 2026-09-18
 tags: [schema, spacetimedb, private]
 abstract: "SpacetimeDB private table playtest_reaper_schedule."
 resource: server-module/src/playtest.rs#L32
