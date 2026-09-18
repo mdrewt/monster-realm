@@ -330,8 +330,11 @@ green under a contiguous needle. A second artifact-lens pass then measured a bra
 `macro_rules!` splice of the accessor name into a receiver position sweeping the table from movement.rs under
 that rule; closed by a brace-list-aware path rule, a crate-wide ban on a metavariable in method or path
 position, a ban on glob-importing the schema module from production files, and no-macro / no-re-export pins
-on privacy.rs itself. The disclosed remaining limit is a proc-macro splice, which needs a new dependency — a
-Cargo.toml diff and an ADR, a reviewed event).
+on privacy.rs itself. A bounded re-probe of those closures then measured a production module placed OUTSIDE
+`src/` through a `#[path = "../…"]` declaration (the walk never reads it) — closed by a path-escape ban (no `..`
+or leading `/` in any `#[path]` literal) and an `include!` ban over every file, which is what makes the `src/`
+walk a complete account of the crate's modules. The disclosed remaining limit is a proc-macro splice, which needs
+a new dependency — a Cargo.toml diff and an ADR, a reviewed event).
 
 **Proof of teeth (ADR-0224: ordinary Rust tests, no eval).** Ten `rb85_` tests in privacy_tests.rs: the
 cutoff value table (with a realistic wall-clock row), the proptest above, body-equality pins on the cutoff,
@@ -344,18 +347,20 @@ to the helper and the receiver-agnostic `.iter()` arithmetic (a full sweep throu
 landed), the crate-wide ratchet, the helper-never-named-outside-privacy.rs clause, a value table for
 `marshal::now_ms` (the crate's first), and a closed roster with an attribute-AWARE walker plus a declaration
 total pinned to the ten tests and a closed helper roster (an eleventh test behind a multi-line attribute was
-measured to run unseen by a line-prefix walker). Pin revisions:
+measured to run unseen by a line-prefix walker), and the test file itself pinned macro-free with no file-level
+module or `#[path =` declarations (a `macro_rules!`-synthesized eleventh test was measured to run with the roster
+green). Pin revisions:
 `rb22p_owner_scoped_filter_never_iter`'s file-wide sweep census 1 → 0 (a tightening that restores rb-22's
 original ban; its two per-body clauses were provably unreachable at zero and were deleted),
 `rb48_reaper_body_exact` re-frozen with its twin deleted (accepted set 2 → 1), prose-only retruths
 elsewhere. RED-before: 949 run / 941 passed / 8 failed on the predicted clauses with the cutoff-calling
 tests cfg-stripped, then a build failure (E0425 ×5) with all ten enabled; GREEN: 951 run (942 + 10 with
-`dev_reducers`). Register (harness `memory/projects/gates/rb-85.mutants.py`, 35 rows, run 2026-09-18 on the
-final tree, runner exit 0): 30 mutants killed on their designated clause — including the six lens-measured
+`dev_reducers`). Register (harness `memory/projects/gates/rb-85.mutants.py`, 37 rows, run 2026-09-18 on the
+final tree, runner exit 0): 32 mutants killed on their designated clause — including the eight lens-measured
 survivors closed on the resume: the band-keyed clock (band opening one second past T10's sampled row, so only
 the body pin sees it), the band-keyed seam, the comment-split call and the fn-item path from observability.rs,
-the brace-list import plus macro splice from movement.rs, and the multi-line-attribute eleventh test — two
-INVALID by mechanism (bare index removal →
+the brace-list import plus macro splice from movement.rs, the multi-line-attribute eleventh test, the
+`#[path]`-escaped module outside src/, and the macro-synthesized eleventh test — two INVALID by mechanism (bare index removal →
 E0599; a test calling the helper → `rust-lld: undefined symbol: datastore_index_scan_range_bsatn`, the whole
 lib-test binary), three controls green; evidence `memory/projects/gates/rb-85.x7-register.md`.
 
