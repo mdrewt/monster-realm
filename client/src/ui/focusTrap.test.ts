@@ -470,13 +470,14 @@ describe('installTrap — full focusable-type coverage (FOCUSABLE_SELECTOR regre
 });
 
 // ---------------------------------------------------------------------------
-// rb-88 (R-17r-e-E3): refutes focusTrap.ts's now-retracted header claim (module header, was
-// lines 58-62) that the four #app-mounted views share ONE root and that opening the next
-// overlay before closing the previous one stacks two capture listeners on ONE node. The three
-// tests below prove: sibling roots never stack (test 1), the SAME node installed twice DOES
-// double-move focus — what the old comment mis-attributed to siblings (test 2, a
-// characterisation, not a design mandate), and installTrap attaches exactly one capture keydown
-// listener per passed root and none to the shared mount, document, or window (test 3).
+// rb-88 (R-17r-e-E3): refutes focusTrap.ts's now-retracted header claim (module header, lines
+// 58-62 — corrected in place by rb-88, not moved) that the four #app-mounted views share ONE
+// root and that opening the next overlay before closing the previous one stacks two capture
+// listeners on ONE node. The three tests below prove: sibling roots never stack (test 1), the
+// SAME node installed twice DOES double-move focus — what the old comment mis-attributed to
+// siblings (test 2, a characterisation, not a design mandate), and installTrap attaches exactly
+// one capture keydown listener per passed root and none to the shared mount, document, or window
+// (test 3).
 //
 // WRONG-IMPL-KILLED for this block (see the file header's existing index for the rest):
 //   - attach-to-parentElement/mount instead of the passed root           -> test 1, test 3
