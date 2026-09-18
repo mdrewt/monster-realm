@@ -413,11 +413,11 @@ amendment above are SUPERSEDED and left in place as history: "deletes by primary
 count (… consumers: the deferred native execution test and rb-86's one-shot drain)", "The read bound
 equals the delete cap", and "outgrows the unchanged 256/h drain (≈361 bundles/day)". What ships:
 
-- A new PRIVATE pure seam, `plan_export_reap_bundles(rows: &[(u64, i64)], now_ms, ttl_ms, max_bundles)
+- A new PRIVATE pure seam, `plan_export_reap_stamps(rows: &[(u64, i64)], now_ms, ttl_ms, max_stamps)
   -> Vec<i64>`, directly below `plan_export_reap`: it runs `plan_export_reap` — still the SSOT expiry
   predicate — over the WHOLE window (`rows.len()`, not a row cap: the read is already bounded), keeps only
   the creation stamps of the ids the seam plans, makes them distinct, sorts them oldest first regardless
-  of the window's order, and truncates to `max_bundles`. Every stamp it returns is at or below the cutoff,
+  of the window's order, and truncates to `max_stamps`. Every stamp it returns is at or below the cutoff,
   i.e. expired.
 - `reap_expired_export_bundles(ctx, now_ms) -> usize` keeps rb-85's bounded range read byte-for-byte as
   the WINDOW (`.created_at_ms().filter(..=cutoff).take(EXPORT_REAP_MAX_DELETE_PER_TICK)`, ≤ 256 decoded
@@ -430,13 +430,15 @@ equals the delete cap", and "outgrows the unchanged 256/h drain (≈361 bundles/
   in the module sits on a `#[primary_key]` column and is `UniqueColumn::delete -> bool` — and the chain
   text is indistinguishable from the unique form, which is why privacy_tests.rs pins the delete's
   ARGUMENT by equality (`stamp`, a point: a range there would be an uncapped delete).
-- A new constant `EXPORT_REAP_MAX_BUNDLES_PER_TICK: usize = 16` — the tick's WRITE bound. The row cap
-  `EXPORT_REAP_MAX_DELETE_PER_TICK` (name retained; it is pinned in ten places and three documents, and a
-  crate-visible rename is its own slice) is now the READ window only, and its doc comment says so. Sixteen
-  minimum-size bundles (17 chunks each, one per exportable table, empty tables included) is 272 rows —
-  the drain rate of the 256-row cap it replaces (≈384 bundles/day, was ≈361) — and a 256-row window in
-  ascending stamp order holds at most fifteen whole bundles and one straddler anyway, so the cap binds only
-  when the window's order is not what the btree is expected to give.
+- A new constant `EXPORT_REAP_MAX_STAMPS_PER_TICK: usize = 16` — the tick's WRITE bound, counted in
+  creation STAMPS: one stamp is one request's bundle, or every bundle committed inside that same
+  millisecond (see Bounds). The row cap `EXPORT_REAP_MAX_DELETE_PER_TICK` (name retained; it is pinned in
+  ten places and three documents, and a crate-visible rename is its own slice) is now the READ window
+  only, and its doc comment says so. Sixteen minimum-size bundles (17 chunks each, one per exportable
+  table, empty tables included) is 272 rows — the drain rate of the 256-row cap it replaces (≈384
+  bundles/day, was ≈361) — and a 256-row window in ascending stamp order holds at most fifteen whole
+  bundles and one straddler anyway, so the cap binds only when the window's order is not what the btree
+  is expected to give.
 - The reducer shell (guard → helper → `Ok(())`), `plan_export_reap`, `export_reap_cutoff_ms`,
   `purge_export_bundles`, `request_data_export`, the arm, schema.rs and the client are unchanged.
 
@@ -452,12 +454,15 @@ degrades to the status-quo k-of-N tear, never to destruction of a live export. I
 row shape and the rb-85 read chain byte-identical, serves the read and the delete from one index, and makes
 ordering independent of the btree range's order (the seam sorts).
 
-**Bounds, stated honestly.** READ: at most 256 decoded rows per tick, unchanged. WRITE: at most 16 bundles
-per tick, each the size of the single `request_data_export` transaction that created it — plus one caveat:
-two bundles committed inside the SAME millisecond share a stamp and form one delete unit (both expired,
-both reaped whole together); `request_data_export` walks seventeen tables per call under the serial write
-lock, so that unit is realistically one bundle (residual R-rb-86-SAMEMS, LOW). Storage growth under sybil
-pressure is still NOT closed (R-rb-85-EXPORTADMIT); the drain is now measured in bundles.
+**Bounds, stated honestly.** READ: at most 256 decoded rows per tick, unchanged. WRITE: at most 16
+creation stamps per tick. A stamp is normally one bundle — the size of the single `request_data_export`
+transaction that created it — but every bundle committed inside the SAME millisecond shares that stamp
+and is reaped in the same delete (all of them expired, all of them whole), so the write set is 16 × (the
+bundles committed in each of those milliseconds), soft-bounded rather than hard-bounded in the attacker's
+direction: `request_data_export` is cheap for a low-state identity and the host serialises reducers at
+millisecond granularity, so a burst of N same-millisecond anonymous exports expires as one unit seven days
+later (residual R-rb-86-SAMEMS, MED — the operator alarm rb-87 owns is the watch). Storage growth under
+sybil pressure is still NOT closed (R-rb-85-EXPORTADMIT); the drain is now measured in stamps.
 
 **Rejected.** (a) The one-shot `ScheduleAt::Time` drain the residual proposed: it still COMMITS the k-of-N
 state (the client would see `incomplete` for seconds instead of an hour), and a second row in
