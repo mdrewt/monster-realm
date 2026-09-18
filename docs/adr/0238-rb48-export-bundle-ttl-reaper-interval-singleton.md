@@ -608,20 +608,34 @@ arithmetic, the bare-call and bare-identifier equalities and the alias ban all a
 outside this slice's touches and is not edited; the supervisor may widen touches for a one-paragraph
 dated amendment there.
 
-**Proof of teeth (ADR-0224: ordinary Rust tests, no eval).** Recorded at slice close in the rb-87 paragraph
-of ARCHITECTURE.md and the harness ledger (`memory/projects/gates/rb-87.gates.md`, RED record
-`rb-87.red-before.md`, register `rb-87.mutants.py` / `rb-87.x7-register.md`): a `rb87_` block in
-privacy_tests.rs — the fields fragment BY VALUE (a value table with pairwise-distinct counts, including the
-cap row) and the exact composed envelope through the shipped `build_log_line` (the first executable oracle
-this reaper has had — the native host still cannot run the reducer, R-rb-85-X9); the tick record and the
-fields builder each declared once, private, with frozen shape/signature/body; the helper's signature
-re-frozen to return the record with `planned` bound before the loop and no constant counts; the reducer's
-ONE emission terminal at depth zero, after the guard, with the fields binding and no breadcrumb; the
-module's two emissions attributed with the alias / fn-pointer equalities and a two-evt partition over the
-whitespace-preserving view (the interior-space evt spelling is byte-identical in every squashed view); and
-a closed roster. The rb-48 reducer-shell and rb-85 helper-body equality pins are re-frozen in place over
-MORE text; `rb65p [emit/count-in-file]` is widened 1 → 2 and repaid as above; the privacy.rs header
+**Proof of teeth (ADR-0224: ordinary Rust tests, no eval).** Recorded in the rb-87 paragraph of
+ARCHITECTURE.md and the harness ledger (`memory/projects/gates/rb-87.gates.md`, RED record
+`rb-87.red-before.md`, register `rb-87.mutants.py` / `rb-87.x7-register.md`): eight `rb87_` tests in
+privacy_tests.rs — `rb87_reap_fields_renders_three_bare_counts` (the fragment BY VALUE over five rows:
+the quiet-hour zeros, pairwise-distinct middle rows, an above-u32 row per field and an all-`usize::MAX`
+row) and `rb87_reap_line_is_the_exact_json_envelope` (the exact composed line through the shipped
+`build_log_line`) are the first EXECUTABLE oracles this reaper has had — the native host still cannot run
+the reducer (R-rb-85-X9); `rb87_tick_record_declared_once_private_with_frozen_shape` (derive adjacency,
+privacy, field shape), `rb87_reap_fields_is_pure` (declared once, the rb-85 24-byte `pub` window, frozen
+signature and body, zero `ctx`), `rb87_helper_reports_the_whole_tick` (the signature re-frozen to return
+the record, no constant counts, `planned` sourced from the stamp plan and bound before the loop header,
+a left-bounded `let` binding census of exactly five — the tests red-team MEASURED a type-annotated
+stamp-plan shadow that published `planned:16, reaped:0` forever with every other clause green),
+`rb87_reaper_emits_one_terminal_observation` (the ONE emission counted first, at depth zero, with the
+fields binding, ordered after the helper and before `Ok`, after the guard, reachable — zero `return` at
+any depth, zero `?`, zero diverging `abort`/`panic!`/`unreachable!`/`todo!`/`unimplemented!`/`exit` in
+the guard→Ok region — no breadcrumb form, the frozen terminal tail LAST as the backstop; clause order is
+load-bearing because the register requires the designated label inside the designated test's own panic
+block), `rb87_module_emits_exactly_two_observations_attributed` (per-body counts over a named roster,
+`total − Σ roster == 0`, and the two-evt partition plus the reject token over the whitespace-PRESERVING
+view — interior-space spellings are byte-identical in every squashed view), and a closed roster. The rb-48
+reducer-shell and rb-85 helper-body equality pins are re-frozen IN PLACE over more text with independently
+spelled controls; `rb65p [emit/count-in-file]` is widened 1 → 2 and repaid as above; the privacy.rs header
 contract's calling-reducer sentence gains the reaper as a LINE-COUNT-NEUTRAL reflow, because sixteen
 inbound `privacy.rs:<line>` citations (ADR-0231, ADR-0252, the client export-assembly tests) point below
-it and thirteen of them live outside this slice's touches. The final test names, counts
-and the register's row verdicts are appended here at slice close.
+it and thirteen of them live outside this slice's touches. Suite 961 → 969 (962 → 970 with
+`dev_reducers`). RED proof: Stage 1 (the three new-symbol items cfg-stripped) 967 run / 958 passed / 9
+failed — the four revised pins plus five rb87_ tests, each on its predicted clause; Stage 2 build failure
+E0425 ×6 + E0422 ×1; the honest fix was green on the first attempt with zero test edits. Register: thirty
+mutants and three controls on the final tree, runner exit 0 — every mutant KILLED on its designated clause,
+every control GREEN, the tree restored byte-exact after every row (`rb-87.x7-register.md`).
