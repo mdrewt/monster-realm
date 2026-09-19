@@ -38,9 +38,14 @@ import {
   type StoreCharacter,
   // EG4 (contract §B): the essence-graph path row, keyed in the store by `pathId` (A1).
   type StoreEvolutionPath,
+  // 20r-d (ADR-0254 D6): the post-evolve reveal SLOT. Neither type exists on master
+  // yet, but `import type` is ERASED by the transform — so the S-NOTICE block at the
+  // foot of this file reds on the missing STORE METHODS, never on this line.
+  type StoreEvolutionReveal,
   type StoreInventory,
   type StoreItemRow,
   type StoreMonsterPub,
+  type StorePendingEvolutionNotice,
   type StorePlayer,
   type StoreProfile,
   type StoreShopItemRow,
@@ -4000,6 +4005,254 @@ describe('AuthoritativeStore ux2 S2: upsertWallet marks dirty; listeners fire on
     s.upsertWallet(makeWallet('alice-hex', 50n));
     s.flushBatch();
     expect(cb).toHaveBeenCalledTimes(1);
+  });
+});
+
+// =============================================================================
+// 20r-d (ADR-0254 D6) — the post-evolve reveal SLOT:
+// reconcileEvolutionNoticesFromView / ownEvolutionNotices / reset.
+//
+// ★ SOURCE OF TRUTH: spec `M-postgate-twentieth-review-residuals.spec.md` §20r-d
+// gate B1 + `docs/adr/0254-post-evolve-notification-queue-and-banner.md` D6.
+//
+// RED REASON AT AUTHORING TIME: `reconcileEvolutionNoticesFromView` and
+// `ownEvolutionNotices` do NOT exist on `AuthoritativeStore`. Every test below
+// fails on a MISSING IMPLEMENTATION (a TypeError on an undefined method), not on
+// a typo here. The two `import type`s at the head of this file are erased by the
+// transform and cannot red on their own.
+//
+// CONTRACT UNDER TEST (do not invent variants):
+//   export type StoreEvolutionReveal = {
+//     readonly monsterId: bigint; readonly fromSpecies: number;
+//     readonly toSpecies: number; readonly evolvedAtMs: bigint };
+//   export type StorePendingEvolutionNotice = {
+//     readonly ownerIdentity: string;
+//     readonly entries: readonly StoreEvolutionReveal[] };
+//   reconcileEvolutionNoticesFromView(rows: readonly StorePendingEvolutionNotice[]): void
+//       — AUTHORITATIVE whole-set: `rows[0] ?? undefined` into a single slot, so an
+//         EMPTY array CLEARS it. `#dirty` is set only on a REAL change.
+//   ownEvolutionNotices(identity: string): readonly StoreEvolutionReveal[]
+//       — the slot's entries ONLY when `slot.ownerIdentity === identity` (EXACT,
+//         no case folding, no trimming — the `ownWallet` / `ownExportChunks` rule);
+//         `[]` when there is no row or the row belongs to somebody else.
+//   reset() — also clears the slot.
+//
+// WHY A SLOT AND NOT A MAP: `my_pending_evolution_notices` is an `Option` view
+// returning exactly ONE row — the caller's — so a keyed map would make another
+// player's evolution history representable in the client cache for free.
+//
+// WHY AUTHORITATIVE (ADR-0254 D6, and the reason this is NOT the `my_wallet`
+// insert-only idiom): the account-deletion cascade DELETES this row. An
+// insert-only slot would leave an erased notice on screen forever.
+// =============================================================================
+
+/** 20r-d fixtures. Prefixed `rd*` so they cannot collide with (or shadow) any of
+ *  this 4000-line file's existing `make*` helpers. */
+function rdReveal(
+  monsterId: bigint,
+  fromSpecies: number,
+  toSpecies: number,
+  evolvedAtMs: bigint,
+): StoreEvolutionReveal {
+  return { monsterId, fromSpecies, toSpecies, evolvedAtMs };
+}
+
+function rdNotice(
+  ownerIdentity: string,
+  entries: readonly StoreEvolutionReveal[],
+): StorePendingEvolutionNotice {
+  return { ownerIdentity, entries };
+}
+
+describe('AuthoritativeStore 20r-d S-NOTICE-SET: reconcileEvolutionNoticesFromView sets, replaces and clears', () => {
+  it('20r-d S-NOTICE-SET BITES: the entries land, in order, with the bigints intact', () => {
+    // Kills: an impl that Number()-casts monsterId/evolvedAtMs (toEqual uses
+    // Object.is on primitives, so 7 !== 7n and this reds); an impl that stores
+    // the WHOLE row where the reader expects entries.
+    const s = new AuthoritativeStore();
+    s.reconcileEvolutionNoticesFromView([
+      rdNotice('alice-hex', [rdReveal(7n, 1, 2, 500n), rdReveal(8n, 2, 3, 500n)]),
+    ]);
+
+    const own = s.ownEvolutionNotices('alice-hex');
+    expect(own).toEqual([rdReveal(7n, 1, 2, 500n), rdReveal(8n, 2, 3, 500n)]);
+    expect(typeof own[0]?.monsterId).toBe('bigint');
+    expect(typeof own[0]?.evolvedAtMs).toBe('bigint');
+    expect(
+      own[0]?.fromSpecies,
+      'Vec order IS display order (EG2-13) — the OLDEST reveal must be the head',
+    ).toBe(1);
+  });
+
+  it('20r-d S-NOTICE-SET BITES: a second delivery REPLACES the slot, never accumulates', () => {
+    // Kills ★: an impl that pushes/concats instead of replacing. The view re-emits
+    // the WHOLE row on every change (a PK-less view delivers an update as an
+    // unordered insert+delete pair), so an accumulating slot would show every
+    // reveal the session has ever seen, forever, and ack-by-count would then drain
+    // the wrong entries.
+    const s = new AuthoritativeStore();
+    s.reconcileEvolutionNoticesFromView([rdNotice('alice-hex', [rdReveal(7n, 1, 2, 500n)])]);
+    s.reconcileEvolutionNoticesFromView([rdNotice('alice-hex', [rdReveal(8n, 2, 3, 600n)])]);
+
+    expect(s.ownEvolutionNotices('alice-hex')).toEqual([rdReveal(8n, 2, 3, 600n)]);
+  });
+
+  it('20r-d S-NOTICE-SET BITES: an EMPTY array CLEARS the slot (the cascade withdraws the reveal)', () => {
+    // Kills ★ THE INSERT-ONLY IDIOM: `if (rows.length === 0) return;`, copied from
+    // the `my_wallet` upsert. The account-deletion cascade ERASES this row
+    // (ADR-0254 D5), and the 7-day-grace reaper fires while the tab is open — an
+    // insert-only slot leaves a notice about erased data on screen for the life of
+    // the page, with an OK button whose ack now rejects forever.
+    const s = new AuthoritativeStore();
+    s.reconcileEvolutionNoticesFromView([rdNotice('alice-hex', [rdReveal(7n, 1, 2, 500n)])]);
+    expect(s.ownEvolutionNotices('alice-hex')).toHaveLength(1);
+
+    s.reconcileEvolutionNoticesFromView([]);
+    expect(s.ownEvolutionNotices('alice-hex')).toEqual([]);
+  });
+
+  it('20r-d S-NOTICE-SET BITES: a row with an EMPTY entries list is a real row, read as []', () => {
+    // Kills: an impl that treats "row present, entries empty" as "no row". The
+    // server NEVER deletes the row on ack (an empty Vec persists, like
+    // player_wallet — ADR-0254 D4), so this is the NORMAL post-ack state and it
+    // must read as "nothing to show", not as a stale previous value.
+    const s = new AuthoritativeStore();
+    s.reconcileEvolutionNoticesFromView([rdNotice('alice-hex', [rdReveal(7n, 1, 2, 500n)])]);
+    s.reconcileEvolutionNoticesFromView([rdNotice('alice-hex', [])]);
+
+    expect(s.ownEvolutionNotices('alice-hex')).toEqual([]);
+  });
+});
+
+describe('AuthoritativeStore 20r-d S-NOTICE-OWNER: ownEvolutionNotices filters on an EXACT identity', () => {
+  it('20r-d S-NOTICE-OWNER BITES: another owner`s row, and a case-variant identity, both read []', () => {
+    // Kills ★: `return this.#slot?.entries ?? []` with no owner test. Defense in
+    // depth behind the server-side owner-scoped view (ADR-0015 V1): a reconnect can
+    // mint a NEW identity, and the slot survives until the next reconcile — the
+    // AUTH-51 hazard `ownAccount` already guards against.
+    // Kills: a case-INSENSITIVE compare (`toLowerCase()`), which would make two
+    // distinct identity hexes alias. EXACT `===`, the `ownWallet` /
+    // `ownExportChunks` rule (store.ts:1180, :1234).
+    const s = new AuthoritativeStore();
+    s.reconcileEvolutionNoticesFromView([rdNotice('bob-hex', [rdReveal(7n, 1, 2, 500n)])]);
+
+    expect(s.ownEvolutionNotices('alice-hex')).toEqual([]);
+    expect(s.ownEvolutionNotices('')).toEqual([]);
+
+    s.reconcileEvolutionNoticesFromView([rdNotice('alice-hex', [rdReveal(7n, 1, 2, 500n)])]);
+    expect(s.ownEvolutionNotices('alice-hex')).toHaveLength(1);
+    expect(
+      s.ownEvolutionNotices('ALICE-HEX'),
+      'the owner filter must be EXACT — no case folding',
+    ).toEqual([]);
+    expect(
+      s.ownEvolutionNotices(' alice-hex'),
+      'the owner filter must be EXACT — no trimming',
+    ).toEqual([]);
+  });
+
+  it('20r-d S-NOTICE-OWNER BITES: an untouched store reads [] rather than undefined', () => {
+    // Kills: an accessor that returns `undefined` before the first delivery — every
+    // main.ts consumer does `ownEvolutionNotices(identity)[0]`, which would throw on
+    // a cold start and take the whole batch listener down with it.
+    const s = new AuthoritativeStore();
+    expect(s.ownEvolutionNotices('alice-hex')).toEqual([]);
+  });
+});
+
+describe('AuthoritativeStore 20r-d S-NOTICE-DIRTY: the batch is dirtied only on a REAL change', () => {
+  /** Arm a listener, run `mutate`, flush, and report whether the batch signalled. */
+  function signalled(s: AuthoritativeStore, mutate: () => void): boolean {
+    const cb = vi.fn();
+    const off = s.onBatchApplied(cb);
+    mutate();
+    s.flushBatch();
+    off();
+    return cb.mock.calls.length > 0;
+  }
+
+  it('20r-d S-NOTICE-DIRTY BITES: a first row, a changed row and a clear each signal', () => {
+    // Kills ★: an impl that writes the slot and forgets `#dirty = true`. The banner
+    // is rendered from a `store.onBatchApplied` listener, so an undirtied reveal is
+    // invisible until some UNRELATED table happens to flush — and in a quiet world
+    // (no NPC wander in the zone) that can be never.
+    const s = new AuthoritativeStore();
+    expect(
+      signalled(s, () => {
+        s.reconcileEvolutionNoticesFromView([rdNotice('alice-hex', [rdReveal(7n, 1, 2, 500n)])]);
+      }),
+      'the FIRST notice row must dirty the batch',
+    ).toBe(true);
+    expect(
+      signalled(s, () => {
+        s.reconcileEvolutionNoticesFromView([
+          rdNotice('alice-hex', [rdReveal(7n, 1, 2, 500n), rdReveal(8n, 2, 3, 500n)]),
+        ]);
+      }),
+      'a CHANGED entry list must dirty the batch — this is the chain`s second reveal arriving',
+    ).toBe(true);
+    expect(
+      signalled(s, () => {
+        s.reconcileEvolutionNoticesFromView([]);
+      }),
+      'CLEARING a populated slot must dirty the batch, or the banner never hides',
+    ).toBe(true);
+  });
+
+  it('20r-d S-NOTICE-DIRTY BITES: an UNCHANGED re-delivery does NOT signal (deep compare, not reference)', () => {
+    // ★ THE RENDER-STORM TOOTH, and the reason this pin is not optional: the
+    // reconcile runs on EVERY flush — every movement tick, every NPC wander step —
+    // with FRESHLY CONSTRUCTED row objects from `pendingEvolutionNoticeRowToStore`.
+    // A reference compare (or `shallowRowEq`, whose one-level recursion does not
+    // descend into an ARRAY of objects — store.ts:1317-1328, :1368-1379) reports
+    // every one of them as changed, so the store dirties and every batch listener
+    // in the client wakes ~5x/second for a row that did not move. The sibling
+    // battle reconcile hit exactly this and was moved to `deepRowEq` (ADR-0198 D5).
+    const s = new AuthoritativeStore();
+    s.reconcileEvolutionNoticesFromView([
+      rdNotice('alice-hex', [rdReveal(7n, 1, 2, 500n), rdReveal(8n, 2, 3, 500n)]),
+    ]);
+    s.flushBatch(); // consume the first dirty
+
+    expect(
+      signalled(s, () => {
+        // A structurally EQUAL row, rebuilt from scratch — exactly what the flush
+        // closure hands the store on the next uneventful burst.
+        s.reconcileEvolutionNoticesFromView([
+          rdNotice('alice-hex', [rdReveal(7n, 1, 2, 500n), rdReveal(8n, 2, 3, 500n)]),
+        ]);
+      }),
+      'an UNCHANGED re-delivery must NOT dirty the batch — use a deep compare over `entries`, not `===` and not `shallowRowEq`',
+    ).toBe(false);
+  });
+
+  it('20r-d S-NOTICE-DIRTY BITES: clearing an ALREADY-EMPTY slot does NOT signal', () => {
+    // Kills: `this.#slot = rows[0]; this.#dirty = true;` written unconditionally.
+    // The overwhelmingly common case is "this player has no pending reveal", and on
+    // that path the reconcile runs on every single flush — an unconditional dirty
+    // turns the store's change-detection off for the whole client.
+    const s = new AuthoritativeStore();
+    expect(
+      signalled(s, () => {
+        s.reconcileEvolutionNoticesFromView([]);
+      }),
+      'reconciling an empty view into an empty slot is a NO-OP and must not dirty the batch',
+    ).toBe(false);
+  });
+});
+
+describe('AuthoritativeStore 20r-d S-NOTICE-RESET: reset() clears the slot', () => {
+  it('20r-d S-NOTICE-RESET BITES: after reset() the slot is empty for its own former owner', () => {
+    // Kills ★: a reset() that forgets the slot. `handleDrop()` calls `store.reset()`
+    // on every disconnect, and a rebuild can mint a NEW identity — a surviving slot
+    // would hand the next identity the PREVIOUS player's evolution history (the
+    // `#ownWallet` / `#ownAccount` / `#exportChunks` rule, store.ts:829-838).
+    const s = new AuthoritativeStore();
+    s.reconcileEvolutionNoticesFromView([rdNotice('alice-hex', [rdReveal(7n, 1, 2, 500n)])]);
+    expect(s.ownEvolutionNotices('alice-hex')).toHaveLength(1);
+
+    s.reset();
+    expect(s.ownEvolutionNotices('alice-hex')).toEqual([]);
   });
 });
 
