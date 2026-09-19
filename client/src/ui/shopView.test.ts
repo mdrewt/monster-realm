@@ -604,4 +604,98 @@ describe('m24s0 I18N-5 (ADR-0255 D5)', () => {
 
     removeOverlay(overlay);
   });
+
+  it('m24s0 X6a: a second populated render REPLACES the for-sale and inventory rows rather than appending them', () => {
+    // Kills: dropping #forSaleList.replaceChildren() before the loop (shopView.ts:131) or
+    // #inventoryList.replaceChildren() (:139) — an append-only render would leave 3 rows
+    // (2 stale + 1 new) instead of 1.
+    const overlay = mountShopOverlay();
+    const view = new ShopView(makeCallbacks());
+    view.show();
+
+    function item(itemId: number, name: string) {
+      return { shopItemId: BigInt(itemId), itemId, name, buyPrice: 10n };
+    }
+    function inv(itemId: number, name: string) {
+      return { invId: BigInt(itemId), itemId, name, count: 1, sellPrice: 5n, canSell: true };
+    }
+
+    view.render({
+      kind: 'shop',
+      shopId: 1,
+      shopName: 'General Store',
+      forSale: [item(1, 'Potion'), item(2, 'Ether')],
+      forSaleByPlayer: [inv(3, 'Herb'), inv(4, 'Root')],
+      balance: knownBalance(100n),
+    });
+
+    view.render({
+      kind: 'shop',
+      shopId: 1,
+      shopName: 'General Store',
+      forSale: [item(5, 'Elixir')],
+      forSaleByPlayer: [inv(6, 'Leaf')],
+      balance: knownBalance(100n),
+    });
+
+    const forSale = document.getElementById('shop-for-sale') as HTMLElement;
+    const inventory = document.getElementById('shop-inventory') as HTMLElement;
+    expect(forSale.childElementCount).toBe(1);
+    expect(forSale.querySelectorAll('button').length).toBe(1);
+    expect(forSale.textContent).toContain('Elixir');
+    expect(forSale.textContent).not.toContain('Potion');
+    expect(forSale.textContent).not.toContain('Ether');
+
+    expect(inventory.childElementCount).toBe(1);
+    expect(inventory.querySelectorAll('button').length).toBe(1);
+    expect(inventory.textContent).toContain('Leaf');
+    expect(inventory.textContent).not.toContain('Herb');
+    expect(inventory.textContent).not.toContain('Root');
+
+    removeOverlay(overlay);
+  });
+
+  it('m24s0 X6b: the per-list empty-state rows carry their own copy — "Nothing for sale." and "No items to sell." — and replace stale rows', () => {
+    // Kills: string transposition between the two empty-row calls (shopView.ts:136/:144) and
+    // replaceChildren(emptyRow) -> appendChild(emptyRow) at :136 (would leave 2 children: the
+    // stale populated row PLUS the empty row).
+    const overlay = mountShopOverlay();
+    const view = new ShopView(makeCallbacks());
+    view.show();
+
+    view.render({
+      kind: 'shop',
+      shopId: 1,
+      shopName: 'General Store',
+      forSale: [{ shopItemId: 1n, itemId: 1, name: 'Potion', buyPrice: 10n }],
+      forSaleByPlayer: [
+        { invId: 1n, itemId: 2, name: 'Herb', count: 1, sellPrice: 5n, canSell: true },
+      ],
+      balance: knownBalance(100n),
+    });
+
+    view.render({
+      kind: 'shop',
+      shopId: 1,
+      shopName: 'General Store',
+      forSale: [],
+      forSaleByPlayer: [],
+      balance: knownBalance(100n),
+    });
+
+    const forSale = document.getElementById('shop-for-sale') as HTMLElement;
+    const inventory = document.getElementById('shop-inventory') as HTMLElement;
+
+    expect(forSale.childElementCount).toBe(1);
+    expect(forSale.firstElementChild!.tagName).toBe('LI');
+    expect(forSale.firstElementChild!.textContent).toBe('Nothing for sale.');
+    expect(forSale.querySelector('button')).toBeNull();
+
+    expect(inventory.childElementCount).toBe(1);
+    expect(inventory.firstElementChild!.tagName).toBe('LI');
+    expect(inventory.firstElementChild!.textContent).toBe('No items to sell.');
+    expect(inventory.querySelector('button')).toBeNull();
+
+    removeOverlay(overlay);
+  });
 });
