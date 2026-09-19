@@ -4531,3 +4531,648 @@ describe('BattleView rb-59: card role is cued by border STYLE, not by hue alone 
     document.body.removeChild(parent);
   });
 });
+
+// =============================================================================
+// 20r-a — in-flight guards for the FIVE PvE battle controls (skill / Flee / Swap / Recruit /
+// Use Item). APPENDED BLOCK; nothing above this line is modified.
+//
+// SOURCE OF TRUTH: docs/specs/20r-a-plan.md §0 D1/D3/D4/D8/D11, §1 battleView.ts, §3 BV-1..BV-11.
+//
+// THE DEFECT (measured against the unmodified tree): every PvE listener in battleView.ts is a bare
+// `() => this.#callbacks.onAttack(...)`. Nothing is disabled and nothing is keyed, so a second
+// click while the reducer promise is still in flight sends a SECOND submitAttack / flee /
+// swapActive / attemptRecruit / useBattleItem for the same turn. The PvP branches are VM-gated
+// (`pvpPendingSubmit`, RT-PVP-DS-01 above) and are deliberately NOT in scope — BV-9 pins that.
+//
+// RED REASON: no `#pending` exists, so the first `disabled === true` assertion after a click fails
+// in every BV row except the two DECLARED regression rows (BV-9 PvP-untouched, BV-10 sync order).
+//
+// HAPPY-DOM FACTS THIS BLOCK LEANS ON (read from node_modules, not assumed):
+//   * `HTMLButtonElement.dispatchEvent` returns false for a click on a DISABLED button, and
+//     `.click()` routes through it (plan D1). So `disabled = true` alone satisfies "two clicks →
+//     one call" and the pending KEY is invisible to a plain double-click. Every row therefore
+//     ALSO asserts the disabled state, and the key gets its own teeth: the HOSTILE RE-ENABLE
+//     (BV-3, and the sibling re-enables inside BV-2 / BV-4 / BV-11) sets `disabled = false` by
+//     hand before the second click, so only the key can swallow it.
+//   * vitest boots happy-dom with `disableErrorCapturing: true`, so a listener that THROWS throws
+//     straight out of `.click()`, and a listener that RETURNS a rejected promise leaves it
+//     unhandled (vitest fails the run on an unhandled rejection). That is what makes BV-6 / BV-7
+//     bite against the exact chain shapes plan §4 bans (`.catch` before `.finally`, `.finally`
+//     with no trailing `.catch`, `Promise.resolve(cb())`).
+//
+// MICROTASK BUDGET: `raFlushPromises` yields THREE microtasks. The plan's chain
+// `new Promise((resolve) => resolve(run())).finally(release).catch(log)` needs exactly three after
+// the deferred settles when the click and the settle are synchronous (thenable-resolution job,
+// the promise's own fulfilment job, the finally reaction). Rows that must prove "STILL pending"
+// flush BEFORE settling, so the anti-release clause is never vacuous.
+//
+// WRONG-IMPL-KILLED index (one per row; each `it` repeats its own):
+//   BV-1  no lock at all / a clicked-button-only lock          -> the seven-control disabled census
+//   BV-2  a per-ACTION lock (skill pending, Flee still live)    -> hostile re-enabled sibling clicks
+//   BV-3  a disabled-only impl with no pending key (D1)         -> hostile re-enable of the clicked button
+//   BV-4  refresh() not re-deriving / releasing the DETACHED node -> rebuilt-disabled + live re-enable
+//   BV-5  a boolean lock (not keyed by battleId)                -> the other battle's controls enabled
+//   BV-6  `.catch` before `.finally`; resolve-only release      -> enabled after rejection, no unhandled
+//   BV-7  `Promise.resolve(cb())` — sync throw after the lock   -> click does not throw, re-enabled
+//   BV-8  a lock that survives hide() (link-drop dead control)  -> enabled after hide + re-show
+//   BV-9  PvP routed through the lock                           -> siblings enabled while onPvpAttack pends
+//   BV-10 `.then(() => cb())` deferral                          -> callback called INSIDE .click()
+//   BV-11 a membership-keyed release (D11 generation clobber)   -> still disabled after the STALE settle
+// =============================================================================
+
+const RA_BATTLE_ID = 77n;
+const RA_OTHER_BATTLE_ID = 78n;
+const RA_CURE_ITEM_ID = 12;
+const RA_SKILLS = [
+  { id: 1, name: 'Vine Whip', affinity: 'Grass', power: 40, accuracy: 100 },
+  { id: 2, name: 'Tackle', affinity: 'Normal', power: 35, accuracy: 95 },
+];
+
+/** An ongoing PvE VM on which ALL FIVE PvE controls render: two skills, Flee, two Swap buttons
+ *  (UX4_BENCH), Recruit (+ bait select) and Use Item (+ cure select). Seven buttons, two selects. */
+function makeRaVM(overrides: Partial<BattleViewModel> = {}): BattleViewModel {
+  return makeUx4VM({
+    battleId: RA_BATTLE_ID,
+    isPvp: false,
+    pvpPendingSubmit: false,
+    skills: [...RA_SKILLS],
+    canFlee: true,
+    canSwap: true,
+    bench: [...UX4_BENCH],
+    canRecruit: true,
+    baitOptions: [{ itemId: 7, name: 'Lure Berry', recruitBonus: 150, count: 2 }],
+    cureItems: [{ itemId: RA_CURE_ITEM_ID, name: 'Antidote', cureStatus: 'Poison', count: 1 }],
+    ...overrides,
+  });
+}
+
+function makeRaCallbacks(overrides: Partial<BattleViewCallbacks> = {}): BattleViewCallbacks {
+  return {
+    onAttack: vi.fn(),
+    onFlee: vi.fn(),
+    onSwap: vi.fn(),
+    onRecruit: vi.fn(),
+    onUseItem: vi.fn(),
+    onPvpAttack: vi.fn(),
+    onPvpSwap: vi.fn(),
+    ...overrides,
+  };
+}
+
+interface RaDeferred {
+  readonly promise: Promise<void>;
+  readonly resolve: () => void;
+  readonly reject: (e: unknown) => void;
+}
+
+/** A hand-controlled promise: the test decides WHEN (and HOW) the reducer call settles. */
+function raDeferred(): RaDeferred {
+  let resolve!: () => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<void>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+/** Three microtasks — see the MICROTASK BUDGET note in the section header. */
+async function raFlushPromises(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+interface RaControls {
+  /** Every <button> under the mount — with makeRaVM that is exactly the seven PvE controls. */
+  readonly all: readonly HTMLButtonElement[];
+  readonly skills: readonly HTMLButtonElement[];
+  readonly flee: HTMLButtonElement;
+  readonly swaps: readonly HTMLButtonElement[];
+  readonly recruit: HTMLButtonElement;
+  readonly useItem: HTMLButtonElement;
+  readonly selects: readonly HTMLSelectElement[];
+}
+
+/** Resolve the LIVE controls (re-query after every refresh — replaceChildren rebuilds them). */
+function raControls(parent: HTMLElement): RaControls {
+  const all = [...parent.querySelectorAll('button')];
+  const skills = all.filter((b) => b.title.startsWith('Acc '));
+  const flee = all.find((b) => b.textContent === 'Flee');
+  const swaps = all.filter((b) => (b.textContent ?? '').startsWith('Swap: '));
+  const recruit = parent.querySelector<HTMLButtonElement>('[data-testid="recruit-action"]');
+  const useItem = parent.querySelector<HTMLButtonElement>('[data-testid="use-item-action"]');
+  const selects = [...parent.querySelectorAll('select')];
+  expect(skills, '20r-a precondition: two skill buttons must render').toHaveLength(2);
+  expect(flee, '20r-a precondition: the Flee button must render').toBeDefined();
+  expect(swaps, '20r-a precondition: two Swap buttons must render').toHaveLength(2);
+  expect(recruit, '20r-a precondition: the Recruit button must render').not.toBeNull();
+  expect(useItem, '20r-a precondition: the Use Item button must render').not.toBeNull();
+  expect(
+    all,
+    '20r-a precondition: EXACTLY seven buttons under the mount — 2 skills + Flee + 2 Swap + ' +
+      'Recruit + Use Item. A different count means the census below is about the wrong nodes',
+  ).toHaveLength(7);
+  expect(selects, '20r-a precondition: the bait and cure <select>s must render').toHaveLength(2);
+  return { all, skills, flee: flee!, swaps, recruit: recruit!, useItem: useItem!, selects };
+}
+
+/** One census assertion over all seven controls, labelled per button so a failure names the
+ *  control that is in the wrong state. */
+function raExpectAll(controls: RaControls, disabled: boolean, why: string): void {
+  expect(
+    controls.all.map((b) => `${b.textContent ?? ''}=${String(b.disabled)}`),
+    why,
+  ).toEqual(controls.all.map((b) => `${b.textContent ?? ''}=${String(disabled)}`));
+}
+
+function raMount(
+  callbacks: BattleViewCallbacks,
+  vm: BattleViewModel = makeRaVM(),
+): { parent: HTMLElement; view: BattleView } {
+  const parent = document.createElement('div');
+  document.body.appendChild(parent);
+  const view = new BattleView(parent, callbacks);
+  view.refresh(vm);
+  view.show();
+  return { parent, view };
+}
+
+describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () => {
+  // The per-case removeChild idiom is skipped when an assertion throws; scoped sweep instead
+  // (ux4 / rb-10 / rb-59 precedent). restoreAllMocks undoes the console.error spies below.
+  afterEach(() => {
+    document.body.replaceChildren();
+    vi.restoreAllMocks();
+  });
+
+  it('20r-a BV-1 BITES: two clicks on one skill while onAttack is unsettled → ONE call; all seven PvE controls disabled, both <select>s untouched; enabled again on settle', async () => {
+    // WRONG IMPL KILLED (1): the shipped code — no lock, two clicks send two submitAttack.
+    // WRONG IMPL KILLED (2): a CLICKED-BUTTON-ONLY lock (`btn.disabled = true` on the one node,
+    //   evolutionView.ts's shipped debounce shape) — the other skill, Flee, Swap, Recruit and
+    //   Use Item stay live and the seven-control census reds on them.
+    // WRONG IMPL KILLED (3): a VOID-returning dispatch (`.then(() => cb())`, or main.ts not
+    //   `return`ing sendGuarded) — the lock releases after one microtask; the post-flush
+    //   "still disabled" census reds.
+    // WRONG IMPL KILLED (4): `querySelectorAll('button, select')` — the two <select>s must stay
+    //   live: their VALUE is what the NEXT Recruit / Use Item click reads (e-1 preserves it
+    //   across refreshes for that reason), and disabling a focused select drops focus.
+    const d = raDeferred();
+    const callbacks = makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) });
+    const { parent } = raMount(callbacks);
+    const c = raControls(parent);
+    raExpectAll(c, false, '20r-a BV-1 precondition: every control starts enabled');
+
+    c.skills[0]!.click();
+    c.skills[0]!.click();
+
+    expect(
+      callbacks.onAttack,
+      '20r-a BV-1: two rapid clicks on the same skill must dispatch onAttack exactly ONCE while ' +
+        'the first call is unsettled — the shipped listener dispatches on every click',
+    ).toHaveBeenCalledTimes(1);
+    expect(callbacks.onAttack).toHaveBeenCalledWith(RA_BATTLE_ID, 1);
+    raExpectAll(
+      c,
+      true,
+      '20r-a BV-1: ALL SEVEN PvE controls must be disabled while any PvE call is pending — the ' +
+        'lock is per BATTLE (D4), not per button, because every one of them acts on the same turn',
+    );
+    for (const sel of c.selects) {
+      expect(
+        sel.disabled,
+        '20r-a BV-1: the bait / cure <select>s must NOT be disabled by the lock (plan §4 #8) — the ' +
+          'lock covers the <button>s under #skillsEl / #actionsEl only',
+      ).toBe(false);
+    }
+
+    await raFlushPromises();
+    raExpectAll(
+      raControls(parent),
+      true,
+      '20r-a BV-1: STILL disabled after the microtasks drain — a void-returning dispatch (or a ' +
+        '`.then(() => cb())` shape) releases here while the reducer call is still in flight',
+    );
+
+    d.resolve();
+    await raFlushPromises();
+    const after = raControls(parent);
+    raExpectAll(after, false, '20r-a BV-1: every control must be re-enabled once the call settles');
+    after.skills[0]!.click();
+    expect(
+      callbacks.onAttack,
+      '20r-a BV-1: after the settle the next click must dispatch again (no dead button)',
+    ).toHaveBeenCalledTimes(2);
+  });
+
+  it('20r-a BV-2 BITES: a pending SKILL blocks Flee / Swap / Recruit / Use Item — each is disabled AND its click is swallowed even after a hostile re-enable', async () => {
+    // WRONG IMPL KILLED: a PER-ACTION lock (`#pendingAttack`, `#pendingFlee`, …) — a skill in
+    //   flight leaves Flee live, so the player flees mid-attack and the server resolves two
+    //   intents for one turn. The hostile `disabled = false` on each sibling is what separates
+    //   "disabled because the lock disabled it" from "swallowed because the lock is shared":
+    //   a per-action lock with a shared disable pass survives the census and dies on the clicks.
+    const d = raDeferred();
+    const callbacks = makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) });
+    const { parent } = raMount(callbacks);
+    const c = raControls(parent);
+    const cureSelect = parent.querySelector<HTMLSelectElement>(
+      '[data-testid="cure-item-selector"]',
+    )!;
+    cureSelect.value = String(RA_CURE_ITEM_ID);
+    expect(
+      cureSelect.value,
+      '20r-a BV-2 precondition: a cure item is selected, so an UNBLOCKED Use Item click would ' +
+        'dispatch onUseItem (with the placeholder selected the listener is a no-op by design)',
+    ).toBe(String(RA_CURE_ITEM_ID));
+
+    c.skills[0]!.click();
+    expect(callbacks.onAttack).toHaveBeenCalledTimes(1);
+
+    const siblings: readonly (readonly [HTMLButtonElement, unknown, string])[] = [
+      [c.flee, callbacks.onFlee, 'Flee'],
+      [c.swaps[0]!, callbacks.onSwap, 'Swap'],
+      [c.recruit, callbacks.onRecruit, 'Recruit'],
+      [c.useItem, callbacks.onUseItem, 'Use Item'],
+    ];
+    for (const [btn, spy, label] of siblings) {
+      expect(
+        btn.disabled,
+        `20r-a BV-2: ${label} must be DISABLED while a skill is pending (one battle, one turn)`,
+      ).toBe(true);
+      btn.click(); // swallowed by `disabled` alone (happy-dom, D1)
+      btn.disabled = false; // HOSTILE re-enable: only the shared pending key can swallow this
+      btn.click();
+      expect(
+        spy,
+        `20r-a BV-2: ${label}'s click must be swallowed by the SHARED pending key even after the ` +
+          'node is re-enabled by hand — a per-action lock lets this through',
+      ).not.toHaveBeenCalled();
+      btn.disabled = true; // restore, so the post-settle census below is about the release
+    }
+    expect(callbacks.onAttack).toHaveBeenCalledTimes(1);
+
+    d.resolve();
+    await raFlushPromises();
+    const after = raControls(parent);
+    raExpectAll(after, false, '20r-a BV-2: every control must be re-enabled on settle');
+    after.flee.click();
+    expect(
+      callbacks.onFlee,
+      '20r-a BV-2: once the skill call settles, Flee must dispatch normally',
+    ).toHaveBeenCalledTimes(1);
+    expect(callbacks.onFlee).toHaveBeenCalledWith(RA_BATTLE_ID);
+  });
+
+  it('20r-a BV-3 BITES: hostile re-enable — click, set the LIVE button `disabled = false` by hand, click again → still ONE call', async () => {
+    // WRONG IMPL KILLED: a DISABLED-ONLY implementation (`btn.disabled = true; cb()` with no
+    //   pending key — plan D1). happy-dom swallows a click on a disabled button, so BV-1 alone
+    //   is satisfied by the attribute; re-enabling the node by hand is the only way a unit test
+    //   can reach the listener, and then only the key can refuse the dispatch. In production the
+    //   same path is a refresh() that rebuilds the button enabled (BV-4) — this is its unit-scale
+    //   twin.
+    const d = raDeferred();
+    const callbacks = makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) });
+    const { parent } = raMount(callbacks);
+    const c = raControls(parent);
+
+    c.skills[1]!.click();
+    expect(callbacks.onAttack).toHaveBeenCalledTimes(1);
+    expect(callbacks.onAttack).toHaveBeenCalledWith(RA_BATTLE_ID, 2);
+    expect(c.skills[1]!.disabled, '20r-a BV-3 precondition: the lock disabled the button').toBe(
+      true,
+    );
+
+    c.skills[1]!.disabled = false;
+    c.skills[1]!.click();
+    expect(
+      callbacks.onAttack,
+      '20r-a BV-3: with the node re-enabled by hand, the PENDING KEY must still swallow the ' +
+        'second click — an attribute-only guard dispatches twice here',
+    ).toHaveBeenCalledTimes(1);
+
+    d.resolve();
+    await raFlushPromises();
+    c.skills[1]!.click();
+    expect(
+      callbacks.onAttack,
+      '20r-a BV-3: after settle the click dispatches',
+    ).toHaveBeenCalledTimes(2);
+  });
+
+  it('20r-a BV-4 BITES: a mid-flight refresh(sameVm) rebuilds every control DISABLED, swallows a click on the new node, and the settle re-enables the LIVE nodes (not the detached ones)', async () => {
+    // WRONG IMPL KILLED (1): a render that does not re-derive the lock — `#renderActions` /
+    //   `#renderSkills` build fresh <button>s with `disabled` at its default, so a batch tick
+    //   mid-flight ships an enabled-looking button whose click the key then swallows (the C6
+    //   defect raisingView.ts already fixed for Care). The rebuilt census reds.
+    // WRONG IMPL KILLED (2): the `.finally` re-enabling the CLOSURE-CAPTURED nodes — after
+    //   replaceChildren those are detached, and the live buttons stay disabled forever. The
+    //   post-settle census on the RE-QUERIED nodes reds.
+    const d = raDeferred();
+    const callbacks = makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) });
+    const { parent, view } = raMount(callbacks);
+    const before = raControls(parent);
+    before.skills[0]!.click();
+    raExpectAll(before, true, '20r-a BV-4 precondition: the lock disabled the first render');
+
+    // An ordinary batch tick while the call is in flight: same battle, same VM shape.
+    view.refresh(makeRaVM());
+    const rebuilt = raControls(parent);
+    expect(
+      rebuilt.skills[0],
+      '20r-a BV-4 precondition: refresh() rebuilds the skill button (replaceChildren) — a ' +
+        'different node from the one the click closure captured',
+    ).not.toBe(before.skills[0]);
+    expect(before.skills[0]!.isConnected, '20r-a BV-4 precondition: the old node is detached').toBe(
+      false,
+    );
+    raExpectAll(
+      rebuilt,
+      true,
+      '20r-a BV-4: every REBUILT control must come back DISABLED — the pending state is ' +
+        're-derived at the end of refresh() (`#applyPendingLock`), not lost on rebuild',
+    );
+    rebuilt.skills[1]!.click(); // swallowed by disabled
+    rebuilt.skills[1]!.disabled = false; // hostile
+    rebuilt.skills[1]!.click();
+    expect(
+      callbacks.onAttack,
+      '20r-a BV-4: a click on a rebuilt (and hand re-enabled) button must still be swallowed by ' +
+        'the pending key',
+    ).toHaveBeenCalledTimes(1);
+    rebuilt.skills[1]!.disabled = true;
+
+    d.resolve();
+    await raFlushPromises();
+    const live = raControls(parent);
+    expect(live.skills[0], '20r-a BV-4: a settle does not re-render').toBe(rebuilt.skills[0]);
+    raExpectAll(
+      live,
+      false,
+      '20r-a BV-4: the LIVE (rebuilt) controls must be re-enabled on settle. Re-enabling the ' +
+        "closure-captured nodes re-enables a detached subtree and leaves the player's real " +
+        'buttons dead until the next refresh — or forever, if the battle row stops changing',
+    );
+    live.skills[0]!.click();
+    expect(callbacks.onAttack).toHaveBeenCalledTimes(2);
+  });
+
+  it('20r-a BV-5 BITES: the lock is keyed by BATTLE — refresh(other battle) renders enabled controls, and settling battle 77 leaves battle 78 enabled and clickable', async () => {
+    // WRONG IMPL KILLED: a BOOLEAN lock (`#pending = true`). A wild battle can be replaced by a
+    //   new battle row (a second encounter, a PvP accept) while a stale call is in flight; a
+    //   boolean disables the NEW battle's controls for a promise that belongs to the old one.
+    //   The post-refresh census on battle 78 reds.
+    const d = raDeferred();
+    const callbacks = makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) });
+    const { parent, view } = raMount(callbacks);
+    const first = raControls(parent);
+    first.skills[0]!.click();
+    raExpectAll(first, true, '20r-a BV-5 precondition: battle 77 is locked');
+
+    view.refresh(makeRaVM({ battleId: RA_OTHER_BATTLE_ID }));
+    const other = raControls(parent);
+    raExpectAll(
+      other,
+      false,
+      "20r-a BV-5: a DIFFERENT battle's controls must not inherit battle 77's pending lock — the " +
+        'key carries the battleId (plan D11: `{ readonly battleId }`), never a bare boolean',
+    );
+
+    d.resolve();
+    await raFlushPromises();
+    raExpectAll(
+      raControls(parent),
+      false,
+      "20r-a BV-5: settling battle 77's call must leave battle 78's controls enabled",
+    );
+    other.skills[0]!.click();
+    expect(callbacks.onAttack).toHaveBeenCalledTimes(2);
+    expect(callbacks.onAttack).toHaveBeenLastCalledWith(RA_OTHER_BATTLE_ID, 1);
+  });
+
+  it('20r-a BV-6 BITES: onAttack REJECTS → still disabled before the settle, enabled after it, the next click dispatches, and NO unhandled rejection escapes', async () => {
+    // WRONG IMPL KILLED (1): `.catch(...)` BEFORE `.finally(...)` with the release in a `.then`
+    //   — a rejection skips the release and the control is dead until hide().
+    // WRONG IMPL KILLED (2): `.finally(release)` with NO trailing `.catch` — the release runs,
+    //   but `.finally` re-throws the rejection and vitest fails the run on the unhandled
+    //   rejection. That run-level error IS the tooth for this shape; nothing in this `it` needs
+    //   to observe it.
+    // WRONG IMPL KILLED (3): a resolve-only release (`.then(release)`) — same as (1).
+    // console.error is silenced (never asserted): the plan routes the swallowed rejection to
+    // `console.error`, which is diagnostic noise here, not a criterion.
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const d = raDeferred();
+    const callbacks = makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) });
+    const { parent } = raMount(callbacks);
+    const c = raControls(parent);
+
+    c.skills[0]!.click();
+    raExpectAll(c, true, '20r-a BV-6 precondition: the lock disabled every control');
+    await raFlushPromises();
+    raExpectAll(
+      raControls(parent),
+      true,
+      '20r-a BV-6: still disabled while the (unsettled) call is in flight',
+    );
+
+    d.reject(new Error('20r-a BV-6: reducer rejected'));
+    await raFlushPromises();
+    const after = raControls(parent);
+    raExpectAll(
+      after,
+      false,
+      '20r-a BV-6: a REJECTED call must release the lock too — the release lives in `.finally`, ' +
+        'so both arms re-enable (a `.catch`-before-`.finally` chain leaves the control dead)',
+    );
+    after.skills[0]!.click();
+    expect(
+      callbacks.onAttack,
+      '20r-a BV-6: after the rejection the next click must dispatch again',
+    ).toHaveBeenCalledTimes(2);
+    await raFlushPromises(); // the second (also rejected) return value settles inside the view
+  });
+
+  it('20r-a BV-7 BITES: onAttack THROWS synchronously → the click does not throw, the lock was taken, and after one flush the control is enabled and re-clickable', async () => {
+    // WRONG IMPL KILLED: `Promise.resolve(cb())` (plan D3). `cb()` is evaluated BEFORE
+    //   Promise.resolve sees it, so a synchronous throw escapes the listener AFTER the lock was
+    //   set and BEFORE any `.finally` is attached — the button is dead until hide(). With
+    //   happy-dom's error capturing disabled the throw comes straight out of `.click()`, which
+    //   is the first assertion below. The required shape is `new Promise((resolve) =>
+    //   resolve(cb()))`: the executor converts the throw into a rejection the same chain
+    //   handles. (NOT `.then(() => cb())` either — that defers the dispatch, see BV-10.)
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const onAttack = vi.fn(() => {
+      throw new Error('20r-a BV-7: synchronous throw');
+    });
+    const callbacks = makeRaCallbacks({ onAttack });
+    const { parent } = raMount(callbacks);
+    const c = raControls(parent);
+
+    expect(
+      () => c.skills[0]!.click(),
+      '20r-a BV-7: a synchronously-throwing callback must NOT throw out of the click — the ' +
+        'dispatch wrapper converts it into a rejection (`new Promise((resolve) => resolve(cb()))`)',
+    ).not.toThrow();
+    expect(onAttack).toHaveBeenCalledTimes(1);
+    raExpectAll(
+      c,
+      true,
+      '20r-a BV-7: the lock was taken before the callback ran (and the release is a microtask ' +
+        'away, not synchronous)',
+    );
+
+    await raFlushPromises();
+    const after = raControls(parent);
+    raExpectAll(
+      after,
+      false,
+      '20r-a BV-7: the sync throw must settle the chain and RELEASE — `Promise.resolve(cb())` ' +
+        'leaves every control dead here',
+    );
+    after.skills[0]!.click();
+    expect(onAttack, '20r-a BV-7: re-clickable after the throw').toHaveBeenCalledTimes(2);
+    await raFlushPromises();
+  });
+
+  it('20r-a BV-8 BITES: hide() releases the lock — after a never-settling call, hide() then refresh(vm) renders enabled controls and the next click dispatches', async () => {
+    // WRONG IMPL KILLED: a lock released ONLY by `.finally`. The SDK never settles an in-flight
+    //   reducer promise after a link drop (shopView / renameView / raisingView precedent), and
+    //   main.ts's onReconnect hides the view (M-3 in main.wiring.test.ts) precisely so THIS
+    //   release runs — without it the battle overlay comes back with every control dead.
+    const d = raDeferred(); // deliberately never settled
+    const callbacks = makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) });
+    const { parent, view } = raMount(callbacks);
+    const c = raControls(parent);
+    c.skills[0]!.click();
+    raExpectAll(c, true, '20r-a BV-8 precondition: the lock disabled every control');
+
+    view.hide();
+    expect(
+      vi.mocked(closeOverlayA11y),
+      '20r-a BV-8: hide() must still close the overlay a11y record exactly once (plan D8 — the ' +
+        'release is added BEFORE the close, the close stays last and unguarded)',
+    ).toHaveBeenCalledTimes(1);
+    view.refresh(makeRaVM()); // the surviving battle re-shows on the next batch
+    expect(view.visible, '20r-a BV-8 precondition: refresh(vm) re-shows').toBe(true);
+    const after = raControls(parent);
+    raExpectAll(
+      after,
+      false,
+      '20r-a BV-8: after hide() + re-show the controls must be ENABLED — hide() is the release ' +
+        'path for a promise that will never settle (link drop)',
+    );
+    after.skills[0]!.click();
+    expect(
+      callbacks.onAttack,
+      '20r-a BV-8: the re-shown control must dispatch (no link-drop dead control)',
+    ).toHaveBeenCalledTimes(2);
+  });
+
+  it('20r-a BV-9 (regression, GREEN by design): PvP Submit with an unsettled onPvpAttack does NOT disable its siblings — PvP lifetime stays VM-gated (RT-PVP-DS-01)', async () => {
+    // WRONG IMPL KILLED: routing the PvP branches through the new lock. PvP double-submit is
+    //   owned by `pvpPendingSubmit` (ADR-0110: the lifetime is "until the server advances the
+    //   turn", which only the VM can see — plan D9); a promise-lifetime lock on top of it would
+    //   re-enable the controls the moment the SDK acks the submit, one batch before the VM hides
+    //   them, and would desync from the "Waiting for opponent…" banner. GREEN today and it must
+    //   stay green after the PvE lock lands.
+    const d = raDeferred();
+    const callbacks = makeRaCallbacks({ onPvpAttack: vi.fn().mockReturnValue(d.promise) });
+    const vm: BattleViewModel = { ...makePvpPendingVM(), pvpPendingSubmit: false };
+    const { parent } = raMount(callbacks, vm);
+    const all = [...parent.querySelectorAll('button')];
+    const submits = all.filter((b) => (b.textContent ?? '').startsWith('Submit: '));
+    const swaps = all.filter((b) => (b.textContent ?? '').startsWith('Submit Swap: '));
+    expect(submits, '20r-a BV-9 precondition: two PvP Submit buttons').toHaveLength(2);
+    expect(swaps, '20r-a BV-9 precondition: one PvP Submit Swap button').toHaveLength(1);
+
+    submits[0]!.click();
+    expect(callbacks.onPvpAttack).toHaveBeenCalledTimes(1);
+    expect(
+      all.map((b) => `${b.textContent ?? ''}=${String(b.disabled)}`),
+      '20r-a BV-9: NO PvP control may be disabled by an unsettled onPvpAttack — the PvP lock is ' +
+        'the VM flag, never the promise',
+    ).toEqual(all.map((b) => `${b.textContent ?? ''}=false`));
+
+    submits[1]!.click();
+    swaps[0]!.click();
+    expect(callbacks.onPvpAttack).toHaveBeenCalledTimes(2);
+    expect(callbacks.onPvpSwap).toHaveBeenCalledTimes(1);
+    expect(callbacks.onPvpSwap).toHaveBeenCalledWith(42n, 1);
+    d.resolve();
+    await raFlushPromises();
+  });
+
+  it('20r-a BV-10 (regression, GREEN by design): the callback runs SYNCHRONOUSLY inside .click() — no microtask deferral of the dispatch', () => {
+    // WRONG IMPL KILLED: `Promise.resolve().then(() => cb())` / `queueMicrotask(cb)` as the
+    //   dispatch shape (plan D3). It reds every synchronous-after-click assertion in this file
+    //   (e-1, m14.5d-1b, ux4 S2) and, in production, lets a `refresh()` that lands between the
+    //   click and the microtask observe a lock with no call behind it.
+    const callbacks = makeRaCallbacks();
+    const { parent } = raMount(callbacks);
+    const c = raControls(parent);
+
+    c.skills[0]!.click();
+    expect(
+      callbacks.onAttack,
+      '20r-a BV-10: onAttack must have been invoked by the time .click() returns',
+    ).toHaveBeenCalledTimes(1);
+    expect(callbacks.onAttack).toHaveBeenCalledWith(RA_BATTLE_ID, 1);
+  });
+
+  it('20r-a BV-11 BITES: two overlapping generations — click (P1), hide(), re-show + click (P2), settle P1 → STILL disabled and a third click is swallowed; settle P2 → enabled', async () => {
+    // WRONG IMPL KILLED (plan D11): a release keyed by MEMBERSHIP / equality (`if
+    //   (this.#pending?.battleId === battleId) this.#pending = null`) instead of by the
+    //   IDENTITY of the lock object the click created. Sequence: P1 in flight → hide() clears
+    //   the lock → the battle re-shows → a second click starts P2 with a fresh lock for the
+    //   SAME battleId → the STALE P1 settles → its `.finally` sees "battleId matches", deletes
+    //   P2's lock and re-enables every control while P2 is still in flight. The third click
+    //   below then sends a THIRD action for the turn. Only `stored === myToken` refuses it.
+    const p1 = raDeferred();
+    const p2 = raDeferred();
+    const onAttack = vi.fn().mockReturnValueOnce(p1.promise).mockReturnValueOnce(p2.promise);
+    const callbacks = makeRaCallbacks({ onAttack });
+    const { parent, view } = raMount(callbacks);
+
+    raControls(parent).skills[0]!.click(); // generation 1
+    expect(onAttack).toHaveBeenCalledTimes(1);
+    raExpectAll(raControls(parent), true, '20r-a BV-11 precondition: generation 1 holds the lock');
+
+    view.hide(); // releases generation 1's lock (BV-8) — P1 is still in flight
+    view.refresh(makeRaVM()); // re-show + rebuild, same battle
+    const gen2 = raControls(parent);
+    raExpectAll(gen2, false, '20r-a BV-11 precondition: hide() released generation 1');
+
+    gen2.skills[0]!.click(); // generation 2
+    expect(onAttack).toHaveBeenCalledTimes(2);
+    raExpectAll(gen2, true, '20r-a BV-11 precondition: generation 2 holds the lock');
+
+    p1.resolve(); // the STALE settle
+    await raFlushPromises();
+    const afterStale = raControls(parent);
+    raExpectAll(
+      afterStale,
+      true,
+      "20r-a BV-11: generation 1's settle must NOT release generation 2's lock — P2 is still in " +
+        'flight. A membership/equality-keyed `.finally` clears it here (same battleId), which is ' +
+        'the cross-generation clobber the identity token exists to refuse',
+    );
+    afterStale.skills[1]!.click(); // swallowed by disabled
+    afterStale.skills[1]!.disabled = false; // hostile
+    afterStale.skills[1]!.click();
+    expect(
+      onAttack,
+      '20r-a BV-11: a third click while P2 is in flight must be swallowed by the pending key',
+    ).toHaveBeenCalledTimes(2);
+    afterStale.skills[1]!.disabled = true;
+
+    p2.resolve();
+    await raFlushPromises();
+    raExpectAll(
+      raControls(parent),
+      false,
+      "20r-a BV-11: generation 2's OWN settle releases the lock",
+    );
+    raControls(parent).skills[0]!.click();
+    expect(onAttack).toHaveBeenCalledTimes(3);
+    await raFlushPromises();
+  });
+});

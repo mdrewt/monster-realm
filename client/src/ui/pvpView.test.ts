@@ -14,7 +14,10 @@
 // today — the file is byte-unchanged from master @0953db7. Every S3-* test below therefore fails now:
 // no aria-label is ever written, nothing schedules a focus, role/aria-modal survive a close (only
 // closeOverlayA11y strips them), and every `toHaveBeenCalledTimes(...)` on the spied helpers is 0.
-// The NON-S3 tests in this file (refresh behaviour) pass NOW and must keep passing.
+// The NON-S3 tests in this file (refresh behaviour) pass NOW and must keep passing — with ONE
+// deliberate 20r-a adaptation: the Accept-then-Decline case awaits the in-flight lock between
+// its two clicks (see the `20r-a PV-5` comment on it), because 20r-a made the four lifecycle
+// actions share ONE view-wide lock (plan D2).
 //
 // WHY pvpView OWNS THE CRUX (plan F6, gate X6). `main.ts:1697-1709` recomputes `forceVisible` on
 // EVERY store batch and, once the overlay is up, keeps it true — and `refresh()` calls `show()`
@@ -24,7 +27,9 @@
 // several times a second and the overlay is untabbable. That failure mode is INVISIBLE to every
 // attribute assertion (a re-open rewrites byte-identical values), so it is proven twice below —
 // once by a call COUNT, once by parking focus on a sentinel INSIDE the root and checking it is
-// still there. `refresh()` itself must stay BYTE-UNCHANGED (plan T7); the guard belongs in `show()`.
+// still there. m23-s3 left `refresh()` byte-unchanged (its plan T7) and put the guard in `show()`;
+// 20r-a later extended `refresh()` to RE-APPLY the in-flight lifecycle lock after the row rebuild
+// (PV-3 below) — the show()-edge guard still belongs in `show()`, and nothing here re-opens.
 //
 // pvpView ALSO KEEPS ITS OWN `#visible` FIELD (plan D4), and that is a main.ts contract, not an
 // accident: `overlayProbes.pvpView` (main.ts:335), the auto-show predicate (main.ts:1700) and
@@ -377,8 +382,10 @@ describe('PvpView — overlay a11y wiring on the show/hide edge (m23-s3)', () =>
 // ---------------------------------------------------------------------------
 // Pre-existing refresh() behaviour — this file is the FIRST spec for pvpView, so the behaviour the
 // S3 tests lean on (the caller-owned show/hide decision, the authoritative row rebuild, the
-// callbacks) is pinned here rather than assumed. `refresh()` must stay BYTE-UNCHANGED in this slice
-// (plan T7), so every test below passes on master TODAY and must keep passing afterwards.
+// callbacks) is pinned here rather than assumed. m23-s3 left `refresh()` byte-unchanged (its plan
+// T7); 20r-a then added the in-flight lifecycle lock (the `★ PvpView 20r-a` block at the end of
+// this file), which `refresh()` re-applies after the rebuild. Every test below still passes; the
+// Accept-then-Decline case awaits that lock between its clicks (20r-a PV-5, plan D2).
 // ---------------------------------------------------------------------------
 
 describe('PvpView refresh(): existing behaviour (pinned, must stay byte-unchanged by m23-s3)', () => {
@@ -407,7 +414,7 @@ describe('PvpView refresh(): existing behaviour (pinned, must stay byte-unchange
     expect(root.style.display).toBe('none');
   });
 
-  it('BITES: refresh(vm, true) with an incoming challenge paints the label plus Accept/Decline, and the buttons dispatch the callbacks with the challengeId', () => {
+  it('BITES: refresh(vm, true) with an incoming challenge paints the label plus Accept/Decline, and the buttons dispatch the callbacks with the challengeId', async () => {
     mountPvpOverlay();
     const cbs = makeCallbacks();
     const view = new PvpView(cbs);
@@ -425,6 +432,11 @@ describe('PvpView refresh(): existing behaviour (pinned, must stay byte-unchange
 
     (document.querySelector('[data-testid="pvp-accept-btn"]') as HTMLButtonElement).click();
     expect(cbs.onAccept).toHaveBeenCalledWith(77n);
+
+    // 20r-a PV-5 (plan D2): Accept and Decline now share ONE view-wide in-flight lock, so the
+    // Decline click must wait for the (void-returning) Accept call to settle — a synchronous
+    // second click is exactly the contradictory-outcome pair the lock exists to refuse (PV-1).
+    await raFlushPromises();
 
     (document.querySelector('[data-testid="pvp-decline-btn"]') as HTMLButtonElement).click();
     expect(cbs.onDecline).toHaveBeenCalledWith(77n);
@@ -490,5 +502,443 @@ describe('PvpView refresh(): existing behaviour (pinned, must stay byte-unchange
 
     view.hide();
     expect(feedback.textContent).toBe('');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 20r-a — ONE view-wide in-flight lock over the four challenge-lifecycle actions (Accept /
+// Decline / Cancel / Challenge-a-player). APPENDED BLOCK; the edits above are the header
+// clauses and the PV-5 `await` in the Accept-then-Decline case.
+//
+// SOURCE OF TRUTH: docs/specs/20r-a-plan.md §0 D2/D3/D8/D11, §1 pvpView.ts, §3 PV-1..PV-6.
+//
+// WHY VIEW-WIDE (plan D2), not per button and not keyed by challengeId: all four actions
+// mutate ONE challenge state. Accept-then-Decline (or Decline-then-Cancel of an outgoing while
+// the incoming is being accepted) is the contradictory-outcome class — the server processes
+// whichever lands first and rejects the other, but the player has now asked for both. A
+// per-button lock leaves that open; a per-challengeId lock leaves Cancel-outgoing open beside
+// Accept-incoming. So one `#pending: object | null`, and every lifecycle control disables.
+//
+// WHAT THE LOCK COVERS AND WHAT IT MUST NOT (plan §4 #8): the <button>s under `#incomingEl`,
+// `#outgoingEl` and `#playerListEl` — never a `#root`-wide query. PV-1 parks a sentinel
+// <button> as a DIRECT child of the root (the S3 idiom above) and asserts it stays enabled.
+//
+// RED REASON: no `#pending` exists — Accept's click disables nothing, so PV-1's first census
+// reds and every other row reds on its "disabled after the click" anchor.
+//
+// happy-dom facts, the microtask budget and the hostile-re-enable rationale: see
+// battleView.test.ts's 20r-a header — the same three facts hold here.
+//
+// WRONG-IMPL-KILLED index:
+//   PV-1  a per-button / per-challengeId lock; a #root-wide disable -> siblings swallowed, sentinel live
+//   PV-1b a disabled-only impl (no pending key)                    -> hostile re-enable of Accept
+//   PV-2  `.catch` before `.finally`; `Promise.resolve(cb())`; a never-releasing resolve path
+//   PV-3  refresh(vm, true) not re-applying the lock / releasing the detached node
+//   PV-4  a lock that survives the force-hide (`refresh(vm, false)`)
+//   PV-6  a membership-keyed release (D11)                         -> still disabled after the stale settle
+// ---------------------------------------------------------------------------
+
+interface RaDeferred {
+  readonly promise: Promise<void>;
+  readonly resolve: () => void;
+  readonly reject: (e: unknown) => void;
+}
+
+function raDeferred(): RaDeferred {
+  let resolve!: () => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<void>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+/** Three microtasks — see battleView.test.ts's 20r-a MICROTASK BUDGET note. */
+async function raFlushPromises(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+const RA_INCOMING_ID = 77n;
+const RA_OUTGOING_ID = 88n;
+
+/** Incoming from Bob, a Pending outgoing to Carol, and two challengeable players — so ALL FIVE
+ *  lifecycle controls render at once: Accept, Decline, Cancel Challenge, Alice, Dave. */
+function raPvpVm(): PvpChallengeViewModel {
+  return pvpVm({
+    incoming: { challengeId: RA_INCOMING_ID, challengerId: '0xbbb', challengerName: 'Bob' },
+    outgoing: {
+      challengeId: RA_OUTGOING_ID,
+      targetId: '0xccc',
+      targetName: 'Carol',
+      status: 'Pending',
+    },
+    challengeablePlayers: [
+      { identity: '0xaaa1', name: 'Alice' },
+      { identity: '0xddd4', name: 'Dave' },
+    ],
+  });
+}
+
+interface RaPvpControls {
+  readonly accept: HTMLButtonElement;
+  readonly decline: HTMLButtonElement;
+  readonly cancel: HTMLButtonElement;
+  readonly players: readonly HTMLButtonElement[];
+  /** The five lifecycle controls, in DOM order. */
+  readonly all: readonly HTMLButtonElement[];
+}
+
+/** The LIVE lifecycle controls (re-query after every refresh — the rows are rebuilt). */
+function raPvpControls(): RaPvpControls {
+  const accept = document.querySelector<HTMLButtonElement>('[data-testid="pvp-accept-btn"]');
+  const decline = document.querySelector<HTMLButtonElement>('[data-testid="pvp-decline-btn"]');
+  const cancel = document.querySelector<HTMLButtonElement>('[data-testid="pvp-cancel-btn"]');
+  const players = [
+    ...document.querySelectorAll<HTMLButtonElement>('[data-testid="pvp-challenge-player-btn"]'),
+  ];
+  expect(accept, '20r-a precondition: Accept renders').not.toBeNull();
+  expect(decline, '20r-a precondition: Decline renders').not.toBeNull();
+  expect(cancel, '20r-a precondition: Cancel Challenge renders').not.toBeNull();
+  expect(players, '20r-a precondition: two challenge-player buttons render').toHaveLength(2);
+  return {
+    accept: accept!,
+    decline: decline!,
+    cancel: cancel!,
+    players,
+    all: [accept!, decline!, cancel!, ...players],
+  };
+}
+
+function raExpectAll(controls: RaPvpControls, disabled: boolean, why: string): void {
+  expect(
+    controls.all.map((b) => `${b.textContent ?? ''}=${String(b.disabled)}`),
+    why,
+  ).toEqual(controls.all.map((b) => `${b.textContent ?? ''}=${String(disabled)}`));
+}
+
+describe('★ PvpView 20r-a: ONE view-wide in-flight lock over the challenge-lifecycle controls', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('20r-a PV-1 BITES: Accept unsettled → Decline / Cancel / every challenge-player button DISABLED and swallowed (hostile re-enable included); a root-level sentinel stays enabled; all released on settle', async () => {
+    // WRONG IMPL KILLED (1): the shipped code — nothing disables, Decline fires beside Accept.
+    // WRONG IMPL KILLED (2): a PER-BUTTON lock — Decline stays live while Accept is in flight
+    //   (the contradictory-outcome pair, plan D2). The hostile re-enable of each sibling is what
+    //   reaches the listener; only a SHARED key can refuse it.
+    // WRONG IMPL KILLED (3): a lock keyed by challengeId — Cancel (outgoing 88n) and the
+    //   challenge-player buttons (no challenge yet) would stay live beside Accept (incoming 77n).
+    // WRONG IMPL KILLED (4): `#root.querySelectorAll('button')` (plan §4 #8) — the sentinel
+    //   parked as a DIRECT child of the root would be disabled too. The lock's registry is the
+    //   three dynamic containers, never the shell root.
+    const root = mountPvpOverlay();
+    const d = raDeferred();
+    const cbs = makeCallbacks();
+    (cbs.onAccept as ReturnType<typeof vi.fn>).mockReturnValue(d.promise);
+    const view = new PvpView(cbs);
+    view.refresh(raPvpVm(), true);
+    const sentinel = addInsideSentinel(root);
+    const c = raPvpControls();
+    raExpectAll(c, false, '20r-a PV-1 precondition: every lifecycle control starts enabled');
+
+    c.accept.click();
+    c.accept.click();
+    expect(
+      cbs.onAccept,
+      '20r-a PV-1: two rapid Accept clicks dispatch onAccept exactly ONCE',
+    ).toHaveBeenCalledTimes(1);
+    expect(cbs.onAccept).toHaveBeenCalledWith(RA_INCOMING_ID);
+    raExpectAll(
+      c,
+      true,
+      '20r-a PV-1: ALL FIVE lifecycle controls must be disabled while Accept is in flight — one ' +
+        'challenge state, one lock (plan D2)',
+    );
+    expect(
+      sentinel.disabled,
+      '20r-a PV-1: a <button> that is a DIRECT child of the shell root must NOT be disabled — the ' +
+        'lock walks #incomingEl / #outgoingEl / #playerListEl, never #root (plan §4 #8)',
+    ).toBe(false);
+
+    const siblings: readonly (readonly [HTMLButtonElement, unknown, string])[] = [
+      [c.decline, cbs.onDecline, 'Decline'],
+      [c.cancel, cbs.onCancel, 'Cancel Challenge'],
+      [c.players[0]!, cbs.onChallenge, 'challenge Alice'],
+      [c.players[1]!, cbs.onChallenge, 'challenge Dave'],
+    ];
+    for (const [btn, spy, label] of siblings) {
+      btn.click(); // swallowed by disabled (happy-dom, D1)
+      btn.disabled = false; // HOSTILE re-enable
+      btn.click();
+      expect(
+        spy,
+        `20r-a PV-1: ${label} must be swallowed by the SHARED pending key even after the node is ` +
+          're-enabled by hand — a per-button or per-challengeId lock lets it through',
+      ).not.toHaveBeenCalled();
+      btn.disabled = true; // restore so the post-settle census is about the release
+    }
+    await raFlushPromises();
+    raExpectAll(
+      raPvpControls(),
+      true,
+      '20r-a PV-1: still disabled after the microtasks drain — a void-returning dispatch releases ' +
+        'here while the reducer call is in flight',
+    );
+
+    d.resolve();
+    await raFlushPromises();
+    const after = raPvpControls();
+    raExpectAll(after, false, '20r-a PV-1: every lifecycle control re-enabled on settle');
+    after.decline.click();
+    expect(cbs.onDecline, '20r-a PV-1: Decline dispatches after the settle').toHaveBeenCalledTimes(
+      1,
+    );
+    expect(cbs.onDecline).toHaveBeenCalledWith(RA_INCOMING_ID);
+    await raFlushPromises();
+  });
+
+  it('20r-a PV-1b BITES: hostile re-enable — click Accept, set the LIVE button `disabled = false` by hand, click again → still ONE onAccept', async () => {
+    // WRONG IMPL KILLED: a disabled-only implementation with no pending key (plan D1).
+    mountPvpOverlay();
+    const d = raDeferred();
+    const cbs = makeCallbacks();
+    (cbs.onAccept as ReturnType<typeof vi.fn>).mockReturnValue(d.promise);
+    const view = new PvpView(cbs);
+    view.refresh(raPvpVm(), true);
+    const c = raPvpControls();
+
+    c.accept.click();
+    expect(cbs.onAccept).toHaveBeenCalledTimes(1);
+    expect(c.accept.disabled, '20r-a PV-1b precondition: the lock disabled Accept').toBe(true);
+    c.accept.disabled = false;
+    c.accept.click();
+    expect(
+      cbs.onAccept,
+      '20r-a PV-1b: with the node re-enabled by hand the PENDING KEY must still swallow the click',
+    ).toHaveBeenCalledTimes(1);
+
+    d.resolve();
+    await raFlushPromises();
+    c.accept.click();
+    expect(cbs.onAccept, '20r-a PV-1b: dispatches again after the settle').toHaveBeenCalledTimes(2);
+    await raFlushPromises();
+  });
+
+  it('20r-a PV-2 BITES: the lock releases on an already-resolved return (the sendGuarded short-circuit), on a REJECTION, and on a synchronous THROW — Accept and Decline enabled after each flush', async () => {
+    // WRONG IMPL KILLED (1): a release that waits for a value / a `.then`-only release — the
+    //   frozen-link short-circuit in main.ts returns `Promise.resolve()` (M-2), which must
+    //   release exactly like a real settle; otherwise every click on a dead link parks the
+    //   overlay dead until the force-hide.
+    // WRONG IMPL KILLED (2): `.catch` before `.finally` — the rejection skips the release.
+    //   `.finally` with no trailing `.catch` — vitest fails the run on the unhandled rejection.
+    // WRONG IMPL KILLED (3): `Promise.resolve(cb())` (plan D3) — the sync throw escapes after
+    //   the lock is set; with happy-dom's error capturing disabled it comes out of `.click()`.
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    mountPvpOverlay();
+    const rejected = raDeferred();
+    const onAccept = vi
+      .fn()
+      .mockReturnValueOnce(Promise.resolve())
+      .mockReturnValueOnce(rejected.promise)
+      .mockImplementationOnce(() => {
+        throw new Error('20r-a PV-2: synchronous throw');
+      });
+    const cbs = makeCallbacks();
+    const view = new PvpView({ ...cbs, onAccept });
+    view.refresh(raPvpVm(), true);
+    const c = raPvpControls();
+
+    // (a) short-circuit: an already-resolved promise.
+    c.accept.click();
+    expect(onAccept).toHaveBeenCalledTimes(1);
+    raExpectAll(c, true, '20r-a PV-2 (a): the lock is taken even for an already-resolved return');
+    await raFlushPromises();
+    raExpectAll(
+      c,
+      false,
+      '20r-a PV-2 (a): an already-resolved return (the frozen-link short-circuit) must release ' +
+        'the lock after the microtasks drain',
+    );
+
+    // (b) rejection.
+    c.accept.click();
+    expect(onAccept).toHaveBeenCalledTimes(2);
+    raExpectAll(c, true, '20r-a PV-2 (b): locked while the rejecting call is in flight');
+    await raFlushPromises();
+    raExpectAll(c, true, '20r-a PV-2 (b): still locked before the rejection');
+    rejected.reject(new Error('20r-a PV-2: accept rejected'));
+    await raFlushPromises();
+    raExpectAll(
+      c,
+      false,
+      '20r-a PV-2 (b): a REJECTED call must release the lock (the release lives in `.finally`)',
+    );
+
+    // (c) synchronous throw.
+    expect(
+      () => c.accept.click(),
+      '20r-a PV-2 (c): a synchronously-throwing onAccept must not throw out of the click',
+    ).not.toThrow();
+    expect(onAccept).toHaveBeenCalledTimes(3);
+    raExpectAll(c, true, '20r-a PV-2 (c): the lock was taken before the callback threw');
+    await raFlushPromises();
+    raExpectAll(
+      c,
+      false,
+      '20r-a PV-2 (c): the sync throw must settle the chain and RELEASE — `Promise.resolve(cb())` ' +
+        'leaves the overlay dead here',
+    );
+    c.decline.click();
+    expect(
+      cbs.onDecline,
+      '20r-a PV-2: Decline dispatches once the lock is free',
+    ).toHaveBeenCalledWith(RA_INCOMING_ID);
+    await raFlushPromises();
+  });
+
+  it('20r-a PV-3 BITES: a mid-flight refresh(vm, true) rebuilds every lifecycle control DISABLED, swallows a click on the new node, and the settle re-enables the LIVE nodes', async () => {
+    // WRONG IMPL KILLED (1): refresh() not re-applying the lock after `#renderIncoming` /
+    //   `#renderOutgoing` / `#renderPlayerList` rebuild the rows — main.ts calls
+    //   `refresh(vm, true)` on EVERY batch while the overlay is up (S3-pvpView-REFRESH-NO-REOPEN
+    //   above), so an unlocked rebuild lands within one tick of any click.
+    // WRONG IMPL KILLED (2): the `.finally` re-enabling the closure-captured nodes — after the
+    //   rebuild they are detached and the LIVE buttons stay disabled.
+    mountPvpOverlay();
+    const d = raDeferred();
+    const cbs = makeCallbacks();
+    (cbs.onAccept as ReturnType<typeof vi.fn>).mockReturnValue(d.promise);
+    const view = new PvpView(cbs);
+    view.refresh(raPvpVm(), true);
+    const before = raPvpControls();
+    before.accept.click();
+    raExpectAll(before, true, '20r-a PV-3 precondition: locked');
+
+    view.refresh(raPvpVm(), true); // a batch tick while Accept is in flight
+    const rebuilt = raPvpControls();
+    expect(rebuilt.accept, '20r-a PV-3 precondition: refresh() rebuilt the node').not.toBe(
+      before.accept,
+    );
+    expect(before.accept.isConnected, '20r-a PV-3 precondition: the old node is detached').toBe(
+      false,
+    );
+    raExpectAll(
+      rebuilt,
+      true,
+      '20r-a PV-3: every REBUILT lifecycle control must come back DISABLED — refresh() re-applies ' +
+        'the lock after the row rebuild, not lost on rebuild',
+    );
+    rebuilt.decline.click(); // swallowed by disabled
+    rebuilt.decline.disabled = false; // hostile
+    rebuilt.decline.click();
+    expect(
+      cbs.onDecline,
+      '20r-a PV-3: a click on a rebuilt (and hand re-enabled) Decline is swallowed by the key',
+    ).not.toHaveBeenCalled();
+    rebuilt.decline.disabled = true;
+
+    d.resolve();
+    await raFlushPromises();
+    const live = raPvpControls();
+    expect(live.accept, '20r-a PV-3: a settle does not re-render').toBe(rebuilt.accept);
+    raExpectAll(
+      live,
+      false,
+      '20r-a PV-3: the LIVE (rebuilt) controls must be re-enabled on settle — re-enabling the ' +
+        'detached closure nodes strands the real ones disabled',
+    );
+    live.decline.click();
+    expect(cbs.onDecline).toHaveBeenCalledWith(RA_INCOMING_ID);
+    await raFlushPromises();
+  });
+
+  it('20r-a PV-4 BITES: the force-hide releases the lock — pending, then refresh(vm, false) (hide) and refresh(vm, true) → enabled, and the next click dispatches', async () => {
+    // WRONG IMPL KILLED: a lock released ONLY by `.finally` — the SDK never settles an
+    //   in-flight reducer promise after a link drop, and this view's ONLY dismiss paths are
+    //   `refresh(vm, false)` (main.ts's batch listener) and the force-hide handle, both of which
+    //   reach `hide()`. The tradeProposeView precedent (`hide()` clears `#pending`) is the shape.
+    mountPvpOverlay();
+    const d = raDeferred(); // deliberately never settled
+    const cbs = makeCallbacks();
+    (cbs.onAccept as ReturnType<typeof vi.fn>).mockReturnValue(d.promise);
+    const view = new PvpView(cbs);
+    view.refresh(raPvpVm(), true);
+    const c = raPvpControls();
+    c.accept.click();
+    raExpectAll(c, true, '20r-a PV-4 precondition: locked');
+
+    view.refresh(raPvpVm(), false); // the production force-hide path
+    expect(view.visible, '20r-a PV-4 precondition: hidden').toBe(false);
+    expect(
+      vi.mocked(closeOverlayA11y),
+      '20r-a PV-4: hide() must still close the overlay a11y record exactly once (plan D8 — the ' +
+        'release is added BEFORE the close, the close stays last and unguarded)',
+    ).toHaveBeenCalledTimes(1);
+    view.refresh(raPvpVm(), true);
+    const after = raPvpControls();
+    raExpectAll(
+      after,
+      false,
+      '20r-a PV-4: after the force-hide + re-show every lifecycle control must be ENABLED — ' +
+        'hide() is the release path for a promise that will never settle (link drop)',
+    );
+    after.accept.click();
+    expect(cbs.onAccept, '20r-a PV-4: dispatches after the hide-release').toHaveBeenCalledTimes(2);
+  });
+
+  it('20r-a PV-6 BITES: two overlapping generations — click (P1), refresh(vm,false), refresh(vm,true) + click (P2), settle P1 → STILL disabled and a third click is swallowed; settle P2 → enabled', async () => {
+    // WRONG IMPL KILLED (plan D11): a release that clears `#pending` unconditionally (a boolean,
+    //   or `#pending = null` with no identity check). hide() clears it, the overlay re-opens, a
+    //   second click sets it again with P2 in flight, then the STALE P1 settles and clears it —
+    //   P2's controls come back live and a THIRD lifecycle action is sent. Only
+    //   `if (this.#pending === myToken)` refuses it.
+    mountPvpOverlay();
+    const p1 = raDeferred();
+    const p2 = raDeferred();
+    const cbs = makeCallbacks();
+    (cbs.onAccept as ReturnType<typeof vi.fn>)
+      .mockReturnValueOnce(p1.promise)
+      .mockReturnValueOnce(p2.promise);
+    const view = new PvpView(cbs);
+    view.refresh(raPvpVm(), true);
+
+    raPvpControls().accept.click(); // generation 1
+    expect(cbs.onAccept).toHaveBeenCalledTimes(1);
+    raExpectAll(raPvpControls(), true, '20r-a PV-6 precondition: generation 1 holds the lock');
+
+    view.refresh(raPvpVm(), false); // force-hide releases generation 1 — P1 still in flight
+    view.refresh(raPvpVm(), true);
+    const gen2 = raPvpControls();
+    raExpectAll(gen2, false, '20r-a PV-6 precondition: the hide released generation 1');
+    gen2.accept.click(); // generation 2
+    expect(cbs.onAccept).toHaveBeenCalledTimes(2);
+    raExpectAll(gen2, true, '20r-a PV-6 precondition: generation 2 holds the lock');
+
+    p1.resolve(); // the STALE settle
+    await raFlushPromises();
+    const afterStale = raPvpControls();
+    raExpectAll(
+      afterStale,
+      true,
+      "20r-a PV-6: generation 1's settle must NOT release generation 2's lock — P2 is still in " +
+        'flight. An unconditional clear in `.finally` re-enables everything here',
+    );
+    afterStale.decline.click(); // swallowed by disabled
+    afterStale.decline.disabled = false; // hostile
+    afterStale.decline.click();
+    expect(
+      cbs.onDecline,
+      '20r-a PV-6: a third lifecycle click while P2 is in flight must be swallowed by the key',
+    ).not.toHaveBeenCalled();
+    afterStale.decline.disabled = true;
+
+    p2.resolve();
+    await raFlushPromises();
+    raExpectAll(raPvpControls(), false, "20r-a PV-6: generation 2's OWN settle releases");
+    raPvpControls().decline.click();
+    expect(cbs.onDecline).toHaveBeenCalledWith(RA_INCOMING_ID);
+    await raFlushPromises();
   });
 });
