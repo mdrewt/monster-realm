@@ -34,20 +34,28 @@
 import type { BattleMonsterCardVM, BattleViewModel } from './battleModel';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 
+/**
+ * The five PvE callbacks may return a promise (20r-a): the view's per-battle in-flight
+ * lock is held until that promise settles, so the return type must express it. Typing
+ * these `=> void` would let a future implementation type-check cleanly while silently
+ * reducing the lock to a one-microtask no-op (a held Enter would fire two attacks).
+ * The two PvP callbacks stay `=> void`: their pending lifetime is "until the server
+ * advances the turn" and is carried by `vm.pvpPendingSubmit` (RT-PVP-DS-01), not here.
+ */
 export interface BattleViewCallbacks {
   /** Called when the player selects a skill to attack with (PvE). */
-  readonly onAttack: (battleId: bigint, skillId: number) => void;
+  readonly onAttack: (battleId: bigint, skillId: number) => void | Promise<void>;
   /** Called when the player clicks the Flee button. */
-  readonly onFlee: (battleId: bigint) => void;
+  readonly onFlee: (battleId: bigint) => void | Promise<void>;
   /** Called when the player selects a team member to swap to (PvE). */
-  readonly onSwap: (battleId: bigint, teamIndex: number) => void;
+  readonly onSwap: (battleId: bigint, teamIndex: number) => void | Promise<void>;
   /**
    * Called when the player clicks Recruit (wild battles only). `baitItemId` is
    * the selected bait's id, or `undefined` for a bare attempt.
    */
-  readonly onRecruit: (battleId: bigint, baitItemId: number | undefined) => void;
+  readonly onRecruit: (battleId: bigint, baitItemId: number | undefined) => void | Promise<void>;
   /** Called when the player selects a cure item and clicks Use Item. */
-  readonly onUseItem: (battleId: bigint, itemId: number) => void;
+  readonly onUseItem: (battleId: bigint, itemId: number) => void | Promise<void>;
   /** Called when the player submits a skill attack in a PvP battle. */
   readonly onPvpAttack: (battleId: bigint, skillId: number) => void;
   /** Called when the player submits a swap in a PvP battle. */
@@ -74,6 +82,20 @@ export class BattleView {
   /** The cure-item `<select>` for the current battle render (null when no cure items). */
   #cureSelectEl: HTMLSelectElement | null = null;
   #visible = false;
+  // 20r-a: the PvE in-flight lock. ONE lock for the whole battle, not per action: attack,
+  // flee, swap, recruit and use-item all spend the same turn, so a second click on ANY of
+  // them while the first call is unsettled is the double-fire (`submit_attack` runs a full
+  // turn twice; `attempt_recruit` consumes bait twice — the server has no idempotency guard).
+  // Promise-gated, not VM-gated like `vm.pvpPendingSubmit`: a PvE call's pending lifetime
+  // is exactly "until the reducer promise settles", which the callback returns; PvP's is
+  // "until the server advances the turn", which only the store can know.
+  // The OBJECT is the generation token: `.finally()` releases only if the lock it stored is
+  // still the current one. A bare `battleId` compare would let a stale promise (click →
+  // hide() → re-show → click again → FIRST promise settles) release the SECOND click's lock
+  // and re-enable the live buttons while that call is still in flight.
+  // Keyed by battleId so a refresh() of a different battle renders enabled controls and a
+  // late settle for the old battle cannot touch them.
+  #pending: { readonly battleId: bigint } | null = null;
 
   constructor(parent: HTMLElement, callbacks: BattleViewCallbacks) {
     this.#callbacks = callbacks;
@@ -239,6 +261,12 @@ export class BattleView {
   hide(): void {
     this.#visible = false;
     this.#root.style.display = 'none';
+    // 20r-a: release the in-flight lock (tradeProposeView hide()-time precedent, ADR-0085
+    // C6): onReconnect and the battle-end paths hide this overlay, and the SDK never settles
+    // an in-flight reducer promise after a link drop — so `.finally()` may never run.
+    // Without this reset the next battle's controls would render dead.
+    this.#pending = null;
+    this.#setActionButtonsDisabled(false);
     closeOverlayA11y('battleView', null);
   }
 
@@ -265,6 +293,46 @@ export class BattleView {
     this.#renderSkills(vm);
     this.#renderActions(vm);
     this.#renderOutcome(vm);
+    // 20r-a: re-derive the lock on the rebuilt controls rather than defaulting to enabled —
+    // a batch can re-render this battle while its call is still in flight, and a fresh
+    // enabled-looking button whose click the lock then swallows is worse than no button.
+    if (this.#pending?.battleId === vm.battleId) this.#setActionButtonsDisabled(true);
+  }
+
+  /**
+   * 20r-a: every PvE click routes through here. No-op while THIS battle has a call in
+   * flight; otherwise take the lock, disable every PvE control, and release in
+   * `.finally()` on BOTH arms — a rejected or short-circuited call must never leave a
+   * dead control. `new Promise((resolve) => resolve(run()))` calls `run` synchronously
+   * (the callback fires inside the click, as before) and converts a synchronous throw
+   * into a rejection instead of stranding the lock; `.catch` sits AFTER `.finally` so a
+   * rejecting callback does not surface as an unhandled rejection (feedback is main.ts's
+   * job — sendGuarded already reported it).
+   */
+  #dispatch(battleId: bigint, run: () => void | Promise<void>): void {
+    if (this.#pending?.battleId === battleId) return;
+    const lock = { battleId };
+    this.#pending = lock;
+    this.#setActionButtonsDisabled(true);
+    void new Promise<void>((resolve) => resolve(run()))
+      .finally(() => {
+        if (this.#pending !== lock) return;
+        this.#pending = null;
+        // Re-enable whichever buttons are on screen NOW: a refresh() during the call
+        // replaced the clicked node, and re-enabling the detached one would strand the
+        // live ones disabled until the next batch.
+        this.#setActionButtonsDisabled(false);
+      })
+      .catch((err: unknown) => {
+        console.error('battle action handler error', err);
+      });
+  }
+
+  /** The skills grid and the actions row ARE the live-button registry (no per-button map). */
+  #setActionButtonsDisabled(disabled: boolean): void {
+    for (const el of [this.#skillsEl, this.#actionsEl]) {
+      for (const btn of el.querySelectorAll('button')) btn.disabled = disabled;
+    }
   }
 
   #renderPvpStatus(vm: BattleViewModel): void {
@@ -376,7 +444,9 @@ export class BattleView {
       if (vm.isPvp) {
         btn.addEventListener('click', () => this.#callbacks.onPvpAttack(vm.battleId, skill.id));
       } else {
-        btn.addEventListener('click', () => this.#callbacks.onAttack(vm.battleId, skill.id));
+        btn.addEventListener('click', () =>
+          this.#dispatch(vm.battleId, () => this.#callbacks.onAttack(vm.battleId, skill.id)),
+        );
       }
       this.#skillsEl.appendChild(btn);
     }
@@ -396,7 +466,9 @@ export class BattleView {
         'padding:6px 12px;cursor:pointer;font-family:monospace;background:#3a2a2a;' +
         'color:#e0e0e0;border:1px solid #844;border-radius:3px;';
       fleeBtn.textContent = 'Flee';
-      fleeBtn.addEventListener('click', () => this.#callbacks.onFlee(vm.battleId));
+      fleeBtn.addEventListener('click', () =>
+        this.#dispatch(vm.battleId, () => this.#callbacks.onFlee(vm.battleId)),
+      );
       this.#actionsEl.appendChild(fleeBtn);
     }
     if (vm.canSwap) {
@@ -468,7 +540,7 @@ export class BattleView {
     recruitBtn.addEventListener('click', () => {
       const raw = this.#baitSelectEl?.value ?? '';
       const baitItemId = raw === '' ? undefined : Number(raw);
-      this.#callbacks.onRecruit(vm.battleId, baitItemId);
+      this.#dispatch(vm.battleId, () => this.#callbacks.onRecruit(vm.battleId, baitItemId));
     });
     this.#actionsEl.appendChild(recruitBtn);
   }
@@ -509,7 +581,7 @@ export class BattleView {
       // No bare use — clicking with empty selection is a no-op (no undefined variant).
       const parsed = parseInt(raw, 10);
       if (!Number.isNaN(parsed)) {
-        this.#callbacks.onUseItem(vm.battleId, parsed);
+        this.#dispatch(vm.battleId, () => this.#callbacks.onUseItem(vm.battleId, parsed));
       }
     });
     this.#actionsEl.appendChild(useBtn);
@@ -531,7 +603,9 @@ export class BattleView {
           this.#callbacks.onPvpSwap(vm.battleId, member.teamIndex),
         );
       } else {
-        btn.addEventListener('click', () => this.#callbacks.onSwap(vm.battleId, member.teamIndex));
+        btn.addEventListener('click', () =>
+          this.#dispatch(vm.battleId, () => this.#callbacks.onSwap(vm.battleId, member.teamIndex)),
+        );
       }
       this.#actionsEl.appendChild(btn);
     }

@@ -944,13 +944,17 @@ window.addEventListener('unhandledrejection', (e) => pushError('unhandledrejecti
  * never leaks InternalError detail. Documented exceptions (A10): enqueueMove
  * (movement — silent prediction repair in sendIntent, M2 §3), joinGame (handled in
  * connection.ts, A4), buy/sell (shop feedback line — gated inline in main(), A6).
+ * 20r-a: ALWAYS resolves (frozen, dead handle, reported rejection) — views holding an
+ * in-flight lock `return` it so the lock lives exactly until the call settles.
  */
-function sendGuarded(where: string, call: () => Promise<void> | undefined): void {
+function sendGuarded(where: string, call: () => Promise<void> | undefined): Promise<void> {
   if (conn === undefined || conn.linkFrozen()) {
     reportError(`${where}: disconnected — try again`);
-    return;
+    return Promise.resolve();
   }
-  call()?.catch((err: unknown) => reportError(reduceErrorMessage(err, where)));
+  const p = call();
+  if (p === undefined) return Promise.resolve();
+  return p.catch((err: unknown) => reportError(reduceErrorMessage(err, where)));
 }
 
 let resolveReady: () => void = () => {};
@@ -2494,23 +2498,30 @@ async function main(): Promise<void> {
         }
       },
     });
+    // 20r-a: the PvE callbacks RETURN the promise (view lock until settle; M-1 pin).
     battleView = new BattleViewClass(mount, {
       onAttack: (battleId, skillId) => {
-        sendGuarded('attack', () => conn?.live()?.reducers.submitAttack({ battleId, skillId }));
+        return sendGuarded('attack', () =>
+          conn?.live()?.reducers.submitAttack({ battleId, skillId }),
+        );
       },
       onFlee: (battleId) => {
-        sendGuarded('flee', () => conn?.live()?.reducers.flee({ battleId }));
+        return sendGuarded('flee', () => conn?.live()?.reducers.flee({ battleId }));
       },
       onSwap: (battleId, teamIndex) => {
-        sendGuarded('swap', () => conn?.live()?.reducers.swapActive({ battleId, teamIndex }));
+        return sendGuarded('swap', () =>
+          conn?.live()?.reducers.swapActive({ battleId, teamIndex }),
+        );
       },
       onRecruit: (battleId, baitItemId) => {
-        sendGuarded('recruit', () =>
+        return sendGuarded('recruit', () =>
           conn?.live()?.reducers.attemptRecruit({ battleId, baitItemId }),
         );
       },
       onUseItem: (battleId, itemId) => {
-        sendGuarded('use-item', () => conn?.live()?.reducers.useBattleItem({ battleId, itemId }));
+        return sendGuarded('use-item', () =>
+          conn?.live()?.reducers.useBattleItem({ battleId, itemId }),
+        );
       },
       // m16b: PvP action submission. pvpPendingTurnNumber is set INSIDE the lambda
       // so sendGuarded's frozen-check runs first — a frozen-link click must not
@@ -2551,7 +2562,7 @@ async function main(): Promise<void> {
     });
     raisingView = new RaisingViewClass(mount, {
       onTrain: (monsterId, foodItemId) => {
-        sendGuarded('train', () => conn?.live()?.reducers.train({ monsterId, foodItemId }));
+        return sendGuarded('train', () => conn?.live()?.reducers.train({ monsterId, foodItemId }));
       },
       // ADR-0159 D1: care used to run through sendGuarded, which attaches ONLY a
       // .catch — a successful care was acknowledged by nothing, and the rejection
@@ -2584,7 +2595,7 @@ async function main(): Promise<void> {
       // never resolves an ambiguous evolution itself (EG4-2) — the player picks, and the
       // server re-validates the same gates before applying.
       onEvolve: (monsterId, toSpecies) => {
-        sendGuarded('evolve', () => conn?.live()?.reducers.evolve({ monsterId, toSpecies }));
+        return sendGuarded('evolve', () => conn?.live()?.reducers.evolve({ monsterId, toSpecies }));
       },
     });
     // M12d: dialogue / quest log / heal DOM shells (ADR-0071).
@@ -2683,30 +2694,37 @@ async function main(): Promise<void> {
     });
     // m16b: PvP challenge overlay (ADR-0110).
     // All action reducers use sendGuarded so a dead link is rejected loudly.
+    // 20r-a: lifecycle callbacks RETURN the promise; party ids read inside the closure.
     pvpView = new PvpViewClass({
       onChallenge: (targetIdentity) => {
-        const partyIds = store
-          .ownMonsters(identity)
-          .filter((m) => m.partySlot !== PARTY_SLOT_NONE)
-          .map((m) => m.monsterId);
-        sendGuarded('pvp-challenge', () =>
-          conn?.live()?.reducers.challengePvp({ target: new Identity(targetIdentity), partyIds }),
-        );
+        return sendGuarded('pvp-challenge', () => {
+          const partyIds = store
+            .ownMonsters(identity)
+            .filter((m) => m.partySlot !== PARTY_SLOT_NONE)
+            .map((m) => m.monsterId);
+          return conn
+            ?.live()
+            ?.reducers.challengePvp({ target: new Identity(targetIdentity), partyIds });
+        });
       },
       onAccept: (challengeId) => {
-        const partyIds = store
-          .ownMonsters(identity)
-          .filter((m) => m.partySlot !== PARTY_SLOT_NONE)
-          .map((m) => m.monsterId);
-        sendGuarded('pvp-accept', () =>
-          conn?.live()?.reducers.acceptChallenge({ challengeId, partyIds }),
-        );
+        return sendGuarded('pvp-accept', () => {
+          const partyIds = store
+            .ownMonsters(identity)
+            .filter((m) => m.partySlot !== PARTY_SLOT_NONE)
+            .map((m) => m.monsterId);
+          return conn?.live()?.reducers.acceptChallenge({ challengeId, partyIds });
+        });
       },
       onDecline: (challengeId) => {
-        sendGuarded('pvp-decline', () => conn?.live()?.reducers.declineChallenge({ challengeId }));
+        return sendGuarded('pvp-decline', () =>
+          conn?.live()?.reducers.declineChallenge({ challengeId }),
+        );
       },
       onCancel: (challengeId) => {
-        sendGuarded('pvp-cancel', () => conn?.live()?.reducers.cancelChallenge({ challengeId }));
+        return sendGuarded('pvp-cancel', () =>
+          conn?.live()?.reducers.cancelChallenge({ challengeId }),
+        );
       },
     });
     // m17b: leaderboard DOM shell (ADR-0120). ZERO-arg construction — RL-15: the
@@ -2995,6 +3013,10 @@ async function main(): Promise<void> {
       tradeView?.hide();
       // m16b: hide the PvP overlay on reconnect — any pending challenge state is stale.
       pvpView?.hide();
+      // 20r-a: same never-settles class for the three settle-released locks (+ Care's).
+      battleView?.hide();
+      raisingView?.hide();
+      evolutionView?.hide();
       // m17b: hide the leaderboard on reconnect — the store was reset, so a stale/empty
       // board must not linger (no lock to reset; re-renders on the next open/batch).
       leaderboardView?.hide();
