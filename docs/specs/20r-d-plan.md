@@ -161,15 +161,18 @@ evals/account-e2e.eval.mjs — `M22S9_MANIFEST_TRANSCRIPTION` regenerated from t
 `[s9/census]` (:1142) and the success string (:1343) → 43; AND the S9 cascade-truth tooth needs an
 ORGANIC pre-cascade row (a `Vec<struct>` column is not SQL-DML-insertable and the vacuity allowlist
 is hard-capped at 3, full): `buildSeedStatements` gains the subject's monster id (emitted in the
-`S9-presence-ready` payload) and one statement `UPDATE monster SET level = 20 WHERE monster_id = N`
-(UPDATE … WHERE col = literal is measured-expressible), then a new driver milestone
-`S9-evolve-notice` right after go-file 1 and BEFORE `S9-trade-open` (evolve is battle-guarded, so
-it must precede the wild battle; the trade escrows no monster): subscribe
-`SELECT * FROM my_pending_evolution_notices` in A's applied list, call
-`a.conn.reducers.evolve({ monsterId: aMonId, toSpecies: 4 })` (content edge 1: species 1 → 4 at
-min_level 20, no essence; species 4 has no outgoing edge, so exactly one entry), poll the view for
-A's row with `entries.length >= 1`, emit. `S9_MILESTONES` (strict ordered set) gains the step and
-its `length !== 25` pin (:4752) → 26; the `buildSeedStatements` teeth (:4311-4340) gain the new
+`S9-presence-ready` payload) and two single-column statements `UPDATE monster SET essence_fire = 150 …`
+and `UPDATE monster SET trust_favorable_count = 40 …` (UPDATE … WHERE col = literal is
+measured-expressible), then a new driver milestone `S9-evolve-notice` right after go-file 1 and BEFORE
+`S9-trade-open` (evolve is battle-guarded, so it must precede the wild battle; the trade escrows no
+monster): subscribe `SELECT * FROM my_pending_evolution_notices` in A's applied list, call
+`a.conn.reducers.evolve({ monsterId: aMonId, toSpecies: 5 })` (content edge 2: species 1 → 5 at
+min_level 1 + 150 Fire essence + Trust ≥ Friendly; species 5 has no outgoing edge and the transform
+zeroes essence, so exactly one entry and no later auto-evolve), poll the view for A's row with
+`entries.length >= 1`, emit. NOT the level-20 edge 1 the first draft named: `roll_encounter` filters
+zone 0's encounter bands by the PLAYER's level (bands top out at 8), so a level-20 subject silences
+`S9-wild-live` — measured RED twice. `S9_MILESTONES` (strict ordered set) gains the step and its
+`length !== 25` pin (:4752) → 26; the `buildSeedStatements` teeth (:4311-4340) gain the new
 argument's validation. This is B1's player-chosen path proven end-to-end against a live host, and
 the cascade then proves the Erase policy on a real row.
 client/src/module_bindings/** — `just gen`. client/src/net/rowConvert.ts (+ test) — convert.

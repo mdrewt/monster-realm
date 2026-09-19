@@ -91,7 +91,8 @@ at-least-once delivery, "cutscene polish MAY be disclosed as a residual".
   data).
 - Forced companions: a new Erase, Identity-keyed table moves the M22 lifecycle censuses
   (accounts_tests / privacy_tests / account-e2e / guest-claim-integrity / schema + type
-  snapshots) and needs an ORGANIC pre-cascade row in the S9 e2e (`UPDATE monster SET level = 20`
-  in the seed statements + an `S9-evolve-notice` milestone, since a `Vec<struct>` column is not
-  SQL-DML-insertable and the vacuity allowlist is capped) — each listed in the PR's
+  snapshots) and needs an ORGANIC pre-cascade row in the S9 e2e (seed `essence_fire = 150` +
+  `trust_favorable_count = 40` on the subject's starter and drive content edge 2, species 1 → 5, in
+  a new `S9-evolve-notice` milestone before the wild battle — a level bump would silence zone-0
+  encounters; a `Vec<struct>` column is not SQL-DML-insertable and the vacuity allowlist is capped) — each listed in the PR's
   `touches-delta:` with its forcing gate (the rb-73 / ADR-0245 precedent).
