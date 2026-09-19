@@ -1,7 +1,10 @@
 //! `currency` — pure, deterministic balance arithmetic (M13a, ADR-0081).
 //!
 //! Every balance mutation routes through `apply_grant` or `apply_spend`.
-//! No side-effects, no context, no SpacetimeDB types.
+//! Since 20r-b (ADR-0175 amendment) the essence reward formula and the per-pool
+//! essence soft cap live here too, beside their currency sibling, so the content
+//! validator and the server read ONE definition. No side-effects, no context,
+//! no SpacetimeDB types.
 
 /// Maximum balance a single wallet may hold (9-digit UI cap, ADR-0081).
 pub const MAX_BALANCE: u64 = 999_999_999;
@@ -30,6 +33,32 @@ pub fn apply_spend(balance: u64, amount: u64) -> Result<u64, &'static str> {
 pub fn battle_currency_reward(loser_bst: u16) -> u64 {
     u64::from(loser_bst) / BATTLE_CURRENCY_BST_DIVISOR
 }
+
+/// Divisor for the essence reward formula (EG2-7, ADR-0175 D5) — deliberately
+/// 3x steeper than [`BATTLE_CURRENCY_BST_DIVISOR`]: at currency's `/ 10` rate a
+/// handful of wins would clear every authored essence threshold. Promoted
+/// from `server-module/src/battle.rs` by 20r-b (ADR-0175 amendment) so the
+/// server, the content validator and any future client preview share it.
+pub const ESSENCE_BST_DIVISOR: u16 = 30;
+
+/// Essence granted to each winning participant of a WILD battle, typed by the
+/// defeated species' affinity at the call site: `max(1, loser_bst / 30)`.
+/// Floored so a low-BST win is never essence-inert; NOT clamped at
+/// [`ESSENCE_SOFT_CAP`] — clamping is the grant's job (EG1-1), and a
+/// `u16::MAX` BST legitimately yields 2184.
+#[must_use]
+pub fn essence_battle_reward(bst: u16) -> u32 {
+    u32::from((bst / ESSENCE_BST_DIVISOR).max(1))
+}
+
+/// Per-pool essence soft cap (EG1-1). Two consumers, two shapes: every essence
+/// GRANT saturates and clamps at this value (never rejects); the content
+/// validator REJECTS any `EvolutionPath` essence requirement above it (rule
+/// R14) because such a gate could never be satisfied. Consequence: lowering
+/// the cap below a shipped `amount:` reds `sync_content` — retune content
+/// first, then the cap. Promoted from `server-module/src/raising.rs` by 20r-b
+/// (ADR-0175 amendment).
+pub const ESSENCE_SOFT_CAP: u32 = 999;
 
 // ---------------------------------------------------------------------------
 // Unit + property tests (M13a EARS criteria → one test per criterion)

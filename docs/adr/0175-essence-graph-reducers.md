@@ -218,7 +218,8 @@ cooldown, the +5 train amount and the Quality-Time windows stay server-local (`r
 (`pub(crate) use game_core::currency::essence_battle_reward;`) — the divisor has no remaining
 server consumer, and re-exporting it would be an unused import under `-D warnings`.
 `server-module/src/raising.rs` re-exports `ESSENCE_SOFT_CAP` the same way (the `CARE_COOLDOWN_MS`
-precedent at the top of that file), so the untouched `battle_tests.rs` / `raising_tests.rs`
+precedent at the top of that file; the `use` sits in the pacing-constants block as a line-neutral
+swap so the knowledge-bundle line pins for the reducers below it do not move), so the untouched `battle_tests.rs` / `raising_tests.rs`
 children keep resolving `super::essence_battle_reward` and `use super::*` unchanged — the slice's
 own gate byte-compares both test files against the slice base. `game-core/src/lib.rs` is
 deliberately untouched (outside the slice's `touches:`); consumers spell the module path
@@ -256,6 +257,7 @@ ledger does not know R14.
 **Confirmation.** `just ci-fast game-core` + `just ci-fast monster-realm-module` (clippy
 `-D warnings`, nextest, doctests); the `currency::tests::essence_*` / `prop_essence_*` and
 `content::tests::r14_*` tests (boundary 999 / 1000, offender-first / offender-last, three entries
-each at the cap, second-path, R7 / R5 precedence, constant coupling); the byte-unmodified
+each at the cap, second-path, R5 / R7 / R12 precedence, the `u16`-cast escape, constant coupling
+and two self-source consumer pins — 23 tests, 7 / 2 / 14 by prefix); the byte-unmodified
 `battle_tests.rs` / `raising_tests.rs`; `just adr-digest-check`; `just knowledge-check` —
 all pinned by acceptance ledger `memory/projects/gates/20r-b.gates.md` gate B1.

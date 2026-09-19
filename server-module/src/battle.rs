@@ -1117,16 +1117,13 @@ pub(crate) fn write_back_party_hp(ctx: &ReducerContext, battle: &Battle) -> Resu
     Ok(())
 }
 
-/// EG2-7: essence divisor — deliberately 3x steeper than currency's `/ 10`
-/// (`battle_currency_reward`); reusing that rate would clear every authored
-/// essence threshold in a handful of wins.
-pub(crate) const ESSENCE_BST_DIVISOR: u16 = 30;
-
-/// EG2-7: essence granted per winning participant on a WILD win —
-/// `max(1, loser_bst / 30)`. Floored so a low-BST win is never essence-inert.
-pub(crate) fn essence_battle_reward(bst: u16) -> u32 {
-    u32::from((bst / ESSENCE_BST_DIVISOR).max(1))
-}
+// EG2-7: the essence reward (`max(1, loser_bst / 30)` — a divisor 3x steeper
+// than currency's `/ 10`, so wins do not clear every authored threshold at
+// once) is game-core SSOT since 20r-b (ADR-0175 amendment):
+// `game_core::currency::{ESSENCE_BST_DIVISOR, essence_battle_reward}`. Only
+// the helper is re-exported — the divisor has no server consumer, and an
+// unused re-export would fail `-D warnings`.
+pub(crate) use game_core::currency::essence_battle_reward;
 
 /// EG2-7 / ADR-0175 D4: the UTC-day index of a server timestamp (day =
 /// ms / 86_400_000), SATURATING to `u32::MAX` when the index has no u32

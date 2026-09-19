@@ -920,7 +920,7 @@ pub fn validate_content(
 }
 
 /// Cross-registry content integrity for the essence-graph evolution model
-/// (EG1-10, spec §5 rules R1-R12; ADR-0174 D6). The successor to the deleted
+/// (EG1-10, spec §5 rules R1-R12 plus R14, 20r-b; ADR-0174 D6). The successor to the deleted
 /// `validate_evolution_fusion`. Pure (errors-as-values, no clock/RNG); checks
 /// run in a deterministic order so each proof-of-teeth fixture isolates exactly
 /// one violation (ADR-0010).
@@ -955,6 +955,14 @@ pub fn validate_content(
 /// - **R11** tier cap: `Species.tier <= 5` (PROVISIONAL, spec §4).
 /// - **R12** `edge_id` unique across the path set (cross-version append-only
 ///   enforcement is the eval gate's job, EG5-1).
+/// - **R13** is RESERVED — ADR-0176 D2's temporal-dominance guard, still a
+///   candidate, not a rule; it is not implemented here.
+/// - **R14** essence satisfiability (20r-b, ADR-0175 amendment): no
+///   `EssenceRequirement.amount` may exceed `currency::ESSENCE_SOFT_CAP` —
+///   every essence grant clamps there (EG1-1), so a higher threshold is a
+///   permanently unsatisfiable gate. Reject at the content boundary, the
+///   mirror of the runtime clamp. Consequence: lowering the cap below a shipped
+///   amount reds `sync_content`; retune content first, then the cap.
 ///
 /// # Errors
 /// Returns `Err` with a descriptive message on the first integrity violation.
@@ -964,7 +972,7 @@ pub fn validate_evolution_paths(
     encounters: &[EncounterTable],
     items: &[ItemDef],
 ) -> Result<(), String> {
-    // The rules run in DECLARED order R1 -> R12: the per-rule proof-of-teeth
+    // The rules run in DECLARED order R1 -> R12, then R14: the per-rule proof-of-teeth
     // fixtures (notably R2's `self` message, which a self-edge would otherwise
     // trip R5's tier arithmetic for) depend on it. Reordering is a spec change,
     // not a refactor.
@@ -1138,6 +1146,25 @@ pub fn validate_evolution_paths(
                  append-only edge identity",
                 path.edge_id
             ));
+        }
+    }
+
+    // R14: essence satisfiability — no requirement may exceed the runtime soft
+    // cap the grants clamp at (EG1-1). LAST by design: a fixture that also
+    // violates an earlier rule keeps reporting that rule (declared order ==
+    // numeric order; R13 is reserved, see the roster above).
+    for path in paths {
+        for req in &path.essence {
+            if req.amount > crate::currency::ESSENCE_SOFT_CAP {
+                return Err(format!(
+                    "R14: edge {} requires {} {:?} essence — above ESSENCE_SOFT_CAP {}; every \
+                     essence grant clamps at the cap, so the gate is permanently unsatisfiable",
+                    path.edge_id,
+                    req.amount,
+                    req.affinity,
+                    crate::currency::ESSENCE_SOFT_CAP
+                ));
+            }
         }
     }
 
