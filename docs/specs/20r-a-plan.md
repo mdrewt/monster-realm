@@ -113,7 +113,8 @@ map `.clear()` → RV-2/EV-3; `return` in main.ts → M-1; `Promise.resolve()` �
   next refresh. Today the same focus loss happens on the NEXT BATCH for every one of these buttons (their containers are
   `replaceChildren`'d on refresh); this slice moves it to click time for Train/Evolve/pvp. Registered as a residual
   (mr-gates residuals add) — fix = move focus to the overlay anchor at dispatch or `aria-disabled` + key check; happy-dom cannot measure it.
-- Shipped Care lock (`raisingView.ts:216-232`) has the D11 generation hole too; byte-pinned block, out of scope → residual R-20r-a-CARE-GEN.
+- Shipped Care lock (`raisingView.ts:216-232`) has the D11 generation hole AND the D3 sync-throw hole (`Promise.resolve(cb())` after the lock is set); byte-pinned block, out of scope → residual R-20r-a-CARE-GEN.
+- Impl review round: `#applyPendingLock` was inlined into `refresh()` (simplify); the `hide()`-time node re-enable was dropped from battle/pvp (unreachable — both views re-show only through a rebuilding `refresh()`); red-team measured 44 mutants, 3 behavioural test gaps closed by the tester's second round (BV-5 dispatch gate, EV-3b sync throw, RV-1c Care-then-Train) plus M-1/M-3 forgery hardening.
 - Evolve resolve→batch window: a second click after resolve but before the batch is server-rejected. Accepted.
 - e2e: Playwright `click()` auto-waits for enabled; no `force:true` in `client/e2e`.
 - Hidden-dependency watch (STOP if hit): `battleModel.ts`, `overlayA11y.ts`, shared test utils, `evals/*` censuses.

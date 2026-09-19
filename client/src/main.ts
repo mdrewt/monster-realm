@@ -3013,7 +3013,8 @@ async function main(): Promise<void> {
       tradeView?.hide();
       // m16b: hide the PvP overlay on reconnect — any pending challenge state is stale.
       pvpView?.hide();
-      // 20r-a: same never-settles class for the three settle-released locks (+ Care's).
+      // 20r-a: same never-settles class for the three settle-released locks (+ Care's);
+      // a surviving battle re-shows (and refocuses) on the next batch, as Escape-dismiss does.
       battleView?.hide();
       raisingView?.hide();
       evolutionView?.hide();

@@ -98,9 +98,9 @@ export class PvpView {
     this.#feedbackEl.textContent = '';
     // 20r-a: release the lifecycle lock (tradeProposeView hide()-time precedent): onReconnect
     // and the battle auto-show force-hide this overlay, and the SDK never settles an in-flight
-    // reducer promise after a link drop — so `.finally()` may never run.
+    // reducer promise after a link drop — so `.finally()` may never run. No node re-enable:
+    // `show()` is only reached through refresh(), which rebuilds every lifecycle control.
     this.#pending = null;
-    this.#setLifecycleDisabled(false);
     // m23-s3 D2 -- DELIBERATELY UNGUARDED, and the asymmetry with the guarded `render(null)` path
     // in the three render-driven views is a decision, not an oversight. `closeOverlayA11y` is a
     // documented no-op when there is no open record (ui/overlayA11y.ts:136-137), so an unguarded

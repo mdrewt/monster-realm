@@ -264,9 +264,9 @@ export class BattleView {
     // 20r-a: release the in-flight lock (tradeProposeView hide()-time precedent, ADR-0085
     // C6): onReconnect and the battle-end paths hide this overlay, and the SDK never settles
     // an in-flight reducer promise after a link drop — so `.finally()` may never run.
-    // Without this reset the next battle's controls would render dead.
+    // Without this reset the next battle's controls would render dead. No node re-enable
+    // here: the view is only ever re-shown through refresh(), which rebuilds every control.
     this.#pending = null;
-    this.#setActionButtonsDisabled(false);
     closeOverlayA11y('battleView', null);
   }
 
@@ -328,7 +328,9 @@ export class BattleView {
       });
   }
 
-  /** The skills grid and the actions row ARE the live-button registry (no per-button map). */
+  /** The skills grid and the actions row ARE the live-button registry (no per-button map).
+   *  In a PvP battle this also covers Flee/Use Item's siblings — the PvP Submit buttons are
+   *  never rendered while `vm.pvpPendingSubmit` (RT-PVP-DS-01), so the two locks never overlap. */
   #setActionButtonsDisabled(disabled: boolean): void {
     for (const el of [this.#skillsEl, this.#actionsEl]) {
       for (const btn of el.querySelectorAll('button')) btn.disabled = disabled;
