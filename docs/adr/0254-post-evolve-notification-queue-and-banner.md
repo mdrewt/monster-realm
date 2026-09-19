@@ -7,7 +7,7 @@
 **Amends:** —
 **Extends:** 0174, 0175, 0194
 **Subsystems:** evolution-fusion, schema-persistence, client-ui
-**Decision:** Every evolution completion appends one `EvolutionRevealRow` to the owner's private `pending_evolution_notice` row inside the same transaction; `ack_evolution_notices(count)` drains exactly that prefix; the client reveals the head entry in a passive banner, not a registry overlay.
+**Decision:** Each evolution appends one `EvolutionRevealRow` to the owner's private `pending_evolution_notice` row in the same transaction; `ack_evolution_notices(count)` drains exactly that prefix; the client shows the head entry in a passive banner.
 
 Numbering note: the supervisor assigned no ADR number ("None"). **0254 is self-assigned** (0253 is the highest on disk and `mr-state.json` `adr_next_free` was 254 at drafting time); renumber at merge if a sibling takes it first.
 
