@@ -755,9 +755,9 @@ fn advance_dialogue_node_lookups_use_equality_not_inequality() {
 // `let Some(def) = quest_defs.iter().find(..) else { continue; }` arm,
 // currently ~npc.rs:157-160).
 //
-// RED at HEAD for T4-a..T4-f: none of this logging exists yet, so
-// `quest_def_missing_arm()` below currently returns just `"continue;"`.
-// T4-g is a non-regression pin and is GREEN at HEAD (and must stay green).
+// T4-a..T4-f were RED when written (11r-i): none of this logging existed, so
+// `quest_def_missing_arm()` returned just `"continue;"`. Green since 11r-i
+// shipped the gated warn. T4-g is a non-regression pin (green throughout).
 //
 // Whitespace-squashed, comment-stripped, brace-matched scanning (same
 // discipline as movement_tests.rs's ADR-0170 D4 rate-limiter teeth) so a
@@ -1409,9 +1409,9 @@ fn apply_quest_trigger_still_grants_currency_and_item_on_quest_complete() {
 //   E3  `apply_quest_trigger`'s `quest_defs_load_error` line SHALL interpolate a
 //       `crate::guards::json_escape`d binding, never the raw `Err` text.
 //
-// RED STATE: ASSERTION-RED at HEAD — npc.rs:164 reads
-// `\"reason\":\"{e}\"` and `apply_quest_trigger` makes exactly ONE
-// `json_escape(` call (T4's, for `quest_id`), not two.
+// RED STATE when written (12r-d): the `quest_defs_load_error` site then read
+// `\"reason\":\"{e}\"` and `apply_quest_trigger` made exactly ONE
+// `json_escape(` call (T4's, for `quest_id`), not two. Green since 12r-d.
 //
 // SHAPE: this file's native idiom — a CONTIGUOUS, whitespace-squashed,
 // comment-stripped mega-needle (the T4-c / T4-i discipline), which is strictly
