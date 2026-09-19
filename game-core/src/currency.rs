@@ -384,9 +384,19 @@ mod tests {
     /// formula, so folding the clamp in here would be a behaviour change and the
     /// promotion must not change behaviour.
     ///
-    /// kills: an impl that appends `.min(999)` or `.min(ESSENCE_SOFT_CAP)` to
-    ///        the reward. Every other reward test above still passes such an
-    ///        impl, because no other fixture produces a value near the cap.
+    /// RETUNE: the 999 below is `ESSENCE_SOFT_CAP` written out as a literal, and
+    /// 2184 is the reward at the top of the domain. Both move together only if
+    /// the DIVISOR moves; a cap retune moves the 999 alone — and a cap retuned
+    /// above 2184 makes this criterion unwitnessable at any BST, which is itself
+    /// a finding to raise rather than a fixture to soften.
+    ///
+    /// kills: on its own, nothing that
+    ///        `essence_battle_reward_at_u16_max_does_not_overflow` does not kill
+    ///        first — that test pins 2184 exactly, so a `.min(999)` /
+    ///        `.min(ESSENCE_SOFT_CAP)` clamp reds it before reaching here. This
+    ///        fixture is CONTRACT DOCUMENTATION: it states, at the point a
+    ///        reader goes looking, that a reward above the cap is CORRECT and is
+    ///        not to be "fixed" — the clamp belongs to the pool write.
     #[test]
     fn essence_battle_reward_may_exceed_the_soft_cap() {
         let reward = super::essence_battle_reward(u16::MAX);
@@ -420,6 +430,80 @@ mod tests {
             999,
             "ESSENCE_SOFT_CAP must be exactly 999 — the value promoted verbatim out of \
              server-module's raising.rs"
+        );
+    }
+
+    /// This file's own source, for the formula-wiring proof below. Declared next
+    /// to its ONE consumer: nothing else in `currency.rs` reads its own source.
+    const CURRENCY_SELF_SOURCE: &str = include_str!("currency.rs");
+
+    /// B1 EARS: the reward FORMULA reads `ESSENCE_BST_DIVISOR` — a source scan.
+    ///
+    /// `ESSENCE_BST_DIVISOR` declared beside a formula that hardcodes the number
+    /// is behaviourally indistinguishable from the real wiring TODAY: every
+    /// example and property test above passes it, and so does
+    /// `essence_bst_divisor_is_thirty`, because the constant exists and holds
+    /// the right value — it is simply not the thing the formula divides by. It
+    /// stops being indistinguishable at the next retune, when the constant moves
+    /// and the reward does not. No behavioural fixture can reach that, so this
+    /// test reads the function's own source.
+    ///
+    /// ANCHORING: the signature occurs TWICE in this file — once for real, once
+    /// in the block header above, which reproduces it as documentation. The
+    /// anchor is therefore COLUMN-0 (a newline immediately followed by
+    /// `pub fn ...(`), which the indented `//` copy cannot match, and it is
+    /// asserted to occur exactly once. `#[must_use]` sits on the line ABOVE
+    /// `pub fn`, so anchoring on the `pub fn` line steps over it. Both needles
+    /// are assembled from fragments, so this test's own text can never satisfy
+    /// them.
+    ///
+    /// LIMITS, deliberate and documented: the scan is whitespace-squashed but
+    /// NOT comment-stripped and NOT string-literal aware, so a future literal —
+    /// or a comment — containing the divisor's digits inside this ONE function's
+    /// body would false-RED it. The body is a single expression; keep it one.
+    ///
+    /// kills: `u32::from((bst / 30).max(1))` — the constant declared, exported
+    ///        and value-pinned, but never actually consumed by the formula.
+    #[test]
+    fn essence_reward_formula_reads_the_divisor_constant() {
+        let anchor = format!("\npub fn {}(", "essence_battle_reward");
+        let occurrences = CURRENCY_SELF_SOURCE.matches(anchor.as_str()).count();
+        assert_eq!(
+            occurrences, 1,
+            "formula probe: the COLUMN-0 essence_battle_reward signature must occur EXACTLY once \
+             in currency.rs (found {occurrences}); the block header above reproduces the \
+             signature in an indented comment, which is why the anchor is column-0."
+        );
+        let start = CURRENCY_SELF_SOURCE
+            .find(anchor.as_str())
+            .expect("the signature was just counted, so it must be findable");
+        let rest = &CURRENCY_SELF_SOURCE[start..];
+        let end = rest.find("\n}\n").expect(
+            "essence_battle_reward must be terminated by a column-0 closing brace; if this fails \
+             the region extraction is broken, not the formula",
+        );
+        let squashed: String = rest[..end].chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(
+            squashed.contains("->u32{"),
+            "extraction sanity: the region read out of the source does not carry \
+             essence_battle_reward's signature and opening brace, so the two assertions below \
+             would be meaningless"
+        );
+
+        let divisor_name = ["ESSENCE_", "BST_DIVISOR"].concat();
+        assert!(
+            squashed.contains(divisor_name.as_str()),
+            "B1 TEETH: essence_battle_reward's body never names {divisor_name:?}. A constant that \
+             is declared, exported and value-pinned but never DIVIDED BY is a decoy: every \
+             behavioural test in this module passes it, and the next retune moves the constant \
+             while the reward stays exactly where it was."
+        );
+
+        let hardcoded = ["3", "0"].concat();
+        assert!(
+            !squashed.contains(hardcoded.as_str()),
+            "B1 TEETH: essence_battle_reward's body carries the literal {hardcoded:?}. The \
+             divisor must be READ from ESSENCE_BST_DIVISOR, never written out beside it."
         );
     }
 

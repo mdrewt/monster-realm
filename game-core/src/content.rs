@@ -4629,21 +4629,32 @@ mod tests {
     // integrity eval and in game-core/tests/eg3_evolution_graph.rs. R14 keeps
     // every one of those present-tense claims true.
     //
-    // ORDER: R14 runs LAST, after R12 and immediately before `Ok(())`. Two
-    // fixtures below (`r14_runs_after_r7_...`, `r14_runs_after_r5_...`) hold
-    // that ordering: a path that breaks an EARLIER rule must report the EARLIER
-    // rule, because the per-rule fixtures above depend on exactly one rule being
-    // reachable at a time (ADR-0010).
+    // ORDER: R14 runs LAST, after R12 and immediately before `Ok(())`. THREE
+    // fixtures below hold that ordering — `r14_runs_after_r5_...`,
+    // `r14_runs_after_r7_...` and `r14_runs_after_r12_...` — because a path that
+    // breaks an EARLIER rule must report the EARLIER rule: the per-rule fixtures
+    // above depend on exactly one rule being reachable at a time (ADR-0010). The
+    // R12 one is load-bearing on its own: without it, R14 slotted immediately
+    // after R7 passes every other test in this block.
     // -----------------------------------------------------------------------
 
     /// R14: an essence requirement above the soft cap is REJECTED, and the
     /// message names the edge, the offending amount and the cap.
     ///
+    /// RETUNE: the `999` in the needle list below is `ESSENCE_SOFT_CAP` written
+    /// out as a literal, and `5000` is the offending amount. When the cap is
+    /// retuned, this needle list moves with it — content first, then the
+    /// constant, then every literal fixture in this block.
+    ///
     /// Kills: a validator with no R14 at all. This fixture violates NOTHING
     /// else — species 1 (tier 0) -> species 2 (tier 1), min_level 10 is binding
     /// for R4, one essence entry is inside R7's cap of 3, edge_id 7 is unique,
     /// no encounters, no items — so only R14 can reject it. Also kills an R14
-    /// whose message is a bare "invalid path" an operator cannot act on.
+    /// whose message is a bare "invalid path" an operator cannot act on, and —
+    /// via the ORDER assertion — a transposed `format!` argument list that
+    /// reports "requires 999 ... above ESSENCE_SOFT_CAP 5000", which carries
+    /// every needle below and still tells the author the exact opposite of the
+    /// truth.
     #[test]
     fn r14_essence_amount_5000_rejected_naming_edge_and_cap() {
         let species = vec![eg1_species(1, 0), eg1_species(2, 1)];
@@ -4663,6 +4674,19 @@ mod tests {
                  offending row and the ceiling it breached; got: {err:?}"
             );
         }
+        let amount_at = err
+            .find("5000")
+            .expect("the 5000 needle was asserted present just above");
+        let cap_at = err
+            .find("999")
+            .expect("the 999 needle was asserted present just above");
+        assert!(
+            amount_at < cap_at,
+            "R14 TEETH: the AUTHORED amount must be reported before the cap it breached. A \
+             transposed format! argument list — \"requires 999 ... above ESSENCE_SOFT_CAP 5000\" \
+             — carries every needle above while telling the author the exact opposite of what \
+             the content says; got: {err:?}"
+        );
     }
 
     /// R14: an `amount` EXACTLY at the cap is ACCEPTED — the boundary is
@@ -4691,11 +4715,16 @@ mod tests {
         );
     }
 
-    /// R14: an `amount` one BELOW the cap is accepted.
+    /// R14: an `amount` one BELOW the cap is accepted — the conventional cap-1
+    /// probe.
     ///
-    /// Kills: an over-tight rule keyed on a smaller ad-hoc ceiling, and a
-    ///        `>= cap - 1` off-by-two. Without this the suite would be
-    ///        consistent with a rule that rejects everything above, say, 500.
+    /// Kills: for a MONOTONE threshold, nothing that
+    ///        `r14_essence_amount_999_accepted` does not already kill — anything
+    ///        accepting 999 accepts 998. Kept deliberately, for two reasons it
+    ///        DOES earn: it pins the acceptance side against a NON-monotone rule
+    ///        (an equality or band check, `amount == 999`-shaped), and it is the
+    ///        fixture a reader expects to find beside the 999/1000 boundary
+    ///        pair — its absence would read as an untested side.
     #[test]
     fn r14_essence_amount_998_accepted() {
         let species = vec![eg1_species(1, 0), eg1_species(2, 1)];
@@ -4732,6 +4761,37 @@ mod tests {
         let err = validate_evolution_paths(&species, &[path], &[], &[]).expect_err(
             "R14 TEETH: 1000 is the SMALLEST unsatisfiable amount — one above the clamp — and an \
              off-by-one ceiling is exactly what lets it ship",
+        );
+        assert!(
+            err.contains("R14"),
+            "R14 TEETH: the rejection must identify itself as R14's soft-cap rule; got: {err:?}"
+        );
+    }
+
+    /// R14: an `amount` ABOVE the u16 range is rejected — the comparison must
+    /// happen in the field's own width.
+    ///
+    /// `EssenceRequirement.amount` is a `u32`. 66_535 truncated to u16 is 999 —
+    /// exactly the cap — so a comparison written with a narrowing cast
+    /// (`req.amount as u16 > ESSENCE_SOFT_CAP as u16`, or `as u8`) accepts this
+    /// path while every other fixture in this block still passes: 998, 999, 1000
+    /// and 5000 all survive a u16 round trip unchanged, and the source scan sees
+    /// the constant being read exactly as required.
+    ///
+    /// Kills: a truncating `as u16` / `as u8` cast anywhere in R14's comparison.
+    ///        This is the ONLY fixture here whose amount does not round-trip
+    ///        through u16, so it is the only one that can see the cast at all.
+    #[test]
+    fn r14_amount_above_u16_range_rejected() {
+        let species = vec![eg1_species(1, 0), eg1_species(2, 1)];
+        let mut path = eg1_path(1, 1, 2);
+        path.essence = vec![EssenceRequirement {
+            affinity: Affinity::Fire,
+            amount: 66_535,
+        }];
+        let err = validate_evolution_paths(&species, &[path], &[], &[]).expect_err(
+            "R14 TEETH: 66_535 essence is far above the cap and must be rejected — a narrowing \
+             cast truncates it to exactly 999 and lets the path ship",
         );
         assert!(
             err.contains("R14"),
@@ -4828,6 +4888,9 @@ mod tests {
 
     /// R14: three entries EACH at the cap are accepted — the rule is per-entry,
     /// not per-path.
+    ///
+    /// RETUNE: the three 999s below are `ESSENCE_SOFT_CAP` written out as
+    /// literals; they move when the cap moves, in the same commit.
     ///
     /// Kills: a sum-over-entries reading (`essence.iter().map(|r| r.amount)
     ///        .sum::<u32>() > cap`), which would see 2997 and reject a path that
@@ -4970,6 +5033,50 @@ mod tests {
         );
     }
 
+    /// R14 runs AFTER R12: a duplicated `edge_id` whose path also carries 5000
+    /// reports R12.
+    ///
+    /// This is the fixture that actually holds "R14 runs LAST". The two
+    /// ordering tests above only pin R14 below R5 and R7, which leaves R14
+    /// slotted anywhere from just-after-R7 to just-before-`Ok(())` — and R14
+    /// placed immediately after R7 passes every other test in this block. R12 is
+    /// the last declared rule, so pinning R14 below R12 closes the whole gap.
+    ///
+    /// The fixture violates ONLY R12 and R14: the two pairs (1 -> 2) and
+    /// (3 -> 4) are distinct so R1 is clean, both tier-1 species are reached so
+    /// R10 is clean, and both edges carry the binding min_level 10.
+    ///
+    /// Kills: R14 inserted anywhere ABOVE R12 — including the natural "put it
+    ///        next to R7, the other essence rule" placement, which no other
+    ///        fixture in this file can see.
+    #[test]
+    fn r14_runs_after_r12_duplicate_edge_id_with_5000_reports_r12() {
+        let species = vec![
+            eg1_species(1, 0),
+            eg1_species(2, 1),
+            eg1_species(3, 0),
+            eg1_species(4, 1),
+        ];
+        let clean = eg1_path(9, 1, 2);
+        let mut dup = eg1_path(9, 3, 4);
+        dup.essence = vec![EssenceRequirement {
+            affinity: Affinity::Fire,
+            amount: 5000,
+        }];
+        let err = validate_evolution_paths(&species, &[clean, dup], &[], &[])
+            .expect_err("both R12 and R14 are violated, so the path set must be rejected");
+        assert!(
+            err.contains("R12"),
+            "ORDER TEETH: R12 (edge_id uniqueness) is the LAST declared rule before R14 and must \
+             report first; got: {err:?}"
+        );
+        assert!(
+            !err.contains("R14"),
+            "ORDER TEETH: R14 must run LAST — after R12, immediately before Ok(()). An R14 \
+             hoisted next to R7 passes every other fixture in this block; got: {err:?}"
+        );
+    }
+
     /// R14's threshold IS `game_core::currency::ESSENCE_SOFT_CAP` — the one
     /// coupling test, and the only place in this block that reads the constant
     /// instead of a literal.
@@ -4980,9 +5087,15 @@ mod tests {
     /// contract: the validator's ceiling and the runtime clamp are ONE value, so
     /// a retune moves both sides together.
     ///
-    /// Kills: a validator wired to some other constant (or to its own private
-    ///        copy) that happens to equal 999 today — the exact two-declarations
-    ///        desync this slice exists to remove.
+    /// Kills: nothing a PRIVATE copy equal to 999 would not also pass today —
+    ///        both sides of this test read the same number, whichever
+    ///        declaration the validator actually consults.
+    ///        `r14_reads_the_shared_constant_in_production_source` is the
+    ///        fixture that kills the private copy. This one is the RETUNE
+    ///        TELL-TALE: it is written in terms of the constant, so on the day
+    ///        the cap moves it keeps passing while every hardcoded boundary
+    ///        fixture above goes red — which is exactly the signal that
+    ///        distinguishes "the retune landed" from "the validator drifted".
     #[test]
     fn r14_threshold_is_the_game_core_constant() {
         let species = vec![eg1_species(1, 0), eg1_species(2, 1)];
@@ -5030,6 +5143,21 @@ mod tests {
     /// source and only THEN comment-stripped (so a planted comment cannot forge
     /// a needle). The extracted region ends thousands of lines above
     /// `mod tests`, so no needle here can match this test's own source.
+    ///
+    /// SPELLING PIN, deliberate: the last assertion pins the INLINE full-path
+    /// form `req.amount > crate::currency::ESSENCE_SOFT_CAP`. A `let cap = ...`
+    /// hoist and a top-of-file `use crate::currency::ESSENCE_SOFT_CAP;` both
+    /// false-RED it. That is the intent — a binding or import refactor must move
+    /// this pin in the SAME commit, consciously, because the whole point of the
+    /// scan is that no behavioural fixture can tell the two apart.
+    ///
+    /// LIMITS, deliberate and documented:
+    /// 1. the whole-body `999` ban reds any FUTURE rule in this function that
+    ///    legitimately needs a literal containing 999;
+    /// 2. `m23s8_strip_rust_comments` is not string-literal aware, so a `//`
+    ///    inside a string literal in this function's body would blank the rest
+    ///    of that line. Stripping can only DELETE, so the failure mode is a
+    ///    false RED on the presence assertions, never a false green on the ban.
     ///
     /// Kills: `if req.amount > 999` with the constant named only inside the
     ///        error message — green under every fixture above — and any other
