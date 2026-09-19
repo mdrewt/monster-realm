@@ -518,3 +518,85 @@ describe('ShopView — overlay a11y wiring on the show/hide edge (m23-s3)', () =
     expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// m24s0 I18N-5 (ADR-0255 D5) — the no-shop empty-state row is ELEMENT-BUILT.
+//
+// SOURCE OF TRUTH: ADR-0255 D5, memory/projects/gates/m24-s0.gates.md X5.
+// `document.createElement('li')` is the direct witness of the spec's own wording
+// ("built by createElement") — a DOM result byte-identical to the old
+// `innerHTML = '<li>x</li>'` markup would pass any textContent-only assertion, so
+// this test spies on `document.createElement` itself, installed AFTER mount,
+// construction and a POPULATED render (so the no-shop render below must also
+// CLEAR the stale rows, not merely coexist with them).
+//
+// RED REASON AT HEAD: shopView.ts:115/116 assign `innerHTML` markup directly —
+// zero `document.createElement('li')` calls happen during the no-shop render, so
+// the FIRST assertion below (the call-count spy) fails with actual 0, not 1.
+// ---------------------------------------------------------------------------
+
+describe('m24s0 I18N-5 (ADR-0255 D5)', () => {
+  it('m24s0 I18N-5: render(no-shop) builds the empty-state row via createElement("li") + textContent — exactly one <li> holding one Text node, after a populated render', () => {
+    const overlay = mountShopOverlay();
+    const view = new ShopView(makeCallbacks());
+    view.show();
+
+    // A populated render first: one real row in EACH list, so the no-shop render
+    // below is proven to CLEAR stale rows, not just build a fresh one alongside them.
+    const populatedVm: ShopScreenViewModel = {
+      kind: 'shop',
+      shopId: 1,
+      shopName: 'General Store',
+      forSale: [{ shopItemId: 1n, itemId: 1, name: 'Potion', buyPrice: 10n }],
+      forSaleByPlayer: [
+        { invId: 1n, itemId: 2, name: 'Herb', count: 1, sellPrice: 5n, canSell: true },
+      ],
+      balance: knownBalance(100n),
+    };
+    view.render(populatedVm);
+
+    const forSale = document.getElementById('shop-for-sale') as HTMLElement;
+    const inventory = document.getElementById('shop-inventory') as HTMLElement;
+    expect(forSale.childElementCount, 'precondition: one populated for-sale row').toBe(1);
+    expect(
+      forSale.querySelector('button'),
+      'precondition: the for-sale row holds a Buy button',
+    ).not.toBeNull();
+    expect(inventory.childElementCount, 'precondition: one populated inventory row').toBe(1);
+    expect(
+      inventory.querySelector('button'),
+      'precondition: the inventory row holds a Sell button',
+    ).not.toBeNull();
+
+    // Installed AFTER mount + construction + the populated render, so ONLY the
+    // no-shop render below is observed.
+    const spy = vi.spyOn(document, 'createElement');
+    try {
+      view.render(noShopVm(knownBalance(100n)));
+    } finally {
+      spy.mockRestore();
+    }
+
+    // THE tooth, asserted FIRST: exactly one createElement('li') call during the render.
+    const liCalls = spy.mock.calls.filter(([tag]) => tag === 'li');
+    expect(
+      liCalls.length,
+      'the empty-state row must be built by exactly one document.createElement("li") call — an ' +
+        'innerHTML markup assignment makes ZERO createElement("li") calls',
+    ).toBe(1);
+
+    expect(forSale.childElementCount).toBe(1);
+    expect(forSale.firstElementChild).not.toBeNull();
+    expect((forSale.firstElementChild as HTMLElement).tagName).toBe('LI');
+    expect(forSale.firstElementChild!.childNodes.length).toBe(1);
+    expect(forSale.firstElementChild!.childNodes[0]!.nodeType).toBe(Node.TEXT_NODE);
+    expect(forSale.textContent).toBe('No shop available.');
+
+    // The stale sell row must be cleared, TEXT included — childNodes, not childElementCount.
+    expect(inventory.childNodes.length).toBe(0);
+
+    expect(document.getElementById('shop-title')!.textContent).toBe('Shop');
+
+    removeOverlay(overlay);
+  });
+});

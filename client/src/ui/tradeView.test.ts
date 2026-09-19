@@ -4,7 +4,7 @@
 // SOURCE OF TRUTH: M16.5-ninth-review-residuals.spec.md §16.5c-3
 //
 // RED REASON (m16.5c-TV-1 — disabled lock during re-render while #pending):
-//   TradeView.#renderActions() recreates buttons via innerHTML='' then createElement.
+//   TradeView.#renderActions() recreates buttons via replaceChildren() then createElement.
 //   Each freshly-created button sets btn.disabled = false ONLY in the click handler's
 //   finally block — but the handler never fires during a re-render.  The button is
 //   created with no explicit disabled assignment, so it defaults to disabled=false.
@@ -217,7 +217,7 @@ function makeNoTradeVM(): TradeScreenViewModel {
 //   6. Assert ALL buttons in #trade-actions are disabled=true
 //
 // Why it's RED before fix:
-//   #renderActions() clears actionsEl.innerHTML then creates fresh buttons.
+//   #renderActions() clears actionsEl via replaceChildren() then creates fresh buttons.
 //   Each fresh button is created with no explicit disabled attribute — defaults to
 //   false.  The click handler's finally() (which sets disabled=false) hasn't fired
 //   and won't fire until the reducer resolves.  But #pending=true at the moment
@@ -375,7 +375,7 @@ describe('TradeView [m16.5c-TV-3]: feedback cleared on kind transition no-trade�
 // Invariant: after a reducer Promise settles (success or error), ALL currently
 // visible trade action buttons must be enabled (disabled=false) and #pending must
 // be false.  A mid-flight render() between click and Promise settlement replaces
-// the old button DOM elements with fresh ones (innerHTML=''), so the `finally`
+// the old button DOM elements with fresh ones (replaceChildren()), so the `finally`
 // block's `btn.disabled = false` targets a DETACHED (orphaned) element and has no
 // effect on the newly-rendered buttons — they remain permanently disabled=true
 // even though #pending has been reset to false.
