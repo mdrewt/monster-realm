@@ -84,8 +84,12 @@ at-least-once delivery, "cutscene polish MAY be disclosed as a residual".
 - Count-based ack is not strictly at-least-once across two sessions: a second tab's stale head can
   drain an entry that tab never showed (inherent in the spec-mandated `count: u32`; a later fix
   acks by `(monster_id, evolved_at_ms)` or a monotonic seq).
-- `entries` is uncapped; growth is self-inflicted only and bounded by owned monsters × the tier cap.
-  An overflow marker, if ever needed, tail-appends to the TABLE (nested types are frozen).
+- `entries` is uncapped; growth is self-inflicted only (a victim's row cannot be grown — the scheduler
+  path iterates the player's own party) and proportional to owned monsters × the tier cap — and the
+  roster itself is uncapped (`attempt_recruit` has no ownership cap), so the queue grows with play
+  rather than to a fixed bound; each ack also rewrites the whole Vec (O(n) per ack). A cap, if ever
+  needed, drops the NEWEST entry and any overflow marker tail-appends to the TABLE (nested types are
+  frozen). Registered as `R-20r-d-B1-cap`.
 - No AT announcement for the banner; closed together with the cutscene/registry residual.
 - A monster evolved then traded leaves its old owner a notice about it (cosmetic; no counterparty
   data).
