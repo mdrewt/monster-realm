@@ -8,6 +8,16 @@ import type {
   ShopScreenViewModel,
 } from './shopModel';
 
+/** m24-s0 (ADR-0255): the empty-state row is ELEMENT-built — `createElement` +
+ *  `textContent`, never `innerHTML` markup. The client has zero HTML-parsing sinks
+ *  (pinned by `i18n-no-html-sink.test.ts`) so a future catalog value can never be
+ *  parsed as HTML. Clears use `replaceChildren()` for the same reason. */
+function emptyRow(text: string): HTMLLIElement {
+  const li = document.createElement('li');
+  li.textContent = text;
+  return li;
+}
+
 export interface ShopCallbacks {
   readonly onBuy: (shopId: number, itemId: number) => void;
   readonly onSell: (itemId: number) => void;
@@ -112,26 +122,26 @@ export class ShopView {
 
     if (vm.kind === 'no-shop') {
       this.#title.textContent = 'Shop';
-      this.#forSaleList.innerHTML = '<li>No shop available.</li>';
-      this.#inventoryList.innerHTML = '';
+      this.#forSaleList.replaceChildren(emptyRow('No shop available.'));
+      this.#inventoryList.replaceChildren();
       return;
     }
 
     this.#title.textContent = vm.shopName;
-    this.#forSaleList.innerHTML = '';
+    this.#forSaleList.replaceChildren();
     for (const item of vm.forSale) {
       this.#forSaleList.appendChild(this.#makeBuyRow(vm.shopId, item));
     }
     if (vm.forSale.length === 0) {
-      this.#forSaleList.innerHTML = '<li>Nothing for sale.</li>';
+      this.#forSaleList.replaceChildren(emptyRow('Nothing for sale.'));
     }
 
-    this.#inventoryList.innerHTML = '';
+    this.#inventoryList.replaceChildren();
     for (const item of vm.forSaleByPlayer) {
       this.#inventoryList.appendChild(this.#makeSellRow(item));
     }
     if (vm.forSaleByPlayer.length === 0) {
-      this.#inventoryList.innerHTML = '<li>No items to sell.</li>';
+      this.#inventoryList.replaceChildren(emptyRow('No items to sell.'));
     }
   }
 

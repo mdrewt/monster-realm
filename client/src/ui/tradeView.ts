@@ -91,9 +91,9 @@ export class TradeView {
   render(vm: TradeScreenViewModel): void {
     if (vm.kind === 'no-trade') {
       this.#statusEl.textContent = 'No active trade';
-      this.#mySideEl.innerHTML = '';
-      this.#theirSideEl.innerHTML = '';
-      this.#actionsEl.innerHTML = '';
+      this.#mySideEl.replaceChildren();
+      this.#theirSideEl.replaceChildren();
+      this.#actionsEl.replaceChildren();
       this.#lastRenderKey = null;
       return;
     }
@@ -119,7 +119,7 @@ export class TradeView {
   }
 
   #renderSide(el: HTMLElement, side: TradeSideViewModel, heading: string): void {
-    el.innerHTML = '';
+    el.replaceChildren();
     const h = document.createElement('h4');
     h.textContent = heading;
     el.appendChild(h);
@@ -162,7 +162,7 @@ export class TradeView {
   }
 
   #renderActions(tradeId: bigint, actions: readonly TradeAction[]): void {
-    this.#actionsEl.innerHTML = '';
+    this.#actionsEl.replaceChildren();
     for (const action of actions) {
       const btn = document.createElement('button');
       btn.dataset.action = action;
@@ -177,7 +177,7 @@ export class TradeView {
         void Promise.resolve(this.#dispatch(action, tradeId)).finally(() => {
           this.#pending = false;
           // Re-enable all live buttons — the captured `btn` closure reference may be
-          // orphaned if render() was called mid-flight (innerHTML='' detaches it).
+          // orphaned if render() was called mid-flight (replaceChildren() detaches it).
           for (const b of this.#actionsEl.querySelectorAll<HTMLButtonElement>('button')) {
             b.disabled = false;
           }

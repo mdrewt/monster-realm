@@ -40,7 +40,7 @@ export class HealView {
       return;
     }
     this.overlay.style.display = 'block';
-    this.list.innerHTML = '';
+    this.list.replaceChildren();
     vm.locations.forEach((loc) => {
       const li = document.createElement('li');
       const cost = formatHealCostLine(loc);
