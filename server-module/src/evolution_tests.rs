@@ -5964,6 +5964,11 @@ fn s20rd_apply_evolution_writes_the_notice_after_the_dual_write() {
         ["from", "_species:path.from_species"].concat(),
         ["to", "_species:path.to_species"].concat(),
         ["owner", "_identity:owner"].concat(),
+        // Verifier-added (2026-09-19): the two payload fields the mirror seam alone
+        // pinned. `monster_id,from` is the shorthand field ADJACENT to the species
+        // literal — `monster_id: 0,` (a constant id that drops every nickname on
+        // the client) squashes to `monster_id:0,from` and dies here.
+        ["monster", "_id,from"].concat(),
     ] {
         assert!(
             sq.contains(needle.as_str()),
@@ -5976,6 +5981,20 @@ fn s20rd_apply_evolution_writes_the_notice_after_the_dual_write() {
              taken off the monster row. Body: {sq:?}"
         );
     }
+
+    // --- (2b) the timestamp is the transaction clock, exactly ------------------
+    // Verifier-added (2026-09-19): `evolved_at_ms: now_ms(ctx) / 1000` (seconds)
+    // survived every other pin. The needle carries the field's closing delimiter
+    // so a trailing arithmetic tail cannot hide behind a prefix match.
+    let stamp_comma = ["evolved", "_at_ms:now_ms(ctx),"].concat();
+    let stamp_close = ["evolved", "_at_ms:now_ms(ctx)}"].concat();
+    assert!(
+        sq.contains(stamp_comma.as_str()) || sq.contains(stamp_close.as_str()),
+        "TEETH(20r-d ADR-0254 D1/D4): `apply_evolution`'s body must stamp the entry \
+         with exactly `evolved_at_ms: now_ms(ctx)` (the transaction clock, no \
+         arithmetic, no other source) — found neither `{stamp_comma}` nor \
+         `{stamp_close}` (whitespace-insensitive). Body: {sq:?}"
+    );
 
     // --- (3) the owner binding precedes the move of `m` ---------------------
     let owner_idx = sq.find(owner_binding.as_str()).unwrap_or_else(|| {
