@@ -148,7 +148,10 @@ monster escrow, item escrow) and exactly two decision rejects (no `essence_affin
 cooldown), both **before** `consume_one` — a reject never burns the item. `ItemDef`
 essence fields come from the compile-time content registry (`cached_items()`), per ADR-0174's
 consequence note. Policy constants are server-module-local (game-core is outside this
-slice's touches; EG5 may promote them beside `battle_currency_reward`).
+slice's touches; EG5 may promote them beside `battle_currency_reward`) **[superseded in part
+by the 20r-b Amendment below — `essence_battle_reward` / `ESSENCE_BST_DIVISOR` /
+`ESSENCE_SOFT_CAP` moved to `game-core/src/currency.rs`; the cooldown, train amount and
+Quality-Time windows stay server-local]**.
 
 ## D6 — Gate deltas (no-idle-accrual + evolution-reducer-security + the EG1-11 scan)
 
@@ -260,4 +263,5 @@ ledger does not know R14.
 each at the cap, second-path, R5 / R7 / R12 precedence, the `u16`-cast escape, constant coupling
 and two self-source consumer pins — 23 tests, 7 / 2 / 14 by prefix); the byte-unmodified
 `battle_tests.rs` / `raising_tests.rs`; `just adr-digest-check`; `just knowledge-check` —
-all pinned by acceptance ledger `memory/projects/gates/20r-b.gates.md` gate B1.
+all pinned by acceptance ledger `memory/projects/gates/20r-b.gates.md` gate B1 (in the harness repo,
+not this one).

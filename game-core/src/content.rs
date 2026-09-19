@@ -4826,6 +4826,38 @@ mod tests {
         );
     }
 
+    /// R14: the TOP of the `amount` domain is rejected — there is no carve-out
+    /// at `u32::MAX`.
+    ///
+    /// Every other amount fixture in this block sits at 5000 or below except the
+    /// u16 probe at 66_535, so until this test the whole upper domain was
+    /// unwitnessed: a rule written `req.amount > ESSENCE_SOFT_CAP &&
+    /// req.amount != u32::MAX` accepted the single most unsatisfiable threshold
+    /// expressible while passing all twenty-three tests.
+    ///
+    /// `u32::MAX` is used as the INPUT (a type boundary, not the constant under
+    /// test); the oracle stays "rejected, naming R14".
+    ///
+    /// Kills: a top-of-domain carve-out — an `!=`, a `< u32::MAX` guard, or a
+    ///        saturating comparison that folds the maximum back to the cap.
+    #[test]
+    fn r14_amount_u32_max_rejected() {
+        let species = vec![eg1_species(1, 0), eg1_species(2, 1)];
+        let mut path = eg1_path(1, 1, 2);
+        path.essence = vec![EssenceRequirement {
+            affinity: Affinity::Fire,
+            amount: u32::MAX,
+        }];
+        let err = validate_evolution_paths(&species, &[path], &[], &[]).expect_err(
+            "R14 TEETH: u32::MAX essence is the most unsatisfiable threshold the type can carry \
+             and must be rejected — a carve-out at the top of the domain is still a carve-out",
+        );
+        assert!(
+            err.contains("R14"),
+            "R14 TEETH: the rejection must identify itself as R14's soft-cap rule; got: {err:?}"
+        );
+    }
+
     /// R14: with the offender FIRST, the message names the offender's affinity
     /// and no other.
     ///
@@ -4909,6 +4941,101 @@ mod tests {
                 !err.contains(innocent),
                 "R14 TEETH: the rejection must name ONLY the offending entry, not every \
                  requirement on the path ({innocent:?} is within the cap); got: {err:?}"
+            );
+        }
+    }
+
+    /// R14: a TWO-entry path is checked.
+    ///
+    /// R7 permits 1, 2 or 3 entries, but until this fixture every R14 case used
+    /// exactly one or exactly three. A rule carrying `if path.essence.len() == 2
+    /// { continue; }` — an entry-count carve-out, which is what a
+    /// half-remembered R7 interaction looks like in code — passed all
+    /// twenty-three tests while leaving a third of the legal shapes ungated.
+    ///
+    /// Kills: any entry-count carve-out, `== 2` or otherwise. Together with the
+    ///        one-entry and three-entry fixtures this covers every arity R7
+    ///        allows, so no `len()` special case survives.
+    #[test]
+    fn r14_two_entry_path_over_cap_rejected() {
+        let species = vec![eg1_species(1, 0), eg1_species(2, 1)];
+        let mut path = eg1_path(1, 1, 2);
+        path.essence = vec![
+            EssenceRequirement {
+                affinity: Affinity::Fire,
+                amount: 5000,
+            },
+            EssenceRequirement {
+                affinity: Affinity::Water,
+                amount: 10,
+            },
+        ];
+        let err = validate_evolution_paths(&species, &[path], &[], &[]).expect_err(
+            "R14 TEETH: a two-entry path is exactly as legal under R7 as a one- or three-entry \
+             one, and its over-cap entry must be rejected the same way",
+        );
+        assert!(
+            err.contains("R14"),
+            "R14 TEETH: the rejection must identify itself as R14's soft-cap rule; got: {err:?}"
+        );
+        assert!(
+            err.contains("Fire"),
+            "R14 TEETH: the rejection must name the offending Fire entry; got: {err:?}"
+        );
+    }
+
+    /// R14: with TWO entries over the cap, the message names the FIRST in
+    /// content order — not the largest.
+    ///
+    /// Accept-or-reject is identical either way, so no boundary fixture can see
+    /// the difference: a rule that takes `path.essence.iter().map(|r| r.amount)
+    /// .max()` and then re-finds the offender by that amount rejects exactly the
+    /// same set and passed all twenty-three tests. It reports Fire 6000 here,
+    /// sending the author to the second row when the first is also broken and
+    /// will simply re-fail on the next sync.
+    ///
+    /// First-violation-wins in CONTENT ORDER is the convention every other rule
+    /// in this function follows (R1-R12 all return on the first offender), and
+    /// it is what makes a fix-and-resync loop terminate predictably.
+    ///
+    /// Kills: largest-offender selection, and any reordering (sort, BTreeMap
+    ///        keyed on amount or affinity) between reading the vec and naming
+    ///        the row.
+    #[test]
+    fn r14_names_the_first_offender_when_two_entries_exceed_the_cap() {
+        let species = vec![eg1_species(1, 0), eg1_species(2, 1)];
+        let mut path = eg1_path(3, 1, 2);
+        path.essence = vec![
+            EssenceRequirement {
+                affinity: Affinity::Water,
+                amount: 5000,
+            },
+            EssenceRequirement {
+                affinity: Affinity::Fire,
+                amount: 6000,
+            },
+            EssenceRequirement {
+                affinity: Affinity::Plant,
+                amount: 10,
+            },
+        ];
+        let err = validate_evolution_paths(&species, &[path], &[], &[]).expect_err(
+            "R14 TEETH: two of the three entries are above the cap, so the path must be rejected",
+        );
+        for named in ["Water", "5000"] {
+            assert!(
+                err.contains(named),
+                "R14 TEETH: the rejection must name the FIRST offender in content order \
+                 ({named:?}); got: {err:?}"
+            );
+        }
+        for unnamed in ["Fire", "6000"] {
+            assert!(
+                !err.contains(unnamed),
+                "R14 TEETH: the rejection must NOT name {unnamed:?} — that is the LARGEST \
+                 offender, not the first. Selecting by max() rejects the same set as selecting \
+                 by order, so only the message can tell the two apart, and it sends the author \
+                 to the wrong row; got: {err:?}"
             );
         }
     }

@@ -38,11 +38,12 @@ pub fn battle_currency_reward(loser_bst: u16) -> u64 {
 /// 3x steeper than [`BATTLE_CURRENCY_BST_DIVISOR`]: at currency's `/ 10` rate a
 /// handful of wins would clear every authored essence threshold. Promoted
 /// from `server-module/src/battle.rs` by 20r-b (ADR-0175 amendment) so the
-/// server, the content validator and any future client preview share it.
+/// server and any future client preview share one definition.
 pub const ESSENCE_BST_DIVISOR: u16 = 30;
 
 /// Essence granted to each winning participant of a WILD battle, typed by the
-/// defeated species' affinity at the call site: `max(1, loser_bst / 30)`.
+/// defeated species' affinity at the call site:
+/// `max(1, loser_bst / ESSENCE_BST_DIVISOR)`.
 /// Floored so a low-BST win is never essence-inert; NOT clamped at
 /// [`ESSENCE_SOFT_CAP`] — clamping is the grant's job (EG1-1), and a
 /// `u16::MAX` BST legitimately yields 2184.
@@ -462,6 +463,61 @@ mod tests {
         );
     }
 
+    /// B1 EARS: every one of the 65_536 representable BSTs is checked — the
+    /// floor, the formula and monotonicity, exhaustively.
+    ///
+    /// WHY EXHAUSTIVE RATHER THAN A PROPERTY: only 30 inputs (0..=29) sit below
+    /// one divisor step, so `prop_essence_reward_floor_holds_for_every_bst`
+    /// reaches the floor region in roughly one run in eight at proptest's
+    /// default 256 cases — MEASURED. A dropped `.max(1)` therefore survives most
+    /// CI runs and reds an unrelated one later. The domain is 65_536 wide and
+    /// the function is pure integer arithmetic, so there is no reason to sample
+    /// it: the sweep runs in about 4 ms and killed the dropped floor 10 out of
+    /// 10 times.
+    ///
+    /// THE ONE RESTATEMENT. Every other test in this block hardcodes an expected
+    /// VALUE, never a formula, precisely so that no test can agree with a wrong
+    /// implementation by construction. This test is the deliberate exception: it
+    /// restates `max(1, bst / 30)` with a LITERAL 30 and a LITERAL floor, which
+    /// makes it an INDEPENDENT oracle rather than a read of the constant under
+    /// test. Writing `ESSENCE_BST_DIVISOR` here instead would make the assertion
+    /// vacuous for the divisor — it would pass for any value the constant takes.
+    /// Do not "clean that up".
+    ///
+    /// RETUNE: the literal 30 below is the divisor. When it moves, this
+    /// restatement moves with it, in the same commit as
+    /// `essence_bst_divisor_is_thirty` and the three example rewards.
+    ///
+    /// kills: a dropped `.max(1)` (reliably, at bst 0..=29); any per-input
+    ///        deviation from the formula anywhere in the domain, including a
+    ///        lookup-table or bucketed impl that matches the four example
+    ///        points; and a fold-back at some interior BST that the monotone
+    ///        property samples past.
+    #[test]
+    fn essence_reward_exhaustive_u16_sweep_holds_floor_and_formula() {
+        let mut previous = 0u32;
+        for bst in 0u16..=u16::MAX {
+            let reward = super::essence_battle_reward(bst);
+            assert!(
+                reward >= 1,
+                "essence_battle_reward({bst}) = {reward}; the reward is floored at 1 for EVERY \
+                 representable BST, so a wild win is never essence-inert"
+            );
+            let expected = u32::from((bst / 30).max(1));
+            assert_eq!(
+                reward, expected,
+                "essence_battle_reward({bst}) = {reward}, but the formula max(1, bst / 30) gives \
+                 {expected}"
+            );
+            assert!(
+                reward >= previous,
+                "essence_battle_reward is monotone non-decreasing, but BST {bst} pays {reward} \
+                 after the previous BST paid {previous}"
+            );
+            previous = reward;
+        }
+    }
+
     /// This file's own source, for the formula-wiring proof below. Declared next
     /// to its ONE consumer: nothing else in `currency.rs` reads its own source.
     const CURRENCY_SELF_SOURCE: &str = include_str!("currency.rs");
@@ -603,14 +659,18 @@ mod tests {
             }
         }
 
-        /// B1 EARS (property): the floor holds for EVERY representable BST —
+        /// B1 EARS (property): the floor holds across the BST domain —
         /// `essence_battle_reward` never returns 0.
         ///
-        /// The example test pins four points near the floor; this pins the whole
-        /// u16 domain, so no input at all makes a wild win essence-inert.
-        ///
-        /// kills: any impl that drops the `.max(1)` — the example test only
-        ///        covers 0, 20, 29 and 30, while this covers 1..=29 too.
+        /// kills: NOT reliably a dropped `.max(1)`. Only 30 of the 65_536
+        ///        representable BSTs fall below one divisor step, so proptest's
+        ///        256 default cases reach the floor region roughly one run in
+        ///        eight — MEASURED. This is a broad-domain SMOKE check that
+        ///        states the invariant at domain level and shrinks a
+        ///        counterexample when it does fire; the TOOTH is
+        ///        `essence_reward_exhaustive_u16_sweep_holds_floor_and_formula`,
+        ///        which walks every input and killed the dropped floor 10 times
+        ///        out of 10.
         #[test]
         fn prop_essence_reward_floor_holds_for_every_bst(bst in any::<u16>()) {
             let reward = super::essence_battle_reward(bst);
