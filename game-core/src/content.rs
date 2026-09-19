@@ -920,7 +920,7 @@ pub fn validate_content(
 }
 
 /// Cross-registry content integrity for the essence-graph evolution model
-/// (EG1-10, spec §5 rules R1-R12; ADR-0174 D6). The successor to the deleted
+/// (EG1-10, spec §5 rules R1-R12 plus R14, 20r-b; ADR-0174 D6). The successor to the deleted
 /// `validate_evolution_fusion`. Pure (errors-as-values, no clock/RNG); checks
 /// run in a deterministic order so each proof-of-teeth fixture isolates exactly
 /// one violation (ADR-0010).
@@ -955,6 +955,14 @@ pub fn validate_content(
 /// - **R11** tier cap: `Species.tier <= 5` (PROVISIONAL, spec §4).
 /// - **R12** `edge_id` unique across the path set (cross-version append-only
 ///   enforcement is the eval gate's job, EG5-1).
+/// - **R13** is RESERVED — ADR-0176 D2's temporal-dominance guard, still a
+///   candidate, not a rule; it is not implemented here.
+/// - **R14** essence satisfiability (20r-b, ADR-0175 amendment): no
+///   `EssenceRequirement.amount` may exceed `currency::ESSENCE_SOFT_CAP` —
+///   every essence grant clamps there (EG1-1), so a higher threshold is a
+///   permanently unsatisfiable gate. Reject at the content boundary, the
+///   mirror of the runtime clamp. Consequence: lowering the cap below a shipped
+///   amount reds `sync_content`; retune content first, then the cap.
 ///
 /// # Errors
 /// Returns `Err` with a descriptive message on the first integrity violation.
@@ -964,7 +972,7 @@ pub fn validate_evolution_paths(
     encounters: &[EncounterTable],
     items: &[ItemDef],
 ) -> Result<(), String> {
-    // The rules run in DECLARED order R1 -> R12: the per-rule proof-of-teeth
+    // The rules run in DECLARED order R1 -> R12, then R14: the per-rule proof-of-teeth
     // fixtures (notably R2's `self` message, which a self-edge would otherwise
     // trip R5's tier arithmetic for) depend on it. Reordering is a spec change,
     // not a refactor.
@@ -1138,6 +1146,25 @@ pub fn validate_evolution_paths(
                  append-only edge identity",
                 path.edge_id
             ));
+        }
+    }
+
+    // R14: essence satisfiability — no requirement may exceed the runtime soft
+    // cap the grants clamp at (EG1-1). LAST by design: a fixture that also
+    // violates an earlier rule keeps reporting that rule (declared order ==
+    // numeric order; R13 is reserved, see the roster above).
+    for path in paths {
+        for req in &path.essence {
+            if req.amount > crate::currency::ESSENCE_SOFT_CAP {
+                return Err(format!(
+                    "R14: edge {} requires {} {:?} essence — above ESSENCE_SOFT_CAP {}; every \
+                     essence grant clamps at the cap, so the gate is permanently unsatisfiable",
+                    path.edge_id,
+                    req.amount,
+                    req.affinity,
+                    crate::currency::ESSENCE_SOFT_CAP
+                ));
+            }
         }
     }
 
@@ -4605,6 +4632,740 @@ mod tests {
             "D4: min_level must round-trip verbatim"
         );
         assert_eq!(ok[0].edge_id, 1, "D4: edge_id must round-trip verbatim");
+    }
+
+    // -----------------------------------------------------------------------
+    // R14 — no essence threshold above the soft cap (20r-b, spec B1)
+    //
+    // THE RULE UNDER TEST IS NOT YET IMPLEMENTED — every test in this block
+    // starts RED. `validate_evolution_paths` today returns Ok(()) for an
+    // `EssenceRequirement.amount` of any size.
+    //
+    // EARS: WHEN an evolution path carries an `EssenceRequirement.amount >
+    // ESSENCE_SOFT_CAP`, `validate_evolution_paths` SHALL reject it naming the
+    // path and the cap.
+    //
+    // WHY: `grant_essence` CLAMPS every essence pool at `ESSENCE_SOFT_CAP`
+    // (EG1-1) — it never rejects a grant. A threshold above the clamp is
+    // therefore permanently unsatisfiable: the monster can never evolve, the
+    // requirements panel shows a bar that never fills, and nothing anywhere in
+    // the system says why. Content, not code, is where that must be caught.
+    //
+    // R13 is NOT this rule: ADR-0176 D2 name-reserves R13 for the never-built
+    // temporal-dominance guard, named in ADR-0177, in the evolution-content-
+    // integrity eval and in game-core/tests/eg3_evolution_graph.rs. R14 keeps
+    // every one of those present-tense claims true.
+    //
+    // ORDER: R14 runs LAST, after R12 and immediately before `Ok(())`. THREE
+    // fixtures below hold that ordering — `r14_runs_after_r5_...`,
+    // `r14_runs_after_r7_...` and `r14_runs_after_r12_...` — because a path that
+    // breaks an EARLIER rule must report the EARLIER rule: the per-rule fixtures
+    // above depend on exactly one rule being reachable at a time (ADR-0010). The
+    // R12 one is load-bearing on its own: without it, R14 slotted immediately
+    // after R7 passes every other test in this block.
+    // -----------------------------------------------------------------------
+
+    /// R14: an essence requirement above the soft cap is REJECTED, and the
+    /// message names the edge, the offending amount and the cap.
+    ///
+    /// RETUNE: the `999` in the needle list below is `ESSENCE_SOFT_CAP` written
+    /// out as a literal, and `5000` is the offending amount. When the cap is
+    /// retuned, this needle list moves with it — content first, then the
+    /// constant, then every literal fixture in this block.
+    ///
+    /// Kills: a validator with no R14 at all. This fixture violates NOTHING
+    /// else — species 1 (tier 0) -> species 2 (tier 1), min_level 10 is binding
+    /// for R4, one essence entry is inside R7's cap of 3, edge_id 7 is unique,
+    /// no encounters, no items — so only R14 can reject it. Also kills an R14
+    /// whose message is a bare "invalid path" an operator cannot act on, and —
+    /// via the ORDER assertion — a transposed `format!` argument list that
+    /// reports "requires 999 ... above ESSENCE_SOFT_CAP 5000", which carries
+    /// every needle below and still tells the author the exact opposite of the
+    /// truth.
+    #[test]
+    fn r14_essence_amount_5000_rejected_naming_edge_and_cap() {
+        let species = vec![eg1_species(1, 0), eg1_species(2, 1)];
+        let mut path = eg1_path(7, 1, 2);
+        path.essence = vec![EssenceRequirement {
+            affinity: Affinity::Fire,
+            amount: 5000,
+        }];
+        let err = validate_evolution_paths(&species, &[path], &[], &[]).expect_err(
+            "R14 TEETH: an essence threshold of 5000 sits above the 999 cap every grant clamps \
+             at, so the gate is permanently unsatisfiable and must be rejected at content time",
+        );
+        for needle in ["R14", "edge 7", "5000", "999"] {
+            assert!(
+                err.contains(needle),
+                "R14 TEETH: the rejection must name {needle:?} so an operator can find the \
+                 offending row and the ceiling it breached; got: {err:?}"
+            );
+        }
+        let amount_at = err
+            .find("5000")
+            .expect("the 5000 needle was asserted present just above");
+        let cap_at = err
+            .find("999")
+            .expect("the 999 needle was asserted present just above");
+        assert!(
+            amount_at < cap_at,
+            "R14 TEETH: the AUTHORED amount must be reported before the cap it breached. A \
+             transposed format! argument list — \"requires 999 ... above ESSENCE_SOFT_CAP 5000\" \
+             — carries every needle above while telling the author the exact opposite of what \
+             the content says; got: {err:?}"
+        );
+    }
+
+    /// R14: an `amount` EXACTLY at the cap is ACCEPTED — the boundary is
+    /// inclusive, because a pool clamped to 999 does satisfy a 999 threshold.
+    ///
+    /// RETUNE: the 999 here is `ESSENCE_SOFT_CAP` written out as a literal on
+    /// purpose. If the cap is ever retuned, this fixture and
+    /// `r14_essence_amount_1000_rejected` move WITH it, in the same commit —
+    /// content first, then the constant, then these two pins.
+    ///
+    /// Kills: `>=` in place of `>`, which would make the only fully-charged
+    /// threshold in the design unauthorable.
+    #[test]
+    fn r14_essence_amount_999_accepted() {
+        let species = vec![eg1_species(1, 0), eg1_species(2, 1)];
+        let mut path = eg1_path(1, 1, 2);
+        path.essence = vec![EssenceRequirement {
+            affinity: Affinity::Water,
+            amount: 999,
+        }];
+        assert_eq!(
+            validate_evolution_paths(&species, &[path], &[], &[]),
+            Ok(()),
+            "R14 TEETH: 999 is exactly the soft cap and a clamped pool reaches it, so an at-cap \
+             threshold is satisfiable and must be accepted (kills `>=`)"
+        );
+    }
+
+    /// R14: an `amount` one BELOW the cap is accepted — the conventional cap-1
+    /// probe.
+    ///
+    /// Kills: for a MONOTONE threshold, nothing that
+    ///        `r14_essence_amount_999_accepted` does not already kill — anything
+    ///        accepting 999 accepts 998. Kept deliberately, for two reasons it
+    ///        DOES earn: it pins the acceptance side against a NON-monotone rule
+    ///        (an equality or band check, `amount == 999`-shaped), and it is the
+    ///        fixture a reader expects to find beside the 999/1000 boundary
+    ///        pair — its absence would read as an untested side.
+    #[test]
+    fn r14_essence_amount_998_accepted() {
+        let species = vec![eg1_species(1, 0), eg1_species(2, 1)];
+        let mut path = eg1_path(1, 1, 2);
+        path.essence = vec![EssenceRequirement {
+            affinity: Affinity::Plant,
+            amount: 998,
+        }];
+        assert_eq!(
+            validate_evolution_paths(&species, &[path], &[], &[]),
+            Ok(()),
+            "R14 TEETH: 998 is below the soft cap and must be accepted — R14 is a ceiling on \
+             unsatisfiable thresholds, not a ban on expensive ones"
+        );
+    }
+
+    /// R14: an `amount` one ABOVE the cap is rejected — the tight side of the
+    /// boundary.
+    ///
+    /// RETUNE: paired with `r14_essence_amount_999_accepted`; both literals move
+    /// together when the cap moves.
+    ///
+    /// Kills: an off-by-one `> 1000` / `>= 1001` threshold. 1000 is the smallest
+    ///        unsatisfiable amount, and it is exactly the one an off-by-one
+    ///        lets through.
+    #[test]
+    fn r14_essence_amount_1000_rejected() {
+        let species = vec![eg1_species(1, 0), eg1_species(2, 1)];
+        let mut path = eg1_path(1, 1, 2);
+        path.essence = vec![EssenceRequirement {
+            affinity: Affinity::Electric,
+            amount: 1000,
+        }];
+        let err = validate_evolution_paths(&species, &[path], &[], &[]).expect_err(
+            "R14 TEETH: 1000 is the SMALLEST unsatisfiable amount — one above the clamp — and an \
+             off-by-one ceiling is exactly what lets it ship",
+        );
+        assert!(
+            err.contains("R14"),
+            "R14 TEETH: the rejection must identify itself as R14's soft-cap rule; got: {err:?}"
+        );
+    }
+
+    /// R14: an `amount` ABOVE the u16 range is rejected — the comparison must
+    /// happen in the field's own width.
+    ///
+    /// `EssenceRequirement.amount` is a `u32`. 66_535 truncated to u16 is 999 —
+    /// exactly the cap — so a comparison written with a narrowing cast
+    /// (`req.amount as u16 > ESSENCE_SOFT_CAP as u16`, or `as u8`) accepts this
+    /// path while every other fixture in this block still passes: 998, 999, 1000
+    /// and 5000 all survive a u16 round trip unchanged, and the source scan sees
+    /// the constant being read exactly as required.
+    ///
+    /// Kills: a truncating `as u16` / `as u8` cast anywhere in R14's comparison.
+    ///        This is the ONLY fixture here whose amount does not round-trip
+    ///        through u16, so it is the only one that can see the cast at all.
+    #[test]
+    fn r14_amount_above_u16_range_rejected() {
+        let species = vec![eg1_species(1, 0), eg1_species(2, 1)];
+        let mut path = eg1_path(1, 1, 2);
+        path.essence = vec![EssenceRequirement {
+            affinity: Affinity::Fire,
+            amount: 66_535,
+        }];
+        let err = validate_evolution_paths(&species, &[path], &[], &[]).expect_err(
+            "R14 TEETH: 66_535 essence is far above the cap and must be rejected — a narrowing \
+             cast truncates it to exactly 999 and lets the path ship",
+        );
+        assert!(
+            err.contains("R14"),
+            "R14 TEETH: the rejection must identify itself as R14's soft-cap rule; got: {err:?}"
+        );
+    }
+
+    /// R14: the TOP of the `amount` domain is rejected — there is no carve-out
+    /// at `u32::MAX`.
+    ///
+    /// Every other amount fixture in this block sits at 5000 or below except the
+    /// u16 probe at 66_535, so until this test the whole upper domain was
+    /// unwitnessed: a rule written `req.amount > ESSENCE_SOFT_CAP &&
+    /// req.amount != u32::MAX` accepted the single most unsatisfiable threshold
+    /// expressible while passing all twenty-three tests.
+    ///
+    /// `u32::MAX` is used as the INPUT (a type boundary, not the constant under
+    /// test); the oracle stays "rejected, naming R14".
+    ///
+    /// Kills: a top-of-domain carve-out — an `!=`, a `< u32::MAX` guard, or a
+    ///        saturating comparison that folds the maximum back to the cap.
+    #[test]
+    fn r14_amount_u32_max_rejected() {
+        let species = vec![eg1_species(1, 0), eg1_species(2, 1)];
+        let mut path = eg1_path(1, 1, 2);
+        path.essence = vec![EssenceRequirement {
+            affinity: Affinity::Fire,
+            amount: u32::MAX,
+        }];
+        let err = validate_evolution_paths(&species, &[path], &[], &[]).expect_err(
+            "R14 TEETH: u32::MAX essence is the most unsatisfiable threshold the type can carry \
+             and must be rejected — a carve-out at the top of the domain is still a carve-out",
+        );
+        assert!(
+            err.contains("R14"),
+            "R14 TEETH: the rejection must identify itself as R14's soft-cap rule; got: {err:?}"
+        );
+    }
+
+    /// R14: with the offender FIRST, the message names the offender's affinity
+    /// and no other.
+    ///
+    /// Kills: an R14 that inspects only `path.essence.last()` — it would see
+    ///        Plant 10, find nothing wrong, and return Ok(()), which
+    ///        `expect_err` turns into a loud failure. The two negative
+    ///        assertions additionally kill a message that Debug-dumps the whole
+    ///        essence vec (or the whole path) instead of naming the one entry
+    ///        an author has to fix.
+    #[test]
+    fn r14_error_names_the_offending_affinity_when_it_is_first() {
+        let species = vec![eg1_species(1, 0), eg1_species(2, 1)];
+        let mut path = eg1_path(3, 1, 2);
+        path.essence = vec![
+            EssenceRequirement {
+                affinity: Affinity::Water,
+                amount: 5000,
+            },
+            EssenceRequirement {
+                affinity: Affinity::Fire,
+                amount: 10,
+            },
+            EssenceRequirement {
+                affinity: Affinity::Plant,
+                amount: 10,
+            },
+        ];
+        let err = validate_evolution_paths(&species, &[path], &[], &[]).expect_err(
+            "R14 TEETH: the FIRST of three essence entries is 5000, above the cap; a `.last()` \
+             reading would accept this path",
+        );
+        assert!(
+            err.contains("Water"),
+            "R14 TEETH: the rejection must name the offending affinity Water; got: {err:?}"
+        );
+        for innocent in ["Fire", "Plant"] {
+            assert!(
+                !err.contains(innocent),
+                "R14 TEETH: the rejection must name ONLY the offending entry — {innocent:?} is \
+                 within the cap, and a message that dumps every requirement leaves the author \
+                 guessing which row to fix; got: {err:?}"
+            );
+        }
+    }
+
+    /// R14: with the offender LAST, it is still found.
+    ///
+    /// Kills: an R14 that inspects only `path.essence.first()` — it would see
+    ///        Fire 10 and return Ok(()). Together with the fixture above, the
+    ///        pair forces a loop over EVERY entry rather than a single probe at
+    ///        either end.
+    #[test]
+    fn r14_checks_every_entry_not_just_the_first() {
+        let species = vec![eg1_species(1, 0), eg1_species(2, 1)];
+        let mut path = eg1_path(3, 1, 2);
+        path.essence = vec![
+            EssenceRequirement {
+                affinity: Affinity::Fire,
+                amount: 10,
+            },
+            EssenceRequirement {
+                affinity: Affinity::Plant,
+                amount: 10,
+            },
+            EssenceRequirement {
+                affinity: Affinity::Water,
+                amount: 5000,
+            },
+        ];
+        let err = validate_evolution_paths(&species, &[path], &[], &[]).expect_err(
+            "R14 TEETH: the LAST of three essence entries is 5000, above the cap; a `.first()` \
+             reading would accept this path",
+        );
+        assert!(
+            err.contains("Water"),
+            "R14 TEETH: the rejection must name the offending affinity Water wherever it sits in \
+             the vec; got: {err:?}"
+        );
+        for innocent in ["Fire", "Plant"] {
+            assert!(
+                !err.contains(innocent),
+                "R14 TEETH: the rejection must name ONLY the offending entry, not every \
+                 requirement on the path ({innocent:?} is within the cap); got: {err:?}"
+            );
+        }
+    }
+
+    /// R14: a TWO-entry path is checked.
+    ///
+    /// R7 permits 1, 2 or 3 entries, but until this fixture every R14 case used
+    /// exactly one or exactly three. A rule carrying `if path.essence.len() == 2
+    /// { continue; }` — an entry-count carve-out, which is what a
+    /// half-remembered R7 interaction looks like in code — passed all
+    /// twenty-three tests while leaving a third of the legal shapes ungated.
+    ///
+    /// Kills: any entry-count carve-out, `== 2` or otherwise. Together with the
+    ///        one-entry and three-entry fixtures this covers every arity R7
+    ///        allows, so no `len()` special case survives.
+    #[test]
+    fn r14_two_entry_path_over_cap_rejected() {
+        let species = vec![eg1_species(1, 0), eg1_species(2, 1)];
+        let mut path = eg1_path(1, 1, 2);
+        path.essence = vec![
+            EssenceRequirement {
+                affinity: Affinity::Fire,
+                amount: 5000,
+            },
+            EssenceRequirement {
+                affinity: Affinity::Water,
+                amount: 10,
+            },
+        ];
+        let err = validate_evolution_paths(&species, &[path], &[], &[]).expect_err(
+            "R14 TEETH: a two-entry path is exactly as legal under R7 as a one- or three-entry \
+             one, and its over-cap entry must be rejected the same way",
+        );
+        assert!(
+            err.contains("R14"),
+            "R14 TEETH: the rejection must identify itself as R14's soft-cap rule; got: {err:?}"
+        );
+        assert!(
+            err.contains("Fire"),
+            "R14 TEETH: the rejection must name the offending Fire entry; got: {err:?}"
+        );
+    }
+
+    /// R14: with TWO entries over the cap, the message names the FIRST in
+    /// content order — not the largest.
+    ///
+    /// Accept-or-reject is identical either way, so no boundary fixture can see
+    /// the difference: a rule that takes `path.essence.iter().map(|r| r.amount)
+    /// .max()` and then re-finds the offender by that amount rejects exactly the
+    /// same set and passed all twenty-three tests. It reports Fire 6000 here,
+    /// sending the author to the second row when the first is also broken and
+    /// will simply re-fail on the next sync.
+    ///
+    /// First-violation-wins in CONTENT ORDER is the convention every other rule
+    /// in this function follows (R1-R12 all return on the first offender), and
+    /// it is what makes a fix-and-resync loop terminate predictably.
+    ///
+    /// Kills: largest-offender selection, and any reordering (sort, BTreeMap
+    ///        keyed on amount or affinity) between reading the vec and naming
+    ///        the row.
+    #[test]
+    fn r14_names_the_first_offender_when_two_entries_exceed_the_cap() {
+        let species = vec![eg1_species(1, 0), eg1_species(2, 1)];
+        let mut path = eg1_path(3, 1, 2);
+        path.essence = vec![
+            EssenceRequirement {
+                affinity: Affinity::Water,
+                amount: 5000,
+            },
+            EssenceRequirement {
+                affinity: Affinity::Fire,
+                amount: 6000,
+            },
+            EssenceRequirement {
+                affinity: Affinity::Plant,
+                amount: 10,
+            },
+        ];
+        let err = validate_evolution_paths(&species, &[path], &[], &[]).expect_err(
+            "R14 TEETH: two of the three entries are above the cap, so the path must be rejected",
+        );
+        for named in ["Water", "5000"] {
+            assert!(
+                err.contains(named),
+                "R14 TEETH: the rejection must name the FIRST offender in content order \
+                 ({named:?}); got: {err:?}"
+            );
+        }
+        for unnamed in ["Fire", "6000"] {
+            assert!(
+                !err.contains(unnamed),
+                "R14 TEETH: the rejection must NOT name {unnamed:?} — that is the LARGEST \
+                 offender, not the first. Selecting by max() rejects the same set as selecting \
+                 by order, so only the message can tell the two apart, and it sends the author \
+                 to the wrong row; got: {err:?}"
+            );
+        }
+    }
+
+    /// R14: three entries EACH at the cap are accepted — the rule is per-entry,
+    /// not per-path.
+    ///
+    /// RETUNE: the three 999s below are `ESSENCE_SOFT_CAP` written out as
+    /// literals; they move when the cap moves, in the same commit.
+    ///
+    /// Kills: a sum-over-entries reading (`essence.iter().map(|r| r.amount)
+    ///        .sum::<u32>() > cap`), which would see 2997 and reject a path that
+    ///        is perfectly satisfiable: the three pools are INDEPENDENT, each
+    ///        clamped at 999 on its own. That reading passes every single-entry
+    ///        fixture above.
+    #[test]
+    fn r14_three_entries_each_at_the_cap_accepted() {
+        let species = vec![eg1_species(1, 0), eg1_species(2, 1)];
+        let mut path = eg1_path(1, 1, 2);
+        path.essence = [Affinity::Fire, Affinity::Water, Affinity::Plant]
+            .into_iter()
+            .map(|affinity| EssenceRequirement {
+                affinity,
+                amount: 999,
+            })
+            .collect();
+        assert_eq!(
+            validate_evolution_paths(&species, &[path], &[], &[]),
+            Ok(()),
+            "R14 TEETH: three independent pools each clamped at 999 make a 999+999+999 path \
+             satisfiable; R14 is a per-entry ceiling, never a per-path budget"
+        );
+    }
+
+    /// R14: the SECOND path's over-cap entry is found, and the message names
+    /// THAT edge.
+    ///
+    /// Kills: an R14 that only inspects `paths.first()` / `paths[0]` — the first
+    ///        path here is clean, so such a rule returns Ok(()). The negative
+    ///        assertion kills a message that names the wrong (innocent) edge,
+    ///        which would send an author to the wrong content row.
+    ///
+    /// Both tier-1 species (2 and 4) are the target of an edge, so R10's
+    /// reachability rule stays satisfied and R14 is the only reachable failure.
+    #[test]
+    fn r14_second_path_over_cap_rejected_naming_its_edge() {
+        let species = vec![
+            eg1_species(1, 0),
+            eg1_species(2, 1),
+            eg1_species(3, 0),
+            eg1_species(4, 1),
+        ];
+        let clean = eg1_path(1, 1, 2);
+        let mut offender = eg1_path(2, 3, 4);
+        offender.essence = vec![EssenceRequirement {
+            affinity: Affinity::Fire,
+            amount: 5000,
+        }];
+        let err = validate_evolution_paths(&species, &[clean, offender], &[], &[]).expect_err(
+            "R14 TEETH: the SECOND path carries the 5000 threshold; a rule that inspects only \
+             the first path would accept the set",
+        );
+        assert!(
+            err.contains("R14"),
+            "R14 TEETH: the rejection must identify itself as R14; got: {err:?}"
+        );
+        assert!(
+            err.contains("edge 2"),
+            "R14 TEETH: the rejection must name the OFFENDING edge as `edge 2`, the same \
+             `edge {{id}}` spelling R1-R12 use, so the author can find the row; got: {err:?}"
+        );
+        assert!(
+            !err.contains("edge 1"),
+            "R14 TEETH: edge 1 is clean and must not be named — a message that blames the whole \
+             path set sends the author to the wrong content row; got: {err:?}"
+        );
+    }
+
+    /// R14 runs AFTER R7: four essence entries, one of them 5000, report R7.
+    ///
+    /// Kills: an R14 inserted before R7 (or anywhere above it) in the rule
+    ///        chain. `r7_four_essence_entries_rejected` above would still pass
+    ///        such an ordering — its four entries are all within the cap — so
+    ///        this fixture is the only thing holding the position of R14
+    ///        relative to the essence rule it sits next to.
+    #[test]
+    fn r14_runs_after_r7_four_entries_with_5000_reports_r7() {
+        let species = vec![eg1_species(1, 0), eg1_species(2, 1)];
+        let mut path = eg1_path(1, 1, 2);
+        path.essence = vec![
+            EssenceRequirement {
+                affinity: Affinity::Fire,
+                amount: 5000,
+            },
+            EssenceRequirement {
+                affinity: Affinity::Water,
+                amount: 10,
+            },
+            EssenceRequirement {
+                affinity: Affinity::Plant,
+                amount: 10,
+            },
+            EssenceRequirement {
+                affinity: Affinity::Electric,
+                amount: 10,
+            },
+        ];
+        let err = validate_evolution_paths(&species, &[path], &[], &[])
+            .expect_err("both R7 and R14 are violated, so the path must be rejected");
+        assert!(
+            err.contains("R7"),
+            "ORDER TEETH: R7 (the legibility cap) is declared before R14 and must report first; \
+             got: {err:?}"
+        );
+        assert!(
+            !err.contains("R14"),
+            "ORDER TEETH: R14 must run LAST, after R12 — an R14 hoisted above R7 changes which \
+             rule every multi-violation fixture in this file reports; got: {err:?}"
+        );
+    }
+
+    /// R14 runs AFTER R5: a tier-skipping edge carrying 5000 reports R5.
+    ///
+    /// The fixture is built so that only R5 and R14 are reachable: min_level 10
+    /// keeps R4 satisfied, tier 3 is under R11's cap of 5, and species 2 is the
+    /// target of the single edge so R10 is satisfied.
+    ///
+    /// Kills: an R14 placed anywhere above R5 — which would make R5's own
+    ///        proof-of-teeth fixture the ONLY thing pinning R5's position, and
+    ///        would silently reorder the diagnostics an author sees.
+    #[test]
+    fn r14_runs_after_r5_tier_skip_with_5000_reports_r5() {
+        let species = vec![eg1_species(1, 0), eg1_species(2, 3)];
+        let mut path = eg1_path(1, 1, 2);
+        path.essence = vec![EssenceRequirement {
+            affinity: Affinity::Fire,
+            amount: 5000,
+        }];
+        let err = validate_evolution_paths(&species, &[path], &[], &[])
+            .expect_err("both R5 and R14 are violated, so the path must be rejected");
+        assert!(
+            err.contains("R5"),
+            "ORDER TEETH: R5 (tier monotonicity) is declared before R14 and must report first; \
+             got: {err:?}"
+        );
+        assert!(
+            !err.contains("R14"),
+            "ORDER TEETH: R14 must run LAST, after R12; got: {err:?}"
+        );
+    }
+
+    /// R14 runs AFTER R12: a duplicated `edge_id` whose path also carries 5000
+    /// reports R12.
+    ///
+    /// This is the fixture that actually holds "R14 runs LAST". The two
+    /// ordering tests above only pin R14 below R5 and R7, which leaves R14
+    /// slotted anywhere from just-after-R7 to just-before-`Ok(())` — and R14
+    /// placed immediately after R7 passes every other test in this block. R12 is
+    /// the last declared rule, so pinning R14 below R12 closes the whole gap.
+    ///
+    /// The fixture violates ONLY R12 and R14: the two pairs (1 -> 2) and
+    /// (3 -> 4) are distinct so R1 is clean, both tier-1 species are reached so
+    /// R10 is clean, and both edges carry the binding min_level 10.
+    ///
+    /// Kills: R14 inserted anywhere ABOVE R12 — including the natural "put it
+    ///        next to R7, the other essence rule" placement, which no other
+    ///        fixture in this file can see.
+    #[test]
+    fn r14_runs_after_r12_duplicate_edge_id_with_5000_reports_r12() {
+        let species = vec![
+            eg1_species(1, 0),
+            eg1_species(2, 1),
+            eg1_species(3, 0),
+            eg1_species(4, 1),
+        ];
+        let clean = eg1_path(9, 1, 2);
+        let mut dup = eg1_path(9, 3, 4);
+        dup.essence = vec![EssenceRequirement {
+            affinity: Affinity::Fire,
+            amount: 5000,
+        }];
+        let err = validate_evolution_paths(&species, &[clean, dup], &[], &[])
+            .expect_err("both R12 and R14 are violated, so the path set must be rejected");
+        assert!(
+            err.contains("R12"),
+            "ORDER TEETH: R12 (edge_id uniqueness) is the LAST declared rule before R14 and must \
+             report first; got: {err:?}"
+        );
+        assert!(
+            !err.contains("R14"),
+            "ORDER TEETH: R14 must run LAST — after R12, immediately before Ok(()). An R14 \
+             hoisted next to R7 passes every other fixture in this block; got: {err:?}"
+        );
+    }
+
+    /// R14's threshold IS `game_core::currency::ESSENCE_SOFT_CAP` — the one
+    /// coupling test, and the only place in this block that reads the constant
+    /// instead of a literal.
+    ///
+    /// Every other fixture hardcodes 999 / 1000 on purpose, so a retune shows up
+    /// as a red boundary test rather than as a suite that quietly follows the
+    /// constant wherever it goes. THIS test documents the other half of the
+    /// contract: the validator's ceiling and the runtime clamp are ONE value, so
+    /// a retune moves both sides together.
+    ///
+    /// Kills: nothing a PRIVATE copy equal to 999 would not also pass today —
+    ///        both sides of this test read the same number, whichever
+    ///        declaration the validator actually consults.
+    ///        `r14_reads_the_shared_constant_in_production_source` is the
+    ///        fixture that kills the private copy. This one is the RETUNE
+    ///        TELL-TALE: it is written in terms of the constant, so on the day
+    ///        the cap moves it keeps passing while every hardcoded boundary
+    ///        fixture above goes red — which is exactly the signal that
+    ///        distinguishes "the retune landed" from "the validator drifted".
+    #[test]
+    fn r14_threshold_is_the_game_core_constant() {
+        let species = vec![eg1_species(1, 0), eg1_species(2, 1)];
+        let mut at_cap = eg1_path(5, 1, 2);
+        at_cap.essence = vec![EssenceRequirement {
+            affinity: Affinity::Water,
+            amount: crate::currency::ESSENCE_SOFT_CAP,
+        }];
+        assert_eq!(
+            validate_evolution_paths(&species, &[at_cap], &[], &[]),
+            Ok(()),
+            "R14 TEETH: a threshold at exactly crate::currency::ESSENCE_SOFT_CAP is reachable by \
+             a clamped pool and must be accepted"
+        );
+
+        let mut over_cap = eg1_path(5, 1, 2);
+        over_cap.essence = vec![EssenceRequirement {
+            affinity: Affinity::Water,
+            amount: crate::currency::ESSENCE_SOFT_CAP + 1,
+        }];
+        let err = validate_evolution_paths(&species, &[over_cap], &[], &[]).expect_err(
+            "R14 TEETH: one above crate::currency::ESSENCE_SOFT_CAP is unsatisfiable and must be \
+             rejected — the validator's ceiling and the runtime clamp are the SAME value",
+        );
+        assert!(
+            err.contains("R14"),
+            "R14 TEETH: the rejection must identify itself as R14; got: {err:?}"
+        );
+    }
+
+    /// R14 reads the SHARED constant in PRODUCTION source — a source scan.
+    ///
+    /// The behavioural fixtures above can only observe the VALUE of the
+    /// threshold, and a `999` literal inside `validate_evolution_paths` is
+    /// behaviourally indistinguishable from the promoted constant TODAY. It
+    /// stops being indistinguishable the moment the cap is retuned: the runtime
+    /// clamp would move and the content ceiling would not, re-creating exactly
+    /// the two-definitions desync this slice removes. No fixture can reach that,
+    /// so this test reads the production function's own source.
+    ///
+    /// Conventions borrowed from the m23-s8 reachability probe further down this
+    /// module: needles are assembled from fragments (so this test's own text can
+    /// never satisfy it), the anchor is asserted to occur EXACTLY once (so a
+    /// decoy copy cannot steer the region), and the region is cut from the RAW
+    /// source and only THEN comment-stripped (so a planted comment cannot forge
+    /// a needle). The extracted region ends thousands of lines above
+    /// `mod tests`, so no needle here can match this test's own source.
+    ///
+    /// SPELLING PIN, deliberate: the last assertion pins the INLINE full-path
+    /// form `req.amount > crate::currency::ESSENCE_SOFT_CAP`. A `let cap = ...`
+    /// hoist and a top-of-file `use crate::currency::ESSENCE_SOFT_CAP;` both
+    /// false-RED it. That is the intent — a binding or import refactor must move
+    /// this pin in the SAME commit, consciously, because the whole point of the
+    /// scan is that no behavioural fixture can tell the two apart.
+    ///
+    /// LIMITS, deliberate and documented:
+    /// 1. the whole-body `999` ban reds any FUTURE rule in this function that
+    ///    legitimately needs a literal containing 999;
+    /// 2. `m23s8_strip_rust_comments` is not string-literal aware, so a `//`
+    ///    inside a string literal in this function's body would blank the rest
+    ///    of that line. Stripping can only DELETE, so the failure mode is a
+    ///    false RED on the presence assertions, never a false green on the ban.
+    ///
+    /// Kills: `if req.amount > 999` with the constant named only inside the
+    ///        error message — green under every fixture above — and any other
+    ///        hardcoded ceiling.
+    #[test]
+    fn r14_reads_the_shared_constant_in_production_source() {
+        let anchor = format!("pub fn {}(", "validate_evolution_paths");
+        let occurrences = M23S8_SELF_SOURCE.matches(anchor.as_str()).count();
+        assert_eq!(
+            occurrences, 1,
+            "R14 source probe: the validate_evolution_paths signature must occur EXACTLY once in \
+             content.rs (found {occurrences}); a second occurrence — in a doc comment, say — \
+             would let a decoy steer the region this test reads."
+        );
+        let start = M23S8_SELF_SOURCE
+            .find(anchor.as_str())
+            .expect("the signature was just counted, so it must be findable");
+        let rest = &M23S8_SELF_SOURCE[start..];
+        let end = rest.find("\n}\n").expect(
+            "validate_evolution_paths must be terminated by a column-0 closing brace; if this \
+             fails the region extraction is broken, not the rule",
+        );
+        let body = m23s8_strip_rust_comments(&rest[..end]);
+        assert!(
+            body.contains("seen_edge_ids"),
+            "extraction sanity: the region read out of the source never reaches R12's \
+             seen_edge_ids, so it is not the whole function body and the assertions below would \
+             be meaningless"
+        );
+
+        let cap_name = ["ESSENCE", "_SOFT_", "CAP"].concat();
+        assert!(
+            body.contains(cap_name.as_str()),
+            "R14 TEETH: validate_evolution_paths never names {cap_name:?}. The content ceiling \
+             must BE the promoted game-core constant — otherwise the next retune moves the \
+             runtime clamp and leaves the validator behind, which is the desync 20r-b removes."
+        );
+
+        let literal_cap = ["9", "99"].concat();
+        assert!(
+            !body.contains(literal_cap.as_str()),
+            "R14 TEETH: validate_evolution_paths's body carries the literal {literal_cap:?}. The \
+             cap must be READ from crate::currency::ESSENCE_SOFT_CAP and interpolated into the \
+             message; a hardcoded ceiling passes every behavioural fixture in this file."
+        );
+
+        let squashed: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+        let needle = [">", "crate::currency::", cap_name.as_str()].concat();
+        assert!(
+            squashed.contains(needle.as_str()),
+            "R14 TEETH: the COMPARISON itself must read the shared constant — expected \
+             {needle:?} in validate_evolution_paths's whitespace-squashed body. Naming the \
+             constant only inside the error message leaves the threshold hardcoded."
+        );
     }
 
     // -----------------------------------------------------------------------

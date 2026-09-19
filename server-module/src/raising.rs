@@ -433,8 +433,8 @@ pub fn heal_party(ctx: &ReducerContext, location_id: u32) -> Result<(), String> 
 pub(crate) const ESSENCE_TRAIN_COOLDOWN_MS: i64 = 18_000_000;
 /// Flat essence granted per `essence_train` (EG2-3).
 pub(crate) const ESSENCE_TRAIN_AMOUNT: u32 = 5;
-/// Per-pool essence soft cap — grants CLAMP here, never reject (EG1-1).
-pub(crate) const ESSENCE_SOFT_CAP: u32 = 999;
+// Per-pool essence soft cap — clamp, never reject (EG1-1); game-core SSOT since 20r-b (ADR-0175).
+pub(crate) use game_core::currency::ESSENCE_SOFT_CAP;
 /// One Quality-Time tick per this many credited active ms (1 tick per minute).
 pub(crate) const QT_TICK_MS: i64 = 60_000;
 /// A gap longer than this means the player was away — idle time never credits.
