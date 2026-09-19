@@ -571,14 +571,19 @@ describe('m24s0 I18N-5 (ADR-0255 D5)', () => {
     // Installed AFTER mount + construction + the populated render, so ONLY the
     // no-shop render below is observed.
     const spy = vi.spyOn(document, 'createElement');
+    // vitest 4.1.10: spy.mockRestore() CLEARS spy.mock.calls, so the filtered
+    // result must be captured INSIDE the try block, before restore runs — not
+    // read back off `spy.mock.calls` afterward (that would read `[]` for every
+    // implementation, including a correct one, and the tooth would be unsatisfiable).
+    let liCalls: unknown[][] = [];
     try {
       view.render(noShopVm(knownBalance(100n)));
+      liCalls = spy.mock.calls.filter(([tag]) => tag === 'li');
     } finally {
       spy.mockRestore();
     }
 
     // THE tooth, asserted FIRST: exactly one createElement('li') call during the render.
-    const liCalls = spy.mock.calls.filter(([tag]) => tag === 'li');
     expect(
       liCalls.length,
       'the empty-state row must be built by exactly one document.createElement("li") call — an ' +
