@@ -1823,6 +1823,15 @@ export const REKEY_MANIFEST = freezeManifest({
     rekey: 'rekey_monsters(',
     exists: 'has_monsters(',
   },
+  // 20r-d (ADR-0254 D6): the post-evolve reveal queue is monster-adjacent
+  // bookkeeping, so it follows the monsters onto the claimed identity. REKEY and
+  // not EXEMPT: an exempt row would orphan under the retired guest identity
+  // forever, with the reveals the player earned stranded behind it.
+  'pending_evolution_notice.owner_identity': {
+    policy: 'REKEY',
+    rekey: 'rekey_evolution_notices(',
+    exists: 'has_evolution_notices(',
+  },
   'inventory.owner_identity': { policy: 'REKEY', rekey: 'rekey_inventory(', exists: 'has_items(' },
   'player_quest.owner_identity': {
     policy: 'REKEY',
@@ -2151,6 +2160,7 @@ const G6_EXEMPT_ANCHOR = 'playtest_event.identity';
 const G6_REKEY_ANCHORS = [
   'monster.owner_identity',
   'monster_pub.owner_identity',
+  'pending_evolution_notice.owner_identity',
   'inventory.owner_identity',
   'player_quest.owner_identity',
   'player_dialogue_state.owner_identity',
@@ -3298,7 +3308,7 @@ function teethTick() {
 // export, and printed there instead of a hand-written sentence. Bump it in the
 // same commit that adds or removes a tooth — a bump is a one-line, reviewable
 // diff; a silent drift is the whole bug this closes.
-const TEETH_PINNED = 352;
+const TEETH_PINNED = 360;
 
 /**
  * Assert that a checker fired the EXPECTED clause (by tag), not merely that it
@@ -3362,6 +3372,7 @@ fn hexy<'a>(s: &'a str) -> bool {
 
 pub(crate) fn account_has_game_data(ctx: &ReducerContext, identity: Identity) -> bool {
     crate::monster_mgmt::has_monsters(ctx, identity)
+        || crate::evolution::has_evolution_notices(ctx, identity)
         || crate::inventory::has_items(ctx, identity)
         || crate::economy::wallet_exists(ctx, identity)
         || crate::ranking::profile_exists(ctx, identity)
@@ -3371,6 +3382,7 @@ pub(crate) fn account_has_game_data(ctx: &ReducerContext, identity: Identity) ->
 
 pub(crate) fn rekey_all(ctx: &ReducerContext, from: Identity, to: Identity) -> Result<(), String> {
     crate::monster_mgmt::rekey_monsters(ctx, from, to)?;
+    crate::evolution::rekey_evolution_notices(ctx, from, to);
     crate::inventory::rekey_inventory(ctx, from, to);
     crate::npc::rekey_npc_state(ctx, from, to);
     crate::raising::rekey_heal_cooldown(ctx, from, to);
@@ -3641,6 +3653,17 @@ pub(crate) fn rekey_monsters(ctx: &ReducerContext, from: Identity, to: Identity)
 
 pub(crate) fn has_monsters(ctx: &ReducerContext, owner: Identity) -> bool {
     ctx.db.monster().owner_identity().filter(owner).next().is_some()
+}
+
+pub(crate) fn rekey_evolution_notices(ctx: &ReducerContext, from: Identity, to: Identity) {
+    if let Some(row) = ctx.db.pending_evolution_notice().owner_identity().find(from) {
+        ctx.db.pending_evolution_notice().owner_identity().delete(from);
+        ctx.db.pending_evolution_notice().insert(carried_notice(row, to));
+    }
+}
+
+pub(crate) fn has_evolution_notices(ctx: &ReducerContext, owner: Identity) -> bool {
+    ctx.db.pending_evolution_notice().owner_identity().find(owner).is_some()
 }
 
 pub(crate) fn rekey_inventory(ctx: &ReducerContext, from: Identity, to: Identity) {
@@ -5213,6 +5236,7 @@ pub struct GuildMember {
     const rekeyAnchors = [
       'monster.owner_identity',
       'monster_pub.owner_identity',
+      'pending_evolution_notice.owner_identity',
       'inventory.owner_identity',
       'player_quest.owner_identity',
       'player_dialogue_state.owner_identity',

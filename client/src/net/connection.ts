@@ -41,6 +41,7 @@ import {
   itemRowToStore,
   monsterPubRowToStore,
   npcRowToStore,
+  pendingEvolutionNoticeRowToStore,
   playerConversationRowToStore,
   playerQuestRowToStore,
   playerRowToStore,
@@ -55,6 +56,7 @@ import {
   type SdkInventoryRow,
   type SdkItemRowRow,
   type SdkMonsterPubRow,
+  type SdkPendingEvolutionNoticeRow,
   type SdkPlayerRow,
   type SdkPlayerWalletRow,
   type SdkProfileRow,
@@ -192,6 +194,17 @@ export function connect(opts: ConnectionOptions): Connection {
         store.reconcileExportChunksFromView(
           [...live.db.my_export_bundle.iter()].map((row) =>
             exportChunkRowToStore(row as unknown as SdkExportChunkRow),
+          ),
+        );
+        // 20r-d (ADR-0254 D6): the fourth Vec-shaped reconcile, and deliberately the LAST call
+        // inside this try — a throw from the newest converter can then never starve the
+        // movement-driving monster/battle reconciles above it. AUTHORITATIVE: an absent row
+        // CLEARS the slot, which is how the account-deletion cascade and the guest-claim rekey
+        // withdraw a reveal instead of stranding it on screen. It runs BEFORE flushBatch()
+        // because main.ts's batch listener is the sole banner render site.
+        store.reconcileEvolutionNoticesFromView(
+          [...live.db.myPendingEvolutionNotices.iter()].map((row) =>
+            pendingEvolutionNoticeRowToStore(row as unknown as SdkPendingEvolutionNoticeRow),
           ),
         );
       } catch (err) {
@@ -652,6 +665,19 @@ export function connect(opts: ConnectionOptions): Connection {
     // client would keep offering a download of data the server has already purged.
     conn.db.my_export_bundle.onInsert(() => batcher.schedule());
     conn.db.my_export_bundle.onDelete(() => batcher.schedule());
+
+    // 20r-d (ADR-0254 D6): `my_pending_evolution_notices` is a PK-less Option-VIEW — the
+    // my_monster_pub / my_battle / my_export_bundle shape, NOT the my_account/my_wallet one.
+    // The SDK never fires onUpdate for it, so do NOT wire one, and per-row store writes are
+    // banned here: with no primary key the delete half of an unordered pair would remove the
+    // row the insert half just wrote (the my_conversation coalescing wipe, ADR-0087). These
+    // handlers only schedule the flush, whose closure reconciles the whole slot from the SDK
+    // cache. onDelete IS wired (unlike my_account/my_wallet, whose rows are never deleted
+    // server-side): a notice row leaves this view on the account-deletion cascade and on the
+    // guest-claim rekey, and with no delete handler the batcher is never scheduled for that
+    // burst — the client would keep showing a reveal the server has already erased.
+    conn.db.myPendingEvolutionNotices.onInsert(() => batcher.schedule());
+    conn.db.myPendingEvolutionNotices.onDelete(() => batcher.schedule());
   }
 
   /** Issue the connection-internal joinGame through the WRAPPED connection (ADR-0157 §1) — the
@@ -819,6 +845,10 @@ export function connect(opts: ConnectionOptions): Connection {
             // The same literal is mirrored in evals/monster-privacy.eval.mjs's
             // EXPECTED_SUBSCRIPTIONS, which pins this array as an exact SET.
             'SELECT * FROM my_export_bundle',
+            // 20r-d (ADR-0254 D3/D6): my_pending_evolution_notices is the owner-scoped VIEW over
+            // the PRIVATE pending_evolution_notice table — subscribing the table itself would
+            // error the whole batch and onApplied would never fire.
+            'SELECT * FROM my_pending_evolution_notices',
           ]);
       })
       .onConnectError((_ctx, err: Error) => {

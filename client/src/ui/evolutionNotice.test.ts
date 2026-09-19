@@ -42,14 +42,20 @@
 //   The label function is TOTAL: it reads no clock, no store and no DOM, and it
 //   never throws.
 //
-// ⚠ EMPTY-NICKNAME CLAUSE — a tester-derived invariant, stated openly. The store
-//   carries an un-nicknamed monster as `nickname: ''` (`Monster.nickname` is
-//   `String::new()` server-side), so "nickname present" cannot mean "the field
-//   exists". An implementation that tests only `!== undefined` ships
-//   `" evolved from Flameling into Flamewing!"` — a leading space and no subject.
-//   Both `evolutionNoticeLabel` and `resolveEvolutionNoticeNames` are therefore
-//   pinned to treat `''` as ABSENT. This is derived from B1's "the player SHALL
-//   see" and from the server's own empty-string convention, not from any code.
+// ⚠ EMPTY-STRING CLAUSE — a tester-derived invariant, stated openly, and it
+//   applies to ALL THREE names. The store carries an un-nicknamed monster as
+//   `nickname: ''` (`Monster.nickname` is `String::new()` server-side) and a
+//   species name is a plain `String` column read through
+//   `store.species(id)?.name`, so "present" can never mean "the field exists".
+//   An implementation that tests only `!== undefined` ships
+//   `" evolved from Flameling into Flamewing!"` (no subject) or
+//   `"Your  evolved into Flamewing!"` (no species) — sentences that name nothing,
+//   which is the exact failure B1's "the player SHALL see" is about. So:
+//     nickname `''`  -> the un-nicknamed branch    (EN-LABEL-3)
+//     fromName/toName `''` -> `Species #${id}`     (EN-LABEL-5)
+//   and `resolveEvolutionNoticeNames` normalises an empty nickname to `undefined`
+//   (EN-NAMES-4). Derived from B1 and from the server's own empty-string
+//   convention, not from any code.
 //
 // ⚠ NOTE FOR THE IMPLEMENTER ON THE REJECTION TEST (EN-BANNER-REJECT below): the
 //   OK handler's release chain must not leak an UNHANDLED REJECTION. `sendGuarded`
@@ -256,12 +262,46 @@ describe('20r-d EN-LABEL — evolutionNoticeLabel renders the reveal copy', () =
     ).toBe('Your Species #31 evolved into Flamewing!');
   });
 
-  it('20r-d EN-LABEL-5 BITES: TOTAL — degenerate input yields a string, never a throw', () => {
-    // WRONG IMPL KILLED: any lookup/parse that can throw. This function runs
+  it('20r-d EN-LABEL-5 BITES: TOTAL — an EMPTY species name takes the "Species #<id>" fallback, and degenerate input never throws', () => {
+    // WRONG IMPL KILLED (a) ★ THE EMPTY-STRING SPECIES NAME, the same rule as the
+    //   empty nickname (EN-LABEL-3) and reachable for the same kind of reason: the
+    //   name arrives from `store.species(id)?.name`, a content row whose `name`
+    //   column is a plain `String`. An implementation that falls back only on
+    //   `undefined` (a `??` or a `!== undefined` test) renders " evolved into "
+    //   with a hole where the species should be — a sentence that names NOTHING,
+    //   which is the exact failure B1's "the player SHALL see" is about. Pinned as
+    //   an exact string on BOTH sides, with different ids, so a fallback that
+    //   reuses one id for both reds here too.
+    // WRONG IMPL KILLED (b): any lookup/parse that can throw. This function runs
     //   inside a `store.onBatchApplied` listener; `flushBatch` catches per
     //   listener (store.ts:766-772), but a throw here still costs the WHOLE
     //   listener its frame — including the render that would have hidden a stale
     //   banner.
+    expect(
+      evolutionNoticeLabel(reveal(7n, 31, 44, 100n), {
+        nickname: 'Sparky',
+        fromName: '',
+        toName: '',
+      }),
+      'an EMPTY species name must render the `Species #<id>` fallback, exactly as an absent one does',
+    ).toBe('Sparky evolved from Species #31 into Species #44!');
+    expect(
+      evolutionNoticeLabel(reveal(7n, 31, 44, 100n), {
+        nickname: undefined,
+        fromName: '',
+        toName: 'Flamewing',
+      }),
+      'the empty-string rule applies per SIDE — an empty `fromName` beside a present `toName`',
+    ).toBe('Your Species #31 evolved into Flamewing!');
+    expect(
+      evolutionNoticeLabel(reveal(7n, 31, 44, 100n), {
+        nickname: undefined,
+        fromName: 'Flameling',
+        toName: '',
+      }),
+      'the empty-string rule applies per SIDE — an empty `toName` beside a present `fromName`',
+    ).toBe('Your Flameling evolved into Species #44!');
+
     const degenerate: readonly [
       StoreEvolutionReveal,
       Parameters<typeof evolutionNoticeLabel>[1],
@@ -377,19 +417,37 @@ describe('20r-d EN-BENIGN — isBenignAckRejection', () => {
     //   bug in this very feature — it must reach the status line.
     // WRONG IMPL KILLED (c): matching on the reducer NAME rather than the
     //   message (every rejection from this reducer would be swallowed).
+    //
+    // ★ EVERY FIXTURE BELOW IS A TRANSCRIPTION of a message the SERVER actually
+    //   produces, and each is pinned WHOLE on the other side of the wire by
+    //   `server-module/src/evolution_tests.rs` (the `S20RD_ERR_*` constants:
+    //   `s20rd_ack_prefix_truth_table` asserts the 4-of-3 and 1-of-0 spellings and
+    //   the zero-count one, `s20rd_ack_rejects_*` assert the no-row and 3-of-2
+    //   spellings against the REAL reducer). Neither half may be re-worded alone:
+    //   the server pins the sentence, this file pins how the client classifies it.
+    //   If a message legitimately changes, both sides are re-derived from ADR-0254
+    //   D5 in the same change.
     for (const benign of [
       'no pending evolution notices',
       'ack count 3 exceeds 2 pending evolution notices',
+      'ack count 4 exceeds 3 pending evolution notices',
+      'ack count 1 exceeds 0 pending evolution notices',
+      // …and the same sentences once the SDK has wrapped them (the shape
+      // `reduceErrorMessage` hands the classifier at the real call site).
       'ackEvolutionNotices: no pending evolution notices',
     ]) {
       expect(isBenignAckRejection(benign), `"${benign}" must be benign`).toBe(true);
     }
     for (const loud of [
+      // The one server rejection that must NOT be swallowed: only a client that
+      // sent `count: 0` can produce it.
       'ack count must be positive',
       'not owner',
       '',
       'ackEvolutionNotices',
       'Error: InternalError',
+      // Truncations of the two benign phrases — a predicate that matched on these
+      // prefixes would also swallow unrelated messages that happen to contain them.
       'no pending',
       'exceed',
     ]) {

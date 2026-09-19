@@ -5,7 +5,7 @@ slug: tables/account
 updated: 2026-09-18
 tags: [schema, spacetimedb, private]
 abstract: "PRIVATE account record (no `public`) — one row per authenticated identity (ADR-0179 D2). No email, no email hash, no ra…"
-resource: server-module/src/schema.rs#L751
+resource: server-module/src/schema.rs#L809
 source: scripts/okf-export.mjs@server-module/src/schema.rs
 visibility: private
 ---

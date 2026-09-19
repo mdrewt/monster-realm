@@ -115,7 +115,7 @@ the supervisor may still reject it at merge.
   same `__table({...})` factory (module_bindings/index.ts:371-388). Store: one `Option` slot
   `#ownEvolutionNotices`, `reconcileEvolutionNoticesFromView(rows)` (rows[0]; the view is Option so
   `rows.length <= 1` by construction — never throw in the reconcile), `ownEvolutionNotices(identity)`
-  exact hex compare, cleared in `reset()`. rowConvert: `evolutionNoticeRowToStore` explicit field
+  exact hex compare, cleared in `reset()`. rowConvert: `pendingEvolutionNoticeRowToStore` explicit field
   mapping, no coercion, no throw. main.ts: construct beside `#privacy-countdown`; batch listener
   renders from the store + species names (nickname from `store.ownMonsters(identity)`, species names
   from `store.species(id)`, `Species #N` fallbacks); OK → `sendGuarded('ackEvolutionNotices', () =>
@@ -226,7 +226,7 @@ tree for present-tense quoters (evolution_tests.rs header, ARCHITECTURE.md, docs
   (reconcile/own/reset); rowConvert.test.ts; connection.test.ts (`W-20RD-SUBSCRIBE` windowed;
   `W-20RD-INGEST`: onInsert/onDelete exactly once as code, zero onUpdate, no per-row store write,
   reconcile present and BEFORE `store.flushBatch()`); main.wiring.test.ts (`W-20RD-BANNER`,
-  `W-20RD-ACK`, `W-20RD-RECONNECT` with the sibling anti-vacuity clause).
+  `W-20RD-ACK`, `W-20RD-RENDER`, `W-20RD-RECONNECT` with the sibling anti-vacuity clause).
 - T7 specialist GREEN client: connection.ts, store.ts, rowConvert.ts, ui/evolutionNotice.ts, main.ts.
 - T8 docs: ADR-0254, `just adr-digest`, `just knowledge`, ARCHITECTURE.md (minimal), residual
   registration via `mr-gates residuals add` AFTER the lenses.

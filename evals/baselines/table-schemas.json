@@ -878,5 +878,17 @@
       "connection_id",
       "identity"
     ]
+  },
+  "pending_evolution_notice": {
+    "pk": "owner_identity",
+    "visibility": "private",
+    "columns": {
+      "owner_identity": "Identity",
+      "entries": "Vec<EvolutionRevealRow>"
+    },
+    "order": [
+      "owner_identity",
+      "entries"
+    ]
   }
 }

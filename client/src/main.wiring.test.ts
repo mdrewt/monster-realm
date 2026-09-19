@@ -13390,6 +13390,21 @@ describe('★ main.ts wiring (20r-d / ADR-0254 D5/D6): 20r-d W-20RD-ACK — OK s
     //   reduced message — `reduceErrorMessage` is what strips the SDK's
     //   `InternalError` wrapper (PTC2-15), so a raw-object test never matches either
     //   phrase and both benign races surface as errors.
+    // WRONG IMPL KILLED (e) ★ THE DROPPED RETURN (the 20r-a M-1 defect class, here
+    //   one level further out): `() => { sendGuarded('ackEvolutionNotices', …); }`.
+    //   A block-bodied arrow that does not RETURN hands the banner `undefined`, the
+    //   banner's `.finally()` fires on the next microtask, and the OK button
+    //   re-enables while the ack is still in flight — so a second press double-acks
+    //   and drains a reveal that was never rendered. The contiguous
+    //   `=> sendGuarded('ackEvolutionNotices'` needle admits only the
+    //   expression-bodied arrow, whose value IS the guarded promise.
+    // WRONG IMPL KILLED (f) ★ INVERTED POLARITY: `if (isBenignAckRejection(m)) throw
+    //   err;` — every needle a positive-shape pin could ask for is present, and the
+    //   behaviour is exactly backwards: the two benign two-tab races become
+    //   player-facing errors while every REAL failure is swallowed in silence. The
+    //   contiguous `!isBenignAckRejection(` needle is what fixes the polarity, and
+    //   the exactly-once count beside it stops a decoy positive call being parked
+    //   alongside the negated one.
     const stripped = rdStrippedMainTs();
     const args = rdBannerCtorArgs(stripped);
 
@@ -13399,6 +13414,23 @@ describe('★ main.ts wiring (20r-d / ADR-0254 D5/D6): 20r-d W-20RD-ACK — OK s
         "`sendGuarded('ackEvolutionNotices', …)` — the tag is what the status line reports and " +
         'what 20r-a M-2 guarantees always resolves (so the banner`s own lock is released on a ' +
         'frozen link). Constructor argument found: ' +
+        JSON.stringify(args),
+    ).toBeGreaterThanOrEqual(0);
+    // …and the callback RETURNS it. `EvolutionNoticeBanner`'s `onAck` is typed
+    // `() => Promise<void>` and the banner releases its generation lock in the
+    // `.finally()` of whatever that call returns, so the promise has to come back
+    // out of the callback. The contiguous `=>` is the whole pin: it admits the
+    // expression-bodied arrow and refuses the block-bodied one that drops the value.
+    expect(
+      args.indexOf("=> sendGuarded('ackEvolutionNotices'"),
+      '20r-d W-20RD-ACK: the onAck callback must be the EXPRESSION-bodied arrow ' +
+        "`() => sendGuarded('ackEvolutionNotices', …)`, so the guarded promise is the callback's " +
+        'RETURN VALUE. A block body without `return` hands the banner `undefined`: its `.finally()` ' +
+        'settles on the next microtask and the OK button re-enables while the ack is still in ' +
+        'flight, so the next press double-acks and drains a reveal that was never on screen. ' +
+        '(This is 20r-a M-1`s defect class one level out, and no unit test of the banner can see ' +
+        'it — evolutionNotice.test.ts drives its own injected onAck, never main.ts`s.) ' +
+        'Constructor argument found: ' +
         JSON.stringify(args),
     ).toBeGreaterThanOrEqual(0);
     expect(
@@ -13445,6 +13477,57 @@ describe('★ main.ts wiring (20r-d / ADR-0254 D5/D6): 20r-d W-20RD-ACK — OK s
         'test that can drift from it. Catch body found: ' +
         JSON.stringify(catchBody),
     ).toBeGreaterThanOrEqual(0);
+    // ★ POLARITY, pinned CONTIGUOUSLY. The sanctioned catch body is
+    //     (err: unknown) => { if (!isBenignAckRejection(reduceErrorMessage(err,
+    //       'ackEvolutionNotices'))) throw err; }
+    // and the `!` is the whole difference between "swallow the two benign races" and
+    // "swallow every real failure". An early-return spelling
+    // (`if (isBenign(m)) return; throw err;`) is behaviourally equivalent BUT is not
+    // distinguishable from its own inversion by any needle this scan can write — so
+    // it is deliberately NOT accepted here. Write the negated form.
+    expect(
+      catchBody.indexOf('!isBenignAckRejection('),
+      '20r-d W-20RD-ACK: the catch body must contain the NEGATED classification ' +
+        '`!isBenignAckRejection(` — the exact spelling ADR-0085 C6 mandates for this site:\n' +
+        "  .catch((err: unknown) => { if (!isBenignAckRejection(reduceErrorMessage(err, 'ackEvolutionNotices'))) throw err; })\n" +
+        'WHY THE `!` IS PINNED AND NOT THE EARLY-RETURN SHAPE: `if (isBenignAckRejection(m)) throw ' +
+        'err;` is the INVERSION, it is one character away from the positive early-return form, and ' +
+        'it satisfies every un-negated needle — while turning the two benign two-tab races into ' +
+        'player-facing errors and silencing every dead link, schema skew and server panic. Binding ' +
+        'the `!` to the call contiguously is the only way this scan can tell the two apart. ' +
+        'Catch body found: ' +
+        JSON.stringify(catchBody),
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      countOccurrences(catchBody, 'isBenignAckRejection('),
+      '20r-d W-20RD-ACK: the catch body must call `isBenignAckRejection(` EXACTLY once. Two calls ' +
+        'means a decoy: a negated one parked to satisfy the clause above while an UN-negated one ' +
+        'does the real work (`if (!isBenign(m)) {} if (isBenign(m)) throw err;`). One classifier, ' +
+        'one decision. Catch body found: ' +
+        JSON.stringify(catchBody),
+    ).toBe(1);
+    // ★ AND NO EARLY EXIT. Found while writing the clause above, and it is the one
+    // shape that satisfies both the `!` needle and the `throw err` needle while
+    // doing the exact opposite of what they describe:
+    //     if (!isBenignAckRejection(m)) { return; }
+    //     throw err;
+    // — the benign races are RETHROWN into the status line and every real failure
+    // is swallowed. The sanctioned single-statement body has no `return` at all, so
+    // banning it outright is free and closes the inversion completely.
+    // DISCLOSED REMAINDER: `if (!isBenign(m)) {} throw err;` (an empty consequent)
+    // passes every clause here. It is not a shape anyone writes by accident, and it
+    // fails SAFE — every rejection reaches the status line, which is a UX regression
+    // and not a silent one.
+    expect(
+      countOccurrences(catchBody, 'return'),
+      '20r-d W-20RD-ACK: the catch body must contain NO `return` — the sanctioned body is the ' +
+        'single statement `if (!isBenignAckRejection(reduceErrorMessage(err, ' +
+        "'ackEvolutionNotices'))) throw err;`. An early `return` inside the negated branch " +
+        'inverts the whole decision (`if (!isBenign(m)) { return; } throw err;` rethrows the two ' +
+        'BENIGN races and swallows every real failure) while still satisfying both the `!` and ' +
+        '`throw err` clauses above. Catch body found: ' +
+        JSON.stringify(catchBody),
+    ).toBe(0);
     expect(
       catchBody.indexOf('reduceErrorMessage('),
       '20r-d W-20RD-ACK: the catch body must classify the REDUCED message, not the raw error — ' +

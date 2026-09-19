@@ -35,6 +35,7 @@ import {
 
 // Import all reducer arg schemas
 import AcceptChallengeReducer from "./accept_challenge_reducer";
+import AckEvolutionNoticesReducer from "./ack_evolution_notices_reducer";
 import AdvanceDialogueReducer from "./advance_dialogue_reducer";
 import AttemptRecruitReducer from "./attempt_recruit_reducer";
 import BuyReducer from "./buy_reducer";
@@ -89,6 +90,7 @@ import MyBattleRow from "./my_battle_table";
 import MyConversationRow from "./my_conversation_table";
 import MyExportBundleRow from "./my_export_bundle_table";
 import MyMonsterPubRow from "./my_monster_pub_table";
+import MyPendingEvolutionNoticesRow from "./my_pending_evolution_notices_table";
 import MyWalletRow from "./my_wallet_table";
 import NpcRow from "./npc_table";
 import PlayerRow from "./player_table";
@@ -379,6 +381,13 @@ const tablesSchema = __schema({
     constraints: [
     ],
   }, MyMonsterPubRow),
+  myPendingEvolutionNotices: __table({
+    name: 'my_pending_evolution_notices',
+    indexes: [
+    ],
+    constraints: [
+    ],
+  }, MyPendingEvolutionNoticesRow),
   myWallet: __table({
     name: 'my_wallet',
     indexes: [
@@ -391,6 +400,7 @@ const tablesSchema = __schema({
 /** The schema information for all reducers in this module. This is defined the same way as the reducers would have been defined in the server, except the body of the reducer is omitted in code generation. */
 const reducersSchema = __reducers(
   __reducerSchema("accept_challenge", AcceptChallengeReducer),
+  __reducerSchema("ack_evolution_notices", AckEvolutionNoticesReducer),
   __reducerSchema("advance_dialogue", AdvanceDialogueReducer),
   __reducerSchema("attempt_recruit", AttemptRecruitReducer),
   __reducerSchema("buy", BuyReducer),
@@ -471,6 +481,8 @@ type __SchemaWithTableAccessorAliases = Omit<typeof tablesSchema.schemaType, "ta
     readonly "my_export_bundle": Omit<typeof tablesSchema.schemaType.tables["myExportBundle"], "accessorName"> & { readonly accessorName: "my_export_bundle" };
     /** @deprecated Use `myMonsterPub` instead. This alias will be removed in the next major version. */
     readonly "my_monster_pub": Omit<typeof tablesSchema.schemaType.tables["myMonsterPub"], "accessorName"> & { readonly accessorName: "my_monster_pub" };
+    /** @deprecated Use `myPendingEvolutionNotices` instead. This alias will be removed in the next major version. */
+    readonly "my_pending_evolution_notices": Omit<typeof tablesSchema.schemaType.tables["myPendingEvolutionNotices"], "accessorName"> & { readonly accessorName: "my_pending_evolution_notices" };
     /** @deprecated Use `myWallet` instead. This alias will be removed in the next major version. */
     readonly "my_wallet": Omit<typeof tablesSchema.schemaType.tables["myWallet"], "accessorName"> & { readonly accessorName: "my_wallet" };
   };
@@ -508,6 +520,7 @@ const tableAccessorAliases = {
   "my_conversation": "myConversation",
   "my_export_bundle": "myExportBundle",
   "my_monster_pub": "myMonsterPub",
+  "my_pending_evolution_notices": "myPendingEvolutionNotices",
   "my_wallet": "myWallet",
 } as const;
 
@@ -563,6 +576,8 @@ export type DbView = __DbViewBase & {
   readonly "my_export_bundle": __DbViewBase["myExportBundle"];
   /** @deprecated Use `myMonsterPub` instead. This alias will be removed in the next major version. */
   readonly "my_monster_pub": __DbViewBase["myMonsterPub"];
+  /** @deprecated Use `myPendingEvolutionNotices` instead. This alias will be removed in the next major version. */
+  readonly "my_pending_evolution_notices": __DbViewBase["myPendingEvolutionNotices"];
   /** @deprecated Use `myWallet` instead. This alias will be removed in the next major version. */
   readonly "my_wallet": __DbViewBase["myWallet"];
 };
@@ -603,6 +618,8 @@ export type Tables = __TablesBase & {
   readonly "my_export_bundle": __TablesBase["myExportBundle"];
   /** @deprecated Use `myMonsterPub` instead. This alias will be removed in the next major version. */
   readonly "my_monster_pub": __TablesBase["myMonsterPub"];
+  /** @deprecated Use `myPendingEvolutionNotices` instead. This alias will be removed in the next major version. */
+  readonly "my_pending_evolution_notices": __TablesBase["myPendingEvolutionNotices"];
   /** @deprecated Use `myWallet` instead. This alias will be removed in the next major version. */
   readonly "my_wallet": __TablesBase["myWallet"];
 };

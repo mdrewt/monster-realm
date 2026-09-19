@@ -110,6 +110,12 @@ import {
   makeZoneChange,
 } from './ui/eventRing';
 import { buildEvolutionViewModel } from './ui/evolutionModel';
+import {
+  EvolutionNoticeBanner,
+  evolutionNoticeLabel,
+  isBenignAckRejection,
+  resolveEvolutionNoticeNames,
+} from './ui/evolutionNotice';
 import type { EvolutionView } from './ui/evolutionView';
 // uxd3-c (ADR-0164): this import block is pinned by
 // W-FANOUT-SURFACES-ROUTE-THROUGH-REGISTRY Part B — the clause that proves every fan-out
@@ -322,6 +328,9 @@ let menuView: MenuView | undefined;
 let claimView: ClaimView | undefined;
 let privacyView: PrivacyView | undefined;
 let sessionView: SessionView | undefined;
+// 20r-d (ADR-0254 D6): the post-evolve reveal banner — runtime-constructed in main(), NOT a
+// registry overlay; read by the batch listener below and reset at the onReconnect tail.
+let evolutionNoticeBanner: EvolutionNoticeBanner | undefined;
 let claimModelState: ClaimModelState = CLAIM_INITIAL;
 let sessionModelState: SessionModelState = SESSION_INITIAL;
 // m16b: tracks the turn number at the time the player submitted a PvP action.
@@ -2068,6 +2077,26 @@ store.onBatchApplied(() => {
   }
 });
 
+// --- 20r-d (ADR-0254 D6): post-evolve reveal banner ---------------------------------
+// The HEAD entry only: Vec order IS display order and the ack drains a PREFIX, so the head is
+// the one reveal a `count: 1` ack may acknowledge. The `null` arm hides the banner once the
+// queue drains — without it the last sentence would stay on screen and every further OK reject.
+store.onBatchApplied(() => {
+  const head = store.ownEvolutionNotices(identity)[0];
+  evolutionNoticeBanner?.render(
+    head === undefined
+      ? null
+      : evolutionNoticeLabel(
+          head,
+          resolveEvolutionNoticeNames(
+            head,
+            store.ownMonsters(identity),
+            (id) => store.species(id)?.name,
+          ),
+        ),
+  );
+});
+
 // --- M12d: dialogue choice click handler -----------------------------------------
 // Reads data-choice-idx from the clicked button and calls advance_dialogue.
 document.addEventListener('click', (e) => {
@@ -2905,6 +2934,21 @@ async function main(): Promise<void> {
     privacyCountdownEl.style.display = label === null ? 'none' : 'block';
   };
 
+  // 20r-d (ADR-0254 D5/D6): the post-evolve reveal banner — the same runtime-constructed,
+  // non-overlay shape as the countdown above. OK acks exactly ONE entry (the head is the only
+  // reveal on screen); the two benign stale-banner races are swallowed, everything else is
+  // rethrown into sendGuarded's single status reporter (ADR-0085 C6).
+  evolutionNoticeBanner = new EvolutionNoticeBanner(() =>
+    sendGuarded('ackEvolutionNotices', () =>
+      conn
+        ?.live()
+        ?.reducers.ackEvolutionNotices({ count: 1 })
+        .catch((err: unknown) => {
+          if (!isBenignAckRejection(reduceErrorMessage(err, 'ackEvolutionNotices'))) throw err;
+        }),
+    ),
+  );
+
   // pt-b1 (ADR-0130): mount the F9 error overlay (self-mounting, starts hidden,
   // non-blocking pointer-events:none). pushError renders into it on the first error.
   errorOverlayView = new ErrorOverlayView();
@@ -3027,6 +3071,10 @@ async function main(): Promise<void> {
       eventRing.push(makeConnect(identity));
       // M21b-2 (ADR-0182 D17): a successful reconnect clears any session terminal overlay.
       applySession({ kind: 'connected' });
+      // 20r-d (ADR-0254 D6): the same never-settles class, at the TAIL on purpose — store.reset()
+      // runs on the drop edge and the post-rebuild flush is a later microtask, so a reset here can
+      // never be re-disabled by a stale render.
+      evolutionNoticeBanner?.reset();
     },
     // 12.5c-1: onOwnWarp delegates to switchZone (idempotent — no-op if rawMap
     // already matches). Fires on live-warp character onUpdate (lower latency path);

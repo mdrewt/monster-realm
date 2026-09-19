@@ -153,13 +153,13 @@ export const TOMBSTONE_DISPLAY_NAME_E2E = '(deleted account)';
 export const TOMBSTONE_IDENTITY_HEX_E2E =
   '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff';
 
-// THE 42-entry data-lifecycle transcription (schema.rs DATA_LIFECYCLE_MANIFEST
+// THE 43-entry data-lifecycle transcription (schema.rs DATA_LIFECYCLE_MANIFEST
 // + the S6 typespace walk's identity-column names), one biome-stable string:
 // entries sorted by table, `table:Policy[(parent)]:col1+col2:1|0`, '|'-joined.
 // Erase/Anonymize entries MUST carry >=1 column (red-team CRITICAL-1: a
 // zero-column entry is an UNATTEMPTED table, invisible to the vacuity list).
 export const M22S9_MANIFEST_TRANSCRIPTION =
-  'account:Anonymize:claimed_from+identity:1|account_deletion_reaper_schedule:NotOwned::0|battle:Anonymize:opponent_identity+player_identity:1|battle_action:Erase:player_identity:1|battle_challenge:Erase:challenger+target:1|battle_challenge_reaper_schedule:ViaJoin(battle_challenge)::0|battle_wild:ViaJoin(battle)::0|character:ViaJoin(player)::1|config:NotOwned::0|encounter:NotOwned::0|evolution_path:NotOwned::0|export_bundle:Erase:owner_identity:0|export_bundle_reaper_schedule:NotOwned::0|guest_claim:NotOwned::0|guest_claim_reaper_schedule:NotOwned::0|heal_cooldown:Erase:owner_identity:1|heal_location_row:NotOwned::0|inventory:Erase:owner_identity:1|item_row:NotOwned::0|monster:Erase:owner_identity:1|monster_pub:Erase:owner_identity:1|movement_tick_schedule:NotOwned::0|mr_heartbeat_schedule:NotOwned::0|npc:NotOwned::0|player:Anonymize:identity:1|player_conversation:Erase:owner_identity:1|player_dialogue_state:Erase:owner_identity:1|player_quest:Erase:owner_identity:1|player_session:Erase:identity:0|player_wallet:Erase:owner_identity:1|playtest_event:Erase:identity:1|playtest_reaper_schedule:NotOwned::0|profile:Anonymize:identity:1|pvp_deadline_schedule:ViaJoin(battle)::0|shop_item_row:NotOwned::0|shop_row:NotOwned::0|skill_row:NotOwned::0|species_row:NotOwned::0|trade_offer:Erase:counterparty+initiator:1|trade_offer_reaper_schedule:ViaJoin(trade_offer)::0|type_relation_row:NotOwned::0|zone_def:NotOwned::0';
+  'account:Anonymize:claimed_from+identity:1|account_deletion_reaper_schedule:NotOwned::0|battle:Anonymize:opponent_identity+player_identity:1|battle_action:Erase:player_identity:1|battle_challenge:Erase:challenger+target:1|battle_challenge_reaper_schedule:ViaJoin(battle_challenge)::0|battle_wild:ViaJoin(battle)::0|character:ViaJoin(player)::1|config:NotOwned::0|encounter:NotOwned::0|evolution_path:NotOwned::0|export_bundle:Erase:owner_identity:0|export_bundle_reaper_schedule:NotOwned::0|guest_claim:NotOwned::0|guest_claim_reaper_schedule:NotOwned::0|heal_cooldown:Erase:owner_identity:1|heal_location_row:NotOwned::0|inventory:Erase:owner_identity:1|item_row:NotOwned::0|monster:Erase:owner_identity:1|monster_pub:Erase:owner_identity:1|movement_tick_schedule:NotOwned::0|mr_heartbeat_schedule:NotOwned::0|npc:NotOwned::0|pending_evolution_notice:Erase:owner_identity:0|player:Anonymize:identity:1|player_conversation:Erase:owner_identity:1|player_dialogue_state:Erase:owner_identity:1|player_quest:Erase:owner_identity:1|player_session:Erase:identity:0|player_wallet:Erase:owner_identity:1|playtest_event:Erase:identity:1|playtest_reaper_schedule:NotOwned::0|profile:Anonymize:identity:1|pvp_deadline_schedule:ViaJoin(battle)::0|shop_item_row:NotOwned::0|shop_row:NotOwned::0|skill_row:NotOwned::0|species_row:NotOwned::0|trade_offer:Erase:counterparty+initiator:1|trade_offer_reaper_schedule:ViaJoin(trade_offer)::0|type_relation_row:NotOwned::0|zone_def:NotOwned::0';
 
 // Tables that may legitimately hold ZERO A-scoped rows at the pre-cascade
 // snapshot, each with its measured reason. HARD-CAPPED — a fourth entry is a
@@ -194,6 +194,7 @@ export const S9_MILESTONES = [
   'S9-battle1-terminal',
   'S9-D-rejoin',
   'S9-presence-ready',
+  'S9-evolve-notice',
   'S9-trade-open',
   'S9-challenge2-pending',
   'S9-wild-live',
@@ -1139,9 +1140,9 @@ export function checkExportAssembly(chunks, expected) {
 export function checkCascadeTruth(input) {
   const { entries, pre, post, allowlist, allowlistCap, seededFloor, graceMs } = input;
   const fail = (reason) => ({ ok: false, reason, vacuous: [], detail: '' });
-  if (!Array.isArray(entries) || entries.length !== 42) {
+  if (!Array.isArray(entries) || entries.length !== 43) {
     return fail(
-      '[s9/census] transcription entries: ' + (entries ? entries.length : 'none') + ', expected 42',
+      '[s9/census] transcription entries: ' + (entries ? entries.length : 'none') + ', expected 43',
     );
   }
   if (!Array.isArray(allowlist) || allowlist.length > allowlistCap) {
@@ -1340,7 +1341,7 @@ export function checkCascadeTruth(input) {
   }
   return {
     ok: true,
-    reason: 'cascade truth held over 42 classified entries',
+    reason: 'cascade truth held over 43 classified entries',
     vacuous,
     detail: 'seeded=' + seededSum + ' vacuous=[' + vacuous.join(',') + ']',
   };
@@ -1349,13 +1350,30 @@ export function checkCascadeTruth(input) {
 /**
  * Build the owner-SQL seed statements for the subject (pure — the rig executes
  * them). >500 playtest_event rows (batched) + wallet + inventory + conversation
- * + quest + heal_cooldown. player_dialogue_state is NOT here (Vec<String>
+ * + quest + heal_cooldown, plus the two column bumps that make the subject's
+ * starter monster evolvable. player_dialogue_state is NOT here (Vec<String>
  * columns are not DML-expressible — probed 400; declared on the vacuity
  * allowlist instead).
+ *
+ * `aMonsterId` (20r-d, ADR-0254): the subject's own starter monster id, as a
+ * DECIMAL STRING — the driver emits it through the `S9-presence-ready` payload
+ * because the SDK hands it over as a BigInt, and a Number round-trip would
+ * silently lose precision on a large auto_inc id. It drives the two
+ * monster-keyed UPDATEs that open content evolution edge 2, which is what lets
+ * the driver's `S9-evolve-notice` step evolve species 1 -> 5 and so write a
+ * REAL `pending_evolution_notice` row before the cascade. A `Vec<struct>`
+ * column is not DML-insertable, so this organic write is the only way that
+ * table can carry a pre-cascade row at all (the vacuity allowlist is
+ * hard-capped at 3 and full).
  */
-export function buildSeedStatements(aHex, playtestRows, baseMs) {
+export function buildSeedStatements(aHex, playtestRows, baseMs, aMonsterId) {
   if (typeof aHex !== 'string' || !/^0x[0-9a-f]{64}$/.test(aHex)) {
     throw new Error('[s9/seed-build] subject identity is not 0x + 64 lowercase hex: ' + aHex);
+  }
+  if (typeof aMonsterId !== 'string' || !/^[1-9][0-9]*$/.test(aMonsterId)) {
+    throw new Error(
+      '[s9/seed-build] subject monster id must be a positive decimal string, got ' + aMonsterId,
+    );
   }
   if (!Number.isInteger(playtestRows) || playtestRows <= 500) {
     throw new Error(
@@ -1405,6 +1423,26 @@ export function buildSeedStatements(aHex, playtestRows, baseMs) {
   stmts.push(
     'INSERT INTO heal_cooldown (owner_identity, last_heal_at_ms) VALUES (' + aHex + ', 1)',
   );
+  // 20r-d (ADR-0254): the ONE organic pre-cascade writer for
+  // `pending_evolution_notice`. `UPDATE <table> SET <col> = <literal> WHERE
+  // <col> = <literal>` is measured-expressible on spacetime 2.8.1 (an INSERT
+  // is not: the row's `entries` column is a Vec of a nested SpacetimeType).
+  //
+  // THE EDGE IS CONTENT EDGE 2 (species 1 -> 5 Embersworn), NOT the level-20
+  // edge 1, and that choice is MEASURED, not stylistic: `roll_encounter`
+  // filters the zone table by the PLAYER's own level, zone 0's three bands top
+  // out at level 8, and a level-20 subject therefore makes zone 0 permanently
+  // silent — the later `S9-wild-live` step then burns all 80 shuttle steps
+  // without an encounter (measured twice). Edge 2 asks for `min_level: 1`,
+  // 150 Fire essence and Trust >= Friendly, so it leaves the subject's LEVEL
+  // untouched and the wild encounter reachable.
+  //
+  // Trust is smoothed: `(fav + 10) / (fav + unfav + 20)`, so 40 favorable and
+  // 0 unfavorable events read as 83% = Devoted, comfortably past Friendly's
+  // 60% floor. Two single-assignment UPDATEs rather than one two-assignment
+  // statement: the single-column form is the one this rig has measured.
+  stmts.push('UPDATE monster SET essence_fire = 150 WHERE monster_id = ' + aMonsterId);
+  stmts.push('UPDATE monster SET trust_favorable_count = 40 WHERE monster_id = ' + aMonsterId);
   const batch = 50;
   let emitted = 0;
   while (emitted < playtestRows) {
@@ -3327,7 +3365,7 @@ const DRIVER_SRC = [
   '  await applied(d.conn, ["SELECT * FROM my_battle", "SELECT * FROM my_monster_pub", "SELECT * FROM battle_challenge"]);',
   '  const dJoin = await tryReducer(d.conn.reducers.joinGame({ name: "dave s9" }));',
   '  emit("S9-D-join", dJoin.ok, dJoin);',
-  '  await applied(a.conn, ["SELECT * FROM my_battle", "SELECT * FROM my_monster_pub", "SELECT * FROM my_export_bundle", "SELECT * FROM battle_challenge", "SELECT * FROM trade_offer", "SELECT * FROM player"]);',
+  '  await applied(a.conn, ["SELECT * FROM my_battle", "SELECT * FROM my_monster_pub", "SELECT * FROM my_export_bundle", "SELECT * FROM battle_challenge", "SELECT * FROM trade_offer", "SELECT * FROM player", "SELECT * FROM my_pending_evolution_notices"]);',
   '  const aJoin = await tryReducer(a.conn.reducers.joinGame({ name: "alice s9" }));',
   '  emit("S9-A-join", aJoin.ok, aJoin);',
   '  const aMon = iterRows(a.conn, "my_monster_pub").filter(function (r) { return stripHexS9(r.ownerIdentity.toHexString()) === stripHexS9(a.identity); });',
@@ -3363,8 +3401,27 @@ const DRIVER_SRC = [
   '  await applied(d2.conn, ["SELECT * FROM my_account", "SELECT * FROM my_battle", "SELECT * FROM my_monster_pub", "SELECT * FROM battle_challenge"]);',
   '  const dRejoin = await tryReducer(d2.conn.reducers.joinGame({ name: "dave s9" }));',
   '  emit("S9-D-rejoin", dRejoin.ok, dRejoin);',
-  '  emit("S9-presence-ready", true, { a: a.identity, d: d2.identity, battle1Id: String(b1.battleId) });',
+  '  emit("S9-presence-ready", true, { a: a.identity, d: d2.identity, battle1Id: String(b1.battleId), monsterId: String(aMonId) });',
   '  await waitGo(1, 90000);',
+  '  // 20r-d (ADR-0254): the post-evolve reveal queue, proven ORGANICALLY. The',
+  '  // go-1 seed gave this monster 150 Fire essence and a Devoted Trust ratio,',
+  '  // so content edge 2 (species 1 -> 5 Embersworn, min_level 1) is now the',
+  '  // ONLY satisfiable edge out of species 1 — the other two need level 20,',
+  '  // which would silence zone 0 and starve the wild encounter below. Species',
+  '  // 5 has no outgoing edge and the transform zeroes essence, so the chain',
+  '  // applies EXACTLY one step, the queue holds exactly one entry, and no',
+  '  // auto-evolution can fire later from the movement tail. It runs BEFORE the',
+  '  // trade and the wild battle: evolve is battle- and trade-escrow guarded,',
+  '  // and both of those open below. The view rides the ONE subscribe list',
+  '  // above — a SECOND subscribe() call on the same connection is an',
+  '  // additional subscription, not a wider one.',
+  '  const evo = await tryReducer(a.conn.reducers.evolve({ monsterId: aMonId, toSpecies: 5 }));',
+  '  if (!evo.ok) bail("S9-evolve-notice", "evolve rejected: " + evo.err);',
+  '  const notice = await pollFor("pending evolution notice on A", 20000, "S9-evolve-notice", function () {',
+  '    const rows = iterRows(a.conn, "my_pending_evolution_notices").filter(function (r) { return stripHexS9(r.ownerIdentity.toHexString()) === stripHexS9(a.identity); });',
+  '    return rows.length > 0 && rows[0].entries.length >= 1 ? rows[0] : null;',
+  '  });',
+  '  emit("S9-evolve-notice", true, { entries: notice.entries.length });',
   '  const tr = await tryReducer(a.conn.reducers.proposeTrade({ counterparty: d2.idObj, initiatorMonsterIds: [], initiatorItems: [], initiatorCurrency: 5n, counterpartyMonsterIds: [], counterpartyItems: [], counterpartyCurrency: 0n }));',
   '  emit("S9-trade-open", tr.ok, tr);',
   '  const ch2 = await tryReducer(a.conn.reducers.challengePvp({ target: d2.idObj, partyIds: [aMonId] }));',
@@ -3909,6 +3966,7 @@ async function runLivePhase() {
           dHex: '0x' + normHex(evPresence.data.d),
           bHex: normHex(evB.data.identity),
           battle1Id: String(evPresence.data.battle1Id),
+          aMonsterId: String(evPresence.data.monsterId),
           wildId: null,
           tradeIds: [],
           challengeIds: [],
@@ -3928,7 +3986,8 @@ async function runLivePhase() {
           guestClaim: sqlTable(dbUrl, 'SELECT guest_identity, code FROM guest_claim', s9G22Raw),
           monster: sqlTable(dbUrl, 'SELECT owner_identity FROM monster', s9G22Raw),
         };
-        for (const stmt of buildSeedStatements(s9.refs.aHex, 501, Date.now())) sqlDml(stmt);
+        for (const stmt of buildSeedStatements(s9.refs.aHex, 501, Date.now(), s9.refs.aMonsterId))
+          sqlDml(stmt);
         writeGo(1);
         const evSeed = await waitEvent('S9-seed-ready', 240_000);
         s9.refs.wildId = String(evSeed.data.wildBattleId);
@@ -4311,14 +4370,25 @@ export default async function () {
     // buildSeedStatements
     {
       const hex = '0x' + 'ab'.repeat(32);
-      const stmts = buildSeedStatements(hex, 501, 1_700_000_000_000);
-      if (stmts.length !== 19)
-        bad.push('S9 seed-count: expected 19 statements, got ' + stmts.length);
-      if (stmts.some((st) => st.indexOf(hex) === -1))
-        bad.push('S9 seed-identity: a seed statement lacks the subject identity');
+      const stmts = buildSeedStatements(hex, 501, 1_700_000_000_000, '77');
+      if (stmts.length !== 21)
+        bad.push('S9 seed-count: expected 21 statements, got ' + stmts.length);
+      if (stmts.filter((st) => st.indexOf(hex) === -1).length !== 2)
+        bad.push(
+          'S9 seed-identity: every seed statement but the two monster-keyed UPDATEs must name ' +
+            'the subject identity',
+        );
+      // 20r-d: the two evolution-gate UPDATEs are statements 9 and 10 and are
+      // keyed on the monster id, not the owner — so they are also the only two
+      // statements above that legitimately do not name the identity.
+      if (
+        stmts[8] !== 'UPDATE monster SET essence_fire = 150 WHERE monster_id = 77' ||
+        stmts[9] !== 'UPDATE monster SET trust_favorable_count = 40 WHERE monster_id = 77'
+      )
+        bad.push('S9 seed-evolvable: the evolution-gate statements are not the pinned UPDATEs');
       const playtestRows =
         stmts
-          .slice(8)
+          .slice(10)
           .join(' ')
           .split('(0, ' + hex).length - 1;
       if (playtestRows !== 501)
@@ -4326,18 +4396,27 @@ export default async function () {
       bad.push(
         mustThrow(
           'seed-too-few',
-          () => buildSeedStatements(hex, 500, 1_700_000_000_000),
+          () => buildSeedStatements(hex, 500, 1_700_000_000_000, '77'),
           'exceed 500',
         ),
       );
       bad.push(
         mustThrow(
           'seed-bad-hex',
-          () => buildSeedStatements('0xzz', 501, 1_700_000_000_000),
+          () => buildSeedStatements('0xzz', 501, 1_700_000_000_000, '77'),
           'lowercase hex',
         ),
       );
-      bad.push(mustThrow('seed-epoch-base', () => buildSeedStatements(hex, 501, 1000), 'epoch-ms'));
+      bad.push(
+        mustThrow('seed-epoch-base', () => buildSeedStatements(hex, 501, 1000, '77'), 'epoch-ms'),
+      );
+      bad.push(
+        mustThrow(
+          'seed-bad-monster-id',
+          () => buildSeedStatements(hex, 501, 1_700_000_000_000, '0x2a'),
+          'positive decimal string',
+        ),
+      );
     }
 
     // checkS9Milestones
@@ -4512,7 +4591,7 @@ export default async function () {
     {
       const mkFix = () => {
         const entries = [];
-        for (let i = 1; i <= 14; i++)
+        for (let i = 1; i <= 15; i++)
           entries.push({
             table: 'e' + i,
             policy: 'Erase',
@@ -4540,7 +4619,7 @@ export default async function () {
           });
         const aPre = {};
         const aPost = {};
-        for (let i = 1; i <= 14; i++) {
+        for (let i = 1; i <= 15; i++) {
           aPre['e' + i] = { owner: 40 };
           aPost['e' + i] = { owner: 0 };
         }
@@ -4749,9 +4828,9 @@ export default async function () {
     if (S9_VACUITY_ALLOWLIST.length > S9_VACUITY_ALLOWLIST_CAP) {
       bad.push('S9 allowlist: the SHIPPED allowlist exceeds its own cap');
     }
-    if (S9_MILESTONES.length !== 25) {
+    if (S9_MILESTONES.length !== 26) {
       bad.push(
-        'S9 roster: expected 25 S9 milestones, found ' +
+        'S9 roster: expected 26 S9 milestones, found ' +
           S9_MILESTONES.length +
           ' — a dropped step silently unrequires itself',
       );

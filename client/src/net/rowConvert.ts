@@ -24,6 +24,7 @@ import type {
   StoreMonsterCard,
   StoreMonsterPub,
   StoreNpcRow,
+  StorePendingEvolutionNotice,
   StorePlayer,
   StorePlayerConversation,
   StorePlayerQuest,
@@ -675,6 +676,62 @@ export function exportChunkRowToStore(row: SdkExportChunkRow): StoreExportChunk 
     totalChunks: row.totalChunks,
     payloadJson: row.payloadJson,
     createdAtMs: row.createdAtMs,
+  };
+}
+
+// --- 20r-d (ADR-0254 D6): the owner-scoped `my_pending_evolution_notices` VIEW row -----
+
+/** One nested `EvolutionRevealRow` as the bindings deliver it (ADR-0254 D1). */
+export interface SdkEvolutionRevealRow {
+  readonly monsterId: bigint;
+  readonly fromSpecies: number;
+  readonly toSpecies: number;
+  readonly evolvedAtMs: bigint;
+}
+
+export interface SdkPendingEvolutionNoticeRow {
+  readonly ownerIdentity: { toHexString(): string };
+  readonly entries: readonly SdkEvolutionRevealRow[];
+}
+
+/**
+ * Map a `my_pending_evolution_notices` view row to the store's notice slot. The
+ * `exportChunkRowToStore` shape, for the same three reasons and one more:
+ *
+ * - EXPLICIT field mapping, on the ROW **and on every entry**, never a spread. A spread
+ *   carries whatever the generated binding gains on the next `just gen` into the store and
+ *   from there into the reconcile's change-detection compare, where a new key makes every
+ *   unchanged row read as CHANGED — the render storm the reconcile's own docstring exists
+ *   to prevent.
+ * - NO numeric coercion. `monsterId` is a server `#[auto_inc]` u64 and `evolvedAtMs` an i64;
+ *   `Number(...)` is lossy at exactly the point where `resolveEvolutionNoticeNames` matches
+ *   the reveal against the player's roster, so a cast makes the banner name the WRONG
+ *   monster's nickname. The two species columns are u32 and stay `number` — the label core
+ *   interpolates them as `Species #N`, which would render `Species #3n` for a bigint.
+ * - NO defaulting of a present value and NO clamping.
+ * - Fail-SOFT, never a throw. This runs inside the shared flush closure, where ONE try/catch
+ *   wraps all four reconciles (ADR-0085 A6), so a throw here also costs the monster, battle
+ *   and export reconciles their burst — including the movement reconcile that drives
+ *   prediction snap. An unresolvable owner degrades to `''` (the `exportChunkRowToStore`
+ *   precedent), which `store.ownEvolutionNotices(identity)`'s exact compare refuses for any
+ *   real identity, so the row is inert rather than mis-attributed; a missing or non-array
+ *   `entries` degrades to `[]` so the slot stays readable by `…[0]`.
+ */
+export function pendingEvolutionNoticeRowToStore(
+  row: SdkPendingEvolutionNoticeRow,
+): StorePendingEvolutionNotice {
+  const owner = row.ownerIdentity;
+  const entries = row.entries;
+  return {
+    ownerIdentity: typeof owner?.toHexString === 'function' ? owner.toHexString() : '',
+    entries: Array.isArray(entries)
+      ? entries.map((e: SdkEvolutionRevealRow) => ({
+          monsterId: e.monsterId,
+          fromSpecies: e.fromSpecies,
+          toSpecies: e.toSpecies,
+          evolvedAtMs: e.evolvedAtMs,
+        }))
+      : [],
   };
 }
 

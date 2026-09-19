@@ -29,6 +29,7 @@
 | tables/movement_tick_schedule | SpacetimeDB Table | movement_tick_schedule | Per-zone movement schedule: one interval-row per active zone makes the scheduler |
 | tables/mr_heartbeat_schedule | SpacetimeDB Table | mr_heartbeat_schedule | SpacetimeDB table mr_heartbeat_schedule. |
 | tables/npc | SpacetimeDB Table | npc | NPC entity role row. Entity/component: an NPC is a `character` row + this. `zone |
+| tables/pending_evolution_notice | SpacetimeDB Table | pending_evolution_notice | PRIVATE per-owner queue of evolution reveals the player has not dismissed yet (2 |
 | tables/player | SpacetimeDB Table | player | Links a connection identity to its character. `last_input_seq` is the reconcilia |
 | tables/player_conversation | SpacetimeDB Table | player_conversation | In-progress dialogue node. Single row per player (PK = owner_identity). PRIVATE  |
 | tables/player_dialogue_state | SpacetimeDB Table | player_dialogue_state | PRIVATE per-player dialogue state: flags + done-quest history. Must-never-leak:  |

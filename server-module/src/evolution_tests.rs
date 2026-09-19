@@ -54,6 +54,13 @@
 //!     `apply_evolution_seam` pushes one reveal entry per applied edge — so
 //!     "one entry per evolution, in chain order, keyed by the MONSTER's owner,
 //!     stamped with the transaction clock" is BEHAVIOURAL, not textual.
+//!   - The three LIFECYCLE helpers are pinned two ways: `erase`/`rekey` by
+//!     frozen squashed-equality (they are pure WRITERS, so the native host
+//!     aborts on them and the text is the whole boundary), and
+//!     `has_evolution_notices` BEHAVIOURALLY against real rows — including the
+//!     empty-entries row that makes ROW-EXISTS distinguishable from
+//!     entries-non-empty, and the `accounts::account_has_game_data` disjunct
+//!     that consumes it.
 //!   - The pure `crate::evolution::ack_prefix` is executed directly (reject 0,
 //!     reject count > len, drain the exact prefix), and the REAL
 //!     `ack_evolution_notices` reducer is executed against the rb-41 native
@@ -6305,6 +6312,235 @@ fn s20rd_ack_evolution_notices_body_is_frozen() {
     );
 }
 
+/// 20r-d (ADR-0254 D5/D6): the three LIFECYCLE helpers' bodies are FROZEN.
+///
+/// WHY A TEXT PIN AND NOT EXECUTION, for the first two: `erase_evolution_notices`
+/// and `rekey_evolution_notices` are pure WRITERS. Every write syscall in the
+/// rb-41 native host is unmodelled and ABORTS the process
+/// (native_host_tests.rs:293), so neither can be executed in `cargo test` at all
+/// — and the account-deletion cascade and the guest claim are the two paths a
+/// player can never retry. `has_evolution_notices` IS executed (it is read-only,
+/// see `s20rd_has_evolution_notices_is_row_exists` below); its body is frozen
+/// here as well because the census only counts ONE accessor occurrence in it and
+/// a count cannot tell `find(owner)` from `find(ctx.sender())`.
+///
+/// NEEDLE CLAUSES FIRST, EXACT EQUALITY SECOND (the ack-reducer pattern): the
+/// needles state the individual invariants so a failure names the missing one,
+/// and the equality is what makes every remaining rewrite unrepresentable. The
+/// equality literals are split at DIFFERENT `concat!` boundaries than the
+/// needles.
+///
+/// kills:
+///  - a FULL-TABLE erase (`.iter().filter(..)`, a `for` loop, a literal key):
+///    the cascade would delete every player's queue, and the ADR-0250 cascade
+///    runs unattended on a scheduled reaper where nobody would see it;
+///  - an erase keyed on `ctx.sender()` rather than the `owner` ARGUMENT — the
+///    cascade reaper's sender is the SCHEDULER, so the subject's row would
+///    survive their own account deletion (an M22 §4.4 erase failure);
+///  - a rekey that reads the DESTINATION row (`find(to)` / `delete(to)`): guard
+///    11 (`account_has_game_data`, which `has_evolution_notices` now joins)
+///    guarantees the destination owns no row, so a merge is dead code that can
+///    only ever LOSE entries if the guard is later weakened — the `no merge`
+///    rule ADR-0254 D5 states, pinned;
+///  - a rekey that inserts under `from` (the identity being retired) or deletes
+///    `to` — both leave the claimed progress unreachable forever;
+///  - a rekey that ZEROES rather than moves (`entries: vec![]`), the
+///    `rekey_wallet` never-delete idiom copied without its AUTH-23/24 reason;
+///  - `has_evolution_notices` answering `entries.is_empty()` instead of ROW
+///    EXISTS — that is what makes the no-merge rekey unsound, because an
+///    acked-empty row would stop joining `account_has_game_data` while still
+///    occupying the destination primary key;
+///  - every `cargo mutants` rewrite of all three bodies.
+#[test]
+fn s20rd_erase_and_rekey_bodies_are_frozen() {
+    let stripped = strip_comments_and_strings(EVOLUTION_RS_SOURCE);
+
+    let erase_decl = ["pub(crate) fn ", "erase", "_evolution_notices(ctx"].concat();
+    let rekey_decl = ["pub(crate) fn ", "rekey", "_evolution_notices(ctx"].concat();
+    let has_decl = ["pub(crate) fn ", "has", "_evolution_notices(ctx"].concat();
+
+    // Vacuity: all three must be DECLARED before any body clause means anything.
+    for decl in [&erase_decl, &rekey_decl, &has_decl] {
+        assert!(
+            stripped.contains(decl.as_str()),
+            "TEETH(20r-d ADR-0254 D5): evolution.rs declares no {decl:?}. RED AT \
+             AUTHORING TIME. Without all three, accounts.rs cannot run the cascade, \
+             the guest-claim rekey or the game-data predicate through this module — \
+             and D0 write-isolation forbids it reaching the table itself"
+        );
+    }
+
+    let erase_body = squash_ws(&extract_fn_body(&stripped, erase_decl.as_str()));
+    let rekey_body = squash_ws(&extract_fn_body(&stripped, rekey_decl.as_str()));
+    let has_body = squash_ws(&extract_fn_body(&stripped, has_decl.as_str()));
+
+    // --- (a) erase: ONE primary-key delete, keyed on the ARGUMENT -----------
+    let delete_owner = ["own", "er_identity().delete(owner);"].concat();
+    assert_eq!(
+        erase_body.matches(delete_owner.as_str()).count(),
+        1,
+        "TEETH(20r-d ADR-0254 D5): `erase_evolution_notices`'s body must contain \
+         `{delete_owner}` EXACTLY once. The key is the `owner` ARGUMENT: the cascade \
+         fires from a scheduled reaper whose sender is the SCHEDULER, so a \
+         sender-keyed delete leaves the deleted account's queue behind — and a \
+         literal key deletes somebody else's. Body: {erase_body:?}"
+    );
+
+    // --- (b) rekey: find(from) -> delete(from) -> insert(under `to`) --------
+    let find_from = ["fi", "nd(from)"].concat();
+    let delete_from = ["dele", "te(from)"].concat();
+    // NO closing `})` in this needle, deliberately: when rustfmt wraps a struct
+    // literal across lines it APPENDS a trailing comma, so `…row.entries})` and
+    // `…row.entries,})` are both valid spellings of the same expression and a
+    // needle that pins the close is a needle that reds on a pure reformat. The
+    // exact-equality set below accepts both; this needle stops before them.
+    let insert_to = [
+        "insert(PendingEvolutionNotice{",
+        "own",
+        "er_identity:to,entries:row.entries",
+    ]
+    .concat();
+    let find_to = ["fi", "nd(to)"].concat();
+    let delete_to = ["dele", "te(to)"].concat();
+
+    let find_idx = rekey_body.find(find_from.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH(20r-d ADR-0254 D5): `rekey_evolution_notices` must READ the source \
+             row with `{find_from}` — the entries have to be carried across, and a \
+             rekey that does not read them can only create an empty row. Body: \
+             {rekey_body:?}"
+        )
+    });
+    let delete_idx = rekey_body.find(delete_from.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH(20r-d ADR-0254 D5): `rekey_evolution_notices` must DELETE the \
+             source row with `{delete_from}` (the PK-rekey precedent — \
+             `rekey_heal_cooldown`, raising.rs:750). Leaving it behind orphans the \
+             retired guest identity's queue forever. Body: {rekey_body:?}"
+        )
+    });
+    let insert_idx = rekey_body.find(insert_to.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH(20r-d ADR-0254 D5): `rekey_evolution_notices` must re-insert the \
+             SAME entries under the DESTINATION identity — the contiguous \
+             `{insert_to}`. The needle pins the whole struct literal on purpose: \
+             `entries: vec![]` (the zeroing shape) and `owner_identity: from` (the \
+             re-insert-under-the-retired-identity shape) both satisfy a bare \
+             `insert(` check. Body: {rekey_body:?}"
+        )
+    });
+    assert!(
+        find_idx < delete_idx && delete_idx < insert_idx,
+        "TEETH(20r-d ADR-0254 D5): `rekey_evolution_notices` runs its three steps out \
+         of order (find {find_idx}, delete {delete_idx}, insert {insert_idx}). The \
+         order IS the safety: reading before deleting is what carries the entries \
+         across, and deleting before inserting is what keeps the two rows from \
+         colliding on the primary key"
+    );
+    for banned in [find_to.as_str(), delete_to.as_str()] {
+        assert_eq!(
+            rekey_body.matches(banned).count(),
+            0,
+            "TEETH(20r-d ADR-0254 D5 NO MERGE): `rekey_evolution_notices`'s body \
+             touches the DESTINATION row ({banned:?}). ADR-0254 D5 is explicit that \
+             there is nothing to merge: `complete_guest_claim`'s guard 11 \
+             (`account_has_game_data`, which `has_evolution_notices` joins) runs \
+             FIRST and proves the destination owns no game data at all. A merge is \
+             dead code today and a silent entry-loser the moment that guard is \
+             weakened. Body: {rekey_body:?}"
+        );
+    }
+
+    // --- (c) has: ROW-EXISTS on the ARGUMENT --------------------------------
+    let find_owner_is_some = ["own", "er_identity().find(owner).is_some()"].concat();
+    assert_eq!(
+        has_body.matches(find_owner_is_some.as_str()).count(),
+        1,
+        "TEETH(20r-d ADR-0254 D5): `has_evolution_notices`'s body must be the \
+         ROW-EXISTS read `{find_owner_is_some}`. It must NOT ask whether the entry \
+         list is non-empty: an acked-empty row still occupies the primary key, so an \
+         entries-based answer would drop it out of `account_has_game_data` and let a \
+         guest claim rekey INTO an occupied key. Body: {has_body:?}"
+    );
+
+    // --- (d) the EXACT squashed bodies --------------------------------------
+    let frozen_erase = [
+        "ctx.db.",
+        "pend",
+        "ing_evolution_noti",
+        "ce().",
+        "own",
+        "er_identity().delete(owner);",
+    ]
+    .concat();
+    // ONE expression, composed mechanically over the SINGLE inert degree of
+    // freedom: the trailing comma rustfmt appends inside a struct literal it has
+    // wrapped across lines. At the production indent the insert statement is 111
+    // columns, so it WILL wrap and the comma WILL appear — both spellings are
+    // accepted so an honest reformat can never red this pin, and nothing else
+    // about the body is free.
+    let frozen_rekey = |tail: &str| -> String {
+        [
+            "ifletSome(row)=ctx.db.",
+            "pend",
+            "ing_evolution_noti",
+            "ce().",
+            "own",
+            "er_identity().find(from){ctx.db.",
+            "pend",
+            "ing_evolution_noti",
+            "ce().",
+            "own",
+            "er_identity().delete(from);ctx.db.",
+            "pend",
+            "ing_evolution_noti",
+            "ce().insert(PendingEvolutionNotice{",
+            "own",
+            "er_identity:to,entries:row.entries",
+            tail,
+            "});}",
+        ]
+        .concat()
+    };
+    let frozen_has = [
+        "ctx.db.",
+        "pend",
+        "ing_evolution_noti",
+        "ce().",
+        "own",
+        "er_identity().find(owner).is_some()",
+    ]
+    .concat();
+
+    let sanctioned_rekey = [frozen_rekey(""), frozen_rekey(",")];
+    assert!(
+        sanctioned_rekey.contains(&rekey_body),
+        "TEETH(20r-d ADR-0254 D5 FROZEN BODY): `rekey_evolution_notices`'s body is \
+         not EXACTLY the sanctioned one.\n  expected one of (whitespace-insensitive, \
+         either trailing-comma spelling): {sanctioned_rekey:?}\n  found: \
+         {rekey_body:?}\n\
+         This body is UNEXECUTABLE in `cargo test` — every write syscall aborts the \
+         rb-41 native host — so the text IS the whole boundary, and the guest claim \
+         it runs on is a path the player cannot retry. Do NOT relax this to match an \
+         implementation; re-derive it from ADR-0254 D5."
+    );
+    for (name, got, want) in [
+        ("erase_evolution_notices", &erase_body, &frozen_erase),
+        ("has_evolution_notices", &has_body, &frozen_has),
+    ] {
+        assert_eq!(
+            got, want,
+            "TEETH(20r-d ADR-0254 D5 FROZEN BODY): `{name}`'s body is not EXACTLY the \
+             sanctioned one.\n  expected (whitespace-insensitive): {want}\n  found: \
+             {got}\n\
+             Both bodies are ONE statement, and `erase_evolution_notices` is \
+             UNEXECUTABLE in `cargo test` (every write syscall aborts the native \
+             host), so for it the text IS the whole boundary. Do NOT relax this to \
+             match an implementation; re-derive it from ADR-0254 D5."
+        );
+    }
+}
+
 /// 20r-d (ADR-0254 D1/D4/D5/D6): the `pending_evolution_notice(` accessor is
 /// reachable from EXACTLY two files, with an enumerated count in each.
 ///
@@ -6415,7 +6651,36 @@ fn s20rd_pending_evolution_notice_accessor_census() {
 
 // ---------------------------------------------------------------------------
 // T1 — EXECUTED: the pure prefix-drain core.
+//
+// THE THREE REJECTION MESSAGES ARE PINNED WHOLE, NOT BY SUBSTRING.
+//
+// WHY (and this is not tidiness): the CLIENT classifies these messages. Two of
+// them — the missing row and the over-count — are SWALLOWED by
+// `isBenignAckRejection` as benign two-tab races; the third, the zero count, is
+// a client defect and must reach the status line. A `contains("exceeds")` pin
+// leaves the rest of the sentence free to drift, and the moment it does the
+// client's transcription stops matching: both benign races start surfacing as
+// errors, and no test in either half notices. The client fixtures in
+// `client/src/ui/evolutionNotice.test.ts` (EN-BENIGN-1) are TRANSCRIPTIONS of
+// exactly these five literals.
+//
+// THE THREE `exceeds` LITERALS CARRY DIFFERENT NUMBERS ON PURPOSE: an
+// implementation that returns a CONSTANT over-count message (the easiest way to
+// make a substring pin green) satisfies at most one of them.
 // ---------------------------------------------------------------------------
+
+/// `count == 0`. NOT benign on the client — a zero count can only come from a
+/// client bug, so this one must reach the player-facing status line.
+const S20RD_ERR_ZERO_COUNT: &str = "ack count must be positive";
+/// No row for the caller. Benign on the client (a second tab already drained).
+const S20RD_ERR_NO_ROW: &str = "no pending evolution notices";
+/// `ack count {count} exceeds {len} pending evolution notices`, at the three
+/// (count, len) pairs the tests below exercise. Spelled as three INDEPENDENT
+/// literals rather than one `format!` helper: a helper shared with the
+/// implementation would make a single mis-transcription pass every arm.
+const S20RD_ERR_4_OF_3: &str = "ack count 4 exceeds 3 pending evolution notices";
+const S20RD_ERR_1_OF_0: &str = "ack count 1 exceeds 0 pending evolution notices";
+const S20RD_ERR_3_OF_2: &str = "ack count 3 exceeds 2 pending evolution notices";
 
 /// 20r-d (ADR-0254 D5): the REAL `crate::evolution::ack_prefix` truth table.
 ///
@@ -6434,7 +6699,14 @@ fn s20rd_pending_evolution_notice_accessor_census() {
 ///  - draining from the TAIL (`truncate`, `split_off`, `pop`) — the surviving
 ///    suffix is pinned by value, so a tail drain lands on the wrong entries;
 ///  - a rejected call that still mutates: both rejection arms assert the vector
-///    is byte-identical afterwards.
+///    is byte-identical afterwards;
+///  - a REWORDED rejection: all three messages are compared WHOLE, and the client
+///    fixtures are transcriptions of the same literals, so wording drift cannot
+///    silently move a benign race into the player-facing status line (or hide a
+///    real client bug out of it);
+///  - a CONSTANT over-count message, or a transposed `{len} exceeds {count}`:
+///    the 4-of-3 and 1-of-0 arms carry different numbers, so at most one of the
+///    two can be satisfied by a fixed or reversed sentence.
 #[test]
 fn s20rd_ack_prefix_truth_table() {
     let a = s20rd_reveal(11, 1, 2, 100);
@@ -6445,12 +6717,13 @@ fn s20rd_ack_prefix_truth_table() {
     let mut entries = vec![a.clone(), b.clone(), c.clone()];
     let err = crate::evolution::ack_prefix(&mut entries, 0)
         .expect_err("TEETH(20r-d): a zero count must be REJECTED, never a silent no-op success");
-    assert!(
-        err.contains("positive"),
-        "TEETH(20r-d ADR-0254 D5): the zero-count rejection must name the reason — \
-         the message must contain \"positive\"; got {err:?}. The client's \
-         `isBenignAckRejection` deliberately does NOT swallow this one, so the \
-         wording is load-bearing"
+    assert_eq!(
+        err, S20RD_ERR_ZERO_COUNT,
+        "TEETH(20r-d ADR-0254 D5): the zero-count rejection must be EXACTLY \
+         {S20RD_ERR_ZERO_COUNT:?}; got {err:?}. Pinned WHOLE, not by substring: the \
+         client's `isBenignAckRejection` deliberately does NOT swallow this one (a \
+         zero count can only come from a client bug), so any drift in the wording \
+         silently changes which rejections the player is told about"
     );
     assert_eq!(
         entries,
@@ -6463,11 +6736,14 @@ fn s20rd_ack_prefix_truth_table() {
     let mut entries = vec![a.clone(), b.clone(), c.clone()];
     let err = crate::evolution::ack_prefix(&mut entries, 4)
         .expect_err("TEETH(20r-d): a count above the queue length must be REJECTED, never clamped");
-    assert!(
-        err.contains("exceeds"),
-        "TEETH(20r-d ADR-0254 D5): the over-count rejection must contain \"exceeds\" \
-         — the client swallows exactly this benign two-tab race rather than showing \
-         it as an error; got {err:?}"
+    assert_eq!(
+        err, S20RD_ERR_4_OF_3,
+        "TEETH(20r-d ADR-0254 D5): acking 4 of 3 must reject with EXACTLY \
+         {S20RD_ERR_4_OF_3:?}; got {err:?}. BOTH numbers are interpolated from the \
+         call, so a CONSTANT message (the cheapest way to satisfy a \
+         `contains(\"exceeds\")` pin) reds here or at the 1-of-0 arm below, and a \
+         transposed `{{len}} exceeds {{count}}` reads 3-exceeds-4 and reds too. The \
+         client swallows exactly this sentence as a benign two-tab race"
     );
     assert_eq!(
         entries,
@@ -6511,15 +6787,39 @@ fn s20rd_ack_prefix_truth_table() {
     );
     let err = crate::evolution::ack_prefix(&mut entries, 1)
         .expect_err("TEETH(20r-d): acking an EMPTY queue must reject (1 exceeds 0)");
-    assert!(
-        err.contains("exceeds"),
-        "TEETH(20r-d): acking an empty queue is the `count > len` arm with len 0 — \
-         the message must contain \"exceeds\"; got {err:?}"
+    assert_eq!(
+        err, S20RD_ERR_1_OF_0,
+        "TEETH(20r-d): acking an empty queue is the `count > len` arm with len 0, and \
+         its message must be EXACTLY {S20RD_ERR_1_OF_0:?}; got {err:?}. This is the \
+         SECOND (count, len) pair: together with the 4-of-3 arm above it proves both \
+         numbers are interpolated from the call rather than baked into a literal, \
+         and it proves the empty queue takes the over-count arm and not a separate, \
+         differently-worded 'queue is empty' path the client would not recognise"
     );
 }
 
 // ---------------------------------------------------------------------------
 // T2 — BEHAVIOURAL: the seam.
+//
+// ⚠ HONESTY, STATED ONCE FOR THE THREE `s20rd_seam_*` TESTS BELOW. The seam is a
+// MIRROR of production, not production. `apply_evolution_seam` carries its own
+// copy of the notice push (added by this slice, a few hundred lines above), so a
+// production `apply_evolution` that writes NO notice at all leaves all three
+// tests GREEN. What they prove is the SHAPE of the write — one entry per applied
+// edge, in chain order, pre/post species off the immutable `path`, one shared
+// transaction stamp, filed under the MONSTER's owner and nobody else's — which
+// is precisely what no source scan can see and what the wasm-only production
+// path cannot be executed for in `cargo test`.
+//
+// THE WRITE SITE ITSELF IS PROVEN ELSEWHERE, and that split is load-bearing:
+//   * `s20rd_apply_evolution_writes_the_notice_after_the_dual_write` pins that
+//     production's `apply_evolution` performs the push at all, after the
+//     dual-write, from the `path` argument, under the monster row's owner;
+//   * `s20rd_pending_evolution_notice_accessor_census` pins that no OTHER
+//     production file writes the table behind its back;
+//   * the `S9-evolve-notice` milestone in `evals/account-e2e.eval.mjs` drives a
+//     REAL evolve reducer against a live host and polls the view for the row.
+// Read the three together; none of them substitutes for another.
 // ---------------------------------------------------------------------------
 
 /// 20r-d (ADR-0254 D4): a player-invoked evolution appends EXACTLY ONE reveal
@@ -6747,12 +7047,15 @@ fn s20rd_ack_rejects_when_no_row_for_sender() {
          success here means the reducer acted on whatever row it found first, which \
          is one player draining another player's queue",
     );
-    assert!(
-        err.contains("no pending"),
-        "TEETH(20r-d ADR-0254 D5): the missing-row rejection must contain \"no \
-         pending\" — the client swallows exactly this benign stale-banner race \
-         rather than surfacing it as an error; got {err:?}. Indexes the generated \
-         code asked the host for: {:?}",
+    assert_eq!(
+        err,
+        S20RD_ERR_NO_ROW,
+        "TEETH(20r-d ADR-0254 D5): the missing-row rejection must be EXACTLY \
+         {S20RD_ERR_NO_ROW:?}; got {err:?}. Pinned WHOLE: the client swallows this \
+         exact sentence as a benign stale-banner race, so a reworded message turns \
+         a normal two-tab race into a player-facing error and no test on either \
+         side of the wire would notice. Indexes the generated code asked the host \
+         for: {:?}",
         fx.requested_indexes()
     );
 }
@@ -6783,10 +7086,14 @@ fn s20rd_ack_rejects_zero_count() {
         "TEETH(20r-d ADR-0254 D5): a zero count must be REJECTED even for a caller \
          whose queue exists — reject, never clamp, never no-op",
     );
-    assert!(
-        err.contains("positive"),
-        "TEETH(20r-d): the zero-count rejection must contain \"positive\"; got \
-         {err:?}. Indexes the generated code asked the host for: {:?}",
+    assert_eq!(
+        err,
+        S20RD_ERR_ZERO_COUNT,
+        "TEETH(20r-d): the zero-count rejection must be EXACTLY \
+         {S20RD_ERR_ZERO_COUNT:?}; got {err:?}. This is the ONE rejection the client \
+         does NOT swallow, so its wording is what decides whether a client bug that \
+         sends `count: 0` is ever seen. Indexes the generated code asked the host \
+         for: {:?}",
         fx.requested_indexes()
     );
 }
@@ -6822,11 +7129,159 @@ fn s20rd_ack_rejects_count_above_len() {
          implementation drains both entries and returns Ok — silently discarding a \
          reveal the player never saw, which is the exact anti-pattern the ADR names",
     );
+    assert_eq!(
+        err,
+        S20RD_ERR_3_OF_2,
+        "TEETH(20r-d): acking 3 of 2 must reject with EXACTLY {S20RD_ERR_3_OF_2:?}; \
+         got {err:?}. THE THIRD (count, len) PAIR — this one is produced by the REAL \
+         reducer against REAL rows, so together with the 4-of-3 and 1-of-0 pairs in \
+         the truth table it proves both numbers come from the call and from the \
+         row, not from a literal. The client swallows this exact sentence as a \
+         benign two-tab race. Indexes the generated code asked the host for: {:?}",
+        fx.requested_indexes()
+    );
+}
+
+/// 20r-d (ADR-0254 D5): `has_evolution_notices` answers ROW-EXISTS, per ASKED
+/// owner, from LIVE rows — and the guest-claim predicate consumes it.
+///
+/// WHY THIS ONE IS EXECUTABLE WHERE ITS TWO SIBLINGS ARE NOT: it is READ-ONLY,
+/// so it never reaches the unmodelled write syscalls that abort the rb-41 native
+/// host. That makes it the only lifecycle helper whose BEHAVIOUR can be proven
+/// in `cargo test`, and the only one where a hollowed body ("perform the read,
+/// then return a constant") is invisible to every source scan — the exact
+/// ADR-0222 known-limit rb-41 exists to close.
+///
+/// THE EMPTY-ENTRIES ROW IS THE WHOLE POINT. An ack NEVER deletes the row (an
+/// empty `Vec` persists, like `player_wallet` — ADR-0254 D4), so "row present,
+/// entries empty" is the NORMAL state of every player who has dismissed their
+/// last reveal. If this predicate answered `!entries.is_empty()` it would drop
+/// that player out of `account_has_game_data`, and `complete_guest_claim`'s
+/// guard 11 would then admit a claim whose rekey inserts INTO an occupied
+/// primary key — a wasm trap on a path the player cannot retry. That is what
+/// makes the no-merge rekey sound, and it is why D5 says ROW-EXISTS in as many
+/// words.
+///
+/// THE ASKED OWNER IS `[1u8; 32]`, NEVER THE DUMMY SENDER. The native host's
+/// `ctx.sender()` is the all-zero identity, so a body keyed on the SENDER rather
+/// than on its `owner` ARGUMENT would pass against an owner of `[0u8; 32]` and
+/// fail here — which is the point (the cascade and the guest claim both call
+/// this for somebody who is not the caller).
+///
+/// kills:
+///  - the ADR-0222 known-limit hollow, `{ let _ = <the read>; false }`: the
+///    owner-row assertion goes red while every source scan stays green;
+///  - the inverted hollow, `{ let _ = <the read>; true }`: the empty-table and
+///    stranger-only assertions go red;
+///  - `!entries.is_empty()` / `entries.len() > 0` instead of row-exists: the
+///    EMPTY-entries row seeded below reads false and this test names why;
+///  - a body that answers does-the-table-hold-ANY-row: the stranger-only
+///    assertion goes red, and so does the post-removal one;
+///  - a body keyed on `ctx.sender()` instead of the `owner` argument;
+///  - a latched or memoised answer that never returns to false: the
+///    post-removal assertion goes red;
+///  - deleting the new disjunct from `accounts::account_has_game_data`: the
+///    paired account assertions go red while the direct ones stay green.
+#[test]
+fn s20rd_has_evolution_notices_is_row_exists() {
+    let fx = crate::native_host_tests::fixture();
+    let table = ["pending", "_evolution_notice"].concat();
+    let column = ["owner", "_identity"].concat();
+    let handle =
+        fx.table::<crate::schema::PendingEvolutionNotice>(&table, &column, |r| r.owner_identity);
+    let ctx = fx.ctx();
+
+    // Both identities are non-zero, so neither can be satisfied by a body that
+    // reads `ctx.sender()` (the host's dummy sender is the all-zero identity).
+    let owner = Identity::from_byte_array([1u8; 32]);
+    let stranger = Identity::from_byte_array([2u8; 32]);
+
     assert!(
-        err.contains("exceeds"),
-        "TEETH(20r-d): the over-count rejection must contain \"exceeds\" — it is one \
-         of the two phrases the client's `isBenignAckRejection` swallows; got \
-         {err:?}. Indexes the generated code asked the host for: {:?}",
+        !crate::evolution::has_evolution_notices(&ctx, owner),
+        "TEETH(20r-d ADR-0254 D5): `has_evolution_notices` must be false for an owner \
+         with no row — the table is EMPTY here, so a true answer means the return \
+         value is not derived from the table read at all"
+    );
+    assert!(
+        !crate::accounts::account_has_game_data(&ctx, owner),
+        "TEETH(20r-d): `account_has_game_data` must be false while the owner holds no \
+         row in ANY of its tables — nothing has been seeded yet"
+    );
+
+    // A STRANGER's row, deliberately NON-empty.
+    handle.seed(&crate::schema::PendingEvolutionNotice {
+        owner_identity: stranger,
+        entries: vec![s20rd_reveal(9_101, 1, 2, 11)],
+    });
+    assert!(
+        !crate::evolution::has_evolution_notices(&ctx, owner),
+        "TEETH(20r-d ADR-0254 D5): `has_evolution_notices` must stay false when the \
+         ONLY row belongs to a DIFFERENT owner — the predicate answers per-owner, \
+         never table-is-non-empty. A table-scan answer would make every guest claim \
+         fail guard 11 as soon as ANY player held a pending reveal. Indexes the \
+         generated code asked the host for: {:?}",
+        fx.requested_indexes()
+    );
+    assert!(
+        !crate::accounts::account_has_game_data(&ctx, owner),
+        "TEETH(20r-d): `account_has_game_data` must stay false when the only seeded \
+         row belongs to a stranger — a guest claim keys on the CALLER identity, never \
+         on global table population"
+    );
+
+    // ★ The owner's OWN row, with an EMPTY entries Vec — the normal post-ack state.
+    handle.seed(&crate::schema::PendingEvolutionNotice {
+        owner_identity: owner,
+        entries: vec![],
+    });
+    assert!(
+        crate::evolution::has_evolution_notices(&ctx, owner),
+        "TEETH(20r-d ADR-0254 D5 ROW-EXISTS): `has_evolution_notices` must report TRUE \
+         for an owner whose row exists with an EMPTY entry list. An ack never deletes \
+         the row (an empty Vec persists, the `player_wallet` rule), so this is the \
+         state of every player who has dismissed their last reveal — and an \
+         `entries.is_empty()`-based answer reads FALSE here, drops that player out of \
+         `account_has_game_data`, and lets a guest claim rekey INTO their occupied \
+         primary key. A body that performs the read and returns a constant false (the \
+         ADR-0222 known-limit hollow) fails exactly here. Indexes the generated code \
+         asked the host for: {:?}",
+        fx.requested_indexes()
+    );
+    assert!(
+        crate::accounts::account_has_game_data(&ctx, owner),
+        "TEETH(20r-d ADR-0254 D5): `account_has_game_data` must be true through its \
+         NEW pending-evolution-notice disjunct while the owner holds a notice row and \
+         NOTHING else. A disjunct that was never added fails exactly here, while the \
+         direct predicate assertion above stays green — which is the whole reason this \
+         pair is asserted together. Indexes the generated code asked the host for: {:?}",
+        fx.requested_indexes()
+    );
+
+    assert_eq!(
+        handle.remove(owner),
+        1,
+        "fixture(20r-d): the owner held exactly ONE row to remove — a different count \
+         means the seeded state is not the state this test reasons about (`seed` \
+         appends, it never upserts)"
+    );
+    assert!(
+        !crate::evolution::has_evolution_notices(&ctx, owner),
+        "TEETH(20r-d): `has_evolution_notices` must return to FALSE once the owner's \
+         row is gone — the answer tracks LIVE rows, so it can never latch on a row \
+         that no longer exists. This is the state in which a guest claim is allowed \
+         to proceed"
+    );
+    assert!(
+        !crate::accounts::account_has_game_data(&ctx, owner),
+        "TEETH(20r-d): `account_has_game_data` must return to false once the owner's \
+         last row is gone"
+    );
+    assert!(
+        crate::evolution::has_evolution_notices(&ctx, stranger),
+        "TEETH(20r-d): removing the OWNER's row must leave the STRANGER's row \
+         untouched — without this, the negatives above could be explained by an \
+         emptied table rather than by owner scoping. Indexes the generated code asked \
+         the host for: {:?}",
         fx.requested_indexes()
     );
 }

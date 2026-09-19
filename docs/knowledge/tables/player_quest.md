@@ -5,7 +5,7 @@ slug: tables/player_quest
 updated: 2026-09-18
 tags: [schema, spacetimedb, public]
 abstract: "Active quest progress. Public (quest log is world-readable like `inventory`). Per-owner transport RLS deferred until pe…"
-resource: server-module/src/schema.rs#L567
+resource: server-module/src/schema.rs#L625
 source: scripts/okf-export.mjs@server-module/src/schema.rs
 visibility: public
 ---

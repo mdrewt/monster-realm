@@ -1,11 +1,16 @@
 //! `evolution` — server-module domain submodule (EG1 rewrite ADR-0174; EG2
 //! reducers ADR-0175).
 //!
-//! ONE reducer: `evolve(ctx, monster_id, to_species)` — the player-invoked
-//! write path of the essence-graph evolution model — plus the two EG2 internal
+//! TWO reducers: `evolve(ctx, monster_id, to_species)` — the player-invoked
+//! write path of the essence-graph evolution model — and
+//! `ack_evolution_notices(ctx, count)`, the owner-keyed dismissal of the
+//! post-evolve reveal queue (20r-d, ADR-0254 D5). Plus the two EG2 internal
 //! helpers: `apply_evolution` (the ONE transform-and-write path, shared by the
 //! reducer and the auto-evolution driver) and `check_and_evolve` (the bounded
-//! auto-evolution cascade called as a tail from the intent reducers). This file
+//! auto-evolution cascade called as a tail from the intent reducers), the pure
+//! prefix-drain core `ack_prefix`, and the three `pending_evolution_notice`
+//! lifecycle helpers accounts.rs delegates to (`erase_evolution_notices`,
+//! `rekey_evolution_notices`, `has_evolution_notices`). This file
 //! is a ctx/DB shell only: the gate DECISION is `game_core::path_satisfied` /
 //! `game_core::eligible_evolution_paths` and the requirement NAMING is
 //! `game_core::unmet_requirement`; nothing in this file reads a gate field
@@ -18,13 +23,14 @@
 
 use crate::guards::{reject_if_in_battle, reject_if_monster_in_trade, require_owner};
 use crate::marshal::{
-    evolution_path_from_row, monster_to_instance, pub_from_monster, species_from_row,
+    evolution_path_from_row, monster_to_instance, now_ms, pub_from_monster, species_from_row,
 };
 use crate::schema::{
-    battle, evolution_path, monster, monster_pub, species_row, trade_offer, EvolutionPathRow,
+    battle, evolution_path, monster, monster_pub, pending_evolution_notice, species_row,
+    trade_offer, EvolutionPathRow, EvolutionRevealRow, PendingEvolutionNotice,
 };
 use game_core::Affinity;
-use spacetimedb::ReducerContext;
+use spacetimedb::{Identity, ReducerContext, Table};
 
 /// Hard cap on the auto-evolution chain cascade (EG2-13, ADR-0175 D3): R11's
 /// tier cap 5 plus 2 — generous on purpose and structurally unreachable for
@@ -128,6 +134,12 @@ pub(crate) fn apply_evolution(
     let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
         return Err("monster not found".to_string());
     };
+    // 20r-d (ADR-0254 D4): capture the owner BEFORE the write-back below moves
+    // `m`. It is the MONSTER's owner and never the caller: this helper is
+    // reachable from pvp_deadline_reaper -> apply_pvp_forfeit ->
+    // settle_pvp_battle -> write_back_battle_results, where the caller is the
+    // SCHEDULER identity, which owns no monsters and could never ack the queue.
+    let owner = m.owner_identity;
     let instance = monster_to_instance(&m)?;
 
     // FRESH target-species lookup — the MonsterPub.tier source (EG1-8) and the
@@ -166,6 +178,51 @@ pub(crate) fn apply_evolution(
     let pub_row = pub_from_monster(&m, to_species_row.tier);
     ctx.db.monster().monster_id().update(m);
     ctx.db.monster_pub().monster_id().update(pub_row);
+
+    // 20r-d (ADR-0254 D4): ONE reveal entry per applied edge, appended AFTER
+    // both rows are written and inside this same helper, so it rides the
+    // caller's transaction by construction. The species come from the IMMUTABLE
+    // `path` argument: the monster row above has ALREADY been transformed, so a
+    // row-derived `from_species` would record the POST species and the banner
+    // would read "evolved from X into X". The stamp is the transaction clock —
+    // every entry of one chain shares it (display metadata, never an ordering
+    // or dedupe key).
+    //
+    // THIS TAIL IS INFALLIBLE ON PURPOSE: `check_and_evolve` swallows an `Err`
+    // from this helper and its callers commit regardless, so a `?` here would
+    // persist the evolution and lose the notice. The upsert is a find-then-
+    // push-or-insert: a bare `.insert` on an existing primary key PANICS, which
+    // in SpacetimeDB is a wasm trap that aborts the HOST reducer — a player's
+    // second evolution would roll back the movement or battle write that
+    // triggered it.
+    let entry = EvolutionRevealRow {
+        monster_id,
+        from_species: path.from_species,
+        to_species: path.to_species,
+        evolved_at_ms: now_ms(ctx),
+    };
+    match ctx
+        .db
+        .pending_evolution_notice()
+        .owner_identity()
+        .find(owner)
+    {
+        Some(mut notice) => {
+            notice.entries.push(entry);
+            ctx.db
+                .pending_evolution_notice()
+                .owner_identity()
+                .update(notice);
+        }
+        None => {
+            ctx.db
+                .pending_evolution_notice()
+                .insert(PendingEvolutionNotice {
+                    owner_identity: owner,
+                    entries: vec![entry],
+                });
+        }
+    }
 
     Ok(())
 }
@@ -256,6 +313,124 @@ pub(crate) fn check_and_evolve(ctx: &ReducerContext, monster_id: u64) {
     log::error!(
         "{{\"evt\":\"check_and_evolve_cap_hit\",\"monster_id\":{monster_id},\"steps\":{steps}}}",
     );
+}
+
+/// Drain the acknowledged PREFIX of an owner's reveal queue (20r-d, ADR-0254
+/// D5). The ONE place the ack arithmetic lives, pure and `ctx`-free so the
+/// truth table is executable without a host.
+///
+/// REJECT, NEVER CLAMP. A zero count is always a client defect worth
+/// surfacing, and a count above the queue length means the caller is acking
+/// entries it never rendered (a second tab's stale head) — clamping would
+/// silently discard reveals the player never saw. Both rejections leave
+/// `entries` byte-identical, so a refused ack can never lose a reveal.
+///
+/// The drained values are DROPPED: Vec order is display order, the entries
+/// carry nothing the caller needs back, and this file confines every
+/// collection to `check_and_evolve` (EG1-11).
+pub(crate) fn ack_prefix(entries: &mut Vec<EvolutionRevealRow>, count: u32) -> Result<(), String> {
+    if count == 0 {
+        return Err("ack count must be positive".to_string());
+    }
+    if count as usize > entries.len() {
+        return Err(format!(
+            "ack count {count} exceeds {} pending evolution notices",
+            entries.len()
+        ));
+    }
+    entries.drain(..count as usize);
+    Ok(())
+}
+
+/// Acknowledge the first `count` pending evolution reveals of the CALLER
+/// (20r-d, ADR-0254 D5).
+///
+/// Owner-keyed by definition: the only row this reducer can ever touch is the
+/// one filed under `ctx.sender()`, so one player can never drain another
+/// player's queue. The row SURVIVES an empty drain — only the account deletion
+/// cascade removes it, exactly as `player_wallet` survives a zero balance — so
+/// the client's reconcile keeps seeing an authoritative empty queue rather
+/// than an ambiguous absent one.
+///
+/// NOT deletion-gated: `require_not_deleting` guards reducers that OPEN a
+/// commitment between two players; gating an ack would leave a deleting
+/// player's banner undismissable.
+#[spacetimedb::reducer]
+pub fn ack_evolution_notices(ctx: &ReducerContext, count: u32) -> Result<(), String> {
+    let Some(mut row) = ctx
+        .db
+        .pending_evolution_notice()
+        .owner_identity()
+        .find(ctx.sender())
+    else {
+        return Err("no pending evolution notices".to_string());
+    };
+    ack_prefix(&mut row.entries, count)?;
+    ctx.db
+        .pending_evolution_notice()
+        .owner_identity()
+        .update(row);
+    Ok(())
+}
+
+/// Cascade step: erase `owner`'s pending reveal queue (20r-d, ADR-0254 D6).
+/// Called by `accounts::account_deletion_reaper` immediately after the monster
+/// erase — the queue is derived bookkeeping about monsters, so it goes with
+/// them. A primary-key delete on a missing row is a no-op, so this is
+/// idempotent and infallible, like every other delegated cascade step.
+pub(crate) fn erase_evolution_notices(ctx: &ReducerContext, owner: Identity) {
+    ctx.db
+        .pending_evolution_notice()
+        .owner_identity()
+        .delete(owner);
+}
+
+/// Claim-flow re-key: move `from`'s pending reveal queue onto `to` (20r-d,
+/// ADR-0254 D6), the `rekey_heal_cooldown` / `rekey_npc_state` PK-rekey shape.
+///
+/// DELETE-THEN-INSERT WITH NO MERGE, and that is deliberate: `complete_guest_
+/// claim`'s guard 11 (`accounts::account_has_game_data`) runs BEFORE
+/// `rekey_all`, and `has_evolution_notices` below is part of that predicate, so
+/// the destination identity provably owns no row by the time this runs. A
+/// merge branch here would be unreachable code guarding an invariant the guard
+/// already holds.
+///
+/// A deliberate deviation from `economy::rekey_wallet`, which never deletes:
+/// that rule is AUTH-23/24's wallet single-surface invariant and does not apply
+/// to a transient delivery queue.
+pub(crate) fn rekey_evolution_notices(ctx: &ReducerContext, from: Identity, to: Identity) {
+    if let Some(row) = ctx
+        .db
+        .pending_evolution_notice()
+        .owner_identity()
+        .find(from)
+    {
+        ctx.db
+            .pending_evolution_notice()
+            .owner_identity()
+            .delete(from);
+        ctx.db
+            .pending_evolution_notice()
+            .insert(PendingEvolutionNotice {
+                owner_identity: to,
+                entries: row.entries,
+            });
+    }
+}
+
+/// True if `owner` holds a pending reveal ROW at all (20r-d, ADR-0254 D6) — the
+/// `accounts::account_has_game_data` clause for this table.
+///
+/// ROW-EXISTS, never "the entry list is non-empty": an acked-empty row is still
+/// a row, and it is exactly this predicate that makes the no-merge re-key above
+/// sound. Weakening it to `!entries.is_empty()` would let a claim target that
+/// already holds an emptied row pass guard 11 and then be overwritten.
+pub(crate) fn has_evolution_notices(ctx: &ReducerContext, owner: Identity) -> bool {
+    ctx.db
+        .pending_evolution_notice()
+        .owner_identity()
+        .find(owner)
+        .is_some()
 }
 
 #[cfg(test)]

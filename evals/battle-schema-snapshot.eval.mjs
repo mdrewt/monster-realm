@@ -2550,13 +2550,13 @@ pub struct Inventory {
   const realVisTableNames = Object.keys(realVisAll);
   const realPublicCount = realVisTableNames.filter((t) => realVisAll[t] === 'public').length;
   const realPrivateCount = realVisTableNames.filter((t) => realVisAll[t] === 'private').length;
-  if (realPublicCount !== 18 || realPrivateCount !== 24) {
+  if (realPublicCount !== 18 || realPrivateCount !== 25) {
     teeth.push(
       `T-VIS-ANCHORS FAILED: the real corpus derives ${realPublicCount} public / ` +
-        `${realPrivateCount} private table(s), expected 18/24 (measured a6ae43c; +export_bundle ` +
+        `${realPrivateCount} private table(s), expected 18/25 (measured a6ae43c; +export_bundle ` +
         `private, M22-S2/ADR-0207; +account_deletion_reaper_schedule private, rb-24/ADR-0221; ` +
         `+export_bundle_reaper_schedule private, rb-48/ADR-0238; +player_session private, ` +
-        `rb-73/ADR-0245) — ` +
+        `rb-73/ADR-0245; +pending_evolution_notice private, 20r-d/ADR-0254) — ` +
         `if a table's ` +
         `declared visibility legitimately changed, update this tooth's pinned counts DELIBERATELY ` +
         `from ADR-0199, not to silence a red`,
@@ -2642,6 +2642,12 @@ pub struct Inventory {
     // per-session secret in spirit and must never reach a subscription
     // (ADR-0015); read only by `has_live_session` in the disconnect hook.
     'player_session',
+    // 20r-d (ADR-0254 D2): one row per owner holding every evolution reveal
+    // that player has not dismissed yet. A public projection would broadcast
+    // every player's evolution history (monster ids, species transitions and
+    // timestamps); the owner-scoped `my_pending_evolution_notices` view is the
+    // sole read path.
+    'pending_evolution_notice',
   ];
   for (const t of pinnedPrivateTables) {
     if (realVisAll[t] !== 'private') {
