@@ -907,20 +907,20 @@ fn split_top_level_commas(s: &str) -> Vec<&str> {
     parts
 }
 
-/// Parse a `if let Some(suppressed) = <LIMITER>.check(<args>) { log::warn!(<args>) }`
+/// Parse a `if let Some(suppressed) = <LIMITER>.check(<args>) { log::<level>!(..) }`
 /// gate as ONE contiguous (whitespace-squashed) expression. Returns
-/// `(check_args, warn_args)` on a full match, `None` otherwise.
+/// `(check_args, log_args)` on a full match, `None` otherwise. 20r-c
+/// parameterised the LEVEL in place; `find_rate_limited_warn` (20r-c section)
+/// delegates here with `"warn"`, and every T4 tooth that cites it depends on
+/// this body staying BEHAVIOUR-IDENTICAL for that spelling.
 ///
 /// Deliberately does NOT pin the limiter's static name (T4's spec does not
 /// prescribe one) — only that SOME identifier's `.check(` result is what the
-/// `if let Some(suppressed) = ..` binds, and that `log::warn!(` opens
-/// IMMEDIATELY inside that `if`'s body, with nothing else between `)` and
-/// `{log::warn!(`. This is what makes `let _ = LIMITER.check(..);
-/// log::warn!(..);` (limiter consulted, answer discarded) fail to match: that
-/// cheat squashes to `let_=LIMITER.check(..);log::warn!(..);`, which contains
-/// neither `ifletSome(suppressed)=` immediately before `.check(` nor
-/// `){log::warn!(` immediately after it.
-fn find_rate_limited_warn(squashed_arm: &str) -> Option<(String, String)> {
+/// `if let Some(suppressed) = ..` binds, and that the log macro opens
+/// IMMEDIATELY inside that `if`'s body, with nothing else between. That is what
+/// makes `let _ = LIMITER.check(..); log::warn!(..);` (limiter consulted, answer
+/// discarded) fail to match: the squashed cheat has no gate opener at all.
+fn find_rate_limited_log(squashed_arm: &str, level: &str) -> Option<(String, String)> {
     let gate_open = ["ifletSome(suppressed)", "="].concat();
     let gate_start = squashed_arm.find(gate_open.as_str())?;
     let after_eq = &squashed_arm[gate_start + gate_open.len()..];
@@ -943,15 +943,15 @@ fn find_rate_limited_warn(squashed_arm: &str) -> Option<(String, String)> {
     // `check_close` is the index just PAST the matching `)` of `.check(..)`,
     // so back up one to re-include that `)` in the marker we match against.
     let tail = &after_eq[check_close - 1..];
-    let warn_open_marker = "){log::warn!(";
-    if !tail.starts_with(warn_open_marker) {
+    let log_open_marker = ["){log::", level, "!("].concat();
+    if !tail.starts_with(log_open_marker.as_str()) {
         return None;
     }
-    let warn_open = check_close - 1 + warn_open_marker.len() - 1;
-    let warn_close = matching_paren_end(after_eq, warn_open)?;
-    let warn_args = after_eq[warn_open + 1..warn_close - 1].to_string();
+    let log_open = check_close - 1 + log_open_marker.len() - 1;
+    let log_close = matching_paren_end(after_eq, log_open)?;
+    let log_args = after_eq[log_open + 1..log_close - 1].to_string();
 
-    Some((check_args, warn_args))
+    Some((check_args, log_args))
 }
 
 /// T4-a: the quest-def-missing arm must name its event `quest_def_missing`.
@@ -3323,5 +3323,792 @@ fn rb80_npc_reducer_roster_and_open_writers_are_pinned() {
          any read of another table, any grant, any second delete — that argument stops holding \
          and the classification must be re-argued in a new ADR, not repaired by re-freezing this \
          literal."
+    );
+}
+
+// ===========================================================================
+// 20r-c (B1) — the `quest_defs_load_error` ERROR line gets its OWN process
+// rate limiter.
+//
+// EARS criterion covered:
+//
+//   B1  WHEN `cached_quest_defs()` returns `Err` on the talk path, the
+//       `quest_defs_load_error` emission SHALL be gated by its own
+//       process-static `RateLimiter` (mirroring `QUEST_DEF_MISSING_LIMITER`,
+//       including the `suppressed` count in the emitted line). Reducer
+//       semantics are UNCHANGED — swallow the error and return — so `talk`'s
+//       caller-visible contract does not move.
+//
+// WHY IT MATTERS: that `e` is a RON PARSE error from a registry embedded at
+// COMPILE time behind a `LazyLock`. Once it fails it fails identically for the
+// LIFE of the process, on EVERY `talk()` of EVERY player. Ungated, the one
+// diagnostic that says why every quest in the game stopped advancing is also
+// the line that floods the sink until the ingest budget is gone and the
+// surrounding context is evicted — the fault becomes invisible BECAUSE it is
+// reported. The dangling-`quest_id` warn five statements below already carries
+// this shape (T4, ADR-0173 D4); this is the same fix for the higher-severity,
+// higher-cardinality sibling, with its own limiter and its own window so the
+// two faults cannot silence each other (ADR-0170 D4 independence).
+//
+// THE HONEST LIMIT, stated once for all nine tests: NOTHING below executes the
+// real `Err` path. `cached_quest_defs()` parses a compile-time-embedded RON
+// blob behind a `LazyLock`, so no test in this crate can make it fail, and the
+// crate has no log capture, so no test can observe an emission at all. The
+// split is therefore:
+//   * (a) EXECUTES the real static with the real window constant and proves
+//     the second immediate check is SUPPRESSED, and that suppressed checks are
+//     REPORTED when the window reopens — the EARS claim about the limiter's
+//     BEHAVIOUR.
+//   * (b)..(i) are SOURCE-SCAN teeth proving production consults THAT static,
+//     with THAT clock, THAT window and THAT line shape — the EARS claim about
+//     the WIRING.
+// Neither half implies the other and neither substitutes for the other: (a) is
+// green against a limiter nothing ever calls, and (b)..(i) are green against a
+// limiter whose window is zero.
+//
+// TEST-AUTHORING RULE (load-bearing, not a style note):
+// `QUEST_DEFS_LOAD_ERR_LIMITER` is a PROCESS static and `cargo test` runs this
+// whole lib-test binary in ONE process with tests on parallel threads. A SECOND
+// test that calls `.check(..)` on it would make both order-dependent and
+// intermittently wrong — and `cargo nextest`, which isolates every test in its
+// own process, would HIDE that from CI while a plain `cargo test` failed at
+// random. Test (a) is the SOLE consumer of this static in the binary and must
+// stay so. It still opens with a clock-backwards check, so it does not even
+// depend on being the first thing in the process to touch the static.
+// ===========================================================================
+
+/// `apply_quest_trigger`'s body: comments stripped, ALL whitespace squashed.
+///
+/// A deliberate COPY of `quest_def_missing_arm`'s preamble rather than a shared
+/// refactor: that function is T4's gating substrate and four of its teeth read
+/// it, so 20r-c does not reach into it. The brace-balance canary below is this
+/// section's OWN copy, and it guards the same failure mode for the same reason:
+/// `matching_brace_end` has no string-literal lexer, so the extraction is sound
+/// only while every brace inside every string literal in this function belongs
+/// to a matched pair (true today — each JSON brace is escaped as a matched
+/// `{{`/`}}` and each capture is a matched `{`..`}`). It is
+/// necessary-but-NOT-sufficient: a stray open brace paired with an unrelated
+/// stray close elsewhere still balances the COUNT while desyncing the SPAN.
+fn s20rc_squashed_apply_quest_trigger() -> String {
+    let fn_name = ["apply_quest", "_trigger"].concat();
+    let stripped = strip_npc_comments(NPC_SOURCE);
+    let body = extract_npc_fn_body(&stripped, fn_name.as_str())
+        .expect("20r-c: `npc.rs` must declare fn apply_quest_trigger");
+    let squashed = squash_ws(body);
+    let opens = squashed.matches('{').count();
+    let closes = squashed.matches('}').count();
+    assert_eq!(
+        opens, closes,
+        "20r-c SCAN PRECONDITION: apply_quest_trigger's squashed body carries {opens} open \
+         brace(s) against {closes} close(s). The arm extraction below depth-counts braces with NO \
+         string-literal lexer, so it ASSUMES the whole function is globally balanced. An edit that \
+         breaks that assumption must fail LOUDLY here rather than let every 20r-c tooth assert \
+         against a silently mis-sliced span — a wrong span is a GREEN verdict about text that is \
+         not the arm. Squashed body was: {squashed:?}"
+    );
+    squashed
+}
+
+/// The squashed INTERIOR (its own braces excluded) of `apply_quest_trigger`'s
+/// `Err(e) => { .. }` arm — the exact site 20r-c edits.
+///
+/// Anchored on the two-arm `match` HEAD, never on a needle taken from inside
+/// the arm: an anchor living in the arm's own body would move with the fix and
+/// could be satisfied by the very text being graded.
+fn s20rc_load_error_arm() -> String {
+    let squashed = s20rc_squashed_apply_quest_trigger();
+    let anchor = ["cached_quest_defs(){Ok(q)=>q,", "Err(e)=>{"].concat();
+    let n_anchor = squashed.matches(anchor.as_str()).count();
+    assert_eq!(
+        n_anchor, 1,
+        "20r-c SCAN PRECONDITION: the quest-defs `Err`-arm anchor occurs {n_anchor} time(s) in \
+         apply_quest_trigger and must occur EXACTLY once. ZERO is almost always a RENAMED MATCH \
+         BINDING — `Ok(q)` to `Ok(defs)`, or `Err(e)` to `Err(err)` — which would otherwise make \
+         every 20r-c arm tooth vacuous by grading nothing at all; it can also mean the `match` was \
+         restructured into a `map_err`/`?` or an `if let`. TWO means a second copy of this match \
+         exists and the teeth below would grade whichever came first. Re-derive the anchor \
+         DELIBERATELY against the new shape; never delete it to make a build green. Anchor was: \
+         {anchor:?}"
+    );
+    let start = squashed
+        .find(anchor.as_str())
+        .expect("20r-c: the Err-arm anchor counted 1 but could not be located");
+    let brace_open = start + anchor.len() - 1;
+    let brace_close = matching_brace_end(&squashed, brace_open).unwrap_or_else(|| {
+        panic!(
+            "20r-c SCAN PRECONDITION: the quest-defs `Err` arm's opening brace at byte \
+             {brace_open} has no matching close in the squashed body. An unbalanced brace inside \
+             a NEW string literal in this function does exactly this — see the canary in \
+             `s20rc_squashed_apply_quest_trigger`."
+        )
+    });
+    squashed[brace_open + 1..brace_close - 1].to_string()
+}
+
+/// Occurrences of `needle` in `hay`. Spelled once so every census below reads
+/// as the arithmetic it is.
+fn s20rc_count(hay: &str, needle: &str) -> usize {
+    hay.matches(needle).count()
+}
+
+/// T4's original entry point — signature, doc contract and every T4 call site
+/// unchanged. The parse itself stayed exactly where it was: 20r-c only
+/// parameterised its log LEVEL in place (now `find_rate_limited_log`) and left
+/// this name behind as a delegator, so the T4 teeth that cite it keep citing it
+/// and this file's line numbering above is untouched.
+fn find_rate_limited_warn(squashed_arm: &str) -> Option<(String, String)> {
+    find_rate_limited_log(squashed_arm, "warn")
+}
+
+/// **20r-c (a)** — THE EARS PROOF, executed against the REAL process static and
+/// the REAL window constant.
+///
+/// PROVES: a second `check` at the SAME instant returns `None` (the emission is
+/// SUPPRESSED); a check one millisecond before the window closes is still
+/// suppressed; the window boundary is INCLUSIVE and REPORTS the two suppressed
+/// checks rather than silently losing them.
+///
+/// KILLS the two shapes that produce a limiter which never suppresses — both of
+/// which leave every source needle in (b)..(i) fully satisfiable: a ZERO window
+/// (`now.saturating_sub(last) >= 0` holds for any pair of checks, so every call
+/// takes the emit branch) and a limiter constructed FRESH at each use (a
+/// fn-local `const` is a new value at every mention — the reason the sibling is
+/// a `static`).
+///
+/// RED AT HEAD: COMPILE-RED, E0425 twice — neither `QUEST_DEFS_LOAD_ERR_LIMITER`
+/// nor `QUEST_DEFS_LOAD_ERR_WINDOW_MS` exists in `npc.rs` yet, so the WHOLE
+/// lib-test binary fails to build and (b)..(i) cannot report at all. The RED
+/// proof is therefore staged: (b)..(i) assertion-RED first, then this test
+/// COMPILE-RED.
+///
+/// SOLE CONSUMER of `QUEST_DEFS_LOAD_ERR_LIMITER` in this binary — see the
+/// section header for why a second one would be a real defect that `nextest`
+/// would hide.
+#[test]
+fn s20rc_load_error_limiter_suppresses_the_second_immediate_check() {
+    let w = super::QUEST_DEFS_LOAD_ERR_WINDOW_MS;
+    let check = |now: i64| super::QUEST_DEFS_LOAD_ERR_LIMITER.check(now, w);
+
+    // A BACKWARDS clock always re-anchors and EMITS (movement.rs's `check`
+    // documents the trade), so this test establishes the limiter's whole
+    // observable history itself instead of assuming nothing else in the process
+    // has touched the static.
+    assert!(
+        check(i64::MIN).is_some(),
+        "20r-c (a) FIXTURE: a check at i64::MIN must ALWAYS emit — `RateLimiter::check` treats a \
+         backwards clock as a RE-ANCHOR rather than a suppression, which is exactly what makes \
+         this test independent of test ORDER inside the shared process. A None here means the \
+         static is not the movement.rs limiter this criterion is written against."
+    );
+    assert_eq!(
+        check(1_000),
+        Some(0),
+        "20r-c (a): the first check after the re-anchor above must EMIT and report ZERO suppressed \
+         checks, because an emit resets the counter. Anything else means `check` is not the \
+         ADR-0170 D4 state machine the rest of this test reasons about."
+    );
+    assert_eq!(
+        check(1_000),
+        None,
+        "TEETH (20r-c a) — THE EARS PROOF: the SECOND check at the SAME instant must be SUPPRESSED \
+         (None). A `Some(0)` here means one of exactly two things and both ship the unbounded \
+         flood this slice exists to stop: the window is ZERO (every pair of checks is at least 0 \
+         ms apart, so the emit branch is always taken), or the limiter is a FRESH instance per use \
+         — a fn-local `const`, or a `RateLimiter::new()` evaluated at the call site — and so has \
+         no memory of the first check. Remember what is being logged: a RON parse error behind a \
+         `LazyLock`, which repeats on every talk() of every player for the life of the process."
+    );
+    assert_eq!(
+        check(1_000 + w - 1),
+        None,
+        "TEETH (20r-c a): a check ONE MILLISECOND before the window closes must still be \
+         suppressed. An off-by-one that opens the window early — a `>` against a decremented \
+         bound, or a window operand read from a different constant — shows up here and nowhere \
+         else in the slice."
+    );
+    assert_eq!(
+        check(1_000 + w),
+        Some(2),
+        "TEETH (20r-c a): at EXACTLY window_ms the gate must reopen (the boundary is INCLUSIVE) \
+         and it must report how many checks it suppressed — TWO here: the same-instant check and \
+         the one-millisecond-early check above. A `Some(0)` means the suppressed checks were \
+         silently LOST, which is the `accounts.rs` `.is_some()` shape ADR-0173 D4 rejects: an \
+         operator reading the emitted line then cannot tell one parse fault from ten thousand."
+    );
+    assert_eq!(
+        w, 60_000,
+        "TEETH (20r-c a): the window constant must be 60_000 ms. This assertion is \
+         SPELLING-INDEPENDENT — it reads the VALUE the gate actually passes, so it also covers a \
+         `60000` literal, a `60 * 1_000` expression and a constant aliased in from elsewhere, none \
+         of which the source-scan pin in (e) can see. A defanged 0 would already have failed the \
+         EARS assertion above; what THIS clause catches is a merely WRONG window (600, 600_000) \
+         that still suppresses and still reads plausibly at the call site."
+    );
+}
+
+/// **20r-c (b)** — the emission is rate-limit gated as ONE expression.
+///
+/// PROVES that `if let Some(suppressed) = <IDENT>.check(..) { log::` +
+/// `error!(..) }` parses as a single contiguous squashed expression inside the
+/// arm, and that the gate opener occurs there EXACTLY once.
+///
+/// KILLS the discard cheat — `let _ = LIMITER.check(..);` followed by an
+/// unconditional emission. The limiter is consulted, its verdict thrown away,
+/// and the line still fires on every talk() of every player: the exact defect
+/// this slice removes, and a presence-only `contains(".check(")` needle is
+/// fully satisfied by it. The exactly-once count additionally kills a SECOND
+/// gate spliced into the arm (a correct gate plus a zero-window twin, of which
+/// only the first found is what every later tooth grades).
+///
+/// ASSERTION-RED at HEAD on the first clause: at HEAD the arm is the UNGATED
+/// `let escaped = ..;` + one emission + `return;`, so the parse returns None.
+#[test]
+fn s20rc_load_error_log_is_rate_limit_gated_as_one_expression() {
+    let arm = s20rc_load_error_arm();
+    let gate = find_rate_limited_log(&arm, "error");
+    assert!(
+        gate.is_some(),
+        "TEETH (20r-c b): the quest-defs load-error emission must be gated as ONE contiguous \
+         expression — `if let Some(suppressed) = QUEST_DEFS_LOAD_ERR_LIMITER.check(<clock>, \
+         <window>)` opening a block whose FIRST token is the ERROR macro. RED at HEAD (the arm is \
+         ungated). KILLS `let _ = LIMITER.check(..);` followed by an unconditional emission: the \
+         limiter is consulted, its Option verdict discarded, and a permanent RON parse fault is \
+         still reported once per talk() per player, forever. Nothing between the `)` and the macro \
+         is tolerated, because a statement in that gap runs on the suppressed path too. Arm was: \
+         {arm:?}"
+    );
+    let opener = ["ifletSome(supp", "ressed)="].concat();
+    let n_opener = s20rc_count(&arm, opener.as_str());
+    assert_eq!(
+        n_opener, 1,
+        "TEETH (20r-c b): the arm must contain EXACTLY ONE rate-limit gate opener; found \
+         {n_opener}. TWO is a second gate the parse above never sees (it matches the FIRST \
+         opener): a correct gate followed by a defanged twin emits twice per fault, and a defanged \
+         gate followed by a correct one means every tooth in this slice grades text that is not \
+         what runs. Arm was: {arm:?}"
+    );
+}
+
+/// **20r-c (c)** — the gate consults this slice's OWN limiter.
+///
+/// PROVES the receiver identifier between the gate opener and `.check(` is
+/// exactly `QUEST_DEFS_LOAD_ERR_LIMITER`, compared by EQUALITY.
+///
+/// KILLS reusing the sibling `QUEST_DEF_MISSING_LIMITER`: one shared limiter
+/// makes the two faults SILENCE EACH OTHER — a burst of dangling `quest_id`
+/// rows suppresses the registry-parse ERROR, and one parse fault suppresses the
+/// warn — which is precisely the per-fault independence ADR-0170 D4 requires.
+/// It also kills any other identifier, including a local `RateLimiter::new()`
+/// bound one line above.
+///
+/// Deliberately does NOT pin the sibling's name anywhere: T4 owns that, and
+/// duplicating it here would make one rename fail twice for two different
+/// reasons.
+///
+/// ASSERTION-RED at HEAD: the arm has no gate opener at all, so this test
+/// panics in the `unwrap_or_else` below with that message.
+#[test]
+fn s20rc_load_error_gate_uses_its_own_limiter() {
+    let arm = s20rc_load_error_arm();
+    let opener = ["ifletSome", "(suppressed)="].concat();
+    let at = arm.find(opener.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH (20r-c c): the quest-defs `Err` arm contains no rate-limit gate opener at all, \
+             so the limiter it names cannot be read. RED at HEAD (the arm is ungated); see (b) for \
+             the required shape. Arm was: {arm:?}"
+        )
+    });
+    let after = &arm[at + opener.len()..];
+    let check_call = [".che", "ck("].concat();
+    let rel = after.find(check_call.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH (20r-c c): the gate opener is present but nothing calls `.check(` after it, so \
+             there is no receiver to compare. Arm was: {arm:?}"
+        )
+    });
+    let got = &after[..rel];
+    let want = ["QUEST_DEFS", "_LOAD_ERR_LIMITER"].concat();
+    assert_eq!(
+        got,
+        want.as_str(),
+        "TEETH (20r-c c): the gate's receiver must be this slice's OWN file-scope process static, \
+         spelled as a bare path; got {got:?}. KILLS REUSING THE SIBLING: \
+         `QUEST_DEF_MISSING_LIMITER` already gates the dangling-`quest_id` warn five statements \
+         below, and one shared limiter makes the two faults silence EACH OTHER — a burst of \
+         dangling rows suppresses the registry-parse ERROR, one parse fault suppresses the warn — \
+         destroying the per-fault independence ADR-0170 D4 requires. Compared by EQUALITY, so a \
+         differently-qualified spelling of some OTHER limiter cannot pass either."
+    );
+}
+
+/// **20r-c (d)** — the gate's clock operand is the INJECTED clock.
+///
+/// PROVES `.check(..)` takes exactly two top-level arguments and that the first
+/// is EXACTLY `crate::marshal::now_ms(ctx)`.
+///
+/// KILLS a wall clock (unavailable in the wasm sandbox, non-deterministic under
+/// replay — ADR-0003) and, because the comparison is an EQUALITY with no
+/// bare-`now_ms(ctx)` alternative accepted, a MEASURED bypass: a file-local
+/// `fn now_ms(_: &ReducerContext) -> i64` backed by an atomic that ticks a full
+/// window per call, which makes every check emit while reading exactly like the
+/// sanctioned call.
+///
+/// ASSERTION-RED at HEAD: panics in the `unwrap_or_else` below — at HEAD there
+/// is no gate, so there are no `.check(..)` arguments to split.
+#[test]
+fn s20rc_load_error_gate_clock_operand_is_the_injected_clock() {
+    let arm = s20rc_load_error_arm();
+    let (check_args, _log_args) = find_rate_limited_log(&arm, "error").unwrap_or_else(|| {
+        panic!(
+            "TEETH (20r-c d): the rate-limit gate must exist (see (b)) before its `.check(..)` \
+             arguments can be split. RED at HEAD. Arm was: {arm:?}"
+        )
+    });
+    let parts = split_top_level_commas(&check_args);
+    let n_parts = parts.len();
+    assert_eq!(
+        n_parts, 2,
+        "TEETH (20r-c d): `.check(..)` must take exactly TWO top-level, comma-separated arguments \
+         (the clock, then the window); got {n_parts} in {check_args:?}. Any other arity means the \
+         operand pins below are reading positions this slice never reasoned about."
+    );
+    let got = parts[0];
+    let want = ["crate::marshal::now", "_ms(ctx)"].concat();
+    assert_eq!(
+        got,
+        want.as_str(),
+        "TEETH (20r-c d): the clock operand must be EXACTLY `crate::marshal::now_ms(ctx)` — the \
+         caller's INJECTED clock (ADR-0003), never a wall clock, which is both unavailable in the \
+         wasm sandbox and non-deterministic across a replay. Got {got:?}. Pinned by EQUALITY with \
+         NO bare-`now_ms(ctx)` alternative accepted, because the bare spelling is a MEASURED \
+         bypass: a file-local `fn now_ms(_: &ReducerContext) -> i64` returning an atomic that \
+         ticks a whole window per call makes every single check emit, while reading at the call \
+         site exactly like the sanctioned one."
+    );
+}
+
+/// **20r-c (e)** — the gate's window operand is its OWN named constant, and
+/// that constant is declared once, at file scope, at 60_000.
+///
+/// PROVES: the second `.check(..)` operand is the bare identifier
+/// `QUEST_DEFS_LOAD_ERR_WINDOW_MS`; `npc.rs` declares that constant as
+/// `i64 = 60_000` (the `60000` spelling is equally accepted); the `const`
+/// declaration occurs EXACTLY once; and the identifier occurs EXACTLY twice in
+/// the whole comment-stripped file — the declaration and the operand, nothing
+/// else.
+///
+/// KILLS: a bare numeric literal or a foreign identifier in the window position
+/// (a `0` there makes `now.saturating_sub(last) >= window_ms` always true, so
+/// the gate is decorative); a `#[cfg(test)]` / `#[cfg(not(test))]` constant TWIN
+/// (60_000 under test, 0 in the published wasm — invisible to (a), which runs
+/// the test build); and a fn-local shadow `const` inside the arm that hides the
+/// file-scope one. The last two are what the two counts own: a value pin alone
+/// passes both.
+///
+/// ASSERTION-RED at HEAD: panics in the `unwrap_or_else` below (no gate at HEAD,
+/// so no `.check(..)` arguments exist).
+#[test]
+fn s20rc_load_error_gate_window_operand_is_its_own_named_constant() {
+    let arm = s20rc_load_error_arm();
+    let (check_args, _log_args) = find_rate_limited_log(&arm, "error").unwrap_or_else(|| {
+        panic!(
+            "TEETH (20r-c e): the rate-limit gate must exist (see (b)) before its window operand \
+             can be read. RED at HEAD. Arm was: {arm:?}"
+        )
+    });
+    let parts = split_top_level_commas(&check_args);
+    let n_parts = parts.len();
+    assert_eq!(
+        n_parts, 2,
+        "TEETH (20r-c e): `.check(..)` must take exactly TWO top-level arguments; got {n_parts} in \
+         {check_args:?}, so the window position below cannot be read."
+    );
+    let ident = ["QUEST_DEFS_LOAD_ERR", "_WINDOW_MS"].concat();
+    let got = parts[1];
+    assert_eq!(
+        got,
+        ident.as_str(),
+        "TEETH (20r-c e): the window operand must be the bare NAMED constant \
+         `QUEST_DEFS_LOAD_ERR_WINDOW_MS`; got {got:?}. A numeric literal `0` there makes \
+         `now.saturating_sub(last) >= window_ms` true for ANY pair of checks, so the gate \
+         compiles, reads correctly and suppresses nothing. A DIFFERENT identifier — including the \
+         sibling's `QUEST_DEF_MISSING_WINDOW_MS` — couples this ERROR's cadence to a warn of \
+         different severity, cardinality and fault class."
+    );
+
+    let file = squash_ws(&strip_npc_comments(NPC_SOURCE));
+    let decl_head = ["const", "QUEST_DEFS_LOAD", "_ERR_WINDOW_MS"].concat();
+    let typed = [decl_head.as_str(), ":i64="].concat();
+    let underscored = [typed.as_str(), "60_000;"].concat();
+    let plain = [typed.as_str(), "60000;"].concat();
+    let declared = file.contains(underscored.as_str()) || file.contains(plain.as_str());
+    assert!(
+        declared,
+        "TEETH (20r-c e): `npc.rs` must declare `const QUEST_DEFS_LOAD_ERR_WINDOW_MS: i64 = \
+         60_000;` at file scope (the `60000` spelling is equally accepted). Without this pin a \
+         mutant that keeps the operand correctly NAMED while redefining the constant to 0 \
+         satisfies the assertion above and still emits on every check — the same unbounded flood, \
+         one edit further away."
+    );
+
+    let n_decl = s20rc_count(&file, decl_head.as_str());
+    assert_eq!(
+        n_decl, 1,
+        "TEETH (20r-c e): the window constant must be DECLARED exactly once in `npc.rs`; found \
+         {n_decl}. TWO is the conditional-compilation TWIN — a `cfg(test)` const at 60_000 beside \
+         a `cfg(not(test))` const at 0 — under which test (a) reads 60_000 while the published \
+         wasm floods, a divergence NO executed test in this crate can observe. It is also what a \
+         fn-local shadow `const` inside the arm produces."
+    );
+    let n_ident = s20rc_count(&file, ident.as_str());
+    assert_eq!(
+        n_ident, 2,
+        "TEETH (20r-c e): the identifier `QUEST_DEFS_LOAD_ERR_WINDOW_MS` must occur EXACTLY twice \
+         in the comment-stripped file — the declaration and the ONE gate operand; found \
+         {n_ident}. THREE means a second mention this slice never reasoned about: a twin \
+         declaration, a fn-local shadow, or a second `.check(..)` consulting the same window from \
+         a site no tooth here covers. ONE means the operand or the declaration is gone and the \
+         clauses above are grading a coincidence."
+    );
+}
+
+/// **20r-c (f)** — the emitted line reports the suppressed COUNT, after the
+/// reason.
+///
+/// PROVES: the event name occurs EXACTLY once in `apply_quest_trigger`, and
+/// THAT site's own format string carries the contiguous escaped-reason /
+/// suppressed-count sequence.
+///
+/// KILLS: a `"suppressed":0` literal (or any constant) in the count slot — the
+/// gate suppresses correctly but every emitted line claims nothing was lost, so
+/// an operator cannot tell one parse fault from ten thousand, which is the whole
+/// reason ADR-0173 D4 rejects the `accounts.rs` `.is_some()` shape; reordering
+/// or dropping the field; and renaming the reason slot. The needle is CONTIGUOUS
+/// and evaluated against the located site's OWN format string, so a correct
+/// count interpolated into some OTHER line cannot satisfy it, and the
+/// exactly-once count kills a dead-string decoy holding the sanctioned text.
+///
+/// ASSERTION-RED at HEAD on the format-string clause: HEAD's line ends at the
+/// reason slot and has no suppressed field at all.
+#[test]
+fn s20rc_load_error_line_reports_the_suppressed_count_after_the_reason() {
+    let fn_name = ["apply_quest", "_trigger"].concat();
+    let stripped = strip_npc_comments(NPC_SOURCE);
+    let body = extract_npc_fn_body(&stripped, fn_name.as_str())
+        .expect("20r-c: `npc.rs` must declare fn apply_quest_trigger");
+    let evt = ["quest_defs_load", "_error"].concat();
+    let hits: Vec<usize> = body.match_indices(evt.as_str()).map(|(i, _)| i).collect();
+    let n_hits = hits.len();
+    assert_eq!(
+        n_hits, 1,
+        "TEETH (20r-c f): the event name must occur EXACTLY once in `apply_quest_trigger`; found \
+         {n_hits}. TWO is the decoy construction — a dead string holding the sanctioned line's \
+         text satisfies any whole-body substring check while the LIVE emission stays wrong. ZERO \
+         means the event was renamed or the line deleted, which would make the clause below \
+         vacuous."
+    );
+    let at = hits[0];
+    let fmt = d12r_format_string_at(body, at).unwrap_or_else(|| {
+        panic!(
+            "TEETH (20r-c f): the event name in `apply_quest_trigger` is not inside a string \
+             literal — this tooth locates the emission BY its format string, so the line must \
+             have been restructured. Re-derive DELIBERATELY."
+        )
+    });
+    let bq = d12r_escaped_quote();
+    let needle = [
+        evt.as_str(),
+        bq.as_str(),
+        ",",
+        bq.as_str(),
+        "reason",
+        bq.as_str(),
+        ":",
+        bq.as_str(),
+        "{escaped}",
+        bq.as_str(),
+        ",",
+        bq.as_str(),
+        "suppressed",
+        bq.as_str(),
+        ":{suppressed}",
+    ]
+    .concat();
+    assert!(
+        fmt.contains(needle.as_str()),
+        "TEETH (20r-c f): the located emission's format string must carry the contiguous sequence \
+         {needle:?} — the escaped reason, then the suppressed COUNT captured from the gate's own \
+         binding. Not found (RED at HEAD: the line stops after the reason). KILLS a constant in \
+         the count slot (a literal zero), which gates perfectly while telling every reader that \
+         nothing was lost — the `accounts.rs` `.is_some()` defect ADR-0173 D4 rejects, reached by \
+         a different route. It also kills a reordered or renamed reason slot. Format string was: \
+         {fmt:?}"
+    );
+}
+
+/// **20r-c (g)** — NON-REGRESSION FENCE: the arm keeps exactly one emission and
+/// it stays at ERROR level.
+///
+/// GREEN AT HEAD and must stay green — this is not part of this slice's RED. It
+/// fences the severity and the site count while the arm is being rewritten:
+/// exactly one `log::` mention in total, exactly one ERROR macro call, and zero
+/// warn / info / debug / trace.
+///
+/// KILLS: a severity DOWNGRADE (a registry-parse fault that stops every quest in
+/// the game advancing is not a warn, and at debug or trace it is not shipped at
+/// all), and a SECOND emission added beside the gated one — which is how a "belt
+/// and braces" edit reintroduces the flood while every gate tooth above stays
+/// green. The debug/trace half is the part `.log-baseline` cannot see: that
+/// baseline carries error / warn / info columns only, so those two levels are
+/// outside its arithmetic entirely.
+#[test]
+fn s20rc_load_error_arm_has_exactly_one_log_site_at_error_level() {
+    let arm = s20rc_load_error_arm();
+    let any_log = ["log", "::"].concat();
+    let n_any = s20rc_count(&arm, any_log.as_str());
+    assert_eq!(
+        n_any, 1,
+        "TEETH (20r-c g): the quest-defs `Err` arm must contain EXACTLY ONE `log::`-prefixed macro \
+         invocation in total, of any severity; found {n_any}. TWO is a second emission beside the \
+         gated one — ungated, it restores the exact flood this slice removes while every gate \
+         tooth stays green. ZERO means the diagnostic was deleted, or moved into a helper function \
+         (which 12r-d E3 forbids for this line: the emission stays INLINE). Arm was: {arm:?}"
+    );
+    let error_site = ["log::", "error!("].concat();
+    let n_error = s20rc_count(&arm, error_site.as_str());
+    assert_eq!(
+        n_error, 1,
+        "TEETH (20r-c g): the one emission must be at ERROR level; found {n_error} ERROR macro \
+         call(s). A registry-parse fault stops EVERY quest in the game from advancing for the life \
+         of the process — it is the highest-severity thing this module can report. Arm was: \
+         {arm:?}"
+    );
+    for bad in ["warn!(", "info!(", "debug!(", "trace!("] {
+        let downgraded = ["log::", bad].concat();
+        let n_bad = s20rc_count(&arm, downgraded.as_str());
+        assert_eq!(
+            n_bad, 0,
+            "TEETH (20r-c g): the arm must not contain `{downgraded}`; found {n_bad}. An operator \
+             relying on ERROR-level alerting for a total quest outage would never see it one level \
+             down. The debug and trace half of this ban is the part `.log-baseline` CANNOT see at \
+             all — it tracks error, warn and info columns only. Arm was: {arm:?}"
+        );
+    }
+}
+
+/// **20r-c (h)** — FROZEN ARM: the whole squashed interior of the quest-defs
+/// `Err` arm, by EQUALITY.
+///
+/// PROVES the arm is exactly the escape binding, the gate, the gated emission
+/// and `return;` — in that order, with nothing else anywhere in it.
+///
+/// KILLS what every needle above is blind to, because a `contains`-shaped pin
+/// only ever constrains the text it names:
+///  * an EXTRA STATEMENT above the gate (measured: a second logging-helper call
+///    that emits the same fault ungated through another channel) — the gate is
+///    perfect and the flood continues;
+///  * an EARLY `return;` above the gate, which makes the whole emission dead
+///    code while every gate tooth still reads it;
+///  * a `/*`-in-a-string BLINDING pair around the gate: `strip_npc_comments` has
+///    no string lexer, so a string literal containing a block-comment opener
+///    blanks everything up to the next closer — a blanked span cannot reproduce
+///    this frozen text, which is why equality catches it where presence needles
+///    cannot;
+///  * a diverging exit (`panic!`, `unreachable!`, an abort) instead of the
+///    swallow — the criterion holds reducer semantics FIXED, and aborting the
+///    module on a content fault is a far larger behaviour change than the flood.
+///
+/// RE-DERIVATION CONTRACT: this literal comes from the criterion and the rustfmt
+/// shape it settles into (the `.check(..)` arguments fit inline at 58 columns,
+/// under `fn_call_width` 60, so there is NO trailing comma — a trailing comma is
+/// a DIFFERENT string and must fail here). If an honest rename tips rustfmt
+/// vertical, RE-DERIVE the literal from the new shape; never paste the current
+/// arm in to make it green, and never relax the equality to `starts_with` or
+/// `contains`, which readmits every bullet above.
+///
+/// ASSERTION-RED at HEAD: the arm is HEAD's ungated escape-plus-emit-plus-return.
+#[test]
+fn s20rc_load_error_arm_is_frozen_swallow_and_return() {
+    let arm = s20rc_load_error_arm();
+    let dq = char::from(D12R_DQUOTE).to_string();
+    let bq = d12r_escaped_quote();
+    let expected = [
+        concat!("letescaped=crate::guards::json", "_escape(&e);"),
+        concat!("ifletSome(suppressed)=QUEST_DEFS", "_LOAD_ERR_LIMITER"),
+        concat!(".check(crate::marshal::now", "_ms(ctx),"),
+        concat!("QUEST_DEFS_LOAD_ERR", "_WINDOW_MS)"),
+        concat!("{log::", "error!("),
+        dq.as_str(),
+        "{{",
+        bq.as_str(),
+        "evt",
+        bq.as_str(),
+        ":",
+        bq.as_str(),
+        concat!("quest_defs_load", "_error"),
+        bq.as_str(),
+        ",",
+        bq.as_str(),
+        "reason",
+        bq.as_str(),
+        ":",
+        bq.as_str(),
+        "{escaped}",
+        bq.as_str(),
+        ",",
+        bq.as_str(),
+        "suppressed",
+        bq.as_str(),
+        ":{suppressed}",
+        "}}",
+        dq.as_str(),
+        concat!(");}", "return;"),
+    ]
+    .concat();
+    assert_eq!(
+        arm, expected,
+        "TEETH (20r-c h) — FROZEN ARM.\n      Got:      {arm:?}\n      Expected: {expected:?}\n \
+         The ENTIRE squashed interior of the quest-defs `Err` arm is pinned by EQUALITY, because \
+         every other tooth in this slice constrains only the text it names. WHAT THAT BUYS: no \
+         extra statement above the gate (a measured bypass emitted the same fault ungated through \
+         a second logging helper), no early `return;` that makes the emission dead code, no \
+         `/*`-in-a-string blinding pair (the comment stripper has no string lexer, so a blanked \
+         span cannot reproduce this literal), and no diverging exit. The arm MUST end in \
+         `}}return;` — SWALLOW AND RETURN: the criterion holds reducer semantics fixed, so `talk` \
+         still succeeds when the quest registry cannot be parsed. RE-DERIVE this literal from the \
+         criterion if an honest rename tips rustfmt vertical; never paste the current arm in, and \
+         never relax to `starts_with` or `contains`."
+    );
+}
+
+/// **20r-c (i)** — the limiter is a PRIVATE file-scope static, declared once,
+/// consulted exactly once, in a function that exists exactly once; and `npc.rs`
+/// carries exactly one ERROR emission in its RAW text.
+///
+/// This is the bridge from test (a) to production. (a) proves the static named
+/// `QUEST_DEFS_LOAD_ERR_LIMITER` suppresses; the identifier census here proves
+/// the thing (a) touched is the SAME object the gate consults: with exactly one
+/// DECLARATION and exactly one RECEIVER mention and nothing else, there is no
+/// room for a `use .. as` alias, a `const`, a `let` or a fn-local `static`
+/// shadow to stand between them. A MEASURED bypass was aliasing the sibling
+/// (`use crate::npc::QUEST_DEF_MISSING_LIMITER as QUEST_DEFS_LOAD_ERR_LIMITER;`),
+/// which makes (a) pass while the ERROR shares the sibling warn's limiter.
+///
+/// KILLS, clause by clause: a missing or duplicated `static` declaration; a bare
+/// `RateLimiter` type spelling (the fully-qualified spelling is MANDATED,
+/// because a bare name opens a LOCAL wrapper-struct cheat — a same-named struct
+/// in `npc.rs` whose `check` always returns `Some`, invisible to every other
+/// tooth here); an alias or shadow (the identifier count); a second `.check(..)`
+/// on this static; `pub` / `pub(crate)` exposure plus a foreign re-anchor from
+/// another module; a conditionally-compiled `pub fn apply_quest_trigger(` DECOY
+/// twin or a raw-string decoy, both of which `extract_npc_fn_body` would slice
+/// INSTEAD of the live function (it searches `pub fn` first, across the whole
+/// file), handing every body-scoped tooth in this slice a perfect body while
+/// production stays ungated; and a SECOND ungated emission anywhere in `npc.rs`
+/// — in `talk`, or hidden inside a `/*`-in-a-string blinded span, which is why
+/// that last census runs on the RAW, UN-stripped source.
+///
+/// AUTHORING RULE: nobody may write the ERROR macro token (`log::` joined to
+/// `error!(`) inside an `npc.rs` COMMENT — the raw census cannot tell a comment
+/// from code. If a second ERROR site in this module is ever sanctioned,
+/// RE-DERIVE this count deliberately, in the slice that adds it.
+///
+/// ASSERTION-RED at HEAD on the first clause: `npc.rs` declares no such static,
+/// so the count is 0.
+#[test]
+fn s20rc_load_error_limiter_is_a_private_file_scope_static_consulted_exactly_once() {
+    let file = squash_ws(&strip_npc_comments(NPC_SOURCE));
+    let ident = ["QUEST_DEFS_LOAD_ERR", "_LIMITER"].concat();
+    let decl_head = ["static", ident.as_str()].concat();
+
+    let n_static = s20rc_count(&file, decl_head.as_str());
+    assert_eq!(
+        n_static, 1,
+        "TEETH (20r-c i): `npc.rs` must declare the static `QUEST_DEFS_LOAD_ERR_LIMITER` EXACTLY \
+         once at file scope; found {n_static}. ZERO IS THE RED STATE AT HEAD. Zero also means the \
+         limiter (a) executes is not a `static` at all — a `const` is a fresh value at every \
+         mention and therefore never suppresses, and a fn-local binding is reconstructed on every \
+         call — or that it is reached through an alias, which is what the identifier count below \
+         forbids. TWO means a second limiter object and a cadence no test here reasoned about."
+    );
+
+    let decl = [
+        decl_head.as_str(),
+        concat!(":crate::movement::Rate", "Limiter="),
+        concat!("crate::movement::Rate", "Limiter::new();"),
+    ]
+    .concat();
+    assert!(
+        file.contains(decl.as_str()),
+        "TEETH (20r-c i): the declaration must be exactly {decl:?} (whitespace-insensitive). The \
+         FULLY-QUALIFIED type spelling is MANDATED, not cosmetic: a bare `RateLimiter` would be \
+         satisfied by a LOCAL struct of that name declared in `npc.rs` whose `check` returns \
+         `Some` unconditionally — a gate that compiles, reads correctly, passes every other tooth \
+         in this slice and suppresses nothing. `crate::movement::RateLimiter::new()` is a `const` \
+         fn precisely so this can be a plain process static (ADR-0170 D4)."
+    );
+
+    let n_ident = s20rc_count(&file, ident.as_str());
+    assert_eq!(
+        n_ident, 2,
+        "TEETH (20r-c i) — THE (a)-TO-PRODUCTION BRIDGE: the identifier \
+         `QUEST_DEFS_LOAD_ERR_LIMITER` must occur EXACTLY twice in the comment-stripped file — the \
+         declaration and the ONE gate receiver; found {n_ident}. With exactly two there is no room \
+         for anything to stand between the static test (a) executes and the object the gate \
+         consults. THREE is the MEASURED alias bypass (importing the sibling limiter under this \
+         name) or a fn-local `static` / `const` / `let` shadow: test (a) then passes against a \
+         static the production gate never touches, and the ERROR shares the sibling warn's \
+         limiter, so each fault silences the other."
+    );
+
+    let consult = [ident.as_str(), ".che", "ck("].concat();
+    let n_consult = s20rc_count(&file, consult.as_str());
+    assert_eq!(
+        n_consult, 1,
+        "TEETH (20r-c i): this static must be consulted EXACTLY once in `npc.rs`; found \
+         {n_consult}. TWO means a second site shares this limiter's cadence, so one fault \
+         suppresses the other's line — the same coupling defect as reusing the sibling, inverted. \
+         HONEST LIMIT: this census is FILE-scoped, so a `.check(..)` on this static from ANOTHER \
+         module is invisible here and is closed by diff review, not by this tooth."
+    );
+
+    for vis in ["pub", "pub(crate)"] {
+        let exposed = [vis, decl_head.as_str()].concat();
+        assert!(
+            !file.contains(exposed.as_str()),
+            "TEETH (20r-c i): the limiter must stay PRIVATE to `npc.rs`; found a `{vis}` \
+             declaration. An exported limiter can be re-anchored from another module — any \
+             `.check(..)` elsewhere resets this one's window and count — which silently turns the \
+             per-fault cadence this criterion specifies into a shared one, and the file-scoped \
+             consult census above cannot see the foreign caller."
+        );
+    }
+
+    let fn_decl = ["fnapply_quest", "_trigger("].concat();
+    let n_fn = s20rc_count(&file, fn_decl.as_str());
+    assert_eq!(
+        n_fn, 1,
+        "TEETH (20r-c i): `npc.rs` must declare `apply_quest_trigger` EXACTLY once; found {n_fn}. \
+         TWO IS A DECOY: `extract_npc_fn_body` searches for the `pub fn` spelling across the WHOLE \
+         file FIRST and takes the first hit, so a conditionally-compiled `pub fn` twin carrying a \
+         perfect gate — or a raw-string literal spelling that declaration — hands every \
+         body-scoped tooth in this slice the text it wants while the LIVE function stays ungated. \
+         This count is the only clause here that can see it."
+    );
+
+    let error_macro = ["log::", "error!("].concat();
+    let n_raw_error = s20rc_count(NPC_SOURCE, error_macro.as_str());
+    assert_eq!(
+        n_raw_error, 1,
+        "TEETH (20r-c i) — BLINDING-IMMUNE EMISSION CENSUS: the RAW, UN-stripped `npc.rs` must \
+         contain EXACTLY ONE ERROR macro call; found {n_raw_error}. Counted on the raw text on \
+         purpose: `strip_npc_comments` has no string-literal lexer, so a string containing a \
+         block-comment opener blanks everything to the next closer, and a second emission hidden \
+         inside that span is INVISIBLE to every stripped-view tooth in this slice. TWO also \
+         catches the simpler shape — an ungated second emission of this same fault added anywhere \
+         else in the module, `talk` included, which restores the flood with the gate fully intact. \
+         This census cannot tell a comment from code, so the ERROR macro token must never appear \
+         in an `npc.rs` comment; if a second ERROR site is ever sanctioned, re-derive this count \
+         DELIBERATELY in the slice that adds it."
     );
 }
