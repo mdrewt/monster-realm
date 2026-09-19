@@ -45,7 +45,7 @@ static QUEST_DEF_MISSING_LIMITER: crate::movement::RateLimiter =
 /// today; each is value-pinned by its own tooth, so drift is visible.
 const QUEST_DEFS_LOAD_ERR_WINDOW_MS: i64 = 60_000;
 
-/// Process-static limiter for the `quest_defs_load_error` line — the named
+/// Process-static limiter for the quest-defs load-error line — the named
 /// follow-up of ADR-0173 D4, realized with ADR-0170 D4's type. A SECOND,
 /// INDEPENDENT limiter on purpose: `cached_quest_defs()` caches its `Err` for
 /// the process lifetime (LazyLock) and the public `talk` reducer reaches this
