@@ -35,6 +35,28 @@ const QUEST_DEF_MISSING_WINDOW_MS: i64 = 60_000;
 static QUEST_DEF_MISSING_LIMITER: crate::movement::RateLimiter =
     crate::movement::RateLimiter::new();
 
+/// Emit window for the quest-defs LOAD-ERROR line: at most one ERROR emission
+/// per 60_000 ms of the caller's injected clock (ADR-0003 — never a wall
+/// clock). Its OWN constant rather than `QUEST_DEF_MISSING_WINDOW_MS`: the two
+/// sites report different faults at different severities and cardinalities
+/// (one dangling row at WARN vs the whole registry failing to parse at ERROR,
+/// on every `talk`), so retuning one must never silently retune the other —
+/// the same choice `accounts.rs` makes with its own 60 s constant. Same value
+/// today; each is value-pinned by its own tooth, so drift is visible.
+const QUEST_DEFS_LOAD_ERR_WINDOW_MS: i64 = 60_000;
+
+/// Process-static limiter for the quest-defs load-error line — the named
+/// follow-up of ADR-0173 D4, realized with ADR-0170 D4's type. A SECOND,
+/// INDEPENDENT limiter on purpose: `cached_quest_defs()` caches its `Err` for
+/// the process lifetime (LazyLock) and the public `talk` reducer reaches this
+/// arm on every call behind joined/zone/range checks only, so after a
+/// malformed-content republish one player looping `talk` is an unbounded
+/// ERROR-level stream. Sharing `QUEST_DEF_MISSING_LIMITER` would let either
+/// fault mask the other — the independence rationale ADR-0170 D4 records for
+/// the two `movement.rs` statics. Reset by a republish, like its sibling.
+static QUEST_DEFS_LOAD_ERR_LIMITER: crate::movement::RateLimiter =
+    crate::movement::RateLimiter::new();
+
 // ---------------------------------------------------------------------------
 // Marshal helpers (DB Vec<String> ↔ game_core BTreeSet<String>)
 // ---------------------------------------------------------------------------
@@ -163,8 +185,19 @@ fn apply_quest_trigger(
         Err(e) => {
             // 12r-d (ADR-0170 D5): RON parse-error text may contain quotes —
             // escape before interpolating into the hand-built JSON line.
+            // 20r-c (ADR-0173 D4 follow-up): the Err is cached for the process
+            // lifetime and `talk` reaches this arm on every call, so the line is
+            // gated by its OWN limiter at QUEST_DEFS_LOAD_ERR_WINDOW_MS of the
+            // injected clock (ADR-0003), reporting `suppressed` so it is never
+            // silently lossy. Control flow is unchanged: swallow and return.
             let escaped = crate::guards::json_escape(&e);
-            log::error!("{{\"evt\":\"quest_defs_load_error\",\"reason\":\"{escaped}\"}}");
+            if let Some(suppressed) = QUEST_DEFS_LOAD_ERR_LIMITER
+                .check(crate::marshal::now_ms(ctx), QUEST_DEFS_LOAD_ERR_WINDOW_MS)
+            {
+                log::error!(
+                    "{{\"evt\":\"quest_defs_load_error\",\"reason\":\"{escaped}\",\"suppressed\":{suppressed}}}"
+                );
+            }
             return;
         }
     };

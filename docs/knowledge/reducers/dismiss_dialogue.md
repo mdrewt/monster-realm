@@ -5,7 +5,7 @@ slug: reducers/dismiss_dialogue
 updated: 2026-09-18
 tags: [reducer, spacetimedb, npc]
 abstract: "Dismiss the current dialogue (no-op if no active conversation)."
-resource: server-module/src/npc.rs#L415
+resource: server-module/src/npc.rs#L448
 source: scripts/okf-export.mjs@server-module/src/npc.rs
 ---
 
