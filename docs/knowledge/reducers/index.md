@@ -7,6 +7,7 @@
 |------|------|-------|---------|
 | reducers/accept_challenge | SpacetimeDB Reducer | accept_challenge | Accept a pending PvP challenge. Creates the `battle` row and schedules the turn  |
 | reducers/account_deletion_reaper | SpacetimeDB Reducer | account_deletion_reaper | Deletion-grace reaper — the M22 §4.4 five-step cascade (m22-s3b, ADR-0228). Sche |
+| reducers/ack_evolution_notices | SpacetimeDB Reducer | ack_evolution_notices | Acknowledge the first `count` pending evolution reveals of the CALLER (20r-d, AD |
 | reducers/advance_dialogue | SpacetimeDB Reducer | advance_dialogue | Advance dialogue by selecting a choice. Security gate: `apply_choice` re-checks  |
 | reducers/attempt_recruit | SpacetimeDB Reducer | attempt_recruit | Attempt to recruit the wild monster in a wild battle (M8d, ADR-0047). The roll i |
 | reducers/battle_challenge_reaper | SpacetimeDB Reducer | battle_challenge_reaper | Scheduled reaper: delete a Pending battle challenge that has outlived `CHALLENGE |

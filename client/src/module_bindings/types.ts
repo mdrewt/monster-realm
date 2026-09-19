@@ -250,6 +250,14 @@ export const EvolutionPathRow = __t.object("EvolutionPathRow", {
 });
 export type EvolutionPathRow = __Infer<typeof EvolutionPathRow>;
 
+export const EvolutionRevealRow = __t.object("EvolutionRevealRow", {
+  monsterId: __t.u64(),
+  fromSpecies: __t.u32(),
+  toSpecies: __t.u32(),
+  evolvedAtMs: __t.i64(),
+});
+export type EvolutionRevealRow = __Infer<typeof EvolutionRevealRow>;
+
 export const ExportBundle = __t.object("ExportBundle", {
   chunkId: __t.u64(),
   ownerIdentity: __t.identity(),
@@ -491,6 +499,14 @@ export const NpcInteraction = __t.enum("NpcInteraction", {
   Heal: __t.u32(),
 });
 export type NpcInteraction = __Infer<typeof NpcInteraction>;
+
+export const PendingEvolutionNotice = __t.object("PendingEvolutionNotice", {
+  ownerIdentity: __t.identity(),
+  get entries() {
+    return __t.array(EvolutionRevealRow);
+  },
+});
+export type PendingEvolutionNotice = __Infer<typeof PendingEvolutionNotice>;
 
 export const Player = __t.object("Player", {
   identity: __t.identity(),

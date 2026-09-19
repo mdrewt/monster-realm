@@ -4074,3 +4074,185 @@ describe('rowConvert rb-53: exportChunkRowToStore — totality (RC-EX-05)', () =
     expect(stored.totalChunks).not.toBe(1);
   });
 });
+
+// =============================================================================
+// 20r-d (ADR-0254 D6) — pendingEvolutionNoticeRowToStore:
+// the `my_pending_evolution_notices` VIEW row -> the store's notice shape.
+//
+// ★ SOURCE OF TRUTH: spec §20r-d gate B1 + ADR-0254 D1/D6.
+//
+// RED REASON AT AUTHORING TIME: `pendingEvolutionNoticeRowToStore` does not
+// exist in rowConvert.ts. Reached through the NAMESPACE object on purpose (the
+// rb-53 idiom above): a named import of a missing export is a link-time
+// SyntaxError that would red every OTHER test in this file too, which makes the
+// RED signal unreadable. Through the namespace, exactly the 20r-d tests red, and
+// they red with "is not a function".
+//
+// CONTRACT UNDER TEST:
+//   export interface SdkEvolutionRevealRow {
+//     readonly monsterId: bigint; readonly fromSpecies: number;
+//     readonly toSpecies: number; readonly evolvedAtMs: bigint }
+//   export interface SdkPendingEvolutionNoticeRow {
+//     readonly ownerIdentity: { toHexString(): string };
+//     readonly entries: readonly SdkEvolutionRevealRow[] }
+//   export function pendingEvolutionNoticeRowToStore(
+//     row: SdkPendingEvolutionNoticeRow): StorePendingEvolutionNotice;
+//
+//   EXPLICIT field mapping (never a spread), NO numeric coercion (u64/i64 stay
+//   `bigint`, u32 stays `number`), NO defaulting, NO clamping, and TOTAL — this
+//   runs inside the shared flush closure, where a throw starves EVERY batch
+//   listener (ADR-0085 A6), including the movement reconcile that drives
+//   prediction snap.
+// =============================================================================
+
+interface Rc20rdSdkReveal {
+  monsterId: bigint;
+  fromSpecies: number;
+  toSpecies: number;
+  evolvedAtMs: bigint;
+}
+
+function rc20rdReveal(overrides: Partial<Rc20rdSdkReveal> = {}): Rc20rdSdkReveal {
+  return {
+    monsterId: 7n,
+    fromSpecies: 1,
+    toSpecies: 2,
+    evolvedAtMs: 1_700_000_000_000n,
+    ...overrides,
+  };
+}
+
+function rc20rdNotice(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    ownerIdentity: { toHexString: () => 'alice-hex' },
+    entries: [rc20rdReveal()],
+    ...overrides,
+  };
+}
+
+/** The converter, reached through the namespace so a MISSING export reds only
+ *  the 20r-d tests (and reds them with a legible "is not a function"). */
+function rc20rdConvert(row: Record<string, unknown>): Record<string, unknown> {
+  const fn = (rowConvertModule as unknown as Record<string, unknown>)
+    .pendingEvolutionNoticeRowToStore;
+  expect(
+    typeof fn,
+    'rowConvert.ts must export `pendingEvolutionNoticeRowToStore` (ADR-0254 D6). RED AT AUTHORING TIME: it does not exist',
+  ).toBe('function');
+  return (fn as (r: unknown) => Record<string, unknown>)(row);
+}
+
+describe('rowConvert 20r-d: pendingEvolutionNoticeRowToStore — RC-NOTICE', () => {
+  it('20r-d RC-NOTICE-1 BITES: ownerIdentity is hexed and EVERY entry field is mapped', () => {
+    // WRONG IMPL KILLED (a) ★: storing the raw SDK Identity OBJECT. Downstream,
+    //   `store.ownEvolutionNotices(identity)` compares with `===` against a hex
+    //   STRING, so the filter never matches and the banner never appears — while
+    //   the row sits happily in the store and every other gate stays green. This
+    //   is the same defect class that already bit playerRowToStore and
+    //   tradeOfferRowToStore in this file.
+    // WRONG IMPL KILLED (b): passing `row.entries` THROUGH by reference without
+    //   mapping. It looks identical today, and it silently re-exports whatever
+    //   extra SDK-only keys the binding happens to carry into the store — the
+    //   explicit-mapping rule `exportChunkRowToStore` documents.
+    const stored = rc20rdConvert(
+      rc20rdNotice({
+        ownerIdentity: { toHexString: () => 'deadbeef1234' },
+        entries: [rc20rdReveal({ monsterId: 42n, fromSpecies: 3, toSpecies: 4, evolvedAtMs: 99n })],
+      }),
+    );
+    expect(typeof stored.ownerIdentity).toBe('string');
+    expect(stored.ownerIdentity).toBe('deadbeef1234');
+    expect(stored.entries).toEqual([
+      { monsterId: 42n, fromSpecies: 3, toSpecies: 4, evolvedAtMs: 99n },
+    ]);
+  });
+
+  it('20r-d RC-NOTICE-2 BITES: the u64/i64 fields stay BIGINT past 2^53 (no Number() cast)', () => {
+    // WRONG IMPL KILLED: `Number(e.monsterId)`. Monster ids are server auto_inc
+    //   u64 and `evolvedAtMs` is i64 — a cast is lossy at exactly the point where
+    //   `resolveEvolutionNoticeNames` matches the reveal against the roster, so
+    //   the banner would name the WRONG monster's nickname.
+    const bigId = 9007199254740993n; // 2^53 + 1
+    const bigMs = 9007199254740994n;
+    const stored = rc20rdConvert(
+      rc20rdNotice({ entries: [rc20rdReveal({ monsterId: bigId, evolvedAtMs: bigMs })] }),
+    );
+    const entries = stored.entries as readonly Record<string, unknown>[];
+    expect(typeof entries[0]?.monsterId).toBe('bigint');
+    expect(entries[0]?.monsterId).toBe(bigId);
+    expect(typeof entries[0]?.evolvedAtMs).toBe('bigint');
+    expect(entries[0]?.evolvedAtMs).toBe(bigMs);
+    // …and the u32 species columns stay NUMBER (the label core does `Species #${id}`,
+    // which would render "Species #3n" for a bigint).
+    expect(typeof entries[0]?.fromSpecies).toBe('number');
+    expect(typeof entries[0]?.toSpecies).toBe('number');
+  });
+
+  it('20r-d RC-NOTICE-3 BITES: an EMPTY entries list maps to [], never to undefined', () => {
+    // WHY IT IS REACHABLE: the server NEVER deletes the row on ack (an empty Vec
+    //   persists, ADR-0254 D4), so "row present, entries empty" is the NORMAL
+    //   post-ack state — the very next view delivery after every dismissal.
+    // WRONG IMPL KILLED: `entries: row.entries.length ? … : undefined`, which
+    //   makes `ownEvolutionNotices(identity)[0]` throw in main.ts's batch listener.
+    const stored = rc20rdConvert(rc20rdNotice({ entries: [] }));
+    expect(Array.isArray(stored.entries)).toBe(true);
+    expect(stored.entries).toEqual([]);
+  });
+
+  it('20r-d RC-NOTICE-4 BITES: EXPLICIT mapping — an SDK-only key is NOT copied through', () => {
+    // WRONG IMPL KILLED ★: `return { ...row, ownerIdentity: … }`. A spread carries
+    //   whatever the generated binding happens to add on the next `just gen` into
+    //   the store — and from there into the change-detection compare, where a new
+    //   key makes every unchanged row read as CHANGED (the render storm) — while
+    //   this file's other assertions all still pass.
+    const stored = rc20rdConvert(
+      rc20rdNotice({
+        sdkOnlyMarker: 'must-not-survive',
+        entries: [{ ...rc20rdReveal(), sdkOnlyEntryMarker: 'must-not-survive' }],
+      }),
+    );
+    expect(Object.keys(stored).sort()).toEqual(['entries', 'ownerIdentity']);
+    const entries = stored.entries as readonly Record<string, unknown>[];
+    expect(Object.keys(entries[0] ?? {}).sort()).toEqual([
+      'evolvedAtMs',
+      'fromSpecies',
+      'monsterId',
+      'toSpecies',
+    ]);
+  });
+
+  it('20r-d RC-NOTICE-5 BITES: TOTAL — hostile rows never throw, and an unresolvable owner degrades to the empty string', () => {
+    // WRONG IMPL KILLED: `row.ownerIdentity.toHexString()` on a degenerate row.
+    //   The converter runs inside the SHARED flush closure (connection.ts's
+    //   MicrotaskBatcher), where a throw is caught by one try/catch that wraps ALL
+    //   FOUR reconciles — so one malformed notice row would also cost the monster,
+    //   battle and export reconciles their burst.
+    // THE FALLBACK IS THE `exportChunkRowToStore` PRECEDENT (rowConvert.ts:667-679):
+    //   an unresolvable owner degrades to '' — which `ownEvolutionNotices(identity)`
+    //   refuses for any real identity, so the row is inert rather than mis-attributed.
+    const hostile: readonly Record<string, unknown>[] = [
+      rc20rdNotice({ ownerIdentity: undefined }),
+      rc20rdNotice({ ownerIdentity: null }),
+      rc20rdNotice({ ownerIdentity: {} }),
+      rc20rdNotice({ entries: undefined }),
+      rc20rdNotice({ entries: null }),
+      rc20rdNotice({ entries: [rc20rdReveal({ monsterId: undefined as unknown as bigint })] }),
+    ];
+    for (const row of hostile) {
+      expect(
+        () => rc20rdConvert(row),
+        'pendingEvolutionNoticeRowToStore must never throw — a throw in the shared flush closure starves every batch listener (ADR-0085 A6)',
+      ).not.toThrow();
+    }
+
+    const degraded = rc20rdConvert(rc20rdNotice({ ownerIdentity: {} }));
+    expect(
+      degraded.ownerIdentity,
+      'an unresolvable owner degrades to the EMPTY STRING (the exportChunkRowToStore precedent), never to a fabricated identity',
+    ).toBe('');
+    expect(
+      rc20rdConvert(rc20rdNotice({ entries: undefined })).entries,
+      'a missing entries list degrades to [] so the store slot stays readable',
+    ).toEqual([]);
+  });
+});

@@ -2,10 +2,10 @@
 type: SpacetimeDB Table
 title: player_dialogue_state
 slug: tables/player_dialogue_state
-updated: 2026-09-18
+updated: 2026-09-19
 tags: [schema, spacetimedb, private]
 abstract: "PRIVATE per-player dialogue state: flags + done-quest history. Must-never-leak: flags gate content branches (ADR-0015, …"
-resource: server-module/src/schema.rs#L556
+resource: server-module/src/schema.rs#L614
 source: scripts/okf-export.mjs@server-module/src/schema.rs
 visibility: private
 ---

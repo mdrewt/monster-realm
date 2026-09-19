@@ -13165,3 +13165,543 @@ describe('★ main.ts wiring (20r-a M-3): onReconnect hides battleView / raising
     ).toBe(1);
   });
 });
+
+// ===========================================================================
+// 20r-d (ADR-0254 D6) — W-20RD-*: the post-evolve banner's main.ts wiring.
+//
+// ★ SOURCE OF TRUTH: spec `M-postgate-twentieth-review-residuals.spec.md` §20r-d
+// gate B1 ("… the client SHALL surface it") + ADR-0254 D6 ("Client").
+//
+// WHAT main.ts GAINS — exactly four wiring points:
+//   BANNER     a module-scope `let evolutionNoticeBanner: EvolutionNoticeBanner |
+//              undefined;` and ONE construction inside `main()`, beside the
+//              `#privacy-countdown` block (the runtime-constructed, NON-overlay
+//              precedent this banner deliberately copies).
+//   ACK        the construction's callback sends `ackEvolutionNotices({ count: 1 })`
+//              through `sendGuarded`, with the ADR-0085 C6 site-specific catch that
+//              SWALLOWS the two benign stale-banner rejections and RETHROWS
+//              everything else into sendGuarded's single status reporter.
+//   RENDER     a `store.onBatchApplied(` listener that reads the head of
+//              `store.ownEvolutionNotices(identity)` and renders `null` when there
+//              is none.
+//   RECONNECT  `evolutionNoticeBanner?.reset();` at the TAIL of the onReconnect
+//              body, immediately after `applySession({ kind: 'connected' });`.
+//
+// ANCHOR DISCIPLINE (this file's standing rule, restated because it is
+// load-bearing here): everything below indexes ONE text —
+// `stripLineComments(readMainTs())` — so a `//` or `/* */` mention of a key can
+// neither satisfy a tooth nor shift an anchor, and no raw/stripped offset is ever
+// mixed. Every anchor this block adds is CODE, never a comment: the four teeth
+// therefore require NO comment in main.ts and cannot be defeated by re-wording
+// one (the comment-mass guard at :2498-2502 is re-asserted per test so a
+// truncating strip reds loudly rather than scanning a prefix).
+//
+// RED REASON AT AUTHORING TIME (verified against main.ts this session):
+// `EvolutionNoticeBanner`, `evolutionNoticeLabel`, `resolveEvolutionNoticeNames`,
+// `isBenignAckRejection`, `ownEvolutionNotices` and `ackEvolutionNotices` occur
+// ZERO times in main.ts. Every tooth below reds on a MISSING IMPLEMENTATION.
+//
+// NO `new RegExp(...)` — indexOf / includes / split / slice only.
+// ===========================================================================
+
+/** ADR-0254 D6's module-scope handle. A `let`, like every other view handle in
+ *  main.ts, because it is constructed inside `main()` and read by a module-scope
+ *  batch listener. */
+const RD_BANNER_DECL = 'let evolutionNoticeBanner: EvolutionNoticeBanner | undefined;';
+/** The ONE construction site. */
+const RD_BANNER_CTOR = 'new EvolutionNoticeBanner(';
+/** The `#privacy-countdown` block's own first statement — the LEFT fence of the
+ *  "beside the countdown banner" region. CODE, and unique. */
+const RD_COUNTDOWN_ANCHOR = "privacyCountdownEl.id = 'privacy-countdown';";
+/** The RIGHT fence: the single `connect({ … })` call site. */
+const RD_CONNECT_ANCHOR = 'conn = connect({';
+/** The exact reducer call ADR-0254 D5 specifies (one entry per OK press — the
+ *  count-based ack's only safe count). */
+const RD_REDUCER_CALL = 'reducers.ackEvolutionNotices({ count: 1 })';
+
+/** Re-assert this file's comment-mass guard before each 20r-d scan: a
+ *  block-comment strip that bailed early (an unterminated `/*`) would leave every
+ *  clause below judging a PREFIX of main.ts rather than the file. */
+function rdStrippedMainTs(): string {
+  const raw = readMainTs();
+  const stripped = stripLineComments(raw);
+  expect(
+    stripped.length,
+    '20r-d: comment-stripped main.ts collapsed to under half its raw size — the block-comment ' +
+      'strip bailed early, so every scan below would cover only a prefix',
+  ).toBeGreaterThan(raw.length / 2);
+  return stripped;
+}
+
+/** The comment-stripped, whitespace-squashed ARGUMENT text of every
+ *  `store.onBatchApplied(` call in main.ts, paren-walked (string-aware, so a
+ *  paren inside a message literal cannot end a body early). */
+function rdBatchListenerBodies(stripped: string): string[] {
+  const needle = 'store.onBatchApplied(';
+  const out: string[] = [];
+  let from = 0;
+  for (;;) {
+    const at = stripped.indexOf(needle, from);
+    if (at === -1) return out;
+    const open = at + needle.length - 1;
+    const close = raMatchingParen(stripped, open);
+    expect(
+      close,
+      '20r-d: a `store.onBatchApplied(` call in main.ts has unbalanced parentheses — refusing to ' +
+        'scan a runaway region',
+    ).toBeGreaterThan(open);
+    out.push(squashWhitespace(stripped.slice(open + 1, close)));
+    from = close + 1;
+  }
+}
+
+/** The squashed ARGUMENT text of the ONE `new EvolutionNoticeBanner(` call. */
+function rdBannerCtorArgs(stripped: string): string {
+  expectUniqueAnchor(stripped, RD_BANNER_CTOR);
+  const at = stripped.indexOf(RD_BANNER_CTOR);
+  const open = at + RD_BANNER_CTOR.length - 1;
+  const close = raMatchingParen(stripped, open);
+  expect(
+    close,
+    '20r-d: the `new EvolutionNoticeBanner(` call has unbalanced parentheses',
+  ).toBeGreaterThan(open);
+  return squashWhitespace(stripped.slice(open + 1, close));
+}
+
+describe('★ main.ts wiring (20r-d / ADR-0254 D6): 20r-d W-20RD-BANNER — the banner is imported, declared once and constructed once inside main()', () => {
+  it('★★ 20r-d W-20RD-BANNER BITES: the four symbols come from ./ui/evolutionNotice, and the ONE construction sits beside the #privacy-countdown block', () => {
+    // WRONG IMPL KILLED (a) ★ THE SHIM (the W-CARE-IMPORT / F2 defect this file
+    //   already guards for its own imports): a locally-declared
+    //   `class EvolutionNoticeBanner { … }` or `const evolutionNoticeLabel = …`
+    //   satisfies every construction/needle clause below while the
+    //   behaviourally-tested module (evolutionNotice.test.ts) is never wired — the
+    //   whole slice's client behaviour silently disconnected from production.
+    // WRONG IMPL KILLED (b): importing the BANNER but not the LABEL core (or vice
+    //   versa) — a half-wired feature that renders an empty box, or computes a
+    //   sentence nothing displays. All four specifiers are required independently.
+    // WRONG IMPL KILLED (c): constructing the banner OUTSIDE `main()` at module
+    //   scope. `document.body` is available at module eval in this app, so it would
+    //   "work" — until the a11y/DOM ordering that every other runtime-constructed
+    //   surface (#status, #interact-prompt, #privacy-countdown) relies on shifts
+    //   under it. The region fence is what pins the placement ADR-0254 D6 names.
+    // WRONG IMPL KILLED (d): TWO constructions (a stray re-init on reconnect) —
+    //   the second would stack a second click listener on the same button, so one
+    //   OK press would send two acks and drain an entry the player never saw.
+    const stripped = rdStrippedMainTs();
+
+    // --- the import edge ----------------------------------------------------
+    const terminator = "} from './ui/evolutionNotice';";
+    expectUniqueAnchor(stripped, terminator);
+    const end = stripped.indexOf(terminator);
+    const start = stripped.lastIndexOf('import', end);
+    expect(
+      start,
+      `20r-d: the \`${terminator}\` clause must be preceded by an \`import\` keyword`,
+    ).toBeGreaterThanOrEqual(0);
+    const importStmt = squashWhitespace(stripped.slice(start, end));
+    for (const specifier of [
+      'EvolutionNoticeBanner',
+      'evolutionNoticeLabel',
+      'resolveEvolutionNoticeNames',
+      'isBenignAckRejection',
+    ]) {
+      expect(
+        importStmt.indexOf(specifier),
+        `20r-d W-20RD-BANNER: the './ui/evolutionNotice' import must name \`${specifier}\` — RED AT ` +
+          'AUTHORING TIME: the module does not exist. Import statement found: ' +
+          JSON.stringify(importStmt),
+      ).toBeGreaterThanOrEqual(0);
+    }
+    for (const shim of [
+      'class EvolutionNoticeBanner',
+      'const evolutionNoticeLabel =',
+      'function evolutionNoticeLabel',
+      'const isBenignAckRejection =',
+      'function isBenignAckRejection',
+    ]) {
+      expect(
+        countOccurrences(stripped, shim),
+        `20r-d W-20RD-BANNER: main.ts must contain NO \`${shim}\` — a local re-implementation ` +
+          'shadows the imported module and disconnects the shipped behaviour from the suite that ' +
+          'proves it (evolutionNotice.test.ts)',
+      ).toBe(0);
+    }
+
+    // --- the declaration and the single construction ------------------------
+    expect(
+      countOccurrences(stripped, RD_BANNER_DECL),
+      `20r-d W-20RD-BANNER: main.ts must declare \`${RD_BANNER_DECL}\` EXACTLY once at module ` +
+        'scope — one handle, constructed in main(), read by the batch listener and by the ' +
+        'onReconnect reset. RED AT AUTHORING TIME: 0',
+    ).toBe(1);
+    expect(
+      countOccurrences(stripped, RD_BANNER_CTOR),
+      `20r-d W-20RD-BANNER: \`${RD_BANNER_CTOR}\` must occur EXACTLY once. Two constructions stack ` +
+        'a second click listener on the SAME button (the shell is find-or-create), so one OK press ' +
+        'sends two acks — draining a reveal the player never saw',
+    ).toBe(1);
+
+    // --- the construction sits inside main(), beside the countdown block ----
+    expectUniqueAnchor(stripped, RD_COUNTDOWN_ANCHOR);
+    expectUniqueAnchor(stripped, RD_CONNECT_ANCHOR);
+    const startIdx = stripped.indexOf(RD_COUNTDOWN_ANCHOR);
+    const endIdx = stripped.indexOf(RD_CONNECT_ANCHOR, startIdx);
+    expect(
+      endIdx,
+      `20r-d: \`${RD_CONNECT_ANCHOR}\` must follow \`${RD_COUNTDOWN_ANCHOR}\` in main.ts (region end)`,
+    ).toBeGreaterThan(startIdx);
+    const region = squashWhitespace(stripped.slice(startIdx, endIdx));
+
+    // ANTI-VACUITY: this really is the runtime-construction region of main().
+    expect(
+      raCount(region, 'document.body.appendChild(privacyCountdownEl);'),
+      '20r-d ANTI-VACUITY: the region must contain the shipped ' +
+        '`document.body.appendChild(privacyCountdownEl);` exactly once — if it does not, these ' +
+        'fences no longer bound the runtime-construction block and the membership clause below is ' +
+        'vacuous',
+    ).toBe(1);
+    expect(
+      raCount(region, RD_BANNER_CTOR),
+      `20r-d W-20RD-BANNER: the ONE \`${RD_BANNER_CTOR}\` must sit between the ` +
+        '`#privacy-countdown` block and the `connect({ … })` call — i.e. inside main(), beside the ' +
+        'sibling runtime-constructed surface ADR-0254 D6 points at. A construction at module scope, ' +
+        'or after connect(), is outside this window',
+    ).toBe(1);
+  });
+});
+
+describe('★ main.ts wiring (20r-d / ADR-0254 D5/D6): 20r-d W-20RD-ACK — OK sends ackEvolutionNotices({ count: 1 }) through sendGuarded, with the benign-race catch', () => {
+  it('★★ 20r-d W-20RD-ACK BITES: the guarded send, the exact reducer argument, and a catch that swallows ONLY the benign rejections and rethrows the rest', () => {
+    // WRONG IMPL KILLED (a): calling the reducer directly instead of through
+    //   `sendGuarded` — a click on a frozen link then produces an unhandled
+    //   rejection and no status line (ADR-0085 D1), and the banner's own lock is
+    //   released by a promise that never settles (20r-a M-2).
+    // WRONG IMPL KILLED (b) ★: `{ count: 0 }` or a count derived from
+    //   `entries.length`. The banner renders ONE entry at a time, so any count
+    //   above 1 drains reveals that were never on screen — the count-based ack's
+    //   one sharp edge (ADR-0254 residual 1), and `{ count: 0 }` is rejected
+    //   outright by the server. The exact argument is the needle.
+    // WRONG IMPL KILLED (c) ★ THE SWALLOW-EVERYTHING CATCH: `.catch(() => {})`. The
+    //   two benign stale-banner races must be silent, and EVERYTHING ELSE must reach
+    //   sendGuarded's single status reporter — a blanket catch turns a dead link, a
+    //   schema skew and a server panic into silence, leaving the player pressing an
+    //   OK button that does nothing and says nothing.
+    // WRONG IMPL KILLED (d): classifying on the RAW error object instead of the
+    //   reduced message — `reduceErrorMessage` is what strips the SDK's
+    //   `InternalError` wrapper (PTC2-15), so a raw-object test never matches either
+    //   phrase and both benign races surface as errors.
+    // WRONG IMPL KILLED (e) ★ THE DROPPED RETURN (the 20r-a M-1 defect class, here
+    //   one level further out): `() => { sendGuarded('ackEvolutionNotices', …); }`.
+    //   A block-bodied arrow that does not RETURN hands the banner `undefined`, the
+    //   banner's `.finally()` fires on the next microtask, and the OK button
+    //   re-enables while the ack is still in flight — so a second press double-acks
+    //   and drains a reveal that was never rendered. The contiguous
+    //   `=> sendGuarded('ackEvolutionNotices'` needle admits only the
+    //   expression-bodied arrow, whose value IS the guarded promise.
+    // WRONG IMPL KILLED (f) ★ INVERTED POLARITY: `if (isBenignAckRejection(m)) throw
+    //   err;` — every needle a positive-shape pin could ask for is present, and the
+    //   behaviour is exactly backwards: the two benign two-tab races become
+    //   player-facing errors while every REAL failure is swallowed in silence. The
+    //   contiguous `!isBenignAckRejection(` needle is what fixes the polarity, and
+    //   the exactly-once count beside it stops a decoy positive call being parked
+    //   alongside the negated one.
+    const stripped = rdStrippedMainTs();
+    const args = rdBannerCtorArgs(stripped);
+
+    expect(
+      args.indexOf("sendGuarded('ackEvolutionNotices'"),
+      "20r-d W-20RD-ACK: the banner's onAck callback must route through " +
+        "`sendGuarded('ackEvolutionNotices', …)` — the tag is what the status line reports and " +
+        'what 20r-a M-2 guarantees always resolves (so the banner`s own lock is released on a ' +
+        'frozen link). Constructor argument found: ' +
+        JSON.stringify(args),
+    ).toBeGreaterThanOrEqual(0);
+    // …and the callback RETURNS it. `EvolutionNoticeBanner`'s `onAck` is typed
+    // `() => Promise<void>` and the banner releases its generation lock in the
+    // `.finally()` of whatever that call returns, so the promise has to come back
+    // out of the callback. The contiguous `=>` is the whole pin: it admits the
+    // expression-bodied arrow and refuses the block-bodied one that drops the value.
+    expect(
+      args.indexOf("=> sendGuarded('ackEvolutionNotices'"),
+      '20r-d W-20RD-ACK: the onAck callback must be the EXPRESSION-bodied arrow ' +
+        "`() => sendGuarded('ackEvolutionNotices', …)`, so the guarded promise is the callback's " +
+        'RETURN VALUE. A block body without `return` hands the banner `undefined`: its `.finally()` ' +
+        'settles on the next microtask and the OK button re-enables while the ack is still in ' +
+        'flight, so the next press double-acks and drains a reveal that was never on screen. ' +
+        '(This is 20r-a M-1`s defect class one level out, and no unit test of the banner can see ' +
+        'it — evolutionNotice.test.ts drives its own injected onAck, never main.ts`s.) ' +
+        'Constructor argument found: ' +
+        JSON.stringify(args),
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      countOccurrences(squashWhitespace(stripped), "sendGuarded('ackEvolutionNotices'"),
+      "20r-d W-20RD-ACK: exactly ONE `sendGuarded('ackEvolutionNotices'` call site in main.ts — a " +
+        'second is a second, differently-guarded ack path',
+    ).toBe(1);
+
+    expect(
+      countOccurrences(squashWhitespace(stripped), RD_REDUCER_CALL),
+      `20r-d W-20RD-ACK: main.ts must contain \`${RD_REDUCER_CALL}\` EXACTLY once. The argument is ` +
+        'pinned whole: the banner shows ONE entry at a time, so a larger count drains reveals the ' +
+        'player never saw and `{ count: 0 }` is rejected by the server outright. RED AT AUTHORING ' +
+        'TIME: 0',
+    ).toBe(1);
+    expect(
+      args.indexOf(RD_REDUCER_CALL),
+      `20r-d W-20RD-ACK: the \`${RD_REDUCER_CALL}\` call must live INSIDE the banner constructor's ` +
+        'own callback argument — not in some other handler that happens to spell it. Constructor ' +
+        'argument found: ' +
+        JSON.stringify(args),
+    ).toBeGreaterThanOrEqual(0);
+
+    // The site-specific catch, bounded to its OWN parenthesised body.
+    const reducerIdx = args.indexOf(RD_REDUCER_CALL);
+    const catchIdx = args.indexOf('.catch(', reducerIdx);
+    expect(
+      catchIdx,
+      '20r-d W-20RD-ACK: the reducer call must carry a `.catch(` (ADR-0085 C6 site-specific catch) ' +
+        '— without it every benign two-tab race reads as an error in the status line, and a ' +
+        'millisecond race between two tabs is a NORMAL state for this queue',
+    ).toBeGreaterThan(reducerIdx);
+    const catchOpen = catchIdx + '.catch'.length;
+    const catchClose = raMatchingParen(args, catchOpen);
+    expect(catchClose, '20r-d W-20RD-ACK: the `.catch(` must have balanced parens').toBeGreaterThan(
+      catchOpen,
+    );
+    const catchBody = args.slice(catchOpen + 1, catchClose);
+
+    expect(
+      catchBody.indexOf('isBenignAckRejection('),
+      '20r-d W-20RD-ACK: the catch body must classify through `isBenignAckRejection(` — the pure, ' +
+        'unit-tested predicate (evolutionNotice.test.ts EN-BENIGN-1), never an inline substring ' +
+        'test that can drift from it. Catch body found: ' +
+        JSON.stringify(catchBody),
+    ).toBeGreaterThanOrEqual(0);
+    // ★ POLARITY, pinned CONTIGUOUSLY. The sanctioned catch body is
+    //     (err: unknown) => { if (!isBenignAckRejection(reduceErrorMessage(err,
+    //       'ackEvolutionNotices'))) throw err; }
+    // and the `!` is the whole difference between "swallow the two benign races" and
+    // "swallow every real failure". An early-return spelling
+    // (`if (isBenign(m)) return; throw err;`) is behaviourally equivalent BUT is not
+    // distinguishable from its own inversion by any needle this scan can write — so
+    // it is deliberately NOT accepted here. Write the negated form.
+    expect(
+      catchBody.indexOf('!isBenignAckRejection('),
+      '20r-d W-20RD-ACK: the catch body must contain the NEGATED classification ' +
+        '`!isBenignAckRejection(` — the exact spelling ADR-0085 C6 mandates for this site:\n' +
+        "  .catch((err: unknown) => { if (!isBenignAckRejection(reduceErrorMessage(err, 'ackEvolutionNotices'))) throw err; })\n" +
+        'WHY THE `!` IS PINNED AND NOT THE EARLY-RETURN SHAPE: `if (isBenignAckRejection(m)) throw ' +
+        'err;` is the INVERSION, it is one character away from the positive early-return form, and ' +
+        'it satisfies every un-negated needle — while turning the two benign two-tab races into ' +
+        'player-facing errors and silencing every dead link, schema skew and server panic. Binding ' +
+        'the `!` to the call contiguously is the only way this scan can tell the two apart. ' +
+        'Catch body found: ' +
+        JSON.stringify(catchBody),
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      countOccurrences(catchBody, 'isBenignAckRejection('),
+      '20r-d W-20RD-ACK: the catch body must call `isBenignAckRejection(` EXACTLY once. Two calls ' +
+        'means a decoy: a negated one parked to satisfy the clause above while an UN-negated one ' +
+        'does the real work (`if (!isBenign(m)) {} if (isBenign(m)) throw err;`). One classifier, ' +
+        'one decision. Catch body found: ' +
+        JSON.stringify(catchBody),
+    ).toBe(1);
+    // ★ AND NO EARLY EXIT. Found while writing the clause above, and it is the one
+    // shape that satisfies both the `!` needle and the `throw err` needle while
+    // doing the exact opposite of what they describe:
+    //     if (!isBenignAckRejection(m)) { return; }
+    //     throw err;
+    // — the benign races are RETHROWN into the status line and every real failure
+    // is swallowed. The sanctioned single-statement body has no `return` at all, so
+    // banning it outright is free and closes the inversion completely.
+    // DISCLOSED REMAINDER: `if (!isBenign(m)) {} throw err;` (an empty consequent)
+    // passes every clause here. It is not a shape anyone writes by accident, and it
+    // fails SAFE — every rejection reaches the status line, which is a UX regression
+    // and not a silent one.
+    expect(
+      countOccurrences(catchBody, 'return'),
+      '20r-d W-20RD-ACK: the catch body must contain NO `return` — the sanctioned body is the ' +
+        'single statement `if (!isBenignAckRejection(reduceErrorMessage(err, ' +
+        "'ackEvolutionNotices'))) throw err;`. An early `return` inside the negated branch " +
+        'inverts the whole decision (`if (!isBenign(m)) { return; } throw err;` rethrows the two ' +
+        'BENIGN races and swallows every real failure) while still satisfying both the `!` and ' +
+        '`throw err` clauses above. Catch body found: ' +
+        JSON.stringify(catchBody),
+    ).toBe(0);
+    expect(
+      catchBody.indexOf('reduceErrorMessage('),
+      '20r-d W-20RD-ACK: the catch body must classify the REDUCED message, not the raw error — ' +
+        '`reduceErrorMessage` is what strips the SDK`s InternalError wrapper (PTC2-15), so a ' +
+        'raw-object test matches neither benign phrase and both races surface as errors',
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      catchBody.indexOf('throw err'),
+      '20r-d W-20RD-ACK: the catch body must RETHROW the non-benign case (`throw err`) so ' +
+        "sendGuarded's catch stays the single status reporter. A catch that swallows everything " +
+        'leaves a dead link, a schema skew and a server panic all invisible behind an OK button ' +
+        'that silently does nothing. Catch body found: ' +
+        JSON.stringify(catchBody),
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      countOccurrences(squashWhitespace(stripped), 'isBenignAckRejection('),
+      '20r-d W-20RD-ACK: `isBenignAckRejection(` must be CALLED exactly once in main.ts — the one ' +
+        'classification site. (The import specifier carries no paren and is not counted.)',
+    ).toBe(1);
+  });
+});
+
+describe('★ main.ts wiring (20r-d / ADR-0254 D6): 20r-d W-20RD-RENDER — one batch listener renders the head entry, and null when there is none', () => {
+  it('★★ 20r-d W-20RD-RENDER BITES: exactly one store.onBatchApplied listener reads ownEvolutionNotices(identity)[0] and renders null when it is undefined', () => {
+    // WRONG IMPL KILLED (a) ★ THE NEVER-HIDES MUTANT: `evolutionNoticeBanner?.render(
+    //   evolutionNoticeLabel(head, …))` with no null arm. Once a reveal has been
+    //   shown the banner stays on screen forever — including after the ack it just
+    //   sent succeeded, which makes the OK button look broken and then starts
+    //   rejecting ("no pending evolution notices") on every further press. The
+    //   ternary is pinned whole for exactly this reason.
+    // WRONG IMPL KILLED (b): rendering from a store read OTHER than the owner-scoped
+    //   accessor (e.g. a raw slot getter) — the client-side owner filter is the
+    //   defence-in-depth AUTH-51 relies on after an identity rotation.
+    // WRONG IMPL KILLED (c): rendering entry [1], or the LAST entry. Vec order IS
+    //   display order (EG2-13) and the ack drains a PREFIX, so the head is the only
+    //   entry the count-1 ack is allowed to acknowledge.
+    // WRONG IMPL KILLED (d): a render wired to the rAF frame instead of the batch
+    //   signal — it would rebuild the label ~60x/second from the same row.
+    const stripped = rdStrippedMainTs();
+    const bodies = rdBatchListenerBodies(stripped);
+
+    expect(
+      bodies.length,
+      '20r-d ANTI-VACUITY: main.ts must register at least the shipped batch listeners — a zero ' +
+        'here means the paren walk rotted and the membership clause below proves nothing',
+    ).toBeGreaterThanOrEqual(2);
+
+    const owners = bodies.filter((b) => b.indexOf('ownEvolutionNotices(identity)') >= 0);
+    expect(
+      owners.length,
+      '20r-d W-20RD-RENDER: EXACTLY ONE `store.onBatchApplied(` listener must read ' +
+        '`ownEvolutionNotices(identity)`. Zero means the banner is never rendered (RED AT AUTHORING ' +
+        'TIME); two means two listeners race to render the same row, and the second would re-show a ' +
+        'banner the first had just hidden',
+    ).toBe(1);
+    const body = owners[0] ?? '';
+
+    for (const needle of [
+      'ownEvolutionNotices(identity)[0]',
+      'evolutionNoticeBanner?.render(',
+      'evolutionNoticeLabel(',
+      'resolveEvolutionNoticeNames(',
+      'store.ownMonsters(identity)',
+      'store.species(',
+    ]) {
+      expect(
+        body.indexOf(needle),
+        `20r-d W-20RD-RENDER: the batch listener must contain \`${needle}\`. The label is built from ` +
+          'the HEAD entry, the nickname from the caller`s OWN roster and the species names from the ' +
+          'content table — each omitted separately is a real shipped-and-broken outcome (no banner, ' +
+          'the wrong entry, "undefined evolved from…", or "Species #3" forever). Listener body: ' +
+          JSON.stringify(body),
+      ).toBeGreaterThanOrEqual(0);
+    }
+
+    expect(
+      body.indexOf('=== undefined ? null :'),
+      '20r-d W-20RD-RENDER: the render argument must be the whole ternary — `head === undefined ? ' +
+        'null : evolutionNoticeLabel(head, …)`. Without the `null` arm the banner never hides: after ' +
+        'the last reveal is acked it keeps showing the stale sentence, and every further OK press ' +
+        'rejects. Listener body: ' +
+        JSON.stringify(body),
+    ).toBeGreaterThanOrEqual(0);
+
+    const squashed = squashWhitespace(stripped);
+    expect(
+      countOccurrences(squashed, 'store.ownEvolutionNotices('),
+      '20r-d W-20RD-RENDER: `store.ownEvolutionNotices(` must be read from EXACTLY ONE site in ' +
+        'main.ts — one seam for one fact (the rb-52 `deriveDeletionCountdown` rule)',
+    ).toBe(1);
+    expect(
+      countOccurrences(squashed, 'evolutionNoticeBanner?.render('),
+      '20r-d W-20RD-RENDER: `evolutionNoticeBanner?.render(` must be called from EXACTLY ONE site — ' +
+        'a second render site is a second opinion about what the banner shows, and the two will ' +
+        'disagree on the frame after an ack',
+    ).toBe(1);
+  });
+});
+
+describe('★ main.ts wiring (20r-d / ADR-0254 D6): 20r-d W-20RD-RECONNECT — the banner lock is reset at the TAIL of onReconnect', () => {
+  it('★★ 20r-d W-20RD-RECONNECT BITES: evolutionNoticeBanner?.reset() is the statement immediately after applySession({ kind: "connected" }) in the onReconnect body', () => {
+    // WHY THE TAIL, AND NOT ANYWHERE IN THE BODY (ADR-0254 D6, and it is a real
+    //   ordering constraint, not tidiness): `store.reset()` runs on the DROP edge and
+    //   the post-rebuild flush is a LATER microtask, so a reset placed at the tail can
+    //   never be re-disabled by a stale render. The SDK never settles an in-flight
+    //   reducer promise after a link drop (ADR-0085 D3), so without this the OK button
+    //   holds its generation lock for the whole SESSION — for exactly the player whose
+    //   connection flapped mid-chain, who is then left with an undismissable banner.
+    // WRONG IMPL KILLED (a): no reset at all (RED AT AUTHORING TIME: 0).
+    // WRONG IMPL KILLED (b) ★ THE PRESENCE-ONLY FORGERY (the 20r-a M-3 round-2
+    //   survivor, restated): `if (false) evolutionNoticeBanner?.reset();`, an
+    //   env-gated or flag-gated reset, or one moved out of statement position. Each
+    //   counts as one occurrence and resets nothing. The ADJACENCY literal below pins
+    //   it as a bare statement immediately after the applySession call.
+    // WRONG IMPL KILLED (c): a reset placed BEFORE `applySession({ kind: 'connected' })`
+    //   — same text, and it runs while the session overlay may still be tearing down.
+    const stripped = rdStrippedMainTs();
+
+    expect(
+      countOccurrences(stripped, 'onReconnect:'),
+      "20r-d: main.ts must contain EXACTLY ONE `onReconnect:` key — the region's left fence. Two " +
+        'would let this scan bind to the wrong callback',
+    ).toBe(1);
+    expect(
+      countOccurrences(stripped, 'onOwnWarp'),
+      "20r-d: main.ts must contain EXACTLY ONE `onOwnWarp` — the region's right fence (the next " +
+        'sibling key of the connect() options object). If a second legitimately appears, re-derive ' +
+        'this fence from the options object; never widen the region to absorb it',
+    ).toBe(1);
+
+    const startIdx = stripped.indexOf('onReconnect:');
+    const endIdx = stripped.indexOf('onOwnWarp', startIdx);
+    expect(
+      endIdx,
+      "20r-d: main.ts must contain 'onOwnWarp' AFTER 'onReconnect:' (region end)",
+    ).toBeGreaterThan(startIdx);
+    const region = squashWhitespace(stripped.slice(startIdx, endIdx));
+
+    // ANTI-VACUITY: the window is the reconnect body — two shipped statements,
+    // exactly once each, one of which is the left fence of the adjacency pin.
+    expect(
+      raCount(region, 'pvpView?.hide()'),
+      '20r-d ANTI-VACUITY: the shipped `pvpView?.hide()` must be in the window exactly once',
+    ).toBe(1);
+    expect(
+      raCount(region, "applySession({ kind: 'connected' });"),
+      "20r-d ANTI-VACUITY: the window must contain exactly one `applySession({ kind: 'connected' });` " +
+        '— the onReady callback carries the other one, and it must stay OUTSIDE this region or the ' +
+        'adjacency pin below is judging the wrong site',
+    ).toBe(1);
+
+    expect(
+      raCount(region, 'evolutionNoticeBanner?.reset();'),
+      '20r-d W-20RD-RECONNECT: the onReconnect body must call `evolutionNoticeBanner?.reset();` ' +
+        'EXACTLY once. RED AT AUTHORING TIME: 0 — and with it absent, one link flap leaves the OK ' +
+        'button dead for the rest of the session',
+    ).toBe(1);
+    expect(
+      countOccurrences(squashWhitespace(stripped), 'evolutionNoticeBanner?.reset();'),
+      '20r-d W-20RD-RECONNECT: `evolutionNoticeBanner?.reset();` must occur EXACTLY once in the ' +
+        'whole file — a second reset elsewhere (a frame tick, a hotkey) would release the lock ' +
+        'while a real ack is still in flight, re-arming the double-send this slice guards against',
+    ).toBe(1);
+
+    const RD_RECONNECT_TAIL =
+      "applySession({ kind: 'connected' }); evolutionNoticeBanner?.reset();";
+    expect(
+      raCount(region, RD_RECONNECT_TAIL),
+      `20r-d W-20RD-RECONNECT ADJACENCY: the squashed onReconnect body must contain ` +
+        `\`${RD_RECONNECT_TAIL}\` EXACTLY once — the reset as a BARE statement immediately after ` +
+        'the applySession call, i.e. at the TAIL of the body. An `if (false) …` / env-gated / ' +
+        'flag-gated reset, or one moved earlier in the body, satisfies the presence count above and ' +
+        'resets nothing on a real reconnect. Squashed window: ' +
+        JSON.stringify(region),
+    ).toBe(1);
+  });
+});

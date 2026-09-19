@@ -640,7 +640,7 @@ invalidates downstream `touches:` declarations — **keep the file names stable.
 | `taming.rs` | `attempt_recruit`, `grant_bait` | `taming_tests.rs` |
 | `inventory.rs` | `grant_item`, `consume_one` (single item-mutation surface — ADR-0059) | — |
 | `raising.rs` | `care`, `train`, `essence_train`, `consume_crystalized_essence`, `evaluate_heal`, `heal_party` + the `accrue_quality_time`/`apply_quality_time_credit`/`grant_essence` growth helpers (raising + heal cooldown — ADR-0058/0059; essence/Quality-Time — ADR-0175) | `raising_tests.rs` |
-| `evolution.rs` | `evolve` + the `apply_evolution`/`check_and_evolve` auto-evolution helpers (fusion deleted — EG1/ADR-0174; event-triggered essence-graph evolution — EG2/ADR-0175) | `evolution_tests.rs` |
+| `evolution.rs` | `evolve` + the `apply_evolution`/`check_and_evolve` auto-evolution helpers (fusion deleted — EG1/ADR-0174; event-triggered essence-graph evolution — EG2/ADR-0175) + `ack_evolution_notices` with its pure `ack_prefix` core and the `erase_evolution_notices`/`rekey_evolution_notices`/`has_evolution_notices` lifecycle helpers over the private `pending_evolution_notice` queue (post-evolve reveal — 20r-d/ADR-0254) | `evolution_tests.rs` |
 | `npc.rs` | `talk`, `advance_dialogue`, `dismiss_dialogue` reducers; dialogue/quest state marshaling + helpers (M12b, ADR-0069) | `npc_tests.rs` |
 | `economy.rs` | `buy`, `sell` reducers + `grant_currency` / `spend_currency` / `wallet_balance` helpers (the single economy-mutation surface — M13, ADR-0081/0082) | `economy_tests.rs` |
 | `trading.rs` | `propose_trade`, `respond_trade`, `confirm_trade`, `cancel_trade`, `trade_offer_reaper` + the `trade_offer_reaper_schedule` scheduled table (M15a — ADR-0106; TTL reaper M16.5f — ADR-0117) | `trading_tests.rs` |

@@ -524,6 +524,7 @@ pub(crate) fn refuses_commitment_opened_at(
 /// monster unconditionally on first play).
 pub(crate) fn account_has_game_data(ctx: &ReducerContext, identity: Identity) -> bool {
     crate::monster_mgmt::has_monsters(ctx, identity)
+        || crate::evolution::has_evolution_notices(ctx, identity)
         || crate::inventory::has_items(ctx, identity)
         || crate::economy::wallet_exists(ctx, identity)
         || crate::ranking::profile_exists(ctx, identity)
@@ -544,6 +545,7 @@ pub(crate) fn account_has_game_data(ctx: &ReducerContext, identity: Identity) ->
 /// so the two manifests cannot drift apart on a rename.
 pub(crate) fn rekey_all(ctx: &ReducerContext, from: Identity, to: Identity) -> Result<(), String> {
     crate::monster_mgmt::rekey_monsters(ctx, from, to)?;
+    crate::evolution::rekey_evolution_notices(ctx, from, to);
     crate::inventory::rekey_inventory(ctx, from, to);
     crate::npc::rekey_npc_state(ctx, from, to);
     crate::raising::rekey_heal_cooldown(ctx, from, to);
@@ -1079,6 +1081,7 @@ pub fn account_deletion_reaper(
     }
     crate::resolve_all_live_interactions(ctx, args.account_identity);
     crate::monster_mgmt::erase_monsters(ctx, args.account_identity);
+    crate::evolution::erase_evolution_notices(ctx, args.account_identity);
     crate::inventory::erase_inventory(ctx, args.account_identity);
     crate::npc::erase_npc_state(ctx, args.account_identity);
     crate::raising::erase_heal_cooldown(ctx, args.account_identity);

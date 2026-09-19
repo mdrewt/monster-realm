@@ -166,6 +166,11 @@ const EXPECTED_VIEWS = [
   // privacy_tests.rs m22s4_view_declared_once_attr_sig_body_exact.
   'my_export_bundle',
   'my_monster_pub',
+  // 20r-d (ADR-0254 D3): owner-scoped read path for the private
+  // pending_evolution_notice table (sorted insert — index 5). Attribute,
+  // signature and body pinned by equality in evolution_tests.rs
+  // s20rd_notice_table_is_private_and_its_view_is_owner_scoped.
+  'my_pending_evolution_notices',
   'my_wallet',
 ];
 
@@ -1320,6 +1325,11 @@ const EXPECTED_SUBSCRIPTIONS = [
   // client's only read path for a completed data export (PRV1-11/12/13). This is the
   // "deliberate eval edit in the PR that privacy-reviews it" the header above asks for.
   'SELECT * FROM my_export_bundle',
+  // 20r-d (ADR-0254 D3/D8): the owner-scoped view over the PRIVATE
+  // `pending_evolution_notice` table — the client's only read path for the
+  // post-evolve reveal queue the banner renders. This is the "deliberate eval
+  // edit in the PR that privacy-reviews it" the header above asks for.
+  'SELECT * FROM my_pending_evolution_notices',
 ];
 
 const SUBSCRIBE_MARKER = '.subscribe([';
@@ -1601,6 +1611,11 @@ fn my_account(ctx: &spacetimedb::ViewContext) -> Option<Account> {
 #[spacetimedb::view(accessor = my_export_bundle, public)]
 fn my_export_bundle(ctx: &spacetimedb::ViewContext) -> Vec<ExportBundle> {
     ctx.db.export_bundle().owner_identity().filter(ctx.sender()).collect()
+}
+
+#[spacetimedb::view(accessor = my_pending_evolution_notices, public)]
+fn my_pending_evolution_notices(ctx: &spacetimedb::ViewContext) -> Option<PendingEvolutionNotice> {
+    ctx.db.pending_evolution_notice().owner_identity().find(ctx.sender())
 }
 `;
 

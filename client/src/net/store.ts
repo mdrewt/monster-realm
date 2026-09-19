@@ -268,6 +268,29 @@ export type StoreExportChunk = {
   readonly createdAtMs: bigint;
 };
 
+/** One queued post-evolve reveal (20r-d, ADR-0254 D1). The server's nested
+ *  `EvolutionRevealRow`, normalised only in NAME: `monsterId` (u64) and `evolvedAtMs`
+ *  (i64) stay `bigint`, the two species columns (u32) stay `number`. `evolvedAtMs` is
+ *  display metadata — the transaction clock, identical across one evolution chain — and
+ *  is never an ordering or a dedupe key: Vec order IS display order (EG2-13). */
+export type StoreEvolutionReveal = {
+  readonly monsterId: bigint;
+  readonly fromSpecies: number;
+  readonly toSpecies: number;
+  readonly evolvedAtMs: bigint;
+};
+
+/** The caller's own `my_pending_evolution_notices` row (20r-d, ADR-0254 D1/D6). The view
+ *  is an `Option` projection of a PK-keyed private table, so at most ONE row exists — the
+ *  caller's — which is why the store holds it in a SLOT and not a keyed map. `entries` is
+ *  authoritative and may legitimately be EMPTY: the ack drains a prefix and never deletes
+ *  the row (the `player_wallet` rule), so "row present, no entries" is the normal
+ *  post-dismissal state. */
+export type StorePendingEvolutionNotice = {
+  readonly ownerIdentity: string;
+  readonly entries: readonly StoreEvolutionReveal[];
+};
+
 /** A player quest row, normalized (ownerIdentity as hex string; M12d). */
 export type StorePlayerQuest = {
   readonly pqId: bigint;
@@ -452,6 +475,12 @@ export class AuthoritativeStore {
   // the key, so it has to come out of the payload), and keying by `requestId` instead would
   // collapse a whole export to one chunk and leave it permanently `incomplete`.
   readonly #exportChunks = new Map<bigint, StoreExportChunk>();
+  // 20r-d (ADR-0254 D6): the post-evolve reveal queue. A SLOT, not a Map, for the
+  // `#ownWallet` / `#ownAccount` reason: `my_pending_evolution_notices` is an Option view
+  // returning exactly ONE row — the caller's — so a keyed map would make another player's
+  // evolution history representable in the client cache for free. Written ONLY by
+  // `reconcileEvolutionNoticesFromView` (authoritative whole-set), never per row.
+  #ownEvolutionNotices: StorePendingEvolutionNotice | undefined;
   readonly #batchListeners = new Set<() => void>();
   #dirty = false;
   /** Nominal server step interval (ms), used for burst detection + jitter EWMA.
@@ -836,6 +865,11 @@ export class AuthoritativeStore {
     // initial snapshot when the subscription re-applies (the `#ownAccount` rule, for a table
     // whose rows ARE the player's exported data).
     this.#exportChunks.clear();
+    // 20r-d: the post-evolve reveal slot — cleared on disconnect so a previous identity's
+    // evolution history can never surface to the next one (every anonymous rebuild can mint a
+    // new identity); repopulated from the `my_pending_evolution_notices` view's initial
+    // snapshot when the subscription re-applies (ADR-0254 D6).
+    this.#ownEvolutionNotices = undefined;
     this.#dirty = false;
   }
 
@@ -1237,6 +1271,49 @@ export class AuthoritativeStore {
       if (c.ownerIdentity === identity) out.push(c);
     }
     return out;
+  }
+
+  /** Replace the post-evolve reveal slot from the post-burst `my_pending_evolution_notices`
+   *  cache (20r-d, ADR-0254 D6) — the `reconcileExportChunksFromView` shape, not the
+   *  `upsertWallet` insert-only one.
+   *
+   *  AUTHORITATIVE: `rows[0]` wins and an EMPTY `rows` CLEARS the slot. That is what makes a
+   *  server-side withdrawal (the account-deletion cascade, the guest-claim rekey) take the
+   *  reveal off the screen instead of stranding a notice about erased data behind an OK
+   *  button whose ack now rejects forever. The view is an `Option` projection, so
+   *  `rows.length <= 1` by construction and a longer delivery simply keeps the head — this
+   *  path must never throw (it runs inside the shared flush closure).
+   *
+   *  Change detection is `deepRowEq`, NOT `shallowRowEq`: `entries` is an ARRAY of objects
+   *  rebuilt fresh by every `pendingEvolutionNoticeRowToStore` call, and the one-level
+   *  compare reports every one of them as changed — the render storm ADR-0198 D5 records for
+   *  the sibling battle reconcile. This reconcile runs on EVERY flush, so an unchanged
+   *  re-delivery must cost no listener wake. */
+  reconcileEvolutionNoticesFromView(rows: readonly StorePendingEvolutionNotice[]): void {
+    const next = rows[0];
+    const prev = this.#ownEvolutionNotices;
+    if (next === undefined) {
+      if (prev === undefined) return;
+      this.#ownEvolutionNotices = undefined;
+      this.#dirty = true;
+      return;
+    }
+    if (prev !== undefined && deepRowEq(prev, next)) return;
+    this.#ownEvolutionNotices = next;
+    this.#dirty = true;
+  }
+
+  /** The queued reveals ONLY when the slot belongs to `identity` — the client-side owner
+   *  filter (ADR-0015 V1), defense in depth behind the server-side owner-scoped view, and
+   *  the AUTH-51 guard `ownWallet` / `ownAccount` already apply: a reconnect can mint a NEW
+   *  identity and the slot survives until the next reconcile.
+   *
+   *  EXACT comparison — no case folding, no trimming. Returns `[]` (never `undefined`) when
+   *  there is no row or the row belongs to somebody else: every caller reads `[0]` off the
+   *  result inside a batch listener. */
+  ownEvolutionNotices(identity: string): readonly StoreEvolutionReveal[] {
+    const slot = this.#ownEvolutionNotices;
+    return slot !== undefined && slot.ownerIdentity === identity ? slot.entries : [];
   }
 }
 

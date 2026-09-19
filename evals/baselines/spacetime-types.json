@@ -33,6 +33,27 @@
       ]
     ]
   },
+  "EvolutionRevealRow": {
+    "kind": "struct",
+    "fields": [
+      [
+        "monster_id",
+        "u64"
+      ],
+      [
+        "from_species",
+        "u32"
+      ],
+      [
+        "to_species",
+        "u32"
+      ],
+      [
+        "evolved_at_ms",
+        "i64"
+      ]
+    ]
+  },
   "AccountStatus": {
     "kind": "enum",
     "variants": [

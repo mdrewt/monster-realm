@@ -528,6 +528,64 @@ pub struct EvolutionPathRow {
     pub min_nutrition_pct: Option<u8>,
 }
 
+/// One post-evolve reveal, queued for the monster's owner (20r-d, ADR-0254 D1).
+/// Nested SpacetimeType, mirroring the `EssenceRequirementRow` precedent above.
+/// The field set is FROZEN at publish (ADR-0174 D8: live automigration rejects
+/// nested-type widening), so the display timestamp ships now even though only
+/// the species pair drives the banner text.
+///
+/// `from_species` and `to_species` are the edge's OWN endpoints, copied off the
+/// immutable `EvolutionPathRow` the transform was applied through — never read
+/// back off the monster row, which by then already carries the TARGET species.
+/// `evolved_at_ms` is the transaction clock: every entry of one chain shares
+/// one stamp, so it is display metadata and never an ordering or dedupe key.
+#[derive(spacetimedb::SpacetimeType, Clone, Debug, PartialEq, Eq)]
+pub struct EvolutionRevealRow {
+    pub monster_id: u64,
+    pub from_species: u32,
+    pub to_species: u32,
+    pub evolved_at_ms: i64,
+}
+
+/// PRIVATE per-owner queue of evolution reveals the player has not dismissed
+/// yet (20r-d, ADR-0254 D2). One row per owner, keyed by `owner_identity`;
+/// `entries` is append-ordered, and Vec order IS display order.
+///
+/// PRIVATE on purpose: a public projection would hand every connected client
+/// the full evolution history of every other player's roster (monster ids,
+/// species transitions and timestamps). The owner-scoped view directly below
+/// is the single sanctioned client read path.
+///
+/// LIFECYCLE: `evolution::apply_evolution` appends one entry per applied edge,
+/// `ack_evolution_notices` drains a prefix (the row itself SURVIVES an empty
+/// drain, exactly as `player_wallet` survives a zero balance), the account
+/// cascade erases the row (`DeletionPolicy::Erase`) and the guest claim
+/// re-keys it onto the claimed identity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[spacetimedb::table(accessor = pending_evolution_notice)]
+pub struct PendingEvolutionNotice {
+    #[primary_key]
+    pub owner_identity: Identity,
+    pub entries: Vec<EvolutionRevealRow>,
+}
+
+/// Owner-scoped read path for `pending_evolution_notice` (ADR-0254 D3,
+/// mirroring `my_wallet` below): each client's subscription sees ONLY its own
+/// row, via the `owner_identity` primary key — never a whole-table scan. The
+/// table stays PRIVATE, so this view is the single sanctioned client read path.
+/// `Option` is load-bearing (ADR-0154 D3): a single-row primary-key projection
+/// returns at most one row, so "no row" stays distinguishable from "an empty
+/// queue", and the client store slot this slice ships holds one row by
+/// construction. Lives next to the table it projects (visibility is a schema
+/// artifact).
+#[spacetimedb::view(accessor = my_pending_evolution_notices, public)]
+fn my_pending_evolution_notices(ctx: &spacetimedb::ViewContext) -> Option<PendingEvolutionNotice> {
+    ctx.db
+        .pending_evolution_notice()
+        .owner_identity()
+        .find(ctx.sender())
+}
+
 // --- M12b tables: NPC, dialogue, quest, healing (ADR-0069) -------------------
 
 /// NPC entity role row. Entity/component: an NPC is a `character` row + this.
@@ -1031,7 +1089,8 @@ pub struct DataLifecycleEntry {
 /// ANONYMIZE + 5 JOIN-ONLY + 17 NOT-OWNED over the 38 pre-M22 tables) plus
 /// m22-s2's `export_bundle` (ERASE), rb-24's `account_deletion_reaper_schedule`
 /// (NOT-OWNED, ADR-0221), rb-48's `export_bundle_reaper_schedule` (NOT-OWNED,
-/// ADR-0238) and rb-73's `player_session` (ERASE, ADR-0245) — 42 entries. Do not re-partition: add new tables with their own entry. The claim-flow
+/// ADR-0238), rb-73's `player_session` (ERASE, ADR-0245) and 20r-d's
+/// `pending_evolution_notice` (ERASE, ADR-0254) — 43 entries. Do not re-partition: add new tables with their own entry. The claim-flow
 /// re-key axis lives separately as `REKEY_MANIFEST` in
 /// `evals/guest-claim-integrity.eval.mjs` (per-column, consumed by G6); a
 /// cross-manifest gate test ties the two together.
@@ -1126,6 +1185,12 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
         table: "player_session",
         policy: DeletionPolicy::Erase,
         basis: "per-connection presence bookkeeping naming a live socket and its identity, erased with the presence rows at cascade time (rb-73)",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "pending_evolution_notice",
+        policy: DeletionPolicy::Erase,
+        basis: "transient delivery queue of unacknowledged evolution reveals, drained by the owner's own acks; ephemeral by design, not a durable history, so nothing to export",
         exportable: false,
     },
     // --- ANONYMIZE: rows survive; identity or PII fields are tombstoned. ---

@@ -5313,3 +5313,339 @@ describe('★ connection.ts wiring (rb-53 / ADR-0231 A3-D1): W-RB53-RECONCILE �
     }
   });
 });
+
+// ===========================================================================
+// 20r-d (ADR-0254 D6) — W-20RD-*: the `my_pending_evolution_notices` transport.
+//
+// ★ SOURCE OF TRUTH — spec `M-postgate-twentieth-review-residuals.spec.md` §20r-d
+// gate B1 ("… and the client SHALL surface it") + ADR-0254 D6 ("Client").
+//
+// WHAT connect() GAINS — exactly three wiring points, all inside
+// `export function connect(opts)`:
+//   1. `'SELECT * FROM my_pending_evolution_notices'` joins the ONE
+//      `.subscribe([...])` array;
+//   2. `conn.db.myPendingEvolutionNotices.onInsert(() => batcher.schedule());` and
+//      the matching `.onDelete(...)` in `wireTables` — and NO `.onUpdate` (a PK-less
+//      Option-view: the `my_monster_pub` / `my_battle` / `my_export_bundle` shape,
+//      so the SDK never fires onUpdate and every change arrives as an unordered
+//      insert+delete pair);
+//   3. `store.reconcileEvolutionNoticesFromView(...)` as the LAST reconcile inside
+//      the stale-build guard's `try`, AFTER `reconcileExportChunksFromView(` and
+//      BEFORE `store.flushBatch()`.
+//
+// ⚠ WHY THE CACHE-RECONCILE IDIOM AND NOT `my_wallet`'s INSERT-ONLY ONE — the one
+// decision a reader is most likely to second-guess, because `my_wallet` and
+// `my_account` are the two OTHER Option-views in this file and both are
+// insert-only. Their exemption rests on "no server path ever deletes this row"
+// (connection.ts:557-571, :627-635). ADR-0254 D5's account-deletion cascade DOES
+// delete `pending_evolution_notice`, so insert-only would leave an erased notice
+// on screen forever, with an OK button whose ack now rejects every time.
+//
+// RED REASON AT AUTHORING TIME (verified against connection.ts this session):
+// `myPendingEvolutionNotices` appears NOWHERE in connection.ts — not in the
+// subscribe array, not as a handler, not as a reconcile — so every count below
+// reads 0 where 1 is required. A MISSING IMPLEMENTATION, never a typo here.
+//
+// CODE-AWARE throughout, except where the needle IS a string literal by nature
+// (the `'SELECT * FROM …'` subscription texts — the applicability note at :219-222).
+// NO `new RegExp`, no regex literal: indexOf / split / slice only.
+// ===========================================================================
+
+const RD_SUB_LITERAL = "'SELECT * FROM my_pending_evolution_notices'";
+const RD_INSERT_STMT = 'conn.db.myPendingEvolutionNotices.onInsert(() => batcher.schedule());';
+const RD_DELETE_STMT = 'conn.db.myPendingEvolutionNotices.onDelete(() => batcher.schedule());';
+
+describe('★ connection.ts wiring (20r-d / ADR-0254 D6): 20r-d W-20RD-SUBSCRIBE — the view joins the ONE subscribe array', () => {
+  it('★★ 20r-d W-20RD-SUBSCRIBE BITES: the array carries the view exactly once, never the private table, and the name is a REAL generated table', () => {
+    // WRONG IMPL KILLED (a) ★ THE MOST LIKELY WAY THIS SLICE "LANDS" WITHOUT WORKING:
+    //   subscribing NOTHING. The server half, the converter, the store slot, the
+    //   banner and the ack can ALL ship and every other gate in the slice stays
+    //   green while not one notice row ever arrives — B1's client half is silently
+    //   unmet and it looks like missing CONTENT, not missing wiring.
+    // WRONG IMPL KILLED (b): parking the literal in a dead module-level constant, a
+    //   commented-out line, or a SECOND unreachable `.subscribe()` call. The WINDOW
+    //   is what kills that (a whole-file needle cannot tell a live subscription from
+    //   a dead string) — the precedent reasoning is
+    //   evals/conversation-privacy.eval.mjs:394-420, Finding 5.
+    // WRONG IMPL KILLED (c): subscribing it twice (an over-eager merge) — the ===1.
+    // WRONG IMPL KILLED (d): subscribing the PRIVATE `pending_evolution_notice` table
+    //   instead of the owner-scoped view. SpacetimeDB rejects the whole subscription
+    //   BATCH, `onApplied` never fires, and EVERY player gets a blank world — not
+    //   merely a missing banner (the T0 rollout probe recorded in ADR-0087). The
+    //   needle carries its CLOSING quote, so the two literals cannot alias.
+    const src = readConnectionTs();
+    expectUniqueAnchor(src, '.subscribe([');
+    const arrayBody = bodyRegion(src, '.subscribe([', ']);');
+
+    // ANTI-VACUITY: the window really is the subscription array.
+    expect(
+      countOccurrences(arrayBody, "'SELECT * FROM my_conversation'"),
+      'the .subscribe([...]) window must still contain the my_conversation subscription — if it ' +
+        'does not, this gate is judging the wrong region and every assertion here is vacuous',
+    ).toBe(1);
+
+    expect(
+      countOccurrences(arrayBody, RD_SUB_LITERAL),
+      "connection.ts's ONE .subscribe([...]) array must contain " +
+        `${RD_SUB_LITERAL} exactly once (ADR-0254 D6). The name is EXACT and it is the SQL ` +
+        '(snake) spelling, not the camelCase binding handle: a wrong view name errors the WHOLE ' +
+        'subscription batch and onApplied never fires. RED AT AUTHORING TIME: it appears nowhere ' +
+        'in connection.ts. ⚠ THE SAME LITERAL MUST ALSO JOIN `EXPECTED_SUBSCRIPTIONS` in ' +
+        'evals/monster-privacy.eval.mjs — that allowlist is an EXACT SET over this array, so ' +
+        'adding the subscription without the eval line reds `just eval`',
+    ).toBe(1);
+
+    expect(
+      countOccurrences(arrayBody, "'SELECT * FROM pending_evolution_notice'"),
+      "the .subscribe([...]) array must NEVER contain 'SELECT * FROM pending_evolution_notice' — " +
+        'the table is PRIVATE (ADR-0254 D1: it holds one row per player, keyed by owner_identity, ' +
+        'carrying their whole evolution history), and subscribing a private table errors the ' +
+        'entire batch',
+    ).toBe(0);
+
+    // ★ THE ONE CLAUSE INDEPENDENT OF THE PINNED LITERAL (the rb-53 control, reused
+    // deliberately rather than re-implemented): a typo spelled IDENTICALLY here and
+    // in the source passes every assertion above, errors the batch at runtime, and
+    // blanks the world for every player. The generated `tablesSchema` roster is a
+    // DIFFERENT source of truth — it is what `spacetime generate` writes from the
+    // server schema, so it also proves `just gen` was actually re-run for this slice.
+    const roster = rb53TableRoster();
+    expect(
+      roster.length,
+      'ANTI-VACUITY: the generated tablesSchema roster must be substantial — a tiny roster means ' +
+        'the line parser is wrong and this cross-check is meaningless',
+    ).toBeGreaterThanOrEqual(20);
+    expect(
+      roster.indexOf('my_pending_evolution_notices'),
+      'the GENERATED bindings must declare `my_pending_evolution_notices` (ADR-0254 D3). RED AT ' +
+        'AUTHORING TIME: the view does not exist server-side yet. If this reds AFTER the server ' +
+        'half lands, `just gen` was not re-run — the subscription would then name a table the ' +
+        'client bindings have never heard of',
+    ).not.toBe(-1);
+  });
+});
+
+describe('★ connection.ts wiring (20r-d / ADR-0254 D6): 20r-d W-20RD-INGEST — schedule-only handlers, no onUpdate, and the reconcile in its exact place', () => {
+  it('★★ 20r-d W-20RD-INGEST BITES: onInsert + onDelete are exact schedule-only statements, onUpdate is absent in BOTH spellings, and the reconcile sits inside the stale-build guard between the export reconcile and flushBatch', () => {
+    // --- THE HANDLERS ------------------------------------------------------------
+    // WHY BOTH: a notice row LEAVES this view on the account-deletion cascade
+    //   (ADR-0254 D5) and on the guest-claim REKEY (delete-then-insert under the new
+    //   identity). With no onDelete the batcher is never scheduled for that burst, so
+    //   the reconcile never runs and the client keeps showing a reveal the server has
+    //   already erased.
+    // WRONG IMPL KILLED (1) ★: a PER-ROW store write in the handler, copied from the
+    //   `my_wallet` block directly above it in the file. That is per-row ingest
+    //   against a MID-BURST cache: the view has no primary key, so the delete half of
+    //   an unordered pair removes the row the insert half just wrote (the
+    //   my_conversation coalescing wipe, ADR-0087). The EXACT contiguous statement
+    //   admits no store call at all.
+    // WRONG IMPL KILLED (2): omitting `batcher.schedule()` — the row lands in the SDK
+    //   cache and nothing reconciles until some UNRELATED table happens to flush. No
+    //   e2e can see this (the NPC wander tick flushes every ~200 ms and the run
+    //   self-heals), which is exactly why this pin is load-bearing.
+    // WRONG IMPL KILLED (3): a CONDITIONAL schedule (`if (…) batcher.schedule()`) — a
+    //   contiguous needle admits no `if` / `?:` / `&&`.
+    // WRONG IMPL KILLED (4): registering either handler twice — the ===1 counts.
+    const squashed = squashedStrippedConnectionTs();
+
+    expect(
+      countCodeOccurrences(squashed, RD_INSERT_STMT),
+      'connection.ts must contain EXACTLY this statement, exactly once AS CODE (ADR-0254 D6):\n  ' +
+        RD_INSERT_STMT +
+        '\nRED AT AUTHORING TIME: `myPendingEvolutionNotices` appears nowhere in connection.ts. ' +
+        'If the implementation is present but this reds, compare CHARACTER BY CHARACTER — the ' +
+        'needle deliberately pins that the handler does NOTHING but schedule, because a per-row ' +
+        'store write against a PK-less view is the my_conversation coalescing wipe. Do NOT loosen ' +
+        'this needle to match the code; correct the code, or re-derive it FROM ADR-0254 D6',
+    ).toBe(1);
+    expect(
+      countCodeOccurrences(squashed, RD_DELETE_STMT),
+      'connection.ts must contain EXACTLY this statement, exactly once AS CODE (ADR-0254 D6):\n  ' +
+        RD_DELETE_STMT +
+        '\nUnlike my_wallet and my_account (whose rows are never deleted server-side), a notice ' +
+        'row IS deleted — by the account cascade and by the guest-claim rekey — so insert-only ' +
+        'wiring leaves the batcher unscheduled for that burst and strands an erased reveal ' +
+        'on screen',
+    ).toBe(1);
+
+    // ANTI-VACUITY for the two zeros below: the needle SHAPE demonstrably matches a
+    // real, shipped registration, so a zero is an absence and not a broken scan.
+    expect(
+      countCodeOccurrences(squashed, 'conn.db.my_account.onUpdate('),
+      'the sanctioned my_account onUpdate handler (ADR-0182 D15) must still be wired — it is this ' +
+        'gate`s calibration. Do NOT delete it to make anything green',
+    ).toBe(1);
+
+    expect(
+      countCodeOccurrences(squashed, 'conn.db.myPendingEvolutionNotices.onUpdate'),
+      'there must be NO onUpdate handler for this view (ADR-0254 D6): a view binding carries no ' +
+        'primary key, so the SDK has nothing to correlate old and new rows with and onUpdate NEVER ' +
+        'FIRES. A copy-pasted onUpdate (the neighbouring trade_offer / profile / my_account blocks ' +
+        'all have one) is dead code that misrepresents the transport — and it invites the author ' +
+        'to reason about reveal arrival as ORDERED events when the whole reconcile design exists ' +
+        'because they are not',
+    ).toBe(0);
+    expect(
+      countCodeOccurrences(squashed, 'db.my_pending_evolution_notices'),
+      'ONE spelling only. The generated bindings ship a deprecated snake_case ALIAS map ' +
+        '(module_bindings/index.ts) in which `conn.db.my_pending_evolution_notices` and ' +
+        '`conn.db.myPendingEvolutionNotices` are the SAME LIVE OBJECT — so a snake-spelled ' +
+        'registration is a REAL handler that every camelCase needle above is blind to, including ' +
+        'the onUpdate ban. This slice uses the camelCase handle (the `conn.db.myBattle` precedent); ' +
+        'only the SQL string keeps the snake spelling',
+    ).toBe(0);
+
+    // The handlers touch the store NOWHERE — stated separately from the exact
+    // statements so the failure names the coalescing wipe rather than a string diff.
+    for (const anchor of [
+      'conn.db.myPendingEvolutionNotices.onInsert(',
+      'conn.db.myPendingEvolutionNotices.onDelete(',
+    ]) {
+      expect(
+        countCodeOccurrences(parenArgsAt(squashed, anchor), 'store.'),
+        `the \`${anchor}…)\` handler must contain NO \`store.\` write — the flush-time reconcile ` +
+          'from the SDK cache is the ONE write path for this row (ADR-0254 D6)',
+      ).toBe(0);
+    }
+
+    // --- THE RECONCILE -----------------------------------------------------------
+    // THE ORDER IS THE POINT (carried forward from W-13RE / W-15RSECA / W-RB53):
+    //   `store.flushBatch()` is what notifies every listener, and main.ts's batch
+    //   listener is the SOLE `evolutionNoticeBanner?.render(` call site. Reconciling
+    //   AFTER the flush means the listener that just ran rendered the PRE-burst
+    //   notice set, so a fresh reveal is invisible (and a dismissed one stays on
+    //   screen) until some unrelated table happens to flush.
+    // THE SCOPE IS EQUALLY THE POINT (the red-team-VERIFIED bypass W-15RSECA records):
+    //   a call placed in the closure but OUTSIDE `if (live !== undefined)` reads a
+    //   SUPERSEDED connection's cache on every flush a dying socket scheduled —
+    //   re-seeding the store after store.reset() with a dead socket's rows, which for
+    //   THIS row means a PREVIOUS identity's evolution history.
+    // WRONG IMPL KILLED (a): reconciling inside the ROW HANDLERS — the region bound
+    //   (the batcher's own call arguments) kills it.
+    // WRONG IMPL KILLED (b): rebuilding from the row EVENTS rather than the
+    //   post-burst row set — the `.iter()` needle kills it.
+    // WRONG IMPL KILLED (c): handing the store RAW SDK rows — `ownerIdentity` would
+    //   stay an SDK Identity OBJECT, so `store.ownEvolutionNotices(identity)`'s `===`
+    //   filter never matches and the banner never renders while the row sits in the
+    //   store. The `pendingEvolutionNoticeRowToStore` needle kills it.
+    // WRONG IMPL KILLED (d) ★ THE TRUNCATION SURVIVOR: `[...].slice(0, 0).map(…)`.
+    //   Every presence and position assertion still passes, and the reconcile is
+    //   AUTHORITATIVE — an absent row CLEARS the slot — so the banner never appears.
+    //   The whole argument is therefore compared by EQUALITY against a mechanically
+    //   generated sanctioned set, never by a ban-list (an index loop, a destructure,
+    //   a helper call or `Array.from(…, fn)` each dodge one entry of any blacklist).
+    expectUniqueAnchor(squashed, 'new MicrotaskBatcher(');
+    const flushClosure = parenArgsAt(squashed, 'new MicrotaskBatcher(');
+
+    expect(
+      countCodeOccurrences(squashed, 'store.reconcileEvolutionNoticesFromView('),
+      'store.reconcileEvolutionNoticesFromView( must be called from EXACTLY ONE site AS CODE — the ' +
+        'batcher flush closure. RED AT AUTHORING TIME: it does not exist in the client at all. A ' +
+        'second call site is a per-row reconcile against a mid-burst SDK cache',
+    ).toBe(1);
+
+    const guardDecl = 'if (live !== undefined) {';
+    const guardHits = codeOccurrences(flushClosure, guardDecl);
+    expect(
+      guardHits.length,
+      `the flush closure must contain EXACTLY ONE \`${guardDecl}\` block AS CODE — the ADR-0085 C2 ` +
+        'stale-build guard the three existing reconciles live in',
+    ).toBe(1);
+    const guardBody = braceBodyAt(flushClosure, (guardHits[0] ?? 0) + guardDecl.length - 1);
+    expect(
+      includesAsCode(guardBody, 'store.reconcileExportChunksFromView('),
+      'ANTI-VACUITY: the brace-walked guard body must still contain the rb-53 export reconcile — if ' +
+        'it does not, the walk bound the wrong block and the membership assertion below passes for free',
+    ).toBe(true);
+    expect(
+      countCodeOccurrences(guardBody, 'store.reconcileEvolutionNoticesFromView('),
+      'the notice reconcile must sit INSIDE the `if (live !== undefined)` block, beside the three ' +
+        "existing reconciles — an unguarded read of a dying connection's cache can fire after " +
+        'store.reset() and re-seed the store from a dead socket. For THIS row that means a previous ' +
+        "identity's evolution history",
+    ).toBe(1);
+
+    const reconcileHits = codeOccurrences(flushClosure, 'store.reconcileEvolutionNoticesFromView(');
+    const exportHits = codeOccurrences(flushClosure, 'store.reconcileExportChunksFromView(');
+    const flushHits = codeOccurrences(flushClosure, 'store.flushBatch()');
+    expect(
+      exportHits.length,
+      'ANTI-VACUITY: the rb-53 export reconcile must still be present in the flush closure exactly ' +
+        'once — it is the left-hand fence of the ordering clause below',
+    ).toBe(1);
+    expect(
+      flushHits.length,
+      'the flush closure must still call `store.flushBatch()` AS CODE exactly once — if this anchor ' +
+        'is gone the whole per-transaction reconcile signal is gone with it',
+    ).toBe(1);
+    expect(
+      reconcileHits[0],
+      'the notice reconcile must run AFTER `store.reconcileExportChunksFromView(` (ADR-0254 D6: it ' +
+        'is the LAST call inside the shared try, so a throw from the newest converter can never ' +
+        'starve the movement-driving monster/battle reconciles that run before it)',
+    ).toBeGreaterThan(exportHits[0] ?? -1);
+    expect(
+      reconcileHits[0],
+      'the notice reconcile must run BEFORE store.flushBatch() inside the flush closure. ' +
+        "flushBatch() is what notifies main.ts's batch listener, and that listener is the SOLE " +
+        'banner render site — reconciling after it means the render it just performed used the ' +
+        'PRE-burst notice set',
+    ).toBeLessThan(flushHits[0] ?? Number.MAX_SAFE_INTEGER);
+
+    expect(
+      includesAsCode(flushClosure, 'myPendingEvolutionNotices.iter()'),
+      "the flush closure must rebuild the slot from the SDK's own post-burst row set — " +
+        '`[...live.db.myPendingEvolutionNotices.iter()]`. Reconstructing it from the insert/delete ' +
+        'EVENTS is id-set arithmetic over an unordered burst, which is the ordering dependence this ' +
+        'design exists to remove',
+    ).toBe(true);
+    expect(
+      includesAsCode(flushClosure, 'pendingEvolutionNoticeRowToStore'),
+      'the flush closure must map the SDK rows through `pendingEvolutionNoticeRowToStore` — a raw ' +
+        "SDK row keeps ownerIdentity as an Identity OBJECT, so store.ownEvolutionNotices(identity)'s " +
+        'exact `===` filter never matches and the banner never renders while the row sits in the store',
+    ).toBe(true);
+
+    // The ARGUMENT is EXACTLY the whole mapped cache. Sliced from the CODE
+    // occurrence, never handed the raw needle: parenArgsAt resolves its anchor with a
+    // plain indexOf, so a decoy string carrying the same text earlier in the closure
+    // would otherwise steer the walk to the wrong parens.
+    const argRegion = parenArgsAt(
+      flushClosure.slice(reconcileHits[0] ?? 0),
+      'store.reconcileEvolutionNoticesFromView(',
+    );
+    const compactArg = argRegion.split(' ').join('');
+    const reconcileArg = (cast: string, inner: string, outer: string): string =>
+      `[...live.db.myPendingEvolutionNotices.iter()].map((row)=>pendingEvolutionNoticeRowToStore(row${cast})${inner})${outer}`;
+    const sanctionedArgs = ['asunknownasSdkPendingEvolutionNoticeRow', ''].flatMap((cast) =>
+      ['', ','].flatMap((inner) => ['', ','].map((outer) => reconcileArg(cast, inner, outer))),
+    );
+    expect(
+      sanctionedArgs.includes(compactArg),
+      'the argument to store.reconcileEvolutionNoticesFromView( must be EXACTLY the whole ' +
+        'post-burst view cache, mapped through the boundary converter and nothing else ' +
+        '(ADR-0254 D6).\n' +
+        `  expected (whitespace-insensitive, any trailing-comma spelling, cast optional): ${reconcileArg('asunknownasSdkPendingEvolutionNoticeRow', '', '')}\n` +
+        `  found: ${compactArg}\n` +
+        'Anything interposed between `.iter()]` and `.map(` — a `.slice(`, a `.filter(`, an index ' +
+        'loop — hands the store a SUBSET, and the reconcile is AUTHORITATIVE: an absent row CLEARS ' +
+        'the slot, so the banner never appears. A truncating mutant passes every other assertion in ' +
+        'this block, is invisible to store.test.ts (which calls the store method directly with its ' +
+        'own arrays), and is invisible to every e2e in this slice. If this fires on a legitimate ' +
+        'change, re-review the new expression HERE and in the ADR — do NOT relax it to a substring ' +
+        'check',
+    ).toBe(true);
+
+    // Regression anchors: this slice ADDS a fourth reconcile, it replaces none.
+    for (const sibling of [
+      'store.reconcileMonstersFromView(',
+      'store.reconcileBattlesFromView(',
+      'store.reconcileExportChunksFromView(',
+    ]) {
+      expect(
+        countCodeOccurrences(squashed, sibling),
+        `the existing \`${sibling}…\` reconcile must still be called exactly once`,
+      ).toBe(1);
+    }
+  });
+});

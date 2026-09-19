@@ -43,6 +43,30 @@
 //!     SCHEDULED reducer body directly calls `accrue_quality_time`/
 //!     `check_and_evolve`.
 //!
+//! WHAT 20r-d ADDS (ADR-0254, spec §20r-d B1 — the post-evolve notification):
+//!   - `s20rd_*` SOURCE SCANS for the shapes no seam can observe: the private
+//!     notice table + its owner-scoped `Option` view (the e13r_e attribute-walk
+//!     clone), the notice push sited AFTER the dual-write inside
+//!     `apply_evolution` with the owner taken from the MONSTER ROW (never the
+//!     sender), the frozen ack-reducer body, and an occurrence CENSUS of the
+//!     table accessor across every non-test server source.
+//!   - `TestEvolutionDb` grows a `notices` list and an injected `now_ms`, and
+//!     `apply_evolution_seam` pushes one reveal entry per applied edge — so
+//!     "one entry per evolution, in chain order, keyed by the MONSTER's owner,
+//!     stamped with the transaction clock" is BEHAVIOURAL, not textual.
+//!   - The three LIFECYCLE helpers are pinned two ways: `erase`/`rekey` by
+//!     frozen squashed-equality (they are pure WRITERS, so the native host
+//!     aborts on them and the text is the whole boundary), and
+//!     `has_evolution_notices` BEHAVIOURALLY against real rows — including the
+//!     empty-entries row that makes ROW-EXISTS distinguishable from
+//!     entries-non-empty, and the `accounts::account_has_game_data` disjunct
+//!     that consumes it.
+//!   - The pure `crate::evolution::ack_prefix` is executed directly (reject 0,
+//!     reject count > len, drain the exact prefix), and the REAL
+//!     `ack_evolution_notices` reducer is executed against the rb-41 native
+//!     host for its three REFUSAL paths only (every write syscall aborts the
+//!     process, so an admitted path is deliberately not exercised here).
+//!
 //! Each test carries a `// kills:` note stating which wrong implementation it
 //! catches.
 
@@ -4146,10 +4170,35 @@ pub(crate) fn apply_evolution_seam(
     m.essence_dark = transformed.essence[Affinity::Dark.index()];
     // Trust and Quality-Time are lifetime history — untouched on purpose.
 
+    // 20r-d (ADR-0254 D4): bind the owner and the transaction stamp BEFORE the
+    // write-back moves `m` — production binds `owner` immediately after its own
+    // `find` for exactly this reason.
+    let owner = m.owner_identity;
+    let stamp = db.now_ms;
+
     // Dual-write, with the tier from the FRESH target species row.
     let pub_row = crate::marshal::pub_from_monster(&m, to_species_row.tier);
     db.update_monster(m);
     db.update_monster_pub(pub_row);
+
+    // 20r-d (ADR-0254 D4): ONE reveal entry per applied edge, AFTER the
+    // dual-write and inside the same helper (= the same transaction in
+    // production). The species come from the IMMUTABLE `path` argument, never
+    // from the monster row — the row has already been transformed above, so
+    // reading `m.species_id` for `from_species` would record the POST species
+    // as the pre-evolution form. The owner is the MONSTER's owner: the auto
+    // path is reachable from `pvp_deadline_reaper`, whose sender is the
+    // scheduler, so a sender-keyed write would file the reveal under an
+    // identity that owns nothing.
+    db.push_notice(
+        owner,
+        crate::schema::EvolutionRevealRow {
+            monster_id,
+            from_species: path.from_species,
+            to_species: path.to_species,
+            evolved_at_ms: stamp,
+        },
+    );
 
     Ok(())
 }
@@ -4225,6 +4274,20 @@ pub struct TestEvolutionDb {
     pub evolution_paths: Vec<EvolutionPathRow>,
     pub battles: Vec<Battle>,
     pub trade_offers: Vec<TradeOffer>,
+    /// 20r-d (ADR-0254 D4): the `pending_evolution_notice` table, one row per
+    /// owner. A `Vec` and not a `HashMap<Identity, _>` ON PURPOSE — the row is
+    /// found by an `owner_identity` comparison, which needs only the `PartialEq`
+    /// this file already relies on (`m.owner_identity != sender` in
+    /// `evolve_seam`), so the fake cannot fail to compile for a reason that has
+    /// nothing to do with the behaviour under test. At most one row per owner is
+    /// an INVARIANT of `push_notice` below, exactly as the PK is in production.
+    pub notices: Vec<crate::schema::PendingEvolutionNotice>,
+    /// 20r-d: the injected transaction clock. Production stamps every entry with
+    /// `crate::marshal::now_ms(ctx)`, which is constant within one reducer call —
+    /// so ONE value per seam run is the faithful model, and it is what makes
+    /// "the stamp is the transaction clock, not a per-step wall-clock read"
+    /// observable at all.
+    pub now_ms: i64,
     /// Auto-increment counter for new monster ids.
     next_monster_id: u64,
 }
@@ -4238,8 +4301,37 @@ impl TestEvolutionDb {
             evolution_paths: vec![],
             battles: vec![],
             trade_offers: vec![],
+            notices: vec![],
+            now_ms: 0,
             next_monster_id: 100,
         }
+    }
+
+    /// 20r-d (ADR-0254 D4): append ONE reveal entry to `owner`'s notice row,
+    /// creating the row when the owner holds none. Mirrors production's
+    /// find-then-push-or-insert upsert; never replaces an existing entry list
+    /// (a replace is the "second evolution loses the first" bug).
+    pub fn push_notice(&mut self, owner: Identity, entry: crate::schema::EvolutionRevealRow) {
+        if let Some(row) = self.notices.iter_mut().find(|r| r.owner_identity == owner) {
+            row.entries.push(entry);
+            return;
+        }
+        self.notices.push(crate::schema::PendingEvolutionNotice {
+            owner_identity: owner,
+            entries: vec![entry],
+        });
+    }
+
+    /// 20r-d: `owner`'s pending reveal entries, in Vec order (= display order,
+    /// EG2-13). An owner with no row reads as an EMPTY list, never a panic — the
+    /// distinction the tests below rely on when they assert that a notice is
+    /// keyed by the MONSTER's owner and by nobody else.
+    pub fn notices_for(&self, owner: Identity) -> Vec<crate::schema::EvolutionRevealRow> {
+        self.notices
+            .iter()
+            .find(|r| r.owner_identity == owner)
+            .map(|r| r.entries.clone())
+            .unwrap_or_default()
     }
 
     /// Insert a Monster row. `monster_id == 0` gets an auto-assigned id
@@ -5352,4 +5444,1863 @@ fn escaped_evolution_reason_composes_a_well_framed_json_log_line() {
             }
         }
     }
+}
+
+// ===========================================================================
+// 20r-d (ADR-0254) — POST-EVOLVE NOTIFICATION. EARS B1, server half.
+//
+// EARS criterion covered (spec M-postgate-twentieth-review-residuals §20r-d B1):
+//   WHEN a monster evolves (player-invoked OR auto), an evolution reveal record
+//   SHALL be written to the owner's pending-notification queue in the SAME
+//   transaction, and the owner SHALL be able to acknowledge a prefix of it.
+//
+// THREE WITNESSES, ONE CRITERION — the split is deliberate and none of the three
+// substitutes for another:
+//   * SOURCE SCANS for the facts execution cannot see: the table's PRIVACY, the
+//     view's exact shape, the write SITE (after the dual-write), the OWNER's
+//     provenance (the monster row, never `ctx.sender()`), the INFALLIBILITY of
+//     the push tail, the frozen reducer body, and the accessor CENSUS;
+//   * the SEAM, which is the only thing that can observe "one entry per applied
+//     edge, in chain order, stamped with the transaction clock, filed under the
+//     MONSTER's owner";
+//   * EXECUTION of the real `ack_prefix` (all four arms of its truth table) and
+//     of the real `ack_evolution_notices` reducer against the rb-41 native host
+//     for its three REFUSAL paths.
+//
+// HONEST LIMIT, stated once for the block: the native host leaves every WRITE
+// syscall unmodelled and ABORTS the process on one (native_host_tests.rs:293),
+// so only paths that return `Err` BEFORE any write are executable here. The
+// admitted path's effect is proven by the seam and by the account-e2e
+// `S9-evolve-notice` milestone, never here.
+//
+// SCAN SUBSTRATE: every needle runs over `strip_comments_and_strings` output, so
+// a doc comment or an error-message literal naming a banned token can neither
+// satisfy a positive nor trip a negative. Every production marker is assembled
+// from `concat!` / `[..].concat()` fragments — four evals concatenate every `.rs`
+// under `server-module/src` and take the FIRST hit of a declaration needle, and
+// this file sorts immediately after `evolution.rs` (the poisoning incident
+// recorded at :2611-2615 above).
+// ===========================================================================
+
+/// Byte offsets at which `token` occurs in `haystack` as a WHOLE identifier —
+/// neither preceded nor followed by an identifier byte.
+///
+/// `ctx.sender()` IS a hit (`.` and `(` are not identifier bytes); `resender`
+/// and `sender_auth` are not. Used by the sender-confinement scan, where a
+/// substring match would be both too loose and too tight.
+fn s20rd_token_sites(haystack: &str, token: &str) -> Vec<usize> {
+    let bytes = haystack.as_bytes();
+    occurrences(haystack, token)
+        .into_iter()
+        .filter(|&at| {
+            let before_ok = at == 0 || !is_ident_byte(bytes[at - 1]);
+            let end = at + token.len();
+            let after_ok = end >= bytes.len() || !is_ident_byte(bytes[end]);
+            before_ok && after_ok
+        })
+        .collect()
+}
+
+/// Every NON-TEST `.rs` source under `server-module/src`, as (file name, text).
+///
+/// RELATIVE `include_str!` (ADR-0154 D8): cargo-mutants copies the crate into a
+/// scratch tree and mutates THERE, so a workspace-rooted path would serve the
+/// pristine file and every mutant would survive silently. A missing or renamed
+/// file is a COMPILE error, which is louder than any runtime check.
+///
+/// The roster is checked against `lib.rs`'s own module declarations by
+/// `s20rd_pending_evolution_notice_accessor_census`, so a NEW production module
+/// cannot join the crate and quietly escape the census.
+fn s20rd_production_sources() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("lib.rs", include_str!("lib.rs")),
+        ("accounts.rs", include_str!("accounts.rs")),
+        ("battle.rs", BATTLE_RS_SOURCE),
+        ("content.rs", CONTENT_RS_SOURCE),
+        ("content_cache.rs", include_str!("content_cache.rs")),
+        ("economy.rs", include_str!("economy.rs")),
+        ("evolution.rs", EVOLUTION_RS_SOURCE),
+        ("guards.rs", include_str!("guards.rs")),
+        ("inventory.rs", include_str!("inventory.rs")),
+        ("marshal.rs", include_str!("marshal.rs")),
+        ("monster_mgmt.rs", MONSTER_MGMT_RS_SOURCE),
+        ("movement.rs", MOVEMENT_RS_SOURCE),
+        ("npc.rs", include_str!("npc.rs")),
+        ("observability.rs", include_str!("observability.rs")),
+        ("playtest.rs", include_str!("playtest.rs")),
+        ("privacy.rs", include_str!("privacy.rs")),
+        ("pvp.rs", PVP_RS_SOURCE),
+        ("raising.rs", RAISING_RS_SOURCE),
+        ("ranking.rs", include_str!("ranking.rs")),
+        ("schema.rs", include_str!("schema.rs")),
+        ("taming.rs", TAMING_RS_SOURCE),
+        ("trading.rs", TRADING_RS_SOURCE),
+    ]
+}
+
+/// Every module `lib.rs` declares, in declaration order. Line-scoped over the
+/// comment-and-string-stripped text, so a `mod` named in prose is invisible.
+fn s20rd_declared_modules(lib_src: &str) -> Vec<String> {
+    let stripped = strip_comments_and_strings(lib_src);
+    let mut out = Vec::new();
+    for line in stripped.lines() {
+        let trimmed = line.trim();
+        let Some(rest) = trimmed
+            .strip_prefix("pub(crate) mod ")
+            .or_else(|| trimmed.strip_prefix("pub mod "))
+            .or_else(|| trimmed.strip_prefix("mod "))
+        else {
+            continue;
+        };
+        let Some(name) = rest.strip_suffix(';') else {
+            continue;
+        };
+        let name = name.trim();
+        if !name.is_empty() && name.chars().all(is_word_char) {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
+/// One `EvolutionRevealRow` fixture. Every field DISTINCT and non-default so a
+/// field-swap (`from_species` written into `to_species`, `monster_id` written
+/// into `evolved_at_ms`) is visible rather than masked by shared zeros.
+fn s20rd_reveal(
+    monster_id: u64,
+    from_species: u32,
+    to_species: u32,
+    evolved_at_ms: i64,
+) -> crate::schema::EvolutionRevealRow {
+    crate::schema::EvolutionRevealRow {
+        monster_id,
+        from_species,
+        to_species,
+        evolved_at_ms,
+    }
+}
+
+/// The `(from_species, to_species)` pairs of `owner`'s notice entries, in Vec
+/// order — the shape the chain test reasons about (Vec order IS display order,
+/// EG2-13).
+fn s20rd_pairs(db: &TestEvolutionDb, owner: Identity) -> Vec<(u32, u32)> {
+    db.notices_for(owner)
+        .iter()
+        .map(|e| (e.from_species, e.to_species))
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// T1 — SOURCE SCANS.
+// ---------------------------------------------------------------------------
+
+/// 20r-d (ADR-0254 D2/D3): `pending_evolution_notice` carries NO `public`, and
+/// the ONE owner-scoped view over it has exactly the sanctioned attribute,
+/// signature, return type and body.
+///
+/// STRUCTURAL CLONE of `e13r_e_monster_pub_is_private_and_its_view_is_owner_scoped`
+/// above: same module-private helpers, same ATTRIBUTE-WALK discipline (never a
+/// name lookup over fns — a red-team PoC defeats a first-match `fn <name>`
+/// lookup by adding a SECOND, un-attributed fn of the same name). The
+/// BARE-attribute ban that test already asserts over this same schema.rs is
+/// deliberately NOT duplicated here — one grammar, one parser (ADR-0003) — but
+/// it is load-bearing for this test too: every walk below anchors on the
+/// fully-qualified marker, so a bare `#[view(...)]` would be invisible to it.
+///
+/// kills:
+///  - a `public` on the table: the queue is one row per player keyed by
+///    `owner_identity`, so a public projection hands every connected client the
+///    full evolution history of every other player's roster;
+///  - a MISSING `public` on the view attribute (mandatory on a view attribute;
+///    without it the client is DARK and the banner can never render);
+///  - a `Vec<PendingEvolutionNotice>` return: the row is a single-row PK
+///    projection (ADR-0154 D3), and a Vec return would take the client down the
+///    `my_monster_pub` binding shape this slice's store slot is not built for;
+///  - the caller-chosen-owner leak: an extra `owner: Identity` parameter turns
+///    the owner-scoped projection into a caller-chosen-owner endpoint while the
+///    attribute, the return type and even a `find(..)` body all still look
+///    canonical. Pinned as VERSION-INDEPENDENT defence in depth (2.8.1
+///    documents a context-only view signature, so the shape should not compile
+///    today — the clause costs nothing and still binds a macro-generated
+///    variant or a future regression);
+///  - the decoy-line leak (`let _decoy = …find(ctx.sender()); … find(victim)`),
+///    which passes every presence-only check;
+///  - every `cargo mutants` rewrite of the view body (any mutant loses the
+///    exact pin);
+///  - a same-named un-attributed decoy fn (the name-lookup defeat);
+///  - a view moved to some OTHER module — schema.rs would not contain it, and
+///    ADR-0254 D2 requires it to live next to the table it projects.
+#[test]
+fn s20rd_notice_table_is_private_and_its_view_is_owner_scoped() {
+    const SCHEMA_RS_SOURCE: &str = include_str!("schema.rs");
+    const TABLE_ATTR: &str = concat!("#[spacetimedb::", "table(");
+    const VIEW_ATTR: &str = concat!("#[spacetimedb::", "view(");
+
+    let stripped = strip_comments_and_strings(SCHEMA_RS_SOURCE);
+
+    // Vacuity guard: an absence claim over a hollow haystack proves nothing.
+    assert!(
+        stripped.len() > 2000,
+        "vacuity guard(20r-d): schema.rs is only {} bytes — the file was truncated, \
+         emptied or moved, and every assertion below would judge an empty string",
+        stripped.len()
+    );
+
+    let view_name = ["my_pending", "_evolution_notices"].concat();
+    let table_name = ["pending", "_evolution_notice"].concat();
+
+    // --- (1) the table is PRIVATE (ADR-0254 D1) -----------------------------
+    let table_sites = spacetimedb_attr_sites(&stripped, TABLE_ATTR);
+    assert!(
+        !table_sites.is_empty(),
+        "vacuity guard(20r-d): the table-attribute walk found ZERO tables in \
+         schema.rs — the scanner (or the concat!-assembled marker) has rotted, and \
+         a rotted scanner must never read as a private schema"
+    );
+    let notice_attrs: Vec<&(String, usize)> = table_sites
+        .iter()
+        .filter(|(args, _)| attr_accessor_arg(args).as_deref() == Some(table_name.as_str()))
+        .collect();
+    assert_eq!(
+        notice_attrs.len(),
+        1,
+        "TEETH(20r-d ADR-0254 D1): expected EXACTLY ONE table attribute named \
+         {table_name:?} in schema.rs, found {}. Zero means the table was never \
+         declared (RED AT AUTHORING TIME — this is the whole feature) or was \
+         renamed, in which case every clause below goes vacuous; two or more means \
+         a STACKED second attribute, which is how a public re-declaration hides \
+         behind a private-looking first one",
+        notice_attrs.len()
+    );
+    assert!(
+        !attr_has_word(&notice_attrs[0].0, "public"),
+        "TEETH(20r-d ADR-0254 D1): the {table_name:?} table attribute carries \
+         `public` (args: {:?}). The row is keyed by `owner_identity` and holds one \
+         entry per evolution that player has ever performed — a public projection \
+         broadcasts every player's evolution history (monster ids, species \
+         transitions and timestamps) to every connected client. Drop `public` and \
+         let the owner-scoped view be the sole read path",
+        notice_attrs[0].0
+    );
+
+    // --- (2) exactly ONE sanctioned view ------------------------------------
+    let view_sites = spacetimedb_attr_sites(&stripped, VIEW_ATTR);
+    let mine: Vec<&(String, usize)> = view_sites
+        .iter()
+        .filter(|(args, _)| attr_accessor_arg(args).as_deref() == Some(view_name.as_str()))
+        .collect();
+    assert_eq!(
+        mine.len(),
+        1,
+        "TEETH(20r-d ADR-0254 D2): expected EXACTLY ONE view attribute named \
+         {view_name:?} in schema.rs, found {}. With none, {table_name} is private \
+         and the client is DARK (the banner can never render, so B1's \"the player \
+         SHALL see\" half is unmet); with two, one of them is unreviewed. It must \
+         live next to the table it projects (the ADR-0087/0154/0179/0194 \
+         convention)",
+        mine.len()
+    );
+    let (view_args, after_attr) = mine[0];
+    assert!(
+        attr_has_word(view_args, "public"),
+        "TEETH(20r-d ADR-0254 D2): the {view_name:?} view attribute is missing the \
+         `public` keyword (args: {view_args:?}) — it is MANDATORY on a view \
+         attribute (it has no visibility effect of its own; per-caller scoping \
+         comes from the host reconstructing `sender`)"
+    );
+
+    // --- (3) the fn that IMMEDIATELY FOLLOWS the attribute ------------------
+    let attr_end = *after_attr;
+    let fn_rel = stripped[attr_end..].find("fn ").unwrap_or_else(|| {
+        panic!(
+            "TEETH(20r-d): no `fn` follows the {view_name:?} view attribute — the \
+             attribute decorates nothing"
+        )
+    });
+    let fn_idx = attr_end + fn_rel;
+    let brace_rel = stripped[fn_idx..]
+        .find('{')
+        .unwrap_or_else(|| panic!("TEETH(20r-d): the {view_name:?} view fn has no body brace"));
+    let brace_idx = fn_idx + brace_rel;
+    let raw_sig = &stripped[fn_idx..brace_idx];
+
+    // Exactly ONE parameter, stated separately from the exact-signature pin so
+    // the caller-chosen-owner shape reports the reason it is fatal.
+    let params = {
+        let open = raw_sig.find('(').unwrap_or_else(|| {
+            panic!("TEETH(20r-d): the {view_name:?} view fn has no parameter list")
+        });
+        let mut depth: usize = 0;
+        let mut close = open;
+        for (off, ch) in raw_sig[open..].char_indices() {
+            if ch == '(' {
+                depth += 1;
+            } else if ch == ')' {
+                depth -= 1;
+                if depth == 0 {
+                    close = open + off;
+                    break;
+                }
+            }
+        }
+        raw_sig[open + 1..close].to_string()
+    };
+    let top_level_commas = {
+        let mut depth: i32 = 0;
+        let mut n = 0usize;
+        for ch in params.chars() {
+            match ch {
+                '(' | '[' | '<' => depth += 1,
+                ')' | ']' | '>' => depth -= 1,
+                ',' if depth == 0 => n += 1,
+                _ => {}
+            }
+        }
+        n
+    };
+    assert_eq!(
+        top_level_commas, 0,
+        "TEETH(20r-d ADR-0254 D2 SIGNATURE): the {view_name:?} view takes more than \
+         one parameter (params: {params:?}). An extra `owner: Identity` turns the \
+         owner-scoped projection into a caller-chosen-owner endpoint that serves ANY \
+         player's queue — while the attribute, the return type and even a \
+         `owner_identity().find(..)` body all still look canonical"
+    );
+
+    let squashed_sig = squash_ws(raw_sig);
+    assert!(
+        squashed_sig.contains("->Option<"),
+        "TEETH(20r-d ADR-0254 D2 / ADR-0154 D3): the {view_name:?} view must return \
+         `Option<…>`, not a collection. The table's primary key IS `owner_identity` \
+         and the view projects exactly the caller's single row, so `Option` is the \
+         honest type — and it is what makes the client's single-slot store \
+         reconcile correct. Found signature: {squashed_sig}"
+    );
+    assert!(
+        !squashed_sig.contains("->Vec<"),
+        "TEETH(20r-d ADR-0254 D2): the {view_name:?} view must NOT return `Vec<…>` — \
+         ADR-0154 D3 warns that a collection return type no longer BOUNDS the result \
+         set, and the client store slot this slice ships holds one row by \
+         construction. Found signature: {squashed_sig}"
+    );
+
+    let sanctioned_sig = [
+        "fn",
+        view_name.as_str(),
+        "(ctx:&spacetimedb::",
+        "ViewContext)->Option<",
+        "PendingEvolutionNotice>",
+    ]
+    .concat();
+    assert_eq!(
+        squashed_sig, sanctioned_sig,
+        "TEETH(20r-d ADR-0254 D2 SIGNATURE): the {view_name:?} view signature is not \
+         EXACTLY the sanctioned one.\n  expected (whitespace-insensitive): \
+         {sanctioned_sig}\n  found: {squashed_sig}\n\
+         The context type is load-bearing (an &AnonymousViewContext has NO sender, so \
+         the projection could not be per-caller) and so is the return type (it is what \
+         the generated client binding is shaped from)."
+    );
+
+    // --- (4) the EXACT body -------------------------------------------------
+    let (body_start, body_end) = brace_block_range(&stripped, brace_idx);
+    let body = squash_ws(&stripped[body_start..body_end]);
+    let sanctioned = [
+        "ctx.db.",
+        "pending",
+        "_evolution_notice().",
+        "owner",
+        "_identity().find(ctx",
+        ".sender())",
+    ]
+    .concat();
+    let sanctioned_ref = [
+        "ctx.db.",
+        "pending",
+        "_evolution_notice().",
+        "owner",
+        "_identity().find(&ctx",
+        ".sender())",
+    ]
+    .concat();
+    assert!(
+        body == sanctioned || body == sanctioned_ref,
+        "TEETH(20r-d ADR-0254 D2 EXACT-BODY): the {view_name:?} view body is not \
+         EXACTLY the sanctioned owner-scoped point read.\n  expected \
+         (whitespace-insensitive): {sanctioned}\n  found: {body}\n\
+         This pin is exact ON PURPOSE. A presence-only check is passed by a decoy \
+         line (`let _decoy = ...find(ctx.sender());` followed by a real read keyed on \
+         some OTHER identity), which compiles, passes clippy and rustfmt, and serves \
+         an arbitrary player's queue. It also kills every cargo-mutants rewrite of \
+         this body — including the `Default::default()` mutant, which would make the \
+         view return `None` forever (client permanently dark, every other gate in \
+         this slice still green). `&ctx.sender()` is the same point read borrowed and \
+         is the only accepted variant. If the body must legitimately change, \
+         re-review the new shape HERE and in both privacy evals' EXPECTED_VIEWS."
+    );
+
+    // --- (5) the fn is declared exactly ONCE in schema.rs -------------------
+    // The attribute walk above already found the RIGHT fn; this proves no second
+    // fn of the same name exists to confuse a reader, a mutant, or any gate that
+    // (wrongly) looks the view up by name.
+    let bytes = stripped.as_bytes();
+    let mut decls = 0usize;
+    for at in occurrences(&stripped, view_name.as_str()) {
+        if at > 0 && is_ident_byte(bytes[at - 1]) {
+            continue;
+        }
+        let after_ident = at + view_name.len();
+        if after_ident < bytes.len() && is_ident_byte(bytes[after_ident]) {
+            continue;
+        }
+        let mut k = at;
+        while k > 0 && (bytes[k - 1] as char).is_ascii_whitespace() {
+            k -= 1;
+        }
+        if k >= 2
+            && bytes[k - 2] == b'f'
+            && bytes[k - 1] == b'n'
+            && (k == 2 || !is_ident_byte(bytes[k - 3]))
+        {
+            decls += 1;
+        }
+    }
+    assert_eq!(
+        decls, 1,
+        "TEETH(20r-d ADR-0254): `fn {view_name}` is declared {decls} time(s) in \
+         schema.rs; exactly ONE is sanctioned. A second, un-attributed fn of the same \
+         name is the red-team shape that defeats every name-anchored body pin — the \
+         real (attributed) view can then leak while a decoy satisfies the lookup"
+    );
+}
+
+/// 20r-d (ADR-0254 D4): `apply_evolution` appends the reveal entry AFTER the
+/// monster/monster_pub dual-write, with the species taken from the IMMUTABLE
+/// `path` argument, the owner taken from the MONSTER ROW, an upsert whose
+/// `.insert(` lives in the `None` arm, and an INFALLIBLE tail.
+///
+/// WHY EACH CLAUSE IS LOAD-BEARING (each names a real shipped-and-broken
+/// outcome, not a style preference):
+///  - AFTER the dual-write: a notice written before the transform would be
+///    committed by a path whose own write can still fail on the fresh
+///    target-species lookup, announcing an evolution that never happened;
+///  - `path.from_species` / `path.to_species`: the monster row has ALREADY been
+///    transformed by the time the entry is built, so `m.species_id` reads as the
+///    POST species and the banner would say "X evolved from Y into Y";
+///  - the owner from `m.owner_identity`: `apply_evolution` is reachable from
+///    `pvp_deadline_reaper` -> `apply_pvp_forfeit` -> `settle_pvp_battle` ->
+///    `write_back_battle_results`, where the sender is the SCHEDULER. A
+///    sender-keyed write files the reveal under an identity that owns no
+///    monsters, so the player never sees it and the scheduler accrues a queue
+///    nobody can ack;
+///  - the `.insert(` inside the `None` arm: a bare `.insert` on an existing
+///    primary key PANICS, which is a wasm trap that aborts the HOST reducer —
+///    a player's second evolution would roll back their movement or battle write;
+///  - the INFALLIBLE tail: `check_and_evolve` SWALLOWS an `Err` from
+///    `apply_evolution` (evolution.rs:241-248) and its callers commit anyway, so
+///    a `?` after the dual-write persists the evolution and loses the notice —
+///    the spec's named worst case.
+///
+/// kills: every one of the six shapes above.
+#[test]
+fn s20rd_apply_evolution_writes_the_notice_after_the_dual_write() {
+    let stripped = strip_comments_and_strings(EVOLUTION_RS_SOURCE);
+    let body = extract_fn_body(&stripped, "pub(crate) fn apply_evolution(");
+
+    // Vacuity guard: an empty extraction must never pass this test silently.
+    assert!(
+        !body.trim().is_empty(),
+        "vacuity guard(20r-d): the extracted `apply_evolution` body is empty — the \
+         source scanner has rotted and every verdict below would be meaningless"
+    );
+    let sq = squash_ws(&body);
+
+    let accessor = ["pending", "_evolution_notice()"].concat();
+    let pub_update = ["monster", "_pub().", "monster", "_id().update("].concat();
+    let monster_update = ["ctx.db.", "monster", "().", "monster", "_id().update(m)"].concat();
+    let owner_binding = ["let", "owner=m.", "owner", "_identity;"].concat();
+    let match_head = ["match", "ctx.db.", "pending", "_evolution_notice()"].concat();
+
+    // --- ANTI-VACUITY: the dual-write anchors still exist, exactly once ------
+    assert_eq!(
+        sq.matches(pub_update.as_str()).count(),
+        1,
+        "vacuity guard(20r-d): `apply_evolution` must still contain EXACTLY ONE \
+         `{pub_update}` — it is the fence every ordering clause below measures \
+         against, and a zero would make them all vacuous"
+    );
+    assert_eq!(
+        sq.matches(monster_update.as_str()).count(),
+        1,
+        "vacuity guard(20r-d): `apply_evolution` must still contain EXACTLY ONE \
+         `{monster_update}` — the private half of the dual-write"
+    );
+
+    // --- (1) the notice write exists, and it is AFTER the dual-write --------
+    let first_accessor = sq.find(accessor.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH(20r-d ADR-0254 D4): `apply_evolution`'s body never names \
+             `{accessor}` — no reveal entry is written at all, so an auto-evolution \
+             still changes a party monster's species with ZERO client-visible \
+             signal (the whole defect §20r-d exists to close). RED AT AUTHORING \
+             TIME. Body: {sq:?}"
+        )
+    });
+    let pub_idx = sq
+        .find(pub_update.as_str())
+        .expect("the dual-write anchor was counted above");
+    assert!(
+        first_accessor > pub_idx,
+        "TEETH(20r-d ADR-0254 D4): the FIRST `{accessor}` in `apply_evolution` sits \
+         at byte {first_accessor}, BEFORE the public dual-write at byte {pub_idx}. \
+         The entry must be appended AFTER both rows are written: a notice announced \
+         ahead of a write that can still fail (the fresh target-species lookup \
+         above it rejects loudly) tells the player about an evolution that did not \
+         happen"
+    );
+
+    // --- (2) the payload comes from the IMMUTABLE path argument -------------
+    for needle in [
+        ["from", "_species:path.from_species"].concat(),
+        ["to", "_species:path.to_species"].concat(),
+        ["owner", "_identity:owner"].concat(),
+        // Verifier-added (2026-09-19): the two payload fields the mirror seam alone
+        // pinned. `monster_id,from` is the shorthand field ADJACENT to the species
+        // literal — `monster_id: 0,` (a constant id that drops every nickname on
+        // the client) squashes to `monster_id:0,from` and dies here.
+        ["monster", "_id,from"].concat(),
+    ] {
+        assert!(
+            sq.contains(needle.as_str()),
+            "TEETH(20r-d ADR-0254 D4): `apply_evolution`'s body does not contain \
+             `{needle}` (whitespace-insensitive). The species MUST come from the \
+             immutable `path` argument — `m.species_id` has already been overwritten \
+             with the TARGET species by the transform above, so a row-derived \
+             `from_species` records the post-evolution form and the banner reads \
+             \"evolved from X into X\". The owner MUST come from the `owner` binding \
+             taken off the monster row. Body: {sq:?}"
+        );
+    }
+
+    // --- (2b) the timestamp is the transaction clock, exactly ------------------
+    // Verifier-added (2026-09-19): `evolved_at_ms: now_ms(ctx) / 1000` (seconds)
+    // survived every other pin. The needle carries the field's closing delimiter
+    // so a trailing arithmetic tail cannot hide behind a prefix match.
+    let stamp_comma = ["evolved", "_at_ms:now_ms(ctx),"].concat();
+    let stamp_close = ["evolved", "_at_ms:now_ms(ctx)}"].concat();
+    assert!(
+        sq.contains(stamp_comma.as_str()) || sq.contains(stamp_close.as_str()),
+        "TEETH(20r-d ADR-0254 D1/D4): `apply_evolution`'s body must stamp the entry \
+         with exactly `evolved_at_ms: now_ms(ctx)` (the transaction clock, no \
+         arithmetic, no other source) — found neither `{stamp_comma}` nor \
+         `{stamp_close}` (whitespace-insensitive). Body: {sq:?}"
+    );
+
+    // --- (3) the owner binding precedes the move of `m` ---------------------
+    let owner_idx = sq.find(owner_binding.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH(20r-d ADR-0254 D4): `apply_evolution` must bind `{owner_binding}` \
+             (whitespace-insensitive) — the monster row is MOVED into \
+             `update_monster` below, so the owner has to be captured first. Body: \
+             {sq:?}"
+        )
+    });
+    let monster_idx = sq
+        .find(monster_update.as_str())
+        .expect("the private dual-write anchor was counted above");
+    assert!(
+        owner_idx < monster_idx,
+        "TEETH(20r-d ADR-0254 D4): `let owner = m.owner_identity;` sits at byte \
+         {owner_idx}, AFTER the `{monster_update}` at byte {monster_idx} that moves \
+         the row. Bind it immediately after the monster `find`"
+    );
+
+    // --- (4) the token `sender` is ABSENT from this fn ----------------------
+    let sender_sites = s20rd_token_sites(&body, "sender");
+    assert!(
+        sender_sites.is_empty(),
+        "TEETH(20r-d ADR-0254 D4): `apply_evolution`'s body names the token `sender` \
+         at byte offset(s) {sender_sites:?}. The owner of the notice is the MONSTER \
+         ROW's `owner_identity` and NEVER `ctx.sender()`: this helper is reachable \
+         from `pvp_deadline_reaper` -> apply_pvp_forfeit -> settle_pvp_battle -> \
+         write_back_battle_results, where the sender is the SCHEDULER identity. A \
+         sender-keyed write files the reveal under an identity that owns no \
+         monsters — the player never sees it, and the scheduler accrues a queue no \
+         one can ack"
+    );
+
+    // --- (5) the upsert arms: `.insert(` in None, `.update(` in Some --------
+    let match_idx = sq.find(match_head.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH(20r-d ADR-0254 D4): `apply_evolution` must upsert through a \
+             `match ctx.db.pending_evolution_notice()…find(owner)` (the \
+             find-then-push-or-insert shape). A bare `.insert` on an existing \
+             primary key PANICS — a wasm trap that aborts the HOST reducer, so a \
+             player's SECOND evolution would roll back the movement or battle write \
+             that triggered it. Body: {sq:?}"
+        )
+    });
+    let none_idx = sq[match_idx..]
+        .find("None=>")
+        .map(|rel| match_idx + rel)
+        .unwrap_or_else(|| {
+            panic!(
+                "TEETH(20r-d ADR-0254 D4): the upsert `match` has no `None =>` arm — \
+                 the first notice for an owner would never be created. Body: {sq:?}"
+            )
+        });
+
+    let insert_sites = occurrences(&sq, ".insert(");
+    assert_eq!(
+        insert_sites.len(),
+        1,
+        "TEETH(20r-d ADR-0254 D4): `apply_evolution` must contain EXACTLY ONE \
+         `.insert(` (found {}) — the one that creates an owner's FIRST notice row. \
+         Two means a second, unreviewed insert path",
+        insert_sites.len()
+    );
+    assert!(
+        insert_sites[0] > none_idx,
+        "TEETH(20r-d ADR-0254 D4): the `.insert(` sits at byte {} — BEFORE the \
+         `None =>` arm at byte {none_idx}, i.e. outside it. An insert reached when \
+         the row already exists is a primary-key PANIC, which in SpacetimeDB is a \
+         wasm trap that aborts the whole HOST reducer",
+        insert_sites[0]
+    );
+
+    let notice_update = [
+        "pending",
+        "_evolution_notice().",
+        "owner",
+        "_identity().update(",
+    ]
+    .concat();
+    let update_sites = occurrences(&sq, notice_update.as_str());
+    assert_eq!(
+        update_sites.len(),
+        1,
+        "TEETH(20r-d ADR-0254 D4): `apply_evolution` must contain EXACTLY ONE \
+         `{notice_update}` (found {}) — the write-back of the appended entry list",
+        update_sites.len()
+    );
+    assert!(
+        update_sites[0] > match_idx && update_sites[0] < none_idx,
+        "TEETH(20r-d ADR-0254 D4): the notice `.update(` sits at byte {} — outside \
+         the `Some(..)` arm ({match_idx}..{none_idx}). The push-then-update belongs \
+         to the EXISTING-ROW arm; anywhere else it either writes a row that was \
+         never read (losing every earlier entry) or is dead code",
+        update_sites[0]
+    );
+
+    // --- (6) the tail is INFALLIBLE -----------------------------------------
+    let tail = &sq[pub_idx..];
+    for banned in ["returnErr", "?;", "?)"] {
+        assert!(
+            !tail.contains(banned),
+            "TEETH(20r-d ADR-0254 D4): the text of `apply_evolution` AFTER the public \
+             dual-write contains {banned:?} — the notice tail must be INFALLIBLE. \
+             `check_and_evolve` swallows an `Err` from this helper (evolution.rs \
+             :241-248) and its callers commit regardless, so a fallible tail means \
+             the evolution PERSISTS and the notice is LOST: the exact worst case \
+             §20r-d names. Tail: {tail:?}"
+        );
+    }
+}
+
+/// 20r-d (ADR-0254 D4/D5): the token `sender` appears EXACTLY ONCE in the whole
+/// production region of `evolution.rs`, and that one occurrence is inside
+/// `ack_evolution_notices`'s body.
+///
+/// WHY FILE-SCOPED AND NOT JUST `apply_evolution`: scoping the ban to one body
+/// leaves a trivial escape — move the sender read into a private helper two
+/// lines below and call it from the write path. The confinement rule is sound at
+/// file scope because exactly ONE function in this file has a legitimate reason
+/// to know who is calling: the ack reducer, which is keyed on the caller by
+/// definition. Everything else in `evolution.rs` acts on a MONSTER, and a monster
+/// has an owner recorded on its row.
+///
+/// kills: `ctx.sender()` used as the notice owner in `apply_evolution` or in any
+///        helper it calls; an ownership check re-derived from the sender on the
+///        auto path (which would make every scheduler-driven evolution reject);
+///        a second sender-keyed reducer added to this file without review.
+#[test]
+fn s20rd_no_production_fn_but_the_ack_reducer_names_sender() {
+    let stripped = strip_comments_and_strings(EVOLUTION_RS_SOURCE);
+    let production = production_region(EVOLUTION_RS_SOURCE);
+
+    // Vacuity guards: the region is real production code and still holds all four
+    // functions, so a truncated region cannot read as "clean".
+    assert!(
+        !production.trim().is_empty(),
+        "vacuity guard(20r-d): the production region of evolution.rs is empty — the \
+         scanner has rotted"
+    );
+    let ack_decl = ["pub fn ", "ack", "_evolution_notices(ctx"].concat();
+    for decl in [
+        "pub fn evolve(".to_string(),
+        "pub(crate) fn apply_evolution(".to_string(),
+        "pub(crate) fn check_and_evolve(".to_string(),
+        ack_decl.clone(),
+    ] {
+        assert!(
+            production.contains(decl.as_str()),
+            "vacuity guard(20r-d): the production region of evolution.rs does not \
+             contain {decl:?} — either the function was never written (RED AT \
+             AUTHORING TIME for the ack reducer) or a `#[cfg(test)]` marker above it \
+             truncated the scan, which would let a sender read below the cut escape \
+             this check"
+        );
+    }
+
+    let sites = s20rd_token_sites(&production, "sender");
+    assert_eq!(
+        sites.len(),
+        1,
+        "TEETH(20r-d ADR-0254 D4): the production region of evolution.rs names the \
+         token `sender` {} time(s); EXACTLY ONE is sanctioned (the ack reducer's own \
+         `ctx.sender()` lookup). More than one means a sender read has appeared on a \
+         monster-owner path, where the caller can be the pvp deadline SCHEDULER; \
+         zero means the ack reducer does not exist yet (RED AT AUTHORING TIME) or \
+         stopped keying on its caller — which would let any player drain any other \
+         player's queue. Sites: {sites:?}",
+        sites.len()
+    );
+
+    let (ack_start, ack_end) = extract_fn_body_range(&stripped, ack_decl.as_str())
+        .unwrap_or_else(|| panic!("vacuity guard(20r-d): {ack_decl:?} must be locatable"));
+    assert!(
+        sites[0] >= ack_start && sites[0] < ack_end,
+        "TEETH(20r-d ADR-0254 D4): the ONE `sender` token in evolution.rs sits at \
+         byte {} — OUTSIDE `ack_evolution_notices`'s body ({ack_start}..{ack_end}). \
+         A private helper hosting the sender read and called from the write path is \
+         exactly the indirection this confinement exists to catch",
+        sites[0]
+    );
+}
+
+/// 20r-d (ADR-0254 D5): `ack_evolution_notices`'s body is FROZEN.
+///
+/// NEEDLE CLAUSES FIRST, EXACT EQUALITY SECOND (the rb-73 / m22-s3b pattern).
+/// The needles are authored from ADR-0254 D5 and state the individual
+/// invariants, so a failure names the missing invariant rather than printing a
+/// string diff; the equality that follows is what makes a HOLLOW body — one that
+/// performs the find, mentions `ack_prefix`, and then returns `Ok(())` without
+/// writing the row back — unrepresentable. The equality literal is split at
+/// DIFFERENT `concat!` boundaries than the needles, so neither can be satisfied
+/// by the other's fragments.
+///
+/// kills:
+///  - a body that drains but never writes the row back (the player's banner
+///    never advances, and every later ack drains the same prefix again);
+///  - a body that writes the row back BEFORE draining (a no-op ack);
+///  - an ack that clamps instead of rejecting (`count.min(len)`), which silently
+///    drains entries the client never rendered — the ADR's named anti-pattern;
+///  - a `#[cfg(...)]`-gated or `cfg!(...)`-branched twin body: the published
+///    wasm is release and the native test binary is `--cfg test`, so a cfg twin
+///    ships `false` to production while every behavioural test stays green
+///    (measured on rb-46);
+///  - a missing `#[spacetimedb::reducer]` attribute, which makes the whole
+///    feature unreachable over the wire while every other clause still passes.
+#[test]
+fn s20rd_ack_evolution_notices_body_is_frozen() {
+    let stripped = strip_comments_and_strings(EVOLUTION_RS_SOURCE);
+    let ack_decl = ["pub fn ", "ack", "_evolution_notices(ctx"].concat();
+    let reducer_attr = concat!("#[spacetimedb::", "reducer]");
+
+    let decl_idx = stripped.find(ack_decl.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH(20r-d ADR-0254 D5): evolution.rs declares no {ack_decl:?} — the \
+             player has no way to dismiss a reveal, so the banner is permanent and \
+             B1 is unmet. RED AT AUTHORING TIME"
+        )
+    });
+
+    // --- (a) the reducer attribute IMMEDIATELY precedes the declaration -----
+    let before = stripped[..decl_idx].trim_end();
+    // CHAR-safe tail for the diagnostic: byte-slicing a stripped source at an
+    // arbitrary offset can land mid-codepoint and panic for a reason unrelated to
+    // the invariant under test.
+    let shown: String = {
+        let chars: Vec<char> = before.chars().collect();
+        let start = chars.len().saturating_sub(120);
+        chars[start..].iter().collect()
+    };
+    assert!(
+        before.ends_with(reducer_attr),
+        "TEETH(20r-d ADR-0254 D5): the declaration of `ack_evolution_notices` is not \
+         immediately preceded by {reducer_attr:?}. Without it the function is a \
+         private helper: it compiles, every body clause below passes, and no client \
+         can ever call it. Text immediately above the declaration: {shown:?}"
+    );
+
+    let body = extract_fn_body(&stripped, ack_decl.as_str());
+    assert!(
+        !body.trim().is_empty(),
+        "vacuity guard(20r-d): the extracted `ack_evolution_notices` body is empty"
+    );
+    let sq = squash_ws(&body);
+
+    // --- (b) the three statements, each exactly once, in order --------------
+    let find_needle = ["own", "er_identity().find("].concat();
+    let prefix_needle = ["ack", "_prefix(&mutrow.entries,count)?;"].concat();
+    let update_needle = ["own", "er_identity().update(row);"].concat();
+    for (label, needle) in [
+        ("the sender-keyed find", find_needle.as_str()),
+        ("the ack_prefix delegation", prefix_needle.as_str()),
+        ("the row write-back", update_needle.as_str()),
+    ] {
+        assert_eq!(
+            sq.matches(needle).count(),
+            1,
+            "TEETH(20r-d ADR-0254 D5): `ack_evolution_notices`'s body must contain \
+             {label} — `{needle}` (whitespace-insensitive) — EXACTLY once. The \
+             `?` on the ack_prefix call is part of the needle on purpose: without \
+             it a rejected count is computed and DISCARDED, and the row is written \
+             back unchanged while the caller is told the ack succeeded. Body: {sq:?}"
+        );
+    }
+    let find_idx = sq.find(find_needle.as_str()).expect("counted above");
+    let prefix_idx = sq.find(prefix_needle.as_str()).expect("counted above");
+    let update_idx = sq.find(update_needle.as_str()).expect("counted above");
+    let ok_idx = sq.find("Ok(())").unwrap_or_else(|| {
+        panic!("TEETH(20r-d): `ack_evolution_notices` must end in `Ok(())`. Body: {sq:?}")
+    });
+    assert!(
+        find_idx < prefix_idx && prefix_idx < update_idx && update_idx < ok_idx,
+        "TEETH(20r-d ADR-0254 D5): the four statements of `ack_evolution_notices` are \
+         out of order (find {find_idx}, ack_prefix {prefix_idx}, update {update_idx}, \
+         Ok {ok_idx}). The order IS the semantics: find the caller's row, drain the \
+         prefix, write the drained row back, then succeed. A write-back placed before \
+         the drain makes every ack a no-op and the banner undismissable"
+    );
+
+    // --- (c) no conditional-compilation or clamping machinery ---------------
+    for banned in ["#[", "cfg!(", "clamp", "min("] {
+        assert!(
+            !sq.contains(banned),
+            "TEETH(20r-d ADR-0254 D5): `ack_evolution_notices`'s body contains \
+             {banned:?}. `clamp` / `min(` are the reject-not-clamp violation — a \
+             clamp lets a STALE large count drain entries the client never rendered, \
+             which is a silent data loss the player can never detect. `#[` / `cfg!(` \
+             are the conditional-twin shape: the native test binary is compiled with \
+             `--cfg test` and the published wasm is release, so a cfg-selected body \
+             ships one thing to players and another to `cargo test` (measured on \
+             rb-46). Body: {sq:?}"
+        );
+    }
+
+    // --- (d) EXACT squashed equality ----------------------------------------
+    let plain_sender = ["ctx", ".sender()"].concat();
+    let borrowed_sender = ["&ctx", ".sender()"].concat();
+    let frozen = |sender: &str| -> String {
+        [
+            "letSome(mutrow)=ctx.db.",
+            "pend",
+            "ing_evolution_noti",
+            "ce().",
+            "own",
+            "er_identity().find(",
+            sender,
+            ")else{returnErr(.to_string());};",
+            "ack",
+            "_prefix(&mutrow.entries,count)?;ctx.db.",
+            "pend",
+            "ing_evolution_noti",
+            "ce().",
+            "own",
+            "er_identity().update(row);Ok(())",
+        ]
+        .concat()
+    };
+    let sanctioned = [
+        frozen(plain_sender.as_str()),
+        frozen(borrowed_sender.as_str()),
+    ];
+    assert!(
+        sanctioned.contains(&sq),
+        "TEETH(20r-d ADR-0254 D5 FROZEN BODY): `ack_evolution_notices`'s body is not \
+         EXACTLY the sanctioned one.\n  expected one of (whitespace-insensitive, \
+         string literals blanked by the scan pipeline): {sanctioned:?}\n  found: \
+         {sq:?}\n\
+         NOTE ON THE EXPECTED TEXT: `strip_comments_and_strings` blanks string \
+         literals INCLUDING their quotes, so the rejection message collapses to \
+         `returnErr(.to_string());` — that is the scan pipeline, not a typo. The pin \
+         is exact so a HOLLOW reducer (find, mention `ack_prefix`, return Ok without \
+         writing the row back) cannot pass while every needle clause above does. Do \
+         NOT relax this to match an implementation; re-derive it from ADR-0254 D5."
+    );
+}
+
+/// 20r-d (ADR-0254 D5/D6): the three LIFECYCLE helpers' bodies are FROZEN.
+///
+/// WHY A TEXT PIN AND NOT EXECUTION, for the first two: `erase_evolution_notices`
+/// and `rekey_evolution_notices` are pure WRITERS. Every write syscall in the
+/// rb-41 native host is unmodelled and ABORTS the process
+/// (native_host_tests.rs:293), so neither can be executed in `cargo test` at all
+/// — and the account-deletion cascade and the guest claim are the two paths a
+/// player can never retry. `has_evolution_notices` IS executed (it is read-only,
+/// see `s20rd_has_evolution_notices_is_row_exists` below); its body is frozen
+/// here as well because the census only counts ONE accessor occurrence in it and
+/// a count cannot tell `find(owner)` from `find(ctx.sender())`.
+///
+/// NEEDLE CLAUSES FIRST, EXACT EQUALITY SECOND (the ack-reducer pattern): the
+/// needles state the individual invariants so a failure names the missing one,
+/// and the equality is what makes every remaining rewrite unrepresentable. The
+/// equality literals are split at DIFFERENT `concat!` boundaries than the
+/// needles.
+///
+/// kills:
+///  - a FULL-TABLE erase (`.iter().filter(..)`, a `for` loop, a literal key):
+///    the cascade would delete every player's queue, and the ADR-0250 cascade
+///    runs unattended on a scheduled reaper where nobody would see it;
+///  - an erase keyed on `ctx.sender()` rather than the `owner` ARGUMENT — the
+///    cascade reaper's sender is the SCHEDULER, so the subject's row would
+///    survive their own account deletion (an M22 §4.4 erase failure);
+///  - a rekey that reads the DESTINATION row (`find(to)` / `delete(to)`): guard
+///    11 (`account_has_game_data`, which `has_evolution_notices` now joins)
+///    guarantees the destination owns no row, so a merge is dead code that can
+///    only ever LOSE entries if the guard is later weakened — the `no merge`
+///    rule ADR-0254 D5 states, pinned;
+///  - a rekey that inserts under `from` (the identity being retired) or deletes
+///    `to` — both leave the claimed progress unreachable forever;
+///  - a rekey that ZEROES rather than moves (`entries: vec![]`), the
+///    `rekey_wallet` never-delete idiom copied without its AUTH-23/24 reason;
+///  - `has_evolution_notices` answering `entries.is_empty()` instead of ROW
+///    EXISTS — that is what makes the no-merge rekey unsound, because an
+///    acked-empty row would stop joining `account_has_game_data` while still
+///    occupying the destination primary key;
+///  - every `cargo mutants` rewrite of all three bodies.
+#[test]
+fn s20rd_erase_and_rekey_bodies_are_frozen() {
+    let stripped = strip_comments_and_strings(EVOLUTION_RS_SOURCE);
+
+    let erase_decl = ["pub(crate) fn ", "erase", "_evolution_notices(ctx"].concat();
+    let rekey_decl = ["pub(crate) fn ", "rekey", "_evolution_notices(ctx"].concat();
+    let has_decl = ["pub(crate) fn ", "has", "_evolution_notices(ctx"].concat();
+
+    // Vacuity: all three must be DECLARED before any body clause means anything.
+    for decl in [&erase_decl, &rekey_decl, &has_decl] {
+        assert!(
+            stripped.contains(decl.as_str()),
+            "TEETH(20r-d ADR-0254 D5): evolution.rs declares no {decl:?}. RED AT \
+             AUTHORING TIME. Without all three, accounts.rs cannot run the cascade, \
+             the guest-claim rekey or the game-data predicate through this module — \
+             and D0 write-isolation forbids it reaching the table itself"
+        );
+    }
+
+    let erase_body = squash_ws(&extract_fn_body(&stripped, erase_decl.as_str()));
+    let rekey_body = squash_ws(&extract_fn_body(&stripped, rekey_decl.as_str()));
+    let has_body = squash_ws(&extract_fn_body(&stripped, has_decl.as_str()));
+
+    // --- (a) erase: ONE primary-key delete, keyed on the ARGUMENT -----------
+    let delete_owner = ["own", "er_identity().delete(owner);"].concat();
+    assert_eq!(
+        erase_body.matches(delete_owner.as_str()).count(),
+        1,
+        "TEETH(20r-d ADR-0254 D5): `erase_evolution_notices`'s body must contain \
+         `{delete_owner}` EXACTLY once. The key is the `owner` ARGUMENT: the cascade \
+         fires from a scheduled reaper whose sender is the SCHEDULER, so a \
+         sender-keyed delete leaves the deleted account's queue behind — and a \
+         literal key deletes somebody else's. Body: {erase_body:?}"
+    );
+
+    // --- (b) rekey: find(from) -> delete(from) -> insert(under `to`) --------
+    let find_from = ["fi", "nd(from)"].concat();
+    let delete_from = ["dele", "te(from)"].concat();
+    // NO closing `})` in this needle, deliberately: when rustfmt wraps a struct
+    // literal across lines it APPENDS a trailing comma, so `…row.entries})` and
+    // `…row.entries,})` are both valid spellings of the same expression and a
+    // needle that pins the close is a needle that reds on a pure reformat. The
+    // exact-equality set below accepts both; this needle stops before them.
+    let insert_to = [
+        "insert(PendingEvolutionNotice{",
+        "own",
+        "er_identity:to,entries:row.entries",
+    ]
+    .concat();
+    let find_to = ["fi", "nd(to)"].concat();
+    let delete_to = ["dele", "te(to)"].concat();
+
+    let find_idx = rekey_body.find(find_from.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH(20r-d ADR-0254 D5): `rekey_evolution_notices` must READ the source \
+             row with `{find_from}` — the entries have to be carried across, and a \
+             rekey that does not read them can only create an empty row. Body: \
+             {rekey_body:?}"
+        )
+    });
+    let delete_idx = rekey_body.find(delete_from.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH(20r-d ADR-0254 D5): `rekey_evolution_notices` must DELETE the \
+             source row with `{delete_from}` (the PK-rekey precedent — \
+             `rekey_heal_cooldown`, raising.rs:750). Leaving it behind orphans the \
+             retired guest identity's queue forever. Body: {rekey_body:?}"
+        )
+    });
+    let insert_idx = rekey_body.find(insert_to.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH(20r-d ADR-0254 D5): `rekey_evolution_notices` must re-insert the \
+             SAME entries under the DESTINATION identity — the contiguous \
+             `{insert_to}`. The needle pins the whole struct literal on purpose: \
+             `entries: vec![]` (the zeroing shape) and `owner_identity: from` (the \
+             re-insert-under-the-retired-identity shape) both satisfy a bare \
+             `insert(` check. Body: {rekey_body:?}"
+        )
+    });
+    assert!(
+        find_idx < delete_idx && delete_idx < insert_idx,
+        "TEETH(20r-d ADR-0254 D5): `rekey_evolution_notices` runs its three steps out \
+         of order (find {find_idx}, delete {delete_idx}, insert {insert_idx}). The \
+         order IS the safety: reading before deleting is what carries the entries \
+         across, and deleting before inserting is what keeps the two rows from \
+         colliding on the primary key"
+    );
+    for banned in [find_to.as_str(), delete_to.as_str()] {
+        assert_eq!(
+            rekey_body.matches(banned).count(),
+            0,
+            "TEETH(20r-d ADR-0254 D5 NO MERGE): `rekey_evolution_notices`'s body \
+             touches the DESTINATION row ({banned:?}). ADR-0254 D5 is explicit that \
+             there is nothing to merge: `complete_guest_claim`'s guard 11 \
+             (`account_has_game_data`, which `has_evolution_notices` joins) runs \
+             FIRST and proves the destination owns no game data at all. A merge is \
+             dead code today and a silent entry-loser the moment that guard is \
+             weakened. Body: {rekey_body:?}"
+        );
+    }
+
+    // --- (c) has: ROW-EXISTS on the ARGUMENT --------------------------------
+    let find_owner_is_some = ["own", "er_identity().find(owner).is_some()"].concat();
+    assert_eq!(
+        has_body.matches(find_owner_is_some.as_str()).count(),
+        1,
+        "TEETH(20r-d ADR-0254 D5): `has_evolution_notices`'s body must be the \
+         ROW-EXISTS read `{find_owner_is_some}`. It must NOT ask whether the entry \
+         list is non-empty: an acked-empty row still occupies the primary key, so an \
+         entries-based answer would drop it out of `account_has_game_data` and let a \
+         guest claim rekey INTO an occupied key. Body: {has_body:?}"
+    );
+
+    // --- (d) the EXACT squashed bodies --------------------------------------
+    let frozen_erase = [
+        "ctx.db.",
+        "pend",
+        "ing_evolution_noti",
+        "ce().",
+        "own",
+        "er_identity().delete(owner);",
+    ]
+    .concat();
+    // ONE expression, composed mechanically over the SINGLE inert degree of
+    // freedom: the trailing comma rustfmt appends inside a struct literal it has
+    // wrapped across lines. At the production indent the insert statement is 111
+    // columns, so it WILL wrap and the comma WILL appear — both spellings are
+    // accepted so an honest reformat can never red this pin, and nothing else
+    // about the body is free.
+    let frozen_rekey = |tail: &str| -> String {
+        [
+            "ifletSome(row)=ctx.db.",
+            "pend",
+            "ing_evolution_noti",
+            "ce().",
+            "own",
+            "er_identity().find(from){ctx.db.",
+            "pend",
+            "ing_evolution_noti",
+            "ce().",
+            "own",
+            "er_identity().delete(from);ctx.db.",
+            "pend",
+            "ing_evolution_noti",
+            "ce().insert(PendingEvolutionNotice{",
+            "own",
+            "er_identity:to,entries:row.entries",
+            tail,
+            "});}",
+        ]
+        .concat()
+    };
+    let frozen_has = [
+        "ctx.db.",
+        "pend",
+        "ing_evolution_noti",
+        "ce().",
+        "own",
+        "er_identity().find(owner).is_some()",
+    ]
+    .concat();
+
+    let sanctioned_rekey = [frozen_rekey(""), frozen_rekey(",")];
+    assert!(
+        sanctioned_rekey.contains(&rekey_body),
+        "TEETH(20r-d ADR-0254 D5 FROZEN BODY): `rekey_evolution_notices`'s body is \
+         not EXACTLY the sanctioned one.\n  expected one of (whitespace-insensitive, \
+         either trailing-comma spelling): {sanctioned_rekey:?}\n  found: \
+         {rekey_body:?}\n\
+         This body is UNEXECUTABLE in `cargo test` — every write syscall aborts the \
+         rb-41 native host — so the text IS the whole boundary, and the guest claim \
+         it runs on is a path the player cannot retry. Do NOT relax this to match an \
+         implementation; re-derive it from ADR-0254 D5."
+    );
+    for (name, got, want) in [
+        ("erase_evolution_notices", &erase_body, &frozen_erase),
+        ("has_evolution_notices", &has_body, &frozen_has),
+    ] {
+        assert_eq!(
+            got, want,
+            "TEETH(20r-d ADR-0254 D5 FROZEN BODY): `{name}`'s body is not EXACTLY the \
+             sanctioned one.\n  expected (whitespace-insensitive): {want}\n  found: \
+             {got}\n\
+             Both bodies are ONE statement, and `erase_evolution_notices` is \
+             UNEXECUTABLE in `cargo test` (every write syscall aborts the native \
+             host), so for it the text IS the whole boundary. Do NOT relax this to \
+             match an implementation; re-derive it from ADR-0254 D5."
+        );
+    }
+}
+
+/// 20r-d (ADR-0254 D1/D4/D5/D6): the `pending_evolution_notice(` accessor is
+/// reachable from EXACTLY two files, with an enumerated count in each.
+///
+/// WHY A CENSUS AND NOT A PER-FUNCTION BAN: a per-function scan cannot see a
+/// THIRD writer. A `schema.rs` helper (`pub(crate) fn notices_of(ctx, owner)`)
+/// or an `accounts.rs` line that touches the table directly would satisfy every
+/// other tooth in this slice while bypassing the four `evolution.rs` helpers the
+/// cascade / rekey / exists-predicate contract is written against — and
+/// `accounts.rs`'s own D0 write-isolation rule says the cascade DELEGATES.
+///
+/// THE ENUMERATION (10 in evolution.rs), derived from ADR-0254, never counted
+/// off an implementation:
+///   `ack_evolution_notices`  find + update                      = 2
+///   `apply_evolution`        find + update + insert             = 3
+///   `erase_evolution_notices`  delete                           = 1
+///   `rekey_evolution_notices`  find + delete + insert           = 3
+///   `has_evolution_notices`    find                             = 1
+/// The `use crate::schema::{…, pending_evolution_notice, …}` import carries no
+/// open paren and is deliberately not counted.
+///
+/// kills: a laundering helper in schema.rs or accounts.rs; a fifth
+///        evolution.rs helper added without review; a cascade that reaches the
+///        table directly instead of calling `erase_evolution_notices`; a NEW
+///        production module that touches the table and is invisible to this
+///        roster (closed by the lib.rs cross-check below).
+#[test]
+fn s20rd_pending_evolution_notice_accessor_census() {
+    let accessor = ["pending", "_evolution_notice("].concat();
+    let sources = s20rd_production_sources();
+
+    // --- (0) the roster covers every module lib.rs declares -----------------
+    let lib_src = sources
+        .iter()
+        .find(|(name, _)| *name == "lib.rs")
+        .map(|(_, src)| *src)
+        .expect("lib.rs is the first entry of the roster");
+    let declared = s20rd_declared_modules(lib_src);
+    assert!(
+        declared.len() >= 15,
+        "vacuity guard(20r-d): only {} module declarations were parsed out of \
+         lib.rs — the line scanner has rotted, and a rotted scanner would report \
+         full coverage over nothing. Parsed: {declared:?}",
+        declared.len()
+    );
+    for name in &declared {
+        if name.ends_with("tests") {
+            continue; // test modules are out of scope by construction
+        }
+        let file = format!("{name}.rs");
+        assert!(
+            sources.iter().any(|(n, _)| *n == file.as_str()),
+            "TEETH(20r-d census roster): lib.rs declares the production module \
+             `{name}` but `{file}` is NOT in this census's `include_str!` roster — \
+             so a `pending_evolution_notice(` call placed there would be invisible \
+             to the census. Add the file to `s20rd_production_sources()` in the same \
+             change that adds the module"
+        );
+    }
+
+    // --- (1) the scanner demonstrably finds a KNOWN accessor ----------------
+    let control = ["monster", "_pub("].concat();
+    let control_total: usize = sources
+        .iter()
+        .map(|(_, src)| {
+            strip_comments_and_strings(src)
+                .matches(control.as_str())
+                .count()
+        })
+        .sum();
+    assert!(
+        control_total >= 5,
+        "vacuity guard(20r-d): the census pipeline found only {control_total} \
+         occurrence(s) of the KNOWN accessor `{control}` across {} sources — the \
+         scanner (or the roster) has rotted, so the zeros asserted below would be \
+         meaningless rather than meaningful",
+        sources.len()
+    );
+
+    // --- (2) the per-file counts --------------------------------------------
+    for &(name, src) in &sources {
+        let count = strip_comments_and_strings(src)
+            .matches(accessor.as_str())
+            .count();
+        let expected = match name {
+            "schema.rs" => 1usize,
+            "evolution.rs" => 10usize,
+            _ => 0usize,
+        };
+        assert_eq!(
+            count, expected,
+            "TEETH(20r-d census): `{accessor}` occurs {count} time(s) in {name}; \
+             {expected} is sanctioned.\n\
+             schema.rs = 1 (the view body, and NOTHING else — a `pub(crate)` reader \
+             helper there would launder a second read path past every body pin in \
+             this slice).\n\
+             evolution.rs = 10, enumerated from ADR-0254: ack_evolution_notices \
+             find+update (2), apply_evolution find+update+insert (3), \
+             erase_evolution_notices delete (1), rekey_evolution_notices \
+             find+delete+insert (3), has_evolution_notices find (1). If this reds \
+             at a different number, re-derive the enumeration from the ADR and move \
+             the number WITH its sentence — never raise it to absorb a stray call.\n\
+             every other file = 0: accounts.rs runs the cascade, the rekey and the \
+             game-data predicate through the three `crate::evolution::*` helpers \
+             (D0 module write-isolation), so it must never name the accessor itself."
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T1 — EXECUTED: the pure prefix-drain core.
+//
+// THE THREE REJECTION MESSAGES ARE PINNED WHOLE, NOT BY SUBSTRING.
+//
+// WHY (and this is not tidiness): the CLIENT classifies these messages. Two of
+// them — the missing row and the over-count — are SWALLOWED by
+// `isBenignAckRejection` as benign two-tab races; the third, the zero count, is
+// a client defect and must reach the status line. A `contains("exceeds")` pin
+// leaves the rest of the sentence free to drift, and the moment it does the
+// client's transcription stops matching: both benign races start surfacing as
+// errors, and no test in either half notices. The client fixtures in
+// `client/src/ui/evolutionNotice.test.ts` (EN-BENIGN-1) are TRANSCRIPTIONS of
+// exactly these five literals.
+//
+// THE THREE `exceeds` LITERALS CARRY DIFFERENT NUMBERS ON PURPOSE: an
+// implementation that returns a CONSTANT over-count message (the easiest way to
+// make a substring pin green) satisfies at most one of them.
+// ---------------------------------------------------------------------------
+
+/// `count == 0`. NOT benign on the client — a zero count can only come from a
+/// client bug, so this one must reach the player-facing status line.
+const S20RD_ERR_ZERO_COUNT: &str = "ack count must be positive";
+/// No row for the caller. Benign on the client (a second tab already drained).
+const S20RD_ERR_NO_ROW: &str = "no pending evolution notices";
+/// `ack count {count} exceeds {len} pending evolution notices`, at the three
+/// (count, len) pairs the tests below exercise. Spelled as three INDEPENDENT
+/// literals rather than one `format!` helper: a helper shared with the
+/// implementation would make a single mis-transcription pass every arm.
+const S20RD_ERR_4_OF_3: &str = "ack count 4 exceeds 3 pending evolution notices";
+const S20RD_ERR_1_OF_0: &str = "ack count 1 exceeds 0 pending evolution notices";
+const S20RD_ERR_3_OF_2: &str = "ack count 3 exceeds 2 pending evolution notices";
+
+/// 20r-d (ADR-0254 D5): the REAL `crate::evolution::ack_prefix` truth table.
+///
+/// NO MIRROR: this executes the shipped production function. A seam copy could
+/// drift from it silently, and the arithmetic IS the criterion ("acknowledge a
+/// prefix").
+///
+/// kills:
+///  - `count == 0` accepted as a no-op success: the client's benign-rejection
+///    filter would then never see the bug that produced a zero count, and a
+///    zero-count ack is always a client defect worth surfacing;
+///  - `count > len` CLAMPED instead of rejected (the ADR's named anti-pattern):
+///    a stale banner in a second tab would drain entries that tab never showed;
+///  - `drain(..1)` / `remove(0)` ignoring `count` entirely — the `count == len`
+///    and `count < len` arms both catch it;
+///  - draining from the TAIL (`truncate`, `split_off`, `pop`) — the surviving
+///    suffix is pinned by value, so a tail drain lands on the wrong entries;
+///  - a rejected call that still mutates: both rejection arms assert the vector
+///    is byte-identical afterwards;
+///  - a REWORDED rejection: all three messages are compared WHOLE, and the client
+///    fixtures are transcriptions of the same literals, so wording drift cannot
+///    silently move a benign race into the player-facing status line (or hide a
+///    real client bug out of it);
+///  - a CONSTANT over-count message, or a transposed `{len} exceeds {count}`:
+///    the 4-of-3 and 1-of-0 arms carry different numbers, so at most one of the
+///    two can be satisfied by a fixed or reversed sentence.
+#[test]
+fn s20rd_ack_prefix_truth_table() {
+    let a = s20rd_reveal(11, 1, 2, 100);
+    let b = s20rd_reveal(12, 2, 3, 200);
+    let c = s20rd_reveal(13, 3, 4, 300);
+
+    // --- count == 0 -> Err, vector untouched --------------------------------
+    let mut entries = vec![a.clone(), b.clone(), c.clone()];
+    let err = crate::evolution::ack_prefix(&mut entries, 0)
+        .expect_err("TEETH(20r-d): a zero count must be REJECTED, never a silent no-op success");
+    assert_eq!(
+        err, S20RD_ERR_ZERO_COUNT,
+        "TEETH(20r-d ADR-0254 D5): the zero-count rejection must be EXACTLY \
+         {S20RD_ERR_ZERO_COUNT:?}; got {err:?}. Pinned WHOLE, not by substring: the \
+         client's `isBenignAckRejection` deliberately does NOT swallow this one (a \
+         zero count can only come from a client bug), so any drift in the wording \
+         silently changes which rejections the player is told about"
+    );
+    assert_eq!(
+        entries,
+        vec![a.clone(), b.clone(), c.clone()],
+        "TEETH(20r-d): a REJECTED ack must leave the entry list byte-identical — a \
+         reject-then-drain implementation loses a reveal the player never saw"
+    );
+
+    // --- count > len -> Err, vector untouched -------------------------------
+    let mut entries = vec![a.clone(), b.clone(), c.clone()];
+    let err = crate::evolution::ack_prefix(&mut entries, 4)
+        .expect_err("TEETH(20r-d): a count above the queue length must be REJECTED, never clamped");
+    assert_eq!(
+        err, S20RD_ERR_4_OF_3,
+        "TEETH(20r-d ADR-0254 D5): acking 4 of 3 must reject with EXACTLY \
+         {S20RD_ERR_4_OF_3:?}; got {err:?}. BOTH numbers are interpolated from the \
+         call, so a CONSTANT message (the cheapest way to satisfy a \
+         `contains(\"exceeds\")` pin) reds here or at the 1-of-0 arm below, and a \
+         transposed `{{len}} exceeds {{count}}` reads 3-exceeds-4 and reds too. The \
+         client swallows exactly this sentence as a benign two-tab race"
+    );
+    assert_eq!(
+        entries,
+        vec![a.clone(), b.clone(), c.clone()],
+        "TEETH(20r-d): an over-count ack must leave the entry list untouched. A \
+         CLAMPING implementation empties it here — silently discarding reveals the \
+         player never saw, which is the whole reason D5 says reject-not-clamp"
+    );
+
+    // --- count == len -> Ok, emptied ----------------------------------------
+    let mut entries = vec![a.clone(), b.clone(), c.clone()];
+    crate::evolution::ack_prefix(&mut entries, 3)
+        .expect("TEETH(20r-d): acking the whole queue must succeed");
+    assert!(
+        entries.is_empty(),
+        "TEETH(20r-d): acking `count == len` must leave an EMPTY list (the row \
+         itself survives — only the account cascade deletes it). Found: {entries:?}"
+    );
+
+    // --- count < len -> Ok, the EXACT surviving suffix ----------------------
+    let mut entries = vec![a.clone(), b.clone(), c.clone()];
+    crate::evolution::ack_prefix(&mut entries, 1)
+        .expect("TEETH(20r-d): acking one of three must succeed");
+    assert_eq!(
+        entries,
+        vec![b.clone(), c.clone()],
+        "TEETH(20r-d ADR-0254 D5): acking 1 of 3 must drain the FIRST entry and \
+         leave exactly the remaining two, in order. A tail drain (`truncate`, \
+         `pop`, `split_off`) leaves [a, b]; a whole-list clear leaves []; an \
+         off-by-one leaves [c]. Vec order IS display order (EG2-13), so the \
+         surviving suffix is what the banner shows next"
+    );
+
+    // --- two-step drain: the prefix rule composes ---------------------------
+    crate::evolution::ack_prefix(&mut entries, 2)
+        .expect("TEETH(20r-d): acking the remaining two must succeed");
+    assert!(
+        entries.is_empty(),
+        "TEETH(20r-d): draining the remaining suffix must empty the list. Found: \
+         {entries:?}"
+    );
+    let err = crate::evolution::ack_prefix(&mut entries, 1)
+        .expect_err("TEETH(20r-d): acking an EMPTY queue must reject (1 exceeds 0)");
+    assert_eq!(
+        err, S20RD_ERR_1_OF_0,
+        "TEETH(20r-d): acking an empty queue is the `count > len` arm with len 0, and \
+         its message must be EXACTLY {S20RD_ERR_1_OF_0:?}; got {err:?}. This is the \
+         SECOND (count, len) pair: together with the 4-of-3 arm above it proves both \
+         numbers are interpolated from the call rather than baked into a literal, \
+         and it proves the empty queue takes the over-count arm and not a separate, \
+         differently-worded 'queue is empty' path the client would not recognise"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T2 — BEHAVIOURAL: the seam.
+//
+// ⚠ HONESTY, STATED ONCE FOR THE THREE `s20rd_seam_*` TESTS BELOW. The seam is a
+// MIRROR of production, not production. `apply_evolution_seam` carries its own
+// copy of the notice push (added by this slice, a few hundred lines above), so a
+// production `apply_evolution` that writes NO notice at all leaves all three
+// tests GREEN. What they prove is the SHAPE of the write — one entry per applied
+// edge, in chain order, pre/post species off the immutable `path`, one shared
+// transaction stamp, filed under the MONSTER's owner and nobody else's — which
+// is precisely what no source scan can see and what the wasm-only production
+// path cannot be executed for in `cargo test`.
+//
+// THE WRITE SITE ITSELF IS PROVEN ELSEWHERE, and that split is load-bearing:
+//   * `s20rd_apply_evolution_writes_the_notice_after_the_dual_write` pins that
+//     production's `apply_evolution` performs the push at all, after the
+//     dual-write, from the `path` argument, under the monster row's owner;
+//   * `s20rd_pending_evolution_notice_accessor_census` pins that no OTHER
+//     production file writes the table behind its back;
+//   * the `S9-evolve-notice` milestone in `evals/account-e2e.eval.mjs` drives a
+//     REAL evolve reducer against a live host and polls the view for the row.
+// Read the three together; none of them substitutes for another.
+// ---------------------------------------------------------------------------
+
+/// 20r-d (ADR-0254 D4): a player-invoked evolution appends EXACTLY ONE reveal
+/// entry, carrying the pre/post species from the authored edge, the monster id,
+/// and the transaction clock — filed under the MONSTER's owner.
+///
+/// kills: zero entries (the feature absent); two entries (a push in both
+///        `apply_evolution` and `evolve`, so the chain tail would double every
+///        step); `from_species` captured AFTER the transform (it would read 2);
+///        a wall-clock read instead of the injected transaction clock (the
+///        stamp would not be 4242); a notice filed under an identity other than
+///        the monster's owner.
+#[test]
+fn s20rd_seam_player_evolve_writes_one_notice() {
+    let owner = owner_id();
+    let mut db = TestEvolutionDb::new();
+    db.now_ms = 4242;
+    seed_evolvable_world(&mut db, 1, owner);
+
+    evolve_seam(&mut db, owner, 1, 2).expect("a fully qualified monster must evolve");
+
+    let entries = db.notices_for(owner);
+    assert_eq!(
+        entries.len(),
+        1,
+        "TEETH(20r-d ADR-0254 D4): ONE evolution must append EXACTLY ONE reveal \
+         entry. Zero means nothing is written (the §20r-d defect, unfixed); two \
+         means the push happens on BOTH the reducer and the shared helper, so a \
+         3-step chain would show six reveals. Found: {entries:?}"
+    );
+    assert_eq!(
+        entries[0],
+        s20rd_reveal(1, 1, 2, 4242),
+        "TEETH(20r-d ADR-0254 D4): the entry must be exactly \
+         {{ monster_id: 1, from_species: 1, to_species: 2, evolved_at_ms: 4242 }}. \
+         A `from_species` read off the monster row AFTER the transform yields 2 (the \
+         banner would say \"evolved from X into X\"); a wall-clock stamp yields \
+         something other than the injected 4242"
+    );
+    assert!(
+        db.notices_for(other_owner_id()).is_empty(),
+        "TEETH(20r-d): no OTHER identity may receive a copy of the reveal"
+    );
+}
+
+/// 20r-d (ADR-0254 D4 + EG2-13): a 3-step auto-evolution chain appends THREE
+/// entries whose (from, to) pairs are the three applied edges IN ORDER, all
+/// stamped with the SAME transaction clock, all filed under the monster's owner.
+///
+/// THE AUTO PATH IS THE SENDER-INDEPENDENCE WITNESS: `check_and_evolve_seam`
+/// takes no caller at all, exactly as production's `check_and_evolve(ctx,
+/// monster_id)` gets its sender from a `ReducerContext` that, at the
+/// `pvp_deadline_reaper` call site, belongs to the SCHEDULER. The entries must
+/// still land on the monster's owner, and on nobody else — including the
+/// all-zero identity a sender-keyed implementation would use in a native test.
+///
+/// kills: a chain that writes one entry for the whole cascade (the player would
+///        be told about the first step and never the other two); entries in
+///        reverse order (Vec order IS display order, EG2-13); a per-step clock
+///        read (the three stamps would differ); the sender-keyed owner.
+#[test]
+fn s20rd_seam_auto_evolve_chain_writes_entries_in_order() {
+    let owner = owner_id();
+    let mut db = TestEvolutionDb::new();
+    db.now_ms = 909_090;
+    db.insert_species(source_species_row()); // 1, tier 0
+    db.insert_species(target_species_row()); // 2, tier 1
+    db.insert_species(make_species_row(3, 40, 60, 2));
+    db.insert_species(make_species_row(4, 55, 70, 3));
+    db.insert_evolution_path(make_evolution_path_row(1, 100, 1, 2));
+    db.insert_evolution_path(make_level_and_trust_path_row(
+        2,
+        101,
+        2,
+        3,
+        20,
+        TrustTier::Friendly,
+    ));
+    db.insert_evolution_path(make_level_and_trust_path_row(
+        3,
+        102,
+        3,
+        4,
+        20,
+        TrustTier::Friendly,
+    ));
+    let m = make_qualified_monster_row(1, owner);
+    db.insert_monster(m.clone());
+    db.insert_monster_pub(make_monster_pub(&m, 0));
+
+    let steps = check_and_evolve_seam(&mut db, 1);
+    assert_eq!(
+        steps, 3,
+        "the 3-step chain must resolve in ONE call (EG2-13)"
+    );
+
+    assert_eq!(
+        s20rd_pairs(&db, owner),
+        vec![(1, 2), (2, 3), (3, 4)],
+        "TEETH(20r-d ADR-0254 D4 / EG2-13): a 3-step chain must append THREE entries \
+         whose (from, to) pairs are the three applied edges IN ORDER. One entry means \
+         only the first (or last) step is announced; a reversed list means the banner \
+         walks the chain backwards, since Vec order IS display order"
+    );
+    for (i, entry) in db.notices_for(owner).iter().enumerate() {
+        assert_eq!(
+            entry.monster_id, 1,
+            "TEETH(20r-d): entry {i} must name the monster that evolved"
+        );
+        assert_eq!(
+            entry.evolved_at_ms, 909_090,
+            "TEETH(20r-d ADR-0254 D1): entry {i} must carry the TRANSACTION clock — \
+             every entry of one chain shares one stamp. A per-step wall-clock read \
+             would make the stamps differ, and the ADR is explicit that the stamp is \
+             display metadata, never an ordering or dedupe key"
+        );
+    }
+    assert!(
+        db.notices_for(other_owner_id()).is_empty(),
+        "TEETH(20r-d): a second identity must receive nothing"
+    );
+    assert!(
+        db.notices_for(Identity::from_byte_array([0u8; 32]))
+            .is_empty(),
+        "TEETH(20r-d ADR-0254 D4): NOTHING may be filed under the all-zero identity. \
+         The auto path has no caller of its own, so an implementation that keys the \
+         write on `ctx.sender()` files the whole chain under whichever identity \
+         happens to be driving the reducer — the pvp deadline SCHEDULER in \
+         production, and the all-zero dummy sender in a native test"
+    );
+}
+
+/// 20r-d (ADR-0254 D4): a SECOND evolution APPENDS to the owner's existing row —
+/// it never replaces the entry list and never opens a second row.
+///
+/// kills: an upsert that writes `entries: vec![entry]` on the update arm (the
+///        first reveal is lost, so a player who evolves twice before dismissing
+///        only ever learns about the second); an insert-always implementation,
+///        which in production is a primary-key PANIC (a wasm trap that aborts
+///        the HOST reducer).
+#[test]
+fn s20rd_seam_second_evolution_appends_not_replaces() {
+    let owner = owner_id();
+    let mut db = TestEvolutionDb::new();
+    db.now_ms = 77;
+    db.insert_species(source_species_row()); // 1
+    db.insert_species(target_species_row()); // 2
+    db.insert_species(make_species_row(3, 40, 60, 2));
+    let m = make_qualified_monster_row(1, owner);
+    db.insert_monster(m.clone());
+    db.insert_monster_pub(make_monster_pub(&m, 0));
+
+    apply_evolution_seam(&mut db, 1, &make_evolution_path_row(1, 100, 1, 2))
+        .expect("the first evolution must apply");
+    assert_eq!(
+        db.notices_for(owner).len(),
+        1,
+        "precondition: the first evolution appends one entry"
+    );
+
+    apply_evolution_seam(&mut db, 1, &make_level_only_path_row(2, 101, 2, 3, 20))
+        .expect("the second evolution must apply");
+
+    assert_eq!(
+        db.notices_for(owner),
+        vec![s20rd_reveal(1, 1, 2, 77), s20rd_reveal(1, 2, 3, 77)],
+        "TEETH(20r-d ADR-0254 D4): the second evolution must APPEND — the owner's row \
+         must hold BOTH reveals, oldest first. A `entries: vec![entry]` write on the \
+         existing-row arm leaves only the 1->2 reveal's successor and silently drops \
+         the reveal the player had not dismissed yet"
+    );
+    assert_eq!(
+        db.notices.len(),
+        1,
+        "TEETH(20r-d ADR-0254 D4): the owner must hold EXACTLY ONE row. A second row \
+         for the same owner is what a bare `.insert` produces — and in production \
+         that is a primary-key PANIC, i.e. a wasm trap that aborts the HOST reducer \
+         (the player's movement or battle write is rolled back by their own second \
+         evolution)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T2 — EXECUTED: the ack reducer's three refusal paths (rb-41 native host).
+//
+// The dummy sender is the ALL-ZERO identity (native_host_tests.rs module doc),
+// so "the caller's row" is seeded under `[0u8; 32]` and "somebody else's row"
+// under `[1u8; 32]`. Every WRITE syscall aborts the PROCESS, so only paths that
+// return `Err` BEFORE the `.update(` are executable here — which is exactly the
+// set of refusals D5 legislates. `database_identity()` is unstubbed in this host
+// and is never reached by this reducer.
+// ---------------------------------------------------------------------------
+
+/// 20r-d (ADR-0254 D5): `ack_evolution_notices` refuses when the CALLER holds no
+/// row, even while another player's queue is non-empty.
+///
+/// kills: an ack that acts on the first row of the table instead of the sender's
+///        (one player could drain another player's queue); an ack that treats a
+///        missing row as success (the client would clear a banner it never
+///        acked); an `unwrap()` on the find (a wasm trap).
+#[test]
+fn s20rd_ack_rejects_when_no_row_for_sender() {
+    let fx = crate::native_host_tests::fixture();
+    let table = ["pending", "_evolution_notice"].concat();
+    let column = ["owner", "_identity"].concat();
+    let handle =
+        fx.table::<crate::schema::PendingEvolutionNotice>(&table, &column, |r| r.owner_identity);
+    let ctx = fx.ctx();
+    let me = ctx.sender();
+    let stranger = Identity::from_byte_array([1u8; 32]);
+    assert_ne!(
+        stranger, me,
+        "fixture(20r-d): the stranger identity must differ from the host's dummy \
+         sender, or this test proves nothing about owner scoping"
+    );
+
+    // A STRANGER holds a non-empty queue; the CALLER holds nothing.
+    handle.seed(&crate::schema::PendingEvolutionNotice {
+        owner_identity: stranger,
+        entries: vec![s20rd_reveal(9_001, 1, 2, 5)],
+    });
+
+    let err = crate::evolution::ack_evolution_notices(&ctx, 1).expect_err(
+        "TEETH(20r-d ADR-0254 D5): a caller with no notice row must be REJECTED. A \
+         success here means the reducer acted on whatever row it found first, which \
+         is one player draining another player's queue",
+    );
+    assert_eq!(
+        err,
+        S20RD_ERR_NO_ROW,
+        "TEETH(20r-d ADR-0254 D5): the missing-row rejection must be EXACTLY \
+         {S20RD_ERR_NO_ROW:?}; got {err:?}. Pinned WHOLE: the client swallows this \
+         exact sentence as a benign stale-banner race, so a reworded message turns \
+         a normal two-tab race into a player-facing error and no test on either \
+         side of the wire would notice. Indexes the generated code asked the host \
+         for: {:?}",
+        fx.requested_indexes()
+    );
+}
+
+/// 20r-d (ADR-0254 D5): a ZERO count is refused even though the caller's row
+/// exists and is non-empty.
+///
+/// kills: `count == 0` treated as a no-op success (a client bug that sends zero
+///        would be invisible forever); a `count.max(1)` normalisation.
+#[test]
+fn s20rd_ack_rejects_zero_count() {
+    let fx = crate::native_host_tests::fixture();
+    let table = ["pending", "_evolution_notice"].concat();
+    let column = ["owner", "_identity"].concat();
+    let handle =
+        fx.table::<crate::schema::PendingEvolutionNotice>(&table, &column, |r| r.owner_identity);
+    let ctx = fx.ctx();
+
+    // Seeded under the CALLER's own identity (never a hard-coded byte array), so
+    // the reducer's sender-keyed `find` resolves and the rejection under test is
+    // the COUNT check rather than a missing row.
+    handle.seed(&crate::schema::PendingEvolutionNotice {
+        owner_identity: ctx.sender(),
+        entries: vec![s20rd_reveal(9_001, 1, 2, 5), s20rd_reveal(9_002, 2, 3, 5)],
+    });
+
+    let err = crate::evolution::ack_evolution_notices(&ctx, 0).expect_err(
+        "TEETH(20r-d ADR-0254 D5): a zero count must be REJECTED even for a caller \
+         whose queue exists — reject, never clamp, never no-op",
+    );
+    assert_eq!(
+        err,
+        S20RD_ERR_ZERO_COUNT,
+        "TEETH(20r-d): the zero-count rejection must be EXACTLY \
+         {S20RD_ERR_ZERO_COUNT:?}; got {err:?}. This is the ONE rejection the client \
+         does NOT swallow, so its wording is what decides whether a client bug that \
+         sends `count: 0` is ever seen. Indexes the generated code asked the host \
+         for: {:?}",
+        fx.requested_indexes()
+    );
+}
+
+/// 20r-d (ADR-0254 D5): a count ABOVE the caller's queue length is refused
+/// rather than clamped.
+///
+/// PROOF-OF-TEETH: the caller's queue holds exactly two entries and the count is
+/// three, so a CLAMPING implementation succeeds here — and, because the success
+/// path reaches `.update(`, the native host would ABORT the process rather than
+/// return. Either way this test does not pass for a clamping implementation; the
+/// `Err` assertion is what makes the distinction legible.
+///
+/// kills: `count.min(entries.len())`, `entries.clear()`, `drain(..)` — every
+///        shape that silently discards reveals the client never rendered.
+#[test]
+fn s20rd_ack_rejects_count_above_len() {
+    let fx = crate::native_host_tests::fixture();
+    let table = ["pending", "_evolution_notice"].concat();
+    let column = ["owner", "_identity"].concat();
+    let handle =
+        fx.table::<crate::schema::PendingEvolutionNotice>(&table, &column, |r| r.owner_identity);
+    let ctx = fx.ctx();
+
+    // The CALLER's own row, holding exactly TWO entries.
+    handle.seed(&crate::schema::PendingEvolutionNotice {
+        owner_identity: ctx.sender(),
+        entries: vec![s20rd_reveal(9_001, 1, 2, 5), s20rd_reveal(9_002, 2, 3, 5)],
+    });
+
+    let err = crate::evolution::ack_evolution_notices(&ctx, 3).expect_err(
+        "TEETH(20r-d ADR-0254 D5): acking 3 of 2 must be REJECTED. A clamping \
+         implementation drains both entries and returns Ok — silently discarding a \
+         reveal the player never saw, which is the exact anti-pattern the ADR names",
+    );
+    assert_eq!(
+        err,
+        S20RD_ERR_3_OF_2,
+        "TEETH(20r-d): acking 3 of 2 must reject with EXACTLY {S20RD_ERR_3_OF_2:?}; \
+         got {err:?}. THE THIRD (count, len) PAIR — this one is produced by the REAL \
+         reducer against REAL rows, so together with the 4-of-3 and 1-of-0 pairs in \
+         the truth table it proves both numbers come from the call and from the \
+         row, not from a literal. The client swallows this exact sentence as a \
+         benign two-tab race. Indexes the generated code asked the host for: {:?}",
+        fx.requested_indexes()
+    );
+}
+
+/// 20r-d (ADR-0254 D5): `has_evolution_notices` answers ROW-EXISTS, per ASKED
+/// owner, from LIVE rows — and the guest-claim predicate consumes it.
+///
+/// WHY THIS ONE IS EXECUTABLE WHERE ITS TWO SIBLINGS ARE NOT: it is READ-ONLY,
+/// so it never reaches the unmodelled write syscalls that abort the rb-41 native
+/// host. That makes it the only lifecycle helper whose BEHAVIOUR can be proven
+/// in `cargo test`, and the only one where a hollowed body ("perform the read,
+/// then return a constant") is invisible to every source scan — the exact
+/// ADR-0222 known-limit rb-41 exists to close.
+///
+/// THE EMPTY-ENTRIES ROW IS THE WHOLE POINT. An ack NEVER deletes the row (an
+/// empty `Vec` persists, like `player_wallet` — ADR-0254 D4), so "row present,
+/// entries empty" is the NORMAL state of every player who has dismissed their
+/// last reveal. If this predicate answered `!entries.is_empty()` it would drop
+/// that player out of `account_has_game_data`, and `complete_guest_claim`'s
+/// guard 11 would then admit a claim whose rekey inserts INTO an occupied
+/// primary key — a wasm trap on a path the player cannot retry. That is what
+/// makes the no-merge rekey sound, and it is why D5 says ROW-EXISTS in as many
+/// words.
+///
+/// THE ASKED OWNER IS `[1u8; 32]`, NEVER THE DUMMY SENDER. The native host's
+/// `ctx.sender()` is the all-zero identity, so a body keyed on the SENDER rather
+/// than on its `owner` ARGUMENT would pass against an owner of `[0u8; 32]` and
+/// fail here — which is the point (the cascade and the guest claim both call
+/// this for somebody who is not the caller).
+///
+/// kills:
+///  - the ADR-0222 known-limit hollow, `{ let _ = <the read>; false }`: the
+///    owner-row assertion goes red while every source scan stays green;
+///  - the inverted hollow, `{ let _ = <the read>; true }`: the empty-table and
+///    stranger-only assertions go red;
+///  - `!entries.is_empty()` / `entries.len() > 0` instead of row-exists: the
+///    EMPTY-entries row seeded below reads false and this test names why;
+///  - a body that answers does-the-table-hold-ANY-row: the stranger-only
+///    assertion goes red, and so does the post-removal one;
+///  - a body keyed on `ctx.sender()` instead of the `owner` argument;
+///  - a latched or memoised answer that never returns to false: the
+///    post-removal assertion goes red;
+///  - deleting the new disjunct from `accounts::account_has_game_data`: the
+///    paired account assertions go red while the direct ones stay green.
+#[test]
+fn s20rd_has_evolution_notices_is_row_exists() {
+    let fx = crate::native_host_tests::fixture();
+    let table = ["pending", "_evolution_notice"].concat();
+    let column = ["owner", "_identity"].concat();
+    let handle =
+        fx.table::<crate::schema::PendingEvolutionNotice>(&table, &column, |r| r.owner_identity);
+    let ctx = fx.ctx();
+
+    // Both identities are non-zero, so neither can be satisfied by a body that
+    // reads `ctx.sender()` (the host's dummy sender is the all-zero identity).
+    let owner = Identity::from_byte_array([1u8; 32]);
+    let stranger = Identity::from_byte_array([2u8; 32]);
+
+    assert!(
+        !crate::evolution::has_evolution_notices(&ctx, owner),
+        "TEETH(20r-d ADR-0254 D5): `has_evolution_notices` must be false for an owner \
+         with no row — the table is EMPTY here, so a true answer means the return \
+         value is not derived from the table read at all"
+    );
+    assert!(
+        !crate::accounts::account_has_game_data(&ctx, owner),
+        "TEETH(20r-d): `account_has_game_data` must be false while the owner holds no \
+         row in ANY of its tables — nothing has been seeded yet"
+    );
+
+    // A STRANGER's row, deliberately NON-empty.
+    handle.seed(&crate::schema::PendingEvolutionNotice {
+        owner_identity: stranger,
+        entries: vec![s20rd_reveal(9_101, 1, 2, 11)],
+    });
+    assert!(
+        !crate::evolution::has_evolution_notices(&ctx, owner),
+        "TEETH(20r-d ADR-0254 D5): `has_evolution_notices` must stay false when the \
+         ONLY row belongs to a DIFFERENT owner — the predicate answers per-owner, \
+         never table-is-non-empty. A table-scan answer would make every guest claim \
+         fail guard 11 as soon as ANY player held a pending reveal. Indexes the \
+         generated code asked the host for: {:?}",
+        fx.requested_indexes()
+    );
+    assert!(
+        !crate::accounts::account_has_game_data(&ctx, owner),
+        "TEETH(20r-d): `account_has_game_data` must stay false when the only seeded \
+         row belongs to a stranger — a guest claim keys on the CALLER identity, never \
+         on global table population"
+    );
+
+    // ★ The owner's OWN row, with an EMPTY entries Vec — the normal post-ack state.
+    handle.seed(&crate::schema::PendingEvolutionNotice {
+        owner_identity: owner,
+        entries: vec![],
+    });
+    assert!(
+        crate::evolution::has_evolution_notices(&ctx, owner),
+        "TEETH(20r-d ADR-0254 D5 ROW-EXISTS): `has_evolution_notices` must report TRUE \
+         for an owner whose row exists with an EMPTY entry list. An ack never deletes \
+         the row (an empty Vec persists, the `player_wallet` rule), so this is the \
+         state of every player who has dismissed their last reveal — and an \
+         `entries.is_empty()`-based answer reads FALSE here, drops that player out of \
+         `account_has_game_data`, and lets a guest claim rekey INTO their occupied \
+         primary key. A body that performs the read and returns a constant false (the \
+         ADR-0222 known-limit hollow) fails exactly here. Indexes the generated code \
+         asked the host for: {:?}",
+        fx.requested_indexes()
+    );
+    assert!(
+        crate::accounts::account_has_game_data(&ctx, owner),
+        "TEETH(20r-d ADR-0254 D5): `account_has_game_data` must be true through its \
+         NEW pending-evolution-notice disjunct while the owner holds a notice row and \
+         NOTHING else. A disjunct that was never added fails exactly here, while the \
+         direct predicate assertion above stays green — which is the whole reason this \
+         pair is asserted together. Indexes the generated code asked the host for: {:?}",
+        fx.requested_indexes()
+    );
+
+    assert_eq!(
+        handle.remove(owner),
+        1,
+        "fixture(20r-d): the owner held exactly ONE row to remove — a different count \
+         means the seeded state is not the state this test reasons about (`seed` \
+         appends, it never upserts)"
+    );
+    assert!(
+        !crate::evolution::has_evolution_notices(&ctx, owner),
+        "TEETH(20r-d): `has_evolution_notices` must return to FALSE once the owner's \
+         row is gone — the answer tracks LIVE rows, so it can never latch on a row \
+         that no longer exists. This is the state in which a guest claim is allowed \
+         to proceed"
+    );
+    assert!(
+        !crate::accounts::account_has_game_data(&ctx, owner),
+        "TEETH(20r-d): `account_has_game_data` must return to false once the owner's \
+         last row is gone"
+    );
+    assert!(
+        crate::evolution::has_evolution_notices(&ctx, stranger),
+        "TEETH(20r-d): removing the OWNER's row must leave the STRANGER's row \
+         untouched — without this, the negatives above could be explained by an \
+         emptied table rather than by owner scoping. Indexes the generated code asked \
+         the host for: {:?}",
+        fx.requested_indexes()
+    );
 }

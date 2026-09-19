@@ -1865,6 +1865,9 @@ fn auth21_rekey_all_delegates_every_table_in_order() {
 
     let ordered = [
         concat!("rekey", "_monsters("),
+        // 20r-d (ADR-0254 D6): the post-evolve notice queue re-keys immediately
+        // after the monsters it is derived bookkeeping about.
+        concat!("rekey", "_evolution_notices("),
         concat!("rekey", "_inventory("),
         concat!("rekey", "_npc_state("),
         concat!("rekey", "_heal_cooldown("),
@@ -3947,9 +3950,9 @@ fn data_lifecycle_manifest_totality_bidirectional() {
 /// `ViaJoin` PAYLOADS pinned by exact parent value.
 ///
 /// The four sets START from spec §3's own recount — "38 = 12 ERASE +
-/// 4 ANONYMIZE, 5 JOIN-ONLY, 17 NOT-OWNED" — and the live tree is now 42
-/// entries (14 ERASE, 4 ANONYMIZE, 5 JOIN-ONLY, 19 NOT-OWNED), because M22, rb-48
-/// and rb-73 add four tables the §3 recount predates.
+/// 4 ANONYMIZE, 5 JOIN-ONLY, 17 NOT-OWNED" — and the live tree is now 43
+/// entries (15 ERASE, 4 ANONYMIZE, 5 JOIN-ONLY, 19 NOT-OWNED), because M22, rb-48,
+/// rb-73 and 20r-d add five tables the §3 recount predates.
 ///
 /// The `Erase` list carries one table beyond the spec's twelve: `export_bundle`.
 /// A snapshot of personal data is itself personal data, so the export bundle is
@@ -4020,7 +4023,9 @@ fn data_lifecycle_partition_matches_spec_section3() {
     not_owned.sort_unstable();
 
     // Spec §3 ERASE (12) + this slice's own `export_bundle` (spec §5 / plan D2)
-    // + rb-73's `player_session` (ADR-0245 D1: per-connection presence bookkeeping).
+    // + rb-73's `player_session` (ADR-0245 D1: per-connection presence bookkeeping)
+    // + 20r-d's `pending_evolution_notice` (ADR-0254 D2: the transient post-evolve
+    // reveal queue, erased with the monsters it is derived bookkeeping about).
     let expected_erase = [
         "battle_action",
         "battle_challenge",
@@ -4029,6 +4034,7 @@ fn data_lifecycle_partition_matches_spec_section3() {
         "inventory",
         "monster",
         "monster_pub",
+        "pending_evolution_notice",
         "player_conversation",
         "player_dialogue_state",
         "player_quest",
@@ -4043,9 +4049,10 @@ fn data_lifecycle_partition_matches_spec_section3() {
          (monster, monster_pub, inventory, player_dialogue_state, player_quest, \
          player_conversation, heal_cooldown, the wallet, playtest_event, trade_offer, \
          battle_challenge, battle_action), this slice adds `export_bundle` — a snapshot of \
-         personal data is itself personal data — and rb-73 adds `player_session` (ADR-0245 \
-         D1). A table moved OUT of this set survives the cascade; a table moved IN is \
-         deleted when the spec says it must survive."
+         personal data is itself personal data — rb-73 adds `player_session` (ADR-0245 \
+         D1) and 20r-d adds `pending_evolution_notice` (ADR-0254 D2). A table moved OUT of \
+         this set survives the cascade; a table moved IN is deleted when the spec says it \
+         must survive."
     );
 
     let expected_anonymize = ["account", "battle", "player", "profile"];
@@ -5767,13 +5774,13 @@ fn rb24_frozen_disarm_sig() -> String {
 /// be edited in one place, and the consumer test asserts they still agree.
 ///
 /// THE SUBJECT IS SPELLED OUT AT EVERY DELEGATED CALL (ADR-0228, RT-3): each of
-/// the fourteen calls passes `(ctx, args.account_identity)` directly, never a
+/// the fifteen calls passes `(ctx, args.account_identity)` directly, never a
 /// local binding, so a single re-pointed `let` cannot silently retarget the
 /// whole cascade at another identity while every call site still reads right.
 /// That is a rule about the ARGUMENT, and rb-65 does not touch it: the export
 /// purge's RESULT is now bound (`let export_chunks = ..`) because the cascade
 /// line publishes that count, but the subject it is called with is still spelled
-/// out in full, so `m22s3b_nd_subject` still counts fourteen.
+/// out in full, so `m22s3b_nd_subject` still counts fifteen.
 ///
 /// WIDENED BY rb-65 (ADR-0243): the literal gains the `let export_chunks =`
 /// prefix on the purge fragment and two statements before `Ok(())` — the
@@ -5815,6 +5822,12 @@ fn rb24_frozen_reaper_body() -> String {
         concat!(
             "crate::monster_mgmt::era",
             "se_monsters(ctx,args.acc",
+            "ount_identity);"
+        )
+        .to_string(),
+        concat!(
+            "crate::evolution::era",
+            "se_evolution_notices(ctx,args.acc",
             "ount_identity);"
         )
         .to_string(),
@@ -6906,7 +6919,7 @@ fn rb24_deletion_reaper_scheduler_guard_is_first_statement() {
 /// bound now (`let export_chunks = crate::privacy::purge_export_bundles(ctx,
 /// args.account_identity);`), because the cascade line publishes that count —
 /// but the needle matches the ARGUMENT list, which is unchanged, so the census
-/// below is still exactly fourteen. rb-65's own binding pin
+/// below is still exactly fifteen. rb-65's own binding pin
 /// (`rb65_reaper_binds_the_purge_result`) spells the whole statement, prefix
 /// included, and `cascade_fields(args.account_identity, export_chunks)` does NOT
 /// contain this needle (no `(ctx,` prefix), so the new statement cannot inflate
@@ -6963,6 +6976,10 @@ fn m22s3b_nd_erase_player_sessions() -> String {
     concat!("crate::erase_player", "_sessions(").to_string()
 }
 
+fn m22s3b_nd_erase_evolution_notices() -> String {
+    concat!("crate::evolution::erase_evolution", "_notices(").to_string()
+}
+
 fn m22s3b_nd_anonymize_names() -> String {
     concat!("crate::ranking::anonymize_display", "_names(").to_string()
 }
@@ -6990,8 +7007,9 @@ fn m22s3b_nd_rearm_seam() -> String {
     concat!("reaper_rearm_at", "_ms(&account,now)").to_string()
 }
 
-/// The FOURTEEN delegated cascade calls, in the plan order (ADR-0228 D2, step
-/// 6e added by rb-73 / ADR-0245).
+/// The FIFTEEN delegated cascade calls, in the plan order (ADR-0228 D2, step
+/// 6e added by rb-73 / ADR-0245, the monster-adjacent evolution-notice erase
+/// added by 20r-d / ADR-0254 D6).
 /// Label first so a failure names the step rather than a needle.
 fn m22s3b_delegated_calls() -> Vec<(&'static str, String)> {
     vec![
@@ -7000,6 +7018,10 @@ fn m22s3b_delegated_calls() -> Vec<(&'static str, String)> {
             m22s3b_nd_resolver_call(),
         ),
         ("6b monster + monster_pub", m22s3b_nd_erase_monsters()),
+        (
+            "6b pending_evolution_notice",
+            m22s3b_nd_erase_evolution_notices(),
+        ),
         ("6b inventory", m22s3b_nd_erase_inventory()),
         (
             "6b npc dialogue/quest/conversation",
@@ -7026,7 +7048,7 @@ fn m22s3b_delegated_calls() -> Vec<(&'static str, String)> {
 
 /// S3B CASCADE (m22-s3b, PRV1-6a..6e + PRV1-5 re-arm): the deletion reaper body
 /// is EXACTLY the rejecting scheduler guard, the scheduler-keyed row lookup, ONE
-/// clock read, the recheck WITH its re-arm branch, the fourteen delegated
+/// clock read, the recheck WITH its re-arm branch, the fifteen delegated
 /// cascade calls in spec para-4.4 order, the terminal stamp, and `Ok(())`.
 ///
 /// WHAT CHANGED, AND WHY THE PIN SURVIVED IT AGAIN. rb-24 froze a bare no-op;
@@ -7130,16 +7152,16 @@ fn rb24_deletion_reaper_body_is_pinned_cascade() {
     let subject = m22s3b_nd_subject();
     let n_subject = m22_count_occurrences(body, &subject);
     assert_eq!(
-        n_subject, 14,
-        "[rb24/reaper-subject-census] the reaper body must pass {subject:?} to EXACTLY 14 \
-         delegated calls (the resolver, eight erases, the export purge, the character \
-         join-sweep, the player_session erase, the display-name anonymize and the battle \
-         anonymize); found \
+        n_subject, 15,
+        "[rb24/reaper-subject-census] the reaper body must pass {subject:?} to EXACTLY 15 \
+         delegated calls (the resolver, nine erases — the evolution-notice queue joined them \
+         in 20r-d — the export purge, the character join-sweep, the player_session erase, the \
+         display-name anonymize and the battle anonymize); found \
          {n_subject}. Spelling the subject at every call site is what makes a re-pointed \
          `let me = ...` unrepresentable: one local binding above the cascade would retarget \
-         fourteen irreversible steps at another account while every call site still reads \
+         fifteen irreversible steps at another account while every call site still reads \
          correctly. FEWER means a step was dropped or re-argued at a binding; MORE means an \
-         unreviewed fifteenth delegated call."
+         unreviewed sixteenth delegated call."
     );
     let n_sender = m22_count_occurrences(body, "ctx.sender()");
     assert_eq!(
@@ -7340,7 +7362,7 @@ fn rb24_deletion_reaper_body_is_pinned_cascade() {
         body, frozen,
         "[rb24/reaper-body] the deletion reaper body is not the m22-s3b frozen cascade \
          (rejecting scheduler guard, scheduler-keyed row lookup, ONE clock read, the PRV1-5 \
-         recheck with its re-arm branch, the fourteen delegated calls in spec para-4.4 \
+         recheck with its re-arm branch, the fifteen delegated calls in spec para-4.4 \
          order, the terminal stamp, then Ok(())). Every statement in this body is \
          irreversible, so this pin is EXACT rather than containment: a containment check \
          cannot tell a complete cascade from one missing a step, and it is green on an \
@@ -9944,6 +9966,7 @@ fn m22s3b_cascade_covers_manifest() {
     let purge_bundles = m22s3b_nd_purge_bundles();
     let erase_character = m22s3b_nd_erase_character_rows();
     let erase_sessions = m22s3b_nd_erase_player_sessions();
+    let erase_notices = m22s3b_nd_erase_evolution_notices();
     let anon_names = m22s3b_nd_anonymize_names();
     let anon_battles = m22s3b_nd_anonymize_battles();
     let anon_account = m22s3b_nd_anonymized_ctor();
@@ -9953,6 +9976,7 @@ fn m22s3b_cascade_covers_manifest() {
     let map: Vec<(&str, &String)> = vec![
         ("monster", &erase_monsters),
         ("monster_pub", &erase_monsters),
+        ("pending_evolution_notice", &erase_notices),
         ("inventory", &erase_inventory),
         ("player_dialogue_state", &erase_npc),
         ("player_quest", &erase_npc),
@@ -10021,9 +10045,9 @@ fn m22s3b_cascade_covers_manifest() {
     }
 
     assert_eq!(
-        classified, 23,
+        classified, 24,
         "[m22s3b/coverage-census] {classified} manifest entries were classified for the \
-         cascade; EXACTLY 23 is the live partition (14 ERASE + 4 ANONYMIZE + 5 JOIN-ONLY). \
+         cascade; EXACTLY 24 is the live partition (15 ERASE + 4 ANONYMIZE + 5 JOIN-ONLY). \
          Tightened from a floor in r2 — a `>=` accepts growth silently, and growth is \
          precisely the event that needs a human: a NEW owner-keyed table classified for the \
          cascade must be routed through this test's hand-maintained table-to-helper map, \
@@ -11058,6 +11082,10 @@ fn m22s6_table_row_types() -> Vec<(&'static str, AlgebraicType)> {
             <crate::schema::Npc as SpacetimeType>::make_type(&mut ts),
         ),
         (
+            "pending_evolution_notice",
+            <crate::schema::PendingEvolutionNotice as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
             "player",
             <crate::schema::Player as SpacetimeType>::make_type(&mut ts),
         ),
@@ -11226,11 +11254,12 @@ fn m22s6_table_row_registry_matches_manifest() {
 
     let registry_len = registry.len();
     assert_eq!(
-        registry_len, 42,
+        registry_len, 43,
         "[m22s6/registry-census] the S6 row-type registry has {registry_len} entries; the live \
-         manifest carries exactly 42 (14 ERASE + 4 ANONYMIZE + 5 JOIN-ONLY + 19 NOT-OWNED, \
+         manifest carries exactly 43 (15 ERASE + 4 ANONYMIZE + 5 JOIN-ONLY + 19 NOT-OWNED, \
          schema.rs :989-993) — 40 before rb-48, plus `export_bundle_reaper_schedule` (ADR-0238), \
-         plus rb-73's `player_session` (ADR-0245). \
+         plus rb-73's `player_session` (ADR-0245), plus 20r-d's `pending_evolution_notice` \
+         (ADR-0254). \
          A registry that grew or shrank without a matching manifest change is a registry nobody \
          reviewed against the schema it claims to cover."
     );
@@ -11242,13 +11271,15 @@ fn m22s6_table_row_registry_matches_manifest() {
         }
     }
     assert_eq!(
-        identity_bearing, 22,
-        "[m22s6/registry-identity-floor] {identity_bearing} of the 42 registered row types \
-         carry an Identity column at some depth; exactly 22 is the live count (the 18 \
+        identity_bearing, 23,
+        "[m22s6/registry-identity-floor] {identity_bearing} of the 43 registered row types \
+         carry an Identity column at some depth; exactly 23 is the live count (the 19 \
          cascade-classified owner-keyed tables R1 below re-derives, plus the 4 frozen NotOwned \
          exceptions R3 below names). rb-73's `player_session` (ADR-0245) adds one: its \
-         `identity` column is what its Erase classification rests on. The count was UNCHANGED \
-         by rb-48 on purpose: \
+         `identity` column is what its Erase classification rests on; 20r-d's \
+         `pending_evolution_notice` (ADR-0254) adds another on the same reasoning — its \
+         `owner_identity` primary key is what its Erase classification rests on. The count was \
+         UNCHANGED by rb-48 on purpose: \
          `export_bundle_reaper_schedule` is a global interval singleton carrying only an auto-inc \
          id and the runtime's fire instant, so it adds a row type without adding an owner key — \
          which is the derive-metadata proof, stronger than any text scan, that its `NotOwned` \
@@ -11326,10 +11357,11 @@ fn m22s6_owner_keyed_tables_are_erase_or_anonymize() {
         );
     }
     assert_eq!(
-        population, 18,
+        population, 19,
         "[m22s6/x1-population] {population} manifest entries are classified Erase or Anonymize; \
-         the live partition is exactly 18 (14 ERASE + 4 ANONYMIZE — schema.rs's own count at \
-         :990, rb-73's `player_session` included). A floor would let this population grow silently; an exact count forces a \
+         the live partition is exactly 19 (15 ERASE + 4 ANONYMIZE — schema.rs's own count at \
+         :990, rb-73's `player_session` and 20r-d's `pending_evolution_notice` included). A \
+         floor would let this population grow silently; an exact count forces a \
          conscious edit to this test alongside any reclassification."
     );
 }
@@ -11599,7 +11631,7 @@ fn m22s6_nd_anonymize_battles_decl() -> String {
     concat!("fnanonymize", "_battles(").to_string()
 }
 
-/// The manifest-driven chain map itself: one row per classified table (23),
+/// The manifest-driven chain map itself: one row per classified table (24),
 /// AUTHORED FROM THE PLAN (ADR-0228's own delegation map), never derived by
 /// printing what an implementation produced.
 fn m22s6_cascade_chain() -> Vec<M22s6ChainEntry> {
@@ -11620,6 +11652,15 @@ fn m22s6_cascade_chain() -> Vec<M22s6ChainEntry> {
             entry_module_label: "monster_mgmt.rs",
             entry_decl: m22s6_nd_erase_monsters_decl(),
             entry_call_in_reaper: m22s3b_nd_erase_monsters(),
+            via: None,
+        },
+        M22s6ChainEntry {
+            table: "pending_evolution_notice",
+            inline_in_reaper: false,
+            entry_module_src: M22_EVOLUTION_RS,
+            entry_module_label: "evolution.rs",
+            entry_decl: concat!("fnerase_evolution", "_notices(").to_string(),
+            entry_call_in_reaper: m22s3b_nd_erase_evolution_notices(),
             via: None,
         },
         M22s6ChainEntry {
@@ -12128,8 +12169,8 @@ fn m22s6_cascade_chain_reaches_every_classified_table() {
     let mut chain_tables: Vec<&str> = m22s6_cascade_chain().iter().map(|e| e.table).collect();
     let chain_len = chain_tables.len();
     assert_eq!(
-        chain_len, 23,
-        "[m22s6/chain-map-census] the cascade-chain map holds {chain_len} row(s); EXACTLY 23 is \
+        chain_len, 24,
+        "[m22s6/chain-map-census] the cascade-chain map holds {chain_len} row(s); EXACTLY 24 is \
          the live classified partition. The walk above only proves every CLASSIFIED table is \
          mapped; it is blind in the other direction, so a stale row for a table that no longer \
          exists — or a table demoted to NotOwned — would linger here forever, and a reviewer \
@@ -12148,9 +12189,9 @@ fn m22s6_cascade_chain_reaches_every_classified_table() {
     }
 
     assert_eq!(
-        classified, 23,
+        classified, 24,
         "[m22s6/chain-census] {classified} manifest entries are classified for the cascade \
-         (Erase/Anonymize/ViaJoin); EXACTLY 23 is the live partition (14 ERASE + 4 ANONYMIZE + 5 \
+         (Erase/Anonymize/ViaJoin); EXACTLY 24 is the live partition (15 ERASE + 4 ANONYMIZE + 5 \
          JOIN-ONLY). A floor would let this grow silently past the cascade-chain map's coverage; \
          an exact count forces a conscious map edit alongside any reclassification."
     );
@@ -12785,13 +12826,15 @@ fn m22s9_derive_manifest_transcription() -> String {
 
     let census = entries.len();
     assert_eq!(
-        census, 42,
+        census, 43,
         "[m22s9/transcription-census] the derivation produced {census} entries; the live manifest \
-         carries exactly 42 (14 ERASE + 4 ANONYMIZE + 5 JOIN-ONLY + 19 NOT-OWNED, schema.rs \
+         carries exactly 43 (15 ERASE + 4 ANONYMIZE + 5 JOIN-ONLY + 19 NOT-OWNED, schema.rs \
          :989-993) — 40 before rb-48, plus `export_bundle_reaper_schedule` (ADR-0238), which \
          transcribes as `export_bundle_reaper_schedule:NotOwned::0`: NotOwned, no owner columns, \
          not exportable; plus rb-73's `player_session` (ADR-0245), which transcribes as \
-         `player_session:Erase:identity:0`. A transcription that silently shrank would let the \
+         `player_session:Erase:identity:0`; plus 20r-d's `pending_evolution_notice` (ADR-0254), \
+         which transcribes as `pending_evolution_notice:Erase:owner_identity:0`. A transcription \
+         that silently shrank would let the \
          e2e prove a cascade over fewer tables than the tree actually has."
     );
     entries.join("|")
@@ -13305,7 +13348,7 @@ fn m22s9_bindings_expose_m22_surface() {
 ///        red-team's CRITICAL-1 kill);
 ///        a decoy second mention of the constant steering a first-hit anchor
 ///        onto text the eval never uses;
-///        a census that quietly shrank below the 42 live tables;
+///        a census that quietly shrank below the 43 live tables;
 ///        an exportable flag flipped on one side only (the flag is the fourth
 ///        field of every entry, so the export-scope axis is inside the compare).
 #[test]
@@ -13327,10 +13370,11 @@ fn m22s9_e2e_manifest_transcription_matches_manifest() {
     let parts: Vec<&str> = derived.split('|').collect();
     let n_parts = parts.len();
     assert_eq!(
-        n_parts, 42,
+        n_parts, 43,
         "[m22s9/transcription-parts] the derived transcription splits into {n_parts} entries; the \
-         live manifest carries exactly 42 (rb-48 / ADR-0238 adds \
-         `export_bundle_reaper_schedule`; rb-73 / ADR-0245 adds `player_session`)."
+         live manifest carries exactly 43 (rb-48 / ADR-0238 adds \
+         `export_bundle_reaper_schedule`; rb-73 / ADR-0245 adds `player_session`; 20r-d / \
+         ADR-0254 adds `pending_evolution_notice`)."
     );
     for part in &parts {
         let colons = part.matches(':').count();
@@ -14667,7 +14711,7 @@ fn rb40_claim_emits_one_purge_observation() {
         "rb40 [emit/count-in-cascade]: account_deletion_reaper must call `{emit}` EXACTLY \
          once; found {n_cascade}. This clause is half the price of the file-wide widening \
          above: without it, `two somewhere` is satisfied by two claim-time emissions and the \
-         cascade — fourteen irreversible steps — goes back to being silent."
+         cascade — fifteen irreversible steps — goes back to being silent."
     );
     let scoped = n_body + n_cascade;
     assert_eq!(
@@ -15790,7 +15834,7 @@ fn rb65_reaper_emits_one_cascade_observation() {
     assert_eq!(
         n_body, 1,
         "rb65 [emit/count-in-fn]: account_deletion_reaper must call `{emit}` EXACTLY once; found \
-         {n_body}. ZERO is the pre-fix state this slice exists to close: fourteen irreversible \
+         {n_body}. ZERO is the pre-fix state this slice exists to close: fifteen irreversible \
          erase/anonymize steps and the PRV1-6e terminal stamp run and leave NO signal anywhere, \
          so an erasure audit cannot tell a cascade that ran from one that never fired — and the \
          export purge's returned count (rb-40) is discarded on this path. MORE THAN ONE is a \
@@ -15927,7 +15971,7 @@ fn rb65_reaper_emits_one_cascade_observation() {
         body.ends_with(tail.as_str()),
         "rb65 [emit/terminal]: the squashed body of account_deletion_reaper must END with \
          `{tail}`. A SpacetimeDB host log line is written as the reducer runs and SURVIVES a \
-         later panic or Err rollback, while the fourteen delegated calls and the terminal stamp \
+         later panic or Err rollback, while the fifteen delegated calls and the terminal stamp \
          do not — so an emission with any fallible statement after it can record a completed \
          cascade for a transaction that rolled back, which is worse than no signal. This one \
          clause also pins: the statement FORM (a bare statement, not a closure or iterator \
@@ -16120,7 +16164,7 @@ fn rb65_reaper_emits_one_cascade_observation() {
     // A SECOND measured early-exit channel, and one that spells no `return`
     // token at all, so both reachability clauses above are blind to it by
     // construction. The ban is TOTAL rather than region-scoped because it can
-    // be: all fourteen delegated steps are `-> ()` by ADR-0228 D1 and both
+    // be: all fifteen delegated steps are `-> ()` by ADR-0228 D1 and both
     // recheck seams are pure, so the sanctioned body carries ZERO `?` today.
     let n_try = body.matches('?').count();
     assert_eq!(
@@ -16180,7 +16224,7 @@ fn rb65_reaper_emits_one_cascade_observation() {
 ///        `args.account_identity` — one re-pointed `let` above the cascade would
 ///        retarget the purge at another account while the call site still reads
 ///        correctly (ADR-0228 RT-3, and the reason the subject is spelled out at
-///        all fourteen delegated call sites);
+///        all fifteen delegated call sites);
 ///        the binding moved out of the reducer into a helper, where neither the
 ///        cascade's reviewers nor this test can see it;
 ///        the call demoted from a statement to an operand of a closure or an
