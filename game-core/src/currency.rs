@@ -270,6 +270,159 @@ mod tests {
         assert!(super::battle_currency_reward(300) <= MAX_BALANCE);
     }
 
+    // -----------------------------------------------------------------------
+    // 20r-b (spec B1): essence_battle_reward + the two essence SSOT constants
+    //
+    // The items under test (NOT YET IMPLEMENTED — these tests are RED):
+    //   pub const ESSENCE_BST_DIVISOR: u16 = 30;
+    //   pub fn essence_battle_reward(bst: u16) -> u32
+    //   pub const ESSENCE_SOFT_CAP: u32 = 999;
+    //
+    // Formula: max(1, bst / ESSENCE_BST_DIVISOR) — a divisor 3x steeper than
+    // the currency reward's 10 (EG2-7), floored at 1 so a low-BST win is never
+    // essence-inert. All three values are UNCHANGED from the server-module
+    // definitions this slice promotes into game-core: the promotion is a MOVE,
+    // never a retune, and server-module then consumes these definitions.
+    //
+    // These tests start RED because none of the three items exists in this
+    // module yet. They turn green only once the implementer adds all three
+    // HERE, beside battle_currency_reward (so `super::` resolves them).
+    //
+    // Every expectation below is a HARDCODED literal, never derived from the
+    // constant under test: a test that reads the constant to compute its own
+    // oracle stays green for whatever value the constant takes, which is
+    // precisely the silent retune an SSOT promotion must not smuggle in.
+    // -----------------------------------------------------------------------
+
+    /// B1 EARS: the essence reward FLOORS at 1 — every BST from 0 up to and
+    /// including one full divisor step pays exactly one essence.
+    ///
+    /// kills: a bare `bst / 30` (0, 20 and 29 would all pay 0, making a wild win
+    ///        against a low-BST opponent essence-inert); `max` swapped for `min`
+    ///        (same three zeros); and a `+ 1` fudge on the quotient (30 pays 2).
+    #[test]
+    fn essence_battle_reward_floors_at_one_for_low_bst() {
+        for bst in [0u16, 20, 29, 30] {
+            assert_eq!(
+                super::essence_battle_reward(bst),
+                1,
+                "essence_battle_reward({bst}) must be exactly 1 — the formula is \
+                 max(1, bst / 30), so every BST through the first full divisor step pays one"
+            );
+        }
+    }
+
+    /// B1 EARS: above the floor the reward scales at the STEEPER essence divisor
+    /// (30), not at the currency rate (10), and the division truncates.
+    ///
+    /// kills: reusing `BATTLE_CURRENCY_BST_DIVISOR` (300 would pay 30 — EG2-7
+    ///        records that rate clears every authored essence threshold in a
+    ///        handful of wins); a ceiling or rounding division (318 would pay
+    ///        11); and `*` or `%` in place of `/` (450 would pay 13500 or 1).
+    #[test]
+    fn essence_battle_reward_scales_at_the_steeper_divisor() {
+        assert_eq!(
+            super::essence_battle_reward(300),
+            10,
+            "essence_battle_reward(300) must be 10 — bst / 30, NOT the currency rate bst / 10"
+        );
+        assert_eq!(
+            super::essence_battle_reward(318),
+            10,
+            "essence_battle_reward(318) must be 10 — integer division TRUNCATES (318 / 30 is \
+             10.6), a ceiling or rounding formula would pay 11"
+        );
+        assert_eq!(
+            super::essence_battle_reward(450),
+            15,
+            "essence_battle_reward(450) must be 15 — bst / 30"
+        );
+    }
+
+    /// B1 EARS: `ESSENCE_BST_DIVISOR` is 30 — the SSOT value pin.
+    ///
+    /// RETUNE: this literal is the divisor's single source of truth now that
+    /// server-module consumes the game-core definition instead of declaring its
+    /// own. Changing the divisor is a deliberate balance change: edit the
+    /// constant AND this pin in one commit, and re-derive the three example
+    /// rewards above (300 -> 10, 318 -> 10, 450 -> 15) BY HAND rather than from
+    /// the new constant.
+    ///
+    /// kills: a promotion that retunes the divisor while moving it. The example
+    ///        tests pin three (input, output) pairs; this pins the constant
+    ///        itself, so a changed divisor cannot hide behind a compensating
+    ///        formula that happens to reproduce those three pairs.
+    #[test]
+    fn essence_bst_divisor_is_thirty() {
+        assert_eq!(
+            super::ESSENCE_BST_DIVISOR,
+            30,
+            "ESSENCE_BST_DIVISOR must be exactly 30 — the value promoted verbatim out of \
+             server-module (EG2-7: 3x steeper than the currency divisor 10)"
+        );
+    }
+
+    /// B1 EARS: the top of the input domain does not overflow the u32 return.
+    /// u16::MAX is 65535 and 65535 / 30 is 2184.5, truncated to 2184.
+    ///
+    /// kills: an impl that panics or wraps at the top of the domain
+    ///        (`overflow-checks = true` is on for release and bench, so a
+    ///        widening mistake is a hard failure, not a silent wrap), and any
+    ///        undersized intermediate — a u8 would truncate 2184 to 136.
+    #[test]
+    fn essence_battle_reward_at_u16_max_does_not_overflow() {
+        assert_eq!(
+            super::essence_battle_reward(u16::MAX),
+            2184,
+            "essence_battle_reward(u16::MAX = 65535) must be 2184 (65535 / 30 truncated), \
+             without panic or wrap"
+        );
+    }
+
+    /// B1 EARS: the reward MAY exceed `ESSENCE_SOFT_CAP`. The cap belongs to the
+    /// pool WRITE — `grant_essence` clamps there (EG1-1) — never to the reward
+    /// formula, so folding the clamp in here would be a behaviour change and the
+    /// promotion must not change behaviour.
+    ///
+    /// kills: an impl that appends `.min(999)` or `.min(ESSENCE_SOFT_CAP)` to
+    ///        the reward. Every other reward test above still passes such an
+    ///        impl, because no other fixture produces a value near the cap.
+    #[test]
+    fn essence_battle_reward_may_exceed_the_soft_cap() {
+        let reward = super::essence_battle_reward(u16::MAX);
+        assert!(
+            reward > 999,
+            "essence_battle_reward(u16::MAX) = {reward} must be ABOVE the soft cap 999 — the \
+             cap is applied by the pool write, not by the reward formula"
+        );
+        assert_eq!(
+            reward, 2184,
+            "essence_battle_reward(u16::MAX) must be exactly 2184, not a clamped 999"
+        );
+    }
+
+    /// B1 EARS: `ESSENCE_SOFT_CAP` is 999 — the SSOT value pin.
+    ///
+    /// RETUNE: the cap stops being a free tunable with this slice. It is now
+    /// BOTH the runtime clamp for every essence pool (EG1-1) AND the
+    /// content-validation ceiling for an authored `EssenceRequirement.amount`
+    /// (content.rs rule R14), so LOWERING it below a shipped `amount:` reds
+    /// content validation and panics a fresh-DB init. Retune order: content
+    /// first, then this constant, then this pin and the R14 boundary fixtures in
+    /// content.rs.
+    ///
+    /// kills: a promotion that changes the cap while moving it, and the
+    ///        two-declarations-two-values desync this slice exists to remove.
+    #[test]
+    fn essence_soft_cap_is_999() {
+        assert_eq!(
+            super::ESSENCE_SOFT_CAP,
+            999,
+            "ESSENCE_SOFT_CAP must be exactly 999 — the value promoted verbatim out of \
+             server-module's raising.rs"
+        );
+    }
+
     proptest! {
         /// EARS (property): monotone grant — for any (balance <= MAX_BALANCE, amount),
         /// apply_grant(balance, amount) >= balance.
@@ -335,6 +488,43 @@ mod tests {
                     );
                 }
             }
+        }
+
+        /// B1 EARS (property): the floor holds for EVERY representable BST —
+        /// `essence_battle_reward` never returns 0.
+        ///
+        /// The example test pins four points near the floor; this pins the whole
+        /// u16 domain, so no input at all makes a wild win essence-inert.
+        ///
+        /// kills: any impl that drops the `.max(1)` — the example test only
+        ///        covers 0, 20, 29 and 30, while this covers 1..=29 too.
+        #[test]
+        fn prop_essence_reward_floor_holds_for_every_bst(bst in any::<u16>()) {
+            let reward = super::essence_battle_reward(bst);
+            prop_assert!(
+                reward >= 1,
+                "essence_battle_reward({bst}) = {reward}; the reward is floored at 1 for every \
+                 representable BST, so 0 is never a valid answer"
+            );
+        }
+
+        /// B1 EARS (property): the reward is monotone non-decreasing in BST —
+        /// a stronger opponent never pays LESS essence.
+        ///
+        /// kills: a bucketed or modular formula (`bst % 30`, a lookup table with
+        ///        a wrong edge, a saturating step that folds back) — each is
+        ///        consistent with the four example points and still lets some
+        ///        higher BST pay less than a lower one.
+        #[test]
+        fn prop_essence_reward_is_monotone_non_decreasing(a in any::<u16>(), b in any::<u16>()) {
+            let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+            let lo_reward = super::essence_battle_reward(lo);
+            let hi_reward = super::essence_battle_reward(hi);
+            prop_assert!(
+                lo_reward <= hi_reward,
+                "essence_battle_reward({lo}) = {lo_reward} but essence_battle_reward({hi}) = \
+                 {hi_reward}; a higher BST must never pay less essence than a lower one"
+            );
         }
     }
 }
