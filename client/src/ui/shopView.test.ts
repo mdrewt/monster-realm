@@ -518,3 +518,184 @@ describe('ShopView — overlay a11y wiring on the show/hide edge (m23-s3)', () =
     expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// m24s0 I18N-5 (ADR-0255 D5) — the no-shop empty-state row is ELEMENT-BUILT.
+//
+// SOURCE OF TRUTH: ADR-0255 D5, memory/projects/gates/m24-s0.gates.md X5.
+// `document.createElement('li')` is the direct witness of the spec's own wording
+// ("built by createElement") — a DOM result byte-identical to the old
+// `innerHTML = '<li>x</li>'` markup would pass any textContent-only assertion, so
+// this test spies on `document.createElement` itself, installed AFTER mount,
+// construction and a POPULATED render (so the no-shop render below must also
+// CLEAR the stale rows, not merely coexist with them).
+//
+// RED REASON AT HEAD: shopView.ts:115/116 assign `innerHTML` markup directly —
+// zero `document.createElement('li')` calls happen during the no-shop render, so
+// the FIRST assertion below (the call-count spy) fails with actual 0, not 1.
+// ---------------------------------------------------------------------------
+
+describe('m24s0 I18N-5 (ADR-0255 D5)', () => {
+  it('m24s0 I18N-5: render(no-shop) builds the empty-state row via createElement("li") + textContent — exactly one <li> holding one Text node, after a populated render', () => {
+    const overlay = mountShopOverlay();
+    const view = new ShopView(makeCallbacks());
+    view.show();
+
+    // A populated render first: one real row in EACH list, so the no-shop render
+    // below is proven to CLEAR stale rows, not just build a fresh one alongside them.
+    const populatedVm: ShopScreenViewModel = {
+      kind: 'shop',
+      shopId: 1,
+      shopName: 'General Store',
+      forSale: [{ shopItemId: 1n, itemId: 1, name: 'Potion', buyPrice: 10n }],
+      forSaleByPlayer: [
+        { invId: 1n, itemId: 2, name: 'Herb', count: 1, sellPrice: 5n, canSell: true },
+      ],
+      balance: knownBalance(100n),
+    };
+    view.render(populatedVm);
+
+    const forSale = document.getElementById('shop-for-sale') as HTMLElement;
+    const inventory = document.getElementById('shop-inventory') as HTMLElement;
+    expect(forSale.childElementCount, 'precondition: one populated for-sale row').toBe(1);
+    expect(
+      forSale.querySelector('button'),
+      'precondition: the for-sale row holds a Buy button',
+    ).not.toBeNull();
+    expect(inventory.childElementCount, 'precondition: one populated inventory row').toBe(1);
+    expect(
+      inventory.querySelector('button'),
+      'precondition: the inventory row holds a Sell button',
+    ).not.toBeNull();
+
+    // Installed AFTER mount + construction + the populated render, so ONLY the
+    // no-shop render below is observed.
+    const spy = vi.spyOn(document, 'createElement');
+    // vitest 4.1.10: spy.mockRestore() CLEARS spy.mock.calls, so the filtered
+    // result must be captured INSIDE the try block, before restore runs — not
+    // read back off `spy.mock.calls` afterward (that would read `[]` for every
+    // implementation, including a correct one, and the tooth would be unsatisfiable).
+    let liCalls: unknown[][] = [];
+    try {
+      view.render(noShopVm(knownBalance(100n)));
+      liCalls = spy.mock.calls.filter(([tag]) => tag === 'li');
+    } finally {
+      spy.mockRestore();
+    }
+
+    // THE tooth, asserted FIRST: exactly one createElement('li') call during the render.
+    expect(
+      liCalls.length,
+      'the empty-state row must be built by exactly one document.createElement("li") call — an ' +
+        'innerHTML markup assignment makes ZERO createElement("li") calls',
+    ).toBe(1);
+
+    expect(forSale.childElementCount).toBe(1);
+    expect(forSale.firstElementChild).not.toBeNull();
+    expect((forSale.firstElementChild as HTMLElement).tagName).toBe('LI');
+    expect(forSale.firstElementChild!.childNodes.length).toBe(1);
+    expect(forSale.firstElementChild!.childNodes[0]!.nodeType).toBe(Node.TEXT_NODE);
+    expect(forSale.textContent).toBe('No shop available.');
+
+    // The stale sell row must be cleared, TEXT included — childNodes, not childElementCount.
+    expect(inventory.childNodes.length).toBe(0);
+
+    expect(document.getElementById('shop-title')!.textContent).toBe('Shop');
+
+    removeOverlay(overlay);
+  });
+
+  it('m24s0 X6a: a second populated render REPLACES the for-sale and inventory rows rather than appending them', () => {
+    // Kills: dropping #forSaleList.replaceChildren() before the loop (shopView.ts:131) or
+    // #inventoryList.replaceChildren() (:139) — an append-only render would leave 3 rows
+    // (2 stale + 1 new) instead of 1.
+    const overlay = mountShopOverlay();
+    const view = new ShopView(makeCallbacks());
+    view.show();
+
+    function item(itemId: number, name: string) {
+      return { shopItemId: BigInt(itemId), itemId, name, buyPrice: 10n };
+    }
+    function inv(itemId: number, name: string) {
+      return { invId: BigInt(itemId), itemId, name, count: 1, sellPrice: 5n, canSell: true };
+    }
+
+    view.render({
+      kind: 'shop',
+      shopId: 1,
+      shopName: 'General Store',
+      forSale: [item(1, 'Potion'), item(2, 'Ether')],
+      forSaleByPlayer: [inv(3, 'Herb'), inv(4, 'Root')],
+      balance: knownBalance(100n),
+    });
+
+    view.render({
+      kind: 'shop',
+      shopId: 1,
+      shopName: 'General Store',
+      forSale: [item(5, 'Elixir')],
+      forSaleByPlayer: [inv(6, 'Leaf')],
+      balance: knownBalance(100n),
+    });
+
+    const forSale = document.getElementById('shop-for-sale') as HTMLElement;
+    const inventory = document.getElementById('shop-inventory') as HTMLElement;
+    expect(forSale.childElementCount).toBe(1);
+    expect(forSale.querySelectorAll('button').length).toBe(1);
+    expect(forSale.textContent).toContain('Elixir');
+    expect(forSale.textContent).not.toContain('Potion');
+    expect(forSale.textContent).not.toContain('Ether');
+
+    expect(inventory.childElementCount).toBe(1);
+    expect(inventory.querySelectorAll('button').length).toBe(1);
+    expect(inventory.textContent).toContain('Leaf');
+    expect(inventory.textContent).not.toContain('Herb');
+    expect(inventory.textContent).not.toContain('Root');
+
+    removeOverlay(overlay);
+  });
+
+  it('m24s0 X6b: the per-list empty-state rows carry their own copy — "Nothing for sale." and "No items to sell." — and replace stale rows', () => {
+    // Kills: string transposition between the two empty-row calls (shopView.ts:136/:144) and
+    // replaceChildren(emptyRow) -> appendChild(emptyRow) at :136 (would leave 2 children: the
+    // stale populated row PLUS the empty row).
+    const overlay = mountShopOverlay();
+    const view = new ShopView(makeCallbacks());
+    view.show();
+
+    view.render({
+      kind: 'shop',
+      shopId: 1,
+      shopName: 'General Store',
+      forSale: [{ shopItemId: 1n, itemId: 1, name: 'Potion', buyPrice: 10n }],
+      forSaleByPlayer: [
+        { invId: 1n, itemId: 2, name: 'Herb', count: 1, sellPrice: 5n, canSell: true },
+      ],
+      balance: knownBalance(100n),
+    });
+
+    view.render({
+      kind: 'shop',
+      shopId: 1,
+      shopName: 'General Store',
+      forSale: [],
+      forSaleByPlayer: [],
+      balance: knownBalance(100n),
+    });
+
+    const forSale = document.getElementById('shop-for-sale') as HTMLElement;
+    const inventory = document.getElementById('shop-inventory') as HTMLElement;
+
+    expect(forSale.childElementCount).toBe(1);
+    expect(forSale.firstElementChild!.tagName).toBe('LI');
+    expect(forSale.firstElementChild!.textContent).toBe('Nothing for sale.');
+    expect(forSale.querySelector('button')).toBeNull();
+
+    expect(inventory.childElementCount).toBe(1);
+    expect(inventory.firstElementChild!.tagName).toBe('LI');
+    expect(inventory.firstElementChild!.textContent).toBe('No items to sell.');
+    expect(inventory.querySelector('button')).toBeNull();
+
+    removeOverlay(overlay);
+  });
+});

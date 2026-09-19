@@ -4,7 +4,7 @@
 // SOURCE OF TRUTH: M16.5-ninth-review-residuals.spec.md §16.5c-3
 //
 // RED REASON (m16.5c-TV-1 — disabled lock during re-render while #pending):
-//   TradeView.#renderActions() recreates buttons via innerHTML='' then createElement.
+//   TradeView.#renderActions() recreates buttons via replaceChildren() then createElement.
 //   Each freshly-created button sets btn.disabled = false ONLY in the click handler's
 //   finally block — but the handler never fires during a re-render.  The button is
 //   created with no explicit disabled assignment, so it defaults to disabled=false.
@@ -217,7 +217,7 @@ function makeNoTradeVM(): TradeScreenViewModel {
 //   6. Assert ALL buttons in #trade-actions are disabled=true
 //
 // Why it's RED before fix:
-//   #renderActions() clears actionsEl.innerHTML then creates fresh buttons.
+//   #renderActions() clears actionsEl via replaceChildren() then creates fresh buttons.
 //   Each fresh button is created with no explicit disabled attribute — defaults to
 //   false.  The click handler's finally() (which sets disabled=false) hasn't fired
 //   and won't fire until the reducer resolves.  But #pending=true at the moment
@@ -375,7 +375,7 @@ describe('TradeView [m16.5c-TV-3]: feedback cleared on kind transition no-trade�
 // Invariant: after a reducer Promise settles (success or error), ALL currently
 // visible trade action buttons must be enabled (disabled=false) and #pending must
 // be false.  A mid-flight render() between click and Promise settlement replaces
-// the old button DOM elements with fresh ones (innerHTML=''), so the `finally`
+// the old button DOM elements with fresh ones (replaceChildren()), so the `finally`
 // block's `btn.disabled = false` targets a DETACHED (orphaned) element and has no
 // effect on the newly-rendered buttons — they remain permanently disabled=true
 // even though #pending has been reset to false.
@@ -631,5 +631,96 @@ describe('TradeView — overlay a11y wiring on the show/hide edge (m23-s3)', () 
     view.hide();
     view.hide();
     expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// m24s0 sink elimination (ADR-0255) — tradeView clears (X6c/X6d)
+// ---------------------------------------------------------------------------
+
+function tradeCard(monsterId: bigint, nickname: string) {
+  return {
+    monsterId,
+    speciesName: 'Sparkling',
+    nickname,
+    level: 5,
+    currentHp: 10,
+    statHp: 10,
+  };
+}
+
+describe('m24s0 sink elimination (ADR-0255) — tradeView clears', () => {
+  it("m24s0 X6c: #renderSide REPLACES a side's content on re-render rather than appending", () => {
+    // Kills: dropping `el.replaceChildren()` in #renderSide (tradeView.ts:122) — an
+    // append-only re-render would leave TWO <h4> and TWO section <ul>s instead of one.
+    const overlay = mountTradeOverlay();
+    const view = new TradeView(makeCallbacks());
+    view.show();
+
+    const vm1: TradeScreenViewModel = {
+      kind: 'trade',
+      tradeId: 1n,
+      mySide: { cards: [tradeCard(1n, 'Rex')], items: [], currency: 0n },
+      theirSide: { cards: [tradeCard(2n, 'Fluffy')], items: [], currency: 0n },
+      viewerIsInitiator: false,
+      statusLabel: 'Offer received',
+      actions: ['accept', 'reject'],
+    };
+    view.render(vm1);
+
+    const mySide = document.getElementById('trade-my-side') as HTMLElement;
+    expect(mySide.querySelectorAll('h4').length).toBe(1);
+    expect(mySide.querySelectorAll('ul[data-section="monsters"]').length).toBe(1);
+    expect(mySide.querySelectorAll('li').length).toBe(1);
+    expect(mySide.textContent).toContain('Rex');
+
+    const vm2: TradeScreenViewModel = {
+      ...vm1,
+      mySide: { cards: [tradeCard(3n, 'Nova')], items: [], currency: 0n },
+    };
+    view.render(vm2);
+
+    expect(mySide.querySelectorAll('h4').length).toBe(1);
+    expect(mySide.querySelectorAll('ul[data-section="monsters"]').length).toBe(1);
+    expect(mySide.querySelectorAll('li').length).toBe(1);
+    expect(mySide.textContent).toContain('Nova');
+    expect(mySide.textContent).not.toContain('Rex');
+
+    removeOverlay(overlay);
+  });
+
+  it('m24s0 X6d: a trade → no-trade transition EMPTIES both sides and the actions container', () => {
+    // Kills: dropping any of the three clears at tradeView.ts:94-96 — a stale populated
+    // side or the stale action buttons would survive the kind transition to 'no-trade'.
+    const overlay = mountTradeOverlay();
+    const view = new TradeView(makeCallbacks());
+    view.show();
+
+    const vm: TradeScreenViewModel = {
+      kind: 'trade',
+      tradeId: 1n,
+      mySide: { cards: [tradeCard(1n, 'Rex')], items: [], currency: 0n },
+      theirSide: { cards: [tradeCard(2n, 'Fluffy')], items: [], currency: 0n },
+      viewerIsInitiator: false,
+      statusLabel: 'Offer received',
+      actions: ['accept', 'reject'],
+    };
+    view.render(vm);
+
+    const mySide = document.getElementById('trade-my-side') as HTMLElement;
+    const theirSide = document.getElementById('trade-their-side') as HTMLElement;
+    const actionsEl = document.getElementById('trade-actions') as HTMLElement;
+    expect(actionsEl.querySelectorAll('button').length).toBeGreaterThan(0); // precondition
+    expect(mySide.childNodes.length).toBeGreaterThan(0); // precondition
+    expect(theirSide.childNodes.length).toBeGreaterThan(0); // precondition
+
+    view.render({ kind: 'no-trade' });
+
+    expect(mySide.childNodes.length).toBe(0);
+    expect(theirSide.childNodes.length).toBe(0);
+    expect(actionsEl.childNodes.length).toBe(0);
+    expect(document.getElementById('trade-status')!.textContent).toBe('No active trade');
+
+    removeOverlay(overlay);
   });
 });

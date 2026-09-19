@@ -39,7 +39,7 @@ export class QuestLogView {
       return;
     }
     this.overlay.style.display = 'block';
-    this.list.innerHTML = '';
+    this.list.replaceChildren();
     vm.active.forEach((entry) => {
       const li = document.createElement('li');
       li.textContent = `${entry.displayName} (step ${entry.stepIndex})`;
