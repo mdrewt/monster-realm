@@ -226,8 +226,9 @@ swap so the knowledge-bundle line pins for the reducers below it do not move), s
 children keep resolving `super::essence_battle_reward` and `use super::*` unchanged — the slice's
 own gate byte-compares both test files against the slice base. `game-core/src/lib.rs` is
 deliberately untouched (outside the slice's `touches:`); consumers spell the module path
-`game_core::currency::…`, which is why the two reward helpers read asymmetrically at the
-`battle.rs` call site.
+`game_core::currency::…`, so the two reward helpers are imported asymmetrically in `battle.rs`
+(`battle_currency_reward` from the crate root, `essence_battle_reward` from the module) while
+the two call sites read identically.
 
 **The new validator rule — R14.** `validate_evolution_paths` (`game-core/src/content.rs`) gains
 R14: every `EssenceRequirement.amount` on every path must be `<= ESSENCE_SOFT_CAP`; a violation
@@ -241,15 +242,14 @@ name R13 as the reserved candidate for the temporal-dominance guard, which is st
 taking R13 here would have falsified five present-tense claims in four files outside this slice.
 R13 stays reserved.
 
-**Consequence recorded — the cap is no longer a free tunable.** Before this amendment
-`ESSENCE_SOFT_CAP` could be lowered at will (the "playtest placeholders" note above). Now lowering
+**Consequence recorded — the cap is no longer a free tunable.** Before this amendment lowering
+`ESSENCE_SOFT_CAP` cost one value-pin update in `raising_tests.rs` (the "playtest placeholders"
+note above). Now lowering
 it below any shipped `amount:` makes `validate_evolution_paths` fail at `sync_content`, and a
 fresh-DB `init` panics for the whole window (the same cost the R10 carve-out documents). Shipped
 headroom at the slice base: the largest authored essence amount is 150. Retune order: content
-first, then the cap. Every literal 999 / 1000 boundary fixture in game-core carries a `RETUNE:`
-marker; `raising_tests.rs`'s "the only pin of `ESSENCE_SOFT_CAP`'s value" wording is no longer
-literally true and is tracked as residual `R-20r-b-RETUNE-PINS` (that file is unmodified by
-design).
+first, then the cap. The 999 / 1000 boundary fixtures in game-core carry `RETUNE:` markers; `raising_tests.rs`'s "the only pin of `ESSENCE_SOFT_CAP`'s value" wording is no longer
+literally true and is tracked as residual `R-20r-b-B1` (that file is unmodified by design).
 
 **ADR-0224.** The JS mirror in `evals/evolution-content-integrity.eval.mjs` is deliberately NOT
 extended to R14 (ADR-0224 retires scanner-eval growth); R14 is Rust-only and runs at every
@@ -260,8 +260,9 @@ ledger does not know R14.
 **Confirmation.** `just ci-fast game-core` + `just ci-fast monster-realm-module` (clippy
 `-D warnings`, nextest, doctests); the `currency::tests::essence_*` / `prop_essence_*` and
 `content::tests::r14_*` tests (boundary 999 / 1000, offender-first / offender-last, three entries
-each at the cap, second-path, R5 / R7 / R12 precedence, the `u16`-cast escape, constant coupling
-and two self-source consumer pins — 23 tests, 7 / 2 / 14 by prefix); the byte-unmodified
+each at the cap, second-path, R5 / R7 / R12 precedence, the `u16`-cast and `u32::MAX` escapes,
+two-entry paths, first-of-two offenders, an exhaustive `u16` sweep of the reward, constant
+coupling and two self-source consumer pins — 27 tests, 8 / 2 / 17 by prefix); the byte-unmodified
 `battle_tests.rs` / `raising_tests.rs`; `just adr-digest-check`; `just knowledge-check` —
 all pinned by acceptance ledger `memory/projects/gates/20r-b.gates.md` gate B1 (in the harness repo,
 not this one).
