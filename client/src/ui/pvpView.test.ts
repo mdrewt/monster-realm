@@ -532,7 +532,8 @@ describe('PvpView refresh(): existing behaviour (pinned, must stay byte-unchange
 // WRONG-IMPL-KILLED index:
 //   PV-1  a per-button / per-challengeId lock; a #root-wide disable -> siblings swallowed, sentinel live
 //   PV-1b a disabled-only impl (no pending key)                    -> hostile re-enable of Accept
-//   PV-2  `.catch` before `.finally`; `Promise.resolve(cb())`; a never-releasing resolve path
+//   PV-2  a `.then`-only (resolve-only) release; `Promise.resolve(cb())`; a never-releasing
+//         resolve path (`.catch(log).finally(release)` is equivalent to the shipped order)
 //   PV-3  refresh(vm, true) not re-applying the lock / releasing the detached node
 //   PV-4  a lock that survives the force-hide (`refresh(vm, false)`)
 //   PV-6  a membership-keyed release (D11)                         -> still disabled after the stale settle
@@ -732,7 +733,8 @@ describe('★ PvpView 20r-a: ONE view-wide in-flight lock over the challenge-lif
     //   frozen-link short-circuit in main.ts returns `Promise.resolve()` (M-2), which must
     //   release exactly like a real settle; otherwise every click on a dead link parks the
     //   overlay dead until the force-hide.
-    // WRONG IMPL KILLED (2): `.catch` before `.finally` — the rejection skips the release.
+    // WRONG IMPL KILLED (2): a `.then`-only (resolve-only) release — the rejection skips it
+    //   (`.catch(log).finally(release)` is equivalent to the shipped order and is NOT a defect).
     //   `.finally` with no trailing `.catch` — vitest fails the run on the unhandled rejection.
     // WRONG IMPL KILLED (3): `Promise.resolve(cb())` (plan D3) — the sync throw escapes after
     //   the lock is set; with happy-dom's error capturing disabled it comes out of `.click()`.

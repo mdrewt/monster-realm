@@ -4557,8 +4557,9 @@ describe('BattleView rb-59: card role is cued by border STYLE, not by hue alone 
 //   * vitest boots happy-dom with `disableErrorCapturing: true`, so a listener that THROWS throws
 //     straight out of `.click()`, and a listener that RETURNS a rejected promise leaves it
 //     unhandled (vitest fails the run on an unhandled rejection). That is what makes BV-6 / BV-7
-//     bite against the exact chain shapes plan §4 bans (`.catch` before `.finally`, `.finally`
-//     with no trailing `.catch`, `Promise.resolve(cb())`).
+//     bite against the exact chain shapes plan §4 bans (a `.then`-only / resolve-only release,
+//     `.finally` with no trailing `.catch`, `Promise.resolve(cb())`). NOTE: `.catch(log)
+//     .finally(release)` is behaviourally EQUIVALENT to the shipped order and is not a defect.
 //
 // MICROTASK BUDGET: `raFlushPromises` yields THREE microtasks. The plan's chain
 // `new Promise((resolve) => resolve(run())).finally(release).catch(log)` needs exactly three after
@@ -4571,8 +4572,9 @@ describe('BattleView rb-59: card role is cued by border STYLE, not by hue alone 
 //   BV-2  a per-ACTION lock (skill pending, Flee still live)    -> hostile re-enabled sibling clicks
 //   BV-3  a disabled-only impl with no pending key (D1)         -> hostile re-enable of the clicked button
 //   BV-4  refresh() not re-deriving / releasing the DETACHED node -> rebuilt-disabled + live re-enable
-//   BV-5  a boolean lock (not keyed by battleId)                -> the other battle's controls enabled
-//   BV-6  `.catch` before `.finally`; resolve-only release      -> enabled after rejection, no unhandled
+//   BV-5  a boolean lock / an ANY-pending gate / a stale cross-battle release -> the other battle
+//                                                                 enabled, clickable, then not clobbered
+//   BV-6  a `.then`-only (resolve-only) release                 -> enabled after rejection, no unhandled
 //   BV-7  `Promise.resolve(cb())` — sync throw after the lock   -> click does not throw, re-enabled
 //   BV-8  a lock that survives hide() (link-drop dead control)  -> enabled after hide + re-show
 //   BV-9  PvP routed through the lock                           -> siblings enabled while onPvpAttack pends
@@ -4889,7 +4891,8 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
       rebuilt,
       true,
       '20r-a BV-4: every REBUILT control must come back DISABLED — the pending state is ' +
-        're-derived at the end of refresh() (`#applyPendingLock`), not lost on rebuild',
+        're-derived by the inline `if (this.#pending?.battleId === vm.battleId)` pass at the END ' +
+        'of refresh() (after #renderActions), not lost on rebuild',
     );
     rebuilt.skills[1]!.click(); // swallowed by disabled
     rebuilt.skills[1]!.disabled = false; // hostile
@@ -4916,16 +4919,30 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
     expect(callbacks.onAttack).toHaveBeenCalledTimes(2);
   });
 
-  it('20r-a BV-5 BITES: the lock is keyed by BATTLE — refresh(other battle) renders enabled controls, and settling battle 77 leaves battle 78 enabled and clickable', async () => {
-    // WRONG IMPL KILLED: a BOOLEAN lock (`#pending = true`). A wild battle can be replaced by a
-    //   new battle row (a second encounter, a PvP accept) while a stale call is in flight; a
-    //   boolean disables the NEW battle's controls for a promise that belongs to the old one.
+  it('20r-a BV-5 BITES: the lock is keyed by BATTLE — refresh(other battle) renders enabled controls that DISPATCH while 77 is still unsettled, take their own lock, survive 77’s stale settle, and release on their own', async () => {
+    // WRONG IMPL KILLED (1): a BOOLEAN lock (`#pending = true`). A wild battle can be replaced
+    //   by a new battle row (a second encounter, a PvP accept) while a stale call is in flight;
+    //   a boolean disables the NEW battle's controls for a promise that belongs to the old one.
     //   The post-refresh census on battle 78 reds.
-    const d = raDeferred();
-    const callbacks = makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) });
+    // WRONG IMPL KILLED (2) ★ MEASURED SURVIVOR (round 2): `#dispatch` gating on ANY pending
+    //   (`if (this.#pending !== null) return;`) instead of `this.#pending?.battleId ===
+    //   battleId`. Battle 78's controls render enabled (the census above passes) and are DEAD:
+    //   the click below is swallowed while 77's call is in flight. The `(78n, 1)` dispatch is
+    //   the kill — it happens BEFORE 77 settles.
+    // WRONG IMPL KILLED (3): a stale cross-battle release — 78's click OVERWRITES `#pending`
+    //   with its own lock, so 77's `.finally` must see a foreign token and leave 78 locked. A
+    //   `.finally` that clears unconditionally re-enables 78 mid-flight; the post-77-settle
+    //   census reds.
+    const p77 = raDeferred();
+    const p78 = raDeferred();
+    const onAttack = vi.fn((battleId: bigint) =>
+      battleId === RA_BATTLE_ID ? p77.promise : p78.promise,
+    );
+    const callbacks = makeRaCallbacks({ onAttack });
     const { parent, view } = raMount(callbacks);
     const first = raControls(parent);
     first.skills[0]!.click();
+    expect(onAttack).toHaveBeenCalledTimes(1);
     raExpectAll(first, true, '20r-a BV-5 precondition: battle 77 is locked');
 
     view.refresh(makeRaVM({ battleId: RA_OTHER_BATTLE_ID }));
@@ -4937,26 +4954,42 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
         'key carries the battleId (plan D11: `{ readonly battleId }`), never a bare boolean',
     );
 
-    d.resolve();
+    // Battle 78 acts while 77's call is STILL in flight.
+    other.skills[0]!.click();
+    expect(
+      onAttack,
+      "20r-a BV-5: battle 78's click must DISPATCH while battle 77's call is unsettled — a " +
+        '`#dispatch` that gates on ANY pending renders 78 enabled and dead (measured survivor)',
+    ).toHaveBeenCalledTimes(2);
+    expect(onAttack).toHaveBeenLastCalledWith(RA_OTHER_BATTLE_ID, 1);
+    raExpectAll(other, true, "20r-a BV-5: battle 78's click takes its OWN lock");
+
+    p77.resolve(); // the STALE settle, for a battle no longer on screen
     await raFlushPromises();
     raExpectAll(
       raControls(parent),
-      false,
-      "20r-a BV-5: settling battle 77's call must leave battle 78's controls enabled",
+      true,
+      "20r-a BV-5: settling battle 77's call must NOT release battle 78's lock — `#pending` now " +
+        "holds 78's token, and 77's `.finally` must see a foreign token and do nothing",
     );
-    other.skills[0]!.click();
-    expect(callbacks.onAttack).toHaveBeenCalledTimes(2);
-    expect(callbacks.onAttack).toHaveBeenLastCalledWith(RA_OTHER_BATTLE_ID, 1);
+
+    p78.resolve();
+    await raFlushPromises();
+    raExpectAll(raControls(parent), false, "20r-a BV-5: battle 78's OWN settle releases");
+    raControls(parent).skills[1]!.click();
+    expect(onAttack).toHaveBeenCalledTimes(3);
+    await raFlushPromises();
   });
 
   it('20r-a BV-6 BITES: onAttack REJECTS → still disabled before the settle, enabled after it, the next click dispatches, and NO unhandled rejection escapes', async () => {
-    // WRONG IMPL KILLED (1): `.catch(...)` BEFORE `.finally(...)` with the release in a `.then`
-    //   — a rejection skips the release and the control is dead until hide().
+    // WRONG IMPL KILLED (1): a `.then`-only (resolve-only) release — `.then(release).catch(log)`
+    //   — a rejection skips the release and the control is dead until hide(). (Note that
+    //   `.catch(log).finally(release)` is behaviourally EQUIVALENT to the shipped
+    //   `.finally(release).catch(log)` and is NOT what this row kills.)
     // WRONG IMPL KILLED (2): `.finally(release)` with NO trailing `.catch` — the release runs,
     //   but `.finally` re-throws the rejection and vitest fails the run on the unhandled
     //   rejection. That run-level error IS the tooth for this shape; nothing in this `it` needs
     //   to observe it.
-    // WRONG IMPL KILLED (3): a resolve-only release (`.then(release)`) — same as (1).
     // console.error is silenced (never asserted): the plan routes the swallowed rejection to
     // `console.error`, which is diagnostic noise here, not a criterion.
     vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -4981,7 +5014,7 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
       after,
       false,
       '20r-a BV-6: a REJECTED call must release the lock too — the release lives in `.finally`, ' +
-        'so both arms re-enable (a `.catch`-before-`.finally` chain leaves the control dead)',
+        'so both arms re-enable (a `.then`-only / resolve-only release leaves the control dead)',
     );
     after.skills[0]!.click();
     expect(

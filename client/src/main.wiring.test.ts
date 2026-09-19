@@ -12692,6 +12692,11 @@ describe('★ main.ts wiring (17r-f/B1): the frame catch records what it logs, a
 //        FIRST statement is `return sendGuarded(` and whose body contains EXACTLY ONE
 //        `sendGuarded(`. (plan D12 — a presence-only needle was measured decoy-bypassable by
 //        `return sendGuarded('dead', () => undefined)` parked after the real, untracked call.)
+//        ROUND-2 HARDENING (three more measured forgeries): the character after the guard
+//        call's own matching `)` must be `;` (comma-operator decoy `return sendGuarded(...),
+//        undefined;`); the guarded closure must RETURN the reducer call (`=> conn?.live()?.
+//        reducers.` or `return conn?.live()?.reducers.`, `?.` spacing squashed); `void ` is
+//        banned in the body; and each body names ITS reducer exactly once.
 //   M-2  `sendGuarded` ALWAYS resolves: `return Promise.resolve();` EXACTLY twice, one inside a
 //        bounded window after `linkFrozen()` (the frozen short-circuit) and one inside a bounded
 //        window after the `=== undefined` check on the call result (a dead `conn.live()`), the
@@ -12745,8 +12750,40 @@ function raCallbackBody(stripped: string, fromNeedle: string, key: string, endKe
   return squashWhitespace(stripped.slice(startIdx, endIdx)).trim();
 }
 
-/** The M-1 per-body contract, applied to one callback. */
-function raExpectReturnsSendGuarded(body: string, key: string): void {
+/** Biome splits a long optional chain across lines (`conn\n?.live()\n?.reducers…`), which the
+ *  whitespace squash renders as `conn ?.live() ?.reducers.` — normalise that ONE spelling so the
+ *  reducer-return needle below is formatter-immune. split/join, never `new RegExp`. */
+function raSquashOptionalChain(body: string): string {
+  return body.split(' ?.').join('?.');
+}
+
+/** Index of the `)` that closes the `(` at `openIdx`, walking bracket depth and skipping
+ *  single-quoted / double-quoted / template literals (a paren inside `'use-item'`-style
+ *  strings is data). Returns -1 when unbalanced. */
+function raMatchingParen(text: string, openIdx: number): number {
+  let depth = 0;
+  let quote = '';
+  for (let i = openIdx; i < text.length; i += 1) {
+    const ch = text.charAt(i);
+    if (quote !== '') {
+      if (ch === '\\') i += 1;
+      else if (ch === quote) quote = '';
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') quote = ch;
+    else if (ch === '(') depth += 1;
+    else if (ch === ')') {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/** The M-1 per-body contract, applied to one callback. `reducer` is the reducer this callback
+ *  must send (`reducers.<name>(`), counted EXACTLY once inside the body. */
+function raExpectReturnsSendGuarded(rawBody: string, key: string, reducer: string): void {
+  const body = raSquashOptionalChain(rawBody);
   expect(body.startsWith(key), `20r-a M-1 ANTI-VACUITY: the body must open with \`${key}\``).toBe(
     true,
   );
@@ -12769,6 +12806,47 @@ function raExpectReturnsSendGuarded(body: string, key: string): void {
       'hole with a prefix. Body: ' +
       JSON.stringify(body),
   ).toBe(true);
+
+  // ★ ROUND-2 SURVIVOR: the comma-operator decoy `return sendGuarded(...), undefined;` — every
+  // clause above is satisfied and the callback still returns `undefined`. The character after
+  // the guard call's OWN closing paren must be the statement terminator.
+  const openIdx = body.indexOf('sendGuarded(') + 'sendGuarded'.length;
+  const closeIdx = raMatchingParen(body, openIdx);
+  expect(
+    closeIdx,
+    `20r-a M-1 (${key}): the sendGuarded( call must have balanced parens`,
+  ).toBeGreaterThan(openIdx);
+  expect(
+    body.charAt(closeIdx + 1),
+    `20r-a M-1 (${key}): the character after the \`sendGuarded(...)\` call's closing paren must be ` +
+      '`;` — `return sendGuarded(...), undefined;` (the comma operator) or `return ' +
+      'sendGuarded(...) && …` returns something other than the guarded promise. Body: ' +
+      JSON.stringify(body),
+  ).toBe(';');
+
+  // ★ ROUND-2 SURVIVOR: the guarded CLOSURE must return the reducer call. `() => { conn?.live()
+  // ?.reducers.x(…); }` (no return) hands sendGuarded `undefined`, which it resolves at once —
+  // the view's lock releases after one microtask while the reducer runs unguarded.
+  expect(
+    body.includes('=> conn?.live()?.reducers.') || body.includes('return conn?.live()?.reducers.'),
+    `20r-a M-1 (${key}): the closure handed to sendGuarded must RETURN the reducer call — either ` +
+      'the expression form `() => conn?.live()?.reducers.…` or the block form `{ … return ' +
+      'conn?.live()?.reducers.…; }`. A block closure without `return` sends the reducer and ' +
+      'resolves the guard immediately. Body: ' +
+      JSON.stringify(body),
+  ).toBe(true);
+  expect(
+    body.includes('void '),
+    `20r-a M-1 (${key}): the body must not contain \`void \` — \`void conn?.live()…\` / ` +
+      '`void sendGuarded(…)` is the same undefined-return hole spelled as an operator. Body: ' +
+      JSON.stringify(body),
+  ).toBe(false);
+  expect(
+    raCount(body, `reducers.${reducer}(`),
+    `20r-a M-1 (${key}) ANTI-VACUITY: the body must call \`reducers.${reducer}(\` EXACTLY once — ` +
+      'the shape clauses alone are satisfied by a guarded no-op or a wrong reducer. Body: ' +
+      JSON.stringify(body),
+  ).toBe(1);
 }
 
 const RA_BATTLE_CTOR = 'battleView = new BattleViewClass(';
@@ -12805,11 +12883,20 @@ describe('★ main.ts wiring (20r-a M-1): every promise-gated callback RETURNS s
     //   main.ts's callback, which no unit test can do. The five are pinned individually so a
     //   half-migration (four of five) names the one it missed.
     const stripped = stripLineComments(readMainTs());
-    const chain = ['onAttack:', 'onFlee:', 'onSwap:', 'onRecruit:', 'onUseItem:', 'onPvpAttack:'];
+    const chain: readonly (readonly [string, string])[] = [
+      ['onAttack:', 'submitAttack'],
+      ['onFlee:', 'flee'],
+      ['onSwap:', 'swapActive'],
+      ['onRecruit:', 'attemptRecruit'],
+      ['onUseItem:', 'useBattleItem'],
+      ['onPvpAttack:', ''],
+    ];
     for (let i = 0; i + 1 < chain.length; i += 1) {
+      const [key, reducer] = chain[i]!;
       raExpectReturnsSendGuarded(
-        raCallbackBody(stripped, RA_BATTLE_CTOR, chain[i]!, chain[i + 1]!),
-        chain[i]!,
+        raCallbackBody(stripped, RA_BATTLE_CTOR, key, chain[i + 1]![0]),
+        key,
+        reducer,
       );
     }
   });
@@ -12824,6 +12911,7 @@ describe('★ main.ts wiring (20r-a M-1): every promise-gated callback RETURNS s
     raExpectReturnsSendGuarded(
       raCallbackBody(stripped, RA_RAISING_CTOR, 'onTrain:', 'onCare:'),
       'onTrain:',
+      'train',
     );
     const evolve = raCallbackBody(
       stripped,
@@ -12831,7 +12919,7 @@ describe('★ main.ts wiring (20r-a M-1): every promise-gated callback RETURNS s
       'onEvolve:',
       'dialogueView = new DialogueViewClass(',
     );
-    raExpectReturnsSendGuarded(evolve, 'onEvolve:');
+    raExpectReturnsSendGuarded(evolve, 'onEvolve:', 'evolve');
     expect(
       evolve.startsWith('onEvolve: (monsterId, toSpecies) =>'),
       '20r-a M-1 (onEvolve): the parameter list must stay verbatim `(monsterId, toSpecies)` — ' +
@@ -12855,19 +12943,20 @@ describe('★ main.ts wiring (20r-a M-1): every promise-gated callback RETURNS s
     //   earlier). Searching FORWARD from the unique `pvpView = new PvpViewClass(` line resolves
     //   the pvp ones; the trade ones are excluded by position, never by text.
     const stripped = stripLineComments(readMainTs());
-    const chain = [
-      'onChallenge:',
-      'onAccept:',
-      'onDecline:',
-      'onCancel:',
-      'leaderboardView = new LeaderboardViewClass(',
+    const chain: readonly (readonly [string, string])[] = [
+      ['onChallenge:', 'challengePvp'],
+      ['onAccept:', 'acceptChallenge'],
+      ['onDecline:', 'declineChallenge'],
+      ['onCancel:', 'cancelChallenge'],
+      ['leaderboardView = new LeaderboardViewClass(', ''],
     ];
     for (let i = 0; i + 1 < chain.length; i += 1) {
-      const body = raCallbackBody(stripped, RA_PVP_CTOR, chain[i]!, chain[i + 1]!);
-      raExpectReturnsSendGuarded(body, chain[i]!);
+      const [key, reducer] = chain[i]!;
+      const body = raCallbackBody(stripped, RA_PVP_CTOR, key, chain[i + 1]![0]);
+      raExpectReturnsSendGuarded(body, key, reducer);
       expect(
         body.includes('respondTrade(') || body.includes('cancelTrade('),
-        `20r-a M-1 (${chain[i]}) ANTI-VACUITY: the window must be the PVP body, not tradeView's — ` +
+        `20r-a M-1 (${key}) ANTI-VACUITY: the window must be the PVP body, not tradeView's — ` +
           'a trade reducer name here means the forward search resolved to the wrong object',
       ).toBe(false);
     }
@@ -13055,5 +13144,24 @@ describe('★ main.ts wiring (20r-a M-3): onReconnect hides battleView / raising
           'a second closeOverlayA11y behind it. RED TODAY: 0.',
       ).toBe(1);
     }
+
+    // ★ ROUND-2 SURVIVORS: the three counts above are presence pins, and presence is forgeable —
+    // `if (false) raisingView?.hide();` (or any gate: `if (import.meta.env.DEV)`, a module flag)
+    // counts as one occurrence while hiding nothing; so does a hide moved out of statement
+    // position. The adjacency literal below pins the four hides as FOUR CONSECUTIVE STATEMENTS
+    // (comment-stripped — the shipped code has `//` rationale lines between them, which
+    // `stripLineComments` removes — and whitespace-squashed, so biome may re-wrap freely),
+    // exactly once. A guard, a reordering, or anything spliced between them changes the text.
+    const RA_RECONNECT_HIDES =
+      'pvpView?.hide(); battleView?.hide(); raisingView?.hide(); evolutionView?.hide();';
+    expect(
+      raCount(squashWhitespace(region), RA_RECONNECT_HIDES),
+      `20r-a M-3 ADJACENCY: the squashed onReconnect body must contain \`${RA_RECONNECT_HIDES}\` ` +
+        'EXACTLY once — the three new hides as bare consecutive statements right after the shipped ' +
+        '`pvpView?.hide();`. A `if (false) …` / env-gated / flag-gated hide, or one moved elsewhere ' +
+        'in the body, satisfies the presence counts above and hides nothing on a real reconnect. ' +
+        'Squashed window: ' +
+        JSON.stringify(squashWhitespace(region)),
+    ).toBe(1);
   });
 });

@@ -2511,6 +2511,7 @@ describe('EvolutionView — m23-s9 contrast tokens, prefers-contrast: more, em�
 //   EV-2  a per-BUTTON lock / a VIEW-WIDE lock                    -> same-monster sibling dead, other monster live
 //   EV-2b a disabled-only impl (no pending key)                   -> hostile re-enable
 //   EV-3  lost pending on rebuild / re-enabling the detached node -> rebuilt-disabled + live re-enable
+//   EV-3b `Promise.resolve(cb())` — sync throw after the lock     -> click does not throw, re-enabled
 //   EV-4  `.then(() => cb())` deferral                            -> callback called INSIDE .click()
 //   EV-5  a membership-keyed release (D11)                        -> still disabled after the stale settle
 // ===========================================================================
@@ -2606,7 +2607,8 @@ describe('★ EvolutionView 20r-a: in-flight guard on the Evolve choice buttons'
     //   and no refresh() runs — the control is dead until the player closes the overlay. This
     //   case never calls refresh() after the click, by design: the release must come from the
     //   promise settling.
-    // WRONG IMPL KILLED (2): `.catch` before `.finally` (release skipped on rejection);
+    // WRONG IMPL KILLED (2): a `.then`-only (resolve-only) release (skipped on rejection;
+    //   `.catch(log).finally(release)` is equivalent to the shipped order and is NOT a defect);
     //   `.finally` with no trailing `.catch` (vitest fails the run on the unhandled rejection —
     //   that run-level error is the tooth).
     // WRONG IMPL KILLED (3): a void-returning dispatch — the post-flush "still disabled" reds.
@@ -2726,9 +2728,10 @@ describe('★ EvolutionView 20r-a: in-flight guard on the Evolve choice buttons'
     // WRONG IMPL KILLED (1): `#renderChoice` building the button with `disabled` at its default
     //   — a batch tick mid-flight ships an enabled-looking button whose click the key swallows.
     // WRONG IMPL KILLED (2): the `.finally` re-enabling the closure-captured `btn` — after
-    //   `#listEl.replaceChildren()` it is detached; the LIVE buttons stay disabled. The plan's
-    //   `#choiceButtons: Map<bigint, HTMLButtonElement[]>` (cleared in refresh()) is the live
-    //   registry the settle must re-enable through.
+    //   `#listEl.replaceChildren()` it is detached; the LIVE buttons stay disabled. What makes
+    //   the live list reachable from the settle is the `#choiceButtons.set(monsterId, …)` write
+    //   in the render on EVERY rebuild (the `.clear()` at the top of refresh() only drops entries
+    //   for monsters that left the VM).
     const { parent, view, callbacks } = raMountTwo();
     const d = raDeferred();
     callbacks.onEvolve.mockReturnValue(d.promise);
@@ -2773,6 +2776,47 @@ describe('★ EvolutionView 20r-a: in-flight guard on the Evolve choice buttons'
     ).toEqual([false, false]);
     live.alpha[0].click();
     expect(callbacks.onEvolve).toHaveBeenCalledTimes(2);
+    await raFlushPromises();
+  });
+
+  it('20r-a EV-3b BITES: onEvolve THROWS synchronously → the click does not throw, BOTH of Alpha’s choices are disabled, and after one flush both are enabled and re-clickable', async () => {
+    // WRONG IMPL KILLED ★ MEASURED SURVIVOR (round 2): `Promise.resolve(this.#callbacks.onEvolve(
+    //   …))` instead of `new Promise((resolve) => resolve(…))` (plan D3). `onEvolve` is evaluated
+    //   BEFORE Promise.resolve sees it, so a synchronous throw escapes the listener AFTER the
+    //   per-monster lock was taken and BEFORE any `.finally` exists — Alpha's choices are dead
+    //   until hide(). With happy-dom's error capturing disabled the throw comes straight out of
+    //   `.click()` (first assertion); the correct executor shape converts it into a rejection the
+    //   same `.finally(release).catch(log)` chain handles. Mirrors BV-7 / RV-3b.
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { parent, callbacks } = raMountTwo();
+    callbacks.onEvolve.mockImplementation(() => {
+      throw new Error('20r-a EV-3b: synchronous throw');
+    });
+    const { alpha, beta } = raChoices(parent);
+
+    expect(
+      () => alpha[0].click(),
+      '20r-a EV-3b: a synchronously-throwing onEvolve must NOT throw out of the click',
+    ).not.toThrow();
+    expect(callbacks.onEvolve).toHaveBeenCalledTimes(1);
+    expect(
+      raDisabled(alpha),
+      "20r-a EV-3b: BOTH of Alpha's choices were locked before the callback ran (the release is " +
+        'a microtask away, not synchronous)',
+    ).toEqual([true, true]);
+    expect(raDisabled(beta), "20r-a EV-3b: Beta's choices are untouched").toEqual([false, false]);
+
+    await raFlushPromises();
+    expect(
+      raDisabled(alpha),
+      '20r-a EV-3b: the sync throw must settle the chain and RELEASE — `Promise.resolve(cb())` ' +
+        "leaves both of Alpha's choices dead here",
+    ).toEqual([false, false]);
+    alpha[1].click();
+    expect(callbacks.onEvolve, '20r-a EV-3b: re-clickable after the throw').toHaveBeenCalledTimes(
+      2,
+    );
+    expect(callbacks.onEvolve).toHaveBeenLastCalledWith(RA_ALPHA, 3);
     await raFlushPromises();
   });
 

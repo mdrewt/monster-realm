@@ -744,8 +744,10 @@ describe('★★ RaisingView Care button: #pending must be tracked PER MONSTER, 
 // WRONG-IMPL-KILLED index:
 //   RV-1  a shared boolean / a Care-Train cross-block            -> sibling monster + Care stay live
 //   RV-1b a disabled-only impl (no pending key)                  -> hostile re-enable
+//   RV-1c Train's gate also honouring Care's `#pending` (D6)      -> Train fires while Care pends
 //   RV-2  lost pending on rebuild / re-enabling the detached node -> rebuilt-disabled + live re-enable
-//   RV-3  `.catch` before `.finally`; `Promise.resolve(cb())`   -> rejection + sync throw release
+//   RV-3  a `.then`-only (resolve-only) release; `Promise.resolve(cb())` -> rejection + sync throw
+//         release (`.catch(log).finally(release)` is equivalent to the shipped order, not a defect)
 //   RV-4  a lock that survives hide()                            -> enabled after hide + refresh
 //   RV-5  a membership-keyed release (D11)                       -> still disabled after the stale settle
 // ---------------------------------------------------------------------------
@@ -952,13 +954,58 @@ describe('★ RaisingView 20r-a: in-flight guard on the Train buttons (separate 
     expect(onTrain, '20r-a RV-1b: dispatches again after the settle').toHaveBeenCalledTimes(2);
   });
 
+  it('20r-a RV-1c BITES: a never-settling CARE call on Aria does NOT block her Train — Train buttons stay ENABLED and the Train click dispatches (D6, Care first)', async () => {
+    // WRONG IMPL KILLED ★ MEASURED SURVIVOR (round 2): Train's click gate also honouring Care's
+    //   `#pending` (`if (this.#pending.has(monsterId) || this.#pendingTrain.has(monsterId))
+    //   return;`, or a shared set). RV-1 clicks Train FIRST and only proves Care is not blocked
+    //   by Train; this row is the other direction. A Care call can stay pending for as long as
+    //   the server takes (or forever after a link drop — the shipped Care lock is only cleared
+    //   by hide()), and plan D6 says a pending Care must never lock the player out of feeding:
+    //   different reducers, different failure modes.
+    const careFlight = raDeferred(); // never settled
+    const onCare = vi.fn().mockReturnValue(careFlight.promise);
+    const onTrain = vi.fn();
+    const parent = mountParent();
+    const view = new RaisingView(parent, makeCallbacks({ onTrain, onCare }));
+    view.refresh(raTrainVm());
+    const [a] = raMonsterControls(parent);
+
+    a.care.click(); // Care FIRST — and it never settles
+    expect(onCare).toHaveBeenCalledTimes(1);
+    expect(a.care.disabled, '20r-a RV-1c precondition: the Care lock is held').toBe(true);
+    expect(
+      raDisabled(a.trains),
+      "20r-a RV-1c: Aria's Train buttons must stay ENABLED while her Care call is pending — the " +
+        'two locks are separate sets (D6)',
+    ).toEqual([false, false]);
+
+    a.trains[0]!.click();
+    expect(
+      onTrain,
+      "20r-a RV-1c: Aria's Train click must DISPATCH while her Care is pending — a Train gate " +
+        "that also reads Care's `#pending` swallows it (measured survivor)",
+    ).toHaveBeenCalledTimes(1);
+    expect(onTrain).toHaveBeenCalledWith(1n, RA_PROTEIN);
+    expect(a.care.disabled, '20r-a RV-1c: the Care lock is untouched by the Train click').toBe(
+      true,
+    );
+
+    await flushPromises(); // the (void-returning) Train call releases; Care still pending
+    expect(raDisabled(a.trains), '20r-a RV-1c: Train released on its own settle').toEqual([
+      false,
+      false,
+    ]);
+    expect(a.care.disabled, '20r-a RV-1c: Care is still pending').toBe(true);
+  });
+
   it('20r-a RV-2 BITES: a mid-flight refresh() rebuilds Aria’s Train buttons DISABLED (Care and Bram enabled), swallows a click on the new node, and the settle re-enables the LIVE nodes', async () => {
     // WRONG IMPL KILLED (1): `trainBtn.disabled` left at its default on rebuild (the C6 defect) —
     //   a batch tick mid-flight ships an enabled-looking button whose click the key swallows.
     // WRONG IMPL KILLED (2): the `.finally` re-enabling the closure-captured node — after
     //   `#monsterEl.replaceChildren()` it is detached; the LIVE buttons stay disabled forever.
-    //   The plan's `#trainButtons: Map<bigint, HTMLButtonElement[]>` (cleared beside
-    //   `#careButtons.clear()`) is what makes the live list reachable from the settle.
+    //   What makes the live list reachable from the settle is the `#trainButtons.set(monsterId,
+    //   trainBtns)` write in #renderMonsters on EVERY rebuild (the `.clear()` beside
+    //   `#careButtons.clear()` only drops entries for monsters that left the VM).
     const d = raDeferred();
     const onTrain = vi.fn().mockReturnValue(d.promise);
     const parent = mountParent();
@@ -1011,9 +1058,11 @@ describe('★ RaisingView 20r-a: in-flight guard on the Train buttons (separate 
   });
 
   it('20r-a RV-3a BITES: onTrain REJECTS → still disabled before the settle, enabled after it, the next click dispatches, no unhandled rejection', async () => {
-    // WRONG IMPL KILLED: `.catch` before `.finally` (release skipped on rejection → dead until
-    //   hide()); `.finally` with no trailing `.catch` (vitest fails the run on the unhandled
-    //   rejection — that run-level error is the tooth). console.error is silenced, not asserted.
+    // WRONG IMPL KILLED: a `.then`-only (resolve-only) release (release skipped on rejection →
+    //   dead until hide(); `.catch(log).finally(release)` is equivalent to the shipped order and
+    //   is NOT a defect); `.finally` with no trailing `.catch` (vitest fails the run on the
+    //   unhandled rejection — that run-level error is the tooth). console.error is silenced,
+    //   not asserted.
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const d = raDeferred();
     const onTrain = vi.fn().mockReturnValue(d.promise);
