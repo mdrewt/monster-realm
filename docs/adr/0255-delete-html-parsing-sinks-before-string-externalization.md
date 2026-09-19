@@ -44,8 +44,9 @@ requires new mechanically-checkable invariants to be ordinary co-located tests.
 - **`evals/i18n-no-html-sink.eval.mjs` as the spec names it.** Rejected by ADR-0224 — no new eval
   scripts. The identical invariant ships as `client/src/ui/i18n-no-html-sink.test.ts`, discovered by
   vitest's `src/**/*.test.ts` include and run by `just ci`'s client stage. It imports the single-owner
-  `stripComments` from `evals/dom-shell-coverage-exclusion.eval.mjs` (ADR-0215: no third stripper)
-  rather than re-declaring one.
+  `stripComments` from `evals/dom-shell-coverage-exclusion.eval.mjs` rather than re-declaring one
+  (ADR-0215 single-owner rule: helpers are imported, never copied — `keyboard-operable-rows.eval.mjs:68`
+  already counts three `stripTsComments` variants in the repo and calls a fourth a regression).
 - **A TS-compiler-API (AST) scan.** Rejected as YAGNI — a five-token vocabulary over comment-stripped
   text with a measurably zero population needs no parse tree; ADR-0224 reserves AST scans for genuine
   whole-codebase censuses with no single assertion target.

@@ -39,8 +39,9 @@ import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-// The single-owner comment stripper (ADR-0215: no third stripper). Precedent for a `.ts`
-// test importing a `.mjs` eval: render/motionPreference.test.ts:48.
+// The comment stripper is IMPORTED, never copied (ADR-0215 single-owner rule — the repo
+// already carries three variants; a fourth is a regression). Precedent for a `.ts` test
+// importing a `.mjs` eval: render/motionPreference.test.ts:48.
 import { stripComments } from '../../../evals/dom-shell-coverage-exclusion.eval.mjs';
 
 const CLIENT_SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
