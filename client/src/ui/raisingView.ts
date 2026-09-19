@@ -37,8 +37,15 @@ import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type { InventoryItemViewModel, RaisingViewModel } from './raisingModel';
 
 export interface RaisingViewCallbacks {
-  /** Called when the user feeds a training item to a monster. */
-  readonly onTrain: (monsterId: bigint, foodItemId: number) => void;
+  /**
+   * Called when the user feeds a training item to a monster.
+   *
+   * May return a promise (20r-a): the per-monster `#pendingTrain` lock is held until it
+   * settles — same contract and same reason as `onCare` below (a `=> void` type would let
+   * a future implementation silently reduce the lock to a one-microtask no-op, and the
+   * server `train` reducer has no idempotency guard: a double-fire spends two food items).
+   */
+  readonly onTrain: (monsterId: bigint, foodItemId: number) => void | Promise<void>;
   /**
    * Called when the user clicks the Care button on a monster.
    *
@@ -71,6 +78,18 @@ export class RaisingView {
   // captured can be detached by the time its call settles — re-enabling that
   // stale node would leave the LIVE one disabled forever.
   readonly #careButtons = new Map<bigint, HTMLButtonElement>();
+  // 20r-a: the Train in-flight lock — a SIBLING of #pending, not a shared set: a Care
+  // rejection (cooldown) must not block Train and vice versa (different reducers, different
+  // failure modes). Keyed per monster like Care; ALL of a monster's Train buttons (one per
+  // food) disable together, since two different foods in flight is the same double-spend.
+  // The VALUE is the generation token: `.finally()` releases only if the stored object is
+  // still its own. A membership-keyed release (`Set.delete`) would let a stale promise —
+  // click → hide() cleared the lock → reopen → click again → FIRST promise settles — delete
+  // the SECOND click's key and re-enable the live buttons while that call is in flight.
+  readonly #pendingTrain = new Map<bigint, object>();
+  // The Train buttons currently on screen per monster (same detached-node reason as
+  // #careButtons: a refresh() mid-flight rebuilds every node).
+  readonly #trainButtons = new Map<bigint, HTMLButtonElement[]>();
 
   constructor(parent: HTMLElement, callbacks: RaisingViewCallbacks) {
     this.#callbacks = callbacks;
@@ -147,6 +166,7 @@ export class RaisingView {
     // drop — .finally() may never run (shopView/renameView precedent).
     this.#feedbackEl.textContent = '';
     this.#pending.clear();
+    this.#pendingTrain.clear(); // 20r-a: same never-settles-after-drop reason as #pending.
     closeOverlayA11y('raisingView', null);
   }
 
@@ -167,6 +187,7 @@ export class RaisingView {
   ): void {
     this.#monsterEl.replaceChildren();
     this.#careButtons.clear();
+    this.#trainButtons.clear();
     if (monsters.length === 0) {
       const empty = document.createElement('div');
       empty.textContent = 'No monsters.';
@@ -236,17 +257,44 @@ export class RaisingView {
       });
       actions.appendChild(careBtn);
 
+      // 20r-a: Train carries the Care lock shape above (re-derived disabled state, the
+      // LIVE-button re-enable, .finally on both arms) with two deliberate differences:
+      // `new Promise((resolve) => resolve(...))` instead of `Promise.resolve(...)`, so a
+      // synchronously-throwing callback becomes a rejection rather than stranding the
+      // lock; and the generation-token release (see #pendingTrain).
+      const trainBtns: HTMLButtonElement[] = [];
       for (const item of items) {
         if (item.count > 0 && item.canTrain) {
           const trainBtn = document.createElement('button');
           trainBtn.textContent = `Train: ${item.name} (x${item.count})`;
           trainBtn.style.cssText = 'font-size:11px;cursor:pointer;';
-          trainBtn.addEventListener('click', () =>
-            this.#callbacks.onTrain(mon.monsterId, item.itemId),
-          );
+          trainBtn.disabled = this.#pendingTrain.has(monsterId);
+          trainBtn.addEventListener('click', () => {
+            if (this.#pendingTrain.has(monsterId)) return;
+            const lock = {};
+            this.#pendingTrain.set(monsterId, lock);
+            for (const b of trainBtns) b.disabled = true;
+            void new Promise<void>((resolve) =>
+              resolve(this.#callbacks.onTrain(monsterId, item.itemId)),
+            )
+              .finally(() => {
+                if (this.#pendingTrain.get(monsterId) !== lock) return;
+                this.#pendingTrain.delete(monsterId);
+                for (const b of this.#trainButtons.get(monsterId) ?? trainBtns) {
+                  b.disabled = false;
+                }
+              })
+              .catch((err: unknown) => {
+                // Feedback is main.ts's job (sendGuarded reported it); swallowed only to
+                // avoid an unhandled rejection, logged so a contract breach stays visible.
+                console.error('train click handler error', err);
+              });
+          });
+          trainBtns.push(trainBtn);
           actions.appendChild(trainBtn);
         }
       }
+      this.#trainButtons.set(monsterId, trainBtns);
       el.appendChild(actions);
 
       this.#monsterEl.appendChild(el);

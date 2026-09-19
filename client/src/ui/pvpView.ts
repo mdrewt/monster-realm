@@ -5,15 +5,22 @@
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type { PvpChallengeViewModel, PvpIncomingChallenge, PvpOutgoingChallenge } from './pvpModel';
 
+/**
+ * All four may return a promise (20r-a): the view-wide lifecycle lock is held until it
+ * settles, so the return type must express it — a `=> void` type would let a future
+ * implementation silently reduce the lock to a one-microtask no-op (raisingView's onCare
+ * makes the same argument). The four reducers are duplicate-safe server-side; this is
+ * defensive polish so one intent never becomes two calls or a contradictory pair.
+ */
 export interface PvpViewCallbacks {
   /** Accept an incoming challenge. */
-  readonly onAccept: (challengeId: bigint) => void;
+  readonly onAccept: (challengeId: bigint) => void | Promise<void>;
   /** Decline an incoming challenge. */
-  readonly onDecline: (challengeId: bigint) => void;
+  readonly onDecline: (challengeId: bigint) => void | Promise<void>;
   /** Cancel an outgoing challenge. */
-  readonly onCancel: (challengeId: bigint) => void;
+  readonly onCancel: (challengeId: bigint) => void | Promise<void>;
   /** Send a challenge to target player. */
-  readonly onChallenge: (targetIdentity: string) => void;
+  readonly onChallenge: (targetIdentity: string) => void | Promise<void>;
 }
 
 export class PvpView {
@@ -25,6 +32,13 @@ export class PvpView {
   readonly #callbacks: PvpViewCallbacks;
   readonly #root: HTMLElement;
   #visible = false;
+  // 20r-a: ONE view-wide lock for the four lifecycle actions, deliberately not keyed by
+  // challengeId — accept/decline/cancel/challenge all mutate the same single challenge
+  // state, and a per-button lock would still admit accept-then-decline on one challenge
+  // (the contradictory-outcome pair). The object is the generation token: `.finally()`
+  // releases only if the stored lock is still its own, so a stale promise (click →
+  // force-hide cleared → re-show → click again → first settles) cannot release the second.
+  #pending: object | null = null;
 
   constructor(callbacks: PvpViewCallbacks) {
     this.#callbacks = callbacks;
@@ -82,6 +96,11 @@ export class PvpView {
     this.#visible = false;
     this.#root.style.display = 'none';
     this.#feedbackEl.textContent = '';
+    // 20r-a: release the lifecycle lock (tradeProposeView hide()-time precedent): onReconnect
+    // and the battle auto-show force-hide this overlay, and the SDK never settles an in-flight
+    // reducer promise after a link drop — so `.finally()` may never run. No node re-enable:
+    // `show()` is only reached through refresh(), which rebuilds every lifecycle control.
+    this.#pending = null;
     // m23-s3 D2 -- DELIBERATELY UNGUARDED, and the asymmetry with the guarded `render(null)` path
     // in the three render-driven views is a decision, not an oversight. `closeOverlayA11y` is a
     // documented no-op when there is no open record (ui/overlayA11y.ts:136-137), so an unguarded
@@ -124,6 +143,42 @@ export class PvpView {
     this.#renderIncoming(vm.incoming);
     this.#renderOutgoing(vm.outgoing);
     this.#renderPlayerList(vm.challengeablePlayers, !hasActive);
+    // 20r-a: re-derive the lock on the rebuilt controls — a batch can re-render while a
+    // lifecycle call is still in flight.
+    if (this.#pending !== null) this.#setLifecycleDisabled(true);
+  }
+
+  /**
+   * 20r-a: every lifecycle click routes through here — no-op while a call is in flight;
+   * otherwise take the lock, disable the lifecycle controls, and release in `.finally()`
+   * on BOTH arms (a rejected or short-circuited call must never leave a dead control).
+   * `new Promise((resolve) => resolve(run()))` calls `run` synchronously and turns a
+   * synchronous throw into a rejection; `.catch` after `.finally` keeps a rejecting
+   * callback from surfacing as an unhandled rejection (main.ts already reported it).
+   */
+  #dispatch(run: () => void | Promise<void>): void {
+    if (this.#pending !== null) return;
+    const lock = {};
+    this.#pending = lock;
+    this.#setLifecycleDisabled(true);
+    void new Promise<void>((resolve) => resolve(run()))
+      .finally(() => {
+        if (this.#pending !== lock) return;
+        this.#pending = null;
+        // The LIVE nodes: a refresh() mid-flight replaced the clicked one.
+        this.#setLifecycleDisabled(false);
+      })
+      .catch((err: unknown) => {
+        console.error('pvp lifecycle handler error', err);
+      });
+  }
+
+  /** The three dynamic containers ARE the live-button registry — never `#root`, which
+   *  also holds the static index.html controls (the close button) this lock must not touch. */
+  #setLifecycleDisabled(disabled: boolean): void {
+    for (const el of [this.#incomingEl, this.#outgoingEl, this.#playerListEl]) {
+      for (const btn of el.querySelectorAll('button')) btn.disabled = disabled;
+    }
   }
 
   #renderIncoming(incoming: PvpIncomingChallenge | null): void {
@@ -141,13 +196,17 @@ export class PvpView {
     const acceptBtn = document.createElement('button');
     acceptBtn.setAttribute('data-testid', 'pvp-accept-btn');
     acceptBtn.textContent = 'Accept';
-    acceptBtn.addEventListener('click', () => this.#callbacks.onAccept(incoming.challengeId));
+    acceptBtn.addEventListener('click', () =>
+      this.#dispatch(() => this.#callbacks.onAccept(incoming.challengeId)),
+    );
     btnRow.appendChild(acceptBtn);
 
     const declineBtn = document.createElement('button');
     declineBtn.setAttribute('data-testid', 'pvp-decline-btn');
     declineBtn.textContent = 'Decline';
-    declineBtn.addEventListener('click', () => this.#callbacks.onDecline(incoming.challengeId));
+    declineBtn.addEventListener('click', () =>
+      this.#dispatch(() => this.#callbacks.onDecline(incoming.challengeId)),
+    );
     btnRow.appendChild(declineBtn);
 
     this.#incomingEl.appendChild(btnRow);
@@ -165,7 +224,9 @@ export class PvpView {
     const cancelBtn = document.createElement('button');
     cancelBtn.setAttribute('data-testid', 'pvp-cancel-btn');
     cancelBtn.textContent = 'Cancel Challenge';
-    cancelBtn.addEventListener('click', () => this.#callbacks.onCancel(outgoing.challengeId));
+    cancelBtn.addEventListener('click', () =>
+      this.#dispatch(() => this.#callbacks.onCancel(outgoing.challengeId)),
+    );
     this.#outgoingEl.appendChild(cancelBtn);
   }
 
@@ -189,7 +250,9 @@ export class PvpView {
       btn.setAttribute('data-testid', 'pvp-challenge-player-btn');
       btn.setAttribute('data-player-identity', p.identity);
       btn.textContent = p.name;
-      btn.addEventListener('click', () => this.#callbacks.onChallenge(p.identity));
+      btn.addEventListener('click', () =>
+        this.#dispatch(() => this.#callbacks.onChallenge(p.identity)),
+      );
       li.appendChild(btn);
       this.#playerListEl.appendChild(li);
     }

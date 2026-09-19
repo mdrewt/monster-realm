@@ -2481,3 +2481,414 @@ describe('EvolutionView — m23-s9 contrast tokens, prefers-contrast: more, em�
     ).toBeGreaterThanOrEqual(6);
   });
 });
+
+// ===========================================================================
+// 20r-a — in-flight guard on the EVOLVE choice buttons (plan D3/D7/D8/D11; matrix EV-1..EV-5).
+// APPENDED BLOCK; nothing above is modified.
+//
+// SOURCE OF TRUTH: docs/specs/20r-a-plan.md §0 D3/D7/D8/D11, §1 evolutionView.ts, §3 EV-*.
+//
+// THE DEFECT (measured, `#renderChoice`): `btn.disabled = true; // debounce: re-enabled on the
+// next server-tick refresh` followed by a bare `this.#callbacks.onEvolve(...)`. Two things are
+// wrong with it. (1) It disables ONLY the clicked button: the monster's OTHER choice stays live,
+// and a second, DIFFERENT choice mid-flight is the irreversible double-evolve — the server
+// applies whichever it processes first and rejects the other, but the player has now asked for
+// both. (2) "re-enabled on the next server-tick refresh" is false in exactly the case that
+// matters: a REJECTED evolve changes no row, so no batch arrives and the button stays dead for
+// the life of the overlay. EV-1 is the seeded acceptance case for (2); EV-2 pins (1).
+//
+// RED REASON: no `#pending` map exists — EV-1 reds on "the other choice is disabled too" (the
+// shipped debounce touches one node), and on "enabled after the rejection with NO refresh()".
+// EV-4 is a declared regression (green today).
+//
+// happy-dom facts, the microtask budget and the hostile-re-enable rationale are stated once in
+// battleView.test.ts's 20r-a header and hold here unchanged. `.click()` is used rather than the
+// file's `dispatchEvent(new MouseEvent(...))` idiom because the D1 disabled-swallow lives in
+// HTMLButtonElement.dispatchEvent, which both routes reach identically.
+//
+// WRONG-IMPL-KILLED index:
+//   EV-1  re-enable-on-next-batch (the shipped code)              -> enabled after rejection, no refresh
+//   EV-2  a per-BUTTON lock / a VIEW-WIDE lock                    -> same-monster sibling dead, other monster live
+//   EV-2b a disabled-only impl (no pending key)                   -> hostile re-enable
+//   EV-3  lost pending on rebuild / re-enabling the detached node -> rebuilt-disabled + live re-enable
+//   EV-3b `Promise.resolve(cb())` — sync throw after the lock     -> click does not throw, re-enabled
+//   EV-4  `.then(() => cb())` deferral                            -> callback called INSIDE .click()
+//   EV-5  a membership-keyed release (D11)                        -> still disabled after the stale settle
+// ===========================================================================
+
+interface RaDeferred {
+  readonly promise: Promise<void>;
+  readonly resolve: () => void;
+  readonly reject: (e: unknown) => void;
+}
+
+function raDeferred(): RaDeferred {
+  let resolve!: () => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<void>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+/** Three microtasks — see battleView.test.ts's 20r-a MICROTASK BUDGET note. */
+async function raFlushPromises(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+const RA_ALPHA = 11n;
+const RA_BETA = 22n;
+
+/** Two ambiguous monsters (the V3 cross-wire fixture): Alpha offers Pyrodrake(2) / Cindermaw(3),
+ *  Beta offers Emberwing(2) / Foreignling(3). Four choice buttons, two per card. */
+function raTwoAmbiguousVm(): EvolutionViewModel {
+  const choicesFor = (a: string, b: string): readonly EvolutionPathViewModel[] => [
+    metPathVm({ edgeId: 3, toSpecies: 2, toSpeciesName: a }),
+    metPathVm({ edgeId: 6, toSpecies: 3, toSpeciesName: b }),
+  ];
+  return viewModel(
+    monsterVm({
+      monsterId: RA_ALPHA,
+      nickname: 'Alpha',
+      paths: choicesFor('Pyrodrake', 'Cindermaw'),
+      eligibleCount: 2,
+      choices: choicesFor('Pyrodrake', 'Cindermaw'),
+    }),
+    monsterVm({
+      monsterId: RA_BETA,
+      nickname: 'Beta',
+      paths: choicesFor('Emberwing', 'Foreignling'),
+      eligibleCount: 2,
+      choices: choicesFor('Emberwing', 'Foreignling'),
+    }),
+  );
+}
+
+interface RaChoices {
+  readonly alpha: readonly [HTMLButtonElement, HTMLButtonElement];
+  readonly beta: readonly [HTMLButtonElement, HTMLButtonElement];
+}
+
+/** The LIVE choice buttons per card (re-query after every refresh). */
+function raChoices(parent: HTMLElement): RaChoices {
+  const alphaCard = elementNamed(parent, CARD_SELECTOR, 'Alpha');
+  const betaCard = elementNamed(parent, CARD_SELECTOR, 'Beta');
+  const alpha = [...alphaCard.querySelectorAll(CHOICE_SELECTOR)] as HTMLButtonElement[];
+  const beta = [...betaCard.querySelectorAll(CHOICE_SELECTOR)] as HTMLButtonElement[];
+  expect(alpha, '20r-a precondition: Alpha has two choice buttons').toHaveLength(2);
+  expect(beta, '20r-a precondition: Beta has two choice buttons').toHaveLength(2);
+  expect(alpha[0]!.textContent, '20r-a precondition: choice order').toContain('Pyrodrake');
+  expect(alpha[1]!.textContent, '20r-a precondition: choice order').toContain('Cindermaw');
+  return { alpha: [alpha[0]!, alpha[1]!], beta: [beta[0]!, beta[1]!] };
+}
+
+function raDisabled(buttons: readonly HTMLButtonElement[]): boolean[] {
+  return buttons.map((b) => b.disabled);
+}
+
+function raMountTwo(): ReturnType<typeof mount> {
+  const h = mount();
+  h.view.refresh(raTwoAmbiguousVm());
+  h.view.show();
+  return h;
+}
+
+describe('★ EvolutionView 20r-a: in-flight guard on the Evolve choice buttons', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('20r-a EV-1 BITES (seed): onEvolve REJECTS → both of Alpha’s choices disabled before the settle, enabled after it WITHOUT any refresh(), and the next click dispatches', async () => {
+    // WRONG IMPL KILLED (1) ★ THE SHIPPED CODE: `btn.disabled = true` with the comment "re-enabled
+    //   on the next server-tick refresh". A rejected evolve changes no row, so no batch arrives
+    //   and no refresh() runs — the control is dead until the player closes the overlay. This
+    //   case never calls refresh() after the click, by design: the release must come from the
+    //   promise settling.
+    // WRONG IMPL KILLED (2): a `.then`-only (resolve-only) release (skipped on rejection;
+    //   `.catch(log).finally(release)` is equivalent to the shipped order and is NOT a defect);
+    //   `.finally` with no trailing `.catch` (vitest fails the run on the unhandled rejection —
+    //   that run-level error is the tooth).
+    // WRONG IMPL KILLED (3): a void-returning dispatch — the post-flush "still disabled" reds.
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { parent, callbacks } = raMountTwo();
+    const d = raDeferred();
+    callbacks.onEvolve.mockReturnValue(d.promise);
+    const { alpha, beta } = raChoices(parent);
+
+    alpha[0].click();
+    expect(callbacks.onEvolve).toHaveBeenCalledTimes(1);
+    expect(callbacks.onEvolve).toHaveBeenCalledWith(RA_ALPHA, 2);
+    expect(
+      raDisabled(alpha),
+      "20r-a EV-1: BOTH of Alpha's choices must be disabled while her evolve is in flight — the " +
+        'shipped debounce disables only the clicked node',
+    ).toEqual([true, true]);
+    expect(raDisabled(beta), "20r-a EV-1: Beta's choices are untouched").toEqual([false, false]);
+    await raFlushPromises();
+    expect(raDisabled(alpha), '20r-a EV-1: still disabled while in flight').toEqual([true, true]);
+
+    d.reject(new Error('20r-a EV-1: evolve rejected'));
+    await raFlushPromises();
+    expect(
+      raDisabled(alpha),
+      "20r-a EV-1: after the REJECTION Alpha's choices must be ENABLED with NO refresh() having " +
+        'run — the shipped "re-enabled on the next server-tick refresh" is a control that stays ' +
+        'dead, because a rejected evolve produces no batch',
+    ).toEqual([false, false]);
+    alpha[0].click();
+    expect(
+      callbacks.onEvolve,
+      '20r-a EV-1: dispatches again after the rejection',
+    ).toHaveBeenCalledTimes(2);
+    await raFlushPromises();
+  });
+
+  it('20r-a EV-2 BITES: clicking Alpha’s Pyrodrake disables AND swallows Alpha’s Cindermaw (hostile re-enable included) while Beta’s choices stay enabled and dispatch', async () => {
+    // WRONG IMPL KILLED (1): a PER-BUTTON lock (the shipped one-node debounce) — a second,
+    //   DIFFERENT choice mid-flight is the irreversible double-evolve; the hostile re-enable of
+    //   Cindermaw is what reaches the listener, and only a per-MONSTER key can refuse it.
+    // WRONG IMPL KILLED (2): a VIEW-WIDE lock — Beta's choice below would be disabled / swallowed
+    //   while looking like a different decision entirely (it is: a different monster).
+    const { parent, callbacks } = raMountTwo();
+    const d = raDeferred();
+    callbacks.onEvolve.mockImplementation((monsterId: bigint) =>
+      monsterId === RA_ALPHA ? d.promise : undefined,
+    );
+    const { alpha, beta } = raChoices(parent);
+
+    alpha[0].click();
+    expect(callbacks.onEvolve).toHaveBeenCalledTimes(1);
+    expect(
+      alpha[1].disabled,
+      "20r-a EV-2: Alpha's OTHER choice must be disabled while her evolve is in flight",
+    ).toBe(true);
+    alpha[1].click(); // swallowed by disabled
+    alpha[1].disabled = false; // hostile
+    alpha[1].click();
+    expect(
+      callbacks.onEvolve,
+      "20r-a EV-2: a click on Alpha's re-enabled sibling choice must be swallowed by the " +
+        'per-monster key — a second different target mid-flight is the double-evolve',
+    ).toHaveBeenCalledTimes(1);
+    alpha[1].disabled = true;
+
+    expect(raDisabled(beta), "20r-a EV-2: Beta's choices must stay ENABLED").toEqual([
+      false,
+      false,
+    ]);
+    beta[0].click();
+    expect(
+      callbacks.onEvolve,
+      "20r-a EV-2: Beta's choice dispatches (per-monster key)",
+    ).toHaveBeenCalledTimes(2);
+    expect(callbacks.onEvolve).toHaveBeenLastCalledWith(RA_BETA, 2);
+
+    d.resolve();
+    await raFlushPromises();
+    expect(raDisabled(alpha), '20r-a EV-2: Alpha released on settle').toEqual([false, false]);
+    expect(raDisabled(beta), '20r-a EV-2: Beta released on its own (immediate) settle').toEqual([
+      false,
+      false,
+    ]);
+  });
+
+  it('20r-a EV-2b BITES: hostile re-enable — click a choice, set the LIVE button `disabled = false` by hand, click again → still ONE onEvolve', async () => {
+    // WRONG IMPL KILLED: a disabled-only implementation with no pending key (plan D1) — the
+    //   shipped `btn.disabled = true` IS that implementation. happy-dom swallows the click on
+    //   a disabled node, so only a hand re-enable reaches the listener.
+    const { parent, callbacks } = raMountTwo();
+    const d = raDeferred();
+    callbacks.onEvolve.mockReturnValue(d.promise);
+    const { alpha } = raChoices(parent);
+
+    alpha[1].click();
+    expect(callbacks.onEvolve).toHaveBeenCalledTimes(1);
+    expect(callbacks.onEvolve).toHaveBeenCalledWith(RA_ALPHA, 3);
+    expect(alpha[1].disabled, '20r-a EV-2b precondition: the lock disabled the button').toBe(true);
+    alpha[1].disabled = false;
+    alpha[1].click();
+    expect(
+      callbacks.onEvolve,
+      '20r-a EV-2b: with the node re-enabled by hand the PENDING KEY must still swallow the click',
+    ).toHaveBeenCalledTimes(1);
+
+    d.resolve();
+    await raFlushPromises();
+    alpha[1].click();
+    expect(
+      callbacks.onEvolve,
+      '20r-a EV-2b: dispatches again after the settle',
+    ).toHaveBeenCalledTimes(2);
+  });
+
+  it('20r-a EV-3 BITES: a mid-flight refresh() rebuilds Alpha’s choices DISABLED (Beta enabled), swallows a click on the new node, and the settle re-enables the LIVE nodes', async () => {
+    // WRONG IMPL KILLED (1): `#renderChoice` building the button with `disabled` at its default
+    //   — a batch tick mid-flight ships an enabled-looking button whose click the key swallows.
+    // WRONG IMPL KILLED (2): the `.finally` re-enabling the closure-captured `btn` — after
+    //   `#listEl.replaceChildren()` it is detached; the LIVE buttons stay disabled. What makes
+    //   the live list reachable from the settle is the `#choiceButtons.set(monsterId, …)` write
+    //   in the render on EVERY rebuild (the `.clear()` at the top of refresh() only drops entries
+    //   for monsters that left the VM).
+    const { parent, view, callbacks } = raMountTwo();
+    const d = raDeferred();
+    callbacks.onEvolve.mockReturnValue(d.promise);
+    const before = raChoices(parent);
+    before.alpha[0].click();
+    expect(raDisabled(before.alpha), '20r-a EV-3 precondition: locked').toEqual([true, true]);
+
+    view.refresh(raTwoAmbiguousVm()); // batch tick while the evolve is in flight
+    const rebuilt = raChoices(parent);
+    expect(rebuilt.alpha[0], '20r-a EV-3 precondition: refresh() rebuilt the node').not.toBe(
+      before.alpha[0],
+    );
+    expect(before.alpha[0].isConnected, '20r-a EV-3 precondition: the old node is detached').toBe(
+      false,
+    );
+    expect(
+      raDisabled(rebuilt.alpha),
+      "20r-a EV-3: Alpha's REBUILT choices must come back DISABLED — `btn.disabled = " +
+        '#pending.has(monsterId)` at build time, not lost on rebuild',
+    ).toEqual([true, true]);
+    expect(raDisabled(rebuilt.beta), "20r-a EV-3: Beta's rebuilt choices are enabled").toEqual([
+      false,
+      false,
+    ]);
+    rebuilt.alpha[1].click(); // swallowed by disabled
+    rebuilt.alpha[1].disabled = false; // hostile
+    rebuilt.alpha[1].click();
+    expect(
+      callbacks.onEvolve,
+      '20r-a EV-3: a click on a rebuilt (and hand re-enabled) choice is swallowed by the key',
+    ).toHaveBeenCalledTimes(1);
+    rebuilt.alpha[1].disabled = true;
+
+    d.resolve();
+    await raFlushPromises();
+    const live = raChoices(parent);
+    expect(live.alpha[0], '20r-a EV-3: a settle does not re-render').toBe(rebuilt.alpha[0]);
+    expect(
+      raDisabled(live.alpha),
+      '20r-a EV-3: the LIVE (rebuilt) choices must be re-enabled on settle — re-enabling the ' +
+        'detached closure node strands the real ones disabled',
+    ).toEqual([false, false]);
+    live.alpha[0].click();
+    expect(callbacks.onEvolve).toHaveBeenCalledTimes(2);
+    await raFlushPromises();
+  });
+
+  it('20r-a EV-3b BITES: onEvolve THROWS synchronously → the click does not throw, BOTH of Alpha’s choices are disabled, and after one flush both are enabled and re-clickable', async () => {
+    // WRONG IMPL KILLED ★ MEASURED SURVIVOR (round 2): `Promise.resolve(this.#callbacks.onEvolve(
+    //   …))` instead of `new Promise((resolve) => resolve(…))` (plan D3). `onEvolve` is evaluated
+    //   BEFORE Promise.resolve sees it, so a synchronous throw escapes the listener AFTER the
+    //   per-monster lock was taken and BEFORE any `.finally` exists — Alpha's choices are dead
+    //   until hide(). With happy-dom's error capturing disabled the throw comes straight out of
+    //   `.click()` (first assertion); the correct executor shape converts it into a rejection the
+    //   same `.finally(release).catch(log)` chain handles. Mirrors BV-7 / RV-3b.
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { parent, callbacks } = raMountTwo();
+    callbacks.onEvolve.mockImplementation(() => {
+      throw new Error('20r-a EV-3b: synchronous throw');
+    });
+    const { alpha, beta } = raChoices(parent);
+
+    expect(
+      () => alpha[0].click(),
+      '20r-a EV-3b: a synchronously-throwing onEvolve must NOT throw out of the click',
+    ).not.toThrow();
+    expect(callbacks.onEvolve).toHaveBeenCalledTimes(1);
+    expect(
+      raDisabled(alpha),
+      "20r-a EV-3b: BOTH of Alpha's choices were locked before the callback ran (the release is " +
+        'a microtask away, not synchronous)',
+    ).toEqual([true, true]);
+    expect(raDisabled(beta), "20r-a EV-3b: Beta's choices are untouched").toEqual([false, false]);
+
+    await raFlushPromises();
+    expect(
+      raDisabled(alpha),
+      '20r-a EV-3b: the sync throw must settle the chain and RELEASE — `Promise.resolve(cb())` ' +
+        "leaves both of Alpha's choices dead here",
+    ).toEqual([false, false]);
+    alpha[1].click();
+    expect(callbacks.onEvolve, '20r-a EV-3b: re-clickable after the throw').toHaveBeenCalledTimes(
+      2,
+    );
+    expect(callbacks.onEvolve).toHaveBeenLastCalledWith(RA_ALPHA, 3);
+    await raFlushPromises();
+  });
+
+  it('20r-a EV-4 (regression, GREEN by design): onEvolve is invoked SYNCHRONOUSLY inside .click() with (monsterId, toSpecies) — no microtask deferral', () => {
+    // WRONG IMPL KILLED: `Promise.resolve().then(() => cb())` / `queueMicrotask` as the dispatch
+    //   shape (plan D3) — it reds V3's synchronous-after-click assertions above and lets a
+    //   refresh() between the click and the microtask see a lock with no call behind it.
+    const { parent, callbacks } = raMountTwo();
+    const { alpha } = raChoices(parent);
+    alpha[1].click();
+    expect(
+      callbacks.onEvolve,
+      '20r-a EV-4: onEvolve must have been invoked by the time .click() returns',
+    ).toHaveBeenCalledTimes(1);
+    expect(callbacks.onEvolve).toHaveBeenCalledWith(RA_ALPHA, 3);
+  });
+
+  it('20r-a EV-5 BITES: two overlapping generations — click (P1), hide(), re-show + click (P2), settle P1 → STILL disabled and a third click is swallowed; settle P2 → enabled', async () => {
+    // WRONG IMPL KILLED (plan D11): a release keyed by SET MEMBERSHIP (`#pending.delete(
+    //   monsterId)` unconditionally in `.finally`). hide() clears the map, the overlay re-opens,
+    //   a second click adds the SAME monsterId with P2 in flight, then the STALE P1 settles and
+    //   deletes it — P2's buttons come back live and a THIRD evolve is sent. Only a
+    //   `Map<bigint, object>` whose `.finally` checks `get(id) === myToken` refuses it.
+    const { parent, view, callbacks } = raMountTwo();
+    const p1 = raDeferred();
+    const p2 = raDeferred();
+    callbacks.onEvolve.mockReturnValueOnce(p1.promise).mockReturnValueOnce(p2.promise);
+
+    raChoices(parent).alpha[0].click(); // generation 1
+    expect(callbacks.onEvolve).toHaveBeenCalledTimes(1);
+    expect(raDisabled(raChoices(parent).alpha), '20r-a EV-5 precondition').toEqual([true, true]);
+
+    view.hide(); // releases generation 1 — P1 still in flight
+    view.show();
+    view.refresh(raTwoAmbiguousVm());
+    const gen2 = raChoices(parent);
+    expect(raDisabled(gen2.alpha), '20r-a EV-5 precondition: hide() released').toEqual([
+      false,
+      false,
+    ]);
+    gen2.alpha[0].click(); // generation 2
+    expect(callbacks.onEvolve).toHaveBeenCalledTimes(2);
+    expect(raDisabled(gen2.alpha), '20r-a EV-5 precondition: generation 2 locked').toEqual([
+      true,
+      true,
+    ]);
+
+    p1.resolve(); // the STALE settle
+    await raFlushPromises();
+    const afterStale = raChoices(parent);
+    expect(
+      raDisabled(afterStale.alpha),
+      "20r-a EV-5: generation 1's settle must NOT release generation 2's lock — P2 is still in " +
+        'flight. An unconditional `#pending.delete(monsterId)` clears it here',
+    ).toEqual([true, true]);
+    afterStale.alpha[1].click(); // swallowed by disabled
+    afterStale.alpha[1].disabled = false; // hostile
+    afterStale.alpha[1].click();
+    expect(
+      callbacks.onEvolve,
+      '20r-a EV-5: a third click while P2 is in flight must be swallowed by the pending key',
+    ).toHaveBeenCalledTimes(2);
+    afterStale.alpha[1].disabled = true;
+
+    p2.resolve();
+    await raFlushPromises();
+    expect(
+      raDisabled(raChoices(parent).alpha),
+      "20r-a EV-5: generation 2's OWN settle releases",
+    ).toEqual([false, false]);
+    raChoices(parent).alpha[0].click();
+    expect(callbacks.onEvolve).toHaveBeenCalledTimes(3);
+    await raFlushPromises();
+  });
+});

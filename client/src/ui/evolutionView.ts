@@ -65,8 +65,12 @@ import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 
 export interface EvolutionViewCallbacks {
   /** Called when the player picks one of 2+ eligible paths. The CHOSEN target species is
-   *  forwarded — the client never resolves an ambiguous evolution on the player's behalf. */
-  readonly onEvolve: (monsterId: bigint, toSpecies: number) => void;
+   *  forwarded — the client never resolves an ambiguous evolution on the player's behalf.
+   *  May return a promise (20r-a): the monster's choice buttons stay disabled until it
+   *  settles and are re-enabled in `.finally()` — on rejection too, without waiting for
+   *  an unrelated batch. A `=> void` type would let a future implementation silently reduce
+   *  that to a one-microtask debounce (see raisingView's onCare for the same argument). */
+  readonly onEvolve: (monsterId: bigint, toSpecies: number) => void | Promise<void>;
 }
 
 export class EvolutionView {
@@ -74,6 +78,16 @@ export class EvolutionView {
   readonly #listEl: HTMLDivElement;
   readonly #callbacks: EvolutionViewCallbacks;
   #visible = false;
+  // 20r-a: per-monster in-flight lock (raisingView Care/Train shape). A click disables ALL
+  // of that monster's choice buttons — a second, DIFFERENT choice while the first evolve
+  // is in flight is the irreversible double-evolve. The value is the generation token:
+  // `.finally()` releases only if the stored object is still its own, so a stale promise
+  // (click → hide() cleared → reopen → click again → first settles) cannot release the
+  // second click's lock.
+  readonly #pending = new Map<bigint, object>();
+  // The choice buttons currently on screen per monster: refresh() rebuilds every node, so
+  // the release must re-enable the LIVE nodes, never the closure's detached ones.
+  readonly #choiceButtons = new Map<bigint, HTMLButtonElement[]>();
 
   constructor(parent: HTMLElement, callbacks: EvolutionViewCallbacks) {
     this.#callbacks = callbacks;
@@ -127,6 +141,10 @@ export class EvolutionView {
   hide(): void {
     this.#root.style.display = 'none';
     this.#visible = false;
+    // 20r-a: the SDK never settles an in-flight reducer promise after a link drop, so
+    // `.finally()` may never run — onReconnect hides this view to release the lock here.
+    // No node re-enable needed: the next refresh() re-derives from the (now empty) map.
+    this.#pending.clear();
     closeOverlayA11y('evolutionView', null);
   }
 
@@ -138,6 +156,7 @@ export class EvolutionView {
   refresh(vm: EvolutionViewModel): void {
     // replaceChildren, not append: refresh() fires on EVERY batch-applied.
     this.#listEl.replaceChildren();
+    this.#choiceButtons.clear();
     if (vm.monsters.length === 0) {
       const empty = document.createElement('p');
       empty.textContent = 'No monsters yet.';
@@ -199,9 +218,13 @@ export class EvolutionView {
 
       const picker = document.createElement('div');
       picker.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;';
+      const btns: HTMLButtonElement[] = [];
       for (const choice of mon.choices) {
-        picker.appendChild(this.#renderChoice(mon.monsterId, choice));
+        const btn = this.#renderChoice(mon.monsterId, choice);
+        btns.push(btn);
+        picker.appendChild(btn);
       }
+      this.#choiceButtons.set(mon.monsterId, btns);
       card.appendChild(picker);
     }
 
@@ -250,9 +273,30 @@ export class EvolutionView {
     btn.style.cssText =
       'padding:4px 12px;background-color:var(--mr-evo-button);border:none;border-radius:4px;' +
       'color:var(--mr-evo-fg);cursor:pointer;font-size:14px;';
+    // 20r-a: re-derive from the lock, not default-enabled — a batch can rebuild this card
+    // while the monster's evolve is still in flight.
+    btn.disabled = this.#pending.has(monsterId);
     btn.addEventListener('click', () => {
-      btn.disabled = true; // debounce: re-enabled on the next server-tick refresh
-      this.#callbacks.onEvolve(monsterId, choice.toSpecies);
+      if (this.#pending.has(monsterId)) return;
+      const lock = {};
+      this.#pending.set(monsterId, lock);
+      for (const b of this.#choiceButtons.get(monsterId) ?? [btn]) b.disabled = true;
+      // Re-enabled in .finally() on BOTH arms — a rejected or frozen-link evolve used to
+      // wedge this button until an unrelated batch happened to refresh the panel.
+      // `new Promise((resolve) => resolve(...))` calls the callback synchronously and turns
+      // a synchronous throw into a rejection; `.catch` after `.finally` keeps a rejecting
+      // callback from surfacing as an unhandled rejection (main.ts reported it already).
+      void new Promise<void>((resolve) =>
+        resolve(this.#callbacks.onEvolve(monsterId, choice.toSpecies)),
+      )
+        .finally(() => {
+          if (this.#pending.get(monsterId) !== lock) return;
+          this.#pending.delete(monsterId);
+          for (const b of this.#choiceButtons.get(monsterId) ?? [btn]) b.disabled = false;
+        })
+        .catch((err: unknown) => {
+          console.error('evolve click handler error', err);
+        });
     });
     return btn;
   }
