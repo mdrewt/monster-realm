@@ -3916,7 +3916,7 @@ fn s20rc_load_error_arm_has_exactly_one_log_site_at_error_level() {
 ///    perfect and the flood continues;
 ///  * an EARLY `return;` above the gate, which makes the whole emission dead
 ///    code while every gate tooth still reads it;
-///  * a `/*`-in-a-string BLINDING pair around the gate: `strip_npc_comments` has
+///  * a block-comment-opener-in-a-string BLINDING pair around the gate: `strip_npc_comments` has
 ///    no string lexer, so a string literal containing a block-comment opener
 ///    blanks everything up to the next closer — a blanked span cannot reproduce
 ///    this frozen text, which is why equality catches it where presence needles
@@ -3988,7 +3988,7 @@ fn s20rc_load_error_arm_is_frozen_swallow_and_return() {
          every other tooth in this slice constrains only the text it names. WHAT THAT BUYS: no \
          extra statement above the gate (a measured bypass emitted the same fault ungated through \
          a second logging helper), no early `return;` that makes the emission dead code, no \
-         `/*`-in-a-string blinding pair (the comment stripper has no string lexer, so a blanked \
+         block-comment-opener-in-a-string blinding pair (the comment stripper has no string lexer, so a blanked \
          span cannot reproduce this literal), and no diverging exit. The arm MUST end in \
          `}}return;` — SWALLOW AND RETURN: the criterion holds reducer semantics fixed, so `talk` \
          still succeeds when the quest registry cannot be parsed. RE-DERIVE this literal from the \
@@ -4022,7 +4022,7 @@ fn s20rc_load_error_arm_is_frozen_swallow_and_return() {
 /// INSTEAD of the live function (it searches `pub fn` first, across the whole
 /// file), handing every body-scoped tooth in this slice a perfect body while
 /// production stays ungated; a SECOND ungated emission anywhere in `npc.rs` — in
-/// `talk`, or hidden inside a `/*`-in-a-string blinded span, which is why the
+/// `talk`, or hidden inside a block-comment-opener-in-a-string blinded span, which is why the
 /// emission censuses run on the RAW, UN-stripped source; that same second
 /// emission sent through ANOTHER CHANNEL, which is what the event-name census
 /// adds over the macro-token one; and an `include!`d sibling file, which is
