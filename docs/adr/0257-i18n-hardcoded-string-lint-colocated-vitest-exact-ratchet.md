@@ -7,7 +7,7 @@
 **Amends:** —
 **Extends:** 0224, 0255, 0256
 **Subsystems:** client-ui, ci-gates
-**Decision:** §5.2's default-fail character-inversion lint is a pure typed scanner (`hardcodedStrings.ts`) driven by a co-located vitest test over the whole non-test client tree, with `SINK_FLOOR = 169` and `HARDCODED_CEILING` pinned exactly to a plain-data baseline.
+**Decision:** §5.2's default-fail lint ships as a pure typed scanner (`hardcodedStrings.ts`) + co-located vitest test over the whole non-test client tree; `SINK_FLOOR = 169`, `HARDCODED_CEILING` pinned exactly to plain-data JSON.
 
 ---
 
