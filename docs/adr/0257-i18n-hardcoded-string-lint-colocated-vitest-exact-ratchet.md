@@ -84,7 +84,12 @@ and `ui/evolutionNotice.ts` (ADR-0254, `:209` `'OK'`). E6's roster is simply old
   `==`/`===` are reads; `.titleEl`/`.title(` are other members; `.id =`, `.className =`,
   `.style.cssText =`, `.dataset.*`, `addEventListener(` are structurally absent (asserted in the
   test). `.innerHTML` is not in S2's vocabulary: S0's gate bans it tree-wide, and the token must not
-  appear adjacent to `=` in any non-test file.
+  appear adjacent to `=` in any non-test file. `document.title =` IS matched — the `.title =` token
+  does not require a specific receiver, and `document.title` is player-facing text, correctly in scope.
+  The allowlist-before-RHS ordering (HC-02) is proven by OUTCOME — `setAttribute('data-testid',
+  'box-slot')` yields zero sinks — because an implementation that classified the value first and
+  discarded the call afterwards is observationally identical; the spec's own proof (B4) is the
+  `{0,0}` result.
 - **D5 — The ceiling, and the tension with ADR-0224 named honestly.** The baseline is plain data,
   `client/src/ui/i18n/__fixtures__/i18n-hardcoded.json` `{"HARDCODED_CEILING": N}`, with no update
   flag; the test asserts `failing ≤ N` (I18N-18's letter) **and** `failing === N`, plus `N` is a
@@ -98,6 +103,13 @@ and `ui/evolutionNotice.ts` (ADR-0254, `:209` `'OK'`). E6's roster is simply old
   a reversal of ADR-0224. **Merge discipline:** S3→S4→S5 are serial by spec; `S6 ‖ S3` is a declared
   pair and both lower the count, so the second to merge re-measures and edits the JSON (one line, the
   failure message says which). The `touches:` of S3/S4/S5/S6 now include the JSON.
+  **Measured at implementation time:** 81 failing of 182 sinks across 172 non-test files (the 19 spec
+  files account for 79; `privacyView.ts:145` and `evolutionNotice.ts:209` add the remaining 2). Per-file
+  failing counts: battleView 16, boxView 12, evolutionView 11, raisingView 10, shopView 9 (including the
+  3 `replaceChildren(emptyRow('…'))` sites), pvpView 8, tradeView 4, errorOverlayView 2,
+  leaderboardView 2, claimView/dialogueView/healView/questLogView/tradeProposeView/privacyView/
+  evolutionNotice 1 each, main/helpView/menuView/renameView/sessionView 0. `CEILING_AT_S2 = 81` is
+  pinned as a constant in the test file.
 - **D6 — Fail-loud tripwires.** `unterminated` (mask ends inside a literal) fails the file; a sink
   token found at a masked index fails loud (the parity-flip signature of two regex literals each holding
   one quote, which leaves `unterminated` false); an RHS that hits EOF at bracket depth > 0 is
@@ -119,7 +131,7 @@ and `ui/evolutionNotice.ts` (ADR-0254, `:209` `'OK'`). E6's roster is simply old
     `announcements.ts`. S3–S6 own those by file roster, not by lint.
   - **Out-of-vocabulary sinks** (all zero today): `.innerText =`, `insertAdjacentText(`,
     `append('…')`, `new Text('…')`, `createTextNode('…')`, `.placeholder =`, `.value =`,
-    `document.title =`, `el['textContent'] =`, `Object.assign(el, {textContent})`, and
+    `el['textContent'] =`, `Object.assign(el, {textContent})`, and
     `prompt(`/`alert(`/`confirm(` (`boxView.ts:248` is a live `prompt('New nickname:', …)`).
   - A non-literal `setAttribute` first argument (`setAttribute(ARIA_LABEL, v)`) is not a sink.
   - Whitespace is ASCII-only (`U+00A0`, en dash `U+2013` are NOT in the set); `…`, `’`, `✓`, `★`,
@@ -127,5 +139,16 @@ and `ui/evolutionNotice.ts` (ADR-0254, `:209` `'OK'`). E6's roster is simply old
     migration unless `→` is reviewed in. A backslash escape (`'\n'`) fails. All fail toward extraction.
   - `t('Raw prose')` passes the lint and fails `tsc` via the `MessageId` union — the exemption leans
     on the type system (ADR-0256).
+  - **`Sink.line` is the line in the comment-stripped source**; the single-owner `stripComments`
+    (`evals/dom-shell-coverage-exclusion.eval.mjs:130-136`) drops newlines inside `/* … */`, so a
+    failure message for a sink below a block comment cites a lower line than the raw file (e.g.
+    `evolutionNotice.ts` raw 209 → 166). Counts are unaffected; the segment text is printed. Fixing
+    it belongs to the stripper's owner, not this slice.
 - Follow-up: none scheduled. The ceiling reaches 0 at S6 and the exact pin becomes a permanent
   0-ratchet with no further edits.
+
+## Lenses
+
+planner → reviewer ∥ red-team (plan) → tester (opus; RED 9/9 "not implemented") → red-team (tests) →
+specialist (helper + JSON only) → reviewer ∥ verifier (mutants on a detached copy) → doc-keeper;
+domain auditors not applicable (no server/game-core surface).
