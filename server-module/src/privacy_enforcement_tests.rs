@@ -31,7 +31,10 @@ use std::collections::BTreeSet;
 // ---------------------------------------------------------------------------
 
 mod census {
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::btree_map::Entry;
+    use std::collections::{BTreeMap, BTreeSet, VecDeque};
+    use syn::visit::Visit;
+    use syn::{Expr, Item, Pat, Stmt};
 
     pub(super) const WRITE_VERBS: &[&str] = &[
         "insert",
@@ -43,16 +46,76 @@ mod census {
         "try_insert_or_update",
     ];
 
+    // --- Vocabulary ---------------------------------------------------------
+    // Every name below is compared against an AST ident or path segment. The
+    // engine never searches source text: a shape the parser cannot classify is
+    // a hard error, never an approximation (ADR-0258 D1).
+
+    const ROOT: &str = "crate";
+    const GUARD_MODULE: &str = "guards";
+    const ACCOUNT_MODULE: &str = "accounts";
+    const SELF_SEGMENT: &str = "self";
+    const REQUIRE_NOT_DELETING: &str = "require_not_deleting";
+    const REQUIRE_SUBJECT: &str = "require_subject_not_deleting";
+    const REQUIRE_COMMITMENT: &str = "require_commitment_predates_deletion";
+    const PENDING_PREDICATE: &str = concat!("is_pending_", "deletion");
+    const REJECT_PREDICATE: &str = concat!("should_reject_", "for_deletion");
+    /// The only three wrapper spellings ADR-0248 D1 pins as gate shape (a).
+    const GATE_WRAPPERS: &[&str] = &[REQUIRE_NOT_DELETING, REQUIRE_SUBJECT, REQUIRE_COMMITMENT];
+    /// Guard-family fn names that may only be DEFINED in guards or accounts.
+    const GUARD_FN_NAMES: &[&str] = &[
+        REQUIRE_NOT_DELETING,
+        REQUIRE_SUBJECT,
+        REQUIRE_COMMITMENT,
+        PENDING_PREDICATE,
+        REJECT_PREDICATE,
+    ];
+    const LIFECYCLE_ARGS: &[&str] = &["init", "client_connected", "client_disconnected"];
+    /// Chain methods that turn a table handle into rows, so a binding of such a
+    /// chain is a row, never a handle alias.
+    const ROW_METHODS: &[&str] = &["iter", "count", "len"];
+    const HANDLE_SUFFIX: &str = concat!("Table", "Handle");
+    const TABLE_TRAIT: &str = "Table";
+    const CTX_TYPE: &str = "ReducerContext";
+    const TEST_CFG: &str = "test";
+    const CFG_ATTR: &str = "cfg";
+    const PATH_ATTR: &str = "path";
+    const REDUCER_ATTR: &str = "reducer";
+    const TABLE_ATTR: &str = "table";
+    const PROCEDURE_ATTR: &str = "procedure";
+    const SCHEDULED_ARG: &str = "scheduled";
+    const LIB_STEM: &str = "lib";
+    const SRC_DIR: &str = "src";
+
     /// Manifest tables whose `DeletionPolicy` is not `NotOwned`, read from the
     /// real `crate::schema::DATA_LIFECYCLE_MANIFEST`.
     pub(super) fn classified_tables() -> BTreeSet<&'static str> {
-        unimplemented!("rb-45 T3: engine not yet implemented")
+        crate::schema::DATA_LIFECYCLE_MANIFEST
+            .iter()
+            .filter(|entry| !matches!(entry.policy, crate::schema::DeletionPolicy::NotOwned))
+            .map(|entry| entry.table)
+            .collect()
     }
 
     /// The real corpus: `[("crate", lib.rs source), (module, module source)…]`,
     /// derived by parsing lib.rs and read through `env!("CARGO_MANIFEST_DIR")`.
     pub(super) fn real_sources() -> Result<Vec<(String, String)>, CensusError> {
-        unimplemented!("rb-45 T3: engine not yet implemented")
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(SRC_DIR);
+        let root_source = read_module(&dir, LIB_STEM, ROOT)?;
+        let root_file = parse_module(ROOT, &root_source)?;
+        let mut out = vec![(String::from(ROOT), root_source)];
+        for item in &root_file.items {
+            let Item::Mod(item_mod) = item else { continue };
+            if item_mod.content.is_some() {
+                continue;
+            }
+            if let RootMod::Scanned = classify_root_mod(item_mod)? {
+                let name = item_mod.ident.to_string();
+                let source = read_module(&dir, &name, &name)?;
+                out.push((name, source));
+            }
+        }
+        Ok(out)
     }
 
     pub(super) fn census(
@@ -60,8 +123,14 @@ mod census {
         classified: &BTreeSet<&str>,
         owners: &[&str],
     ) -> Result<Report, CensusError> {
-        let _ = (sources, classified, owners);
-        unimplemented!("rb-45 T3: engine not yet implemented")
+        let mut files: Vec<(&str, syn::File)> = Vec::with_capacity(sources.len());
+        for (module, source) in sources {
+            files.push((module.as_str(), parse_module(module, source)?));
+        }
+        let corpus = Corpus::collect(&files)?;
+        let tables: BTreeSet<String> = classified.iter().map(|t| (*t).to_string()).collect();
+        let modules = sources.iter().map(|(name, _)| name.clone()).collect();
+        corpus.report(&tables, owners, modules)
     }
 
     #[derive(Debug)]
@@ -72,12 +141,15 @@ mod census {
 
     impl Report {
         pub(super) fn ungated(&self) -> BTreeSet<&str> {
-            unimplemented!("rb-45 T3: engine not yet implemented")
+            self.names_with(|verdict| matches!(verdict, Verdict::Ungated { .. }))
         }
 
         pub(super) fn names_with(&self, pred: impl Fn(&Verdict) -> bool) -> BTreeSet<&str> {
-            let _ = pred;
-            unimplemented!("rb-45 T3: engine not yet implemented")
+            self.verdicts
+                .iter()
+                .filter(|(_, verdict)| pred(verdict))
+                .map(|(name, _)| name.as_str())
+                .collect()
         }
     }
 
@@ -105,6 +177,931 @@ mod census {
         MissingModuleFile { module: String },
         DuplicateReducer { name: String },
         UnsupportedShape { module: String, what: String },
+    }
+
+    // --- Source access ------------------------------------------------------
+
+    fn read_module(dir: &std::path::Path, stem: &str, module: &str) -> Result<String, CensusError> {
+        std::fs::read_to_string(dir.join(format!("{stem}.rs"))).map_err(|_| {
+            CensusError::MissingModuleFile {
+                module: String::from(module),
+            }
+        })
+    }
+
+    fn parse_module(module: &str, source: &str) -> Result<syn::File, CensusError> {
+        syn::parse_file(source).map_err(|err| CensusError::Parse {
+            module: String::from(module),
+            msg: err.to_string(),
+        })
+    }
+
+    fn shape(module: &str, what: String) -> CensusError {
+        CensusError::UnsupportedShape {
+            module: String::from(module),
+            what,
+        }
+    }
+
+    // --- Crate-root module roster ------------------------------------------
+
+    enum RootMod {
+        Scanned,
+        Skipped,
+    }
+
+    /// A crate-root `mod` is SCANNED when it carries no attribute at all and
+    /// SKIPPED when it carries exactly a test cfg (optionally with a path
+    /// attribute). Every other attribute set is refused rather than guessed.
+    fn classify_root_mod(item_mod: &syn::ItemMod) -> Result<RootMod, CensusError> {
+        if item_mod.attrs.is_empty() {
+            return Ok(RootMod::Scanned);
+        }
+        let ident = item_mod.ident.to_string();
+        let mut test_gated = false;
+        for attr in &item_mod.attrs {
+            match attr_name(attr).as_deref() {
+                Some(name) if name == CFG_ATTR => {
+                    if !is_test_cfg(attr) {
+                        return Err(root_mod_error(&ident, true));
+                    }
+                    test_gated = true;
+                }
+                Some(name) if name == PATH_ATTR => {}
+                _ => return Err(root_mod_error(&ident, false)),
+            }
+        }
+        if test_gated {
+            Ok(RootMod::Skipped)
+        } else {
+            Err(root_mod_error(&ident, false))
+        }
+    }
+
+    fn root_mod_error(ident: &str, cfg_shaped: bool) -> CensusError {
+        let what = if cfg_shaped {
+            format!("module {ident} carries a cfg attribute other than the test one")
+        } else {
+            format!("module {ident} carries an unsupported attribute set at the crate root")
+        };
+        shape(ROOT, what)
+    }
+
+    // --- Attribute helpers --------------------------------------------------
+
+    fn attr_name(attr: &syn::Attribute) -> Option<String> {
+        attr.path().segments.last().map(|s| s.ident.to_string())
+    }
+
+    fn attr_ident_arg(attr: &syn::Attribute) -> Option<String> {
+        match &attr.meta {
+            syn::Meta::List(list) => syn::parse2::<syn::Ident>(list.tokens.clone())
+                .ok()
+                .map(|ident| ident.to_string()),
+            _ => None,
+        }
+    }
+
+    fn is_test_cfg(attr: &syn::Attribute) -> bool {
+        attr_ident_arg(attr).is_some_and(|arg| arg == TEST_CFG)
+    }
+
+    fn carries_test_cfg(attrs: &[syn::Attribute]) -> bool {
+        attrs
+            .iter()
+            .any(|attr| attr_name(attr).as_deref() == Some(CFG_ATTR) && is_test_cfg(attr))
+    }
+
+    /// `Some(attribute argument)` when the item carries a reducer attribute;
+    /// the inner `None` is the argument-less spelling.
+    fn reducer_arg(attrs: &[syn::Attribute]) -> Option<Option<String>> {
+        attrs
+            .iter()
+            .find(|attr| attr_name(attr).as_deref() == Some(REDUCER_ATTR))
+            .map(attr_ident_arg)
+    }
+
+    fn item_attrs(item: &Item) -> &[syn::Attribute] {
+        match item {
+            Item::Const(i) => &i.attrs,
+            Item::Enum(i) => &i.attrs,
+            Item::ExternCrate(i) => &i.attrs,
+            Item::Fn(i) => &i.attrs,
+            Item::ForeignMod(i) => &i.attrs,
+            Item::Impl(i) => &i.attrs,
+            Item::Macro(i) => &i.attrs,
+            Item::Mod(i) => &i.attrs,
+            Item::Static(i) => &i.attrs,
+            Item::Struct(i) => &i.attrs,
+            Item::Trait(i) => &i.attrs,
+            Item::TraitAlias(i) => &i.attrs,
+            Item::Type(i) => &i.attrs,
+            Item::Union(i) => &i.attrs,
+            Item::Use(i) => &i.attrs,
+            _ => &[],
+        }
+    }
+
+    fn item_label(item: &Item) -> String {
+        match item {
+            Item::Const(i) => i.ident.to_string(),
+            Item::Enum(i) => i.ident.to_string(),
+            Item::Fn(i) => i.sig.ident.to_string(),
+            Item::Mod(i) => i.ident.to_string(),
+            Item::Static(i) => i.ident.to_string(),
+            Item::Struct(i) => i.ident.to_string(),
+            Item::Trait(i) => i.ident.to_string(),
+            Item::Type(i) => i.ident.to_string(),
+            Item::Union(i) => i.ident.to_string(),
+            _ => String::from("an unnamed item"),
+        }
+    }
+
+    fn path_segments(path: &syn::Path) -> Vec<String> {
+        path.segments
+            .iter()
+            .map(|segment| segment.ident.to_string())
+            .collect()
+    }
+
+    fn path_tail(path: &syn::Path) -> String {
+        path.segments
+            .last()
+            .map_or_else(|| String::from("an unnamed path"), |s| s.ident.to_string())
+    }
+
+    fn use_rename(tree: &syn::UseTree) -> Option<String> {
+        match tree {
+            syn::UseTree::Path(inner) => use_rename(&inner.tree),
+            syn::UseTree::Group(group) => group.items.iter().find_map(use_rename),
+            syn::UseTree::Rename(rename) => Some(rename.rename.to_string()),
+            _ => None,
+        }
+    }
+
+    // --- Signature probes ---------------------------------------------------
+
+    struct CtxProbe {
+        hit: bool,
+    }
+
+    impl<'ast> Visit<'ast> for CtxProbe {
+        fn visit_path_segment(&mut self, segment: &'ast syn::PathSegment) {
+            if segment.ident == CTX_TYPE {
+                self.hit = true;
+            }
+            syn::visit::visit_path_segment(self, segment);
+        }
+    }
+
+    fn signature_mentions_ctx(sig: &syn::Signature) -> bool {
+        let mut probe = CtxProbe { hit: false };
+        probe.visit_signature(sig);
+        probe.hit
+    }
+
+    struct HandleProbe {
+        hit: bool,
+        depth: usize,
+    }
+
+    impl<'ast> Visit<'ast> for HandleProbe {
+        fn visit_type_impl_trait(&mut self, node: &'ast syn::TypeImplTrait) {
+            self.depth += 1;
+            syn::visit::visit_type_impl_trait(self, node);
+            self.depth -= 1;
+        }
+
+        fn visit_path_segment(&mut self, segment: &'ast syn::PathSegment) {
+            let ident = segment.ident.to_string();
+            if ident.ends_with(HANDLE_SUFFIX) {
+                self.hit = true;
+            }
+            let parameterised = matches!(segment.arguments, syn::PathArguments::AngleBracketed(_));
+            if ident == TABLE_TRAIT && (self.depth > 0 || parameterised) {
+                self.hit = true;
+            }
+            syn::visit::visit_path_segment(self, segment);
+        }
+    }
+
+    fn returns_handle(output: &syn::ReturnType) -> bool {
+        let mut probe = HandleProbe {
+            hit: false,
+            depth: 0,
+        };
+        probe.visit_return_type(output);
+        probe.hit
+    }
+
+    // --- Corpus collection --------------------------------------------------
+
+    struct FnBody {
+        module: String,
+        name: String,
+        block: syn::Block,
+        reducer: Option<Option<String>>,
+    }
+
+    struct Corpus {
+        fns: Vec<FnBody>,
+        module_set: BTreeSet<String>,
+        scheduled: BTreeSet<String>,
+        reducers: BTreeSet<String>,
+    }
+
+    impl Corpus {
+        fn collect(files: &[(&str, syn::File)]) -> Result<Self, CensusError> {
+            let mut corpus = Corpus {
+                fns: Vec::new(),
+                module_set: files.iter().map(|(name, _)| (*name).to_string()).collect(),
+                scheduled: BTreeSet::new(),
+                reducers: BTreeSet::new(),
+            };
+            for (module, file) in files {
+                corpus.scan_items(module, &file.items)?;
+            }
+            Ok(corpus)
+        }
+
+        fn scan_items(&mut self, module: &str, items: &[Item]) -> Result<(), CensusError> {
+            for item in items {
+                self.scan_item(module, item)?;
+            }
+            Ok(())
+        }
+
+        fn scan_item(&mut self, module: &str, item: &Item) -> Result<(), CensusError> {
+            for attr in item_attrs(item) {
+                if attr_name(attr).as_deref() == Some(PROCEDURE_ATTR) {
+                    let what = format!("procedure attribute on {}", item_label(item));
+                    return Err(shape(module, what));
+                }
+            }
+            match item {
+                Item::Macro(item_macro) => {
+                    let what = match &item_macro.ident {
+                        Some(ident) => format!("macro definition {ident} at item position"),
+                        None => format!(
+                            "macro invocation {} at item position",
+                            path_tail(&item_macro.mac.path)
+                        ),
+                    };
+                    Err(shape(module, what))
+                }
+                Item::Mod(item_mod) => self.scan_mod(module, item_mod),
+                Item::Use(item_use) => match use_rename(&item_use.tree) {
+                    Some(alias) => Err(shape(module, format!("use as rename binding {alias}"))),
+                    None => Ok(()),
+                },
+                Item::Impl(item_impl) => {
+                    for inner in &item_impl.items {
+                        if let syn::ImplItem::Fn(method) = inner {
+                            if signature_mentions_ctx(&method.sig) {
+                                let what = format!(
+                                    "an implementation block fn {} takes a reducer context",
+                                    method.sig.ident
+                                );
+                                return Err(shape(module, what));
+                            }
+                        }
+                    }
+                    Ok(())
+                }
+                Item::Struct(item_struct) => {
+                    self.collect_schedule_targets(&item_struct.attrs);
+                    Ok(())
+                }
+                Item::Fn(item_fn) => self.scan_fn(module, item_fn),
+                _ => Ok(()),
+            }
+        }
+
+        fn scan_mod(&mut self, module: &str, item_mod: &syn::ItemMod) -> Result<(), CensusError> {
+            if module == ROOT {
+                if let RootMod::Scanned = classify_root_mod(item_mod)? {
+                    if let Some((_, inner)) = &item_mod.content {
+                        self.scan_items(module, inner)?;
+                    }
+                }
+                return Ok(());
+            }
+            if carries_test_cfg(&item_mod.attrs) {
+                return Ok(());
+            }
+            let what = format!("nested module {} without a test attribute", item_mod.ident);
+            Err(shape(module, what))
+        }
+
+        fn scan_fn(&mut self, module: &str, item_fn: &syn::ItemFn) -> Result<(), CensusError> {
+            let name = item_fn.sig.ident.to_string();
+            if returns_handle(&item_fn.sig.output) {
+                return Err(shape(module, format!("fn {name} returns a table handle")));
+            }
+            if GUARD_FN_NAMES.contains(&name.as_str())
+                && module != GUARD_MODULE
+                && module != ACCOUNT_MODULE
+            {
+                let what = format!("shadow definition of the guard fn {name}");
+                return Err(shape(module, what));
+            }
+            let reducer = reducer_arg(&item_fn.attrs);
+            if reducer.is_some() && !self.reducers.insert(name.clone()) {
+                return Err(CensusError::DuplicateReducer { name });
+            }
+            self.fns.push(FnBody {
+                module: String::from(module),
+                name,
+                block: (*item_fn.block).clone(),
+                reducer,
+            });
+            Ok(())
+        }
+
+        /// The scheduled reducer roster: the ident inside the schedule argument
+        /// of any table attribute in the corpus (never the parameter type).
+        fn collect_schedule_targets(&mut self, attrs: &[syn::Attribute]) {
+            for attr in attrs {
+                if attr_name(attr).as_deref() != Some(TABLE_ATTR) {
+                    continue;
+                }
+                let parsed = attr.parse_args_with(
+                    syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+                );
+                let Ok(args) = parsed else { continue };
+                for meta in args {
+                    let syn::Meta::List(list) = meta else {
+                        continue;
+                    };
+                    if !list.path.is_ident(SCHEDULED_ARG) {
+                        continue;
+                    }
+                    if let Ok(ident) = syn::parse2::<syn::Ident>(list.tokens.clone()) {
+                        self.scheduled.insert(ident.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Crate-local call resolution ---------------------------------------
+
+    struct Resolver {
+        index: BTreeMap<(String, String), usize>,
+        by_name: BTreeMap<String, Vec<usize>>,
+        modules: BTreeSet<String>,
+    }
+
+    impl Resolver {
+        fn build(fns: &[FnBody], modules: &BTreeSet<String>) -> Self {
+            let mut index = BTreeMap::new();
+            let mut by_name: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+            for (idx, entry) in fns.iter().enumerate() {
+                index.insert((entry.module.clone(), entry.name.clone()), idx);
+                by_name.entry(entry.name.clone()).or_default().push(idx);
+            }
+            Resolver {
+                index,
+                by_name,
+                modules: modules.clone(),
+            }
+        }
+
+        fn in_module(&self, module: &str, name: &str) -> Vec<usize> {
+            self.index
+                .get(&(String::from(module), String::from(name)))
+                .map_or_else(Vec::new, |idx| vec![*idx])
+        }
+
+        /// Resolve a call or fn-pointer path to crate fns. Zero matches means a
+        /// closure, an `Fn` parameter or a foreign call, which is ignored.
+        fn resolve(&self, module: &str, segments: &[String]) -> Vec<usize> {
+            let Some(name) = segments.last() else {
+                return Vec::new();
+            };
+            match segments.len() {
+                1 => {
+                    let same = self.in_module(module, name);
+                    if same.is_empty() {
+                        self.by_name.get(name).cloned().unwrap_or_default()
+                    } else {
+                        same
+                    }
+                }
+                2 if segments[0] == SELF_SEGMENT => self.in_module(module, name),
+                2 if segments[0] == ROOT => self.in_module(ROOT, name),
+                2 if self.modules.contains(segments[0].as_str()) => {
+                    self.in_module(&segments[0], name)
+                }
+                3 if segments[0] == ROOT && self.modules.contains(segments[1].as_str()) => {
+                    self.in_module(&segments[1], name)
+                }
+                _ => Vec::new(),
+            }
+        }
+    }
+
+    // --- Refused body shapes ------------------------------------------------
+
+    struct RefusalProbe<'s> {
+        resolver: &'s Resolver,
+        module: &'s str,
+        fn_name: &'s str,
+        found: Option<String>,
+    }
+
+    impl<'ast, 's> Visit<'ast> for RefusalProbe<'s> {
+        fn visit_local(&mut self, local: &'ast syn::Local) {
+            if self.found.is_none() {
+                if let (Pat::Ident(binding), Some(init)) = (&local.pat, &local.init) {
+                    if let Expr::Path(path) = &*init.expr {
+                        let segments = path_segments(&path.path);
+                        if !self.resolver.resolve(self.module, &segments).is_empty() {
+                            self.found = Some(format!(
+                                "fn pointer let binding {} in fn {}",
+                                binding.ident, self.fn_name
+                            ));
+                        }
+                    }
+                }
+            }
+            syn::visit::visit_local(self, local);
+        }
+
+        fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+            if self.found.is_none() {
+                if let Expr::Path(path) = &*call.func {
+                    let segments = path_segments(&path.path);
+                    if let Some(last) = segments.last() {
+                        if segments.len() >= 2 && WRITE_VERBS.contains(&last.as_str()) {
+                            self.found =
+                                Some(format!("ufcs write call {last} in fn {}", self.fn_name));
+                        } else if segments.len() > 3 && segments[0] == ROOT {
+                            self.found = Some(format!(
+                                "nested module call path to {last} in fn {}",
+                                self.fn_name
+                            ));
+                        }
+                    }
+                }
+            }
+            syn::visit::visit_expr_call(self, call);
+        }
+    }
+
+    // --- Handle aliases -----------------------------------------------------
+
+    struct AliasScan<'s> {
+        classified: &'s BTreeSet<String>,
+        known: &'s BTreeMap<String, String>,
+        found: BTreeMap<String, String>,
+    }
+
+    impl<'ast, 's> Visit<'ast> for AliasScan<'s> {
+        fn visit_local(&mut self, local: &'ast syn::Local) {
+            if let (Pat::Ident(binding), Some(init)) = (&local.pat, &local.init) {
+                if binding.subpat.is_none() {
+                    if let Some(table) = handle_chain(&init.expr, self.classified, self.known) {
+                        self.found.insert(binding.ident.to_string(), table);
+                    }
+                }
+            }
+            syn::visit::visit_local(self, local);
+        }
+    }
+
+    /// A handle chain: it reaches a classified accessor (or a known alias) and
+    /// EVERY method call in it is zero-argument and none of them turns the
+    /// handle into rows. `ctx.db.battle()` and `ctx.db.battle().battle_id()`
+    /// qualify; a `find(..)`-shaped row chain does not.
+    fn handle_chain(
+        expr: &Expr,
+        classified: &BTreeSet<String>,
+        known: &BTreeMap<String, String>,
+    ) -> Option<String> {
+        let mut found: Option<String> = None;
+        let mut cursor = expr;
+        loop {
+            match cursor {
+                Expr::MethodCall(call) => {
+                    let method = call.method.to_string();
+                    if !call.args.is_empty() || ROW_METHODS.contains(&method.as_str()) {
+                        return None;
+                    }
+                    if found.is_none() && classified.contains(method.as_str()) {
+                        found = Some(method);
+                    }
+                    cursor = &call.receiver;
+                }
+                Expr::Field(field) => cursor = &field.base,
+                Expr::Reference(reference) => cursor = &reference.expr,
+                Expr::Paren(paren) => cursor = &paren.expr,
+                Expr::Try(attempt) => cursor = &attempt.expr,
+                Expr::Path(path) => {
+                    if found.is_none() {
+                        if let Some(ident) = path.path.get_ident() {
+                            found = known.get(&ident.to_string()).cloned();
+                        }
+                    }
+                    return found;
+                }
+                _ => return found,
+            }
+        }
+    }
+
+    fn collect_aliases(
+        block: &syn::Block,
+        classified: &BTreeSet<String>,
+    ) -> BTreeMap<String, String> {
+        let mut known: BTreeMap<String, String> = BTreeMap::new();
+        loop {
+            let found = {
+                let mut scan = AliasScan {
+                    classified,
+                    known: &known,
+                    found: BTreeMap::new(),
+                };
+                scan.visit_block(block);
+                scan.found
+            };
+            let mut grew = false;
+            for (name, table) in found {
+                if let Entry::Vacant(slot) = known.entry(name) {
+                    slot.insert(table);
+                    grew = true;
+                }
+            }
+            if !grew {
+                return known;
+            }
+        }
+    }
+
+    // --- Writes and calls ---------------------------------------------------
+
+    fn accessor_in_chain(expr: &Expr, classified: &BTreeSet<String>) -> Option<String> {
+        match expr {
+            Expr::MethodCall(call) => {
+                let method = call.method.to_string();
+                if call.args.is_empty() && classified.contains(method.as_str()) {
+                    return Some(method);
+                }
+                accessor_in_chain(&call.receiver, classified)
+            }
+            Expr::Field(field) => accessor_in_chain(&field.base, classified),
+            Expr::Reference(reference) => accessor_in_chain(&reference.expr, classified),
+            Expr::Paren(paren) => accessor_in_chain(&paren.expr, classified),
+            Expr::Try(attempt) => accessor_in_chain(&attempt.expr, classified),
+            _ => None,
+        }
+    }
+
+    /// The alias root of a write receiver: reachable through method receivers,
+    /// references and parentheses ONLY — a field base is a row, not a handle.
+    fn alias_root(expr: &Expr, aliases: &BTreeMap<String, String>) -> Option<String> {
+        match expr {
+            Expr::MethodCall(call) => alias_root(&call.receiver, aliases),
+            Expr::Reference(reference) => alias_root(&reference.expr, aliases),
+            Expr::Paren(paren) => alias_root(&paren.expr, aliases),
+            Expr::Path(path) => path
+                .path
+                .get_ident()
+                .and_then(|ident| aliases.get(&ident.to_string()).cloned()),
+            _ => None,
+        }
+    }
+
+    fn write_target(
+        receiver: &Expr,
+        classified: &BTreeSet<String>,
+        aliases: &BTreeMap<String, String>,
+    ) -> Option<String> {
+        accessor_in_chain(receiver, classified).or_else(|| alias_root(receiver, aliases))
+    }
+
+    struct ScanCtx<'s> {
+        classified: &'s BTreeSet<String>,
+        aliases: &'s BTreeMap<String, String>,
+        resolver: &'s Resolver,
+        module: &'s str,
+    }
+
+    #[derive(Default)]
+    struct BodyFacts {
+        writes: BTreeSet<String>,
+        calls: BTreeSet<usize>,
+    }
+
+    struct BodyScan<'s> {
+        ctx: &'s ScanCtx<'s>,
+        facts: BodyFacts,
+    }
+
+    impl<'ast, 's> Visit<'ast> for BodyScan<'s> {
+        fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+            let method = call.method.to_string();
+            if WRITE_VERBS.contains(&method.as_str()) {
+                if let Some(table) =
+                    write_target(&call.receiver, self.ctx.classified, self.ctx.aliases)
+                {
+                    self.facts.writes.insert(table);
+                }
+            }
+            syn::visit::visit_expr_method_call(self, call);
+        }
+
+        fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+            if let Expr::Path(path) = &*call.func {
+                let segments = path_segments(&path.path);
+                for idx in self.ctx.resolver.resolve(self.ctx.module, &segments) {
+                    self.facts.calls.insert(idx);
+                }
+            }
+            syn::visit::visit_expr_call(self, call);
+        }
+    }
+
+    fn scan_block(block: &syn::Block, ctx: &ScanCtx) -> BodyFacts {
+        let mut scan = BodyScan {
+            ctx,
+            facts: BodyFacts::default(),
+        };
+        scan.visit_block(block);
+        scan.facts
+    }
+
+    fn scan_stmt(stmt: &Stmt, ctx: &ScanCtx) -> BodyFacts {
+        let mut scan = BodyScan {
+            ctx,
+            facts: BodyFacts::default(),
+        };
+        scan.visit_stmt(stmt);
+        scan.facts
+    }
+
+    // --- Gate shapes --------------------------------------------------------
+
+    struct PendingProbe<'s> {
+        module: &'s str,
+        hit: bool,
+    }
+
+    impl<'ast, 's> Visit<'ast> for PendingProbe<'s> {
+        fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+            if let Expr::Path(path) = &*call.func {
+                let segments = path_segments(&path.path);
+                let qualified = segments.len() == 3
+                    && segments[0] == ROOT
+                    && segments[1] == ACCOUNT_MODULE
+                    && segments[2] == PENDING_PREDICATE;
+                let bare = segments.len() == 1
+                    && segments[0] == PENDING_PREDICATE
+                    && self.module == ACCOUNT_MODULE;
+                if qualified || bare {
+                    self.hit = true;
+                }
+            }
+            syn::visit::visit_expr_call(self, call);
+        }
+    }
+
+    fn condition_tests_pending(cond: &Expr, module: &str) -> bool {
+        let mut probe = PendingProbe { module, hit: false };
+        probe.visit_expr(cond);
+        probe.hit
+    }
+
+    fn wrapper_call(expr: &Expr) -> bool {
+        let Expr::Call(call) = expr else { return false };
+        let Expr::Path(path) = &*call.func else {
+            return false;
+        };
+        let segments = path_segments(&path.path);
+        segments.len() == 3
+            && segments[0] == ROOT
+            && segments[1] == GUARD_MODULE
+            && GATE_WRAPPERS.contains(&segments[2].as_str())
+    }
+
+    /// A leading `!` on the condition inverts the test, so the branch guards the
+    /// NOT-pending case and is never a gate.
+    fn is_negation(cond: &Expr) -> bool {
+        match cond {
+            Expr::Unary(unary) => matches!(unary.op, syn::UnOp::Not(_)),
+            _ => false,
+        }
+    }
+
+    /// The two gate shapes, at the reducer body's depth 0 and nowhere else.
+    fn is_gate(stmt: &Stmt, module: &str) -> bool {
+        match stmt {
+            Stmt::Expr(Expr::Try(attempt), Some(_)) => wrapper_call(&attempt.expr),
+            Stmt::Expr(Expr::If(branch), _) => {
+                !is_negation(&branch.cond)
+                    && condition_tests_pending(&branch.cond, module)
+                    && matches!(
+                        branch.then_branch.stmts.last(),
+                        Some(Stmt::Expr(Expr::Return(_), _))
+                    )
+            }
+            _ => false,
+        }
+    }
+
+    // --- The census ---------------------------------------------------------
+
+    impl Corpus {
+        fn report(
+            &self,
+            classified: &BTreeSet<String>,
+            owners: &[&str],
+            modules: Vec<String>,
+        ) -> Result<Report, CensusError> {
+            let resolver = Resolver::build(&self.fns, &self.module_set);
+            let aliases: Vec<BTreeMap<String, String>> = self
+                .fns
+                .iter()
+                .map(|entry| collect_aliases(&entry.block, classified))
+                .collect();
+            for entry in &self.fns {
+                let mut probe = RefusalProbe {
+                    resolver: &resolver,
+                    module: &entry.module,
+                    fn_name: &entry.name,
+                    found: None,
+                };
+                probe.visit_block(&entry.block);
+                if let Some(what) = probe.found {
+                    return Err(shape(&entry.module, what));
+                }
+            }
+            let facts: Vec<BodyFacts> = self
+                .fns
+                .iter()
+                .enumerate()
+                .map(|(idx, entry)| {
+                    let ctx = ScanCtx {
+                        classified,
+                        aliases: &aliases[idx],
+                        resolver: &resolver,
+                        module: &entry.module,
+                    };
+                    scan_block(&entry.block, &ctx)
+                })
+                .collect();
+            let reachable = transitive_writes(&facts);
+
+            let mut verdicts = BTreeMap::new();
+            for (idx, entry) in self.fns.iter().enumerate() {
+                let Some(argument) = &entry.reducer else {
+                    continue;
+                };
+                let verdict = self.verdict_of(VerdictInput {
+                    idx,
+                    entry,
+                    argument: argument.as_deref(),
+                    owners,
+                    classified,
+                    aliases: &aliases[idx],
+                    resolver: &resolver,
+                    facts: &facts,
+                    reachable: &reachable,
+                });
+                verdicts.insert(entry.name.clone(), verdict);
+            }
+            Ok(Report { verdicts, modules })
+        }
+
+        fn verdict_of(&self, input: VerdictInput) -> Verdict {
+            let name = input.entry.name.as_str();
+            if input.owners.contains(&name) {
+                return Verdict::Owner;
+            }
+            if input
+                .argument
+                .is_some_and(|arg| LIFECYCLE_ARGS.contains(&arg))
+            {
+                return Verdict::Lifecycle;
+            }
+            if self.scheduled.contains(name) {
+                return Verdict::Scheduled;
+            }
+            let writes = &input.reachable[input.idx];
+            if writes.is_empty() {
+                return Verdict::NoClassifiedWrites;
+            }
+            let ctx = ScanCtx {
+                classified: input.classified,
+                aliases: input.aliases,
+                resolver: input.resolver,
+                module: &input.entry.module,
+            };
+            let first_write_stmt = input
+                .entry
+                .block
+                .stmts
+                .iter()
+                .position(|stmt| {
+                    let facts = scan_stmt(stmt, &ctx);
+                    !facts.writes.is_empty()
+                        || facts
+                            .calls
+                            .iter()
+                            .any(|callee| !input.reachable[*callee].is_empty())
+                })
+                .unwrap_or(0);
+            let gate_stmt = input
+                .entry
+                .block
+                .stmts
+                .iter()
+                .position(|stmt| is_gate(stmt, &input.entry.module));
+            match gate_stmt {
+                Some(gate) if gate < first_write_stmt => Verdict::Gated {
+                    gate_stmt: gate,
+                    first_write_stmt,
+                },
+                _ => Verdict::Ungated {
+                    writes: writes.clone(),
+                    first_write_stmt,
+                    gate_stmt,
+                    via: self.via_chain(input.idx, input.facts, input.reachable),
+                },
+            }
+        }
+
+        /// The resolved helper chain from a reducer to the first fn that writes
+        /// a classified table itself. Empty when the reducer writes directly.
+        fn via_chain(
+            &self,
+            start: usize,
+            facts: &[BodyFacts],
+            reachable: &[BTreeSet<String>],
+        ) -> Vec<String> {
+            if !facts[start].writes.is_empty() {
+                return Vec::new();
+            }
+            let mut seen: BTreeSet<usize> = BTreeSet::new();
+            seen.insert(start);
+            let mut queue: VecDeque<(usize, Vec<String>)> = facts[start]
+                .calls
+                .iter()
+                .map(|callee| (*callee, vec![self.fns[*callee].name.clone()]))
+                .collect();
+            while let Some((idx, chain)) = queue.pop_front() {
+                if !seen.insert(idx) {
+                    continue;
+                }
+                if !facts[idx].writes.is_empty() {
+                    return chain;
+                }
+                if reachable[idx].is_empty() {
+                    continue;
+                }
+                for callee in &facts[idx].calls {
+                    let mut next = chain.clone();
+                    next.push(self.fns[*callee].name.clone());
+                    queue.push_back((*callee, next));
+                }
+            }
+            Vec::new()
+        }
+    }
+
+    struct VerdictInput<'s> {
+        idx: usize,
+        entry: &'s FnBody,
+        argument: Option<&'s str>,
+        owners: &'s [&'s str],
+        classified: &'s BTreeSet<String>,
+        aliases: &'s BTreeMap<String, String>,
+        resolver: &'s Resolver,
+        facts: &'s [BodyFacts],
+        reachable: &'s [BTreeSet<String>],
+    }
+
+    /// Writes(f) = own writes ∪ writes of every crate fn f calls, as a fixpoint
+    /// over sets so a call cycle terminates.
+    fn transitive_writes(facts: &[BodyFacts]) -> Vec<BTreeSet<String>> {
+        let mut reachable: Vec<BTreeSet<String>> =
+            facts.iter().map(|entry| entry.writes.clone()).collect();
+        loop {
+            let mut grew = false;
+            for idx in 0..facts.len() {
+                let mut merged = reachable[idx].clone();
+                for callee in &facts[idx].calls {
+                    merged.extend(reachable[*callee].iter().cloned());
+                }
+                if merged.len() != reachable[idx].len() {
+                    reachable[idx] = merged;
+                    grew = true;
+                }
+            }
+            if !grew {
+                return reachable;
+            }
+        }
     }
 }
 
