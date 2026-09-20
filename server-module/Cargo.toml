@@ -26,6 +26,17 @@ unicode-normalization = { workspace = true }
 [dev-dependencies]
 # Property testing for the evaluate_train seam (M9b-tail, raising_tests.rs).
 proptest = { workspace = true }
+# AST walker for the crate-wide deletion-gate census (rb-45, ADR-0258,
+# privacy_enforcement_tests.rs): every reducer that reaches a manifest-classified
+# write must carry a depth-0 `crate::guards::require_*` gate before it or be a
+# declared exemption. ADR-0224's escape hatch for a genuine whole-crate scan — a
+# real parser, never string/regex. Test-only (cfg(test) consumer); Cargo.lock
+# resolves this to the syn already in the tree (spacetimedb's macros), so no new
+# package enters. `visit` because a hand-rolled Expr walk that misses one
+# variant is a hole; syn's visitor covers every node. Not a
+# [workspace.dependencies] entry: single consumer, root manifest outside
+# rb-45's touches.
+syn = { version = "2", features = ["full", "visit"] }
 
 [features]
 # Dev/test-only reducers (start_wild_battle, grant_bait), OFF in release/publish
