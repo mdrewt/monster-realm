@@ -1147,10 +1147,22 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     });
 
     it('m24s7 FR-02: battle.weather.banner selects French plural forms (0≡1, 1≠2, 1e6 -> many)', () => {
-      function trailingWord(s: string): string {
+      // The plural FORM is everything after the LAST DIGIT of the interpolated turn count, up to
+      // (but excluding) the closing `)` — never just the last space-delimited word: CLDR-correct
+      // French spells `many` as the TWO-WORD "de tours" ("1 000 000 de tours"), so a last-word
+      // extractor collapses `many` and `other` (both end in the bare word "tours") and the
+      // many-vs-other assertion below becomes unsatisfiable under correct French.
+      function pluralForm(s: string): string {
         const trimmed = endsWith(s, ')') ? s.slice(0, -1) : s;
-        const idx = trimmed.lastIndexOf(' ');
-        return idx === -1 ? trimmed : trimmed.slice(idx + 1);
+        let lastDigitIdx = -1;
+        for (let i = 0; i < trimmed.length; i++) {
+          const code = trimmed.charCodeAt(i);
+          if (code >= 48 && code <= 57) lastDigitIdx = i;
+        }
+        const after = lastDigitIdx === -1 ? trimmed : trimmed.slice(lastDigitIdx + 1);
+        let start = 0;
+        while (start < after.length && isWhitespace(after.charAt(start))) start += 1;
+        return after.slice(start);
       }
       try {
         setLocale('fr');
@@ -1159,17 +1171,17 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
         const out2 = tf('battle.weather.banner', { label: 'Pluie', turns: 2 });
         const outMany = tf('battle.weather.banner', { label: 'Pluie', turns: 1_000_000 });
         expect(
-          trailingWord(out0),
+          pluralForm(out0),
           "fr's 'one' category covers BOTH 0 and 1 — the two forms must match",
-        ).toBe(trailingWord(out1));
-        expect(trailingWord(out1), "fr's 'one' (1) and 'other' (2) forms must differ").not.toBe(
-          trailingWord(out2),
+        ).toBe(pluralForm(out1));
+        expect(pluralForm(out1), "fr's 'one' (1) and 'other' (2) forms must differ").not.toBe(
+          pluralForm(out2),
         );
         expect(
-          trailingWord(outMany),
-          "fr's 'many' (1e6) and 'other' (2) forms must differ — a two-category cldr({...," +
-            ' many: other}) authoring would collapse this',
-        ).not.toBe(trailingWord(out2));
+          pluralForm(outMany),
+          "fr's 'many' (1e6, «de tours») and 'other' (2, «tours») forms must differ — a " +
+            'cldr({..., many: other}) authoring would collapse this',
+        ).not.toBe(pluralForm(out2));
       } finally {
         setLocale('en');
       }
