@@ -13,24 +13,33 @@
 // ICU `description` field, so it is written for a translator, not for us; the `main.ts:NNN` /
 // `index.html:NNN` citations are the S5/S6 migration targets, for the engineer.
 //
-// S1 SEEDED `chrome.*` and migrated zero call sites: those cited literals stay in `main.ts` and
-// `index.html` until S5/S6 swap them for `t()`/`tf()`. S3 (ADR-0259) ADDED `battle.*` and `pvp.*`
+// S1 SEEDED `chrome.*` and migrated zero call sites. S3 (ADR-0259) ADDED `battle.*` and `pvp.*`
 // and MIGRATED their call sites: `battleView.ts` and `pvpView.ts` now resolve every one of these
 // through `t()`/`tf()`, so the `battleView.ts:NNN` / `pvpView.ts:NNN` citations name where the
 // string is rendered (pre-migration line numbers, kept as the translator's "where"). S4
 // (ADR-0260) did the same for the five mid-density views — `evolution.*`, `raising.*`, `box.*`,
 // `trade.*`, `shop.*` — including seven literals the scanner never saw (function arguments and
 // `return` values: tradeView's side headings and action labels, boxView's `prompt()` label).
+// S5 (ADR-0261) finished the tail — `tradePropose.*`, `dialogue.*`, `claim.*`, `leaderboard.*`,
+// `errorOverlay.*`, `questLog.*`, `heal.*`, `privacy.*`, `evolutionNotice.*` — including five
+// more scanner-invisible literals (privacyView's `#paintButton` labels, evolutionNotice's
+// `return` values), and REMOVED the three view-owned `index.html` literals: `chrome.help.title`
+// / `chrome.rename.submit` / `chrome.tradePropose.submit` are now resolved in HelpView /
+// RenameView / TradeProposeView `show()`. `chrome.helpHint` STAYS a static literal in
+// `index.html` (ADR-0261 alternative 3: no slice may own a resolver write for it without
+// amending ADR-0151 D2), and the `main.ts` `chrome.status.*` literals wait for S6.
 // Every value is byte-identical to the literal it replaced — including `’` U+2019 and `…`
-// U+2026, the `—` U+2014 / `→` / `★` / `✓` / `•` glyphs, the `×` U+00D7 in `shop.sell.*` versus
-// the ASCII `x` in `raising.*`, and the TRAILING SPACE in `shop.buy.row` / `shop.sell.row` (the
-// Buy/Sell button follows the text) — because catalog.test.ts pins the English bytes and several
-// e2e specs match them. Still no plural key: `(${turns} turns)` keeps its pre-existing English
-// plural defect on purpose — fixing it is a reword, which takes a FRESH key and the first
-// `oneOther` use (ADR-0259 alternatives); likewise `Slot ${slot}` (0-based) and `(x${count})`
-// keep their pre-existing shape (ADR-0260 consequences). Model data (affinities, weather labels,
-// species/skill/item/player names, tiers, stats, counts, prices) are PARAMS, interpolated
-// verbatim, never catalogued (M24 §2.5).
+// U+2026, the `—` U+2014 / `→` / `★` / `✓` / `•` / `·` U+00B7 glyphs, the `×` U+00D7 in
+// `shop.sell.*` versus the ASCII `x` in `raising.*`, the TRAILING SPACE in `shop.buy.row` /
+// `shop.sell.row` (the Buy/Sell button follows the text) and the LEADING SPACE in
+// `leaderboard.row` (the player's display name is NOT a param, I18N-21, but a sibling `<bdi>`
+// element that the catalog text follows) — because catalog.test.ts pins the English bytes and
+// several e2e specs match them. Still no plural key: `(${turns} turns)` keeps its pre-existing
+// English plural defect on purpose — fixing it is a reword, which takes a FRESH key and the
+// first `oneOther` use (ADR-0259 alternatives); likewise `Slot ${slot}` (0-based) and
+// `(x${count})` keep their pre-existing shape (ADR-0260 consequences). Model data (affinities,
+// weather labels, species/skill/item/player names, tiers, stats, counts, prices) are PARAMS,
+// interpolated verbatim, never catalogued (M24 §2.5).
 
 import type { Catalog } from './messageIds';
 
@@ -40,14 +49,14 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // index.html:143
   'chrome.helpHint': 'Press ? for help · click or M for menu',
   // @desc: Heading of the help overlay listing keyboard controls and game goals.
-  // index.html:94
+  // index.html:94 (literal removed from index.html; resolved in HelpView show())
   'chrome.help.title': 'Controls & Goals',
   // @desc: Submit button of the profile-rename dialog; short verb, fits a narrow button.
-  // index.html:60
+  // index.html:60 (literal removed from index.html; resolved in RenameView show())
   'chrome.rename.submit': 'Rename',
   // @desc: Submit button of the trade-proposal dialog; the player offers a trade to another
   // player. Short verb, fits a narrow button.
-  // index.html:80
+  // index.html:80 (literal removed from index.html; resolved in TradeProposeView show())
   'chrome.tradePropose.submit': 'Offer',
   // @desc: Status-strip error shown when the browser blocked the account data-export download.
   // main.ts:582
@@ -438,4 +447,73 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // sign). Carries a spaced em dash. One line.
   // shopView.ts:190
   'shop.sell.unsellable': (p) => `${p.name} (×${p.count}) — Cannot sell`,
+  // @desc: Placeholder option of the trade-proposal dialog's target selector, shown before the
+  // player picks another player to trade with; ends with an ellipsis. Short, fits a narrow
+  // dropdown.
+  // tradeProposeView.ts:168
+  'tradePropose.target.placeholder': 'Select a player…',
+  // @desc: Button in the NPC dialogue overlay that opens the shop this NPC runs; shown only when
+  // the NPC has one. One word, fits a narrow button.
+  // dialogueView.ts:72
+  'dialogue.action.shop': 'Shop',
+  // @desc: Button on the guest-claim overlay that opens the privacy & account-data surface
+  // (account deletion, data export). Same English as privacy.title today, but a different key:
+  // this is a BUTTON label. One short line.
+  // claimView.ts:96 (resolved in show() and render())
+  'claim.privacyButton': 'Privacy & Account Data',
+  // @desc: Only row of the ranked leaderboard when no player has a rating yet (ratings exist
+  // only after a decisive ranked battle). One short line.
+  // leaderboardView.ts:60
+  'leaderboard.empty': 'No ranked players yet',
+  // @desc: Text that FOLLOWS a player's name on one leaderboard row: {rating} is the ranked
+  // rating number, {wins}/{losses} the win and loss counts ("W" and "L" abbreviate them). MUST
+  // START WITH A SPACE and a spaced em dash — the name is rendered just before this text in its
+  // own element and is not a placeholder. One line.
+  // leaderboardView.ts:69
+  'leaderboard.row': (p) => ` — ${p.rating} (W${p.wins}/L${p.losses})`,
+  // @desc: Footer of the diagnostic error overlay naming its two keyboard shortcuts: F8 closes
+  // it, F9 downloads a bug report; "F8"/"F9" are key names. One short line, small text.
+  // errorOverlayView.ts:81 (resolved in show())
+  'errorOverlay.footer': 'F8 dismiss · F9 bug report',
+  // @desc: One row of the quest log; {name} is the quest's content identifier (e.g.
+  // "quest_001", not player text) and {step} the current step number counted from 0. One line.
+  // questLogView.ts:45
+  'questLog.entry': (p) => `${p.name} (step ${p.step})`,
+  // @desc: One row of the heal overlay offering a heal at this location; {cost} is the price
+  // text the heal model produces (e.g. "Free" or "25 gold"). One short line.
+  // healView.ts:47
+  'heal.location': (p) => `Heal here (${p.cost})`,
+  // @desc: Heading of the privacy & account-data overlay (account deletion, data export). Same
+  // English as claim.privacyButton today, but a different key: this is a HEADING. One short line.
+  // privacyView.ts:145 (resolved in show())
+  'privacy.title': 'Privacy & Account Data',
+  // @desc: Button that closes the privacy & account-data overlay; it is the first control and
+  // always enabled. Short verb, fits a very narrow button.
+  // privacyView.ts:151 (resolved in show())
+  'privacy.close': 'Close',
+  // @desc: Second-step button that confirms the player's account deletion request, shown only
+  // after they asked to delete. Two words, fits a narrow button.
+  // privacyView.ts:187 (#paintButton label argument)
+  'privacy.confirm.delete': 'Confirm deletion',
+  // @desc: Second-step button that backs out of a pending account deletion request, shown
+  // beside privacy.confirm.delete. Short phrase, fits a narrow button.
+  // privacyView.ts:188 (#paintButton label argument)
+  'privacy.confirm.keep': 'Keep my account',
+  // @desc: Dismiss button of the small evolution-reveal banner near the bottom of the screen.
+  // Very short — one or two characters wide.
+  // evolutionNotice.ts:209 (resolved in render())
+  'evolutionNotice.ok': 'OK',
+  // @desc: Stand-in for a species name that has not loaded yet; {id} is the numeric species
+  // id. Used inside the evolution-reveal sentences. Very short.
+  // evolutionNotice.ts:71 (speciesLabel return)
+  'evolutionNotice.species.fallback': (p) => `Species #${p.id}`,
+  // @desc: Evolution-reveal sentence for a monster the player nicknamed; {nickname} is that
+  // nickname, {from} the previous species name and {to} the new one. One line in a small
+  // banner.
+  // evolutionNotice.ts:93 (evolutionNoticeLabel return)
+  'evolutionNotice.reveal.nicknamed': (p) => `${p.nickname} evolved from ${p.from} into ${p.to}!`,
+  // @desc: Evolution-reveal sentence for a monster with no nickname; {from} is the previous
+  // species name and {to} the new one. One line in a small banner.
+  // evolutionNotice.ts:95 (evolutionNoticeLabel return)
+  'evolutionNotice.reveal.anonymous': (p) => `Your ${p.from} evolved into ${p.to}!`,
 } satisfies Catalog);

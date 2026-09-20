@@ -35,7 +35,17 @@
 // the DOM state it observes — the defect is upstream, in a model that cannot represent "dismissed".
 // Fixing it needs `claimModel.ts` (a new `ClaimEvent`) or `client/src/main.ts` (route the `KeyC`
 // close through `applyClaim`), both outside this slice's scope and `main.ts` reserved for S5.
+//
+// m24-s5 (ADR-0261 D4) — the privacy button's label is the one string this view owns, resolved
+// through the i18n resolver as `t('claim.privacyButton')` in BOTH open doors — `render()` (whose
+// `vm.visible` is the real open edge) and `show()` (`main.ts`'s `onSignInFailed` calls `show()`
+// BEFORE `renderClaim()`) — unconditionally, on every call, never in the constructor (S6 may
+// negotiate the locale after this view is constructed). It shares its English bytes with
+// `privacy.title` today but is a DIFFERENT key (ADR-0261 D2: a button label, not a heading).
+// The vm strings (`title`, `body`, `nudge`, `feedback`, `confirmPrompt`) are model copy from
+// `claimModel.ts`, rendered raw.
 import type { ClaimViewModel } from './claimModel';
+import { t } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 
 export interface ClaimViewHandlers {
@@ -88,12 +98,14 @@ export class ClaimView {
     this.#wireButton('claim-decline-confirm-btn', handlers.onDeclineConfirmed);
     this.#wireButton('claim-decline-cancel-btn', handlers.onDeclineCancelled);
     this.#privacyBtn = this.#wireButton('claim-privacy-btn', handlers.onPrivacy);
-    // UNLIKE ITS FIVE SIBLINGS, this button is LABELLED AND UN-HIDDEN. `ensureElement` creates
-    // every node `display:none` and `render()` never un-hides the buttons, so the five above ship
-    // blank and invisible while a programmatic `.click()` still fires them. That is a real defect
-    // (tracked as a follow-up, not fixed here — it is claimView's own copy, outside this slice's
-    // criterion); this one must not inherit it, because rb-52's criterion is REACHABILITY.
-    this.#privacyBtn.textContent = 'Privacy & Account Data';
+    // UNLIKE ITS FIVE SIBLINGS, this button is UN-HIDDEN here and LABELLED by every open door.
+    // `ensureElement` creates every node `display:none` and `render()` never un-hides the
+    // buttons, so the five above ship blank and invisible while a programmatic `.click()` still
+    // fires them. That is a real defect (tracked as a follow-up, not fixed here — it is
+    // claimView's own copy, outside rb-52's criterion); this one must not inherit it, because
+    // rb-52's criterion is REACHABILITY. Its label is NOT written here: `render()` and `show()`
+    // each resolve `t('claim.privacyButton')` (m24-s5, header), so pre-open the button is
+    // visible but empty.
     this.#privacyBtn.style.display = '';
   }
 
@@ -118,6 +130,8 @@ export class ClaimView {
     this.#feedback.style.display = vm.feedback === undefined ? 'none' : 'block';
     this.#confirm.textContent = vm.confirmPrompt ?? '';
     this.#confirm.style.display = vm.confirmPrompt === undefined ? 'none' : 'block';
+    // m24-s5 (ADR-0261 D4): door 1 of 2 for the privacy label — every render, unconditionally.
+    this.#privacyBtn.textContent = t('claim.privacyButton');
     // LAST, after every write above, so the deferred focus resolves against a painted root.
     if (vm.visible && !wasVisible) openOverlayA11y('claimView', this.#overlay);
     else if (!vm.visible && wasVisible) closeOverlayA11y('claimView', null);
@@ -129,6 +143,9 @@ export class ClaimView {
 
   show(): void {
     const wasVisible = this.visible;
+    // m24-s5 (ADR-0261 D4): door 2 of 2 for the privacy label — every show(), unconditionally,
+    // after the `wasVisible` read and before the display write.
+    this.#privacyBtn.textContent = t('claim.privacyButton');
     this.#overlay.style.display = 'block';
     if (!wasVisible) openOverlayA11y('claimView', this.#overlay);
   }

@@ -6,7 +6,16 @@
 // RL-15: ZERO-arg constructor — no callbacks, no write path (pure subscription view).
 // displayName is player-controlled (profile.name): textContent + dataset only,
 // NEVER innerHTML with data (XSS).
+//
+// m24-s5 (ADR-0261 D3) — the two strings this view owns are resolved through the i18n resolver
+// (ui/i18n/resolver.ts): the empty-board row (`t('leaderboard.empty')`) and the numbers that
+// follow a name on a row (`tf('leaderboard.row', { rating, wins, losses })`). The display name
+// is NEVER a resolver argument (I18N-21): each row is `[<bdi>name</bdi>, textNode]` — the
+// `<bdi>` (zero attributes, zero children, `textContent` only) isolates the player-chosen name's
+// bidi run from the surrounding catalog text (M24 §2.7, I18N-20), and the catalog value carries
+// the leading space, so `li.textContent` is byte-identical to the pre-migration string.
 
+import { t, tf } from './i18n/resolver';
 import type { LeaderboardViewModel } from './leaderboardModel';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 
@@ -57,7 +66,7 @@ export class LeaderboardView {
     if (vm.isEmpty) {
       // Empty board is a real state: profiles exist only after a decisive ranked battle.
       const li = document.createElement('li');
-      li.textContent = 'No ranked players yet';
+      li.textContent = t('leaderboard.empty');
       this.#listEl.replaceChildren(li);
       return;
     }
@@ -66,7 +75,13 @@ export class LeaderboardView {
       li.dataset.identity = row.identityHex;
       // Own-row highlight hook: dataset.own set ONLY on the own row (CSS [data-own]).
       if (row.isOwn) li.dataset.own = 'true';
-      li.textContent = `${row.displayName} — ${row.rating} (W${row.wins}/L${row.losses})`;
+      // `<bdi>` + ONE text node from ONE key (header): the name never reaches the catalog.
+      const name = document.createElement('bdi');
+      name.textContent = row.displayName;
+      li.replaceChildren(
+        name,
+        tf('leaderboard.row', { rating: row.rating, wins: row.wins, losses: row.losses }),
+      );
       return li;
     });
     this.#listEl.replaceChildren(...items);

@@ -14,7 +14,9 @@
 /** Every message the catalogs must define. S1 seeded the `chrome.*` namespace; S3 (ADR-0259)
  *  added `battle.*` and `pvp.*` as it migrated battleView.ts/pvpView.ts; S4 (ADR-0260) added
  *  `evolution.*`, `raising.*`, `box.*`, `trade.*` and `shop.*` for the five mid-density views;
- *  S5–S6 add the remaining call sites. Adding a literal here is what forces EVERY
+ *  S5 (ADR-0261) added the tail — `tradePropose.*`, `dialogue.*`, `claim.*`, `leaderboard.*`,
+ *  `errorOverlay.*`, `questLog.*`, `heal.*`, `privacy.*`, `evolutionNotice.*` — and gave three
+ *  `chrome.*` keys their first call sites; S6 wires boot. Adding a literal here is what forces EVERY
  *  registered catalog to grow (the mapped `Catalog` below is total over this union). Keys are
  *  `<namespace>.<screen>.<element>` (M24 §2.3), semantic — named for what the string IS, never
  *  for the DOM mechanism that shows it (`battle.skill.accuracy`, not `accuracyTitle`). */
@@ -119,7 +121,34 @@ export type MessageId =
   | 'shop.buy.submit'
   | 'shop.sell.row'
   | 'shop.sell.submit'
-  | 'shop.sell.unsellable';
+  | 'shop.sell.unsellable'
+  // m24-s5 (ADR-0261) — tradePropose.* : the trade-proposal dialog (tradeProposeView.ts); its
+  // submit label is the S1-seeded `chrome.tradePropose.submit`.
+  | 'tradePropose.target.placeholder'
+  // m24-s5 (ADR-0261) — dialogue.* : the NPC dialogue overlay (dialogueView.ts).
+  | 'dialogue.action.shop'
+  // m24-s5 (ADR-0261) — claim.* : the guest-claim overlay (claimView.ts). Its button and the
+  // privacy heading below share English bytes today but are TWO keys (ADR-0261 D2).
+  | 'claim.privacyButton'
+  // m24-s5 (ADR-0261) — leaderboard.* : the ranked leaderboard overlay (leaderboardView.ts).
+  | 'leaderboard.empty'
+  | 'leaderboard.row'
+  // m24-s5 (ADR-0261) — errorOverlay.* : the F9 error overlay (errorOverlayView.ts).
+  | 'errorOverlay.footer'
+  // m24-s5 (ADR-0261) — questLog.* : the quest log overlay (questLogView.ts).
+  | 'questLog.entry'
+  // m24-s5 (ADR-0261) — heal.* : the heal overlay (healView.ts).
+  | 'heal.location'
+  // m24-s5 (ADR-0261) — privacy.* : the privacy surface (privacyView.ts).
+  | 'privacy.title'
+  | 'privacy.close'
+  | 'privacy.confirm.delete'
+  | 'privacy.confirm.keep'
+  // m24-s5 (ADR-0261) — evolutionNotice.* : the post-evolve reveal banner (evolutionNotice.ts).
+  | 'evolutionNotice.ok'
+  | 'evolutionNotice.species.fallback'
+  | 'evolutionNotice.reveal.nicknamed'
+  | 'evolutionNotice.reveal.anonymous';
 
 /** The ONE hand-written parameter table (ADR-0256 D7): a key appears here iff its message takes
  *  parameters, and `ParamMessageId` is DERIVED from it — one table, not two lists to keep in
@@ -218,6 +247,23 @@ export interface MessageParams {
     readonly price: bigint;
   };
   readonly 'shop.sell.unsellable': { readonly name: string; readonly count: number };
+  // m24-s5 (ADR-0261 D5): MODEL DATA only, again — ranked numbers, a quest content id and step,
+  // the heal model's own cost text, species/nickname names. The leaderboard DISPLAY NAME is
+  // deliberately NOT a param (I18N-21): it renders in a sibling `<bdi>`, never through a catalog.
+  readonly 'leaderboard.row': {
+    readonly rating: number;
+    readonly wins: number;
+    readonly losses: number;
+  };
+  readonly 'questLog.entry': { readonly name: string; readonly step: number };
+  readonly 'heal.location': { readonly cost: string };
+  readonly 'evolutionNotice.species.fallback': { readonly id: number };
+  readonly 'evolutionNotice.reveal.nicknamed': {
+    readonly nickname: string;
+    readonly from: string;
+    readonly to: string;
+  };
+  readonly 'evolutionNotice.reveal.anonymous': { readonly from: string; readonly to: string };
 }
 
 /** Keys resolved by `tf(key, params)`. */

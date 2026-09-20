@@ -17,6 +17,11 @@
 // invoking the helper "on a repeat render at the same nullity", and a guarded branch costs nothing. `hide()` is NOT
 // guarded -- see the reasoning in `ui/pvpView.ts`'s `hide()`: an unguarded close is the self-healing
 // path, and `closeOverlayA11y` with no open record is a documented no-op.
+//
+// m24-s5 (ADR-0261) — the one string this view owns, the quest row, is resolved through the i18n
+// resolver (`tf('questLog.entry', { name, step })`, ui/i18n/resolver.ts); `name` is the quest's
+// content id and `step` its index — model data, interpolated verbatim.
+import { tf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type { QuestLogViewModel } from './questLogModel';
 
@@ -42,7 +47,7 @@ export class QuestLogView {
     this.list.replaceChildren();
     vm.active.forEach((entry) => {
       const li = document.createElement('li');
-      li.textContent = `${entry.displayName} (step ${entry.stepIndex})`;
+      li.textContent = tf('questLog.entry', { name: entry.displayName, step: entry.stepIndex });
       this.list.appendChild(li);
     });
     // m23-s3: the null->non-null EDGE, and only the edge -- paint first, then claim the

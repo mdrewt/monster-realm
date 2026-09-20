@@ -51,8 +51,17 @@
 // whole-body child replacement (it would delete the world canvas); and a motion-preference
 // media query (this shell animates nothing, so reading one is dead weight the reduced-motion
 // eval would then have to model).
+//
+// m24-s5 (ADR-0261) — every player-facing string here is resolved through the i18n resolver
+// (`t()`/`tf()`, ui/i18n/resolver.ts): the species fallback and the two reveal sentences as
+// `tf()` return values (species/nickname names are model data, interpolated verbatim — the
+// nickname is plain interpolation, as `pvp.incoming.label`'s challenger is), and the OK label in
+// `render()` — every store batch, unconditionally, never in the constructor (S6 may negotiate the
+// locale after the banner is constructed). The `speciesLabel` ternary sits OUTSIDE the call:
+// every `t(`/`tf(` first argument is a string LITERAL.
 
 import type { StoreEvolutionReveal } from '../net/store';
+import { t, tf } from './i18n/resolver';
 
 /** The three display names a reveal needs, each already resolved or known-absent.
  *  `undefined` means "no name" and is rendered as a `Species #N` fallback, never as the
@@ -68,7 +77,7 @@ export interface EvolutionNoticeNames {
  *  table" is an ordinary startup race. An EMPTY name is treated as missing for the same
  *  reason the nickname is (below) — a blank gap reads as a rendering bug. */
 function speciesLabel(name: string | undefined, id: number): string {
-  return name === undefined || name === '' ? `Species #${id}` : name;
+  return name === undefined || name === '' ? tf('evolutionNotice.species.fallback', { id }) : name;
 }
 
 /**
@@ -90,9 +99,9 @@ export function evolutionNoticeLabel(
   const to = speciesLabel(names.toName, entry.toSpecies);
   const nickname = names.nickname;
   if (nickname !== undefined && nickname !== '') {
-    return `${nickname} evolved from ${from} into ${to}!`;
+    return tf('evolutionNotice.reveal.nicknamed', { nickname, from, to });
   }
-  return `Your ${from} evolved into ${to}!`;
+  return tf('evolutionNotice.reveal.anonymous', { from, to });
 }
 
 /**
@@ -203,10 +212,11 @@ export class EvolutionNoticeBanner {
     // native evidence from that binding, and a helper call, a ternary tag or a computed tag all
     // read (correctly) as forged evidence. A real `<button>` is Enter/Space-operable, focusable
     // and announced as a button for free, which is the whole reason this is not a styled div.
+    // Its label is resolved in `render()` (header), not here — the banner starts hidden, so the
+    // empty button is never seen before its first render.
     const existing = document.getElementById(OK_ID) as HTMLButtonElement | null;
     const okBtn = existing ?? document.createElement('button');
     okBtn.id = OK_ID;
-    okBtn.textContent = 'OK';
     okBtn.style.pointerEvents = 'auto';
     if (okBtn.parentElement !== this.#container) this.#container.appendChild(okBtn);
 
@@ -233,9 +243,11 @@ export class EvolutionNoticeBanner {
   }
 
   /** Show `label`, or hide the banner when it is `null`. Text is written with `textContent`
-   *  only: the sentence embeds a player-chosen nickname. */
+   *  only: the sentence embeds a player-chosen nickname. The OK label is resolved on every call
+   *  (m24-s5, header) — this runs every store batch and is the banner's only door. */
   render(label: string | null): void {
     this.#label.textContent = label ?? '';
+    this.#okBtn.textContent = t('evolutionNotice.ok');
     this.#container.style.display = label === null ? 'none' : 'block';
   }
 

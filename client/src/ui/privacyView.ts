@@ -36,7 +36,19 @@
 //
 // NO aria-live / role="status" / role="alert" on the notice: exactly one live region exists and
 // `ui/liveRegion.ts` owns it (the rb-51 A1-D4 call, which applies to this notice too).
+//
+// m24-s5 (ADR-0261 D4) — the four strings this view owns are resolved through the i18n resolver
+// (`t()`, ui/i18n/resolver.ts), never in the constructor (S6 may negotiate the locale after this
+// view is constructed): the heading (`privacy.title`) and the close anchor's label
+// (`privacy.close`) in show() — the only door that opens this overlay; `render()` never does —
+// and the two second-step labels (`privacy.confirm.delete` / `privacy.confirm.keep`) in render().
+// The close anchor's `display = ''` / `disabled = false` and the title's `display = ''` STAY in
+// the constructor: the never-disabled anchor invariant (A2-D10) must hold before the first
+// show(). `privacy.title` shares its English bytes with `claim.privacyButton` today but is a
+// DIFFERENT key (ADR-0261 D2: a heading, not a button). Every vm label and
+// `PRIVACY_PSEUDONYMIZATION_DISCLOSURE` are `privacyBanner.ts` copy, rendered raw.
 
+import { t } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { PRIVACY_PSEUDONYMIZATION_DISCLOSURE, type PrivacyViewModel } from './privacyBanner';
 
@@ -138,17 +150,19 @@ export class PrivacyView {
       if (child.parentElement !== this.#overlay) this.#overlay.appendChild(child);
     }
 
-    // The title and the disclosure never vary, so they are written ONCE here rather than on every
-    // render. The disclosure in particular must be present in EVERY state — it is the §9 language,
-    // and a render path that blanked it on the terminal branch would drop it exactly when it
-    // matters most.
-    this.#title.textContent = 'Privacy & Account Data';
+    // The disclosure never varies and is not catalogued (privacyBanner.ts copy, M24 §2.5), so it
+    // is written ONCE here rather than on every render. It must be present in EVERY state — it
+    // is the §9 language, and a render path that blanked it on the terminal branch would drop it
+    // exactly when it matters most. The title is un-hidden here but its TEXT is resolved in
+    // show() (m24-s5, header).
     this.#title.style.display = '';
     this.#disclosure.textContent = PRIVACY_PSEUDONYMIZATION_DISCLOSURE;
     this.#disclosure.style.display = '';
-    // Painted once, ALWAYS enabled: it is `initialFocusSelector`, and an overlay whose anchor can
-    // be `disabled` has no reachable focus in the phases where every other control is refused.
-    this.#paintButton(this.#closeBtn, 'Close', true);
+    // The close anchor is un-hidden and ALWAYS enabled from construction: it is
+    // `initialFocusSelector`, and an overlay whose anchor can be `disabled` has no reachable focus
+    // in the phases where every other control is refused. Its label, too, is resolved in show().
+    this.#closeBtn.style.display = '';
+    this.#closeBtn.disabled = false;
   }
 
   #ensureButton(id: string, handler: () => void): HTMLButtonElement {
@@ -184,8 +198,8 @@ export class PrivacyView {
     this.#confirm.style.display = armed ? '' : 'none';
     // Step two only exists while step one is armed. Painting them unconditionally would put a bare
     // "Confirm" beside "Delete my account" at all times, which is the opposite of a two-step gate.
-    this.#paintButton(this.#confirmBtn, 'Confirm deletion', armed);
-    this.#paintButton(this.#confirmCancelBtn, 'Keep my account', armed);
+    this.#paintButton(this.#confirmBtn, t('privacy.confirm.delete'), armed);
+    this.#paintButton(this.#confirmCancelBtn, t('privacy.confirm.keep'), armed);
     this.#confirmBtn.style.display = armed ? '' : 'none';
     this.#confirmCancelBtn.style.display = armed ? '' : 'none';
 
@@ -202,6 +216,10 @@ export class PrivacyView {
     // already-open overlay, and a re-open would re-schedule overlayA11y's deferred focus and yank
     // the player back to the anchor mid-interaction.
     const wasVisible = this.visible;
+    // m24-s5 (ADR-0261 D4): the heading and the close anchor's label are resolved HERE, on EVERY
+    // show() — unconditionally, after the `wasVisible` read, before the display write.
+    this.#title.textContent = t('privacy.title');
+    this.#paintButton(this.#closeBtn, t('privacy.close'), true);
     this.#overlay.style.display = 'block';
     if (!wasVisible) openOverlayA11y('privacyView', this.#overlay);
   }

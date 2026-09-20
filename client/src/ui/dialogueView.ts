@@ -25,8 +25,13 @@
 // strands the server `player_conversation` row), and `main.wiring.test.ts` asserts zero
 // `dialogueView.hide` occurrences in `main.ts`. `render(null)` is the real close. `hide()` stays as
 // a belt-and-braces API surface and is wired identically.
+//
+// m24-s5 (ADR-0261) — the one string this view owns, the Shop button label, is resolved through
+// the i18n resolver (`t('dialogue.action.shop')`, ui/i18n/resolver.ts). `vm.npcName`,
+// `vm.nodeText` and `choice.text` are content/model data, rendered raw.
 
 import type { DialogueViewModel } from './dialogueModel';
+import { t } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 
 export class DialogueView {
@@ -69,7 +74,7 @@ export class DialogueView {
     // delegation never mistakes it for a choice.
     if (vm.shopAction) {
       const shopBtn = document.createElement('button');
-      shopBtn.textContent = 'Shop';
+      shopBtn.textContent = t('dialogue.action.shop');
       shopBtn.dataset.shopId = String(vm.shopAction.shopId);
       this.choicesContainer.appendChild(shopBtn);
     }
