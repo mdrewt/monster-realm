@@ -27,8 +27,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 // The comment stripper is IMPORTED, never copied (ADR-0215 single-owner rule). Precedent for a
-// `.ts` test importing a `.mjs` eval: client/src/ui/i18n-no-html-sink.test.ts:45 (one `..`
-// shallower — this file sits one directory deeper, under `ui/i18n/`).
+// `.ts` test under `ui/i18n/` importing a `.mjs` eval: ./catalog.test.ts:32.
 import { stripComments } from '../../../../evals/dom-shell-coverage-exclusion.eval.mjs';
 import { CATALOG_EN } from './catalog.en';
 
@@ -239,6 +238,26 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
     { name: 'Charm', count: 2 },
     { name: 'Relic', count: 1 },
   ],
+  // m24s5 (ADR-0261) — the tail batch's 6 ★ keys (leaderboard.row is A's; heal.location,
+  // questLog.entry, evolutionNotice.species.fallback/reveal.nicknamed/reveal.anonymous are B's).
+  'leaderboard.row': [
+    { rating: 1200, wins: 10, losses: 2 },
+    { rating: 987, wins: 3, losses: 14 },
+  ],
+  'heal.location': [{ cost: 'Free' }, { cost: '25 gold' }],
+  'questLog.entry': [
+    { name: 'quest_001', step: 0 },
+    { name: 'quest_kelp', step: 3 },
+  ],
+  'evolutionNotice.species.fallback': [{ id: 31 }, { id: 44 }],
+  'evolutionNotice.reveal.nicknamed': [
+    { nickname: 'Sparky', from: 'Flameling', to: 'Flamewing' },
+    { nickname: 'Kip', from: 'Mossback', to: 'Duskling' },
+  ],
+  'evolutionNotice.reveal.anonymous': [
+    { from: 'Flameling', to: 'Flamewing' },
+    { from: 'Mossback', to: 'Duskling' },
+  ],
 };
 
 /** Every PLAIN (non-parameterised) MessageId's expected value, byte-transcribed
@@ -324,6 +343,17 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'shop.inventory.empty': 'No items to sell.', // shopView.ts
   'shop.buy.submit': 'Buy', // shopView.ts
   'shop.sell.submit': 'Sell', // shopView.ts
+  // m24s5 (ADR-0261) — the tail batch's 10 plain keys.
+  'tradePropose.target.placeholder': 'Select a player…', // tradeProposeView.ts:168
+  'dialogue.action.shop': 'Shop', // dialogueView.ts:72
+  'claim.privacyButton': 'Privacy & Account Data', // claimView.ts (resolved in render()/show())
+  'leaderboard.empty': 'No ranked players yet', // leaderboardView.ts:60
+  'errorOverlay.footer': 'F8 dismiss · F9 bug report', // errorOverlayView.ts (resolved in show())
+  'privacy.title': 'Privacy & Account Data', // privacyView.ts (resolved in show())
+  'privacy.close': 'Close', // privacyView.ts (resolved in show())
+  'privacy.confirm.delete': 'Confirm deletion', // privacyView.ts
+  'privacy.confirm.keep': 'Keep my account', // privacyView.ts
+  'evolutionNotice.ok': 'OK', // evolutionNotice.ts (resolved in render())
 };
 
 interface ParamOutputSpec {
@@ -516,9 +546,46 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { name: 'Relic', count: 1 },
     outputB: 'Relic (×1) — Cannot sell',
   },
+  // m24s5 (ADR-0261) — the tail batch's 6 ★ keys, both sample sets differing in every field.
+  'leaderboard.row': {
+    inputA: { rating: 1200, wins: 10, losses: 2 },
+    outputA: ' — 1200 (W10/L2)',
+    inputB: { rating: 987, wins: 3, losses: 14 },
+    outputB: ' — 987 (W3/L14)',
+  },
+  'heal.location': {
+    inputA: { cost: 'Free' },
+    outputA: 'Heal here (Free)',
+    inputB: { cost: '25 gold' },
+    outputB: 'Heal here (25 gold)',
+  },
+  'questLog.entry': {
+    inputA: { name: 'quest_001', step: 0 },
+    outputA: 'quest_001 (step 0)',
+    inputB: { name: 'quest_kelp', step: 3 },
+    outputB: 'quest_kelp (step 3)',
+  },
+  'evolutionNotice.species.fallback': {
+    inputA: { id: 31 },
+    outputA: 'Species #31',
+    inputB: { id: 44 },
+    outputB: 'Species #44',
+  },
+  'evolutionNotice.reveal.nicknamed': {
+    inputA: { nickname: 'Sparky', from: 'Flameling', to: 'Flamewing' },
+    outputA: 'Sparky evolved from Flameling into Flamewing!',
+    inputB: { nickname: 'Kip', from: 'Mossback', to: 'Duskling' },
+    outputB: 'Kip evolved from Mossback into Duskling!',
+  },
+  'evolutionNotice.reveal.anonymous': {
+    inputA: { from: 'Flameling', to: 'Flamewing' },
+    outputA: 'Your Flameling evolved into Flamewing!',
+    inputB: { from: 'Mossback', to: 'Duskling' },
+    outputB: 'Your Mossback evolved into Duskling!',
+  },
 };
 
-/** The full 96-key roster (m24s4 growth of the m24s3 42-key roster, itself grown from the
+/** The full 112-key roster (m24s5 growth of the m24s4 96-key roster, itself grown from the
  *  m24-s1 10-key `chrome.*` seed), sorted — `EXPECTED_PLAIN` and `SAMPLE_PARAMS` are disjoint
  *  by construction (plain vs. parameterised), so their key union is exactly the roster. */
 const EXPECTED_KEYS = Object.keys(EXPECTED_PLAIN).concat(Object.keys(SAMPLE_PARAMS)).sort();
@@ -566,7 +633,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
   });
 
-  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the m24s4 96-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
+  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the m24s5 112-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
@@ -662,10 +729,10 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 // plan/ADR-0259 only.
 // =============================================================================
 describe('m24s3 (ADR-0259): catalog.en.ts — 42-key roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
-  it('m24s3 CAT-01: the roster is exactly 96 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
+  it('m24s3 CAT-01: the roster is exactly 112 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
-    // (a) roster is exactly the 96 keys.
+    // (a) roster is exactly the 112 keys.
     expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).

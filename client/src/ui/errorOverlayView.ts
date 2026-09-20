@@ -10,8 +10,16 @@
 // or malformed VM (e.g. a rows getter that throws) can never propagate out of the render call and
 // crash the animation frame that drives it. Data reaches the DOM via textContent only (never
 // innerHTML) — error messages can echo server strings, so this is the XSS firewall (U-4).
+//
+// m24-s5 (ADR-0261 D4) — the footer is the one string this view owns. It is resolved through the
+// i18n resolver (`t('errorOverlay.footer')`, ui/i18n/resolver.ts) in show(), on every show() —
+// NOT in the constructor (S6 may negotiate the locale after construction) and NOT inside
+// render()'s hostile-VM try, where a mis-keyed call would be swallowed to console.error and a
+// first render whose `rows` getter throws would leave the footer blank. `main.ts` renders and
+// then shows, so the first visible paint carries the footer. Row text is model data, rendered raw.
 
 import type { ErrorOverlayViewModel } from './errorOverlayModel';
+import { t } from './i18n/resolver';
 
 export class ErrorOverlayView {
   readonly rootId = 'mr-error-overlay';
@@ -30,9 +38,9 @@ export class ErrorOverlayView {
     list.className = 'mr-error-overlay-list';
     root.appendChild(list);
 
+    // Text resolved in show() (header), never here.
     const footer = document.createElement('div');
     footer.className = 'mr-error-overlay-footer';
-    footer.textContent = 'F8 dismiss · F9 bug report';
     root.appendChild(footer);
 
     mount.appendChild(root);
@@ -46,6 +54,8 @@ export class ErrorOverlayView {
   }
 
   show(): void {
+    // m24-s5 (ADR-0261 D4): unconditional, on every show(), before the display write (header).
+    this.#footer.textContent = t('errorOverlay.footer');
     this.#root.style.display = '';
   }
 
@@ -78,7 +88,6 @@ export class ErrorOverlayView {
         return el;
       });
       this.#list.replaceChildren(...items);
-      this.#footer.textContent = 'F8 dismiss · F9 bug report';
     } catch (err) {
       console.error('[obs] error-overlay render', err);
     }

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" dir="ltr">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -57,7 +57,7 @@
     <div id="rename-overlay" role="dialog" aria-modal="true" style="display:none">
       <div id="rename-current" data-testid="rename-current"></div>
       <input id="rename-input" data-testid="rename-input" type="text" maxlength="24" />
-      <button id="rename-submit" data-testid="rename-submit" type="button">Rename</button>
+      <button id="rename-submit" data-testid="rename-submit" type="button"></button>
       <div id="rename-feedback" data-testid="rename-feedback"></div>
     </div>
     <!-- pt-c2 trade-PROPOSE overlay shell — hidden by default; managed by TradeProposeView (ADR-0134). -->
@@ -76,9 +76,7 @@
         type="number"
         min="0"
       />
-      <button id="tradepropose-submit" data-testid="tradepropose-submit" type="button">
-        Offer
-      </button>
+      <button id="tradepropose-submit" data-testid="tradepropose-submit" type="button"></button>
       <div id="tradepropose-feedback" data-testid="tradepropose-feedback"></div>
     </div>
     <!-- pt-c2b help overlay shell — hidden by default; managed by HelpView (ADR-0135). Display-only.
@@ -91,7 +89,7 @@
       aria-modal="true"
       style="display:none;position:fixed;inset:0;z-index:100;overflow:auto;background:rgba(0,0,0,0.88);padding:24px;font:14px/1.6 monospace;color:#e0e0e0"
     >
-      <div id="help-title" tabindex="-1">Controls &amp; Goals</div>
+      <div id="help-title" tabindex="-1"></div>
       <ul id="help-controls"></ul>
       <ul id="help-goals"></ul>
     </div>

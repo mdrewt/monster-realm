@@ -24,6 +24,13 @@
 // A single #submit() path is shared by the button click AND the currency-input Enter; a
 // #pending lock reset via .finally() on BOTH resolve and reject (no dead-button-forever),
 // with a trailing .catch() so a rejecting onSubmit never emits an unhandled rejection.
+//
+// m24-s5 (ADR-0261) — the two strings this view owns are resolved through the i18n resolver
+// (`t()`, ui/i18n/resolver.ts): the target placeholder (`tradePropose.target.placeholder`, in
+// render()) and the submit label (`chrome.tradePropose.submit`, in show() — `index.html` no
+// longer ships the "Offer" text, so the button is EMPTY until the first show()). Target labels
+// and monster labels are model data, rendered raw. Every `t(` first argument is a string LITERAL.
+import { t } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import {
   buildProposeSubmission,
@@ -124,6 +131,10 @@ export class TradeProposeView {
   show(): void {
     // m23-s3 D1: only the hidden->visible EDGE opens (see pvpView.ts's header for why).
     const wasVisible = this.visible;
+    // m24-s5 (ADR-0261 D4): the submit label is resolved HERE, on EVERY show() — unconditionally,
+    // after the `wasVisible` read, before the display write (the ADR-0260 D4 shape; see
+    // evolutionView.show() for the boot-order / locale-switch reasoning).
+    this.#submitBtn.textContent = t('chrome.tradePropose.submit');
     this.#overlay.style.display = '';
     if (!wasVisible) openOverlayA11y('tradeProposeView', this.#overlay);
   }
@@ -165,7 +176,7 @@ export class TradeProposeView {
     this.#target.replaceChildren();
     const placeholder = document.createElement('option');
     placeholder.value = PLACEHOLDER_VALUE;
-    placeholder.textContent = 'Select a player…';
+    placeholder.textContent = t('tradePropose.target.placeholder');
     this.#target.appendChild(placeholder);
     for (const t of lists.targets) {
       const opt = document.createElement('option');

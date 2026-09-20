@@ -17,8 +17,13 @@
 // invoking the helper "on a repeat render at the same nullity", and a guarded branch costs nothing. `hide()` is NOT
 // guarded -- see the reasoning in `ui/pvpView.ts`'s `hide()`: an unguarded close is the self-healing
 // path, and `closeOverlayA11y` with no open record is a documented no-op.
+//
+// m24-s5 (ADR-0261) — the one string this view owns, the location row, is resolved through the
+// i18n resolver (`tf('heal.location', { cost })`, ui/i18n/resolver.ts); `cost` is
+// `formatHealCostLine(loc)`'s text — model-owned copy (healModel.ts), interpolated verbatim.
 
 import { formatHealCostLine, type HealViewModel } from './healModel';
+import { tf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 
 export class HealView {
@@ -44,7 +49,7 @@ export class HealView {
     vm.locations.forEach((loc) => {
       const li = document.createElement('li');
       const cost = formatHealCostLine(loc);
-      li.textContent = `Heal here (${cost})`;
+      li.textContent = tf('heal.location', { cost });
       li.dataset.locationId = String(loc.locationId);
       this.list.appendChild(li);
     });

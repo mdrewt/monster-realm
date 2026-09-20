@@ -20,6 +20,12 @@
 // A single #submit() path is shared by the button click AND the input's Enter; a
 // #pending lock reset via .finally() on BOTH resolve and reject (no dead-button-forever,
 // ADR-0085 C6 / shopView precedent).
+//
+// m24-s5 (ADR-0261) — the submit label is the one string this view owns. It is resolved through
+// the i18n resolver (`t('chrome.rename.submit')`, ui/i18n/resolver.ts) in show(), on every
+// show(); `index.html` no longer ships the "Rename" text, so the button is EMPTY until the first
+// show(). The current display name is model data, rendered raw.
+import { t } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { buildRenameViewModel, type RenameViewModel } from './renameModel';
 
@@ -104,6 +110,10 @@ export class RenameView {
     // m23-s3 D1: only the hidden->visible EDGE opens, so a repeat show() cannot re-schedule
     // overlayA11y's deferred focus and steal focus back from wherever the player put it.
     const wasVisible = this.visible;
+    // m24-s5 (ADR-0261 D4): the submit label is resolved HERE, on EVERY show() — unconditionally,
+    // after the `wasVisible` read, before the display write (the ADR-0260 D4 shape; see
+    // evolutionView.show() for the boot-order / locale-switch reasoning).
+    this.#submitBtn.textContent = t('chrome.rename.submit');
     this.#overlay.style.display = '';
     if (!wasVisible) openOverlayA11y('renameView', this.#overlay);
   }
