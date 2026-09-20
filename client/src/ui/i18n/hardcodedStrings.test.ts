@@ -38,6 +38,7 @@
 // Do NOT edit these tests to match a buggy implementation — correct them from the spec/ADR/plan
 // only.
 
+// biome-ignore-all lint/suspicious/noTemplateCurlyInString: fixture is scanned source text, not a template
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -61,9 +62,9 @@ const CLIENT_SRC = path.resolve(I18N_DIR, '..', '..');
 const HELPER_PATH = path.join(I18N_DIR, 'hardcodedStrings.ts');
 const CEILING_PATH = path.join(I18N_DIR, '__fixtures__', 'i18n-hardcoded.json');
 
-// m24-s2 T4: the orchestrator tightens this to the measured count after the first green scan.
-// Raising HARDCODED_CEILING above this mark requires editing a TEST, not a JSON (ADR-0257 D5).
-const CEILING_AT_S2 = 200;
+// m24-s2 measured 2026-09-20 at the S2 build: 81 failing of 182 sinks (whole non-test tree).
+// Shrink-only: raising above this needs a test edit.
+const CEILING_AT_S2 = 81;
 
 // ---------------------------------------------------------------------------
 // Small helpers (no RegExp anywhere)
@@ -252,6 +253,11 @@ const RHS_TITLE_RAW = "el.title = 'Raw';";
 const RHS_TITLE_READ = 'const v = vm.title;';
 const RHS_TITLE_CALL = "vm.title('x');";
 const RHS_LOGICAL_ASSIGN = "el.textContent ??= 'x'; el.textContent ||= 'y';";
+// Coverage fixtures (plan R8): brace depth inside `${}`, an allowlisted setAttribute with NO value
+// argument (empty payload), and a NON-bare (concatenated) first argument.
+const RHS_TPL_BRACES = 'el.textContent = `${fmt({ n: 1 })}`;';
+const SET_ATTR_NO_VALUE = "el.setAttribute('alt')";
+const SET_ATTR_CONCAT_NAME = "el.setAttribute('title' + x, 'Raw')";
 const RHS_UNTERMINATED = "el.textContent = 'oops;";
 const RHS_TRUNCATED = "el.textContent = f('a'";
 // Plan R5 parity flip: two regex literals each holding ONE quote. stringMask reads the first `'`
@@ -352,7 +358,8 @@ describe('i18n-hardcoded-strings (M24 S2, ADR-0257)', () => {
     expect(counts(r)).toEqual({ sinks: 1, failing: 1 });
     expect(r.sinks[0].kind).toBe('textContent');
     expect(r.sinks[0].line).toBe(1);
-    expect(r.sinks[0].segments).toContain('Lv');
+    // R2: the only static run is `Lv` (the run after `${card.level}` is empty and not a segment).
+    expect(r.sinks[0].segments).toEqual(['Lv']);
     expect(failingSegmentsOf(r)).toEqual(['Lv']);
     expect(r.unterminated).toBe(false);
     expect(r.sinks[0].truncated).toBe(false);
@@ -364,8 +371,7 @@ describe('i18n-hardcoded-strings (M24 S2, ADR-0257)', () => {
     const r = scanSource(BAD_2_WL);
     expect(counts(r)).toEqual({ sinks: 1, failing: 1 });
     // Static segments outside every ${}: ' — ' (clean), ' (W' (W fails), '/L' (L fails), ')' (clean).
-    expect(r.sinks[0].segments).toContain(' — ');
-    expect(r.sinks[0].segments).toContain(')');
+    expect(r.sinks[0].segments).toEqual([' — ', ' (W', '/L', ')']);
     expect(failingSegmentsOf(r)).toEqual([' (W', '/L']);
     expect(r.unterminated).toBe(false);
   });
@@ -374,7 +380,7 @@ describe('i18n-hardcoded-strings (M24 S2, ADR-0257)', () => {
     // GOOD (1): ' · ' is all-glyph — the closed set is not a blanket alphabetic ban.
     const good1 = scanSource(GOOD_1_DOT);
     expect(counts(good1)).toEqual({ sinks: 1, failing: 0 });
-    expect(good1.sinks[0].segments).toContain(' · ');
+    expect(good1.sinks[0].segments).toEqual([' · ']);
     expect(good1.sinks[0].failingSegments).toEqual([]);
 
     // BAD (3): a bare string literal is ONE static segment under the same rule.
@@ -533,6 +539,19 @@ describe('i18n-hardcoded-strings (M24 S2, ADR-0257)', () => {
     check('vm.title; is a read', RHS_TITLE_READ, { sinks: 0, failing: 0 });
     check('vm.title( is a call', RHS_TITLE_CALL, { sinks: 0, failing: 0 });
     check('??= / ||= are not sinks', RHS_LOGICAL_ASSIGN, { sinks: 0, failing: 0 });
+    // Coverage fixtures (plan R8).
+    check('`${fmt({ n: 1 })}` — brace depth inside an interpolation, no literal', RHS_TPL_BRACES, {
+      sinks: 1,
+      failing: 0,
+    });
+    check("setAttribute('alt') — allowlisted name, empty payload", SET_ATTR_NO_VALUE, {
+      sinks: 1,
+      failing: 0,
+    });
+    check("setAttribute('title' + x, 'Raw') — non-bare first arg", SET_ATTR_CONCAT_NAME, {
+      sinks: 0,
+      failing: 0,
+    });
 
     // Tripwires (ADR-0257 D6).
     expect(scanSource(RHS_UNTERMINATED).unterminated, 'unterminated literal').toBe(true);
@@ -629,6 +648,7 @@ describe('i18n-hardcoded-strings (M24 S2, ADR-0257)', () => {
     expect(() => readCeiling('{"HARDCODED_CEILING":"3"}')).toThrow('non-negative integer');
     expect(() => readCeiling('{"HARDCODED_CEILING":1.5}')).toThrow('non-negative integer');
     expect(() => readCeiling('{"HARDCODED_CEILING":-1}')).toThrow('non-negative integer');
+    expect(() => readCeiling('{"HARDCODED_CEILING":true}')).toThrow('non-negative integer');
     expect(() => readCeiling('{"HARDCODED_CEILING":3,"x":1}')).toThrow('exactly one key');
     expect(() => readCeiling('{"ceiling":3}')).toThrow('exactly one key');
     expect(() => readCeiling('[3]')).toThrow('plain object');
