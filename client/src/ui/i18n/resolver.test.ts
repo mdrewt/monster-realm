@@ -92,7 +92,7 @@ describe('resolver — the module-level locale cell and the t()/tf() resolvers (
     );
   });
 
-  it('m24s1 RESOLVER-LOCALE: currentLocale()/DEFAULT_LOCALE start at en; setLocale THROWS on an unregistered locale and leaves the cell UNCHANGED; CATALOGS is the frozen single-entry registry', () => {
+  it('m24s1 RESOLVER-LOCALE: currentLocale()/DEFAULT_LOCALE start at en; setLocale THROWS on an unregistered locale and leaves the cell UNCHANGED; CATALOGS is the frozen two-entry registry', () => {
     expect(currentLocale()).toBe('en');
     expect(DEFAULT_LOCALE).toBe('en');
 
@@ -117,7 +117,10 @@ describe('resolver — the module-level locale cell and the t()/tf() resolvers (
 
     expect(() => setLocale('en')).not.toThrow();
 
-    expect(Object.keys(CATALOGS as Record<string, unknown>)).toEqual(['en']);
+    // m24-s7 (ADR-0263 D2): the registry widens to ['en', 'fr'] — RED at HEAD until the
+    // specialist registers CATALOG_FR in resolver.ts's CATALOGS. Sorted so key ORDER (an
+    // incidental fact of object-literal construction) can never fail this pin.
+    expect(Object.keys(CATALOGS as Record<string, unknown>).sort()).toEqual(['en', 'fr']);
     expect(Object.isFrozen(CATALOGS), 'CATALOGS must be Object.freeze()d').toBe(true);
   });
 
