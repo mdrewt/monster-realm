@@ -756,14 +756,16 @@ function m24s4EmptyShopVm(): ShopScreenViewModel {
 }
 
 /** One buy row, one sellable row, one unsellable row — every fixture name is
- *  chosen to contain NONE of the M24S4_SV_ROSTER words. */
+ *  chosen to contain NONE of the M24S4_SV_ROSTER words. Prices are deliberately
+ *  non-round (17n / 23n, red-team mutant #4): a catalog closure that hardcodes the
+ *  obvious `10 gold` decoy must NOT coincide with the fixture. */
 function m24s4PopulatedShopVm(): ShopScreenViewModel {
   return {
     ...shopVm(m24s4Balance('Coins: 100')),
     shopName: 'Wayside Stall',
-    forSale: [{ shopItemId: 1n, itemId: 1, name: 'Charm', buyPrice: 10n }],
+    forSale: [{ shopItemId: 1n, itemId: 1, name: 'Charm', buyPrice: 17n }],
     forSaleByPlayer: [
-      { invId: 1n, itemId: 2, name: 'Feather', count: 3, sellPrice: 4n, canSell: true },
+      { invId: 1n, itemId: 2, name: 'Feather', count: 3, sellPrice: 23n, canSell: true },
       { invId: 2n, itemId: 3, name: 'Talisman', count: 1, sellPrice: 0n, canSell: false },
     ],
   };
@@ -922,12 +924,12 @@ describe('m24s4 (ADR-0260): shopView.ts routes its migrated sinks through t()/tf
     vi.mocked(i18nT).mockClear();
     vi.mocked(i18nTf).mockClear();
     view.render(m24s4PopulatedShopVm());
-    expect(i18nTf).toHaveBeenCalledWith('shop.buy.row', { name: 'Charm', price: 10n });
+    expect(i18nTf).toHaveBeenCalledWith('shop.buy.row', { name: 'Charm', price: 17n });
     expect(i18nT).toHaveBeenCalledWith('shop.buy.submit');
     expect(i18nTf).toHaveBeenCalledWith('shop.sell.row', {
       name: 'Feather',
       count: 3,
-      price: 4n,
+      price: 23n,
     });
     expect(i18nT).toHaveBeenCalledWith('shop.sell.submit');
     expect(i18nTf).toHaveBeenCalledWith('shop.sell.unsellable', { name: 'Talisman', count: 1 });
@@ -936,13 +938,13 @@ describe('m24s4 (ADR-0260): shopView.ts routes its migrated sinks through t()/tf
     const buyLi = forSale.querySelector('li')!;
     // THE tooth (plan): li.firstChild is the TEXT NODE written by `li.textContent =`
     // BEFORE the <button> is appended — pin the exact bytes INCLUDING the trailing space.
-    expect(buyLi.firstChild?.textContent).toBe('Charm — 10 gold ');
+    expect(buyLi.firstChild?.textContent).toBe('Charm — 17 gold ');
     expect(buyLi.querySelector('button')?.textContent).toBe('Buy');
 
     const inventory = document.getElementById('shop-inventory')!;
     const rows = [...inventory.querySelectorAll('li')];
     const sellRow = rows.find((li) => li.textContent?.startsWith('Feather'))!;
-    expect(sellRow.firstChild?.textContent).toBe('Feather (×3) — 4 gold ');
+    expect(sellRow.firstChild?.textContent).toBe('Feather (×3) — 23 gold ');
     expect(sellRow.querySelector('button')?.textContent).toBe('Sell');
     const unsellableRow = rows.find((li) => li.textContent?.startsWith('Talisman'))!;
     expect(unsellableRow.firstChild?.textContent).toBe('Talisman (×1) — Cannot sell');
@@ -987,9 +989,9 @@ describe('m24s4 (ADR-0260): shopView.ts routes its migrated sinks through t()/tf
       texts = m24s4SvWalkSubtree(overlay);
       m24s4SvAssertNoRosterWord(texts, 'populated shop');
       joined = texts.join('\n');
-      expect(joined).toContain('«shop.buy.row|{"name":"Charm","price":"10"}»');
+      expect(joined).toContain('«shop.buy.row|{"name":"Charm","price":"17"}»');
       expect(joined).toContain('«shop.buy.submit»');
-      expect(joined).toContain('«shop.sell.row|{"name":"Feather","count":3,"price":"4"}»');
+      expect(joined).toContain('«shop.sell.row|{"name":"Feather","count":3,"price":"23"}»');
       expect(joined).toContain('«shop.sell.submit»');
       expect(joined).toContain('«shop.sell.unsellable|{"name":"Talisman","count":1}»');
     } finally {
