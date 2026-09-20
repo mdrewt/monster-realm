@@ -100,10 +100,10 @@ import { BoxView, type BoxViewCallbacks } from './boxView';
 // absence of standalone tags reads as a decision here too).
 // ---------------------------------------------------------------------------
 
-import { beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { beforeEach } from 'vitest';
 import { stripComments } from '../../../evals/dom-shell-coverage-exclusion.eval.mjs';
 import { t } from './a11yCopy';
 import { BattleView, type BattleViewCallbacks } from './battleView';
@@ -1568,7 +1568,10 @@ describe('m24s4 (ADR-0260): boxView.ts routes its migrated sinks through t()/tf(
     expect(boxCardEl.textContent ?? '').toContain('HP 21/21');
 
     // --- Rename prompt: t() supplies the label, the native dialog is the mechanism ---
-    vi.stubGlobal('prompt', vi.fn(() => null));
+    vi.stubGlobal(
+      'prompt',
+      vi.fn(() => null),
+    );
     try {
       const renameBtn = [...partyGrid.querySelectorAll('button')].find(
         (b) => b.textContent === 'Rename',
@@ -1666,7 +1669,10 @@ describe('m24s4 (ADR-0260): boxView.ts routes its migrated sinks through t()/tf(
         })}»`,
       );
 
-      vi.stubGlobal('prompt', vi.fn(() => null));
+      vi.stubGlobal(
+        'prompt',
+        vi.fn(() => null),
+      );
       try {
         const renameBtn = [...root.querySelectorAll('button')].find(
           (b) => b.textContent === '«box.card.rename»',

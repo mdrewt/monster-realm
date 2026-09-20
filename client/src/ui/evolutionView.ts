@@ -29,6 +29,14 @@
 // (m23s9 X1–X4), with the four fixture states named there; a new element or colour here must
 // be added to those censuses in the same change.
 //
+// m24-s4 (ADR-0260) — every player-facing string this view renders is resolved through the i18n
+// resolver (`t()`/`tf()`, ui/i18n/resolver.ts) with an `evolution.*` key from
+// ui/i18n/catalog.en.ts; the English bytes are unchanged (the catalog pins them). The name row
+// `${nick} (${species})` is deliberately NOT keyed — a glyph-only compound (ADR-0257 §2.2 tier
+// (e)). Model data (species names, tiers, the model's `unmetReason`, gate label/current/required
+// text) flow through as params or raw, never as catalog text. Every `t(`/`tf(` first argument is
+// a string LITERAL — the gate row's ternary picks between two calls, never between two keys.
+//
 // m23-s4 (M23 §2.2, ADR-0205 D1/D2/A3) — overlay a11y wiring. This view is a CONSTRUCTED shell:
 // its root is `document.createElement`'d here and appended into the shared `#app` MOUNT, so unlike
 // the ten static shells S3 wired it ships NO ARIA of its own from `client/index.html` — every
@@ -61,6 +69,7 @@ import type {
   EvolutionPathViewModel,
   EvolutionViewModel,
 } from './evolutionModel';
+import { t, tf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 
 export interface EvolutionViewCallbacks {
@@ -75,6 +84,10 @@ export interface EvolutionViewCallbacks {
 
 export class EvolutionView {
   readonly #root: HTMLDivElement;
+  /** The "Evolution" heading; its text is resolved in show(), not here (m24-s4, see show()). */
+  readonly #titleEl: HTMLHeadingElement;
+  /** The static explainer under the heading; text resolved in show() (m24-s4). */
+  readonly #hintEl: HTMLParagraphElement;
   readonly #listEl: HTMLDivElement;
   readonly #callbacks: EvolutionViewCallbacks;
   #visible = false;
@@ -98,8 +111,8 @@ export class EvolutionView {
       'display:none;flex-direction:column;align-items:center;padding:24px;' +
       'overflow-y:auto;font-family:monospace;color:var(--mr-evo-fg);';
 
+    // m24-s4 (ADR-0260): NO text here — `evolution.title` is resolved in show() (see there for why).
     const title = document.createElement('h2');
-    title.textContent = 'Evolution';
     // m23-s4: the OVERLAY_A11Y initialFocusSelector anchor for this overlay. `tabindex="-1"`
     // (never "0") makes the heading programmatically focusable WITHOUT adding a permanent tab
     // stop ahead of the overlay's real controls. `setAttribute`, not `dataset` — the selector is
@@ -107,14 +120,14 @@ export class EvolutionView {
     title.setAttribute('data-testid', 'evolution-title');
     title.setAttribute('tabindex', '-1');
     title.style.cssText = 'margin:0 0 8px;'; // colour inherits --mr-evo-fg from the root
+    this.#titleEl = title;
     this.#root.appendChild(title);
 
+    // Its text (`evolution.hint`) is resolved in show() (m24-s4), not here.
     const hint = document.createElement('p');
-    hint.textContent =
-      'Each path lists what it needs and how close this monster is. When two or more ' +
-      'paths are ready at once, you choose which one to take.';
     hint.style.cssText =
       'margin:0 0 16px;color:var(--mr-evo-muted);font-size:14px;max-width:700px;';
+    this.#hintEl = hint;
     this.#root.appendChild(hint);
 
     this.#listEl = document.createElement('div');
@@ -133,6 +146,17 @@ export class EvolutionView {
     // The read is hoisted above BOTH writes: this view writes `display` before `#visible`,
     // and "read the visibility source first" must hold uniformly across all five S4 files.
     const wasVisible = this.#visible;
+    // m24-s4 (ADR-0260 D4, the ADR-0259 R1 rule): the two strings that are set ONCE and never
+    // rewritten by a render — the heading and the explainer — are resolved HERE, on every
+    // show(), not in the constructor. A constructor-time `t()` would freeze the English unless
+    // S6's `setLocale` ran before main.ts constructs this view (deep inside the async connect
+    // path) — an unenforced cross-file boot-order invariant. UNCONDITIONAL, not gated on
+    // `wasVisible`: a repeat show() on an already-open overlay must re-resolve too, or a
+    // mid-session locale switch would leave stale text. Idempotent by design. These writes sit
+    // AFTER the `wasVisible` read (the header's "first statement" edge) and BEFORE the display
+    // write, so the open stays the last statement of the open path.
+    this.#titleEl.textContent = t('evolution.title');
+    this.#hintEl.textContent = t('evolution.hint');
     this.#root.style.display = 'flex';
     this.#visible = true;
     if (!wasVisible) openOverlayA11y('evolutionView', this.#root);
@@ -159,7 +183,7 @@ export class EvolutionView {
     this.#choiceButtons.clear();
     if (vm.monsters.length === 0) {
       const empty = document.createElement('p');
-      empty.textContent = 'No monsters yet.';
+      empty.textContent = t('evolution.monsters.empty');
       empty.style.cssText = 'color:var(--mr-evo-muted);';
       this.#listEl.appendChild(empty);
       return;
@@ -184,15 +208,19 @@ export class EvolutionView {
 
     // The three server-derived tiers, surfaced verbatim beside level and stage (EG4-6).
     const stats = document.createElement('div');
-    stats.textContent =
-      `Lv.${mon.level} · Stage ${mon.tier} · Trust ${mon.trustTier} · ` +
-      `Quality time ${mon.qualityTimeTier} · Nutrition ${mon.nutritionPct}%`;
+    stats.textContent = tf('evolution.card.stats', {
+      level: mon.level,
+      stage: mon.tier,
+      trust: mon.trustTier,
+      qualityTime: mon.qualityTimeTier,
+      nutrition: mon.nutritionPct,
+    });
     stats.style.cssText = 'font-size:13px;color:var(--mr-evo-muted);margin-bottom:6px;';
     card.appendChild(stats);
 
     if (mon.paths.length === 0) {
       const none = document.createElement('div');
-      none.textContent = 'No evolution paths.';
+      none.textContent = t('evolution.card.noPaths');
       none.style.cssText = 'font-size:13px;color:var(--mr-evo-muted);';
       card.appendChild(none);
     }
@@ -204,7 +232,7 @@ export class EvolutionView {
     if (mon.readyPathName !== null) {
       const ready = document.createElement('div');
       ready.setAttribute('data-testid', 'evo-ready-note');
-      ready.textContent = `Ready — evolves into ${mon.readyPathName} on your next action.`;
+      ready.textContent = tf('evolution.card.ready', { species: mon.readyPathName });
       ready.style.cssText = 'margin-top:6px;font-size:14px;color:var(--mr-evo-ok);';
       card.appendChild(ready);
     }
@@ -212,7 +240,7 @@ export class EvolutionView {
     // EG4-2: rendered from `choices`, which the model keeps empty below 2 eligible.
     if (mon.choices.length > 0) {
       const prompt = document.createElement('div');
-      prompt.textContent = 'Two or more paths are ready — pick one:';
+      prompt.textContent = t('evolution.card.choosePrompt');
       prompt.style.cssText = 'margin-top:6px;font-size:14px;'; // inherits --mr-evo-fg
       card.appendChild(prompt);
 
@@ -239,13 +267,14 @@ export class EvolutionView {
       `border-left:3px solid ${path.met ? 'var(--mr-evo-ok)' : 'var(--mr-evo-border)'};`;
 
     const heading = document.createElement('div');
-    heading.textContent = `→ ${path.toSpeciesName}`;
+    heading.textContent = tf('evolution.path.heading', { species: path.toSpeciesName });
     heading.style.cssText = `font-size:14px;color:${path.met ? 'var(--mr-evo-ok)' : 'var(--mr-evo-fg)'};`;
     row.appendChild(heading);
 
     const status = document.createElement('div');
-    // `unmetReason` is null exactly when the path is reachable, so this is total.
-    status.textContent = path.unmetReason ?? 'All requirements met.';
+    // `unmetReason` is null exactly when the path is reachable, so this is total. The model's
+    // reason text stays raw (model data); only the fallback is catalogued (m24-s4).
+    status.textContent = path.unmetReason ?? t('evolution.path.allMet');
     status.style.cssText = `font-size:12px;margin-bottom:4px;color:${path.met ? 'var(--mr-evo-ok)' : 'var(--mr-evo-warn)'};`;
     row.appendChild(status);
 
@@ -261,7 +290,11 @@ export class EvolutionView {
   static #renderGateRow(gate: EvolutionGateViewModel): HTMLDivElement {
     const row = document.createElement('div');
     row.setAttribute('data-testid', 'evo-gate-row');
-    row.textContent = `${gate.met ? '✓' : '•'} ${gate.label}: ${gate.currentText} / ${gate.requiredText}`;
+    // m24-s4 (ADR-0260 D2): two whole-row keys, the ternary OUTSIDE the call — every `tf(` first
+    // argument stays a string literal. One text node in one element (the m23s9 census is
+    // unaffected).
+    const p = { label: gate.label, current: gate.currentText, required: gate.requiredText };
+    row.textContent = gate.met ? tf('evolution.gate.metRow', p) : tf('evolution.gate.unmetRow', p);
     row.style.cssText = `font-size:12px;color:${gate.met ? 'var(--mr-evo-ok)' : 'var(--mr-evo-muted)'};`;
     return row;
   }
@@ -269,7 +302,7 @@ export class EvolutionView {
   #renderChoice(monsterId: bigint, choice: EvolutionPathViewModel): HTMLButtonElement {
     const btn = document.createElement('button');
     btn.setAttribute('data-testid', 'evo-choice');
-    btn.textContent = `Evolve into ${choice.toSpeciesName}`;
+    btn.textContent = tf('evolution.choice.evolve', { species: choice.toSpeciesName });
     btn.style.cssText =
       'padding:4px 12px;background-color:var(--mr-evo-button);border:none;border-radius:4px;' +
       'color:var(--mr-evo-fg);cursor:pointer;font-size:14px;';

@@ -3254,7 +3254,9 @@ describe('m24s4 (ADR-0260): evolutionView.ts routes its migrated sinks through t
           JSON.stringify({ level: 12, stage: 2, trust: 'Devoted', qualityTime: 4, nutrition: 77 }) +
           '»',
       );
-      expect(joined).toContain(`«evolution.card.ready|${JSON.stringify({ species: 'Cindermaw' })}»`);
+      expect(joined).toContain(
+        `«evolution.card.ready|${JSON.stringify({ species: 'Cindermaw' })}»`,
+      );
       expect(joined).toContain(
         `«evolution.path.heading|${JSON.stringify({ species: 'Pyrodrake' })}»`,
       );

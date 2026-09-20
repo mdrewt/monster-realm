@@ -5,6 +5,12 @@
 // The loop calls refresh() on batch-applied; the user triggers reducer intents
 // via callbacks passed at construction (never called directly by this module).
 //
+// m24-s4 (ADR-0260) — every player-facing string this view renders is resolved through the i18n
+// resolver (`t()`/`tf()`, ui/i18n/resolver.ts) with a `box.*` key from ui/i18n/catalog.en.ts —
+// the native `prompt()` label included; the English bytes are unchanged (the catalog pins them).
+// The name row `card.nickname || card.speciesName` is model data, rendered raw. Every `t(`/`tf(`
+// first argument is a string LITERAL.
+//
 // m23-s4 (M23 §2.2, ADR-0205 D1/D2/A3) — overlay a11y wiring. This view is a CONSTRUCTED shell:
 // its root is `document.createElement`'d here and appended into the shared `#app` MOUNT, so unlike
 // the ten static shells S3 wired it ships NO ARIA of its own from `client/index.html` — every
@@ -32,6 +38,7 @@
 // OWN root under the shared MOUNT — four roots, four `OverlayId`s, four records. Closing a sibling
 // here would close an overlay the player still has open. Pinned by `S4-CROSS-VIEW-DISTINCT-ROOTS`.
 import type { MonsterCardViewModel } from './boxModel';
+import { t, tf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 
 export interface BoxViewCallbacks {
@@ -47,10 +54,18 @@ const BOX_SLOT = 255;
 
 export class BoxView {
   readonly #root: HTMLDivElement;
+  /** The "Party & Box" heading; its text is resolved in show(), not here (m24-s4, see show()). */
+  readonly #titleEl: HTMLHeadingElement;
+  /** The Heal Party button; its label is resolved in show() (m24-s4). */
+  readonly #healBtn: HTMLButtonElement;
   readonly #partyEl: HTMLDivElement;
   readonly #boxEl: HTMLDivElement;
-  /** Static box-vs-party explainer (ux4, ADR-0155); never toggled — it states an invariant. */
+  /** Static box-vs-party explainer (ux4, ADR-0155); never toggled — it states an invariant.
+   *  Its text is resolved in show() (m24-s4). */
   readonly #hintEl: HTMLDivElement;
+  /** The two section headings; text resolved in show() (m24-s4). */
+  readonly #partyLabelEl: HTMLHeadingElement;
+  readonly #boxLabelEl: HTMLHeadingElement;
   readonly #callbacks: BoxViewCallbacks;
   #visible = false;
 
@@ -65,8 +80,8 @@ export class BoxView {
 
     const header = document.createElement('div');
     header.style.cssText = 'display:flex;align-items:center;gap:16px;margin-bottom:16px;';
+    // m24-s4 (ADR-0260): NO text here — `box.title` is resolved in show() (see there for why).
     const title = document.createElement('h2');
-    title.textContent = 'Party & Box';
     // m23-s4: the OVERLAY_A11Y initialFocusSelector anchor for this overlay. `tabindex="-1"`
     // (never "0") makes the heading programmatically focusable WITHOUT adding a permanent tab
     // stop ahead of the overlay's real controls. `setAttribute`, not `dataset` — the selector is
@@ -74,12 +89,14 @@ export class BoxView {
     title.setAttribute('data-testid', 'box-title');
     title.setAttribute('tabindex', '-1');
     title.style.cssText = 'margin:0;color:#fff;';
+    this.#titleEl = title;
     header.appendChild(title);
+    // Its label (`box.heal`) is resolved in show() (m24-s4), not here.
     const healBtn = document.createElement('button');
-    healBtn.textContent = 'Heal Party';
     healBtn.style.cssText =
       'padding:4px 12px;cursor:pointer;font-family:monospace;background:#2a3a2a;color:#8f8;border:1px solid #4a4;border-radius:3px;';
     healBtn.addEventListener('click', () => this.#callbacks.onHealParty());
+    this.#healBtn = healBtn;
     header.appendChild(healBtn);
     this.#root.appendChild(header);
 
@@ -89,17 +106,16 @@ export class BoxView {
     // h2['Party & Box'].parentElement.parentElement, and a wrapper retargets that chain.
     // The copy DESCRIBES the "To Party" button (#renderCard) rather than commanding a click —
     // the empty-box short-circuit below renders no such button in the fresh-player state.
+    // Its text (`box.hint`) is resolved in show() (m24-s4), not here.
     this.#hintEl = document.createElement('div');
     this.#hintEl.setAttribute('data-testid', 'box-party-hint');
-    this.#hintEl.textContent =
-      'Only monsters in your Party can battle or be swapped in. New recruits arrive in your ' +
-      'Box — each box monster has a "To Party" button that moves it into an open party slot.';
     this.#hintEl.style.cssText = 'max-width:600px;margin:0 0 12px;font-size:12px;color:#aaa;';
     this.#root.appendChild(this.#hintEl);
 
+    // Its text (`box.section.party`) is resolved in show() (m24-s4), not here.
     const partyLabel = document.createElement('h3');
-    partyLabel.textContent = 'Party';
     partyLabel.style.cssText = 'margin:0 0 8px;color:#aaa;';
+    this.#partyLabelEl = partyLabel;
     this.#root.appendChild(partyLabel);
 
     this.#partyEl = document.createElement('div');
@@ -107,9 +123,10 @@ export class BoxView {
       'display:grid;grid-template-columns:repeat(3,1fr);gap:8px;width:100%;max-width:600px;margin-bottom:16px;';
     this.#root.appendChild(this.#partyEl);
 
+    // Its text (`box.section.box`) is resolved in show() (m24-s4), not here.
     const boxLabel = document.createElement('h3');
-    boxLabel.textContent = 'Box';
     boxLabel.style.cssText = 'margin:0 0 8px;color:#aaa;';
+    this.#boxLabelEl = boxLabel;
     this.#root.appendChild(boxLabel);
 
     this.#boxEl = document.createElement('div');
@@ -131,6 +148,21 @@ export class BoxView {
   show(): void {
     const wasVisible = this.#visible;
     this.#visible = true;
+    // m24-s4 (ADR-0260 D4, the ADR-0259 R1 rule): the five strings that are set ONCE and never
+    // rewritten by a render — the heading, the Heal Party label, the explainer and the two
+    // section headings — are resolved HERE, on every show(), not in the constructor. A
+    // constructor-time `t()` would freeze the English unless S6's `setLocale` ran before main.ts
+    // constructs this view (deep inside the async connect path) — an unenforced cross-file
+    // boot-order invariant. UNCONDITIONAL, not gated on `wasVisible`: a repeat show() on an
+    // already-open overlay must re-resolve too, or a mid-session locale switch would leave stale
+    // text. Idempotent by design. These writes sit AFTER the `wasVisible` read (the header's
+    // "first statement" edge) and BEFORE the display write, so the open stays the last statement
+    // of the open path.
+    this.#titleEl.textContent = t('box.title');
+    this.#healBtn.textContent = t('box.heal');
+    this.#hintEl.textContent = t('box.hint');
+    this.#partyLabelEl.textContent = t('box.section.party');
+    this.#boxLabelEl.textContent = t('box.section.box');
     this.#root.style.display = 'flex';
     if (!wasVisible) openOverlayA11y('boxView', this.#root);
   }
@@ -157,7 +189,7 @@ export class BoxView {
       el.style.cssText =
         'border:1px solid #444;border-radius:4px;padding:8px;min-height:80px;background:#1a1a2e;';
       if (card === null) {
-        el.textContent = `Slot ${i}: (empty)`;
+        el.textContent = tf('box.party.emptySlot', { slot: i });
         el.style.opacity = '0.4';
       } else {
         el.appendChild(this.#renderCard(card, true));
@@ -170,7 +202,7 @@ export class BoxView {
     this.#boxEl.replaceChildren();
     if (monsters.length === 0) {
       const empty = document.createElement('div');
-      empty.textContent = 'No monsters in box.';
+      empty.textContent = t('box.box.empty');
       empty.style.opacity = '0.4';
       this.#boxEl.appendChild(empty);
       return;
@@ -194,7 +226,7 @@ export class BoxView {
     nameRow.appendChild(nameSpan);
 
     const editBtn = document.createElement('button');
-    editBtn.textContent = 'Rename';
+    editBtn.textContent = t('box.card.rename');
     editBtn.style.cssText = 'font-size:11px;cursor:pointer;';
     editBtn.addEventListener('click', () => this.#promptNickname(card.monsterId, card.nickname));
     nameRow.appendChild(editBtn);
@@ -202,7 +234,13 @@ export class BoxView {
 
     const info = document.createElement('div');
     info.style.cssText = 'font-size:12px;margin-top:4px;color:#ccc;';
-    info.textContent = `${card.speciesName} · Lv${card.level} · HP ${card.currentHp}/${card.statHp} (${card.hpPercent}%)`;
+    info.textContent = tf('box.card.stats', {
+      species: card.speciesName,
+      level: card.level,
+      current: card.currentHp,
+      max: card.statHp,
+      percent: card.hpPercent,
+    });
     wrap.appendChild(info);
 
     // EG4-8: the evolution-choice badge. Built INSIDE the card (so it is per-monster and
@@ -213,7 +251,7 @@ export class BoxView {
     if (card.evolutionChoicePending) {
       const badge = document.createElement('div');
       badge.setAttribute('data-testid', 'evo-choice-badge');
-      badge.textContent = '★ Ready to evolve — choose a path';
+      badge.textContent = t('box.card.evolveBadge');
       badge.style.cssText =
         'margin-top:4px;font-size:11px;color:#fbbf24;border:1px solid #fbbf24;' +
         'border-radius:3px;padding:1px 4px;display:inline-block;';
@@ -224,7 +262,7 @@ export class BoxView {
     actions.style.cssText = 'margin-top:6px;';
     if (inParty) {
       const toBoxBtn = document.createElement('button');
-      toBoxBtn.textContent = 'To Box';
+      toBoxBtn.textContent = t('box.card.toBox');
       toBoxBtn.style.cssText = 'font-size:11px;cursor:pointer;';
       toBoxBtn.addEventListener('click', () =>
         this.#callbacks.onSetPartySlot(card.monsterId, BOX_SLOT),
@@ -232,7 +270,7 @@ export class BoxView {
       actions.appendChild(toBoxBtn);
     } else {
       const toPartyBtn = document.createElement('button');
-      toPartyBtn.textContent = 'To Party';
+      toPartyBtn.textContent = t('box.card.toParty');
       toPartyBtn.style.cssText = 'font-size:11px;cursor:pointer;';
       toPartyBtn.addEventListener('click', () =>
         this.#callbacks.onSetPartySlot(card.monsterId, -1),
@@ -245,7 +283,7 @@ export class BoxView {
   }
 
   #promptNickname(monsterId: bigint, currentName: string): void {
-    const name = prompt('New nickname:', currentName);
+    const name = prompt(t('box.rename.prompt'), currentName);
     if (name !== null && name !== currentName) {
       this.#callbacks.onSetNickname(monsterId, name);
     }

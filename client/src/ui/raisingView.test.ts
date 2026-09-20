@@ -1600,13 +1600,13 @@ describe('m24s4 (ADR-0260): raisingView.ts routes its migrated sinks through t()
       expect(joined).toContain('Kiri');
       expect(joined).toContain('A field-grown ration.');
 
-      view.showFeedback('Cared for Kiri!');
+      view.showFeedback('Tended Kiri!');
       texts = m24s4RvWalkSubtree(root);
       m24s4RvAssertNoRosterWord(texts, 'after showFeedback');
       expect(
         texts.join('\n'),
         'showFeedback() text must render raw, never through the resolver',
-      ).toContain('Cared for Kiri!');
+      ).toContain('Tended Kiri!');
     } finally {
       vi.mocked(i18nT).mockRestore();
       vi.mocked(i18nTf).mockRestore();
