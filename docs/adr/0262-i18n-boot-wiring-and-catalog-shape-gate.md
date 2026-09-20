@@ -7,7 +7,7 @@
 **Amends:** —
 **Extends:** 0256, 0257, 0261
 **Subsystems:** client-ui, ci-gates
-**Decision:** `main.ts` negotiates the locale once at module scope (`?locale=` values, then `navigator.languages`, against `Object.keys(CATALOGS)`), writes `documentElement.lang`/`dir` once each, resolves its six status strings, and `[I18N-SHAPE-01..06]` is `catalogShape.test.ts`.
+**Decision:** `main.ts` negotiates the locale once at module scope (`?locale=`, then `navigator.languages`, against `CATALOGS`), writes `lang`/`dir` once each, resolves six status strings; `[I18N-SHAPE-01..06]` ships as `catalogShape.test.ts`.
 
 ---
 
