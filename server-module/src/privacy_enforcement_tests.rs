@@ -1116,42 +1116,67 @@ mod census {
 
 const DELIBERATE_EXEMPTIONS: &[(&str, &str)] = &[
     // (i) acts on an already-open commitment, which PRV1-10 and ADR-0227 D5 keep
-    // completable while a deletion is pending.
+    // completable while a deletion is pending. Every one of these reaches two
+    // INSERT-IF-ABSENT helpers on the way out -- economy::grant_currency
+    // (player_wallet) and evolution::check_and_evolve (pending_evolution_notice).
+    // That is accepted under PRV1-10: during the grace window nothing has been
+    // erased yet, so the update arm runs, and any row a helper does mint is swept
+    // by the cascade at terminal time. The post-terminal case -- a battle still
+    // Ongoing after the cascade ran -- is a REGISTERED RESIDUAL, not a claim of
+    // safety.
     (
         "submit_attack",
-        "acts on an already-open battle commitment; PRV1-10 and ADR-0227 D5 keep it completable",
+        "acts on an already-open battle commitment (PRV1-10, ADR-0227 D5); on the way out it \
+         reaches the insert-if-absent helpers economy::grant_currency and \
+         evolution::check_and_evolve, whose minted rows the cascade sweeps",
     ),
     (
         "swap_active",
-        "acts on an already-open battle commitment; PRV1-10 and ADR-0227 D5 keep it completable",
+        "acts on an already-open battle commitment (PRV1-10, ADR-0227 D5); on the way out it \
+         reaches the insert-if-absent helpers economy::grant_currency and \
+         evolution::check_and_evolve, whose minted rows the cascade sweeps",
     ),
     (
         "flee",
-        "unwinds an already-open battle commitment; PRV1-10 and ADR-0227 D5 keep it completable",
+        "unwinds an already-open battle commitment (PRV1-10, ADR-0227 D5); on the way out it \
+         reaches the insert-if-absent helpers economy::grant_currency and \
+         evolution::check_and_evolve, whose minted rows the cascade sweeps",
     ),
     (
         "use_battle_item",
-        "acts on an already-open battle commitment; PRV1-10 and ADR-0227 D5 keep it completable",
+        "acts on an already-open battle commitment (PRV1-10, ADR-0227 D5); on the way out it \
+         reaches the insert-if-absent helpers economy::grant_currency and \
+         evolution::check_and_evolve, whose minted rows the cascade sweeps",
     ),
     (
         "submit_pvp_action",
-        "acts on an already-open PvP commitment; PRV1-10 and ADR-0227 D5 keep it completable",
+        "acts on an already-open PvP commitment (PRV1-10, ADR-0227 D5); on the way out it \
+         reaches the insert-if-absent helpers economy::grant_currency and \
+         evolution::check_and_evolve, whose minted rows the cascade sweeps",
     ),
     (
         "cancel_trade",
-        "unwinds an already-open trade commitment; PRV1-10 and ADR-0227 D5 keep it completable",
+        "unwinds an already-open trade commitment (PRV1-10, ADR-0227 D5); on the way out it \
+         reaches the insert-if-absent helpers economy::grant_currency and \
+         evolution::check_and_evolve, whose minted rows the cascade sweeps",
     ),
     (
         "confirm_trade",
-        "closes an already-open trade commitment; PRV1-10 and ADR-0227 D5 keep it completable",
+        "closes an already-open trade commitment (PRV1-10, ADR-0227 D5); on the way out it \
+         reaches the insert-if-absent helpers economy::grant_currency and \
+         evolution::check_and_evolve, whose minted rows the cascade sweeps",
     ),
     (
         "cancel_challenge",
-        "unwinds an already-open challenge; PRV1-10 and ADR-0227 D5 keep it completable",
+        "unwinds an already-open challenge (PRV1-10, ADR-0227 D5); on the way out it reaches \
+         the insert-if-absent helpers economy::grant_currency and \
+         evolution::check_and_evolve, whose minted rows the cascade sweeps",
     ),
     (
         "decline_challenge",
-        "unwinds an already-open challenge; PRV1-10 and ADR-0227 D5 keep it completable",
+        "unwinds an already-open challenge (PRV1-10, ADR-0227 D5); on the way out it reaches \
+         the insert-if-absent helpers economy::grant_currency and \
+         evolution::check_and_evolve, whose minted rows the cascade sweeps",
     ),
     // (ii) the decline arm runs before the stamp-aware accept gate by design.
     (
@@ -1164,8 +1189,10 @@ const DELIBERATE_EXEMPTIONS: &[(&str, &str)] = &[
         "operator-only behind the module-owner identity guard; no player caller exists",
     ),
     // (iv) KNOWN GAP — spec para 4.7 names these as gate targets and no slice has
-    // gated them yet. Debt with a registered drain (one reject test per reducer),
-    // not a decision that they stay ungated.
+    // gated them yet. The predicate that puts a reducer HERE rather than in class
+    // (i) is "creates or mutates the caller's assets", not merely "acts on an
+    // already-open commitment". Debt with a registered drain (one reject test per
+    // reducer), not a decision that they stay ungated.
     (
         "join_game",
         "KNOWN GAP: a spec para 4.7 gate target, pending the roster-drain slice",
@@ -1192,7 +1219,9 @@ const DELIBERATE_EXEMPTIONS: &[(&str, &str)] = &[
     ),
     (
         "attempt_recruit",
-        "KNOWN GAP: a spec para 4.7 gate target, pending the roster-drain slice",
+        "KNOWN GAP: inserts a brand-new monster and monster_pub for the caller -- a NEW asset, \
+         which is why it is debt and not class (i), even though it acts on an already-open \
+         wild battle",
     ),
     (
         "set_nickname",
@@ -1218,9 +1247,13 @@ const DELIBERATE_EXEMPTIONS: &[(&str, &str)] = &[
         "dismiss_dialogue",
         "KNOWN GAP: a spec para 4.7 gate target, pending the roster-drain slice",
     ),
+    // (v) acts ONLY on rows the caller already owns, minting nothing new — the
+    // class the roster-drain slice does not have to gate.
     (
         "ack_evolution_notices",
-        "KNOWN GAP: a spec para 4.7 gate target, pending the roster-drain slice",
+        "acts only on the caller's own existing notice queue (find sender then update, never \
+         an insert); ADR-0254 keeps the evolution banner dismissable during grace by decision, \
+         not by omission",
     ),
 ];
 
@@ -1537,6 +1570,16 @@ fn fixture_pending_if(prefix: &str, body: &str) -> String {
     format!("if {prefix}{PENDING_PRED}(ctx, me) {{ {body} }}")
 }
 
+/// The scheduler-identity guard every scheduled reducer must open with (ADR-0258
+/// D5, the ea and g7 needles): without it a player can call the reducer directly
+/// and the Scheduled exemption would be a free ride past the para 4.7 gate.
+fn fixture_scheduler_guard() -> String {
+    format!(
+        "if ctx.sender() != ctx.{}() {{ return Err(e); }}",
+        concat!("database_", "identity")
+    )
+}
+
 fn fixture_reducer(attr: &str, name: &str, extra_params: &str, body: &[String]) -> String {
     let mut out = String::from(attr);
     out.push('\n');
@@ -1780,6 +1823,36 @@ fn rb45_conditional_nested_negated_or_discarded_gate_is_not_a_gate() {
                 ACCOUNTS_PATH,
                 "if other { return Err(e); } log_something();",
             ),
+            write.clone(),
+        ],
+    ));
+    src.push_str(&fixture_reducer(
+        &attr,
+        "predicate_in_compound_condition",
+        "",
+        &[
+            String::from("let me = ctx.sender();"),
+            fixture_pending_if(&format!("flag && {ACCOUNTS_PATH}"), "return Err(e);"),
+            write.clone(),
+        ],
+    ));
+    src.push_str(&fixture_reducer(
+        &attr,
+        "negated_predicate_in_compound_condition",
+        "",
+        &[
+            String::from("let me = ctx.sender();"),
+            fixture_pending_if(&format!("flag && !{ACCOUNTS_PATH}"), "return Err(e);"),
+            write.clone(),
+        ],
+    ));
+    src.push_str(&fixture_reducer(
+        &attr,
+        "predicate_gate_returning_ok",
+        "",
+        &[
+            String::from("let me = ctx.sender();"),
+            fixture_pending_if(ACCOUNTS_PATH, &format!("return {OK_TAIL};")),
             write,
         ],
     ));
@@ -1798,6 +1871,9 @@ fn rb45_conditional_nested_negated_or_discarded_gate_is_not_a_gate() {
         "bare_gate_name",
         "bare_predicate_outside_accounts",
         "return_not_last_in_then_branch",
+        "predicate_in_compound_condition",
+        "negated_predicate_in_compound_condition",
+        "predicate_gate_returning_ok",
     ] {
         assert_ungated(&report, name, &["monster"], None);
     }
@@ -1960,11 +2036,14 @@ fn rb45_owner_lifecycle_and_scheduled_are_exempt_with_precedence() {
         "",
         one_write,
     ));
+    // The scheduled reducer opens with the scheduler-identity guard: the Scheduled
+    // exemption rests on "a player can never be the caller", so it is only earned
+    // by a reducer that actually refuses a player caller.
     src.push_str(&fixture_reducer(
         &attr,
         "tick",
         ", _s: TickSchedule",
-        one_write,
+        &[fixture_scheduler_guard(), write.clone()],
     ));
     src.push_str(&fixture_reducer(
         &attr,
@@ -1972,6 +2051,11 @@ fn rb45_owner_lifecycle_and_scheduled_are_exempt_with_precedence() {
         ", _s: TickSchedule",
         one_write,
     ));
+    // Deliberately UNGUARDED, and deliberately an OWNER: the guard requirement
+    // exists to earn the SCHEDULED exemption, so it must be scoped to reducers
+    // that actually claim it. An owner wins by precedence and is not refused for
+    // lacking a guard — pair this with the refused "scheduled reducer without the
+    // scheduler guard" row, whose reducer is neither an owner nor guarded.
     src.push_str(&fixture_reducer(&attr, scheduled_owner, "", one_write));
 
     let report = census_one("synth", src, &["monster"]);
@@ -2150,6 +2234,14 @@ struct RefusedShape {
 
 fn refused_shapes() -> Vec<RefusedShape> {
     let attr = fixture_reducer_attr("");
+    let handle_type = concat!("Table", "Handle");
+    let indexed_delete = |receiver: &str| {
+        format!(
+            "{};",
+            fixture_method(&fixture_method(receiver, "monster_id", ""), "delete", "id")
+        )
+    };
+
     let mut fn_pointer = fixture_helper_fn("helper", &[]);
     fn_pointer.push_str(&fixture_reducer(
         &attr,
@@ -2158,6 +2250,123 @@ fn refused_shapes() -> Vec<RefusedShape> {
         &[
             String::from("let f = crate::synth::helper;"),
             String::from("let g = helper;"),
+            String::from(OK_TAIL),
+        ],
+    ));
+
+    let tuple_handle = fixture_reducer(
+        &attr,
+        "tuple_let_handle",
+        "",
+        &[
+            format!(
+                "let (wallets, monsters) = ({}, {});",
+                fixture_handle("player_wallet"),
+                fixture_handle("monster")
+            ),
+            indexed_delete("monsters"),
+            String::from(OK_TAIL),
+        ],
+    );
+
+    let deferred_handle = fixture_reducer(
+        &attr,
+        "deferred_handle_binding",
+        "",
+        &[
+            String::from("let h;"),
+            format!("h = {};", fixture_handle("monster")),
+            format!("{};", fixture_method("h", "insert", "row")),
+            String::from(OK_TAIL),
+        ],
+    );
+
+    let audit_write = format!("{};", fixture_method("h", "delete", "id"));
+    let mut handle_argument = format!(
+        "pub(crate) fn audit<T: {}>(h: &T, id: u64) {{\n    {audit_write}\n}}\n\n",
+        concat!("spacetimedb::Tab", "le<Row = Monster>")
+    );
+    handle_argument.push_str(&fixture_reducer(
+        &attr,
+        "passes_a_handle_as_an_argument",
+        "",
+        &[
+            format!("audit(&{}, 1);", fixture_handle("monster")),
+            String::from(OK_TAIL),
+        ],
+    ));
+
+    let handle_param = format!(
+        "pub(crate) fn purge(h: &Monster{}, id: u64) {{\n    {}\n}}\n",
+        handle_type,
+        indexed_delete("h")
+    );
+
+    let mut fn_reference = fixture_helper_fn("ref_target", &[]);
+    fn_reference.push_str(&fixture_reducer(
+        &attr,
+        "binds_a_fn_reference",
+        "",
+        &[
+            String::from("let r = &ref_target;"),
+            String::from("r(ctx);"),
+            String::from(OK_TAIL),
+        ],
+    ));
+
+    let mut fn_cast = fixture_helper_fn("cast_target", &[]);
+    fn_cast.push_str(&fixture_reducer(
+        &attr,
+        "casts_a_fn_pointer",
+        "",
+        &[
+            String::from("let c = cast_target as fn(&ReducerContext);"),
+            String::from("c(ctx);"),
+            String::from(OK_TAIL),
+        ],
+    ));
+
+    let qself_ufcs = fixture_reducer(
+        &attr,
+        "writes_by_qself_ufcs",
+        "",
+        &[
+            format!(
+                "<Monster{}>::insert(&{}, row);",
+                handle_type,
+                fixture_handle("monster")
+            ),
+            String::from(OK_TAIL),
+        ],
+    );
+
+    let block_rename = fixture_reducer(
+        &attr,
+        "renames_inside_a_block",
+        "",
+        &[
+            String::from("use crate::economy as e;"),
+            String::from("e::grant(ctx);"),
+            String::from(OK_TAIL),
+        ],
+    );
+
+    // A scheduled reducer that is NOT an owner, writes a classified table, and
+    // never refuses a player caller. Scope the refusal to exactly that shape: an
+    // owner needs no guard (precedence, pinned in the exemption test) and neither
+    // does a scheduled reducer that reaches no classified write at all — two real
+    // reapers are in that state today.
+    let mut unguarded_scheduled = fixture_table_item(
+        "tick_schedule",
+        &fixture_sched_arg("scheduled_writer"),
+        "TickSchedule",
+    );
+    unguarded_scheduled.push_str(&fixture_reducer(
+        &attr,
+        "scheduled_writer",
+        ", _s: TickSchedule",
+        &[
+            fixture_write_stmt("monster", "insert"),
             String::from(OK_TAIL),
         ],
     ));
@@ -2263,37 +2472,144 @@ fn refused_shapes() -> Vec<RefusedShape> {
             ),
             keyword: "shadow",
         },
+        RefusedShape {
+            label: "a tuple let binding of two table handles",
+            module: "synth",
+            source: tuple_handle,
+            keyword: "handle",
+        },
+        RefusedShape {
+            label: "a deferred-init handle binding",
+            module: "synth",
+            source: deferred_handle,
+            keyword: "handle",
+        },
+        RefusedShape {
+            label: "a handle passed as a call argument to a generic helper",
+            module: "synth",
+            source: handle_argument,
+            keyword: "handle",
+        },
+        RefusedShape {
+            label: "a helper with a handle-typed parameter",
+            module: "synth",
+            source: handle_param,
+            keyword: "handle",
+        },
+        RefusedShape {
+            label: "a fn-pointer binding taken by reference",
+            module: "synth",
+            source: fn_reference,
+            keyword: "pointer",
+        },
+        RefusedShape {
+            label: "a fn-pointer binding made by cast",
+            module: "synth",
+            source: fn_cast,
+            keyword: "pointer",
+        },
+        RefusedShape {
+            label: "a qualified-self UFCS write spelling",
+            module: "synth",
+            source: qself_ufcs,
+            keyword: "ufcs",
+        },
+        RefusedShape {
+            label: "a type alias naming the reducer context",
+            module: "synth",
+            source: String::from("pub type Rc<'a> = &'a ReducerContext;\n"),
+            keyword: "alias",
+        },
+        RefusedShape {
+            label: "a type alias naming a table handle",
+            module: "synth",
+            source: format!("pub type H = Monster{handle_type};\n"),
+            keyword: "alias",
+        },
+        RefusedShape {
+            label: "a module rename inside a fn body",
+            module: "synth",
+            source: block_rename,
+            keyword: "use as",
+        },
+        RefusedShape {
+            label: "an extern crate rename",
+            module: "synth",
+            source: String::from("extern crate serde as s;\n"),
+            keyword: "use as",
+        },
+        RefusedShape {
+            label: "a crate-root inline mod carrying no attribute",
+            module: "crate",
+            source: String::from("mod crate_inner { pub fn f() {} }\n"),
+            keyword: "mod",
+        },
+        RefusedShape {
+            label: "a scheduled reducer without the scheduler guard",
+            module: "synth",
+            source: unguarded_scheduled,
+            keyword: "scheduler guard",
+        },
     ]
 }
 
-fn accepted_shapes() -> Vec<(&'static str, &'static str, String)> {
+/// Shapes the engine must NOT refuse, each as a whole corpus: over-reaching here
+/// reds the real crate, which spells every one of these in `lib.rs` today.
+fn accepted_shapes() -> Vec<(&'static str, Vec<(String, String)>)> {
     let cfg_test = concat!("#[cf", "g(test)]");
     let path_attr = concat!("#[pa", "th = \"synth_tests.rs\"]");
+    let allow_attr = concat!("#[all", "ow(unused_imports)]");
+    let doc_attr = concat!("#[d", "oc = \"the battle domain\"]");
+    let one = |module: &str, source: String| vec![(String::from(module), source)];
+    let encounter_fn =
+        format!("pub(crate) fn table_of({REDUCER_CTX}) -> EncounterTable {{\n    q()\n}}\n");
     vec![
         (
             "a test-only mod at the crate root",
-            "crate",
-            format!("{cfg_test}\nmod synth_tests;\n"),
+            one("crate", format!("{cfg_test}\nmod synth_tests;\n")),
         ),
         (
             "a test-only path mod at the crate root, the rb-77 wiring form",
-            "crate",
-            format!("{cfg_test}\n{path_attr}\nmod synth_tests;\n"),
+            one(
+                "crate",
+                format!("{cfg_test}\n{path_attr}\nmod synth_tests;\n"),
+            ),
+        ),
+        (
+            "a test-only path mod that also carries an allow attribute",
+            one(
+                "crate",
+                format!("{cfg_test}\n{path_attr}\n{allow_attr}\nmod synth_tests;\n"),
+            ),
         ),
         (
             "a test-only path mod inside a scanned module",
-            "synth",
-            format!("{cfg_test}\n{path_attr}\nmod synth_tests;\n"),
+            one(
+                "synth",
+                format!("{cfg_test}\n{path_attr}\nmod synth_tests;\n"),
+            ),
         ),
         (
             "an inline test-only mod inside a scanned module",
-            "synth",
-            format!("{cfg_test}\nmod tests {{}}\n"),
+            one("synth", format!("{cfg_test}\nmod tests {{}}\n")),
+        ),
+        (
+            "a doc-commented production mod at the crate root",
+            vec![
+                (String::from("crate"), format!("{doc_attr}\nmod battle;\n")),
+                (String::from("battle"), String::new()),
+            ],
+        ),
+        (
+            "an underscore import of a trait, which binds no alias",
+            one(
+                "synth",
+                String::from(concat!("use spacetimedb::Tab", "le as _;\n")),
+            ),
         ),
         (
             "a helper returning an encounter table",
-            "synth",
-            format!("pub(crate) fn table_of({REDUCER_CTX}) -> EncounterTable {{\n    load()\n}}\n"),
+            one("synth", encounter_fn),
         ),
     ]
 }
@@ -2306,7 +2622,7 @@ fn rb45_unsupported_shapes_are_hard_errors() {
     let rows = refused_shapes();
     assert_eq!(
         rows.len(),
-        13,
+        26,
         "every refused shape in ADR-0258 D2 needs a row"
     );
     let distinct: BTreeSet<String> = rows
@@ -2369,11 +2685,10 @@ fn rb45_unsupported_shapes_are_hard_errors() {
     let accepted = accepted_shapes();
     assert_eq!(
         accepted.len(),
-        5,
+        8,
         "the accepted shapes keep the refusals from over-reaching"
     );
-    for (label, module, source) in accepted {
-        let sources = vec![(String::from(module), source)];
+    for (label, sources) in accepted {
         census::census(&sources, &classified, owners)
             .unwrap_or_else(|e| panic!("{label} must be accepted, got {e:?}"));
     }
