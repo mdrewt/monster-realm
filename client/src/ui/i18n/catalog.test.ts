@@ -26,6 +26,10 @@ import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+// The comment stripper is IMPORTED, never copied (ADR-0215 single-owner rule). Precedent for a
+// `.ts` test importing a `.mjs` eval: client/src/ui/i18n-no-html-sink.test.ts:45 (one `..`
+// shallower — this file sits one directory deeper, under `ui/i18n/`).
+import { stripComments } from '../../../../evals/dom-shell-coverage-exclusion.eval.mjs';
 import { CATALOG_EN } from './catalog.en';
 
 const I18N_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -50,6 +54,20 @@ function isValidKey(key: string): boolean {
     }
   }
   return true;
+}
+
+/** `indexOf`-loop occurrence counter — no RegExp, reused by the `satisfies Catalog` /
+ *  `Object.freeze(` belt-and-braces text pins below. */
+function countOccurrences(source: string, needle: string): number {
+  let count = 0;
+  let from = 0;
+  for (;;) {
+    const at = source.indexOf(needle, from);
+    if (at === -1) break;
+    count += 1;
+    from = at + needle.length;
+  }
+  return count;
 }
 
 interface EntryLine {
@@ -84,10 +102,10 @@ function findDescViolations(source: string): string[] {
     let j = entry.lineIndex - 1;
     let hasDesc = false;
     while (j >= 0) {
-      const t = lines[j].trim();
-      if (!t.startsWith('//')) break;
-      if (t.startsWith('// @desc:')) {
-        const rest = t.slice('// @desc:'.length);
+      const commentLine = lines[j].trim();
+      if (!commentLine.startsWith('//')) break;
+      if (commentLine.startsWith('// @desc:')) {
+        const rest = commentLine.slice('// @desc:'.length);
         let nonWs = 0;
         for (let k = 0; k < rest.length; k++) {
           const ch = rest[k];
@@ -112,11 +130,7 @@ function checkOneOtherUsage(localeTag: string, source: string): void {
     categories.length === 2 && categories.includes('one') && categories.includes('other');
   if (!isTwoCategory) {
     throw new Error(
-      "oneOther( used in a catalog for locale '" +
-        localeTag +
-        "' whose CLDR category set is " +
-        JSON.stringify(categories) +
-        ' — exceeds {one, other}; author with cldr(...) instead',
+      `oneOther( used in a catalog for locale '${localeTag}' whose CLDR category set is ${JSON.stringify(categories)} — exceeds {one, other}; author with cldr(...) instead`,
     );
   }
 }
@@ -126,7 +140,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     const violations = findDescViolations(RAW_SOURCE);
     expect(
       violations,
-      'entries missing an adjacent @desc comment (>=10 non-ws chars): ' + violations.join(', '),
+      `entries missing an adjacent @desc comment (>=10 non-ws chars): ${violations.join(', ')}`,
     ).toEqual([]);
   });
 
@@ -151,34 +165,33 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
       'chrome.helpHint ',
     ];
     for (const f of validFixtures) {
-      expect(isValidKey(f), f + ' must be VALID').toBe(true);
+      expect(isValidKey(f), `${f} must be VALID`).toBe(true);
     }
     for (const f of invalidFixtures) {
-      expect(isValidKey(f), f + ' must be INVALID').toBe(false);
+      expect(isValidKey(f), `${f} must be INVALID`).toBe(false);
     }
 
     const realKeys = Object.keys(CATALOG_EN as Record<string, unknown>);
     expect(realKeys.length > 0, 'ANTI-VACUITY: CATALOG_EN must not be empty').toBe(true);
     for (const key of realKeys) {
-      expect(isValidKey(key), 'real key ' + key + ' must satisfy the grammar').toBe(true);
+      expect(isValidKey(key), `real key ${key} must satisfy the grammar`).toBe(true);
     }
   });
 
-  it("m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, and the key roster is exactly the plan's 10", () => {
+  it("m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the plan's 10, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each", () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
     const entryLineCount = scanEntryLines(RAW_SOURCE).length;
     expect(
       entryLineCount,
-      'the number of line-start-quoted-key entry lines in catalog.en.ts must equal ' +
-        'Object.keys(CATALOG_EN).length — a key merely echoed in a comment must not count',
+      'the number of line-start-quoted-key entry lines in catalog.en.ts must equal Object.keys(CATALOG_EN).length — a key merely echoed in a comment must not count',
     ).toBe(keys.length);
 
     for (const forbidden of ['constructor', 'toString', 'hasOwnProperty', '__proto__']) {
       expect(
         Object.hasOwn(CATALOG_EN as object, forbidden),
-        'CATALOG_EN must not have an OWN key named ' + forbidden,
+        `CATALOG_EN must not have an OWN key named ${forbidden}`,
       ).toBe(false);
     }
 
@@ -187,15 +200,11 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
       const value = (CATALOG_EN as Record<string, unknown>)[key];
       if (typeof value === 'function') {
         const result = (value as (p: { where: string }) => string)({ where: 'x' });
-        expect(typeof result, key + '(...) must return a string').toBe('string');
-        expect(result.length > 0, key + '(...) must return a non-empty string').toBe(true);
+        expect(typeof result, `${key}(...) must return a string`).toBe('string');
+        expect(result.length > 0, `${key}(...) must return a non-empty string`).toBe(true);
       } else {
-        expect(typeof value, 'CATALOG_EN[' + key + '] must be a string or a function').toBe(
-          'string',
-        );
-        expect((value as string).length > 0, 'CATALOG_EN[' + key + '] must be non-empty').toBe(
-          true,
-        );
+        expect(typeof value, `CATALOG_EN[${key}] must be a string or a function`).toBe('string');
+        expect((value as string).length > 0, `CATALOG_EN[${key}] must be non-empty`).toBe(true);
       }
       checked += 1;
     }
@@ -216,6 +225,21 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
       .slice()
       .sort();
     expect(keys.slice().sort()).toEqual(expectedKeys);
+
+    // Belt-and-braces TEXT pin (test-review round), scoped to this OWNED file: `satisfies
+    // Catalog` restores the excess-property check that `Object.freeze<T>`'s generic signature
+    // would otherwise swallow (plan §2 D2), and both structural checks above (Object.isFrozen,
+    // the exact key-roster/stowaway checks) remain the REAL runtime backstop if this text pin is
+    // ever weakened or the clause is dropped without breaking either of them.
+    const strippedSource = stripComments(RAW_SOURCE);
+    expect(
+      countOccurrences(strippedSource, 'satisfies Catalog'),
+      "catalog.en.ts must spell 'satisfies Catalog' exactly once",
+    ).toBe(1);
+    expect(
+      countOccurrences(strippedSource, 'Object.freeze('),
+      "catalog.en.ts must call 'Object.freeze(' exactly once",
+    ).toBe(1);
   });
 
   it('m24s1 SHAPE-06: checkOneOtherUsage BITES when oneOther( appears in a catalog for a locale whose CLDR set exceeds {one, other}, and is silent for en; every real catalog.<tag>.ts in the i18n directory passes it', () => {
@@ -237,7 +261,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
     expect(
       found.length > 0,
-      'ANTI-VACUITY: at least catalog.en.ts must have been found under ' + I18N_DIR,
+      `ANTI-VACUITY: at least catalog.en.ts must have been found under ${I18N_DIR}`,
     ).toBe(true);
   });
 });

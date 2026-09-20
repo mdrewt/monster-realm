@@ -54,7 +54,7 @@ const PLURAL_SPEC = path.join(I18N_DIR, 'plural');
 const LOCALE_SPEC = path.join(I18N_DIR, 'locale');
 
 function importFrom(members: string, specifier: string): string {
-  return 'import ' + members + ' from ' + JSON.stringify(specifier) + ';';
+  return `import ${members} from ${JSON.stringify(specifier)};`;
 }
 
 interface Fixture {
@@ -153,6 +153,10 @@ const FIXTURES: readonly Fixture[] = [
   {
     // I18N-8 half 1: an a11y.* key handed to tf() — TS2345 (A11yKey is barred from tf's domain
     // by the type).
+    // HONEST LIMIT: not yet load-bearing FOR THE A11Y-SPECIFIC EXCLUSION while A11yKey = never —
+    // any string that is not a ParamMessageId produces the same TS2345 today, so this fixture
+    // currently overlaps bad-plain-tf; it becomes load-bearing for the a11y case specifically the
+    // moment a real a11y.* id joins MessageId (ADR-0256 D4 follow-up).
     name: 'bad-a11y-tf',
     lines: [
       importFrom('{ tf }', RESOLVER_SPEC),
@@ -246,7 +250,7 @@ function parseDiagnostics(output: string): {
     while (digitsEnd < tail.length && tail[digitsEnd] >= '0' && tail[digitsEnd] <= '9') {
       digitsEnd += 1;
     }
-    const code = 'TS' + tail.slice(errAt + errMarker.length, digitsEnd);
+    const code = `TS${tail.slice(errAt + errMarker.length, digitsEnd)}`;
     const set = codeSets.get(filePart) ?? new Set<string>();
     set.add(code);
     codeSets.set(filePart, set);
@@ -276,8 +280,8 @@ function runCompileAll(): { result: CompileResult; dir: string | undefined } {
   const dir = mkdtempSync(path.join(tmpdir(), 'm24s1-i18n-'));
   const fixtureFiles: string[] = [];
   for (const fixture of FIXTURES) {
-    writeFileSync(path.join(dir, fixture.name + '.ts'), fixture.lines.join('\n'), 'utf8');
-    fixtureFiles.push(fixture.name + '.ts');
+    writeFileSync(path.join(dir, `${fixture.name}.ts`), fixture.lines.join('\n'), 'utf8');
+    fixtureFiles.push(`${fixture.name}.ts`);
   }
   const spawned = spawnSync(
     TSC_BIN,
@@ -300,7 +304,7 @@ function runCompileAll(): { result: CompileResult; dir: string | undefined } {
     // over ~13 small fixtures measure well under a second; 30s is generous headroom.
     { cwd: dir, encoding: 'utf8', timeout: 30000 },
   );
-  const output = (spawned.stdout ?? '') + (spawned.stderr ?? '');
+  const output = `${spawned.stdout ?? ''}${spawned.stderr ?? ''}`;
   const { codesByFile, linesByFile } = parseDiagnostics(output);
   return {
     result: { tscExists: true, status: spawned.status, output, codesByFile, linesByFile },
@@ -333,7 +337,15 @@ afterAll(() => {
 /** Any diagnostic located INSIDE a real, imported module (path contains `/i18n/`) means the
  *  IMPLEMENTATION is buggy, not the fixture under test. Any diagnostic on `good.ts` means the
  *  "imports and uses every export" fixture itself failed to compile clean. Both are asserted
- *  absent in every grouped test below, each carrying the FULL tsc output for diagnosis. */
+ *  absent in every grouped test below, each carrying the FULL tsc output for diagnosis.
+ *
+ *  Why `file.includes('/i18n/')` can never false-positive on the temp dir itself: `mkdtempSync`
+ *  is seeded with the PREFIX `'m24s1-i18n-'` (hyphens, not slashes), so the generated directory
+ *  name is something like `m24s1-i18n-Ab12Cd` — the substring around "i18n" there is `-i18n-`,
+ *  never `/i18n/`. Fixture diagnostics are also printed as BARE basenames (`cwd` is the temp
+ *  dir, and the spawned args are basenames), so a fixture's own path never contains a `/` at
+ *  all; only a diagnostic actually resolved inside the real `client/src/ui/i18n/` module tree
+ *  can contain the slash-delimited `/i18n/` segment this check looks for. */
 function assertNoStrayDiagnostics(result: CompileResult): void {
   for (const [file, codes] of result.codesByFile) {
     if (codes.length === 0) continue;
@@ -341,25 +353,13 @@ function assertNoStrayDiagnostics(result: CompileResult): void {
     const isGoodFixture = file === 'good.ts';
     expect(
       isRealModule || isGoodFixture,
-      'unexpected diagnostic(s) on ' +
-        file +
-        ' (' +
-        codes.join(',') +
-        ') — a diagnostic inside the real i18n module, or on good.ts, means the fixture harness ' +
-        'or the implementation is broken, never the fixture under test. Full tsc output:\n' +
-        result.output,
+      `unexpected diagnostic(s) on ${file} (${codes.join(',')}) — a diagnostic inside the real i18n module, or on good.ts, means the fixture harness or the implementation is broken, never the fixture under test. Full tsc output:\n${result.output}`,
     ).toBe(false);
   }
 }
 
 function tscExistsMessage(): string {
-  return (
-    'tsc binary must exist at ' +
-    TSC_BIN +
-    ' — client/node_modules must be installed (just client-setup). A missing binary is an ' +
-    'ANTI-VACUITY failure: every MUST-NOT-COMPILE assertion in this file would otherwise never ' +
-    'actually invoke the compiler.'
-  );
+  return `tsc binary must exist at ${TSC_BIN} — client/node_modules must be installed (just client-setup). A missing binary is an ANTI-VACUITY failure: every MUST-NOT-COMPILE assertion in this file would otherwise never actually invoke the compiler.`;
 }
 
 describe('i18nTypes.compile — the i18n module compile-total guarantees (m24-s1, ADR-0256)', () => {
@@ -369,19 +369,18 @@ describe('i18nTypes.compile — the i18n module compile-total guarantees (m24-s1
     assertNoStrayDiagnostics(result);
 
     const omitCodes = result.codesByFile.get('bad-omit.ts') ?? [];
-    expect(omitCodes, 'full tsc output:\n' + result.output).toEqual(['TS2741']);
+    expect(omitCodes, `full tsc output:\n${result.output}`).toEqual(['TS2741']);
     const omitLines = result.linesByFile.get('bad-omit.ts') ?? [];
     expect(
       omitLines.some((l) => l.includes('chrome.helpHint')),
-      "bad-omit.ts's TS2741 message must name the omitted key 'chrome.helpHint':\n" +
-        omitLines.join('\n'),
+      `bad-omit.ts's TS2741 message must name the omitted key 'chrome.helpHint':\n${omitLines.join('\n')}`,
     ).toBe(true);
 
     const partialCodes = result.codesByFile.get('bad-partial.ts') ?? [];
-    expect(partialCodes, 'full tsc output:\n' + result.output).toEqual(['TS2322']);
+    expect(partialCodes, `full tsc output:\n${result.output}`).toEqual(['TS2322']);
 
     const goodCodes = result.codesByFile.get('good.ts') ?? [];
-    expect(goodCodes, 'good.ts must compile with zero diagnostics:\n' + result.output).toEqual([]);
+    expect(goodCodes, `good.ts must compile with zero diagnostics:\n${result.output}`).toEqual([]);
   });
 
   it('m24s1 I18N-7: a tf() params object missing a required key (TS2345) or carrying a mistyped one (TS2322, measured — not TS2345) is a tsc RED', () => {
@@ -390,25 +389,34 @@ describe('i18nTypes.compile — the i18n module compile-total guarantees (m24-s1
     assertNoStrayDiagnostics(result);
 
     const missingCodes = result.codesByFile.get('bad-params-missing.ts') ?? [];
-    expect(missingCodes, 'full tsc output:\n' + result.output).toEqual(['TS2345']);
+    expect(missingCodes, `full tsc output:\n${result.output}`).toEqual(['TS2345']);
 
     const typeCodes = result.codesByFile.get('bad-params-type.ts') ?? [];
-    expect(typeCodes, 'full tsc output:\n' + result.output).toEqual(['TS2322']);
+    expect(typeCodes, `full tsc output:\n${result.output}`).toEqual(['TS2322']);
   });
 
-  it('m24s1 I18N-8: an a11y.* key reaching tf(), a plain key reaching tf(), and a param key reaching t() are each a tsc RED (TS2345)', () => {
+  it('m24s1 I18N-8: an a11y.* key reaching tf(), a plain key reaching tf(), a param key reaching t(), and t widened to (key: string) => string (the domain-widening oracle) are each a tsc RED', () => {
     const result = getResult();
     expect(result.tscExists, tscExistsMessage()).toBe(true);
     assertNoStrayDiagnostics(result);
 
     const a11yCodes = result.codesByFile.get('bad-a11y-tf.ts') ?? [];
-    expect(a11yCodes, 'full tsc output:\n' + result.output).toEqual(['TS2345']);
+    expect(a11yCodes, `full tsc output:\n${result.output}`).toEqual(['TS2345']);
 
     const plainCodes = result.codesByFile.get('bad-plain-tf.ts') ?? [];
-    expect(plainCodes, 'full tsc output:\n' + result.output).toEqual(['TS2345']);
+    expect(plainCodes, `full tsc output:\n${result.output}`).toEqual(['TS2345']);
 
     const paramTCodes = result.codesByFile.get('bad-param-t.ts') ?? [];
-    expect(paramTCodes, 'full tsc output:\n' + result.output).toEqual(['TS2345']);
+    expect(paramTCodes, `full tsc output:\n${result.output}`).toEqual(['TS2345']);
+
+    // bad-t-wide is the ADR-0256 D4 transitive oracle for the a11yCopy-import widening hazard —
+    // asserted HERE (not just written and forgotten) because a widened `t` is exactly the shape
+    // that would let an a11y.* key silently reach tf() undetected by the three checks above.
+    const tWideCodes = result.codesByFile.get('bad-t-wide.ts') ?? [];
+    expect(
+      tWideCodes,
+      `bad-t-wide.ts (widening t to (key: string) => string) must produce exactly TS2322 — full tsc output:\n${result.output}`,
+    ).toEqual(['TS2322']);
   });
 
   it('m24s1 I18N-9: a plural-forms literal omitting a CLDR category reaching selectPlural() is a tsc RED (TS2345); good.ts (oneOther/cldr) compiles clean', () => {
@@ -417,12 +425,12 @@ describe('i18nTypes.compile — the i18n module compile-total guarantees (m24-s1
     assertNoStrayDiagnostics(result);
 
     const pluralCodes = result.codesByFile.get('bad-plural.ts') ?? [];
-    expect(pluralCodes, 'full tsc output:\n' + result.output).toEqual(['TS2345']);
+    expect(pluralCodes, `full tsc output:\n${result.output}`).toEqual(['TS2345']);
 
     const goodCodes = result.codesByFile.get('good.ts') ?? [];
     expect(
       goodCodes,
-      "good.ts's oneOther/cldr lines must have compiled with zero diagnostics:\n" + result.output,
+      `good.ts's oneOther/cldr lines must have compiled with zero diagnostics:\n${result.output}`,
     ).toEqual([]);
   });
 
@@ -434,17 +442,12 @@ describe('i18nTypes.compile — the i18n module compile-total guarantees (m24-s1
     const controlCodes = result.codesByFile.get('control-red.ts') ?? [];
     expect(
       controlCodes,
-      'CONTROL fixture (assigning a string literal to `number`) must produce exactly TS2322 — ' +
-        'if it does not, the tsc spawn itself is broken (path/cwd/args) and every MUST-NOT-COMPILE ' +
-        'assertion elsewhere in this file is meaningless. Full tsc output:\n' +
-        result.output,
+      `CONTROL fixture (assigning a string literal to \`number\`) must produce exactly TS2322 — if it does not, the tsc spawn itself is broken (path/cwd/args) and every MUST-NOT-COMPILE assertion elsewhere in this file is meaningless. Full tsc output:\n${result.output}`,
     ).toEqual(['TS2322']);
 
     expect(
       result.status,
-      'BAD fixtures are present in this single invocation, so the whole tsc process must exit ' +
-        'non-zero:\n' +
-        result.output,
+      `BAD fixtures are present in this single invocation, so the whole tsc process must exit non-zero:\n${result.output}`,
     ).not.toBe(0);
   });
 });

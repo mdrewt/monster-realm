@@ -21,7 +21,7 @@ import { describe, expect, it } from 'vitest';
 import { cldr, fmtNumber, oneOther, selectPlural } from './plural';
 
 describe('plural — CLDR-total plural selection and locale-aware number formatting (m24-s1, ADR-0256)', () => {
-  it('m24s1 I18N-10: selectPlural resolves the CLDR category Intl.PluralRules picks, per-locale, across ru (6 categories), en (2), and ar (6)', () => {
+  it('m24s1 I18N-10: selectPlural resolves the CLDR category Intl.PluralRules picks, per-locale, across ru (4 real categories: one/few/many/other), en (2), and ar (6)', () => {
     // WRONG IMPL KILLED: a mutant that ignores `locale` and always applies English rules would
     // return `ruForms.other` for n=3 (few in ru, other in en-style two-category thinking) instead
     // of `ruForms.few` — but only because every category below holds a DISTINCT string can that

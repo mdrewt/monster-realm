@@ -48,7 +48,7 @@ describe('locale — RFC 4647 BCP-47 negotiation and the RTL primary-subtag tabl
 
   it("m24s1 IS-RTL: isRtl is a primary-subtag table over {ar,he,fa,ur,ps,yi} — region-tagged and case-varied forms still resolve true, en/fr/'' resolve false", () => {
     for (const code of ['ar', 'he', 'fa', 'ur', 'ps', 'yi']) {
-      expect(isRtl(code), code + ' must be RTL').toBe(true);
+      expect(isRtl(code), `${code} must be RTL`).toBe(true);
     }
     // Region subtags and mixed case must not defeat the primary-subtag lookup.
     expect(isRtl('ar-SA')).toBe(true);

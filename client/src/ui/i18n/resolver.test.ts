@@ -44,7 +44,7 @@ describe('resolver — the module-level locale cell and the t()/tf() resolvers (
     let checked = 0;
     for (const [key, value] of entries) {
       if (typeof value !== 'string') continue;
-      expect(t(key as never), 't(' + key + ') must equal CATALOG_EN[' + key + ']').toBe(value);
+      expect(t(key as never), `t(${key}) must equal CATALOG_EN[${key}]`).toBe(value);
       checked += 1;
     }
     expect(
@@ -90,25 +90,38 @@ describe('resolver — the module-level locale cell and the t()/tf() resolvers (
     expect(Object.isFrozen(CATALOGS), 'CATALOGS must be Object.freeze()d').toBe(true);
   });
 
-  it('m24s1 RESOLVER-MISS: t/tf THROW (never return a string) for an absent key, an inherited Object.prototype key, or a key routed to the wrong resolver', () => {
-    // Absent key.
-    expect(() => t('nope' as never)).toThrow();
-    let thrown: unknown;
-    try {
-      t('nope' as never);
-    } catch (err) {
-      thrown = err;
+  it('m24s1 RESOLVER-MISS: t/tf THROW (never return a string) for an absent key, an inherited Object.prototype key, or a key routed to the wrong resolver — and a prototype-chain hit takes the SAME miss path as an ordinary absent key', () => {
+    function messageFor(key: string): string {
+      let thrown: unknown;
+      try {
+        t(key as never);
+      } catch (err) {
+        thrown = err;
+      }
+      expect(thrown, `t(${key}) must throw an Error`).toBeInstanceOf(Error);
+      return (thrown as Error).message;
     }
-    expect(thrown).toBeInstanceOf(Error);
-    expect(
-      (thrown as Error).message.includes('nope'),
-      'the thrown message must NAME the miss',
-    ).toBe(true);
 
-    // Inherited Object.prototype members — `key in CATALOGS[locale]` is true for these even
-    // though neither is a real catalog entry; only `Object.hasOwn` resolution is safe.
-    expect(() => t('constructor' as never)).toThrow();
-    expect(() => t('toString' as never)).toThrow();
+    const nopeMessage = messageFor('nope');
+    expect(nopeMessage.includes('nope'), 'the thrown message must NAME the miss').toBe(true);
+
+    // WRONG IMPL KILLED (red-team's `key in catalog` cheat): `key in CATALOGS[locale]` is TRUE
+    // for 'constructor'/'toString'/'hasOwnProperty' even though none is a real catalog entry. A
+    // `t = (key) => (key in catalog ? catalog[key] : throwMiss(key))` implementation would only
+    // be caught by a bare `.toThrow()` if it happened to ALSO fail a downstream `typeof` guard —
+    // but a cheat that special-cases "not a string" (the inherited Object.prototype member's
+    // typeof) to produce its OWN distinct message would still pass a bare throw check while
+    // never actually reaching the `Object.hasOwn` miss path. Asserting the prototype-key message
+    // is IDENTICAL to the ordinary-miss message, modulo the substituted key, forces the SAME
+    // Object.hasOwn-based miss path for both and closes that gap.
+    for (const protoKey of ['constructor', 'toString', 'hasOwnProperty']) {
+      const protoMessage = messageFor(protoKey);
+      expect(
+        protoMessage,
+        `t(${protoKey}) must throw via the SAME miss path as t('nope') — got a different message shape`,
+      ).toBe(nopeMessage.split('nope').join(protoKey));
+      expect(protoMessage.includes(protoKey), 'the thrown message must NAME the key').toBe(true);
+    }
 
     // A parameterized key routed through the PLAIN resolver.
     expect(() => t('chrome.status.disconnected' as never)).toThrow();
@@ -117,7 +130,13 @@ describe('resolver — the module-level locale cell and the t()/tf() resolvers (
     expect(() => tf('chrome.helpHint' as never, {} as never)).toThrow();
   });
 
-  it("m24s1 SHAPE-05: t has arity 1, tf has arity 2, and resolver.ts's source declares exactly one `export function t(` and one `export function tf(` — no overload, no variadic", () => {
+  it("m24s1 SHAPE-05: t has arity 1, tf has arity 2, and resolver.ts's source declares exactly one `export function t(` and one GENERIC `export function tf<` — no overload, no variadic, no monomorphic tf regression", () => {
+    // NOTE (test-review round): the plan mandates the GENERIC signature
+    // `export function tf<K extends ParamMessageId>(key: K, params: MessageParams[K]): string`,
+    // so the literal substring `'export function tf('` can never appear — the `<` intervenes
+    // between `tf` and `(`. The scan below counts `'export function tf<'` instead: this both
+    // requires the generic form (a plain `tf(key, ...)` regression fails the count) and remains
+    // exactly-one, no-overload.
     expect(t.length, 't.length must be 1').toBe(1);
     expect(tf.length, 'tf.length must be 2').toBe(2);
 
@@ -138,14 +157,17 @@ describe('resolver — the module-level locale cell and the t()/tf() resolvers (
     {
       let from = 0;
       for (;;) {
-        const at = stripped.indexOf('export function tf(', from);
+        const at = stripped.indexOf('export function tf<', from);
         if (at === -1) break;
         tfDecls += 1;
-        from = at + 'export function tf('.length;
+        from = at + 'export function tf<'.length;
       }
     }
     expect(tDecls, "resolver.ts must declare exactly one 'export function t('").toBe(1);
-    expect(tfDecls, "resolver.ts must declare exactly one 'export function tf('").toBe(1);
+    expect(
+      tfDecls,
+      "resolver.ts must declare exactly one GENERIC 'export function tf<' — a monomorphic 'export function tf(' regression fails this count too",
+    ).toBe(1);
 
     // WRONG IMPL KILLED: `export function t(...key: PlainMessageId[])` — a rest/variadic
     // spelling immediately after the opening paren.
