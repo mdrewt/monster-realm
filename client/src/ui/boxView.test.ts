@@ -101,12 +101,21 @@ import { BoxView, type BoxViewCallbacks } from './boxView';
 // ---------------------------------------------------------------------------
 
 import { beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { stripComments } from '../../../evals/dom-shell-coverage-exclusion.eval.mjs';
 import { t } from './a11yCopy';
 import { BattleView, type BattleViewCallbacks } from './battleView';
+import { scanSource } from './i18n/hardcodedStrings';
+import { t as i18nT, tf as i18nTf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
 
 vi.mock('./overlayA11y', { spy: true });
+// m24s4 (ADR-0260) MECHANISM oracle, same shape as m24s3: records every t()/tf() call AND
+// calls through to the real resolver, so BX-01's DOM byte-identity assertions still work.
+vi.mock('./i18n/resolver', { spy: true });
 
 async function s4FlushMacrotask(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
@@ -157,7 +166,7 @@ function s4CaptureDisplayAtOpen(root: HTMLElement): { display: () => string | un
 describe('BoxView — m23-s4 overlay a11y wiring on the show()/hide()/toggle() edge', () => {
   it('S4-boxView-OPEN-ARIA BITES: the first show() from a hidden shell labels the root from OVERLAY_A11Y/t()', () => {
     const { parent, view } = mount();
-    const root = e2eBoxRootOf(parent);
+    const root = s4BoxRootOf(parent);
     expect(view.visible, 'the shell must start hidden, so show() IS an edge').toBe(false);
 
     view.show();
@@ -169,7 +178,7 @@ describe('BoxView — m23-s4 overlay a11y wiring on the show()/hide()/toggle() e
 
   it('S4-boxView-ANCHOR-FOCUS BITES: the anchor resolves to an <h2 tabindex="-1"> with byte-unchanged "Party & Box" text, and focus moves to it after ONE real macrotask (never synchronously)', async () => {
     const { parent, view } = mount();
-    const root = e2eBoxRootOf(parent);
+    const root = s4BoxRootOf(parent);
     view.show();
 
     const anchor = root.querySelector<HTMLElement>(S4_META.initialFocusSelector);
@@ -197,7 +206,7 @@ describe('BoxView — m23-s4 overlay a11y wiring on the show()/hide()/toggle() e
 
   it('S4-boxView-HELPER-CALLED BITES: the view DELEGATES to the S1 helpers with its OWN id, its OWN root, and a literal null fallbackFocus', () => {
     const { parent, view } = mount();
-    const root = e2eBoxRootOf(parent);
+    const root = s4BoxRootOf(parent);
 
     view.show();
     expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
@@ -212,7 +221,7 @@ describe('BoxView — m23-s4 overlay a11y wiring on the show()/hide()/toggle() e
     const outside = s4OutsideSentinel();
     outside.focus();
     const { parent, view } = mount();
-    const root = e2eBoxRootOf(parent);
+    const root = s4BoxRootOf(parent);
 
     view.show();
     await s4FlushMacrotask();
@@ -244,7 +253,7 @@ describe('BoxView — m23-s4 overlay a11y wiring on the show()/hide()/toggle() e
 
   it('S4-boxView-REPEAT-NO-REOPEN BITES: show() on an already-visible overlay neither re-opens nor yanks focus off a sentinel parked inside the root', async () => {
     const { parent, view } = mount();
-    const root = e2eBoxRootOf(parent);
+    const root = s4BoxRootOf(parent);
     view.show();
     await s4FlushMacrotask();
 
@@ -261,7 +270,7 @@ describe('BoxView — m23-s4 overlay a11y wiring on the show()/hide()/toggle() e
 
   it('S4-boxView-OPEN-LAST BITES: openOverlayA11y is invoked with root.style.display ALREADY painted (neither "none" nor "") — never open-before-paint', () => {
     const { parent, view } = mount();
-    const root = e2eBoxRootOf(parent);
+    const root = s4BoxRootOf(parent);
     const capture = s4CaptureDisplayAtOpen(root);
 
     view.show();
@@ -469,6 +478,22 @@ function e2eBoxRootOf(parent: HTMLElement): HTMLElement {
   ).not.toBeNull();
   const root = header!.parentElement;
   expect(root, "precondition: the header row must have a parent (BoxView's #root)").not.toBeNull();
+  return root as HTMLElement;
+}
+
+/**
+ * BoxView's `#root`, resolved STRUCTURALLY (`parent.firstElementChild`) rather than by the
+ * title's TEXT (`e2eBoxRootOf`). Six m23-s4 call sites resolve the root BEFORE the first
+ * `show()`; once `box.title` moves into `show()` (m24s4, ADR-0260 D3/D4), the `<h2>` carries no
+ * text yet at those sites and `e2eBoxRootOf`'s `findByTag` precondition throws. Every POST-show
+ * site keeps `e2eBoxRootOf` — the text anchor is the stronger oracle once the title has
+ * actually resolved.
+ */
+function s4BoxRootOf(parent: HTMLElement): HTMLElement {
+  const root = parent.firstElementChild;
+  if (root === null) {
+    throw new Error('m24s4 s4BoxRootOf: BoxView did not append an overlay root into parent');
+  }
   return root as HTMLElement;
 }
 
@@ -1307,5 +1332,391 @@ describe("BoxView EG4-8 X10: the badge does not displace the card's existing con
       'EG4-8 (X10): the surviving control must still emit the same intent it does without ' +
         'the badge (id + the -1 next-free-slot sentinel)',
     ).toHaveBeenCalledWith(200n, NEXT_FREE_SLOT_SENTINEL);
+  });
+});
+
+// =============================================================================
+// m24s4 (ADR-0260) — i18n migration batch B: boxView.ts routes its migrated
+// sinks through t()/tf() (ADR-0256/0257/0259/0260 resolver) instead of raw
+// English literals, and its hoisted `prompt('New nickname:', ...)` argument
+// through `t('box.rename.prompt')`.
+//
+// PREDICTED RED REASON AT HEAD: boxView.ts calls neither `t()` nor `tf()`
+// anywhere today, and `#promptNickname` calls the native `prompt()` with the
+// raw literal `'New nickname:'` — every literal below is still bare, and the
+// file imports nothing from `./i18n/resolver`. BX-01/BX-02 therefore fail on
+// their very first assertion (the spied `i18nT`/`i18nTf` are never called at
+// all, and the roster-word scan finds unbracketed English); BX-03 fails
+// because `scanSource(stripComments(...))` reports >=15 FAILING sinks (raw
+// English segments), not the required `failing: []`.
+//
+// Do NOT edit these tests to match a buggy implementation — correct them from
+// the plan/ADR-0260 only.
+// =============================================================================
+
+const M24S4_BX_PLAIN_KEYS = new Set([
+  'box.title',
+  'box.heal',
+  'box.hint',
+  'box.section.party',
+  'box.section.box',
+  'box.box.empty',
+  'box.card.rename',
+  'box.card.evolveBadge',
+  'box.card.toBox',
+  'box.card.toParty',
+  'box.rename.prompt',
+]);
+
+const M24S4_BX_PARAM_KEYS = new Set(['box.party.emptySlot', 'box.card.stats']);
+
+/** True iff `content` (the text strictly between one `«`/`»` pair) is EXACTLY an
+ *  expected sentinel: a bare roster key, or `key|<json>` where `key` is a roster
+ *  PARAM key and the tail after the FIRST `|` parses to a plain (non-array,
+ *  non-null) object. */
+function m24s4BxIsExpectedSentinelSpan(content: string): boolean {
+  const bar = content.indexOf('|');
+  if (bar === -1) {
+    return M24S4_BX_PLAIN_KEYS.has(content) || M24S4_BX_PARAM_KEYS.has(content);
+  }
+  const key = content.slice(0, bar);
+  if (!M24S4_BX_PARAM_KEYS.has(key)) return false;
+  const tail = content.slice(bar + 1);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(tail);
+  } catch {
+    return false;
+  }
+  return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed);
+}
+
+/** Elides only the bracket spans that are EXACTLY an expected sentinel (manual
+ *  indexOf loop — no RegExp, ADR-0055) and reports every OTHER `«...»` span
+ *  verbatim in `unexpectedSpans`, un-elided, so it stays in `stripped` for the
+ *  roster-word scan too — see battleView.test.ts's m24s3SplitSentinels header. */
+function m24s4BxSplitSentinels(text: string): { stripped: string; unexpectedSpans: string[] } {
+  let out = '';
+  const unexpectedSpans: string[] = [];
+  let i = 0;
+  while (i < text.length) {
+    const open = text.indexOf('«', i);
+    if (open === -1) {
+      out += text.slice(i);
+      break;
+    }
+    out += text.slice(i, open);
+    const close = text.indexOf('»', open + 1);
+    if (close === -1) {
+      // Unterminated bracket: never a legitimate sentinel — leave it in place.
+      out += text.slice(open);
+      break;
+    }
+    const span = text.slice(open, close + 1);
+    const content = text.slice(open + 1, close);
+    if (m24s4BxIsExpectedSentinelSpan(content)) {
+      // Elide — this is a real, correctly-formed sentinel.
+    } else {
+      out += span;
+      unexpectedSpans.push(span);
+    }
+    i = close + 1;
+  }
+  return { stripped: out, unexpectedSpans };
+}
+
+/** Whole-subtree walk (plan R5): every descendant's own text-node children, every
+ *  element's `title` attribute, and every `<option>`'s text — never a per-element
+ *  spot check. */
+function m24s4BxWalkSubtree(root: HTMLElement): string[] {
+  const texts: string[] = [];
+  const stack: Element[] = [root];
+  while (stack.length > 0) {
+    const el = stack.pop()!;
+    const titleAttr = el.getAttribute('title');
+    if (titleAttr) texts.push(titleAttr);
+    for (const node of Array.from(el.childNodes)) {
+      if (node.nodeType === 3) texts.push(node.textContent ?? ''); // TEXT_NODE
+    }
+    for (const child of Array.from(el.children)) stack.push(child);
+  }
+  return texts;
+}
+
+const M24S4_BX_ROSTER = [
+  'Party & Box',
+  'Heal Party',
+  'Party',
+  'Box',
+  'Rename',
+  'To Box',
+  'To Party',
+  'No monsters in box.',
+  '★ Ready to evolve',
+  'Slot ',
+  '(empty)',
+  'New nickname:',
+  'Only monsters in your Party can battle',
+  'New recruits arrive in your Box',
+];
+
+function m24s4BxAssertNoRosterWord(texts: readonly string[], label: string): void {
+  const { stripped, unexpectedSpans } = m24s4BxSplitSentinels(texts.join('\n'));
+  // A FORGED bracket span (raw English wrapped in `«...»` by something other than the
+  // resolver) is never elided — it must not exist at all under a correct implementation.
+  expect(
+    unexpectedSpans,
+    `${label}: found «...» span(s) that are not an EXACT expected sentinel (a forged ` +
+      `bracket span around raw content is not exempted from the roster scan)`,
+  ).toEqual([]);
+  for (const word of M24S4_BX_ROSTER) {
+    expect(
+      stripped.includes(word),
+      `${label}: must not contain English roster word "${word}" outside a «sentinel»`,
+    ).toBe(false);
+  }
+}
+
+describe('m24s4 (ADR-0260): boxView.ts routes its migrated sinks through t()/tf()', () => {
+  it('m24s4 BX-01: every migrated sink calls t()/tf() with the exact key and params, prompt() receives the resolved copy, show() re-resolves constructor-time keys on a repeat open, and every DOM string stays byte-identical', () => {
+    vi.mocked(i18nT).mockClear();
+    vi.mocked(i18nTf).mockClear();
+    const { parent, view } = mount();
+    const root = s4BoxRootOf(parent);
+
+    // --- pre-show: constructor-time keys must NOT have been requested yet (plan D3/D4) ---
+    expect(
+      i18nT,
+      'm24s4 BX-01: box.title must resolve in show(), not the constructor',
+    ).not.toHaveBeenCalledWith('box.title');
+    expect(i18nT).not.toHaveBeenCalledWith('box.heal');
+    expect(i18nT).not.toHaveBeenCalledWith('box.hint');
+    expect(i18nT).not.toHaveBeenCalledWith('box.section.party');
+    expect(i18nT).not.toHaveBeenCalledWith('box.section.box');
+
+    // --- one party card + one empty slot; box empty ---
+    const partyCard = makeCard({
+      monsterId: 100n,
+      speciesName: 'Sproutle',
+      nickname: 'Kip',
+      level: 6,
+      currentHp: 15,
+      statHp: 20,
+      hpPercent: 75,
+    });
+    view.refresh([partyCard, null], []);
+    view.show();
+
+    expect(i18nT).toHaveBeenCalledWith('box.title');
+    expect(i18nT).toHaveBeenCalledWith('box.heal');
+    expect(i18nT).toHaveBeenCalledWith('box.hint');
+    expect(i18nT).toHaveBeenCalledWith('box.section.party');
+    expect(i18nT).toHaveBeenCalledWith('box.section.box');
+    expect(i18nT).toHaveBeenCalledWith('box.box.empty');
+    expect(i18nT).toHaveBeenCalledWith('box.card.rename');
+    expect(i18nT).toHaveBeenCalledWith('box.card.toBox');
+    expect(i18nT).not.toHaveBeenCalledWith('box.card.toParty');
+    expect(i18nT).not.toHaveBeenCalledWith('box.card.evolveBadge');
+    expect(i18nTf).toHaveBeenCalledWith('box.party.emptySlot', { slot: 1 });
+    expect(i18nTf).toHaveBeenCalledWith('box.card.stats', {
+      species: 'Sproutle',
+      level: 6,
+      current: 15,
+      max: 20,
+      percent: 75,
+    });
+
+    expect(root.querySelector('[data-testid="box-title"]')?.textContent).toBe('Party & Box');
+    expect(root.querySelector('button')?.textContent).toBe('Heal Party');
+    expect(root.querySelector('[data-testid="box-party-hint"]')?.textContent ?? '').toContain(
+      'To Party',
+    );
+    const partyGrid = partyGridOf(parent);
+    expect(partyGrid.textContent ?? '').toContain('Slot 1: (empty)');
+    const boxGrid = boxGridOf(parent);
+    expect(boxGrid.textContent ?? '').toContain('No monsters in box.');
+
+    // --- box now holds a card pending an evolution choice ---
+    vi.mocked(i18nT).mockClear();
+    vi.mocked(i18nTf).mockClear();
+    const boxCard = makeCard({
+      monsterId: 200n,
+      speciesName: 'Emberfang',
+      nickname: '',
+      level: 9,
+      currentHp: 21,
+      statHp: 21,
+      hpPercent: 100,
+      evolutionChoicePending: true,
+    });
+    view.refresh([partyCard, null], [boxCard]);
+
+    expect(i18nT).not.toHaveBeenCalledWith('box.box.empty');
+    expect(i18nT).toHaveBeenCalledWith('box.card.evolveBadge');
+    expect(i18nT).toHaveBeenCalledWith('box.card.toParty');
+    expect(i18nTf).toHaveBeenCalledWith('box.card.stats', {
+      species: 'Emberfang',
+      level: 9,
+      current: 21,
+      max: 21,
+      percent: 100,
+    });
+    const boxCardEl = boxGridOf(parent);
+    expect(boxCardEl.textContent ?? '').toContain('★ Ready to evolve — choose a path');
+    // recruit.spec.ts HP-shape survival (brief): the `HP ${current}/${max}` bytes must
+    // survive the migration verbatim.
+    expect(boxCardEl.textContent ?? '').toContain('HP 21/21');
+
+    // --- Rename prompt: t() supplies the label, the native dialog is the mechanism ---
+    vi.stubGlobal('prompt', vi.fn(() => null));
+    try {
+      const renameBtn = [...partyGrid.querySelectorAll('button')].find(
+        (b) => b.textContent === 'Rename',
+      );
+      expect(renameBtn, 'precondition: the party card must carry a Rename button').toBeDefined();
+      renameBtn!.click();
+      expect(
+        vi.mocked(prompt).mock.calls[0]?.[0],
+        'm24s4 BX-01: prompt() must receive the RESOLVED box.rename.prompt copy, English bytes here',
+      ).toBe('New nickname:');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    // --- RT2: a repeat show() re-resolves the constructor-time keys ---
+    vi.mocked(i18nT).mockClear();
+    view.show();
+    expect(
+      i18nT,
+      'm24s4 BX-01 RT2: a repeat show() on an already-open overlay must re-resolve box.title',
+    ).toHaveBeenCalledWith('box.title');
+    expect(i18nT).toHaveBeenCalledWith('box.heal');
+    expect(i18nT).toHaveBeenCalledWith('box.hint');
+    expect(i18nT).toHaveBeenCalledWith('box.section.party');
+    expect(i18nT).toHaveBeenCalledWith('box.section.box');
+  });
+
+  it('m24s4 BX-02: under «key» sentinels, every rendered surface shows resolver output and never an English roster word outside a sentinel; prompt() still receives the sentinel-wrapped label', () => {
+    const { parent, view } = mount();
+    const root = s4BoxRootOf(parent);
+
+    try {
+      vi.mocked(i18nT).mockImplementation((key: string) => `«${key}»`);
+      vi.mocked(i18nTf).mockImplementation(
+        (key: string, params: unknown) => `«${key}|${JSON.stringify(params)}»`,
+      );
+
+      const partyCard = makeCard({
+        monsterId: 100n,
+        speciesName: 'Sproutle',
+        nickname: 'Kip',
+        level: 6,
+        currentHp: 15,
+        statHp: 20,
+        hpPercent: 75,
+      });
+      view.refresh([partyCard, null], []);
+      view.show();
+      let texts = m24s4BxWalkSubtree(root);
+      m24s4BxAssertNoRosterWord(texts, 'one party card, empty box');
+      let joined = texts.join('\n');
+      expect(joined).toContain('«box.title»');
+      expect(joined).toContain('«box.heal»');
+      expect(joined).toContain('«box.hint»');
+      expect(joined).toContain('«box.section.party»');
+      expect(joined).toContain('«box.section.box»');
+      expect(joined).toContain('«box.box.empty»');
+      expect(joined).toContain('«box.card.rename»');
+      expect(joined).toContain('«box.card.toBox»');
+      expect(joined).toContain(`«box.party.emptySlot|${JSON.stringify({ slot: 1 })}»`);
+      expect(joined).toContain(
+        `«box.card.stats|${JSON.stringify({
+          species: 'Sproutle',
+          level: 6,
+          current: 15,
+          max: 20,
+          percent: 75,
+        })}»`,
+      );
+      expect(joined, 'nickname renders raw, never a key').toContain('Kip');
+
+      const boxCard = makeCard({
+        monsterId: 200n,
+        speciesName: 'Emberfang',
+        nickname: '',
+        level: 9,
+        currentHp: 21,
+        statHp: 21,
+        hpPercent: 100,
+        evolutionChoicePending: true,
+      });
+      view.refresh([partyCard, null], [boxCard]);
+      texts = m24s4BxWalkSubtree(root);
+      m24s4BxAssertNoRosterWord(texts, 'box card pending evolution');
+      joined = texts.join('\n');
+      expect(joined).toContain('«box.card.evolveBadge»');
+      expect(joined).toContain('«box.card.toParty»');
+      expect(joined).toContain(
+        `«box.card.stats|${JSON.stringify({
+          species: 'Emberfang',
+          level: 9,
+          current: 21,
+          max: 21,
+          percent: 100,
+        })}»`,
+      );
+
+      vi.stubGlobal('prompt', vi.fn(() => null));
+      try {
+        const renameBtn = [...root.querySelectorAll('button')].find(
+          (b) => b.textContent === '«box.card.rename»',
+        );
+        expect(
+          renameBtn,
+          'precondition: a Rename control must be findable by its sentinel',
+        ).toBeDefined();
+        renameBtn!.click();
+        expect(
+          vi.mocked(prompt).mock.calls[0]?.[0],
+          'm24s4 BX-02: prompt() must receive the SENTINEL-wrapped box.rename.prompt copy',
+        ).toBe('«box.rename.prompt»');
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    } finally {
+      vi.mocked(i18nT).mockRestore();
+      vi.mocked(i18nTf).mockRestore();
+    }
+
+    // Post-restore call-through control (an existing S1 key — the new box.* keys do not exist
+    // in the catalog until the specialist ships them).
+    expect(i18nT('chrome.help.title')).toBe('Controls & Goals');
+  });
+});
+
+describe('m24s4 (ADR-0260): boxView.ts scan — zero failing sinks', () => {
+  it('m24s4 BX-03: scanSource(stripComments(boxView.ts)) has zero failing sinks, a >=15 sink floor, and no truncation/masking tripwires', () => {
+    const src = readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), 'boxView.ts'),
+      'utf8',
+    );
+    const result = scanSource(stripComments(src));
+
+    expect(
+      result.failing.map((s) => `${s.kind}@L${s.line}: ${s.failingSegments.join(' | ')}`),
+      'every sink must route through t()/tf() — any surviving English segment is listed above',
+    ).toEqual([]);
+    expect(
+      result.sinks.length,
+      'SINK_FLOOR idiom (plan measured census): a floor, never an exact count',
+    ).toBeGreaterThanOrEqual(15);
+    expect(
+      result.unterminated,
+      'the literal mask must not end inside an unterminated literal',
+    ).toBe(false);
+    expect(result.maskedSinkTokens, 'no parity-flip mask desync').toBe(0);
+    for (const sink of result.sinks) {
+      expect(sink.truncated, `${sink.kind}@L${sink.line} must not be truncated`).toBe(false);
+    }
   });
 });

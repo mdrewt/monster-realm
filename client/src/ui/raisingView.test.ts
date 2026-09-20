@@ -91,11 +91,20 @@ import { RaisingView } from './raisingView';
 // battleView.test.ts's file header for the full rationale.
 // ---------------------------------------------------------------------------
 
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { stripComments } from '../../../evals/dom-shell-coverage-exclusion.eval.mjs';
 import { t } from './a11yCopy';
+import { scanSource } from './i18n/hardcodedStrings';
+import { t as i18nT, tf as i18nTf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
 
 vi.mock('./overlayA11y', { spy: true });
+// m24s4 (ADR-0260) MECHANISM oracle, same shape as m24s3: records every t()/tf() call AND
+// calls through to the real resolver, so RV-01's DOM byte-identity assertions still work.
+vi.mock('./i18n/resolver', { spy: true });
 
 /** ONE real macrotask boundary — never vi.useFakeTimers() (plan anti-pattern #10). */
 async function s4FlushMacrotask(): Promise<void> {
@@ -1222,5 +1231,416 @@ describe('★ RaisingView 20r-a: in-flight guard on the Train buttons (separate 
     raMonsterControls(parent)[0].trains[0]!.click();
     expect(onTrain).toHaveBeenCalledTimes(3);
     await flushPromises();
+  });
+});
+
+// =============================================================================
+// m24s4 (ADR-0260) — i18n migration batch B: raisingView.ts routes its migrated
+// sinks through t()/tf() (ADR-0256/0257/0259/0260 resolver) instead of raw
+// English literals.
+//
+// PREDICTED RED REASON AT HEAD: raisingView.ts calls neither `t()` nor `tf()`
+// anywhere today — every literal below is still a bare string literal or
+// template, and the file imports nothing from `./i18n/resolver`. RV-01/RV-02
+// therefore fail on their very first assertion (the spied `i18nT`/`i18nTf` are
+// never called at all, and the roster-word scan finds unbracketed English);
+// RV-03 fails because `scanSource(stripComments(...))` reports >=16 FAILING
+// sinks (raw English segments), not the required `failing: []`.
+//
+// Do NOT edit these tests to match a buggy implementation — correct them from
+// the plan/ADR-0260 only.
+// =============================================================================
+
+const M24S4_RV_PLAIN_KEYS = new Set([
+  'raising.title',
+  'raising.monsters.heading',
+  'raising.inventory.heading',
+  'raising.monsters.empty',
+  'raising.inventory.empty',
+  'raising.card.care',
+]);
+
+const M24S4_RV_PARAM_KEYS = new Set([
+  'raising.card.status',
+  'raising.card.stats',
+  'raising.card.train',
+  'raising.inventory.item',
+]);
+
+/** True iff `content` (the text strictly between one `«`/`»` pair) is EXACTLY an
+ *  expected sentinel: a bare roster key, or `key|<json>` where `key` is a roster
+ *  PARAM key and the tail after the FIRST `|` parses to a plain (non-array,
+ *  non-null) object. */
+function m24s4RvIsExpectedSentinelSpan(content: string): boolean {
+  const bar = content.indexOf('|');
+  if (bar === -1) {
+    return M24S4_RV_PLAIN_KEYS.has(content) || M24S4_RV_PARAM_KEYS.has(content);
+  }
+  const key = content.slice(0, bar);
+  if (!M24S4_RV_PARAM_KEYS.has(key)) return false;
+  const tail = content.slice(bar + 1);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(tail);
+  } catch {
+    return false;
+  }
+  return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed);
+}
+
+/** Elides only the bracket spans that are EXACTLY an expected sentinel (manual
+ *  indexOf loop — no RegExp, ADR-0055) and reports every OTHER `«...»` span
+ *  verbatim in `unexpectedSpans`, un-elided, so it stays in `stripped` for the
+ *  roster-word scan too — see battleView.test.ts's m24s3SplitSentinels header. */
+function m24s4RvSplitSentinels(text: string): { stripped: string; unexpectedSpans: string[] } {
+  let out = '';
+  const unexpectedSpans: string[] = [];
+  let i = 0;
+  while (i < text.length) {
+    const open = text.indexOf('«', i);
+    if (open === -1) {
+      out += text.slice(i);
+      break;
+    }
+    out += text.slice(i, open);
+    const close = text.indexOf('»', open + 1);
+    if (close === -1) {
+      // Unterminated bracket: never a legitimate sentinel — leave it in place.
+      out += text.slice(open);
+      break;
+    }
+    const span = text.slice(open, close + 1);
+    const content = text.slice(open + 1, close);
+    if (m24s4RvIsExpectedSentinelSpan(content)) {
+      // Elide — this is a real, correctly-formed sentinel.
+    } else {
+      out += span;
+      unexpectedSpans.push(span);
+    }
+    i = close + 1;
+  }
+  return { stripped: out, unexpectedSpans };
+}
+
+/** Whole-subtree walk (plan R5): every descendant's own text-node children, every
+ *  element's `title` attribute, and every `<option>`'s text — never a per-element
+ *  spot check. */
+function m24s4RvWalkSubtree(root: HTMLElement): string[] {
+  const texts: string[] = [];
+  const stack: Element[] = [root];
+  while (stack.length > 0) {
+    const el = stack.pop()!;
+    const titleAttr = el.getAttribute('title');
+    if (titleAttr) texts.push(titleAttr);
+    for (const node of Array.from(el.childNodes)) {
+      if (node.nodeType === 3) texts.push(node.textContent ?? ''); // TEXT_NODE
+    }
+    for (const child of Array.from(el.children)) stack.push(child);
+  }
+  return texts;
+}
+
+const M24S4_RV_ROSTER = [
+  'Raising & Inventory',
+  'Monsters',
+  'Inventory',
+  'No monsters.',
+  'No items.',
+  'Care',
+  'Trust ',
+  'HP ',
+  'ATK ',
+  'DEF ',
+  'SPD ',
+  'SP.ATK ',
+  'SP.DEF ',
+  'Train: ',
+];
+
+function m24s4RvAssertNoRosterWord(texts: readonly string[], label: string): void {
+  const { stripped, unexpectedSpans } = m24s4RvSplitSentinels(texts.join('\n'));
+  // A FORGED bracket span (raw English wrapped in `«...»` by something other than the
+  // resolver) is never elided — it must not exist at all under a correct implementation.
+  expect(
+    unexpectedSpans,
+    `${label}: found «...» span(s) that are not an EXACT expected sentinel (a forged ` +
+      `bracket span around raw content is not exempted from the roster scan)`,
+  ).toEqual([]);
+  for (const word of M24S4_RV_ROSTER) {
+    expect(
+      stripped.includes(word),
+      `${label}: must not contain English roster word "${word}" outside a «sentinel»`,
+    ).toBe(false);
+  }
+}
+
+describe('m24s4 (ADR-0260): raisingView.ts routes its migrated sinks through t()/tf()', () => {
+  it('m24s4 RV-01: every migrated sink calls t()/tf() with the exact key and params, exactly one Train request per trainable item-with-stock, show() re-resolves on a repeat open, and every DOM string stays byte-identical', () => {
+    vi.mocked(i18nT).mockClear();
+    vi.mocked(i18nTf).mockClear();
+    const parent = mountParent();
+    const view = new RaisingView(parent, makeCallbacks());
+    const root = overlayRootOf(parent);
+
+    // --- pre-show: constructor-time keys must NOT have been requested yet (plan D3) ---
+    expect(
+      i18nT,
+      'm24s4 RV-01: raising.title must resolve in show(), not the constructor',
+    ).not.toHaveBeenCalledWith('raising.title');
+    expect(i18nT).not.toHaveBeenCalledWith('raising.monsters.heading');
+    expect(i18nT).not.toHaveBeenCalledWith('raising.inventory.heading');
+
+    // --- empty monsters + empty inventory ---
+    view.refresh({ monsters: [], items: [] });
+    view.show();
+    expect(i18nT).toHaveBeenCalledWith('raising.title');
+    expect(i18nT).toHaveBeenCalledWith('raising.monsters.heading');
+    expect(i18nT).toHaveBeenCalledWith('raising.inventory.heading');
+    expect(i18nT).toHaveBeenCalledWith('raising.monsters.empty');
+    expect(i18nT).toHaveBeenCalledWith('raising.inventory.empty');
+    expect(root.querySelector('[data-testid="raising-title"]')?.textContent).toBe(
+      'Raising & Inventory',
+    );
+    expect(root.textContent ?? '').toContain('No monsters.');
+    expect(root.textContent ?? '').toContain('No items.');
+
+    // --- one monster, three items (one trainable-with-stock, one zero-count, one non-trainable) ---
+    vi.mocked(i18nT).mockClear();
+    vi.mocked(i18nTf).mockClear();
+    const items = [
+      {
+        invId: 200n,
+        itemId: 40,
+        name: 'Meadowgrain',
+        description: 'A field-grown ration.',
+        count: 3,
+        trainStat: 'speed',
+        canTrain: true,
+      },
+      {
+        invId: 201n,
+        itemId: 41,
+        name: 'Duskroot',
+        description: 'An out-of-stock ration.',
+        count: 0,
+        trainStat: 'attack',
+        canTrain: true,
+      },
+      {
+        invId: 202n,
+        itemId: 42,
+        name: 'Glimmerpebble',
+        description: 'Not a training item.',
+        count: 5,
+        trainStat: null,
+        canTrain: false,
+      },
+    ];
+    const monster = {
+      monsterId: 55n,
+      nickname: 'Kiri',
+      level: 12,
+      trustTier: 'Wary' as const,
+      currentHp: 30,
+      statHp: 50,
+      statAttack: 22,
+      statDefense: 18,
+      statSpeed: 27,
+      statSpAttack: 15,
+      statSpDefense: 19,
+    };
+    view.refresh({ monsters: [monster], items });
+
+    expect(i18nT).not.toHaveBeenCalledWith('raising.monsters.empty');
+    expect(i18nT).not.toHaveBeenCalledWith('raising.inventory.empty');
+    expect(i18nT).toHaveBeenCalledWith('raising.card.care');
+    expect(i18nTf).toHaveBeenCalledWith('raising.card.status', {
+      level: 12,
+      trust: 'Wary',
+      current: 30,
+      max: 50,
+    });
+    expect(i18nTf).toHaveBeenCalledWith('raising.card.stats', {
+      attack: 22,
+      defense: 18,
+      speed: 27,
+      spAttack: 15,
+      spDefense: 19,
+    });
+    expect(
+      vi.mocked(i18nTf).mock.calls.filter(([key]) => key === 'raising.card.train'),
+      'RV-01: exactly ONE raising.card.train request — only Meadowgrain qualifies (count > 0 ' +
+        'AND canTrain); Duskroot is out of stock and Glimmerpebble is not trainable',
+    ).toHaveLength(1);
+    expect(i18nTf).toHaveBeenCalledWith('raising.card.train', { name: 'Meadowgrain', count: 3 });
+    expect(i18nTf).not.toHaveBeenCalledWith('raising.card.train', { name: 'Duskroot', count: 0 });
+    expect(i18nTf).toHaveBeenCalledWith('raising.inventory.item', {
+      name: 'Meadowgrain',
+      count: 3,
+    });
+    expect(i18nTf).toHaveBeenCalledWith('raising.inventory.item', { name: 'Duskroot', count: 0 });
+    expect(i18nTf).toHaveBeenCalledWith('raising.inventory.item', {
+      name: 'Glimmerpebble',
+      count: 5,
+    });
+
+    // model-supplied strings must render RAW, never a key
+    expect(root.textContent ?? '').toContain('Kiri');
+    expect(root.textContent ?? '').toContain('A field-grown ration.');
+    expect(root.textContent ?? '').toContain('An out-of-stock ration.');
+    expect(root.textContent ?? '').toContain('Not a training item.');
+    const buttons = [...root.querySelectorAll('button')].map((b) => b.textContent);
+    expect(buttons).toContain('Train: Meadowgrain (x3)');
+
+    // --- RT2: a repeat show() re-resolves the constructor-time keys ---
+    vi.mocked(i18nT).mockClear();
+    view.show();
+    expect(
+      i18nT,
+      'm24s4 RV-01 RT2: a repeat show() on an already-open overlay must re-resolve raising.title',
+    ).toHaveBeenCalledWith('raising.title');
+    expect(i18nT).toHaveBeenCalledWith('raising.monsters.heading');
+    expect(i18nT).toHaveBeenCalledWith('raising.inventory.heading');
+  });
+
+  it('m24s4 RV-02: under «key» sentinels, every rendered surface shows resolver output and never an English roster word outside a sentinel, and showFeedback() text stays raw', () => {
+    const parent = mountParent();
+    const view = new RaisingView(parent, makeCallbacks());
+    const root = overlayRootOf(parent);
+
+    try {
+      vi.mocked(i18nT).mockImplementation((key: string) => `«${key}»`);
+      vi.mocked(i18nTf).mockImplementation(
+        (key: string, params: unknown) => `«${key}|${JSON.stringify(params)}»`,
+      );
+
+      view.refresh({ monsters: [], items: [] });
+      view.show();
+      let texts = m24s4RvWalkSubtree(root);
+      m24s4RvAssertNoRosterWord(texts, 'monsters+items empty');
+      let joined = texts.join('\n');
+      expect(joined).toContain('«raising.title»');
+      expect(joined).toContain('«raising.monsters.heading»');
+      expect(joined).toContain('«raising.inventory.heading»');
+      expect(joined).toContain('«raising.monsters.empty»');
+      expect(joined).toContain('«raising.inventory.empty»');
+
+      const items = [
+        {
+          invId: 200n,
+          itemId: 40,
+          name: 'Meadowgrain',
+          description: 'A field-grown ration.',
+          count: 3,
+          trainStat: 'speed',
+          canTrain: true,
+        },
+        {
+          invId: 201n,
+          itemId: 41,
+          name: 'Duskroot',
+          description: 'An out-of-stock ration.',
+          count: 0,
+          trainStat: 'attack',
+          canTrain: true,
+        },
+        {
+          invId: 202n,
+          itemId: 42,
+          name: 'Glimmerpebble',
+          description: 'Not a training item.',
+          count: 5,
+          trainStat: null,
+          canTrain: false,
+        },
+      ];
+      const monster = {
+        monsterId: 55n,
+        nickname: 'Kiri',
+        level: 12,
+        trustTier: 'Wary' as const,
+        currentHp: 30,
+        statHp: 50,
+        statAttack: 22,
+        statDefense: 18,
+        statSpeed: 27,
+        statSpAttack: 15,
+        statSpDefense: 19,
+      };
+      view.refresh({ monsters: [monster], items });
+      texts = m24s4RvWalkSubtree(root);
+      m24s4RvAssertNoRosterWord(texts, 'one monster, three items');
+      joined = texts.join('\n');
+      expect(joined).toContain('«raising.card.care»');
+      expect(joined).toContain(
+        `«raising.card.status|${JSON.stringify({ level: 12, trust: 'Wary', current: 30, max: 50 })}»`,
+      );
+      expect(joined).toContain(
+        `«raising.card.stats|${JSON.stringify({
+          attack: 22,
+          defense: 18,
+          speed: 27,
+          spAttack: 15,
+          spDefense: 19,
+        })}»`,
+      );
+      expect(joined).toContain(
+        `«raising.card.train|${JSON.stringify({ name: 'Meadowgrain', count: 3 })}»`,
+      );
+      expect(joined).toContain(
+        `«raising.inventory.item|${JSON.stringify({ name: 'Meadowgrain', count: 3 })}»`,
+      );
+      expect(joined).toContain(
+        `«raising.inventory.item|${JSON.stringify({ name: 'Duskroot', count: 0 })}»`,
+      );
+      expect(joined).toContain(
+        `«raising.inventory.item|${JSON.stringify({ name: 'Glimmerpebble', count: 5 })}»`,
+      );
+      // model-supplied strings must render RAW, never a sentinel
+      expect(joined).toContain('Kiri');
+      expect(joined).toContain('A field-grown ration.');
+
+      view.showFeedback('Cared for Kiri!');
+      texts = m24s4RvWalkSubtree(root);
+      m24s4RvAssertNoRosterWord(texts, 'after showFeedback');
+      expect(
+        texts.join('\n'),
+        'showFeedback() text must render raw, never through the resolver',
+      ).toContain('Cared for Kiri!');
+    } finally {
+      vi.mocked(i18nT).mockRestore();
+      vi.mocked(i18nTf).mockRestore();
+    }
+
+    // Post-restore call-through control (an existing S1 key — the new raising.* keys do not
+    // exist in the catalog until the specialist ships them).
+    expect(i18nT('chrome.help.title')).toBe('Controls & Goals');
+  });
+});
+
+describe('m24s4 (ADR-0260): raisingView.ts scan — zero failing sinks', () => {
+  it('m24s4 RV-03: scanSource(stripComments(raisingView.ts)) has zero failing sinks, a >=16 sink floor, and no truncation/masking tripwires', () => {
+    const src = readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), 'raisingView.ts'),
+      'utf8',
+    );
+    const result = scanSource(stripComments(src));
+
+    expect(
+      result.failing.map((s) => `${s.kind}@L${s.line}: ${s.failingSegments.join(' | ')}`),
+      'every sink must route through t()/tf() — any surviving English segment is listed above',
+    ).toEqual([]);
+    expect(
+      result.sinks.length,
+      'SINK_FLOOR idiom (plan measured census): a floor, never an exact count',
+    ).toBeGreaterThanOrEqual(16);
+    expect(
+      result.unterminated,
+      'the literal mask must not end inside an unterminated literal',
+    ).toBe(false);
+    expect(result.maskedSinkTokens, 'no parity-flip mask desync').toBe(0);
+    for (const sink of result.sinks) {
+      expect(sink.truncated, `${sink.kind}@L${sink.line} must not be truncated`).toBe(false);
+    }
   });
 });
