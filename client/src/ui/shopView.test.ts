@@ -67,8 +67,14 @@
 //   - GUARDED close in hide() (kills S1's A13 self-heal)  -> S3-shopView-CLOSE-UNGUARDED
 //   - `fallbackFocus` passed as undefined/an element       -> S3-shopView-HELPER-CALLED (literal null)
 
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { stripComments } from '../../../evals/dom-shell-coverage-exclusion.eval.mjs';
 import { t } from './a11yCopy';
+import { scanSource } from './i18n/hardcodedStrings';
+import { t as i18nT, tf as i18nTf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
 import type { ShopScreenViewModel } from './shopModel';
@@ -78,6 +84,9 @@ import { ShopView } from './shopView';
 // The m23-s3 MECHANISM oracle. `{ spy: true }` records every call AND calls through to the real
 // implementation, so the VALUE oracle (real attribute writes, real focus moves) still works.
 vi.mock('./overlayA11y', { spy: true });
+// m24s4 (ADR-0260) MECHANISM oracle, same shape: records every t()/tf() call AND calls through to
+// the real resolver, so SV-01's DOM byte-identity assertions still work.
+vi.mock('./i18n/resolver', { spy: true });
 
 // ---------------------------------------------------------------------------
 // DOM fixture — mirrors client/index.html:23-28 EXACTLY as it exists today.
@@ -697,5 +706,328 @@ describe('m24s0 I18N-5 (ADR-0255 D5)', () => {
     expect(inventory.querySelector('button')).toBeNull();
 
     removeOverlay(overlay);
+  });
+});
+
+// =============================================================================
+// m24s4 (ADR-0260) — i18n migration batch B: shopView.ts routes its migrated
+// sinks through t()/tf() (ADR-0256/0257/0259/0260 resolver) instead of raw
+// English literals.
+//
+// PREDICTED RED REASON AT HEAD: shopView.ts calls neither `t()` nor `tf()`
+// anywhere today — every literal below is still a bare string, and the file
+// imports nothing from `./i18n/resolver`. SV-01/SV-02 therefore fail on their
+// very first assertion (the spied `i18nT`/`i18nTf` are never called at all,
+// and the roster-word scan finds unbracketed English); SV-03 fails because
+// `scanSource(stripComments(...))` reports FAILING raw-English sinks, not the
+// required `failing: []`.
+//
+// Do NOT edit these tests to match a buggy implementation — correct them from
+// the plan/ADR-0260 only.
+//
+// m24s0 I18N-5 NOTE (unaffected, no new test needed): `emptyRow` (shopView.ts)
+// still calls `document.createElement('li')` exactly once regardless of
+// whether its `text` argument is a literal or `t('shop.noShop')` — the
+// migration only changes the ARGUMENT VALUE passed into the pre-existing
+// helper, never its call shape, so the existing `m24s0 I18N-5` spy test above
+// (exactly one `createElement('li')` call) stays green under a correct
+// migration without any edit.
+// =============================================================================
+
+/** `JSON.stringify` throws on a bare bigint (buy/sell prices ARE bigint,
+ *  shopModel.ts:27/35) — every sentinel `tf` mock in this block must use this. */
+function m24s4BigintReplacer(_key: string, value: unknown): unknown {
+  return typeof value === 'bigint' ? String(value) : value;
+}
+
+/** A balance label with NONE of the M24S4_SV_ROSTER words — the file's own
+ *  `knownBalance` fixture says 'Gold: N', which collides with the roster word
+ *  'gold' (case-insensitively, per the fixture-collision rule). */
+function m24s4Balance(label: string): ShopScreenViewModel['balance'] {
+  return { kind: 'known', amount: 100n, label };
+}
+
+function m24s4NoShopVm(): ShopScreenViewModel {
+  return noShopVm(m24s4Balance('Coins: 100'));
+}
+
+function m24s4EmptyShopVm(): ShopScreenViewModel {
+  return { ...shopVm(m24s4Balance('Coins: 100')), shopName: 'Wayside Stall' };
+}
+
+/** One buy row, one sellable row, one unsellable row — every fixture name is
+ *  chosen to contain NONE of the M24S4_SV_ROSTER words. */
+function m24s4PopulatedShopVm(): ShopScreenViewModel {
+  return {
+    ...shopVm(m24s4Balance('Coins: 100')),
+    shopName: 'Wayside Stall',
+    forSale: [{ shopItemId: 1n, itemId: 1, name: 'Charm', buyPrice: 10n }],
+    forSaleByPlayer: [
+      { invId: 1n, itemId: 2, name: 'Feather', count: 3, sellPrice: 4n, canSell: true },
+      { invId: 2n, itemId: 3, name: 'Talisman', count: 1, sellPrice: 0n, canSell: false },
+    ],
+  };
+}
+
+// m24s4 hardening (mirrors m24s3's H1, battleView.test.ts): the shopView keys this
+// sentinel matrix can legitimately produce — a bracket span whose content is not
+// EXACTLY one of these must be LEFT IN PLACE (never elided) rather than blindly
+// stripped, or a decoy bracket pair around raw English would silently launder it
+// past the roster-word scan below.
+const M24S4_SV_PLAIN_KEYS = new Set([
+  'shop.title',
+  'shop.noShop',
+  'shop.forSale.empty',
+  'shop.inventory.empty',
+  'shop.buy.submit',
+  'shop.sell.submit',
+]);
+
+const M24S4_SV_PARAM_KEYS = new Set(['shop.buy.row', 'shop.sell.row', 'shop.sell.unsellable']);
+
+/** True iff `content` (the text strictly between one `«`/`»` pair) is EXACTLY an
+ *  expected sentinel: a bare roster key, or `key|<json>` where `key` is a roster
+ *  PARAM key and the tail after the FIRST `|` parses to a plain (non-array,
+ *  non-null) object. */
+function m24s4SvIsExpectedSentinelSpan(content: string): boolean {
+  const bar = content.indexOf('|');
+  if (bar === -1) {
+    return M24S4_SV_PLAIN_KEYS.has(content) || M24S4_SV_PARAM_KEYS.has(content);
+  }
+  const key = content.slice(0, bar);
+  if (!M24S4_SV_PARAM_KEYS.has(key)) return false;
+  const tail = content.slice(bar + 1);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(tail);
+  } catch {
+    return false;
+  }
+  return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed);
+}
+
+/** Elides only the bracket spans that are EXACTLY an expected sentinel (manual
+ *  indexOf loop — no RegExp, ADR-0055) and reports every OTHER `«...»` span
+ *  verbatim in `unexpectedSpans`, un-elided, so it stays in `stripped` for the
+ *  roster-word scan too — see battleView.test.ts's m24s3SplitSentinels header. */
+function m24s4SvSplitSentinels(text: string): { stripped: string; unexpectedSpans: string[] } {
+  let out = '';
+  const unexpectedSpans: string[] = [];
+  let i = 0;
+  while (i < text.length) {
+    const open = text.indexOf('«', i);
+    if (open === -1) {
+      out += text.slice(i);
+      break;
+    }
+    out += text.slice(i, open);
+    const close = text.indexOf('»', open + 1);
+    if (close === -1) {
+      // Unterminated bracket: never a legitimate sentinel — leave it in place.
+      out += text.slice(open);
+      break;
+    }
+    const span = text.slice(open, close + 1);
+    const content = text.slice(open + 1, close);
+    if (m24s4SvIsExpectedSentinelSpan(content)) {
+      // Elide — this is a real, correctly-formed sentinel.
+    } else {
+      out += span;
+      unexpectedSpans.push(span);
+    }
+    i = close + 1;
+  }
+  return { stripped: out, unexpectedSpans };
+}
+
+/** Whole-subtree walk (plan R5): every descendant's own text-node children, every
+ *  element's `title` attribute, and every `<option>`'s text — never a per-element
+ *  spot check. */
+function m24s4SvWalkSubtree(root: HTMLElement): string[] {
+  const texts: string[] = [];
+  const stack: Element[] = [root];
+  while (stack.length > 0) {
+    const el = stack.pop()!;
+    const titleAttr = el.getAttribute('title');
+    if (titleAttr) texts.push(titleAttr);
+    if (el.tagName === 'OPTION') texts.push(el.textContent ?? '');
+    for (const node of Array.from(el.childNodes)) {
+      if (node.nodeType === 3) texts.push(node.textContent ?? ''); // TEXT_NODE
+    }
+    for (const child of Array.from(el.children)) stack.push(child);
+  }
+  return texts;
+}
+
+const M24S4_SV_ROSTER = [
+  'Shop',
+  'No shop available.',
+  'Nothing for sale.',
+  'No items to sell.',
+  'gold',
+  'Buy',
+  'Sell',
+  'Cannot sell',
+];
+
+function m24s4SvAssertNoRosterWord(texts: readonly string[], label: string): void {
+  const { stripped, unexpectedSpans } = m24s4SvSplitSentinels(texts.join('\n'));
+  // A FORGED bracket span (raw English wrapped in `«...»` by something other than
+  // the resolver, e.g. a decoy `.append('«Buy»')`) is never elided — it must not
+  // exist at all under a correct implementation.
+  expect(
+    unexpectedSpans,
+    `${label}: found «...» span(s) that are not an EXACT expected sentinel (a forged ` +
+      `bracket span around raw content is not exempted from the roster scan)`,
+  ).toEqual([]);
+  for (const word of M24S4_SV_ROSTER) {
+    expect(
+      stripped.includes(word),
+      `${label}: must not contain English roster word "${word}" outside a «sentinel»`,
+    ).toBe(false);
+  }
+}
+
+describe('m24s4 (ADR-0260): shopView.ts routes its migrated sinks through t()/tf()', () => {
+  it('m24s4 SV-01: every migrated sink calls t()/tf() with the exact key and params, shopName/balance.label stay raw, li.firstChild pins the buy-row text node, and every DOM string stays byte-identical', () => {
+    const overlay = mountShopOverlay();
+    const view = new ShopView(makeCallbacks());
+    view.show();
+
+    // (a) kind: 'no-shop' -> shop.title + shop.noShop (via emptyRow(t(...)))
+    view.render(m24s4NoShopVm());
+    expect(i18nT).toHaveBeenCalledWith('shop.title');
+    expect(i18nT).toHaveBeenCalledWith('shop.noShop');
+    expect(document.getElementById('shop-title')!.textContent).toBe('Shop');
+    expect(document.getElementById('shop-for-sale')!.textContent).toBe('No shop available.');
+    expect(
+      document.getElementById('shop-balance')!.textContent,
+      'balance.label is raw model data, never a resolver key',
+    ).toBe('Coins: 100');
+
+    // (b) empty shop -> shop.forSale.empty + shop.inventory.empty; vm.shopName raw
+    vi.mocked(i18nT).mockClear();
+    view.render(m24s4EmptyShopVm());
+    expect(i18nT).toHaveBeenCalledWith('shop.forSale.empty');
+    expect(i18nT).toHaveBeenCalledWith('shop.inventory.empty');
+    expect(i18nT, 'vm.shopName is raw model data, never a resolver key').not.toHaveBeenCalledWith(
+      'Wayside Stall',
+    );
+    expect(document.getElementById('shop-title')!.textContent).toBe('Wayside Stall');
+    expect(document.getElementById('shop-for-sale')!.textContent).toBe('Nothing for sale.');
+    expect(document.getElementById('shop-inventory')!.textContent).toBe('No items to sell.');
+
+    // (c) populated shop -> shop.buy.row / shop.buy.submit / shop.sell.row /
+    // shop.sell.submit / shop.sell.unsellable
+    vi.mocked(i18nT).mockClear();
+    vi.mocked(i18nTf).mockClear();
+    view.render(m24s4PopulatedShopVm());
+    expect(i18nTf).toHaveBeenCalledWith('shop.buy.row', { name: 'Charm', price: 10n });
+    expect(i18nT).toHaveBeenCalledWith('shop.buy.submit');
+    expect(i18nTf).toHaveBeenCalledWith('shop.sell.row', {
+      name: 'Feather',
+      count: 3,
+      price: 4n,
+    });
+    expect(i18nT).toHaveBeenCalledWith('shop.sell.submit');
+    expect(i18nTf).toHaveBeenCalledWith('shop.sell.unsellable', { name: 'Talisman', count: 1 });
+
+    const forSale = document.getElementById('shop-for-sale')!;
+    const buyLi = forSale.querySelector('li')!;
+    // THE tooth (plan): li.firstChild is the TEXT NODE written by `li.textContent =`
+    // BEFORE the <button> is appended — pin the exact bytes INCLUDING the trailing space.
+    expect(buyLi.firstChild?.textContent).toBe('Charm — 10 gold ');
+    expect(buyLi.querySelector('button')?.textContent).toBe('Buy');
+
+    const inventory = document.getElementById('shop-inventory')!;
+    const rows = [...inventory.querySelectorAll('li')];
+    const sellRow = rows.find((li) => li.textContent?.startsWith('Feather'))!;
+    expect(sellRow.firstChild?.textContent).toBe('Feather (×3) — 4 gold ');
+    expect(sellRow.querySelector('button')?.textContent).toBe('Sell');
+    const unsellableRow = rows.find((li) => li.textContent?.startsWith('Talisman'))!;
+    expect(unsellableRow.firstChild?.textContent).toBe('Talisman (×1) — Cannot sell');
+    expect(unsellableRow.querySelector('button')).toBeNull();
+
+    removeOverlay(overlay);
+  });
+
+  it('m24s4 SV-02: under «key» sentinels, every rendered surface shows resolver output and never an English roster word outside a sentinel', () => {
+    const overlay = mountShopOverlay();
+    // m24s4 hardening (mirrors m24s3 H3, battleView.test.ts/pvpView.test.ts): the view is
+    // CONSTRUCTED here, BEFORE the sentinel mockImplementation is installed below, so a
+    // future regression that hoists a t()/tf() call into the constructor would resolve
+    // against the REAL (call-through) resolver and surface as stale, unbracketed English
+    // in the very first m24s4SvAssertNoRosterWord below.
+    const view = new ShopView(makeCallbacks());
+
+    try {
+      vi.mocked(i18nT).mockImplementation((key: string) => `«${key}»`);
+      vi.mocked(i18nTf).mockImplementation((key: string, params: unknown) => {
+        return `«${key}|${JSON.stringify(params, m24s4BigintReplacer)}»`;
+      });
+
+      view.show();
+      view.render(m24s4NoShopVm());
+      let texts = m24s4SvWalkSubtree(overlay);
+      m24s4SvAssertNoRosterWord(texts, 'no-shop');
+      let joined = texts.join('\n');
+      expect(joined).toContain('«shop.title»');
+      expect(joined).toContain('«shop.noShop»');
+      expect(joined, 'balance.label stays raw').toContain('Coins: 100');
+
+      view.render(m24s4EmptyShopVm());
+      texts = m24s4SvWalkSubtree(overlay);
+      m24s4SvAssertNoRosterWord(texts, 'empty shop');
+      joined = texts.join('\n');
+      expect(joined).toContain('«shop.forSale.empty»');
+      expect(joined).toContain('«shop.inventory.empty»');
+      expect(joined, 'vm.shopName stays raw').toContain('Wayside Stall');
+
+      view.render(m24s4PopulatedShopVm());
+      texts = m24s4SvWalkSubtree(overlay);
+      m24s4SvAssertNoRosterWord(texts, 'populated shop');
+      joined = texts.join('\n');
+      expect(joined).toContain('«shop.buy.row|{"name":"Charm","price":"10"}»');
+      expect(joined).toContain('«shop.buy.submit»');
+      expect(joined).toContain('«shop.sell.row|{"name":"Feather","count":3,"price":"4"}»');
+      expect(joined).toContain('«shop.sell.submit»');
+      expect(joined).toContain('«shop.sell.unsellable|{"name":"Talisman","count":1}»');
+    } finally {
+      vi.mocked(i18nT).mockRestore();
+      vi.mocked(i18nTf).mockRestore();
+    }
+
+    // Post-restore call-through control (an existing S1 key -- the new shop.* keys do not
+    // exist in the catalog until the specialist ships them).
+    expect(i18nT('chrome.help.title')).toBe('Controls & Goals');
+
+    removeOverlay(overlay);
+  });
+});
+
+describe('m24s4 (ADR-0260): shopView.ts scan — zero failing sinks', () => {
+  it('m24s4 SV-03: scanSource(stripComments(shopView.ts)) has zero failing sinks, a >=17 sink floor, and no truncation/masking tripwires', () => {
+    const src = readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), 'shopView.ts'),
+      'utf8',
+    );
+    const result = scanSource(stripComments(src));
+
+    expect(
+      result.failing.map((s) => `${s.kind}@L${s.line}: ${s.failingSegments.join(' | ')}`),
+      'every sink must route through t()/tf() -- any surviving English segment is listed above',
+    ).toEqual([]);
+    expect(
+      result.sinks.length,
+      'SINK_FLOOR idiom (plan R2): a floor, never an exact count',
+    ).toBeGreaterThanOrEqual(17);
+    expect(
+      result.unterminated,
+      'the literal mask must not end inside an unterminated literal',
+    ).toBe(false);
+    expect(result.maskedSinkTokens, 'no parity-flip mask desync').toBe(0);
+    for (const sink of result.sinks) {
+      expect(sink.truncated, `${sink.kind}@L${sink.line} must not be truncated`).toBe(false);
+    }
   });
 });
