@@ -101,11 +101,11 @@ export const CATALOG_FR: Catalog = Object.freeze({
   'battle.continueHint': 'Appuyez sur Esc pour continuer',
   // @desc: Explainer shown in place of the swap buttons when the player has no healthy bench
   // monster in this battle; the second sentence tells them how to reach the party screen afterwards
-  // ("Esc" and "B" are keyboard key names; "Équipe et Boîte" is that screen's title, box.title).
+  // ("Esc" and "B" are keyboard key names; "Équipe et boîte" is that screen's title, box.title).
   // Two sentences, wraps freely in a 320px-wide column.
   // battleView.ts:216-218 (resolved in show())
   'battle.swap.hint':
-    'Aucun monstre de l’équipe en état de combattre ne peut entrer dans ce combat. À la fin du combat, appuyez sur Esc, puis sur B pour Équipe et Boîte.',
+    'Aucun monstre de l’équipe en état de combattre ne peut entrer dans ce combat. À la fin du combat, appuyez sur Esc, puis sur B pour Équipe et boîte.',
   // @desc: PvP status banner shown after the player has submitted their move, while the opponent's
   // move is still outstanding; carries a typographic apostrophe and an ellipsis. One line.
   // battleView.ts:347
@@ -331,7 +331,7 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // @desc: Heading of the party & box overlay, where the player arranges which monsters are in
   // the active party and which stay in storage; quoted inside battle.swap.hint. One short line.
   // boxView.ts:69 (resolved in show())
-  'box.title': 'Équipe et Boîte',
+  'box.title': 'Équipe et boîte',
   // @desc: Button beside the party & box heading that fully heals every party monster. Short
   // phrase, fits a narrow button.
   // boxView.ts:79 (resolved in show())
@@ -342,7 +342,7 @@ export const CATALOG_FR: Catalog = Object.freeze({
   // a spaced em dash.
   // boxView.ts:94-96 (resolved in show())
   'box.hint':
-    'Seuls les monstres de votre Équipe peuvent combattre ou entrer en combat. Les nouvelles recrues arrivent dans votre Boîte — chaque monstre de la boîte a un bouton « Vers l’équipe » qui le déplace dans un emplacement libre de l’équipe.',
+    'Seuls les monstres de votre équipe peuvent combattre ou être échangés en cours de combat. Les nouvelles recrues arrivent dans votre Boîte — chaque monstre de la boîte a un bouton « Vers l’équipe » qui le déplace dans un emplacement libre de l’équipe.',
   // @desc: Section heading above the six party slots. One word.
   // boxView.ts:101 (resolved in show())
   'box.section.party': 'Équipe',

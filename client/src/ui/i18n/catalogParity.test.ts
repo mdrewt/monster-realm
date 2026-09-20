@@ -818,6 +818,34 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
     expect(Array.from(a11yLiteralKeys).sort(), 'main.ts a11y-bound literal keys').toEqual([
       'a11y.world.region',
     ]);
+
+    // I18N-27 over the LIVE tree: every resolver-bound call's first argument is a literal.
+    // WRONG IMPL KILLED (the verifier's own mutant): a roster + main.ts-only assertion lets a call
+    // site swap `t('claim.privacyButton')` for a backtick key while a SECOND literal requester of
+    // the same key survives — DEAD-KEY never fires, UNDEFINED-KEY never fires, and the whole
+    // §5.3 gate stayed green over 3368 tests. The census must be asked directly.
+    const dynamicSites = census.flatMap((f) =>
+      f.calls.filter((c) => c.kind === 'dynamic').map((c) => `${f.file}:${c.module}.${c.orig}`),
+    );
+    expect(
+      dynamicSites.filter((s) => endsWith(s, ':i18n.t') || endsWith(s, ':i18n.tf')),
+      `DYNAMIC-KEY findings over the live tree (i18n binding): ${JSON.stringify(dynamicSites)}`,
+    ).toEqual([]);
+    // The a11y binding is M23's `t(key: string)` seam, and two of its sites are REGISTRY-DRIVEN by
+    // design (`OVERLAY_A11Y[id].labelKey`, ADR-0205) — a finding, never a skip: the roster below is
+    // exact, so a THIRD dynamic a11y site (or a resolver-bound one) is a loud red, not a pass.
+    expect(
+      dynamicSites.filter((s) => endsWith(s, ':a11y.t')).sort(),
+      'the only dynamic a11y.t sites are the two M23 registry lookups — exact roster',
+    ).toEqual(['ui/announcements.ts:a11y.t', 'ui/overlayA11y.ts:a11y.t']);
+    const literalTotal = census.reduce(
+      (n, f) => n + f.calls.filter((c) => c.kind === 'literal').length,
+      0,
+    );
+    expect(
+      literalTotal,
+      'anti-vacuity: the live census must classify well over 100 literal call sites',
+    ).toBeGreaterThan(100);
   });
 
   it('m24s7 PARITY-02: fixtures — proof-of-teeth for DYNAMIC-KEY detection + binding resolution', () => {
