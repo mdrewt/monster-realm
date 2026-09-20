@@ -593,6 +593,9 @@ describe('catalogShape (M24 S6, ADR-0262 §5.4)', () => {
     // census): `const k = 'a11y.x' as const; tf(k, {});` has no string literal as the first
     // argument at all, so it produces zero hits here by construction — messageIds.ts:299's
     // `AssertNoA11yParamKey` is the compile-time half of that guarantee.
+    // Also out of scope, same reason: FUNCTION-VALUE indirection (`[tf][0]('a11y.x', …)`,
+    // `const f = tf; f('a11y.x', …)`) is not a text-scannable call site — I18N-27's census and
+    // tsc's totality (`A11yKey = never`, so only an `as never` cast compiles) are the backstops.
     expect(
       findTfCalls("const k = 'a11y.x' as const; tf(k, {});").filter(
         (c) => c.firstArgLiteral !== undefined,
@@ -687,7 +690,8 @@ describe('catalogShape (M24 S6, ADR-0262 §5.4)', () => {
       expect(
         result.ok,
         `${d.file}: locale '${d.locale}' plural categories are not exactly {one,other} but the ` +
-          `source still uses the identifier oneOther ${result.count} time(s)`,
+          `source still uses the identifier oneOther ${result.count} time(s) and/or the quoted ` +
+          `literal token 'oneOther' ${result.literalCount} time(s)`,
       ).toBe(true);
     }
 
@@ -725,6 +729,12 @@ describe('catalogShape (M24 S6, ADR-0262 §5.4)', () => {
     expect(
       checkOneOther('ru', 'const oo = oneOther;').ok,
       'a bare reference (no call at all) must FAIL — this is an identifier scan',
+    ).toBe(false);
+    expect(
+      checkOneOther('ru', "const label = plural['oneOther']('a', 'b');").ok,
+      "a ru file accessing plural['oneOther'](...) via string-index must FAIL — the quoted " +
+        'literal token is caught separately, since maskOutLiteralText blanks it before the ' +
+        'identifier scan runs',
     ).toBe(false);
     expect(
       checkOneOther('en', "const forms = oneOther('a', 'b');").ok,
@@ -1142,22 +1152,51 @@ function countIdentifierOccurrences(src: string, ident: string): number {
   return count;
 }
 
+/** Counts occurrences of `ident` as a WHOLE single/double/backtick-quoted string literal — e.g.
+ *  `'oneOther'`, `"oneOther"`, `` `oneOther` `` — in `src`. Catches `plural['oneOther'](...)`
+ *  string-index access: `maskOutLiteralText` blanks quoted literal payload BY DESIGN (a
+ *  translated string value that merely contains the word `oneOther` must never trip the
+ *  identifier scan), which is exactly what let that string-index access through as a bypass; an
+ *  exact quote-ident-matching-quote substring search leaves no room for a partial match
+ *  (`'xoneOtherx'` never counts). */
+function countWholeLiteralTokenOccurrences(src: string, ident: string): number {
+  let count = 0;
+  for (const quote of ["'", '"', '`']) {
+    const token = `${quote}${ident}${quote}`;
+    let from = 0;
+    for (;;) {
+      const at = src.indexOf(token, from);
+      if (at === -1) break;
+      from = at + token.length;
+      count += 1;
+    }
+  }
+  return count;
+}
+
 interface OneOtherResult {
   readonly ok: boolean;
   readonly count: number;
+  readonly literalCount: number;
 }
 
 /** SHAPE-06 (I18N-33): the IDENTIFIER token `oneOther` at word boundaries (import specifiers,
  *  aliases, spaced calls, bare references all count — this is not a `oneOther(` call-shape
- *  scan), over comment-stripped + literal-masked source. `locale`'s CLDR category set decides
- *  whether ANY occurrence is a violation. */
+ *  scan), over comment-stripped + literal-masked source, PLUS the whole quoted literal token
+ *  `'oneOther'` / `"oneOther"` / `` `oneOther` `` on the comment-stripped but UNMASKED source (a
+ *  `plural['oneOther'](...)` string-index access hides the identifier inside a literal that the
+ *  mask blanks for the first scan; a catalog value that is exactly the bare word `oneOther` is
+ *  never a real translated string either way, so it is also a violation). `locale`'s CLDR
+ *  category set decides whether ANY occurrence, of either kind, is a violation. */
 function checkOneOther(locale: string, rawSrc: string): OneOtherResult {
   const categories = Array.from(
     new Intl.PluralRules(locale).resolvedOptions().pluralCategories,
   ).sort();
   const isTwoCategory =
     categories.length === 2 && categories[0] === 'one' && categories[1] === 'other';
-  const masked = maskOutLiteralText(stripComments(rawSrc));
+  const stripped = stripComments(rawSrc);
+  const masked = maskOutLiteralText(stripped);
   const count = countIdentifierOccurrences(masked, 'oneOther');
-  return { ok: isTwoCategory || count === 0, count };
+  const literalCount = countWholeLiteralTokenOccurrences(stripped, 'oneOther');
+  return { ok: isTwoCategory || (count === 0 && literalCount === 0), count, literalCount };
 }

@@ -18,7 +18,8 @@
  *   document.documentElement.lang = LOCALE;
  *   document.documentElement.dir = isRtl(LOCALE) ? 'rtl' : 'ltr';
  * with `import { isRtl, negotiateLocale } from './ui/i18n/locale';` and
- * `import { CATALOGS, setLocale, t as i18nT, tf } from './ui/i18n/resolver';`, plus six
+ * `import { CATALOGS, t as i18nT, setLocale, tf } from './ui/i18n/resolver';` (biome sorts
+ * import specifiers by their LOCAL binding name — i18nT sorts before setLocale), plus six
  * `reportError(...)` literal-to-`i18nT`/`tf` migrations (BOOT-06).
  *
  * WHY A RUNTIME IMPORT FOR BOOT-01..04/07 — main.wiring.test.ts's own rule is "source-scan
@@ -28,9 +29,10 @@
  * a resolver-cell mutation), which no text scan can observe — only a real module evaluation can.
  * Modelled on `main.reducedMotionWiring.test.ts` (17r-a): SAME wasm-pkg / ./net/connection /
  * ./observability/telemetry / ./render/world mocks, SAME recordListeners + afterEach cleanup,
- * SAME controllable rAF stub, SAME `vi.resetModules()` + `await import('./main')` +
- * `vi.waitFor` on the connect() capture. The `./render/renderResolver` mock is dropped — this
- * file never drives a frame.
+ * SAME `vi.resetModules()` + `await import('./main')` + `vi.waitFor` on the connect() capture.
+ * The `./render/renderResolver` mock is dropped, and the rAF stub here is INERT (`stubInertRaf`
+ * — no captured callback, unlike the precedent's controllable one) because this file never
+ * drives a frame; it only observes module-scope boot-time side effects.
  *
  * WHY WRAP `document.documentElement.setAttribute` RATHER THAN SHADOW THE `lang`/`dir`
  * ACCESSORS (red-team correction, plan-review-findings.md): happy-dom's `.lang =` / `.dir =`
@@ -71,13 +73,32 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 // client/src/ui/i18n-no-html-sink.test.ts). Path is relative to client/src/ (this file's dir).
 import { stripComments } from '../../evals/dom-shell-coverage-exclusion.eval.mjs';
 import type { Connection, ConnectionOptions } from './net/connection';
+import { CATALOG_EN } from './ui/i18n/catalog.en';
+import type { Catalog } from './ui/i18n/messageIds';
 
 // --- hoisted state shared with the mock factories --------------------------------------
+//
+// MEASURED (red-team, 2026-09-20): a vi.mock(...) factory runs ONCE PER FILE, not once per
+// vi.resetModules() generation. This file's first draft assumed the resolver mock factory
+// re-ran fresh on every import('./main') the way main.reducedMotionWiring.test.ts's
+// RecordingRenderResolver subclass does — it does not; only a module that is genuinely
+// UNMOCKED (main.ts itself) gets a fresh instance from vi.resetModules(). A frozen CATALOGS
+// object captured on the FIRST test's factory invocation stayed frozen at whatever that first
+// test registered, for every later test in the file (BOOT-01 ran first with no extra locales
+// => CATALOGS = {en} forever => BOOT-02/03/04/07 each measured setLocaleCalls ['en']). THE
+// FIX: the mock's registry is a single MUTABLE object, created once, that setupMain() edits IN
+// PLACE (deletes every key, re-adds 'en' plus whatever this test needs) before every
+// import('./main') — never reassigned. The mock's setLocale/currentLocale close over H itself
+// (never a local snapshot), so they always see the CURRENT contents no matter which
+// "generation" of main.ts is asking.
 const H = vi.hoisted(() => ({
-  /** Extra locale tags the './ui/i18n/resolver' mock should register (beyond 'en'), each
-   *  mapped to the real English catalog object — set by setupMain() BEFORE vi.resetModules()
-   *  so the mock factory (which re-runs per fresh module-registry generation) reads it fresh. */
-  extraLocales: [] as string[],
+  /** The MUTABLE locale registry the mocked './ui/i18n/resolver' module serves CATALOGS from
+   *  — the SAME object reference for this file's whole lifetime; setupMain() deletes/re-adds
+   *  its own keys per test, never reassigns this binding. */
+  catalogs: {} as Record<string, Catalog>,
+  /** The mocked resolver's locale cell — lives in H for the identical per-file-factory reason;
+   *  reset to 'en' by setupMain() before every test. */
+  current: 'en',
   /** Every locale tag ever passed to the mocked setLocale, in call order. THE observation
    *  channel for "was setLocale called, with what, how many times". */
   setLocaleCalls: [] as string[],
@@ -176,33 +197,31 @@ vi.mock('./render/world', () => {
   return { WorldRenderer };
 });
 
-// THE OBSERVATION CHANNEL FOR setLocale/CATALOGS/currentLocale: a fresh mock built from
-// importOriginal() inside the factory (which re-runs per fresh module-registry generation), so
-// it is never a stale-generation problem the way a statically-imported spy would be (see the
-// reducedMotionWiring precedent's RenderResolver note for the general hazard). Keeps the REAL
-// `t`/`tf` untouched (this file never exercises them at runtime) and the REAL CATALOG_EN object
-// as the value behind every registered tag — 'en' always, plus whatever H.extraLocales names,
-// so a test can register a second locale ('he') without a second real catalog existing yet.
+// THE OBSERVATION CHANNEL FOR setLocale/CATALOGS/currentLocale — see the H doc-comment above
+// for the MEASURED "factory runs once per file" fact this shape is built around. `CATALOGS`
+// below is bound to `H.catalogs` ITSELF (never a copy, never frozen): setupMain() mutates
+// H.catalogs's keys in place before every import('./main'), so a FRESH main.ts generation
+// reading `Object.keys(CATALOGS)` at its own module-eval time always sees the CURRENT per-test
+// registry, even though this factory function body only ever runs once for the whole file.
+// `setLocale`/`currentLocale` close over H directly (never a local `current`) for the same
+// reason. Keeps the REAL `t`/`tf` untouched (this file never exercises them at runtime).
 vi.mock('./ui/i18n/resolver', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./ui/i18n/resolver')>();
-  const englishCatalog = actual.CATALOGS.en;
-  const catalogs: Record<string, typeof englishCatalog> = { en: englishCatalog };
-  for (const tag of H.extraLocales) catalogs[tag] = englishCatalog;
-  const mockCatalogs: Readonly<Record<string, typeof englishCatalog>> = Object.freeze(catalogs);
-  let current = actual.DEFAULT_LOCALE;
   // Throws on an unregistered locale EXACTLY like the real setLocale — see the "NO try/catch"
-  // header note for why that must stay true.
+  // header note for why that must stay true. Checked against H.catalogs AT CALL TIME, never a
+  // snapshot, so a locale setupMain() registers is always honoured regardless of when this
+  // factory body itself ran.
   const setLocale = (locale: string): void => {
-    if (!Object.hasOwn(mockCatalogs, locale)) {
+    if (!Object.hasOwn(H.catalogs, locale)) {
       throw new Error(
-        `i18n: locale '${locale}' is not registered — CATALOGS has [${Object.keys(mockCatalogs).join(', ')}]`,
+        `i18n: locale '${locale}' is not registered — CATALOGS has [${Object.keys(H.catalogs).join(', ')}]`,
       );
     }
     H.setLocaleCalls.push(locale);
-    current = locale;
+    H.current = locale;
   };
-  const currentLocale = (): string => current;
-  return { ...actual, CATALOGS: mockCatalogs, setLocale, currentLocale };
+  const currentLocale = (): string => H.current;
+  return { ...actual, CATALOGS: H.catalogs, setLocale, currentLocale };
 });
 
 // --- listener-cleanup harness (verbatim from main.reducedMotionWiring.test.ts) ---------
@@ -297,7 +316,14 @@ describe('main.ts boot-time locale negotiation wiring (m24-s6, I18N-22)', {
     readonly url?: string;
   }): Promise<void> {
     const { languages, extraLocales = [], url = '/' } = opts;
-    H.extraLocales = [...extraLocales];
+
+    // Reset the MUTABLE resolver registry IN PLACE — never reassign H.catalogs itself (see the
+    // H doc-comment: the mock factory bound CATALOGS to this exact object once, for the file's
+    // whole lifetime, so only in-place mutation is visible to a freshly re-imported main.ts).
+    for (const key of Object.keys(H.catalogs)) delete H.catalogs[key];
+    H.catalogs.en = CATALOG_EN;
+    for (const tag of extraLocales) H.catalogs[tag] = CATALOG_EN;
+    H.current = 'en';
     H.setLocaleCalls = [];
     H.connectOpts = null;
     attrWrites = [];
@@ -325,6 +351,18 @@ describe('main.ts boot-time locale negotiation wiring (m24-s6, I18N-22)', {
     stubInertRaf();
 
     vi.resetModules();
+    // Precondition: guards against the SAME per-file-factory staleness class B1 measured — if a
+    // future edit reassigns `CATALOGS` inside the mock factory (instead of mutating
+    // H.catalogs's keys), the in-place reset above would silently stop reaching the module
+    // main.ts actually imports, and every BOOT-0[2-4]/07 assertion would fail exactly the way
+    // B1 did (measured: 3/7 passing, each test green in isolation).
+    const resolverModule = await import('./ui/i18n/resolver');
+    expect(
+      resolverModule.CATALOGS,
+      "precondition: './ui/i18n/resolver''s mocked CATALOGS must be the EXACT SAME object as " +
+        'H.catalogs — a copy or a re-frozen snapshot would not observe the in-place reset above',
+    ).toBe(H.catalogs);
+
     // NO try/catch here — see the header note. A wrong impl that hands an unregistered tag
     // straight to setLocale() must reject this import and fail the calling test by name.
     await import('./main');
@@ -350,7 +388,8 @@ describe('main.ts boot-time locale negotiation wiring (m24-s6, I18N-22)', {
     attrWrites = [];
     H.connectOpts = null;
     H.setLocaleCalls = [];
-    H.extraLocales = [];
+    for (const key of Object.keys(H.catalogs)) delete H.catalogs[key];
+    H.current = 'en';
     vi.unstubAllGlobals();
     document.body.innerHTML = '';
     window.history.replaceState(null, '', '/');
@@ -521,11 +560,13 @@ describe('main.ts boot-time locale negotiation wiring (m24-s6, I18N-22)', {
     expect(
       countOccurrences(
         squashed,
-        "import { CATALOGS, setLocale, t as i18nT, tf } from './ui/i18n/resolver';",
+        "import { CATALOGS, t as i18nT, setLocale, tf } from './ui/i18n/resolver';",
       ),
       'WRONG IMPL KILLED: the resolver.ts import missing, duplicated, aliased differently ' +
         '(e.g. `t as tChrome`, which would make the S7 DEAD-KEY census key on the wrong bare ' +
-        'token), or its specifiers out of the biome-sorted alphabetical order.',
+        "token), or its specifiers out of biome's LOCAL-NAME sort order (i18nT sorts before " +
+        'setLocale because biome orders import specifiers by their LOCAL binding name, not ' +
+        'their original export name).',
     ).toBe(1);
   });
 

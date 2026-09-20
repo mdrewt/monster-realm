@@ -133,6 +133,8 @@ import {
 import type { HealView } from './ui/healView';
 import { buildHelpViewModel } from './ui/helpModel';
 import type { HelpView } from './ui/helpView';
+import { isRtl, negotiateLocale } from './ui/i18n/locale';
+import { CATALOGS, t as i18nT, setLocale, tf } from './ui/i18n/resolver';
 import { interactPrompt, nearestInteractable } from './ui/interactModel';
 import { buildLeaderboardViewModel } from './ui/leaderboardModel';
 import type { LeaderboardView } from './ui/leaderboardView';
@@ -225,6 +227,15 @@ const sendLogger = makeSendLogger(DEV_LOG_LEVEL, (line) => console.log(line));
 // sendLogger. CONSOLE-ONLY — a ring push smuggled into this sink would ship reducer args
 // (player free text) into the shared F9 bundle (ADR-0157 §4).
 const fateLogger = makeFateLogger(DEV_LOG_LEVEL, (line) => console.log(line));
+
+// m24-s6 (ADR-0262, I18N-22): negotiate the boot locale once, before any consumer.
+const LOCALE = negotiateLocale(
+  [...new URLSearchParams(window.location.search).getAll('locale'), ...navigator.languages],
+  Object.keys(CATALOGS),
+);
+setLocale(LOCALE);
+document.documentElement.lang = LOCALE;
+document.documentElement.dir = isRtl(LOCALE) ? 'rtl' : 'ltr';
 
 const ZONE_ID = 0;
 
@@ -579,7 +590,7 @@ function downloadExportBundle(): void {
     // export, and logging it would retain it in the devtools buffer for the page's life and —
     // through reportError — put it on screen and into the ring the F9 bundle embeds.
     console.error('[data-export] download blocked');
-    reportError('data export: download blocked by the browser');
+    reportError(i18nT('chrome.status.exportBlocked'));
   } finally {
     // A3-D8: in a `finally`, not inside the `try` after `click()` as the F9 precedent has it —
     // a throw there would pin the object URL, and with it the whole export Blob, for the page's
@@ -648,7 +659,7 @@ function openPrivacy(): void {
   // discovering the deny afterwards would leave the player with NEITHER overlay and no message.
   const verdict = overlayVerdict('privacyView');
   if (verdict.kind === 'deny' && verdict.blockedBy !== 'claimView') {
-    reportError('privacy: close the other overlay first');
+    reportError(i18nT('chrome.status.privacyOverlayBusy'));
     return;
   }
   // Only now. A2-D5: hiding claim BEFORE show() is what keeps openOverlayA11y from capturing a
@@ -958,7 +969,7 @@ window.addEventListener('unhandledrejection', (e) => pushError('unhandledrejecti
  */
 function sendGuarded(where: string, call: () => Promise<void> | undefined): Promise<void> {
   if (conn === undefined || conn.linkFrozen()) {
-    reportError(`${where}: disconnected — try again`);
+    reportError(tf('chrome.status.disconnected', { where }));
     return Promise.resolve();
   }
   const p = call();
@@ -1037,7 +1048,7 @@ function switchZone(newZoneId: number): void {
     console.error('[zone-sync] zone switch to %s failed — keeping current zone', newZoneId, err);
     zoneSyncFailureCount++;
     if (shouldReportZoneSyncFailure(zoneSyncFailureCount)) {
-      reportError('content out of date — reload');
+      reportError(i18nT('chrome.status.contentStale'));
     }
   }
 }
@@ -2439,7 +2450,7 @@ function downloadBugBundle(): void {
   } catch {
     // CSP/sandbox/serialize fallback: never silently no-op. Log whatever we have.
     console.log('[bug-bundle]', json || bundle);
-    reportError('bug bundle: download blocked — copy from console');
+    reportError(i18nT('chrome.status.bugBundleBlocked'));
   }
 }
 // F9-BUNDLE-END
@@ -2521,7 +2532,7 @@ async function main(): Promise<void> {
         // zone/range/cooldown on the real send.
         const locationId = healTargetLocationId(store.healLocations());
         if (locationId === undefined) {
-          reportError('heal: no heal location available');
+          reportError(i18nT('chrome.status.healUnavailable'));
         } else {
           sendGuarded('heal', () => conn?.live()?.reducers.healParty({ locationId }));
         }
