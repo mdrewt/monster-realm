@@ -169,15 +169,9 @@ export class RaisingView {
   show(): void {
     const wasVisible = this.#visible;
     this.#visible = true;
-    // m24-s4 (ADR-0260 D4, the ADR-0259 R1 rule): the three strings that are set ONCE and never
-    // rewritten by a render — the heading and the two section headings — are resolved HERE, on
-    // every show(), not in the constructor. A constructor-time `t()` would freeze the English
-    // unless S6's `setLocale` ran before main.ts constructs this view (deep inside the async
-    // connect path) — an unenforced cross-file boot-order invariant. UNCONDITIONAL, not gated on
-    // `wasVisible`: a repeat show() on an already-open overlay must re-resolve too, or a
-    // mid-session locale switch would leave stale text. Idempotent by design. These writes sit
-    // AFTER the `wasVisible` read (the header's "first statement" edge) and BEFORE the display
-    // write, so the open stays the last statement of the open path.
+    // m24-s4 (ADR-0260 D4): the strings set ONCE and never rewritten by a render are resolved
+    // HERE, on EVERY show() — unconditionally, after the `wasVisible` read, before the display
+    // write. See evolutionView.show() for the boot-order / locale-switch reasoning.
     this.#titleEl.textContent = t('raising.title');
     this.#monstersLabelEl.textContent = t('raising.monsters.heading');
     this.#inventoryLabelEl.textContent = t('raising.inventory.heading');
