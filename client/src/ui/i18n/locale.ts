@@ -19,8 +19,8 @@ const RTL_PRIMARY_SUBTAGS: ReadonlySet<string> = new Set(['ar', 'he', 'fa', 'ur'
 
 /**
  * RFC 4647 lookup: for each `requested` tag IN ORDER, try the tag, then truncate at the last `-`
- * (dropping a trailing single-character subtag too, per §3.4) until an `available` tag matches
- * case-insensitively; the first hit wins. No hit, or an empty `requested`, resolves to `en`.
+ * until an `available` tag matches case-insensitively; the first hit wins. No hit, or an empty
+ * `requested`, resolves to `en`.
  */
 export function negotiateLocale(
   requested: readonly string[],
@@ -40,10 +40,6 @@ export function negotiateLocale(
       const cut = candidate.lastIndexOf('-');
       if (cut <= 0) break;
       candidate = candidate.slice(0, cut);
-      // RFC 4647 §3.4: a truncation that leaves a single-character subtag (an extension or
-      // private-use singleton like `-x`) is not a usable range on its own — drop it as well.
-      const prevCut = candidate.lastIndexOf('-');
-      if (prevCut > 0 && candidate.length - prevCut === 2) candidate = candidate.slice(0, prevCut);
     }
   }
   return english;

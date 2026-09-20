@@ -129,6 +129,22 @@ const FIXTURES: readonly Fixture[] = [
     ],
   },
   {
+    // I18N-6 half 3 (mutation red-team survivor fix): the READONLY layer of the totality
+    // guarantee. Writing through a Catalog-typed parameter must not compile — TS2540 (cannot
+    // assign to a read-only property). Kills a mutant that drops `readonly` from Catalog's
+    // mapped type (a mutant the omit/partial fixtures above do NOT catch, since neither writes
+    // through an already-typed Catalog value).
+    name: 'bad-readonly',
+    lines: [
+      importFrom('type { Catalog }', MESSAGE_IDS_SPEC),
+      '',
+      'export function badReadonly(cat: Catalog): void {',
+      "  cat['chrome.helpHint'] = 'x';",
+      '}',
+      '',
+    ],
+  },
+  {
     // I18N-7 half 1: a missing required param property on tf() — TS2345 (a fresh object-literal
     // argument reports on the argument, per plan §9 M2/red-team H3).
     name: 'bad-params-missing',
@@ -363,7 +379,7 @@ function tscExistsMessage(): string {
 }
 
 describe('i18nTypes.compile — the i18n module compile-total guarantees (m24-s1, ADR-0256)', () => {
-  it('m24s1 I18N-6: omitting a catalog key (TS2741, naming the key) or widening to Partial<Catalog> (TS2322) is a tsc RED; good.ts compiles clean', () => {
+  it('m24s1 I18N-6: omitting a catalog key (TS2741, naming the key), widening to Partial<Catalog> (TS2322), or writing through a Catalog-typed value (TS2540, the readonly layer) is a tsc RED; good.ts compiles clean', () => {
     const result = getResult();
     expect(result.tscExists, tscExistsMessage()).toBe(true);
     assertNoStrayDiagnostics(result);
@@ -378,6 +394,11 @@ describe('i18nTypes.compile — the i18n module compile-total guarantees (m24-s1
 
     const partialCodes = result.codesByFile.get('bad-partial.ts') ?? [];
     expect(partialCodes, `full tsc output:\n${result.output}`).toEqual(['TS2322']);
+
+    // The READONLY layer (mutation red-team survivor fix): writing through a Catalog-typed
+    // parameter must not compile — TS2540, killing a `readonly` drop from Catalog's mapped type.
+    const readonlyCodes = result.codesByFile.get('bad-readonly.ts') ?? [];
+    expect(readonlyCodes, `full tsc output:\n${result.output}`).toEqual(['TS2540']);
 
     const goodCodes = result.codesByFile.get('good.ts') ?? [];
     expect(goodCodes, `good.ts must compile with zero diagnostics:\n${result.output}`).toEqual([]);

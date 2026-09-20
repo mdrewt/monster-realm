@@ -84,5 +84,11 @@ export function tf<K extends ParamMessageId>(key: K, params: MessageParams[K]): 
   if (typeof entry !== 'function') {
     throw new Error(`i18n: key '${key}' is a plain message — use t()`);
   }
-  return entry(params);
+  // The ONE narrowing in this module. `lookup` returns the union of every key's branch, so once a
+  // second `MessageParams` entry exists the narrowed `entry` is a union of closures whose call
+  // signature is the INTERSECTION of their params — uncallable with `MessageParams[K]`. The cast
+  // is sound: `Object.hasOwn` + `typeof === 'function'` established that `entry` is K's own
+  // closure, and `Catalog` types that closure as exactly `(p: MessageParams[K]) => string`.
+  const fn = entry as (p: MessageParams[K]) => string;
+  return fn(params);
 }

@@ -41,6 +41,11 @@ describe('locale — RFC 4647 BCP-47 negotiation and the RTL primary-subtag tabl
     // WRONG IMPL KILLED (7): a mutant that only truncates ONCE — 'zh-Hant-TW' needs TWO
     // truncations ('zh-Hant-TW' -> 'zh-Hant' -> 'zh') before it matches the available 'zh'.
     expect(negotiateLocale(['zh-Hant-TW'], ['zh', 'en'])).toBe('zh');
+    // A private-use singleton subtag ('-x-') truncates through to the bare language via the
+    // SAME plain `lastIndexOf('-')` loop as any other subtag — no dedicated singleton-drop
+    // branch is required: 'fr-x-priv' -> 'fr-x' (no match) -> 'fr' (match).
+    expect(negotiateLocale(['en-x-priv'], ['en', 'fr'])).toBe('en');
+    expect(negotiateLocale(['fr-x-priv'], ['en', 'fr'])).toBe('fr');
     // An available set lacking 'en' is a programming error — negotiateLocale must throw rather
     // than return a locale the resolver cannot actually serve.
     expect(() => negotiateLocale(['fr'], ['fr'])).toThrow();

@@ -53,6 +53,26 @@ describe('resolver — the module-level locale cell and the t()/tf() resolvers (
     ).toBe(true);
 
     expect(t('chrome.helpHint' as never)).toBe('Press ? for help · click or M for menu');
+
+    // FULL VALUE SNAPSHOT (mutation red-team): a punctuation-only change to any one plain
+    // value — e.g. dropping the em dash in `contentStale` — passes every check above (it only
+    // asserts t(key) === CATALOG_EN[key], never the LITERAL English text) but fails here. Kills
+    // that survivor by pinning the exact 9-entry plain-value table from the plan.
+    const plainKeys = Object.keys(CATALOG_EN as Record<string, unknown>).filter(
+      (key) => typeof (CATALOG_EN as Record<string, unknown>)[key] === 'string',
+    );
+    const snapshot = Object.fromEntries(plainKeys.map((key) => [key, t(key as never)]));
+    expect(snapshot).toEqual({
+      'chrome.helpHint': 'Press ? for help · click or M for menu',
+      'chrome.help.title': 'Controls & Goals',
+      'chrome.rename.submit': 'Rename',
+      'chrome.tradePropose.submit': 'Offer',
+      'chrome.status.exportBlocked': 'data export: download blocked by the browser',
+      'chrome.status.privacyOverlayBusy': 'privacy: close the other overlay first',
+      'chrome.status.contentStale': 'content out of date — reload',
+      'chrome.status.bugBundleBlocked': 'bug bundle: download blocked — copy from console',
+      'chrome.status.healUnavailable': 'heal: no heal location available',
+    });
   });
 
   it('m24s1 RESOLVER-TF: tf(key, params) interpolates the params into the catalog closure — the em-dash literal is exact', () => {
