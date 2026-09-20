@@ -5337,14 +5337,71 @@ function m24s3PvpVM(overrides: Partial<BattleViewModel> = {}): BattleViewModel {
   } as BattleViewModel;
 }
 
-/** Strips every `«...»` sentinel marker out of `text` (manual indexOf loop — no
- *  RegExp, ADR-0055). Sentinel-mode's own bracketed key names legitimately
- *  contain English-looking substrings (`pvpSubmit` contains "Submit"); stripping
- *  them before the roster-word scan keeps the check sound: a genuinely-migrated
- *  site is bracketed and disappears, while any UNBRACKETED raw-English leak (a
- *  regression back to a literal) survives and still reds the scan. */
-function m24s3StripSentinels(text: string): string {
+// m24s3 hardening H1 (tests red-team, surviving cheat C10c): the battleView keys this
+// sentinel matrix can legitimately produce — the ONLY spans a strip is allowed to elide.
+// A bracket span whose content is not EXACTLY one of these (bare key, or `key|<json
+// object>` with key a PARAM key) is a FORGED span (e.g. a raw `.append('«Submit»')`
+// literal that never went through t()/tf()) and must be LEFT IN PLACE, never elided —
+// otherwise a decoy bracket pair around raw English would silently launder it past the
+// roster-word scan below.
+const M24S3_BV_PLAIN_KEYS = new Set([
+  'battle.title',
+  'battle.continueHint',
+  'battle.swap.hint',
+  'battle.pvp.waiting',
+  'battle.card.you',
+  'battle.card.opponent',
+  'battle.action.flee',
+  'battle.recruit.noBait',
+  'battle.recruit.submit',
+  'battle.cure.placeholder',
+  'battle.cure.submit',
+  'battle.outcome.victory',
+  'battle.outcome.defeat',
+  'battle.outcome.fled',
+]);
+
+const M24S3_BV_PARAM_KEYS = new Set([
+  'battle.weather.banner',
+  'battle.card.level',
+  'battle.card.hpLine',
+  'battle.skill.pvpSubmit',
+  'battle.skill.pveLabel',
+  'battle.skill.accuracy',
+  'battle.cure.option',
+  'battle.swap.pvpSubmit',
+  'battle.swap.pveLabel',
+]);
+
+/** True iff `content` (the text strictly between one `«`/`»` pair) is EXACTLY an
+ *  expected sentinel: a bare roster key, or `key|<json>` where `key` is a roster PARAM
+ *  key and the tail after the FIRST `|` parses to a plain (non-array, non-null) object. */
+function m24s3IsExpectedSentinelSpan(content: string): boolean {
+  const bar = content.indexOf('|');
+  if (bar === -1) {
+    return M24S3_BV_PLAIN_KEYS.has(content) || M24S3_BV_PARAM_KEYS.has(content);
+  }
+  const key = content.slice(0, bar);
+  if (!M24S3_BV_PARAM_KEYS.has(key)) return false;
+  const tail = content.slice(bar + 1);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(tail);
+  } catch {
+    return false;
+  }
+  return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed);
+}
+
+/** Elides only the bracket spans that are EXACTLY an expected sentinel (manual
+ *  indexOf loop — no RegExp, ADR-0055) and reports every OTHER `«...»` span verbatim
+ *  in `unexpectedSpans`, un-elided, so it stays in `stripped` for the roster-word scan
+ *  too (belt-and-braces): a genuinely-migrated site is bracketed with an EXACT
+ *  sentinel and disappears; any unbracketed raw-English leak, OR a forged bracket span
+ *  around raw English, survives into `stripped` and still reds the scan. */
+function m24s3SplitSentinels(text: string): { stripped: string; unexpectedSpans: string[] } {
   let out = '';
+  const unexpectedSpans: string[] = [];
   let i = 0;
   while (i < text.length) {
     const open = text.indexOf('«', i);
@@ -5355,12 +5412,21 @@ function m24s3StripSentinels(text: string): string {
     out += text.slice(i, open);
     const close = text.indexOf('»', open + 1);
     if (close === -1) {
+      // Unterminated bracket: never a legitimate sentinel — leave it in place.
       out += text.slice(open);
       break;
     }
+    const span = text.slice(open, close + 1);
+    const content = text.slice(open + 1, close);
+    if (m24s3IsExpectedSentinelSpan(content)) {
+      // Elide — this is a real, correctly-formed sentinel.
+    } else {
+      out += span;
+      unexpectedSpans.push(span);
+    }
     i = close + 1;
   }
-  return out;
+  return { stripped: out, unexpectedSpans };
 }
 
 /** Whole-subtree walk (plan R5): every descendant's own text-node children, every
@@ -5407,10 +5473,18 @@ const M24S3_BV_ROSTER = [
 ];
 
 function m24s3AssertNoRosterWord(texts: readonly string[], label: string): void {
-  const joined = m24s3StripSentinels(texts.join('\n'));
+  const { stripped, unexpectedSpans } = m24s3SplitSentinels(texts.join('\n'));
+  // m24s3 hardening H1: a FORGED bracket span (raw English wrapped in `«...»` by
+  // something other than the resolver, e.g. a decoy `.append('«Submit»')`) is never
+  // elided — it must not exist at all under a correct implementation.
+  expect(
+    unexpectedSpans,
+    `${label}: found «...» span(s) that are not an EXACT expected sentinel (a forged ` +
+      `bracket span around raw content is not exempted from the roster scan)`,
+  ).toEqual([]);
   for (const word of M24S3_BV_ROSTER) {
     expect(
-      joined.includes(word),
+      stripped.includes(word),
       `${label}: must not contain English roster word "${word}" outside a «sentinel»`,
     ).toBe(false);
   }
@@ -5567,6 +5641,15 @@ describe('m24s3 (ADR-0259): battleView.ts routes its migrated sinks through t()/
   it('m24s3 BV-02: under «key» sentinels, every rendered surface shows resolver output and never an English roster word outside a sentinel', () => {
     const parent = document.createElement('div');
     document.body.appendChild(parent);
+    // m24s3 hardening H3: the view is CONSTRUCTED here, BEFORE the sentinel
+    // mockImplementation is installed below. That ordering is load-bearing — plan R1
+    // moves `battle.title`/`battle.swap.hint`/`battle.continueHint` OUT of the
+    // constructor and into `show()` specifically so no string is ever resolved before
+    // sentinel mode is active; a regression back to a constructor-time `t()` call would
+    // resolve against the REAL (call-through) resolver at construction time here and
+    // surface as stale, unbracketed English in the very first `m24s3AssertNoRosterWord`
+    // below. Refactoring this ordering away (e.g. installing the mock before
+    // `new BattleView(...)`) would silently un-gate that R1 regression.
     const view = new BattleView(parent, m24s3Callbacks());
     const root = parent.firstElementChild as HTMLElement;
 

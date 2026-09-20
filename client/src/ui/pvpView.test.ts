@@ -970,10 +970,51 @@ describe('★ PvpView 20r-a: ONE view-wide in-flight lock over the challenge-lif
 // plan/ADR-0259 only.
 // =============================================================================
 
-/** Strips every `«...»` sentinel marker out of `text` — see battleView.test.ts's
- *  m24s3StripSentinels header for why this keeps the roster-word scan sound. */
-function m24s3PvStripSentinels(text: string): string {
+// m24s3 hardening H1 (tests red-team, surviving cheat C10c): the pvpView keys this
+// sentinel matrix can legitimately produce — see battleView.test.ts's
+// m24s3IsExpectedSentinelSpan header for why a bracket span whose content is not
+// EXACTLY one of these must be LEFT IN PLACE (never elided) rather than blindly
+// stripped — a forged `.append('«Accept»')`-style span must not launder raw English
+// past the roster-word scan below.
+const M24S3_PV_PLAIN_KEYS = new Set([
+  'pvp.title.idle',
+  'pvp.title.challenge',
+  'pvp.incoming.accept',
+  'pvp.incoming.decline',
+  'pvp.outgoing.cancel',
+  'pvp.players.none',
+  'pvp.players.heading',
+]);
+
+const M24S3_PV_PARAM_KEYS = new Set(['pvp.incoming.label', 'pvp.outgoing.label']);
+
+/** True iff `content` (the text strictly between one `«`/`»` pair) is EXACTLY an
+ *  expected sentinel: a bare roster key, or `key|<json>` where `key` is a roster PARAM
+ *  key and the tail after the FIRST `|` parses to a plain (non-array, non-null) object. */
+function m24s3PvIsExpectedSentinelSpan(content: string): boolean {
+  const bar = content.indexOf('|');
+  if (bar === -1) {
+    return M24S3_PV_PLAIN_KEYS.has(content) || M24S3_PV_PARAM_KEYS.has(content);
+  }
+  const key = content.slice(0, bar);
+  if (!M24S3_PV_PARAM_KEYS.has(key)) return false;
+  const tail = content.slice(bar + 1);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(tail);
+  } catch {
+    return false;
+  }
+  return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed);
+}
+
+/** Elides only the bracket spans that are EXACTLY an expected sentinel (manual
+ *  indexOf loop — no RegExp, ADR-0055) and reports every OTHER `«...»` span verbatim
+ *  in `unexpectedSpans`, un-elided, so it stays in `stripped` for the roster-word scan
+ *  too (belt-and-braces). See battleView.test.ts's m24s3SplitSentinels header. */
+function m24s3PvSplitSentinels(text: string): { stripped: string; unexpectedSpans: string[] } {
   let out = '';
+  const unexpectedSpans: string[] = [];
   let i = 0;
   while (i < text.length) {
     const open = text.indexOf('«', i);
@@ -987,9 +1028,17 @@ function m24s3PvStripSentinels(text: string): string {
       out += text.slice(open);
       break;
     }
+    const span = text.slice(open, close + 1);
+    const content = text.slice(open + 1, close);
+    if (m24s3PvIsExpectedSentinelSpan(content)) {
+      // Elide — this is a real, correctly-formed sentinel.
+    } else {
+      out += span;
+      unexpectedSpans.push(span);
+    }
     i = close + 1;
   }
-  return out;
+  return { stripped: out, unexpectedSpans };
 }
 
 /** Whole-subtree walk (plan R5): every descendant's own text-node children, every
@@ -1022,10 +1071,18 @@ const M24S3_PV_ROSTER = [
 ];
 
 function m24s3PvAssertNoRosterWord(texts: readonly string[], label: string): void {
-  const joined = m24s3PvStripSentinels(texts.join('\n'));
+  const { stripped, unexpectedSpans } = m24s3PvSplitSentinels(texts.join('\n'));
+  // m24s3 hardening H1: a FORGED bracket span (raw English wrapped in `«...»` by
+  // something other than the resolver) is never elided — it must not exist at all
+  // under a correct implementation.
+  expect(
+    unexpectedSpans,
+    `${label}: found «...» span(s) that are not an EXACT expected sentinel (a forged ` +
+      `bracket span around raw content is not exempted from the roster scan)`,
+  ).toEqual([]);
   for (const word of M24S3_PV_ROSTER) {
     expect(
-      joined.includes(word),
+      stripped.includes(word),
       `${label}: must not contain English roster word "${word}" outside a «sentinel»`,
     ).toBe(false);
   }
@@ -1103,6 +1160,15 @@ describe('m24s3 (ADR-0259): pvpView.ts routes its migrated sinks through t()/tf(
 
   it('m24s3 PV-02: under «key» sentinels, every rendered surface shows resolver output and never an English roster word outside a sentinel', () => {
     const root = mountPvpOverlay();
+    // m24s3 hardening H3: the view is CONSTRUCTED here, BEFORE the sentinel
+    // mockImplementation is installed below — same ordering as battleView.test.ts's
+    // BV-02 (see its m24s3 H3 comment). pvpView.ts has no constructor-time t()/tf()
+    // call today, but this ordering is what would surface one if a future edit ever
+    // hoisted a resolver call into the constructor (pvpView's own version of the plan
+    // R1 hazard battleView.ts's constructor once had): resolving against the REAL
+    // (call-through) resolver at construction time would show up as stale, unbracketed
+    // English in the very first m24s3PvAssertNoRosterWord below. Installing the mock
+    // before `new PvpView(...)` would silently hide that regression class.
     const view = new PvpView(makeCallbacks());
 
     try {
