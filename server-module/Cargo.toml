@@ -26,6 +26,15 @@ unicode-normalization = { workspace = true }
 [dev-dependencies]
 # Property testing for the evaluate_train seam (M9b-tail, raising_tests.rs).
 proptest = { workspace = true }
+# AST walker for the crate-wide deletion-gate census (rb-45, ADR-0258,
+# privacy_enforcement_tests.rs): every reducer that writes a manifest-classified
+# table must carry a depth-0 `should_reject_for_deletion` guard or be a declared
+# exemption. ADR-0224's escape hatch for a genuine whole-crate scan — a real
+# parser, never string/regex. Test-only (cfg(test) consumer); pinned to the
+# version already resolved transitively in Cargo.lock so no new package enters
+# the tree. Not a [workspace.dependencies] entry: single consumer, and the root
+# manifest is outside rb-45's touches.
+syn = { version = "2.0.118", features = ["full", "visit", "extra-traits"] }
 
 [features]
 # Dev/test-only reducers (start_wild_battle, grant_bait), OFF in release/publish
