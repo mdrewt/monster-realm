@@ -110,6 +110,14 @@ co-located vitest test; no `evals/*.eval.mjs` file is created.
 - A missing key, a wrong parameter shape, an `a11y.*` key reaching `tf`, and a two-category plural
   literal reaching `selectPlural` are each a `tsc` error, and each is proven so by a fixture whose
   exact diagnostic code is asserted — the compile path itself is proven live by a control fixture.
+- **The one narrowing in the module (measured):** `lookup` returns the union of every key's branch,
+  so once a second `MessageParams` entry with a different shape exists, the `typeof === 'function'`
+  narrowed `entry` is a union of closures whose call signature is the *intersection* of their
+  parameter types — `entry(params)` fails to compile (TS2345, reproduced with a probe key). A
+  generic `lookup<K extends MessageId>(key: K): Catalog[K]` does **not** help (the deferred
+  conditional's constraint distributes to the same union). So `tf` carries exactly one explicit
+  `entry as (p: MessageParams[K]) => string`, sound because `Object.hasOwn` + `typeof` established
+  it is `K`'s own closure; a future param key needs no `resolver.ts` edit.
 - **Named residual:** a JavaScript caller (or an `as never` cast) can pass `{ where: undefined }` to
   the `chrome.status.disconnected` closure and render `undefined: disconnected`. Typed call sites
   cannot; no runtime parameter validation is added (YAGNI). Casts are the caller's lie and are
