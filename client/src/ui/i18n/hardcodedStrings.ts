@@ -8,7 +8,7 @@
 // LITERAL MASK ORIGIN. The string/template-literal cursor (which indices are literal TEXT, which
 // are code, with template interpolations `${…}` left UNMASKED and an `unterminated` flag when the
 // scan ends inside a literal) is a minimal TYPED PORT of `stringMask` at
-// `evals/client-no-pii-logs.eval.mjs:166-249`. It is ported, not imported: this file is typechecked
+// `evals/client-no-pii-logs.eval.mjs:166-250`. It is ported, not imported: this file is typechecked
 // by `client-typecheck` (strict, no `allowJs`) and a `.mjs` import is TS7016 (ADR-0257 alt. 3).
 //
 // THE RULE (spec §2.2, default-fail character inversion; ADR-0257 D3 = plan R2/R3):
@@ -137,14 +137,12 @@ export const NON_TRANSLATABLE_CHARS: ReadonlySet<string> = new Set([
 ]);
 
 /** ADR-0257 D4: the four-token sink vocabulary. */
-export type SinkKind = 'textContent' | 'title' | 'replaceChildren' | 'setAttribute';
+type SinkKind = 'textContent' | 'title' | 'replaceChildren' | 'setAttribute';
 
 export interface Sink {
   readonly kind: SinkKind;
   /** 1-based line of the sink token in the (stripped) source handed to `scanSource`. */
   readonly line: number;
-  /** The raw RHS span: the assignment's right-hand side, or the call's payload arguments. */
-  readonly rhs: string;
   /** Every static segment the RHS contributes (literals at any depth outside `t(`/`tf(` spans),
    *  in source order. Empty for a literal-free RHS. */
   readonly segments: readonly string[];
@@ -194,7 +192,7 @@ const DOUBLE_QUOTE = '"';
 const BACKTICK = '`';
 
 // ---------------------------------------------------------------------------
-// Literal mask — typed port of `stringMask` (evals/client-no-pii-logs.eval.mjs:166-249).
+// Literal mask — typed port of `stringMask` (evals/client-no-pii-logs.eval.mjs:166-250).
 // ---------------------------------------------------------------------------
 
 type FrameKind = 'sq' | 'dq' | 'tl' | 'expr';
@@ -321,6 +319,13 @@ function assignmentOperatorEnd(src: string, at: number): number {
   if (ch === '=') return src.charAt(i + 1) === '=' ? -1 : i + 1;
   if (ch === '+' && src.charAt(i + 1) === '=') return i + 2;
   return -1;
+}
+
+/** A call token (`replaceChildren(` / `setAttribute(`) starts a sink only at an identifier
+ *  boundary: the char before it is not an identifier char (a `.` receiver is the normal shape;
+ *  `resetAttribute(` / `myReplaceChildren(` are other identifiers, not DOM sinks). */
+function callTokenBoundaryAt(src: string, i: number): boolean {
+  return i === 0 || !isIdentifierChar(src.charAt(i - 1));
 }
 
 // ---------------------------------------------------------------------------
@@ -472,7 +477,6 @@ export function scanSource(stripped: string): ScanResult {
     sinks.push({
       kind,
       line: lineAt(tokenAt),
-      rhs: src.slice(span.start, span.end),
       segments,
       failingSegments,
       truncated: span.truncated,
@@ -505,13 +509,13 @@ export function scanSource(stripped: string): ScanResult {
         continue;
       }
     } else if (ch === 'r' && src.startsWith(TOKEN_REPLACE_CHILDREN, i)) {
-      if (!mask.masked[i]) {
+      if (!mask.masked[i] && callTokenBoundaryAt(src, i)) {
         emit('replaceChildren', i, walkSpan(src, mask, i + TOKEN_REPLACE_CHILDREN.length, 'call'));
       }
       i += TOKEN_REPLACE_CHILDREN.length;
       continue;
     } else if (ch === 's' && src.startsWith(TOKEN_SET_ATTRIBUTE, i)) {
-      if (!mask.masked[i]) {
+      if (!mask.masked[i] && callTokenBoundaryAt(src, i)) {
         const span = setAttributeValueSpan(src, mask, i + TOKEN_SET_ATTRIBUTE.length);
         if (span !== undefined) emit('setAttribute', i, span);
       }

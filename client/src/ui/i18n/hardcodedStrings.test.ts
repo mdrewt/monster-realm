@@ -258,6 +258,13 @@ const RHS_LOGICAL_ASSIGN = "el.textContent ??= 'x'; el.textContent ||= 'y';";
 const RHS_TPL_BRACES = 'el.textContent = `${fmt({ n: 1 })}`;';
 const SET_ATTR_NO_VALUE = "el.setAttribute('alt')";
 const SET_ATTR_CONCAT_NAME = "el.setAttribute('title' + x, 'Raw')";
+// Reviewer/verifier fixtures: the t(/tf( exemption is exact on BOTH sides of the name (verifier
+// mutant v1: a suffix-blind check exempted `tr(`), and the call tokens need an identifier
+// boundary BEFORE them (`resetAttribute(` / `myReplaceChildren(` are other functions).
+const RHS_TR_CALL = "el.textContent = tr('Raw');";
+const CALL_RESET_ATTRIBUTE = "el.resetAttribute('aria-label', 'Raw')";
+const CALL_MY_REPLACE_CHILDREN = "myReplaceChildren('Raw')";
+const RHS_CALL_TRUNCATED = 'list.replaceChildren(a';
 const RHS_UNTERMINATED = "el.textContent = 'oops;";
 const RHS_TRUNCATED = "el.textContent = f('a'";
 // Plan R5 parity flip: two regex literals each holding ONE quote. stringMask reads the first `'`
@@ -552,12 +559,35 @@ describe('i18n-hardcoded-strings (M24 S2, ADR-0257)', () => {
       sinks: 0,
       failing: 0,
     });
+    // Reviewer/verifier fixtures: exemption name is exact on both sides; call tokens need an
+    // identifier boundary before them.
+    check(
+      'tr() is NOT exempt (suffix side: the name must be exactly t or tf)',
+      RHS_TR_CALL,
+      { sinks: 1, failing: 1 },
+      ['Raw'],
+    );
+    check(
+      'resetAttribute( is not setAttribute( — identifier boundary before the call token',
+      CALL_RESET_ATTRIBUTE,
+      { sinks: 0, failing: 0 },
+    );
+    check(
+      'myReplaceChildren( is not replaceChildren( — identifier boundary before the call token',
+      CALL_MY_REPLACE_CHILDREN,
+      { sinks: 0, failing: 0 },
+    );
 
     // Tripwires (ADR-0257 D6).
     expect(scanSource(RHS_UNTERMINATED).unterminated, 'unterminated literal').toBe(true);
     const trunc = scanSource(RHS_TRUNCATED);
     expect(trunc.sinks.length, 'truncated: the sink is still reported').toBe(1);
     expect(trunc.sinks[0].truncated, 'truncated flag').toBe(true);
+    // The call family truncates too: an unbalanced replaceChildren( payload at EOF.
+    const callTrunc = scanSource(RHS_CALL_TRUNCATED);
+    expect(callTrunc.sinks.length, 'call truncated: the sink is still reported').toBe(1);
+    expect(callTrunc.sinks[0].kind, 'call truncated: kind').toBe('replaceChildren');
+    expect(callTrunc.sinks[0].truncated, 'call truncated flag').toBe(true);
     // Plan R5: mask desync without an unterminated signal must still be LOUD.
     const flip = scanSource(RHS_PARITY_FLIP);
     expect(flip.unterminated, 'parity flip leaves unterminated false — that is the point').toBe(

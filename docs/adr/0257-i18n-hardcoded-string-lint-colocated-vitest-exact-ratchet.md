@@ -81,7 +81,8 @@ and `ui/evolutionNotice.ts` (ADR-0254, `:209` `'OK'`). E6's roster is simply old
 - **D4 — Sink vocabulary (I18N-HC-02).** `.textContent =`/`+=`, `.title =`/`+=`, `replaceChildren(`,
   and `setAttribute(` whose **first** argument is a bare quoted literal in
   `{aria-label, aria-live, aria-describedby, title, alt}` — checked before any RHS character is read.
-  `==`/`===` are reads; `.titleEl`/`.title(` are other members; `.id =`, `.className =`,
+  `==`/`===` are reads; `.titleEl`/`.title(` are other members; the call tokens match only at an
+  identifier boundary (`resetAttribute(`, `myReplaceChildren(` are other identifiers, not sinks); `.id =`, `.className =`,
   `.style.cssText =`, `.dataset.*`, `addEventListener(` are structurally absent (asserted in the
   test). `.innerHTML` is not in S2's vocabulary: S0's gate bans it tree-wide, and the token must not
   appear adjacent to `=` in any non-test file. `document.title =` IS matched — the `.title =` token
