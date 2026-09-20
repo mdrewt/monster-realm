@@ -82,8 +82,14 @@
 //     whose close is driven by main.ts's overlayHandles force-hide path) -> S3-pvpView-CLOSE-UNGUARDED
 //   - refresh() regressions (auto-show, stale rows, callbacks) -> the refresh-behaviour block
 
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { stripComments } from '../../../evals/dom-shell-coverage-exclusion.eval.mjs';
 import { t } from './a11yCopy';
+import { scanSource } from './i18n/hardcodedStrings';
+import { t as i18nT, tf as i18nTf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
 import type { PvpChallengeViewModel } from './pvpModel';
@@ -93,6 +99,9 @@ import { PvpView, type PvpViewCallbacks } from './pvpView';
 // implementation, so the VALUE oracle (real attribute writes, real focus moves) still works in the
 // same test. Measured working in this repo's vitest 4 (plan §7 "Verified mechanics").
 vi.mock('./overlayA11y', { spy: true });
+// m24s3 (ADR-0259) MECHANISM oracle, same shape: records every t()/tf() call AND calls
+// through to the real resolver, so PV-01's DOM byte-identity assertions still work.
+vi.mock('./i18n/resolver', { spy: true });
 
 const ID: OverlayId = 'pvpView';
 const META = OVERLAY_A11Y[ID];
@@ -942,5 +951,306 @@ describe('★ PvpView 20r-a: ONE view-wide in-flight lock over the challenge-lif
     raPvpControls().decline.click();
     expect(cbs.onDecline).toHaveBeenCalledWith(RA_INCOMING_ID);
     await raFlushPromises();
+  });
+});
+
+// =============================================================================
+// m24s3 (ADR-0259) — i18n migration batch A: pvpView.ts routes its migrated sinks
+// through t()/tf() (ADR-0256/0257 resolver) instead of raw English literals.
+//
+// PREDICTED RED REASON AT HEAD: pvpView.ts calls neither `t()` nor `tf()` anywhere
+// today — every literal below is still a bare string, and the file imports
+// nothing from `./i18n/resolver`. PV-01/PV-02 therefore fail on their very first
+// `toHaveBeenCalledWith` / sentinel-presence assertion (the spied `i18nT`/`i18nTf`
+// are never called at all); PV-03 fails because `scanSource(stripComments(...))`
+// reports >=17 FAILING sinks (raw English segments), not the required
+// `failing: []`.
+//
+// Do NOT edit these tests to match a buggy implementation — correct them from the
+// plan/ADR-0259 only.
+// =============================================================================
+
+// m24s3 hardening H1 (tests red-team, surviving cheat C10c): the pvpView keys this
+// sentinel matrix can legitimately produce — see battleView.test.ts's
+// m24s3IsExpectedSentinelSpan header for why a bracket span whose content is not
+// EXACTLY one of these must be LEFT IN PLACE (never elided) rather than blindly
+// stripped — a forged `.append('«Accept»')`-style span must not launder raw English
+// past the roster-word scan below.
+const M24S3_PV_PLAIN_KEYS = new Set([
+  'pvp.title.idle',
+  'pvp.title.challenge',
+  'pvp.incoming.accept',
+  'pvp.incoming.decline',
+  'pvp.outgoing.cancel',
+  'pvp.players.none',
+  'pvp.players.heading',
+]);
+
+const M24S3_PV_PARAM_KEYS = new Set(['pvp.incoming.label', 'pvp.outgoing.label']);
+
+/** True iff `content` (the text strictly between one `«`/`»` pair) is EXACTLY an
+ *  expected sentinel: a bare roster key, or `key|<json>` where `key` is a roster PARAM
+ *  key and the tail after the FIRST `|` parses to a plain (non-array, non-null) object. */
+function m24s3PvIsExpectedSentinelSpan(content: string): boolean {
+  const bar = content.indexOf('|');
+  if (bar === -1) {
+    return M24S3_PV_PLAIN_KEYS.has(content) || M24S3_PV_PARAM_KEYS.has(content);
+  }
+  const key = content.slice(0, bar);
+  if (!M24S3_PV_PARAM_KEYS.has(key)) return false;
+  const tail = content.slice(bar + 1);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(tail);
+  } catch {
+    return false;
+  }
+  return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed);
+}
+
+/** Elides only the bracket spans that are EXACTLY an expected sentinel (manual
+ *  indexOf loop — no RegExp, ADR-0055) and reports every OTHER `«...»` span verbatim
+ *  in `unexpectedSpans`, un-elided, so it stays in `stripped` for the roster-word scan
+ *  too (belt-and-braces). See battleView.test.ts's m24s3SplitSentinels header. */
+function m24s3PvSplitSentinels(text: string): { stripped: string; unexpectedSpans: string[] } {
+  let out = '';
+  const unexpectedSpans: string[] = [];
+  let i = 0;
+  while (i < text.length) {
+    const open = text.indexOf('«', i);
+    if (open === -1) {
+      out += text.slice(i);
+      break;
+    }
+    out += text.slice(i, open);
+    const close = text.indexOf('»', open + 1);
+    if (close === -1) {
+      out += text.slice(open);
+      break;
+    }
+    const span = text.slice(open, close + 1);
+    const content = text.slice(open + 1, close);
+    if (m24s3PvIsExpectedSentinelSpan(content)) {
+      // Elide — this is a real, correctly-formed sentinel.
+    } else {
+      out += span;
+      unexpectedSpans.push(span);
+    }
+    i = close + 1;
+  }
+  return { stripped: out, unexpectedSpans };
+}
+
+/** Whole-subtree walk (plan R5): every descendant's own text-node children, every
+ *  element's `title` attribute, and every `<option>`'s text. */
+function m24s3PvWalkSubtree(root: HTMLElement): string[] {
+  const texts: string[] = [];
+  const stack: Element[] = [root];
+  while (stack.length > 0) {
+    const el = stack.pop()!;
+    const titleAttr = el.getAttribute('title');
+    if (titleAttr) texts.push(titleAttr);
+    if (el.tagName === 'OPTION') texts.push(el.textContent ?? '');
+    for (const node of Array.from(el.childNodes)) {
+      if (node.nodeType === 3) texts.push(node.textContent ?? ''); // TEXT_NODE
+    }
+    for (const child of Array.from(el.children)) stack.push(child);
+  }
+  return texts;
+}
+
+const M24S3_PV_ROSTER = [
+  'PvP',
+  'Challenge',
+  'challenged',
+  'Accept',
+  'Decline',
+  'waiting',
+  'Cancel',
+  'No players',
+];
+
+function m24s3PvAssertNoRosterWord(texts: readonly string[], label: string): void {
+  const { stripped, unexpectedSpans } = m24s3PvSplitSentinels(texts.join('\n'));
+  // m24s3 hardening H1: a FORGED bracket span (raw English wrapped in `«...»` by
+  // something other than the resolver) is never elided — it must not exist at all
+  // under a correct implementation.
+  expect(
+    unexpectedSpans,
+    `${label}: found «...» span(s) that are not an EXACT expected sentinel (a forged ` +
+      `bracket span around raw content is not exempted from the roster scan)`,
+  ).toEqual([]);
+  for (const word of M24S3_PV_ROSTER) {
+    expect(
+      stripped.includes(word),
+      `${label}: must not contain English roster word "${word}" outside a «sentinel»`,
+    ).toBe(false);
+  }
+}
+
+describe('m24s3 (ADR-0259): pvpView.ts routes its migrated sinks through t()/tf()', () => {
+  it('m24s3 PV-01: every migrated sink calls t()/tf() with the exact key and params, the player-button text stays the raw name (never a resolver call), and every DOM string stays byte-identical', () => {
+    mountPvpOverlay();
+    const view = new PvpView(makeCallbacks());
+
+    // idle
+    view.refresh(null, true);
+    expect(i18nT).toHaveBeenCalledWith('pvp.title.idle');
+    expect(document.getElementById('pvp-challenge-status')?.textContent).toBe('PvP');
+
+    // incoming — from Bob
+    vi.mocked(i18nT).mockClear();
+    view.refresh(
+      pvpVm({ incoming: { challengeId: 77n, challengerId: '0xbbb', challengerName: 'Bob' } }),
+      true,
+    );
+    expect(i18nT).toHaveBeenCalledWith('pvp.title.challenge');
+    expect(i18nTf).toHaveBeenCalledWith('pvp.incoming.label', { challenger: 'Bob' });
+    expect(i18nT).toHaveBeenCalledWith('pvp.incoming.accept');
+    expect(i18nT).toHaveBeenCalledWith('pvp.incoming.decline');
+    expect(document.querySelector('[data-testid="pvp-incoming-label"]')?.textContent).toBe(
+      'Bob has challenged you!',
+    );
+    expect(document.querySelector('[data-testid="pvp-accept-btn"]')?.textContent).toBe('Accept');
+    expect(document.querySelector('[data-testid="pvp-decline-btn"]')?.textContent).toBe('Decline');
+
+    // outgoing — to Alice, Pending
+    vi.mocked(i18nT).mockClear();
+    view.refresh(
+      pvpVm({
+        outgoing: { challengeId: 88n, targetId: '0xccc', targetName: 'Alice', status: 'Pending' },
+      }),
+      true,
+    );
+    expect(i18nTf).toHaveBeenCalledWith('pvp.outgoing.label', { target: 'Alice' });
+    expect(i18nT).toHaveBeenCalledWith('pvp.outgoing.cancel');
+    expect(document.querySelector('[data-testid="pvp-outgoing-label"]')?.textContent).toBe(
+      'Challenge sent to Alice — waiting…',
+    );
+    expect(document.querySelector('[data-testid="pvp-cancel-btn"]')?.textContent).toBe(
+      'Cancel Challenge',
+    );
+
+    // players empty + showTitle (no active challenge)
+    vi.mocked(i18nT).mockClear();
+    view.refresh(pvpVm({ challengeablePlayers: [] }), true);
+    expect(i18nT).toHaveBeenCalledWith('pvp.players.none');
+    expect(document.getElementById('pvp-player-list')?.firstElementChild?.textContent).toBe(
+      'No players online to challenge',
+    );
+
+    // players present — the button text is the RAW player name, never a resolver call.
+    vi.mocked(i18nT).mockClear();
+    view.refresh(pvpVm({ challengeablePlayers: [{ identity: '0xaaa1', name: 'Carol' }] }), true);
+    expect(i18nT).toHaveBeenCalledWith('pvp.players.heading');
+    expect(document.getElementById('pvp-player-list')?.firstElementChild?.textContent).toBe(
+      'Challenge:',
+    );
+    expect(document.querySelector('[data-testid="pvp-challenge-player-btn"]')?.textContent).toBe(
+      'Carol',
+    );
+
+    // showFeedback never touches the resolver.
+    vi.mocked(i18nT).mockClear();
+    vi.mocked(i18nTf).mockClear();
+    view.showFeedback('some feedback text');
+    expect(i18nT).not.toHaveBeenCalled();
+    expect(i18nTf).not.toHaveBeenCalled();
+  });
+
+  it('m24s3 PV-02: under «key» sentinels, every rendered surface shows resolver output and never an English roster word outside a sentinel', () => {
+    const root = mountPvpOverlay();
+    // m24s3 hardening H3: the view is CONSTRUCTED here, BEFORE the sentinel
+    // mockImplementation is installed below — same ordering as battleView.test.ts's
+    // BV-02 (see its m24s3 H3 comment). pvpView.ts has no constructor-time t()/tf()
+    // call today, but this ordering is what would surface one if a future edit ever
+    // hoisted a resolver call into the constructor (pvpView's own version of the plan
+    // R1 hazard battleView.ts's constructor once had): resolving against the REAL
+    // (call-through) resolver at construction time would show up as stale, unbracketed
+    // English in the very first m24s3PvAssertNoRosterWord below. Installing the mock
+    // before `new PvpView(...)` would silently hide that regression class.
+    const view = new PvpView(makeCallbacks());
+
+    try {
+      vi.mocked(i18nT).mockImplementation((key: string) => `«${key}»`);
+      vi.mocked(i18nTf).mockImplementation(
+        (key: string, params: unknown) => `«${key}|${JSON.stringify(params)}»`,
+      );
+
+      view.refresh(null, true);
+      let texts = m24s3PvWalkSubtree(root);
+      m24s3PvAssertNoRosterWord(texts, 'idle');
+      expect(texts.join('\n')).toContain('«pvp.title.idle»');
+
+      view.refresh(
+        pvpVm({ incoming: { challengeId: 77n, challengerId: '0xbbb', challengerName: 'Bob' } }),
+        true,
+      );
+      texts = m24s3PvWalkSubtree(root);
+      m24s3PvAssertNoRosterWord(texts, 'incoming');
+      let joined = texts.join('\n');
+      expect(joined).toContain('«pvp.title.challenge»');
+      expect(joined).toContain('«pvp.incoming.label|{"challenger":"Bob"}»');
+      expect(joined).toContain('«pvp.incoming.accept»');
+      expect(joined).toContain('«pvp.incoming.decline»');
+
+      view.refresh(
+        pvpVm({
+          outgoing: { challengeId: 88n, targetId: '0xccc', targetName: 'Alice', status: 'Pending' },
+        }),
+        true,
+      );
+      texts = m24s3PvWalkSubtree(root);
+      m24s3PvAssertNoRosterWord(texts, 'outgoing');
+      joined = texts.join('\n');
+      expect(joined).toContain('«pvp.outgoing.label|{"target":"Alice"}»');
+      expect(joined).toContain('«pvp.outgoing.cancel»');
+
+      view.refresh(pvpVm({ challengeablePlayers: [] }), true);
+      texts = m24s3PvWalkSubtree(root);
+      m24s3PvAssertNoRosterWord(texts, 'players empty');
+      expect(texts.join('\n')).toContain('«pvp.players.none»');
+
+      view.refresh(pvpVm({ challengeablePlayers: [{ identity: '0xaaa1', name: 'Carol' }] }), true);
+      texts = m24s3PvWalkSubtree(root);
+      m24s3PvAssertNoRosterWord(texts, 'players present');
+      joined = texts.join('\n');
+      expect(joined).toContain('«pvp.players.heading»');
+      expect(joined).toContain('Carol');
+    } finally {
+      vi.mocked(i18nT).mockRestore();
+      vi.mocked(i18nTf).mockRestore();
+    }
+
+    // Post-restore call-through control (an existing S1 key — the new pvp.* keys do not
+    // exist in the catalog until the specialist ships them).
+    expect(i18nT('chrome.help.title')).toBe('Controls & Goals');
+  });
+});
+
+describe('m24s3 (ADR-0259): pvpView.ts scan — zero failing sinks', () => {
+  it('m24s3 PV-03: scanSource(stripComments(pvpView.ts)) has zero failing sinks, a >=17 sink floor, and no truncation/masking tripwires', () => {
+    const src = readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), 'pvpView.ts'),
+      'utf8',
+    );
+    const result = scanSource(stripComments(src));
+
+    expect(
+      result.failing.map((s) => `${s.kind}@L${s.line}: ${s.failingSegments.join(' | ')}`),
+      'every sink must route through t()/tf() — any surviving English segment is listed above',
+    ).toEqual([]);
+    expect(
+      result.sinks.length,
+      'SINK_FLOOR idiom (plan R2): a floor, never an exact count',
+    ).toBeGreaterThanOrEqual(17);
+    expect(
+      result.unterminated,
+      'the literal mask must not end inside an unterminated literal',
+    ).toBe(false);
+    expect(result.maskedSinkTokens, 'no parity-flip mask desync').toBe(0);
+    for (const sink of result.sinks) {
+      expect(sink.truncated, `${sink.kind}@L${sink.line} must not be truncated`).toBe(false);
+    }
   });
 });

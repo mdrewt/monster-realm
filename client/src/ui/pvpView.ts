@@ -2,6 +2,14 @@
 //
 // Renders PvpChallengeViewModels produced by pvpModel.ts. No game logic, no SDK.
 // Auto-shows when incoming/outgoing challenges are present; also KeyP-toggleable.
+//
+// m24-s3 (ADR-0259): every player-facing string this view renders is resolved through the i18n
+// resolver (`t()`/`tf()`, ui/i18n/resolver.ts) with a `pvp.*` key from ui/i18n/catalog.en.ts;
+// the English bytes are unchanged. Two sinks stay raw on purpose: the per-player challenge
+// button shows `p.name` (model data, ADR-0259 D3) and `showFeedback(msg)` renders text that
+// main.ts owns (S6 migrates it there). Every `t(`/`tf(` first argument is a string LITERAL — the
+// player-list heading is a ternary between two CALLS, never between two keys.
+import { t, tf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type { PvpChallengeViewModel, PvpIncomingChallenge, PvpOutgoingChallenge } from './pvpModel';
 
@@ -132,14 +140,14 @@ export class PvpView {
     this.show();
 
     if (vm === null) {
-      this.#statusEl.textContent = 'PvP';
+      this.#statusEl.textContent = t('pvp.title.idle');
       this.#incomingEl.replaceChildren();
       this.#outgoingEl.replaceChildren();
       this.#playerListEl.replaceChildren();
       return;
     }
 
-    this.#statusEl.textContent = 'PvP Challenge';
+    this.#statusEl.textContent = t('pvp.title.challenge');
     this.#renderIncoming(vm.incoming);
     this.#renderOutgoing(vm.outgoing);
     this.#renderPlayerList(vm.challengeablePlayers, !hasActive);
@@ -187,7 +195,7 @@ export class PvpView {
 
     const label = document.createElement('div');
     label.setAttribute('data-testid', 'pvp-incoming-label');
-    label.textContent = `${incoming.challengerName} has challenged you!`;
+    label.textContent = tf('pvp.incoming.label', { challenger: incoming.challengerName });
     this.#incomingEl.appendChild(label);
 
     const btnRow = document.createElement('div');
@@ -195,7 +203,7 @@ export class PvpView {
 
     const acceptBtn = document.createElement('button');
     acceptBtn.setAttribute('data-testid', 'pvp-accept-btn');
-    acceptBtn.textContent = 'Accept';
+    acceptBtn.textContent = t('pvp.incoming.accept');
     acceptBtn.addEventListener('click', () =>
       this.#dispatch(() => this.#callbacks.onAccept(incoming.challengeId)),
     );
@@ -203,7 +211,7 @@ export class PvpView {
 
     const declineBtn = document.createElement('button');
     declineBtn.setAttribute('data-testid', 'pvp-decline-btn');
-    declineBtn.textContent = 'Decline';
+    declineBtn.textContent = t('pvp.incoming.decline');
     declineBtn.addEventListener('click', () =>
       this.#dispatch(() => this.#callbacks.onDecline(incoming.challengeId)),
     );
@@ -218,12 +226,12 @@ export class PvpView {
 
     const label = document.createElement('div');
     label.setAttribute('data-testid', 'pvp-outgoing-label');
-    label.textContent = `Challenge sent to ${outgoing.targetName} — waiting…`;
+    label.textContent = tf('pvp.outgoing.label', { target: outgoing.targetName });
     this.#outgoingEl.appendChild(label);
 
     const cancelBtn = document.createElement('button');
     cancelBtn.setAttribute('data-testid', 'pvp-cancel-btn');
-    cancelBtn.textContent = 'Cancel Challenge';
+    cancelBtn.textContent = t('pvp.outgoing.cancel');
     cancelBtn.addEventListener('click', () =>
       this.#dispatch(() => this.#callbacks.onCancel(outgoing.challengeId)),
     );
@@ -238,7 +246,7 @@ export class PvpView {
 
     if (showTitle) {
       const title = document.createElement('div');
-      title.textContent = players.length === 0 ? 'No players online to challenge' : 'Challenge:';
+      title.textContent = players.length === 0 ? t('pvp.players.none') : t('pvp.players.heading');
       this.#playerListEl.appendChild(title);
     }
 

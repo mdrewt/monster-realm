@@ -26,12 +26,22 @@
 // `.focus()` on a `display:none` node is a silent no-op, so an open-before-paint overlay announces
 // itself and then never receives focus.
 //
+// m24-s3 (ADR-0259) — every player-facing string this view renders is resolved through the i18n
+// resolver (`t()`/`tf()`, ui/i18n/resolver.ts) with a `battle.*` key from ui/i18n/catalog.en.ts;
+// the English bytes are unchanged (the catalog pins them). Two rows are deliberately NOT keyed:
+// the card header `${label}: ${species}` and the bait option `${name} (+${n}‰) ×${count}` are
+// glyph-only compounds (ADR-0257 §2.2 tier (e)) — an S7 reviewer risk, not an S3 defect. Model
+// data (affinity, weather label, status, species/skill/item names, the rival's display name) flow
+// through as params, never as catalog text. Every `t(`/`tf(` first argument is a string LITERAL —
+// a ternary picks between two calls, never between two keys — so S7's dynamic-key scan stays quiet.
+//
 // NO CLOSE-BEFORE-OPEN. `ui/overlayA11y.ts`'s cross-slice contract (a) once claimed the four
 // `#app`-mounted views "share ONE root" and prescribed close-before-open; 17r-e RETRACTED it
 // in place (A12, ui/overlayA11y.ts:52-54); (a) now agrees with this code: each view creates its
 // OWN root under the shared MOUNT — four roots, four `OverlayId`s, four records. Closing a sibling
 // here would close an overlay the player still has open. Pinned by `S4-CROSS-VIEW-DISTINCT-ROOTS`.
 import type { BattleMonsterCardVM, BattleViewModel } from './battleModel';
+import { t, tf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 
 /**
@@ -64,6 +74,8 @@ export interface BattleViewCallbacks {
 
 export class BattleView {
   readonly #root: HTMLDivElement;
+  /** The "Battle" heading; its text is resolved in show(), not here (m24-s3, see show()). */
+  readonly #titleEl: HTMLHeadingElement;
   readonly #weatherEl: HTMLDivElement;
   readonly #playerCardEl: HTMLDivElement;
   readonly #opponentCardEl: HTMLDivElement;
@@ -106,8 +118,8 @@ export class BattleView {
       'display:none;flex-direction:column;align-items:center;justify-content:center;' +
       'padding:24px;font-family:monospace;color:#e0e0e0;';
 
+    // m24-s3 (ADR-0259): NO text here — `battle.title` is resolved in show() (see there for why).
     const title = document.createElement('h2');
-    title.textContent = 'Battle';
     // m23-s4: the OVERLAY_A11Y initialFocusSelector anchor for this overlay. `tabindex="-1"`
     // (never "0") makes the heading programmatically focusable WITHOUT adding a permanent tab
     // stop ahead of the overlay's real controls. `setAttribute`, not `dataset` — the selector is
@@ -115,6 +127,7 @@ export class BattleView {
     title.setAttribute('data-testid', 'battle-title');
     title.setAttribute('tabindex', '-1');
     title.style.cssText = 'margin:0 0 16px;color:#fff;';
+    this.#titleEl = title;
     this.#root.appendChild(title);
 
     // Weather banner (field-state banner; hidden by default — shown when weather is active)
@@ -207,15 +220,13 @@ export class BattleView {
     // ux4 (ADR-0155): explains the ABSENCE of a swap control. A SIBLING of #actionsEl — never
     // its child, since #renderActions calls #actionsEl.replaceChildren() before rendering (which
     // would detach it on the next refresh) — and never appended to the caller-supplied `parent`.
-    // Copy is honesty-constrained (dead KeyB, persistent terminal overlay, zone-gated heal,
-    // mutable party_slot) — ADR-0155 §3; teeth in battleView.test.ts H1. The claim is scoped
-    // "in this battle" deliberately: party_slot is mutable mid-battle while sideA.team is a
-    // snapshot, so an unscoped "no healthy party monster" is falsifiable — keep the scope.
+    // Copy (catalog key `battle.swap.hint`) is honesty-constrained (dead KeyB, persistent terminal
+    // overlay, zone-gated heal, mutable party_slot) — ADR-0155 §3; teeth in battleView.test.ts H1.
+    // The claim is scoped "in this battle" deliberately: party_slot is mutable mid-battle while
+    // sideA.team is a snapshot, so an unscoped "no healthy party monster" is falsifiable — keep
+    // the scope. The text itself is resolved in show() (m24-s3), not here.
     this.#swapHintEl = document.createElement('div');
     this.#swapHintEl.setAttribute('data-testid', 'battle-swap-hint');
-    this.#swapHintEl.textContent =
-      'No healthy party monster in this battle to swap in. ' +
-      'When this battle ends, press Esc, then B for Party & Box.';
     this.#swapHintEl.style.cssText =
       'width:100%;max-width:320px;text-align:center;margin-bottom:8px;' +
       'font-size:12px;color:#aab;display:none;';
@@ -238,9 +249,9 @@ export class BattleView {
     // ux1 (ADR-0151 D3): the battle-result exit affordance. A SIBLING of #outcomeEl — never its
     // child (#renderOutcome writes #outcomeEl.textContent, which would wipe a child every render)
     // and never merged into its text (three e2e specs use getByText('Victory!', {exact:true})).
+    // Its text (`battle.continueHint`) is resolved in show() (m24-s3), not here.
     this.#continueHintEl = document.createElement('div');
     this.#continueHintEl.setAttribute('data-testid', 'battle-continue-hint');
-    this.#continueHintEl.textContent = 'Press Esc to continue';
     this.#continueHintEl.style.cssText = 'margin-top:8px;font-size:12px;color:#aab;display:none;';
     this.#root.appendChild(this.#continueHintEl);
 
@@ -254,6 +265,17 @@ export class BattleView {
   show(): void {
     const wasVisible = this.#visible;
     this.#visible = true;
+    // m24-s3 (ADR-0259, plan R1): the three strings that are set ONCE and never rewritten by a
+    // render — the heading, the empty-swap explainer and the Esc hint — are resolved HERE, on
+    // every show(), not in the constructor. A constructor-time `t()` would freeze the English
+    // unless S6's `setLocale` ran before main.ts constructs this view (deep inside the async
+    // connect path) — an unenforced cross-file boot-order invariant. Idempotent by design: the
+    // same value is written on every show(), the same per-render pattern every other sink uses.
+    // These writes sit AFTER the `wasVisible` read (the header's "first statement" edge) and
+    // BEFORE the display write, so the open stays the last statement of the open path.
+    this.#titleEl.textContent = t('battle.title');
+    this.#swapHintEl.textContent = t('battle.swap.hint');
+    this.#continueHintEl.textContent = t('battle.continueHint');
     this.#root.style.display = 'flex';
     if (!wasVisible) openOverlayA11y('battleView', this.#root);
   }
@@ -285,10 +307,12 @@ export class BattleView {
     if (!this.#visible) this.show();
 
     this.#renderWeather(vm);
-    // Show opponent name for PvP battles so the player knows who they are fighting.
-    const opponentLabel = vm.isPvp && vm.pvpOpponentName ? `${vm.pvpOpponentName}` : 'Opponent';
+    // Show opponent name for PvP battles so the player knows who they are fighting. The name is
+    // model data, rendered raw — no catalog key is requested when it is set (ADR-0259 D3).
+    const opponentLabel =
+      vm.isPvp && vm.pvpOpponentName ? vm.pvpOpponentName : t('battle.card.opponent');
     this.#renderMonsterCard(this.#opponentCardEl, vm.opponentCard, opponentLabel);
-    this.#renderMonsterCard(this.#playerCardEl, vm.playerCard, 'You');
+    this.#renderMonsterCard(this.#playerCardEl, vm.playerCard, t('battle.card.you'));
     this.#renderPvpStatus(vm);
     this.#renderSkills(vm);
     this.#renderActions(vm);
@@ -344,7 +368,7 @@ export class BattleView {
     }
     if (vm.pvpPendingSubmit) {
       this.#pvpStatusEl.style.display = 'block';
-      this.#pvpStatusEl.textContent = 'Waiting for opponent’s action…';
+      this.#pvpStatusEl.textContent = t('battle.pvp.waiting');
     } else {
       this.#pvpStatusEl.style.display = 'none';
     }
@@ -358,7 +382,10 @@ export class BattleView {
       return;
     }
     this.#weatherEl.style.display = 'block';
-    this.#weatherEl.textContent = `${w.label} (${w.turnsRemaining} turns)`;
+    this.#weatherEl.textContent = tf('battle.weather.banner', {
+      label: w.label,
+      turns: w.turnsRemaining,
+    });
   }
 
   #renderMonsterCard(el: HTMLDivElement, card: BattleMonsterCardVM, label: string): void {
@@ -370,7 +397,7 @@ export class BattleView {
     nameSpan.textContent = `${label}: ${card.speciesName}`;
     header.appendChild(nameSpan);
     const lvSpan = document.createElement('span');
-    lvSpan.textContent = `Lv${card.level}`;
+    lvSpan.textContent = tf('battle.card.level', { level: card.level });
     header.appendChild(lvSpan);
     el.appendChild(header);
 
@@ -404,7 +431,11 @@ export class BattleView {
 
     const hpText = document.createElement('div');
     hpText.style.cssText = 'font-size:11px;margin-top:2px;color:#aaa;';
-    hpText.textContent = `HP ${card.currentHp}/${card.maxHp} · ${card.affinity}`;
+    hpText.textContent = tf('battle.card.hpLine', {
+      current: card.currentHp,
+      max: card.maxHp,
+      affinity: card.affinity,
+    });
     el.appendChild(hpText);
 
     if (card.status) {
@@ -438,11 +469,17 @@ export class BattleView {
       // infix: `e2e/pvp-side-b.spec.ts` matches `/^Submit: /` (start-anchored),
       // `e2e/my-battle-privacy.spec.ts` and `e2e/recruit.spec.ts` match
       // `button:has-text("(")`, and this file's own test filters on `startsWith('Submit:')`.
-      // PvP still says "Submit:" to distinguish it from PvE "use now" semantics.
+      // PvP still says "Submit:" to distinguish it from PvE "use now" semantics. Since m24-s3
+      // the two label shapes live in ui/i18n/catalog.en.ts (`battle.skill.pvpSubmit` /
+      // `battle.skill.pveLabel`) — the ordering constraint above now binds THOSE entries.
       btn.textContent = vm.isPvp
-        ? `Submit: ${skill.name} · ${skill.affinity}`
-        : `${skill.name} (${skill.power}) · ${skill.affinity}`;
-      btn.title = `Acc ${skill.accuracy}%`;
+        ? tf('battle.skill.pvpSubmit', { name: skill.name, affinity: skill.affinity })
+        : tf('battle.skill.pveLabel', {
+            name: skill.name,
+            power: skill.power,
+            affinity: skill.affinity,
+          });
+      btn.title = tf('battle.skill.accuracy', { accuracy: skill.accuracy });
       if (vm.isPvp) {
         btn.addEventListener('click', () => this.#callbacks.onPvpAttack(vm.battleId, skill.id));
       } else {
@@ -467,7 +504,7 @@ export class BattleView {
       fleeBtn.style.cssText =
         'padding:6px 12px;cursor:pointer;font-family:monospace;background:#3a2a2a;' +
         'color:#e0e0e0;border:1px solid #844;border-radius:3px;';
-      fleeBtn.textContent = 'Flee';
+      fleeBtn.textContent = t('battle.action.flee');
       fleeBtn.addEventListener('click', () =>
         this.#dispatch(vm.battleId, () => this.#callbacks.onFlee(vm.battleId)),
       );
@@ -519,7 +556,7 @@ export class BattleView {
 
     const noBait = document.createElement('option');
     noBait.value = '';
-    noBait.textContent = 'No bait';
+    noBait.textContent = t('battle.recruit.noBait');
     select.appendChild(noBait);
 
     for (const bait of vm.baitOptions) {
@@ -538,7 +575,7 @@ export class BattleView {
     recruitBtn.style.cssText =
       'padding:6px 12px;cursor:pointer;font-family:monospace;background:#2a3a2a;' +
       'color:#e0e0e0;border:1px solid #6a6;border-radius:3px;';
-    recruitBtn.textContent = 'Recruit';
+    recruitBtn.textContent = t('battle.recruit.submit');
     recruitBtn.addEventListener('click', () => {
       const raw = this.#baitSelectEl?.value ?? '';
       const baitItemId = raw === '' ? undefined : Number(raw);
@@ -559,13 +596,17 @@ export class BattleView {
 
     const placeholder = document.createElement('option');
     placeholder.value = '';
-    placeholder.textContent = 'Select item';
+    placeholder.textContent = t('battle.cure.placeholder');
     select.appendChild(placeholder);
 
     for (const item of vm.cureItems) {
       const opt = document.createElement('option');
       opt.value = String(item.itemId);
-      opt.textContent = `${item.name} (cures ${item.cureStatus}) ×${item.count}`;
+      opt.textContent = tf('battle.cure.option', {
+        name: item.name,
+        cureStatus: item.cureStatus,
+        count: item.count,
+      });
       opt.setAttribute('data-cure-status', item.cureStatus);
       select.appendChild(opt);
     }
@@ -577,7 +618,7 @@ export class BattleView {
     useBtn.style.cssText =
       'padding:6px 12px;cursor:pointer;font-family:monospace;background:#3a3a2a;' +
       'color:#e0e0e0;border:1px solid #886;border-radius:3px;';
-    useBtn.textContent = 'Use Item';
+    useBtn.textContent = t('battle.cure.submit');
     useBtn.addEventListener('click', () => {
       const raw = this.#cureSelectEl?.value ?? '';
       // No bare use — clicking with empty selection is a no-op (no undefined variant).
@@ -598,8 +639,12 @@ export class BattleView {
         'padding:6px 12px;cursor:pointer;font-family:monospace;background:#2a2a3a;' +
         'color:#e0e0e0;border:1px solid #448;border-radius:3px;';
       btn.textContent = vm.isPvp
-        ? `Submit Swap: ${member.speciesName}`
-        : `Swap: ${member.speciesName} (${member.currentHp}/${member.maxHp})`;
+        ? tf('battle.swap.pvpSubmit', { species: member.speciesName })
+        : tf('battle.swap.pveLabel', {
+            species: member.speciesName,
+            current: member.currentHp,
+            max: member.maxHp,
+          });
       if (vm.isPvp) {
         btn.addEventListener('click', () =>
           this.#callbacks.onPvpSwap(vm.battleId, member.teamIndex),
@@ -626,13 +671,13 @@ export class BattleView {
     let text: string;
     switch (vm.outcome) {
       case 'SideAWins':
-        text = 'Victory!';
+        text = t('battle.outcome.victory');
         break;
       case 'SideBWins':
-        text = 'Defeat...';
+        text = t('battle.outcome.defeat');
         break;
       case 'Fled':
-        text = 'Got away safely!';
+        text = t('battle.outcome.fled');
         break;
       default: {
         // Exhaustiveness check: vm.outcome is BattleOutcomeTag, so the union is

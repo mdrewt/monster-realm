@@ -37,9 +37,16 @@ afterEach(() => {
 });
 
 describe('resolver — the module-level locale cell and the t()/tf() resolvers (m24-s1, ADR-0256)', () => {
-  it('m24s1 RESOLVER-T: t(key) returns the exact CATALOG_EN value for every plain (string-valued) key, and the literal English helpHint value is pinned', () => {
-    const entries = Object.entries(CATALOG_EN as Record<string, unknown>);
-    expect(entries.length > 0, 'ANTI-VACUITY: CATALOG_EN must not be empty').toBe(true);
+  it('m24s1 RESOLVER-T: t(key) returns the exact CATALOG_EN value for every m24-s1 plain (string-valued) chrome.* key, and the literal English helpHint value is pinned', () => {
+    // SCOPED to `chrome.*` (m24s3 hardening H2): S3+ grows CATALOG_EN past the m24-s1 seed with
+    // its own `battle.*`/`pvp.*` plain keys — CAT-01 in catalog.test.ts owns the full-roster
+    // byte-identity pin for THOSE. This test's job is narrower and stays narrow: it pins that
+    // t() returns CATALOG_EN's value verbatim for the ORIGINAL 9-key chrome.* seed, so it must
+    // not red merely because a LATER slice added unrelated keys elsewhere in the catalog.
+    const entries = Object.entries(CATALOG_EN as Record<string, unknown>).filter(([key]) =>
+      key.startsWith('chrome.'),
+    );
+    expect(entries.length > 0, 'ANTI-VACUITY: CATALOG_EN must carry chrome.* keys').toBe(true);
 
     let checked = 0;
     for (const [key, value] of entries) {
@@ -49,7 +56,7 @@ describe('resolver — the module-level locale cell and the t()/tf() resolvers (
     }
     expect(
       checked > 0,
-      'ANTI-VACUITY: at least one plain (string-valued) key must have been checked',
+      'ANTI-VACUITY: at least one plain (string-valued) chrome.* key must have been checked',
     ).toBe(true);
 
     expect(t('chrome.helpHint' as never)).toBe('Press ? for help · click or M for menu');
@@ -57,9 +64,13 @@ describe('resolver — the module-level locale cell and the t()/tf() resolvers (
     // FULL VALUE SNAPSHOT (mutation red-team): a punctuation-only change to any one plain
     // value — e.g. dropping the em dash in `contentStale` — passes every check above (it only
     // asserts t(key) === CATALOG_EN[key], never the LITERAL English text) but fails here. Kills
-    // that survivor by pinning the exact 9-entry plain-value table from the plan.
+    // that survivor by pinning the exact 9-entry plain-value table from the plan. Scoped to
+    // `chrome.*` for the same reason as the loop above — this snapshot is S1's roster, not the
+    // full (S3+-grown) one.
     const plainKeys = Object.keys(CATALOG_EN as Record<string, unknown>).filter(
-      (key) => typeof (CATALOG_EN as Record<string, unknown>)[key] === 'string',
+      (key) =>
+        key.startsWith('chrome.') &&
+        typeof (CATALOG_EN as Record<string, unknown>)[key] === 'string',
     );
     const snapshot = Object.fromEntries(plainKeys.map((key) => [key, t(key as never)]));
     expect(snapshot).toEqual({

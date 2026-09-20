@@ -28,9 +28,14 @@
 //   attributes are different attribute names. The duplicate write also signals a code-smell
 //   that was caught in review.
 
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { stripComments } from '../../../evals/dom-shell-coverage-exclusion.eval.mjs';
 import type { BattleViewModel } from './battleModel';
 import { BattleView, type BattleViewCallbacks } from './battleView';
+import { scanSource } from './i18n/hardcodedStrings';
 
 // ---------------------------------------------------------------------------
 // m23-s4 — overlay a11y wiring for BattleView (constructed-shell, #app-mounted).
@@ -58,6 +63,7 @@ import { BattleView, type BattleViewCallbacks } from './battleView';
 
 import { beforeEach } from 'vitest';
 import { t } from './a11yCopy';
+import { t as i18nT, tf as i18nTf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
 
@@ -65,6 +71,9 @@ import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
 // to the real implementation, so the VALUE oracle (real attribute writes, real focus
 // moves) still works.
 vi.mock('./overlayA11y', { spy: true });
+// m24s3 (ADR-0259) MECHANISM oracle, same shape: records every t()/tf() call AND calls
+// through to the real resolver, so BV-01's DOM byte-identity assertions still work.
+vi.mock('./i18n/resolver', { spy: true });
 
 /** ONE real macrotask boundary — never vi.useFakeTimers() (plan anti-pattern #10). */
 async function s4FlushMacrotask(): Promise<void> {
@@ -5207,5 +5216,557 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
     raControls(parent).skills[0]!.click();
     expect(onAttack).toHaveBeenCalledTimes(3);
     await raFlushPromises();
+  });
+});
+
+// =============================================================================
+// m24s3 (ADR-0259) — i18n migration batch A: battleView.ts routes its migrated
+// sinks through t()/tf() (ADR-0256/0257 resolver) instead of raw English literals.
+//
+// PREDICTED RED REASON AT HEAD: battleView.ts calls neither `t()` nor `tf()`
+// anywhere today — every literal below is still a bare string, and the file
+// imports nothing from `./i18n/resolver`. BV-01/BV-02 therefore fail on their
+// very first `toHaveBeenCalledWith` / sentinel-presence assertion (the spied
+// `i18nT`/`i18nTf` are never called at all); BV-03 fails because
+// `scanSource(stripComments(...))` reports >=25 FAILING sinks (raw English
+// segments), not the required `failing: []`.
+//
+// Do NOT edit these tests to match a buggy implementation — correct them from
+// the plan/ADR-0259 only.
+// =============================================================================
+
+/** All seven BattleViewCallbacks fields as spies (m24s3 shares ux4's local
+ *  fixture-independence rule — see that block's header — never the file's own
+ *  five-field makeCallbacks()). */
+function m24s3Callbacks(): BattleViewCallbacks {
+  return {
+    onAttack: vi.fn(),
+    onFlee: vi.fn(),
+    onSwap: vi.fn(),
+    onRecruit: vi.fn(),
+    onUseItem: vi.fn(),
+    onPvpAttack: vi.fn(),
+    onPvpSwap: vi.fn(),
+  };
+}
+
+/**
+ * Ongoing PvE VM hitting every migrated PvE sink at once: weather, two skills, a
+ * swappable bench member, a wild recruit with one bait item, and one cure item.
+ * Every fixture name/value is chosen to contain NONE of the English roster words
+ * BV-02 checks for (species/skill/affinity/item names collision-free per plan).
+ */
+function m24s3PveVM(overrides: Partial<BattleViewModel> = {}): BattleViewModel {
+  return {
+    battleId: 501n,
+    turnNumber: 1,
+    outcome: 'Ongoing',
+    playerCard: {
+      speciesName: 'Sproutle',
+      level: 7,
+      currentHp: 3,
+      maxHp: 9,
+      hpPercent: 33,
+      affinity: 'Plant',
+      status: null,
+    },
+    opponentCard: {
+      speciesName: 'Emberfang',
+      level: 4,
+      currentHp: 5,
+      maxHp: 12,
+      hpPercent: 42,
+      affinity: 'Fire',
+      status: null,
+    },
+    skills: [
+      { id: 1, name: 'Vine Lash', affinity: 'Plant', power: 40, accuracy: 95 },
+      { id: 2, name: 'Ember Jab', affinity: 'Fire', power: 35, accuracy: 90 },
+    ],
+    canFlee: true,
+    canSwap: true,
+    bench: [{ teamIndex: 1, speciesName: 'Mosshorn', currentHp: 6, maxHp: 10 }],
+    canRecruit: true,
+    baitOptions: [{ itemId: 11, name: 'Herb', recruitBonus: 100, count: 2 }],
+    cureItems: [{ itemId: 21, name: 'Tonic', cureStatus: 'Poison', count: 1 }],
+    weather: { label: 'Rain', turnsRemaining: 2 },
+    isPvp: false,
+    pvpPendingSubmit: false,
+    pvpOpponentName: null,
+    ...overrides,
+  } as BattleViewModel;
+}
+
+/** A PvP VM sharing the m24s3PveVM species/skill/bench shapes so BV-02's sentinel
+ *  roster check can reuse one collision-free fixture family. */
+function m24s3PvpVM(overrides: Partial<BattleViewModel> = {}): BattleViewModel {
+  return {
+    battleId: 502n,
+    turnNumber: 3,
+    outcome: 'Ongoing',
+    playerCard: {
+      speciesName: 'Sproutle',
+      level: 7,
+      currentHp: 3,
+      maxHp: 9,
+      hpPercent: 33,
+      affinity: 'Plant',
+      status: null,
+    },
+    opponentCard: {
+      speciesName: 'Emberfang',
+      level: 4,
+      currentHp: 5,
+      maxHp: 12,
+      hpPercent: 42,
+      affinity: 'Fire',
+      status: null,
+    },
+    skills: [{ id: 1, name: 'Vine Lash', affinity: 'Plant', power: 40, accuracy: 95 }],
+    canFlee: false,
+    canSwap: true,
+    bench: [{ teamIndex: 1, speciesName: 'Mosshorn', currentHp: 6, maxHp: 10 }],
+    canRecruit: false,
+    baitOptions: [],
+    cureItems: [],
+    weather: null,
+    isPvp: true,
+    pvpPendingSubmit: false,
+    pvpOpponentName: null,
+    ...overrides,
+  } as BattleViewModel;
+}
+
+// m24s3 hardening H1 (tests red-team, surviving cheat C10c): the battleView keys this
+// sentinel matrix can legitimately produce — the ONLY spans a strip is allowed to elide.
+// A bracket span whose content is not EXACTLY one of these (bare key, or `key|<json
+// object>` with key a PARAM key) is a FORGED span (e.g. a raw `.append('«Submit»')`
+// literal that never went through t()/tf()) and must be LEFT IN PLACE, never elided —
+// otherwise a decoy bracket pair around raw English would silently launder it past the
+// roster-word scan below.
+const M24S3_BV_PLAIN_KEYS = new Set([
+  'battle.title',
+  'battle.continueHint',
+  'battle.swap.hint',
+  'battle.pvp.waiting',
+  'battle.card.you',
+  'battle.card.opponent',
+  'battle.action.flee',
+  'battle.recruit.noBait',
+  'battle.recruit.submit',
+  'battle.cure.placeholder',
+  'battle.cure.submit',
+  'battle.outcome.victory',
+  'battle.outcome.defeat',
+  'battle.outcome.fled',
+]);
+
+const M24S3_BV_PARAM_KEYS = new Set([
+  'battle.weather.banner',
+  'battle.card.level',
+  'battle.card.hpLine',
+  'battle.skill.pvpSubmit',
+  'battle.skill.pveLabel',
+  'battle.skill.accuracy',
+  'battle.cure.option',
+  'battle.swap.pvpSubmit',
+  'battle.swap.pveLabel',
+]);
+
+/** True iff `content` (the text strictly between one `«`/`»` pair) is EXACTLY an
+ *  expected sentinel: a bare roster key, or `key|<json>` where `key` is a roster PARAM
+ *  key and the tail after the FIRST `|` parses to a plain (non-array, non-null) object. */
+function m24s3IsExpectedSentinelSpan(content: string): boolean {
+  const bar = content.indexOf('|');
+  if (bar === -1) {
+    return M24S3_BV_PLAIN_KEYS.has(content) || M24S3_BV_PARAM_KEYS.has(content);
+  }
+  const key = content.slice(0, bar);
+  if (!M24S3_BV_PARAM_KEYS.has(key)) return false;
+  const tail = content.slice(bar + 1);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(tail);
+  } catch {
+    return false;
+  }
+  return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed);
+}
+
+/** Elides only the bracket spans that are EXACTLY an expected sentinel (manual
+ *  indexOf loop — no RegExp, ADR-0055) and reports every OTHER `«...»` span verbatim
+ *  in `unexpectedSpans`, un-elided, so it stays in `stripped` for the roster-word scan
+ *  too (belt-and-braces): a genuinely-migrated site is bracketed with an EXACT
+ *  sentinel and disappears; any unbracketed raw-English leak, OR a forged bracket span
+ *  around raw English, survives into `stripped` and still reds the scan. */
+function m24s3SplitSentinels(text: string): { stripped: string; unexpectedSpans: string[] } {
+  let out = '';
+  const unexpectedSpans: string[] = [];
+  let i = 0;
+  while (i < text.length) {
+    const open = text.indexOf('«', i);
+    if (open === -1) {
+      out += text.slice(i);
+      break;
+    }
+    out += text.slice(i, open);
+    const close = text.indexOf('»', open + 1);
+    if (close === -1) {
+      // Unterminated bracket: never a legitimate sentinel — leave it in place.
+      out += text.slice(open);
+      break;
+    }
+    const span = text.slice(open, close + 1);
+    const content = text.slice(open + 1, close);
+    if (m24s3IsExpectedSentinelSpan(content)) {
+      // Elide — this is a real, correctly-formed sentinel.
+    } else {
+      out += span;
+      unexpectedSpans.push(span);
+    }
+    i = close + 1;
+  }
+  return { stripped: out, unexpectedSpans };
+}
+
+/** Whole-subtree walk (plan R5): every descendant's own text-node children, every
+ *  element's `title` attribute, and every `<option>`'s text — never a per-element
+ *  spot check. */
+function m24s3WalkSubtree(root: HTMLElement): string[] {
+  const texts: string[] = [];
+  const stack: Element[] = [root];
+  while (stack.length > 0) {
+    const el = stack.pop()!;
+    const titleAttr = el.getAttribute('title');
+    if (titleAttr) texts.push(titleAttr);
+    if (el.tagName === 'OPTION') texts.push(el.textContent ?? '');
+    for (const node of Array.from(el.childNodes)) {
+      if (node.nodeType === 3) texts.push(node.textContent ?? ''); // TEXT_NODE
+    }
+    for (const child of Array.from(el.children)) stack.push(child);
+  }
+  return texts;
+}
+
+const M24S3_BV_ROSTER = [
+  'Battle',
+  'Press Esc',
+  'No healthy',
+  'Waiting',
+  'turns)',
+  'Lv',
+  'HP ',
+  'Acc ',
+  'Submit',
+  'Swap',
+  'Flee',
+  'No bait',
+  'Recruit',
+  'Select item',
+  'cures',
+  'Use Item',
+  'Victory',
+  'Defeat',
+  'Got away',
+  'You',
+  'Opponent',
+];
+
+function m24s3AssertNoRosterWord(texts: readonly string[], label: string): void {
+  const { stripped, unexpectedSpans } = m24s3SplitSentinels(texts.join('\n'));
+  // m24s3 hardening H1: a FORGED bracket span (raw English wrapped in `«...»` by
+  // something other than the resolver, e.g. a decoy `.append('«Submit»')`) is never
+  // elided — it must not exist at all under a correct implementation.
+  expect(
+    unexpectedSpans,
+    `${label}: found «...» span(s) that are not an EXACT expected sentinel (a forged ` +
+      `bracket span around raw content is not exempted from the roster scan)`,
+  ).toEqual([]);
+  for (const word of M24S3_BV_ROSTER) {
+    expect(
+      stripped.includes(word),
+      `${label}: must not contain English roster word "${word}" outside a «sentinel»`,
+    ).toBe(false);
+  }
+}
+
+describe('m24s3 (ADR-0259): battleView.ts routes its migrated sinks through t()/tf()', () => {
+  it('m24s3 BV-01: every migrated sink calls t()/tf() with the exact key and params, battle.card.opponent is skipped only when pvpOpponentName is set, and every DOM string stays byte-identical', () => {
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+    const view = new BattleView(parent, m24s3Callbacks());
+
+    // --- PvE: every conditional branch present at once ----------------------
+    view.refresh(m24s3PveVM());
+    view.show();
+
+    expect(i18nT, 'battle.title resolves in show() (plan R1)').toHaveBeenCalledWith('battle.title');
+    expect(i18nT).toHaveBeenCalledWith('battle.continueHint');
+    expect(i18nT).toHaveBeenCalledWith('battle.swap.hint');
+    expect(i18nT).toHaveBeenCalledWith('battle.card.you');
+    expect(i18nT, 'PvE always resolves battle.card.opponent').toHaveBeenCalledWith(
+      'battle.card.opponent',
+    );
+    expect(i18nT).toHaveBeenCalledWith('battle.action.flee');
+    expect(i18nT).toHaveBeenCalledWith('battle.recruit.noBait');
+    expect(i18nT).toHaveBeenCalledWith('battle.recruit.submit');
+    expect(i18nT).toHaveBeenCalledWith('battle.cure.placeholder');
+    expect(i18nT).toHaveBeenCalledWith('battle.cure.submit');
+
+    expect(i18nTf).toHaveBeenCalledWith('battle.weather.banner', { label: 'Rain', turns: 2 });
+    expect(i18nTf).toHaveBeenCalledWith('battle.card.level', { level: 7 });
+    expect(i18nTf).toHaveBeenCalledWith('battle.card.level', { level: 4 });
+    expect(i18nTf).toHaveBeenCalledWith('battle.card.hpLine', {
+      current: 3,
+      max: 9,
+      affinity: 'Plant',
+    });
+    expect(i18nTf).toHaveBeenCalledWith('battle.card.hpLine', {
+      current: 5,
+      max: 12,
+      affinity: 'Fire',
+    });
+    expect(i18nTf).toHaveBeenCalledWith('battle.skill.pveLabel', {
+      name: 'Vine Lash',
+      power: 40,
+      affinity: 'Plant',
+    });
+    expect(i18nTf).toHaveBeenCalledWith('battle.skill.pveLabel', {
+      name: 'Ember Jab',
+      power: 35,
+      affinity: 'Fire',
+    });
+    expect(i18nTf).toHaveBeenCalledWith('battle.skill.accuracy', { accuracy: 95 });
+    expect(i18nTf).toHaveBeenCalledWith('battle.skill.accuracy', { accuracy: 90 });
+    expect(i18nTf).toHaveBeenCalledWith('battle.swap.pveLabel', {
+      species: 'Mosshorn',
+      current: 6,
+      max: 10,
+    });
+    expect(i18nTf).toHaveBeenCalledWith('battle.cure.option', {
+      name: 'Tonic',
+      cureStatus: 'Poison',
+      count: 1,
+    });
+
+    // DOM byte-identity, from the real (call-through) resolver.
+    expect(parent.querySelector('[data-testid="battle-title"]')?.textContent).toBe('Battle');
+    expect(parent.querySelector('[data-testid="weather-banner"]')?.textContent).toBe(
+      'Rain (2 turns)',
+    );
+    const allSpans = [...parent.querySelectorAll('span')].map((s) => s.textContent);
+    expect(allSpans).toContain('You: Sproutle');
+    expect(allSpans).toContain('Opponent: Emberfang');
+    expect(allSpans).toContain('Lv7');
+    expect(allSpans).toContain('Lv4');
+    const hpTexts = [...parent.querySelectorAll('div')]
+      .map((d) => d.textContent)
+      .filter((txt): txt is string => txt !== null)
+      .filter((txt) => txt.startsWith('HP '));
+    expect(hpTexts).toContain('HP 3/9 · Plant');
+    expect(hpTexts).toContain('HP 5/12 · Fire');
+    const buttons = [...parent.querySelectorAll('button')];
+    const accTitles = buttons.map((b) => b.title).filter((title) => title.startsWith('Acc '));
+    expect(accTitles).toContain('Acc 95%');
+    expect(accTitles).toContain('Acc 90%');
+    expect(buttons.some((b) => b.textContent === 'Flee')).toBe(true);
+    expect(buttons.some((b) => b.textContent === 'Recruit')).toBe(true);
+    expect(buttons.some((b) => b.textContent === 'Use Item')).toBe(true);
+    expect(buttons.some((b) => b.textContent === 'Swap: Mosshorn (6/10)')).toBe(true);
+    expect(
+      parent.querySelector('[data-testid="cure-item-selector"] option[value="21"]')?.textContent,
+    ).toBe('Tonic (cures Poison) ×1');
+    // Untouched glyph-only bait row (plan: "Untouched (passing, glyph-only, tier-(e))") — a
+    // sanity precondition only, never an i18n key.
+    expect(
+      parent.querySelector('[data-testid="bait-selector"] option[value="11"]')?.textContent,
+    ).toBe('Herb (+100‰) ×2');
+    expect(
+      parent.querySelector('[data-testid="bait-selector"] option[value=""]')?.textContent,
+    ).toBe('No bait');
+    expect(
+      parent.querySelector('[data-testid="cure-item-selector"] option[value=""]')?.textContent,
+    ).toBe('Select item');
+    expect(parent.querySelector('[data-testid="battle-continue-hint"]')).not.toBeNull();
+
+    // --- PvP: opponentName UNSET -> battle.card.opponent still requested ----
+    vi.mocked(i18nT).mockClear();
+    view.refresh(m24s3PvpVM({ pvpOpponentName: null, pvpPendingSubmit: false }));
+    expect(
+      i18nT,
+      'PvP with no opponent name falls back to battle.card.opponent',
+    ).toHaveBeenCalledWith('battle.card.opponent');
+    expect(i18nTf).toHaveBeenCalledWith('battle.skill.pvpSubmit', {
+      name: 'Vine Lash',
+      affinity: 'Plant',
+    });
+    expect(i18nTf).toHaveBeenCalledWith('battle.swap.pvpSubmit', { species: 'Mosshorn' });
+
+    // --- PvP: pending=true -> the waiting banner resolves -------------------
+    view.refresh(m24s3PvpVM({ pvpOpponentName: null, pvpPendingSubmit: true }));
+    expect(i18nT).toHaveBeenCalledWith('battle.pvp.waiting');
+    expect(parent.querySelector('[data-testid="pvp-status"]')?.textContent).toBe(
+      'Waiting for opponent’s action…',
+    );
+
+    // --- PvP: opponentName SET -> battle.card.opponent is SKIPPED -----------
+    vi.mocked(i18nT).mockClear();
+    view.refresh(m24s3PvpVM({ pvpOpponentName: 'Rival', pvpPendingSubmit: false }));
+    expect(
+      i18nT,
+      'a set pvpOpponentName is rendered raw — battle.card.opponent must not be requested',
+    ).not.toHaveBeenCalledWith('battle.card.opponent');
+
+    // --- the three terminal outcomes -----------------------------------------
+    vi.mocked(i18nT).mockClear();
+    view.refresh(makeTerminalVM('SideAWins'));
+    expect(i18nT).toHaveBeenCalledWith('battle.outcome.victory');
+    expect(parent.querySelector('[data-testid="outcome-text"]')?.textContent).toBe('Victory!');
+
+    vi.mocked(i18nT).mockClear();
+    view.refresh(makeTerminalVM('SideBWins'));
+    expect(i18nT).toHaveBeenCalledWith('battle.outcome.defeat');
+    expect(parent.querySelector('[data-testid="outcome-text"]')?.textContent).toBe('Defeat...');
+
+    vi.mocked(i18nT).mockClear();
+    view.refresh(makeTerminalVM('Fled'));
+    expect(i18nT).toHaveBeenCalledWith('battle.outcome.fled');
+    expect(parent.querySelector('[data-testid="outcome-text"]')?.textContent).toBe(
+      'Got away safely!',
+    );
+
+    document.body.removeChild(parent);
+  });
+
+  it('m24s3 BV-02: under «key» sentinels, every rendered surface shows resolver output and never an English roster word outside a sentinel', () => {
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+    // m24s3 hardening H3: the view is CONSTRUCTED here, BEFORE the sentinel
+    // mockImplementation is installed below. That ordering is load-bearing — plan R1
+    // moves `battle.title`/`battle.swap.hint`/`battle.continueHint` OUT of the
+    // constructor and into `show()` specifically so no string is ever resolved before
+    // sentinel mode is active; a regression back to a constructor-time `t()` call would
+    // resolve against the REAL (call-through) resolver at construction time here and
+    // surface as stale, unbracketed English in the very first `m24s3AssertNoRosterWord`
+    // below. Refactoring this ordering away (e.g. installing the mock before
+    // `new BattleView(...)`) would silently un-gate that R1 regression.
+    const view = new BattleView(parent, m24s3Callbacks());
+    const root = parent.firstElementChild as HTMLElement;
+
+    try {
+      vi.mocked(i18nT).mockImplementation((key: string) => `«${key}»`);
+      vi.mocked(i18nTf).mockImplementation(
+        (key: string, params: unknown) => `«${key}|${JSON.stringify(params)}»`,
+      );
+
+      view.refresh(m24s3PveVM());
+      view.show();
+      let texts = m24s3WalkSubtree(root);
+      m24s3AssertNoRosterWord(texts, 'PvE ongoing');
+      let joined = texts.join('\n');
+      expect(joined).toContain('«battle.title»');
+      expect(joined).toContain('«battle.continueHint»');
+      expect(joined).toContain('«battle.swap.hint»');
+      expect(joined).toContain('«battle.card.you»');
+      expect(joined).toContain('«battle.card.opponent»');
+      expect(joined).toContain('«battle.action.flee»');
+      expect(joined).toContain('«battle.recruit.noBait»');
+      expect(joined).toContain('«battle.recruit.submit»');
+      expect(joined).toContain('«battle.cure.placeholder»');
+      expect(joined).toContain('«battle.cure.submit»');
+      expect(joined).toContain('«battle.weather.banner|{"label":"Rain","turns":2}»');
+      expect(joined).toContain('«battle.card.level|{"level":7}»');
+      expect(joined).toContain('«battle.skill.accuracy|{"accuracy":95}»');
+      expect(joined).toContain(
+        '«battle.swap.pveLabel|{"species":"Mosshorn","current":6,"max":10}»',
+      );
+      // Verifier M10 (2026-09-20): a PvE skill label rebuilt as an inline template beside a DEAD
+      // `void tf(...)` call survived 3288/3288 — the spy saw the call, the roster scan saw no
+      // English word, the scanner saw a glyph-only template. Every parameterized PvE surface
+      // therefore gets its own containment pin, not just the PvP twins.
+      expect(joined).toContain(
+        '«battle.skill.pveLabel|{"name":"Vine Lash","power":40,"affinity":"Plant"}»',
+      );
+      expect(joined).toContain(
+        '«battle.skill.pveLabel|{"name":"Ember Jab","power":35,"affinity":"Fire"}»',
+      );
+      expect(joined).toContain('«battle.card.hpLine|{"current":3,"max":9,"affinity":"Plant"}»');
+      expect(joined).toContain('«battle.card.hpLine|{"current":5,"max":12,"affinity":"Fire"}»');
+      expect(joined).toContain(
+        '«battle.cure.option|{"name":"Tonic","cureStatus":"Poison","count":1}»',
+      );
+      expect(joined).toContain(
+        '«battle.cure.option|{"name":"Tonic","cureStatus":"Poison","count":1}»',
+      );
+
+      view.refresh(m24s3PvpVM({ pvpOpponentName: null, pvpPendingSubmit: false }));
+      texts = m24s3WalkSubtree(root);
+      m24s3AssertNoRosterWord(texts, 'PvP opponentName unset');
+      joined = texts.join('\n');
+      expect(joined).toContain('«battle.card.opponent»');
+      expect(joined).toContain('«battle.skill.pvpSubmit|{"name":"Vine Lash","affinity":"Plant"}»');
+      expect(joined).toContain('«battle.swap.pvpSubmit|{"species":"Mosshorn"}»');
+
+      view.refresh(m24s3PvpVM({ pvpOpponentName: 'Rival', pvpPendingSubmit: false }));
+      texts = m24s3WalkSubtree(root);
+      m24s3AssertNoRosterWord(texts, 'PvP opponentName set');
+      joined = texts.join('\n');
+      expect(joined, 'a set pvpOpponentName must render raw, never the sentinel').not.toContain(
+        '«battle.card.opponent»',
+      );
+      expect(joined).toContain('Rival');
+
+      view.refresh(m24s3PvpVM({ pvpOpponentName: null, pvpPendingSubmit: true }));
+      texts = m24s3WalkSubtree(root);
+      m24s3AssertNoRosterWord(texts, 'PvP pending');
+      expect(texts.join('\n')).toContain('«battle.pvp.waiting»');
+
+      for (const [outcome, key] of [
+        ['SideAWins', 'battle.outcome.victory'],
+        ['SideBWins', 'battle.outcome.defeat'],
+        ['Fled', 'battle.outcome.fled'],
+      ] as const) {
+        view.refresh(makeTerminalVM(outcome));
+        texts = m24s3WalkSubtree(root);
+        m24s3AssertNoRosterWord(texts, `terminal ${outcome}`);
+        expect(texts.join('\n')).toContain(`«${key}»`);
+      }
+    } finally {
+      vi.mocked(i18nT).mockRestore();
+      vi.mocked(i18nTf).mockRestore();
+    }
+
+    // Post-restore call-through control (an existing S1 key — the new battle.* keys do not
+    // exist in the catalog until the specialist ships them).
+    expect(i18nT('chrome.help.title')).toBe('Controls & Goals');
+
+    document.body.removeChild(parent);
+  });
+});
+
+describe('m24s3 (ADR-0259): battleView.ts scan — zero failing sinks', () => {
+  it('m24s3 BV-03: scanSource(stripComments(battleView.ts)) has zero failing sinks, a >=25 sink floor, and no truncation/masking tripwires', () => {
+    const src = readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), 'battleView.ts'),
+      'utf8',
+    );
+    const result = scanSource(stripComments(src));
+
+    expect(
+      result.failing.map((s) => `${s.kind}@L${s.line}: ${s.failingSegments.join(' | ')}`),
+      'every sink must route through t()/tf() — any surviving English segment is listed above',
+    ).toEqual([]);
+    expect(
+      result.sinks.length,
+      'SINK_FLOOR idiom (plan R2): a floor, never an exact count',
+    ).toBeGreaterThanOrEqual(25);
+    expect(
+      result.unterminated,
+      'the literal mask must not end inside an unterminated literal',
+    ).toBe(false);
+    expect(result.maskedSinkTokens, 'no parity-flip mask desync').toBe(0);
+    for (const sink of result.sinks) {
+      expect(sink.truncated, `${sink.kind}@L${sink.line} must not be truncated`).toBe(false);
+    }
   });
 });
