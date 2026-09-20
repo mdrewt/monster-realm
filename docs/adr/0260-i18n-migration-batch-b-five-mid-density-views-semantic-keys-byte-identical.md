@@ -7,7 +7,7 @@
 **Amends:** —
 **Extends:** 0256, 0257, 0259
 **Subsystems:** client-ui, ci-gates
-**Decision:** The five mid-density views call `t()`/`tf()` from the ONE flat catalog with semantic `evolution.*`/`raising.*`/`box.*`/`trade.*`/`shop.*` keys; English output is byte-identical; 46 failing sinks + 7 scanner-invisible hoisted literals migrate; `HARDCODED_CEILING` 57 → 11.
+**Decision:** The five mid-density views call `t()`/`tf()` from the ONE flat catalog with semantic `evolution.*`/`raising.*`/`box.*`/`trade.*`/`shop.*` keys; English byte-identical; 46 failing sinks + 7 hoisted literals migrate; ceiling 57 → 11.
 
 ---
 
