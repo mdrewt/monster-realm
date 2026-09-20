@@ -87,7 +87,7 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: Field-weather banner above the two monster cards; {label} is the weather name (e.g.
   // "Rain") and {turns} the number of turns it has left. One centred line, about 40 characters
   // wide.
-  // battleView.ts:360
+  // battleView.ts:361
   'battle.weather.banner': (p) => `${p.label} (${p.turns} turns)`,
   // @desc: Role word prefixed to the player's own monster card header, rendered as "You:
   // <species>". Very short — shares one line with the species name and the level.
@@ -100,25 +100,25 @@ export const CATALOG_EN: Catalog = Object.freeze({
   'battle.card.opponent': 'Opponent',
   // @desc: Level badge on the right of a monster card header; {level} is the monster's level and
   // "Lv" abbreviates "Level". Very short — shares one line with the card's name.
-  // battleView.ts:371
+  // battleView.ts:373
   'battle.card.level': (p) => `Lv${p.level}`,
   // @desc: Small line under a monster card's health bar; {current}/{max} are hit points and
   // {affinity} is the monster's elemental type name (e.g. "Fire"). One line, small text.
-  // battleView.ts:404
+  // battleView.ts:407
   'battle.card.hpLine': (p) => `HP ${p.current}/${p.max} · ${p.affinity}`,
   // @desc: PvP skill button: submits the move rather than using it at once, hence the leading
   // "Submit:"; {name} is the skill name, {affinity} its elemental type. Keep {affinity} LAST and
   // keep the "Submit:" prefix first (tests match the start of the text). Fits a half-width button.
-  // battleView.ts:441
+  // battleView.ts:443
   'battle.skill.pvpSubmit': (p) => `Submit: ${p.name} · ${p.affinity}`,
   // @desc: PvE skill button, used at once; {name} is the skill name, {power} its damage value and
   // {affinity} its elemental type. Keep {affinity} LAST (tests match the start of the text). Fits a
   // half-width button.
-  // battleView.ts:442
+  // battleView.ts:444
   'battle.skill.pveLabel': (p) => `${p.name} (${p.power}) · ${p.affinity}`,
   // @desc: Hover tooltip on a skill button giving its hit chance; {accuracy} is a percentage and
   // "Acc" abbreviates "Accuracy". Very short.
-  // battleView.ts:443
+  // battleView.ts:445
   'battle.skill.accuracy': (p) => `Acc ${p.accuracy}%`,
   // @desc: Button label to run from an ongoing PvE battle. Short verb, fits a narrow button.
   // battleView.ts:470
@@ -138,7 +138,7 @@ export const CATALOG_EN: Catalog = Object.freeze({
   // @desc: One option of the cure-item selector; {name} is the item name, {cureStatus} the ailment
   // it removes (e.g. "Poison") and {count} how many the player carries. One line in a narrow
   // dropdown.
-  // battleView.ts:566
+  // battleView.ts:568
   'battle.cure.option': (p) => `${p.name} (cures ${p.cureStatus}) ×${p.count}`,
   // @desc: Button label to use the selected cure item on the player's monster. Short, fits a narrow
   // button.

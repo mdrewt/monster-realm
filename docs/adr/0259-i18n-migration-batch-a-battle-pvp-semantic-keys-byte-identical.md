@@ -105,7 +105,11 @@ every closure with `{ where: 'x' }`.
   pending-submit on/off, weather, bench, bait, cure items; pvp idle/incoming/outgoing/player-list) and
   walks the whole `#root` subtree (text, `title` attributes, `<option>` text) asserting the sentinels
   are present and none of the English roster words is — the DOM value must BE the resolver's return
-  value. The five hoisted literals have NO other mechanical proof; this matrix is it. A per-file
+  value. The five hoisted literals have NO other mechanical proof; this matrix is it. Every
+  parameterized surface gets its OWN `«key|params»` containment pin, PvE and PvP alike: the
+  verifier's mutant M10 (a PvE skill label rebuilt as an inline glyph-only template beside a dead
+  `void tf(...)`) survived 3288/3288 while only the PvP twin was pinned — the spy saw the call, the
+  roster scan saw no English word, the scanner saw a tier-(e) template. A per-file
   `scanSource` pin in each view test asserts `failing.length === 0` exactly with the sink total as a
   `>=` floor (the `SINK_FLOOR` idiom — an unrelated clean sink added later must not red an i18n gate).
 - **D7 — Catalog-layer teeth.** `catalog.test.ts` grows a `SAMPLE_PARAMS` table with TWO sample sets
@@ -133,6 +137,10 @@ every closure with `{ where: 'x' }`.
 ## Lenses
 
 planner → reviewer(+/simplify) ∥ red-team (plan; the sentinel matrix, the `>=` sink floor, the
-`show()`-time resolution and the output-equality catalog pins came from these) → tester → red-team
-(tests) → specialist → reviewer ∥ verifier → doc-keeper; domain auditors not applicable (no
-server/game-core surface).
+`show()`-time resolution and the output-equality catalog pins came from these) → tester (RED 9/9
+for the predicted reasons) → reviewer ∥ red-team (tests; C10c forged-span cheat and the
+`resolver.test.ts` plain-key snapshot BLOCKER → tester hardening) → specialist (five files only,
+never a test) → reviewer(+/simplify; 7 `@desc` citations re-pointed) ∥ verifier (REJECT on M10 →
+BV-02 gains per-surface PvE pins → M10 KILLED; 9/9 other mutants killed, RED→green integrity
+clean, every ledger CHECK reproduced) → docs inline (landing pattern; no doc-keeper spawn);
+domain auditors not applicable (no server/game-core surface).

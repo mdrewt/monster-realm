@@ -5680,6 +5680,21 @@ describe('m24s3 (ADR-0259): battleView.ts routes its migrated sinks through t()/
       expect(joined).toContain(
         '«battle.swap.pveLabel|{"species":"Mosshorn","current":6,"max":10}»',
       );
+      // Verifier M10 (2026-09-20): a PvE skill label rebuilt as an inline template beside a DEAD
+      // `void tf(...)` call survived 3288/3288 — the spy saw the call, the roster scan saw no
+      // English word, the scanner saw a glyph-only template. Every parameterized PvE surface
+      // therefore gets its own containment pin, not just the PvP twins.
+      expect(joined).toContain(
+        '«battle.skill.pveLabel|{"name":"Vine Lash","power":40,"affinity":"Plant"}»',
+      );
+      expect(joined).toContain(
+        '«battle.skill.pveLabel|{"name":"Ember Jab","power":35,"affinity":"Fire"}»',
+      );
+      expect(joined).toContain('«battle.card.hpLine|{"current":3,"max":9,"affinity":"Plant"}»');
+      expect(joined).toContain('«battle.card.hpLine|{"current":5,"max":12,"affinity":"Fire"}»');
+      expect(joined).toContain(
+        '«battle.cure.option|{"name":"Tonic","cureStatus":"Poison","count":1}»',
+      );
       expect(joined).toContain(
         '«battle.cure.option|{"name":"Tonic","cureStatus":"Poison","count":1}»',
       );
