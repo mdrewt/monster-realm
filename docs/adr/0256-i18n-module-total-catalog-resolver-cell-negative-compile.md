@@ -7,7 +7,7 @@
 **Amends:** —
 **Extends:** 0205, 0224
 **Subsystems:** client-ui, ci-gates
-**Decision:** `client/src/ui/i18n/` ships a literal `MessageId` union, a mapped-type-total `Catalog`, a throw-on-miss resolver whose locale is one module-level cell, CLDR-total plural forms paid for once by `oneOther`/`cldr`, and its four compile-time guarantees are proven by spawning `tsc` over fixtures from a co-located vitest test.
+**Decision:** `client/src/ui/i18n/` is a literal `MessageId` union + mapped-type-total `Catalog`, a throw-on-miss resolver over one module-level locale cell, CLDR-total plurals via `oneOther`/`cldr`, all proven by a vitest-spawned `tsc`.
 
 ---
 
