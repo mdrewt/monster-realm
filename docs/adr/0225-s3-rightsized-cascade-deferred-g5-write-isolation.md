@@ -5,6 +5,7 @@
 **Slice:** m22-s3
 **Supersedes:** —
 **Amends:** —
+**Amended-by:** ADR-0258
 **Extended-by:** ADR-0227
 **Subsystems:** security-authz, schema-persistence, ci-gates
 **Decision:** S3 ships the terminal-cancel guard, the reaper recheck skeleton and `should_reject_for_deletion` in accounts.rs; the PRV1-6 cascade defers to S3b — G5 write isolation demands per-module erase helpers outside S3's touches.
@@ -159,3 +160,17 @@ remainder as a properly-scoped slice (called **S3b** below).
   actually performed anywhere; M22's §7.2 spine (S4/S5 after S3) now depends on S3b being
   scheduled promptly. The spec's S3 row and §7.3 contract table need a supervisor-side amendment
   to reflect the S3/S3b split and the predicate's real home.
+
+## Amendment (rb-45, 2026-09-20 — ADR-0258 closes the PRV1-7 crate-wide follow-up)
+
+The Consequences bullet above ("PRV1-7's crate-wide enforcement … defers to S5/S6 … a
+`syn`-based check or an explicit reviewer-checklist item are the candidates") is resolved.
+The supervisor ruled under ADR-0224 for the `syn`-based check, and rb-45 shipped it as ONE
+ordinary `#[test]` module, `server-module/src/privacy_enforcement_tests.rs` (ADR-0258): every
+`lib.rs`-declared module is parsed, crate-local helper calls are followed transitively, and a
+reducer that reaches a manifest-classified write without a depth-0 fully-qualified
+`crate::guards::require_*` gate before it fails CI unless it is a `STATE_TRANSITION_OWNERS`
+member, a lifecycle or scheduled reducer, or an exactly-pinned roster entry carrying a basis.
+Residual R-m22-s5-X11 (rb-45) is closed by that slice; the remaining ungated gameplay writers
+are pinned by name in the roster and drained by a registered follow-up. Nothing else in this
+ADR changes.

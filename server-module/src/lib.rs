@@ -357,3 +357,7 @@ pub fn on_disconnect(ctx: &ReducerContext) {
 #[cfg(test)]
 #[path = "rb74_citation_tests.rs"]
 mod rb74_citation_tests;
+
+#[cfg(test)]
+#[path = "privacy_enforcement_tests.rs"]
+mod privacy_enforcement_tests;

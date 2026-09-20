@@ -5,7 +5,7 @@
 **Slice:** m22-s3b
 **Supersedes:** —
 **Amends:** —
-**Amended-by:** ADR-0245
+**Amended-by:** ADR-0245, ADR-0258
 **Subsystems:** security-authz, schema-persistence, ci-gates
 **Decision:** S3b lands the §4.4 cascade via per-module `erase_*`/`anonymize_*` delegation, re-arms the one-shot reaper (not-due branch + init/sync sweep), ships PRV1-8(b) fresh re-registration, and re-pins the reaper body pin.
 
@@ -241,3 +241,18 @@ should leave no orphaned data... treat all unrecognized OAuth identities like fr
   table→helper map that `m22s3b_cascade_covers_manifest` pins (exhaustive `DeletionPolicy` match,
   fail-loud on an unmapped entry) — the map is a named drift surface of the same class as
   `JOIN_ONLY_TABLES` (spec §9 residual 3).
+
+## Amendment (rb-45, 2026-09-20 — ADR-0258 lands the [DEL-06] mechanical fan-out)
+
+§4h above and the Consequences bullet "PRV1-7's crate-wide [DEL-06] enforcement mechanism
+remains deferred to S6 pending the supervisor's ADR-0224 ruling (gate X18 DEFER)" are resolved.
+rb-45 shipped the mechanism as ONE syn-based ordinary `#[test]` module,
+`server-module/src/privacy_enforcement_tests.rs` (ADR-0258), closing residual R-m22-s3b-X18
+(rb-49). The width this ADR recorded on purpose ("roughly twenty-five reducers … so the residual
+cannot be closed by a one-reducer change") is now measured and pinned: the census reports every
+reducer's verdict, and the ungated set must equal a roster whose every entry names its basis —
+already-open commitments (PRV1-10, ADR-0227 D5), `respond_trade`'s decline-before-gate arm
+(ADR-0237), the operator-only `sync_content`, and the KNOWN-GAP gameplay writers named here
+(`join_game` among them), which a registered follow-up drains one reject-tested reducer at a
+time. The mid-grace non-conformance described in §4h therefore stays visible in CI rather than
+in prose until each entry is gated. Nothing else in this ADR changes.

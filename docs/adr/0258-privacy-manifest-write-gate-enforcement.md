@@ -7,7 +7,7 @@
 **Amends:** ADR-0225, ADR-0228
 **Extends:** ADR-0224, ADR-0227, ADR-0246, ADR-0248, ADR-0257
 **Subsystems:** security-authz, ci-gates
-**Decision:** `privacy_enforcement_tests.rs` parses every `lib.rs`-declared module with `syn` and fails CI when a reducer transitively reaches a manifest-classified write with no depth-0 `crate::guards::require_*` gate before it, unless exempt or rostered.
+**Decision:** `privacy_enforcement_tests.rs` parses every `lib.rs`-declared module with `syn` and fails CI when a reducer reaches a manifest-classified write with no depth-0 `crate::guards::require_*` gate before it, unless exempt or rostered.
 
 ---
 
