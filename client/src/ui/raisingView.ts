@@ -6,6 +6,12 @@
 // batch-applied; the user triggers reducer intents via callbacks passed at
 // construction (never called directly by this module). Coverage-excluded shell.
 //
+// m24-s4 (ADR-0260) — every player-facing string this view renders is resolved through the i18n
+// resolver (`t()`/`tf()`, ui/i18n/resolver.ts) with a `raising.*` key from ui/i18n/catalog.en.ts;
+// the English bytes are unchanged (the catalog pins them). Model data (nickname, item
+// description, the `showFeedback` message, tiers, stats, names, counts) flow through raw or as
+// params, never as catalog text. Every `t(`/`tf(` first argument is a string LITERAL.
+//
 // m23-s4 (M23 §2.2, ADR-0205 D1/D2/A3) — overlay a11y wiring. This view is a CONSTRUCTED shell:
 // its root is `document.createElement`'d here and appended into the shared `#app` MOUNT, so unlike
 // the ten static shells S3 wired it ships NO ARIA of its own from `client/index.html` — every
@@ -33,6 +39,7 @@
 // OWN root under the shared MOUNT — four roots, four `OverlayId`s, four records. Closing a sibling
 // here would close an overlay the player still has open. Pinned by `S4-CROSS-VIEW-DISTINCT-ROOTS`.
 
+import { t, tf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type { InventoryItemViewModel, RaisingViewModel } from './raisingModel';
 
@@ -59,7 +66,12 @@ export interface RaisingViewCallbacks {
 
 export class RaisingView {
   readonly #root: HTMLDivElement;
+  /** The "Raising & Inventory" heading; its text is resolved in show(), not here (m24-s4). */
+  readonly #titleEl: HTMLHeadingElement;
   readonly #feedbackEl: HTMLDivElement;
+  /** The two section headings; text resolved in show() (m24-s4, see show()). */
+  readonly #monstersLabelEl: HTMLHeadingElement;
+  readonly #inventoryLabelEl: HTMLHeadingElement;
   readonly #monsterEl: HTMLDivElement;
   readonly #inventoryEl: HTMLDivElement;
   readonly #callbacks: RaisingViewCallbacks;
@@ -100,8 +112,8 @@ export class RaisingView {
       'display:none;flex-direction:column;align-items:center;padding:24px;' +
       'overflow-y:auto;font-family:monospace;color:#e0e0e0;';
 
+    // m24-s4 (ADR-0260): NO text here — `raising.title` is resolved in show() (see there for why).
     const title = document.createElement('h2');
-    title.textContent = 'Raising & Inventory';
     // m23-s4: the OVERLAY_A11Y initialFocusSelector anchor for this overlay. `tabindex="-1"`
     // (never "0") makes the heading programmatically focusable WITHOUT adding a permanent tab
     // stop ahead of the overlay's real controls. `setAttribute`, not `dataset` — the selector is
@@ -109,6 +121,7 @@ export class RaisingView {
     title.setAttribute('data-testid', 'raising-title');
     title.setAttribute('tabindex', '-1');
     title.style.cssText = 'margin:0 0 16px;color:#fff;';
+    this.#titleEl = title;
     this.#root.appendChild(title);
 
     // ADR-0159 D1: the feedback line lives INSIDE the overlay root. main.ts's
@@ -120,9 +133,10 @@ export class RaisingView {
       'min-height:16px;margin:0 0 12px;font-size:12px;color:#ffd479;';
     this.#root.appendChild(this.#feedbackEl);
 
+    // Its text (`raising.monsters.heading`) is resolved in show() (m24-s4), not here.
     const monsterLabel = document.createElement('h3');
-    monsterLabel.textContent = 'Monsters';
     monsterLabel.style.cssText = 'margin:0 0 8px;color:#aaa;';
+    this.#monstersLabelEl = monsterLabel;
     this.#root.appendChild(monsterLabel);
 
     this.#monsterEl = document.createElement('div');
@@ -130,9 +144,10 @@ export class RaisingView {
       'display:grid;grid-template-columns:repeat(2,1fr);gap:8px;width:100%;max-width:700px;margin-bottom:16px;';
     this.#root.appendChild(this.#monsterEl);
 
+    // Its text (`raising.inventory.heading`) is resolved in show() (m24-s4), not here.
     const inventoryLabel = document.createElement('h3');
-    inventoryLabel.textContent = 'Inventory';
     inventoryLabel.style.cssText = 'margin:0 0 8px;color:#aaa;';
+    this.#inventoryLabelEl = inventoryLabel;
     this.#root.appendChild(inventoryLabel);
 
     this.#inventoryEl = document.createElement('div');
@@ -154,6 +169,12 @@ export class RaisingView {
   show(): void {
     const wasVisible = this.#visible;
     this.#visible = true;
+    // m24-s4 (ADR-0260 D4): the strings set ONCE and never rewritten by a render are resolved
+    // HERE, on EVERY show() — unconditionally, after the `wasVisible` read, before the display
+    // write. See evolutionView.show() for the boot-order / locale-switch reasoning.
+    this.#titleEl.textContent = t('raising.title');
+    this.#monstersLabelEl.textContent = t('raising.monsters.heading');
+    this.#inventoryLabelEl.textContent = t('raising.inventory.heading');
     this.#root.style.display = 'flex';
     if (!wasVisible) openOverlayA11y('raisingView', this.#root);
   }
@@ -190,7 +211,7 @@ export class RaisingView {
     this.#trainButtons.clear();
     if (monsters.length === 0) {
       const empty = document.createElement('div');
-      empty.textContent = 'No monsters.';
+      empty.textContent = t('raising.monsters.empty');
       empty.style.opacity = '0.4';
       this.#monsterEl.appendChild(empty);
       return;
@@ -206,14 +227,23 @@ export class RaisingView {
 
       const info = document.createElement('div');
       info.style.cssText = 'font-size:12px;margin-top:4px;color:#ccc;';
-      info.textContent = `Lv${mon.level} · Trust ${mon.trustTier} · HP ${mon.currentHp}/${mon.statHp}`;
+      info.textContent = tf('raising.card.status', {
+        level: mon.level,
+        trust: mon.trustTier,
+        current: mon.currentHp,
+        max: mon.statHp,
+      });
       el.appendChild(info);
 
       const stats = document.createElement('div');
       stats.style.cssText = 'font-size:11px;margin-top:4px;color:#9ab;';
-      stats.textContent =
-        `ATK ${mon.statAttack} · DEF ${mon.statDefense} · SPD ${mon.statSpeed} · ` +
-        `SP.ATK ${mon.statSpAttack} · SP.DEF ${mon.statSpDefense}`;
+      stats.textContent = tf('raising.card.stats', {
+        attack: mon.statAttack,
+        defense: mon.statDefense,
+        speed: mon.statSpeed,
+        spAttack: mon.statSpAttack,
+        spDefense: mon.statSpDefense,
+      });
       el.appendChild(stats);
 
       const actions = document.createElement('div');
@@ -221,7 +251,7 @@ export class RaisingView {
 
       const monsterId = mon.monsterId;
       const careBtn = document.createElement('button');
-      careBtn.textContent = 'Care';
+      careBtn.textContent = t('raising.card.care');
       careBtn.style.cssText = 'font-size:11px;cursor:pointer;';
       // Re-derive the disabled state from the pending SET rather than defaulting
       // to enabled: refresh() can rebuild this button while THIS monster's care
@@ -266,7 +296,7 @@ export class RaisingView {
       for (const item of items) {
         if (item.count > 0 && item.canTrain) {
           const trainBtn = document.createElement('button');
-          trainBtn.textContent = `Train: ${item.name} (x${item.count})`;
+          trainBtn.textContent = tf('raising.card.train', { name: item.name, count: item.count });
           trainBtn.style.cssText = 'font-size:11px;cursor:pointer;';
           trainBtn.disabled = this.#pendingTrain.has(monsterId);
           trainBtn.addEventListener('click', () => {
@@ -305,7 +335,7 @@ export class RaisingView {
     this.#inventoryEl.replaceChildren();
     if (items.length === 0) {
       const empty = document.createElement('div');
-      empty.textContent = 'No items.';
+      empty.textContent = t('raising.inventory.empty');
       empty.style.opacity = '0.4';
       this.#inventoryEl.appendChild(empty);
       return;
@@ -315,7 +345,7 @@ export class RaisingView {
       el.style.cssText = 'border:1px solid #444;border-radius:4px;padding:8px;background:#1a1a2e;';
 
       const nameSpan = document.createElement('div');
-      nameSpan.textContent = `${item.name} (x${item.count})`;
+      nameSpan.textContent = tf('raising.inventory.item', { name: item.name, count: item.count });
       nameSpan.style.fontWeight = 'bold';
       el.appendChild(nameSpan);
 

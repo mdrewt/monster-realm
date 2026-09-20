@@ -1,6 +1,15 @@
 // ui/shopView.ts — thin DOM shell for the shop screen (M13d, ADR-0084).
 // Pure rendering from ShopScreenViewModel. No logic — all logic is in shopModel.ts.
 // Coverage-excluded per vite.config.ts (DOM shell; behavior validated by e2e).
+//
+// m24-s4 (ADR-0260) — every player-facing string this view renders is resolved through the i18n
+// resolver (`t()`/`tf()`, ui/i18n/resolver.ts) with a `shop.*` key from ui/i18n/catalog.en.ts;
+// the English bytes are unchanged (the catalog pins them, TRAILING SPACE of the buy/sell rows
+// included). `vm.shopName`, `vm.balance.label` and the `showFeedback` message are model data,
+// rendered raw; item names, counts and bigint prices flow through as params. Every `t(`/`tf(`
+// first argument is a string LITERAL, and the `emptyRow` helper stays (nested `emptyRow(t('…'))`
+// — ADR-0260 D5). No constructor-time strings: this view renders into the static index.html shell.
+import { t, tf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type {
   ShopInventoryItemViewModel,
@@ -121,8 +130,8 @@ export class ShopView {
     this.#balanceEl.dataset.balanceState = vm.balance.kind;
 
     if (vm.kind === 'no-shop') {
-      this.#title.textContent = 'Shop';
-      this.#forSaleList.replaceChildren(emptyRow('No shop available.'));
+      this.#title.textContent = t('shop.title');
+      this.#forSaleList.replaceChildren(emptyRow(t('shop.noShop')));
       this.#inventoryList.replaceChildren();
       return;
     }
@@ -133,7 +142,7 @@ export class ShopView {
       this.#forSaleList.appendChild(this.#makeBuyRow(vm.shopId, item));
     }
     if (vm.forSale.length === 0) {
-      this.#forSaleList.replaceChildren(emptyRow('Nothing for sale.'));
+      this.#forSaleList.replaceChildren(emptyRow(t('shop.forSale.empty')));
     }
 
     this.#inventoryList.replaceChildren();
@@ -141,7 +150,7 @@ export class ShopView {
       this.#inventoryList.appendChild(this.#makeSellRow(item));
     }
     if (vm.forSaleByPlayer.length === 0) {
-      this.#inventoryList.replaceChildren(emptyRow('No items to sell.'));
+      this.#inventoryList.replaceChildren(emptyRow(t('shop.inventory.empty')));
     }
   }
 
@@ -152,9 +161,9 @@ export class ShopView {
 
   #makeBuyRow(shopId: number, item: ShopItemViewModel): HTMLElement {
     const li = document.createElement('li');
-    li.textContent = `${item.name} — ${item.buyPrice} gold `;
+    li.textContent = tf('shop.buy.row', { name: item.name, price: item.buyPrice });
     const btn = document.createElement('button');
-    btn.textContent = 'Buy';
+    btn.textContent = t('shop.buy.submit');
     btn.dataset.itemId = String(item.itemId);
     btn.addEventListener('click', () => {
       if (this.#pending) return;
@@ -172,9 +181,13 @@ export class ShopView {
   #makeSellRow(item: ShopInventoryItemViewModel): HTMLElement {
     const li = document.createElement('li');
     if (item.canSell) {
-      li.textContent = `${item.name} (×${item.count}) — ${item.sellPrice} gold `;
+      li.textContent = tf('shop.sell.row', {
+        name: item.name,
+        count: item.count,
+        price: item.sellPrice,
+      });
       const btn = document.createElement('button');
-      btn.textContent = 'Sell';
+      btn.textContent = t('shop.sell.submit');
       btn.dataset.itemId = String(item.itemId);
       btn.addEventListener('click', () => {
         if (this.#pending) return;
@@ -187,7 +200,7 @@ export class ShopView {
       });
       li.appendChild(btn);
     } else {
-      li.textContent = `${item.name} (×${item.count}) — Cannot sell`;
+      li.textContent = tf('shop.sell.unsellable', { name: item.name, count: item.count });
     }
     return li;
   }

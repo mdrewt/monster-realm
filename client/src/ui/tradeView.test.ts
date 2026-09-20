@@ -83,8 +83,14 @@
 //   - GUARDED close in hide() (plan anti-pattern #3 — kills S1's A13 self-heal)
 //                                                        -> S3-tradeView-CLOSE-UNGUARDED
 
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { stripComments } from '../../../evals/dom-shell-coverage-exclusion.eval.mjs';
 import { t } from './a11yCopy';
+import { scanSource } from './i18n/hardcodedStrings';
+import { t as i18nT, tf as i18nTf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
 import type { TradeScreenViewModel } from './tradeModel';
@@ -94,6 +100,9 @@ import { TradeView } from './tradeView';
 // The m23-s3 MECHANISM oracle. `{ spy: true }` records every call AND calls through to the real
 // implementation, so the VALUE oracle (real attribute writes, real focus moves) still works.
 vi.mock('./overlayA11y', { spy: true });
+// m24s4 (ADR-0260) MECHANISM oracle, same shape: records every t()/tf() call AND calls through to
+// the real resolver, so TV-01's DOM byte-identity assertions still work.
+vi.mock('./i18n/resolver', { spy: true });
 
 /** m23-s3: one REAL macrotask boundary — a microtask flush is NOT enough for setTimeout(...,0),
  *  and fake timers are banned for this defer (plan anti-pattern #10). */
@@ -722,5 +731,352 @@ describe('m24s0 sink elimination (ADR-0255) — tradeView clears', () => {
     expect(document.getElementById('trade-status')!.textContent).toBe('No active trade');
 
     removeOverlay(overlay);
+  });
+});
+
+// =============================================================================
+// m24s4 (ADR-0260) — i18n migration batch B: tradeView.ts routes its migrated
+// sinks through t()/tf() (ADR-0256/0257/0259/0260 resolver) instead of raw
+// English literals.
+//
+// PREDICTED RED REASON AT HEAD: tradeView.ts calls neither `t()` nor `tf()`
+// anywhere today — every literal below is still a bare string, and the file
+// imports nothing from `./i18n/resolver`. TV-01/TV-02 therefore fail on their
+// very first assertion (the spied `i18nT`/`i18nTf` are never called at all,
+// and the roster-word scan finds unbracketed English); TV-03 fails because
+// `scanSource(stripComments(...))` reports FAILING raw-English sinks, not the
+// required `failing: []`.
+//
+// Do NOT edit these tests to match a buggy implementation — correct them from
+// the plan/ADR-0260 only.
+// =============================================================================
+
+/** RT6: tradeModel's action sets are mutually exclusive — this VM needs an explicit
+ *  `actions` argument so TV-01/TV-02 can reach all four `trade.action.*` labels
+ *  across two renders (['confirm','cancel'] then ['accept','reject']). Reuses the
+ *  file's own `makePendingTradeVM` for the statusLabel/tradeId/theirSide/kind
+ *  scaffolding and overrides `mySide` with a card + an item + a positive currency
+ *  so a single render also reaches trade.side.card/trade.side.currency. Every
+ *  fixture value is chosen to contain NONE of the M24S4_TV_ROSTER words. */
+function m24s4TradeVm(
+  actions: Array<'accept' | 'reject' | 'confirm' | 'cancel'>,
+): TradeScreenViewModel {
+  return {
+    ...makePendingTradeVM('Awaiting counterparty', actions),
+    mySide: {
+      cards: [
+        {
+          monsterId: 1n,
+          speciesName: 'Mossback',
+          nickname: 'Sproutle',
+          level: 7,
+          currentHp: 3,
+          statHp: 9,
+        },
+      ],
+      items: [{ itemId: 1, name: 'Charm', qty: 3 }],
+      currency: 250n,
+    },
+  };
+}
+
+/** `JSON.stringify` throws on a bare bigint (trade currency IS bigint,
+ *  tradeModel.ts:37) — every sentinel `tf` mock in this block must use this. */
+function m24s4BigintReplacer(_key: string, value: unknown): unknown {
+  return typeof value === 'bigint' ? String(value) : value;
+}
+
+// m24s4 hardening (mirrors m24s3's H1, battleView.test.ts): the tradeView keys this
+// sentinel matrix can legitimately produce — a bracket span whose content is not
+// EXACTLY one of these must be LEFT IN PLACE (never elided) rather than blindly
+// stripped, or a decoy bracket pair around raw English would silently launder it
+// past the roster-word scan below.
+const M24S4_TV_PLAIN_KEYS = new Set([
+  'trade.status.none',
+  'trade.side.offer',
+  'trade.side.receive',
+  'trade.side.nothing',
+  'trade.action.accept',
+  'trade.action.reject',
+  'trade.action.confirm',
+  'trade.action.cancel',
+]);
+
+const M24S4_TV_PARAM_KEYS = new Set(['trade.side.card', 'trade.side.currency']);
+
+/** True iff `content` (the text strictly between one `«`/`»` pair) is EXACTLY an
+ *  expected sentinel: a bare roster key, or `key|<json>` where `key` is a roster
+ *  PARAM key and the tail after the FIRST `|` parses to a plain (non-array,
+ *  non-null) object. */
+function m24s4TvIsExpectedSentinelSpan(content: string): boolean {
+  const bar = content.indexOf('|');
+  if (bar === -1) {
+    return M24S4_TV_PLAIN_KEYS.has(content) || M24S4_TV_PARAM_KEYS.has(content);
+  }
+  const key = content.slice(0, bar);
+  if (!M24S4_TV_PARAM_KEYS.has(key)) return false;
+  const tail = content.slice(bar + 1);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(tail);
+  } catch {
+    return false;
+  }
+  return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed);
+}
+
+/** Elides only the bracket spans that are EXACTLY an expected sentinel (manual
+ *  indexOf loop — no RegExp, ADR-0055) and reports every OTHER `«...»` span
+ *  verbatim in `unexpectedSpans`, un-elided, so it stays in `stripped` for the
+ *  roster-word scan too — see battleView.test.ts's m24s3SplitSentinels header. */
+function m24s4TvSplitSentinels(text: string): { stripped: string; unexpectedSpans: string[] } {
+  let out = '';
+  const unexpectedSpans: string[] = [];
+  let i = 0;
+  while (i < text.length) {
+    const open = text.indexOf('«', i);
+    if (open === -1) {
+      out += text.slice(i);
+      break;
+    }
+    out += text.slice(i, open);
+    const close = text.indexOf('»', open + 1);
+    if (close === -1) {
+      // Unterminated bracket: never a legitimate sentinel — leave it in place.
+      out += text.slice(open);
+      break;
+    }
+    const span = text.slice(open, close + 1);
+    const content = text.slice(open + 1, close);
+    if (m24s4TvIsExpectedSentinelSpan(content)) {
+      // Elide — this is a real, correctly-formed sentinel.
+    } else {
+      out += span;
+      unexpectedSpans.push(span);
+    }
+    i = close + 1;
+  }
+  return { stripped: out, unexpectedSpans };
+}
+
+/** Whole-subtree walk (plan R5): every descendant's own text-node children, every
+ *  element's `title` attribute, and every `<option>`'s text — never a per-element
+ *  spot check. */
+function m24s4TvWalkSubtree(root: HTMLElement): string[] {
+  const texts: string[] = [];
+  const stack: Element[] = [root];
+  while (stack.length > 0) {
+    const el = stack.pop()!;
+    const titleAttr = el.getAttribute('title');
+    if (titleAttr) texts.push(titleAttr);
+    if (el.tagName === 'OPTION') texts.push(el.textContent ?? '');
+    for (const node of Array.from(el.childNodes)) {
+      if (node.nodeType === 3) texts.push(node.textContent ?? ''); // TEXT_NODE
+    }
+    for (const child of Array.from(el.children)) stack.push(child);
+  }
+  return texts;
+}
+
+const M24S4_TV_ROSTER = [
+  'No active trade',
+  'You offer',
+  'You receive',
+  'Lv.',
+  'HP:',
+  'gold',
+  '(nothing)',
+  'Accept',
+  'Reject',
+  'Confirm Trade',
+  'Cancel',
+];
+
+function m24s4TvAssertNoRosterWord(texts: readonly string[], label: string): void {
+  const { stripped, unexpectedSpans } = m24s4TvSplitSentinels(texts.join('\n'));
+  // A FORGED bracket span (raw English wrapped in `«...»` by something other than
+  // the resolver, e.g. a decoy `.append('«Cancel»')`) is never elided — it must not
+  // exist at all under a correct implementation.
+  expect(
+    unexpectedSpans,
+    `${label}: found «...» span(s) that are not an EXACT expected sentinel (a forged ` +
+      `bracket span around raw content is not exempted from the roster scan)`,
+  ).toEqual([]);
+  for (const word of M24S4_TV_ROSTER) {
+    expect(
+      stripped.includes(word),
+      `${label}: must not contain English roster word "${word}" outside a «sentinel»`,
+    ).toBe(false);
+  }
+}
+
+describe('m24s4 (ADR-0260): tradeView.ts routes its migrated sinks through t()/tf()', () => {
+  it('m24s4 TV-01: every migrated sink calls t()/tf() with the exact key and params, the item row/statusLabel/feedback stay raw, and every DOM string stays byte-identical', () => {
+    const overlay = mountTradeOverlay();
+    const view = new TradeView(makeCallbacks());
+    view.show();
+
+    // (a) kind: 'no-trade' -> trade.status.none
+    view.render(makeNoTradeVM());
+    expect(i18nT).toHaveBeenCalledWith('trade.status.none');
+    expect(document.getElementById('trade-status')!.textContent).toBe('No active trade');
+
+    // (b) active trade, actions=['confirm','cancel'] -- reaches both #renderSide
+    // headings, the card/currency ★ params, the empty (theirSide) nothing branch, and
+    // two of the four trade.action.* labels.
+    vi.mocked(i18nT).mockClear();
+    vi.mocked(i18nTf).mockClear();
+    const vmA = m24s4TradeVm(['confirm', 'cancel']);
+    view.render(vmA);
+
+    expect(
+      i18nT,
+      '#renderSide heading arg (plan: scanner-invisible hoisted literal)',
+    ).toHaveBeenCalledWith('trade.side.offer');
+    expect(i18nT).toHaveBeenCalledWith('trade.side.receive');
+    expect(i18nT, 'theirSide is empty -> trade.side.nothing').toHaveBeenCalledWith(
+      'trade.side.nothing',
+    );
+    expect(i18nT).toHaveBeenCalledWith('trade.action.confirm');
+    expect(i18nT).toHaveBeenCalledWith('trade.action.cancel');
+    expect(i18nTf).toHaveBeenCalledWith('trade.side.card', {
+      nickname: 'Sproutle',
+      species: 'Mossback',
+      level: 7,
+      current: 3,
+      max: 9,
+    });
+    expect(i18nTf).toHaveBeenCalledWith('trade.side.currency', { amount: 250n });
+
+    const mySide = document.getElementById('trade-my-side')!;
+    const theirSide = document.getElementById('trade-their-side')!;
+    expect(mySide.querySelector('h4')?.textContent).toBe('You offer');
+    expect(theirSide.querySelector('h4')?.textContent).toBe('You receive');
+    expect(mySide.querySelector('ul[data-section="monsters"] li')?.textContent).toBe(
+      'Sproutle (Mossback) Lv.7 HP:3/9',
+    );
+    expect(
+      mySide.querySelector('ul[data-section="items"] li')?.textContent,
+      'the item row stays untouched raw glyph-only text -- never a resolver call',
+    ).toBe('Charm ×3');
+    expect(mySide.querySelector('p[data-currency]')?.textContent).toBe('250 gold');
+    expect(theirSide.querySelector('p')?.textContent).toBe('(nothing)');
+    expect(document.getElementById('trade-status')!.textContent).toBe(vmA.statusLabel);
+    const actionsEl = document.getElementById('trade-actions')!;
+    const btnTextsA = [...actionsEl.querySelectorAll('button')].map((b) => b.textContent);
+    expect(btnTextsA).toContain('Confirm Trade');
+    expect(btnTextsA).toContain('Cancel');
+
+    // Untouched model-data strings must never be requested AS a resolver key.
+    expect(i18nT).not.toHaveBeenCalledWith('Charm ×3');
+    expect(i18nT).not.toHaveBeenCalledWith(vmA.statusLabel);
+    expect(i18nTf).not.toHaveBeenCalledWith('Charm ×3', expect.anything());
+
+    // (c) the remaining two trade.action.* labels (RT6 -- mutually exclusive action sets).
+    vi.mocked(i18nT).mockClear();
+    const vmB = m24s4TradeVm(['accept', 'reject']);
+    view.render(vmB);
+    expect(i18nT).toHaveBeenCalledWith('trade.action.accept');
+    expect(i18nT).toHaveBeenCalledWith('trade.action.reject');
+    const btnTextsB = [...actionsEl.querySelectorAll('button')].map((b) => b.textContent);
+    expect(btnTextsB).toContain('Accept');
+    expect(btnTextsB).toContain('Reject');
+
+    // showFeedback never touches the resolver.
+    vi.mocked(i18nT).mockClear();
+    vi.mocked(i18nTf).mockClear();
+    view.showFeedback('a raw feedback line');
+    expect(document.getElementById('trade-feedback')!.textContent).toBe('a raw feedback line');
+    expect(i18nT).not.toHaveBeenCalled();
+    expect(i18nTf).not.toHaveBeenCalled();
+
+    removeOverlay(overlay);
+  });
+
+  it('m24s4 TV-02: under «key» sentinels, every rendered surface shows resolver output and never an English roster word outside a sentinel', () => {
+    const overlay = mountTradeOverlay();
+    // m24s4 hardening (mirrors m24s3 H3, battleView.test.ts/pvpView.test.ts): the view is
+    // CONSTRUCTED here, BEFORE the sentinel mockImplementation is installed below, so a
+    // future regression that hoists a t()/tf() call into the constructor would resolve
+    // against the REAL (call-through) resolver and surface as stale, unbracketed English
+    // in the very first m24s4TvAssertNoRosterWord below.
+    const view = new TradeView(makeCallbacks());
+
+    try {
+      vi.mocked(i18nT).mockImplementation((key: string) => `«${key}»`);
+      vi.mocked(i18nTf).mockImplementation((key: string, params: unknown) => {
+        return `«${key}|${JSON.stringify(params, m24s4BigintReplacer)}»`;
+      });
+
+      view.show();
+      view.render(makeNoTradeVM());
+      let texts = m24s4TvWalkSubtree(overlay);
+      m24s4TvAssertNoRosterWord(texts, 'no-trade');
+      expect(texts.join('\n')).toContain('«trade.status.none»');
+
+      view.render(m24s4TradeVm(['confirm', 'cancel']));
+      texts = m24s4TvWalkSubtree(overlay);
+      m24s4TvAssertNoRosterWord(texts, 'active trade, confirm/cancel');
+      let joined = texts.join('\n');
+      expect(joined).toContain('«trade.side.offer»');
+      expect(joined).toContain('«trade.side.receive»');
+      expect(joined).toContain('«trade.side.nothing»');
+      expect(joined).toContain('«trade.action.confirm»');
+      expect(joined).toContain('«trade.action.cancel»');
+      expect(joined).toContain(
+        '«trade.side.card|{"nickname":"Sproutle","species":"Mossback","level":7,"current":3,"max":9}»',
+      );
+      expect(joined).toContain('«trade.side.currency|{"amount":"250"}»');
+      expect(joined, 'the item row stays raw -- glyph-only, untouched').toContain('Charm ×3');
+      expect(joined, 'vm.statusLabel stays raw').toContain('Awaiting counterparty');
+
+      view.render(m24s4TradeVm(['accept', 'reject']));
+      texts = m24s4TvWalkSubtree(overlay);
+      m24s4TvAssertNoRosterWord(texts, 'active trade, accept/reject');
+      joined = texts.join('\n');
+      expect(joined).toContain('«trade.action.accept»');
+      expect(joined).toContain('«trade.action.reject»');
+
+      view.showFeedback('a raw feedback line');
+      texts = m24s4TvWalkSubtree(overlay);
+      m24s4TvAssertNoRosterWord(texts, 'feedback');
+      expect(texts.join('\n')).toContain('a raw feedback line');
+    } finally {
+      vi.mocked(i18nT).mockRestore();
+      vi.mocked(i18nTf).mockRestore();
+    }
+
+    // Post-restore call-through control (an existing S1 key -- the new trade.* keys do not
+    // exist in the catalog until the specialist ships them).
+    expect(i18nT('chrome.help.title')).toBe('Controls & Goals');
+
+    removeOverlay(overlay);
+  });
+});
+
+describe('m24s4 (ADR-0260): tradeView.ts scan — zero failing sinks', () => {
+  it('m24s4 TV-03: scanSource(stripComments(tradeView.ts)) has zero failing sinks, a >=16 sink floor, and no truncation/masking tripwires', () => {
+    const src = readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), 'tradeView.ts'),
+      'utf8',
+    );
+    const result = scanSource(stripComments(src));
+
+    expect(
+      result.failing.map((s) => `${s.kind}@L${s.line}: ${s.failingSegments.join(' | ')}`),
+      'every sink must route through t()/tf() -- any surviving English segment is listed above',
+    ).toEqual([]);
+    expect(
+      result.sinks.length,
+      'SINK_FLOOR idiom (plan R2): a floor, never an exact count',
+    ).toBeGreaterThanOrEqual(16);
+    expect(
+      result.unterminated,
+      'the literal mask must not end inside an unterminated literal',
+    ).toBe(false);
+    expect(result.maskedSinkTokens, 'no parity-flip mask desync').toBe(0);
+    for (const sink of result.sinks) {
+      expect(sink.truncated, `${sink.kind}@L${sink.line} must not be truncated`).toBe(false);
+    }
   });
 });

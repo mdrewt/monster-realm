@@ -181,6 +181,64 @@ const SAMPLE_PARAMS: Record<string, readonly [Record<string, unknown>, Record<st
   ],
   'pvp.incoming.label': [{ challenger: 'Bob' }, { challenger: 'Dana' }],
   'pvp.outgoing.label': [{ target: 'Alice' }, { target: 'Elliot' }],
+  // m24s4 (ADR-0260) — evolution.* (6 ★)
+  'evolution.card.stats': [
+    { level: 7, stage: 1, trust: 'Wary', qualityTime: 1, nutrition: 41 },
+    { level: 30, stage: 3, trust: 'Devoted', qualityTime: 4, nutrition: 88 },
+  ],
+  'evolution.card.ready': [{ species: 'Pyrodrake' }, { species: 'Cindermaw' }],
+  'evolution.path.heading': [{ species: 'Pyrodrake' }, { species: 'Cindermaw' }],
+  'evolution.gate.metRow': [
+    { label: 'Level', current: 'Lv 30', required: 'Lv 20' },
+    { label: 'Trust', current: 'Devoted', required: 'Friendly' },
+  ],
+  'evolution.gate.unmetRow': [
+    { label: 'Nutrition', current: '41%', required: '60%' },
+    { label: 'Quality time', current: 'Tier 1', required: 'Tier 3' },
+  ],
+  'evolution.choice.evolve': [{ species: 'Pyrodrake' }, { species: 'Cindermaw' }],
+  // m24s4 — raising.* (4 ★)
+  'raising.card.status': [
+    { level: 5, trust: 'Neutral', current: 20, max: 20 },
+    { level: 12, trust: 'Friendly', current: 15, max: 30 },
+  ],
+  'raising.card.stats': [
+    { attack: 5, defense: 5, speed: 5, spAttack: 5, spDefense: 5 },
+    { attack: 22, defense: 18, speed: 27, spAttack: 15, spDefense: 19 },
+  ],
+  'raising.card.train': [
+    { name: 'Protein', count: 2 },
+    { name: 'Iron', count: 5 },
+  ],
+  'raising.inventory.item': [
+    { name: 'Protein', count: 2 },
+    { name: 'Iron', count: 5 },
+  ],
+  // m24s4 — box.* (2 ★)
+  'box.party.emptySlot': [{ slot: 0 }, { slot: 3 }],
+  'box.card.stats': [
+    { species: 'Sproutle', level: 5, current: 18, max: 20, percent: 90 },
+    { species: 'Emberfang', level: 9, current: 21, max: 21, percent: 100 },
+  ],
+  // m24s4 — trade.* (2 ★, side.currency.amount is bigint)
+  'trade.side.card': [
+    { nickname: 'Sproutle', species: 'Mossback', level: 7, current: 3, max: 9 },
+    { nickname: 'Kip', species: 'Duskling', level: 12, current: 20, max: 40 },
+  ],
+  'trade.side.currency': [{ amount: 250n }, { amount: 1000n }],
+  // m24s4 — shop.* (3 ★, row prices are bigint)
+  'shop.buy.row': [
+    { name: 'Herb', price: 50n },
+    { name: 'Tonic', price: 120n },
+  ],
+  'shop.sell.row': [
+    { name: 'Herb', count: 3, price: 20n },
+    { name: 'Tonic', count: 1, price: 60n },
+  ],
+  'shop.sell.unsellable': [
+    { name: 'Charm', count: 2 },
+    { name: 'Relic', count: 1 },
+  ],
 };
 
 /** Every PLAIN (non-parameterised) MessageId's expected value, byte-transcribed
@@ -220,6 +278,52 @@ const EXPECTED_PLAIN: Record<string, string> = {
   'pvp.outgoing.cancel': 'Cancel Challenge', // pvpView.ts:226
   'pvp.players.none': 'No players online to challenge', // pvpView.ts:241
   'pvp.players.heading': 'Challenge:', // pvpView.ts:241
+  // m24s4 (ADR-0260) — evolution.* (6 plain)
+  'evolution.title': 'Evolution', // evolutionView.ts
+  'evolution.hint':
+    'Each path lists what it needs and how close this monster is. When two or more ' +
+    'paths are ready at once, you choose which one to take.', // evolutionView.ts
+  'evolution.monsters.empty': 'No monsters yet.', // evolutionView.ts
+  'evolution.card.noPaths': 'No evolution paths.', // evolutionView.ts
+  'evolution.card.choosePrompt': 'Two or more paths are ready — pick one:', // evolutionView.ts
+  'evolution.path.allMet': 'All requirements met.', // evolutionView.ts
+  // m24s4 — raising.* (6 plain)
+  'raising.title': 'Raising & Inventory', // raisingView.ts
+  'raising.monsters.heading': 'Monsters', // raisingView.ts
+  'raising.inventory.heading': 'Inventory', // raisingView.ts
+  'raising.monsters.empty': 'No monsters.', // raisingView.ts
+  'raising.inventory.empty': 'No items.', // raisingView.ts
+  'raising.card.care': 'Care', // raisingView.ts
+  // m24s4 — box.* (11 plain)
+  'box.title': 'Party & Box', // boxView.ts
+  'box.heal': 'Heal Party', // boxView.ts
+  'box.hint':
+    'Only monsters in your Party can battle or be swapped in. New recruits arrive in your ' +
+    'Box — each box monster has a "To Party" button that moves it into an open party slot.', // boxView.ts
+  'box.section.party': 'Party', // boxView.ts
+  'box.section.box': 'Box', // boxView.ts
+  'box.box.empty': 'No monsters in box.', // boxView.ts
+  'box.card.rename': 'Rename', // boxView.ts
+  'box.card.evolveBadge': '★ Ready to evolve — choose a path', // boxView.ts
+  'box.card.toBox': 'To Box', // boxView.ts
+  'box.card.toParty': 'To Party', // boxView.ts
+  'box.rename.prompt': 'New nickname:', // boxView.ts (hoisted, prompt() argument)
+  // m24s4 — trade.* (8 plain)
+  'trade.status.none': 'No active trade', // tradeView.ts
+  'trade.side.offer': 'You offer', // tradeView.ts (hoisted, #renderSide heading arg)
+  'trade.side.receive': 'You receive', // tradeView.ts (hoisted, #renderSide heading arg)
+  'trade.side.nothing': '(nothing)', // tradeView.ts
+  'trade.action.accept': 'Accept', // tradeView.ts (hoisted, #actionLabel)
+  'trade.action.reject': 'Reject', // tradeView.ts (hoisted, #actionLabel)
+  'trade.action.confirm': 'Confirm Trade', // tradeView.ts (hoisted, #actionLabel)
+  'trade.action.cancel': 'Cancel', // tradeView.ts (hoisted, #actionLabel)
+  // m24s4 — shop.* (6 plain)
+  'shop.title': 'Shop', // shopView.ts
+  'shop.noShop': 'No shop available.', // shopView.ts
+  'shop.forSale.empty': 'Nothing for sale.', // shopView.ts
+  'shop.inventory.empty': 'No items to sell.', // shopView.ts
+  'shop.buy.submit': 'Buy', // shopView.ts
+  'shop.sell.submit': 'Sell', // shopView.ts
 };
 
 interface ParamOutputSpec {
@@ -305,12 +409,119 @@ const EXPECTED_PARAM_OUTPUTS: Record<string, ParamOutputSpec> = {
     inputB: { target: 'Elliot' },
     outputB: 'Challenge sent to Elliot — waiting…',
   },
+  // m24s4 (ADR-0260) — evolution.* (6 ★)
+  'evolution.card.stats': {
+    inputA: { level: 7, stage: 1, trust: 'Wary', qualityTime: 1, nutrition: 41 },
+    outputA: 'Lv.7 · Stage 1 · Trust Wary · Quality time 1 · Nutrition 41%',
+    inputB: { level: 30, stage: 3, trust: 'Devoted', qualityTime: 4, nutrition: 88 },
+    outputB: 'Lv.30 · Stage 3 · Trust Devoted · Quality time 4 · Nutrition 88%',
+  },
+  'evolution.card.ready': {
+    inputA: { species: 'Pyrodrake' },
+    outputA: 'Ready — evolves into Pyrodrake on your next action.',
+    inputB: { species: 'Cindermaw' },
+    outputB: 'Ready — evolves into Cindermaw on your next action.',
+  },
+  'evolution.path.heading': {
+    inputA: { species: 'Pyrodrake' },
+    outputA: '→ Pyrodrake',
+    inputB: { species: 'Cindermaw' },
+    outputB: '→ Cindermaw',
+  },
+  'evolution.gate.metRow': {
+    inputA: { label: 'Level', current: 'Lv 30', required: 'Lv 20' },
+    outputA: '✓ Level: Lv 30 / Lv 20',
+    inputB: { label: 'Trust', current: 'Devoted', required: 'Friendly' },
+    outputB: '✓ Trust: Devoted / Friendly',
+  },
+  'evolution.gate.unmetRow': {
+    inputA: { label: 'Nutrition', current: '41%', required: '60%' },
+    outputA: '• Nutrition: 41% / 60%',
+    inputB: { label: 'Quality time', current: 'Tier 1', required: 'Tier 3' },
+    outputB: '• Quality time: Tier 1 / Tier 3',
+  },
+  'evolution.choice.evolve': {
+    inputA: { species: 'Pyrodrake' },
+    outputA: 'Evolve into Pyrodrake',
+    inputB: { species: 'Cindermaw' },
+    outputB: 'Evolve into Cindermaw',
+  },
+  // m24s4 — raising.* (4 ★)
+  'raising.card.status': {
+    inputA: { level: 5, trust: 'Neutral', current: 20, max: 20 },
+    outputA: 'Lv5 · Trust Neutral · HP 20/20',
+    inputB: { level: 12, trust: 'Friendly', current: 15, max: 30 },
+    outputB: 'Lv12 · Trust Friendly · HP 15/30',
+  },
+  'raising.card.stats': {
+    inputA: { attack: 5, defense: 5, speed: 5, spAttack: 5, spDefense: 5 },
+    outputA: 'ATK 5 · DEF 5 · SPD 5 · SP.ATK 5 · SP.DEF 5',
+    inputB: { attack: 22, defense: 18, speed: 27, spAttack: 15, spDefense: 19 },
+    outputB: 'ATK 22 · DEF 18 · SPD 27 · SP.ATK 15 · SP.DEF 19',
+  },
+  'raising.card.train': {
+    inputA: { name: 'Protein', count: 2 },
+    outputA: 'Train: Protein (x2)',
+    inputB: { name: 'Iron', count: 5 },
+    outputB: 'Train: Iron (x5)',
+  },
+  'raising.inventory.item': {
+    inputA: { name: 'Protein', count: 2 },
+    outputA: 'Protein (x2)',
+    inputB: { name: 'Iron', count: 5 },
+    outputB: 'Iron (x5)',
+  },
+  // m24s4 — box.* (2 ★)
+  'box.party.emptySlot': {
+    inputA: { slot: 0 },
+    outputA: 'Slot 0: (empty)',
+    inputB: { slot: 3 },
+    outputB: 'Slot 3: (empty)',
+  },
+  'box.card.stats': {
+    inputA: { species: 'Sproutle', level: 5, current: 18, max: 20, percent: 90 },
+    outputA: 'Sproutle · Lv5 · HP 18/20 (90%)',
+    inputB: { species: 'Emberfang', level: 9, current: 21, max: 21, percent: 100 },
+    outputB: 'Emberfang · Lv9 · HP 21/21 (100%)',
+  },
+  // m24s4 — trade.* (2 ★)
+  'trade.side.card': {
+    inputA: { nickname: 'Sproutle', species: 'Mossback', level: 7, current: 3, max: 9 },
+    outputA: 'Sproutle (Mossback) Lv.7 HP:3/9',
+    inputB: { nickname: 'Kip', species: 'Duskling', level: 12, current: 20, max: 40 },
+    outputB: 'Kip (Duskling) Lv.12 HP:20/40',
+  },
+  'trade.side.currency': {
+    inputA: { amount: 250n },
+    outputA: '250 gold',
+    inputB: { amount: 1000n },
+    outputB: '1000 gold',
+  },
+  // m24s4 — shop.* (3 ★, trailing space pinned exactly)
+  'shop.buy.row': {
+    inputA: { name: 'Herb', price: 50n },
+    outputA: 'Herb — 50 gold ',
+    inputB: { name: 'Tonic', price: 120n },
+    outputB: 'Tonic — 120 gold ',
+  },
+  'shop.sell.row': {
+    inputA: { name: 'Herb', count: 3, price: 20n },
+    outputA: 'Herb (×3) — 20 gold ',
+    inputB: { name: 'Tonic', count: 1, price: 60n },
+    outputB: 'Tonic (×1) — 60 gold ',
+  },
+  'shop.sell.unsellable': {
+    inputA: { name: 'Charm', count: 2 },
+    outputA: 'Charm (×2) — Cannot sell',
+    inputB: { name: 'Relic', count: 1 },
+    outputB: 'Relic (×1) — Cannot sell',
+  },
 };
 
-/** The full 42-key roster (m24s3 growth of the m24-s1 10-key `chrome.*` seed),
- *  sorted — `EXPECTED_PLAIN` and `SAMPLE_PARAMS` are disjoint by construction
- *  (plain vs. parameterised), so their key union is exactly the roster. */
-const EXPECTED_42_KEYS = Object.keys(EXPECTED_PLAIN).concat(Object.keys(SAMPLE_PARAMS)).sort();
+/** The full 96-key roster (m24s4 growth of the m24s3 42-key roster, itself grown from the
+ *  m24-s1 10-key `chrome.*` seed), sorted — `EXPECTED_PLAIN` and `SAMPLE_PARAMS` are disjoint
+ *  by construction (plain vs. parameterised), so their key union is exactly the roster. */
+const EXPECTED_KEYS = Object.keys(EXPECTED_PLAIN).concat(Object.keys(SAMPLE_PARAMS)).sort();
 
 describe('catalog.en — the English catalog: @desc adjacency, key grammar, and shape invariants (m24-s1, ADR-0256)', () => {
   it('m24s1 SHAPE-01: every catalog.en.ts entry line has an immediately-adjacent `// @desc:` comment with >=10 non-whitespace characters', () => {
@@ -355,7 +566,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
   });
 
-  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the m24s3 42-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
+  it('m24s1 CATALOG-SHAPE: CATALOG_EN is frozen, its source entry-line count matches Object.keys, no own prototype-name keys, every value resolves to a non-empty string, the key roster is exactly the m24s4 96-key roster, and the source spells `satisfies Catalog` + `Object.freeze(` exactly once each', () => {
     expect(Object.isFrozen(CATALOG_EN), 'CATALOG_EN must be Object.freeze()d').toBe(true);
 
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
@@ -396,7 +607,7 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
     }
     expect(checked, 'ANTI-VACUITY: every catalog key must have been examined').toBe(keys.length);
 
-    expect(keys.slice().sort()).toEqual(EXPECTED_42_KEYS);
+    expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
 
     // Belt-and-braces TEXT pin (test-review round), scoped to this OWNED file: `satisfies
     // Catalog` restores the excess-property check that `Object.freeze<T>`'s generic signature
@@ -451,11 +662,11 @@ describe('catalog.en — the English catalog: @desc adjacency, key grammar, and 
 // plan/ADR-0259 only.
 // =============================================================================
 describe('m24s3 (ADR-0259): catalog.en.ts — 42-key roster, SAMPLE_PARAMS bijection, byte-identical migrated values', () => {
-  it('m24s3 CAT-01: the roster is exactly 42 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
+  it('m24s3 CAT-01: the roster is exactly 96 keys, SAMPLE_PARAMS is a bijection with the function-valued keys, every plain/param value is byte-identical to the pre-migration source (both sample sets), and the two glyph pins hold', () => {
     const keys = Object.keys(CATALOG_EN as Record<string, unknown>);
 
-    // (a) roster is exactly the 42 keys.
-    expect(keys.slice().sort()).toEqual(EXPECTED_42_KEYS);
+    // (a) roster is exactly the 96 keys.
+    expect(keys.slice().sort()).toEqual(EXPECTED_KEYS);
 
     // (b) SAMPLE_PARAMS keys === the set of function-valued catalog keys (bijection).
     const functionKeys = keys.filter(

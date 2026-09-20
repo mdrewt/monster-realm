@@ -1,6 +1,15 @@
 // ui/tradeView.ts — thin DOM shell for the trade overlay (m15b, ADR-0107).
 // Pure rendering from TradeScreenViewModel. No logic — all logic is in tradeModel.ts.
 // Coverage-excluded per vite.config.ts (DOM shell; behavior validated by e2e).
+//
+// m24-s4 (ADR-0260) — every player-facing string this view renders is resolved through the i18n
+// resolver (`t()`/`tf()`, ui/i18n/resolver.ts) with a `trade.*` key from ui/i18n/catalog.en.ts —
+// the `#renderSide` heading arguments and the `#actionLabel` returns included; the English bytes
+// are unchanged (the catalog pins them). The item row `${item.name} ×${item.qty}` is deliberately
+// NOT keyed — a glyph-only compound (ADR-0257 §2.2 tier (e)). `vm.statusLabel` and the
+// `showFeedback` message are model data, rendered raw. Every `t(`/`tf(` first argument is a
+// string LITERAL. No constructor-time strings: this view renders into the static index.html shell.
+import { t, tf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type { TradeAction, TradeScreenViewModel, TradeSideViewModel } from './tradeModel';
 
@@ -90,7 +99,7 @@ export class TradeView {
   /** Render or re-render the trade view from the view model. */
   render(vm: TradeScreenViewModel): void {
     if (vm.kind === 'no-trade') {
-      this.#statusEl.textContent = 'No active trade';
+      this.#statusEl.textContent = t('trade.status.none');
       this.#mySideEl.replaceChildren();
       this.#theirSideEl.replaceChildren();
       this.#actionsEl.replaceChildren();
@@ -108,8 +117,8 @@ export class TradeView {
     }
 
     this.#statusEl.textContent = vm.statusLabel;
-    this.#renderSide(this.#mySideEl, vm.mySide, 'You offer');
-    this.#renderSide(this.#theirSideEl, vm.theirSide, 'You receive');
+    this.#renderSide(this.#mySideEl, vm.mySide, t('trade.side.offer'));
+    this.#renderSide(this.#theirSideEl, vm.theirSide, t('trade.side.receive'));
     this.#renderActions(vm.tradeId, vm.actions);
   }
 
@@ -130,7 +139,13 @@ export class TradeView {
       for (const card of side.cards) {
         const li = document.createElement('li');
         li.dataset.monsterId = card.monsterId.toString();
-        li.textContent = `${card.nickname} (${card.speciesName}) Lv.${card.level} HP:${card.currentHp}/${card.statHp}`;
+        li.textContent = tf('trade.side.card', {
+          nickname: card.nickname,
+          species: card.speciesName,
+          level: card.level,
+          current: card.currentHp,
+          max: card.statHp,
+        });
         ul.appendChild(li);
       }
       el.appendChild(ul);
@@ -150,13 +165,13 @@ export class TradeView {
     if (side.currency > 0n) {
       const p = document.createElement('p');
       p.dataset.currency = side.currency.toString();
-      p.textContent = `${side.currency} gold`;
+      p.textContent = tf('trade.side.currency', { amount: side.currency });
       el.appendChild(p);
     }
 
     if (side.cards.length === 0 && side.items.length === 0 && side.currency === 0n) {
       const p = document.createElement('p');
-      p.textContent = '(nothing)';
+      p.textContent = t('trade.side.nothing');
       el.appendChild(p);
     }
   }
@@ -190,13 +205,13 @@ export class TradeView {
   #actionLabel(action: TradeAction): string {
     switch (action) {
       case 'accept':
-        return 'Accept';
+        return t('trade.action.accept');
       case 'reject':
-        return 'Reject';
+        return t('trade.action.reject');
       case 'confirm':
-        return 'Confirm Trade';
+        return t('trade.action.confirm');
       case 'cancel':
-        return 'Cancel';
+        return t('trade.action.cancel');
     }
   }
 

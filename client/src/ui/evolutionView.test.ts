@@ -90,11 +90,17 @@ import { EvolutionView, type EvolutionViewCallbacks } from './evolutionView';
 // ---------------------------------------------------------------------------
 
 import { beforeEach } from 'vitest';
+import { stripComments } from '../../../evals/dom-shell-coverage-exclusion.eval.mjs';
 import { t } from './a11yCopy';
+import { scanSource } from './i18n/hardcodedStrings';
+import { t as i18nT, tf as i18nTf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
 
 vi.mock('./overlayA11y', { spy: true });
+// m24s4 (ADR-0260) MECHANISM oracle, same shape as m24s3: records every t()/tf() call AND
+// calls through to the real resolver, so EV-01's DOM byte-identity assertions still work.
+vi.mock('./i18n/resolver', { spy: true });
 
 /** ONE real macrotask boundary — never vi.useFakeTimers() (plan anti-pattern #10). */
 async function s4FlushMacrotask(): Promise<void> {
@@ -2890,5 +2896,453 @@ describe('★ EvolutionView 20r-a: in-flight guard on the Evolve choice buttons'
     raChoices(parent).alpha[0].click();
     expect(callbacks.onEvolve).toHaveBeenCalledTimes(3);
     await raFlushPromises();
+  });
+});
+
+// =============================================================================
+// m24s4 (ADR-0260) — i18n migration batch B: evolutionView.ts routes its migrated
+// sinks through t()/tf() (ADR-0256/0257/0259/0260 resolver) instead of raw
+// English literals.
+//
+// PREDICTED RED REASON AT HEAD: evolutionView.ts calls neither `t()` nor `tf()`
+// anywhere today — every literal below is still a bare string literal or
+// template, and the file imports nothing from `./i18n/resolver`. EV-01/EV-02
+// therefore fail on their very first assertion (the spied `i18nT`/`i18nTf` are
+// never called at all, and the roster-word scan finds unbracketed English);
+// EV-03 fails because `scanSource(stripComments(...))` reports >=13 FAILING
+// sinks (raw English segments), not the required `failing: []`.
+//
+// Do NOT edit these tests to match a buggy implementation — correct them from
+// the plan/ADR-0260 only.
+//
+// FIXTURE COLLISION RULE (plan, tester brief): this block deliberately does NOT
+// reuse the file's own `FIVE_GATES` fixture — its labels 'Trust'/'Quality time'/
+// 'Nutrition' are themselves English roster words this view migrates
+// (evolution.card.stats's own template), which would make the m24s4 roster scan
+// mean nothing for those three words. Gate fixtures below use 'Rank'/'Bond' with
+// values like 'R 17' instead.
+// =============================================================================
+
+const M24S4_EV_PLAIN_KEYS = new Set([
+  'evolution.title',
+  'evolution.hint',
+  'evolution.monsters.empty',
+  'evolution.card.noPaths',
+  'evolution.card.choosePrompt',
+  'evolution.path.allMet',
+]);
+
+const M24S4_EV_PARAM_KEYS = new Set([
+  'evolution.card.stats',
+  'evolution.card.ready',
+  'evolution.path.heading',
+  'evolution.gate.metRow',
+  'evolution.gate.unmetRow',
+  'evolution.choice.evolve',
+]);
+
+/** True iff `content` (the text strictly between one `«`/`»` pair) is EXACTLY an
+ *  expected sentinel: a bare roster key, or `key|<json>` where `key` is a roster
+ *  PARAM key and the tail after the FIRST `|` parses to a plain (non-array,
+ *  non-null) object. */
+function m24s4EvIsExpectedSentinelSpan(content: string): boolean {
+  const bar = content.indexOf('|');
+  if (bar === -1) {
+    return M24S4_EV_PLAIN_KEYS.has(content) || M24S4_EV_PARAM_KEYS.has(content);
+  }
+  const key = content.slice(0, bar);
+  if (!M24S4_EV_PARAM_KEYS.has(key)) return false;
+  const tail = content.slice(bar + 1);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(tail);
+  } catch {
+    return false;
+  }
+  return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed);
+}
+
+/** Elides only the bracket spans that are EXACTLY an expected sentinel (manual
+ *  indexOf loop — no RegExp, ADR-0055) and reports every OTHER `«...»` span
+ *  verbatim in `unexpectedSpans`, un-elided, so it stays in `stripped` for the
+ *  roster-word scan too — see battleView.test.ts's m24s3SplitSentinels header. */
+function m24s4EvSplitSentinels(text: string): { stripped: string; unexpectedSpans: string[] } {
+  let out = '';
+  const unexpectedSpans: string[] = [];
+  let i = 0;
+  while (i < text.length) {
+    const open = text.indexOf('«', i);
+    if (open === -1) {
+      out += text.slice(i);
+      break;
+    }
+    out += text.slice(i, open);
+    const close = text.indexOf('»', open + 1);
+    if (close === -1) {
+      // Unterminated bracket: never a legitimate sentinel — leave it in place.
+      out += text.slice(open);
+      break;
+    }
+    const span = text.slice(open, close + 1);
+    const content = text.slice(open + 1, close);
+    if (m24s4EvIsExpectedSentinelSpan(content)) {
+      // Elide — this is a real, correctly-formed sentinel.
+    } else {
+      out += span;
+      unexpectedSpans.push(span);
+    }
+    i = close + 1;
+  }
+  return { stripped: out, unexpectedSpans };
+}
+
+/** Whole-subtree walk (plan R5): every descendant's own text-node children, every
+ *  element's `title` attribute, and every `<option>`'s text — never a per-element
+ *  spot check. */
+function m24s4EvWalkSubtree(root: HTMLElement): string[] {
+  const texts: string[] = [];
+  const stack: Element[] = [root];
+  while (stack.length > 0) {
+    const el = stack.pop()!;
+    const titleAttr = el.getAttribute('title');
+    if (titleAttr) texts.push(titleAttr);
+    for (const node of Array.from(el.childNodes)) {
+      if (node.nodeType === 3) texts.push(node.textContent ?? ''); // TEXT_NODE
+    }
+    for (const child of Array.from(el.children)) stack.push(child);
+  }
+  return texts;
+}
+
+const M24S4_EV_ROSTER = [
+  'Evolution',
+  'Each path lists',
+  'you choose which one',
+  'No monsters yet.',
+  'No evolution paths.',
+  'Two or more paths are ready',
+  'pick one:',
+  'Ready — evolves into',
+  'on your next action.',
+  'All requirements met.',
+  'Lv.',
+  'Stage ',
+  'Trust ',
+  'Quality time ',
+  'Nutrition ',
+  'Evolve into',
+];
+
+function m24s4EvAssertNoRosterWord(texts: readonly string[], label: string): void {
+  const { stripped, unexpectedSpans } = m24s4EvSplitSentinels(texts.join('\n'));
+  // A FORGED bracket span (raw English wrapped in `«...»` by something other than the
+  // resolver, e.g. a decoy `.append('«Evolution»')`) is never elided — it must not exist
+  // at all under a correct implementation.
+  expect(
+    unexpectedSpans,
+    `${label}: found «...» span(s) that are not an EXACT expected sentinel (a forged ` +
+      `bracket span around raw content is not exempted from the roster scan)`,
+  ).toEqual([]);
+  for (const word of M24S4_EV_ROSTER) {
+    expect(
+      stripped.includes(word),
+      `${label}: must not contain English roster word "${word}" outside a «sentinel»`,
+    ).toBe(false);
+  }
+}
+
+describe('m24s4 (ADR-0260): evolutionView.ts routes its migrated sinks through t()/tf()', () => {
+  it('m24s4 EV-01: every migrated sink calls t()/tf() with the exact key and params, show() re-resolves title/hint on a repeat open, and every DOM string stays byte-identical', () => {
+    vi.mocked(i18nT).mockClear();
+    vi.mocked(i18nTf).mockClear();
+    const { parent, view } = mount();
+    const root = parent.firstElementChild as HTMLElement;
+
+    // --- pre-show: constructor-time keys must NOT have been requested yet (plan D3) ---
+    expect(
+      i18nT,
+      'm24s4 EV-01: evolution.title must resolve in show(), not the constructor',
+    ).not.toHaveBeenCalledWith('evolution.title');
+    expect(i18nT).not.toHaveBeenCalledWith('evolution.hint');
+
+    // --- monsters empty ---
+    view.refresh(viewModel());
+    view.show();
+    expect(i18nT, 'evolution.title resolves in show()').toHaveBeenCalledWith('evolution.title');
+    expect(i18nT).toHaveBeenCalledWith('evolution.hint');
+    expect(i18nT).toHaveBeenCalledWith('evolution.monsters.empty');
+    expect(root.querySelector('[data-testid="evolution-title"]')?.textContent).toBe('Evolution');
+    expect(root.querySelector('p')?.textContent).toBe(
+      'Each path lists what it needs and how close this monster is. When two or more ' +
+        'paths are ready at once, you choose which one to take.',
+    );
+    expect(parent.textContent ?? '').toContain('No monsters yet.');
+
+    // --- one monster: a mixed-gate blocked path (metRow AND unmetRow) + a ready (allMet) path ---
+    vi.mocked(i18nT).mockClear();
+    vi.mocked(i18nTf).mockClear();
+    const blockedPath = pathVm({
+      edgeId: 2,
+      toSpecies: 2,
+      toSpeciesName: 'Pyrodrake',
+      met: false,
+      unmetReason: 'needs more Bond',
+      gates: [
+        gate('trust', 'Rank', 'R 17', 'R 20', false),
+        gate('qualityTime', 'Bond', 'B 3', 'B 5', true),
+      ],
+    });
+    const readyPath = metPathVm({
+      edgeId: 5,
+      toSpecies: 3,
+      toSpeciesName: 'Cindermaw',
+      gates: [gate('level', 'Rank', 'R 25', 'R 20', true)],
+    });
+    const mon = monsterVm({
+      speciesName: 'Flameling',
+      nickname: 'Blaze',
+      level: 12,
+      tier: 2,
+      trustTier: 'Devoted',
+      qualityTimeTier: 4,
+      nutritionPct: 77,
+      paths: [blockedPath, readyPath],
+      eligibleCount: 1,
+      choices: [],
+      readyPathName: 'Cindermaw',
+    });
+    view.refresh(viewModel(mon));
+
+    expect(i18nT).not.toHaveBeenCalledWith('evolution.card.noPaths');
+    expect(i18nT).not.toHaveBeenCalledWith('evolution.card.choosePrompt');
+    expect(i18nT).toHaveBeenCalledWith('evolution.path.allMet');
+    expect(i18nTf).toHaveBeenCalledWith('evolution.card.stats', {
+      level: 12,
+      stage: 2,
+      trust: 'Devoted',
+      qualityTime: 4,
+      nutrition: 77,
+    });
+    expect(i18nTf).toHaveBeenCalledWith('evolution.card.ready', { species: 'Cindermaw' });
+    expect(i18nTf).toHaveBeenCalledWith('evolution.path.heading', { species: 'Pyrodrake' });
+    expect(i18nTf).toHaveBeenCalledWith('evolution.path.heading', { species: 'Cindermaw' });
+    expect(i18nTf).toHaveBeenCalledWith('evolution.gate.metRow', {
+      label: 'Bond',
+      current: 'B 3',
+      required: 'B 5',
+    });
+    expect(i18nTf).toHaveBeenCalledWith('evolution.gate.unmetRow', {
+      label: 'Rank',
+      current: 'R 17',
+      required: 'R 20',
+    });
+    expect(i18nTf).toHaveBeenCalledWith('evolution.gate.metRow', {
+      label: 'Rank',
+      current: 'R 25',
+      required: 'R 20',
+    });
+
+    const card = cardOf(parent);
+    expect(card.querySelector(READY_NOTE_SELECTOR)?.textContent).toBe(
+      'Ready — evolves into Cindermaw on your next action.',
+    );
+    const gateRows = [...card.querySelectorAll(GATE_ROW_SELECTOR)].map((el) => el.textContent);
+    expect(gateRows).toContain('✓ Bond: B 3 / B 5');
+    expect(gateRows).toContain('• Rank: R 17 / R 20');
+    expect(gateRows).toContain('✓ Rank: R 25 / R 20');
+
+    // --- two choices ---
+    vi.mocked(i18nT).mockClear();
+    vi.mocked(i18nTf).mockClear();
+    const choiceA = metPathVm({ edgeId: 3, toSpecies: 2, toSpeciesName: 'Pyrodrake', gates: [] });
+    const choiceB = metPathVm({ edgeId: 6, toSpecies: 3, toSpeciesName: 'Cindermaw', gates: [] });
+    view.refresh(
+      viewModel(
+        monsterVm({
+          monsterId: 88n,
+          paths: [choiceA, choiceB],
+          eligibleCount: 2,
+          choices: [choiceA, choiceB],
+          readyPathName: null,
+        }),
+      ),
+    );
+
+    expect(i18nT).toHaveBeenCalledWith('evolution.card.choosePrompt');
+    expect(i18nT).not.toHaveBeenCalledWith('evolution.card.ready');
+    expect(i18nTf).toHaveBeenCalledWith('evolution.choice.evolve', { species: 'Pyrodrake' });
+    expect(i18nTf).toHaveBeenCalledWith('evolution.choice.evolve', { species: 'Cindermaw' });
+    const choiceButtons = [...parent.querySelectorAll(CHOICE_SELECTOR)].map((b) => b.textContent);
+    expect(choiceButtons).toContain('Evolve into Pyrodrake');
+    expect(choiceButtons).toContain('Evolve into Cindermaw');
+
+    // --- no paths ---
+    vi.mocked(i18nT).mockClear();
+    view.refresh(
+      viewModel(monsterVm({ paths: [], eligibleCount: 0, choices: [], readyPathName: null })),
+    );
+    expect(i18nT).toHaveBeenCalledWith('evolution.card.noPaths');
+    expect(cardOf(parent).textContent ?? '').toContain('No evolution paths.');
+
+    // --- RT2: a repeat show() re-resolves the constructor-time keys ---
+    vi.mocked(i18nT).mockClear();
+    view.show();
+    expect(
+      i18nT,
+      'm24s4 EV-01 RT2: a repeat show() on an already-open overlay must re-resolve evolution.title',
+    ).toHaveBeenCalledWith('evolution.title');
+    expect(i18nT).toHaveBeenCalledWith('evolution.hint');
+  });
+
+  it('m24s4 EV-02: under «key» sentinels, every rendered surface shows resolver output and never an English roster word outside a sentinel', () => {
+    const { parent, view } = mount();
+    const root = parent.firstElementChild as HTMLElement;
+
+    try {
+      vi.mocked(i18nT).mockImplementation((key: string) => `«${key}»`);
+      vi.mocked(i18nTf).mockImplementation(
+        (key: string, params: unknown) => `«${key}|${JSON.stringify(params)}»`,
+      );
+
+      // --- monsters empty ---
+      view.refresh(viewModel());
+      view.show();
+      let texts = m24s4EvWalkSubtree(root);
+      m24s4EvAssertNoRosterWord(texts, 'monsters empty');
+      let joined = texts.join('\n');
+      expect(joined).toContain('«evolution.title»');
+      expect(joined).toContain('«evolution.hint»');
+      expect(joined).toContain('«evolution.monsters.empty»');
+
+      // --- one monster: mixed-gate blocked path + ready path ---
+      const blockedPath = pathVm({
+        edgeId: 2,
+        toSpecies: 2,
+        toSpeciesName: 'Pyrodrake',
+        met: false,
+        unmetReason: 'needs more Bond',
+        gates: [
+          gate('trust', 'Rank', 'R 17', 'R 20', false),
+          gate('qualityTime', 'Bond', 'B 3', 'B 5', true),
+        ],
+      });
+      const readyPath = metPathVm({
+        edgeId: 5,
+        toSpecies: 3,
+        toSpeciesName: 'Cindermaw',
+        gates: [gate('level', 'Rank', 'R 25', 'R 20', true)],
+      });
+      const mon = monsterVm({
+        speciesName: 'Flameling',
+        nickname: 'Blaze',
+        level: 12,
+        tier: 2,
+        trustTier: 'Devoted',
+        qualityTimeTier: 4,
+        nutritionPct: 77,
+        paths: [blockedPath, readyPath],
+        eligibleCount: 1,
+        choices: [],
+        readyPathName: 'Cindermaw',
+      });
+      view.refresh(viewModel(mon));
+      texts = m24s4EvWalkSubtree(root);
+      m24s4EvAssertNoRosterWord(texts, 'one monster, mixed gates, ready path');
+      joined = texts.join('\n');
+      expect(joined).toContain(
+        '«evolution.card.stats|' +
+          JSON.stringify({ level: 12, stage: 2, trust: 'Devoted', qualityTime: 4, nutrition: 77 }) +
+          '»',
+      );
+      expect(joined).toContain(
+        `«evolution.card.ready|${JSON.stringify({ species: 'Cindermaw' })}»`,
+      );
+      expect(joined).toContain(
+        `«evolution.path.heading|${JSON.stringify({ species: 'Pyrodrake' })}»`,
+      );
+      expect(joined).toContain(
+        `«evolution.path.heading|${JSON.stringify({ species: 'Cindermaw' })}»`,
+      );
+      expect(joined).toContain('«evolution.path.allMet»');
+      expect(joined, 'raw model text must render UNRESOLVED, never a key').toContain(
+        'needs more Bond',
+      );
+      expect(joined).toContain(
+        `«evolution.gate.metRow|${JSON.stringify({ label: 'Bond', current: 'B 3', required: 'B 5' })}»`,
+      );
+      expect(joined).toContain(
+        `«evolution.gate.unmetRow|${JSON.stringify({ label: 'Rank', current: 'R 17', required: 'R 20' })}»`,
+      );
+      expect(joined).toContain(
+        `«evolution.gate.metRow|${JSON.stringify({ label: 'Rank', current: 'R 25', required: 'R 20' })}»`,
+      );
+
+      // --- two choices ---
+      const choiceA = metPathVm({ edgeId: 3, toSpecies: 2, toSpeciesName: 'Pyrodrake', gates: [] });
+      const choiceB = metPathVm({ edgeId: 6, toSpecies: 3, toSpeciesName: 'Cindermaw', gates: [] });
+      view.refresh(
+        viewModel(
+          monsterVm({
+            monsterId: 88n,
+            paths: [choiceA, choiceB],
+            eligibleCount: 2,
+            choices: [choiceA, choiceB],
+            readyPathName: null,
+          }),
+        ),
+      );
+      texts = m24s4EvWalkSubtree(root);
+      m24s4EvAssertNoRosterWord(texts, 'two choices');
+      joined = texts.join('\n');
+      expect(joined).toContain('«evolution.card.choosePrompt»');
+      expect(joined).toContain(
+        `«evolution.choice.evolve|${JSON.stringify({ species: 'Pyrodrake' })}»`,
+      );
+      expect(joined).toContain(
+        `«evolution.choice.evolve|${JSON.stringify({ species: 'Cindermaw' })}»`,
+      );
+
+      // --- no paths ---
+      view.refresh(
+        viewModel(monsterVm({ paths: [], eligibleCount: 0, choices: [], readyPathName: null })),
+      );
+      texts = m24s4EvWalkSubtree(root);
+      m24s4EvAssertNoRosterWord(texts, 'no paths');
+      expect(texts.join('\n')).toContain('«evolution.card.noPaths»');
+    } finally {
+      vi.mocked(i18nT).mockRestore();
+      vi.mocked(i18nTf).mockRestore();
+    }
+
+    // Post-restore call-through control (an existing S1 key — the new evolution.* keys do not
+    // exist in the catalog until the specialist ships them).
+    expect(i18nT('chrome.help.title')).toBe('Controls & Goals');
+  });
+});
+
+describe('m24s4 (ADR-0260): evolutionView.ts scan — zero failing sinks', () => {
+  it('m24s4 EV-03: scanSource(stripComments(evolutionView.ts)) has zero failing sinks, a >=13 sink floor, and no truncation/masking tripwires', () => {
+    const src = readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), 'evolutionView.ts'),
+      'utf8',
+    );
+    const result = scanSource(stripComments(src));
+
+    expect(
+      result.failing.map((s) => `${s.kind}@L${s.line}: ${s.failingSegments.join(' | ')}`),
+      'every sink must route through t()/tf() — any surviving English segment is listed above',
+    ).toEqual([]);
+    expect(
+      result.sinks.length,
+      'SINK_FLOOR idiom (plan measured census): a floor, never an exact count',
+    ).toBeGreaterThanOrEqual(13);
+    expect(
+      result.unterminated,
+      'the literal mask must not end inside an unterminated literal',
+    ).toBe(false);
+    expect(result.maskedSinkTokens, 'no parity-flip mask desync').toBe(0);
+    for (const sink of result.sinks) {
+      expect(sink.truncated, `${sink.kind}@L${sink.line} must not be truncated`).toBe(false);
+    }
   });
 });

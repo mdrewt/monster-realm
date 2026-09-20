@@ -12,8 +12,9 @@
 // (`a11y.overlay.boxView.title`, ADR-0205 D5), so the spec's own `[a-z0-9]+` is corrected here.
 
 /** Every message the catalogs must define. S1 seeded the `chrome.*` namespace; S3 (ADR-0259)
- *  added `battle.*` and `pvp.*` as it migrated battleView.ts/pvpView.ts; S4–S6 add `menu.*`, …
- *  as they migrate the remaining call sites. Adding a literal here is what forces EVERY
+ *  added `battle.*` and `pvp.*` as it migrated battleView.ts/pvpView.ts; S4 (ADR-0260) added
+ *  `evolution.*`, `raising.*`, `box.*`, `trade.*` and `shop.*` for the five mid-density views;
+ *  S5–S6 add the remaining call sites. Adding a literal here is what forces EVERY
  *  registered catalog to grow (the mapped `Catalog` below is total over this union). Keys are
  *  `<namespace>.<screen>.<element>` (M24 §2.3), semantic — named for what the string IS, never
  *  for the DOM mechanism that shows it (`battle.skill.accuracy`, not `accuracyTitle`). */
@@ -59,7 +60,66 @@ export type MessageId =
   | 'pvp.outgoing.label'
   | 'pvp.outgoing.cancel'
   | 'pvp.players.none'
-  | 'pvp.players.heading';
+  | 'pvp.players.heading'
+  // m24-s4 (ADR-0260) — evolution.* : the evolution screen (evolutionView.ts).
+  | 'evolution.title'
+  | 'evolution.hint'
+  | 'evolution.monsters.empty'
+  | 'evolution.card.stats'
+  | 'evolution.card.noPaths'
+  | 'evolution.card.ready'
+  | 'evolution.card.choosePrompt'
+  | 'evolution.path.heading'
+  | 'evolution.path.allMet'
+  | 'evolution.gate.metRow'
+  | 'evolution.gate.unmetRow'
+  | 'evolution.choice.evolve'
+  // m24-s4 — raising.* : the raising / inventory screen (raisingView.ts).
+  | 'raising.title'
+  | 'raising.monsters.heading'
+  | 'raising.inventory.heading'
+  | 'raising.monsters.empty'
+  | 'raising.card.status'
+  | 'raising.card.stats'
+  | 'raising.card.care'
+  | 'raising.card.train'
+  | 'raising.inventory.empty'
+  | 'raising.inventory.item'
+  // m24-s4 — box.* : the party / box screen (boxView.ts).
+  | 'box.title'
+  | 'box.heal'
+  | 'box.hint'
+  | 'box.section.party'
+  | 'box.section.box'
+  | 'box.party.emptySlot'
+  | 'box.box.empty'
+  | 'box.card.rename'
+  | 'box.card.stats'
+  | 'box.card.evolveBadge'
+  | 'box.card.toBox'
+  | 'box.card.toParty'
+  | 'box.rename.prompt'
+  // m24-s4 — trade.* : the live-trade overlay (tradeView.ts); `tradePropose.*` is the dialog.
+  | 'trade.status.none'
+  | 'trade.side.offer'
+  | 'trade.side.receive'
+  | 'trade.side.card'
+  | 'trade.side.currency'
+  | 'trade.side.nothing'
+  | 'trade.action.accept'
+  | 'trade.action.reject'
+  | 'trade.action.confirm'
+  | 'trade.action.cancel'
+  // m24-s4 — shop.* : the shop overlay (shopView.ts).
+  | 'shop.title'
+  | 'shop.noShop'
+  | 'shop.forSale.empty'
+  | 'shop.inventory.empty'
+  | 'shop.buy.row'
+  | 'shop.buy.submit'
+  | 'shop.sell.row'
+  | 'shop.sell.submit'
+  | 'shop.sell.unsellable';
 
 /** The ONE hand-written parameter table (ADR-0256 D7): a key appears here iff its message takes
  *  parameters, and `ParamMessageId` is DERIVED from it — one table, not two lists to keep in
@@ -97,6 +157,67 @@ export interface MessageParams {
   };
   readonly 'pvp.incoming.label': { readonly challenger: string };
   readonly 'pvp.outgoing.label': { readonly target: string };
+  // m24-s4 (ADR-0260 D3): again MODEL DATA only — species/nick/item names, server-derived
+  // tiers, stats, counts and prices. `bigint` where the model is bigint (trade currency, shop
+  // prices): template interpolation of a bigint is byte-identical to the literal it replaced.
+  readonly 'evolution.card.stats': {
+    readonly level: number;
+    readonly stage: number;
+    readonly trust: string;
+    readonly qualityTime: number;
+    readonly nutrition: number;
+  };
+  readonly 'evolution.card.ready': { readonly species: string };
+  readonly 'evolution.path.heading': { readonly species: string };
+  readonly 'evolution.gate.metRow': {
+    readonly label: string;
+    readonly current: string;
+    readonly required: string;
+  };
+  readonly 'evolution.gate.unmetRow': {
+    readonly label: string;
+    readonly current: string;
+    readonly required: string;
+  };
+  readonly 'evolution.choice.evolve': { readonly species: string };
+  readonly 'raising.card.status': {
+    readonly level: number;
+    readonly trust: string;
+    readonly current: number;
+    readonly max: number;
+  };
+  readonly 'raising.card.stats': {
+    readonly attack: number;
+    readonly defense: number;
+    readonly speed: number;
+    readonly spAttack: number;
+    readonly spDefense: number;
+  };
+  readonly 'raising.card.train': { readonly name: string; readonly count: number };
+  readonly 'raising.inventory.item': { readonly name: string; readonly count: number };
+  readonly 'box.party.emptySlot': { readonly slot: number };
+  readonly 'box.card.stats': {
+    readonly species: string;
+    readonly level: number;
+    readonly current: number;
+    readonly max: number;
+    readonly percent: number;
+  };
+  readonly 'trade.side.card': {
+    readonly nickname: string;
+    readonly species: string;
+    readonly level: number;
+    readonly current: number;
+    readonly max: number;
+  };
+  readonly 'trade.side.currency': { readonly amount: bigint };
+  readonly 'shop.buy.row': { readonly name: string; readonly price: bigint };
+  readonly 'shop.sell.row': {
+    readonly name: string;
+    readonly count: number;
+    readonly price: bigint;
+  };
+  readonly 'shop.sell.unsellable': { readonly name: string; readonly count: number };
 }
 
 /** Keys resolved by `tf(key, params)`. */
