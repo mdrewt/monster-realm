@@ -21345,6 +21345,8 @@ fn rb108_mod_census_blanking_never_merges_lines() {
         "mod after_lifetime;",
         "let s = r#######\"a \" b\"#######;",
         "mod after_raw7;",
+        "let z = r\"mod raw0_phantom; \\\";",
+        "mod after_raw0;",
     ]
     .join("\n");
 
@@ -21357,6 +21359,7 @@ fn rb108_mod_census_blanking_never_merges_lines() {
             "after_string".to_string(),
             "after_lifetime".to_string(),
             "after_raw7".to_string(),
+            "after_raw0".to_string(),
         ],
         "[rb108/blanking-never-merges] m22_declared_mod_names_in returned \
          {got:?}. prod_mod: the `#[cfg(test)]` two lines up belongs to \
@@ -21389,6 +21392,13 @@ fn rb108_mod_census_blanking_never_merges_lines() {
          blanker would misread as the string's close, then mis-close AGAIN \
          at the real terminator and blank everything after it to EOF, so a \
          cap on the hash count silently hides every mod declared after the \
-         first over-cap raw string; after_raw7 must still be RETURNED."
+         first over-cap raw string; after_raw7 must still be RETURNED. \
+         after_raw0: ZERO hashes is a hash count too — `r\"mod raw0_phantom; \
+         \\\";` is a valid zero-hash raw string whose body ends in a \
+         backslash; a blanker that only recognises `r#...` (never bare \
+         `r\"...\"`) would treat this as a PLAIN string, read the backslash \
+         as escaping the next `\"`, and keep scanning past the real close — \
+         swallowing `mod after_raw0;`. raw0_phantom must stay invisible and \
+         after_raw0 must be RETURNED."
     );
 }
