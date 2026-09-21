@@ -650,22 +650,88 @@ every control GREEN, the tree restored byte-exact after every row (`rb-87.x7-reg
 
 ## Amendment (2026-09-21, rb-109 — residual R-rb-85-X9 closed)
 
-<!-- DRAFT (plan checkpoint) — finalised by the doc-keeper against the shipped diff. -->
-
 The **Deferred (ledger gates/rb-85.gates.md) X9 → backlog** paragraph of the rb-85 amendment above is
 discharged by rb-109 (promoted from residual R-rb-85-X9; no ADR number was allocated, so per the
-rb-84/85/86/87 precedent this dated amendment is the decision record). The native test host now models
-`datastore_index_scan_range_bsatn` and a real `datastore_delete_by_index_scan_point_bsatn` — the HOST
-record is the rb-109 amendment on ADR-0222 — and `privacy_tests.rs` runs the SHIPPED private helper
-`reap_expired_export_bundles(ctx, now_ms)` over a seeded oversized `export_bundle` population.
+rb-84/85/86/87 precedent this dated amendment is the decision record for the CLOSURE — the native
+HOST record, which is the mechanism, is the rb-109 amendment on ADR-0222). Nothing in `privacy.rs`
+changed except two comments; the helper body `rb85_helper_body_exact` freezes is byte-identical.
 
-**What is now MEASURED (stated honestly).** [to be filled from the shipped tests: the (read, planned,
-reaped) tuples, the survivor sets, the totals]. The ascending yield the fairness argument rests on is a
-MODEL of the btree contract verified against the modelled host, NOT an observation of a live SpacetimeDB
-instance — residual R-rb-109-ORDERMODEL.
+**What is now EXECUTED.** `server-module/src/privacy_tests.rs` runs the SHIPPED private helper
+`reap_expired_export_bundles(ctx, now_ms)` — the one call site is `rb109_tick`, exactly the 0 → 1
+re-attribution of `rb85_helper_is_never_named_outside_privacy_rs` that its own doc pre-authorised (the
+paren-bearing count, plus a new paren-less count that closes the fn-item-binding second call) — over
+seeded `export_bundle` rows in the native host, with an injected `now_ms` below the reducer's guard.
+Eight `rb109_` tests (1011 → 1019; 1012 → 1020 with `dev_reducers`), every clause a VALUE oracle:
 
-**Superseded sentences in this ADR** (its own convention): the "execution proof is deferred, below"
-clause under *What this changes and does not change*; the rb-85 amendment's X9 deferral paragraph; the
-rb-86 amendment's "the native execution proof stays deferred"; the rb-87 amendment's "the native host
-still cannot run the reducer" — the HELPER is executable now; the REDUCER still is not
-(`ctx.database_identity()` remains unstubbed).
+- The oversized population the criterion names — 26 owners × 17 chunks × 8 KiB payload (442 rows; 340
+  expired across 20 stamps, one exactly AT the cutoff; 102 live), seeded in a deterministic
+  INTERLEAVED order that a guard clause proves is not the sorted order — and one tick returns
+  `read == 256`, `planned == 16`, `reaped == 272` (> read: the sixteenth stamp's tail lies past the
+  window), and the survivor set compared as sorted `(owner, stamp, chunk_id)` triples is exactly the
+  102 live rows plus the four NEWEST expired bundles. An unsorted host leaves a disjoint four with
+  every count unchanged; a host that capped its own scan is caught by a direct `filter(lo..=cutoff)`
+  count of 340 (which is also what keeps the production `.take` mutant loud).
+- The exact-delete case (85 expired incl. the at-cutoff stamp, 51 live → `(85, 5, 85)`, survivors ==
+  the live set), the drain (`(256,16,272)`, `(68,4,68)`, `(0,0,0)`, bounds held every tick, iterators
+  closed every tick), the zero tick with a positive readability control, and the STAMP-CAP binding
+  case — 20 bundles × 13 chunks, where a 256-row window holds twenty distinct stamps, so
+  `planned == 16` and `reaped == 208` is the only value oracle for `EXPORT_REAP_MAX_STAMPS_PER_TICK`
+  (in the 17-chunk population the window holds exactly sixteen stamps and the truncation cannot bind).
+- Two host-model controls: every bound kind on each side incl. an Excluded START and the plain `a..b`
+  Range, negative keys (BSATN i64 is little-endian — a byte comparator sorts −1 above every positive),
+  a same-stamp pair in seed order; and the iterator lifecycle — two live interleaved scans without
+  aliasing, the fixture SEEING one open iterator (the one non-zero reading that makes every zero
+  meaningful), the abandoned scan closed, a 70 000-byte row read back through the buffer-grow leg.
+- A closed roster with rb-107's nine clause families (per-name, dup, adjacency, attribute walker with
+  controls, label census, declaration total over closed rosters, a squashed declaration count, the
+  body floor, a dependency roster).
+
+**RED, measured (harness `memory/projects/gates/rb-109.red-before.md`).** Stage 1: the pin revision
+alone on the pre-slice tree → 1011 run / 1010 passed / 1 failed on `[rb85/helper-name-tests]`. Stage 2:
+the test block on the unchanged host → E0599 ×6 (`Handle::rows`, `Fixture::open_iters`), zero tests
+run. Stage 2b: the read-back APIs without the syscall bodies → `rust-lld: undefined symbol:
+datastore_index_scan_range_bsatn`, the whole lib-test binary — the mechanism the X9 DEFER line named.
+**The criterion's "RED on the pre-slice `.iter()` body" is mutant M1**: the tree at 786c222 already
+ships rb-85's bounded read, so the rb-48 full `.iter()` sweep was spliced back into the helper and the
+five helper-reaching tests ABORTED the process on the unmodelled table scan (nextest: 5 failed / 3
+passed) — GREEN on restore. Register (`rb-109.mutants.py`, 17 rows): every production and host mutant
+with a value oracle died on its predicted label — `.take` dropped (340), `..cutoff` (68/4/68), the
+stamp truncation dropped (planned 20), the host's sort removed (the survivor set), a delete reporting
+0, a delete ignoring its key, an end bound ignored, a byte comparator, a host-side 256 cap, Excluded
+parsed as Included, a stubbed iterator count, a body wrapped in `if false`. Disclosed survivors: the
+out-param written as `usize` (UB), a host that reports 0 on BUFFER_TOO_SMALL (a HANG, not a red — run
+under a timeout), an unregistered-index delete that returns 0 instead of aborting (the wall is
+prose-pinned), and `sort_by` → `sort_unstable_by` (at eight rows both are insertion sorts).
+
+**What is now MEASURED, and what is not.** The fairness property rb-85 could not observe — that a
+tick plans the sixteen OLDEST stamps — holds against the modelled host. Stated honestly: the
+ascending yield is a MODEL of the btree contract, verified against `native_host_tests.rs`, NOT an
+observation of a live SpacetimeDB instance; the model also compares with a comparator the FIXTURE
+typed (`table_keyed::<_, i64>`), not the index's `AlgebraicType`, and it materialises the sorted
+candidate list eagerly — so E1's "materialise no more than 256 rows" is proven of the module's own
+decode count `read`, made credible by the 340-row scan the host offers beside the frozen body pin.
+Residual **R-rb-109-ORDERMODEL**: closing it needs a live-instance probe (account-e2e tier), not a
+unit test. Also disclosed: a range-argued `delete(..=stamp)` (the cross-bundle wipe the helper's own
+comment names) and an at-or-below delete relation are INDISTINGUISHABLE to these oracles, because the
+tick issues its deletes oldest-first — the argument pin in `rb85_helper_body_exact` owns that shape. And the verifier's own probe: deleting the bundle seam's defensive
+`stamps.sort_unstable()` (so `dedup` becomes adjacency-only and planning silently DEPENDS on the
+datastore's order) survives all eight `rb109_` tests under the modelled ascending host and is killed
+only by the rb-86 family (five tests) — the rb-109 proof pins the MODEL's order, not the module's
+independence from it; that independence is owned by rb-86, and X2's full-suite run is what makes it a
+merge gate.
+
+**Superseded sentences in this ADR** (its own convention; none edited in place): under *What this
+changes and does not change*, "neither a documented SDK contract nor something this slice observed
+(the execution proof is deferred, below)"; the rb-85 amendment's X9 deferral paragraph and its
+"consumers: the deferred native execution test"; the rb-86 amendment's "The native execution proof
+stays deferred (R-rb-85-X9 …)"; the rb-87 amendment's "the native host still cannot run the reducer"
+— the HELPER is executable now; the REDUCER still is not (`ctx.database_identity()` and the metadata
+row-count syscall remain unstubbed, so a test reaching either is still a LINK failure of the whole
+lib-test binary, which is why no test names the reducer).
+
+**Rejected.** Modelling `datastore_table_scan_bsatn` (the abort IS the ban, and it is what makes M1
+loud); calling `export_bundle_reaper` from a test (a LINK failure, not a red test); a `Host` field or a
+second static for the comparator (either shifts the four out-of-touches line citations into
+`native_host_tests.rs` — see the ADR-0222 amendment, D1); growing the T6 fixture past the
+insertion-sort threshold to make the stable-sort claim testable (tie order is no datastore contract
+and nothing may depend on it — the claim was retruthed instead).

@@ -7494,9 +7494,9 @@ fn rb40p_purge_returns_the_collected_count() {
 //      a reaper tick.
 //   E3 WHEN a sender other than the database identity invokes the reaper THE
 //      SYSTEM SHALL reject before any delete. SOURCE-STRUCTURE ONLY, and it
-//      says so: native_host_tests.rs leaves the table scan, all four writes and
-//      the identity syscall unmodelled, so a scheduled reducer cannot be
-//      executed off-instance and this criterion has no behavioural instrument.
+//      says so: native_host_tests.rs leaves the table scan, three of the writes
+//      and the identity syscall unmodelled (the index-point delete is real since
+//      rb-109), so a scheduled reducer still cannot run here — no instrument.
 //   E4 WHEN request_data_export writes chunks THE SYSTEM SHALL leave exactly
 //      one armed reaper schedule row, as its last statement, and a publish must
 //      repair a missing one.
@@ -10179,8 +10179,8 @@ fn rb65p_export_fields_is_pure() {
 // matters and a direct test would pin a helper nobody is required to keep.
 //
 // `request_data_export` itself is not natively executable (`native_host_tests.rs`
-// models no datastore write), so there is no behavioural proof of the emission —
-// an honest limit recorded in ADR-0243, not a gap this arm closes.
+// models no INSERT, and the reducer reaches the row-count syscall), so there is
+// no behavioural proof of the emission — an honest limit (ADR-0243), not a gap.
 // ===========================================================================
 
 /// A deterministic fixture identity. This module owns no `use super::*`, so the
@@ -11570,12 +11570,12 @@ fn rb67p_adr0220_citation_oracle_control() {
 // re-derives). Everything ctx-bound is a SOURCE-STRUCTURE pin over PRIVACY_RS,
 // RB85_SCHEMA_RS and RB85_MARSHAL_RS through this module's three-stage strip
 // pipeline, and says so. The behavioural execution proof over an oversized
-// population is DEFERRED (ledger X9 -> backlog):
-// `datastore_index_scan_range_bsatn` is undefined in native_host_tests.rs, so a
-// Rust test that CALLED the helper would fail the whole lib-test binary at LINK
-// time — which is why T7 bans naming it here at all, and why the helper ships as
-// `(ctx, now_ms) -> usize` so the deferred slice can inject its instant below the
-// guard.
+// population was DEFERRED here (ledger X9) and is now the rb109_ block at the end
+// of this file: until rb-109 `datastore_index_scan_range_bsatn` was undefined in
+// native_host_tests.rs, so a Rust test that CALLED the helper failed the whole
+// lib-test binary at LINK time — which is why T7 banned naming it here, and why
+// the helper shipped as `(ctx, now_ms) -> usize` so that slice could inject its
+// instant below the guard (T7 now pins the ONE call site, `rb109_tick`).
 //
 // THE BAND-KEYED FAMILY, MEASURED THREE TIMES, AND WHAT CLOSES IT. Every clock
 // this slice compares is a wall-clock millisecond, and every behavioural
@@ -11777,7 +11777,7 @@ fn rb85_nd_take() -> String {
 /// The flat source spelling is 85 columns since rb-87 (76 before it), still far
 /// under max_width, so rustfmt has exactly one canonical form for it: NO
 /// trailing-comma twin exists and none is accepted. `now_ms` is a TRUST INPUT —
-/// the caller owns the clock — which is what lets the deferred X9 native test
+/// the caller owns the clock — which is what lets the rb-109 native tests
 /// inject an instant below the guard.
 ///
 /// RE-FROZEN BY rb-87 (ADR-0238 amendment; closes R-rb-48-OBS): the return type
@@ -12759,7 +12759,7 @@ fn rb85_src_tree() -> Vec<(String, String)> {
 
 /// Recursive walk backing `rb85_src_tree`. `_tests.rs` files are INCLUDED (the
 /// ratchet is about who may reach the table, and a test module reaching it
-/// off-instance is exactly the link failure the deferred X9 gate records).
+/// off-instance was the link failure the X9 gate recorded until rb-109 closed it).
 ///
 /// SYMLINKS ARE SKIPPED (reviewer NIT): a link is followed by `is_dir`, so a loop
 /// back to an ancestor would recurse forever and a link to a file already in the
@@ -12932,7 +12932,7 @@ proptest! {
     /// fns. It does NOT prove the helper passes the cutoff to the range (T6),
     /// that the range is inclusive in the SOURCE (T6), or that a row the range
     /// yields is actually deleted — the execution proof over a real datastore
-    /// is deferred (ledger X9).
+    /// is the rb109_ block at the end of this file (ledger X9, closed).
     #[test]
     fn rb85_cutoff_range_matches_the_seam_expired_set(
         now in 0i64..=(1i64 << 53),
@@ -13374,7 +13374,7 @@ fn rb85_export_bundle_created_at_ms_carries_the_btree_index() {
 /// Kills: M17, a `pub` or `pub(crate)` helper; a second definition (including a
 /// cfg twin, which would make every body-scoped clause read whichever one the
 /// extractor reaches first); a third parameter — the helper's two arguments ARE
-/// its contract, since the deferred X9 native test injects the second one; the
+/// its contract, since the rb109_ native tests inject the second one; the
 /// `-> ExportReapTick` record dropped or narrowed back to a bare count, which
 /// would strand the consumer that ships TODAY — the reducer above it renders the
 /// record through `reap_fields` and publishes it as its terminal observation
@@ -13524,7 +13524,7 @@ fn rb85_new_seams_declared_once_private_with_frozen_signatures() {
 /// HONEST LIMITS: an equality pin reports only that something moved — the
 /// attributable clauses live in T6, which is why both exist. It is a SOURCE
 /// pin: it cannot prove the host executes a range scan rather than a table
-/// scan (deferred X9), and it is blind to an import alias re-pointing a name it
+/// scan (the rb109_ block does), and it is blind to an import alias re-pointing a name it
 /// spells (closed by `m22s4_now_bound_once`'s import-identity clause).
 #[test]
 fn rb85_helper_body_exact() {
@@ -15320,7 +15320,7 @@ fn rb86_window(table: &[(u64, i64, u8)], now: i64, ttl: i64, cap: usize) -> Vec<
 ///
 /// `reverse_window` hands the seam the same rows in the opposite order. The
 /// btree's ascending yield is an expectation rather than an SDK contract (rb-85
-/// says so, and the execution proof is the deferred gate X9), so the design is
+/// says so; rb-109 executes it against a MODEL of that order), so the design is
 /// only honest if the plan does not depend on it.
 fn rb86_tick(
     table: &[(u64, i64, u8)],
@@ -15996,7 +15996,7 @@ proptest! {
     /// HONEST LIMIT: this is an arithmetic relationship between two pure fns. It
     /// does not prove the helper hands the seam its window (T7, and the revised
     /// helper body pin), nor that the datastore deletes what the plan names —
-    /// the execution proof over a real table is deferred (ledger X9).
+    /// the execution proof over seeded rows is the rb109_ block (ledger X9, closed).
     #[test]
     fn rb86_reap_bundle_plan_agrees_with_the_shipped_expiry_seam(
         stamps in proptest::collection::vec(
@@ -18858,8 +18858,8 @@ fn rb87_test_roster_is_closed() {
 // manifest walk against this request's EXACT row count.
 //
 // WHY THE SEAMS ARE PURE, AND WHY THAT IS A CONSTRAINT RATHER THAN A STYLE
-// CHOICE. The native test host (`native_host_tests.rs`) models exactly ten
-// syscalls and the row-count one is NOT among them, so after rb-107 the export
+// CHOICE. The native test host (`native_host_tests.rs`) models eleven syscalls
+// (since rb-109) and the row-count one is NOT among them, so after rb-107 the export
 // reducer is LINK-fatal: a test that reached it would fail the link of the whole
 // lib-test binary rather than red one test, which reads like a toolchain problem
 // instead of a finding. Nothing in this block therefore names the reducer as a
@@ -20281,7 +20281,7 @@ fn rb107_cap_selection_is_tiered_by_account() {
 /// predicate does not red one clause — it makes every call in
 /// `rb107_admission_is_exact_at_both_caps_and_saturates` a LINK failure of the
 /// whole `monster-realm-module` lib-test binary, because the native host models
-/// ten syscalls and the row-count one is not among them. A link error has no
+/// eleven syscalls and the row-count one is not among them. A link error has no
 /// test name and no clause label attached to it, so the purity clause has to be
 /// the thing that names the reason, and it has to run before anything that
 /// would merely report a text difference.
@@ -20353,7 +20353,7 @@ fn rb107_admission_seams_are_pure_and_frozen() {
             assert!(
                 !span.contains(token),
                 "[rb107/admit-no-ctx]: the admission predicate's {where_} names `{token}`. The \
-                 predicate MUST stay scalar-in, bool-out. The native test host defines exactly ten \
+                 predicate MUST stay scalar-in, bool-out. The native test host defines eleven \
                  syscall symbols and the metadata row-count one is NOT among them, so a context \
                  here does not red one clause — it fails the LINK of the whole lib-test binary, \
                  and every value-oracle row in the admission test disappears behind an undefined \

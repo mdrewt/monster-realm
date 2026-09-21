@@ -30,7 +30,7 @@ at a time, and `EXPORT_REQUEST_COOLDOWN_MS` (`privacy.rs:1199`) rate-limits that
 can see a thousand identities.
 
 Two facts fixed the design space before planning. First, the native test host
-(`server-module/src/native_host_tests.rs:14-18`) defines exactly ten `#[no_mangle]` syscall
+(`server-module/src/native_host_tests.rs:14-18`) defines exactly ten (eleven since rb-109) `#[no_mangle]` syscall
 symbols and `datastore_table_row_count` is not among them, so any admission logic that reads a
 table can never execute in an ordinary `#[test]` — and after this slice a test that so much as
 names `request_data_export` fails the LINK of the whole `monster-realm-module` lib-test binary
@@ -52,7 +52,7 @@ per exportable table, which is exactly the inequality
     EXPORT_REAP_MAX_STAMPS_PER_TICK × EXPORT_MIN_BUNDLE_ROWS ≥ EXPORT_REAP_MAX_DELETE_PER_TICK
     (16 × 17 = 272 ≥ 256)
 
-that `[rb86/stamp-cap-throughput]` (`privacy_tests.rs:16700-16713`) already asserts at runtime off
+that `[rb86/stamp-cap-throughput]` (`privacy_tests.rs:16799-16812`) already asserts at runtime off
 the live manifest. Because stamps are deleted whole, no bundle is ever partly reaped and the floor
 holds whatever order the window arrives in. Hold the live population at or below one TTL of that
 drain and every expired row leaves within one TTL of expiring: the write side structurally cannot
@@ -295,7 +295,7 @@ host — nothing here reaches the reducer:
   exact gate → insert loop, the reject token counted as exactly 2 over two views that disagree on an
   interior-space respelling, `.count()` counted as exactly 2, the exit shape, and last the two
   two-sided adjacency needles with a positive control and a blindness fixture each. The pre-gate
-  control carries the rb-86 one-trailing-comma tolerance (`privacy_tests.rs:16731-16741`) because
+  control carries the rb-86 one-trailing-comma tolerance (`privacy_tests.rs:16826-16832`) because
   that argument list sits at 59 of rustfmt's 60 columns.
 - **`rb107_test_roster_is_closed`** — the rb-87 roster shape: vacuity, duplicate and name checks, a
   closed adjacency walk with its own walker control, and an attributed `#[test]` count against a

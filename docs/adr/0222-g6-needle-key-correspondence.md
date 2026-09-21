@@ -266,14 +266,64 @@ still asserting that `ReducerContext` cannot be constructed is stale.
 
 ## Amendment (2026-09-21, rb-109 — the native host models the index range scan and the index-point delete)
 
-<!-- DRAFT (plan checkpoint) — finalised by the doc-keeper against the shipped diff. -->
-
 The rb-41 amendment above described a host of ten `#[no_mangle]` symbols, five implemented, "the table
-scan and the four write syscalls panic loudly". Since rb-109 (the X9 closure record is the rb-109
-amendment on ADR-0238): ELEVEN symbols, SEVEN implemented, FOUR unmodelled. [to be filled from the
-shipped diff: the Bound tag parse, the decoded-value comparator registered by `Fixture::table_keyed`
-(`K: DeserializeOwned + Ord`), the stable ascending sort, the both-Unbounded and multi-column-prefix
-aborts, the write wall — three writes abort unconditionally, the index-point delete aborts unless the
-fixture registered the index — `Handle::rows()` / `Fixture::open_iters()`, the eager candidate list vs
-the module's decode bound, the fixture-typed comparator, the out-of-touches comment sites that now
-overstate the wall (residual R-rb-109-WRITEWALLPROSE).]
+scan and the four write syscalls panic loudly". Since rb-109 (the X9 CLOSURE record is the rb-109
+amendment on ADR-0238; this is the HOST record — `native_host_tests.rs`'s module doc and its EOF
+banner remain the SSOT for the design): **ELEVEN symbols defined once, SEVEN implemented, FOUR
+unmodelled.** Implemented: the two name lookups, the index POINT scan, the index RANGE scan
+(`datastore_index_scan_range_bsatn` — the single new `#[no_mangle]`), the row iterator's advance and
+close, and the index-point DELETE on an index a fixture registered. Unmodelled (abort): the table
+scan, insert, update, `delete_all_by_eq`. Still UNDEFINED and therefore link-fatal if any test path
+reaches them: `datastore_delete_by_index_scan_range_bsatn` (`nm` on the built lib-test binary shows
+no reference — the `if const { is_point_scan }` branch is eliminated for the reaper's `i64` point) and
+`datastore_table_row_count` (the rb-107 admission gates reason about that link failure by name).
+
+**The range model.** Each side's `Bound<T>` arrives as BSATN — tag 0 Included(x), 1 Excluded(x), 2
+Unbounded with no payload (`spacetimedb-sats-2.8.1/src/ser/impls.rs:124-128`) — and is parsed by an
+EXPLICIT tag match; an empty slice, an unknown tag, or a payload that fails to decode aborts rather
+than defaulting. Keys are compared by DECODED value through a comparator `Fixture::table_keyed`
+registers per index (hence `K: Serialize + DeserializeOwned + Ord`; every caller keys on `Identity` or
+`u64`), stored in `index_table`'s value tuple alongside the table id — BSATN `i64` is little-endian
+two's complement, so byte order is not value order and a byte comparator sorts −1 above every
+positive. Matching rows are STABLE-sorted ascending (ties keep store order; a convenience of the
+model, not a datastore contract). A multi-column prefix and a both-`Unbounded` range abort: the
+latter is a sorted full scan — the `.iter()` shape this host refuses, wearing a range (D6). An
+unregistered index reads as EMPTY, exactly as the point scan does. The candidate list is built
+eagerly; only the module's own `.take` bounds what it decodes.
+
+**The write wall MOVED but still stands (D5).** `datastore_delete_by_index_scan_point_bsatn` is real
+ONLY for an index a fixture registered — it `retain`s out every row whose key bytes equal the point
+and writes the count as exactly a `u32` on its single `0`-returning path — and ABORTS on an
+unregistered index. The asymmetry with reads is deliberate: a multi-table predicate must be able to
+read tables a test did not register, while a WRITE to one is a test reaching a table it never
+declared, which is the abort several sibling suites use as their kill mechanism. Consequence for
+those suites' prose: every "reaching a write syscall aborts" claim about an UNREGISTERED table stays
+TRUE; the wording "all four write syscalls are unmodelled" is now imprecise, and rb-72 Leg A M5
+(`accounts_tests.rs:20329-20337`) now lands as the `[rb72/post-player]` assertion rather than an
+abort, because `player` IS registered there (the kill survives). Those files are outside rb-109's
+touches and were NOT edited — this paragraph is the record that they overstate the wall, and the
+sites are registered as residual **R-rb-109-WRITEWALLPROSE**: `rb73_session_tests.rs:33, :493-501,
+:638-641`; `accounts_tests.rs:20318, :20329-20337, :20349-20359, :20449-20454, :20966`;
+`trading_tests.rs:4902, :4995, :5009`; `npc_tests.rs:2152, :2629, :2998`; `taming_tests.rs:581,
+:997`; `raising_tests.rs:3341, :3733`; `evolution_tests.rs:67, :5470-5473, :6337-6340, :6541, :6556,
+:7168`; `battle_tests.rs:7702, :7971`; `guards_tests.rs:4120` (line numbers at 786c222).
+
+**Read-back and lifecycle (D9).** `Handle::rows() -> Vec<R>` decodes every stored row in STORE order
+(the oracle stays independent of the model under test — no second range read), and
+`Fixture::open_iters() -> usize` exposes the iterator count, the one fixture call a test may make
+while a scan is live (it reads no store). `host()` is a plain non-reentrant Mutex: a call from inside
+a syscall would deadlock; a store-reading call between two `next()` calls does not hang but is banned
+because the iterator was handed its rows when it opened.
+
+**Line-count discipline (D1).** Four out-of-touches files cite into this file by line —
+`evolution_tests.rs:5471, :6339` → `:293`; `rb73_session_tests.rs:387` → `:351-354`;
+`battle_tests.rs:7025, :7405` and `economy_tests.rs:2797` → `:311-319`; ADR-0265:33 → `:14-18` — so
+lines 1–450 stayed line-count-identical: every retruth (module doc, the `index_table` doc, the
+`table_keyed` bound, the write-wall sentences, the `unmodelled()` message) was an in-place reflow and
+every net new line landed at 451+. Verified by `git diff -U0` hunk headers (all above 451 net-zero;
+first net-add `@@ -450,0 +451,8 @@`).
+
+**Kept.** The file still never spells the `#[cfg(test)]` attribute literal and still names no table
+accessor, row type or table attribute (the rb-85 accessor and handle ratchets walk it). The compiler,
+not a gate, keeps the eleven symbols out of the published wasm: any non-test reference fails the
+publish build.
