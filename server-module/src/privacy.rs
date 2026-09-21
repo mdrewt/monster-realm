@@ -1725,7 +1725,7 @@ fn export_live_row_cap(has_account: bool) -> u64 {
 
 // The admission predicate: PURE, and that is a CONSTRAINT rather than a style
 // choice. The shells around it reach a table, so they can never run in the
-// native test host — it models ten syscalls, the row-count one is not among
+// native test host — it models eleven syscalls, the row-count one is not among
 // them, and a test that reached the reducer would fail the LINK of the whole
 // lib-test binary rather than red one test. Scalar-argued, it has a value
 // oracle. EXACT rather than approximate: the request's own row count is added,
@@ -1901,15 +1901,15 @@ fn export_reap_cutoff_ms(now_ms: i64, ttl_ms: i64) -> i64 {
 //
 // A BOUNDED INDEX READ, not a full scan: the btree range on the creation stamp
 // yields only rows at or below the cutoff, ascending in key order (btree-backed
-// and therefore expected; neither a documented SDK contract nor something this
-// slice observed — the execution proof is deferred, ledger X9. Progress never
-// depends on it, since every planned bundle is deleted whole; only FAIRNESS
-// does), and `.take` caps the read at EXPORT_REAP_MAX_DELETE_PER_TICK, so the
-// module decodes at most that many rows per tick however large the table grows
-// (the host may fill at most one further iterator buffer beyond the last decoded
-// row). The bound is on ROWS, not bytes: rb-107 (ADR-0265) closed
-// R-rb-85-EXPORTADMIT with a write-side row cap sized to this drain, and the
-// byte-level ceiling it leaves open is R-rb-107-BYTEBOUND.
+// and therefore expected, but undocumented; rb-109 MODELS that order in the
+// native host and EXECUTES this helper against it — the rb109_ tests — a model
+// of the btree contract, not a live-host observation, R-rb-109-ORDERMODEL.
+// Progress never depends on it: every planned bundle is deleted whole, so only
+// FAIRNESS does), and `.take` caps the read at EXPORT_REAP_MAX_DELETE_PER_TICK,
+// so the module decodes at most that many rows per tick however large the table
+// grows (the host may fill one buffer past the last decoded row). The bound is
+// on ROWS, not bytes: rb-107 (ADR-0265) closed R-rb-85-EXPORTADMIT with a
+// write-side cap sized to this drain, leaving R-rb-107-BYTEBOUND.
 //
 // WHOLE BUNDLES, never a fraction of one (rb-86). A bundle is every chunk
 // sharing one creation stamp: `request_data_export` stamps all of a request's
