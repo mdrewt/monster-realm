@@ -3593,13 +3593,19 @@ fn m22_table_accessors(path: &str, src: &str) -> Vec<String> {
     out
 }
 
-/// Every `mod <name>;` declared anywhere in the scanned sources, minus the
-/// `#[path]`-included sibling test modules (whose names all end in `tests`).
+/// Every file-declaring `mod` item anywhere in the scanned sources, minus the
+/// declarations whose OWN contiguous attribute run carries exactly
+/// `#[cfg(test)]` (rb-85 residual R-rb-85-MODCENSUS, ADR-0266).
 ///
-/// Line-oriented over the comment-blanked, string-blanked source: a commented
-/// out `mod` and a `mod` spelled inside a string literal are both invisible,
-/// while `pub mod` / `pub(crate) mod` are both seen. Inline `mod x { .. }`
-/// blocks declare no FILE and are correctly ignored (no trailing `;`).
+/// A name suffix is never evidence: a `tests`-named module with no cfg gate
+/// is production and stays in the census, while a `#[cfg(test)]`-gated helper
+/// with any name is dropped. Every OTHER cfg form (`cfg(any(test, ..))`,
+/// `cfg(all(test))`, `cfg_attr(test, ..)`, `cfg(not(test))`) counts as
+/// production — the census fails toward coverage. Line-oriented over
+/// `m22_blank_for_mod_scan`: a commented-out `mod` and a `mod` spelled inside
+/// a string literal are both invisible, `pub mod` / `pub(crate) mod` are both
+/// seen, and inline `mod x { .. }` blocks declare no FILE and are ignored (no
+/// trailing `;`).
 fn m22_declared_mod_names() -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for (_, src) in m22_scanned_sources() {
@@ -3610,14 +3616,163 @@ fn m22_declared_mod_names() -> Vec<String> {
     out
 }
 
-/// The per-source half of `m22_declared_mod_names`: every file-declaring
-/// `mod <name>;` in ONE source, in declaration order, minus the exempt test
-/// modules. Pure over its input so the exemption rule can be pinned against a
-/// synthetic source.
+/// Blank every `//` line comment, `/* */` block comment (NESTING-aware), string
+/// literal (`"…"` with `\` escapes, `r"…"`, `r#"…"#` up to six hashes) and char
+/// literal (`'x'`, `'\n'`, `'"'`) to spaces in ONE pass, keeping every `\n`
+/// byte exactly where it was — inside block comments and multi-line strings
+/// too. Lifetimes (`'a`) are left alone: a `'` opens a char literal only when
+/// the next byte is `\` or the byte two ahead is another `'`.
+///
+/// Invariant, by construction: `out` starts as a byte copy of `src` and the only
+/// mutation is `blank_span`, which writes a space over every byte in a span
+/// EXCEPT `\n`. So the output has the same byte length and the same newline
+/// positions as the input, and line `k` of the output is line `k` of the input
+/// with its comment / literal bytes spaced out. No comment or string can ever
+/// merge two lines and drag an attribute onto a `mod` it does not own — the
+/// strings-then-comments pipeline used by the other scans CAN (a stray `"` in a
+/// `//` comment opens a string that swallows the newlines up to the next `"`),
+/// which is why the mod census does not share it (rb-85 residual
+/// R-rb-85-MODCENSUS, ADR-0266).
+fn m22_blank_for_mod_scan(src: &str) -> String {
+    /// Space out `out[from..to]`, leaving every `\n` untouched.
+    fn blank_span(out: &mut [u8], from: usize, to: usize) {
+        for slot in &mut out[from..to] {
+            if *slot != b'\n' {
+                *slot = b' ';
+            }
+        }
+    }
+    /// If a raw string opens at byte `i` (`r"` or `r#"` with up to six hashes),
+    /// the number of hashes it carries.
+    fn raw_string_hashes(bytes: &[u8], i: usize) -> Option<usize> {
+        if bytes[i] != b'r' {
+            return None;
+        }
+        let mut hashes: usize = 0;
+        let mut k = i + 1;
+        while k < bytes.len() && bytes[k] == b'#' && hashes < 6 {
+            hashes += 1;
+            k += 1;
+        }
+        (k < bytes.len() && bytes[k] == b'"').then_some(hashes)
+    }
+    let bytes = src.as_bytes();
+    let len = bytes.len();
+    let mut out = bytes.to_vec();
+    let mut i = 0;
+    while i < len {
+        let b = bytes[i];
+        let next = if i + 1 < len { bytes[i + 1] } else { 0 };
+        if b == b'/' && next == b'/' {
+            // Line comment: up to but not including the newline.
+            let mut j = i;
+            while j < len && bytes[j] != b'\n' {
+                j += 1;
+            }
+            blank_span(&mut out, i, j);
+            i = j;
+        } else if b == b'/' && next == b'*' {
+            // Block comment with nesting: `/*` inside it increments the depth.
+            let mut depth: usize = 0;
+            let mut j = i;
+            while j < len {
+                if j + 1 < len && bytes[j] == b'/' && bytes[j + 1] == b'*' {
+                    depth += 1;
+                    j += 2;
+                } else if j + 1 < len && bytes[j] == b'*' && bytes[j + 1] == b'/' {
+                    depth -= 1;
+                    j += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    j += 1;
+                }
+            }
+            blank_span(&mut out, i, j);
+            i = j;
+        } else if let Some(hashes) = raw_string_hashes(bytes, i) {
+            // Raw string `r"…"` / `r#"…"#` (up to six hashes): the closing `"`
+            // must be followed by exactly as many `#` as the opener carried.
+            let mut j = i + 1 + hashes + 1; // past `r`, the hashes, and `"`
+            while j < len {
+                if bytes[j] == b'"' {
+                    let mut k = j + 1;
+                    let mut closing: usize = 0;
+                    while k < len && bytes[k] == b'#' && closing < hashes {
+                        closing += 1;
+                        k += 1;
+                    }
+                    if closing == hashes {
+                        j = k;
+                        break;
+                    }
+                }
+                j += 1;
+            }
+            let j = j.min(len);
+            blank_span(&mut out, i, j);
+            i = j;
+        } else if b == b'"' {
+            // Plain string: `\` escapes the next byte; newlines inside are kept.
+            let mut j = i + 1;
+            while j < len {
+                if bytes[j] == b'\\' {
+                    j += 2;
+                } else if bytes[j] == b'"' {
+                    j += 1;
+                    break;
+                } else {
+                    j += 1;
+                }
+            }
+            let j = j.min(len);
+            blank_span(&mut out, i, j);
+            i = j;
+        } else if b == b'\'' && next == b'\\' {
+            // Escaped char literal (`'\n'`, `'\''`, `'\u{..}'`): blank through
+            // the closing `'`.
+            let mut j = i + 3;
+            while j < len && bytes[j] != b'\'' {
+                j += 1;
+            }
+            let j = (j + 1).min(len);
+            blank_span(&mut out, i, j);
+            i = j;
+        } else if b == b'\'' && i + 2 < len && bytes[i + 2] == b'\'' {
+            // One-byte char literal such as `'x'` or `'"'`.
+            blank_span(&mut out, i, i + 3);
+            i += 3;
+        } else {
+            // Ordinary source byte (including a lifetime's `'`): kept as is.
+            i += 1;
+        }
+    }
+    String::from_utf8(out).expect("mod-scan-blanked source must be valid UTF-8")
+}
+
+/// The per-source half of `m22_declared_mod_names`: every file-declaring `mod`
+/// item in ONE source, in declaration order (no sort / dedup here), minus the
+/// ones exempted by their own attribute run. Pure over its input so the rule
+/// can be pinned against a synthetic source.
+///
+/// Exemption rule: walk upward from the `mod` line, skipping blank lines and
+/// collecting whitespace-squashed `#[..]` lines, and STOP at the first line
+/// that is neither (so an attribute above a `use` or `fn` belongs to that item,
+/// not to the mod). Exempt iff one collected attribute is exactly
+/// `#[cfg(test)]`; a name suffix is never evidence and every other cfg form
+/// counts as production (fail toward coverage). A same-line
+/// `#[cfg(test)] mod x;`, several attributes on one line, and a genuinely
+/// multi-line `#[cfg(` / `test` / `)]` are rustfmt-impossible in this crate
+/// and all count as production. Runs over `m22_blank_for_mod_scan`, which
+/// keeps every newline, so no comment or string literal can merge lines and
+/// glue an attribute onto a later mod (rb-85 residual R-rb-85-MODCENSUS,
+/// ADR-0266).
 fn m22_declared_mod_names_in(src: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    let clean = strip_rust_comments(&strip_rust_strings(src));
-    for line in clean.lines() {
+    let clean = m22_blank_for_mod_scan(src);
+    let lines: Vec<&str> = clean.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
         let mut text = line.trim();
         if let Some(rest) = text.strip_prefix("pub(crate)") {
             text = rest.trim_start();
@@ -3635,7 +3790,22 @@ fn m22_declared_mod_names_in(src: &str) -> Vec<String> {
         if name.is_empty() || !name.chars().all(is_word_char) {
             continue;
         }
-        if name.ends_with("tests") {
+        let mut attrs: Vec<String> = Vec::new();
+        let mut j = i;
+        while j > 0 {
+            j -= 1;
+            let above = lines[j];
+            if above.trim().is_empty() {
+                continue;
+            }
+            if above.trim_start().starts_with("#[") {
+                attrs.push(squash_ws(above));
+                continue;
+            }
+            break;
+        }
+        let exempt = attrs.iter().any(|a| a == "#[cfg(test)]");
+        if exempt {
             continue;
         }
         out.push(name.to_string());
