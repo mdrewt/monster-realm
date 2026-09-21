@@ -535,6 +535,30 @@ knowledge:
 knowledge-check:
     node scripts/okf-export.mjs docs/knowledge --check
 
+# Export every client/src/ui/i18n/catalog.<tag>.ts to build/i18n/<tag>.icu.json (ICU
+# MessageFormat interchange for a translator/TMS; build/ is gitignored — M24 S8, ADR-0264).
+i18n-export:
+    node scripts/catalog-export.mjs
+
+# Import a translated ICU JSON as client/src/ui/i18n/catalog.<locale>.ts: emit, format,
+# typecheck, then refresh the completion baseline. Registering a NEW locale (resolver.ts
+# CATALOGS, resolver.test.ts, catalogParity.test.ts) stays manual — the importer prints the edits.
+i18n-import locale file:
+    node scripts/catalog-import.mjs {{locale}} {{file}}
+    client/node_modules/.bin/biome format --write client/src/ui/i18n/catalog.{{locale}}.ts
+    just client-typecheck
+    node scripts/catalog-export.mjs --completion
+
+# Regenerate evals/baselines/i18n-locale-completion.json (nightly-only data, never a ci gate —
+# M24 spec 5.5). Refuses to record a translation gap larger than the committed one.
+i18n-completion:
+    node scripts/catalog-export.mjs --completion
+
+# Nightly target: exit 1 when a locale's translation gap grew, a locale vanished, or the
+# committed baseline is stale (gap shrank or a locale is missing from it).
+i18n-completion-check:
+    node scripts/catalog-export.mjs --completion --check
+
 # Regenerate docs/adr/DIGEST.md from the ADR corpus (ADR-0104).
 # Run after any ADR change and before committing.
 adr-digest:
