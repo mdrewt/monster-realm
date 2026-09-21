@@ -14,9 +14,11 @@
 // specialist ships both scripts.
 //
 // ZERO RegExp anywhere in this file (ADR-0055; a regex literal also blinds the single-owner
-// `stripComments`): every scan is `indexOf` / `charCodeAt` / a hand-rolled char walk. The few
-// needles that name banned tokens (`RegExp`, `eval(`, `.test(` …) are SPLICED from two halves so
-// a raw text gate over test files can never mistake the pin for a use.
+// `stripComments`): every scan is `indexOf` / `charCodeAt` / a hand-rolled char walk. The
+// needles that name banned tokens (`RegExp`, `eval(`, `.test(` …) are never spelled in CODE —
+// each is SPLICED from two halves at runtime — so a code-scanning gate over test files cannot
+// mistake the pin for a use; they ARE spelled in comments like this one, which is fine because
+// the raw-text pins run against the two SCRIPTS, never against this file.
 //
 // Every fixture is asserted EXACTLY ONCE; every assertion message names the WRONG IMPLEMENTATION
 // it kills. Nothing is ever written under client/src/ui/i18n (fixtures are in-memory; emitted
@@ -1079,6 +1081,18 @@ function lineStartingWith(lines: readonly string[], prefix: string): string | un
   return lines.find((l) => startsWith(l, prefix));
 }
 
+/** The text of ONE top-level function in comment-stripped script source: from its `header`
+ *  (e.g. `export function importLocale(`) to the first column-0 `}` after it. Used for the
+ *  RegExp-free ORDERING pins that stand in for mutants no accepted input can reach. */
+function functionBody(stripped: string, header: string): string {
+  const start = stripped.indexOf(header);
+  expect(start, `script must define ${header}`).not.toBe(-1);
+  expect(stripped.indexOf(header, start + 1), `script must define ${header} exactly once`).toBe(-1);
+  const end = stripped.indexOf('\n}', start);
+  expect(end, `${header} body must close at a column-0 brace`).not.toBe(-1);
+  return stripped.slice(start, end);
+}
+
 // ---------------------------------------------------------------------------
 // Tests.
 // ---------------------------------------------------------------------------
@@ -1338,6 +1352,11 @@ describe('catalogRoundTrip (M24 S8, ADR-0264)', { sequential: true }, () => {
     expect(nextLine.text, '(f) a plain value on the line after the colon').toBe(
       'value on the next line',
     );
+    // (f2) leading + trailing spaces inside a PLAIN value are payload — kills a `.trim()` on the
+    // decoded plain text (the closure path is covered by the live shop.buy.row / leaderboard.row
+    // pins in RT-01; this is the plain-string twin).
+    const padded = one([], [`  // @desc: ${DESC}`, "  'a.b': ' padded ',"]);
+    expect(padded.text, '(f2) a padded plain value keeps both spaces').toBe(' padded ');
 
     // (g) hoisted six-form cldr const resolves; ws-tolerant selectPlural hole.
     const hoistedForms = [
@@ -1896,6 +1915,49 @@ describe('catalogRoundTrip (M24 S8, ADR-0264)', { sequential: true }, () => {
         `${bannerBase}one {a} many {b${String.fromCharCode(0x2028)}} other {c}})`,
       ),
     );
+    // U+2029 (PARAGRAPH SEPARATOR) is legal inside an ES string literal but TERMINATES a `//`
+    // comment — in a description it is marker injection, in a message it is a line break the
+    // catalog cannot hold. Kills a checker that only knows U+2028 (or only `< 0x20`).
+    rejects('CONTROL-CHAR: U+2029 in a description', 'CONTROL-CHAR', (j) => {
+      j.messages['battle.title'].description = `ten chars ${String.fromCharCode(0x2029)}here x`;
+    });
+    rejects('CONTROL-CHAR: U+2029 in a message', 'CONTROL-CHAR', (j) =>
+      setMessage(j, 'battle.title', `Com${String.fromCharCode(0x2029)}bat`),
+    );
+
+    // (k) EMIT-MISMATCH is unreachable through any input the validator accepts (every accepted
+    // description line and value quoting round-trips by construction), so the tooth is a
+    // RegExp-free ORDERING pin on the importer's own `importLocale` body: the self-re-parse and
+    // the EMIT-MISMATCH check come BEFORE `writeFileSync(`, and `renameSync(` comes after it.
+    // Kills "skip the self-re-parse / write before the check".
+    const importerStripped = stripComments(readFileSync(IMPORT_SCRIPT, 'utf8'));
+    const importLocaleBody = functionBody(importerStripped, 'export function importLocale(');
+    const reparseAt = importLocaleBody.indexOf('parseCatalogSource(');
+    const mismatchAt = importLocaleBody.indexOf("'EMIT-MISMATCH'");
+    const writeAt = importLocaleBody.indexOf('writeFileSync(');
+    const renameAt = importLocaleBody.indexOf('renameSync(');
+    expect(
+      {
+        reparseFound: reparseAt !== -1,
+        mismatchFound: mismatchAt !== -1,
+        writeFound: writeAt !== -1,
+        renameFound: renameAt !== -1,
+        reparseBeforeMismatch: reparseAt < mismatchAt,
+        mismatchBeforeWrite: mismatchAt < writeAt,
+        writeBeforeRename: writeAt < renameAt,
+        writeCount: countOccurrences(importLocaleBody, 'writeFileSync('),
+      },
+      'importLocale body order: parseCatalogSource( < EMIT-MISMATCH < writeFileSync( (exactly one) < renameSync( — kills "skip the self-re-parse" and "write before the check" mutants',
+    ).toEqual({
+      reparseFound: true,
+      mismatchFound: true,
+      writeFound: true,
+      renameFound: true,
+      reparseBeforeMismatch: true,
+      mismatchBeforeWrite: true,
+      writeBeforeRename: true,
+      writeCount: 1,
+    });
 
     // FORMS-NAME-COLLISION needs two keys whose <KEY_UPPER>_<PARAM_UPPER>_FORMS collide — impossible
     // with the live roster, so a synthetic en model: `a.b` param `c_n` and `a.b.c` param `n` both
@@ -2651,6 +2713,26 @@ describe('catalogRoundTrip (M24 S8, ADR-0264)', { sequential: true }, () => {
         none.status,
         'no arguments is a usage error, exit 2 (an unguarded main would have exited at collection)',
       ).toBe(2);
+
+      // (n1) A default-path import of a NEW locale creates the very file that makes discovery say
+      // "registered", so the banner decision must be taken BEFORE the write. Not testable against
+      // the real dir here (nothing may be written under client/src/ui/i18n), so a RegExp-free
+      // ordering pin on the CLI's `main` body: `discoverLocales()` precedes `importLocale(`.
+      // Kills "banner computed after the write".
+      const mainBody = functionBody(
+        stripComments(readFileSync(IMPORT_SCRIPT, 'utf8')),
+        'function main(',
+      );
+      const discoverAt = mainBody.indexOf('discoverLocales()');
+      const importCallAt = mainBody.indexOf('importLocale(');
+      expect(
+        {
+          discoverFound: discoverAt !== -1,
+          importFound: importCallAt !== -1,
+          discoverBeforeImport: discoverAt < importCallAt,
+        },
+        'main body order: discoverLocales() (the wasRegistered decision) < importLocale( (the write) — kills "banner computed after the write"',
+      ).toEqual({ discoverFound: true, importFound: true, discoverBeforeImport: true });
 
       expect(
         {
