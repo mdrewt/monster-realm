@@ -679,7 +679,11 @@ impl Fixture {
     /// Zero between tests is guaranteed by [`fixture`]; zero after a tick is
     /// not, and that is what a test asserts.
     ///
-    /// Same lock rule as [`Handle::rows`]: collect first, assert afterwards.
+    /// The ONE fixture call a test may make while a scan is live: it reads the
+    /// iterator count, not the store, so it can neither deadlock (no syscall is
+    /// in flight between two `next()` calls) nor watch a store move under a
+    /// reader — which is how the rb109_ iterator test proves this fixture can
+    /// see an OPEN iterator, not only an absent one.
     pub(crate) fn open_iters(&self) -> usize {
         host().iters.len()
     }
