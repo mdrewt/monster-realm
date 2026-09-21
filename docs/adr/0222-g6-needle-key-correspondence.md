@@ -263,3 +263,17 @@ recurse). Limits 1 and 3-8 stand unchanged; the rekey half of 3, 4 and 6 is unto
 existence or read predicate ships with an `rb41_*`-shaped test rather than a source pin; a text
 scan is still the right tool for what a native test binary cannot see (cfg twins), and any document
 still asserting that `ReducerContext` cannot be constructed is stale.
+
+## Amendment (2026-09-21, rb-109 — the native host models the index range scan and the index-point delete)
+
+<!-- DRAFT (plan checkpoint) — finalised by the doc-keeper against the shipped diff. -->
+
+The rb-41 amendment above described a host of ten `#[no_mangle]` symbols, five implemented, "the table
+scan and the four write syscalls panic loudly". Since rb-109 (the X9 closure record is the rb-109
+amendment on ADR-0238): ELEVEN symbols, SEVEN implemented, FOUR unmodelled. [to be filled from the
+shipped diff: the Bound tag parse, the decoded-value comparator registered by `Fixture::table_keyed`
+(`K: DeserializeOwned + Ord`), the stable ascending sort, the both-Unbounded and multi-column-prefix
+aborts, the write wall — three writes abort unconditionally, the index-point delete aborts unless the
+fixture registered the index — `Handle::rows()` / `Fixture::open_iters()`, the eager candidate list vs
+the module's decode bound, the fixture-typed comparator, the out-of-touches comment sites that now
+overstate the wall (residual R-rb-109-WRITEWALLPROSE).]

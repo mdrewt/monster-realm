@@ -647,3 +647,25 @@ failed — the four revised pins plus five rb87_ tests, each on its predicted cl
 E0425 ×6 + E0422 ×1; the honest fix was green on the first attempt with zero test edits. Register: thirty
 mutants and three controls on the final tree, runner exit 0 — every mutant KILLED on its designated clause,
 every control GREEN, the tree restored byte-exact after every row (`rb-87.x7-register.md`).
+
+## Amendment (2026-09-21, rb-109 — residual R-rb-85-X9 closed)
+
+<!-- DRAFT (plan checkpoint) — finalised by the doc-keeper against the shipped diff. -->
+
+The **Deferred (ledger gates/rb-85.gates.md) X9 → backlog** paragraph of the rb-85 amendment above is
+discharged by rb-109 (promoted from residual R-rb-85-X9; no ADR number was allocated, so per the
+rb-84/85/86/87 precedent this dated amendment is the decision record). The native test host now models
+`datastore_index_scan_range_bsatn` and a real `datastore_delete_by_index_scan_point_bsatn` — the HOST
+record is the rb-109 amendment on ADR-0222 — and `privacy_tests.rs` runs the SHIPPED private helper
+`reap_expired_export_bundles(ctx, now_ms)` over a seeded oversized `export_bundle` population.
+
+**What is now MEASURED (stated honestly).** [to be filled from the shipped tests: the (read, planned,
+reaped) tuples, the survivor sets, the totals]. The ascending yield the fairness argument rests on is a
+MODEL of the btree contract verified against the modelled host, NOT an observation of a live SpacetimeDB
+instance — residual R-rb-109-ORDERMODEL.
+
+**Superseded sentences in this ADR** (its own convention): the "execution proof is deferred, below"
+clause under *What this changes and does not change*; the rb-85 amendment's X9 deferral paragraph; the
+rb-86 amendment's "the native execution proof stays deferred"; the rb-87 amendment's "the native host
+still cannot run the reducer" — the HELPER is executable now; the REDUCER still is not
+(`ctx.database_identity()` remains unstubbed).
