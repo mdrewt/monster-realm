@@ -21219,6 +21219,7 @@ fn rb108_mod_census_exempts_by_cfg_test_not_by_name() {
         "// mod ghost;",
         "let s = \"mod phantom;\";",
         "mod inline { }",
+        "pub(crate) mod r#raw_ident_tests;",
     ]
     .join("\n");
 
@@ -21232,6 +21233,7 @@ fn rb108_mod_census_exempts_by_cfg_test_not_by_name() {
             "guards".to_string(),
             "bar".to_string(),
             "commented_gate_tests".to_string(),
+            "raw_ident_tests".to_string(),
         ],
         "[rb108/exempt-by-cfg] m22_declared_mod_names_in returned {got:?}; the \
          exemption must key on the contiguous #[cfg(test)] attribute directly \
@@ -21245,7 +21247,11 @@ fn rb108_mod_census_exempts_by_cfg_test_not_by_name() {
          (the attribute belongs to the `use`, not the mod) and must be \
          RETURNED; the three whitespace variants of `#[cfg(test)]` (with \
          inner spaces, outer spaces, and a trailing `// note`) must all still \
-         exempt their mods."
+         exempt their mods; `mod r#raw_ident_tests;` names the SAME file as \
+         its bare spelling (the `r#` prefix is a raw-identifier escape, not \
+         part of the file name), so it must be returned BARE as \
+         `raw_ident_tests`, never dropped for failing a naive word-char \
+         check on the leading `#`."
     );
 }
 
@@ -21333,6 +21339,8 @@ fn rb108_mod_census_blanking_never_merges_lines() {
         "#[path = \"lt_tests.rs\"]",
         "mod lt_tests;",
         "mod after_lifetime;",
+        "let s = r#######\"a \" b\"#######;",
+        "mod after_raw7;",
     ]
     .join("\n");
 
@@ -21344,6 +21352,7 @@ fn rb108_mod_census_blanking_never_merges_lines() {
             "prod2".to_string(),
             "after_string".to_string(),
             "after_lifetime".to_string(),
+            "after_raw7".to_string(),
         ],
         "[rb108/blanking-never-merges] m22_declared_mod_names_in returned \
          {got:?}. prod_mod: the `#[cfg(test)]` two lines up belongs to \
@@ -21370,6 +21379,12 @@ fn rb108_mod_census_blanking_never_merges_lines() {
          misread as opening a char literal (which would swallow real code \
          and corrupt the rest of the scan) — lt_tests stays exempt under its \
          own `#[cfg(test)]`, and after_lifetime, declared right after it, \
-         must be RETURNED."
+         must be RETURNED. after_raw7: a raw string may carry ANY number of \
+         `#` delimiters (Rust allows up to 255), not just a small fixed cap — \
+         `r#######\"a \" b\"#######;` embeds a bare `\"` that a hash-capped \
+         blanker would misread as the string's close, then mis-close AGAIN \
+         at the real terminator and blank everything after it to EOF, so a \
+         cap on the hash count silently hides every mod declared after the \
+         first over-cap raw string; after_raw7 must still be RETURNED."
     );
 }

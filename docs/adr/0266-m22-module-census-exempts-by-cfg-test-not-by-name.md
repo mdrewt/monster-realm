@@ -7,7 +7,7 @@
 **Amends:** —
 **Extends:** 0224, 0229
 **Subsystems:** ci-gates, schema-persistence
-**Decision:** `m22_declared_mod_names` drops a `mod x;` from the deletion-policy totality census only when the declaration's own contiguous attribute run contains exactly `#[cfg(test)]`; a name ending in `tests` is never evidence, and every other cfg form counts as production.
+**Decision:** `m22_declared_mod_names` drops a `mod x;` from the deletion-policy census only when its own contiguous attribute run contains exactly `#[cfg(test)]`; a `tests` name suffix is never evidence and every other cfg form counts as production.
 
 ---
 
