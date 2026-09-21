@@ -21269,6 +21269,8 @@ fn rb108_mod_census_other_cfg_forms_count_as_production() {
         "    test",
         ")]",
         "mod multiline_tests;",
+        "#[cfg(test)] #[allow(dead_code)]",
+        "mod paired_tests;",
         "#[cfg(test)]",
         "mod exact_tests;",
     ]
@@ -21283,14 +21285,19 @@ fn rb108_mod_census_other_cfg_forms_count_as_production() {
             "attr_tests".to_string(),
             "not_tests".to_string(),
             "multiline_tests".to_string(),
+            "paired_tests".to_string(),
         ],
         "[rb108/other-cfg-forms] m22_declared_mod_names_in returned {got:?}; \
          only the EXACT squashed attribute `#[cfg(test)]` may exempt a mod — \
          `cfg(any(test,..))`, `cfg(all(test))`, `cfg_attr(test,..)`, \
          `cfg(not(test))` and a genuinely multi-line `#[cfg(` / `test` / `)]` \
          are all OTHER cfg forms and must count as production (fail toward \
-         coverage, per the plan's Known limitation). exact_tests is the \
-         control and correctly absent from this list."
+         coverage, per the plan's Known limitation). paired_tests carries \
+         TWO attributes rustfmt-fused onto one line — its squashed line is \
+         `#[cfg(test)]#[allow(dead_code)]`, not EXACTLY `#[cfg(test)]`, so a \
+         `contains(\"cfg(test)\")` predicate would wrongly exempt it while the \
+         exact-match rule correctly counts it as production. exact_tests is \
+         the control and correctly absent from this list."
     );
 }
 
@@ -21321,6 +21328,11 @@ fn rb108_mod_census_blanking_never_merges_lines() {
         "mod str_phantom;",
         "end\";",
         "mod after_string;",
+        "fn lt<'a>(s: &'a str) -> &'a str { s }",
+        "#[cfg(test)]",
+        "#[path = \"lt_tests.rs\"]",
+        "mod lt_tests;",
+        "mod after_lifetime;",
     ]
     .join("\n");
 
@@ -21331,6 +21343,7 @@ fn rb108_mod_census_blanking_never_merges_lines() {
             "prod_mod".to_string(),
             "prod2".to_string(),
             "after_string".to_string(),
+            "after_lifetime".to_string(),
         ],
         "[rb108/blanking-never-merges] m22_declared_mod_names_in returned \
          {got:?}. prod_mod: the `#[cfg(test)]` two lines up belongs to \
@@ -21352,6 +21365,11 @@ fn rb108_mod_census_blanking_never_merges_lines() {
          raw_phantom and str_phantom must both stay invisible (a raw string \
          and a multi-line string literal), and after_string — the mod \
          declared on its own line right after that multi-line string closes \
-         — must be RETURNED."
+         — must be RETURNED. lt: `fn lt<'a>(s: &'a str) -> &'a str {{ s }}` \
+         carries THREE lifetime quotes on one line, none of which may be \
+         misread as opening a char literal (which would swallow real code \
+         and corrupt the rest of the scan) — lt_tests stays exempt under its \
+         own `#[cfg(test)]`, and after_lifetime, declared right after it, \
+         must be RETURNED."
     );
 }
