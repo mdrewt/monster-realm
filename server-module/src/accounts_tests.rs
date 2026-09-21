@@ -21001,3 +21001,187 @@ fn rb83_plan_declines_at_cancel_truth_table() {
          `[rb83/sweep-before-write]`. Judged before: {before:?}. Judged after: {after:?}"
     );
 }
+
+// ===========================================================================
+// rb-108 (R-rb-85-MODCENSUS, ADR-0266) — `m22_declared_mod_names_in` must
+// exempt a declared `mod` from the M22 census iff the contiguous attribute
+// run directly above it carries `#[cfg(test)]` EXACTLY, never by matching the
+// mod NAME's `tests` suffix. These three tests pin the RETURN VALUE of that
+// pure seam only; they do not touch the census's per-source or crate-wide
+// callers.
+// ===========================================================================
+
+/// [rb108/exempt-by-cfg] The exemption keys on the contiguous `#[cfg(test)]`
+/// attribute run directly above a `mod`, never on whether its NAME ends in
+/// `tests`. Criterion: rb-108 plan Rule + Edge classes.
+#[test]
+fn rb108_mod_census_exempts_by_cfg_test_not_by_name() {
+    let src = [
+        "#[path = \"reach_privacy_tests.rs\"]",
+        "pub(crate) mod reach_privacy_tests;",
+        "#[cfg(test)]",
+        "#[path = \"x_tests.rs\"]",
+        "mod x_tests;",
+        "#[cfg(test)]",
+        "#[path = \"economy_tests.rs\"]",
+        "#[allow(unused_imports)]",
+        "mod economy_tests;",
+        "#[cfg(test)]",
+        "#[path = \"bench_support.rs\"]",
+        "mod bench_support;",
+        "mod inventory;",
+        "pub mod exported;",
+        "mod guards; // trailing comment",
+        "#[cfg(test)]",
+        "",
+        "mod blank_gap_tests;",
+        "#[cfg(test)]",
+        "use foo;",
+        "mod bar;",
+        "// #[cfg(test)]",
+        "mod commented_gate_tests;",
+        "#[cfg( test )]",
+        "mod ws1_tests;",
+        "#[ cfg(test) ]",
+        "mod ws2_tests;",
+        "#[cfg(test)] // note",
+        "mod ws3_tests;",
+        "// mod ghost;",
+        "let s = \"mod phantom;\";",
+        "mod inline { }",
+    ]
+    .join("\n");
+
+    let got = m22_declared_mod_names_in(&src);
+    assert_eq!(
+        got,
+        vec![
+            "reach_privacy_tests".to_string(),
+            "inventory".to_string(),
+            "exported".to_string(),
+            "guards".to_string(),
+            "bar".to_string(),
+            "commented_gate_tests".to_string(),
+        ],
+        "[rb108/exempt-by-cfg] m22_declared_mod_names_in returned {got:?}; the \
+         exemption must key on the contiguous #[cfg(test)] attribute directly \
+         above a mod, never on whether its NAME ends in `tests`. \
+         reach_privacy_tests carries a #[path] cheat with NO cfg and must be \
+         RETURNED (the measured cheat); bench_support IS #[cfg(test)]-gated \
+         but its name lacks the `tests` suffix and must still be DROPPED (the \
+         second RED direction — the old suffix rule wrongly keeps it); \
+         commented_gate_tests sits under a commented-out `// #[cfg(test)]` \
+         and must be RETURNED; bar sits under `#[cfg(test)]` / `use foo;` \
+         (the attribute belongs to the `use`, not the mod) and must be \
+         RETURNED; the three whitespace variants of `#[cfg(test)]` (with \
+         inner spaces, outer spaces, and a trailing `// note`) must all still \
+         exempt their mods."
+    );
+}
+
+/// [rb108/other-cfg-forms] Every OTHER cfg form — `cfg(any(test,..))`,
+/// `cfg(all(test))`, `cfg_attr(test,..)`, `cfg(not(test))`, and a genuinely
+/// multi-line `#[cfg(\n test\n)]` — counts as PRODUCTION (mod returned); only
+/// the exact single-line `#[cfg(test)]` exempts. Criterion: rb-108 plan Rule
+/// ("Any other cfg form ... -> production") + Known limitation.
+#[test]
+fn rb108_mod_census_other_cfg_forms_count_as_production() {
+    let src = [
+        "#[cfg(any(test, feature = \"dev\"))]",
+        "mod any_tests;",
+        "#[cfg(all(test))]",
+        "mod all_tests;",
+        "#[cfg_attr(test, path = \"z.rs\")]",
+        "mod attr_tests;",
+        "#[cfg(not(test))]",
+        "mod not_tests;",
+        "#[cfg(",
+        "    test",
+        ")]",
+        "mod multiline_tests;",
+        "#[cfg(test)]",
+        "mod exact_tests;",
+    ]
+    .join("\n");
+
+    let got = m22_declared_mod_names_in(&src);
+    assert_eq!(
+        got,
+        vec![
+            "any_tests".to_string(),
+            "all_tests".to_string(),
+            "attr_tests".to_string(),
+            "not_tests".to_string(),
+            "multiline_tests".to_string(),
+        ],
+        "[rb108/other-cfg-forms] m22_declared_mod_names_in returned {got:?}; \
+         only the EXACT squashed attribute `#[cfg(test)]` may exempt a mod — \
+         `cfg(any(test,..))`, `cfg(all(test))`, `cfg_attr(test,..)`, \
+         `cfg(not(test))` and a genuinely multi-line `#[cfg(` / `test` / `)]` \
+         are all OTHER cfg forms and must count as production (fail toward \
+         coverage, per the plan's Known limitation). exact_tests is the \
+         control and correctly absent from this list."
+    );
+}
+
+/// [rb108/blanking-never-merges] `m22_blank_for_mod_scan` must never let a
+/// stray quote inside a `//` comment, a nested `/* */` block comment, a char
+/// literal, or a multi-line string swallow a NEWLINE and glue an unrelated
+/// `#[cfg(test)]` onto a later production `mod` (or hide a later mod's own
+/// declaration, or wrongly swallow a REAL `#[cfg(test)]` as string content).
+/// Criterion: rb-108 plan REV2 red-team #1/#2 + Rule ("NEWLINE PRESERVING
+/// blanker").
+#[test]
+fn rb108_mod_census_blanking_never_merges_lines() {
+    let src = [
+        "#[cfg(test)]",
+        "// stray: \"leftover",
+        "fn helper() {}",
+        "// note: done\" removing",
+        "mod prod_mod;",
+        "/* outer /* inner */",
+        "#[cfg(test)]",
+        "*/ mod prod2;",
+        "let c = '\"';",
+        "#[cfg(test)]",
+        "#[path = \"c_tests.rs\"]",
+        "mod c_tests;",
+        "let r = r#\"mod raw_phantom;\"#;",
+        "let m = \"line one",
+        "mod str_phantom;",
+        "end\";",
+        "mod after_string;",
+    ]
+    .join("\n");
+
+    let got = m22_declared_mod_names_in(&src);
+    assert_eq!(
+        got,
+        vec![
+            "prod_mod".to_string(),
+            "prod2".to_string(),
+            "after_string".to_string(),
+        ],
+        "[rb108/blanking-never-merges] m22_declared_mod_names_in returned \
+         {got:?}. prod_mod: the `#[cfg(test)]` two lines up belongs to \
+         `fn helper() {{}}`, which stops the upward walk, so prod_mod must be \
+         RETURNED even though a stray `\"` in the comment above it could fool \
+         a strings-then-comments (not per-line, newline-eating) pipeline into \
+         gluing that attribute onto this mod instead. prod2: the OUTER close \
+         of the nested block comment shares its line with `mod prod2;` — a \
+         nesting-aware blanker keeps the whole span (including the `#[cfg(\
+         test)]` line inside it) a comment until that shared-line `*/`, \
+         leaving only ` mod prod2;` live, so prod2 must be RETURNED; a \
+         first-`*/`-closes stripper closes early after `inner */`, leaves the \
+         `#[cfg(test)]` line spuriously live, and leaves `*/ mod prod2;` as a \
+         line that does NOT start with `mod ` — hiding prod2 from the census \
+         entirely. c_tests: the char literal `'\"'` must never \
+         be misread as opening a real string, or the real `#[cfg(test)]` two \
+         lines below it would be swallowed as string content instead of read \
+         as its own attribute — c_tests must stay exempt (NOT returned). \
+         raw_phantom and str_phantom must both stay invisible (a raw string \
+         and a multi-line string literal), and after_string — the mod \
+         declared on its own line right after that multi-line string closes \
+         — must be RETURNED."
+    );
+}
