@@ -7494,9 +7494,9 @@ fn rb40p_purge_returns_the_collected_count() {
 //      a reaper tick.
 //   E3 WHEN a sender other than the database identity invokes the reaper THE
 //      SYSTEM SHALL reject before any delete. SOURCE-STRUCTURE ONLY, and it
-//      says so: native_host_tests.rs leaves the table scan, all four writes and
-//      the identity syscall unmodelled, so a scheduled reducer cannot be
-//      executed off-instance and this criterion has no behavioural instrument.
+//      says so: native_host_tests.rs leaves the table scan, three of the writes
+//      and the identity syscall unmodelled (the index-point delete is real since
+//      rb-109), so a scheduled reducer still cannot run here — no instrument.
 //   E4 WHEN request_data_export writes chunks THE SYSTEM SHALL leave exactly
 //      one armed reaper schedule row, as its last statement, and a publish must
 //      repair a missing one.
@@ -10179,8 +10179,8 @@ fn rb65p_export_fields_is_pure() {
 // matters and a direct test would pin a helper nobody is required to keep.
 //
 // `request_data_export` itself is not natively executable (`native_host_tests.rs`
-// models no datastore write), so there is no behavioural proof of the emission —
-// an honest limit recorded in ADR-0243, not a gap this arm closes.
+// models no INSERT, and the reducer reaches the row-count syscall), so there is
+// no behavioural proof of the emission — an honest limit (ADR-0243), not a gap.
 // ===========================================================================
 
 /// A deterministic fixture identity. This module owns no `use super::*`, so the
@@ -11570,12 +11570,12 @@ fn rb67p_adr0220_citation_oracle_control() {
 // re-derives). Everything ctx-bound is a SOURCE-STRUCTURE pin over PRIVACY_RS,
 // RB85_SCHEMA_RS and RB85_MARSHAL_RS through this module's three-stage strip
 // pipeline, and says so. The behavioural execution proof over an oversized
-// population is DEFERRED (ledger X9 -> backlog):
-// `datastore_index_scan_range_bsatn` is undefined in native_host_tests.rs, so a
-// Rust test that CALLED the helper would fail the whole lib-test binary at LINK
-// time — which is why T7 bans naming it here at all, and why the helper ships as
-// `(ctx, now_ms) -> usize` so the deferred slice can inject its instant below the
-// guard.
+// population was DEFERRED here (ledger X9) and is now the rb109_ block at the end
+// of this file: until rb-109 `datastore_index_scan_range_bsatn` was undefined in
+// native_host_tests.rs, so a Rust test that CALLED the helper failed the whole
+// lib-test binary at LINK time — which is why T7 banned naming it here, and why
+// the helper shipped as `(ctx, now_ms) -> usize` so that slice could inject its
+// instant below the guard (T7 now pins the ONE call site, `rb109_tick`).
 //
 // THE BAND-KEYED FAMILY, MEASURED THREE TIMES, AND WHAT CLOSES IT. Every clock
 // this slice compares is a wall-clock millisecond, and every behavioural
@@ -11777,7 +11777,7 @@ fn rb85_nd_take() -> String {
 /// The flat source spelling is 85 columns since rb-87 (76 before it), still far
 /// under max_width, so rustfmt has exactly one canonical form for it: NO
 /// trailing-comma twin exists and none is accepted. `now_ms` is a TRUST INPUT —
-/// the caller owns the clock — which is what lets the deferred X9 native test
+/// the caller owns the clock — which is what lets the rb-109 native tests
 /// inject an instant below the guard.
 ///
 /// RE-FROZEN BY rb-87 (ADR-0238 amendment; closes R-rb-48-OBS): the return type
@@ -12759,7 +12759,7 @@ fn rb85_src_tree() -> Vec<(String, String)> {
 
 /// Recursive walk backing `rb85_src_tree`. `_tests.rs` files are INCLUDED (the
 /// ratchet is about who may reach the table, and a test module reaching it
-/// off-instance is exactly the link failure the deferred X9 gate records).
+/// off-instance was the link failure the X9 gate recorded until rb-109 closed it).
 ///
 /// SYMLINKS ARE SKIPPED (reviewer NIT): a link is followed by `is_dir`, so a loop
 /// back to an ancestor would recurse forever and a link to a file already in the
@@ -12932,7 +12932,7 @@ proptest! {
     /// fns. It does NOT prove the helper passes the cutoff to the range (T6),
     /// that the range is inclusive in the SOURCE (T6), or that a row the range
     /// yields is actually deleted — the execution proof over a real datastore
-    /// is deferred (ledger X9).
+    /// is the rb109_ block at the end of this file (ledger X9, closed).
     #[test]
     fn rb85_cutoff_range_matches_the_seam_expired_set(
         now in 0i64..=(1i64 << 53),
@@ -13374,7 +13374,7 @@ fn rb85_export_bundle_created_at_ms_carries_the_btree_index() {
 /// Kills: M17, a `pub` or `pub(crate)` helper; a second definition (including a
 /// cfg twin, which would make every body-scoped clause read whichever one the
 /// extractor reaches first); a third parameter — the helper's two arguments ARE
-/// its contract, since the deferred X9 native test injects the second one; the
+/// its contract, since the rb109_ native tests inject the second one; the
 /// `-> ExportReapTick` record dropped or narrowed back to a bare count, which
 /// would strand the consumer that ships TODAY — the reducer above it renders the
 /// record through `reap_fields` and publishes it as its terminal observation
@@ -13524,7 +13524,7 @@ fn rb85_new_seams_declared_once_private_with_frozen_signatures() {
 /// HONEST LIMITS: an equality pin reports only that something moved — the
 /// attributable clauses live in T6, which is why both exist. It is a SOURCE
 /// pin: it cannot prove the host executes a range scan rather than a table
-/// scan (deferred X9), and it is blind to an import alias re-pointing a name it
+/// scan (the rb109_ block does), and it is blind to an import alias re-pointing a name it
 /// spells (closed by `m22s4_now_bound_once`'s import-identity clause).
 #[test]
 fn rb85_helper_body_exact() {
@@ -14387,27 +14387,46 @@ fn rb85_reaper_reads_a_bounded_range_and_never_sweeps() {
     }
 }
 
-/// T7 (plan §2 R8; ledger X1, X9): the bounded-read helper is named exactly
-/// twice in privacy.rs and NEVER in this file.
+/// T7 (plan §2 R8; ledger X1, and rb-109 X4): the bounded-read helper is named
+/// exactly twice in privacy.rs and EXACTLY ONCE in this file.
 ///
-/// This is the anti-pattern gate for the whole slice, and it is not stylistic.
-/// `native_host_tests.rs` models point scans and iterators only:
-/// `datastore_index_scan_range_bsatn` is UNDEFINED there, and
-/// `ctx.database_identity()` is unstubbed — so a Rust test that CALLED this
-/// helper would not fail as a red test, it would fail the WHOLE lib-test binary
-/// at LINK time (the measured `identity` precedent). The ban is what keeps the
-/// suite runnable.
-///
-/// Kills: M18, a test that calls the helper; a second call site anywhere in
-/// privacy.rs, which would mean a reaper tick that is not the scheduled one.
-///
-/// WHEN THIS CLAUSE MAY BE REVISED, and only then: revise the second count to
-/// `== 1` and name the test in the same diff that teaches
-/// `server-module/src/native_host_tests.rs` to model
+/// REVISED BY rb-109 (dated ADR-0238 + ADR-0222 amendments; closes the DEFERRED
+/// gate X9) — and this is the ONE revision this test's own doc pre-authorised
+/// before rb-109, landing in exactly the diff that doc named (gate X9 in
+/// gates/rb-85.gates.md carried the DEFER line, and it named this test).
+/// Any other reason to relax the counts below is the reason they exist.
+/// `native_host_tests.rs` now models
 /// `datastore_index_scan_range_bsatn` over the row store in ascending key order
-/// (plus the delete-by-index-scan-point syscall). That is the DEFERRED gate X9
-/// in gates/rb-85.gates.md, whose DEFER line names this test by name. Any other
-/// reason to relax it is the reason the ban exists.
+/// (an explicit bound-tag parse on each side, a DECODED-value comparator, a
+/// stable sort) together with a real index-point delete, so the shipped helper
+/// can be EXECUTED here over real rows. What is still unmodelled is the metadata
+/// row-count syscall and `ctx.database_identity()`, so the scheduled REDUCER
+/// around this helper remains a LINK failure of the whole lib-test binary rather
+/// than a red test — no test in this crate may name IT, and none does.
+///
+/// ONE call site, and it is `rb109_tick`, which every rb-109 test goes through.
+/// A second one in this file would be a second, unreviewed trigger for a delete
+/// that takes a WHOLE creation stamp at a time — every chunk committed in that
+/// millisecond, including rows the bounded window never read and with no owner
+/// in sight.
+///
+/// TWO NEEDLES, and the second is not book-keeping. The paren-bearing needle is
+/// blind to a fn-ITEM binding: binding the helper to a local and calling it
+/// through that local puts no parenthesis after the name at the binding site, so
+/// a second tick could be driven from this file with the first count unmoved.
+/// The paren-LESS census pins the identifier itself. It is the same measured
+/// escape family the accessor ratchet's paren-less needle closes.
+///
+/// HONEST LIMIT, stated rather than implied: a TEXT COUNT proves only that the
+/// helper is NAMED once. It proves nothing about whether that call runs, or what
+/// it does when it does — the seven behavioural `rb109_` oracles at the end of
+/// this file own that (the eighth is the roster census that keeps them all
+/// declared), and gate E1 is their green run.
+///
+/// Kills: a second call site anywhere in privacy.rs, which would mean a reaper
+/// tick that is not the scheduled one; a second call site in this file, spelled
+/// with or without its parenthesis; the rb-109 execution proof deleted, which
+/// takes the count back to ZERO.
 #[test]
 fn rb85_helper_is_never_named_outside_privacy_rs() {
     let named = rb85_nd_helper_named();
@@ -14426,16 +14445,32 @@ fn rb85_helper_is_never_named_outside_privacy_rs() {
          trigger is the guarded scheduled tick."
     );
 
-    let tests = rb22p_count(&stripped_for_scan(PRIVACY_TESTS_RS), &named);
+    let squashed_tests = stripped_for_scan(PRIVACY_TESTS_RS);
+    let tests = rb22p_count(&squashed_tests, &named);
     assert_eq!(
-        tests, 0,
-        "[rb85/helper-name-tests]: privacy_tests.rs names `{named}` {tests} time(s) in code; it \
-         must name it ZERO times. A Rust test that calls this helper does not fail as a red test: \
-         the native host does not define the range-scan syscall and leaves the database identity \
-         unstubbed, so the call fails the WHOLE lib-test binary at link time and every other test \
-         in this crate disappears with it. Revise this clause to == 1 and name the test ONLY when \
-         native_host_tests.rs models datastore_index_scan_range_bsatn — the deferred gate X9, \
-         whose DEFER line names this test."
+        tests, 1,
+        "[rb85/helper-name-tests]: privacy_tests.rs names `{named}` {tests} time(s) in code; \
+         since rb-109 it must name it EXACTLY once — the call inside `rb109_tick`, which every \
+         rb109_ test goes through. ZERO is the pre-rb-109 state and now means the execution proof \
+         for the bounded read has been deleted: back then the range-scan syscall was undefined in \
+         the native host, so a call from here failed the WHOLE lib-test binary at link time and \
+         every other test in this crate disappeared with it. TWO or more is a second, unreviewed \
+         trigger for a delete that takes a WHOLE creation stamp at a time — every chunk committed \
+         in that millisecond, including rows the bounded window never read."
+    );
+
+    let bare = concat!("reap_expired_export", "_bundles");
+    let bare_named = rb22p_count(&squashed_tests, bare);
+    assert_eq!(
+        bare_named, 1,
+        "[rb85/helper-name-tests]: privacy_tests.rs names the helper IDENTIFIER `{bare}` \
+         {bare_named} time(s) WITHOUT requiring a call parenthesis; it must name it exactly once, \
+         and it must be the same single occurrence the clause above counts. The paren-bearing \
+         needle is BLIND to a fn-ITEM binding — bind the helper to a local and call it through \
+         that local, and the name carries no parenthesis at the binding site at all — so a second \
+         tick could be driven from this file with the count above unmoved. Neither count proves \
+         EXECUTION in either direction: what proves the tick behaves are the seven behavioural \
+         rb109_ oracles at the end of this file, over a seeded population in the native host."
     );
 }
 
@@ -15285,7 +15320,7 @@ fn rb86_window(table: &[(u64, i64, u8)], now: i64, ttl: i64, cap: usize) -> Vec<
 ///
 /// `reverse_window` hands the seam the same rows in the opposite order. The
 /// btree's ascending yield is an expectation rather than an SDK contract (rb-85
-/// says so, and the execution proof is the deferred gate X9), so the design is
+/// says so; rb-109 executes it against a MODEL of that order), so the design is
 /// only honest if the plan does not depend on it.
 fn rb86_tick(
     table: &[(u64, i64, u8)],
@@ -15961,7 +15996,7 @@ proptest! {
     /// HONEST LIMIT: this is an arithmetic relationship between two pure fns. It
     /// does not prove the helper hands the seam its window (T7, and the revised
     /// helper body pin), nor that the datastore deletes what the plan names —
-    /// the execution proof over a real table is deferred (ledger X9).
+    /// the execution proof over seeded rows is the rb109_ block (ledger X9, closed).
     #[test]
     fn rb86_reap_bundle_plan_agrees_with_the_shipped_expiry_seam(
         stamps in proptest::collection::vec(
@@ -18823,8 +18858,8 @@ fn rb87_test_roster_is_closed() {
 // manifest walk against this request's EXACT row count.
 //
 // WHY THE SEAMS ARE PURE, AND WHY THAT IS A CONSTRAINT RATHER THAN A STYLE
-// CHOICE. The native test host (`native_host_tests.rs`) models exactly ten
-// syscalls and the row-count one is NOT among them, so after rb-107 the export
+// CHOICE. The native test host (`native_host_tests.rs`) models eleven syscalls
+// (since rb-109) and the row-count one is NOT among them, so after rb-107 the export
 // reducer is LINK-fatal: a test that reached it would fail the link of the whole
 // lib-test binary rather than red one test, which reads like a toolchain problem
 // instead of a finding. Nothing in this block therefore names the reducer as a
@@ -20246,7 +20281,7 @@ fn rb107_cap_selection_is_tiered_by_account() {
 /// predicate does not red one clause — it makes every call in
 /// `rb107_admission_is_exact_at_both_caps_and_saturates` a LINK failure of the
 /// whole `monster-realm-module` lib-test binary, because the native host models
-/// ten syscalls and the row-count one is not among them. A link error has no
+/// eleven syscalls and the row-count one is not among them. A link error has no
 /// test name and no clause label attached to it, so the purity clause has to be
 /// the thing that names the reason, and it has to run before anything that
 /// would merely report a text difference.
@@ -20318,7 +20353,7 @@ fn rb107_admission_seams_are_pure_and_frozen() {
             assert!(
                 !span.contains(token),
                 "[rb107/admit-no-ctx]: the admission predicate's {where_} names `{token}`. The \
-                 predicate MUST stay scalar-in, bool-out. The native test host defines exactly ten \
+                 predicate MUST stay scalar-in, bool-out. The native test host defines eleven \
                  syscall symbols and the metadata row-count one is NOT among them, so a context \
                  here does not red one clause — it fails the LINK of the whole lib-test binary, \
                  and every value-oracle row in the admission test disappears behind an undefined \
@@ -21465,6 +21500,1697 @@ fn rb107_test_roster_is_closed() {
              inside it and contributes NOTHING, because this measurement is taken after comments \
              and string literals have been blanked — so the number is the test's own CODE and \
              nothing else."
+        );
+    }
+}
+
+// ===========================================================================
+// rb-109 (dated ADR-0238 + ADR-0222 amendments; closes residual R-rb-85-X9) —
+// THE EXECUTION PROOF FOR THE BOUNDED TTL READ, RUN AGAINST THE NATIVE HOST.
+//
+// EARS E1 (gates/rb-109.gates.md): WHEN an oversized synthetic export_bundle
+// population (many owners x at least seventeen chunks x large payload_json) is
+// seeded into the in-memory native host and one reaper tick executes THE SYSTEM
+// SHALL complete without abort, materialise no more than
+// EXPORT_REAP_MAX_DELETE_PER_TICK rows, and delete exactly the expired ones.
+//
+// WHAT CHANGED, AND WHY THIS BLOCK CAN EXIST AT ALL. Every rb-85, rb-86 and
+// rb-87 clause about this helper is a SOURCE pin, because the range-scan syscall
+// was undefined in native_host_tests.rs: a Rust test that called the helper did
+// not red, it failed the LINK of the whole lib-test binary. rb-109 models that
+// syscall and the index-point delete, so the SHIPPED helper now runs over REAL
+// rows here. The eight tests below are VALUE oracles over that run — counts the
+// tick reports and the exact (owner, stamp, chunk id) set the store is left
+// holding — and they are the first behavioural evidence this reaper has ever
+// had. The scheduled REDUCER around the helper is still unreachable
+// (ctx.database_identity() is unstubbed, and the metadata row-count syscall the
+// rb-107 gates reach is not modelled), so nothing here names it.
+//
+// THE HOST IS A MODEL, AND SAYS SO. Ascending yield in key order is an
+// expectation about a btree-backed datastore, not an observation of one
+// (residual R-rb-109-ORDERMODEL). What the tests below prove is that the
+// MODULE's arithmetic — the read cap, the stamp cap, whole-bundle deletes and
+// the tail beyond the window — is right against a host that keeps that
+// contract, and that the module does not silently depend on anything else: test
+// 6 pins the host model itself against every bound kind, negative keys and a
+// same-stamp tie, so a host that quietly stopped sorting reds there as well as
+// in the survivor sets.
+//
+// ONE CALL SITE. `rb109_tick` is the only place in this file that names the
+// private helper, which is what lets the pre-authorised revision of
+// `rb85_helper_is_never_named_outside_privacy_rs` pin the count at exactly one
+// (paren-bearing and paren-less alike).
+//
+// THE HOST LOCK IS NOT REENTRANT. A `ctx.db` range iterator that is still alive
+// holds no lock between syscalls, but the design rule (ADR-0222 amendment, D9)
+// is that no method that reads or moves the STORE — seed, remove, rows — may be
+// called while one is in scope: the iterator was handed its rows when it opened.
+// `open_iters` reads the iterator COUNT, not the store, and is the one fixture
+// call a test may make while a scan is live — that is how the two-iterator test
+// proves the fixture can see an OPEN iterator, not only an absent one. Every
+// other test COLLECTS first and asserts afterwards. A range spelled with both
+// bounds unbounded ABORTS the process by design (it is the banned full sweep
+// wearing a range), so every host-side oracle here spells an explicit low..=high
+// covering its own seeded stamps.
+//
+// DISCLOSED LIMITS, measured and not closed here. (a) A range-argued delete in
+// place of the point delete (`delete(..=stamp)`, the cross-bundle wipe privacy.rs
+// names) is INDISTINGUISHABLE to every value oracle below: the tick issues its
+// deletes oldest-first and every stamp below a planned one is itself planned, so
+// the argument pin in rb85_helper_body_exact is what owns that shape. (b) For the
+// same reason a point delete whose relation is at-or-below rather than equal
+// reaps the same rows here. (c) `read` is the module's OWN count of what it
+// decoded; what makes it credible is the host-unbounded clause (the scan offers
+// 340) beside the frozen body pin, not the count alone. (d) A cfg attribute above
+// a test attribute disables the test while every text census stays green; only
+// the ledger's filtered run count (E1) and the suite total (X2) see that.
+//
+// SCAN HYGIENE (rb22p_scan_hygiene scans THIS FILE): line comments only, no
+// block-comment delimiter, no raw-string prefix, no output or debug macro token,
+// no backslash before a double quote, and no double quote inside any comment in
+// this section. The table and column names handed to the fixture are assembled
+// from concat! fragments and are never spelled contiguously, so a raw-corpus
+// scanner that concatenates this file cannot mistake a fixture argument for a
+// live declaration. The deliberate exceptions are the LIVE ones: the call to
+// the private helper (`reap_expired_export` + `_bundles`) inside rb109_tick, the
+// three constants read by their real names, and the ctx.db chain the host-side
+// oracles take — a value oracle has to reach the real item.
+// ===========================================================================
+
+// The generated accessor TRAIT for the export chunk table, imported for the
+// host-side oracles alone: the accessor is a trait method on the database
+// handle, so without this import the direct reads in the criterion test, the
+// zero-tick positive control and the two host-model tests do not resolve.
+//
+// WHY THIS IS NOT A RATCHET BREAK. The crate-wide accessor ownership ratchet
+// walks every file under src/ and skips privacy_tests.rs by name, one clause
+// before it counts accessor calls, paths and brace-list imports — so this import
+// is outside what that census measures, and it is recorded here as the reviewed
+// event rather than discovered later in a diff. The narrow reason it is safe:
+// this file is cfg(test)-gated, so nothing here reaches production, and the
+// table it names is the one the owning module already owns. A trait is all that
+// is imported: the row type arrives through its own path and the generated table
+// HANDLE type, which is a constructible ZST and therefore the real bypass, is
+// never named in this file at all.
+use crate::schema::export_bundle;
+
+// --- the population fixtures and the ONE call site ---------------------------
+
+/// THE ONLY PLACE this file names the private bounded-read helper, and the
+/// reason the second clause of `rb85_helper_is_never_named_outside_privacy_rs`
+/// counts ONE since rb-109 rather than zero.
+///
+/// Returns the tick record as a bare tuple, so the private record type is never
+/// named here: `(read, planned, reaped)` — the rows the bounded window decoded,
+/// the creation stamps the bundle seam planned, and the datastore's own count of
+/// the rows the point deletes removed. The third can EXCEED the first: a stamp
+/// selected from inside the window carries its tail beyond the window's edge.
+fn rb109_tick(ctx: &spacetimedb::ReducerContext, now: i64) -> (usize, usize, usize) {
+    let tick = crate::privacy::reap_expired_export_bundles(ctx, now);
+    (tick.read, tick.planned, tick.reaped)
+}
+
+/// A distinct owner identity per seeded bundle.
+///
+/// The byte is never zero: the all-zero identity is the dummy sender the native
+/// host hands every context, so a fixture sharing it with the caller would make
+/// an owner-scoped defect invisible. The reaper is owner-BLIND by design — it
+/// selects on the creation stamp alone — which is exactly why the survivor
+/// oracles below carry the owner in the triple.
+fn rb109_owner(byte: u8) -> spacetimedb::Identity {
+    spacetimedb::Identity::from_byte_array([byte; 32])
+}
+
+/// `len` bytes of chunk payload filler.
+fn rb109_filler(len: usize) -> String {
+    "p".repeat(len)
+}
+
+/// The chunk id of chunk `k` of the bundle seeded at index `i`.
+///
+/// Globally unique across a population, and NEVER zero: zero is the auto_inc
+/// sentinel the real insert path writes, and this fixture seeds rows directly
+/// into the store, below the write-back the host does not model.
+fn rb109_chunk_id(i: usize, k: u32) -> u64 {
+    1 + 1000 * (i as u64) + u64::from(k)
+}
+
+/// One export chunk row.
+///
+/// `table_name` is empty and `request_id` is a placeholder cast of the stamp
+/// (the reducer writes a real table name and a positive request id; neither
+/// field is read by anything under test). The payload SIZE is, because it is
+/// what drives the host iterator to refill.
+fn rb109_row(
+    owner: u8,
+    stamp: i64,
+    chunk_id: u64,
+    index: u32,
+    total: u32,
+    payload: usize,
+) -> crate::schema::ExportBundle {
+    crate::schema::ExportBundle {
+        chunk_id,
+        owner_identity: rb109_owner(owner),
+        request_id: stamp as u64,
+        table_name: String::new(),
+        chunk_index: index,
+        total_chunks: total,
+        payload_json: rb109_filler(payload),
+        created_at_ms: stamp,
+    }
+}
+
+/// Register the export chunk table with the native host, keyed on the creation
+/// stamp — the single-column btree index the reaper reads and deletes through.
+///
+/// The two names are the only strings this block hands the host, and they are
+/// assembled from fragments for the reason the module header gives. The index
+/// name itself is DERIVED inside the fixture from these two, never passed in.
+fn rb109_table(
+    fx: &crate::native_host_tests::Fixture,
+) -> crate::native_host_tests::Handle<'_, crate::schema::ExportBundle, i64> {
+    fx.table_keyed(
+        concat!("export", "_bundle"),
+        concat!("created_at", "_ms"),
+        |r| r.created_at_ms,
+    )
+}
+
+/// Seed one whole population: every bundle in LIST order, `chunks` rows each, so
+/// the host's store order IS the list order and nothing sorts it on the way in.
+fn rb109_seed_population(
+    t: &crate::native_host_tests::Handle<'_, crate::schema::ExportBundle, i64>,
+    bundles: &[(u8, i64)],
+    chunks: u32,
+    payload: usize,
+) {
+    for (i, (owner, stamp)) in bundles.iter().enumerate() {
+        for k in 0..chunks {
+            let row = rb109_row(*owner, *stamp, rb109_chunk_id(i, k), k, chunks, payload);
+            t.seed(&row);
+        }
+    }
+}
+
+/// The INTERLEAVED bundle population — one `(owner byte, creation stamp)` entry
+/// per bundle, in the order it will be seeded.
+///
+/// THE INTERLEAVE IS LOAD-BEARING (rb-109 plan red team, F1). If the store order
+/// were ascending, a host that never sorted would hand the module a correct
+/// window by accident and every count below would pass over a broken read; if it
+/// were descending, the same is true of a host that sorted backwards. So the
+/// expired stamps alternate NEWEST/OLDEST and a live bundle is spliced in at
+/// every fourth slot, which makes neither direction a prefix of the sorted
+/// order. `rb109/seed-order` asserts that property from the LIVE store rather
+/// than trusting this construction.
+///
+/// Expired stamps are `cutoff - step*i`, so entry zero sits EXACTLY ON the
+/// cutoff (expired: the rule is at-or-below); live stamps are `cutoff + 1 +
+/// step*j`, so entry zero is the closest possible survivor.
+fn rb109_bundles(cutoff: i64, expired: usize, live: usize, step: i64) -> Vec<(u8, i64)> {
+    let mut queue: Vec<i64> = Vec::new();
+    let mut lo = 0usize;
+    let mut hi = expired;
+    while lo < hi {
+        queue.push(cutoff - step * lo as i64);
+        lo += 1;
+        if lo < hi {
+            hi -= 1;
+            queue.push(cutoff - step * hi as i64);
+        }
+    }
+    let live_stamps: Vec<i64> = (0..live).map(|j| cutoff + 1 + step * j as i64).collect();
+    let mut out: Vec<(u8, i64)> = Vec::new();
+    let mut ei = 0usize;
+    let mut li = 0usize;
+    for i in 0..(expired + live) {
+        let stamp = if (i % 4 == 0 && li < live_stamps.len()) || ei >= queue.len() {
+            li += 1;
+            live_stamps[li - 1]
+        } else {
+            ei += 1;
+            queue[ei - 1]
+        };
+        let owner = u8::try_from(i + 1).expect("rb109: a population fits in one owner byte");
+        out.push((owner, stamp));
+    }
+    out
+}
+
+/// The `(owner, stamp, chunk id)` triples the population SHOULD still hold once
+/// every bundle stamped strictly below `min_stamp` has been reaped WHOLE.
+///
+/// Sorted by `(stamp, chunk id)` — a total order here, because chunk ids are
+/// unique across a population — so the comparison is over SETS and not over the
+/// order the store happens to return. The owner rides along rather than being
+/// dropped: chunk ids are unique per population today, so it adds no
+/// discrimination now — it is what keeps a future id collision from hiding a
+/// wrong-OWNER delete behind equal counts.
+fn rb109_expected_triples(
+    bundles: &[(u8, i64)],
+    chunks: u32,
+    min_stamp: i64,
+) -> Vec<(spacetimedb::Identity, i64, u64)> {
+    let mut out: Vec<(spacetimedb::Identity, i64, u64)> = Vec::new();
+    for (i, (owner, stamp)) in bundles.iter().enumerate() {
+        if *stamp < min_stamp {
+            continue;
+        }
+        for k in 0..chunks {
+            out.push((rb109_owner(*owner), *stamp, rb109_chunk_id(i, k)));
+        }
+    }
+    out.sort_unstable_by_key(|(_, stamp, chunk)| (*stamp, *chunk));
+    out
+}
+
+/// The same triples READ BACK from the live host store, in the same order.
+fn rb109_observed_triples(
+    t: &crate::native_host_tests::Handle<'_, crate::schema::ExportBundle, i64>,
+) -> Vec<(spacetimedb::Identity, i64, u64)> {
+    let mut out: Vec<(spacetimedb::Identity, i64, u64)> = t
+        .rows()
+        .into_iter()
+        .map(|r| (r.owner_identity, r.created_at_ms, r.chunk_id))
+        .collect();
+    out.sort_unstable_by_key(|(_, stamp, chunk)| (*stamp, *chunk));
+    out
+}
+
+/// Every creation stamp in the host's STORE order — the order the rows were
+/// seeded in, never a sorted view.
+fn rb109_store_stamps(
+    t: &crate::native_host_tests::Handle<'_, crate::schema::ExportBundle, i64>,
+) -> Vec<i64> {
+    t.rows().into_iter().map(|r| r.created_at_ms).collect()
+}
+
+// ===========================================================================
+// THE EXECUTION PROOF — eight value oracles over the SHIPPED helper.
+// ===========================================================================
+
+/// E1 (ledger gates/rb-109.gates.md), THE CRITERION ITSELF: one tick over an
+/// oversized population completes without abort, READS at most the row cap,
+/// PLANS at most the stamp cap, and deletes the OLDEST expired bundles WHOLE —
+/// their tails beyond the read window included.
+///
+/// Twenty-six owners, seventeen chunks each (one per exportable table: the
+/// smallest bundle the export reducer can write), 8 KiB of payload per chunk.
+/// Twenty of the bundles are expired — entry zero sitting EXACTLY on the cutoff
+/// — and six are live, the first of them one millisecond above it.
+///
+/// THE ARITHMETIC, derived from the spec and not from the code: 340 expired
+/// rows are visible to the range, the read cap takes the 256 oldest of them
+/// (fifteen whole bundles plus one row of the sixteenth), the bundle seam plans
+/// the sixteen DISTINCT stamps that window touches, and each is deleted whole —
+/// 16 x 17 = 272 rows, sixteen MORE than were read, because the sixteenth
+/// stamp's tail lies past the window's edge. What is left is every live row and
+/// the four NEWEST expired bundles.
+///
+/// WHY THE SURVIVOR SET IS COMPARED AND NOT COUNTED. A host that yielded rows in
+/// seed order rather than ascending order leaves four DIFFERENT expired bundles
+/// — with this interleave, the four stamped cutoff-8000 down to cutoff-11000 —
+/// instead of the four newest: identical counts, disjoint sets, and every
+/// numeric clause in this test still green. The triple carries the owner so a
+/// future id collision could not hide a wrong-owner delete behind equal counts.
+///
+/// `read` is the MODULE's own count of what it decoded; what makes it credible is
+/// the host-unbounded clause (the scan offers 340) beside the frozen body pin.
+///
+/// Kills: M1 the rb-48 full-table sweep restored (the host has no table scan and
+/// aborts the process); M2 the read cap dropped (read 340); M4 the host's sort
+/// removed (the survivor set, and the seed-order clause that proves the fixture
+/// could see it); M10 a host that caps its own scan at 256 (the unbounded
+/// clause below reads 340 through the same index); a point delete that stopped
+/// at the window edge (reaped 256 rather than 272). Deliberately NOT killed
+/// here: M8, the stamp truncation dropped — this window holds exactly sixteen
+/// stamps, so planned is 16 either way; the stamp-cap test owns that mutant.
+#[test]
+fn rb109_oversized_tick_is_bounded_and_reaps_the_oldest_bundles_whole() {
+    let now: i64 = 1_760_000_000_000;
+    let cutoff = now - crate::privacy::EXPORT_BUNDLE_TTL_MS;
+    let bundles = rb109_bundles(cutoff, 20, 6, 1_000);
+
+    let fx = crate::native_host_tests::fixture();
+    let t = rb109_table(&fx);
+    let ctx = fx.ctx();
+    rb109_seed_population(&t, &bundles, 17, 8_192);
+
+    // --- rb109/seed-order: the store is NOT already in the sorted order ------
+    let store = rb109_store_stamps(&t);
+    assert_eq!(
+        store.len(),
+        442,
+        "[rb109/seed-order]: the host holds {} row(s); twenty-six bundles of seventeen chunks is \
+         442. Every clause below reads this population, so a fixture that seeded a different one \
+         would make all of them true about nothing.",
+        store.len()
+    );
+    let expired_in_store: Vec<i64> = store.iter().copied().filter(|s| *s <= cutoff).collect();
+    let mut head: Vec<i64> = expired_in_store[..256].to_vec();
+    head.sort_unstable();
+    let mut smallest: Vec<i64> = expired_in_store.clone();
+    smallest.sort_unstable();
+    smallest.truncate(256);
+    assert_ne!(
+        head, smallest,
+        "[rb109/seed-order]: the first 256 EXPIRED stamps in STORE order are the same multiset as \
+         the 256 SMALLEST expired stamps, so this fixture cannot tell a host that sorts from one \
+         that simply hands back the rows in the order they were seeded — and the whole point of \
+         the survivor clause below is that it can. The live rows are filtered out first: they \
+         never enter the window, so their position in the store proves nothing. Re-interleave."
+    );
+
+    // --- rb109/host-unbounded: the host does not cap its OWN scan ------------
+    let oldest = *store
+        .iter()
+        .min()
+        .expect("rb109: the population is not empty");
+    let visible = ctx
+        .db
+        .export_bundle()
+        .created_at_ms()
+        .filter(oldest..=cutoff)
+        .count();
+    assert_eq!(
+        visible, 340,
+        "[rb109/host-unbounded]: the same btree range the reaper reads yields {visible} row(s) \
+         through the host; twenty expired bundles of seventeen chunks is 340. A host that \
+         truncated its own scan at the module's read cap would DISARM the cap clause below — the \
+         module could drop its own `take` and still report 256 — so the read bound has to be \
+         proved to be the MODULE's, over a scan that hands back more than it."
+    );
+
+    // --- ONE tick ------------------------------------------------------------
+    let (read, planned, reaped) = rb109_tick(&ctx, now);
+
+    assert_eq!(
+        read,
+        crate::privacy::EXPORT_REAP_MAX_DELETE_PER_TICK,
+        "[rb109/read-cap]: the tick decoded {read} row(s); the per-tick READ window is {}. With \
+         340 rows expired and visible, a tick that reads them all has no bound on the payload \
+         bytes it materialises under the global write lock, which is the cost this whole slice \
+         family exists to bound.",
+        crate::privacy::EXPORT_REAP_MAX_DELETE_PER_TICK
+    );
+    assert_eq!(
+        read, 256,
+        "[rb109/read-cap]: the shipped read cap is no longer 256 — this population was sized \
+         against it (340 visible rows, so the cap BINDS and the window straddles a bundle). \
+         Re-derive the numbers in this test from the spec before touching anything else."
+    );
+    assert_eq!(
+        planned,
+        crate::privacy::EXPORT_REAP_MAX_STAMPS_PER_TICK,
+        "[rb109/planned-cap]: the tick planned {planned} creation stamp(s); the per-tick WRITE \
+         bound is {}. The 256-row window in ascending stamp order holds fifteen whole bundles and \
+         one straddler, so sixteen DISTINCT stamps is both what the window touches and what the \
+         cap allows — a number ABOVE this is a write set nobody budgeted.",
+        crate::privacy::EXPORT_REAP_MAX_STAMPS_PER_TICK
+    );
+    assert_eq!(
+        planned, 16,
+        "[rb109/planned-cap]: the shipped stamp cap is no longer 16, which is the number this \
+         population was sized against. Re-derive from the spec."
+    );
+    assert_eq!(
+        reaped, 272,
+        "[rb109/reaped-whole]: the tick deleted {reaped} row(s); sixteen whole bundles of \
+         seventeen chunks is 272. A stamp is deleted WHOLE — every chunk committed in that \
+         millisecond, including the sixteen rows of the sixteenth bundle that the 256-row window \
+         never read. A tick that deleted only what it read leaves those rows behind and commits a \
+         bundle k-of-N, which is the partial-reap defect rb-86 closed."
+    );
+    assert!(
+        reaped > read,
+        "[rb109/reaped-whole]: the tick deleted {reaped} row(s) having read {read}. The two \
+         numbers being DIFFERENT is the observable consequence of whole-stamp deletes: the tail of \
+         the straddling bundle lies beyond the window's edge and goes with it. Equal counts mean \
+         the delete stopped at the window, however correct the totals look."
+    );
+
+    // --- rb109/survivors: exactly the live rows and the four NEWEST expired --
+    let observed = rb109_observed_triples(&t);
+    let expected = rb109_expected_triples(&bundles, 17, cutoff - 3_000);
+    assert_eq!(
+        expected.len(),
+        170,
+        "[rb109/survivors]: the ORACLE itself describes {} row(s); it must describe 170 — the 102 live rows plus the 68 rows of the four newest expired bundles. A wrong \
+         minimum-stamp literal turns this oracle into a different, still self-consistent claim.",
+        expected.len()
+    );
+    let missing: Vec<&(spacetimedb::Identity, i64, u64)> = expected
+        .iter()
+        .filter(|e| !observed.contains(e))
+        .take(3)
+        .collect();
+    let extra: Vec<&(spacetimedb::Identity, i64, u64)> = observed
+        .iter()
+        .filter(|o| !expected.contains(o))
+        .take(3)
+        .collect();
+    assert_eq!(
+        observed,
+        expected,
+        "[rb109/survivors]: the store holds {} row(s) and should hold {} — every one of the 102 \
+         live rows plus the 68 rows of the four NEWEST expired bundles. First rows wrongly GONE: \
+         {missing:?}. First rows wrongly STILL THERE: {extra:?}. A host that yielded rows in seed \
+         order instead of ascending key order leaves four DIFFERENT expired bundles — with this \
+         interleave, the four stamped cutoff-8000 down to cutoff-11000: the same 170 rows by \
+         count, a disjoint set by identity, and every number above unmoved.",
+        observed.len(),
+        expected.len()
+    );
+
+    // --- rb109/iters-closed: the unfinished scan is handed back --------------
+    let open = fx.open_iters();
+    assert_eq!(
+        open, 0,
+        "[rb109/iters-closed]: {open} host iterator(s) are still open after the tick. The module \
+         takes 256 rows from a scan of 340 and then DROPS it, so the iterator is abandoned \
+         unfinished and the bindings must close it; a leak here is a real datastore resource the \
+         hourly tick would strand once an hour, forever."
+    );
+}
+
+/// E1 (the `delete exactly the expired ones` half): one tick over a population
+/// that fits INSIDE both caps deletes every expired row and not one live row —
+/// including the bundle stamped EXACTLY on the cutoff.
+///
+/// Five expired bundles of seventeen chunks (85 rows, entry zero sitting on the
+/// cutoff itself) and three live ones (51 rows, the first one millisecond above
+/// it). Both caps are slack here on purpose: this test is about the BOUNDARY,
+/// not about the bounds, so every expired row is read, every stamp is planned
+/// and every expired row is deleted — `(85, 5, 85)`.
+///
+/// Kills: M3 the range narrowed to strictly-below the cutoff, which reports
+/// `(68, 4, 68)` and strands a bundle that the retention ceiling says must go —
+/// the cutoff is the NEWEST stamp a chunk may carry and still be expired; M6 a
+/// point delete that ignores its key (the live rows disappear); M5 a point
+/// delete that reports zero (reaped 0 while the rows are gone, or the rows still
+/// there); an off-by-one in the other direction, which takes the `cutoff + 1`
+/// bundle with it.
+#[test]
+fn rb109_tick_deletes_exactly_the_expired_set_including_the_cutoff_stamp() {
+    let now: i64 = 1_760_000_000_000;
+    let cutoff = now - crate::privacy::EXPORT_BUNDLE_TTL_MS;
+    let bundles = rb109_bundles(cutoff, 5, 3, 1_000);
+
+    let fx = crate::native_host_tests::fixture();
+    let t = rb109_table(&fx);
+    let ctx = fx.ctx();
+    rb109_seed_population(&t, &bundles, 17, 64);
+
+    let seeded = rb109_store_stamps(&t).len();
+    assert_eq!(
+        seeded, 136,
+        "[rb109/expired-exact]: the host holds {seeded} row(s); eight bundles of seventeen chunks \
+         is 136. The tuple below is sized against that population."
+    );
+    let at_cutoff = bundles.iter().filter(|(_, s)| *s == cutoff).count();
+    let just_above = bundles.iter().filter(|(_, s)| *s == cutoff + 1).count();
+    assert_eq!(
+        (at_cutoff, just_above),
+        (1usize, 1usize),
+        "[rb109/expired-exact]: the fixture must carry exactly one bundle ON the cutoff and one \
+         exactly one millisecond above it; it carries {at_cutoff} and {just_above}. Those two are \
+         the only bundles that separate an inclusive bound from an exclusive one, so without both \
+         this test is about nothing in particular."
+    );
+
+    let tick = rb109_tick(&ctx, now);
+    assert_eq!(
+        tick,
+        (85usize, 5, 85),
+        "[rb109/expired-exact]: the tick reported (read, planned, reaped) = {tick:?}; five expired \
+         bundles of seventeen chunks is (85, 5, 85). A range spelled strictly BELOW the cutoff \
+         reports (68, 4, 68) — it silently stops expiring the bundle that turned seven days old \
+         exactly on this tick, and the next tick has the same argument about it."
+    );
+
+    let observed = rb109_observed_triples(&t);
+    let expected = rb109_expected_triples(&bundles, 17, cutoff + 1);
+    assert_eq!(
+        expected.len(),
+        51,
+        "[rb109/cutoff-included]: the ORACLE itself describes {} row(s); it must describe 51 — the 51 rows of the three live bundles. A wrong \
+         minimum-stamp literal turns this oracle into a different, still self-consistent claim.",
+        expected.len()
+    );
+    let left_expired = observed.iter().filter(|(_, s, _)| *s <= cutoff).count();
+    assert_eq!(
+        left_expired, 0,
+        "[rb109/cutoff-included]: {left_expired} row(s) at or below the cutoff survived the tick. \
+         The cutoff is inclusive: a chunk whose age has REACHED the retention ceiling is expired, \
+         and one left behind is personal data held past the seven days the spec promises."
+    );
+    let boundary = observed.iter().filter(|(_, s, _)| *s == cutoff + 1).count();
+    assert_eq!(
+        boundary, 17,
+        "[rb109/cutoff-included]: the bundle stamped one millisecond ABOVE the cutoff has \
+         {boundary} of its seventeen chunks left. Deleting it is the opposite failure and the \
+         worse one: a live export destroyed under a caller who is still assembling it."
+    );
+    assert_eq!(
+        observed,
+        expected,
+        "[rb109/cutoff-included]: the store holds {} row(s) and should hold the 51 rows of the \
+         three live bundles, exactly. A point delete that ignored its key wipes the table; one \
+         keyed on a different COLUMN removes nothing (an eight-byte stamp point equals no owner \
+         or chunk-id key) and reds above. What no fixture here can separate is a delete whose \
+         relation is at-or-below rather than equal: the plan is oldest-first by construction.",
+        observed.len()
+    );
+}
+
+/// E1 (`complete without abort`, across ticks): repeated ticks DRAIN an
+/// oversized backlog down to the live set and then report a zero tick, every one
+/// of them inside both caps and leaking no iterator.
+///
+/// The same 442-row population as the criterion test. The drain is the property
+/// a per-tick bound has to buy: a cap that never finishes is a retention
+/// ceiling that is never enforced. Three ticks — `(256, 16, 272)`, then
+/// `(68, 4, 68)`, then `(0, 0, 0)` — and the sequence is pinned as a whole,
+/// because a tick that made NO progress would loop here forever and a tick that
+/// suddenly made all of it would mean the caps stopped binding.
+///
+/// The loop has a hard cap of ten iterations with its own labelled failure: a
+/// non-progressing tick must fail LOUDLY rather than hang a CI runner.
+///
+/// Kills: M5 a point delete that reports zero (the FIRST tuple, through the
+/// sequence clause — the loop stops on the first zero); a delete that reports a
+/// count it did not perform (the loop runs its ten iterations and the cap
+/// clause says so by name); a tick whose delete set is
+/// smaller than its plan (four ticks instead of three); any per-tick bound
+/// removed (the first tuple); an iterator leaked once per tick, which a
+/// single-tick test cannot distinguish from a fixture artefact.
+#[test]
+fn rb109_repeated_ticks_drain_to_the_live_set() {
+    let now: i64 = 1_760_000_000_000;
+    let cutoff = now - crate::privacy::EXPORT_BUNDLE_TTL_MS;
+    let bundles = rb109_bundles(cutoff, 20, 6, 1_000);
+
+    let fx = crate::native_host_tests::fixture();
+    let t = rb109_table(&fx);
+    let ctx = fx.ctx();
+    rb109_seed_population(&t, &bundles, 17, 8_192);
+
+    let mut ticks: Vec<(usize, usize, usize)> = Vec::new();
+    let mut drained = false;
+    for _ in 0..10 {
+        let tick = rb109_tick(&ctx, now);
+        ticks.push(tick);
+        let open = fx.open_iters();
+        assert_eq!(
+            open,
+            0,
+            "[rb109/drain-bounds]: tick {} left {open} host iterator(s) open. Once an hour, \
+             forever, is what an hourly reaper does with a leak.",
+            ticks.len()
+        );
+        assert!(
+            tick.0 <= crate::privacy::EXPORT_REAP_MAX_DELETE_PER_TICK
+                && tick.1 <= crate::privacy::EXPORT_REAP_MAX_STAMPS_PER_TICK,
+            "[rb109/drain-bounds]: tick {} reported {tick:?}; every tick must stay inside the \
+             read cap of {} rows and the write cap of {} stamps. The caps are per TICK, not per \
+             drain: a tick that widens its window because a backlog exists is exactly the \
+             unbounded transaction they exist to prevent.",
+            ticks.len(),
+            crate::privacy::EXPORT_REAP_MAX_DELETE_PER_TICK,
+            crate::privacy::EXPORT_REAP_MAX_STAMPS_PER_TICK
+        );
+        if tick.2 == 0 {
+            drained = true;
+            break;
+        }
+    }
+    assert!(
+        drained,
+        "[rb109/drain-cap]: ten consecutive ticks each still deleted rows from a 442-row \
+         population that three ticks must clear. The tick is not making progress — a delete that \
+         reports a count it did not perform, or a plan that keeps re-selecting rows it never \
+         removes — and a scheduled reducer in that state burns a transaction an hour forever \
+         while the store never shrinks. Ticks so far: {ticks:?}"
+    );
+
+    assert_eq!(
+        ticks,
+        [(256usize, 16usize, 272usize), (68, 4, 68), (0, 0, 0)],
+        "[rb109/drain-sequence]: the drain reported {ticks:?}; the spec's arithmetic gives \
+         (256, 16, 272) then (68, 4, 68) then (0, 0, 0). The first tick takes the sixteen oldest \
+         stamps whole, the second takes the four that are left — under both caps, so it reads and \
+         reaps the same 68 — and the third finds nothing expired. A sequence that is LONGER means \
+         a tick retired fewer rows than it read, which is the drain-rate inequality rb-107 sized \
+         the write-side admission cap against."
+    );
+
+    let observed = rb109_observed_triples(&t);
+    let expected = rb109_expected_triples(&bundles, 17, cutoff + 1);
+    assert_eq!(
+        expected.len(),
+        102,
+        "[rb109/drain-final]: the ORACLE itself describes {} row(s); it must describe 102 — the 102 rows of the six live bundles. A wrong \
+         minimum-stamp literal turns this oracle into a different, still self-consistent claim.",
+        expected.len()
+    );
+    assert_eq!(
+        observed,
+        expected,
+        "[rb109/drain-final]: after the drain the store holds {} row(s); it must hold exactly the \
+         102 rows of the six LIVE bundles. The reaper is allowed to be slow; it is never allowed \
+         to be hungry.",
+        observed.len()
+    );
+}
+
+/// E1 (the no-op direction): a tick over an EMPTY table and a tick over an
+/// all-live table both report `(0, 0, 0)` and change nothing.
+///
+/// A zero tick is the reaper's normal state — 167 of every 168 of them — so the
+/// interesting failure is a zero that means `read nothing` rather than `nothing
+/// to read`. The POSITIVE CONTROL is what separates the two: the same index
+/// range, read directly through the host, yields all 51 live rows, so `reaped 0`
+/// is attributed to the retention rule and not to a scan that found an empty
+/// table, an unregistered index or a mis-derived index name.
+///
+/// Kills: a host that resolves the index to no table at all (the control reads
+/// zero and this test reds, where every count clause in the slice would
+/// otherwise pass vacuously); a cutoff computed so far in the future that
+/// everything is expired (the tuple); a tick that deletes rows it did not plan.
+#[test]
+fn rb109_zero_expired_and_empty_tables_report_a_zero_tick() {
+    let now: i64 = 1_760_000_000_000;
+    let cutoff = now - crate::privacy::EXPORT_BUNDLE_TTL_MS;
+
+    let fx = crate::native_host_tests::fixture();
+    let t = rb109_table(&fx);
+    let ctx = fx.ctx();
+
+    let empty = rb109_tick(&ctx, now);
+    assert_eq!(
+        empty,
+        (0usize, 0, 0),
+        "[rb109/zero-tick]: a tick over an EMPTY table reported {empty:?}. Nothing read, nothing \
+         planned, nothing reaped is the only honest answer, and a non-zero `reaped` here is a \
+         delete issued against a plan that was never made."
+    );
+
+    let bundles = rb109_bundles(cutoff, 0, 3, 1_000);
+    rb109_seed_population(&t, &bundles, 17, 64);
+    let before = rb109_observed_triples(&t);
+    assert_eq!(
+        before.len(),
+        51,
+        "[rb109/zero-tick]: the all-live fixture holds {} row(s); three bundles of seventeen \
+         chunks is 51.",
+        before.len()
+    );
+
+    let live = rb109_tick(&ctx, now);
+    assert_eq!(
+        live,
+        (0usize, 0, 0),
+        "[rb109/zero-tick]: a tick over a table whose every row is LIVE reported {live:?}. The \
+         oldest row here is one millisecond younger than the cutoff, so the range must select \
+         nothing at all — a tick that reads rows it cannot act on pays the decode cost of the \
+         whole live store every hour."
+    );
+
+    let after = rb109_observed_triples(&t);
+    let expected = rb109_expected_triples(&bundles, 17, i64::MIN);
+    assert_eq!(
+        expected.len(),
+        51,
+        "[rb109/zero-survivors]: the ORACLE itself describes {} row(s); it must describe 51 — every one of the 51 all-live rows. A wrong \
+         minimum-stamp literal turns this oracle into a different, still self-consistent claim.",
+        expected.len()
+    );
+    assert_eq!(
+        after, before,
+        "[rb109/zero-survivors]: the zero tick CHANGED the store. A tick that reports no deletions \
+         and performs some is the worst shape this record can take: the observation line the \
+         reducer emits would say the reaper did nothing on the hour it destroyed a live export."
+    );
+    assert_eq!(
+        after,
+        expected,
+        "[rb109/zero-survivors]: the store holds {} row(s) and must hold all 51 seeded rows, \
+         unchanged and identical to the fixture. Compared against the FIXTURE rather than against \
+         the pre-tick read, so a store that was already wrong before the tick cannot satisfy this \
+         clause by staying wrong.",
+        after.len()
+    );
+
+    let readable = ctx
+        .db
+        .export_bundle()
+        .created_at_ms()
+        .filter((cutoff + 1)..=(cutoff + 2_001))
+        .count();
+    assert_eq!(
+        readable, 51,
+        "[rb109/zero-readable]: reading the live band straight through the host yields {readable} \
+         row(s); all 51 are in it. THIS IS THE POSITIVE CONTROL for every zero above: without it, \
+         a host that resolved this index to no table — a mis-derived index name, a registration \
+         that never happened — would report `(0, 0, 0)` for the most encouraging of wrong reasons, \
+         and so would every other count clause in this slice."
+    );
+}
+
+/// E1 (`no more than EXPORT_REAP_MAX_DELETE_PER_TICK`, the WRITE bound): when
+/// the read window holds MORE distinct stamps than the stamp cap allows, the cap
+/// BINDS — sixteen stamps are planned out of twenty available, and only those
+/// sixteen bundles are deleted.
+///
+/// THIS IS THE VALUE ORACLE FOR THE STAMP CAP, and the criterion test cannot be:
+/// there the window holds exactly sixteen stamps, so dropping the truncation
+/// entirely leaves every number in that test unmoved. Here the bundles are
+/// THIRTEEN chunks each, so the 256-row window covers nineteen whole bundles and
+/// nine rows of a twentieth — twenty distinct stamps — and the cap has to
+/// discard four of them.
+///
+/// Sixteen stamps of thirteen rows is 208 reaped from 256 read, which is the
+/// other side of the criterion test's inequality: `reaped` can exceed `read`
+/// when the window straddles a bundle, and it falls SHORT of it when the window
+/// holds more bundles than the write cap allows. Both are correct; only the
+/// pair proves the two bounds are independent.
+///
+/// This test is BLIND to a host that does not sort: the window holds all twenty
+/// stamps either way and the plan sorts them itself, so the survivor set here is
+/// identical under a seed-order host. T1 and T6 own that mutant.
+///
+/// Kills: M8 the stamp truncation dropped (planned 20, reaped 260 — the whole
+/// backlog retired in one transaction, which is the unbounded write the cap
+/// exists to prevent); a truncation applied BEFORE the distinct-ing (the first
+/// sixteen window rows are barely two bundles); a stamp cap read from the ROW
+/// cap constant (planned 20 again, since only twenty stamps exist).
+#[test]
+fn rb109_stamp_cap_binds_when_the_window_holds_more_than_sixteen_stamps() {
+    let now: i64 = 1_760_000_000_000;
+    let cutoff = now - crate::privacy::EXPORT_BUNDLE_TTL_MS;
+    let bundles = rb109_bundles(cutoff, 20, 2, 1_000);
+
+    let fx = crate::native_host_tests::fixture();
+    let t = rb109_table(&fx);
+    let ctx = fx.ctx();
+    rb109_seed_population(&t, &bundles, 13, 64);
+
+    let seeded = rb109_store_stamps(&t).len();
+    assert_eq!(
+        seeded, 286,
+        "[rb109/stamp-cap]: the host holds {seeded} row(s); twenty-two bundles of THIRTEEN chunks \
+         is 286, of which 260 are expired. The chunk count is what makes the window straddle a \
+         twentieth stamp, so a fixture with a different one proves something else."
+    );
+
+    let (read, planned, reaped) = rb109_tick(&ctx, now);
+    assert_eq!(
+        (read, planned),
+        (256usize, 16usize),
+        "[rb109/stamp-cap]: the tick read {read} row(s) and planned {planned} stamp(s); the \
+         256-row window over 260 expired rows covers nineteen whole thirteen-chunk bundles plus \
+         nine rows of a twentieth — TWENTY distinct stamps — and the write cap allows sixteen. \
+         `planned == 20` is the truncation dropped: every expired bundle in the store retired in \
+         one transaction."
+    );
+    assert_eq!(
+        reaped, 208,
+        "[rb109/stamp-cap-reaped]: the tick deleted {reaped} row(s); sixteen whole bundles of \
+         thirteen chunks is 208. Fewer rows reaped than READ is the correct shape here and the \
+         mirror image of the criterion test: there the window straddled one bundle and the tail \
+         pushed `reaped` above `read`; here the window holds more bundles than the write cap \
+         allows and four of them are left for the next tick. 260 means the cap did not bind."
+    );
+
+    let observed = rb109_observed_triples(&t);
+    let expected = rb109_expected_triples(&bundles, 13, cutoff - 3_000);
+    assert_eq!(
+        expected.len(),
+        78,
+        "[rb109/stamp-cap-survivors]: the ORACLE itself describes {} row(s); it must describe 78 — the 26 live rows plus the 52 rows of the four newest expired bundles. A wrong \
+         minimum-stamp literal turns this oracle into a different, still self-consistent claim.",
+        expected.len()
+    );
+    assert_eq!(
+        observed,
+        expected,
+        "[rb109/stamp-cap-survivors]: the store holds {} row(s) and must hold 78 — the 26 live \
+         rows plus the 52 rows of the four NEWEST expired bundles, whole. WHICH four survive is \
+         the fairness claim: the cap discards the youngest stamps in the window, so the oldest \
+         personal data always leaves first and no bundle is ever left part-deleted.",
+        observed.len()
+    );
+}
+
+/// THE HOST MODEL'S OWN CONTROL (ADR-0222 amendment): the modelled range scan
+/// honours every bound kind on each side, orders by DECODED value across
+/// negative keys, and keeps equal keys in seed order.
+///
+/// Everything above this test reasons about what the MODULE does against a host
+/// that keeps the btree contract. This test is about the host, and it is not
+/// decoration: a model that quietly got any of this wrong would make the five
+/// tests above agree with it, in the same wrong direction, in silence.
+///
+/// NEGATIVE KEYS ARE THE POINT. BSATN encodes an i64 little-endian two's
+/// complement, so a host that compared key BYTES sorts -1 above every positive
+/// stamp and -5000 between 0 and 1. Every stamp the reaper sees in production is
+/// positive, which is exactly why this has to be tested HERE rather than
+/// discovered later by the first caller with a clock skew.
+///
+/// THE EXCLUDED START is its own case: a bound parser that maps every tag onto
+/// the inclusive variant is correct for three of the six spellings below and
+/// wrong for the tuple form, which is the only way to spell an exclusive lower
+/// bound at all.
+///
+/// THE SAME-STAMP PAIR pins the MODEL's tie order: the host sorts stably, so
+/// two chunks of one bundle come back in the order they were seeded. Tie order
+/// is NO datastore contract — a real btree may hand same-stamp rows back in any
+/// order and no production code may depend on it — and at eight rows this pair
+/// does not distinguish a stable sort from an unstable one (both are insertion
+/// sorts at this size; measured as register row M4b). What it pins is that the
+/// model is deterministic and that a reader can predict it.
+///
+/// Kills: M9 a comparator over raw BSATN bytes (every negative-key list);
+/// M7 an end bound ignored (the two half-open lists); M11 an excluded start
+/// parsed as included (the tuple list); a sort dropped entirely (the covering
+/// list, which is also what the survivor
+/// clauses above depend on).
+#[test]
+fn rb109_host_range_model_honours_every_bound_kind_negative_keys_and_ties() {
+    let fx = crate::native_host_tests::fixture();
+    let t = rb109_table(&fx);
+    let ctx = fx.ctx();
+
+    // Seeded DESCENDING by stamp, with the 2000 pair in a known order.
+    let seeds: [(i64, u64); 8] = [
+        (9_000, 106),
+        (5_000, 105),
+        (2_000, 141),
+        (2_000, 142),
+        (1, 104),
+        (0, 103),
+        (-1, 102),
+        (-5_000, 101),
+    ];
+    for (stamp, chunk) in seeds {
+        let row = rb109_row(9, stamp, chunk, 0, 1, 8);
+        t.seed(&row);
+    }
+
+    let store = rb109_store_stamps(&t);
+    assert_eq!(
+        store,
+        [9_000i64, 5_000, 2_000, 2_000, 1, 0, -1, -5_000],
+        "[rb109/range-seeded]: the store order is {store:?}; it must be the DESCENDING seed order. \
+         If the fixture handed the host its rows already ascending, every ordering clause below \
+         would be satisfied by a host that does not order at all."
+    );
+
+    // Collect EVERY range first: no fixture or handle method may run while a
+    // host iterator is alive.
+    let to_incl: Vec<u64> = ctx
+        .db
+        .export_bundle()
+        .created_at_ms()
+        .filter(..=0i64)
+        .map(|r| r.chunk_id)
+        .collect();
+    let to_excl: Vec<u64> = ctx
+        .db
+        .export_bundle()
+        .created_at_ms()
+        .filter(..0i64)
+        .map(|r| r.chunk_id)
+        .collect();
+    let from: Vec<u64> = ctx
+        .db
+        .export_bundle()
+        .created_at_ms()
+        .filter(0i64..)
+        .map(|r| r.chunk_id)
+        .collect();
+    let closed: Vec<u64> = ctx
+        .db
+        .export_bundle()
+        .created_at_ms()
+        .filter((-1i64)..=1i64)
+        .map(|r| r.chunk_id)
+        .collect();
+    let excluded_start: Vec<u64> = ctx
+        .db
+        .export_bundle()
+        .created_at_ms()
+        .filter((
+            std::ops::Bound::Excluded(-1i64),
+            std::ops::Bound::Included(1i64),
+        ))
+        .map(|r| r.chunk_id)
+        .collect();
+    let excluded_open: Vec<u64> = ctx
+        .db
+        .export_bundle()
+        .created_at_ms()
+        .filter((
+            std::ops::Bound::Excluded(-5_000i64),
+            std::ops::Bound::Unbounded,
+        ))
+        .map(|r| r.chunk_id)
+        .collect();
+    let half_open: Vec<u64> = ctx
+        .db
+        .export_bundle()
+        .created_at_ms()
+        .filter((-1i64)..1i64)
+        .map(|r| r.chunk_id)
+        .collect();
+    let covering: Vec<u64> = ctx
+        .db
+        .export_bundle()
+        .created_at_ms()
+        .filter((-5_000i64)..=9_000i64)
+        .map(|r| r.chunk_id)
+        .collect();
+
+    let cases: [(&str, &Vec<u64>, &[u64]); 7] = [
+        (
+            "an INCLUSIVE end with no start: every stamp at or below zero, which is where a \
+             byte-comparing host puts the two negatives on the wrong side",
+            &to_incl,
+            &[101, 102, 103],
+        ),
+        (
+            "an EXCLUSIVE end with no start: the same range with the boundary row dropped, which \
+             is the difference between the reaper expiring a bundle this tick and next tick",
+            &to_excl,
+            &[101, 102],
+        ),
+        (
+            "an INCLUSIVE start with no end: everything from zero up, the pair included",
+            &from,
+            &[103, 104, 141, 142, 105, 106],
+        ),
+        ("both ends INCLUSIVE across zero", &closed, &[102, 103, 104]),
+        (
+            "an INCLUSIVE start with an EXCLUSIVE end — the plain a..b Range, the crate's most \
+             common spelling elsewhere and the one two-sided combination the cases above miss",
+            &half_open,
+            &[102, 103],
+        ),
+        (
+            "an EXCLUDED START with an included end — the one spelling no range literal can \
+             express, and the case a parser that maps every bound tag onto the inclusive variant \
+             gets wrong",
+            &excluded_start,
+            &[103, 104],
+        ),
+        (
+            "an EXCLUDED START with an UNBOUNDED end: the lowest stamp dropped and everything \
+             above it kept",
+            &excluded_open,
+            &[102, 103, 104, 141, 142, 105, 106],
+        ),
+    ];
+    for (what, got, want) in cases {
+        assert_eq!(
+            got.as_slice(),
+            want,
+            "[rb109/bound-kinds]: over {what}, the host yielded chunk ids {got:?}; the model owes \
+             {want:?}. The list is compared in ORDER, so this clause also sees a sort that only \
+             happens to be right on non-negative keys."
+        );
+    }
+
+    assert_eq!(
+        covering,
+        [101u64, 102, 103, 104, 141, 142, 105, 106],
+        "[rb109/range-ascending]: the covering range yielded {covering:?}. It must be every \
+         seeded row in ASCENDING stamp order — which is the contract the reaper's fairness rests \
+         on — with the two chunks that share the stamp 2000 in the order they were SEEDED (141 \
+         then 142). Rows in seed order mean the host does not sort at all; the pair reversed means \
+         the model's tie order changed — no datastore contract, but a reader of this model must \
+         be able to predict it, and nothing in production may depend on tie order at all."
+    );
+}
+
+/// THE ITERATOR LIFECYCLE (ADR-0222 amendment, D9): two host iterators can be
+/// live at once without aliasing, an abandoned one is CLOSED rather than
+/// leaked, and a row larger than the pooled buffer is read back whole.
+///
+/// TWO ITERATORS, INTERLEAVED. The host mints iterator ids and the bindings hold
+/// them across calls; if ids were reused or the row queue were shared, the two
+/// sequences below would bleed into each other. They overlap on exactly one row
+/// (the stamp-zero row is in both ranges), so a shared queue shows up as a
+/// missing row rather than as a coincidence.
+///
+/// THE ABANDONED ITERATOR IS THE CLOSE PATH. Each row here carries 20 KB of
+/// payload (a row is 72 bytes plus its payload; the pooled buffer is 65 536), so
+/// only three of the four fit in one fill: the second iterator is carried out of
+/// the block still open, SEEN open by the fixture (the one non-zero reading of
+/// the iterator count in the slice, which is what makes every zero elsewhere
+/// meaningful), then dropped with a row still pending host-side, and the only
+/// thing that can remove it is the close syscall. The first iterator is drained
+/// to exhaustion instead, which is the other destruction path. This is one of
+/// the slice's two close-path proofs; the tick's own abandoned scan is the other.
+///
+/// THE OVERSIZED ROW drives the reserve-and-retry leg: at 70 KB the row does not
+/// fit in the pooled buffer at all, so the host must report the size it needs
+/// and the bindings must grow the buffer and ask again. A host that reported
+/// zero there would spin forever, which is why this clause exists at all.
+///
+/// Kills: an iterator id handed out twice; a row queue shared between open
+/// iterators; a fixture whose iterator count is a constant zero (the live
+/// clause); a close that does not remove the iterator (the leak clause); a
+/// buffer-too-small report that loses the row or truncates the payload.
+#[test]
+fn rb109_host_iterators_close_alias_free_and_refill_on_oversized_rows() {
+    let fx = crate::native_host_tests::fixture();
+    let t = rb109_table(&fx);
+    let ctx = fx.ctx();
+
+    for (stamp, chunk) in [
+        (30i64, 307u64),
+        (20, 306),
+        (10, 305),
+        (0, 304),
+        (-10, 303),
+        (-20, 302),
+        (-30, 301),
+    ] {
+        let row = rb109_row(11, stamp, chunk, 0, 1, 20_000);
+        t.seed(&row);
+    }
+
+    // Both iterators live at once. NOTHING that reads or moves the STORE may be
+    // called inside this block; the second iterator is carried OUT of it, still
+    // open, so the fixture can be asked to see it before it is dropped.
+    let (low, high, b) = {
+        let mut a = ctx.db.export_bundle().created_at_ms().filter(..=0i64);
+        let mut b = ctx.db.export_bundle().created_at_ms().filter(0i64..);
+        let mut low: Vec<Option<u64>> = Vec::new();
+        let mut high: Vec<Option<u64>> = Vec::new();
+        for step in 0..5 {
+            low.push(a.next().map(|r| r.chunk_id));
+            if step < 3 {
+                high.push(b.next().map(|r| r.chunk_id));
+            }
+        }
+        (low, high, b)
+    };
+
+    assert_eq!(
+        low,
+        [Some(301u64), Some(302), Some(303), Some(304), None],
+        "[rb109/iters-alias]: the first iterator yielded {low:?} while a second one was open over \
+         an overlapping range. It owes the four rows at or below zero, ascending, and then \
+         exhaustion. A shared or reused iterator id shows up here as a row from the OTHER range."
+    );
+    assert_eq!(
+        high,
+        [Some(304u64), Some(305), Some(306)],
+        "[rb109/iters-alias]: the second iterator yielded {high:?} while the first was open and \
+         being advanced between its own calls. It owes the first three rows from zero upward. The \
+         stamp-zero row belongs to BOTH ranges, so a host that handed the two iterators one queue \
+         would drop it from one of them."
+    );
+
+    // --- rb109/iters-live: the fixture can SEE an open iterator -------------
+    let live = fx.open_iters();
+    assert_eq!(
+        live, 1,
+        "[rb109/iters-live]: {live} host iterator(s) are open while the second scan is still \
+         alive. Exactly ONE must be: the first was drained to exhaustion (the host removed it on \
+         its final advance), the second was handed three of its four 20 KB rows in one 64 KiB \
+         buffer fill and has one pending. A fixture that cannot see an OPEN iterator cannot see \
+         a leaked one either — every other iterator clause in this slice compares this number to \
+         zero, so this is the clause that proves those zeros mean something. ZERO here means \
+         either the host never registered the scan, or the buffer arithmetic changed and the \
+         second scan drained in one fill, in which case the close path below is no longer \
+         exercised by this test at all."
+    );
+    drop(b);
+
+    let open = fx.open_iters();
+    assert_eq!(
+        open, 0,
+        "[rb109/iters-drained]: {open} host iterator(s) survived the drop above. One was drained \
+         to exhaustion and the other was DROPPED with a row still pending — one open before the \
+         drop, none after, so this clause is one of the slice's two proofs of the close syscall \
+         (the other is the tick's own abandoned 340-row scan). A row is 72 bytes plus its payload \
+         and the pooled buffer is 65 536 bytes, so 20 KB payloads put three of four rows in one \
+         fill; if that payload ever shrinks, the second scan drains in one fill and the clause \
+         above reds first. A close that does not remove the iterator leaks one per abandoned \
+         scan, and the reaper abandons one every hour by construction."
+    );
+
+    let big = rb109_row(12, 1_000, 308, 0, 1, 70_000);
+    t.seed(&big);
+    let refilled: Vec<(u64, usize)> = ctx
+        .db
+        .export_bundle()
+        .created_at_ms()
+        .filter(900i64..=1_100i64)
+        .map(|r| (r.chunk_id, r.payload_json.len()))
+        .collect();
+    assert_eq!(
+        refilled,
+        [(308u64, 70_000usize)],
+        "[rb109/iters-refill]: reading back a row whose payload is larger than the whole pooled \
+         iterator buffer yielded {refilled:?}; it owes exactly one row of 70 000 payload bytes. \
+         This is the buffer-too-small leg: the host must report the size the next row needs so \
+         the bindings can grow the buffer and ask again. A host that reported ZERO there spins \
+         forever, and one that reported a truncated size loses payload bytes out of an export \
+         chunk a caller is about to assemble."
+    );
+    let open_after = fx.open_iters();
+    assert_eq!(
+        open_after, 0,
+        "[rb109/iters-refill]: {open_after} host iterator(s) are open after the oversized read. \
+         The retry path allocates a second buffer and must still hand the iterator back."
+    );
+}
+
+// ===========================================================================
+// THE ROSTER CENSUS — what anchors the ledger's literal test counts.
+// ===========================================================================
+
+/// The EIGHT `rb109_` test names this slice ships, in the order the plan lists
+/// them.
+///
+/// CLOSED on purpose: the ledger's E1 and X2 EXPECTs carry literal counts
+/// derived from these names, so a ninth test has to move a literal in the ledger
+/// in the same commit rather than quietly change what a gate measures.
+fn rb109_test_roster() -> [&'static str; 8] {
+    [
+        "rb109_oversized_tick_is_bounded_and_reaps_the_oldest_bundles_whole",
+        "rb109_tick_deletes_exactly_the_expired_set_including_the_cutoff_stamp",
+        "rb109_repeated_ticks_drain_to_the_live_set",
+        "rb109_zero_expired_and_empty_tables_report_a_zero_tick",
+        "rb109_stamp_cap_binds_when_the_window_holds_more_than_sixteen_stamps",
+        "rb109_host_range_model_honours_every_bound_kind_negative_keys_and_ties",
+        "rb109_host_iterators_close_alias_free_and_refill_on_oversized_rows",
+        "rb109_test_roster_is_closed",
+    ]
+}
+
+/// The seventeen `rb109_` HELPER fn names this slice ships — every `rb109_`
+/// declaration in this file that is not one of the eight tests.
+///
+/// CLOSED, exactly like the test roster, so the declaration total below can
+/// assert that the file declares exactly these plus the eight: a ninth test
+/// cannot hide behind an attribute the walker misreads, and a new helper cannot
+/// arrive without a reviewer seeing it.
+fn rb109_helper_roster() -> [&'static str; 17] {
+    [
+        "rb109_tick",
+        "rb109_owner",
+        "rb109_filler",
+        "rb109_chunk_id",
+        "rb109_row",
+        "rb109_table",
+        "rb109_seed_population",
+        "rb109_bundles",
+        "rb109_expected_triples",
+        "rb109_observed_triples",
+        "rb109_store_stamps",
+        "rb109_test_roster",
+        "rb109_helper_roster",
+        "rb109_dependency_roster",
+        "rb109_declaration_starts",
+        "rb109_attributed_test_declarations",
+        "rb109_label_roster",
+    ]
+}
+
+/// The THREE tests OUTSIDE this slice's prefix that rb-109 rests on, asserted
+/// DECLARED so none of them can be deleted in the diff that would need them
+/// most.
+///
+/// Each one holds up something this slice cannot restate:
+///   - the helper-name census is the clause rb-109 REVISED from zero to one, and
+///     it is the only thing that keeps the single sanctioned call site single —
+///     delete it and a second, unreviewed tick trigger in this file is invisible;
+///   - the helper BODY equality pin is what says the thing these eight tests
+///     execute is still the bounded read: every count below is equally true of a
+///     body that reads the whole table and then filters in Rust, right up until
+///     the native host aborts on the sweep it does not model;
+///   - the hygiene scan keeps both files free of the delimiters that
+///     desynchronise the strip pipeline the roster census itself reads through.
+fn rb109_dependency_roster() -> [&'static str; 3] {
+    [
+        "rb85_helper_is_never_named_outside_privacy_rs",
+        "rb85_helper_body_exact",
+        "rb22p_scan_hygiene",
+    ]
+}
+
+/// The line-start offset of every `rb109_` fn DECLARATION in `src`.
+///
+/// The prefix is HARDCODED here rather than shared with the rb-85, rb-86, rb-87
+/// and rb-107 twins, exactly as those four hardcode theirs: a roster census that
+/// took its own prefix as an argument could be pointed at the wrong one by a
+/// single edit. Only true declarations count — the text before `fn` on its own
+/// line must be blank at any indentation, which admits a declaration inside a
+/// property-test block and excludes this file's own string fixtures and every
+/// prose mention.
+fn rb109_declaration_starts(src: &str) -> Vec<usize> {
+    let needle = concat!("fn rb109", "_");
+    let mut out: Vec<usize> = Vec::new();
+    let mut scan = 0usize;
+    while let Some(rel) = src[scan..].find(needle) {
+        let at = scan + rel;
+        scan = at + needle.len();
+        let line_start = match src[..at].rfind('\n') {
+            Some(i) => i + 1,
+            None => 0,
+        };
+        if src[line_start..at].chars().all(|c| c == ' ') {
+            out.push(line_start);
+        }
+    }
+    out
+}
+
+/// How many `rb109_` fn DECLARATIONS in `src` carry a test attribute.
+///
+/// The attribute-block walk itself is `rb85_attr_block_line`, REUSED rather than
+/// re-derived: it is already gated by the rb-85 walker control over the MEASURED
+/// multi-line-attribute fixture, and a second copy would be a second thing to
+/// keep true. Takes its source as an ARGUMENT so this walk can be gated too.
+fn rb109_attributed_test_declarations(src: &str) -> usize {
+    let mut found = 0usize;
+    for line_start in rb109_declaration_starts(src) {
+        let mut cursor = line_start;
+        let mut is_test = false;
+        while cursor > 0 {
+            let prev_end = cursor - 1;
+            let prev_start = match src[..prev_end].rfind('\n') {
+                Some(i) => i + 1,
+                None => 0,
+            };
+            let line = src[prev_start..prev_end].trim();
+            if line == concat!("#[te", "st]") {
+                is_test = true;
+            }
+            if !(line.is_empty()
+                || line.starts_with("#[")
+                || line.starts_with("//")
+                || rb85_attr_block_line(src, prev_start))
+            {
+                break;
+            }
+            cursor = prev_start;
+        }
+        if is_test {
+            found += 1;
+        }
+    }
+    found
+}
+
+/// EVERY clause label this slice ships, paired with the INDEX into
+/// `rb109_test_roster()` of the test that owns it.
+///
+/// An index rather than a name so the two rosters cannot drift: a renamed test
+/// moves one literal, not two.
+///
+/// FROZEN and CLOSED. The label census requires each label to occur inside its
+/// owner's span AND NOWHERE ELSE, which is what makes a HOLLOWED test body
+/// visible: the measured forge replaced a whole test body with one throwaway
+/// statement under an intact doc comment, and every name-based census stayed
+/// green while the ledger's filtered run still printed the full count passed. No
+/// label is spelled in a doc comment anywhere in this block, deliberately — a
+/// span runs from a test's own `fn` line to the NEXT test attribute, so the next
+/// test's prose falls inside it and a label quoted there would be owned twice.
+fn rb109_label_roster() -> [(&'static str, usize); 36] {
+    [
+        ("[rb109/seed-order]", 0),
+        ("[rb109/host-unbounded]", 0),
+        ("[rb109/read-cap]", 0),
+        ("[rb109/planned-cap]", 0),
+        ("[rb109/reaped-whole]", 0),
+        ("[rb109/survivors]", 0),
+        ("[rb109/iters-closed]", 0),
+        ("[rb109/expired-exact]", 1),
+        ("[rb109/cutoff-included]", 1),
+        ("[rb109/drain-bounds]", 2),
+        ("[rb109/drain-cap]", 2),
+        ("[rb109/drain-sequence]", 2),
+        ("[rb109/drain-final]", 2),
+        ("[rb109/zero-tick]", 3),
+        ("[rb109/zero-survivors]", 3),
+        ("[rb109/zero-readable]", 3),
+        ("[rb109/stamp-cap]", 4),
+        ("[rb109/stamp-cap-reaped]", 4),
+        ("[rb109/stamp-cap-survivors]", 4),
+        ("[rb109/range-seeded]", 5),
+        ("[rb109/bound-kinds]", 5),
+        ("[rb109/range-ascending]", 5),
+        ("[rb109/iters-alias]", 6),
+        ("[rb109/iters-live]", 6),
+        ("[rb109/iters-drained]", 6),
+        ("[rb109/iters-refill]", 6),
+        ("[rb109/roster-vacuity]", 7),
+        ("[rb109/roster-dup]", 7),
+        ("[rb109/roster-name]", 7),
+        ("[rb109/roster-closed]", 7),
+        ("[rb109/walker-control]", 7),
+        ("[rb109/decl-total]", 7),
+        ("[rb109/roster-attributed]", 7),
+        ("[rb109/label-census]", 7),
+        ("[rb109/body-floor]", 7),
+        ("[rb109/tick-owner]", 7),
+    ]
+}
+
+/// E1 (ledger anchor): this file declares EXACTLY the eight `rb109_` tests the
+/// roster names, each exactly once and each carrying a test attribute, no ninth
+/// — and every clause label each of them ships is still inside it.
+///
+/// A test cannot prove its own existence, but a file CAN prove which tests it
+/// declares — this module already includes its own source for the hygiene scan,
+/// so the census costs nothing. The shape is rb-107's, clause for clause,
+/// because each clause of it closes an escape that was MEASURED one round at a
+/// time: per-NAME, so a rename or a deletion reds; by ADJACENCY, summed across
+/// the flush-left and the indented forms; the attribute-block WALKER, which sees
+/// a test carrying a second attribute that both adjacency needles are blind to;
+/// the exact declaration TOTAL over two CLOSED rosters, which does not care WHY
+/// a declaration is invisible to a walker; the LABEL census and the body FLOOR,
+/// which between them notice a test whose body has been emptied or deadened;
+/// and a SQUASHED declaration count that sees a visibility-prefixed ninth test.
+///
+/// THE DEPENDENCY CLAUSE names the three out-of-prefix tests this slice rests
+/// on. That is not decoration either: the helper-name census is the clause
+/// rb-109 revised, and deleting it is a way to let a second tick trigger into
+/// this file without editing a single rb-109 literal.
+///
+/// Kills: a test renamed out of the ledger's roster filter (its `-E` filter
+/// matches fewer tests and still reports the same count passed as ran); a
+/// planned test never written; a ninth test slipped in without moving a literal
+/// in the ledger, including one hidden behind an extra or a multi-line
+/// attribute; an unlisted helper; a hollowed body under an intact doc comment;
+/// a load-bearing out-of-prefix test deleted; a body wrapped in a dead
+/// conditional, prefixed with a bare return, or hollowed to its label strings
+/// (the body floor); a `pub fn` ninth test (the squashed count). NOT caught here,
+/// disclosed: a cfg attribute above the test attribute, which every text census
+/// reads as a test — only the ledger's filtered run count and the suite total
+/// see that.
+#[test]
+fn rb109_test_roster_is_closed() {
+    let roster = rb109_test_roster();
+    let helpers = rb109_helper_roster();
+    let dependencies = rb109_dependency_roster();
+
+    assert!(
+        PRIVACY_TESTS_RS.len() > 200,
+        "[rb109/roster-vacuity]: this file reads as only {} bytes, so every count below would pass \
+         over nothing.",
+        PRIVACY_TESTS_RS.len()
+    );
+
+    let mut seen: Vec<&str> = roster.to_vec();
+    seen.extend_from_slice(&helpers);
+    seen.extend_from_slice(&dependencies);
+    seen.sort_unstable();
+    for pair in seen.windows(2) {
+        assert_ne!(
+            pair[0], pair[1],
+            "[rb109/roster-dup]: the rosters name `{}` twice, so the total-count clause below is \
+             satisfied by one fewer distinct declaration plus a duplicate entry.",
+            pair[0]
+        );
+    }
+
+    for name in roster {
+        let needle = format!("fn {name}(");
+        let n = rb22p_count(PRIVACY_TESTS_RS, &needle);
+        assert_eq!(
+            n, 1,
+            "[rb109/roster-name]: `{needle}` must be declared exactly once in privacy_tests.rs; \
+             found {n}. ZERO means the test was renamed or never written — and a filtered gate run \
+             does not red on a missing test, it simply matches fewer tests and still reports the \
+             same count passed as ran, which is precisely how E1 could report eight of eight over \
+             a tree that lost one."
+        );
+    }
+    for name in dependencies {
+        let needle = format!("fn {name}(");
+        let n = rb22p_count(PRIVACY_TESTS_RS, &needle);
+        assert_eq!(
+            n, 1,
+            "[rb109/roster-name]: the LOAD-BEARING test `{needle}` must still be declared exactly \
+             once in privacy_tests.rs; found {n}. The helper-name census is the clause this slice \
+             REVISED from zero to one, and it is the only instrument that keeps the single \
+             sanctioned call site single; the body pin is what says the thing these eight tests \
+             execute is still the bounded read rather than a sweep with a filter behind it. \
+             Deleting one of these is a way to disarm this slice without editing an rb-109 literal."
+        );
+    }
+
+    let flush = rb22p_count(PRIVACY_TESTS_RS, concat!("#[te", "st]\nfn rb109", "_"));
+    let indented = rb22p_count(PRIVACY_TESTS_RS, concat!("#[te", "st]\n    fn rb109", "_"));
+    assert_eq!(
+        flush + indented,
+        roster.len(),
+        "[rb109/roster-closed]: privacy_tests.rs declares {} `rb109_` test(s) by adjacency; the \
+         roster names {}. The two forms are SUMMED so a future property test inside a generator \
+         block could not be deleted while the roster still reported a closed set.",
+        flush + indented,
+        roster.len()
+    );
+
+    // --- the WALKER's own control, over fixtures with a KNOWN count ----------
+    let test_attr = concat!("#[te", "st]");
+    let decl = concat!("fn rb109", "_");
+    let cfg_open = concat!("#[c", "fg(");
+    let cfg_test = concat!("#[c", "fg(test)]");
+    let ignore_attr = concat!("#[ign", "ore]");
+    let walker_cases: [(&str, String, usize); 6] = [
+        (
+            "the MEASURED multi-line attribute: a test attribute, then an \
+             attribute whose bracket stays open across two further lines, then \
+             the declaration",
+            format!("{test_attr}\n{cfg_open}\n    test\n)]\n{decl}probe() {{}}\n"),
+            1,
+        ),
+        (
+            "a BLANK line between the test attribute and the declaration",
+            format!("{test_attr}\n\n{decl}a() {{}}\n"),
+            1,
+        ),
+        (
+            "a SECOND attribute wedged between the test attribute and the \
+             declaration, which both adjacency needles above are blind to",
+            format!("{test_attr}\n{ignore_attr}\n{decl}d() {{}}\n"),
+            1,
+        ),
+        (
+            "an attributed declaration that is NOT a test",
+            format!("{cfg_test}\n{decl}b() {{}}\n"),
+            0,
+        ),
+        (
+            "a declaration under a closing brace and a blank line — an ordinary \
+             helper, which must never be counted however far the walk continues",
+            format!("}}\n\n{decl}c() {{}}\n"),
+            0,
+        ),
+        (
+            "a declaration needle with TEXT before it on its line — this file's \
+             own string fixtures, which are prose and not declarations",
+            format!("{test_attr}\n    let s = mk({decl}decoy());\n"),
+            0,
+        ),
+    ];
+    let mut walker_total = 0usize;
+    for (what, text, want) in &walker_cases {
+        let got = rb109_attributed_test_declarations(text);
+        assert_eq!(
+            got, *want,
+            "[rb109/walker-control]: over {what} the attribute-block walker finds {got} \
+             test-attributed declaration(s); it must find {want}. A walker is a scanner like any \
+             other and a scanner that sees nothing passes everything. The LAST fixture is what \
+             keeps this block honest about itself: these fixtures build a decoy declaration at \
+             runtime, and the only thing that stops the declaration walk counting it is the rule \
+             that the bytes before `fn` on its line must all be spaces. Fixture: {text:?}"
+        );
+        walker_total += got;
+    }
+    assert_eq!(
+        walker_total, 3,
+        "[rb109/walker-control]: the six fixtures together must yield exactly three attributed \
+         declarations; the walker found {walker_total}. The per-fixture clauses above separate \
+         every shape from every other; this total is what catches a walker wrong in two directions \
+         at once, and what makes the pair fail loud rather than cancel out."
+    );
+
+    // --- the DECLARATION TOTAL: tests plus a CLOSED helper roster ------------
+    for name in helpers {
+        let needle = format!("\nfn {name}(");
+        let n = rb22p_count(PRIVACY_TESTS_RS, &needle);
+        assert_eq!(
+            n, 1,
+            "[rb109/decl-total]: the helper `{name}` must be declared exactly once at the top \
+             level of privacy_tests.rs; found {n}. The needle carries a leading newline so this \
+             test's own literals are not counted. ZERO means the roster names a helper that no \
+             longer exists, which would make the total arithmetic below pass over a file that is \
+             missing one."
+        );
+    }
+    let declared = rb109_declaration_starts(PRIVACY_TESTS_RS).len();
+    assert_eq!(
+        declared,
+        roster.len() + helpers.len(),
+        "[rb109/decl-total]: privacy_tests.rs declares {} `rb109_` fn(s) whose line carries nothing \
+         but indentation before them; the two CLOSED rosters name {} tests plus {} helpers. This \
+         is the backstop for the attribute walker above and it does not care WHY a declaration is \
+         invisible to it: a ninth test — attributed, un-attributed, or hidden behind a multi-line \
+         attribute — moves this number, as does an unlisted helper. If it reds after an honest \
+         addition, add the name to the roster it belongs to in the same diff, which is the reviewed \
+         event this clause exists to force.",
+        declared,
+        roster.len(),
+        helpers.len()
+    );
+    let squashed_decls = rb22p_count(
+        &stripped_for_scan(PRIVACY_TESTS_RS),
+        concat!("fnrb109", "_"),
+    );
+    assert_eq!(
+        squashed_decls,
+        roster.len() + helpers.len(),
+        "[rb109/decl-total]: the SQUASHED source (strings and comments blanked, whitespace removed) \
+         carries {squashed_decls} `rb109_` fn declaration(s); the rosters name {}. The line-start \
+         census above requires nothing but indentation before `fn`, so a `pub fn rb109_` ninth \
+         test is invisible to it; this view sees every visibility prefix and every indentation, \
+         and it cannot be fed by this file's own fixtures because they are string literals.",
+        roster.len() + helpers.len()
+    );
+
+    let attributed = rb109_attributed_test_declarations(PRIVACY_TESTS_RS);
+    assert_eq!(
+        attributed,
+        roster.len(),
+        "[rb109/roster-attributed]: walking every `rb109_` declaration's ATTRIBUTE BLOCK finds {} \
+         test-attributed declaration(s); the roster names {}. The two adjacency counts above \
+         require the test attribute to be the line IMMEDIATELY above the `fn`, so they are blind \
+         to a test carrying a second attribute between the two. That test would ship, never run, \
+         and leave both counts unmoved; this clause is the one that sees it, and it also catches a \
+         roster name declared without a test attribute at all.",
+        attributed,
+        roster.len()
+    );
+
+    // --- [rb109/label-census]: every clause a test SHIPS, still inside it -----
+    //
+    // The span helper is rb-107's, REUSED rather than re-derived: it already
+    // measures from a test's own `fn` line to the next test attribute or
+    // flush-left banner, which is exactly the window this census needs, and a
+    // second copy would be a second thing to keep true.
+    let labels = rb109_label_roster();
+    let spans: Vec<String> = roster
+        .iter()
+        .map(|name| rb107_test_span(PRIVACY_TESTS_RS, name))
+        .collect();
+
+    let mut label_names: Vec<&str> = labels.iter().map(|(label, _)| *label).collect();
+    label_names.sort_unstable();
+    for pair in label_names.windows(2) {
+        assert_ne!(
+            pair[0], pair[1],
+            "[rb109/label-census]: the label roster names `{}` TWICE, so the per-label clause \
+             below is satisfied by one fewer real clause plus a duplicate entry — which is exactly \
+             how a roster stops being a census of what ships.",
+            pair[0]
+        );
+    }
+
+    for (owner, name) in roster.iter().enumerate() {
+        let owned = labels.iter().filter(|(_, idx)| *idx == owner).count();
+        assert!(
+            owned >= 2,
+            "[rb109/label-census]: the roster credits `{name}` with only {owned} clause label(s); \
+             every test in this slice ships at least two. ONE or ZERO means the roster was trimmed \
+             rather than the test, which would let that test be hollowed out with the census still \
+             closed over whatever labels were left."
+        );
+    }
+
+    for (label, owner) in labels {
+        assert!(
+            owner < roster.len(),
+            "[rb109/label-census]: the label `{label}` names owner index {owner}, past the end of \
+             a roster of {} test(s), so the span clause below would index out of the file.",
+            roster.len()
+        );
+        let carriers: Vec<usize> = (0..roster.len())
+            .filter(|i| rb22p_count(&spans[*i], label) > 0)
+            .collect();
+        assert_eq!(
+            carriers,
+            [owner],
+            "[rb109/label-census]: `{label}` occurs inside the spans of tests {carriers:?}; it \
+             must occur inside exactly one — `{}`, at index {owner}. An EMPTY list means the \
+             clause that label names has been DELETED from the test that owns it while every \
+             census above stayed green: the name is declared, the attribute is there, the \
+             declaration total is unmoved, and the ledger's filtered run still reports eight of \
+             eight. A list with TWO entries means the label was copied into a second test (or \
+             quoted in the next test's doc comment, which falls inside this test's span), so it no \
+             longer attributes a failure to one place.",
+            roster[owner]
+        );
+    }
+    // --- [rb109/tick-owner]: the ONE helper naming lives inside rb109_tick ----
+    //
+    // The revised helper-name census pins the COUNT at one (paren-bearing and
+    // paren-less); this pins the LOCATION, so the single naming cannot drift
+    // into some other fn while both counts stay green. The needle is assembled
+    // from fragments and the body is read squashed, so this clause adds no
+    // naming of its own to the file the census counts.
+    let squashed_file = stripped_for_scan(PRIVACY_TESTS_RS);
+    let tick_body = extract_squashed_fn_body(&squashed_file, concat!("fnrb109", "_tick("))
+        .expect("[rb109/tick-owner]: rb109_tick has no brace-balanced body in the squashed file");
+    let in_tick = rb22p_count(tick_body, concat!("reap_expired_export", "_bundles"));
+    assert_eq!(
+        in_tick, 1,
+        "[rb109/tick-owner]: the squashed body of rb109_tick names the private helper {in_tick} \
+         time(s); it must name it exactly once — the census in the rb-85 block pins the file-wide \
+         count at one, and this clause is what says WHICH fn owns that one occurrence, so a second \
+         trigger cannot be smuggled in by moving the naming out of the tick helper."
+    );
+
+    // --- [rb109/body-floor]: the blunt backstop -------------------------------
+    //
+    // rb-107's two DEAD-BODY bans and its not-a-stub floor, ported clause for
+    // clause: a body can be neutered without losing a byte or a label by wrapping
+    // it in a never-taken conditional or returning above the assertions, and
+    // both leave every census above green. Honest value across all eight spans:
+    // ZERO dead branches, ZERO bare early returns, every span far above the floor.
+    for (owner, name) in roster.iter().enumerate() {
+        let squashed_span = stripped_for_scan(&spans[owner]);
+        let n_dead = rb22p_count(&squashed_span, concat!("iffal", "se{"));
+        assert_eq!(
+            n_dead, 0,
+            "[rb109/body-floor]: `{name}` contains {n_dead} never-taken conditional(s). A whole \
+             test body wrapped in one keeps every declaration census, the attribute walker, the \
+             label census and the size floor below GREEN while not one of its assertions ever \
+             runs, and gate E1 still prints eight of eight."
+        );
+        let n_early = rb22p_count(&squashed_span, "return;");
+        assert_eq!(
+            n_early, 0,
+            "[rb109/body-floor]: `{name}` contains {n_early} bare early return(s). An early return \
+             above the assertions is the other way to keep a full body and run none of it; no \
+             rb-109 test returns early, so ZERO is the honest value."
+        );
+        let size = squashed_span.len();
+        assert!(
+            size >= 300,
+            "[rb109/body-floor]: the span of `{name}` is only {size} squashed byte(s) — comments \
+             and string literals blanked, whitespace removed — and 300 is the floor, rb-107's \
+             literal kept on purpose: a NOT-A-STUB pin, not a size pin. The honest spans here run \
+             from roughly 650 to 2 200 bytes; what this catches is a body hollowed to its label \
+             strings, which the label census above cannot see."
         );
     }
 }

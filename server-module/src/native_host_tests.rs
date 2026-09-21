@@ -11,16 +11,16 @@
 //! out in the `extern "C"` host imports declared by `spacetimedb-bindings-sys`
 //! (`#[link(wasm_import_module = "spacetime_10.x")]`), which the native
 //! test target leaves UNDEFINED — until now the crate linked only because two
-//! test files defined aborting `#[no_mangle]` stubs for them. This module
-//! defines every one of those ten symbols ONCE (a `#[no_mangle]` symbol is
-//! one-definition-per-binary), and implements the five a read-only predicate
-//! reaches: the two name lookups, the index point scan and the row iterator.
-//! The table scan and the four WRITE syscalls stay loudly unmodelled — a
-//! full-table `.iter()` is the shape this repo bans in owner-scoped readers, so
-//! a predicate that reaches for one must fail here, not pass — and tests seed rows
-//! through [`Fixture::table`] / [`Fixture::table_keyed`] instead, which sidesteps the auto_inc write-back
-//! decode, the monster dual-write pairing scan and the single-stack inventory
-//! scan (all of which read test files) without touching any of them.
+//! test files defined aborting `#[no_mangle]` stubs for them. This module defines every
+//! one of those ELEVEN symbols ONCE (a `#[no_mangle]` symbol is one-definition-per-binary)
+//! and implements SEVEN of them: the two name lookups, the index point scan and the index
+//! RANGE scan, the row iterator's advance and close, and the index-point DELETE on an index
+//! a fixture registered. The other FOUR stay loudly unmodelled — the table scan, insert,
+//! update and delete_all_by_eq. A full-table `.iter()` is the shape this repo bans in
+//! owner-scoped readers, so a predicate that reaches for one must fail here, not pass — and
+//! tests seed rows through [`Fixture::table`] / [`Fixture::table_keyed`] instead, which
+//! sidesteps the auto_inc write-back decode, the monster dual-write pairing scan and the
+//! single-stack inventory scan (all of which read test files) without touching any of them.
 //!
 //! NAMING IS LOAD-BEARING. The module name ends in `tests` because the
 //! `accounts_tests.rs` module census (`m22_declared_mod_names`) exempts only
@@ -53,7 +53,7 @@
 
 use spacetimedb::sats::bsatn;
 use spacetimedb::sys::Errno;
-use spacetimedb::{Identity, ReducerContext, Serialize};
+use spacetimedb::{DeserializeOwned, Identity, ReducerContext, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::marker::PhantomData;
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -72,13 +72,12 @@ struct Host {
     table_ids: HashMap<String, u32>,
     /// Canonical index name (`{table}_{col}_idx_btree`) -> id. Never reset.
     index_ids: HashMap<String, u32>,
-    /// index id -> table id, bound only for indexes a fixture registered.
-    /// Process-lifetime like the ids (never reset — a binding is a pure function
-    /// of two names). An index the generated code asks about but no test
-    /// registered resolves to an id with NO table behind it, and scans over it
-    /// yield no rows — which is what lets `account_has_game_data` visit all six
-    /// tables while a test registers only its own.
-    index_table: HashMap<u32, u32>,
+    /// index id -> (table id, key comparator), bound only for indexes THIS
+    /// fixture registered — reset by every [`fixture`] since rb-109, because it
+    /// now decides whether a WRITE aborts (D5). An index no test registered has
+    /// NO table behind it: READS over it yield no rows — what lets
+    /// `account_has_game_data` visit six tables while a test registers one.
+    index_table: HashMap<u32, (u32, KeyCmp)>,
     /// table id -> live rows, reset by every [`fixture`].
     rows: HashMap<u32, Vec<(Key, Row)>>,
     /// Open row iterators: rows not yet handed to the caller.
@@ -157,7 +156,7 @@ pub(crate) struct Fixture {
 }
 
 /// Acquire the host for one test: serialise against every other fixture user,
-/// then wipe rows, open iterators and the requested-index log (ids survive).
+/// then wipe rows, open iterators, index registrations and the log (ids survive).
 pub(crate) fn fixture() -> Fixture {
     let serial = FIXTURE_LOCK
         .lock()
@@ -166,6 +165,7 @@ pub(crate) fn fixture() -> Fixture {
         let mut h = host();
         h.rows.clear();
         h.iters.clear();
+        h.index_table.clear();
         h.requested_indexes.clear();
     }
     Fixture { _serial: serial }
@@ -202,9 +202,9 @@ impl Fixture {
     /// every state, which made a behavioural test of it vacuous). Same
     /// derived-name rule, same idempotence, same no-constraints caveat as
     /// [`Fixture::table`], which is now a thin `Identity`-keyed alias of this.
-    /// The write wall is unchanged: a path that reaches an update or delete
-    /// still aborts, so tests over such reducers can assert REFUSALS only.
-    pub(crate) fn table_keyed<'a, R: Serialize, K: Serialize>(
+    /// The write wall MOVED but still stands: an update, or a delete through an
+    /// index no fixture registered, still aborts (rb-109; the EOF banner, D5).
+    pub(crate) fn table_keyed<'a, R: Serialize, K: Serialize + DeserializeOwned + Ord>(
         &'a self,
         table: &str,
         column: &str,
@@ -214,7 +214,7 @@ impl Fixture {
         let mut h = host();
         let table_id = h.table_id(table);
         let index_id = h.index_id(&index);
-        h.index_table.insert(index_id, table_id);
+        h.index_table.insert(index_id, (table_id, cmp_keys::<K>));
         Handle {
             table_id,
             key_of,
@@ -232,7 +232,7 @@ impl Fixture {
 }
 
 /// A typed handle onto one registered table: seeds and removes rows without
-/// going through the (unmodelled) write syscalls. Borrows the [`Fixture`] it
+/// going through the host's write syscalls at all. Borrows the [`Fixture`] it
 /// came from, so `fixture().table(..)` — a temporary fixture whose lock would
 /// drop at the end of the statement — does not compile: the serialisation
 /// lock outlives every handle by construction. `K` is the indexed column's
@@ -293,8 +293,8 @@ unsafe fn name_at(ptr: *const u8, len: usize) -> String {
 fn unmodelled(symbol: &str) -> ! {
     panic!(
         "native_host_tests: `{symbol}` is not modelled — this host serves single-column index \
-         point reads only; seed rows with `Fixture::table(..).seed(..)` and remove them with \
-         `Handle::remove(..)` instead of writing through, or scanning, the database handle"
+         point and range reads and index-point deletes on registered indexes only; seed rows \
+         with `Fixture::table(..).seed(..)` and `Handle::remove(..)`, never the db handle"
     )
 }
 
@@ -334,7 +334,7 @@ unsafe extern "C" fn datastore_index_scan_point_bsatn(
     let point = unsafe { std::slice::from_raw_parts(point_ptr, point_len) };
     let mut h = host();
     let matching: Vec<Row> = match h.index_table.get(&index_id) {
-        Some(&table_id) => h
+        Some(&(table_id, _)) => h
             .rows_of(table_id)
             .iter()
             .filter(|(key, _)| key.as_slice() == point)
@@ -448,12 +448,243 @@ unsafe extern "C" fn datastore_delete_all_by_eq_bsatn(
     unmodelled("datastore_delete_all_by_eq_bsatn")
 }
 
+/// Removes every row whose indexed key IS `point`, and reports how many went.
+///
+/// REAL only for an index a fixture registered; anything else aborts (D5 in the
+/// banner below). That is asymmetric with the read path above on purpose, and
+/// the asymmetry is the point: a read of an unregistered table must yield
+/// nothing so a multi-table predicate can run, while a WRITE to one is a test
+/// reaching a table it never declared — which is the abort several sibling
+/// suites use as their kill mechanism.
 #[no_mangle]
 unsafe extern "C" fn datastore_delete_by_index_scan_point_bsatn(
-    _index_id: u32,
-    _point_ptr: *const u8,
-    _point_len: usize,
-    _out: *mut u32,
+    index_id: u32,
+    point_ptr: *const u8,
+    point_len: usize,
+    out: *mut u32,
 ) -> u16 {
-    unmodelled("datastore_delete_by_index_scan_point_bsatn")
+    // SAFETY: `point_ptr[..point_len]` is the caller's serialised key buffer,
+    // live for the call's duration.
+    let point = unsafe { std::slice::from_raw_parts(point_ptr, point_len) };
+    let mut h = host();
+    let Some(&(table_id, _)) = h.index_table.get(&index_id) else {
+        unmodelled("datastore_delete_by_index_scan_point_bsatn on an unregistered index")
+    };
+    let rows = h.rows.entry(table_id).or_default();
+    let before = rows.len();
+    rows.retain(|(key, _)| key.as_slice() != point);
+    let removed = before - rows.len();
+    let removed = u32::try_from(removed).expect("native_host_tests: a delete count fits a u32");
+    // SAFETY: `out` points at the bindings' `MaybeUninit<u32>` out-param, which
+    // `sys::call` `assume_init`s on every `0` return — so every `0`-returning
+    // path here writes it, and writes EXACTLY a `u32` (bindings-sys `:1059`).
+    unsafe { out.write(removed) };
+    0
+}
+
+// ---------------------------------------------------------------------------
+// rb-109 — THE RANGE MODEL: what the scan below reads off the wire, what it
+// decides for itself, and which of its answers is a MODEL rather than an
+// observation. (ADR-0222 amendment; the value oracles are the `rb109_` tests.)
+//
+// THE WIRE FORMAT. Each side of a range arrives as the BSATN of a `Bound<T>`:
+// tag byte 0 `Included` followed by the BSATN of the payload, 1 `Excluded`
+// followed by the payload, 2 `Unbounded` with no payload at all
+// (`spacetimedb-sats-2.8.1/src/ser/impls.rs:124-128`). The bindings pack both
+// sides into one buffer and hand out two slices over it
+// (`spacetimedb-2.8.1/src/table.rs:1069-1078`), and `prefix_elems` is a
+// `repr(transparent)` `ColId(pub u16)`, so the raw parameter is a `u16`
+// (`spacetimedb-primitives-2.8.1/src/ids.rs:125`). The parse is an EXPLICIT tag
+// match: an empty slice, an unknown tag and trailing bytes after tag 2 are each
+// an ERROR, never a quiet `Unbounded`. A bound this host misreads is a window
+// the caller never asked for, and every count taken over it would be true about
+// the wrong rows. The tag byte is stripped BEFORE the comparator sees a payload.
+//
+// KEYS ARE COMPARED BY DECODED VALUE, never by their bytes. BSATN writes an i64
+// little-endian in two's complement, so byte order is NOT value order: a byte
+// comparator sorts every negative stamp above every positive one. The
+// comparator is therefore chosen at REGISTRATION, where the key type `K` is
+// still in hand, and stored beside the table id — one map, one lock, no second
+// static to keep in step. `bsatn::from_slice` re-enters nothing, so calling it
+// under the host lock is safe.
+//
+// THE SORT IS STABLE, and that is tested rather than assumed. Rows sharing a
+// key keep their store order — and they DO share one in the shipped case, where
+// a single request stamps every chunk of its bundle with one millisecond. An
+// unstable sort would make the contents of a bounded window depend on nothing a
+// reader can see.
+//
+// ASCENDING YIELD IS THE BTREE CONTRACT, MODELLED (residual
+// R-rb-109-ORDERMODEL). Nothing in this crate has watched a live datastore hand
+// rows back in key order; what the model buys is that a reader whose FAIRNESS
+// rests on that order can be executed and measured here at all, against a host
+// that keeps the contract deliberately and says so.
+//
+// D6 — A BOTH-`Unbounded` RANGE ABORTS. It is a sorted full scan: the `.iter()`
+// shape this host refuses, wearing a range. Refusing it here keeps the wall
+// SHAPE-based rather than spelling-based.
+//
+// D5 — THE WRITE WALL IS ASYMMETRIC, on purpose. A READ through an index no
+// fixture registered yields nothing, so a predicate that visits several tables
+// still runs against the one table its test owns. A WRITE through such an index
+// ABORTS. Insert, update and delete_all_by_eq abort unconditionally; the table
+// scan aborts; the index-point delete aborts unless the fixture registered the
+// index. Eleven symbols, seven implemented, four unmodelled.
+// ---------------------------------------------------------------------------
+
+/// Compares two BSATN-encoded index keys by DECODED value, returning the order
+/// of the values rather than of their bytes (see the banner above).
+type KeyCmp = fn(&[u8], &[u8]) -> std::cmp::Ordering;
+
+/// The [`KeyCmp`] [`Fixture::table_keyed`] registers for its key type `K` —
+/// monomorphised at the registration site, which is the last place `K` is known.
+///
+/// A payload that will not decode is a mis-registered host or a bound the
+/// bindings never sent, not a row that happens to sort oddly, so it aborts
+/// rather than defaulting to some order.
+fn cmp_keys<K: DeserializeOwned + Ord>(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
+    let (Ok(a), Ok(b)) = (bsatn::from_slice::<K>(a), bsatn::from_slice::<K>(b)) else {
+        unmodelled("datastore_index_scan_range_bsatn with an index key that will not decode")
+    };
+    a.cmp(&b)
+}
+
+/// One side of a range with its tag byte stripped. `Copy`, so one bound can be
+/// tested against every candidate row without a reborrow.
+#[derive(Clone, Copy)]
+enum RangeBound<'a> {
+    Included(&'a [u8]),
+    Excluded(&'a [u8]),
+    Unbounded,
+}
+
+/// BSATN `Bound<T>` -> [`RangeBound`], strictly: see the banner above for why
+/// an empty slice is an error rather than an `Unbounded`.
+fn parse_bound(bytes: &[u8]) -> RangeBound<'_> {
+    match bytes {
+        [0, payload @ ..] => RangeBound::Included(payload),
+        [1, payload @ ..] => RangeBound::Excluded(payload),
+        [2] => RangeBound::Unbounded,
+        _ => unmodelled("datastore_index_scan_range_bsatn with an unreadable range bound"),
+    }
+}
+
+impl RangeBound<'_> {
+    /// Does `key` clear this bound as the range's LOW side?
+    fn admits_low(self, key: &[u8], cmp: KeyCmp) -> bool {
+        match self {
+            RangeBound::Included(payload) => cmp(key, payload) != std::cmp::Ordering::Less,
+            RangeBound::Excluded(payload) => cmp(key, payload) == std::cmp::Ordering::Greater,
+            RangeBound::Unbounded => true,
+        }
+    }
+
+    /// Does `key` clear this bound as the range's HIGH side?
+    fn admits_high(self, key: &[u8], cmp: KeyCmp) -> bool {
+        match self {
+            RangeBound::Included(payload) => cmp(key, payload) != std::cmp::Ordering::Greater,
+            RangeBound::Excluded(payload) => cmp(key, payload) == std::cmp::Ordering::Less,
+            RangeBound::Unbounded => true,
+        }
+    }
+}
+
+/// The btree range scan: every row of the registered table whose key clears
+/// both bounds, handed back ASCENDING by decoded key with ties in store order.
+///
+/// An index no fixture registered opens an EMPTY iterator and returns `0`,
+/// exactly as the point scan above does — an unregistered table reads as empty,
+/// it does not abort. A multi-column prefix and a both-`Unbounded` range do
+/// abort (D6). The whole call takes the host lock ONCE; the comparator runs
+/// inside it and re-enters nothing.
+#[no_mangle]
+unsafe extern "C" fn datastore_index_scan_range_bsatn(
+    index_id: u32,
+    _prefix_ptr: *const u8,
+    _prefix_len: usize,
+    prefix_elems: u16,
+    rstart_ptr: *const u8,
+    rstart_len: usize,
+    rend_ptr: *const u8,
+    rend_len: usize,
+    out: *mut u32,
+) -> u16 {
+    if prefix_elems != 0 {
+        unmodelled("datastore_index_scan_range_bsatn over a multi-column index prefix");
+    }
+    // SAFETY: each `ptr[..len]` is a live slice of the bindings' packed range
+    // buffer, owned by the caller for the call's duration.
+    let rstart = unsafe { std::slice::from_raw_parts(rstart_ptr, rstart_len) };
+    let rend = unsafe { std::slice::from_raw_parts(rend_ptr, rend_len) };
+    let (low, high) = (parse_bound(rstart), parse_bound(rend));
+    if matches!((low, high), (RangeBound::Unbounded, RangeBound::Unbounded)) {
+        unmodelled("datastore_index_scan_range_bsatn over a both-unbounded range (a sorted scan)");
+    }
+    let mut h = host();
+    let matching: Vec<Row> = match h.index_table.get(&index_id) {
+        Some(&(table_id, cmp)) => {
+            let mut hits: Vec<&(Key, Row)> = h
+                .rows_of(table_id)
+                .iter()
+                .filter(|(key, _)| {
+                    low.admits_low(key.as_slice(), cmp) && high.admits_high(key.as_slice(), cmp)
+                })
+                .collect();
+            // STABLE, so equal keys keep the order `Handle::seed` stored them in.
+            hits.sort_by(|a, b| cmp(&a.0, &b.0));
+            hits.into_iter().map(|(_, row)| row.clone()).collect()
+        }
+        None => Vec::new(),
+    };
+    let iter = h.open_iter(matching);
+    // SAFETY: `out` points at the bindings' `MaybeUninit<RowIter>` out-param.
+    unsafe { out.write(iter) };
+    0
+}
+
+impl<R: Serialize, K: Serialize> Handle<'_, R, K> {
+    /// Every row this table holds, in STORE order — the order [`Handle::seed`]
+    /// pushed them, never a sorted view — decoded from the same BSATN the
+    /// generated read path gets. The read-back half of the seeding API, so a
+    /// test can compare the store against an expected SET rather than a count.
+    ///
+    /// THE LOCK RULE (ADR-0222 amendment, D9). [`host`] is a plain,
+    /// NON-REENTRANT `Mutex`: a call made from inside a host syscall — from a
+    /// comparator, say — would deadlock. A live `ctx.db..filter(..)` iterator
+    /// holds no lock BETWEEN syscalls, so calling this between two `next()`
+    /// calls does not hang; it is banned anyway, because that iterator was
+    /// handed its rows when it opened and a seed or a delete underneath it
+    /// leaves a reader looking at a store that has moved. COLLECT first, assert
+    /// afterwards — which is what every `rb109_` test does.
+    pub(crate) fn rows(&self) -> Vec<R>
+    where
+        R: DeserializeOwned,
+    {
+        host()
+            .rows_of(self.table_id)
+            .iter()
+            .map(|(_, row)| {
+                bsatn::from_slice::<R>(row).expect("native_host_tests: a stored row decodes")
+            })
+            .collect()
+    }
+}
+
+impl Fixture {
+    /// How many host row iterators are open RIGHT NOW.
+    ///
+    /// The observable half of the iterator lifecycle: a scan the caller
+    /// abandoned mid-way must come back through the close syscall, and a leak
+    /// is a real datastore resource an hourly job would strand once an hour.
+    /// Zero between tests is guaranteed by [`fixture`]; zero after a tick is
+    /// not, and that is what a test asserts.
+    ///
+    /// The ONE fixture call a test may make while a scan is live: it reads the
+    /// iterator count, not the store, so it can neither deadlock (no syscall is
+    /// in flight between two `next()` calls) nor watch a store move under a
+    /// reader — which is how the rb109_ iterator test proves this fixture can
+    /// see an OPEN iterator, not only an absent one.
+    pub(crate) fn open_iters(&self) -> usize {
+        host().iters.len()
+    }
 }
