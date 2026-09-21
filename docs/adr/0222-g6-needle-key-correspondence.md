@@ -296,7 +296,12 @@ ONLY for an index a fixture registered — it `retain`s out every row whose key 
 and writes the count as exactly a `u32` on its single `0`-returning path — and ABORTS on an
 unregistered index. The asymmetry with reads is deliberate: a multi-table predicate must be able to
 read tables a test did not register, while a WRITE to one is a test reaching a table it never
-declared, which is the abort several sibling suites use as their kill mechanism. Consequence for
+declared, which is the abort several sibling suites use as their kill mechanism. Because the
+registration set is now that decision, `fixture()` CLEARS `index_table` per test (the rb-41 doc's
+"never reset — a pure function of two names" rationale held only while the map steered reads), so
+plain `cargo test` and process-per-test `nextest` agree on which deletes abort. The wall itself has
+no EXECUTED tooth — an abort cannot be asserted in-process, and the register's M14 (an unregistered
+delete returning 0) survives — residual **R-rb-109-WALLTOOTH**. Consequence for
 those suites' prose: every "reaching a write syscall aborts" claim about an UNREGISTERED table stays
 TRUE; the wording "all four write syscalls are unmodelled" is now imprecise, and rb-72 Leg A M5
 (`accounts_tests.rs:20329-20337`) now lands as the `[rb72/post-player]` assertion rather than an

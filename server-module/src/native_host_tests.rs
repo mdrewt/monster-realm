@@ -72,12 +72,11 @@ struct Host {
     table_ids: HashMap<String, u32>,
     /// Canonical index name (`{table}_{col}_idx_btree`) -> id. Never reset.
     index_ids: HashMap<String, u32>,
-    /// index id -> (table id, key comparator), bound only for indexes a fixture
-    /// registered. Process-lifetime like the ids (never reset — a binding is a
-    /// pure function of two names). An index the generated code asks about but
-    /// no test registered resolves to an id with NO table behind it, and READS
-    /// over it yield no rows — which is what lets `account_has_game_data` visit
-    /// all six tables while a test registers only its own (a WRITE aborts, D5).
+    /// index id -> (table id, key comparator), bound only for indexes THIS
+    /// fixture registered — reset by every [`fixture`] since rb-109, because it
+    /// now decides whether a WRITE aborts (D5). An index no test registered has
+    /// NO table behind it: READS over it yield no rows — what lets
+    /// `account_has_game_data` visit six tables while a test registers one.
     index_table: HashMap<u32, (u32, KeyCmp)>,
     /// table id -> live rows, reset by every [`fixture`].
     rows: HashMap<u32, Vec<(Key, Row)>>,
@@ -157,7 +156,7 @@ pub(crate) struct Fixture {
 }
 
 /// Acquire the host for one test: serialise against every other fixture user,
-/// then wipe rows, open iterators and the requested-index log (ids survive).
+/// then wipe rows, open iterators, index registrations and the log (ids survive).
 pub(crate) fn fixture() -> Fixture {
     let serial = FIXTURE_LOCK
         .lock()
@@ -166,6 +165,7 @@ pub(crate) fn fixture() -> Fixture {
         let mut h = host();
         h.rows.clear();
         h.iters.clear();
+        h.index_table.clear();
         h.requested_indexes.clear();
     }
     Fixture { _serial: serial }

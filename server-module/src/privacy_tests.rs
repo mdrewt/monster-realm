@@ -22822,7 +22822,7 @@ fn rb109_attributed_test_declarations(src: &str) -> usize {
 /// label is spelled in a doc comment anywhere in this block, deliberately — a
 /// span runs from a test's own `fn` line to the NEXT test attribute, so the next
 /// test's prose falls inside it and a label quoted there would be owned twice.
-fn rb109_label_roster() -> [(&'static str, usize); 35] {
+fn rb109_label_roster() -> [(&'static str, usize); 36] {
     [
         ("[rb109/seed-order]", 0),
         ("[rb109/host-unbounded]", 0),
@@ -22859,6 +22859,7 @@ fn rb109_label_roster() -> [(&'static str, usize); 35] {
         ("[rb109/roster-attributed]", 7),
         ("[rb109/label-census]", 7),
         ("[rb109/body-floor]", 7),
+        ("[rb109/tick-owner]", 7),
     ]
 }
 
@@ -23139,6 +23140,25 @@ fn rb109_test_roster_is_closed() {
             roster[owner]
         );
     }
+    // --- [rb109/tick-owner]: the ONE helper naming lives inside rb109_tick ----
+    //
+    // The revised helper-name census pins the COUNT at one (paren-bearing and
+    // paren-less); this pins the LOCATION, so the single naming cannot drift
+    // into some other fn while both counts stay green. The needle is assembled
+    // from fragments and the body is read squashed, so this clause adds no
+    // naming of its own to the file the census counts.
+    let squashed_file = stripped_for_scan(PRIVACY_TESTS_RS);
+    let tick_body = extract_squashed_fn_body(&squashed_file, concat!("fnrb109", "_tick("))
+        .expect("[rb109/tick-owner]: rb109_tick has no brace-balanced body in the squashed file");
+    let in_tick = rb22p_count(tick_body, concat!("reap_expired_export", "_bundles"));
+    assert_eq!(
+        in_tick, 1,
+        "[rb109/tick-owner]: the squashed body of rb109_tick names the private helper {in_tick} \
+         time(s); it must name it exactly once — the census in the rb-85 block pins the file-wide \
+         count at one, and this clause is what says WHICH fn owns that one occurrence, so a second \
+         trigger cannot be smuggled in by moving the naming out of the tick helper."
+    );
+
     // --- [rb109/body-floor]: the blunt backstop -------------------------------
     //
     // rb-107's two DEAD-BODY bans and its not-a-stub floor, ported clause for
