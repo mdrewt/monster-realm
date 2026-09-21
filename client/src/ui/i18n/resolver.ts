@@ -21,6 +21,7 @@
 // that lied to the type system (`as never`, a JS caller); each message names the key.
 
 import { CATALOG_EN } from './catalog.en';
+import { CATALOG_FR } from './catalog.fr';
 import type {
   A11yKey,
   Catalog,
@@ -33,10 +34,13 @@ import type {
 /** The source locale; the cell's initial value and the negotiation fallback. */
 export const DEFAULT_LOCALE = 'en';
 
-/** Every registered catalog by BCP-47 tag. Frozen: registration is a source edit (S7 adds `fr`
- *  here), never a runtime `registerCatalog` hook — a runtime hook is exactly the seam through
- *  which a partial catalog would arrive untyped. */
-export const CATALOGS: Readonly<Record<string, Catalog>> = Object.freeze({ en: CATALOG_EN });
+/** Every registered catalog by BCP-47 tag. Frozen: registration is a source edit (S7 added `fr`;
+ *  a later locale is added here), never a runtime `registerCatalog` hook — a runtime hook is
+ *  exactly the seam through which a partial catalog would arrive untyped. */
+export const CATALOGS: Readonly<Record<string, Catalog>> = Object.freeze({
+  en: CATALOG_EN,
+  fr: CATALOG_FR,
+});
 
 let current: string = DEFAULT_LOCALE;
 
