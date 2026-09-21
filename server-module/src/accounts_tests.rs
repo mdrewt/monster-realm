@@ -3603,33 +3603,43 @@ fn m22_table_accessors(path: &str, src: &str) -> Vec<String> {
 fn m22_declared_mod_names() -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for (_, src) in m22_scanned_sources() {
-        let clean = strip_rust_comments(&strip_rust_strings(src));
-        for line in clean.lines() {
-            let mut text = line.trim();
-            if let Some(rest) = text.strip_prefix("pub(crate)") {
-                text = rest.trim_start();
-            } else if let Some(rest) = text.strip_prefix("pub ") {
-                text = rest.trim_start();
-            }
-            let rest = match text.strip_prefix("mod ") {
-                Some(rest) => rest.trim(),
-                None => continue,
-            };
-            let name = match rest.strip_suffix(';') {
-                Some(name) => name.trim(),
-                None => continue,
-            };
-            if name.is_empty() || !name.chars().all(is_word_char) {
-                continue;
-            }
-            if name.ends_with("tests") {
-                continue;
-            }
-            out.push(name.to_string());
-        }
+        out.extend(m22_declared_mod_names_in(src));
     }
     out.sort();
     out.dedup();
+    out
+}
+
+/// The per-source half of `m22_declared_mod_names`: every file-declaring
+/// `mod <name>;` in ONE source, in declaration order, minus the exempt test
+/// modules. Pure over its input so the exemption rule can be pinned against a
+/// synthetic source.
+fn m22_declared_mod_names_in(src: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let clean = strip_rust_comments(&strip_rust_strings(src));
+    for line in clean.lines() {
+        let mut text = line.trim();
+        if let Some(rest) = text.strip_prefix("pub(crate)") {
+            text = rest.trim_start();
+        } else if let Some(rest) = text.strip_prefix("pub ") {
+            text = rest.trim_start();
+        }
+        let rest = match text.strip_prefix("mod ") {
+            Some(rest) => rest.trim(),
+            None => continue,
+        };
+        let name = match rest.strip_suffix(';') {
+            Some(name) => name.trim(),
+            None => continue,
+        };
+        if name.is_empty() || !name.chars().all(is_word_char) {
+            continue;
+        }
+        if name.ends_with("tests") {
+            continue;
+        }
+        out.push(name.to_string());
+    }
     out
 }
 
