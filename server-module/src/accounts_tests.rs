@@ -3593,43 +3593,227 @@ fn m22_table_accessors(path: &str, src: &str) -> Vec<String> {
     out
 }
 
-/// Every `mod <name>;` declared anywhere in the scanned sources, minus the
-/// `#[path]`-included sibling test modules (whose names all end in `tests`).
+/// Every file-declaring `mod` item anywhere in the scanned sources, minus the
+/// declarations whose OWN contiguous attribute run carries exactly
+/// `#[cfg(test)]` (rb-85 residual R-rb-85-MODCENSUS, ADR-0266).
 ///
-/// Line-oriented over the comment-blanked, string-blanked source: a commented
-/// out `mod` and a `mod` spelled inside a string literal are both invisible,
-/// while `pub mod` / `pub(crate) mod` are both seen. Inline `mod x { .. }`
-/// blocks declare no FILE and are correctly ignored (no trailing `;`).
+/// A name suffix is never evidence: a `tests`-named module with no cfg gate
+/// is production and stays in the census, while a `#[cfg(test)]`-gated helper
+/// with any name is dropped. Every OTHER cfg form (`cfg(any(test, ..))`,
+/// `cfg(all(test))`, `cfg_attr(test, ..)`, `cfg(not(test))`) counts as
+/// production — the census fails toward coverage. Line-oriented over
+/// `m22_blank_for_mod_scan`: a commented-out `mod` and a `mod` spelled inside
+/// a string literal are both invisible, `pub mod` / `pub(crate) mod` are both
+/// seen, and inline `mod x { .. }` blocks declare no FILE and are ignored (no
+/// trailing `;`).
 fn m22_declared_mod_names() -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for (_, src) in m22_scanned_sources() {
-        let clean = strip_rust_comments(&strip_rust_strings(src));
-        for line in clean.lines() {
-            let mut text = line.trim();
-            if let Some(rest) = text.strip_prefix("pub(crate)") {
-                text = rest.trim_start();
-            } else if let Some(rest) = text.strip_prefix("pub ") {
-                text = rest.trim_start();
-            }
-            let rest = match text.strip_prefix("mod ") {
-                Some(rest) => rest.trim(),
-                None => continue,
-            };
-            let name = match rest.strip_suffix(';') {
-                Some(name) => name.trim(),
-                None => continue,
-            };
-            if name.is_empty() || !name.chars().all(is_word_char) {
-                continue;
-            }
-            if name.ends_with("tests") {
-                continue;
-            }
-            out.push(name.to_string());
-        }
+        out.extend(m22_declared_mod_names_in(src));
     }
     out.sort();
     out.dedup();
+    out
+}
+
+/// Blank every `//` line comment, `/* */` block comment (NESTING-aware), string
+/// literal (`"…"` with `\` escapes, `r"…"`, `r#"…"#` with ANY number of hashes) and char
+/// literal (`'x'`, `'\n'`, `'"'`) to spaces in ONE pass, keeping every `\n`
+/// byte exactly where it was — inside block comments and multi-line strings
+/// too. Lifetimes (`'a`) are left alone: a `'` opens a char literal only when
+/// the next byte is `\` or the byte two ahead is another `'`.
+///
+/// Invariant, by construction: `out` starts as a byte copy of `src` and the only
+/// mutation is `blank_span`, which writes a space over every byte in a span
+/// EXCEPT `\n`. So the output has the same byte length and the same newline
+/// positions as the input, and line `k` of the output is line `k` of the input
+/// with its comment / literal bytes spaced out. No comment or string can ever
+/// merge two lines and drag an attribute onto a `mod` it does not own — the
+/// strings-then-comments pipeline used by the other scans CAN (a stray `"` in a
+/// `//` comment opens a string that swallows the newlines up to the next `"`),
+/// which is why the mod census does not share it (rb-85 residual
+/// R-rb-85-MODCENSUS, ADR-0266).
+fn m22_blank_for_mod_scan(src: &str) -> String {
+    /// Space out `out[from..to]`, leaving every `\n` untouched.
+    fn blank_span(out: &mut [u8], from: usize, to: usize) {
+        for slot in &mut out[from..to] {
+            if *slot != b'\n' {
+                *slot = b' ';
+            }
+        }
+    }
+    /// If a raw string opens at byte `i` (`r"` or `r#"` with ANY number of hashes
+    /// — Rust allows up to 255), the number of hashes it carries.
+    fn raw_string_hashes(bytes: &[u8], i: usize) -> Option<usize> {
+        if bytes[i] != b'r' {
+            return None;
+        }
+        let mut hashes: usize = 0;
+        let mut k = i + 1;
+        while k < bytes.len() && bytes[k] == b'#' {
+            hashes += 1;
+            k += 1;
+        }
+        (k < bytes.len() && bytes[k] == b'"').then_some(hashes)
+    }
+    let bytes = src.as_bytes();
+    let len = bytes.len();
+    let mut out = bytes.to_vec();
+    let mut i = 0;
+    while i < len {
+        let b = bytes[i];
+        let next = if i + 1 < len { bytes[i + 1] } else { 0 };
+        if b == b'/' && next == b'/' {
+            // Line comment: up to but not including the newline.
+            let mut j = i;
+            while j < len && bytes[j] != b'\n' {
+                j += 1;
+            }
+            blank_span(&mut out, i, j);
+            i = j;
+        } else if b == b'/' && next == b'*' {
+            // Block comment with nesting: `/*` inside it increments the depth.
+            let mut depth: usize = 0;
+            let mut j = i;
+            while j < len {
+                if j + 1 < len && bytes[j] == b'/' && bytes[j + 1] == b'*' {
+                    depth += 1;
+                    j += 2;
+                } else if j + 1 < len && bytes[j] == b'*' && bytes[j + 1] == b'/' {
+                    depth -= 1;
+                    j += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    j += 1;
+                }
+            }
+            blank_span(&mut out, i, j);
+            i = j;
+        } else if let Some(hashes) = raw_string_hashes(bytes, i) {
+            // Raw string `r"…"` / `r#"…"#` (any hash count): the closing `"` must
+            // be followed by exactly as many `#` as the opener carried.
+            let mut j = i + 1 + hashes + 1; // past `r`, the hashes, and `"`
+            while j < len {
+                if bytes[j] == b'"' {
+                    let mut k = j + 1;
+                    let mut closing: usize = 0;
+                    while k < len && bytes[k] == b'#' && closing < hashes {
+                        closing += 1;
+                        k += 1;
+                    }
+                    if closing == hashes {
+                        j = k;
+                        break;
+                    }
+                }
+                j += 1;
+            }
+            let j = j.min(len);
+            blank_span(&mut out, i, j);
+            i = j;
+        } else if b == b'"' {
+            // Plain string: `\` escapes the next byte; newlines inside are kept.
+            let mut j = i + 1;
+            while j < len {
+                if bytes[j] == b'\\' {
+                    j += 2;
+                } else if bytes[j] == b'"' {
+                    j += 1;
+                    break;
+                } else {
+                    j += 1;
+                }
+            }
+            let j = j.min(len);
+            blank_span(&mut out, i, j);
+            i = j;
+        } else if b == b'\'' && next == b'\\' {
+            // Escaped char literal (`'\n'`, `'\''`, `'\u{..}'`): blank through
+            // the closing `'`.
+            let mut j = i + 3;
+            while j < len && bytes[j] != b'\'' {
+                j += 1;
+            }
+            let j = (j + 1).min(len);
+            blank_span(&mut out, i, j);
+            i = j;
+        } else if b == b'\'' && i + 2 < len && bytes[i + 2] == b'\'' {
+            // One-byte char literal such as `'x'` or `'"'`.
+            blank_span(&mut out, i, i + 3);
+            i += 3;
+        } else {
+            // Ordinary source byte (including a lifetime's `'`): kept as is.
+            i += 1;
+        }
+    }
+    String::from_utf8(out).expect("mod-scan-blanked source must be valid UTF-8")
+}
+
+/// The per-source half of `m22_declared_mod_names`: every file-declaring `mod`
+/// item in ONE source, in declaration order (no sort / dedup here), minus the
+/// ones exempted by their own attribute run. Pure over its input so the rule
+/// can be pinned against a synthetic source.
+///
+/// Exemption rule: walk upward from the `mod` line, skipping blank lines and
+/// collecting whitespace-squashed `#[..]` lines, and STOP at the first line
+/// that is neither (so an attribute above a `use` or `fn` belongs to that item,
+/// not to the mod). Exempt iff one collected attribute is exactly
+/// `#[cfg(test)]`; a name suffix is never evidence and every other cfg form
+/// counts as production (fail toward coverage). A raw-identifier module
+/// (`r#name`) is reported by its BARE name, which is also its file stem. A
+/// same-line attribute run (`#[cfg(test)] mod x;`, or several attributes on
+/// one line) and a genuinely multi-line `#[cfg(` / `test` / `)]` are
+/// rustfmt-impossible in this crate and count as production; two `mod` items
+/// on one physical line are not parsed at all, and `cargo fmt --check` (a
+/// `just lint` gate) keeps that layout from shipping. Runs over
+/// `m22_blank_for_mod_scan`, which keeps every newline, so no comment or string
+/// literal can merge lines and glue an attribute onto a later mod (rb-85
+/// residual R-rb-85-MODCENSUS, ADR-0266).
+fn m22_declared_mod_names_in(src: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let clean = m22_blank_for_mod_scan(src);
+    let lines: Vec<&str> = clean.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        let mut text = line.trim();
+        if let Some(rest) = text.strip_prefix("pub(crate)") {
+            text = rest.trim_start();
+        } else if let Some(rest) = text.strip_prefix("pub ") {
+            text = rest.trim_start();
+        }
+        let rest = match text.strip_prefix("mod ") {
+            Some(rest) => rest.trim(),
+            None => continue,
+        };
+        let name = match rest.strip_suffix(';') {
+            Some(name) => name.trim(),
+            None => continue,
+        };
+        let name = name.strip_prefix("r#").unwrap_or(name);
+        if name.is_empty() || !name.chars().all(is_word_char) {
+            continue;
+        }
+        let mut attrs: Vec<String> = Vec::new();
+        let mut j = i;
+        while j > 0 {
+            j -= 1;
+            let above = lines[j];
+            if above.trim().is_empty() {
+                continue;
+            }
+            if above.trim_start().starts_with("#[") {
+                attrs.push(squash_ws(above));
+                continue;
+            }
+            break;
+        }
+        let exempt = attrs.iter().any(|a| a == "#[cfg(test)]");
+        if exempt {
+            continue;
+        }
+        out.push(name.to_string());
+    }
     out
 }
 
@@ -20989,5 +21173,232 @@ fn rb83_plan_declines_at_cancel_truth_table() {
          a sweep placed there declines nothing at all. That is precisely why the read and the \
          plan must both precede the status write, and it is the behavioural twin of \
          `[rb83/sweep-before-write]`. Judged before: {before:?}. Judged after: {after:?}"
+    );
+}
+
+// ===========================================================================
+// rb-108 (R-rb-85-MODCENSUS, ADR-0266) — `m22_declared_mod_names_in` must
+// exempt a declared `mod` from the M22 census iff the contiguous attribute
+// run directly above it carries `#[cfg(test)]` EXACTLY, never by matching the
+// mod NAME's `tests` suffix. These three tests pin the RETURN VALUE of that
+// pure seam only; they do not touch the census's per-source or crate-wide
+// callers.
+// ===========================================================================
+
+/// [rb108/exempt-by-cfg] The exemption keys on the contiguous `#[cfg(test)]`
+/// attribute run directly above a `mod`, never on whether its NAME ends in
+/// `tests`. Criterion: rb-108 plan Rule + Edge classes.
+#[test]
+fn rb108_mod_census_exempts_by_cfg_test_not_by_name() {
+    let src = [
+        "#[path = \"reach_privacy_tests.rs\"]",
+        "pub(crate) mod reach_privacy_tests;",
+        "#[cfg(test)]",
+        "#[path = \"x_tests.rs\"]",
+        "mod x_tests;",
+        "#[cfg(test)]",
+        "#[path = \"economy_tests.rs\"]",
+        "#[allow(unused_imports)]",
+        "mod economy_tests;",
+        "#[cfg(test)]",
+        "#[path = \"bench_support.rs\"]",
+        "mod bench_support;",
+        "mod inventory;",
+        "pub mod exported;",
+        "mod guards; // trailing comment",
+        "#[cfg(test)]",
+        "",
+        "mod blank_gap_tests;",
+        "#[cfg(test)]",
+        "use foo;",
+        "mod bar;",
+        "// #[cfg(test)]",
+        "mod commented_gate_tests;",
+        "#[cfg( test )]",
+        "mod ws1_tests;",
+        "#[ cfg(test) ]",
+        "mod ws2_tests;",
+        "#[cfg(test)] // note",
+        "mod ws3_tests;",
+        "// mod ghost;",
+        "let s = \"mod phantom;\";",
+        "mod inline { }",
+        "pub(crate) mod r#raw_ident_tests;",
+    ]
+    .join("\n");
+
+    let got = m22_declared_mod_names_in(&src);
+    assert_eq!(
+        got,
+        vec![
+            "reach_privacy_tests".to_string(),
+            "inventory".to_string(),
+            "exported".to_string(),
+            "guards".to_string(),
+            "bar".to_string(),
+            "commented_gate_tests".to_string(),
+            "raw_ident_tests".to_string(),
+        ],
+        "[rb108/exempt-by-cfg] m22_declared_mod_names_in returned {got:?}; the \
+         exemption must key on the contiguous #[cfg(test)] attribute directly \
+         above a mod, never on whether its NAME ends in `tests`. \
+         reach_privacy_tests carries a #[path] cheat with NO cfg and must be \
+         RETURNED (the measured cheat); bench_support IS #[cfg(test)]-gated \
+         but its name lacks the `tests` suffix and must still be DROPPED (the \
+         second RED direction — the old suffix rule wrongly keeps it); \
+         commented_gate_tests sits under a commented-out `// #[cfg(test)]` \
+         and must be RETURNED; bar sits under `#[cfg(test)]` / `use foo;` \
+         (the attribute belongs to the `use`, not the mod) and must be \
+         RETURNED; the three whitespace variants of `#[cfg(test)]` (with \
+         inner spaces, outer spaces, and a trailing `// note`) must all still \
+         exempt their mods; `mod r#raw_ident_tests;` names the SAME file as \
+         its bare spelling (the `r#` prefix is a raw-identifier escape, not \
+         part of the file name), so it must be returned BARE as \
+         `raw_ident_tests`, never dropped for failing a naive word-char \
+         check on the leading `#`."
+    );
+}
+
+/// [rb108/other-cfg-forms] Every OTHER cfg form — `cfg(any(test,..))`,
+/// `cfg(all(test))`, `cfg_attr(test,..)`, `cfg(not(test))`, and a genuinely
+/// multi-line `#[cfg(\n test\n)]` — counts as PRODUCTION (mod returned); only
+/// the exact single-line `#[cfg(test)]` exempts. Criterion: rb-108 plan Rule
+/// ("Any other cfg form ... -> production") + Known limitation.
+#[test]
+fn rb108_mod_census_other_cfg_forms_count_as_production() {
+    let src = [
+        "#[cfg(any(test, feature = \"dev\"))]",
+        "mod any_tests;",
+        "#[cfg(all(test))]",
+        "mod all_tests;",
+        "#[cfg_attr(test, path = \"z.rs\")]",
+        "mod attr_tests;",
+        "#[cfg(not(test))]",
+        "mod not_tests;",
+        "#[cfg(",
+        "    test",
+        ")]",
+        "mod multiline_tests;",
+        "#[cfg(test)] #[allow(dead_code)]",
+        "mod paired_tests;",
+        "#[cfg(test)]",
+        "mod exact_tests;",
+    ]
+    .join("\n");
+
+    let got = m22_declared_mod_names_in(&src);
+    assert_eq!(
+        got,
+        vec![
+            "any_tests".to_string(),
+            "all_tests".to_string(),
+            "attr_tests".to_string(),
+            "not_tests".to_string(),
+            "multiline_tests".to_string(),
+            "paired_tests".to_string(),
+        ],
+        "[rb108/other-cfg-forms] m22_declared_mod_names_in returned {got:?}; \
+         only the EXACT squashed attribute `#[cfg(test)]` may exempt a mod — \
+         `cfg(any(test,..))`, `cfg(all(test))`, `cfg_attr(test,..)`, \
+         `cfg(not(test))` and a genuinely multi-line `#[cfg(` / `test` / `)]` \
+         are all OTHER cfg forms and must count as production (fail toward \
+         coverage, per the plan's Known limitation). paired_tests carries \
+         TWO attributes rustfmt-fused onto one line — its squashed line is \
+         `#[cfg(test)]#[allow(dead_code)]`, not EXACTLY `#[cfg(test)]`, so a \
+         `contains(\"cfg(test)\")` predicate would wrongly exempt it while the \
+         exact-match rule correctly counts it as production. exact_tests is \
+         the control and correctly absent from this list."
+    );
+}
+
+/// [rb108/blanking-never-merges] `m22_blank_for_mod_scan` must never let a
+/// stray quote inside a `//` comment, a nested `/* */` block comment, a char
+/// literal, or a multi-line string swallow a NEWLINE and glue an unrelated
+/// `#[cfg(test)]` onto a later production `mod` (or hide a later mod's own
+/// declaration, or wrongly swallow a REAL `#[cfg(test)]` as string content).
+/// Criterion: rb-108 plan REV2 red-team #1/#2 + Rule ("NEWLINE PRESERVING
+/// blanker").
+#[test]
+fn rb108_mod_census_blanking_never_merges_lines() {
+    let src = [
+        "#[cfg(test)]",
+        "// stray: \"leftover",
+        "fn helper() {}",
+        "// note: done\" removing",
+        "mod prod_mod;",
+        "/* outer /* inner */",
+        "#[cfg(test)]",
+        "*/ mod prod2;",
+        "let c = '\"';",
+        "#[cfg(test)]",
+        "#[path = \"c_tests.rs\"]",
+        "mod c_tests;",
+        "let r = r#\"mod raw_phantom;\"#;",
+        "let m = \"line one",
+        "mod str_phantom;",
+        "end\";",
+        "mod after_string;",
+        "fn lt<'a>(s: &'a str) -> &'a str { s }",
+        "#[cfg(test)]",
+        "#[path = \"lt_tests.rs\"]",
+        "mod lt_tests;",
+        "mod after_lifetime;",
+        "let s = r#######\"a \" b\"#######;",
+        "mod after_raw7;",
+        "let z = r\"mod raw0_phantom; \\\";",
+        "mod after_raw0;",
+    ]
+    .join("\n");
+
+    let got = m22_declared_mod_names_in(&src);
+    assert_eq!(
+        got,
+        vec![
+            "prod_mod".to_string(),
+            "prod2".to_string(),
+            "after_string".to_string(),
+            "after_lifetime".to_string(),
+            "after_raw7".to_string(),
+            "after_raw0".to_string(),
+        ],
+        "[rb108/blanking-never-merges] m22_declared_mod_names_in returned \
+         {got:?}. prod_mod: the `#[cfg(test)]` two lines up belongs to \
+         `fn helper() {{}}`, which stops the upward walk, so prod_mod must be \
+         RETURNED even though a stray `\"` in the comment above it could fool \
+         a strings-then-comments (not per-line, newline-eating) pipeline into \
+         gluing that attribute onto this mod instead. prod2: the OUTER close \
+         of the nested block comment shares its line with `mod prod2;` — a \
+         nesting-aware blanker keeps the whole span (including the `#[cfg(\
+         test)]` line inside it) a comment until that shared-line `*/`, \
+         leaving only ` mod prod2;` live, so prod2 must be RETURNED; a \
+         first-`*/`-closes stripper closes early after `inner */`, leaves the \
+         `#[cfg(test)]` line spuriously live, and leaves `*/ mod prod2;` as a \
+         line that does NOT start with `mod ` — hiding prod2 from the census \
+         entirely. c_tests: the char literal `'\"'` must never \
+         be misread as opening a real string, or the real `#[cfg(test)]` two \
+         lines below it would be swallowed as string content instead of read \
+         as its own attribute — c_tests must stay exempt (NOT returned). \
+         raw_phantom and str_phantom must both stay invisible (a raw string \
+         and a multi-line string literal), and after_string — the mod \
+         declared on its own line right after that multi-line string closes \
+         — must be RETURNED. lt: `fn lt<'a>(s: &'a str) -> &'a str {{ s }}` \
+         carries THREE lifetime quotes on one line, none of which may be \
+         misread as opening a char literal (which would swallow real code \
+         and corrupt the rest of the scan) — lt_tests stays exempt under its \
+         own `#[cfg(test)]`, and after_lifetime, declared right after it, \
+         must be RETURNED. after_raw7: a raw string may carry ANY number of \
+         `#` delimiters (Rust allows up to 255), not just a small fixed cap — \
+         `r#######\"a \" b\"#######;` embeds a bare `\"` that a hash-capped \
+         blanker would misread as the string's close, then mis-close AGAIN \
+         at the real terminator and blank everything after it to EOF, so a \
+         cap on the hash count silently hides every mod declared after the \
+         first over-cap raw string; after_raw7 must still be RETURNED. \
+         after_raw0: ZERO hashes is a hash count too — `r\"mod raw0_phantom; \
+         \\\";` is a valid zero-hash raw string whose body ends in a \
+         backslash; a blanker that only recognises `r#...` (never bare \
+         `r\"...\"`) would treat this as a PLAIN string, read the backslash \
+         as escaping the next `\"`, and keep scanning past the real close — \
+         swallowing `mod after_raw0;`. raw0_phantom must stay invisible and \
+         after_raw0 must be RETURNED."
     );
 }
