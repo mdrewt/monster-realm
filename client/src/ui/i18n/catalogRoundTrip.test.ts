@@ -58,14 +58,22 @@
 //     checkCompletion(live, baseline): { lines: string[], exitCode: 0 | 1 }   A4 gap-only:
 //       per tag of baseline ∪ live (sorted): OK | REGRESSION (tag missing live, or live.gap >
 //       base.gap) | STALE (live.gap < base.gap, or tag absent from baseline); total/translated
-//       are informational (never compared). Lines:
-//         `i18n-completion: <tag> total=<n> translated=<n> gap=<n> <OK|REGRESSION gap <b> -> <l>|…>`
+//       are informational (never compared). Lines, EXACT (RT-11 pins all four verdict shapes):
+//         `i18n-completion: <tag> total=<n> translated=<n> gap=<n> OK`
+//         `i18n-completion: <tag> total=<n> translated=<n> gap=<n> REGRESSION gap <b> -> <l>`
+//         `i18n-completion: <tag> total=- translated=- gap=- REGRESSION missing live (baseline gap <b>)`
+//         `i18n-completion: <tag> total=<n> translated=<n> gap=<n> STALE gap <b> -> <l>`
+//         `i18n-completion: <tag> total=<n> translated=<n> gap=<n> STALE not in baseline`
 //         then `i18n-completion: <k> locale(s) checked, <m> not OK`; exitCode 1 iff m > 0.
 //     Errors: Object.assign(new Error('catalog-export: <CODE> <detail>'), { code: '<CODE>' }),
 //       CODE ∈ { PARSE (detail starts `<file>:<line>:`), LOCALE-UNSUPPORTED, LOCALE-IS-SOURCE }.
 //     CLI: `[--out <dir>]` | `--completion [--check] [--baseline <path>]` | `--seed <tag> [--out
-//       <dir>]`; exit 0 ok / 1 check failed (incl. BASELINE-MISSING, writer refusal) / 2 usage or
-//       a named error on stderr (`catalog-export: <CODE> …`). cwd-independent.
+//       <dir>]`, each accepting `--i18n-dir <dir>` (M5: the catalog directory to read instead of
+//       <root>/client/src/ui/i18n — this is how the A4 WRITER refusal is exercised: `--completion
+//       --i18n-dir <dir> --baseline <b>` with a live gap larger than <b>'s prints the REGRESSION
+//       line to stdout, exits 1 and leaves <b> byte-unchanged); exit 0 ok / 1 check failed (incl.
+//       BASELINE-MISSING, writer refusal) / 2 usage or a named error on stderr (`catalog-export:
+//       <CODE> …`). cwd-independent. Importing the module never runs main (no stdout, no writes).
 //   scripts/catalog-import.mjs (imports parseCatalogSource/discoverLocales from ./catalog-export.mjs)
 //     parseIcuMessage(message, { liveCategories, roster }): { text, params, plurals }
 //       same hole model; plurals[<name>] = Record<liveCategory, decoded branch text> (live
@@ -99,7 +107,13 @@
 //       discoverLocales(), the four manual registration edits (resolver.ts CATALOGS,
 //       resolver.test.ts, catalogParity.test.ts PLURAL_CATEGORIES / PLURAL_PARAM_KEYS).
 //   I18N-30 text pins (RT-12) run on the RAW script text for `.test(` / `.exec(` / `new RegExp(`
-//     (blind-proof) — so neither script may spell those even in a comment.
+//     (blind-proof) — so neither script may spell those even in a comment; on the comment-stripped
+//     + literal-masked text for the `RegExp` / `Function(` / `eval(` / `import(` / `require(` /
+//     `getBuiltinModule` / `globalThis` / `.match(` / `.matchAll(` / `.search(` tokens, a
+//     regex-LITERAL detector (a `/` after `( , = : [ ! & | ? { } ; + - * % < > ~ ^` or after
+//     return/typeof/case/in/of/do/else/throw/await/void), and a dangling-quote mask state; every
+//     word-boundary `from` / bare `import '…'` specifier must be in {node:fs, node:path, node:url,
+//     node:process, ./catalog-export.mjs} (`export … from` counts too).
 //
 // Do NOT edit these tests to match a buggy implementation — correct them from the spec/plan only.
 
@@ -286,10 +300,14 @@ function nonWhitespaceCount(s: string): number {
   return count;
 }
 
-/** Blanks string/template literal PAYLOAD (post comment-strip) — catalogShape.test.ts:1109. */
-function maskOutLiteralText(src: string): string {
+type MaskState = 'code' | 'sq' | 'dq' | 'tl';
+
+/** Blanks string/template literal PAYLOAD (post comment-strip) — catalogShape.test.ts:1109 —
+ *  and reports the FINAL scanner state: anything but 'code' means a dangling quote desynced the
+ *  mask (a regex literal carrying a quote does exactly that), which is itself a finding (M2). */
+function maskWithState(src: string): { masked: string; finalState: MaskState } {
   const out: string[] = [];
-  let state: 'code' | 'sq' | 'dq' | 'tl' = 'code';
+  let state: MaskState = 'code';
   for (let i = 0; i < src.length; i++) {
     const ch = src.charAt(i);
     if (state === 'code') {
@@ -315,7 +333,7 @@ function maskOutLiteralText(src: string): string {
     }
     out.push(' ');
   }
-  return out.join('');
+  return { masked: out.join(''), finalState: state };
 }
 
 /** Two halves glued at runtime so the banned token never appears verbatim in this file. */
@@ -682,10 +700,59 @@ const MASKED_NEEDLES: readonly string[] = [
   spliced('Func', 'tion('),
   spliced('ev', 'al('),
   spliced('imp', 'ort('),
+  spliced('requ', 'ire('),
+  spliced('getBuiltin', 'Module'),
+  spliced('global', 'This'),
   spliced('.ma', 'tch('),
   spliced('.match', 'All('),
   spliced('.sea', 'rch('),
 ];
+/** A `/` (not `//`) whose previous non-whitespace char is one of these, or whose preceding word
+ *  is one of the keywords below, can only start a regex LITERAL — never a division (B2a). */
+const REGEX_PRECEDING_CHARS = '(,=:[!&|?{};+-*%<>~^';
+const REGEX_PRECEDING_WORDS: ReadonlySet<string> = new Set([
+  'return',
+  'typeof',
+  'case',
+  'in',
+  'of',
+  'do',
+  'else',
+  'throw',
+  'await',
+  'void',
+]);
+
+/** RegExp-free regex-literal detector over the MASKED source (string payloads blanked, so a `/`
+ *  inside a string never counts; a `#!` first line is skipped). Returns the candidate offsets. */
+function findRegexLiteralStarts(masked: string): number[] {
+  const hits: number[] = [];
+  let start = 0;
+  if (startsWith(masked, '#!')) {
+    const nl = masked.indexOf('\n');
+    start = nl === -1 ? masked.length : nl + 1;
+  }
+  for (let i = start; i < masked.length; i++) {
+    if (masked.charAt(i) !== '/' || masked.charAt(i + 1) === '/') continue;
+    let p = i - 1;
+    while (p >= start && isWhitespace(masked.charAt(p))) p -= 1;
+    if (p < start) {
+      hits.push(i);
+      continue;
+    }
+    const prev = masked.charAt(p);
+    if (REGEX_PRECEDING_CHARS.indexOf(prev) !== -1) {
+      hits.push(i);
+      continue;
+    }
+    if (isIdentChar(prev)) {
+      let w = p;
+      while (w >= start && isIdentChar(masked.charAt(w))) w -= 1;
+      if (REGEX_PRECEDING_WORDS.has(masked.slice(w + 1, p + 1))) hits.push(i);
+    }
+  }
+  return hits;
+}
 const STRING_ARG_METHODS: readonly string[] = ['.replace(', '.replaceAll(', '.split('];
 const ALLOWED_IMPORT_SPECIFIERS: ReadonlySet<string> = new Set([
   'node:fs',
@@ -705,7 +772,15 @@ function scanForRegexUse(raw: string): string[] {
     if (n > 0) findings.push(`raw '${needle}' x${n}`);
   }
   const stripped = stripComments(raw);
-  const masked = maskOutLiteralText(stripped);
+  const { masked, finalState } = maskWithState(stripped);
+  if (finalState !== 'code') {
+    findings.push(
+      `literal mask ends in state '${finalState}' — a dangling quote (a regex literal carrying a quote desyncs the mask)`,
+    );
+  }
+  const regexStarts = findRegexLiteralStarts(masked);
+  if (regexStarts.length > 0)
+    findings.push(`regex literal candidate(s) at ${regexStarts.join(',')}`);
   const identCount = countWordBoundaryOccurrences(masked, REGEXP_IDENT);
   if (identCount > 0) findings.push(`identifier ${REGEXP_IDENT} x${identCount}`);
   for (const needle of MASKED_NEEDLES) {
@@ -729,27 +804,34 @@ function scanForRegexUse(raw: string): string[] {
   return findings;
 }
 
-/** Every static `import … from '<spec>'` / `import '<spec>'` specifier in comment-stripped source. */
+/** Every module specifier reached through a word-boundary `from` or a bare `import '<spec>'` in
+ *  CODE state of the comment-stripped source (M1): the keyword is located in the literal-MASKED
+ *  text (same length as the stripped text, string payloads blanked — so an emitter's own
+ *  `"import type { Catalog } from './messageIds';"` string is never scanned) and the quoted
+ *  specifier is then read from the stripped text at that offset. Catches `import … from`,
+ *  `export { x } from`, `export * from`, and side-effect imports alike. */
 function collectImportSpecifiers(stripped: string): string[] {
+  const { masked } = maskWithState(stripped);
   const out: string[] = [];
-  let i = 0;
-  for (;;) {
-    const at = stripped.indexOf('import', i);
-    if (at === -1) break;
-    i = at + 'import'.length;
-    const before = at > 0 ? stripped.charAt(at - 1) : '';
-    const after = stripped.charAt(i);
-    if (isIdentChar(before) || isIdentChar(after) || after === '.' || after === '(') continue;
-    const end = stripped.indexOf(';', i);
-    const stmt = stripped.slice(i, end === -1 ? stripped.length : end);
-    const fromAt = stmt.indexOf('from');
-    let k = fromAt === -1 ? 0 : fromAt + 'from'.length;
-    while (k < stmt.length && isWhitespace(stmt.charAt(k))) k += 1;
-    const quote = stmt.charAt(k);
-    if (quote !== "'" && quote !== '"') continue;
-    const close = stmt.indexOf(quote, k + 1);
-    out.push(stmt.slice(k + 1, close));
-    if (end !== -1) i = end + 1;
+  const readQuoted = (k: number): string | undefined => {
+    let j = k;
+    while (j < stripped.length && isWhitespace(stripped.charAt(j))) j += 1;
+    const quote = stripped.charAt(j);
+    if (quote !== "'" && quote !== '"') return undefined;
+    const close = stripped.indexOf(quote, j + 1);
+    return close === -1 ? undefined : stripped.slice(j + 1, close);
+  };
+  for (const keyword of ['from', 'import']) {
+    let i = 0;
+    for (;;) {
+      const at = masked.indexOf(keyword, i);
+      if (at === -1) break;
+      i = at + keyword.length;
+      const before = at > 0 ? masked.charAt(at - 1) : '';
+      if (isIdentChar(before) || isIdentChar(masked.charAt(i))) continue;
+      const spec = readQuoted(i);
+      if (spec !== undefined) out.push(spec);
+    }
   }
   return out;
 }
@@ -873,6 +955,21 @@ async function assertRoundTripIdentity(tag: string): Promise<void> {
   expect(j1, 'exportLocale().text must be JSON.stringify(json, null, 2) + newline').toBe(
     `${JSON.stringify(original.json, null, 2)}\n`,
   );
+  // m9: the JSON envelope and the message order are the catalog's.
+  expect(
+    {
+      locale: original.json.locale,
+      sourceLocale: original.json.sourceLocale,
+      generatedBy: original.json.generatedBy,
+      keys: Object.keys(original.json.messages),
+    },
+    `${tag}: JSON envelope (locale/sourceLocale/generatedBy) and message key order`,
+  ).toEqual({
+    locale: tag,
+    sourceLocale: 'en',
+    generatedBy: 'scripts/catalog-export.mjs',
+    keys: liveModel(tag).entries.map((e) => e.key),
+  });
   const model = validate(JSON.parse(j1), { tag, enModel: liveModel('en') });
   const emitted = emitTs(tag, model);
   const dir = scratchDir(`rt-${tag}`);
@@ -881,6 +978,12 @@ async function assertRoundTripIdentity(tag: string): Promise<void> {
   biomeFormat(dir, fileName);
   const formatted = readFileSync(path.join(dir, fileName), 'utf8');
 
+  // M4: `i18nDir` must be honoured — an exportLocale that always reads the live dir would make
+  // J1 === J2 below a tautology.
+  expect(
+    () => exportTag(tag, { i18nDir: path.join(dir, 'absent') }),
+    `${tag}: exportLocale must read catalog.${tag}.ts from the GIVEN i18nDir (an absent dir throws)`,
+  ).toThrow();
   const j2 = exportTag(tag, { i18nDir: dir }).text;
   expect(
     j2,
@@ -940,7 +1043,10 @@ async function assertRoundTripIdentity(tag: string): Promise<void> {
       '(kills an emitter whose TS parses back the same but evaluates differently: wrong escape, ' +
       'wrong selectPlural wiring, dead-category fill on a live category)',
   ).toEqual([]);
-  expect(compared, `${tag}: anti-vacuity — well over 112 runtime comparisons`).toBeGreaterThan(112);
+  expect(
+    compared,
+    `${tag}: anti-vacuity — exactly 114 runtime comparisons (77 plain + 34 closures × 1 + 1 plural closure × 3)`,
+  ).toBe(114);
 }
 
 // ---------------------------------------------------------------------------
@@ -1037,6 +1143,49 @@ describe('catalogRoundTrip (M24 S8, ADR-0264)', { sequential: true }, () => {
       }
     }
     expect(paramMismatch, 'per-key kind + param SET must agree between en and fr').toEqual([]);
+    expect(
+      en.entries.find((e) => e.key === 'battle.card.hpLine')?.params,
+      'battle.card.hpLine params stay in hole order current,max,affinity (kills a sorting parser)',
+    ).toEqual(['current', 'max', 'affinity']);
+
+    // B1: the sum of description LINES equals the count of indented `//` lines in the file —
+    // every block line is a description line (kills a parser that keeps only the first N lines).
+    for (const [tag, model, measured] of [
+      ['en', en, 355],
+      ['fr', fr, 360],
+    ] as const) {
+      const descLines = model.entries.reduce((n, e) => n + e.description.split('\n').length, 0);
+      expect(
+        descLines,
+        `every indented // line of catalog.${tag}.ts is a description line — kills a parser that keeps only the first N block lines`,
+      ).toBe(countOccurrences(liveSource(tag), '\n  //'));
+      expect(descLines, `catalog.${tag}.ts description-line census measured today`).toBe(measured);
+    }
+
+    // M3: the exported JSON is exactly one message object per entry, in entry order, with the
+    // four CONTRACT fields and the entry's params list (kills a stowaway field or a re-sort).
+    expect(
+      Object.entries(exportTag('fr').json.messages).map(([k, m]) => [k, Object.keys(m), m.params]),
+      'exportLocale(fr).json.messages: [key, field roster, params] per entry in catalog order',
+    ).toEqual(
+      fr.entries.map((e) => [e.key, ['message', 'description', 'params', 'translated'], e.params]),
+    );
+
+    // m6: discoverLocales over scratch dirs — an unsupported tag throws, `*.test.ts` is skipped.
+    const dirWith = (...names: string[]): string => {
+      const dir = scratchDir('rt01-discover');
+      for (const name of names) writeFileSync(path.join(dir, name), '', 'utf8');
+      return dir;
+    };
+    expectCode(
+      () => discover(dirWith('catalog.xx.ts')),
+      'LOCALE-UNSUPPORTED',
+      'discoverLocales must reject a catalog.xx.ts whose tag Intl has no plural data for',
+    );
+    expect(
+      discover(dirWith('catalog.de.ts', 'catalog.de.test.ts', 'resolver.ts')),
+      'discoverLocales lists catalog.<tag>.ts only — never *.test.ts, never other files',
+    ).toEqual(['de']);
 
     const closureKeys = en.entries
       .filter((e) => e.kind === 'closure')
@@ -1099,8 +1248,8 @@ describe('catalogRoundTrip (M24 S8, ADR-0264)', { sequential: true }, () => {
     ).toEqual([]);
     expect(
       rendered,
-      'anti-vacuity: >224 renderings (112 per locale plus plural rounds)',
-    ).toBeGreaterThan(224);
+      'anti-vacuity: exactly 228 renderings — 2 locales × (77 plain + 34 closures × 1 sample + 1 plural closure × 3 samples)',
+    ).toBe(228);
 
     const enBuy = en.entries.find((e) => e.key === 'shop.buy.row');
     expect(
@@ -1142,13 +1291,17 @@ describe('catalogRoundTrip (M24 S8, ADR-0264)', { sequential: true }, () => {
         '  // @desc: First line of the note.',
         '  // index.html:143',
         '  //   indented continuation kept verbatim',
+        '  // kept trailing space ',
+        '  //',
         "  'a.b': 'v',",
       ],
     );
     expect(
       verbatim.description,
-      '(a) description must be the block verbatim (newline join, `// ` stripped, no citation heuristic, no re-trim)',
-    ).toBe('First line of the note.\nindex.html:143\n  indented continuation kept verbatim');
+      '(a) description must be the block verbatim (newline join, `// ` stripped, no citation heuristic, no re-trim: a trailing space and a bare `//` line survive — the IMPORTER, not this parser, rejects trailing whitespace)',
+    ).toBe(
+      'First line of the note.\nindex.html:143\n  indented continuation kept verbatim\nkept trailing space \n',
+    );
 
     // (b) `// @translated: false` read, and excluded from the description.
     const flagged = one([], [`  // @desc: ${DESC}`, '  // @translated: false', "  'a.b': 'v',"]);
@@ -1637,6 +1790,13 @@ describe('catalogRoundTrip (M24 S8, ADR-0264)', { sequential: true }, () => {
     rejects('DESC-INVALID: a line starting with @ (marker injection)', 'DESC-INVALID', (j) => {
       j.messages['battle.title'].description = `${DESC}\n@translated: false`;
     });
+    rejects(
+      'DESC-INVALID: a line ending in whitespace (biome trims comment trailing whitespace, so it could never round-trip)',
+      'DESC-INVALID',
+      (j) => {
+        j.messages['battle.title'].description = `${DESC}\nsecond line with a trailing space `;
+      },
+    );
     rejects('PARAMS-MISMATCH: message drops {level}', 'PARAMS-MISMATCH', (j) =>
       setMessage(j, 'battle.card.level', 'Niv.'),
     );
@@ -1815,6 +1975,23 @@ describe('catalogRoundTrip (M24 S8, ADR-0264)', { sequential: true }, () => {
         icu: "{label} ({turns} {turns, plural, one {'#' tour} many {l''an} other {tours}})",
         emittedLine: '  many: "l\'an",',
       },
+      // m3: both quote kinds -> single quotes with an escaped apostrophe; a backslash is escaped
+      // in the TS; a backtick inside a closure template is escaped.
+      {
+        key: 'battle.outcome.victory',
+        icu: 'it\'\'s "q"',
+        emittedLine: "  'battle.outcome.victory': 'it\\'s \"q\"',",
+      },
+      {
+        key: 'battle.outcome.defeat',
+        icu: 'a\\b',
+        emittedLine: "  'battle.outcome.defeat': 'a\\\\b',",
+      },
+      {
+        key: 'battle.card.level',
+        icu: 'a`b {level}',
+        emittedLine: `  'battle.card.level': (p) => \`a\\\`b ${hole('level')}\`,`,
+      },
     ];
     const findings: string[] = [];
     for (const f of fixtures) {
@@ -1942,14 +2119,12 @@ describe('catalogRoundTrip (M24 S8, ADR-0264)', { sequential: true }, () => {
 
     const vanished = checkBaseline({ en: base.en }, base);
     expect(
-      {
-        exitCode: vanished.exitCode,
-        fr:
-          (lineStartingWith(vanished.lines, 'i18n-completion: fr') ?? '').indexOf('REGRESSION') !==
-          -1,
-      },
-      'a baseline tag missing live -> REGRESSION (kills missing-locale = OK)',
-    ).toEqual({ exitCode: 1, fr: true });
+      { exitCode: vanished.exitCode, fr: lineStartingWith(vanished.lines, 'i18n-completion: fr') },
+      'a baseline tag missing live -> REGRESSION, exact line (kills missing-locale = OK)',
+    ).toEqual({
+      exitCode: 1,
+      fr: 'i18n-completion: fr total=- translated=- gap=- REGRESSION missing live (baseline gap 0)',
+    });
 
     const totalShrank = checkBaseline(
       { ...base, fr: { total: 100, translated: 100, gap: 0 } },
@@ -1962,21 +2137,21 @@ describe('catalogRoundTrip (M24 S8, ADR-0264)', { sequential: true }, () => {
 
     const shrank = checkBaseline(base, { ...base, fr: { total: 112, translated: 107, gap: 5 } });
     expect(
-      {
-        exitCode: shrank.exitCode,
-        fr: (lineStartingWith(shrank.lines, 'i18n-completion: fr') ?? '').indexOf('STALE') !== -1,
-      },
-      'gap shrank -> STALE and exit 1 (kills exit 0 on STALE)',
-    ).toEqual({ exitCode: 1, fr: true });
+      { exitCode: shrank.exitCode, fr: lineStartingWith(shrank.lines, 'i18n-completion: fr') },
+      'gap shrank -> STALE and exit 1, exact line (kills exit 0 on STALE)',
+    ).toEqual({
+      exitCode: 1,
+      fr: 'i18n-completion: fr total=112 translated=112 gap=0 STALE gap 5 -> 0',
+    });
 
     const newTag = checkBaseline({ ...base, de: { total: 112, translated: 0, gap: 112 } }, base);
     expect(
-      {
-        exitCode: newTag.exitCode,
-        de: (lineStartingWith(newTag.lines, 'i18n-completion: de') ?? '').indexOf('STALE') !== -1,
-      },
-      'a live tag absent from the baseline -> STALE, exit 1',
-    ).toEqual({ exitCode: 1, de: true });
+      { exitCode: newTag.exitCode, de: lineStartingWith(newTag.lines, 'i18n-completion: de') },
+      'a live tag absent from the baseline -> STALE, exit 1, exact line',
+    ).toEqual({
+      exitCode: 1,
+      de: 'i18n-completion: de total=112 translated=0 gap=112 STALE not in baseline',
+    });
   });
 
   it('m24s8 RT-12: I18N-30 over BOTH scripts — text pins, import roster, size, and the behavioural no-RegExp oracle', () => {
@@ -2012,6 +2187,26 @@ describe('catalogRoundTrip (M24 S8, ADR-0264)', { sequential: true }, () => {
       scanForRegexUse(spliced('// never use Reg', 'Exp here\nconst a = 1;')),
       'the identifier inside a comment is stripped, not a finding',
     ).toEqual([]);
+    // B2a regex-literal detector teeth: a literal after `=`, a literal carrying a quote (which
+    // also desyncs the mask — M2), and a plain division chain that must stay clean.
+    expect(
+      scanForRegexUse('x = /a/g;').length,
+      'a regex literal after `=` must be a finding (no method call, no identifier)',
+    ).toBeGreaterThan(0);
+    expect(
+      scanForRegexUse("const APOS = /'/;").length,
+      'a regex literal carrying a quote must be a finding (literal start + dangling mask state)',
+    ).toBeGreaterThan(0);
+    expect(scanForRegexUse('x = a / b / c;'), 'a division chain is clean').toEqual([]);
+    // M1 import-roster teeth: `export … from` and a side-effect import are collected, a string
+    // payload spelling an import line is not.
+    expect(
+      collectImportSpecifiers(
+        "export { x } from './y.mjs';\nexport * from 'node:os';\nimport 'node:child_process';\n" +
+          `const s = ${JSON.stringify("import type { Catalog } from './messageIds';")};\n`,
+      ),
+      'every code-state `from`/bare import is collected; the string payload is not',
+    ).toEqual(['./y.mjs', 'node:os', 'node:child_process']);
 
     expect(scanForRegexUse(exportRaw), 'catalog-export.mjs findings').toEqual([]);
     expect(scanForRegexUse(importRaw), 'catalog-import.mjs findings').toEqual([]);
@@ -2042,17 +2237,30 @@ describe('catalogRoundTrip (M24 S8, ADR-0264)', { sequential: true }, () => {
       'the importer imports its parser from ./catalog-export.mjs (no third script)',
     ).toContain('./catalog-export.mjs');
 
-    // Behavioural oracle (A11): String.prototype methods that would construct or consume a RegExp
-    // throw while the whole pipeline runs. (RegExp.prototype wrappers are not installable here —
-    // the identifier is banned in this file — so `/x/.test(` / `.exec(` are covered by the raw
-    // text pins above.)
+    // Behavioural oracle (A11): every String.prototype method that would construct or consume a
+    // RegExp, AND every RegExp.prototype entry point (reached through the spliced identifier via
+    // globalThis — the token never appears verbatim in this file), throws while the whole pipeline
+    // runs: parse, export, import, importLocale's write path, completion, and the rejections.
     const proto = String.prototype as unknown as Record<string, (...args: unknown[]) => unknown>;
+    const regexProto = (
+      globalThis as unknown as Record<string, { prototype: Record<PropertyKey, unknown> }>
+    )[REGEXP_IDENT].prototype;
     const stringArg = ['replace', 'replaceAll', 'split'];
     const always = ['match', 'matchAll', 'search'];
+    const regexKeys: readonly PropertyKey[] = [
+      'test',
+      'exec',
+      Symbol.split,
+      Symbol.replace,
+      Symbol.match,
+      Symbol.matchAll,
+      Symbol.search,
+    ];
     const saved = new Map<string, (...args: unknown[]) => unknown>();
+    const savedRegex = new Map<PropertyKey, unknown>();
     const bite = (method: string): never => {
       throw Object.assign(
-        new Error(`I18N-30: String.prototype.${method} reached with a non-string pattern`),
+        new Error(`I18N-30: ${method} reached with a RegExp (or a non-string pattern)`),
         { code: 'REGEXP-USED' },
       );
     };
@@ -2060,13 +2268,17 @@ describe('catalogRoundTrip (M24 S8, ADR-0264)', { sequential: true }, () => {
       const orig = proto[m];
       saved.set(m, orig);
       proto[m] = function wrapped(this: unknown, ...args: unknown[]) {
-        if (typeof args[0] !== 'string') bite(m);
+        if (typeof args[0] !== 'string') bite(`String.prototype.${m}`);
         return orig.apply(this, args);
       };
     }
     for (const m of always) {
       saved.set(m, proto[m]);
-      proto[m] = () => bite(m);
+      proto[m] = () => bite(`String.prototype.${m}`);
+    }
+    for (const k of regexKeys) {
+      savedRegex.set(k, regexProto[k]);
+      regexProto[k] = () => bite(`${REGEXP_IDENT}.prototype[${String(k)}]`);
     }
     try {
       expect(
@@ -2079,13 +2291,25 @@ describe('catalogRoundTrip (M24 S8, ADR-0264)', { sequential: true }, () => {
       ).toEqual(['a', 'b']);
       const enModel = liveModel('en');
       const regexpUses: string[] = [];
-      const guard = (label: string, fn: () => unknown): void => {
+      /** Non-rejection labels rethrow any unexpected error (a silent swallow would let a broken
+       *  pipeline pass as "no RegExp"); rejection labels must throw WITH a structured code (m5). */
+      const guard = (label: string, fn: () => unknown, expectsRejection = false): void => {
+        let threw = false;
         try {
           fn();
         } catch (e) {
-          if ((e as { code?: unknown }).code === 'REGEXP-USED')
+          threw = true;
+          const code = (e as { code?: unknown }).code;
+          if (code === 'REGEXP-USED') {
             regexpUses.push(`${label}: ${(e as Error).message}`);
+          } else if (expectsRejection) {
+            if (code === undefined)
+              regexpUses.push(`${label}: rejected WITHOUT a code: ${String(e)}`);
+          } else {
+            throw e;
+          }
         }
+        if (expectsRejection && !threw) regexpUses.push(`${label}: did not reject`);
       };
       for (const tag of ['en', 'fr']) {
         const src = liveSource(tag);
@@ -2097,6 +2321,12 @@ describe('catalogRoundTrip (M24 S8, ADR-0264)', { sequential: true }, () => {
           parseCatalog(emitted, { tag, file: `catalog.${tag}.ts` });
         });
       }
+      guard('importLocale fr', () =>
+        importTag('fr', exportTag('fr').text, {
+          enModel,
+          outPath: path.join(scratchDir('rt12'), 'catalog.fr.ts'),
+        }),
+      );
       guard('checkCompletion', () =>
         checkBaseline(completionOf([enModel]), { en: { total: 1, translated: 1, gap: 0 } }),
       );
@@ -2126,16 +2356,25 @@ describe('catalogRoundTrip (M24 S8, ADR-0264)', { sequential: true }, () => {
         (j) => setMessage(j, 'battle.title', `Com${String.fromCharCode(7)}bat`),
       ];
       for (let i = 0; i < rejections.length; i++) {
-        guard(`rejection ${i}`, () => validate(frJson(rejections[i]), { tag: 'fr', enModel }));
+        guard(
+          `rejection ${i}`,
+          () => validate(frJson(rejections[i]), { tag: 'fr', enModel }),
+          true,
+        );
       }
       expect(
         regexpUses,
-        'no String.prototype regex-capable method may receive a non-string pattern anywhere in export/import/validation',
+        'no String.prototype regex-capable method may receive a non-string pattern and no RegExp.prototype entry point may run anywhere in export/import/importLocale/validation',
       ).toEqual([]);
     } finally {
       for (const [m, orig] of saved) proto[m] = orig;
+      for (const [k, orig] of savedRegex) regexProto[k] = orig;
     }
     expect('a'.replace('a', 'b'), 'the wrappers were restored').toBe('b');
+    expect(
+      regexKeys.map((k) => typeof regexProto[k]),
+      'the RegExp.prototype entry points were restored',
+    ).toEqual(regexKeys.map(() => 'function'));
   });
 
   it(
@@ -2180,6 +2419,80 @@ describe('catalogRoundTrip (M24 S8, ADR-0264)', { sequential: true }, () => {
         dir,
       );
       expect(check.status, 'check against the just-written baseline -> exit 0').toBe(0);
+      expect(
+        check.stdout
+          .split('\n')
+          .filter((l) => l.length > 0)
+          .pop(),
+        'the OK check ends with the exact summary line',
+      ).toBe('i18n-completion: 2 locale(s) checked, 0 not OK');
+
+      // M5 — the A4 WRITER refusal, reachable only through `--i18n-dir`: a scratch i18n dir whose
+      // catalog.fr.ts carries one `// @translated: false` marker (live gap 1) against a baseline
+      // with gap 0 must refuse to write (exit 1, REGRESSION line, file untouched); against a
+      // baseline with gap 1 it writes normally.
+      const i18nDir = scratchDir('rt13-i18n');
+      writeFileSync(path.join(i18nDir, 'catalog.en.ts'), liveSource('en'), 'utf8');
+      const frLines = liveSource('fr').split('\n');
+      const youIdx = frLines.indexOf("  'battle.card.you': 'Vous',");
+      expect(
+        youIdx,
+        "precondition: catalog.fr.ts has the 'battle.card.you' entry line",
+      ).toBeGreaterThan(0);
+      frLines.splice(youIdx, 0, '  // @translated: false');
+      writeFileSync(path.join(i18nDir, 'catalog.fr.ts'), frLines.join('\n'), 'utf8');
+      const gap0 = `${JSON.stringify({ en: { total: 112, translated: 112, gap: 0 }, fr: { total: 112, translated: 112, gap: 0 } }, null, 2)}\n`;
+      const refusePath = path.join(dir, 'refuse.json');
+      writeFileSync(refusePath, gap0, 'utf8');
+      const refused = runNode(
+        [EXPORT_SCRIPT, '--completion', '--i18n-dir', i18nDir, '--baseline', refusePath],
+        dir,
+      );
+      expect(
+        {
+          status: refused.status,
+          line: lineStartingWith(refused.stdout.split('\n'), 'i18n-completion: fr'),
+          unchanged: readFileSync(refusePath, 'utf8') === gap0,
+        },
+        'the writer refuses a grown gap: exit 1, the REGRESSION line, baseline byte-unchanged',
+      ).toEqual({
+        status: 1,
+        line: 'i18n-completion: fr total=112 translated=111 gap=1 REGRESSION gap 0 -> 1',
+        unchanged: true,
+      });
+      const gap1 = {
+        en: { total: 112, translated: 112, gap: 0 },
+        fr: { total: 112, translated: 111, gap: 1 },
+      };
+      const acceptPath = path.join(dir, 'accept.json');
+      writeFileSync(acceptPath, `${JSON.stringify(gap1, null, 2)}\n`, 'utf8');
+      const accepted = runNode(
+        [EXPORT_SCRIPT, '--completion', '--i18n-dir', i18nDir, '--baseline', acceptPath],
+        dir,
+      );
+      expect(
+        { status: accepted.status, written: JSON.parse(readFileSync(acceptPath, 'utf8')) },
+        'an equal gap writes normally: exit 0, the file rewritten with gap 1',
+      ).toEqual({ status: 0, written: gap1 });
+
+      // M6 — the main guard: a bare `import()` of the script must run NOTHING (no stdout, no
+      // build/i18n under the cwd).
+      const bare = runNode(
+        [
+          '--input-type=module',
+          '-e',
+          `import(${JSON.stringify(pathToFileURL(EXPORT_SCRIPT).href)})`,
+        ],
+        dir,
+      );
+      expect(
+        {
+          status: bare.status,
+          out: bare.stdout,
+          leaked: existsSync(path.join(dir, 'build')),
+        },
+        'importing the exporter as a module prints nothing and writes nothing (main is guarded)',
+      ).toEqual({ status: 0, out: '', leaked: false });
 
       const stalePath = path.join(dir, 'stale.json');
       writeFileSync(
@@ -2247,6 +2560,19 @@ describe('catalogRoundTrip (M24 S8, ADR-0264)', { sequential: true }, () => {
     'm24s8 RT-14: import CLI — success + registration banner, ICU-UNSUPPORTED exit 2 with nothing written, usage exit 2, source-locale refusal',
     () => {
       const dir = scratchDir('rt14');
+      // m7: the live tree must be byte-untouched by every CLI run below (an importer that ignores
+      // `--out`, or a success path that refreshes the committed baseline, would show here).
+      const liveFrPath = path.join(I18N_DIR, 'catalog.fr.ts');
+      const liveBaselinePath = path.join(
+        PROJECT_ROOT,
+        'evals',
+        'baselines',
+        'i18n-locale-completion.json',
+      );
+      const frBefore = readFileSync(liveFrPath, 'utf8');
+      const baselineBefore = existsSync(liveBaselinePath)
+        ? readFileSync(liveBaselinePath, 'utf8')
+        : undefined;
       const frJsonPath = path.join(dir, 'fr.icu.json');
       writeFileSync(frJsonPath, exportTag('fr').text, 'utf8');
       const outPath = path.join(dir, 'x.ts');
@@ -2325,6 +2651,16 @@ describe('catalogRoundTrip (M24 S8, ADR-0264)', { sequential: true }, () => {
         none.status,
         'no arguments is a usage error, exit 2 (an unguarded main would have exited at collection)',
       ).toBe(2);
+
+      expect(
+        {
+          fr: readFileSync(liveFrPath, 'utf8') === frBefore,
+          baseline:
+            (existsSync(liveBaselinePath) ? readFileSync(liveBaselinePath, 'utf8') : undefined) ===
+            baselineBefore,
+        },
+        'm7: catalog.fr.ts and evals/baselines/i18n-locale-completion.json are byte-identical after every import CLI run',
+      ).toEqual({ fr: true, baseline: true });
     },
     LONG_TEST_MS,
   );

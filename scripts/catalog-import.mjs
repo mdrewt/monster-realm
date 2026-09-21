@@ -40,9 +40,6 @@ import {
 
 /** The `${` opener, concatenated so no plain string literal here holds a template hole. */
 const HOLE = '$' + '{';
-/** The keyword, spliced: the I18N-30 import-roster scan reads string payloads, and must never
- *  take an EMITTED import line for one of this script's own. */
-const IMPORT = ['im', 'port'].join('');
 
 function fail(code, detail) {
   throw Object.assign(new Error(`catalog-import: ${code} ${detail}`), { code });
@@ -313,10 +310,10 @@ export function emitCatalogTs(tag, model) {
     '// the next export. Dead CLDR categories of a plural mirror its other form; only entry blocks',
     '// round-trip (this header is regenerated each time the file is written).',
     '',
-    `${IMPORT} type { Catalog } from './messageIds';`,
+    "import type { Catalog } from './messageIds';",
   ];
   const withPlurals = model.entries.filter((e) => Object.keys(e.plurals).length > 0);
-  if (withPlurals.length > 0) lines.push(`${IMPORT} { cldr, selectPlural } from './plural';`);
+  if (withPlurals.length > 0) lines.push("import { cldr, selectPlural } from './plural';");
   lines.push('');
   for (const entry of withPlurals) {
     for (const name of Object.keys(entry.plurals)) {

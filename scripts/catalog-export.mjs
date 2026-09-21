@@ -498,7 +498,7 @@ function classify(live, baseline) {
         line: `i18n-completion: ${tag} total=- translated=- gap=- ${status}`,
       };
     }
-    if (b === undefined) status = 'STALE not in the baseline';
+    if (b === undefined) status = 'STALE not in baseline';
     else if (l.gap > b.gap) {
       status = `REGRESSION gap ${b.gap} -> ${l.gap}`;
       grew = true;
@@ -521,21 +521,23 @@ export function checkCompletion(live, baseline) {
 // ---------------------------------------------------------------------------
 
 const USAGE = [
-  'usage: node scripts/catalog-export.mjs [--out <dir>]',
-  '       node scripts/catalog-export.mjs --completion [--check] [--baseline <path>]',
-  '       node scripts/catalog-export.mjs --seed <tag> [--out <dir>]',
+  'usage: node scripts/catalog-export.mjs [--out <dir>] [--i18n-dir <dir>]',
+  '       node scripts/catalog-export.mjs --completion [--check] [--baseline <path>] [--i18n-dir <dir>]',
+  '       node scripts/catalog-export.mjs --seed <tag> [--out <dir>] [--i18n-dir <dir>]',
 ].join('\n');
 
 function parseArgs(argv) {
   const opts = { mode: 'export', out: undefined, check: false, baseline: undefined, seed: '' };
+  const valued = ['--out', '--baseline', '--seed', '--i18n-dir'];
   for (let k = 0; k < argv.length; k++) {
     const arg = argv[k];
     const value = argv[k + 1];
     if (arg === '--completion') opts.mode = 'completion';
     else if (arg === '--check') opts.check = true;
-    else if ((arg === '--out' || arg === '--baseline' || arg === '--seed') && value !== undefined) {
+    else if (valued.includes(arg) && value !== undefined) {
       if (arg === '--out') opts.out = value;
       else if (arg === '--baseline') opts.baseline = value;
+      else if (arg === '--i18n-dir') opts.i18nDir = resolve(value);
       else {
         opts.mode = 'seed';
         opts.seed = value;
@@ -553,9 +555,9 @@ function writeJson(outDir, tag, text) {
   return outPath;
 }
 
-function runCompletion(opts) {
+function runCompletion(opts, i18nDir) {
   const baselinePath = resolve(opts.baseline ?? BASELINE_PATH);
-  const live = computeCompletion(discoverLocales().map((tag) => readModel(tag, I18N_DIR)));
+  const live = computeCompletion(discoverLocales(i18nDir).map((tag) => readModel(tag, i18nDir)));
   let baseline;
   if (existsSync(baselinePath)) {
     try {
@@ -594,13 +596,14 @@ function main(argv) {
     console.error(USAGE);
     return 2;
   }
-  if (opts.mode === 'completion') return runCompletion(opts);
+  const i18nDir = opts.i18nDir ?? I18N_DIR;
+  if (opts.mode === 'completion') return runCompletion(opts, i18nDir);
   const outDir = resolve(opts.out ?? BUILD_DIR);
   if (opts.mode === 'seed') {
     // A9: the only sanctioned producer of `translated: false` — English text under a new tag.
     if (opts.seed === 'en') fail('LOCALE-IS-SOURCE', 'en is the source locale, nothing to seed');
     liveCategories(opts.seed);
-    const { json } = exportLocale('en');
+    const { json } = exportLocale('en', { i18nDir });
     json.locale = opts.seed;
     for (const message of Object.values(json.messages)) message.translated = false;
     const outPath = writeJson(outDir, opts.seed, `${JSON.stringify(json, null, 2)}\n`);
@@ -609,8 +612,8 @@ function main(argv) {
     );
     return 0;
   }
-  for (const tag of discoverLocales()) {
-    const { json, text } = exportLocale(tag);
+  for (const tag of discoverLocales(i18nDir)) {
+    const { json, text } = exportLocale(tag, { i18nDir });
     const outPath = writeJson(outDir, tag, text);
     console.log(
       `catalog-export: ${tag} ${Object.keys(json.messages).length} messages -> ${outPath}`,
