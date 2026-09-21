@@ -21391,15 +21391,14 @@ fn rb107_test_roster_is_closed() {
         distinct.len()
     );
 
-    for owner in 0..roster.len() {
+    for (owner, name) in roster.iter().enumerate() {
         let owned = labels.iter().filter(|(_, idx)| *idx == owner).count();
         assert!(
             owned >= 2,
-            "[rb107/label-census]: the roster credits `{}` with only {owned} clause label(s); \
+            "[rb107/label-census]: the roster credits `{name}` with only {owned} clause label(s); \
              every test in this slice ships at least two. ONE or ZERO means the roster was \
              trimmed rather than the test, which would let that test be hollowed out with the \
-             census still closed over whatever labels were left.",
-            roster[owner]
+             census still closed over whatever labels were left."
         );
     }
 

@@ -1490,11 +1490,13 @@ fn rows_character(ctx: &ReducerContext, owner: Identity) -> Result<Vec<String>, 
 // ===========================================================================
 // The reducer (ADR-0226 guard order — this shape IS the security boundary and
 // privacy_tests.rs pins it statement by statement):
-//   subject-existence guard, then deletion gate, then cooldown, then
-//   purge-before-write, then the manifest-order walk, then the insert loop,
-//   then the rb-48 self-arm, then the rb-65 observation line (terminal).
-// Exactly three reject returns precede the purge; a mid-walk Err aborts the
-// whole transaction, so the purged prior bundle rolls back (ADR-0106 D8).
+//   subject guard, deletion gate, cooldown, purge-before-write, the rb-107
+//   admission pre-gate (does the smallest possible bundle fit?), the
+//   manifest-order walk, the rb-107 exact gate (does THIS bundle fit?), the
+//   insert loop, the rb-48 self-arm, then the rb-65 observation line (terminal).
+// Three rejects precede the purge; the two admission rejects follow it, share
+// one static reason and one cap binding, and a mid-walk Err — theirs included —
+// rolls that purge back with it (ADR-0106 D8).
 // ===========================================================================
 
 /// Build the caller a fresh export: one chunk per exportable table (split at
@@ -1504,7 +1506,10 @@ fn rows_character(ctx: &ReducerContext, owner: Identity) -> Result<Vec<String>, 
 /// bundle now expires via the hourly TTL reaper, rb-48, but a zero-state
 /// identity should not write one in the first place), a caller inside
 /// the deletion grace window (PRV1-7; cancel-then-export stays available), and
-/// a caller inside the flood-control cooldown window.
+/// a caller inside the flood-control cooldown window. Since rb-107 (ADR-0265)
+/// it also rejects, under ONE further static reason, any caller whose bundle
+/// would take `export_bundle` past the global live-row cap — half of it for a
+/// caller with no `account` row, so sybils cannot crowd out account holders.
 #[spacetimedb::reducer]
 pub fn request_data_export(ctx: &ReducerContext) -> Result<(), String> {
     let me = ctx.sender();
@@ -1528,6 +1533,19 @@ pub fn request_data_export(ctx: &ReducerContext) -> Result<(), String> {
         return Err(stringify!(export_reject_cooldown).to_string());
     }
     let purged = purge_export_bundles(ctx, me);
+    // rb-107 (ADR-0265): admission control, tier one. The cap depends on the
+    // caller, the shed order does not: an anonymous caller is refused while an
+    // account holder still has headroom, so no number of JWT-less identities can
+    // take the whole store. The subject test is the crate SSOT (ADR-0189 D2 /
+    // ADR-0179 D4', accounts.rs:477) — never has_jwt(), which is true for every
+    // connection. This first gate asks whether even the SMALLEST possible bundle
+    // fits, so a caller who cannot be served is refused BEFORE the manifest walk
+    // (which includes two unindexed own-row scans). An Err here rolls the purge
+    // above back with it (ADR-0106 D8).
+    let cap = export_live_row_cap(crate::accounts::is_account_holder(ctx, me));
+    if !export_admission_open(ctx.db.export_bundle().count(), EXPORT_MIN_BUNDLE_ROWS, cap) {
+        return Err(stringify!(export_reject_admission).to_string());
+    }
     let mut per_table: Vec<(&'static str, Vec<String>)> = Vec::new();
     for entry in DATA_LIFECYCLE_MANIFEST {
         if !entry.exportable {
@@ -1553,6 +1571,11 @@ pub fn request_data_export(ctx: &ReducerContext) -> Result<(), String> {
     }
     let plan = plan_export_chunks(per_table);
     let total = plan.len() as u32;
+    // rb-107 (ADR-0265): admission control, tier two — the same cap, now against
+    // this request's EXACT row count, so the live population can never EXCEED it.
+    if !export_admission_open(ctx.db.export_bundle().count(), total, cap) {
+        return Err(stringify!(export_reject_admission).to_string());
+    }
     for c in plan {
         ctx.db.export_bundle().insert(ExportBundle {
             chunk_id: 0,
@@ -1658,6 +1681,60 @@ pub(crate) const EXPORT_REAP_MAX_DELETE_PER_TICK: usize = 256;
 // drain rate of the 256-row cap it replaces; a 256-row window in ascending stamp
 // order holds at most fifteen whole bundles and one straddler anyway.
 pub(crate) const EXPORT_REAP_MAX_STAMPS_PER_TICK: usize = 16;
+
+// ===========================================================================
+// rb-107 (ADR-0265): the GLOBAL admission ceiling for export_bundle, with ZERO
+// new state, closing residual R-rb-85-EXPORTADMIT. The three constants above
+// bound what ONE tick retires; this is what the reaper retires in one whole
+// retention window, so the write side cannot outpace the drain. The derivation
+// and its trade-offs live ONCE, in ADR-0265 D1 — what must be stated here is the
+// inequality it rests on: EXPORT_REAP_MAX_STAMPS_PER_TICK * EXPORT_MIN_BUNDLE_ROWS
+// >= EXPORT_REAP_MAX_DELETE_PER_TICK (16 * 17 = 272 >= 256), which is what makes
+// a tick retire at least as many rows as it read. Stamps are deleted WHOLE, so
+// no bundle is ever partly reaped and the floor holds whatever order the window
+// arrives in; [rb86/stamp-cap-throughput] asserts that inequality off the live
+// manifest. Draining a FULL store therefore takes about 158 ticks (6.6 days), so
+// a row's worst case is two retention windows, not one. Two thresholds, one
+// count: a caller with no account row gets half, so anonymous identities can
+// never take the account holders' half (ADR-0265 D1b; the lockout they CAN
+// sustain is R-rb-107-LOCKOUT). The bound is on ROWS, not bytes — a chunk carries
+// up to EXPORT_CHUNK_ROWS serialized rows (R-rb-107-BYTEBOUND). PRIVATE, like
+// EXPORT_REQUEST_COOLDOWN_MS above: DoS knobs, not legal figures.
+// ===========================================================================
+
+const EXPORT_LIVE_ROW_CAP: u64 = (EXPORT_REAP_MAX_DELETE_PER_TICK as u64)
+    * (EXPORT_BUNDLE_TTL_MS as u64 / EXPORT_REAP_INTERVAL.as_millis() as u64);
+
+const EXPORT_ANON_LIVE_ROW_CAP: u64 = EXPORT_LIVE_ROW_CAP / 2;
+
+// One chunk per exportable table is the smallest bundle this reducer can write
+// (plan_export_chunks pushes an empty chunk for an empty table), and the const
+// totality assertion above makes EXPORTERS.len() exactly the manifest's
+// exportable count — so this is derived, never transcribed.
+const EXPORT_MIN_BUNDLE_ROWS: u32 = EXPORTERS.len() as u32;
+
+// Tier selection. PURE and exhaustive over its input, so both arms have a value
+// oracle in an ordinary test.
+fn export_live_row_cap(has_account: bool) -> u64 {
+    if has_account {
+        EXPORT_LIVE_ROW_CAP
+    } else {
+        EXPORT_ANON_LIVE_ROW_CAP
+    }
+}
+
+// The admission predicate: PURE, and that is a CONSTRAINT rather than a style
+// choice. The shells around it reach a table, so they can never run in the
+// native test host — it models ten syscalls, the row-count one is not among
+// them, and a test that reached the reducer would fail the LINK of the whole
+// lib-test binary rather than red one test. Scalar-argued, it has a value
+// oracle. EXACT rather than approximate: the request's own row count is added,
+// so a request is admitted only if the WHOLE bundle fits. SATURATING because the
+// release profile enables overflow checks and an addition that wrapped would
+// both abort the reducer and, worse, ADMIT.
+fn export_admission_open(live_rows: u64, requested: u32, cap: u64) -> bool {
+    live_rows.saturating_add(u64::from(requested)) <= cap
+}
 
 // PRIVATE scheduled table colocated with its reducer (ADR-0056 exception).
 #[spacetimedb::table(accessor = export_bundle_reaper_schedule, scheduled(export_bundle_reaper))]
@@ -1830,8 +1907,9 @@ fn export_reap_cutoff_ms(now_ms: i64, ttl_ms: i64) -> i64 {
 // does), and `.take` caps the read at EXPORT_REAP_MAX_DELETE_PER_TICK, so the
 // module decodes at most that many rows per tick however large the table grows
 // (the host may fill at most one further iterator buffer beyond the last decoded
-// row). The bound is on ROWS, not bytes (the byte-level bound is
-// R-rb-85-EXPORTADMIT; rb-87 ships the counts an operator alarm reads).
+// row). The bound is on ROWS, not bytes: rb-107 (ADR-0265) closed
+// R-rb-85-EXPORTADMIT with a write-side row cap sized to this drain, and the
+// byte-level ceiling it leaves open is R-rb-107-BYTEBOUND.
 //
 // WHOLE BUNDLES, never a fraction of one (rb-86). A bundle is every chunk
 // sharing one creation stamp: `request_data_export` stamps all of a request's
