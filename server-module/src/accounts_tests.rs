@@ -3617,7 +3617,7 @@ fn m22_declared_mod_names() -> Vec<String> {
 }
 
 /// Blank every `//` line comment, `/* */` block comment (NESTING-aware), string
-/// literal (`"…"` with `\` escapes, `r"…"`, `r#"…"#` up to six hashes) and char
+/// literal (`"…"` with `\` escapes, `r"…"`, `r#"…"#` with ANY number of hashes) and char
 /// literal (`'x'`, `'\n'`, `'"'`) to spaces in ONE pass, keeping every `\n`
 /// byte exactly where it was — inside block comments and multi-line strings
 /// too. Lifetimes (`'a`) are left alone: a `'` opens a char literal only when
@@ -3642,15 +3642,15 @@ fn m22_blank_for_mod_scan(src: &str) -> String {
             }
         }
     }
-    /// If a raw string opens at byte `i` (`r"` or `r#"` with up to six hashes),
-    /// the number of hashes it carries.
+    /// If a raw string opens at byte `i` (`r"` or `r#"` with ANY number of hashes
+    /// — Rust allows up to 255), the number of hashes it carries.
     fn raw_string_hashes(bytes: &[u8], i: usize) -> Option<usize> {
         if bytes[i] != b'r' {
             return None;
         }
         let mut hashes: usize = 0;
         let mut k = i + 1;
-        while k < bytes.len() && bytes[k] == b'#' && hashes < 6 {
+        while k < bytes.len() && bytes[k] == b'#' {
             hashes += 1;
             k += 1;
         }
@@ -3692,8 +3692,8 @@ fn m22_blank_for_mod_scan(src: &str) -> String {
             blank_span(&mut out, i, j);
             i = j;
         } else if let Some(hashes) = raw_string_hashes(bytes, i) {
-            // Raw string `r"…"` / `r#"…"#` (up to six hashes): the closing `"`
-            // must be followed by exactly as many `#` as the opener carried.
+            // Raw string `r"…"` / `r#"…"#` (any hash count): the closing `"` must
+            // be followed by exactly as many `#` as the opener carried.
             let mut j = i + 1 + hashes + 1; // past `r`, the hashes, and `"`
             while j < len {
                 if bytes[j] == b'"' {
@@ -3761,13 +3761,16 @@ fn m22_blank_for_mod_scan(src: &str) -> String {
 /// that is neither (so an attribute above a `use` or `fn` belongs to that item,
 /// not to the mod). Exempt iff one collected attribute is exactly
 /// `#[cfg(test)]`; a name suffix is never evidence and every other cfg form
-/// counts as production (fail toward coverage). A same-line
-/// `#[cfg(test)] mod x;`, several attributes on one line, and a genuinely
-/// multi-line `#[cfg(` / `test` / `)]` are rustfmt-impossible in this crate
-/// and all count as production. Runs over `m22_blank_for_mod_scan`, which
-/// keeps every newline, so no comment or string literal can merge lines and
-/// glue an attribute onto a later mod (rb-85 residual R-rb-85-MODCENSUS,
-/// ADR-0266).
+/// counts as production (fail toward coverage). A raw-identifier module
+/// (`r#name`) is reported by its BARE name, which is also its file stem. A
+/// same-line attribute run (`#[cfg(test)] mod x;`, or several attributes on
+/// one line) and a genuinely multi-line `#[cfg(` / `test` / `)]` are
+/// rustfmt-impossible in this crate and count as production; two `mod` items
+/// on one physical line are not parsed at all, and `cargo fmt --check` (a
+/// `just lint` gate) keeps that layout from shipping. Runs over
+/// `m22_blank_for_mod_scan`, which keeps every newline, so no comment or string
+/// literal can merge lines and glue an attribute onto a later mod (rb-85
+/// residual R-rb-85-MODCENSUS, ADR-0266).
 fn m22_declared_mod_names_in(src: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let clean = m22_blank_for_mod_scan(src);
@@ -3787,6 +3790,7 @@ fn m22_declared_mod_names_in(src: &str) -> Vec<String> {
             Some(name) => name.trim(),
             None => continue,
         };
+        let name = name.strip_prefix("r#").unwrap_or(name);
         if name.is_empty() || !name.chars().all(is_word_char) {
             continue;
         }
