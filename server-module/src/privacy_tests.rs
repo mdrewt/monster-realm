@@ -9431,8 +9431,9 @@ fn rb65p_fields_body_source() -> String {
 ///     exactly one `#[cfg` attribute and zero `cfg!` macros, and ADR-0224
 ///     forbids a second clause for zero marginal coverage);
 ///   - the reachability clause is scoped BY DEPTH, because this reducer
-///     legitimately carries one nested `return Err(..)` AFTER the purge, where
-///     the reaper carries none at all below its cascade;
+///     carries three sanctioned nested `return Err(..)`s AFTER the purge — the
+///     PRV1-11 fail-loud arm and, since rb-107 (ADR-0265), the two admission
+///     gates — where the reaper carries none at all below its cascade;
 ///   - that nested return's SHAPE is pinned too (round 2): a count alone cannot
 ///     tell the PRV1-11 fail-loud arm from a fail-silent rewrite of it, and the
 ///     rewrite was MEASURED green against the count;
@@ -9475,13 +9476,24 @@ fn rb65p_fields_body_source() -> String {
 ///   (7) the emission nested one brace deep — an `if purged > 0` guard silences
 ///       exactly the first-export case;
 ///   (8) a DEPTH-0 `return` inserted between the purge binding and the trailing
-///       Ok, which makes the emission dead code or adds an exit that skips it;
+///       Ok, which makes the emission dead code or adds an exit that skips it.
+///       The region's three sanctioned nested returns — the PRV1-11 fail-loud
+///       arm and, since rb-107 (ADR-0265), the admission pre-gate and the exact
+///       gate — are all one brace deep inside their own `if`, so none of them
+///       is at depth zero and this clause is unmoved by that slice;
 ///   (8b) the PRV1-11 fail-loud arm rewritten `None => { return Ok(()); }` —
-///       MEASURED: the nested-return COUNT is unchanged, so (8) stays green,
-///       while a request that finds no exporter for a manifest-exportable table
-///       returns SUCCESS with a short bundle, its prior bundle already purged,
-///       no arm and no line. Counting the SHAPE is what tells a fail-loud arm
-///       from a fail-silent one;
+///       MEASURED: the nested-return COUNT is unchanged (the rewrite is still a
+///       `return`), so the nested-count clause stays green at three and the
+///       depth-0 clause at (8) never sees it, while a request that finds no
+///       exporter for a manifest-exportable table returns SUCCESS with a short
+///       bundle, its prior bundle already purged, no arm and no line. Counting
+///       the SHAPE is what tells a fail-loud arm from a fail-silent one, and
+///       since rb-107 the same argument covers its two admission siblings: a
+///       gate whose reject is rewritten as a success moves no count at all, and
+///       is caught only by
+///       `rb107_reducer_admits_twice_before_the_first_write`
+///       `[rb107/exit-shape]`, which pins each of the three exits to its own
+///       spelling and requires the named shapes to sum to the total;
 ///   (8c) a `?` early exit at depth 0 in the same region — MEASURED as `let _ =
 ///       rows_character(ctx, me)?;` after the purge binding. It spells no
 ///       `return` token, so (8) and (8b) are both blind to it, and it skips the
@@ -9707,12 +9719,18 @@ fn rb65p_export_emits_one_observation() {
 
     // --- (8) REACHABILITY, SCOPED BY DEPTH -----------------------------------
     // The region from the purge binding to the trailing Ok legitimately contains
-    // ONE `return`: the PRV1-11 `export_missing_exporter` fail-loud arm, which
-    // sits at depth 3 inside the manifest walk. A flat "no return token here"
-    // clause would therefore be unsatisfiable against the correct
-    // implementation, so the clause counts by DEPTH instead — and the depth-0
-    // count of zero is the property that actually matters: a top-level early
-    // exit below the purge is what makes the emission dead code.
+    // THREE nested `return`s, and rb-107 (ADR-0265) named them: the PRV1-11
+    // `export_missing_exporter` fail-loud arm, which sits at depth 3 inside the
+    // manifest walk, plus the admission PRE-GATE just below the purge and the
+    // EXACT gate just above the insert loop, each one brace deep inside its own
+    // `if`. A flat "no return token here" clause would therefore be
+    // unsatisfiable against the correct implementation, so the clause counts by
+    // DEPTH instead — and the depth-0 count of zero is the property that
+    // actually matters: a top-level early exit below the purge is what makes the
+    // emission dead code. The nested count below is a BUDGET, not a fact about
+    // the code: which three shapes those returns have is owned by
+    // rb107_reducer_admits_twice_before_the_first_write [rb107/exit-shape], and
+    // neither number may move without the other.
     let region = &body[at_purge..at_ok];
     let region_bytes = region.as_bytes();
     let mut depth0 = 0usize;
@@ -9735,20 +9753,36 @@ fn rb65p_export_emits_one_observation() {
     assert_eq!(
         depth0, 0,
         "rb65p [emit/reachable]: {depth0} DEPTH-0 `return` token(s) sit between the bound purge \
-         and the trailing Ok(()). Every sanctioned reject in this reducer is one of the three \
-         guards that run BEFORE the purge, so a top-level return below it either makes the \
-         emission dead code or adds an exit that skips it — while the count, terminal, ordering \
-         and depth clauses above all stay GREEN, because every one of them reasons about POSITION \
-         and none about REACHABILITY. Region text: {region:?}"
+         and the trailing Ok(()). Every sanctioned reject in this reducer is either one of the \
+         three guards ABOVE the purge or one of the two rb-107 admission gates below it, and each \
+         of those five sits inside its own `if` — so NONE of them is at depth zero here. A \
+         top-level return below the purge therefore either makes the emission dead code or adds \
+         an exit that skips it, while the count, terminal, ordering and depth clauses above all \
+         stay GREEN, because every one of them reasons about POSITION and none about \
+         REACHABILITY. THIS ZERO IS LOAD-BEARING FOR rb-107: \
+         `rb107_reducer_admits_twice_before_the_first_write` `[rb107/exit-shape]` counts `Err` \
+         returns over this whole region rather than by depth, and it may do so only because this \
+         clause has already fixed the depth-0 share at nothing. Region text: {region:?}"
     );
     assert_eq!(
-        nested, 1,
-        "rb65p [emit/reachable-nested]: exactly ONE nested `return` may sit between the purge and \
-         the trailing Ok — the PRV1-11 `export_missing_exporter` fail-loud arm inside the \
-         manifest walk; found {nested}. ZERO means that arm was deleted or turned into a silent \
-         `continue`, which is the shape that produces a SHORT export (a bundle missing a table \
-         the manifest promises) while returning success. MORE THAN ONE is an undeclared early \
-         exit hiding one brace deep, where the depth-0 clause above cannot see it."
+        nested, 3,
+        "rb65p [emit/reachable-nested]: exactly THREE nested `return`s may sit between the purge \
+         and the trailing Ok; found {nested}. MOVED 1 -> 3 BY rb-107 (ADR-0265, closes \
+         R-rb-85-EXPORTADMIT) — ATTRIBUTION, NOT RELAXATION, and these are the three sanctioned \
+         nested returns, named: the PRV1-11 `export_missing_exporter` fail-loud arm at depth three \
+         inside the manifest walk, the rb-107 admission PRE-GATE immediately after the purge, and \
+         the rb-107 EXACT gate immediately before the insert loop. The two admission exits reject \
+         a caller whose bundle would take the export table past the global live-row cap; they sit \
+         one brace deep inside their own `if`, which is why they land here and not in the depth-0 \
+         count above. THE SHAPE OF ALL THREE IS OWNED BY \
+         `rb107_reducer_admits_twice_before_the_first_write` `[rb107/exit-shape]`, which requires \
+         the two NAMED forms — two admission rejects and one fail-loud arm — to SUM to this total, \
+         so a fourth, undeclared exit shows up there as a gap even while this number is moved to \
+         match it. That test runs in X1 and in the same X2/X3/X6 gates as this one. ZERO or TWO \
+         still means the PRV1-11 arm was deleted or turned into a silent `continue`, which is the \
+         shape that produces a SHORT export (a bundle missing a table the manifest promises) while \
+         returning success. MORE THAN THREE is an undeclared early exit hiding one brace deep, \
+         where the depth-0 clause above cannot see it."
     );
 
     // --- (8b) THE NESTED EXIT IS AN `Err`, NEVER AN `Ok` (red-team S3) ------
@@ -9763,12 +9797,21 @@ fn rb65p_export_emits_one_observation() {
     // total and a depth>0 total are the same number here.
     let n_ret_err = rb22p_count(region, concat!("returnEr", "r("));
     assert_eq!(
-        n_ret_err, 1,
-        "rb65p [emit/nested-is-err]: exactly ONE `Err` return may sit between the purge and the \
-         trailing Ok — the PRV1-11 `export_missing_exporter` fail-loud arm; found {n_ret_err}. \
-         ZERO means the arm no longer FAILS: PRV1-11 promises that a table the manifest declares \
-         exportable, with no exporter behind it, aborts the whole request rather than silently \
-         producing a bundle that is missing it."
+        n_ret_err, 3,
+        "rb65p [emit/nested-is-err]: exactly THREE `Err` returns may sit between the purge and the \
+         trailing Ok — the PRV1-11 `export_missing_exporter` fail-loud arm, the rb-107 admission \
+         pre-gate and the rb-107 exact gate; found {n_ret_err}. MOVED 1 -> 3 BY rb-107 (ADR-0265) \
+         — ATTRIBUTION, NOT RELAXATION. This clause says every nested exit in the region is an \
+         `Err`; WHICH `Err` each one is belongs to \
+         `rb107_reducer_admits_twice_before_the_first_write` `[rb107/exit-shape]`, which pins the \
+         two admission rejects to the static reason they share and the fail-loud arm to its bound \
+         message, and requires the two named forms to sum to this total. Without that owner a \
+         count of three is satisfied by any three `Err`s at all, which is precisely how a widened \
+         census stops being a budget. BELOW THREE means an exit changed polarity or was deleted: \
+         PRV1-11 promises that a table the manifest declares exportable, with no exporter behind \
+         it, aborts the whole request rather than silently producing a bundle that is missing it, \
+         and rb-107 promises that a caller whose bundle would breach the live-row cap is REJECTED \
+         rather than served a short one."
     );
     // SUBSUMED BY ARITHMETIC, and saying so is the point: the depth-0 count is
     // zero, the nested count is one, and that one return is an `Err` — so an
@@ -13901,18 +13944,34 @@ fn rb85_reaper_reads_a_bounded_range_and_never_sweeps() {
     let accessor = m22s4_nd_bundle_accessor();
     let file_wide = rb22p_count(&squashed, &accessor);
     assert_eq!(
-        file_wide, 7,
-        "[rb85/bundle-census]: privacy.rs must reach `{accessor}` exactly seven times; found \
-         {file_wide}. Two in the owner-scoped purge, two in the export reducer, one in the \
+        file_wide, 9,
+        "[rb85/bundle-census]: privacy.rs must reach `{accessor}` exactly nine times; found \
+         {file_wide}. Two in the owner-scoped purge, FOUR in the export reducer, one in the \
          owner-scoped view, two in the bounded-read helper, none in the scheduler-only reducer. \
-         SEVEN before this slice and seven after: the reducer held a read AND a delete, and both \
-         move WHOLE into the helper (two to none there, none to two here), so this total is an \
-         INVARIANT across the change and the per-body attribution below is what actually moves."
+         MOVED 7 -> 9 BY rb-107 (ADR-0265, closes R-rb-85-EXPORTADMIT): the reducer gained TWO \
+         reads of the live population, one per admission gate, each spelled \
+         `{accessor}.count()` — an O(1) metadata read, not a scan. Moving a census is exactly the \
+         shape a silent loosening takes, so the number does not move alone: the per-body \
+         attribution below moves in the same diff and re-closes the set, and \
+         `rb107_reducer_admits_twice_before_the_first_write` `[rb107/count-census]` OWNS the two \
+         new reaches BY SHAPE — exactly two `.count()` calls in the file, both inside the export \
+         reducer, both rooted in this accessor — so a third reach smuggled in as a sweep wearing a \
+         count reds there even while this total has been moved to match it. That test runs in X1 \
+         and in the same X2/X3/X6 gates as this one."
     );
 
+    // The export reducer's share MOVED 2 -> 4 with rb-107 (ADR-0265): the two it
+    // always held are the cooldown's owner-scoped max and the insert, and the
+    // two it gained are the live-population reads of the admission pre-gate and
+    // the exact gate. Both new ones are `.count()` — O(1) datastore metadata,
+    // never a scan — and their SHAPE, their number and their position are owned
+    // by rb107_reducer_admits_twice_before_the_first_write
+    // ([rb107/count-census], [rb107/pre-gate-adjacency],
+    // [rb107/exact-gate-adjacency]), so this number and that test move together
+    // or not at all.
     let attributed: [(&str, &str, usize); 5] = [
         ("the owner-scoped purge helper", purge_body.as_str(), 2),
-        ("request_data_export", export_body.as_str(), 2),
+        ("request_data_export", export_body.as_str(), 4),
         ("the owner-scoped export view", view_body.as_str(), 1),
         ("the bounded-read TTL helper", body.as_str(), 2),
         ("the scheduler-only reaper reducer", reaper_body.as_str(), 0),
@@ -18740,6 +18799,2150 @@ fn rb87_test_roster_is_closed() {
          carrying a second attribute between the two. That test would ship, never run, and leave \
          both counts unmoved; this clause is the one that sees it, and it also catches a roster \
          name declared without `#[test]` at all.",
+        attributed,
+        roster.len()
+    );
+}
+
+// ===========================================================================
+// rb-107 (ADR-0265; closes residual R-rb-85-EXPORTADMIT) — THE GLOBAL,
+// ACCOUNT-TIERED LIVE-ROW ADMISSION CAP ON THE EXPORT REDUCER.
+//
+// EARS X1 (spec M-residual-backlog.spec.md, slice rb-107): WHEN a caller asks
+// the export reducer to write a bundle THE SYSTEM SHALL admit the request only
+// while the WHOLE bundle still fits under a GLOBAL live-row ceiling — the
+// reaper's one-retention-window drain capacity for a caller holding an account
+// row, HALF of that for every caller without one — and SHALL reject under ONE
+// static reason rather than clamp, TWICE: once immediately after the purge
+// against the smallest bundle this reducer can write, and once after the
+// manifest walk against this request's EXACT row count.
+//
+// WHY THE SEAMS ARE PURE, AND WHY THAT IS A CONSTRAINT RATHER THAN A STYLE
+// CHOICE. The native test host (`native_host_tests.rs`) models exactly ten
+// syscalls and the row-count one is NOT among them, so after rb-107 the export
+// reducer is LINK-fatal: a test that reached it would fail the link of the whole
+// lib-test binary rather than red one test, which reads like a toolchain problem
+// instead of a finding. Nothing in this block therefore names the reducer as a
+// Rust symbol or calls anything that reaches a table. The only executable
+// surfaces are the two scalar-argued seams and the three constants; everything
+// else in this block is a SOURCE scan and compiles on the pre-fix tree.
+//
+// SCAN HYGIENE (rb22p_scan_hygiene scans THIS FILE): line comments only, no
+// block-comment delimiter, no raw-string prefix, no output or debug macro token,
+// no backslash before a double quote, and no double quote inside any comment in
+// this section. Every production NEEDLE below is assembled from concat!
+// fragments and is never spelled contiguously, so a raw-corpus scanner that
+// concatenates this file cannot mistake a pinned literal for a live declaration.
+// The ONE deliberate exception is the live CALL and the live CONSTANT READ in
+// the three value-oracle tests, exactly as the rb-48 and rb-85 behavioural tests
+// already spell `crate::privacy::plan_export_reap` and
+// `crate::privacy::EXPORT_REAP_MAX_DELETE_PER_TICK` by their real names: a value
+// oracle has to reach the real item.
+//
+// RUSTFMT TOLERANCE, MEASURED, ONCE AND ONLY ONCE IN THIS BLOCK. The pre-gate's
+// argument list is 59 of rustfmt's fn_call_width (60), so it is flat today and
+// ANY longer spelling would wrap it vertically and append a trailing comma. The
+// ARGUMENT sub-clause of the pre-gate adjacency pin therefore drops one trailing
+// comma before comparing (the rb-86 `[rb86/cap-wiring]` idiom), so that if the
+// call is ever lengthened the reader is told the ARGUMENTS are still the
+// reviewed ones and it is the STATEMENT SHAPE that moved. The two-sided
+// statement needle itself is NOT widened: a wrapped call is a lengthened call,
+// which plan §8.2 forbids outright, and it must red rather than be absorbed.
+// ===========================================================================
+
+// --- squashed needles, assembled from fragments ------------------------------
+
+/// The squashed `fn` needle for the admission predicate.
+fn rb107_nd_admit_fn() -> String {
+    concat!("fnexport_admission", "_open(").to_string()
+}
+
+/// The BARE naming needle for the admission predicate — definition and call
+/// sites alike.
+///
+/// NEVER prefixed with the bang (plan §8.4): the DEFINITION does not carry one,
+/// so a bang-prefixed needle is unsatisfiable as a declaration census and would
+/// report zero against a perfectly correct tree.
+fn rb107_nd_admit_named() -> String {
+    concat!("export_admission", "_open(").to_string()
+}
+
+/// The squashed `fn` needle for the tier-selection seam.
+fn rb107_nd_tier_fn() -> String {
+    concat!("fnexport_live", "_row_cap(").to_string()
+}
+
+/// The BARE naming needle for the tier-selection seam.
+fn rb107_nd_tier_named() -> String {
+    concat!("export_live", "_row_cap(").to_string()
+}
+
+/// THE FROZEN SQUASHED DECLARATION of the full live-row cap.
+///
+/// The value and the derivation are pinned SEPARATELY and both are required:
+/// `43_008` and this expression are value-identical, so only the source pin can
+/// tell a transcribed literal from the derivation, and only the value clauses
+/// can tell this expression from a wrong-valued one.
+fn rb107_nd_cap_decl() -> String {
+    [
+        concat!("constEXPORT_LIVE", "_ROW_CAP:u64="),
+        concat!("(EXPORT_REAP_MAX_DELETE", "_PER_TICKasu64)"),
+        "*(",
+        concat!("EXPORT_BUNDLE", "_TTL_MSasu64/"),
+        concat!("EXPORT_REAP", "_INTERVAL.as_millis()asu64);"),
+    ]
+    .concat()
+}
+
+/// THE FROZEN SQUASHED DECLARATION of the anonymous tier's cap.
+///
+/// Prefix-free against the needle above by construction: the full cap's name is
+/// not a substring of this one, so the two declaration censuses cannot be
+/// satisfied by the same span.
+fn rb107_nd_anon_decl() -> String {
+    [
+        concat!("constEXPORT_ANON", "_LIVE_ROW_CAP:u64="),
+        concat!("EXPORT_LIVE", "_ROW_CAP/2;"),
+    ]
+    .concat()
+}
+
+/// THE FROZEN SQUASHED DECLARATION of the minimum-bundle floor, DERIVED from the
+/// exporter registry rather than transcribed as seventeen.
+fn rb107_nd_min_decl() -> String {
+    [
+        concat!("constEXPORT_MIN", "_BUNDLE_ROWS:u32="),
+        concat!("EXPORT", "ERS.len()asu32;"),
+    ]
+    .concat()
+}
+
+/// The frozen squashed SIGNATURE slice of the tier seam. It starts at the `fn`
+/// needle, so the (absent) visibility keyword is not part of it and is pinned
+/// separately by the twenty-four-byte window.
+fn rb107_tier_sig_pin() -> String {
+    [rb107_nd_tier_fn(), "has_account:bool)->u64".to_string()].concat()
+}
+
+/// THE FROZEN SQUASHED BODY of the tier seam. Names BOTH constants, so a tier
+/// collapse that returns one of them from both arms cannot satisfy it.
+fn rb107_tier_body_pin() -> String {
+    [
+        "ifhas_account{",
+        concat!("EXPORT_LIVE", "_ROW_CAP}else{"),
+        concat!("EXPORT_ANON", "_LIVE_ROW_CAP}"),
+    ]
+    .concat()
+}
+
+/// The frozen squashed SIGNATURE slice of the admission predicate.
+fn rb107_admit_sig_pin() -> String {
+    [
+        rb107_nd_admit_fn(),
+        "live_rows:u64,requested:u32,cap:u64)->bool".to_string(),
+    ]
+    .concat()
+}
+
+/// THE FROZEN SQUASHED BODY of the admission predicate.
+///
+/// EQUALITY, not containment, and it is the backstop that kills a literal cap in
+/// place of the parameter, a `<` for the `<=`, a dropped argument and any prefix
+/// `return` in ONE clause — the family this module has MEASURED twice to be
+/// invisible to containment pins.
+fn rb107_admit_body_pin() -> String {
+    "live_rows.saturating_add(u64::from(requested))<=cap".to_string()
+}
+
+// --- the sanctioned SOURCE text, spelled INDEPENDENTLY of every pin above ----
+//
+// Feeding each of these through the LIVE pipeline must reproduce the matching
+// pin byte for byte. That positive control is what makes an equality pin
+// provably SATISFIABLE: a hand-typed squashed literal with one character wrong
+// is a permanently red gate that reads exactly like a missing implementation and
+// sends the next reader to reverse-engineer the test instead of the spec. None
+// of these is built from the needle helper it controls — a pin constructed from
+// its own needle proves nothing at all.
+
+/// The full cap's DECLARATION as whitespace-bearing source text.
+fn rb107_cap_decl_source() -> String {
+    [
+        concat!(
+            "const EXPORT_LIVE",
+            "_ROW_CAP: u64 = (EXPORT_REAP_MAX_DELETE"
+        ),
+        "_PER_TICK as u64)\n",
+        concat!("    * (EXPORT_BUNDLE", "_TTL_MS as u64 / EXPORT_REAP"),
+        "_INTERVAL.as_millis() as u64);\n",
+    ]
+    .concat()
+}
+
+/// The anonymous cap's DECLARATION as whitespace-bearing source text.
+fn rb107_anon_decl_source() -> String {
+    [
+        concat!("const EXPORT_ANON", "_LIVE_ROW_CAP: u64 = EXPORT_LIVE"),
+        "_ROW_CAP / 2;\n",
+    ]
+    .concat()
+}
+
+/// The minimum-bundle floor's DECLARATION as whitespace-bearing source text.
+fn rb107_min_decl_source() -> String {
+    [
+        concat!("const EXPORT_MIN", "_BUNDLE_ROWS: u32 = EXPORT"),
+        "ERS.len() as u32;\n",
+    ]
+    .concat()
+}
+
+/// The tier seam's DECLARATION line as whitespace-bearing source text.
+fn rb107_tier_decl_source() -> String {
+    concat!("fn export_live", "_row_cap(has_account: bool) -> u64 ").to_string()
+}
+
+/// The tier seam's BODY as whitespace-bearing source text.
+fn rb107_tier_body_source() -> String {
+    [
+        "\n    if has_account {\n        ",
+        concat!("EXPORT_LIVE", "_ROW_CAP\n"),
+        "    } else {\n        ",
+        concat!("EXPORT_ANON", "_LIVE_ROW_CAP\n"),
+        "    }\n",
+    ]
+    .concat()
+}
+
+/// The admission predicate's DECLARATION line as whitespace-bearing source text.
+fn rb107_admit_decl_source() -> String {
+    [
+        concat!("fn export_admission", "_open(live_rows: u64, "),
+        "requested: u32, cap: u64) -> bool ",
+    ]
+    .concat()
+}
+
+/// The admission predicate's BODY as whitespace-bearing source text.
+fn rb107_admit_body_source() -> String {
+    "\n    live_rows.saturating_add(u64::from(requested)) <= cap\n".to_string()
+}
+
+// --- the reducer-shell needles -----------------------------------------------
+
+/// The static reject reason, as the reducer must spell it: a `stringify!` token,
+/// never a string literal (privacy.rs carries exactly one double-quote pair).
+///
+/// Because the reason is a `stringify!` token rather than a literal it SURVIVES
+/// `strip_rust_strings`, which is what lets the reject census below be taken in
+/// TWO views and compared.
+fn rb107_nd_reason() -> String {
+    concat!("stringify!(export_reject", "_admission)").to_string()
+}
+
+/// The ONE cap binding, squashed. Pinned at exactly one occurrence: a second
+/// `let cap = ...` above the exact gate would hand every anonymous caller the
+/// account holder's ceiling while both statement needles stayed green.
+fn rb107_nd_cap_binding() -> String {
+    concat!("letc", "ap=").to_string()
+}
+
+/// The shared HEAD of both gates, squashed. Short on purpose: the two gates
+/// differ only in their second argument, and the depth and ordering clauses must
+/// keep reading the right statements even when that argument is what moved.
+fn rb107_nd_gate_head() -> String {
+    ["if!".to_string(), rb107_nd_admit_named()].concat()
+}
+
+/// The squashed `Err` return token. Left-bounded matching is not needed here:
+/// `squash_ws` fuses the keyword into the constructor, so this spelling is
+/// already a token boundary on the right.
+fn rb107_nd_return_err() -> String {
+    concat!("returnEr", "r(").to_string()
+}
+
+/// The squashed `Ok` return token, banned outright inside the post-purge region.
+fn rb107_nd_return_ok() -> String {
+    concat!("returnO", "k(").to_string()
+}
+
+/// The squashed metadata row-count call.
+fn rb107_nd_count_call() -> String {
+    concat!(".co", "unt()").to_string()
+}
+
+/// The squashed owner-agnostic live-population read: the export chunk accessor
+/// followed by the O(1) metadata count.
+fn rb107_nd_bundle_count() -> String {
+    [m22s4_nd_bundle_accessor(), rb107_nd_count_call()].concat()
+}
+
+/// The squashed head of the manifest-order walk.
+fn rb107_nd_manifest_walk() -> String {
+    concat!("forentryinDATA_LIFECYCLE", "_MANIFEST{").to_string()
+}
+
+/// The squashed head of the insert loop.
+fn rb107_nd_insert_loop() -> String {
+    concat!("forcin", "plan{").to_string()
+}
+
+/// The squashed chunk-count binding (the rb-65 spelling, reused not respelled).
+fn rb107_nd_total_binding() -> String {
+    concat!("lettot", "al=").to_string()
+}
+
+/// The frozen ARGUMENT LIST of the pre-gate call, squashed.
+fn rb107_pre_gate_args_pin() -> String {
+    [
+        rb107_nd_bundle_count(),
+        concat!(",EXPORT_MIN", "_BUNDLE_ROWS,cap").to_string(),
+    ]
+    .concat()
+}
+
+/// The frozen ARGUMENT LIST of the exact gate call, squashed.
+fn rb107_exact_gate_args_pin() -> String {
+    [rb107_nd_bundle_count(), ",total,cap".to_string()].concat()
+}
+
+/// NEEDLE N1 — the WHOLE pre-gate, two-sided.
+///
+/// Left-anchored on the shipped `rb65p_nd_purge_binding()` (reused, never
+/// respelled) and right-anchored on the manifest accumulator's declaration, so
+/// the pin is about ADJACENCY rather than containment: a statement or an
+/// ATTRIBUTE wedged between the purge and the cap binding, between the binding
+/// and the gate, or between the gate and the walk all move it, and so do the
+/// gate deleted, the gate moved, the subject test replaced by a constant, the
+/// count argument replaced by a literal and a `debug_assert!` substitution.
+fn rb107_nd_pre_gate() -> String {
+    [
+        rb65p_nd_purge_binding(),
+        rb107_nd_cap_binding(),
+        rb107_nd_tier_named(),
+        concat!("crate::accounts::is_account", "_holder(ctx,me));").to_string(),
+        rb107_nd_gate_head(),
+        rb107_pre_gate_args_pin(),
+        "){".to_string(),
+        rb107_nd_return_err(),
+        rb107_nd_reason(),
+        ".to_string());}".to_string(),
+        concat!("letmutper", "_table:").to_string(),
+    ]
+    .concat()
+}
+
+/// NEEDLE N2 — the WHOLE exact gate, two-sided.
+///
+/// Left-anchored on the chunk-count binding (the request's EXACT row count) and
+/// right-anchored on the insert loop head, so the gate cannot be moved below the
+/// first write without moving this literal.
+fn rb107_nd_exact_gate() -> String {
+    [
+        rb107_nd_total_binding(),
+        "plan.len()asu32;".to_string(),
+        rb107_nd_gate_head(),
+        rb107_exact_gate_args_pin(),
+        "){".to_string(),
+        rb107_nd_return_err(),
+        rb107_nd_reason(),
+        ".to_string());}".to_string(),
+        rb107_nd_insert_loop(),
+    ]
+    .concat()
+}
+
+/// The pre-gate as whitespace-bearing SOURCE text — N1's positive control,
+/// spelled independently of N1 itself.
+fn rb107_pre_gate_source() -> String {
+    [
+        concat!("}\n    let purged = purge_export", "_bundles(ctx, me);\n"),
+        concat!(
+            "    let cap = export_live",
+            "_row_cap(crate::accounts::is_account"
+        ),
+        "_holder(ctx, me));\n",
+        concat!("    if !export_admission", "_open(ctx"),
+        concat!(".db.export", "_bundle().count(), EXPORT_MIN"),
+        "_BUNDLE_ROWS, cap) {\n",
+        concat!("        return Err(stringify!(export_reject", "_admission)"),
+        ".to_string());\n    }\n",
+        concat!("    let mut per", "_table:\n"),
+    ]
+    .concat()
+}
+
+/// The exact gate as whitespace-bearing SOURCE text — N2's positive control.
+fn rb107_exact_gate_source() -> String {
+    [
+        "    let total = plan.len() as u32;\n",
+        concat!("    if !export_admission", "_open(ctx"),
+        concat!(".db.export", "_bundle().count(), total, cap) {\n"),
+        concat!("        return Err(stringify!(export_reject", "_admission)"),
+        ".to_string());\n    }\n",
+        "    for c in plan {\n",
+    ]
+    .concat()
+}
+
+// --- shared machinery --------------------------------------------------------
+
+/// How many times the live strip pipeline still sees `needle` after it has been
+/// placed ONLY inside a line comment and inside a string literal.
+///
+/// The answer must be ZERO for every equality pin in this block, or the pin
+/// would be satisfiable by a doc comment naming the right sequence. The fixture
+/// is asserted to CARRY the needle first, so a zero cannot come from a fixture
+/// that never held it.
+fn rb107_blind_count(needle: &str) -> usize {
+    let mut prose = String::new();
+    prose.push_str(concat!("fn rb107", "_blindness_decoy() "));
+    prose.push('{');
+    prose.push_str("\n    ");
+    prose.push_str(concat!("/", "/ "));
+    prose.push_str(needle);
+    prose.push_str("\n    let s = ");
+    prose.push(rb22p_dq());
+    prose.push_str(needle);
+    prose.push(rb22p_dq());
+    prose.push_str(";\n");
+    prose.push('}');
+    prose.push('\n');
+    assert!(
+        prose.contains(needle),
+        "[rb107/blind-vacuity]: the blindness fixture built for {needle:?} does not carry the \
+         needle at all, so the ZERO it is about to report would prove nothing."
+    );
+    rb22p_count(&stripped_for_scan(&prose), needle)
+}
+
+/// The `RB85_VIS_WINDOW` squashed bytes immediately before `needle`.
+///
+/// A WINDOW rather than a list of spellings, for the reason rb-85 records: an
+/// enumerated ban on the two obvious visibility keywords is silently satisfied
+/// by `pub(super)` or `pub(in crate::x)`. HONEST LIMIT, inherited unchanged: an
+/// identifier ENDING in those three bytes immediately before a declaration would
+/// be a false red — loud, and trivially diagnosable, which is the safe
+/// direction.
+///
+/// Returns an owned `String` rather than a borrow so the declaration carries no
+/// lifetime parameter: the roster census in `rb107_test_roster_is_closed` spells
+/// every helper needle as a name followed immediately by an opening paren, and a
+/// generic parameter list between the two would make that needle unsatisfiable.
+fn rb107_vis_window_text(squashed: &str, needle: &str) -> String {
+    let at = squashed.find(needle).unwrap_or_else(|| {
+        panic!(
+            "[rb107/vis-window]: the declaration needle {needle:?} does not occur in privacy.rs, \
+             so the visibility window would be read off an arbitrary span and pass VACUOUSLY."
+        )
+    });
+    let prefix = &squashed[..at];
+    let start = prefix
+        .char_indices()
+        .rev()
+        .take(RB85_VIS_WINDOW)
+        .last()
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    prefix[start..].to_string()
+}
+
+/// The admission value table: `(what, live_rows, requested, cap, expected)`.
+///
+/// The two caps are spelled as LITERALS here, not read from the constants, and
+/// that is deliberate: this table is the predicate's value oracle and must stay
+/// an independent statement of what admission MEANS. The caps test owns the
+/// separate question of whether the shipped constants carry those values. If the
+/// ceiling is ever legitimately re-sized, BOTH move, in the same diff, from the
+/// spec — never one to match the other.
+///
+/// At least half the rows are OFF-boundary (fourteen of twenty-seven), both
+/// expectations appear, both caps appear, and the four cross-tier rows are the
+/// ones that kill a predicate which ignores its `cap` argument and reads a
+/// constant instead — every other row is satisfied by the full cap alone.
+fn rb107_admit_rows() -> [(&'static str, u64, u32, u64, bool); 27] {
+    let full: u64 = 43_008;
+    let anon: u64 = 21_504;
+    [
+        (
+            "full tier: the floor — empty store, empty request",
+            0,
+            0,
+            full,
+            true,
+        ),
+        (
+            "full tier: a minimum bundle into an empty store",
+            0,
+            17,
+            full,
+            true,
+        ),
+        ("full tier: an off-boundary admit", 41_000, 137, full, true),
+        (
+            "full tier: a small off-boundary admit",
+            5_000,
+            500,
+            full,
+            true,
+        ),
+        (
+            "full tier: a large off-boundary admit",
+            37_777,
+            4_321,
+            full,
+            true,
+        ),
+        (
+            "full tier: the mid-split EXACT fit",
+            20_000,
+            23_008,
+            full,
+            true,
+        ),
+        (
+            "full tier: the EXACT fit at cap minus requested",
+            42_871,
+            137,
+            full,
+            true,
+        ),
+        (
+            "full tier: one row under the exact fit",
+            42_870,
+            137,
+            full,
+            true,
+        ),
+        (
+            "full tier: ONE ROW OVER the exact fit",
+            42_872,
+            137,
+            full,
+            false,
+        ),
+        ("full tier: the top pair, admitted", 43_007, 1, full, true),
+        ("full tier: the top pair, rejected", 43_007, 2, full, false),
+        (
+            "full tier: exactly at the cap with an empty request",
+            43_008,
+            0,
+            full,
+            true,
+        ),
+        (
+            "full tier: exactly at the cap with a minimum bundle",
+            43_008,
+            17,
+            full,
+            false,
+        ),
+        (
+            "full tier: requested-dominant, admitted",
+            1,
+            43_007,
+            full,
+            true,
+        ),
+        (
+            "full tier: requested-dominant, rejected",
+            1,
+            43_008,
+            full,
+            false,
+        ),
+        (
+            "anon tier: the EXACT fit at cap minus a minimum bundle",
+            21_487,
+            17,
+            anon,
+            true,
+        ),
+        (
+            "anon tier: ONE ROW OVER that exact fit",
+            21_488,
+            17,
+            anon,
+            false,
+        ),
+        (
+            "anon tier: exactly at the cap with a one-row request",
+            21_504,
+            1,
+            anon,
+            false,
+        ),
+        (
+            "anon tier: the mid-split EXACT fit",
+            10_000,
+            11_504,
+            anon,
+            true,
+        ),
+        ("anon tier: an off-boundary admit", 21_000, 137, anon, true),
+        (
+            "anon tier: an off-boundary reject",
+            21_400,
+            137,
+            anon,
+            false,
+        ),
+        (
+            "anon tier: a second off-boundary admit",
+            12_345,
+            9_000,
+            anon,
+            true,
+        ),
+        (
+            "anon tier: a second off-boundary reject",
+            19_999,
+            2_000,
+            anon,
+            false,
+        ),
+        (
+            "cross-tier: a mid store an ACCOUNT HOLDER may still fill",
+            30_000,
+            17,
+            full,
+            true,
+        ),
+        (
+            "cross-tier: the same store, an ANONYMOUS caller shed",
+            30_000,
+            17,
+            anon,
+            false,
+        ),
+        (
+            "cross-tier: just past half, admitted for an account holder",
+            21_500,
+            17,
+            full,
+            true,
+        ),
+        (
+            "cross-tier: just past half, refused for an anonymous caller",
+            21_500,
+            17,
+            anon,
+            false,
+        ),
+    ]
+}
+
+/// X1 (ledger anchor; register rows M1-M5): the admission predicate is EXACT at
+/// BOTH caps and SATURATES rather than wraps.
+///
+/// THE ONLY EXECUTABLE ORACLE THIS SLICE HAS for the decision itself. The shells
+/// around this predicate reach a table, so they can never run in the native test
+/// host; the predicate is scalar-in, bool-out, and therefore has an ordinary
+/// value oracle. Everything else about the gate is a source pin, which is why
+/// this test is first in the roster and why its table is as wide as it is.
+///
+/// Kills (first killer of each):
+///   M1 `<` substituted for `<=` — the exact-fit rows at both caps;
+///   M2 the `requested` argument dropped — the cap-exact rows with a non-empty
+///      request, at both tiers;
+///   M4 the predicate ignoring its `cap` parameter and reading the full
+///      constant instead — the four cross-tier rows, which are the only rows
+///      whose expectation depends on WHICH cap was passed;
+///   M5 the body replaced by a constant — the anti-vacuity preamble names the
+///      discriminating pair before the loop even starts;
+///   M3 a wrapping addition — the saturation clause, where the mutant admits at
+///      `u64::MAX + 1`, which is the one direction a capacity control may never
+///      fail in.
+#[test]
+fn rb107_admission_is_exact_at_both_caps_and_saturates() {
+    let rows = rb107_admit_rows();
+
+    // --- anti-vacuity: the table itself, BEFORE anything is called -----------
+    assert!(
+        rows.len() >= 18,
+        "[rb107/admit-value]: the value table carries only {} row(s); at least eighteen are \
+         required. A table that shrank is a table that stopped discriminating, and every clause \
+         below would still report green over whatever is left.",
+        rows.len()
+    );
+    let admits = rows.iter().filter(|r| r.4).count();
+    let refuses = rows.len() - admits;
+    assert!(
+        admits >= 6 && refuses >= 6,
+        "[rb107/admit-value]: the table carries {admits} admit row(s) and {refuses} reject \
+         row(s); at least six of each are required. A table with one expectation is satisfied by \
+         a constant predicate, which is register row M5."
+    );
+    let full_rows = rows.iter().filter(|r| r.3 == 43_008).count();
+    let anon_rows = rows.iter().filter(|r| r.3 == 21_504).count();
+    assert!(
+        full_rows >= 6 && anon_rows >= 6,
+        "[rb107/admit-value]: the table carries {full_rows} row(s) at the full cap and \
+         {anon_rows} at the anonymous cap; at least six of each are required. A table that \
+         exercises one tier cannot see a predicate that ignores its cap argument (M4), because \
+         every row would agree with the constant it read."
+    );
+    let expectation = |live: u64, requested: u32, cap: u64| {
+        rows.iter()
+            .find(|r| r.1 == live && r.2 == requested && r.3 == cap)
+            .map(|r| r.4)
+    };
+    assert_eq!(
+        (
+            expectation(42_871, 137, 43_008),
+            expectation(42_872, 137, 43_008),
+            expectation(21_487, 17, 21_504),
+            expectation(21_488, 17, 21_504),
+        ),
+        (Some(true), Some(false), Some(true), Some(false)),
+        "[rb107/admit-value]: the four DISCRIMINATING rows are not in the table with the \
+         expectations the spec gives them. They are the exact fit and the one-row overshoot at \
+         each tier — (42_871 + 137) and (42_872 + 137) against 43_008, (21_487 + 17) and \
+         (21_488 + 17) against 21_504 — and each PAIR disagrees, so a constant-true or \
+         constant-false predicate dies on them whatever else the table says. Naming them here, \
+         before the loop, is what stops a future edit from quietly deleting the only rows that \
+         separate `fits` from `does not fit`."
+    );
+
+    // --- [rb107/admit-value]: every row, individually -------------------------
+    for (what, live, requested, cap, expected) in rows {
+        let got = crate::privacy::export_admission_open(live, requested, cap);
+        assert_eq!(
+            got, expected,
+            "[rb107/admit-value]: {what} — the admission predicate reads live_rows = {live}, \
+             requested = {requested}, cap = {cap} and returns {got}; the value oracle says \
+             {expected}. The rule is EXACT, not approximate: a request is admitted only when \
+             live_rows PLUS its own whole row count still fits, so `live_rows <= cap` alone \
+             (M2) admits a bundle that overshoots, `<` for `<=` (M1) refuses a bundle that fits \
+             exactly, and a predicate reading the full constant instead of this `cap` argument \
+             (M4) hands every anonymous caller the account holders' ceiling — which is the one \
+             property the tiering exists to provide."
+        );
+    }
+
+    // --- [rb107/admit-saturating]: the overflow direction ---------------------
+    for (what, live, requested) in [
+        (
+            "an already-saturated store with an empty request",
+            u64::MAX,
+            0u32,
+        ),
+        (
+            "an already-saturated store with a ONE-ROW request",
+            u64::MAX,
+            1u32,
+        ),
+        (
+            "five rows below saturation with a minimum bundle",
+            u64::MAX - 5,
+            17u32,
+        ),
+        (
+            "saturation against the widest possible request",
+            u64::MAX,
+            u32::MAX,
+        ),
+    ] {
+        for (tier, cap) in [
+            ("the full cap", 43_008u64),
+            ("the anonymous cap", 21_504u64),
+        ] {
+            let got = crate::privacy::export_admission_open(live, requested, cap);
+            assert!(
+                !got,
+                "[rb107/admit-saturating]: {what}, against {tier} — the admission predicate \
+                 reads live_rows = {live}, requested = {requested}, cap = {cap} and ADMITS. The \
+                 addition must SATURATE: the release profile enables overflow checks, so an \
+                 unchecked add ABORTS the reducer at the extremes, and a wrapping add (M3) is \
+                 worse than an abort — it wraps past zero and returns true, admitting without \
+                 limit exactly when the store is most full. Saturation fails in the refusing \
+                 direction, which is the only direction a capacity control may fail in."
+            );
+        }
+    }
+}
+
+/// X1 (ledger anchor; register rows M6, M9-M13): the three ceilings are the
+/// reaper's one-window DRAIN, half of it, and the manifest's own minimum bundle
+/// — by VALUE, by DERIVATION and by frozen declaration TEXT.
+///
+/// ALL THREE INSTRUMENTS ARE REQUIRED AND NONE SUBSUMES ANOTHER. `43_008` and
+/// the derivation are value-identical, so only the source pin can tell a
+/// transcribed literal from the expression; a wrong-valued expression would pass
+/// a source pin alone; and the drain inequality is a statement about the WORLD
+/// (how many rows a tick can retire) that neither of the other two carries.
+///
+/// The drain inequality is CITED, not restated: `[rb86/stamp-cap-throughput]`
+/// already asserts it off the live manifest and owns its reasoning (ADR-0224
+/// forbids a second clause for zero marginal coverage). What this test adds is
+/// that the SAME inequality is what the new cap's derivation rests on, so a
+/// manifest that shrank below sixteen exportable tables reds HERE with the
+/// arithmetic shown rather than silently weakening the ceiling.
+///
+/// Kills: M12 the floor set to one; M13 the floor transcribed as seventeen
+/// instead of derived from the registry; M9 the cap moved off its derived value;
+/// M11 the cap derived from the STAMP cap instead of the ROW cap (sixteen times
+/// one hundred and sixty-eight, a store one sixteenth the size); M10 the
+/// derivation respelled with the tick count inlined, which is value-identical
+/// and dies only on the source pin; M6 tiering removed by setting the anonymous
+/// cap equal to the full one, which is what makes the sybil share unbounded
+/// again; either ceiling widened to `pub(crate)`, which turns a DoS knob into
+/// something another module can read as a retention rule.
+#[test]
+fn rb107_caps_are_the_reapers_drain_and_the_manifest_minimum() {
+    let min_rows = crate::privacy::EXPORT_MIN_BUNDLE_ROWS;
+    let cap = crate::privacy::EXPORT_LIVE_ROW_CAP;
+    let anon_cap = crate::privacy::EXPORT_ANON_LIVE_ROW_CAP;
+    let read_cap = crate::privacy::EXPORT_REAP_MAX_DELETE_PER_TICK as u64;
+    let stamp_cap = crate::privacy::EXPORT_REAP_MAX_STAMPS_PER_TICK as u64;
+    let ttl_ms = crate::privacy::EXPORT_BUNDLE_TTL_MS as u64;
+    let interval_ms = crate::privacy::EXPORT_REAP_INTERVAL.as_millis() as u64;
+
+    // --- [rb107/min-value] ----------------------------------------------------
+    assert_eq!(
+        min_rows, 17,
+        "[rb107/min-value]: the smallest bundle this reducer can write must be exactly 17 rows — \
+         one chunk per exportable manifest table, because the planner pushes an empty chunk even \
+         for a table holding no rows for the subject. This number is the pre-gate's `requested` \
+         argument, so shrinking it (M12) makes the pre-gate ask whether ONE row fits and stops \
+         refusing the sybil before the seventeen-table walk, which is the whole point of having a \
+         pre-gate at all."
+    );
+
+    // --- [rb107/min-derivation]: TWO independent sources ----------------------
+    let from_registry = crate::privacy::EXPORTERS.len() as u64;
+    let from_manifest = crate::schema::DATA_LIFECYCLE_MANIFEST
+        .iter()
+        .filter(|e| e.exportable)
+        .count() as u64;
+    assert_eq!(
+        from_registry, from_manifest,
+        "[rb107/min-derivation]: the exporter registry names {from_registry} table(s) while the \
+         lifecycle manifest declares {from_manifest} exportable. The const totality assertion in \
+         privacy.rs makes those two sets equal at compile time, so a divergence here means the \
+         assertion itself moved — and the floor below would then be derived from whichever of the \
+         two happens to be smaller."
+    );
+    assert_eq!(
+        u64::from(min_rows),
+        from_registry,
+        "[rb107/min-derivation]: the minimum-bundle floor reads {min_rows} but the exporter \
+         registry holds {from_registry} entries. The floor is DERIVED, never transcribed (M13): \
+         a hand-written seventeen goes quietly false the day export scope changes, and the pre-gate \
+         then admits or refuses against a bundle size the reducer no longer writes."
+    );
+
+    // --- [rb107/drain-invariant]: the inequality the whole derivation rests on -
+    assert!(
+        stamp_cap * u64::from(min_rows) >= read_cap,
+        "[rb107/drain-invariant]: a tick may delete {stamp_cap} whole creation stamps, a bundle is \
+         at least {min_rows} chunks, and that is {} rows against the {read_cap}-row READ window — \
+         which must be at least as large, or a tick retires fewer rows than it read and the \
+         retention ceiling becomes a backlog. THE WHOLE CAP DERIVATION BELOW RESTS ON THIS: it is \
+         what makes `one tick drains one read window` true, and it collapses at fifteen or fewer \
+         exportable tables. `[rb86/stamp-cap-throughput]` is the shipped owner of this inequality \
+         and asserts it off the live manifest; this clause exists so that a manifest change reds \
+         against the CAP with the arithmetic shown, rather than leaving the ceiling to drift.",
+        stamp_cap * u64::from(min_rows)
+    );
+
+    // --- [rb107/cap-value] ----------------------------------------------------
+    assert_eq!(
+        cap, 43_008,
+        "[rb107/cap-value]: the full live-row ceiling must be exactly 43_008 — the number of chunk \
+         rows the reaper retires in ONE whole retention window, which is the unique size at which \
+         the write side structurally cannot outpace the drain. A larger number (M9) needs more than \
+         one window to drain and weakens the claim to an approximation; deriving it from the STAMP \
+         cap instead of the ROW cap (M11) gives 2_688 and shrinks the store to a sixteenth for no \
+         stated reason."
+    );
+
+    // --- [rb107/cap-derivation]: recomputed from the three named constants ----
+    assert!(
+        interval_ms > 0,
+        "[rb107/cap-derivation]: the reap interval reads ZERO milliseconds, so the tick count \
+         below would divide by zero or read as infinite and the derivation would prove nothing."
+    );
+    let ticks = ttl_ms / interval_ms;
+    assert_eq!(
+        ticks, 168,
+        "[rb107/cap-derivation]: one retention window is {ttl_ms} ms and the sweep cadence is \
+         {interval_ms} ms, so a window holds {ticks} tick(s); the derivation the cap is built on \
+         says 168. Either the TTL or the cadence moved, and the ceiling above is now describing a \
+         drain the reaper no longer performs."
+    );
+    assert_eq!(
+        read_cap * ticks,
+        cap,
+        "[rb107/cap-derivation]: {read_cap} rows per tick times {ticks} ticks per retention window \
+         is {}, but the ceiling reads {cap}. The cap IS that product — it is not a taste — so the \
+         two must move together or the sentence `every expired row leaves within one TTL of \
+         expiring` stops being true.",
+        read_cap * ticks
+    );
+    assert!(
+        cap >= read_cap,
+        "[rb107/cap-derivation]: the ceiling ({cap}) is below one tick's read window ({read_cap}), \
+         so the arithmetic above was satisfied by a degenerate pair of constants and the store \
+         cannot hold even a single tick's worth of rows."
+    );
+
+    // --- [rb107/anon-value]: the tier, and that it IS a tier ------------------
+    assert_eq!(
+        anon_cap, 21_504,
+        "[rb107/anon-value]: the anonymous ceiling must be exactly 21_504 rows — half the full \
+         cap, about 1_264 minimum-size bundles. This is the number that bounds what JWT-less \
+         identities can take: `join_game` needs no token, so nothing else stops a sybil from \
+         filling the store, and the half they cannot reach is the account holders' structural \
+         headroom (residual R-rb-107-LOCKOUT records what the half they CAN take still costs)."
+    );
+    assert_eq!(
+        anon_cap,
+        cap / 2,
+        "[rb107/anon-value]: the anonymous ceiling ({anon_cap}) is not half the full ceiling \
+         ({cap}). The two are one knob, not two: a literal here drifts the moment the full cap is \
+         re-sized, and the tier then means whatever the older of the two numbers happens to say."
+    );
+    assert!(
+        anon_cap < cap,
+        "[rb107/anon-value]: the anonymous ceiling ({anon_cap}) is not BELOW the full ceiling \
+         ({cap}), so there is no tier at all. This is register row M6 — tiering removed by setting \
+         the two equal — and it is the shape both value clauses above are green on if they are \
+         read as `each constant has some value`. With the tiers equal, 2_530 anonymous identities \
+         lock every export out permanently for the price of one request every four minutes, which \
+         is the red team's C1 and the reason this slice ships two thresholds instead of one."
+    );
+
+    // --- [rb107/cap-vis]: PRIVATE, by WINDOW, on all three --------------------
+    let squashed = stripped_for_scan(PRIVACY_RS);
+    for (what, name) in [
+        (
+            "the full live-row ceiling",
+            concat!("constEXPORT_LIVE", "_ROW_CAP:"),
+        ),
+        (
+            "the anonymous ceiling",
+            concat!("constEXPORT_ANON", "_LIVE_ROW_CAP:"),
+        ),
+        (
+            "the minimum-bundle floor",
+            concat!("constEXPORT_MIN", "_BUNDLE_ROWS:"),
+        ),
+    ] {
+        let window = rb107_vis_window_text(&squashed, name);
+        assert!(
+            !window.contains("pub"),
+            "[rb107/cap-vis]: {what} (`{name}`) is preceded by a visibility keyword — the \
+             {RB85_VIS_WINDOW} squashed bytes before it read {window:?}. All three are PRIVATE, \
+             like the flood-control cooldown constant above them: they are DoS knobs, not legal \
+             figures, and nothing outside this module decides who may write a bundle. Widening one \
+             makes the cap look like a retention rule and invites a second reader of a number that \
+             is only ever an admission decision — and privacy is the one property a test cannot \
+             restore once the compiler has stopped enforcing it. The check is a WINDOW rather than \
+             a list of spellings because an enumerated ban is satisfied by the restricted forms."
+        );
+    }
+
+    // --- the three SOURCE pins, each with a control and a blindness fixture ---
+    for (label, what, pin, source) in [
+        (
+            "[rb107/min-source]",
+            "the minimum-bundle floor",
+            rb107_nd_min_decl(),
+            rb107_min_decl_source(),
+        ),
+        (
+            "[rb107/cap-source]",
+            "the full live-row ceiling",
+            rb107_nd_cap_decl(),
+            rb107_cap_decl_source(),
+        ),
+        (
+            "[rb107/anon-source]",
+            "the anonymous ceiling",
+            rb107_nd_anon_decl(),
+            rb107_anon_decl_source(),
+        ),
+    ] {
+        let control = stripped_for_scan(&source);
+        assert_eq!(
+            control, pin,
+            "{label}: the frozen DECLARATION pin for {what} is UNSATISFIABLE — the live pipeline \
+             derives {control:?} from the sanctioned declaration text, not the pinned literal. A \
+             hand-typed squashed literal with one character wrong is a permanently red gate that \
+             reads exactly like a missing implementation. Revise the literal FROM THE SPEC, never \
+             to match whatever the code happens to say."
+        );
+        assert_eq!(
+            rb107_blind_count(&pin),
+            0,
+            "{label}: the strip pipeline still sees the declaration of {what} after it was placed \
+             ONLY inside a line comment and inside a string literal, so this pin would be \
+             satisfiable by a doc comment naming the right expression."
+        );
+        let n = rb22p_count(&squashed, &pin);
+        assert_eq!(
+            n, 1,
+            "{label}: privacy.rs must declare {what} EXACTLY as pinned, exactly once; found {n}. \
+             ZERO is the intended RED before the implementer lands rb-107 — and, after it, the one \
+             instrument that can tell a DERIVED constant from a transcribed literal of the same \
+             value (M10, M13). The value clauses above cannot see that difference by construction, \
+             because the two are equal."
+        );
+    }
+}
+
+/// X1 (ledger anchor; register rows M7, M8, M28): the cap a caller gets is
+/// TIERED on whether they hold an account row, and the seam that decides it is
+/// declared once, private, with a frozen signature and a frozen body.
+///
+/// WHY A NAMED SEAM AND NOT AN INLINE CONDITIONAL. `/simplify` flagged this
+/// layer and it was KEPT as a named exception: inlined into the `let cap`
+/// binding it would have exactly one caller and no value oracle, so the
+/// swapped-arms and tier-collapse mutants would die on a TEXT pin. Named, they
+/// die on what the function RETURNS, which is the project's own doctrine — the
+/// oracle must be the return value, one hop, not the source that produces it.
+///
+/// THE SUBJECT TEST ITSELF IS NOT RE-DERIVED HERE. `is_account_holder` is the
+/// crate SSOT for `does this identity hold a verified account row` (ADR-0189 D2;
+/// ADR-0179 records why `has_jwt()` is not the predicate — the host mints its own
+/// token, so it is true for every connection). Its own tests own its behaviour;
+/// what rb-107 owns is that the reducer asks THAT question and maps the answer
+/// onto these two ceilings. The mapping is this seam, and the asking is pinned by
+/// the pre-gate needle in
+/// `rb107_reducer_admits_twice_before_the_first_write`.
+///
+/// Kills: M7 the two arms swapped, which hands every anonymous caller the
+/// account holders' ceiling and every account holder half a store; M8 the body
+/// collapsed to the full cap, which deletes the tier while leaving both
+/// constants declared and both value clauses in the caps test green; M28 the
+/// seam widened to `pub(crate)`, which makes the tier decision reachable from a
+/// module that never reviewed it; a literal ceiling inlined into either arm.
+#[test]
+fn rb107_cap_selection_is_tiered_by_account() {
+    let full = crate::privacy::EXPORT_LIVE_ROW_CAP;
+    let anon = crate::privacy::EXPORT_ANON_LIVE_ROW_CAP;
+
+    // --- [rb107/tier-value]: exhaustive over the input ------------------------
+    let holder = crate::privacy::export_live_row_cap(true);
+    assert_eq!(
+        (holder, holder),
+        (full, 43_008),
+        "[rb107/tier-value]: a caller HOLDING an account row is given a ceiling of {holder}; it \
+         must be the full live-row cap, {full}, which is 43_008. Both the named constant AND its \
+         literal value are asserted here on purpose: against swapped arms (M7) a name-only clause \
+         is green whenever the two constants are compared to each other rather than to what the \
+         seam returned, and against a tier collapse (M8) the literal is what says WHICH ceiling \
+         came back."
+    );
+    let guest = crate::privacy::export_live_row_cap(false);
+    assert_eq!(
+        (guest, guest),
+        (anon, 21_504),
+        "[rb107/tier-value]: a caller with NO account row is given a ceiling of {guest}; it must \
+         be the anonymous cap, {anon}, which is 21_504. This arm is the whole security property of \
+         the slice: `join_game` needs no token, so unlimited anonymous identities exist by design, \
+         and the only thing that stops them taking the entire store is that this arm returns the \
+         SMALLER number. Returning the full cap here (M8) is the tier deleted, silently, with both \
+         constants still declared and every clause in the caps test still green."
+    );
+
+    // --- [rb107/tier-ordering]: the shed order, stated as an inequality -------
+    assert!(
+        guest < holder,
+        "[rb107/tier-ordering]: the anonymous ceiling ({guest}) is not strictly below the account \
+         holder's ({holder}), so anonymous requests are NOT shed first and the two tiers are the \
+         same control wearing two names. This clause is the one that survives a future re-sizing \
+         of either constant: whatever the numbers become, the JWT-less tier must be the smaller \
+         one or the account holders' headroom is not structurally unreachable."
+    );
+
+    let squashed = stripped_for_scan(PRIVACY_RS);
+    let needle = rb107_nd_tier_fn();
+
+    // --- [rb107/tier-decl]: declared exactly once, and the pins are reachable --
+    let sig_control = stripped_for_scan(&format!("{}{}{}", rb107_tier_decl_source(), '{', '}'));
+    let control_sig = extract_squashed_fn_sig(&sig_control, &needle).unwrap_or_else(|| {
+        panic!("[rb107/tier-decl]: the control fixture for the tier seam has no signature.")
+    });
+    assert_eq!(
+        control_sig,
+        rb107_tier_sig_pin(),
+        "[rb107/tier-decl]: the frozen SIGNATURE pin for the tier seam is UNSATISFIABLE — the live \
+         pipeline derives {control_sig:?} from the sanctioned declaration text. Fix the literal \
+         from the spec, never the other way round."
+    );
+    let n = rb22p_count(&squashed, &needle);
+    assert_eq!(
+        n, 1,
+        "[rb107/tier-decl]: privacy.rs must define `{needle}` exactly once; found {n}. ZERO is the \
+         intended RED before the implementer lands rb-107; TWO makes every clause scoped to it \
+         read whichever definition the extractor reaches first, so the other ships completely \
+         ungated."
+    );
+
+    // --- [rb107/tier-vis]: PRIVATE, by window ---------------------------------
+    let window = rb107_vis_window_text(&squashed, &needle);
+    assert!(
+        !window.contains("pub"),
+        "[rb107/tier-vis]: `{needle}` is preceded by a visibility keyword — the \
+         {RB85_VIS_WINDOW} squashed bytes before it read {window:?}. The seam is PRIVATE because \
+         privacy is the one property a test cannot restore once the compiler stops enforcing it, \
+         and because a private seam is what makes the call census in the reducer test a COMPLETE \
+         account of who decides a caller's ceiling. The check is a window rather than a list of \
+         spellings: an enumerated ban is satisfied by the restricted visibility forms."
+    );
+
+    // --- [rb107/tier-sig] -----------------------------------------------------
+    let sig = extract_squashed_fn_sig(&squashed, &needle)
+        .unwrap_or_else(|| panic!("[rb107/tier-sig]: `{needle}` has no opening brace."));
+    assert_eq!(
+        sig,
+        rb107_tier_sig_pin(),
+        "[rb107/tier-sig]: the tier seam's signature is not the frozen one. It takes the ANSWER to \
+         the subject question as a plain `bool` and reaches no context at all — that split is what \
+         keeps it executable in the native test host, where the reducer that computes the bool \
+         can never run. A `ctx` parameter here would make the value clauses above a LINK failure \
+         of the whole lib-test binary rather than a red test."
+    );
+
+    // --- [rb107/tier-body] LAST: the equality backstop ------------------------
+    let body_control = stripped_for_scan(&format!(
+        "{}{}{}{}",
+        rb107_tier_decl_source(),
+        '{',
+        rb107_tier_body_source(),
+        '}'
+    ));
+    let control_body = extract_squashed_fn_body(&body_control, &needle)
+        .expect("[rb107/tier-body]: the control fixture has no body");
+    assert_eq!(
+        control_body,
+        rb107_tier_body_pin(),
+        "[rb107/tier-body]: the frozen BODY pin for the tier seam is UNSATISFIABLE — the live \
+         pipeline derives {control_body:?} from the sanctioned body text. Revise the literal FROM \
+         THE SPEC, never to match whatever the code happens to say."
+    );
+    assert_eq!(
+        rb107_blind_count(&rb107_tier_body_pin()),
+        0,
+        "[rb107/tier-body]: the strip pipeline still sees the sanctioned tier body after it was \
+         placed ONLY inside a line comment and inside a string literal, so this pin would be \
+         satisfiable by a doc comment naming the right conditional."
+    );
+    let body = extract_squashed_fn_body(&squashed, &needle)
+        .unwrap_or_else(|| panic!("[rb107/tier-body]: `{needle}` has no brace-balanced body."));
+    assert_eq!(
+        body,
+        rb107_tier_body_pin(),
+        "[rb107/tier-body]: the tier seam's body must be EXACTLY the two-armed selection, naming \
+         BOTH ceilings and nothing else. Equality rather than containment, for the reason this \
+         module has MEASURED three times on strictly simpler bodies: a correct body wrapped in a \
+         dead conditional, a shadowed binding, or an appended statement are all clippy-clean and \
+         green against every containment clause. This one literal closes a third arm that cannot \
+         exist, a literal ceiling inlined in place of either constant, and any prefix statement \
+         at once."
+    );
+}
+
+/// X1 (ledger anchor; register rows M28, M29): the admission predicate is
+/// declared exactly once, PRIVATE, PURE, with a frozen signature and a frozen
+/// body.
+///
+/// `[rb107/admit-no-ctx]` IS LOAD-BEARING BEYOND STYLE and it runs BEFORE the
+/// body pin deliberately. A context parameter or a context read inside this
+/// predicate does not red one clause — it makes every call in
+/// `rb107_admission_is_exact_at_both_caps_and_saturates` a LINK failure of the
+/// whole `monster-realm-module` lib-test binary, because the native host models
+/// ten syscalls and the row-count one is not among them. A link error has no
+/// test name and no clause label attached to it, so the purity clause has to be
+/// the thing that names the reason, and it has to run before anything that
+/// would merely report a text difference.
+///
+/// Kills: M28 the predicate widened to `pub(crate)`; a second definition,
+/// including a conditionally-compiled twin, which would make every body-scoped
+/// clause read whichever one the extractor reaches first; a fourth parameter or
+/// a reordered one; M29 an early `return true;` prefixed to the body, which is
+/// the shape that survives every containment clause; a literal ceiling
+/// substituted for the `cap` parameter (value-identical for account holders,
+/// and a deleted tier for everyone else); `<` for `<=`; the `requested`
+/// argument dropped.
+#[test]
+fn rb107_admission_seams_are_pure_and_frozen() {
+    let squashed = stripped_for_scan(PRIVACY_RS);
+    let needle = rb107_nd_admit_fn();
+
+    // --- [rb107/admit-decl]: exactly one definition, pin proven satisfiable ---
+    let sig_control = stripped_for_scan(&format!("{}{}{}", rb107_admit_decl_source(), '{', '}'));
+    let control_sig = extract_squashed_fn_sig(&sig_control, &needle).unwrap_or_else(|| {
+        panic!("[rb107/admit-decl]: the control fixture for the predicate has no signature.")
+    });
+    assert_eq!(
+        control_sig,
+        rb107_admit_sig_pin(),
+        "[rb107/admit-decl]: the frozen SIGNATURE pin for the admission predicate is \
+         UNSATISFIABLE — the live pipeline derives {control_sig:?} from the sanctioned declaration \
+         text. Fix the literal from the spec, never the other way round."
+    );
+    let n = rb22p_count(&squashed, &needle);
+    assert_eq!(
+        n, 1,
+        "[rb107/admit-decl]: privacy.rs must define `{needle}` exactly once; found {n}. ZERO is \
+         the intended RED before the implementer lands rb-107; TWO leaves one of the two \
+         definitions completely ungated, because every clause below is scoped to whichever the \
+         extractor reaches first."
+    );
+
+    // --- [rb107/admit-vis]: PRIVATE, by window --------------------------------
+    let window = rb107_vis_window_text(&squashed, &needle);
+    assert!(
+        !window.contains("pub"),
+        "[rb107/admit-vis]: `{needle}` is preceded by a visibility keyword — the \
+         {RB85_VIS_WINDOW} squashed bytes before it read {window:?}. The predicate is PRIVATE \
+         because the admission decision belongs to this module alone: nothing outside privacy.rs \
+         decides who may write a bundle, and a crate-visible predicate invites a second, unreviewed \
+         caller that the call census in the reducer test would then be unable to account for. The \
+         check is a window, not a list of spellings — an enumerated ban is satisfied by the \
+         restricted forms."
+    );
+
+    // --- [rb107/admit-no-ctx]: PURITY, before anything else reads the body ----
+    let sig = extract_squashed_fn_sig(&squashed, &needle)
+        .unwrap_or_else(|| panic!("[rb107/admit-no-ctx]: `{needle}` has no opening brace."));
+    let body = extract_squashed_fn_body(&squashed, &needle)
+        .unwrap_or_else(|| panic!("[rb107/admit-no-ctx]: `{needle}` has no brace-balanced body."));
+    for (where_, span) in [("signature", sig), ("body", body)] {
+        for token in ["ctx", "ReducerContext", "ViewContext"] {
+            assert!(
+                !span.contains(token),
+                "[rb107/admit-no-ctx]: the admission predicate's {where_} names `{token}`. The \
+                 predicate MUST stay scalar-in, bool-out. The native test host defines exactly ten \
+                 syscall symbols and the metadata row-count one is NOT among them, so a context \
+                 here does not red one clause — it fails the LINK of the whole lib-test binary, \
+                 and every value-oracle row in the admission test disappears behind an undefined \
+                 symbol that names no test and no clause. The table read stays in the reducer \
+                 shell; that split IS the testability of this slice. Span read: {span:?}"
+            );
+        }
+    }
+
+    // --- [rb107/admit-sig] ----------------------------------------------------
+    assert_eq!(
+        sig,
+        rb107_admit_sig_pin(),
+        "[rb107/admit-sig]: the admission predicate's signature is not the frozen one. Three \
+         scalars in a fixed order and a bool out: the live population FIRST, this request's own \
+         row count SECOND, the caller's ceiling THIRD. The ceiling is a PARAMETER and not a read \
+         of the constant, which is exactly what makes the anonymous tier expressible at all — and \
+         the two integer widths differ, so the first and second arguments cannot be transposed \
+         without a compile error, which is why no test row tries."
+    );
+
+    // --- [rb107/admit-body] LAST: the equality backstop -----------------------
+    let body_control = stripped_for_scan(&format!(
+        "{}{}{}{}",
+        rb107_admit_decl_source(),
+        '{',
+        rb107_admit_body_source(),
+        '}'
+    ));
+    let control_body = extract_squashed_fn_body(&body_control, &needle)
+        .expect("[rb107/admit-body]: the control fixture has no body");
+    assert_eq!(
+        control_body,
+        rb107_admit_body_pin(),
+        "[rb107/admit-body]: the frozen BODY pin is UNSATISFIABLE — the live pipeline derives \
+         {control_body:?} from the sanctioned body text. A hand-typed squashed literal with one \
+         character wrong is a permanently red gate that reads exactly like a missing \
+         implementation. Revise the literal FROM THE SPEC, never to match the code."
+    );
+    assert_eq!(
+        rb107_blind_count(&rb107_admit_body_pin()),
+        0,
+        "[rb107/admit-body]: the strip pipeline still sees the sanctioned predicate body after it \
+         was placed ONLY inside a line comment and inside a string literal, so this pin would be \
+         satisfiable by a doc comment naming the right expression."
+    );
+    assert_eq!(
+        body,
+        rb107_admit_body_pin(),
+        "[rb107/admit-body]: the admission predicate's body must be EXACTLY the saturating, \
+         inclusive, parameter-capped comparison and nothing else. This one literal closes the \
+         whole family at once: a literal ceiling in place of the `cap` parameter, which is \
+         value-identical for account holders and deletes the tier for everyone else; `<` for \
+         `<=`, which refuses a bundle that fits exactly; the `requested` argument dropped, which \
+         admits a bundle that overshoots; a wrapping or unchecked addition; and an early \
+         `return true;` prefixed above a body that is otherwise perfect (M29) — the shape every \
+         containment clause in this module has been MEASURED green on."
+    );
+}
+
+/// X1 (ledger anchor; register rows M14-M27): the reducer ADMITS TWICE before
+/// its first write — once against the smallest bundle it could write, once
+/// against this request's exact row count — under ONE static reason, ONE cap
+/// binding, at depth zero, in that order.
+///
+/// EVERY CLAUSE IS A SOURCE SCAN and this test therefore compiles on the pre-fix
+/// tree. It has to be: after rb-107 the reducer reaches a metadata syscall the
+/// native host does not model, so no test in this crate may name it as a Rust
+/// symbol or call anything that reaches it. What can be proved by reading is the
+/// SHAPE of the shell; what the shell decides is proved by the two value-oracle
+/// tests above; and that the shell is executed at all against a live host is
+/// proved by the account-e2e leg of the full gate, which calls the reducer on
+/// its success path with a token-bearing connection.
+///
+/// ATTRIBUTION OWNERSHIP. `[rb107/exit-shape]` is the named owner of the two
+/// rb-65 nested-return censuses this slice widens from one to three. A widened
+/// census with no attribution owner is exactly how a MEASURED tooth gets lost —
+/// the fail-silent rewrite of the PRV1-11 arm is the recorded example — so the
+/// number does not move alone: this clause says WHICH three exits are sanctioned
+/// and requires the two named shapes to SUM to the region total, so a fourth,
+/// undeclared exit shows up here as a gap even while the total has been moved to
+/// match it.
+///
+/// CLAUSE ORDER IS LOAD-BEARING (assertions are first-failure-wins) and the
+/// order is the plan's: the declaration census first, because zero definitions
+/// is the pre-fix state and every clause below it would then be reading a body
+/// that has no gates in it; the whole-statement equality needles LAST, as
+/// backstops.
+///
+/// CITED, NOT RESTATED (ADR-0224): `[rb85/no-sweep]` and `[rb85/iter-census]`
+/// already forbid this module a table sweep, so the count census below does not
+/// re-ban one — a full scan wearing a count reds there as well as here.
+/// `[X9/returns]` still fixes the number of reject returns in the PREFIX above
+/// the purge at exactly three, and both admission rejects are BELOW the purge,
+/// so that clause is unmoved and stays the guard of the prefix.
+///
+/// Kills: M15 a second cap binding above the exact gate, which hands the exact
+/// gate the account holder's ceiling while both statement needles stay green;
+/// M20 a gate wrapped in a conditional; M22 one reject token respelled with an
+/// interior space, which is byte-identical once whitespace is squashed; M23 the
+/// same respelling paired with a decoy token elsewhere, which restores the
+/// whitespace-preserving count; M24 a reject rewritten as a success return; M25
+/// the metadata count replaced by a full sweep wearing a count; M26 a third,
+/// unreviewed call of the predicate planted in a pure helper; M14 the cap
+/// binding replaced by a literal ceiling; M16 the pre-gate asking whether ZERO
+/// rows fit; M21 a conditional-compilation attribute fencing the pre-gate off;
+/// M27 the subject test replaced by a constant.
+#[test]
+fn rb107_reducer_admits_twice_before_the_first_write() {
+    let squashed = stripped_for_scan(PRIVACY_RS);
+    let body = m22s4_reducer_body(&squashed);
+
+    let admit_fn = rb107_nd_admit_fn();
+    let admit_named = rb107_nd_admit_named();
+    let tier_fn = rb107_nd_tier_fn();
+    let tier_named = rb107_nd_tier_named();
+
+    // --- [rb107/seam-counts]: one definition each, and no second call site ----
+    //
+    // The needles are the BARE names, never bang-prefixed: the definition does
+    // not carry a bang, so a bang-prefixed declaration census is unsatisfiable
+    // against a correct tree (plan §8.4).
+    //
+    // The per-body totals are NOT asserted here, deliberately. They are the
+    // property the two statement needles at the end of this test pin
+    // POSITIONALLY, and asserting them twice would mean a deleted or relocated
+    // gate reds on a bare number here instead of on the clause that can say
+    // WHICH statement moved and where it went. What this clause owns is the one
+    // thing the needles cannot see: a call somewhere else in the file.
+    let n_admit_def = rb22p_count(&squashed, &admit_fn);
+    assert_eq!(
+        n_admit_def, 1,
+        "[rb107/seam-counts]: privacy.rs must define `{admit_fn}` exactly once; found \
+         {n_admit_def}. ZERO is the pre-fix state this slice exists to close — the export table \
+         has no write-side ceiling at all, so unlimited anonymous identities can each commit a \
+         bundle and the only thing that ever removes a row is the seven-day reaper. TWO makes \
+         every clause scoped to the predicate read whichever definition the extractor reaches \
+         first."
+    );
+    let n_tier_def = rb22p_count(&squashed, &tier_fn);
+    assert_eq!(
+        n_tier_def, 1,
+        "[rb107/seam-counts]: privacy.rs must define `{tier_fn}` exactly once; found \
+         {n_tier_def}. ZERO means there is no tier: every caller is measured against one ceiling \
+         and the anonymous share is unbounded again."
+    );
+    let admit_file = rb22p_count(&squashed, &admit_named);
+    let admit_body = rb22p_count(&body, &admit_named);
+    assert_eq!(
+        admit_file,
+        admit_body + 1,
+        "[rb107/seam-counts]: privacy.rs names `{admit_named}` {admit_file} time(s) and the export \
+         reducer accounts for {admit_body} of them. Exactly ONE occurrence may sit outside that \
+         body — the DEFINITION itself. Any other is a second, unreviewed admission decision: \
+         MEASURED as a call planted inside the pure chunk planner (M26), where it is reached on \
+         every request, decides nothing a reviewer ever read, and leaves both statement needles \
+         below perfectly green."
+    );
+    let tier_file = rb22p_count(&squashed, &tier_named);
+    let tier_body = rb22p_count(&body, &tier_named);
+    assert_eq!(
+        tier_file,
+        tier_body + 1,
+        "[rb107/seam-counts]: privacy.rs names `{tier_named}` {tier_file} time(s) and the export \
+         reducer accounts for {tier_body} of them; exactly ONE — the definition — may sit outside. \
+         A second caller of the tier seam is a second place where a caller's ceiling is chosen, \
+         and the one-cap-binding clause below can only be a complete statement while this one \
+         holds."
+    );
+
+    // --- [rb107/cap-binding]: ONE cap, for BOTH gates -------------------------
+    let cap_bind = rb107_nd_cap_binding();
+    let n_cap_bind = rb22p_count(&body, &cap_bind);
+    assert_eq!(
+        n_cap_bind, 1,
+        "[rb107/cap-binding]: the export reducer must bind the caller's ceiling EXACTLY once; \
+         found {n_cap_bind}. The rb-65 no-rebind idiom, and here it is a security clause rather \
+         than a style one: a SECOND `let cap = ...` above the exact gate (M15) re-points that gate \
+         at whatever the shadow says — the full ceiling is the obvious spelling — so an anonymous \
+         caller is shed by the pre-gate and then admitted by the exact one, which is the anonymous \
+         tier quietly lifted for every request large enough to reach the walk. Both statement \
+         needles at the end of this test stay GREEN on that shape, because the shadow sits between \
+         them."
+    );
+
+    // --- [rb107/gate-depth]: TWO gates, both at brace depth zero --------------
+    //
+    // The anchor is the SHARED head of the two gates, not either whole
+    // statement: the gates differ only in their second argument, and this clause
+    // has to keep reading the right statements even when that argument is what
+    // moved.
+    let head = rb107_nd_gate_head();
+    let gates: Vec<usize> = body.match_indices(head.as_str()).map(|(i, _)| i).collect();
+    assert_eq!(
+        gates.len(),
+        2,
+        "[rb107/gate-depth]: the export reducer must open `{head}` EXACTLY twice — the pre-gate \
+         immediately after the purge and the exact gate immediately before the insert loop; found \
+         {}. ONE means a gate was deleted or relocated out of the body: with only the exact gate \
+         left, a caller who cannot possibly be served still pays the whole seventeen-table walk, \
+         including the two unindexed own-row scans, under the global write lock; with only the \
+         pre-gate left, a bundle larger than the minimum can still take the live population PAST \
+         the ceiling, which is the exact statement the cap exists to make true. ZERO is the \
+         pre-fix state. THREE is a decision nobody reviewed.",
+        gates.len()
+    );
+    for (which, at) in [("the pre-gate", gates[0]), ("the exact gate", gates[1])] {
+        let depth = m22s4_brace_depth_at(&body, at);
+        assert_eq!(
+            depth, 0,
+            "[rb107/gate-depth]: {which} sits at brace depth {depth}, not at the top level of the \
+             reducer body. Depth is what separates `it is checked` from `it is always checked`: \
+             `if total > 0 {{ .. }}` around the exact gate (M20) is the obvious shape and it is \
+             true on every request that has anything to export, so the control is present, \
+             reviewed, and silently conditional on the one thing it can never be conditional on."
+        );
+    }
+    let at_pre = gates[0];
+    let at_exact = gates[1];
+
+    // --- [rb107/gate-order]: COUNT each anchor once, THEN take its offset -----
+    let purge_bind = rb65p_nd_purge_binding();
+    let walk = rb107_nd_manifest_walk();
+    let total_bind = rb107_nd_total_binding();
+    let loop_head = rb107_nd_insert_loop();
+    let insert = m22s4_nd_bundle_insert();
+    for (what, needle) in [
+        ("the bound purge", purge_bind.as_str()),
+        ("the manifest-order walk head", walk.as_str()),
+        ("the chunk-count binding", total_bind.as_str()),
+        ("the insert loop head", loop_head.as_str()),
+        ("the first export chunk write", insert.as_str()),
+    ] {
+        let n = rb22p_count(&body, needle);
+        assert_eq!(
+            n, 1,
+            "[rb107/gate-order]: {what} (`{needle}`) must occur EXACTLY once in the export reducer \
+             body; found {n}. The ordering clauses below take FIRST-hit offsets, so a decoy second \
+             occurrence steers them at a statement nobody reviewed — and zero would make every one \
+             of them compare a missing position."
+        );
+    }
+    let at_purge = m22s4_idx(&body, &purge_bind, "the bound purge statement");
+    let at_cap = m22s4_idx(&body, &cap_bind, "the cap binding");
+    let at_walk = m22s4_idx(&body, &walk, "the manifest-order walk head");
+    let at_total = m22s4_idx(&body, &total_bind, "the chunk-count binding");
+    let at_loop = m22s4_idx(&body, &loop_head, "the insert loop head");
+    let at_insert = m22s4_idx(&body, &insert, "the first export chunk write");
+    for (what, before, after, why) in [
+        (
+            "the purge then the cap binding",
+            at_purge,
+            at_cap,
+            "the ceiling is chosen AFTER the caller's own prior bundle has been freed inside this \
+             transaction, so a re-exporting caller is not charged for rows that are already gone",
+        ),
+        (
+            "the cap binding then the pre-gate",
+            at_cap,
+            at_pre,
+            "a gate above its own binding would not compile, and a gate reading a DIFFERENT cap \
+             is exactly what the one-binding clause above forbids",
+        ),
+        (
+            "the pre-gate then the manifest walk",
+            at_pre,
+            at_walk,
+            "the pre-gate exists to refuse a caller who cannot be served BEFORE the seventeen-table \
+             walk and its two unindexed own-row scans; below the walk it is a second exact gate \
+             wearing the minimum-bundle argument and buys nothing",
+        ),
+        (
+            "the manifest walk then the chunk-count binding",
+            at_walk,
+            at_total,
+            "the request's exact row count is only known once the plan exists",
+        ),
+        (
+            "the chunk-count binding then the exact gate",
+            at_total,
+            at_exact,
+            "the exact gate's whole claim is that it measures THIS request's real size; above the \
+             binding it could only measure a guess",
+        ),
+        (
+            "the exact gate then the insert loop",
+            at_exact,
+            at_loop,
+            "reject-not-clamp: the gate must precede the FIRST write or a rejected request has \
+             already committed part of a bundle",
+        ),
+        (
+            "the exact gate then the first chunk write",
+            at_exact,
+            at_insert,
+            "the write verb itself, not merely the loop head, so a write hoisted above the loop \
+             is still below the gate",
+        ),
+    ] {
+        assert!(
+            before < after,
+            "[rb107/gate-order]: {what} — offsets {before} and {after} are out of order. {why}. \
+             Moving the exact gate below the insert loop (M19) leaves every count clause in this \
+             test green while the ceiling is enforced only after the rows it was meant to refuse \
+             have already been written."
+        );
+    }
+
+    // --- [rb107/reason-count]: ONE reason, TWO sites, in TWO views ------------
+    //
+    // The whitespace-PRESERVING view is the same pipeline with the squash step
+    // omitted, so the two views differ by exactly the bytes a respelling can
+    // hide in. Neither view alone is enough: the squashed view is byte-identical
+    // for an interior-space respelling of the token, which silently renames the
+    // wire value at one gate, and the preserving view is restored to two by a
+    // decoy occurrence anywhere else in the file. The two views disagree on
+    // exactly that pair, which is why they are also compared to each other.
+    let preserving = strip_rust_comments(&strip_rust_strings(PRIVACY_RS));
+    assert!(
+        preserving.contains("\n    ")
+            && !squashed.contains('\n')
+            && preserving.len() > squashed.len(),
+        "[rb107/reason-count]: the whitespace-PRESERVING view is not preserving whitespace — it \
+         holds no newline-plus-indentation run, or it is no longer than the squashed view. Both \
+         counts below would then be taken over the same text and the pair would prove nothing \
+         beyond what one of them already says."
+    );
+    let reason = rb107_nd_reason();
+    let n_pres = rb22p_count(&preserving, &reason);
+    assert_eq!(
+        n_pres, 2,
+        "[rb107/reason-count]: privacy.rs must spell `{reason}` EXACTLY twice in the \
+         whitespace-preserving view; found {n_pres}. Two, because the two gates share ONE static \
+         reason: a second reason would let the anonymous tier be lifted for one of them without \
+         moving any other literal, and the client enumerates no reject string, so nothing \
+         downstream would notice. ONE means a gate is gone or its reject was rewritten. THREE \
+         means a token was planted somewhere that is not a reject at all."
+    );
+    let n_squashed = rb22p_count(&squashed, &reason);
+    assert_eq!(
+        n_squashed, 2,
+        "[rb107/reason-count]: privacy.rs must spell `{reason}` EXACTLY twice in the SQUASHED \
+         view; found {n_squashed}. This is the view that sees an interior-space respelling — \
+         `stringify!` captures the token bytes verbatim, so a space inside the identifier renames \
+         the value that crosses the wire while every squashed needle in this test is byte-identical \
+         (M22). Paired with a decoy token elsewhere (M23) the preserving count above is restored to \
+         two and only this number moves."
+    );
+    assert_eq!(
+        n_pres, n_squashed,
+        "[rb107/reason-count]: the whitespace-preserving view spells the reject reason {n_pres} \
+         time(s) and the squashed view {n_squashed} time(s). Equal counts are the attribution: the \
+         only text that can differ between the two views is whitespace INSIDE the token, so a \
+         difference here is a respelled reason and nothing else, and it is the one shape a single \
+         view cannot see however exact its number is."
+    );
+
+    // --- [rb107/count-census]: the live population is read O(1), twice --------
+    let count_call = rb107_nd_count_call();
+    let n_count_file = rb22p_count(&squashed, &count_call);
+    assert_eq!(
+        n_count_file, 2,
+        "[rb107/count-census]: privacy.rs must spell `{count_call}` EXACTLY twice; found \
+         {n_count_file}. Two, and both of them in the export reducer: the metadata row count is an \
+         O(1) datastore read, and a third one is a cost on a path nobody budgeted."
+    );
+    let n_count_body = rb22p_count(&body, &count_call);
+    assert_eq!(
+        n_count_body, 2,
+        "[rb107/count-census]: the export reducer must spell `{count_call}` EXACTLY twice; found \
+         {n_count_body}. Comparing this to the file total above is what says the two counts are \
+         the two gates rather than a gate and a helper."
+    );
+    let bundle_count = rb107_nd_bundle_count();
+    let n_bundle_count = rb22p_count(&body, &bundle_count);
+    assert_eq!(
+        n_bundle_count, 2,
+        "[rb107/count-census]: the export reducer must read the live population as `{bundle_count}` \
+         EXACTLY twice; found {n_bundle_count}. RECEIVER-ANCHORED on purpose: the two clauses above \
+         count the VERB and are equally satisfied by `.iter().count()` — a full decode of every \
+         personal-data payload row in the table, on every request, wearing a count (M25). That \
+         shape also reds `[rb85/no-sweep]` and `[rb85/iter-census]`, which this clause CITES rather \
+         than restates; what it owns is that the number the gates read comes from the table's \
+         metadata and not from a sweep."
+    );
+
+    // --- [rb107/exit-shape]: the ATTRIBUTION OWNER of the widened rb-65 census -
+    let at_ok = body.rfind(concat!("Ok", "(())")).unwrap_or_else(|| {
+        panic!(
+            "[rb107/exit-shape]: the export reducer does not end in a success tail, so the region \
+             every clause below is scoped to has no right edge and would be read off an arbitrary \
+             span."
+        )
+    });
+    assert!(
+        at_purge < at_ok,
+        "[rb107/exit-shape]: the bound purge (offset {at_purge}) does not precede the trailing \
+         success tail (offset {at_ok}), so the region below is empty or inverted."
+    );
+    let region = &body[at_purge..at_ok];
+    let ret_err = rb107_nd_return_err();
+    let n_err = rb22p_count(region, &ret_err);
+    assert_eq!(
+        n_err, 3,
+        "[rb107/exit-shape]: exactly THREE `Err` returns may sit between the bound purge and the \
+         trailing success tail; found {n_err}. THIS CLAUSE IS THE ATTRIBUTION OWNER of the two \
+         rb-65 censuses rb-107 widens from one to three, and it names the three sanctioned nested \
+         returns so the number cannot move alone: the PRV1-11 fail-loud arm inside the manifest \
+         walk, the rb-107 admission pre-gate, and the rb-107 exact gate. The depth-0 count in that \
+         region is pinned at ZERO by `rb65p_export_emits_one_observation` `[emit/reachable]`, which \
+         is unchanged by this slice, so a region total and a nested total are the same number here."
+    );
+    let admission_exit = format!("{ret_err}{reason}.to_string());");
+    let n_admission_exit = rb22p_count(region, &admission_exit);
+    assert_eq!(
+        n_admission_exit, 2,
+        "[rb107/exit-shape]: exactly TWO of the region's exits must be the rb-107 admission reject \
+         spelled `{admission_exit}`; found {n_admission_exit}. Rewriting either gate's reject as a \
+         SUCCESS return (M24) holds the depth-0 count at zero and, once the count above has been \
+         moved to match, would leave every reachability clause in this module green — while a \
+         caller whose bundle does not fit is told the export succeeded, with their previous bundle \
+         already purged, no rows written, no self-arm and no observation line. Counting the SHAPE \
+         is what tells a reject from a silent success."
+    );
+    let loud_exit = format!("{ret_err}msg);");
+    let n_loud = rb22p_count(region, &loud_exit);
+    assert_eq!(
+        n_loud, 1,
+        "[rb107/exit-shape]: exactly ONE of the region's exits must be the PRV1-11 fail-loud arm \
+         spelled `{loud_exit}`; found {n_loud}. ZERO means the arm no longer fails: a table the \
+         manifest declares exportable with no exporter behind it would then produce a bundle that \
+         is missing it, under a success return."
+    );
+    assert_eq!(
+        n_admission_exit + n_loud,
+        n_err,
+        "[rb107/exit-shape]: the two NAMED exit shapes account for {} of the {n_err} `Err` returns \
+         in the region. The two counts being EQUAL is the attribution: a THIRD, undeclared early \
+         exit shows up here as a gap even when the total above has been moved to match it, which \
+         is the repayment idiom a widened census owes its reader.",
+        n_admission_exit + n_loud
+    );
+    let n_ret_ok = rb22p_count(region, &rb107_nd_return_ok());
+    assert_eq!(
+        n_ret_ok, 0,
+        "[rb107/exit-shape]: {n_ret_ok} `Ok` return(s) sit between the bound purge and the trailing \
+         success tail; ZERO is allowed. Given the three clauses above this is arithmetic, and it is \
+         kept for ATTRIBUTION: a reader who lands on THIS message is told that an exit changed \
+         POLARITY rather than that a number moved."
+    );
+
+    // --- [rb107/pre-gate-adjacency] LAST but one ------------------------------
+    let n1 = rb107_nd_pre_gate();
+    let n1_control = stripped_for_scan(&rb107_pre_gate_source());
+    assert_eq!(
+        n1_control, n1,
+        "[rb107/pre-gate-adjacency]: the frozen PRE-GATE needle is UNSATISFIABLE — the live \
+         pipeline derives {n1_control:?} from the sanctioned source text. Fix the literal from the \
+         spec, never the other way round."
+    );
+    assert_eq!(
+        rb107_blind_count(&n1),
+        0,
+        "[rb107/pre-gate-adjacency]: the strip pipeline still sees the sanctioned pre-gate after it \
+         was placed ONLY inside a line comment and inside a string literal, so this pin would be \
+         satisfiable by a comment describing the right statement."
+    );
+    let calls = m22s4_call_arg_lists(&body, &admit_named);
+    assert_eq!(
+        calls.len(),
+        2,
+        "[rb107/pre-gate-adjacency]: the export reducer must CALL the admission predicate exactly \
+         twice; it calls it {} time(s), so the argument clauses below would read the wrong list or \
+         none at all.",
+        calls.len()
+    );
+    let pre_args = calls[0].strip_suffix(',').unwrap_or(calls[0].as_str());
+    assert_ne!(
+        pre_args, M22S4_UNBALANCED,
+        "[rb107/pre-gate-adjacency]: the pre-gate call is not paren-balanced. Refusing to classify \
+         is the safe direction: an unclassifiable gate is an ungated gate."
+    );
+    assert_eq!(
+        pre_args,
+        rb107_pre_gate_args_pin().as_str(),
+        "[rb107/pre-gate-adjacency]: the pre-gate must receive the live population, the \
+         MINIMUM-BUNDLE floor and the bound cap, in that order; it reads {pre_args:?}. ONE \
+         trailing comma is dropped before comparing (the rb-86 cap-wiring idiom) because this \
+         argument list sits at 59 of rustfmt's 60-column call width — so if it ever wraps \
+         vertically, this clause still reports that the ARGUMENTS are the reviewed ones and the \
+         statement needle below is what tells you the SHAPE moved. Passing zero here (M16) makes \
+         the pre-gate ask whether an EMPTY bundle fits, which is true at every live population \
+         below the cap and deletes the pre-gate without deleting a line."
+    );
+    let n_n1 = rb22p_count(&body, &n1);
+    assert_eq!(
+        n_n1, 1,
+        "[rb107/pre-gate-adjacency]: the export reducer must carry the rb-107 pre-gate EXACTLY as \
+         pinned, welded between the bound purge and the manifest accumulator, exactly once; found \
+         {n_n1}. ADJACENCY, not containment, and it closes a family in one clause: a statement or \
+         an ATTRIBUTE wedged between the purge and the cap binding or between the binding and the \
+         gate (a conditional-compilation attribute on the gate, M21, is the MEASURED shape — it \
+         leaves the host build, the lint run and every Rust test green while the wasm the database \
+         runs has the gate compiled out); the cap binding replaced by a literal ceiling, M14, which \
+         hands every anonymous caller the account holders' cap; the subject test replaced by a \
+         constant, M27, which does the same thing one call deeper; the gate deleted or relocated; a \
+         debug assertion substituted for the reject, which is compiled out of the release profile \
+         entirely. IF THE ARGUMENT LIST WRAPPED VERTICALLY, the call was lengthened past \
+         fn_call_width — plan §8.2 forbids that; fix the call, not this pin."
+    );
+
+    // --- [rb107/exact-gate-adjacency] LAST ------------------------------------
+    let n2 = rb107_nd_exact_gate();
+    let n2_control = stripped_for_scan(&rb107_exact_gate_source());
+    assert_eq!(
+        n2_control, n2,
+        "[rb107/exact-gate-adjacency]: the frozen EXACT-GATE needle is UNSATISFIABLE — the live \
+         pipeline derives {n2_control:?} from the sanctioned source text. Fix the literal from the \
+         spec, never the other way round."
+    );
+    assert_eq!(
+        rb107_blind_count(&n2),
+        0,
+        "[rb107/exact-gate-adjacency]: the strip pipeline still sees the sanctioned exact gate \
+         after it was placed ONLY inside a line comment and inside a string literal."
+    );
+    let exact_args = calls[1].strip_suffix(',').unwrap_or(calls[1].as_str());
+    assert_ne!(
+        exact_args, M22S4_UNBALANCED,
+        "[rb107/exact-gate-adjacency]: the exact gate's call is not paren-balanced."
+    );
+    assert_eq!(
+        exact_args,
+        rb107_exact_gate_args_pin().as_str(),
+        "[rb107/exact-gate-adjacency]: the exact gate must receive the live population, THIS \
+         REQUEST'S OWN chunk count and the same bound cap, in that order; it reads {exact_args:?}. \
+         The second argument is what makes `the live population can never EXCEED the cap` an exact \
+         statement rather than an approximate one, and it is the one argument the pre-gate cannot \
+         supply."
+    );
+    let n_n2 = rb22p_count(&body, &n2);
+    assert_eq!(
+        n_n2, 1,
+        "[rb107/exact-gate-adjacency]: the export reducer must carry the rb-107 exact gate EXACTLY \
+         as pinned, welded between the chunk-count binding and the insert loop, exactly once; found \
+         {n_n2}. Deleted (M18) the ceiling becomes a floor test on the smallest possible bundle and \
+         a large request walks straight past it; moved below the loop (M19) it refuses AFTER the \
+         rows it was meant to refuse are already written."
+    );
+
+    // --- the CLOSURE: the two pinned statements are ALL the calls in the body -
+    assert_eq!(
+        admit_body, 2,
+        "[rb107/exact-gate-adjacency]: the export reducer calls the admission predicate \
+         {admit_body} time(s); the two statement needles above account for exactly two. The two \
+         numbers being EQUAL is what closes the body: a THIRD call inside this reducer — a gate \
+         wedged into the manifest walk, say — leaves both needles green and is visible only here."
+    );
+    assert_eq!(
+        tier_body, 1,
+        "[rb107/exact-gate-adjacency]: the export reducer calls the tier seam {tier_body} time(s); \
+         the pre-gate needle accounts for exactly one. A second call is a second ceiling chosen \
+         inside one request, which is the same defect the one-binding clause names, reached through \
+         a different spelling."
+    );
+}
+
+// ===========================================================================
+// THE ROSTER CENSUS — what anchors the ledger's literal test counts.
+// ===========================================================================
+
+/// The SIX `rb107_` test names this slice ships, in the order the plan lists
+/// them.
+///
+/// CLOSED on purpose: the ledger's X1, X2 and X3 EXPECTs carry literal counts
+/// derived from these names, so a seventh test has to move a literal in the
+/// ledger in the same commit rather than quietly change what a gate measures.
+fn rb107_test_roster() -> [&'static str; 6] {
+    [
+        "rb107_admission_is_exact_at_both_caps_and_saturates",
+        "rb107_caps_are_the_reapers_drain_and_the_manifest_minimum",
+        "rb107_cap_selection_is_tiered_by_account",
+        "rb107_admission_seams_are_pure_and_frozen",
+        "rb107_reducer_admits_twice_before_the_first_write",
+        "rb107_test_roster_is_closed",
+    ]
+}
+
+/// The forty-two `rb107_` HELPER fn names this slice ships — every `rb107_`
+/// declaration in this file that is not one of the six tests.
+///
+/// CLOSED, exactly like the test roster, so `[rb107/decl-total]` can assert that
+/// the file declares exactly these plus the six: a seventh test cannot hide
+/// behind an attribute the walker misreads, and a new helper cannot arrive
+/// without a reviewer seeing it.
+fn rb107_helper_roster() -> [&'static str; 42] {
+    [
+        "rb107_nd_admit_fn",
+        "rb107_nd_admit_named",
+        "rb107_nd_tier_fn",
+        "rb107_nd_tier_named",
+        "rb107_nd_cap_decl",
+        "rb107_nd_anon_decl",
+        "rb107_nd_min_decl",
+        "rb107_tier_sig_pin",
+        "rb107_tier_body_pin",
+        "rb107_admit_sig_pin",
+        "rb107_admit_body_pin",
+        "rb107_cap_decl_source",
+        "rb107_anon_decl_source",
+        "rb107_min_decl_source",
+        "rb107_tier_decl_source",
+        "rb107_tier_body_source",
+        "rb107_admit_decl_source",
+        "rb107_admit_body_source",
+        "rb107_nd_reason",
+        "rb107_nd_cap_binding",
+        "rb107_nd_gate_head",
+        "rb107_nd_return_err",
+        "rb107_nd_return_ok",
+        "rb107_nd_count_call",
+        "rb107_nd_bundle_count",
+        "rb107_nd_manifest_walk",
+        "rb107_nd_insert_loop",
+        "rb107_nd_total_binding",
+        "rb107_pre_gate_args_pin",
+        "rb107_exact_gate_args_pin",
+        "rb107_nd_pre_gate",
+        "rb107_nd_exact_gate",
+        "rb107_pre_gate_source",
+        "rb107_exact_gate_source",
+        "rb107_blind_count",
+        "rb107_vis_window_text",
+        "rb107_admit_rows",
+        "rb107_test_roster",
+        "rb107_helper_roster",
+        "rb107_dependency_roster",
+        "rb107_declaration_starts",
+        "rb107_attributed_test_declarations",
+    ]
+}
+
+/// The FOUR tests OUTSIDE this slice's prefix that rb-107's whole pin surface
+/// depends on, asserted DECLARED so none of them can be deleted in the diff that
+/// would need them most.
+///
+/// This is not decoration. Each one holds up a class of clause above:
+///   - the bare-quote census is the only view taken BEFORE the strings-first
+///     strip pipeline, so it is the only thing that catches two bare quotes in
+///     line comments blanking an arbitrary span of privacy.rs — and every
+///     squashed clause in this block reads exactly that span;
+///   - the hygiene scan keeps both files free of the block-comment delimiter,
+///     the raw-string prefix and the escaped quote that desynchronise the same
+///     pipeline;
+///   - the conditional-compilation census pins privacy.rs at exactly ONE such
+///     attribute file-wide, which is what makes a compiled-out gate impossible
+///     rather than merely unpinned;
+///   - the rb-65 observation test owns the depth-0 reject count in the
+///     post-purge region, which the exit-shape clause above reasons FROM rather
+///     than restating.
+fn rb107_dependency_roster() -> [&'static str; 4] {
+    [
+        "rb22p_no_bare_quote_in_privacy",
+        "rb22p_scan_hygiene",
+        "rb48_privacy_has_exactly_one_cfg_attribute",
+        "rb65p_export_emits_one_observation",
+    ]
+}
+
+/// The line-start offset of every `rb107_` fn DECLARATION in `src`.
+///
+/// The prefix is HARDCODED here rather than shared with the rb-85, rb-86 and
+/// rb-87 twins, exactly as those three hardcode theirs: a roster census that
+/// took its own prefix as an argument could be pointed at the wrong one by a
+/// single edit. Only true declarations count — the text before `fn` on its own
+/// line must be blank at any indentation, which admits a declaration inside a
+/// property-test block and excludes this file's own string fixtures and every
+/// prose mention.
+fn rb107_declaration_starts(src: &str) -> Vec<usize> {
+    let needle = concat!("fn rb107", "_");
+    let mut out: Vec<usize> = Vec::new();
+    let mut scan = 0usize;
+    while let Some(rel) = src[scan..].find(needle) {
+        let at = scan + rel;
+        scan = at + needle.len();
+        let line_start = match src[..at].rfind('\n') {
+            Some(i) => i + 1,
+            None => 0,
+        };
+        if src[line_start..at].chars().all(|c| c == ' ') {
+            out.push(line_start);
+        }
+    }
+    out
+}
+
+/// How many `rb107_` fn DECLARATIONS in `src` carry a test attribute.
+///
+/// The attribute-block walk itself is `rb85_attr_block_line`, REUSED rather than
+/// re-derived: it is already gated by `[rb85/walker-control]` over the MEASURED
+/// multi-line-attribute fixture, and a second copy would be a second thing to
+/// keep true. Takes its source as an ARGUMENT so this walk can be gated too.
+fn rb107_attributed_test_declarations(src: &str) -> usize {
+    let mut found = 0usize;
+    for line_start in rb107_declaration_starts(src) {
+        let mut cursor = line_start;
+        let mut is_test = false;
+        while cursor > 0 {
+            let prev_end = cursor - 1;
+            let prev_start = match src[..prev_end].rfind('\n') {
+                Some(i) => i + 1,
+                None => 0,
+            };
+            let line = src[prev_start..prev_end].trim();
+            if line == concat!("#[te", "st]") {
+                is_test = true;
+            }
+            if !(line.is_empty()
+                || line.starts_with("#[")
+                || line.starts_with("//")
+                || rb85_attr_block_line(src, prev_start))
+            {
+                break;
+            }
+            cursor = prev_start;
+        }
+        if is_test {
+            found += 1;
+        }
+    }
+    found
+}
+
+/// X1 (ledger anchor): this file declares EXACTLY the six `rb107_` tests the
+/// roster names, each exactly once, and no seventh — and the four out-of-prefix
+/// tests this slice's pin surface rests on are still declared.
+///
+/// A test cannot prove its own existence, but a file CAN prove which tests it
+/// declares — this module already includes its own source for the hygiene scan,
+/// so the census costs nothing. FOUR censuses, for the four escapes rb-85
+/// measured one round at a time: per-NAME, so a rename or a deletion reds; by
+/// ADJACENCY, summed across the flush-left and the indented forms; the
+/// attribute-block WALKER, which sees a test carrying a second attribute that
+/// both adjacency needles are blind to; and the exact declaration TOTAL over two
+/// CLOSED rosters, which does not care WHY a declaration is invisible to a
+/// walker.
+///
+/// THE DEPENDENCY CLAUSE is rb-107's own addition to the shape, and it is
+/// register row M30: the red team's sweep found that a bare-quote span-blanking
+/// cheat inside a line comment in privacy.rs defeats EVERY squashed clause in
+/// this block at once, and that the only instrument which sees it is a test this
+/// slice does not own. Deleting that test is therefore a way to disarm rb-107
+/// without touching a single rb-107 literal, so the roster names it.
+///
+/// Kills: a test renamed out of the ledger's roster filter; a planned test never
+/// written; a seventh test slipped in without moving a literal in the ledger,
+/// including one hidden behind an extra or a multi-line attribute; an unlisted
+/// helper; M30, a load-bearing out-of-prefix test deleted.
+#[test]
+fn rb107_test_roster_is_closed() {
+    let roster = rb107_test_roster();
+    let helpers = rb107_helper_roster();
+    let dependencies = rb107_dependency_roster();
+
+    assert!(
+        PRIVACY_TESTS_RS.len() > 200,
+        "[rb107/roster-vacuity]: this file reads as only {} bytes, so every count below would pass \
+         over nothing.",
+        PRIVACY_TESTS_RS.len()
+    );
+
+    let mut seen: Vec<&str> = roster.to_vec();
+    seen.extend_from_slice(&helpers);
+    seen.extend_from_slice(&dependencies);
+    seen.sort_unstable();
+    for pair in seen.windows(2) {
+        assert_ne!(
+            pair[0], pair[1],
+            "[rb107/roster-dup]: the rosters name `{}` twice, so the total-count clause below is \
+             satisfied by one fewer distinct declaration plus a duplicate entry.",
+            pair[0]
+        );
+    }
+
+    for name in roster {
+        let needle = format!("fn {name}(");
+        let n = rb22p_count(PRIVACY_TESTS_RS, &needle);
+        assert_eq!(
+            n, 1,
+            "[rb107/roster-name]: `{needle}` must be declared exactly once in privacy_tests.rs; \
+             found {n}. ZERO means the test was renamed or never written — and a filtered gate run \
+             does not red on a missing test, it simply matches fewer tests and still reports the \
+             same count passed as ran."
+        );
+    }
+    for name in dependencies {
+        let needle = format!("fn {name}(");
+        let n = rb22p_count(PRIVACY_TESTS_RS, &needle);
+        assert_eq!(
+            n, 1,
+            "[rb107/roster-name]: the LOAD-BEARING test `{needle}` must still be declared exactly \
+             once in privacy_tests.rs; found {n}. rb-107's whole pin surface is squashed-text \
+             clauses over privacy.rs, and each of these four holds up a class of them — the \
+             bare-quote census is the only view taken BEFORE the strings-first pipeline, so it is \
+             the only thing that catches two bare quotes in line comments blanking the very span \
+             every clause in this block reads (M30). Deleting one of these is a way to disarm this \
+             slice without editing a single rb-107 literal, which is why the roster names them."
+        );
+    }
+
+    let flush = rb22p_count(PRIVACY_TESTS_RS, concat!("#[te", "st]\nfn rb107", "_"));
+    let indented = rb22p_count(PRIVACY_TESTS_RS, concat!("#[te", "st]\n    fn rb107", "_"));
+    assert_eq!(
+        flush + indented,
+        roster.len(),
+        "[rb107/roster-closed]: privacy_tests.rs declares {} `rb107_` test(s) by adjacency; the \
+         roster names {}. The two forms are SUMMED so a future property test inside a generator \
+         block could not be deleted while the roster still reported a closed set.",
+        flush + indented,
+        roster.len()
+    );
+
+    // --- the WALKER's own control, over fixtures with a KNOWN count ----------
+    let test_attr = concat!("#[te", "st]");
+    let decl = concat!("fn rb107", "_");
+    let cfg_open = concat!("#[c", "fg(");
+    let cfg_test = concat!("#[c", "fg(test)]");
+    let ignore_attr = concat!("#[ign", "ore]");
+    let walker_cases: [(&str, String, usize); 6] = [
+        (
+            "the MEASURED multi-line attribute: a test attribute, then an \
+             attribute whose bracket stays open across two further lines, then \
+             the declaration",
+            format!("{test_attr}\n{cfg_open}\n    test\n)]\n{decl}probe() {{}}\n"),
+            1,
+        ),
+        (
+            "a BLANK line between the test attribute and the declaration",
+            format!("{test_attr}\n\n{decl}a() {{}}\n"),
+            1,
+        ),
+        (
+            "a SECOND attribute wedged between the test attribute and the \
+             declaration, which both adjacency needles above are blind to",
+            format!("{test_attr}\n{ignore_attr}\n{decl}d() {{}}\n"),
+            1,
+        ),
+        (
+            "an attributed declaration that is NOT a test",
+            format!("{cfg_test}\n{decl}b() {{}}\n"),
+            0,
+        ),
+        (
+            "a declaration under a closing brace and a blank line — an ordinary \
+             helper, which must never be counted however far the walk continues",
+            format!("}}\n\n{decl}c() {{}}\n"),
+            0,
+        ),
+        (
+            "a declaration needle with TEXT before it on its line — this file's \
+             own string fixtures, which are prose and not declarations",
+            format!("{test_attr}\n    let s = mk({decl}decoy());\n"),
+            0,
+        ),
+    ];
+    let mut walker_total = 0usize;
+    for (what, text, want) in &walker_cases {
+        let got = rb107_attributed_test_declarations(text);
+        assert_eq!(
+            got, *want,
+            "[rb107/walker-control]: over {what} the attribute-block walker finds {got} \
+             test-attributed declaration(s); it must find {want}. A walker is a scanner like any \
+             other and a scanner that sees nothing passes everything. The LAST fixture is what \
+             keeps this block honest about itself: the blindness fixtures in this slice build a \
+             decoy declaration at runtime, and the only thing that stops the declaration walk \
+             counting it is the rule that the bytes before `fn` on its line must all be spaces. \
+             Fixture: {text:?}"
+        );
+        walker_total += got;
+    }
+    assert_eq!(
+        walker_total, 3,
+        "[rb107/walker-control]: the six fixtures together must yield exactly three attributed \
+         declarations; the walker found {walker_total}. The per-fixture clauses above separate \
+         every shape from every other; this total is what catches a walker wrong in two directions \
+         at once, and what makes the pair fail loud rather than cancel out."
+    );
+
+    // --- the DECLARATION TOTAL: tests plus a CLOSED helper roster ------------
+    for name in helpers {
+        let needle = format!("\nfn {name}(");
+        let n = rb22p_count(PRIVACY_TESTS_RS, &needle);
+        assert_eq!(
+            n, 1,
+            "[rb107/decl-total]: the helper `{name}` must be declared exactly once at the top \
+             level of privacy_tests.rs; found {n}. The needle carries a leading newline so this \
+             test's own literals are not counted. ZERO means the roster names a helper that no \
+             longer exists, which would make the total arithmetic below pass over a file that is \
+             missing one."
+        );
+    }
+    let declared = rb107_declaration_starts(PRIVACY_TESTS_RS).len();
+    assert_eq!(
+        declared,
+        roster.len() + helpers.len(),
+        "[rb107/decl-total]: privacy_tests.rs declares {} `rb107_` fn(s) whose line carries nothing \
+         but indentation before them; the two CLOSED rosters name {} tests plus {} helpers. This \
+         is the backstop for the attribute walker above and it does not care WHY a declaration is \
+         invisible to it: a seventh test — attributed, un-attributed, or hidden behind a multi-line \
+         attribute — moves this number, as does an unlisted helper. If it reds after an honest \
+         addition, add the name to the roster it belongs to in the same diff, which is the reviewed \
+         event this clause exists to force.",
+        declared,
+        roster.len(),
+        helpers.len()
+    );
+
+    let attributed = rb107_attributed_test_declarations(PRIVACY_TESTS_RS);
+    assert_eq!(
+        attributed,
+        roster.len(),
+        "[rb107/roster-attributed]: walking every `rb107_` declaration's ATTRIBUTE BLOCK finds {} \
+         test-attributed declaration(s); the roster names {}. The two adjacency counts above \
+         require the test attribute to be the line IMMEDIATELY above the `fn`, so they are blind \
+         to a test carrying a second attribute between the two. That test would ship, never run, \
+         and leave both counts unmoved; this clause is the one that sees it, and it also catches a \
+         roster name declared without a test attribute at all.",
         attributed,
         roster.len()
     );
