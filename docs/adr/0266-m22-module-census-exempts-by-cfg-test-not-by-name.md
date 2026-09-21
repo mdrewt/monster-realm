@@ -39,14 +39,22 @@ stay green. That is residual R-rb-85-MODCENSUS.
    totality proof.
 3. **The scanner reads a newline-preserving view.** The per-source parse
    (`m22_declared_mod_names_in`) runs over `m22_blank_for_mod_scan`, a single-pass blanker that
-   turns line comments, NESTED block comments, string literals, raw strings and char literals into
-   spaces while keeping every newline. The pre-existing strings-then-comments pipeline swallows
-   across lines when a comment carries an unbalanced `"`, which under rule 1 would let an earlier
-   `#[cfg(test)]` attach to a later production `mod` (plan red-team #1/#2). A blanker that never
-   merges lines makes that attachment impossible by construction.
-4. **Not widened.** Same-line `#[cfg(test)] mod x;` and multi-attribute-per-line runs are
-   rustfmt-impossible in this crate (fmt --check is a CI gate) and are deliberately not parsed;
-   they fall under rule 2 (counted as production).
+   turns line comments, NESTED block comments, string literals, raw strings with ANY number of
+   hashes, and char literals into spaces while keeping every newline (same byte length, same
+   newline positions). The pre-existing strings-then-comments pipeline swallows across lines
+   when a comment carries an unbalanced `"` or a char literal is `'"'`, closes a nested comment
+   at its first `*/`, and caps raw strings at six hashes — under rule 1 each of those either
+   glued an earlier `#[cfg(test)]` onto a later production `mod` or hid the `mod` outright
+   (all five measured by the slice's red-team lenses; see the proof of teeth). A blanker that
+   never merges lines makes the attachment impossible by construction.
+4. **Raw identifiers are reported bare.** `pub(crate) mod r#name;` names the file `name.rs`; the
+   `r#` prefix is stripped before the identifier check (it used to fail the check and the
+   declaration vanished from the census — the opposite of fail-toward-coverage).
+5. **Not widened.** A same-line attribute run (`#[cfg(test)] mod x;`, or several attributes on
+   one line) squashes to a non-exact attribute and counts as production under rule 2; two `mod`
+   items on one physical line are not parsed at all, and `cargo fmt --check` (a `just lint`
+   gate) keeps both layouts out of the tree. Neither is parsed on purpose: more parser is more
+   forgeable surface.
 
 ## Consequences
 
@@ -63,10 +71,22 @@ stay green. That is residual R-rb-85-MODCENSUS.
 
 ## Proof of teeth (ADR-0224: ordinary Rust tests, no eval)
 
-Three `rb108_` tests in accounts_tests.rs against the pure seam, each with an exact-vec oracle in
-declaration order: the measured cheat is returned and a cfg(test)-gated non-`tests` name is not;
-non-exact cfg forms count as production; the red-team line-merge fixtures still return the
-production mod. RED was recorded against the extracted-but-unchanged suffix rule before the
-predicate changed (memory/projects/gates/rb-108.red-before.md); the acceptance ledger's X5/X6
-re-derive that RED mechanically by reinstating the old predicate / the old blanking pipeline on
-their single anchor lines and requiring the tests to fail.
+Three `rb108_` tests in accounts_tests.rs against the pure seam, each with one exact-vec oracle
+in declaration order:
+- `rb108_mod_census_exempts_by_cfg_test_not_by_name` — the measured cheat
+  (`pub(crate) mod reach_privacy_tests;` under a `#[path]`, no cfg) is returned; a
+  `#[cfg(test)]`-gated `bench_support` is dropped; a `#[cfg(test)]` above a `use` does not gate the
+  `mod` after it; a commented-out gate does not gate; whitespace variants of `#[cfg(test)]` do;
+  a raw identifier is returned bare.
+- `rb108_mod_census_other_cfg_forms_count_as_production` — `cfg(any(test, ..))`,
+  `cfg(all(test))`, `cfg_attr(test, ..)`, `cfg(not(test))`, a multi-line `#[cfg(` / `test` / `)]`
+  and a two-attributes-on-one-line run are all returned; the exact `#[cfg(test)]` control is not.
+- `rb108_mod_census_blanking_never_merges_lines` — a stray `"` in a `//` comment, a nested block
+  comment whose outer `*/` shares the `mod` line, a `'"'` char literal, `r#"…"#` and multi-line
+  string phantoms, lifetimes, a seven-hash raw string and a zero-hash raw string ending in `\`.
+
+RED was recorded against the extracted-but-unchanged suffix rule and the old blanking pipeline
+before the predicate changed (memory/projects/gates/rb-108.red-before.md: all three failed on
+`assert_eq`); the acceptance ledger's X5/X6 re-derive that RED mechanically by reinstating the old
+predicate / the old pipeline on their single anchor lines and requiring the tests to fail, and the
+verifier's own mutant (zero-hash raw strings unrecognised) survived until the last fixture was added.
