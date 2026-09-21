@@ -1,28 +1,22 @@
 #!/usr/bin/env node
 // catalog-export.mjs — client/src/ui/i18n/catalog.<tag>.ts -> <tag>.icu.json (ICU MessageFormat
-// interchange, M24 S8, ADR-0264), plus the nightly locale-completion baseline.
+// interchange) plus the nightly locale-completion baseline. M24 S8; design and rejected
+// alternatives in docs/adr/0264-i18n-icu-interchange-round-trip-and-completion-baseline.md.
 //
-// WHY THE SOURCE IS PARSED, NEVER IMPORTED. The translator-facing `// @desc:` block and the
-// `// @translated: false` marker are comments — invisible to the runtime module — and a closure
-// value is opaque at runtime (no way back to `${p.x}`). So this is a cursor walker over the RAW
-// file: the contiguous `//` block directly above an entry is the description (verbatim, one line
-// per comment line, exactly SHAPE-01's adjacency rule), a value is a quoted string or a
-// `(p) => \`…\`` template whose holes are `${p.<name>}` or `${selectPlural('<tag>', p.<name>,
-// <CONST>)}` with `<CONST>` a hoisted `cldr({…})`. Anything outside that grammar is a PARSE error
-// naming `<file>:<line>:` — reject, never guess (ADR-0205 D4). The marker is the single source
-// of truth for `translated`: absence means true, `true` is never written, and a string diff
-// against English is NOT a signal (a glyph-only key legitimately equals its English twin).
+// WHY THE SOURCE IS PARSED, NEVER IMPORTED. The `// @desc:` block and the `// @translated: false`
+// marker are comments (invisible at runtime) and a closure value is opaque (no way back to
+// `${p.x}`), so this is a cursor walker over the RAW file. Anything outside its grammar is a
+// PARSE error naming `<file>:<line>:` — reject, never guess (ADR-0205 D4).
 //
-// WHY ONLY LIVE CLDR CATEGORIES ARE EMITTED. A catalog's forms record is total (six keys) so the
-// type stays honest, but fr never selects `zero`/`two`/`few` — exporting them hands a translator
-// branches whose edits change nothing. `Intl.PluralRules(tag).resolvedOptions().pluralCategories`
-// is the live set; the importer fills the dead ones from `other`.
+// WHY ONLY LIVE CLDR CATEGORIES ARE EMITTED. The forms record is total (six keys) so the type
+// stays honest, but fr never selects `zero`/`two`/`few`; exporting them hands a translator
+// branches whose edits change nothing. The importer refills the dead ones from `other`.
 //
-// WHY THE COMPLETION RATCHET IS GAP-ONLY. `total` follows the English key count (every new key
-// moves it) and `translated` follows it too; only `gap = total - translated` measures translation
-// debt, so a baseline is checked on gap alone: it may not grow (REGRESSION) and the committed
-// number may not lag the tree (STALE). Both are exit 1 — a nightly that disagrees with the tree
-// in either direction is a lie, and the regen recipe is the fix.
+// WHY THE RATCHET IS GAP-ONLY AND THE MARKER IS THE SSOT. `total`/`translated` both move with the
+// English key count; only `gap` measures translation debt, so a baseline is compared on gap alone
+// (grew = REGRESSION, lagging = STALE, both exit 1). `translated` is exactly what the marker says —
+// absence is true, `true` is never written, and a string diff against English is NOT a signal (a
+// glyph-only key legitimately equals its English twin).
 //
 // ZERO RegExp (ADR-0055 and the M24 convention): every scan is indexOf / charAt / a char class.
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -38,7 +32,12 @@ const GENERATED_BY = 'scripts/catalog-export.mjs';
 /** Canonical CLDR order — the emission order of plural branches and of a forms record. */
 export const CATEGORIES = Object.freeze(['zero', 'one', 'two', 'few', 'many', 'other']);
 /** The `${` opener, concatenated so no plain string literal here holds a template hole. */
-const HOLE = '$' + '{';
+export const HOLE = '$' + '{';
+
+/** `CATALOG_<TAG_UPPER, - -> _>` — the exported const of one catalog (`pt-BR` -> `CATALOG_PT_BR`). */
+export function catalogConstName(tag) {
+  return `CATALOG_${tag.toUpperCase().split('-').join('_')}`;
+}
 
 /** The hole-model token for a param: `${p.<name>}`. */
 export function paramHole(name) {
@@ -214,7 +213,7 @@ export function parseCatalogSource(source, { tag, file }) {
     hoisted.set(name, readForms());
   }
   // (b) the entries between the declaration and `} satisfies Catalog);`.
-  const decl = `export const CATALOG_${tag.toUpperCase().split('-').join('_')}: Catalog = Object.freeze({`;
+  const decl = `export const ${catalogConstName(tag)}: Catalog = Object.freeze({`;
   const declAt = src.indexOf(decl);
   if (declAt === -1 || src.indexOf(decl, declAt + 1) !== -1) {
     parseFail(`expected exactly one \`${decl}\``, 0);
@@ -302,19 +301,22 @@ export function parseCatalogSource(source, { tag, file }) {
     entry.kind = 'closure';
     entry.text = readTemplate(entry);
   };
-  /** The `//` block above an entry: `// @desc:` first, `// @translated:` read and excluded. */
-  const readBlock = (block, at) => {
-    if (block.length === 0) parseFail('no // @desc: block directly above the entry', at);
-    if (!block[0].startsWith('// @desc:')) parseFail('the first block line must be // @desc:', at);
+  /** The `//` block (`[{ text, at }]`) above the entry at `entryAt`: `// @desc:` first,
+   *  `// @translated:` read and excluded; errors cite the offending comment line. */
+  const readBlock = (block, entryAt) => {
+    if (block.length === 0) parseFail('no // @desc: block directly above the entry', entryAt);
+    if (!block[0].text.startsWith('// @desc:')) {
+      parseFail('the first block line must be // @desc:', block[0].at);
+    }
     const strip = (line, prefix) => {
       const rest = line.slice(prefix.length);
       return rest.startsWith(' ') ? rest.slice(1) : rest;
     };
-    const lines = [strip(block[0], '// @desc:')];
+    const lines = [strip(block[0].text, '// @desc:')];
     let translated = true;
     let markers = 0;
-    for (const line of block.slice(1)) {
-      const body = strip(line, '//');
+    for (const { text, at } of block.slice(1)) {
+      const body = strip(text, '//');
       if (body.startsWith('@desc:')) parseFail('two // @desc: lines in one block', at);
       if (body.startsWith('@translated:')) {
         const value = body.slice('@translated:'.length).trim();
@@ -344,8 +346,9 @@ export function parseCatalogSource(source, { tag, file }) {
       continue;
     }
     if (src.startsWith('//', i)) {
-      const end = src.indexOf('\n', i);
-      block.push(src.slice(i, end));
+      const nl = src.indexOf('\n', i);
+      const end = nl === -1 ? src.length : nl;
+      block.push({ text: src.slice(i, end), at: i });
       i = end + 1;
       continue;
     }
@@ -485,27 +488,41 @@ export function computeCompletion(models) {
 function classify(live, baseline) {
   const tags = [...new Set([...Object.keys(baseline), ...Object.keys(live)])].sort();
   return tags.map((tag) => {
-    const l = live[tag];
-    const b = baseline[tag];
+    const l = Object.hasOwn(live, tag) ? live[tag] : undefined;
+    const b = Object.hasOwn(baseline, tag) ? baseline[tag] : undefined;
     let status = 'OK';
     let grew = false;
-    if (l === undefined) {
-      status = `REGRESSION missing live (baseline gap ${b.gap})`;
-      return {
-        tag,
-        status,
-        grew,
-        line: `i18n-completion: ${tag} total=- translated=- gap=- ${status}`,
-      };
-    }
-    if (b === undefined) status = 'STALE not in baseline';
+    if (l === undefined) status = `REGRESSION missing live (baseline gap ${b.gap})`;
+    else if (b === undefined) status = 'STALE not in baseline';
     else if (l.gap > b.gap) {
       status = `REGRESSION gap ${b.gap} -> ${l.gap}`;
       grew = true;
     } else if (l.gap < b.gap) status = `STALE gap ${b.gap} -> ${l.gap}`;
-    const line = `i18n-completion: ${tag} total=${l.total} translated=${l.translated} gap=${l.gap} ${status}`;
+    const line = `i18n-completion: ${tag} total=${l?.total ?? '-'} translated=${l?.translated ?? '-'} gap=${l?.gap ?? '-'} ${status}`;
     return { tag, status, grew, line };
   });
+}
+
+/** A baseline file must be `{ <tag>: { total, translated, gap } }` with integer fields —
+ *  anything else (an empty row, a non-object) is BASELINE-INVALID, never a silent OK. */
+function readBaseline(baselinePath) {
+  let baseline;
+  try {
+    baseline = JSON.parse(readFileSync(baselinePath, 'utf8'));
+  } catch (err) {
+    fail('BASELINE-INVALID', `${baselinePath}: ${err.message}`);
+  }
+  const isRow = (row) =>
+    typeof row === 'object' &&
+    row !== null &&
+    ['total', 'translated', 'gap'].every((f) => Number.isInteger(row[f]));
+  if (typeof baseline !== 'object' || baseline === null || Array.isArray(baseline)) {
+    fail('BASELINE-INVALID', `${baselinePath}: not an object`);
+  }
+  for (const tag of Object.keys(baseline)) {
+    if (!isRow(baseline[tag])) fail('BASELINE-INVALID', `${baselinePath}: bad row '${tag}'`);
+  }
+  return baseline;
 }
 
 export function checkCompletion(live, baseline) {
@@ -526,22 +543,23 @@ const USAGE = [
   '       node scripts/catalog-export.mjs --seed <tag> [--out <dir>] [--i18n-dir <dir>]',
 ].join('\n');
 
+const VALUED_FLAGS = {
+  '--out': 'out',
+  '--baseline': 'baseline',
+  '--i18n-dir': 'i18nDir',
+  '--seed': 'seed',
+};
+
+/** `undefined` on any usage error (unknown flag, a valued flag without its value). */
 function parseArgs(argv) {
-  const opts = { mode: 'export', out: undefined, check: false, baseline: undefined, seed: '' };
-  const valued = ['--out', '--baseline', '--seed', '--i18n-dir'];
+  const opts = { mode: 'export', check: false };
   for (let k = 0; k < argv.length; k++) {
     const arg = argv[k];
-    const value = argv[k + 1];
     if (arg === '--completion') opts.mode = 'completion';
     else if (arg === '--check') opts.check = true;
-    else if (valued.includes(arg) && value !== undefined) {
-      if (arg === '--out') opts.out = value;
-      else if (arg === '--baseline') opts.baseline = value;
-      else if (arg === '--i18n-dir') opts.i18nDir = resolve(value);
-      else {
-        opts.mode = 'seed';
-        opts.seed = value;
-      }
+    else if (Object.hasOwn(VALUED_FLAGS, arg) && argv[k + 1] !== undefined) {
+      opts[VALUED_FLAGS[arg]] = argv[k + 1];
+      if (arg === '--seed') opts.mode = 'seed';
       k += 1;
     } else return undefined;
   }
@@ -558,14 +576,7 @@ function writeJson(outDir, tag, text) {
 function runCompletion(opts, i18nDir) {
   const baselinePath = resolve(opts.baseline ?? BASELINE_PATH);
   const live = computeCompletion(discoverLocales(i18nDir).map((tag) => readModel(tag, i18nDir)));
-  let baseline;
-  if (existsSync(baselinePath)) {
-    try {
-      baseline = JSON.parse(readFileSync(baselinePath, 'utf8'));
-    } catch (err) {
-      fail('BASELINE-INVALID', `${baselinePath}: ${err.message}`);
-    }
-  }
+  const baseline = existsSync(baselinePath) ? readBaseline(baselinePath) : undefined;
   if (opts.check) {
     if (baseline === undefined) {
       console.error(`catalog-export: BASELINE-MISSING ${baselinePath}`);
@@ -596,7 +607,7 @@ function main(argv) {
     console.error(USAGE);
     return 2;
   }
-  const i18nDir = opts.i18nDir ?? I18N_DIR;
+  const i18nDir = opts.i18nDir === undefined ? I18N_DIR : resolve(opts.i18nDir);
   if (opts.mode === 'completion') return runCompletion(opts, i18nDir);
   const outDir = resolve(opts.out ?? BUILD_DIR);
   if (opts.mode === 'seed') {

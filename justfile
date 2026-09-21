@@ -543,6 +543,9 @@ i18n-export:
 # Import a translated ICU JSON as client/src/ui/i18n/catalog.<locale>.ts: emit, format,
 # typecheck, then refresh the completion baseline. Registering a NEW locale (resolver.ts
 # CATALOGS, resolver.test.ts, catalogParity.test.ts) stays manual — the importer prints the edits.
+# Re-importing an EXISTING locale replaces its hand-written file header (only entry blocks
+# round-trip). If client-typecheck fails, the imported file stays in the tree and the baseline
+# is NOT refreshed: nightly goes STALE until the file is repaired and `just i18n-completion` run.
 i18n-import locale file:
     node scripts/catalog-import.mjs {{locale}} {{file}}
     client/node_modules/.bin/biome format --write client/src/ui/i18n/catalog.{{locale}}.ts

@@ -1,24 +1,22 @@
 #!/usr/bin/env node
-// catalog-import.mjs — <tag>.icu.json -> client/src/ui/i18n/catalog.<tag>.ts (M24 S8, ADR-0264).
+// catalog-import.mjs — <tag>.icu.json -> client/src/ui/i18n/catalog.<tag>.ts. M24 S8; design and
+// rejected alternatives in docs/adr/0264-i18n-icu-interchange-round-trip-and-completion-baseline.md.
 //
-// WHY THE DECODER IS DOUBLE_OPTIONAL BUT THE EMITTER (catalog-export.mjs) ALWAYS QUOTES. A TMS
-// hands back whatever ICU4J accepts: `''` is one apostrophe, a `'` before a syntax char opens a
-// quoted span to the next lone `'`, and any other lone `'` is literal — so the reader must be
-// ICU4J-faithful or a translator's `l'objet` would be mangled. Our own exporter still writes the
-// unambiguous DOUBLE_REQUIRED form so every file it produces reads the same under both modes.
+// WHY THE DECODER IS DOUBLE_OPTIONAL WHILE THE EXPORTER ALWAYS QUOTES. A TMS hands back whatever
+// ICU4J accepts (`''` = one apostrophe; a `'` before a syntax char opens a span to the next lone
+// `'`; any other lone `'` is literal), so the reader must be ICU4J-faithful or a translator's
+// `l'objet` is mangled; our own output stays in the unambiguous DOUBLE_REQUIRED form.
 //
-// WHY THE SUBSET IS DEPTH-1 PLURAL-ONLY, AND WHY EVERYTHING ELSE IS A NAMED REJECTION. The
-// catalog has exactly two hole kinds (`${p.x}` and a CLDR plural over one param), so `select`,
-// `selectordinal`, `=N`, `offset:`, nesting, `#` and any other argument type cannot be expressed
-// in the target file — a guess would ship a silent no-op; each is a code and exit 2, nothing
-// written. Only the locale's LIVE CLDR categories may be authored (PLURAL-CATEGORIES); the dead
-// ones are filled from `other` so the emitted forms record stays total.
+// WHY EVERYTHING OUTSIDE THE DEPTH-1 PLURAL SUBSET IS A NAMED REJECTION. The catalog has exactly
+// two hole kinds (`${p.x}` and one CLDR plural per param), so `select`, `=N`, `offset:`, nesting,
+// `#` and any other argument type cannot be expressed in the target file — a guess would ship a
+// silent no-op; each is a code and exit 2, nothing written. Only the locale's LIVE categories may
+// be authored; the dead ones are refilled from `other` so the forms record stays total.
 //
 // WHY THE EMITTED FILE IS RE-PARSED BEFORE THE WRITE. The exporter's parser is the SSOT for what
-// a catalog may contain; if emit(validate(json)) does not parse back to the same model the file
-// would be unreadable on the next export (EMIT-MISMATCH) — so the text goes to `<out>.tmp` and
-// is renamed into place only after that self-check. The `// @translated: false` marker is written
-// LAST in the block and only when the JSON says false; `true` is never written (absence = true).
+// a catalog may contain; text that would not parse back to the same model (EMIT-MISMATCH) never
+// reaches `<out>.tmp` -> rename. `// @translated: false` is written LAST in the block and only
+// when the JSON says false.
 //
 // ZERO RegExp (ADR-0055): indexOf / charAt / char classes only; parser shared with the exporter.
 import { readFileSync, renameSync, writeFileSync } from 'node:fs';
@@ -27,7 +25,9 @@ import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 import {
   CATEGORIES,
+  catalogConstName,
   discoverLocales,
+  HOLE,
   I18N_DIR,
   isIdentChar,
   isWhitespace,
@@ -37,9 +37,6 @@ import {
   pluralHole,
   walkHoles,
 } from './catalog-export.mjs';
-
-/** The `${` opener, concatenated so no plain string literal here holds a template hole. */
-const HOLE = '$' + '{';
 
 function fail(code, detail) {
   throw Object.assign(new Error(`catalog-import: ${code} ${detail}`), { code });
@@ -53,8 +50,9 @@ function sameSet(a, b) {
   return a.length === b.length && a.every((x) => b.includes(x));
 }
 
-/** CONTROL-CHAR: nothing below U+0020, no DEL, no U+2028/U+2029 (line terminators inside a
- *  quoted TS literal). `allowNewline` lets a multi-line description through. */
+/** CONTROL-CHAR: nothing below U+0020, no DEL, no U+2028/U+2029 — the last two are legal inside
+ *  an ES2019+ string literal but TERMINATE a `//` comment, i.e. description injection.
+ *  `allowNewline` lets a multi-line description through. */
 function checkControl(s, where, allowNewline) {
   for (let i = 0; i < s.length; i++) {
     const c = s.charCodeAt(i);
@@ -234,7 +232,8 @@ export function validateImport(json, { tag, enModel }) {
       // biome trims trailing whitespace inside comments (measured), so it could never round-trip.
       if (line !== line.trimEnd()) fail('DESC-INVALID', `${where}: a line ends with whitespace`);
     }
-    if (typeof m.message !== 'string' || m.message.length === 0) fail('MSG-EMPTY', where);
+    if (typeof m.message !== 'string') fail('MSG-EMPTY', `${where}: message is not a string`);
+    if (m.message.length === 0) fail('MSG-EMPTY', `${where}: empty message`);
     checkControl(m.message, `${where} message`, false);
     if (m.message.indexOf(HOLE) !== -1) fail('ICU-UNSUPPORTED', `${where}: literal ${HOLE}`);
     const parsed = parseIcuMessage(m.message, { liveCategories: live, roster: en.params });
@@ -244,11 +243,11 @@ export function validateImport(json, { tag, enModel }) {
         `${where}: message [${parsed.params.join(' ')}] vs en [${en.params.join(' ')}]`,
       );
     }
-    const listed = Array.isArray(m.params) ? m.params : [];
-    if (!listed.every((p) => typeof p === 'string') || !sameSet(listed, en.params)) {
+    if (!Array.isArray(m.params)) fail('PARAMS-MISMATCH', `${where}: params is not an array`);
+    if (!m.params.every((p) => typeof p === 'string') || !sameSet(m.params, en.params)) {
       fail(
         'PARAMS-MISMATCH',
-        `${where}: params [${listed.join(' ')}] vs en [${en.params.join(' ')}]`,
+        `${where}: params [${m.params.join(' ')}] vs en [${en.params.join(' ')}]`,
       );
     }
     const plurals = {};
@@ -275,7 +274,9 @@ export function validateImport(json, { tag, enModel }) {
   return { tag, entries };
 }
 
-/** A2: biome's quote — double when the text has `'` and no `"`, else single with `\'`. */
+/** A2: double when the text has `'` and no `"`, else single with `\'`. biome then keeps the
+ *  quote with fewer escapes, and the parser reads both styles, so this pre-format choice only
+ *  has to be format-stable for the common case. */
 function quoteTs(text) {
   const useDouble = text.indexOf("'") !== -1 && text.indexOf('"') === -1;
   const escaped = text.split('\\').join('\\\\');
@@ -322,9 +323,7 @@ export function emitCatalogTs(tag, model) {
       lines.push('});', '');
     }
   }
-  lines.push(
-    `export const CATALOG_${tag.toUpperCase().split('-').join('_')}: Catalog = Object.freeze({`,
-  );
+  lines.push(`export const ${catalogConstName(tag)}: Catalog = Object.freeze({`);
   for (const entry of model.entries) {
     const desc = entry.description.split('\n');
     lines.push(`  // @desc: ${desc[0]}`);
@@ -380,10 +379,11 @@ function main(argv) {
       out = argv[k + 1];
       k += 1;
     } else if (argv[k].startsWith('--')) {
-      positional.push(undefined);
+      console.error(USAGE);
+      return 2;
     } else positional.push(argv[k]);
   }
-  if (positional.length !== 2 || positional.includes(undefined)) {
+  if (positional.length !== 2) {
     console.error(USAGE);
     return 2;
   }
@@ -393,14 +393,17 @@ function main(argv) {
     tag: 'en',
     file: 'catalog.en.ts',
   });
+  // Decided BEFORE the write: a default-path import of a new locale creates the very file that
+  // would make discovery say "registered".
+  const wasRegistered = discoverLocales().includes(tag);
   importLocale(tag, readFileSync(resolve(file), 'utf8'), { enModel, outPath });
   console.log(`catalog-import: ${tag} -> ${outPath}`);
-  if (!discoverLocales().includes(tag)) {
+  if (!wasRegistered) {
     // Registration is deliberately manual (ADR-0263): four edits, none of them generated.
     console.log(
       [
         `catalog-import: '${tag}' is not registered yet — four manual edits:`,
-        `  1. client/src/ui/i18n/resolver.ts: add CATALOG_${tag.toUpperCase()} (from ./catalog.${tag}) to CATALOGS`,
+        `  1. client/src/ui/i18n/resolver.ts: add ${catalogConstName(tag)} (from ./catalog.${tag}) to CATALOGS`,
         `  2. client/src/ui/i18n/resolver.test.ts: extend the registry pin with '${tag}'`,
         `  3. client/src/ui/i18n/catalogParity.test.ts: add '${tag}' to PLURAL_CATEGORIES`,
         '  4. client/src/ui/i18n/catalogParity.test.ts: add to PLURAL_PARAM_KEYS every key this',
