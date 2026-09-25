@@ -339,3 +339,17 @@ so there is no id for a player row to key on and nothing to pin.
 - **Substituting `encounter.entries` for `battle.state`** as the nightly subject.
   Rejected: empirically it fails identically (it is a struct nested in a `Vec`
   column), so it de-risks nothing.
+
+## Amendment (rb-124, 2026-09-25)
+
+Supervisor-direct doc-only body edit (residual `R-20r-c-ADR0173-BODY`, no new
+ADR number minted): lines 293–301 above still described `quest_defs_load_error`
+as an open named follow-up. It is discharged — 20r-c gated it behind its own
+`QUEST_DEFS_LOAD_ERR_LIMITER` (see `ARCHITECTURE.md`'s 20r-c entry, bracketed
+addendum on the 11r-i paragraph, for the full account: separate limiter and
+window from `QUEST_DEF_MISSING_LIMITER` per ADR-0170 D4 independence, nine
+`s20rc_` proof-of-teeth tests). `ARCHITECTURE.md` already carried this
+discharge; this ADR body was the only stale SSOT. 11r-j's other two named
+follow-ups — the nightly append-at-end BSATN phase and the Rust-side
+comment-hygiene guards for `abilities`/`npcs` + block comments — remain
+uncreated and are unaffected by this amendment.
