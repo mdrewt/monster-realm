@@ -55,7 +55,7 @@ retired it.** ADR-0238 (five sites — three identifier citations in live text r
 amendment's "name retained; a rename is its own slice" parenthetical replaced by a bracket note recording the
 rename, and the one sentence ADR-0238 had itself already declared superseded history left as written with a
 same-line bracket note), ADR-0231 (one site, whose surrounding sentence — "so it can cut across one owner's
-request" — has been false since rb-86 and is retruthed with it), ADR-0265 (four sites in the derivation) and
+request" — has been false since rb-86 and is retruthed with it), ADR-0265 (three sites in the D1 derivation and one in its Context) and
 ARCHITECTURE.md (the rb-85 and rb-107 slice paragraphs) now spell the new name; the rb-86 paragraph of
 ARCHITECTURE.md keeps the old spelling on the line that names `R-rb-86-READCAP-NAME` and this slice, so a
 reader who greps for the old name lands on the record of its retirement. A test reads the four documents as

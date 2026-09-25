@@ -754,7 +754,7 @@ value-and-rationale citation), `:423` (the rb-86 amendment's WINDOW chain), `:43
 retention parenthetical, replaced by a bracket note that records the rename) and `:537` (the rb-87
 amendment's `ExportReapTick.read` bound). The same citations are renamed in ADR-0231 (one site, whose
 surrounding "so it can cut across one owner's request" sentence rb-86 had already made false and which is
-retruthed with it), in ADR-0265 (four sites in the D1 derivation) and in ARCHITECTURE.md (the rb-85 and
+retruthed with it), in ADR-0265 (three sites in the D1 derivation and one in its Context) and in ARCHITECTURE.md (the rb-85 and
 rb-107 slice paragraphs; the rb-86 paragraph keeps one marked mention of the retired spelling, and a new
 rb-110 paragraph records this slice).
 
