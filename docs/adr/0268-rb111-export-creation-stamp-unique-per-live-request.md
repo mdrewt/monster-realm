@@ -153,7 +153,11 @@ cooldown), and every eval.
 - **Stamp semantics.** `created_at_ms` and `request_id` are now "the request's unique creation
   stamp, at or up to 15 ms after the clock". TTL expiry and the caller's next cooldown shift by the
   same amount. `request_id: stamp as u64` still wraps a negative stamp to a huge value (pre-existing
-  `now as u64` behaviour; the client selects the maximum), unchanged here.
+  `now as u64` behaviour; the client selects the maximum), unchanged here. The probe is global,
+  not owner-scoped, so a caller's own `request_id` (readable back through `my_export_bundle`) encodes
+  how many of the preceding fifteen milliseconds carried some OTHER owner's live bundle — at most four
+  bits, no identity and no content, behind the 60 s per-identity cooldown; accepted as outside the
+  row-level leak class ADR-0231 governs.
 - **Retention correctness improves on the reaper side with no reaper change:** a tick's write set is
   sixteen whole bundles minted since rb-111, so the write-side cap of ADR-0265 and the drain of
   ADR-0238 now reason about the same unit. **R-rb-86-TICKBOUND stays open** (rows per bundle).

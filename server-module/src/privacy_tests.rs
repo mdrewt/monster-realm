@@ -25819,8 +25819,11 @@ proptest! {
     /// The value table in T1 is nine hand-picked shapes; this samples the rule
     /// itself, which is what kills the off-by-one and first-gap-after-a-run
     /// variants a finite table misses. The oracle is `rb111_expected_free`,
-    /// written from the spec and shared with T1's cross-check, so neither the
-    /// table nor the property is a copy of the implementation.
+    /// written from the spec and shared with T1's cross-check. HONEST LIMIT:
+    /// that oracle is a loop of the same shape as the mint with a slice lookup
+    /// in place of the index-point read, so what this property proves is the
+    /// PROBE WIRING and the domain edges below; the arithmetic oracle that is
+    /// independent of the implementation is T1's hand-picked value table.
     ///
     /// THE DOMAIN IS CHOSEN, not incidental. The four clock bases are zero, a
     /// NEGATIVE instant (clock skew is expressible in an i64 column and BSATN
