@@ -808,7 +808,10 @@ by construction. Sustaining a contention refusal needs about one successful bund
 distinct subject identities, which the ADR-0265 anonymous budget ends in about 1.25 s once per retention
 window — during which account holders can be refused too (a partial regression of ADR-0265 D1b; residual
 R-rb-111-CONTENTION, LOW, retryable). The bijection rests on reducer-transaction serialisation, not on a
-datastore constraint (residual R-rb-111-NOCONSTRAINT). ADR-0268 records the derivation, the rejected
+datastore constraint (residual R-rb-111-NOCONSTRAINT); the minted stamp a caller reads back is a ≤ 4-bit
+anonymous timing channel (R-rb-111-STAMPORACLE); an unreachable `i64::MAX` clock would collapse the window
+(R-rb-111-SATURATE); and the pre-existing `privacy.rs:<line>` citations in ADR-0231/ADR-0265 drift further
+(R-rb-111-ADRCITE). ADR-0268 records the derivation, the rejected
 alternatives (a composite index, an owner-keyed delete, a monotonic global stamp, a fallback stamp, a wider
 window) and every residual.
 
@@ -820,6 +823,6 @@ under the status-quo stamp), a minimum-free-stamp proptest, the reducer write-si
 the docs census and a closed roster — plus the re-frozen `[X9/now-request-id]` / `[X9/now-stamp]`
 needles, the rb-86 insert-loop needle and its control, `[X9/dispatch-args]` (admits `(ctx, now)` only for
 the mint), `[rb85/range-census]` 1 → 2 and `[rb85/bundle-census]` 9 → 10 with attribution,
-`[rb86/stamp-index-reaches]` 2 → 3, rb-107's N1 needle welding the mint, and `[rb107/exit-shape]`
-counting `?` by depth. RED record: harness `memory/projects/gates/rb-111.red-before.md`. Suite
+`[rb86/stamp-index-reaches]` 2 → 3, rb-107's N1 needle welding the mint, `[rb107/exit-shape]`
+counting `?` by depth, and `rb65p [emit/no-try]` 0 → 1 attributed to the mint's `?`. RED record: harness `memory/projects/gates/rb-111.red-before.md`. Suite
 1023 → 1031 (1024 → 1032 with `dev_reducers`); `just ci`.

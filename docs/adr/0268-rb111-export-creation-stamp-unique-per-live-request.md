@@ -176,7 +176,7 @@ cooldown), and every eval.
   ADR-0238 now reason about the same unit. **R-rb-86-TICKBOUND stays open** (rows per bundle).
 - **No constraint backs the invariant** (D5; residual R-rb-111-NOCONSTRAINT): a future
   cross-transaction construct on this path must re-establish it.
-- **privacy.rs grows** (about forty lines); the three `docs/knowledge/**` anchors into it are
+- **privacy.rs grows** by forty-nine lines (2025 → 2074); the three `docs/knowledge/**` anchors into it are
   regenerated, and the pre-existing `privacy.rs:<line>` citations in ADR-0231/ADR-0265, already
   drifted at the parent commit, drift further (residual R-rb-111-ADRCITE).
 
@@ -217,7 +217,8 @@ delete, mint probe), and the closed roster. Re-frozen in the same diff, each a r
 `[X9/now-request-id]`, `[X9/now-stamp]`, the rb-86 insert-loop needle and its control,
 `[X9/dispatch-args]` (admits `(ctx, now)` only for the mint), `[rb85/range-census]` 1 → 2 and
 `[rb85/bundle-census]` 9 → 10 with attribution, `[rb86/stamp-index-reaches]` 2 → 3, rb-107's N1
-adjacency needle and its control (now welding the mint), and `[rb107/exit-shape]` gaining a
-`?`-by-depth census. The RED record (stages: pins alone; build; status-quo body; no-fallback;
+adjacency needle and its control (now welding the mint), `[rb107/exit-shape]` gaining a
+`?`-by-depth census, and `rb65p [emit/no-try]` 0 → 1 attributed to the mint's own `?` offset — the one
+census the plan, both plan lenses and the tester all missed, found at the first GREEN run (RED record §5). The RED record (stages: pins alone; build; status-quo body; no-fallback;
 loop-bound drifts; wiring left on `now`; `unwrap_or(now)` at the call site) lives in the harness
 ledger at `memory/projects/gates/rb-111.red-before.md`.
