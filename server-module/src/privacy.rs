@@ -22,8 +22,9 @@
 //! deletes every `export_bundle` chunk older than `EXPORT_BUNDLE_TTL_MS` (7
 //! days) through the pure `plan_export_reap` seam. Since rb-86 (a second dated
 //! ADR-0238 amendment) a tick deletes WHOLE BUNDLES: the delete unit is the
-//! creation stamp every chunk of one request shares, so a bundle is never
-//! committed part-gone. `request_data_export` arms the singleton as its last
+//! creation stamp every chunk of one request shares and, since rb-111
+//! (ADR-0268), no other live request shares, so a bundle is never committed
+//! part-gone. `request_data_export` arms the singleton as its last
 //! statement, and `init` / `sync_content` re-arm it on publish, so a chunk can
 //! never exist without its expiry armed.
 //!
@@ -1206,6 +1207,48 @@ fn export_cooldown_elapsed(last_at_ms: Option<i64>, now_ms: i64) -> bool {
 }
 
 // ===========================================================================
+// rb-111 (ADR-0268): a NEW bundle's creation stamp is unique among LIVE rows,
+// so a stamp is exactly one live request and the TTL reaper's per-tick stamp
+// cap counts BUNDLES. Minted here, at the module's one write site, with no
+// schema change: the btree on created_at_ms already exists, a composite index
+// would be a table migration, and a unique column on a live table is
+// automigration-forbidden.
+// ===========================================================================
+
+// A DoS knob, not a legal figure (EXPORT_REQUEST_COOLDOWN_MS above is the
+// precedent): the span of consecutive milliseconds, at or after the clock, in
+// which one request may look for a free creation stamp — and therefore the
+// hard ceiling on how far a stamp may sit ahead of the clock. PRIVATE.
+const EXPORT_STAMP_PROBE_WINDOW_MS: i64 = 16;
+
+// The creation stamp of a NEW bundle: the injected clock, or the first later
+// millisecond no LIVE export_bundle row carries. At most
+// EXPORT_STAMP_PROBE_WINDOW_MS index-POINT reads on the created_at_ms btree;
+// the common case is ONE that decodes nothing. REJECTS with a static reason
+// when the whole window is occupied rather than falling back on a shared
+// stamp — a fallback would restore the unbounded delete unit this removes.
+// READS ONLY: no insert, no delete, and an explicit range loop rather than an
+// iterator chain over the table. `now_ms` is a PARAMETER that deliberately
+// SHADOWS the imported clock fn (the rb-85 idiom), so a second clock read in
+// here is a compile error rather than something a text census must catch.
+fn mint_export_stamp(ctx: &ReducerContext, now_ms: i64) -> Result<i64, String> {
+    for offset in 0..EXPORT_STAMP_PROBE_WINDOW_MS {
+        let candidate = now_ms.saturating_add(offset);
+        if ctx
+            .db
+            .export_bundle()
+            .created_at_ms()
+            .filter(candidate)
+            .next()
+            .is_none()
+        {
+            return Ok(candidate);
+        }
+    }
+    Err(stringify!(export_reject_stamp_contention).to_string())
+}
+
+// ===========================================================================
 // Exporter registry, manifest order. Totality is compile-locked: the const
 // assertion below fails the build if any exportable manifest table lacks an
 // exporter or any exporter names a table that is not exportable — and that
@@ -1500,8 +1543,10 @@ fn rows_character(ctx: &ReducerContext, owner: Identity) -> Result<Vec<String>, 
 // ===========================================================================
 
 /// Build the caller a fresh export: one chunk per exportable table (split at
-/// the game-core sub-chunk boundary), all sharing one request_id minted from
-/// the injected clock. Rejects (distinct static reasons, reject-not-clamp) a
+/// the game-core sub-chunk boundary), all sharing one request_id — the
+/// request's unique creation stamp (rb-111, ADR-0268: the injected clock, or the
+/// first later millisecond no live bundle holds). Rejects (distinct static
+/// reasons, reject-not-clamp) a
 /// caller with no game state at all (anonymous identities are free; an orphaned
 /// bundle now expires via the hourly TTL reaper, rb-48, but a zero-state
 /// identity should not write one in the first place), a caller inside
@@ -1546,6 +1591,13 @@ pub fn request_data_export(ctx: &ReducerContext) -> Result<(), String> {
     if !export_admission_open(ctx.db.export_bundle().count(), EXPORT_MIN_BUNDLE_ROWS, cap) {
         return Err(stringify!(export_reject_admission).to_string());
     }
+    // rb-111 (ADR-0268): this request's UNIQUE creation stamp. AFTER the
+    // admission pre-gate, so a caller who cannot be served pays no probe
+    // reads; BEFORE the manifest walk, so contention is refused before the
+    // two unindexed own-row scans. The `?` is an early exit that rolls the
+    // purge above back with it (ADR-0106 D8), the same contract the two
+    // admission rejects carry.
+    let stamp = mint_export_stamp(ctx, now)?;
     let mut per_table: Vec<(&'static str, Vec<String>)> = Vec::new();
     for entry in DATA_LIFECYCLE_MANIFEST {
         if !entry.exportable {
@@ -1580,12 +1632,12 @@ pub fn request_data_export(ctx: &ReducerContext) -> Result<(), String> {
         ctx.db.export_bundle().insert(ExportBundle {
             chunk_id: 0,
             owner_identity: me,
-            request_id: now as u64,
+            request_id: stamp as u64,
             table_name: c.table.to_string(),
             chunk_index: c.chunk_index,
             total_chunks: total,
             payload_json: c.payload,
-            created_at_ms: now,
+            created_at_ms: stamp,
         });
     }
     ensure_export_bundle_reaper(ctx);
@@ -1675,8 +1727,9 @@ pub(crate) const EXPORT_REAP_MAX_READ_PER_TICK: usize = 256;
 // Per-tick STAMP cap (rb-86, ADR-0238 amendment): the WRITE bound. The row cap
 // above bounds what a tick READS; every creation stamp the window touches is then
 // deleted whole — its tail may lie beyond the window — so the write set is at
-// most this many stamps. A stamp is one request's bundle, or every bundle that
-// committed inside the same millisecond (all expired together). Sixteen
+// most this many stamps — and since rb-111 (ADR-0268) a stamp is exactly one
+// bundle minted since then, because the write site refuses a stamp a live row
+// already carries. Sixteen
 // minimum-size bundles (17 chunks, one per exportable table) is 272 rows, the
 // drain rate of the 256-row cap it replaces; a 256-row window in ascending stamp
 // order holds at most fifteen whole bundles and one straddler anyway.
@@ -1768,8 +1821,9 @@ pub(crate) fn plan_export_reap(
 
 // Pure BUNDLE selection for a per-bundle atomic reap (rb-86, ADR-0238 amendment;
 // closes R-rb-48-PARTIALREAP). A bundle is every chunk sharing one creation
-// stamp: request_data_export stamps all of a request's chunks with its single
-// `now`, so deleting a stamp deletes a whole bundle and never part of one.
+// stamp: request_data_export stamps all of a request's chunks with the single
+// stamp it minted (rb-111), so deleting a stamp deletes exactly one whole bundle
+// and never part of one.
 // `plan_export_reap` above stays the SSOT expiry predicate — it is run over the
 // WHOLE window (`rows.len()`, not a row cap: the read is already bounded) and
 // only the stamps of the ids it plans are kept — then the stamps are made
@@ -1913,8 +1967,9 @@ fn export_reap_cutoff_ms(now_ms: i64, ttl_ms: i64) -> i64 {
 //
 // WHOLE BUNDLES, never a fraction of one (rb-86). A bundle is every chunk
 // sharing one creation stamp: `request_data_export` stamps all of a request's
-// chunks with its single `now`, which is also the `request_id` the S8 client
-// assembles on. So the tick plans STAMPS, through `plan_export_reap_stamps`, and
+// chunks with the one stamp it minted, which is also the `request_id` the S8
+// client assembles on, and since rb-111 (ADR-0268) no other live request shares
+// it. So the tick plans STAMPS, through `plan_export_reap_stamps`, and
 // deletes each one with a single index-POINT delete on the `created_at_ms` btree
 // index — which takes the chunks the bounded window never read as well. That
 // tail is exactly what a per-chunk key delete used to strand, committing a
@@ -1932,17 +1987,11 @@ fn export_reap_cutoff_ms(now_ms: i64, ttl_ms: i64) -> i64 {
 // TWO bounds with two different jobs. EXPORT_REAP_MAX_READ_PER_TICK bounds the
 // READ at 256 rows; EXPORT_REAP_MAX_STAMPS_PER_TICK bounds the WRITE at 16
 // stamps, because a stamp selected from inside the window carries a tail past
-// its edge. A stamp is one request's bundle, or every bundle committed in that
-// same millisecond (residual R-rb-86-SAMEMS). The atomicity invariant is
-// precisely `one request, one stamp`, and privacy_tests.rs pins it four ways:
-// `m22s4_now_bound_once`'s `[X9/now-bind]` (the reducer binds the clock once),
-// `[X9/now-file]` (two clock calls file-wide) and `[X9/now-stamp]` (the insert
-// writes that binding into `created_at_ms`, field separator included), plus
-// rb-86's `[rb86/stamp-site]`, which freezes the export reducer's whole insert
-// loop by adjacency with exactly one `now` binding — a shadowing `let now`, a
-// `zip(now..)` and a closure parameter were each MEASURED to pass the first
-// three. A break there degrades to the status-quo tear, never to destroying a
-// live export.
+// its edge. A stamp is ONE request's bundle (rb-111, ADR-0268): the write site
+// stamps every chunk of a request with the one stamp it minted and refuses a
+// stamp a live bundle already carries, so sixteen stamps per tick is sixteen
+// bundles minted since then. A break on either side degrades to the pre-rb-111
+// shape — a shared stamp reaped as one unit — never to destroying a live export.
 //
 // The delete is a RANGED-index point delete, not the unique-column delete this
 // module used until rb-86: it lowers to

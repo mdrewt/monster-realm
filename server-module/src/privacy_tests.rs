@@ -6700,9 +6700,9 @@ fn m22s4_reducer_statement_order() {
 /// makes this test load-bearing for a second property: the ONE stamp per request
 /// is what makes `a bundle` an index point the TTL reaper can delete whole, so
 /// `[X9/now-bind]`, `[X9/now-file]` and `[X9/now-stamp]` are the three clauses
-/// the per-bundle atomicity claim rests on (residual R-rb-86-SAMEMS records the
-/// other direction: two requests inside one millisecond share a stamp and are
-/// reaped together, both already expired).
+/// the per-bundle atomicity claim rests on (rb-111, ADR-0268, closes the OTHER
+/// direction: the write site refuses a stamp a live bundle already carries, so
+/// one stamp is one request and sixteen stamps per tick is sixteen bundles).
 ///
 /// Kills: a second clock read inside either reducer;
 ///        a clock read anywhere else in the module (a helper minting its own
@@ -6789,19 +6789,19 @@ fn m22s4_now_bound_once() {
         "m22s4 [X9/now-bind]: the clock must be bound once, by name, from the injected context."
     );
     assert_eq!(
-        rb22p_count(&body, "request_id:nowasu64"),
+        rb22p_count(&body, "request_id:stampasu64"),
         1,
-        "m22s4 [X9/now-request-id]: the request id must be minted from the SAME binding. It is \
-         monotone, meaningful and derived from the injected clock — never from randomness, which \
-         is documented non-cryptographic here and is banned in security-sensitive paths."
+        "m22s4 [X9/now-request-id]: the request id must be minted from the SAME stamp binding, \
+         itself derived from the ONE clock binding by `mint_export_stamp` (rb-111, ADR-0268) — \
+         never from randomness, which is non-cryptographic here and banned in security paths."
     );
     assert_eq!(
-        rb22p_count(&body, "created_at_ms:now,"),
+        rb22p_count(&body, "created_at_ms:stamp,"),
         1,
-        "m22s4 [X9/now-stamp]: the row timestamp must be EXACTLY the bound instant — the field \
-         separator is part of the needle since rb-86, which is a TIGHTENING. The old prefix form \
-         `created_at_ms:now` was MEASURED satisfiable by `created_at_ms: now + c.chunk_index as \
-         i64`, a per-CHUNK stamp that passes this clause, both clock censuses and every binding \
+        "m22s4 [X9/now-stamp]: the row timestamp must be EXACTLY the bound creation STAMP — the \
+         field separator is part of the needle since rb-86, which is a TIGHTENING. The old form \
+         `created_at_ms:stamp` was MEASURED satisfiable by `created_at_ms: stamp + c.chunk_index \
+         as i64`, a per-CHUNK stamp that passes this clause, both clock censuses and every binding \
          clause above. That shape is not cosmetic: since rb-86 a bundle IS its creation stamp — \
          the TTL reaper deletes one index point per expired stamp and takes every chunk carrying \
          it — so one request whose chunks carry N different stamps is reaped in N pieces across N \
@@ -6871,12 +6871,15 @@ fn m22s4_sender_bound_once_and_sole_identity_source() {
         let at = scan + rel;
         let rest = &body[at + 4..];
         if let Some(stripped) = rest.strip_prefix(',') {
+            let mint_clock = stripped.starts_with("now)")
+                && body[..=at].ends_with(rb111_nd_mint_named().as_str());
             assert!(
-                stripped.starts_with("me)"),
-                "m22s4 [X9/dispatch-args]: a call in the reducer body passes the context together \
-                 with something other than the bound subject. The dispatch is `(ctx, me)` and \
-                 nothing else: a shell reader handed any other identity reads another account's \
-                 rows into this subject's export while every other clause stays green."
+                stripped.starts_with("me)") || mint_clock,
+                "m22s4 [X9/dispatch-args]: a call in the reducer body passes the context with \
+                 something other than the bound subject. `(ctx, now)` is admitted ONLY when the \
+                 callee IS the rb-111 creation-stamp mint — the i64 clock, bound once and censused \
+                 at two file-wide, so it can never be an identity; `[rb111/dispatch-now-once]` \
+                 owns its exactly-once tooth. Any other pairing reads a foreign identity's rows."
             );
             ctx_calls += 1;
         } else if rest.starts_with(')') {
@@ -6887,11 +6890,8 @@ fn m22s4_sender_bound_once_and_sole_identity_source() {
     assert!(
         ctx_calls >= 3,
         "m22s4 [X9/dispatch-args]: only {ctx_calls} context-passing call(s) were found in the \
-         reducer body; the clock read, the deletion gate, the purge, the per-table dispatch and \
-         the rb-48 TTL-reaper self-arm are five. A scan that finds too few is a scan that stopped \
-         looking. The floor stays at three on purpose: it guards against a broken walk, not \
-         against a changed statement list, and every one of those five calls is pinned by name \
-         and position elsewhere in this module."
+         reducer body; SEVEN exist since rb-111. A scan that finds too few stopped looking; the \
+         floor guards a broken walk, not a changed statement list, each call pinned by name."
     );
 
     // The only tables this body may touch are the three the guards need.
@@ -9725,12 +9725,12 @@ fn rb65p_export_emits_one_observation() {
     // EXACT gate just above the insert loop, each one brace deep inside its own
     // `if`. A flat "no return token here" clause would therefore be
     // unsatisfiable against the correct implementation, so the clause counts by
-    // DEPTH instead — and the depth-0 count of zero is the property that
-    // actually matters: a top-level early exit below the purge is what makes the
-    // emission dead code. The nested count below is a BUDGET, not a fact about
-    // the code: which three shapes those returns have is owned by
-    // rb107_reducer_admits_twice_before_the_first_write [rb107/exit-shape], and
-    // neither number may move without the other.
+    // DEPTH instead — and its depth-0 ZERO still matters (a top-level `return`
+    // below the purge makes the emission dead code). It is NOT the whole
+    // reachability story since rb-111: the mint's `?` is a CORRECT depth-0 exit
+    // (it rolls the transaction back), invisible to a keyword census, so
+    // [rb111/mint-exit] counts this region's `?` by depth. The nested BUDGET is
+    // rb107_reducer_admits_twice_before_the_first_write's; neither moves alone.
     let region = &body[at_purge..at_ok];
     let region_bytes = region.as_bytes();
     let mut depth0 = 0usize;
@@ -13793,28 +13793,30 @@ fn rb85_reaper_reads_a_bounded_range_and_never_sweeps() {
          event, not a drive-by."
     );
 
-    // --- (2) exactly ONE range read exists, file-wide -------------------------
+    // --- (2) exactly TWO filter chains exist, file-wide ----------------------
     let range = rb85_nd_range_chain();
     let ranges = rb22p_count(&squashed, &range);
     assert_eq!(
-        ranges, 1,
+        ranges, 2,
         "[rb85/range-census]: privacy.rs must apply the creation-stamp index FILTER chain EXACTLY \
-         once; found {ranges}. The needle counted here is the FILTER chain, not every reach of \
-         that index: since rb-86 the module reaches the creation-stamp index TWICE — this bounded \
-         range READ, and the index-POINT delete that reaps a whole bundle — and the second reach \
-         is counted and attributed by `[rb86/stamp-index-reaches]`, deliberately not here, so \
-         neither clause restates the other. The accessor rb-85 created is a full-read surface in \
-         its own right — `.filter(i64::MIN..)` is an unbounded index scan with no `.iter()` and \
-         no `..=` in it at all — so this count stays exact and the ONE filter occurrence is \
-         attributed below."
+         twice; found {ranges}. MOVED 1 -> 2 BY rb-111: the second is the creation-stamp MINT's \
+         index-POINT probe, whose ARGUMENT this needle cannot see — so the number does not move \
+         alone, and both offsets are attributed to a NAMED body immediately below. The needle is \
+         the FILTER chain, not every reach of that index: the module now reaches it three times \
+         — this bounded range READ, the index-POINT delete that reaps a whole bundle, and the \
+         mint's probe — with `[rb86/stamp-index-reaches]` counting the reaches and \
+         `[rb111/index-reach]` closing their arithmetic. `.filter(i64::MIN..)` is an unbounded \
+         scan with no `.iter()` and no `..=` in it, so this count stays exact."
     );
 
-    // --- (3) and it is INSIDE the helper, INCLUSIVE, at the bound cutoff ------
+    // --- (3) BOTH are attributed; the helper's is INCLUSIVE, at the cutoff ----
     //
-    // The ATTRIBUTION is carried by the indexing call below rather than by a
-    // count clause of its own: `m22s4_idx` fails LOUD when the needle is absent
-    // from the scoped body, so `exactly one file-wide` plus `and it is in this
-    // body` is already said by the two lines together.
+    // ATTRIBUTION rides on the indexing calls rather than on count clauses of
+    // their own: `m22s4_idx` fails LOUD when the needle is absent from the body
+    // it is handed, so `exactly two file-wide` plus one hit inside each NAMED
+    // body is already a closed statement. rb-111's mint owns the second.
+    let mint_body = rb111_mint_body(&squashed);
+    m22s4_idx(&mint_body, &range, "rb-111's creation-stamp probe");
     let body = rb85_helper_body(&squashed);
     let at = m22s4_idx(&body, &range, "the bounded range read");
     let terminator = rb85_range_terminator();
@@ -13949,36 +13951,34 @@ fn rb85_reaper_reads_a_bounded_range_and_never_sweeps() {
     let accessor = m22s4_nd_bundle_accessor();
     let file_wide = rb22p_count(&squashed, &accessor);
     assert_eq!(
-        file_wide, 9,
-        "[rb85/bundle-census]: privacy.rs must reach `{accessor}` exactly nine times; found \
+        file_wide, 10,
+        "[rb85/bundle-census]: privacy.rs must reach `{accessor}` exactly ten times; found \
          {file_wide}. Two in the owner-scoped purge, FOUR in the export reducer, one in the \
-         owner-scoped view, two in the bounded-read helper, none in the scheduler-only reducer. \
-         MOVED 7 -> 9 BY rb-107 (ADR-0265, closes R-rb-85-EXPORTADMIT): the reducer gained TWO \
-         reads of the live population, one per admission gate, each spelled \
-         `{accessor}.count()` — an O(1) metadata read, not a scan. Moving a census is exactly the \
-         shape a silent loosening takes, so the number does not move alone: the per-body \
-         attribution below moves in the same diff and re-closes the set, and \
+         owner-scoped view, two in the bounded-read helper, ONE in the creation-stamp mint, none \
+         in the scheduler-only reducer. MOVED 7 -> 9 BY rb-107 (ADR-0265) — two O(1) metadata \
+         reads of the live population, one per admission gate, each spelled `{accessor}.count()` \
+         — and 9 -> 10 BY rb-111 (ADR-0268), the mint's index-POINT probe. Moving a census is \
+         exactly the shape a silent loosening takes, so the number never moves alone: the \
+         per-body attribution below moves in the same diff and re-closes the set, and \
          `rb107_reducer_admits_twice_before_the_first_write` `[rb107/count-census]` OWNS the two \
-         new reaches BY SHAPE — exactly two `.count()` calls in the file, both inside the export \
-         reducer, both rooted in this accessor — so a third reach smuggled in as a sweep wearing a \
-         count reds there even while this total has been moved to match it. That test runs in X1 \
-         and in the same X2/X3/X6 gates as this one."
+         rb-107 reaches BY SHAPE — exactly two `.count()` calls, both inside the export reducer, \
+         both rooted in this accessor — while `[rb111/index-reach]` owns the mint's. That test \
+         runs in X1 and in the same X2/X3/X6 gates as this one."
     );
 
     // The export reducer's share MOVED 2 -> 4 with rb-107 (ADR-0265): the two it
-    // always held are the cooldown's owner-scoped max and the insert, and the
-    // two it gained are the live-population reads of the admission pre-gate and
-    // the exact gate. Both new ones are `.count()` — O(1) datastore metadata,
-    // never a scan — and their SHAPE, their number and their position are owned
-    // by rb107_reducer_admits_twice_before_the_first_write
-    // ([rb107/count-census], [rb107/pre-gate-adjacency],
-    // [rb107/exact-gate-adjacency]), so this number and that test move together
-    // or not at all.
-    let attributed: [(&str, &str, usize); 5] = [
+    // always held are the cooldown's owner-scoped max and the insert; the two it
+    // gained are the pre-gate's and the exact gate's live-population `.count()`
+    // reads, whose SHAPE, number and position are owned by
+    // rb107_reducer_admits_twice_before_the_first_write. rb-111 (ADR-0268) adds
+    // the SIXTH body: the creation-stamp mint, whose single reach is the probe
+    // [rb111/index-reach] attributes. No number here moves without that test.
+    let attributed: [(&str, &str, usize); 6] = [
         ("the owner-scoped purge helper", purge_body.as_str(), 2),
         ("request_data_export", export_body.as_str(), 4),
         ("the owner-scoped export view", view_body.as_str(), 1),
         ("the bounded-read TTL helper", body.as_str(), 2),
+        ("the creation-stamp mint", mint_body.as_str(), 1),
         ("the scheduler-only reaper reducer", reaper_body.as_str(), 0),
     ];
     let mut attributed_total = 0usize;
@@ -13996,10 +13996,10 @@ fn rb85_reaper_reads_a_bounded_range_and_never_sweeps() {
     }
     assert_eq!(
         attributed_total, file_wide,
-        "[rb85/bundle-scope]: the five attributed bodies account for {attributed_total} of the \
+        "[rb85/bundle-scope]: the six attributed bodies account for {attributed_total} of the \
          {file_wide} uses in the file. The two counts being EQUAL is the attribution: the scoped \
          occurrences are a subset of the file's, so equal cardinalities mean equal sets, and an \
-         eighth use in a new helper nobody scoped would show up here as a gap."
+         ELEVENTH use in a new helper nobody scoped would show up here as a gap."
     );
 
     // --- (10) the crate-wide ownership ratchet, over RAW source ---------------
@@ -15115,9 +15115,9 @@ fn rb86_nd_insert_loop() -> String {
         "forcinplan{".to_string(),
         m22s4_nd_bundle_insert(),
         concat!("Export", "Bundle{").to_string(),
-        "chunk_id:0,owner_identity:me,request_id:nowasu64,".to_string(),
+        "chunk_id:0,owner_identity:me,request_id:stampasu64,".to_string(),
         "table_name:c.table.to_string(),chunk_index:c.chunk_index,".to_string(),
-        "total_chunks:total,payload_json:c.payload,created_at_ms:now,".to_string(),
+        "total_chunks:total,payload_json:c.payload,created_at_ms:stamp,".to_string(),
         "});}".to_string(),
     ]
     .concat()
@@ -15226,12 +15226,12 @@ fn rb86_insert_loop_source() -> String {
         "Bundle {\n",
         "            chunk_id: 0,\n",
         "            owner_identity: me,\n",
-        "            request_id: now as u64,\n",
+        "            request_id: stamp as u64,\n",
         "            table_name: c.table.to_string(),\n",
         "            chunk_index: c.chunk_index,\n",
         "            total_chunks: total,\n",
         "            payload_json: c.payload,\n",
-        "            created_at_ms: now,\n",
+        "            created_at_ms: stamp,\n",
         "        });\n    }\n",
     ]
     .concat()
@@ -16675,20 +16675,20 @@ fn rb86_reaper_deletes_whole_bundles_by_stamp_and_never_by_chunk_id() {
     // --- (8) the creation-stamp index is reached TWICE, both times here -------
     let index_file_wide = rb22p_count(&squashed, &stamp_index);
     assert_eq!(
-        index_file_wide, 2,
-        "[rb86/stamp-index-reaches]: privacy.rs must reach the creation-stamp index EXACTLY twice; \
-         found {index_file_wide}. ONE is the rb-85 shape — the bounded range READ alone. The \
-         second reach is this slice's index-POINT delete, and pinning the pair here is what keeps \
-         `[rb85/range-census]` an exact statement about the FILTER chain instead of a count that \
-         had to be loosened."
+        index_file_wide, 3,
+        "[rb86/stamp-index-reaches]: privacy.rs must reach the creation-stamp index EXACTLY three \
+         times; found {index_file_wide}. ONE was the rb-85 shape — the bounded range READ alone; \
+         TWO added rb-86's index-POINT delete; the THIRD is rb-111's creation-stamp probe, so \
+         MOVED 2 -> 3 BY rb-111 (ADR-0268). `[rb111/index-reach]` closes the arithmetic: the \
+         helper's two below plus the mint's one must equal this number."
     );
     assert_eq!(
         rb22p_count(&helper, &stamp_index),
         2,
-        "[rb86/stamp-index-reaches]: both reaches of the creation-stamp index must be inside the \
-         TTL helper — the range read and the point delete. Equal cardinalities mean equal sets, so \
-         a third reach anywhere else in the module shows up as a gap here even when the file-wide \
-         count above was moved to match it."
+        "[rb86/stamp-index-reaches]: exactly TWO reaches of the creation-stamp index are the TTL \
+         helper's — the range read and the point delete. The file's THIRD is rb-111's mint, and \
+         the closure is `[rb111/index-reach]` below, which asserts helper 2 + mint 1 == file 3; a \
+         fourth reach anywhere shows up there as a gap even if this pair was moved to match it."
     );
 
     // --- (9) a scheduled tick has no caller to speak of -----------------------
@@ -16863,9 +16863,9 @@ fn rb86_bundle_cap_is_sixteen_and_the_read_cap_is_unchanged() {
 ///
 /// THIS IS THE ATOMICITY INVARIANT'S GUARD. The whole per-bundle design rests on
 /// `one request ⇔ one stamp`, because since rb-86 the reap's delete unit IS the
-/// creation stamp. rb-86 already tightened `m22s4 [X9/now-stamp]` from
-/// `created_at_ms:now` to `created_at_ms:now,` — and that is still only a PREFIX
-/// pin on ONE FIELD. Three clippy-clean shapes were measured green against the
+/// creation stamp. rb-86 already tightened `m22s4 [X9/now-stamp]` by adding the
+/// field separator — and since rb-111 that needle reads `created_at_ms:stamp,`,
+/// still only a PREFIX pin on ONE FIELD. Three clippy-clean shapes were green
 /// tightened needle, against both clock censuses, against all three binding
 /// clauses and against every count in this module:
 ///
@@ -16892,6 +16892,15 @@ fn rb86_bundle_cap_is_sixteen_and_the_read_cap_is_unchanged() {
 /// wins, so B1 dies on the clause that names its cause and the adjacency needle
 /// is left owning B1' and B1'', neither of which adds a binding at all. Each
 /// clause therefore has a bypass it uniquely reports.
+///
+/// RE-FROZEN BY rb-111 (ADR-0268; closes residual R-rb-86-SAMEMS). The loop's
+/// `request_id` and `created_at_ms` now read the MINTED stamp rather than the
+/// clock binding, so `rb86_nd_insert_loop` and its INDEPENDENTLY spelled source
+/// control both moved in that diff — B1, B1' and B1'' are the same three shapes,
+/// spelled with `stamp`. The binding clause below still pins exactly one
+/// `let now =`; its twin for `let stamp =` lives in the rb-111 block, together
+/// with the clause that forbids the literal `now` anywhere in the row literal,
+/// so a single field reverted to the clock is owned there rather than here.
 ///
 /// HONEST LIMITS: a source pin on the reducer that MINTS the stamps. It says
 /// nothing about the host, it cannot see an import alias re-pointing `now_ms`
@@ -19168,6 +19177,13 @@ fn rb107_exact_gate_args_pin() -> String {
 /// and the gate, or between the gate and the walk all move it, and so do the
 /// gate deleted, the gate moved, the subject test replaced by a constant, the
 /// count argument replaced by a literal and a `debug_assert!` substitution.
+///
+/// RE-FROZEN BY rb-111 (ADR-0268), and the re-freeze is a STRENGTHENING: the
+/// creation-stamp mint statement is appended before the right anchor, so N1 now
+/// welds the mint's POSITION between the admission pre-gate and the manifest
+/// accumulator as well. The needle is spelled through `rb111_nd_mint_stmt()` —
+/// the same helper the rb-111 block's call-site clauses read — so the statement
+/// this pin demands and the statement those clauses count cannot drift apart.
 fn rb107_nd_pre_gate() -> String {
     [
         rb65p_nd_purge_binding(),
@@ -19184,6 +19200,7 @@ fn rb107_nd_pre_gate() -> String {
         rb107_nd_return_err(),
         rb107_nd_reason(),
         ".to_string());}".to_string(),
+        rb111_nd_mint_stmt(),
         concat!("letmutper", "_table:").to_string(),
     ]
     .concat()
@@ -19211,6 +19228,12 @@ fn rb107_nd_exact_gate() -> String {
 
 /// The pre-gate as whitespace-bearing SOURCE text — N1's positive control,
 /// spelled independently of N1 itself.
+///
+/// The rb-111 mint statement is retyped HERE from the production spec, never
+/// derived from `rb111_nd_mint_stmt()`: a control built out of the needle it
+/// controls proves nothing, and the comment block the implementer lands above
+/// that statement contributes no bytes, because the live pipeline blanks
+/// comments before the squash.
 fn rb107_pre_gate_source() -> String {
     [
         concat!("}\n    let purged = purge_export", "_bundles(ctx, me);\n"),
@@ -19224,6 +19247,7 @@ fn rb107_pre_gate_source() -> String {
         "_BUNDLE_ROWS, cap) {\n",
         concat!("        return Err(stringify!(export_reject", "_admission)"),
         ".to_string());\n    }\n",
+        concat!("    let stamp = mint_export", "_stamp(ctx, now)?;\n"),
         concat!("    let mut per", "_table:\n"),
     ]
     .concat()
@@ -20896,6 +20920,34 @@ fn rb107_reducer_admits_twice_before_the_first_write() {
          POLARITY rather than that a number moved."
     );
 
+    // The region's `?` exits, counted by DEPTH (rb-111, ADR-0268). Every clause
+    // above counts a `return` KEYWORD and is structurally blind to a `?`: the
+    // reducer's `rows_fn(ctx, me)?` has always sat at depth three inside the
+    // manifest walk, and rb-111's mint statement added the region's FIRST
+    // depth-0 `?`. Both numbers are pinned, because the split is what sees a
+    // swap that holds the total; [rb111/mint-exit] attributes the depth-0 one
+    // to the mint statement's own offset.
+    let mut q_total = 0usize;
+    let mut q_depth0 = 0usize;
+    for (rel, _) in region.match_indices('?') {
+        q_total += 1;
+        if m22s4_brace_depth_at(&body, at_purge + rel) == 0 {
+            q_depth0 += 1;
+        }
+    }
+    assert_eq!(
+        (q_total, q_depth0),
+        (2usize, 1usize),
+        "[rb107/exit-shape]: the region between the bound purge and the trailing success tail \
+         carries {q_total} `?` exit(s), {q_depth0} of them at brace depth ZERO; exactly (2, 1) \
+         are sanctioned. The `Err`-return censuses above count one KEYWORD and cannot see a `?` \
+         at all — the view is squashed, so a `?` inside a string or a comment is already gone — \
+         which is why this pair sits beside them: `rows_fn(ctx, me)?` is the nested one and \
+         rb-111's `let stamp = ...?;` is the region's first top-level early exit. Swapping the \
+         nested one for `.unwrap_or_default()` while adding the mint's holds the TOTAL at two, \
+         so only the DEPTH split reports it."
+    );
+
     // --- [rb107/pre-gate-adjacency] LAST but one ------------------------------
     let n1 = rb107_nd_pre_gate();
     let n1_control = stripped_for_scan(&rb107_pre_gate_source());
@@ -20943,8 +20995,12 @@ fn rb107_reducer_admits_twice_before_the_first_write() {
     assert_eq!(
         n_n1, 1,
         "[rb107/pre-gate-adjacency]: the export reducer must carry the rb-107 pre-gate EXACTLY as \
-         pinned, welded between the bound purge and the manifest accumulator, exactly once; found \
-         {n_n1}. ADJACENCY, not containment, and it closes a family in one clause: a statement or \
+         pinned, welded between the bound purge and the manifest accumulator with rb-111's \
+         creation-stamp mint statement as its last member, exactly once; found \
+         {n_n1}. RE-FROZEN BY rb-111 (ADR-0268), a STRENGTHENING: the needle now also fixes the \
+         mint's POSITION — hoisted above the gate, sunk below the walk, or wrapped in anything at \
+         all, it moves this literal. ADJACENCY, not containment, and it closes a family in one \
+         clause: a statement or \
          an ATTRIBUTE wedged between the purge and the cap binding or between the binding and the \
          gate (a conditional-compilation attribute on the gate, M21, is the MEASURED shape — it \
          leaves the host build, the lint run and every Rust test green while the wasm the database \
@@ -24620,6 +24676,2279 @@ fn rb110_test_roster_is_closed() {
              measured on the SPAN so the number means what it means there. The value oracle is \
              the TIGHTEST span in this block at roughly 350 bytes, because it is five bindings \
              and three assertions; the three text tests run into the thousands. What this catches \
+             is a body hollowed down to its label strings, which neither label census can see."
+        );
+    }
+}
+
+// ===========================================================================
+// rb-111 (ADR-0268; closes residual R-rb-86-SAMEMS) — A NEW BUNDLE'S CREATION
+// STAMP IS UNIQUE AMONG LIVE ROWS, SO THE TTL REAPER'S PER-TICK STAMP CAP
+// COUNTS BUNDLES.
+//
+// CRITERION (gates/rb-111.gates.md): same-millisecond export bursts must not
+// form one reaper delete unit. rb-86 keyed the whole-bundle delete on
+// created_at_ms and pinned `one request => one stamp`; the CONVERSE was the
+// residual. `request_data_export` is cheap for a low-state anonymous identity
+// and the host serialises reducers at millisecond granularity, so N bundles
+// committed inside one millisecond shared one stamp and expired as ONE delete
+// unit seven days later — the per-tick WRITE set was sixteen stamps times the
+// bundles under each. The fix mints, at the module's one write site, a stamp
+// no LIVE row carries; the reaper, the schema, the native host and the client
+// are all byte-identical.
+//
+// WHAT IS BEHAVIOURAL HERE AND WHAT IS NOT. The mint is a ctx-bound helper
+// whose only read is an index POINT scan on a registered single-column btree,
+// which is exactly what native_host_tests.rs models since rb-109 — so T1-T4
+// EXECUTE the shipped helper over real rows. `request_data_export` itself can
+// NEVER run there (it reaches `.count()`, the account/player tables and
+// seventeen exporters, and `ctx.database_identity()` is a LINK failure of the
+// whole lib-test binary), so every clause about the CALL SITE — its position,
+// its `?`, and the two row-literal fields — is a SOURCE PIN and says so.
+//
+// ONE LIVE NAMING. `rb111_mint` is the only place in this file that spells the
+// private helper (the rb109_tick idiom), and `[rb111/mint-decl]` pins that at
+// one with a paren-bearing AND a paren-less census — a fn-ITEM binding carries
+// no parenthesis at its binding site, which is the escape rb-85 measured.
+//
+// SCAN HYGIENE (rb22p_scan_hygiene scans THIS FILE): line comments only, no
+// block-comment delimiter, no raw-string prefix, no logging or output macro
+// token, no backslash before a double quote. Every production needle is
+// assembled from concat! fragments, and NO fragment begins with the reaper
+// family prefix immediately after its opening quote — the rb-110 live-roster
+// clause reads every complete quoted EXPORT-family token in this file and
+// requires production to still carry it, so a fragment spelled that way would
+// red on the tree before the implementer lands the constant. No clause LABEL
+// appears in any comment or doc comment in this section: a span runs from a
+// test's own fn line to the next test attribute or flush-left banner, so a
+// label quoted in the NEXT test's prose is attributed to the PREVIOUS test and
+// the label census reds on a carrier list of two. The label roster itself is
+// declared ABOVE the first test, in the region this banner cuts off from every
+// span, for the same reason.
+// ===========================================================================
+
+// --- needles: the production tokens, never spelled contiguously -------------
+
+/// The squashed DECLARATION head of the creation-stamp mint.
+fn rb111_nd_mint_fn() -> String {
+    concat!("fnmint_export", "_stamp(").to_string()
+}
+
+/// The BARE naming needle — declaration and call sites alike, paren-bearing.
+fn rb111_nd_mint_named() -> String {
+    concat!("mint_export", "_stamp(").to_string()
+}
+
+/// The same name with NO call parenthesis.
+///
+/// The paren-bearing needle above is blind to a fn-ITEM binding: bind the
+/// helper to a local and call it through that local, and the name carries no
+/// parenthesis at the binding site at all. rb-85 measured that escape for its
+/// own helper; this is the same instrument for this one.
+fn rb111_nd_mint_ident() -> String {
+    concat!("mint_export", "_stamp").to_string()
+}
+
+/// The WHOLE mint statement as the reducer spells it, squashed — binding,
+/// callee, argument list and the `?` together.
+///
+/// Whole rather than by parts, and that is a measurement rather than a
+/// preference: `mint_export_stamp(ctx, now).unwrap_or(now)` restores the
+/// shared stamp while leaving a call census, a binding census and every
+/// ordering clause in this module green. Reused by `rb107_nd_pre_gate`, which
+/// welds this statement between the admission pre-gate and the manifest
+/// accumulator, so the statement that pin demands and the statement the
+/// clauses below count cannot drift apart.
+fn rb111_nd_mint_stmt() -> String {
+    concat!("letst", "amp=mint_export", "_stamp(ctx,now)?;").to_string()
+}
+
+/// The squashed DECLARATION of the probe window.
+fn rb111_nd_probe_const() -> String {
+    concat!("constEXPORT_STAMP", "_PROBE_WINDOW_MS:i64=16;").to_string()
+}
+
+/// The same declaration up to the type colon — the cfg-twin needle, which sees
+/// a second declaration whose right-hand side differs.
+fn rb111_nd_probe_head() -> String {
+    concat!("constEXPORT_STAMP", "_PROBE_WINDOW_MS:").to_string()
+}
+
+/// The squashed static reject reason the mint returns on contention.
+fn rb111_nd_reason() -> String {
+    concat!("stringify!(export_reject_stamp", "_contention)").to_string()
+}
+
+// --- frozen pins and their independently spelled control inputs -------------
+
+/// THE FROZEN squashed signature of the creation-stamp mint.
+///
+/// The flat spelling is 79 columns, under max_width, so rustfmt has exactly one
+/// canonical form for it: no trailing-comma twin exists and none is accepted.
+/// `now_ms` is a PARAMETER that deliberately SHADOWS the imported clock fn (the
+/// rb-85 idiom), which is what makes a second clock read inside the helper a
+/// compile error rather than something a text census has to catch.
+fn rb111_mint_sig_pin() -> String {
+    concat!(
+        "fnmint_export",
+        "_stamp(ctx:&ReducerContext,now_ms:i64)->Result<i64,String>"
+    )
+    .to_string()
+}
+
+/// THE FROZEN mint BODY, squashed, in rustfmt canonical form.
+///
+/// EQUALITY, not containment, and this module has MEASURED three times why: a
+/// predicate gated on the live wall-clock band leaves every containment,
+/// adjacency and arithmetic clause green while the seam returns the wrong
+/// answer in exactly the hours that matter. Here equality owns everything the
+/// value table cannot see — a band-keyed predicate, a reordered probe, a bound
+/// read off the wrong constant, and the `saturating_add` demoted to a `+`
+/// (which panics at the ceiling under the workspace's overflow checks rather
+/// than clamping).
+///
+/// The receiver chain is spelled through `m22s4_nd_bundle_accessor()`, the
+/// module's shared accessor needle, exactly as `rb85_helper_body_pin` does; the
+/// whitespace-bearing control below spells it INDEPENDENTLY.
+fn rb111_mint_body_pin() -> String {
+    [
+        concat!("foroffsetin0..EXPORT_STAMP", "_PROBE_WINDOW_MS{").to_string(),
+        "letcandidate=now_ms.saturating_add(offset);if".to_string(),
+        m22s4_nd_bundle_accessor(),
+        concat!(".created_at", "_ms().filter(candidate).next().is_none(){").to_string(),
+        "returnOk(candidate);}}".to_string(),
+        concat!("Err(stringify!(export_reject_stamp", "_contention).to_string())").to_string(),
+    ]
+    .concat()
+}
+
+/// The mint DECLARATION as whitespace-bearing SOURCE text (control input).
+fn rb111_mint_decl_source() -> String {
+    concat!(
+        "fn mint_export",
+        "_stamp(ctx: &ReducerContext, now_ms: i64) -> Result<i64, String> "
+    )
+    .to_string()
+}
+
+/// The mint BODY as whitespace-bearing SOURCE text (control input), spelled
+/// INDEPENDENTLY of the pin above rather than derived from it.
+///
+/// Feeding this through the LIVE pipeline must reproduce `rb111_mint_body_pin()`
+/// byte for byte. A pin built out of its own needle helper proves nothing, and a
+/// hand-typed squashed literal with one character wrong is a permanently red
+/// gate that reads exactly like a missing implementation.
+///
+/// The vertical break in the receiver chain is NOT a style choice: the flat
+/// spelling of that condition is 72 columns, past rustfmt's chain_width of 60,
+/// so the formatter has exactly one canonical form for it and no twin is
+/// accepted. The comment block the implementer lands above the fn contributes
+/// nothing here, because the live pipeline blanks comments before the squash.
+fn rb111_mint_body_source() -> String {
+    [
+        concat!("\n    for offset in 0..EXPORT_STAMP", "_PROBE_WINDOW_MS {\n"),
+        "        let candidate = now_ms.saturating_add(offset);\n",
+        concat!("        if ", "ctx", "\n"),
+        "            .db\n",
+        concat!("            .export", "_bundle()\n"),
+        concat!("            .created_at", "_ms()\n"),
+        "            .filter(candidate)\n",
+        "            .next()\n",
+        "            .is_none()\n",
+        "        {\n",
+        "            return Ok(candidate);\n",
+        "        }\n",
+        "    }\n",
+        concat!("    Err(stringify!(export_reject_stamp", "_contention).to_string())\n"),
+    ]
+    .concat()
+}
+
+/// The probe window's DECLARATION as whitespace-bearing SOURCE text — the
+/// positive control for the frozen squashed declaration needle, spelled
+/// independently of it.
+fn rb111_probe_decl_source() -> String {
+    concat!("const EXPORT_STAMP", "_PROBE_WINDOW_MS: i64 = 16;\n").to_string()
+}
+
+/// The squashed, SCOPED body of the creation-stamp mint, or a loud panic.
+///
+/// Scoped, never whole-file: `rb22p_machinery_comment_string_blind`'s decoy arm
+/// records why — text sitting in a sibling fn must never satisfy a clause about
+/// this one. Called from `rb85_reaper_reads_a_bounded_range_and_never_sweeps`
+/// as well, which is why it is rostered as a shared helper rather than kept
+/// private to the rb-111 tests.
+fn rb111_mint_body(squashed: &str) -> String {
+    let needle = rb111_nd_mint_fn();
+    let n = rb22p_count(squashed, &needle);
+    assert_eq!(
+        n, 1,
+        "rb111 [mint-scope]: privacy.rs must define `{needle}` exactly once; found {n}. ZERO \
+         means the creation-stamp mint does not exist yet (the intended RED before the \
+         implementer lands rb-111); TWO makes every clause scoped to it read whichever \
+         definition the extractor reaches first, leaving the other completely ungated."
+    );
+    let body = extract_squashed_fn_body(squashed, &needle).unwrap_or_else(|| {
+        panic!(
+            "rb111 [mint-scope]: `{needle}` was found but its body is not brace-balanced, so \
+             every clause scoped to it would run over an arbitrary span and pass VACUOUSLY."
+        )
+    });
+    assert!(
+        body.len() > 8,
+        "rb111 [mint-vacuity]: the mint body is only {} squashed byte(s) — it is EMPTY, or a \
+         `todo!()`-shaped stub, so every clause scoped to it would run over nothing. The floor \
+         is deliberately LOW: the shape clauses above it are equalities and exact counts, which \
+         never pass vacuously, so a wrong-but-present body must be reported by `[rb111/mint-body]` \
+         rather than swallowed here.",
+        body.len()
+    );
+    body.to_string()
+}
+
+// --- the behavioural seam, reached exactly ONCE from this file --------------
+
+/// THE ONLY PLACE this file names the private creation-stamp mint.
+///
+/// The rb109_tick idiom, and for the same reason: the helper is PRIVATE, this
+/// module is its only test-side reader, and a second spelling anywhere in the
+/// file would make the naming census a statement about nothing. Every
+/// behavioural clause below goes through this wrapper.
+fn rb111_mint(ctx: &spacetimedb::ReducerContext, now: i64) -> Result<i64, String> {
+    crate::privacy::mint_export_stamp(ctx, now)
+}
+
+/// Register the export chunk table with the native host, keyed on the creation
+/// stamp — the single-column btree the mint probes and the reaper deletes
+/// through.
+///
+/// Re-spelled rather than shared with the rb-109 fixture: that block's helper
+/// roster is CLOSED and its tests are a different slice's evidence. The two
+/// names are assembled from fragments and the index name itself is DERIVED
+/// inside the fixture from them, never passed in.
+fn rb111_table(
+    fx: &crate::native_host_tests::Fixture,
+) -> crate::native_host_tests::Handle<'_, crate::schema::ExportBundle, i64> {
+    fx.table_keyed(
+        concat!("export", "_bundle"),
+        concat!("created_at", "_ms"),
+        |r| r.created_at_ms,
+    )
+}
+
+/// A distinct owner identity per seeded bundle.
+///
+/// The byte is never zero: the all-zero identity is the dummy sender the native
+/// host hands every context, so a fixture sharing it with the caller would make
+/// an owner-scoped defect invisible.
+fn rb111_owner(byte: u8) -> spacetimedb::Identity {
+    spacetimedb::Identity::from_byte_array([byte; 32])
+}
+
+/// One export chunk row.
+///
+/// `table_name` is empty and `request_id` mirrors the stamp exactly as the
+/// shipped write site does; neither field is read by anything under test. The
+/// payload SIZE is, because it is what drives the host iterator to refill.
+fn rb111_row(
+    owner: u8,
+    stamp: i64,
+    chunk_id: u64,
+    index: u32,
+    total: u32,
+    payload: usize,
+) -> crate::schema::ExportBundle {
+    crate::schema::ExportBundle {
+        chunk_id,
+        owner_identity: rb111_owner(owner),
+        request_id: stamp as u64,
+        table_name: String::new(),
+        chunk_index: index,
+        total_chunks: total,
+        payload_json: "p".repeat(payload),
+        created_at_ms: stamp,
+    }
+}
+
+/// Seed ONE whole bundle: `chunks` rows at `stamp` under owner byte `owner`.
+///
+/// Chunk ids are derived from the bundle's position `i`, so they are globally
+/// unique across a population and NEVER zero — zero is the auto_inc sentinel
+/// the real insert path writes, and this fixture seeds rows straight into the
+/// store, below the write-back the host does not model.
+fn rb111_seed(
+    t: &crate::native_host_tests::Handle<'_, crate::schema::ExportBundle, i64>,
+    i: usize,
+    owner: u8,
+    stamp: i64,
+    chunks: u32,
+    payload: usize,
+) {
+    for k in 0..chunks {
+        let chunk_id = 1 + 1000 * (i as u64) + u64::from(k);
+        t.seed(&rb111_row(owner, stamp, chunk_id, k, chunks, payload));
+    }
+}
+
+/// Every `(owner, stamp, chunk id)` triple in the live store, sorted.
+///
+/// Sorted by `(stamp, chunk id)` — a total order, because chunk ids are unique
+/// across a population — so comparisons are over SETS and not over the order
+/// the store happens to return. The owner rides along so a future id collision
+/// could not hide a wrong-owner delete behind equal counts.
+fn rb111_triples(
+    t: &crate::native_host_tests::Handle<'_, crate::schema::ExportBundle, i64>,
+) -> Vec<(spacetimedb::Identity, i64, u64)> {
+    let mut out: Vec<(spacetimedb::Identity, i64, u64)> = t
+        .rows()
+        .into_iter()
+        .map(|r| (r.owner_identity, r.created_at_ms, r.chunk_id))
+        .collect();
+    out.sort_unstable_by_key(|(_, stamp, chunk)| (*stamp, *chunk));
+    out
+}
+
+/// THE ORACLE, written from the SPEC and never read off the production source:
+/// the first millisecond at or after `now`, within a window of `width`, that no
+/// stamp in `occupied` carries — or `None` when the whole window is taken.
+///
+/// The arithmetic is SATURATING because the spec says so: the release and test
+/// profiles both enable overflow checks, so a plain `+` would PANIC at the
+/// ceiling instead of clamping, and the clock-at-`i64::MAX` rows are what tell
+/// the two apart behaviourally.
+fn rb111_expected_free(occupied: &[i64], now: i64, width: i64) -> Option<i64> {
+    for offset in 0..width {
+        let candidate = now.saturating_add(offset);
+        if !occupied.contains(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+// --- the roster census machinery --------------------------------------------
+
+/// The source span OWNED by the `rb111_` test called `name`.
+///
+/// rb-107's helper, WIDENED in exactly one direction: this slice declares one
+/// test INSIDE a property-test block, so its `fn` line is INDENTED and the
+/// flush-left anchor `rb107_test_span` uses cannot find it. The flush-left half
+/// is behaviour-identical; the added terminator is the indented test attribute,
+/// so a flush-left test can never swallow the property test's span.
+fn rb111_test_span(src: &str, name: &str) -> String {
+    let flush = format!("\nfn {name}(");
+    let indented = format!("\n    fn {name}(");
+    let at = match src.find(flush.as_str()) {
+        Some(at) => at,
+        None => src.find(indented.as_str()).unwrap_or_else(|| {
+            panic!(
+                "rb111 [span]: `{name}` is not declared at the top level of privacy_tests.rs nor \
+                 inside a property-test block, so the span every clause below reads would be \
+                 taken off an arbitrary offset."
+            )
+        }),
+    };
+    let start = at + 1;
+    let rest = &src[start..];
+    let mut end = src.len();
+    for found in [
+        rest.find(concat!("\n#[te", "st]")),
+        rest.find(concat!("\n    #[te", "st]")),
+        rest.find(concat!("\n/", "/ ===")),
+    ] {
+        let Some(rel) = found else {
+            continue;
+        };
+        if start + rel < end {
+            end = start + rel;
+        }
+    }
+    src[start..end].to_string()
+}
+
+/// Every DISTINCT rb-111 clause label spelled in `text`, sorted.
+///
+/// The span-to-roster direction: the per-label clause proves each ROSTERED
+/// label still occurs where it should; this proves no label occurs that the
+/// roster does not name.
+fn rb111_labels_in(text: &str) -> Vec<String> {
+    let open = "[rb111/";
+    let mut out: Vec<String> = Vec::new();
+    let mut start = 0usize;
+    while let Some(rel) = text[start..].find(open) {
+        let at = start + rel;
+        let tail = &text[at..];
+        match tail.find(']') {
+            Some(end) => {
+                let label = &tail[..=end];
+                if !out.iter().any(|seen| seen.as_str() == label) {
+                    out.push(String::from(label));
+                }
+                start = at + end + 1;
+            }
+            None => {
+                start = at + open.len();
+            }
+        }
+    }
+    out.sort_unstable();
+    out
+}
+
+/// The EIGHT `rb111_` test names this slice ships, in ledger order.
+///
+/// CLOSED on purpose: the acceptance ledger's X1 gate is a name filter over
+/// exactly these eight and its EXPECT carries the literal count, and a filtered
+/// run does NOT red on a missing test — it matches fewer and still reports the
+/// same number passed as ran.
+fn rb111_test_roster() -> [&'static str; 8] {
+    [
+        "rb111_mint_returns_the_first_free_stamp_at_or_after_the_clock",
+        "rb111_a_same_millisecond_burst_takes_distinct_stamps_until_the_window_is_full",
+        "rb111_one_tick_reaps_sixteen_whole_bundles_from_a_same_millisecond_burst",
+        "rb111_minted_stamp_is_the_minimum_free_stamp_over_random_occupancy",
+        "rb111_export_write_site_stamps_from_the_mint_and_exits_once",
+        "rb111_mint_is_declared_once_private_and_frozen",
+        "rb111_docs_record_the_closed_same_millisecond_residual",
+        "rb111_test_roster_is_closed",
+    ]
+}
+
+/// Every non-test `rb111_` fn this block declares, CLOSED.
+///
+/// Closed because the declaration total below is an EQUALITY against
+/// `tests + helpers`: an unlisted helper and an unlisted ninth test are the
+/// same number to that clause, so the roster has to name every one — INCLUDING
+/// the two that are called from OUTSIDE this block (`rb111_mint_body`, from the
+/// rb-85 range census, and `rb111_nd_mint_stmt`, from rb-107's pre-gate needle
+/// and its source control).
+fn rb111_helper_roster() -> [&'static str; 26] {
+    [
+        "rb111_nd_mint_fn",
+        "rb111_nd_mint_named",
+        "rb111_nd_mint_ident",
+        "rb111_nd_mint_stmt",
+        "rb111_nd_probe_const",
+        "rb111_nd_probe_head",
+        "rb111_nd_reason",
+        "rb111_mint_sig_pin",
+        "rb111_mint_body_pin",
+        "rb111_mint_decl_source",
+        "rb111_mint_body_source",
+        "rb111_probe_decl_source",
+        "rb111_mint_body",
+        "rb111_mint",
+        "rb111_table",
+        "rb111_owner",
+        "rb111_row",
+        "rb111_seed",
+        "rb111_triples",
+        "rb111_expected_free",
+        "rb111_test_span",
+        "rb111_labels_in",
+        "rb111_test_roster",
+        "rb111_helper_roster",
+        "rb111_dependency_roster",
+        "rb111_label_roster",
+    ]
+}
+
+/// The SEVEN tests OUTSIDE this slice's prefix that rb-111's proof rests on,
+/// asserted DECLARED so none can be deleted in the diff that would need them
+/// most.
+///
+/// Not decoration — each holds up a class of clause here:
+///   - the cfg census pins privacy.rs at exactly ONE conditional-compilation
+///     attribute, which is what stops a twin mint or a twin constant living
+///     behind a second one where no census in this block would compile it;
+///   - the bare-quote census is the only view taken BEFORE the strings-first
+///     strip pipeline, so it is the only instrument that catches two bare
+///     quotes in line comments blanking the very span every squashed clause
+///     here reads;
+///   - the hygiene scan keeps both files free of the raw-string prefix and the
+///     block-comment delimiter that desynchronise that same pipeline;
+///   - the clock census owns the two moved row-literal needles and the
+///     file-wide `now_ms(` count of two that makes the parameter shadow safe;
+///   - the rb-86 write-site pin owns the whole insert loop by adjacency, which
+///     is what says every chunk of one request carries the ONE minted stamp;
+///   - the rb-107 reducer test owns the re-frozen pre-gate adjacency needle
+///     (which now welds the mint's position) and the `?`-by-depth census;
+///   - the rb-85 bounded-read test owns the moved filter-chain census and the
+///     six-body accessor attribution the mint joins.
+fn rb111_dependency_roster() -> [&'static str; 7] {
+    [
+        "rb48_privacy_has_exactly_one_cfg_attribute",
+        "rb22p_no_bare_quote_in_privacy",
+        "rb22p_scan_hygiene",
+        "m22s4_now_bound_once",
+        "rb86_export_write_site_is_frozen_to_one_stamp",
+        "rb107_reducer_admits_twice_before_the_first_write",
+        "rb85_reaper_reads_a_bounded_range_and_never_sweeps",
+    ]
+}
+
+/// Every clause label this block ships, paired with the index of the test that
+/// owns it in `rb111_test_roster()`.
+///
+/// An index rather than a name so the two rosters cannot drift: a renamed test
+/// moves one literal, not two. DECLARED HERE, above the first test, and that
+/// placement is load-bearing — a span runs from a test's own fn line to the
+/// next test attribute or flush-left banner, so this roster's literals would
+/// otherwise be counted as occurrences inside whichever test preceded it. The
+/// section banner above cuts this region off from every span.
+fn rb111_label_roster() -> [(&'static str, usize); 48] {
+    [
+        ("[rb111/mint-table]", 0),
+        ("[rb111/mint-value]", 0),
+        ("[rb111/mint-index]", 0),
+        ("[rb111/mint-iters]", 0),
+        ("[rb111/mint-readonly]", 0),
+        ("[rb111/burst-distinct]", 1),
+        ("[rb111/burst-refused]", 1),
+        ("[rb111/burst-recovers]", 1),
+        ("[rb111/bound-population-minted]", 2),
+        ("[rb111/bound-read]", 2),
+        ("[rb111/bound-planned]", 2),
+        ("[rb111/bound-bundles]", 2),
+        ("[rb111/bound-attribution]", 2),
+        ("[rb111/bound-survivors]", 2),
+        ("[rb111/prop-free]", 3),
+        ("[rb111/prop-minimal]", 3),
+        ("[rb111/prop-err-iff]", 3),
+        ("[rb111/stamp-bind]", 4),
+        ("[rb111/mint-call-once]", 4),
+        ("[rb111/mint-position]", 4),
+        ("[rb111/mint-exit]", 4),
+        ("[rb111/dispatch-now-once]", 4),
+        ("[rb111/row-from-stamp]", 4),
+        ("[rb111/probe-value]", 5),
+        ("[rb111/probe-decl]", 5),
+        ("[rb111/probe-vis]", 5),
+        ("[rb111/mint-decl]", 5),
+        ("[rb111/mint-sig]", 5),
+        ("[rb111/mint-body]", 5),
+        ("[rb111/mint-hygiene]", 5),
+        ("[rb111/probe-is-a-point]", 5),
+        ("[rb111/index-reach]", 5),
+        ("[rb111/reason-once]", 5),
+        ("[rb111/prod-residual-closed]", 6),
+        ("[rb111/prod-stale-claim]", 6),
+        ("[rb111/doc-closure]", 6),
+        ("[rb111/doc-adr]", 6),
+        ("[rb111/doc-arch]", 6),
+        ("[rb111/doc-split-token]", 6),
+        ("[rb111/doc-tickbound-open]", 6),
+        ("[rb111/roster-vacuity]", 7),
+        ("[rb111/roster-dup]", 7),
+        ("[rb111/roster-name]", 7),
+        ("[rb111/roster-closed]", 7),
+        ("[rb111/decl-total]", 7),
+        ("[rb111/label-census]", 7),
+        ("[rb111/label-total]", 7),
+        ("[rb111/body-floor]", 7),
+    ]
+}
+
+/// T1 (ledger X1), THE VALUE ORACLE: the creation-stamp mint returns the FIRST
+/// FREE millisecond at or after the injected clock, and refuses when the whole
+/// probe window is occupied — EXECUTED against the native host over real rows.
+///
+/// Nine cases, each over its own freshly wiped fixture. Five of them separate
+/// shapes a narrower table cannot: the gap case kills a mint that resumes after
+/// the last OCCUPIED stamp rather than at the clock; the only-now+1 case kills
+/// a mint that always skips; the last-free-slot case kills a window read off
+/// `W - 1`; and the two clock-at-the-ceiling rows are the only ones that tell
+/// `saturating_add` from `+` BEHAVIOURALLY — under this workspace's overflow
+/// checks a plain `+` panics there rather than clamping.
+///
+/// Each row's expectation is cross-checked against `rb111_expected_free`, the
+/// rule written from the spec, before the shipped helper is called at all: the
+/// table is a list of hand-picked cases and the oracle is the rule, so a
+/// disagreement means one of the two was fitted to the code.
+///
+/// THE INDEX CLAUSE AND A PER-PROCESS CAVEAT. `Fixture::requested_indexes()`
+/// reports the names the GENERATED code asked the host about since the fixture
+/// was created, and `table_keyed` registers without asking — so the list is the
+/// probe's own reach and nothing else. The generated accessor memoises the
+/// index id per PROCESS, so only the first fixture in a process records the
+/// lookup; the runner is `cargo nextest`, one process per test, which is why
+/// the clause asserts `at least one` rather than `one per case` and pairs it
+/// with a per-case POSITIVE CONTROL that reads the seeded stamp straight
+/// through the same index. Without that control a host resolving this index to
+/// no table at all would read as an empty store and hand back the clock every
+/// time, and every value row above would agree with it.
+///
+/// Kills: the status-quo body `Ok(now_ms)` (rows 2, 3, 6, 7); a no-Err fallback
+/// (row 7); a probe over `1..W` or `0..=W` (rows 1 and 7); a probe that scans
+/// downward or stops at the first occupied slot (rows 4, 5); a `+` in place of
+/// the saturating add (row 9, where the second candidate overflows and the
+/// reducer PANICS instead of refusing); a probe on the owner index or on a
+/// table nobody registered (the index clause and its control); a leaked scan,
+/// which an hourly-scale caller would strand (the iterator clause); a mint that
+/// DELETES the squatter rather than stepping over it (the read-only clause).
+#[test]
+fn rb111_mint_returns_the_first_free_stamp_at_or_after_the_clock() {
+    let w = crate::privacy::EXPORT_STAMP_PROBE_WINDOW_MS;
+    let now: i64 = 1_760_000_000_000;
+    let reason = concat!("export_reject_stamp", "_contention");
+    let index = concat!("export", "_bundle_created_at", "_ms_idx_btree");
+
+    assert!(
+        w >= 2,
+        "[rb111/mint-table]: the shipped probe window is {w} millisecond(s). Below two there is \
+         no gap case, no last-free-slot case and no difference between `refuse` and `the clock \
+         was taken`, so every row below would be about nothing in particular."
+    );
+    let full: Vec<i64> = (0..w).map(|o| now + o).collect();
+    let almost: Vec<i64> = (0..w - 1).map(|o| now + o).collect();
+    let cases: [(&str, i64, Vec<i64>, Option<i64>); 9] = [
+        (
+            "an EMPTY store — the common case, which must not drift off the clock",
+            now,
+            Vec::new(),
+            Some(now),
+        ),
+        ("the clock itself occupied", now, vec![now], Some(now + 1)),
+        (
+            "the clock and the next millisecond occupied",
+            now,
+            vec![now, now + 1],
+            Some(now + 2),
+        ),
+        (
+            "a GAP at now+1, with now and now+2 taken",
+            now,
+            vec![now, now + 2],
+            Some(now + 1),
+        ),
+        (
+            "only now+1 occupied — the clock itself is still free",
+            now,
+            vec![now + 1],
+            Some(now),
+        ),
+        (
+            "the first W-1 consecutive occupied — the window's LAST free slot",
+            now,
+            almost,
+            Some(now + w - 1),
+        ),
+        ("the WHOLE window occupied", now, full, None),
+        (
+            "the clock at the i64 ceiling over an empty store",
+            i64::MAX,
+            Vec::new(),
+            Some(i64::MAX),
+        ),
+        (
+            "the clock at the i64 ceiling with that one stamp occupied",
+            i64::MAX,
+            vec![i64::MAX],
+            None,
+        ),
+    ];
+    let seeded_cases = cases.iter().filter(|(_, _, occ, _)| !occ.is_empty()).count();
+
+    let mut index_seen = 0usize;
+    let mut foreign: Vec<String> = Vec::new();
+    let mut controls = 0usize;
+    for (what, clock, occupied, want) in cases {
+        let fx = crate::native_host_tests::fixture();
+        let t = rb111_table(&fx);
+        let ctx = fx.ctx();
+        for (i, stamp) in occupied.iter().enumerate() {
+            let owner = u8::try_from(i + 1).expect("rb111: a probe fixture fits one owner byte");
+            rb111_seed(&t, i, owner, *stamp, 1, 64);
+        }
+        let before = rb111_triples(&t);
+        assert_eq!(
+            before.len(),
+            occupied.len(),
+            "[rb111/mint-table]: over {what} the host holds {} row(s) for {} occupied stamp(s). \
+             Every clause in this case reads that population, so a fixture that seeded a \
+             different one would make all of them true about nothing.",
+            before.len(),
+            occupied.len()
+        );
+
+        let modelled = rb111_expected_free(&occupied, clock, w);
+        assert_eq!(
+            modelled, want,
+            "[rb111/mint-table]: over {what} the table expects {want:?} while the spec oracle \
+             derives {modelled:?}. The two are written INDEPENDENTLY — the table is a list of \
+             hand-picked cases, the oracle is the rule T4 samples — so a disagreement means one \
+             of them was fitted to the code. Revise the wrong one FROM THE SPEC."
+        );
+
+        let got = rb111_mint(&ctx, clock);
+        match (&got, want) {
+            (Ok(stamp), Some(expected)) => assert_eq!(
+                *stamp, expected,
+                "[rb111/mint-table]: over {what} the mint returned {stamp}; the spec's first free \
+                 millisecond at or after {clock} is {expected}. Occupied: {occupied:?}."
+            ),
+            (Err(msg), None) => assert_eq!(
+                msg.as_str(),
+                reason,
+                "[rb111/mint-value]: over {what} the mint refused with {msg:?}; the ONE static \
+                 reason this family may carry is `{reason}`. Equality, never containment: the \
+                 reject string is the wire value a caller sees and the ops vocabulary an alarm \
+                 keys on, and a respelling renames it with every count in this module unmoved."
+            ),
+            _ => panic!(
+                "[rb111/mint-table]: over {what} the mint returned {got:?} and the spec says \
+                 {want:?} — success where a refusal is required, or a refusal where a free \
+                 millisecond exists. Occupied: {occupied:?}; clock {clock}; window {w}."
+            ),
+        }
+
+        for name in fx.requested_indexes() {
+            if name.as_str() == index {
+                index_seen += 1;
+            } else {
+                foreign.push(name);
+            }
+        }
+        let open = fx.open_iters();
+        assert_eq!(
+            open, 0,
+            "[rb111/mint-iters]: over {what} the probe left {open} host iterator(s) open. The \
+             mint abandons each point scan after ONE `.next()`, so the bindings must close it; a \
+             leak here is a real datastore resource that the module's one write path would \
+             strand on every export request, forever."
+        );
+        let after = rb111_triples(&t);
+        assert_eq!(
+            after, before,
+            "[rb111/mint-readonly]: over {what} the store CHANGED across the probe. The mint is \
+             a reader: no insert, no delete, no update. A mint that removed the squatting row \
+             instead of stepping over it would satisfy every value row above while destroying a \
+             live export belonging to somebody else — and it is spellable, because the delete \
+             the reaper uses is on this very index."
+        );
+        if let Some(stamp) = occupied.first() {
+            let visible = ctx
+                .db
+                .export_bundle()
+                .created_at_ms()
+                .filter(*stamp)
+                .count();
+            if visible == 1 {
+                controls += 1;
+            }
+        }
+    }
+
+    assert_eq!(
+        controls, seeded_cases,
+        "[rb111/mint-index]: reading the first seeded stamp straight back through the \
+         creation-stamp index found the row in {controls} of the {seeded_cases} cases that seed \
+         one. THIS IS THE POSITIVE CONTROL for every value row above: a host that resolved this \
+         index to no table — a mis-derived index name, a registration that never happened — \
+         reads as an EMPTY store, so the mint would hand back the clock every time and all nine \
+         rows above would agree with it for the most encouraging of wrong reasons."
+    );
+    assert!(
+        index_seen >= 1 && foreign.is_empty(),
+        "[rb111/mint-index]: the generated code asked the host about the creation-stamp index \
+         {index_seen} time(s) and about {} OTHER index name(s): {foreign:?}. At least one reach \
+         of `{index}` and no reach of anything else is the contract — a probe on the owner index \
+         is a different question with a different answer, and one on a table nobody registered \
+         is an empty read. The floor is `at least one` rather than one per case because the \
+         generated accessor memoises the index id per PROCESS and every case wipes the fixture; \
+         under `cargo nextest` each test owns its process, so the first case records the lookup.",
+        foreign.len()
+    );
+}
+
+/// T2 (ledger X1), THE RESIDUAL'S OWN SENTENCE: a burst of requests at ONE
+/// millisecond takes W DISTINCT creation stamps, and the next one is refused
+/// until the clock moves.
+///
+/// Sixteen cycles of `mint -> commit a whole minimum-size bundle at the minted
+/// stamp under a distinct owner`, all at one fixed clock. That is the residual
+/// verbatim — `request_data_export` is cheap for a low-state anonymous identity
+/// and the host serialises reducers at millisecond granularity — with the write
+/// half modelled by seeding exactly what the reducer's insert loop writes: one
+/// chunk per exportable table, every chunk carrying the ONE minted stamp.
+///
+/// The bundle size is DERIVED from the live lifecycle manifest, never
+/// transcribed: `plan_export_chunks` emits one chunk per exportable entry even
+/// for an empty table, so that count IS the smallest bundle a request can
+/// commit, and if export scope legitimately changes this test follows it in the
+/// same diff instead of going quietly false.
+///
+/// The recovery clause is what makes residual R-rb-111-CONTENTION a LOW: the
+/// refusal is retryable, not a latch. Under the status-quo shared stamp the
+/// first clause reads ONE distinct stamp for sixteen requests, which is the
+/// unbounded delete unit this slice removes.
+///
+/// Kills: the status-quo body (one distinct stamp, not sixteen); a fallback to
+/// the clock when the window is full (the refusal clause, and the row count
+/// beside it, which says nothing was written either); a mint that latches the
+/// refusal or leaves the window permanently wedged (the recovery clause); a
+/// respelled reject string (equality on the payload).
+#[test]
+fn rb111_a_same_millisecond_burst_takes_distinct_stamps_until_the_window_is_full() {
+    let w = crate::privacy::EXPORT_STAMP_PROBE_WINDOW_MS;
+    let reason = concat!("export_reject_stamp", "_contention");
+    let now: i64 = 1_760_000_000_000;
+    let chunks =
+        u32::try_from(m22s4_manifest_exportable().len()).expect("rb111: the manifest fits a u32");
+    let burst = usize::try_from(w).expect("rb111: the probe window fits a usize");
+
+    assert!(
+        chunks >= 2 && burst >= 2,
+        "[rb111/burst-distinct]: the lifecycle manifest reports {chunks} exportable table(s) and \
+         the probe window is {burst} millisecond(s). A one-chunk bundle or a one-slot window \
+         makes `distinct stamps` and `a whole bundle per stamp` the same statement, and every \
+         clause below would pass over a population that cannot express the defect."
+    );
+
+    let fx = crate::native_host_tests::fixture();
+    let t = rb111_table(&fx);
+    let ctx = fx.ctx();
+
+    let mut minted: Vec<i64> = Vec::new();
+    for i in 0..burst {
+        let owner = u8::try_from(i + 1).expect("rb111: a burst fits one owner byte");
+        let stamp = rb111_mint(&ctx, now).unwrap_or_else(|e| {
+            panic!(
+                "[rb111/burst-distinct]: request {} of a {burst}-request same-millisecond burst \
+                 was REFUSED with {e:?}. The window is exactly {burst} milliseconds wide, so the \
+                 first {burst} requests at one clock must all be served.",
+                i + 1
+            )
+        });
+        rb111_seed(&t, i, owner, stamp, chunks, 64);
+        minted.push(stamp);
+    }
+
+    let mut distinct = minted.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    let expected: Vec<i64> = (0..w).map(|o| now + o).collect();
+    assert_eq!(
+        minted, expected,
+        "[rb111/burst-distinct]: {burst} requests at the SAME clock took the stamps {minted:?} \
+         ({} of them distinct); they must take {burst} DISTINCT consecutive stamps starting at \
+         the clock. ONE distinct stamp is the status quo this slice removes: every one of those \
+         bundles then shares a creation stamp, the TTL reaper deletes that stamp WHOLE, and the \
+         per-tick write bound of sixteen stamps is sixteen times however many bundles a burst \
+         put under each — soft-bounded in the attacker's direction (residual R-rb-86-SAMEMS).",
+        distinct.len()
+    );
+
+    let refused = rb111_mint(&ctx, now);
+    match &refused {
+        Err(msg) => assert_eq!(
+            msg.as_str(),
+            reason,
+            "[rb111/burst-refused]: the request past the full window refused with {msg:?}; the \
+             one static reason is `{reason}`."
+        ),
+        Ok(stamp) => panic!(
+            "[rb111/burst-refused]: request {} at the same clock SUCCEEDED with stamp {stamp} \
+             over a window that is already full. Falling back on an occupied stamp restores the \
+             unbounded delete unit one request at a time, in exactly the burst case that matters.",
+            burst + 1
+        ),
+    }
+    let rows = rb111_triples(&t).len();
+    assert_eq!(
+        rows,
+        burst * chunks as usize,
+        "[rb111/burst-refused]: the store holds {rows} row(s); {burst} bundles of {chunks} \
+         chunks is {}. The refusal must write NOTHING — a mint that committed a chunk before \
+         deciding would leave a k-of-N bundle behind a reject.",
+        burst * chunks as usize
+    );
+
+    let recovered = rb111_mint(&ctx, now + w);
+    assert_eq!(
+        recovered,
+        Ok(now + w),
+        "[rb111/burst-recovers]: once the clock advances past the occupied window the mint must \
+         serve again, at the first millisecond of the new window; it returned {recovered:?}. \
+         This is what makes the refusal RETRYABLE rather than a latch, and it is the whole \
+         reason residual R-rb-111-CONTENTION is rated LOW: a caller who is told the window is \
+         busy gets served on the next millisecond, having written nothing and paid no cooldown."
+    );
+}
+
+/// T3 (ledger X1), THE CRITERION END TO END: eighteen bundles committed through
+/// the mint at one clock, then ONE reaper tick — sixteen WHOLE BUNDLES leave,
+/// not one delete unit.
+///
+/// THE POPULATION IS MINTED, NEVER HAND-SEEDED, and that is the difference
+/// between this test and `rb109_oversized_tick_...`. A hand-seeded population
+/// of eighteen distinct stamps would make the tick's arithmetic true under the
+/// status quo as well, so this test would be a re-run of rb-109's with a new
+/// name. Every stamp here comes out of the shipped helper, through the RETRY
+/// loop a real caller would run: eighteen bundles cannot fit one clock (the
+/// window is sixteen wide), so the seventeenth request is refused, the clock
+/// advances by a window, and two more are served. On the fixed tree that yields
+/// eighteen CONSECUTIVE stamps; under the status-quo body no refusal ever
+/// fires, the clock never advances, and all eighteen bundles land on ONE stamp
+/// — which the population clause below reports BEFORE the tick runs at all.
+///
+/// THE ARITHMETIC, derived from the shipped constants and never transcribed:
+/// eighteen minimum-size bundles are 306 rows, so the 256-row read window
+/// BINDS; that window in ascending stamp order covers fifteen whole bundles and
+/// one row of the sixteenth, so it touches sixteen DISTINCT stamps, which is
+/// also the write cap; each is deleted whole, tail beyond the window included,
+/// so 16 x 17 = 272 rows go and the two newest bundles survive intact. Under
+/// the status-quo shared stamp the same tick plans ONE stamp and reaps all 306
+/// rows in one transaction — the unbounded delete unit, and the abort-loop
+/// hazard that silently retains expired personal data past the seven-day
+/// ceiling.
+///
+/// The tick is driven through `rb109_tick`, the file's ONE naming of the
+/// private reaper helper: a second spelling here would red
+/// `rb85_helper_is_never_named_outside_privacy_rs`, which pins that count at
+/// one, and that census is exactly what keeps the sanctioned trigger single.
+///
+/// Kills: the status-quo body (the population clause, before the tick); a mint
+/// that reuses a live stamp under any spelling (same clause); a tick that
+/// stopped at the window's edge (reaped 256 rather than 272); the stamp cap
+/// dropped (planned 18, reaped 306); the read cap dropped (read 306); a
+/// survivor set of the right SIZE but the wrong IDENTITY, which every count
+/// clause here is blind to (the triple comparison); numbers moved to match the
+/// code rather than re-derived (the constants pin).
+#[test]
+fn rb111_one_tick_reaps_sixteen_whole_bundles_from_a_same_millisecond_burst() {
+    let w = crate::privacy::EXPORT_STAMP_PROBE_WINDOW_MS;
+    let read_cap = crate::privacy::EXPORT_REAP_MAX_READ_PER_TICK;
+    let stamp_cap = crate::privacy::EXPORT_REAP_MAX_STAMPS_PER_TICK;
+    let chunks =
+        u32::try_from(m22s4_manifest_exportable().len()).expect("rb111: the manifest fits a u32");
+    let min_bundle = chunks as usize;
+    let window = usize::try_from(w).expect("rb111: the probe window fits a usize");
+    let bundles = window + 2;
+    let now0: i64 = 1_760_000_000_000;
+
+    // The shipped constants this population was SIZED against. A value that
+    // moves makes every number below a different, still self-consistent claim,
+    // so it is re-derived from the spec rather than quietly followed.
+    assert_eq!(
+        (read_cap, stamp_cap, min_bundle, window),
+        (256usize, 16usize, 17usize, 16usize),
+        "[rb111/bound-attribution]: the shipped read cap, stamp cap, minimum bundle and probe \
+         window read ({read_cap}, {stamp_cap}, {min_bundle}, {window}); this population was \
+         sized against (256, 16, 17, 16) — 18 bundles of 17 chunks is 306 rows, which makes the \
+         256-row read window BIND and leaves the window touching exactly 16 distinct stamps. \
+         Re-derive every number in this test from the spec before touching anything else."
+    );
+
+    let fx = crate::native_host_tests::fixture();
+    let t = rb111_table(&fx);
+    let ctx = fx.ctx();
+
+    // The RETRY loop a real caller runs: 18 bundles cannot fit one 16 ms
+    // window, so the refusal is part of the population's construction. The
+    // attempt cap is a CI guard, not a tooth: a mint that refused everything
+    // would otherwise advance the clock forever.
+    let mut clock = now0;
+    let mut stamps: Vec<i64> = Vec::new();
+    for i in 0..bundles {
+        let owner = u8::try_from(i + 1).expect("rb111: a population fits one owner byte");
+        let mut tries = 0usize;
+        let stamp = loop {
+            tries += 1;
+            assert!(
+                tries <= bundles + 4,
+                "[rb111/bound-population-minted]: bundle {i} was refused {tries} times in a row \
+                 while the clock advanced {} ms past the start. A mint that refuses every window \
+                 never terminates this loop, so it fails LOUD here instead of hanging a runner.",
+                clock - now0
+            );
+            match rb111_mint(&ctx, clock) {
+                Ok(stamp) => break stamp,
+                Err(_) => clock = clock.saturating_add(w),
+            }
+        };
+        rb111_seed(&t, i, owner, stamp, chunks, 1_024);
+        stamps.push(stamp);
+    }
+
+    let mut sorted = stamps.clone();
+    sorted.sort_unstable();
+    let mut uniq = sorted.clone();
+    uniq.dedup();
+    let expected_stamps: Vec<i64> = (0..bundles as i64).map(|o| now0 + o).collect();
+    let seeded = rb111_triples(&t).len();
+    assert_eq!(
+        sorted, expected_stamps,
+        "[rb111/bound-population-minted]: {bundles} bundles minted at one clock (with the retry \
+         the full window forces) carry the stamps {stamps:?}, sorted {sorted:?}, {} of them \
+         DISTINCT; they must be the {bundles} consecutive milliseconds from the clock. THIS \
+         CLAUSE RUNS BEFORE THE TICK ON PURPOSE: under the status-quo shared stamp every mint \
+         returns the clock, no refusal ever advances it, and all {bundles} bundles land on ONE \
+         stamp — so the tick below would be reaping one delete unit and this test would \
+         otherwise report it as a tick arithmetic failure instead of as the residual itself. It \
+         is also what stops a hand-seeded population turning this test into a re-run of the \
+         rb-109 oversized-tick oracle, which is GREEN under the status quo.",
+        uniq.len()
+    );
+    assert_eq!(
+        seeded,
+        bundles * min_bundle,
+        "[rb111/bound-population-minted]: the host holds {seeded} row(s); {bundles} bundles of \
+         {min_bundle} chunks is {}. Every clause below reads this population.",
+        bundles * min_bundle
+    );
+    assert!(
+        seeded > read_cap,
+        "[rb111/bound-read]: the population is {seeded} row(s) and the per-tick read window is \
+         {read_cap}; the population must EXCEED it or the cap never binds and the tick below \
+         proves nothing about a bound."
+    );
+
+    let newest = *sorted.last().expect("rb111: the population is not empty");
+    let tick_now = newest.saturating_add(crate::privacy::EXPORT_BUNDLE_TTL_MS);
+    let (read, planned, reaped) = rb109_tick(&ctx, tick_now);
+
+    assert_eq!(
+        read, read_cap,
+        "[rb111/bound-read]: the tick decoded {read} row(s); the per-tick READ window is \
+         {read_cap}. With {seeded} rows expired and visible, a tick that reads them all has no \
+         bound on the payload bytes it materialises under the global write lock."
+    );
+    assert_eq!(
+        planned, stamp_cap,
+        "[rb111/bound-planned]: the tick planned {planned} creation stamp(s); the per-tick WRITE \
+         bound is {stamp_cap}. ONE is the status quo — a single shared stamp under every bundle \
+         the burst committed — and it is the number that makes the write set unbounded."
+    );
+    assert_eq!(
+        reaped,
+        stamp_cap * min_bundle,
+        "[rb111/bound-bundles]: THE RESIDUAL ITSELF. The tick deleted {reaped} row(s); sixteen \
+         WHOLE BUNDLES of {min_bundle} chunks is {}. Since rb-111 a creation stamp is exactly \
+         one live request, so the reaper's cap of {stamp_cap} stamps per tick is {stamp_cap} \
+         BUNDLES; before it, every bundle a same-millisecond burst committed shared one stamp \
+         and the same tick retired all {seeded} rows in one transaction — 16 x (bundles per \
+         stamp), soft-bounded in the attacker's direction, and an abort loop there silently \
+         retains expired personal data past the seven-day ceiling.",
+        stamp_cap * min_bundle
+    );
+    assert!(
+        reaped > read && reaped % min_bundle == 0 && reaped / min_bundle == stamp_cap,
+        "[rb111/bound-attribution]: the tick read {read} row(s) and deleted {reaped}. The write \
+         set must be a WHOLE NUMBER OF BUNDLES — {reaped} is {} bundles of {min_bundle} — and it \
+         must EXCEED the read, because the sixteenth stamp's tail lies past the window's edge \
+         and goes with it. Equal counts mean the delete stopped at the window; a remainder means \
+         a bundle was cut. The product is read off the shipped constants, never transcribed.",
+        reaped / min_bundle
+    );
+
+    let floor = sorted[stamp_cap];
+    let mut expected_survivors: Vec<(spacetimedb::Identity, i64, u64)> = Vec::new();
+    for (i, stamp) in stamps.iter().enumerate() {
+        if *stamp < floor {
+            continue;
+        }
+        let owner = u8::try_from(i + 1).expect("rb111: a population fits one owner byte");
+        for k in 0..chunks {
+            expected_survivors.push((
+                rb111_owner(owner),
+                *stamp,
+                1 + 1000 * (i as u64) + u64::from(k),
+            ));
+        }
+    }
+    expected_survivors.sort_unstable_by_key(|(_, stamp, chunk)| (*stamp, *chunk));
+    assert_eq!(
+        expected_survivors.len(),
+        (bundles - stamp_cap) * min_bundle,
+        "[rb111/bound-survivors]: the ORACLE itself describes {} row(s); it must describe {} — \
+         the {} newest bundles of {min_bundle} chunks each. A wrong floor turns this oracle into \
+         a different, still self-consistent claim.",
+        expected_survivors.len(),
+        (bundles - stamp_cap) * min_bundle,
+        bundles - stamp_cap
+    );
+    let observed = rb111_triples(&t);
+    assert_eq!(
+        observed,
+        expected_survivors,
+        "[rb111/bound-survivors]: the store holds {} row(s) and must hold the {} rows of the two \
+         NEWEST bundles, whole. Compared as a sorted SET of (owner, stamp, chunk id) triples and \
+         not as a count: a tick that retired the wrong sixteen bundles leaves the same number of \
+         rows behind with a disjoint identity, and every numeric clause above stays green over \
+         it. WHICH bundles survive is the fairness claim — the cap discards the youngest stamps \
+         in the window, so the oldest personal data always leaves first.",
+        observed.len(),
+        expected_survivors.len()
+    );
+}
+
+// ===========================================================================
+// T4 IS DECLARED INSIDE A PROPERTY-TEST BLOCK, so its `fn` line is INDENTED and
+// so is its test attribute. These two flush-left banners are load-bearing: a
+// test span runs from a test's own `fn` line to the next FLUSH-LEFT test
+// attribute or flush-left banner, so without the first the span of the test
+// above would swallow this whole block and the label census would report a
+// carrier list of two for every label in it; without the second, this test's
+// span would run on into the next one. `rb111_test_span` finds the indented
+// declaration and stops at an indented test attribute as well.
+// ===========================================================================
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(48))]
+
+    /// T4 (ledger X1), THE RULE rather than a list of cases: over random
+    /// occupancy the minted stamp is the MINIMUM FREE millisecond at or after
+    /// the clock, and the mint refuses exactly when the whole window is taken.
+    ///
+    /// The value table in T1 is nine hand-picked shapes; this samples the rule
+    /// itself, which is what kills the off-by-one and first-gap-after-a-run
+    /// variants a finite table misses. The oracle is `rb111_expected_free`,
+    /// written from the spec and shared with T1's cross-check, so neither the
+    /// table nor the property is a copy of the implementation.
+    ///
+    /// THE DOMAIN IS CHOSEN, not incidental. The four clock bases are zero, a
+    /// NEGATIVE instant (clock skew is expressible in an i64 column and BSATN
+    /// encodes it little-endian, so a host comparing raw key bytes sorts it
+    /// above every positive stamp), a realistic epoch, and the i64 CEILING —
+    /// where the saturating add makes several candidates collapse onto one
+    /// value. The shift lets the clock sit BELOW every seeded stamp, which is
+    /// the expired-but-unreaped case: such a row is still LIVE to the mint and
+    /// must count as occupied, conservatively.
+    ///
+    /// A FRESH FIXTURE PER CASE, acquired INSIDE the case: the host's
+    /// serialisation lock is not reentrant, and a fixture held across cases
+    /// would carry the previous case's rows into this one.
+    #[test]
+    fn rb111_minted_stamp_is_the_minimum_free_stamp_over_random_occupancy(
+        offsets in prop::collection::vec(0i64..48i64, 0..20usize),
+        base in prop_oneof![
+            Just(0i64),
+            Just(-4_000_000_000i64),
+            Just(1_760_000_000_000i64),
+            Just(i64::MAX - 40)
+        ],
+        shift in -3i64..4i64,
+    ) {
+        let w = crate::privacy::EXPORT_STAMP_PROBE_WINDOW_MS;
+        let reason = concat!("export_reject_stamp", "_contention");
+        let now = base.saturating_add(shift);
+        let mut occupied: Vec<i64> = offsets.iter().map(|o| base.saturating_add(*o)).collect();
+        occupied.sort_unstable();
+        occupied.dedup();
+
+        let fx = crate::native_host_tests::fixture();
+        let t = rb111_table(&fx);
+        let ctx = fx.ctx();
+        for (i, stamp) in occupied.iter().enumerate() {
+            let owner = u8::try_from(i + 1).expect("rb111: an occupancy row fits one owner byte");
+            rb111_seed(&t, i, owner, *stamp, 1, 32);
+        }
+
+        let expected = rb111_expected_free(&occupied, now, w);
+        let got = rb111_mint(&ctx, now);
+        let minted = match &got {
+            Ok(stamp) => Some(*stamp),
+            Err(_) => None,
+        };
+        let reason_kept = match &got {
+            Ok(_) => true,
+            Err(msg) => msg.as_str() == reason,
+        };
+
+        if let Some(stamp) = minted {
+            prop_assert!(
+                !occupied.contains(&stamp),
+                "[rb111/prop-free]: the mint returned {}, which a LIVE row already carries. \
+                 Clock {}, occupancy {:?}. A stamp handed out twice is the shared delete unit \
+                 this slice removes, reached one request at a time.",
+                stamp,
+                now,
+                occupied
+            );
+        }
+        prop_assert_eq!(
+            minted,
+            expected,
+            "[rb111/prop-minimal]: the mint returned {:?}; the first FREE millisecond at or \
+             after the clock, within a window of {}, is {:?}. Clock {}, occupancy {:?}. A mint \
+             that skips a free slot drifts every bundle's TTL expiry and its owner's next \
+             cooldown for no reason; one that resumes after the last OCCUPIED stamp rather than \
+             at the clock walks past a gap the window was meant to use.",
+            minted,
+            w,
+            expected,
+            now,
+            occupied
+        );
+        prop_assert!(
+            minted.is_none() == expected.is_none() && reason_kept,
+            "[rb111/prop-err-iff]: the mint {} and the spec says the window is {}. Clock {}, \
+             occupancy {:?}, result {:?}. Refusing while a free millisecond exists denies a \
+             legitimate export; succeeding over a full window means a fallback onto an occupied \
+             stamp, which restores the unbounded delete unit — and the refusal must carry the \
+             one static reason, because that string is the wire value and the ops vocabulary.",
+            if minted.is_none() { "REFUSED" } else { "succeeded" },
+            if expected.is_none() { "FULL" } else { "not full" },
+            now,
+            occupied,
+            got
+        );
+    }
+}
+
+// ===========================================================================
+// Source pins. Everything below is TEXT over privacy.rs and the documents: the
+// export reducer reaches `.count()`, the account and player tables and
+// seventeen exporters, so it can never run in the native host and no clause
+// below claims otherwise.
+// ===========================================================================
+
+/// T5 (ledger X1), THE CALL SITE — SOURCE PINS ONLY, and it says so: the export
+/// reducer binds ONE stamp, from the mint, between the admission pre-gate and
+/// the manifest walk, exits through it exactly once, and writes it into BOTH
+/// row columns.
+///
+/// There is no behavioural tier for any clause in this test and there cannot
+/// be: `request_data_export` reaches the metadata row count, the account and
+/// player tables and seventeen exporters, none of which the native host models,
+/// and `ctx.database_identity()` on that path is a LINK failure of the whole
+/// lib-test binary rather than a red test. What T1-T4 prove is that the HELPER
+/// behaves; what this test proves is that the write site actually uses it.
+///
+/// THE STATEMENT IS PINNED WHOLE, not by parts, and that is a measurement
+/// rather than a preference: the same call with `.unwrap_or(now)` hung off it
+/// restores the shared stamp while leaving a call census, a binding census and
+/// every ordering clause in this module green, and so does a `let _ =` discard
+/// of it above an unchanged row literal. The needle therefore carries the
+/// binding, the callee, the argument list and the `?` together.
+///
+/// THE `?` IS COUNTED BY DEPTH because nothing else in this module can see it.
+/// `[rb107/exit-shape]` counts `return` forms and `[emit/reachable]` counts the
+/// same keyword by depth; a `?` is invisible to both. The reducer's only `?`
+/// before rb-111 was the shell reader's, at brace depth three inside the
+/// manifest walk, so the mint's is the region's FIRST top-level early exit —
+/// and it is correct, because it rolls the purge above back with it (ADR-0106
+/// D8). Pinning the depth-0 one at the mint's own offset AND the nested one at
+/// the shell reader's is what stops the pair being satisfied by a swap.
+///
+/// Kills: the mint called but its result discarded or defaulted; a second
+/// `let stamp =` shadowing the first; the call hoisted above the pre-gate (a
+/// refused caller then pays up to sixteen index reads), sunk below the insert
+/// loop, or wrapped in a conditional; a second undeclared `?` early exit; the
+/// context paired with the clock anywhere but at the mint; and ONE of the two
+/// row columns reverted to the clock, which makes `request_id` and
+/// `created_at_ms` disagree — the client groups by `request_id` and the reaper
+/// deletes by `created_at_ms`, so that shape tears a bundle across both.
+#[test]
+fn rb111_export_write_site_stamps_from_the_mint_and_exits_once() {
+    let squashed = stripped_for_scan(PRIVACY_RS);
+    let body = m22s4_reducer_body(&squashed);
+    let stmt = rb111_nd_mint_stmt();
+    let dispatch = "(ctx,now)";
+
+    // Every number this test can report, taken BEFORE the first assertion, so
+    // one run of the runtime-RED stage records the whole pre-state.
+    let n_bind = rb22p_count(&body, concat!("letst", "amp="));
+    let n_stmt = rb22p_count(&body, stmt.as_str());
+    let n_dispatch = rb22p_count(&body, dispatch);
+    let n_request = rb22p_count(&body, concat!("request", "_id:stampasu64"));
+    let n_created = rb22p_count(&body, concat!("created_at", "_ms:stamp,"));
+
+    let at_purge = m22s4_idx(&body, &rb65p_nd_purge_binding(), "the bound purge statement");
+    let at_ok = body.rfind(concat!("Ok", "(())")).unwrap_or_else(|| {
+        panic!(
+            "rb111 [exit-region]: the export reducer does not end in a success tail, so the \
+             region the exit clauses are scoped to has no right edge."
+        )
+    });
+    let region = &body[at_purge..at_ok];
+    let mut q_total = 0usize;
+    let mut q_depth0: Vec<usize> = Vec::new();
+    let mut q_nested: Vec<usize> = Vec::new();
+    for (rel, _) in region.match_indices('?') {
+        q_total += 1;
+        if m22s4_brace_depth_at(&body, at_purge + rel) == 0 {
+            q_depth0.push(at_purge + rel);
+        } else {
+            q_nested.push(at_purge + rel);
+        }
+    }
+
+    let dossier = format!(
+        "MEASURED IN ONE PASS before the first clause. Reducer body — `let stamp =` {n_bind} \
+         (must be 1), the WHOLE mint statement {n_stmt} (1), `(ctx,now)` {n_dispatch} (1), \
+         `request_id` from the stamp {n_request} (1), `created_at_ms` from the stamp {n_created} \
+         (1). Post-purge region — {q_total} `?` exit(s) in all (2), {} at depth zero (1) and {} \
+         nested (1).",
+        q_depth0.len(),
+        q_nested.len()
+    );
+
+    assert_eq!(
+        n_bind, 1,
+        "[rb111/stamp-bind]: `request_data_export` must bind the name `stamp` EXACTLY once; \
+         found {n_bind}. ZERO is the pre-fix state — the row literal still writes the clock into \
+         both columns and a same-millisecond burst shares one creation stamp. TWO is the \
+         shadowing family `[rb86/one-now-binding]` was written for, reached through the other \
+         name: `for c in plan {{ let stamp = stamp + c.chunk_index as i64; ... }}` gives every \
+         chunk of one request a DIFFERENT stamp, which the reaper then removes in N pieces over \
+         N hours. {dossier}"
+    );
+    assert_eq!(
+        n_stmt, 1,
+        "[rb111/mint-call-once]: the reducer must carry the WHOLE frozen mint statement exactly \
+         once; found {n_stmt}. The needle is the binding, the callee, the argument list AND the \
+         `?` together, because every narrower instrument was measured green over a call whose \
+         failure is swallowed: `.unwrap_or(now)` and `.unwrap_or_default()` both restore a \
+         shared stamp on contention, and a `let _ =` discard of the same call above an \
+         unchanged row literal keeps a call census, a binding census and every ordering clause \
+         in this module green while nothing about the write changed at all. {dossier}"
+    );
+
+    let at_mint = m22s4_idx(&body, stmt.as_str(), "the creation-stamp mint statement");
+    let at_gate = m22s4_idx(&body, &rb107_nd_gate_head(), "the rb-107 admission pre-gate");
+    let at_table = m22s4_idx(
+        &body,
+        concat!("letmutper", "_table:"),
+        "the manifest accumulator",
+    );
+    let depth = m22s4_brace_depth_at(&body, at_mint);
+    assert!(
+        at_gate < at_mint && at_mint < at_table && depth == 0,
+        "[rb111/mint-position]: the mint sits at offset {at_mint} (brace depth {depth}); the \
+         admission pre-gate is at {at_gate} and the manifest accumulator at {at_table}, and the \
+         mint must sit strictly between them at the reducer's top level. ABOVE the pre-gate, a \
+         caller who cannot be served pays up to sixteen index-point reads before being refused, \
+         which is free work handed to a flooding identity. BELOW the walk, contention is refused \
+         only after the two unindexed own-row scans of ADR-0226. Inside an `if`, the stamp is \
+         minted on some requests and not others, and the row literal reads whatever is in scope."
+    );
+
+    assert_eq!(
+        (q_total, q_depth0.len(), q_nested.len()),
+        (2usize, 1usize, 1usize),
+        "[rb111/mint-exit]: the region between the bound purge and the trailing success tail \
+         carries {q_total} `?` exit(s), {} at depth zero and {} nested; exactly (2, 1, 1) are \
+         sanctioned. This is the ONE instrument in the module that sees a `?`: the `Err`-return \
+         censuses count a keyword, and the depth census in the rb-65 observation test counts the \
+         same keyword. A second, undeclared `?` is a second way out of this reducer that no \
+         other clause can report.",
+        q_depth0.len(),
+        q_nested.len()
+    );
+    assert_eq!(
+        q_depth0,
+        [at_mint + stmt.len() - 2],
+        "[rb111/mint-exit]: the region's ONE top-level `?` must be the mint statement's own — \
+         the needle ends `?;`, so its offset is the statement's start plus its length less two. \
+         Found {q_depth0:?}, mint statement at {at_mint}. ATTRIBUTION, not arithmetic: without \
+         it, promoting the shell reader's nested `?` to the top level while demoting the mint's \
+         to an `unwrap` holds both counts above exactly where they are."
+    );
+    let nested_at = q_nested[0];
+    assert!(
+        body[..nested_at].ends_with(concat!("rows", "_fn(ctx,me)")),
+        "[rb111/mint-exit]: the region's one NESTED `?` must still be the per-table shell \
+         reader's, at offset {nested_at}; the text before it reads {:?}. Swapping that one for \
+         `.unwrap_or_default()` while adding the mint's holds the TOTAL at two, and only naming \
+         both exits reports it.",
+        &body[nested_at.saturating_sub(24)..nested_at]
+    );
+
+    assert_eq!(
+        n_dispatch, 1,
+        "[rb111/dispatch-now-once]: the reducer body must pair the context with the clock \
+         EXACTLY once; found {n_dispatch}. `m22s4 [X9/dispatch-args]` admitted `(ctx, now)` when \
+         rb-111 landed, and this is the tooth that widening owes its reader: the clock may cross \
+         exactly ONE call boundary in this body, and a second `(ctx, now)` is a second helper \
+         handed the reducer's instant with no clause anywhere naming it."
+    );
+    let at_dispatch = m22s4_idx(&body, dispatch, "the clock-passing dispatch");
+    let in_stmt = m22s4_idx(&stmt, dispatch, "the mint statement's own dispatch");
+    assert_eq!(
+        at_dispatch,
+        at_mint + in_stmt,
+        "[rb111/dispatch-now-once]: the one `(ctx,now)` call sits at offset {at_dispatch}; the \
+         mint statement's own is at {}. The COUNT above says the clock crosses one call \
+         boundary; this says WHICH, so the pairing cannot drift onto some other helper while \
+         both the count and the widened dispatch walk stay green.",
+        at_mint + in_stmt
+    );
+
+    let row_head = concat!("Export", "Bundle{");
+    let at_row = m22s4_idx(&body, row_head, "the export chunk row literal");
+    let literal = m22s4_braced_span(&body, at_row + row_head.len() - 1).unwrap_or_else(|| {
+        panic!(
+            "rb111 [row-scope]: the export row literal is not brace-balanced, so the clause \
+             below would read an arbitrary span and pass VACUOUSLY."
+        )
+    });
+    let n_now_in_row = rb22p_count(literal, "now");
+    assert_eq!(
+        (n_request, n_created, n_now_in_row),
+        (1usize, 1usize, 0usize),
+        "[rb111/row-from-stamp]: the written row names the minted stamp as its request id \
+         {n_request} time(s) and as its creation stamp {n_created} time(s), and mentions the \
+         clock {n_now_in_row} time(s); exactly (1, 1, 0) is the contract. Row literal: \
+         {literal:?}. ONE column reverted to `now` is the worst shape this can take and it is \
+         not hypothetical — the two fields are written by two separate lines: the S8 client \
+         groups the owner's rows by `request_id` and takes the maximum, while the reaper deletes \
+         by `created_at_ms`, so a request whose two columns disagree is assembled under one key \
+         and reaped under another. The zero is what closes the pair: it is satisfied by neither \
+         column reading the clock, in any spelling."
+    );
+}
+
+/// T6 (ledger X1): the creation-stamp mint and its probe window are declared
+/// ONCE, PRIVATE, with a frozen signature, a frozen body and an index-POINT
+/// probe — and the module reaches the creation-stamp index exactly three times.
+///
+/// THE VALUE READ IS THE ONLY CLAUSE HERE THAT PROVES EXISTENCE. Every other
+/// one reads source TEXT, and source text cannot tell a live item from a name
+/// inside a comment, inside a string literal, or behind a conditional-
+/// compilation attribute that never compiles. The host read of the constant is
+/// also exactly why the full tester patch is a BUILD failure on the tree before
+/// the implementer lands rb-111 rather than a runtime one.
+///
+/// EQUALITY ON THE BODY, not containment, and this module has measured three
+/// times why: a predicate gated on the live wall-clock band leaves every
+/// containment, adjacency and count clause green while the seam returns the
+/// wrong answer in exactly the hours that matter. Both frozen literals are
+/// proved SATISFIABLE first, against source text spelled INDEPENDENTLY of them,
+/// because a pin with one character wrong is a permanently red gate that reads
+/// to the next reader exactly like a feature nobody implemented — and both are
+/// proved BLIND to a line comment and a string literal carrying the same bytes.
+///
+/// THE POINT CLAUSE is the one a count cannot state. `.created_at_ms()
+/// .filter(candidate..)` is a RANGE — every occupancy census, every hygiene ban
+/// and the whole chain count are identical over it — and it asks whether ANY
+/// stamp at or above the candidate exists, so a busy store refuses forever
+/// while a free window looks occupied. The text after the filter's open paren
+/// must therefore begin with the bound argument and its closing paren, and the
+/// mint's ONLY `..` must be the offset range in its `for` header.
+///
+/// Kills: the constant declared with the wrong value, widened visibility, a
+/// widened type, or twinned behind an attribute; the helper made `pub`, given
+/// an extra parameter (a caller-chosen stamp) or an infallible return type; the
+/// probe turned into a range; the loop bound re-pointed; the reject reason
+/// respelled with an interior space, which `stringify!` captures verbatim and
+/// only the two-view comparison can see; a write, a delete, a sweep, a second
+/// metadata count or a second clock read smuggled into the helper; and a third
+/// reach of the creation-stamp index in a body nobody attributed.
+#[test]
+fn rb111_mint_is_declared_once_private_and_frozen() {
+    let value = crate::privacy::EXPORT_STAMP_PROBE_WINDOW_MS;
+    assert_eq!(
+        value, 16,
+        "[rb111/probe-value]: the creation-stamp probe window must be exactly 16 milliseconds; \
+         it reads {value}. THIS CLAUSE IS A HOST READ of the item, which makes it the only \
+         instrument in this slice that proves the constant EXISTS and is reachable rather than \
+         merely spelled. The number is a DoS knob and not a derivation: it is the assumed \
+         ceiling on LEGITIMATE exports per millisecond, kept far below the 60 s per-identity \
+         cooldown so a stamp's run-ahead can never interact with flood control. ZERO refuses \
+         every export outright; a large value spends more index reads under the global write \
+         lock per contended request and widens the run-ahead for no attacker-facing gain."
+    );
+
+    let squashed = stripped_for_scan(PRIVACY_RS);
+    let squashed_tests = stripped_for_scan(PRIVACY_TESTS_RS);
+    let preserving = strip_rust_comments(&strip_rust_strings(PRIVACY_RS));
+
+    // --- the probe window's DECLARATION, control first ------------------------
+    let decl = rb111_nd_probe_const();
+    let probe_control = stripped_for_scan(&rb111_probe_decl_source());
+    assert_eq!(
+        probe_control, decl,
+        "[rb111/probe-decl]: the frozen declaration needle is UNSATISFIABLE — feeding the \
+         sanctioned source text through the LIVE strip pipeline derives {probe_control:?}, which \
+         is not what the clause below searches for. Revise the literal FROM THE SPEC, never the \
+         other way round."
+    );
+    assert_eq!(
+        rb107_blind_count(&decl),
+        0,
+        "[rb111/probe-decl]: the strip pipeline still sees the declaration after it was placed \
+         ONLY inside a line comment and inside a string literal, so this pin would be satisfiable \
+         by a comment describing the right constant."
+    );
+    let n_decl = rb22p_count(&squashed, &decl);
+    let n_head = rb22p_count(&squashed, &rb111_nd_probe_head());
+    assert_eq!(
+        (n_decl, n_head),
+        (1usize, 1usize),
+        "[rb111/probe-decl]: the squashed source of privacy.rs declares the probe window \
+         {n_decl} time(s) in its sanctioned form and {n_head} time(s) counting only the name and \
+         its type colon. ZERO of the first means the declaration was reshaped — a widened type, \
+         a `pub` that lets another module read a DoS knob, a value taken from somewhere else. \
+         The bare head is the cfg-twin clause: a second declaration with a DIFFERENT right-hand \
+         side behind a conditional-compilation attribute is invisible to the exact form and \
+         moves only this one, and the value read above is perfectly happy with either."
+    );
+    let probe_vis = rb107_vis_window_text(&squashed, &rb111_nd_probe_head());
+    assert!(
+        !probe_vis.contains("pub") && !probe_vis.contains("#["),
+        "[rb111/probe-vis]: the bytes immediately before the probe window's declaration read \
+         {probe_vis:?}; they must carry neither a visibility keyword nor an attribute. A WINDOW \
+         rather than a list of spellings, for the reason rb-85 records: an enumerated ban on the \
+         two obvious keywords is silently satisfied by `pub(super)` or `pub(in crate::x)`."
+    );
+
+    // --- the mint is DECLARED once, and NAMED exactly where it should be ------
+    let fn_needle = rb111_nd_mint_fn();
+    let named = rb111_nd_mint_named();
+    let ident = rb111_nd_mint_ident();
+    let n_fn = rb22p_count(&squashed, &fn_needle);
+    let n_named = rb22p_count(&squashed, &named);
+    let n_tests_named = rb22p_count(&squashed_tests, &named);
+    let n_tests_ident = rb22p_count(&squashed_tests, &ident);
+    assert_eq!(
+        (n_fn, n_named),
+        (1usize, 2usize),
+        "[rb111/mint-decl]: privacy.rs defines `{fn_needle}` {n_fn} time(s) and names \
+         `{named}` {n_named} time(s); exactly one definition and exactly two namings — the \
+         definition and the ONE call from the export reducer. ZERO is the intended RED before \
+         the implementer lands rb-111. THREE or more namings is a second caller of a helper \
+         whose whole contract is `one request, one stamp`: a second probe in the same \
+         transaction would hand back the stamp the first one is about to take."
+    );
+    assert_eq!(
+        (n_tests_named, n_tests_ident),
+        (1usize, 1usize),
+        "[rb111/mint-decl]: privacy_tests.rs names the mint {n_tests_named} time(s) with a call \
+         parenthesis and {n_tests_ident} time(s) as a bare identifier; both must be ONE, and \
+         both must be the same occurrence — the `rb111_mint` wrapper every behavioural clause in \
+         this slice goes through. The paren-LESS census is not book-keeping: a fn-ITEM binding \
+         (the helper bound to a local, then called through that local) carries no \
+         parenthesis at the binding site, so a second, unreviewed probe trigger could live in \
+         this file with the paren-bearing count unmoved. The measured escape family is rb-85's."
+    );
+
+    // --- the frozen SIGNATURE and BODY, each control-proved first -------------
+    let mint_control_src = [
+        rb111_mint_decl_source(),
+        String::from("{"),
+        rb111_mint_body_source(),
+        String::from("}"),
+    ]
+    .concat();
+    let mint_control = stripped_for_scan(&mint_control_src);
+    let control_sig = extract_squashed_fn_sig(&mint_control, &fn_needle).unwrap_or_else(|| {
+        panic!("rb111 [mint-control]: the control fixture has no brace-terminated signature")
+    });
+    assert_eq!(
+        control_sig,
+        rb111_mint_sig_pin(),
+        "[rb111/mint-sig]: the frozen SIGNATURE pin is UNSATISFIABLE — the live pipeline derives \
+         {control_sig:?} from the independently spelled declaration text. Fix the literal from \
+         the spec, never the other way round."
+    );
+    let sig = extract_squashed_fn_sig(&squashed, &fn_needle)
+        .unwrap_or_else(|| panic!("rb111 [mint-sig]: `{fn_needle}` has no opening brace."));
+    assert_eq!(
+        sig,
+        rb111_mint_sig_pin(),
+        "[rb111/mint-sig]: the mint's signature is not the frozen one; it reads {sig:?}. The \
+         flat spelling is under max_width, so rustfmt has exactly ONE canonical form and no \
+         trailing-comma twin is accepted. A THIRD parameter is a caller-chosen stamp, which \
+         hands the uniqueness decision back to the call site; an infallible return type deletes \
+         the refusal and with it the only thing standing between a full window and a shared \
+         stamp; and the parameter name `now_ms` is what SHADOWS the imported clock fn, so a \
+         rename makes a second clock read inside the helper compile."
+    );
+    let mint_vis = rb107_vis_window_text(&squashed, &fn_needle);
+    assert!(
+        !mint_vis.contains("pub") && !mint_vis.contains("#["),
+        "[rb111/mint-sig]: the bytes immediately before the mint's declaration read \
+         {mint_vis:?}; they must carry neither a visibility keyword nor an attribute. The mint \
+         is the module's own write-site machinery: a second caller in another module is a second \
+         probe in a transaction whose whole contract is that there is only one."
+    );
+
+    let pin = rb111_mint_body_pin();
+    let control_body = extract_squashed_fn_body(&mint_control, &fn_needle)
+        .unwrap_or_else(|| panic!("rb111 [mint-control]: the control fixture has no body"));
+    assert_eq!(
+        control_body, pin,
+        "[rb111/mint-body]: the frozen BODY pin is UNSATISFIABLE — the live pipeline derives \
+         {control_body:?} from the independently spelled source text, which is not the literal \
+         the clause below compares against. An unsatisfiable equality pin is a gate that can \
+         never pass and reads exactly like a missing implementation. Fix it FROM THE SPEC."
+    );
+    assert_eq!(
+        rb107_blind_count(&pin),
+        0,
+        "[rb111/mint-body]: the strip pipeline still sees the sanctioned body after it was \
+         placed ONLY inside a line comment and inside a string literal, so this equality would \
+         be satisfiable by a doc comment quoting the right code."
+    );
+    let mint = rb111_mint_body(&squashed);
+    assert_eq!(
+        mint, pin,
+        "[rb111/mint-body]: the mint's body is not the frozen one. EQUALITY owns everything the \
+         value table cannot see: a band-keyed predicate (`if now_ms > LO && now_ms < HI`) that \
+         returns the clock in exactly the hours that matter; a probe walking the window \
+         downward; the loop bound read off a different constant; and the saturating add demoted \
+         to a `+`, which under this workspace's overflow checks PANICS at the i64 ceiling rather \
+         than clamping — a panic inside a reducer aborts the transaction. Read: {mint:?}"
+    );
+
+    // --- the helper's HYGIENE: reads only, one chain, one accessor ------------
+    let bans: [(String, &str); 4] = [
+        (
+            rb85_nd_iter_call(),
+            "an iterator over the table, which spends a slot the module's closed iterator budget \
+             reserves and reads every personal-data payload row under the global write lock",
+        ),
+        (
+            concat!(".ins", "ert(").to_string(),
+            "a WRITE inside a probe, which would commit a row to reserve a stamp",
+        ),
+        (
+            concat!(".del", "ete(").to_string(),
+            "a DELETE inside a probe, which would remove somebody else's live bundle to free the \
+             stamp it wanted",
+        ),
+        (
+            concat!("now", "_ms(").to_string(),
+            "a second clock read, which the parameter shadow is supposed to make a compile error",
+        ),
+    ];
+    for (needle, what) in &bans {
+        let n = rb22p_count(&mint, needle);
+        assert_eq!(
+            n, 0,
+            "[rb111/mint-hygiene]: the mint body spells `{needle}` {n} time(s); it must spell it \
+             NEVER — that is {what}."
+        );
+    }
+    let n_count = rb22p_count(&mint, &rb107_nd_count_call());
+    let chain = rb85_nd_range_chain();
+    let n_chain = rb22p_count(&mint, &chain);
+    let n_accessor = rb22p_count(&mint, &m22s4_nd_bundle_accessor());
+    assert_eq!(
+        (n_count, n_chain, n_accessor),
+        (0usize, 1usize, 1usize),
+        "[rb111/mint-hygiene]: the mint body spells the metadata row count {n_count} time(s), \
+         the creation-stamp filter chain {n_chain} time(s) and the export accessor \
+         {n_accessor} time(s); exactly (0, 1, 1) is the contract. The probe is ONE index read \
+         per candidate and nothing else: a second chain is a second question asked of the same \
+         millisecond, and a metadata count here would red `[rb107/count-census]`, which pins \
+         privacy.rs at exactly two, both inside the export reducer."
+    );
+
+    // --- the probe is an index POINT, not a range -----------------------------
+    let at_chain = m22s4_idx(&mint, &chain, "the creation-stamp probe");
+    let after = &mint[at_chain + chain.len()..];
+    assert!(
+        after.starts_with("candidate)"),
+        "[rb111/probe-is-a-point]: the text after the probe's filter paren reads {:?}; it must \
+         begin with the bound candidate and its CLOSING paren. `filter(candidate..)` is a RANGE \
+         and is identical to a point under every count, hygiene ban and chain census in this \
+         module — but it asks whether ANY stamp at or above the candidate exists, so one live \
+         bundle far in the future makes every window look full and refuses every export, while \
+         `filter(..candidate)` makes every window look free and hands out a shared stamp.",
+        &after[..after.len().min(32)]
+    );
+    let n_range = rb22p_count(&mint, "..");
+    let at_range = m22s4_idx(&mint, "..", "the offset range in the probe's loop header");
+    assert!(
+        n_range == 1 && at_range < at_chain,
+        "[rb111/probe-is-a-point]: the mint body carries {n_range} range operator(s), the first \
+         at offset {at_range}, and the probe chain begins at {at_chain}. EXACTLY ONE is right, \
+         and it must be the `for` header's offset range: zero would mean the loop bound is gone, \
+         and a second one below the header is a range argument wearing a point."
+    );
+
+    // --- the creation-stamp index, reached three times and all three named ----
+    let stamp_index = rb86_nd_stamp_index();
+    let file_reaches = rb22p_count(&squashed, &stamp_index);
+    let helper_reaches = rb22p_count(&rb85_helper_body(&squashed), &stamp_index);
+    let mint_reaches = rb22p_count(&mint, &stamp_index);
+    assert_eq!(
+        (file_reaches, helper_reaches, mint_reaches),
+        (3usize, 2usize, 1usize),
+        "[rb111/index-reach]: privacy.rs reaches the creation-stamp index {file_reaches} time(s) \
+         file-wide, {helper_reaches} of them inside the bounded-read TTL helper and \
+         {mint_reaches} inside the mint; exactly (3, 2, 1) is the closed set. This clause is the \
+         arithmetic `[rb86/stamp-index-reaches]` used to carry before rb-111 added a third \
+         reach: helper two plus mint one must EQUAL the file's three, so equal cardinalities \
+         mean equal sets and a fourth reach — in a new helper, behind an extension trait, or \
+         through a handle constructed out of thin air — shows up here as a gap even when the \
+         file-wide total has been moved to match it."
+    );
+    assert_eq!(
+        helper_reaches + mint_reaches,
+        file_reaches,
+        "[rb111/index-reach]: the two attributed bodies account for {} of the {file_reaches} \
+         reaches. The equality is the attribution; the triple above is the value.",
+        helper_reaches + mint_reaches
+    );
+
+    // --- the reject reason: ONE site, TWO views -------------------------------
+    let reason = rb111_nd_reason();
+    let n_pres = rb22p_count(&preserving, &reason);
+    let n_squash = rb22p_count(&squashed, &reason);
+    let n_mint = rb22p_count(&mint, &reason);
+    assert_eq!(
+        (n_pres, n_squash, n_mint),
+        (1usize, 1usize, 1usize),
+        "[rb111/reason-once]: privacy.rs spells the contention reject reason {n_pres} time(s) in \
+         the whitespace-PRESERVING view, {n_squash} time(s) in the SQUASHED view and {n_mint} \
+         time(s) inside the mint body; exactly (1, 1, 1). TWO VIEWS, because neither alone is \
+         enough: `stringify!` captures its token bytes verbatim, so a space inside the \
+         identifier renames the value that crosses the wire while every squashed needle in this \
+         slice stays byte-identical — and a decoy occurrence elsewhere restores the preserving \
+         count on its own. The scoped count is what says the reason belongs to the mint rather \
+         than to some other refusal."
+    );
+    assert_eq!(
+        n_pres, n_squash,
+        "[rb111/reason-once]: the whitespace-preserving view spells the reason {n_pres} time(s) \
+         and the squashed view {n_squash}. The only text that can differ between the two views \
+         is whitespace INSIDE the token, so a difference here is a respelled reason and nothing \
+         else — the one shape a single view cannot see however exact its number is."
+    );
+}
+
+/// This slice's own decision record, read as TEXT through the rb-67
+/// `include_str!` idiom (the `../../` reach out of `src/` is this file's
+/// shipped convention; a document that is never read cannot be gated).
+const RB111_ADR_0268_MD: &str =
+    include_str!("../../docs/adr/0268-rb111-export-creation-stamp-unique-per-live-request.md");
+
+/// The reaper's own decision record, which this slice EXTENDS: its rb-86
+/// amendment stated the soft bound and named the residual, and its rb-111
+/// amendment is where the closure is recorded.
+const RB111_ADR_0238_MD: &str =
+    include_str!("../../docs/adr/0238-rb48-export-bundle-ttl-reaper-interval-singleton.md");
+
+/// The slice log.
+const RB111_ARCHITECTURE_MD: &str = include_str!("../../ARCHITECTURE.md");
+
+/// T7 (ledger X1), THE DOCUMENTARY HALF: production no longer states the
+/// millisecond-sharing claim or advertises the closed residual as open, the
+/// three documents record the closure, and NONE of them over-claims the
+/// sibling residual as closed with it.
+///
+/// THE STALE-CLAIM BAN IS THE ONLY INSTRUMENT HERE THAT SEES A FALSEHOOD WITH
+/// NO IDENTIFIER IN IT. Every other clause keys on a name; the two sentences
+/// that say a creation stamp may be "every bundle committed inside the same
+/// millisecond" carry no identifier at all on some of their lines, and both are
+/// false the moment the mint lands. The needles are RAW phrase fragments
+/// measured on the live file — the rustfmt-wrapped full sentences have a raw
+/// count of zero, so pinning those would be a clause passing over nothing — and
+/// the shorter of the two is deliberately NOT the bare word `millisecond`,
+/// which the retruthed sentences legitimately reintroduce.
+///
+/// THE CLOSURE CLAUSE IS LINE-SCOPED, and that is the whole design. ADR-0238
+/// already names this residual on a line of rb-86 history that stays exactly as
+/// it is, so a FILE-level pair of containment checks is GREEN the moment any
+/// rb-111 sentence lands anywhere in the file. Only a per-line rule can say
+/// that the document carries a sentence about the residual AND this slice
+/// together. The marker must end at a token boundary: a plain containment check
+/// is satisfied by a slice number that merely starts with this one, which this
+/// repository has MEASURED.
+///
+/// THE SIBLING CLAUSE IS SPAN-SCOPED for the mirror-image reason. ARCHITECTURE.md
+/// writes each slice as ONE very long line, and the rb-110 paragraph carries
+/// both the sibling residual's id and the word `closed` about a DIFFERENT
+/// residual — so a line-scoped co-occurrence ban there is permanently red. The
+/// clause therefore reads only the spans this slice writes: ADR-0268 whole (it
+/// is new), the rb-111 amendment section of ADR-0238, and the rb-111 paragraph
+/// of ARCHITECTURE.md. Each must say the sibling stays OPEN in so many words.
+///
+/// Kills: the residual id left in a production comment advertising a closed
+/// residual as open; the two identifier-free sentences that state the old
+/// mechanism as current; the ADR-0238 amendment never written, or written
+/// without naming what it closes; the ARCHITECTURE paragraph missing or not
+/// naming the record and the residual; a document mention hidden from a
+/// contiguous scan by a markdown comment or a line break inside an identifier
+/// (the split-token cross-check); and the single most likely documentary error
+/// in this slice — a sentence that claims rb-111 closed R-rb-86-TICKBOUND too.
+#[test]
+fn rb111_docs_record_the_closed_same_millisecond_residual() {
+    let residual = concat!("R-rb-86-", "SAMEMS");
+    let sibling = concat!("R-rb-86-", "TICKBOUND");
+    let marker = "rb-111";
+    let record = "ADR-0268";
+    let amend_header = concat!("## Amendment (2026-09-25, ", "rb-111");
+    let arch_head = concat!("**rb-", "111**");
+    let probe_name = stringify!(EXPORT_STAMP_PROBE_WINDOW_MS);
+    let mint_name = rb111_nd_mint_ident();
+    let reason_name = concat!("export_reject_stamp", "_contention");
+
+    let whole_token = |line: &str, needle: &str| -> bool {
+        let mut start = 0usize;
+        while let Some(rel) = line[start..].find(needle) {
+            let after = start + rel + needle.len();
+            match line[after..].chars().next() {
+                Some(c) if c.is_ascii_digit() => start = after,
+                _ => return true,
+            }
+        }
+        false
+    };
+
+    // Every number this test can report, taken BEFORE the first assertion, so
+    // one run of the runtime-RED stage records the whole pre-state.
+    let prod_residual = rb22p_count(PRIVACY_RS, residual);
+    let stale: [(&str, &str); 2] = [
+        (
+            concat!("or every ", "bundle"),
+            "the two comment sentences that offer `every bundle committed in one millisecond` as \
+             an alternative reading of a creation stamp",
+        ),
+        (
+            concat!("same milli", "second"),
+            "the millisecond claim itself, which carries no identifier and which no census in \
+             this module can see",
+        ),
+    ];
+    let stale_counts: Vec<usize> = stale
+        .iter()
+        .map(|(phrase, _)| rb22p_count(PRIVACY_RS, phrase))
+        .collect();
+
+    let docs: [(&str, &str); 3] = [
+        (record, RB111_ADR_0268_MD),
+        ("ADR-0238", RB111_ADR_0238_MD),
+        ("ARCHITECTURE.md", RB111_ARCHITECTURE_MD),
+    ];
+    let idents: [(&str, &str); 3] = [
+        ("the probe window constant", probe_name),
+        ("the creation-stamp mint", mint_name.as_str()),
+        ("the contention reject reason", reason_name),
+    ];
+    let mut shortest = usize::MAX;
+    let mut split_gaps: Vec<String> = Vec::new();
+    for (label, text) in docs {
+        if text.len() < shortest {
+            shortest = text.len();
+        }
+        let ident_view = rb110_ident_only(text);
+        for (what, needle) in idents {
+            let raw = rb22p_count(text, needle);
+            let fused = rb22p_count(&ident_view, needle);
+            if raw != fused {
+                split_gaps.push(format!("{label}/{what}: raw {raw} vs identifier-only {fused}"));
+            }
+        }
+    }
+
+    let has_amendment = RB111_ADR_0238_MD
+        .lines()
+        .any(|line| line.starts_with(amend_header));
+    let mut closure_lines = 0usize;
+    for line in RB111_ADR_0238_MD.lines() {
+        if line.contains(residual) && whole_token(line, marker) {
+            closure_lines += 1;
+        }
+    }
+    let arch_line = RB111_ARCHITECTURE_MD
+        .lines()
+        .find(|line| line.starts_with(arch_head))
+        .unwrap_or("");
+
+    let doc_dossier = format!(
+        "MEASURED IN ONE PASS before the first clause. privacy.rs — closed residual id \
+         {prod_residual} (must be 0), stale phrases {stale_counts:?} (must be [0, 0]). ADR-0238 \
+         — rb-111 amendment header present: {has_amendment}; lines naming the residual together \
+         with this slice: {closure_lines} (must be at least 1). ARCHITECTURE.md — rb-111 \
+         paragraph found: {}; it names the record: {}; it names the residual: {}. Split-token \
+         gaps across the three documents: {split_gaps:?} (must be empty). Shortest document \
+         read: {shortest} bytes.",
+        !arch_line.is_empty(),
+        arch_line.contains(record),
+        arch_line.contains(residual)
+    );
+
+    assert_eq!(
+        prod_residual, 0,
+        "[rb111/prod-residual-closed]: privacy.rs still names the residual this slice CLOSES \
+         {prod_residual} time(s). A production comment advertising a closed residual as open is \
+         a false statement in the one file the change is about, and it is the same class as the \
+         cross-file meta-claim ADR-0267 D4 removed: the archaeology belongs in the decision \
+         record and in the slice log, where a later slice can keep it true. {doc_dossier}"
+    );
+
+    for (i, (phrase, what)) in stale.into_iter().enumerate() {
+        let n = stale_counts[i];
+        assert_eq!(
+            n, 0,
+            "[rb111/prod-stale-claim]: privacy.rs still carries {n} occurrence(s) of the phrase \
+             `{phrase}` — {what}. Both sentences describe the mechanism this slice REPLACES, and \
+             both were MEASURED present twice before it. The needles are raw phrase fragments, \
+             not whole sentences: rustfmt wraps those sentences across lines, so a full-sentence \
+             needle has a raw count of zero and would be a ban passing over nothing."
+        );
+    }
+
+    assert!(
+        shortest > 200,
+        "[rb111/doc-adr]: the shortest document read is only {shortest} bytes, which is too \
+         short to be any of the three this test means to read — so every containment check and \
+         both cross-checks below would pass over an empty string."
+    );
+    for (what, needle) in idents {
+        assert!(
+            RB111_ADR_0268_MD.contains(needle),
+            "[rb111/doc-adr]: {record} does not name {what} (`{needle}`). The record has to \
+             carry the names a reader arriving from the code will grep for; a decision record \
+             that describes the change without naming what shipped sends that reader back to the \
+             diff. {doc_dossier}"
+        );
+    }
+    for needle in [residual, "**Extends:** 0238", "**Amends:** —"] {
+        assert!(
+            RB111_ADR_0268_MD.contains(needle),
+            "[rb111/doc-adr]: {record} does not carry `{needle}`. The residual id is what ties \
+             the record to the backlog entry that authorised the slice; `Extends` is the header \
+             field the digest gate accepts WITHOUT a reciprocal edit to the extended record, and \
+             `Amends` must stay empty precisely because that field demands one."
+        );
+    }
+
+    assert!(
+        has_amendment && closure_lines >= 1,
+        "[rb111/doc-closure]: ADR-0238 carries a dated rb-111 amendment header: {has_amendment}; \
+         and {closure_lines} of its line(s) name the residual together with `{marker}` as a \
+         WHOLE token. Both are required. The rule is per LINE, not per file, and that is the \
+         whole design: this ADR already names the residual on a line of rb-86 history that stays \
+         exactly as it is, so a file-level pair of containment checks is GREEN as soon as any \
+         rb-111 sentence lands anywhere in it. The token boundary matters too — a plain \
+         containment check is satisfied by a longer slice number that merely starts with this \
+         one, which this repository has MEASURED. {doc_dossier}"
+    );
+
+    assert!(
+        !arch_line.is_empty() && arch_line.contains(record) && arch_line.contains(residual),
+        "[rb111/doc-arch]: ARCHITECTURE.md must carry a paragraph beginning `{arch_head}` that \
+         names both `{record}` and `{residual}`. Found a paragraph: {}; it names the record: {}; \
+         it names the residual: {}. The slice log is where a reader who greps the residual id \
+         lands, and a paragraph that records the change without naming the record it rests on \
+         leaves them with nothing to follow. {doc_dossier}",
+        !arch_line.is_empty(),
+        arch_line.contains(record),
+        arch_line.contains(residual)
+    );
+
+    assert!(
+        split_gaps.is_empty(),
+        "[rb111/doc-split-token]: in {} place(s) a document's CONTIGUOUS count of one of this \
+         slice's identifiers disagrees with its identifier-only count: {split_gaps:?}. The two \
+         must agree. A mismatch means a token is split by an HTML comment or by a line break — a \
+         construct this repository has MEASURED in markdown, where it renders to a reader as an \
+         ordinary citation while defeating every contiguous scan, including the presence clauses \
+         above.",
+        split_gaps.len()
+    );
+
+    let stays_open = [sibling, " stays open"].concat();
+    let claims = [["closes ", sibling].concat(), [sibling, " closed"].concat()];
+    let amend_span = {
+        let mut collected = String::new();
+        let mut inside = false;
+        for line in RB111_ADR_0238_MD.lines() {
+            if line.starts_with(amend_header) {
+                inside = true;
+            } else if inside && line.starts_with("## ") {
+                break;
+            }
+            if inside {
+                collected.push_str(line);
+                collected.push('\n');
+            }
+        }
+        collected
+    };
+    for (what, text) in [
+        ("ADR-0268, read whole because it is new", RB111_ADR_0268_MD),
+        ("the rb-111 amendment section of ADR-0238", amend_span.as_str()),
+        ("the rb-111 paragraph of ARCHITECTURE.md", arch_line),
+    ] {
+        assert!(
+            text.contains(stays_open.as_str()),
+            "[rb111/doc-tickbound-open]: {what} does not say `{stays_open}` in so many words. \
+             The sibling residual — rows per BUNDLE are still unbounded, so one oversized bundle \
+             can still wedge a tick — is NOT closed here, and over-claiming it is the single \
+             most likely documentary error in this slice: the change turns `sixteen stamps times \
+             bundles-per-stamp` into `sixteen bundles`, and says nothing at all about how many \
+             ROWS those sixteen bundles carry. The clause is scoped to the spans this slice \
+             WRITES, never to a whole file or a whole line: ARCHITECTURE.md holds each slice on \
+             one very long line and an existing one already carries this id beside the word \
+             `closed` about a different residual."
+        );
+        for claim in &claims {
+            assert!(
+                !text.contains(claim.as_str()),
+                "[rb111/doc-tickbound-open]: {what} claims `{claim}`. It is not closed: a bundle \
+                 can run to hundreds of chunks at the chunk-row cap, so a single bundle can still \
+                 exceed a tick's transaction budget — that is its own design and its own slice."
+            );
+        }
+    }
+}
+
+/// T8 (ledger X1, the anchor): this file declares EXACTLY the eight `rb111_`
+/// tests the roster names, each once, over a CLOSED set of helpers — and every
+/// clause label those tests ship still occurs inside the test that owns it, in
+/// a body that is not a stub.
+///
+/// A test cannot prove its own existence, but a file CAN prove which tests it
+/// declares: this module already includes its own source for the hygiene scan,
+/// so the census costs nothing. It matters because the ledger's gate is a NAME
+/// FILTER, and a filtered run does not red on a missing test — it matches fewer
+/// tests and reports the same number passed as ran, which is precisely how
+/// eight-of-eight could be printed over a tree that lost one.
+///
+/// THE SPAN HELPER IS WIDENED, not re-derived. One test in this slice is
+/// declared inside a property-test block, so its `fn` line and its test
+/// attribute are INDENTED; `rb111_test_span` finds that declaration and treats
+/// an indented test attribute as a terminator, and the two flush-left banners
+/// around that block are what stop the previous test's span swallowing it. The
+/// adjacency count below therefore SUMS the flush-left and the indented forms.
+///
+/// THE HELPER ROSTER IS CLOSED AND INCLUDES TWO HELPERS CALLED FROM OUTSIDE
+/// THIS BLOCK — the scoped mint-body extractor the rb-85 range census now uses,
+/// and the mint statement needle rb-107's pre-gate pin and its source control
+/// now spell. A roster that omitted them would make the declaration total one
+/// short and would let either be deleted in the diff that needs it most.
+///
+/// Kills: a test renamed out of the ledger's filter or never written; a ninth
+/// test slipped in without moving a ledger literal, whatever shape it is
+/// declared in; a test disabled by an ignore attribute above its test
+/// attribute; an unlisted helper; a load-bearing out-of-prefix test deleted; a
+/// clause label deleted from the test that owns it while every declaration
+/// count stays green; that same deletion covered by re-planting the label in a
+/// line comment (the comment-blanked view); a label copied into a second test;
+/// a clause shipped under a label no roster names (the set equality); and a
+/// body neutered by a leading conditional or hollowed to its label strings.
+#[test]
+fn rb111_test_roster_is_closed() {
+    let roster = rb111_test_roster();
+    let helpers = rb111_helper_roster();
+    let dependencies = rb111_dependency_roster();
+    let file_len = PRIVACY_TESTS_RS.len();
+
+    assert!(
+        file_len > 200,
+        "[rb111/roster-vacuity]: this file reads as only {file_len} bytes, so every count below \
+         would pass over nothing."
+    );
+
+    let mut seen: Vec<&str> = roster.to_vec();
+    seen.extend_from_slice(&helpers);
+    seen.extend_from_slice(&dependencies);
+    seen.sort_unstable();
+    for pair in seen.windows(2) {
+        assert_ne!(
+            pair[0], pair[1],
+            "[rb111/roster-dup]: the rosters name `{}` twice, so every total below is satisfied \
+             by one fewer distinct declaration plus a duplicate entry.",
+            pair[0]
+        );
+    }
+
+    for name in roster {
+        let needle = format!("fn {name}(");
+        let n = rb22p_count(PRIVACY_TESTS_RS, &needle);
+        assert_eq!(
+            n, 1,
+            "[rb111/roster-name]: `{needle}` must be declared exactly once in privacy_tests.rs; \
+             found {n}. ZERO means the test was renamed or never written, and the ledger's name \
+             filter does not red on that — it matches fewer tests and still reports the same \
+             count passed as ran."
+        );
+    }
+    for name in dependencies {
+        let needle = format!("fn {name}(");
+        let n = rb22p_count(PRIVACY_TESTS_RS, &needle);
+        assert_eq!(
+            n, 1,
+            "[rb111/roster-name]: the LOAD-BEARING test `{needle}` must still be declared exactly \
+             once in privacy_tests.rs; found {n}. Each of these seven holds up a class of clause \
+             in this slice — the strip pipeline every squashed clause reads, the one view taken \
+             BEFORE it, the single conditional-compilation attribute that makes a twin mint or a \
+             twin constant impossible, the two moved row-literal needles beside the clock \
+             census, the frozen insert loop, the re-frozen pre-gate adjacency with its \
+             `?`-by-depth census, and the moved filter-chain census with its six-body \
+             attribution. Deleting one is a way to disarm this slice without editing an rb-111 \
+             literal, which is why the roster names them."
+        );
+    }
+
+    let flush = rb22p_count(PRIVACY_TESTS_RS, concat!("#[te", "st]\nfn rb111", "_"));
+    let indented = rb22p_count(PRIVACY_TESTS_RS, concat!("#[te", "st]\n    fn rb111", "_"));
+    let adjacent = flush + indented;
+    let tests = roster.len();
+    assert_eq!(
+        adjacent, tests,
+        "[rb111/roster-closed]: privacy_tests.rs declares {adjacent} `rb111_` test(s) by \
+         adjacency ({flush} flush-left, {indented} indented); the roster names {tests}. The two \
+         forms are SUMMED because this slice declares one test inside a property-test block, so \
+         a test hidden in a generator block could not be deleted while the roster still reported \
+         a closed set."
+    );
+
+    let block_at = PRIVACY_TESTS_RS
+        .find(concat!("\nfn rb111", "_"))
+        .expect("rb111: this file declares no top-level rb111_ fn");
+    let ignored = rb22p_count(&PRIVACY_TESTS_RS[block_at..], concat!("#[ign", "ore]"));
+    assert_eq!(
+        ignored, 0,
+        "[rb111/roster-closed]: the rb-111 section carries {ignored} ignore attribute(s). Placed \
+         ABOVE a test attribute, one leaves both adjacency needles and every declaration census \
+         at eight while the test never runs under the default profile — and a skipped test is \
+         not a failed one, so the suite still reports its full count passed. That is the one \
+         never-runs shape a text census CAN see, so it is banned outright."
+    );
+
+    for name in helpers {
+        let needle = format!("\nfn {name}(");
+        let n = rb22p_count(PRIVACY_TESTS_RS, &needle);
+        assert_eq!(
+            n, 1,
+            "[rb111/decl-total]: the helper `{name}` must be declared exactly once at the top \
+             level of privacy_tests.rs; found {n}. The needle carries a leading newline so this \
+             block's own roster literals are not counted. ZERO means the roster names a helper \
+             that no longer exists, which would make the total below pass over a file that is \
+             missing one."
+        );
+    }
+    let squashed_file = stripped_for_scan(PRIVACY_TESTS_RS);
+    let squashed_decls = rb22p_count(&squashed_file, concat!("fnrb111", "_"));
+    let declared = roster.len() + helpers.len();
+    assert_eq!(
+        squashed_decls, declared,
+        "[rb111/decl-total]: the SQUASHED source (strings and comments blanked, whitespace \
+         removed) carries {squashed_decls} `rb111_` fn declaration(s); the two CLOSED rosters \
+         name {declared}. This one view sees every visibility prefix and every indentation at \
+         once — including the declaration inside the property-test block — and it cannot be fed \
+         by this file's own string fixtures. If it reds after an honest addition, add the name \
+         to the roster it belongs to in the same diff, which is the reviewed event this clause \
+         exists to force."
+    );
+
+    // --- the label census, over COMMENT-BLANKED spans -------------------------
+    //
+    // MEASURED cheat: delete a clause and re-plant its label in a line comment
+    // inside the same test, and a raw census counts it and reports the test
+    // intact. Comments ONLY — the full strip pipeline would blank the string
+    // literals the labels actually live in and leave every span with no labels
+    // at all, which is the opposite failure.
+    let labels = rb111_label_roster();
+    let mut spans: Vec<String> = Vec::new();
+    let mut visible: Vec<String> = Vec::new();
+    for name in roster {
+        let span = rb111_test_span(PRIVACY_TESTS_RS, name);
+        visible.push(strip_rust_comments(&span));
+        spans.push(span);
+    }
+
+    let mut label_names: Vec<&str> = labels.iter().map(|(label, _)| *label).collect();
+    label_names.sort_unstable();
+    for pair in label_names.windows(2) {
+        assert_ne!(
+            pair[0], pair[1],
+            "[rb111/label-census]: the label roster names `{}` TWICE, so the per-label clause \
+             below is satisfied by one fewer real clause plus a duplicate entry — which is how a \
+             roster stops being a census of what ships.",
+            pair[0]
+        );
+    }
+
+    for (owner, name) in roster.iter().enumerate() {
+        let owned = labels.iter().filter(|(_, idx)| *idx == owner).count();
+        assert!(
+            owned >= 2,
+            "[rb111/label-census]: the roster credits `{name}` with only {owned} clause label(s); \
+             every test in this slice ships at least two. ONE or ZERO means the roster was \
+             trimmed rather than the test, which would let that test be hollowed out with the \
+             census still closed over whatever labels were left."
+        );
+    }
+
+    for (label, owner) in labels {
+        assert!(
+            owner < roster.len(),
+            "[rb111/label-census]: the label `{label}` names owner index {owner}, past the end \
+             of a roster of {} test(s), so the span clause below would index out of the file.",
+            roster.len()
+        );
+        let carriers: Vec<usize> = (0..roster.len())
+            .filter(|i| rb22p_count(&visible[*i], label) > 0)
+            .collect();
+        assert_eq!(
+            carriers,
+            [owner],
+            "[rb111/label-census]: `{label}` occurs inside the comment-blanked spans of tests \
+             {carriers:?}; it must occur inside exactly one — `{}`, at index {owner}. An EMPTY \
+             list means the clause that label names has been DELETED from the test that owns it \
+             while every census above stayed green: the name is declared, the attribute is \
+             there, the declaration total is unmoved, and the ledger's filtered run still \
+             reports eight of eight. A list with TWO entries means the label was copied into a \
+             second test, or quoted in a doc comment that falls inside the previous test's span, \
+             so a failure no longer attributes to one place.",
+            roster[owner]
+        );
+    }
+
+    // --- the SPAN-to-ROSTER direction: no label ships that nobody rostered ---
+    let mut found: Vec<String> = Vec::new();
+    for text in &visible {
+        for label in rb111_labels_in(text) {
+            if !found.iter().any(|seen| seen.as_str() == label.as_str()) {
+                found.push(label);
+            }
+        }
+    }
+    found.sort_unstable();
+    let mut rostered: Vec<String> = Vec::new();
+    for (label, _) in labels {
+        rostered.push(String::from(label));
+    }
+    rostered.sort_unstable();
+    assert_eq!(
+        found, rostered,
+        "[rb111/label-total]: the eight test spans between them carry the label set {found:?}; \
+         the roster names {rostered:?}. The per-label clause above only looks for labels the \
+         ROSTER already knows, so it is blind in one direction: a clause shipped under a label \
+         nobody rostered attributes its failure to a name that appears in no census and in no \
+         record, and a rostered label occurring nowhere leaves the roster describing a clause \
+         that does not exist. This reads the same set from the other end, so the two together \
+         are a bijection between what ships and what is written down."
+    );
+
+    // --- the body floor: the blunt backstop ----------------------------------
+    for (owner, name) in roster.iter().enumerate() {
+        let needle = format!("fn{name}(");
+        let body = extract_squashed_fn_body(&squashed_file, &needle)
+            .expect("rb111: a roster test has no brace-balanced body");
+        assert!(
+            !body.starts_with("if"),
+            "[rb111/body-floor]: the squashed body of `{name}` OPENS with a conditional. A whole \
+             test body wrapped in a never-taken one keeps every declaration census, both label \
+             censuses and the size floor below GREEN while not one of its assertions ever runs, \
+             and the ledger's filtered run still prints eight of eight. The check is on the \
+             body's first two bytes rather than on a particular spelling, because `if false {{` \
+             and `if 1 == 2 {{` were both MEASURED to walk past a needle written for the first."
+        );
+        let squashed_span = stripped_for_scan(&spans[owner]);
+        let n_dead = rb22p_count(&squashed_span, concat!("iffal", "se{"));
+        assert_eq!(
+            n_dead, 0,
+            "[rb111/body-floor]: `{name}` contains {n_dead} never-taken conditional(s) anywhere \
+             in its span, not merely at its head — a dead branch wrapped around the assertions \
+             half-way down is the same defect one level deeper."
+        );
+        let size = squashed_span.len();
+        assert!(
+            size >= 300,
+            "[rb111/body-floor]: the span of `{name}` is only {size} squashed byte(s) — comments \
+             and string literals blanked, whitespace removed — and 300 is the floor the rb-107, \
+             rb-109 and rb-110 blocks use, kept here as a NOT-A-STUB pin rather than a size pin \
+             and measured on the SPAN so the number means what it means there. What this catches \
              is a body hollowed down to its label strings, which neither label census can see."
         );
     }

@@ -770,3 +770,56 @@ split-token cross-check and stale-claim ban; and a closed roster — plus seven 
 and ten re-frozen value reads. RED before the rename (harness
 `memory/projects/gates/rb-110.red-before.md`), GREEN after with no further test edit; suite 1019 → 1023
 (1020 → 1024 with `dev_reducers`); `just ci`.
+
+## Amendment (2026-09-25, rb-111 — residual R-rb-86-SAMEMS closed)
+
+The "Bounds, stated honestly" paragraph of the rb-86 amendment above disclosed **R-rb-86-SAMEMS**: every
+bundle committed inside the same millisecond shared a creation stamp, so the tick's WRITE bound was sixteen
+stamps × (the bundles under each), soft-bounded in the attacker's direction. rb-111 (ADR-0268, which
+**Extends** this record) closes it at the WRITE SITE, with no change to the reaper, the schema, the native
+test host or the client: `request_data_export` now mints a creation stamp no LIVE `export_bundle` row
+carries — the injected clock, or the first later millisecond within `EXPORT_STAMP_PROBE_WINDOW_MS = 16`
+for which an index-POINT read on the `created_at_ms` btree finds nothing (`mint_export_stamp`, private,
+reads only) — and REFUSES with the static reason `export_reject_stamp_contention` when the whole window is
+occupied, never falling back on a shared stamp. Every chunk of the request carries that one stamp as
+`request_id` and `created_at_ms`. **`one request ⇔ one live stamp` is now a bijection**, so the per-tick
+WRITE bound is sixteen BUNDLES minted since rb-111 — the reaper's bound semantics change without a byte of
+the reaper changing.
+
+**Superseded sentences in the rb-86 amendment above (this ADR's convention: listed, none edited in
+place):** "A stamp is normally one bundle … but every bundle committed inside the SAME millisecond shares
+that stamp and is reaped in the same delete … so the write set is 16 × (the bundles committed in each of
+those milliseconds), soft-bounded rather than hard-bounded in the attacker's direction" and "a burst of N
+same-millisecond anonymous exports expires as one unit seven days later (residual R-rb-86-SAMEMS, MED …)"
+— true of every bundle minted BEFORE rb-111 (such rows keep their stamps for one retention window:
+residual R-rb-111-LEGACYSTAMP), false of every bundle minted after it. The constant's description in the
+same amendment — "one stamp is one request's bundle, or every bundle committed inside that same
+millisecond" — is superseded the same way; privacy.rs's own comments were retruthed in place.
+
+**What does NOT change, and stays open:** the write set is still counted in stamps, not rows — a bundle can
+run to hundreds of chunks at `EXPORT_CHUNK_ROWS`, and sixteen large bundles may exceed the transaction
+budget, so **R-rb-86-TICKBOUND stays open** (rb-112). The rb-87 observation line's `planned` count now
+counts bundles minted since rb-111 exactly, which sharpens the backlog HINT it publishes without changing
+its shape.
+
+**Bounds after rb-111.** READ: at most 256 decoded rows per tick, unchanged. WRITE: at most 16 stamps per
+tick, each exactly one bundle minted since rb-111. A minted stamp sits at most 15 ms ahead of the clock,
+by construction. Sustaining a contention refusal needs about one successful bundle per millisecond from
+distinct subject identities, which the ADR-0265 anonymous budget ends in about 1.25 s once per retention
+window — during which account holders can be refused too (a partial regression of ADR-0265 D1b; residual
+R-rb-111-CONTENTION, LOW, retryable). The bijection rests on reducer-transaction serialisation, not on a
+datastore constraint (residual R-rb-111-NOCONSTRAINT). ADR-0268 records the derivation, the rejected
+alternatives (a composite index, an owner-keyed delete, a monotonic global stamp, a fallback stamp, a wider
+window) and every residual.
+
+**Proof (ADR-0224: ordinary Rust tests, no eval).** `server-module/src/privacy_tests.rs`: eight `rb111_`
+tests — the mint's value table, the same-millisecond burst (sixteen distinct stamps, the seventeenth
+refused until the clock advances), the criterion end-to-end (eighteen bundles minted at one clock, one
+tick: 256 read / 16 planned / 272 reaped, the two newest surviving whole — RED as 1 planned / 306 reaped
+under the status-quo stamp), a minimum-free-stamp proptest, the reducer write-site pins, the frozen helper,
+the docs census and a closed roster — plus the re-frozen `[X9/now-request-id]` / `[X9/now-stamp]`
+needles, the rb-86 insert-loop needle and its control, `[X9/dispatch-args]` (admits `(ctx, now)` only for
+the mint), `[rb85/range-census]` 1 → 2 and `[rb85/bundle-census]` 9 → 10 with attribution,
+`[rb86/stamp-index-reaches]` 2 → 3, rb-107's N1 needle welding the mint, and `[rb107/exit-shape]`
+counting `?` by depth. RED record: harness `memory/projects/gates/rb-111.red-before.md`. Suite
+1023 → 1031 (1024 → 1032 with `dev_reducers`); `just ci`.
