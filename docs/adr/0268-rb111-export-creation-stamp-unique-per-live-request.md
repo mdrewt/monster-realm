@@ -143,21 +143,34 @@ cooldown), and every eval.
   zero live rows is always past it), so under a fully occupied window every request pays those
   reads at an unbounded rate behind the write lock; the admission pre-gate above the mint is the
   only bound on that, and it binds only near the cap (residual R-rb-111-CONTENTION).
-- **The window is untiered.** An anonymous burst can refuse ACCOUNT HOLDERS for about 1.25 s once
-  per retention window — a partial regression of ADR-0265 D1b's promise that anonymous traffic
-  cannot crowd out account holders. LOW, retryable, and strictly better than the status quo in
-  which the same burst succeeded and formed one unbounded delete unit.
+- **The window is untiered.** An anonymous burst can refuse ACCOUNT HOLDERS for about 1.26 s once
+  per retention window, plus about 16 ms per hourly reaper tick thereafter (the tick frees sixteen
+  bundles of admission budget, enough to re-occupy the window once) — a partial regression of
+  ADR-0265 D1b's promise that anonymous traffic cannot crowd out account holders. LOW, retryable,
+  and strictly better than the status quo in which the same burst succeeded and formed one unbounded
+  delete unit. A tiered window is NOT the obvious shape: the sixteen slots are milliseconds, not a
+  partitionable pool, so "reserve some for account holders" is meaningless — the only workable
+  tiering is a WIDER window per tier (more probe reads and more run-ahead for the tier it favours),
+  which is not worth its cost against a once-per-window event.
 - **The bijection is prospective.** Rows committed before this module version keep whatever stamp
   they have, so for one `EXPORT_BUNDLE_TTL_MS + EXPORT_REAP_INTERVAL` a pre-deploy same-millisecond
   group is still one delete unit (residual R-rb-111-LEGACYSTAMP, self-clearing).
 - **Stamp semantics.** `created_at_ms` and `request_id` are now "the request's unique creation
   stamp, at or up to 15 ms after the clock". TTL expiry and the caller's next cooldown shift by the
   same amount. `request_id: stamp as u64` still wraps a negative stamp to a huge value (pre-existing
-  `now as u64` behaviour; the client selects the maximum), unchanged here. The probe is global,
+  `now as u64` behaviour; the client selects the maximum), unchanged here — and a negative clock is
+  unreachable today (`marshal::now_ms` clamps at zero). At the other end, `saturating_add` collapses
+  the whole window onto `i64::MAX`, so at that (unreachable: micros ÷ 1000) clock every concurrent
+  caller would receive the same free stamp — the ceiling is enforced by saturation, not by rejection
+  (residual R-rb-111-SATURATE, LOW; a future change to the clock's unit must revisit it). The probe is global,
   not owner-scoped, so a caller's own `request_id` (readable back through `my_export_bundle`) encodes
   how many of the preceding fifteen milliseconds carried some OTHER owner's live bundle — at most four
   bits, no identity and no content, behind the 60 s per-identity cooldown; accepted as outside the
-  row-level leak class ADR-0231 governs.
+  row-level leak class ADR-0231 governs (residual R-rb-111-STAMPORACLE — the reject reason itself is
+  weaker still: one transient bit, "sixteen live bundles from sixteen identities in the last sixteen
+  milliseconds", strictly less than the persistent global-count bit `export_reject_admission`
+  already discloses). A contended probe decodes one foreign owner's row in module memory and
+  discards it; nothing is written, logged or returned from it.
 - **Retention correctness improves on the reaper side with no reaper change:** a tick's write set is
   sixteen whole bundles minted since rb-111, so the write-side cap of ADR-0265 and the drain of
   ADR-0238 now reason about the same unit. **R-rb-86-TICKBOUND stays open** (rows per bundle).
@@ -171,8 +184,15 @@ cooldown), and every eval.
 
 - **R-rb-111-CONTENTION** (LOW) — while a sixteen-millisecond window is fully occupied, a
   legitimate request (account holder or not) is refused with `export_reject_stamp_contention`;
-  retryable; reachable only under a ≥ 1 bundle/ms multi-identity burst, for ≈ 1.25 s once per TTL;
-  and each refused request costs up to sixteen index-point reads with no cooldown of its own.
+  retryable; reachable only under a ≥ 1 bundle/ms multi-identity burst, for ≈ 1.26 s once per TTL
+  plus ≈ 16 ms per hourly reaper tick; and each refused request costs up to sixteen index-point
+  reads with no cooldown of its own (attacker-side amplification is below one: every inflicted
+  probe costs the attacker a whole admitted bundle).
+- **R-rb-111-STAMPORACLE** (LOW) — the minted stamp a caller reads back through `my_export_bundle`
+  encodes how many of the preceding fifteen milliseconds carried another owner's live bundle (≤ 4
+  anonymous bits, transient, paid for in admission budget).
+- **R-rb-111-SATURATE** (LOW) — at an unreachable `i64::MAX` clock the window collapses to one
+  candidate and the bijection would degrade to a shared stamp; enforced by saturation, not rejection.
 - **R-rb-111-LEGACYSTAMP** (LOW) — pre-deploy rows keep shared stamps for one retention window.
 - **R-rb-111-NOCONSTRAINT** (LOW) — the uniqueness rests on reducer serialisation alone.
 - **R-rb-111-ADRCITE** (LOW) — stale `privacy.rs:<line>` citations in ADR-0231/ADR-0265.
