@@ -9840,31 +9840,31 @@ fn rb65p_export_emits_one_observation() {
     );
 
     // --- (8c) THE `?` OPERATOR, SCOPED BY DEPTH (artifact red-team S2) ------
-    // A SECOND early-exit channel, and one that spells no `return` token at
-    // all, so all three clauses above are blind to it by construction. The
-    // legitimate `?` — `rows_fn(ctx, me)?` inside the manifest walk — sits at
-    // depth 3, so the same depth split the return census uses applies here.
-    let mut try_depth0 = 0usize;
+    // A SECOND early-exit channel that spells no `return` token at all, so all
+    // three clauses above are blind to it by construction. The nested one is
+    // the manifest walk's reader; since rb-111 one sits at depth ZERO as well.
+    let mut try_depth0: Vec<usize> = Vec::new();
     let mut try_nested = 0usize;
-    for (rel, ch) in region.char_indices() {
-        if ch != '?' {
-            continue;
-        }
+    for (rel, _) in region.match_indices('?') {
         if m22s4_brace_depth_at(&body, at_purge + rel) == 0 {
-            try_depth0 += 1;
+            try_depth0.push(at_purge + rel);
         } else {
             try_nested += 1;
         }
     }
+    let mint_try = rb111_nd_mint_stmt();
+    let mint_at = body.find(&mint_try).map(|at| at + mint_try.len() - 2);
     assert_eq!(
-        try_depth0, 0,
-        "rb65p [emit/no-try]: {try_depth0} DEPTH-0 `?` operator(s) sit between the bound purge \
-         and the trailing Ok(()); ZERO is allowed. A `?` is an early exit that spells no `return` \
-         token, so all three reachability clauses above are blind to it. MEASURED: `let _ = \
-         rows_character(ctx, me)?;` planted directly after the purge binding is clippy-clean, \
-         keeps every count, ordering, depth and terminal clause green, and turns any reader Err \
-         into a path that skips the self-arm AND the emission — after the purge has already \
-         destroyed the caller's previous bundle."
+        (try_depth0.len(), try_depth0.first().copied()),
+        (1usize, mint_at),
+        "rb65p [emit/no-try]: the depth-0 `?` operators in this region sit at {try_depth0:?}; \
+         EXACTLY ONE is required and it must be the rb-111 (ADR-0268) creation-stamp mint \
+         statement's, at {mint_at:?}. MOVED 0 -> 1 WITH ATTRIBUTION: a bare count of one is \
+         satisfied by ANY top-level exit, and the MEASURED plant is `let _ = rows_character(ctx, \
+         me)?;` after the purge — clippy-clean, green under every count, ordering, depth and \
+         terminal clause, skipping the self-arm AND the emission. The mint's Err rolls the whole \
+         transaction back, purge included (ADR-0106 D8), so `already destroyed the previous \
+         bundle` was never true. Shape owners: [rb111/mint-exit] and [rb107/exit-shape]."
     );
     assert_eq!(
         try_nested, 1,
@@ -24817,7 +24817,11 @@ fn rb111_mint_body_pin() -> String {
         m22s4_nd_bundle_accessor(),
         concat!(".created_at", "_ms().filter(candidate).next().is_none(){").to_string(),
         "returnOk(candidate);}}".to_string(),
-        concat!("Err(stringify!(export_reject_stamp", "_contention).to_string())").to_string(),
+        concat!(
+            "Err(stringify!(export_reject_stamp",
+            "_contention).to_string())"
+        )
+        .to_string(),
     ]
     .concat()
 }
@@ -24846,7 +24850,10 @@ fn rb111_mint_decl_source() -> String {
 /// nothing here, because the live pipeline blanks comments before the squash.
 fn rb111_mint_body_source() -> String {
     [
-        concat!("\n    for offset in 0..EXPORT_STAMP", "_PROBE_WINDOW_MS {\n"),
+        concat!(
+            "\n    for offset in 0..EXPORT_STAMP",
+            "_PROBE_WINDOW_MS {\n"
+        ),
         "        let candidate = now_ms.saturating_add(offset);\n",
         concat!("        if ", "ctx", "\n"),
         "            .db\n",
@@ -24859,7 +24866,10 @@ fn rb111_mint_body_source() -> String {
         "            return Ok(candidate);\n",
         "        }\n",
         "    }\n",
-        concat!("    Err(stringify!(export_reject_stamp", "_contention).to_string())\n"),
+        concat!(
+            "    Err(stringify!(export_reject_stamp",
+            "_contention).to_string())\n"
+        ),
     ]
     .concat()
 }
@@ -25347,7 +25357,10 @@ fn rb111_mint_returns_the_first_free_stamp_at_or_after_the_clock() {
             None,
         ),
     ];
-    let seeded_cases = cases.iter().filter(|(_, _, occ, _)| !occ.is_empty()).count();
+    let seeded_cases = cases
+        .iter()
+        .filter(|(_, _, occ, _)| !occ.is_empty())
+        .count();
 
     let mut index_seen = 0usize;
     let mut foreign: Vec<String> = Vec::new();
@@ -25529,7 +25542,8 @@ fn rb111_a_same_millisecond_burst_takes_distinct_stamps_until_the_window_is_full
     distinct.dedup();
     let expected: Vec<i64> = (0..w).map(|o| now + o).collect();
     assert_eq!(
-        minted, expected,
+        minted,
+        expected,
         "[rb111/burst-distinct]: {burst} requests at the SAME clock took the stamps {minted:?} \
          ({} of them distinct); they must take {burst} DISTINCT consecutive stamps starting at \
          the clock. ONE distinct stamp is the status quo this slice removes: every one of those \
@@ -25678,7 +25692,8 @@ fn rb111_one_tick_reaps_sixteen_whole_bundles_from_a_same_millisecond_burst() {
     let expected_stamps: Vec<i64> = (0..bundles as i64).map(|o| now0 + o).collect();
     let seeded = rb111_triples(&t).len();
     assert_eq!(
-        sorted, expected_stamps,
+        sorted,
+        expected_stamps,
         "[rb111/bound-population-minted]: {bundles} bundles minted at one clock (with the retry \
          the full window forces) carry the stamps {stamps:?}, sorted {sorted:?}, {} of them \
          DISTINCT; they must be the {bundles} consecutive milliseconds from the clock. THIS \
@@ -25955,7 +25970,11 @@ fn rb111_export_write_site_stamps_from_the_mint_and_exits_once() {
     let n_request = rb22p_count(&body, concat!("request", "_id:stampasu64"));
     let n_created = rb22p_count(&body, concat!("created_at", "_ms:stamp,"));
 
-    let at_purge = m22s4_idx(&body, &rb65p_nd_purge_binding(), "the bound purge statement");
+    let at_purge = m22s4_idx(
+        &body,
+        &rb65p_nd_purge_binding(),
+        "the bound purge statement",
+    );
     let at_ok = body.rfind(concat!("Ok", "(())")).unwrap_or_else(|| {
         panic!(
             "rb111 [exit-region]: the export reducer does not end in a success tail, so the \
@@ -26007,7 +26026,11 @@ fn rb111_export_write_site_stamps_from_the_mint_and_exits_once() {
     );
 
     let at_mint = m22s4_idx(&body, stmt.as_str(), "the creation-stamp mint statement");
-    let at_gate = m22s4_idx(&body, &rb107_nd_gate_head(), "the rb-107 admission pre-gate");
+    let at_gate = m22s4_idx(
+        &body,
+        &rb107_nd_gate_head(),
+        "the rb-107 admission pre-gate",
+    );
     let at_table = m22s4_idx(
         &body,
         concat!("letmutper", "_table:"),
@@ -26531,7 +26554,9 @@ fn rb111_docs_record_the_closed_same_millisecond_residual() {
             let raw = rb22p_count(text, needle);
             let fused = rb22p_count(&ident_view, needle);
             if raw != fused {
-                split_gaps.push(format!("{label}/{what}: raw {raw} vs identifier-only {fused}"));
+                split_gaps.push(format!(
+                    "{label}/{what}: raw {raw} vs identifier-only {fused}"
+                ));
             }
         }
     }
@@ -26664,7 +26689,10 @@ fn rb111_docs_record_the_closed_same_millisecond_residual() {
     };
     for (what, text) in [
         ("ADR-0268, read whole because it is new", RB111_ADR_0268_MD),
-        ("the rb-111 amendment section of ADR-0238", amend_span.as_str()),
+        (
+            "the rb-111 amendment section of ADR-0238",
+            amend_span.as_str(),
+        ),
         ("the rb-111 paragraph of ARCHITECTURE.md", arch_line),
     ] {
         assert!(
