@@ -9035,14 +9035,14 @@ fn rb48_ttl_is_exactly_seven_days_in_milliseconds() {
 /// in the bounded-read helper exactly where the frozen body says it is — which
 /// is all the equality and census clauses can see.
 ///
-/// RETRUTHED BY rb-86 (ADR-0238 amendment), PROSE ONLY — every assertion below
-/// is byte-identical. `EXPORT_REAP_MAX_READ_PER_TICK` is no longer named TWICE
+/// RETRUTHED BY rb-86 (ADR-0238 amendment), PROSE ONLY — every assertion was
+/// byte-identical then. `EXPORT_REAP_MAX_READ_PER_TICK` is no longer named TWICE
 /// in the helper and no longer bounds the delete: it bounds what a tick READS
 /// (`.take(...)`), and the WRITE bound is the separate
-/// `EXPORT_REAP_MAX_STAMPS_PER_TICK`, pinned by value in
-/// `rb86_bundle_cap_is_sixteen_and_the_read_cap_is_unchanged`. RENAMED BY rb-110
-/// (ADR-0267, closing residual R-rb-86-READCAP-NAME): the constant is now named
-/// for the read it bounds, so the misnomer this comment used to record is gone.
+/// `EXPORT_REAP_MAX_STAMPS_PER_TICK`. RENAMED BY rb-110 (ADR-0267, closing
+/// residual R-rb-86-READCAP-NAME): the constant is now named for the read it
+/// bounds, the misnomer this comment recorded is gone, and rb-110 moved exactly
+/// ONE token below — the constant read in the batch-value clause.
 ///
 /// The cap is 256 rather than the sibling reaper's 8192 deliberately: export
 /// rows carry chunked `payload_json` strings, not forty bytes of scalars, and
@@ -11541,8 +11541,8 @@ fn rb67p_adr0220_citation_oracle_control() {
 // BOUNDED INDEX READ. The PRV1-14 TTL reaper stops materialising every
 // `payload_json` in the table on every tick: `created_at_ms` gains a
 // FIELD-LEVEL btree index, and the sweep becomes a bounded range read
-// (`..=cutoff`) capped by `.take(EXPORT_REAP_MAX_READ_PER_TICK)` inside a
-// PRIVATE helper that takes its instant as a parameter.
+// (`..=cutoff`) capped by `.take(EXPORT_REAP_MAX_READ_PER_TICK)` (so spelled
+// since rb-110) inside a PRIVATE helper that takes its instant as a parameter.
 //
 // THE CRITERION THIS BLOCK GATES (ledger gates/rb-85.gates.md X1):
 //   WHEN the rb85_ tests run against the fixed tree THE SYSTEM SHALL pass every
@@ -14996,8 +14996,8 @@ fn rb85_test_roster_is_closed() {
 // PER-BUNDLE ATOMIC REAP. The PRV1-14 TTL reaper stops cutting bundles in half.
 //
 // THE DEFECT. rb-85 made the tick a bounded range read capped at
-// EXPORT_REAP_MAX_READ_PER_TICK rows and then deleted the planned CHUNK IDS
-// one primary key at a time. A bundle whose chunks straddle that cap is
+// EXPORT_REAP_MAX_READ_PER_TICK rows (so spelled since rb-110) and then deleted the
+// planned CHUNK IDS one primary key at a time. A bundle whose chunks straddle that cap is
 // therefore reaped in pieces: the window's share goes now, the tail goes on some
 // later tick, and in between the table holds a k-of-N bundle. That tear is
 // client-observable — connection.ts has subscribed to the owner-scoped view
@@ -22263,9 +22263,9 @@ fn rb109_zero_expired_and_empty_tables_report_a_zero_tick() {
 /// stamps than the stamp cap allows, the cap BINDS — sixteen stamps are planned
 /// out of twenty available, and only those sixteen bundles are deleted.
 ///
-/// THIS IS THE VALUE ORACLE FOR THE STAMP CAP, and the criterion test cannot be:
-/// there the window holds exactly sixteen stamps, so dropping the truncation
-/// entirely leaves every number in that test unmoved. Here the bundles are
+/// THE CRITERION TEST CANNOT BE THIS ORACLE: there the window holds exactly
+/// sixteen stamps, so dropping the truncation entirely leaves every number in
+/// that test unmoved. Here the bundles are
 /// THIRTEEN chunks each, so the 256-row window covers nineteen whole bundles and
 /// nine rows of a twentieth — twenty distinct stamps — and the cap has to
 /// discard four of them.
@@ -23276,6 +23276,17 @@ const RB110_ADR_0267_MD: &str =
 /// The slice log, whose rb-85 / rb-86 / rb-107 paragraphs all cite the cap.
 const RB110_ARCHITECTURE_MD: &str = include_str!("../../ARCHITECTURE.md");
 
+/// The EXACT number of crate source files the transitive reader must reach:
+/// lib.rs, the twenty-six modules lib.rs declares, and the twenty nested
+/// `*_tests.rs` modules their parents declare.
+///
+/// An EQUALITY and not a floor. A floor of twenty left seven modules of slack,
+/// which is exactly the room a silently shrunken corpus needs — and the reader's
+/// blanker can in principle lose a declaration to a multi-line string, so the
+/// only thing standing between that and a quieter census is this number. A new
+/// module is therefore a REVIEWED EVENT: it moves this literal in the same diff.
+const RB110_CRATE_CORPUS: usize = 47;
+
 /// The name the constant carries from rb-110 on, taken from the token itself.
 ///
 /// `stringify!` never RESOLVES its argument, which is precisely what lets this
@@ -23313,9 +23324,10 @@ fn rb110_stamp_cap_name() -> &'static str {
     concat!("EXPORT_REAP", "_MAX_STAMPS_PER_TICK")
 }
 
-/// The residual this slice closes. Assembled from fragments because production
-/// must not still advertise it as open, and a contiguous copy here would be
-/// indistinguishable from the disclosure that census forbids.
+/// The residual this slice closes. Assembled from fragments to match this
+/// block's needle convention — NOT because a contiguous copy here would break
+/// anything: the census that forbids it scans privacy.rs only, and this file
+/// spells the id in full in the section banner above.
 fn rb110_residual_id() -> &'static str {
     concat!("R-rb-86-", "READCAP-NAME")
 }
@@ -23339,17 +23351,26 @@ fn rb110_ident_only(text: &str) -> String {
         .collect()
 }
 
-/// Every `mod <name>;` item the crate root declares, read off a
-/// string-blanked and comment-blanked view of lib.rs so a `mod` inside a
-/// comment or a string cannot enter the corpus and a trailing comment cannot
-/// swallow the semicolon.
+/// Every `mod <name>;` item `src` declares, read off a string-blanked and
+/// comment-blanked view of it so a `mod` inside a comment or a string cannot
+/// enter the corpus and a trailing comment cannot swallow the semicolon.
 ///
-/// Deliberately NOT a parser. The shape it must cover is the crate root's
-/// one-line declarations, and a module whose file cannot be found is REPORTED
-/// by the caller rather than skipped, so an escape lands as a red clause and
-/// never as a silently smaller corpus.
-fn rb110_declared_mod_names(root: &str) -> Vec<String> {
-    let blanked = strip_rust_comments(&strip_rust_strings(root));
+/// Deliberately NOT a parser. The shape it must cover is one-line `mod` items,
+/// and a declared module whose file cannot be found is REPORTED by the caller
+/// rather than skipped, so an escape lands as a red clause and never as a
+/// silently smaller corpus. A RAW IDENTIFIER (raw-prefix spelling) is returned AS WRITTEN
+/// for exactly that reason: no such file will open, so it is reported rather
+/// than dropped by a validity filter no clause can see.
+///
+/// HONEST LIMIT, mitigated rather than closed: this uses the file's shared
+/// strings-then-comments pipeline, which blanks ACROSS newlines, so a multi-line
+/// string could in principle merge two lines and hide a declaration at a line
+/// start — the hole ADR-0266 closed one slice ago for a different scanner.
+/// Porting rb-108's newline-preserving blanker would be a second sizeable
+/// scanner to keep true; instead the caller's corpus size is pinned EXACTLY, so
+/// a module hidden that way makes the corpus one file short and reds.
+fn rb110_declared_mod_names(src: &str) -> Vec<String> {
+    let blanked = strip_rust_comments(&strip_rust_strings(src));
     let mut names: Vec<String> = Vec::new();
     for line in blanked.lines() {
         let mut rest = line.trim_start();
@@ -23363,12 +23384,59 @@ fn rb110_declared_mod_names(root: &str) -> Vec<String> {
             Some(at) => after[..at].trim(),
             None => continue,
         };
-        if name.is_empty() || !name.bytes().all(is_word_byte) {
+        if name.is_empty() {
             continue;
         }
         names.push(String::from(name));
     }
     names
+}
+
+/// Every DISTINCT rb-110 clause label spelled in `text`, sorted.
+///
+/// The span-to-roster direction. The per-label clause proves each ROSTERED
+/// label still occurs where it should; this proves no label occurs that the
+/// roster does not name.
+fn rb110_labels_in(text: &str) -> Vec<String> {
+    let open = "[rb110/";
+    let mut out: Vec<String> = Vec::new();
+    let mut start = 0usize;
+    while let Some(rel) = text[start..].find(open) {
+        let at = start + rel;
+        let tail = &text[at..];
+        match tail.find(']') {
+            Some(end) => {
+                let label = &tail[..=end];
+                if !out.iter().any(|seen| seen.as_str() == label) {
+                    out.push(String::from(label));
+                }
+                start = at + end + 1;
+            }
+            None => {
+                start = at + open.len();
+            }
+        }
+    }
+    out.sort_unstable();
+    out
+}
+
+/// Does `line` carry the slice marker as a WHOLE token?
+///
+/// MEASURED forgery (tests red-team B4): a plain containment check is satisfied
+/// by `rb-1100`, so a document line could be "marked" by a slice number that
+/// does not exist. The byte after the marker must be absent or a non-digit.
+fn rb110_carries_marker(line: &str) -> bool {
+    let marker = rb110_slice_marker();
+    let mut start = 0usize;
+    while let Some(rel) = line[start..].find(marker) {
+        let after = start + rel + marker.len();
+        match line[after..].chars().next() {
+            Some(c) if c.is_ascii_digit() => start = after,
+            _ => return true,
+        }
+    }
+    false
 }
 
 /// The crate's own sources: lib.rs plus one file per `mod` item it declares.
@@ -23380,27 +23448,43 @@ fn rb110_declared_mod_names(root: &str) -> Vec<String> {
 /// re-exported under the retired spelling would be just as reachable from a
 /// test module as from a production one.
 ///
-/// Returns `(sources, unreadable)`. A declared module whose file cannot be
-/// found is reported rather than panicked on, so the crate census can print the
-/// whole pre-state in one run instead of dying before its first clause.
+/// TRANSITIVE, not one level. Round 2's reader stopped at the modules lib.rs
+/// itself declares, which left the twenty nested `*_tests.rs` modules — each
+/// declared from its own parent — and anything a parent might declare beside
+/// them outside the corpus, while the clause below claimed the whole crate. A
+/// worklist over every file already read closes that: `mod rb110_compat;`
+/// wedged into privacy.rs is now FOUND, and because `src/rb110_compat.rs` does
+/// not exist it is reported as unreadable rather than passing unseen.
+///
+/// Returns `(sources, unreadable)`. A declared module whose file cannot be found
+/// is reported rather than panicked on, so the crate census can print the whole
+/// pre-state in one run instead of dying before its first clause.
 fn rb110_crate_sources() -> (Vec<(String, String)>, Vec<String>) {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let root = std::fs::read_to_string(dir.join("lib.rs"))
         .expect("rb110: the crate root src/lib.rs must be readable");
-    let names = rb110_declared_mod_names(&root);
+    let mut queue: Vec<String> = rb110_declared_mod_names(&root);
     let mut sources: Vec<(String, String)> = vec![(String::from("lib.rs"), root)];
     let mut unreadable: Vec<String> = Vec::new();
-    for name in names {
+    let mut seen: Vec<String> = Vec::new();
+    while let Some(name) = queue.pop() {
+        if seen.iter().any(|s| s.as_str() == name.as_str()) {
+            continue;
+        }
+        seen.push(name.clone());
         let flat = dir.join(format!("{name}.rs"));
         let nested = dir.join(name.as_str()).join("mod.rs");
         if let Ok(src) = std::fs::read_to_string(flat) {
+            queue.extend(rb110_declared_mod_names(&src));
             sources.push((format!("{name}.rs"), src));
         } else if let Ok(src) = std::fs::read_to_string(nested) {
+            queue.extend(rb110_declared_mod_names(&src));
             sources.push((format!("{name}/mod.rs"), src));
         } else {
             unreadable.push(name);
         }
     }
+    unreadable.sort_unstable();
     (sources, unreadable)
 }
 
@@ -23471,7 +23555,7 @@ fn rb110_test_roster() -> [&'static str; 4] {
 /// `tests + helpers`: an unlisted helper and an unlisted fifth test are the same
 /// number to that clause, so the roster has to name every one. The four roster
 /// fns name themselves, as the sibling blocks do.
-fn rb110_helper_roster() -> [&'static str; 15] {
+fn rb110_helper_roster() -> [&'static str; 17] {
     [
         "rb110_new_name",
         "rb110_old_name",
@@ -23481,6 +23565,8 @@ fn rb110_helper_roster() -> [&'static str; 15] {
         "rb110_slice_marker",
         "rb110_ident_only",
         "rb110_declared_mod_names",
+        "rb110_labels_in",
+        "rb110_carries_marker",
         "rb110_crate_sources",
         "rb110_export_literal_tokens",
         "rb110_decl_source",
@@ -23533,7 +23619,7 @@ fn rb110_dependency_roster() -> [&'static str; 7] {
 /// preceded it. The opening banner of this section cuts the region above the
 /// first test off from every span, which is the only place these literals can
 /// live without making the census below contradict itself.
-fn rb110_label_roster() -> [(&'static str, usize); 21] {
+fn rb110_label_roster() -> [(&'static str, usize); 22] {
     [
         ("[rb110/value]", 0),
         ("[rb110/decl]", 0),
@@ -23555,6 +23641,7 @@ fn rb110_label_roster() -> [(&'static str, usize); 21] {
         ("[rb110/roster-closed]", 3),
         ("[rb110/decl-total]", 3),
         ("[rb110/label-census]", 3),
+        ("[rb110/label-total]", 3),
         ("[rb110/body-floor]", 3),
     ]
 }
@@ -23663,11 +23750,16 @@ fn rb110_read_cap_constant_is_named_for_the_read_and_valued_256() {
 /// The crate census is what makes this test's NAME true. A zero-occurrence
 /// census over two files says nothing about a compatibility alias — a
 /// `use crate::privacy::… as <the retired name>;` — parked in any other module,
-/// and ADR-0267 D2 rejected exactly that shim. The corpus is DERIVED from
-/// lib.rs rather than transcribed, so a module added later is covered without
-/// an edit; its size, its coverage of privacy.rs and its unreadable count are
-/// asserted before it is counted, because a reader that found nothing would
-/// make the census vacuous.
+/// and ADR-0267 D2 rejected exactly that shim. The corpus is DERIVED rather than
+/// transcribed, and TRANSITIVE: lib.rs, the modules lib.rs declares, and the
+/// modules those declare in turn, which is what brings the twenty nested
+/// `*_tests.rs` files inside it. Its SIZE is an exact equality rather than a
+/// floor, its coverage of privacy.rs and its unreadable count are asserted
+/// before anything is counted, and a module that is declared but whose file will
+/// not open is REPORTED — which is what turns a `mod rb110_compat;` wedged into
+/// any crate file into a red clause instead of a quiet hole. What it does not
+/// reach is stated in the clause itself: a module redirected by a `#[path]`
+/// attribute, and an inline module block, which has no file of its own.
 ///
 /// The no-alias clause pins THREE exact squashed counts instead of netting
 /// them. A subtraction nets to zero the moment a second copy of one name
@@ -23697,8 +23789,11 @@ fn rb110_read_cap_constant_is_named_for_the_read_and_valued_256() {
 ///        two file censuses); a spelling broken across a concat! boundary, a
 ///        markdown comment or a line break so that grep and every contiguous
 ///        scan miss it (the identifier-only view); a compatibility alias or a
-///        re-export under the retired name in any OTHER module of the crate
-///        (the crate census); an alias constant, a third family member or a
+///        re-export under the retired name in any OTHER module of the crate,
+///        nested test modules included (the transitive crate census); a module
+///        declared but absent, which is how a census corpus quietly shrinks; a
+///        family name ASSEMBLED at runtime to dodge the quoted roster (the
+///        format ban); an alias constant, a third family member or a
 ///        macro-pasted twin inside privacy.rs (the three exact counts); a
 ///        frozen-text pin left quoting a name production no longer has, which
 ///        makes its own clause vacuous (the live roster); a production comment
@@ -23754,6 +23849,9 @@ fn rb110_the_delete_named_read_cap_is_gone_from_the_crate() {
         }
     }
     let stale_count = stale.len();
+    let dq = rb22p_dq();
+    let assembled = format!("format!({dq}EXPORT_");
+    let assembled_hits = rb22p_count(PRIVACY_TESTS_RS, assembled.as_str());
 
     let residual_in_prod = rb22p_count(PRIVACY_RS, residual);
     let witness_prod = rb22p_count(PRIVACY_RS, new);
@@ -23769,7 +23867,8 @@ fn rb110_the_delete_named_read_cap_is_gone_from_the_crate() {
          witness {witness_count} in a needle of {needle_len} bytes. Squashed privacy.rs — new \
          name {squashed_new} (must be 3), stamp cap {squashed_stamps} (must be 2), family prefix \
          {squashed_family} (must be 5). Quoted family roster in privacy_tests.rs — \
-         {literal_count} distinct token(s), {stale_count} of them no longer in privacy.rs. Closed \
+         {literal_count} distinct token(s), {stale_count} of them no longer in privacy.rs, \
+         {assembled_hits} assembled by a format call (must be 0). Closed \
          residual id in privacy.rs — {residual_in_prod} (must be 0). Witnesses — new name raw in \
          privacy.rs {witness_prod}, its qualified value read in privacy_tests.rs {witness_tests} \
          (both must be at least 1)."
@@ -23809,23 +23908,30 @@ fn rb110_the_delete_named_read_cap_is_gone_from_the_crate() {
     );
 
     assert!(
-        crate_files >= 20 && privacy_in_corpus == 1 && crate_missing == 0,
-        "[rb110/census-crate]: the crate corpus derived from lib.rs holds {crate_files} file(s), \
-         names privacy.rs {privacy_in_corpus} time(s) (must be exactly 1) and failed to read \
-         {crate_missing} declared module file(s): {crate_unreadable:?}. A corpus that is short, \
-         that lost the one file the rename is about, or that silently dropped a module whose file \
-         moved would make the crate-wide zero below pass over nothing, so the corpus is checked \
-         before it is counted."
+        crate_files == RB110_CRATE_CORPUS && privacy_in_corpus == 1 && crate_missing == 0,
+        "[rb110/census-crate]: the crate corpus holds {crate_files} file(s) and must hold exactly \
+         {RB110_CRATE_CORPUS}; it names privacy.rs {privacy_in_corpus} time(s) (must be exactly \
+         1) and failed to read {crate_missing} declared module file(s): {crate_unreadable:?}. The \
+         size is an EQUALITY and not a floor because a floor leaves room for a corpus that \
+         silently shrank — the reader's blanker is the file's shared strings-then-comments \
+         pipeline, which blanks across newlines, so a declaration hidden inside a multi-line \
+         string would cost exactly one file and nothing else would notice. An unreadable entry is \
+         the OTHER half: `mod rb110_compat;` wedged into any crate file is found here and has no \
+         file to open, which is how a declared-but-absent module reds instead of passing unseen. \
+         A new module is a reviewed event: it moves the literal in the same diff. {dossier}"
     );
 
     assert_eq!(
         crate_total, 0,
         "[rb110/census-crate]: the retired spelling still occurs {crate_total} time(s) in the \
          identifier-only view of {crate_dirty} crate source file(s): {crate_hits:?}. This test's \
-         NAME claims the whole crate, so its census has to reach the whole crate: a compatibility \
-         alias or a re-export under the retired name — the shim ADR-0267 D2 rejected — is \
-         reachable from every module and completely invisible to a two-file census. The corpus is \
-         lib.rs plus one file per `mod` item lib.rs declares, cfg-test modules included."
+         NAME claims the crate, so its census has to reach the crate: a compatibility alias or a \
+         re-export under the retired name — the shim ADR-0267 D2 rejected — is reachable from \
+         every module and completely invisible to a two-file census. The corpus is lib.rs plus \
+         one file per `mod` item reachable TRANSITIVELY from it, cfg-test and nested `*_tests.rs` \
+         modules included. WHAT IT STILL DOES NOT REACH, disclosed: a module declared with a \
+         `#[path]` attribute pointing somewhere other than `src/<name>.rs`, and an inline `mod x \
+         {{ }}` block, which has no file of its own and is read as part of its parent anyway."
     );
 
     assert_eq!(
@@ -23857,14 +23963,19 @@ fn rb110_the_delete_named_read_cap_is_gone_from_the_crate() {
     );
 
     assert!(
-        literal_count >= 5 && stale_count == 0,
+        literal_count >= 5 && stale_count == 0 && assembled_hits == 0,
         "[rb110/ban-roster-live]: privacy_tests.rs quotes {literal_count} distinct complete \
-         reaper-family name(s) as double-quoted literals, and {stale_count} of them no longer \
-         exist anywhere in privacy.rs: {stale:?}. A frozen-text pin that forbids a name \
-         production no longer has is a zero-count clause passing over nothing — it survives the \
-         rename in silence and keeps reporting success, which is exactly how a negative array \
-         outlives the thing it was written to forbid. The floor of five is the anti-vacuity half: \
-         an extractor that found nothing would satisfy the emptiness half trivially."
+         reaper-family name(s) as double-quoted literals, {stale_count} of them no longer exist \
+         anywhere in privacy.rs ({stale:?}), and {assembled_hits} family name(s) are ASSEMBLED by \
+         a format call rather than quoted whole. A frozen-text pin that forbids a name production \
+         no longer has is a zero-count clause passing over nothing — it survives the rename in \
+         silence and keeps reporting success, which is exactly how a negative array outlives the \
+         thing it was written to forbid. THE STANDING RULE this clause sets: no fixture in this \
+         file may quote an EXPORT-family name that production deliberately lacks. The format ban \
+         closes the MEASURED way round it — a name built from pieces at runtime yields no roster \
+         token and no identifier-only fusion, so it would re-vacuate the very negative census \
+         this clause exists to keep live. The floor of five is the anti-vacuity half: an \
+         extractor that found nothing would satisfy the emptiness halves trivially."
     );
 
     assert_eq!(
@@ -23894,11 +24005,31 @@ fn rb110_the_delete_named_read_cap_is_gone_from_the_crate() {
 ///
 /// WHY EACH CLAUSE EXISTS.
 ///
+/// THE CORPUS IS FOUR NAMED DOCUMENTS and nothing else: ADR-0238, ADR-0231,
+/// ADR-0265 and ARCHITECTURE.md, the four the constant was cited from. ADR-0267
+/// is deliberately outside it — this slice's own record is the one place the
+/// retired spelling is quoted in full on purpose, and T2 reads it as the witness
+/// for its needle. DISCLOSED, not closed: a FIFTH document that picks up the
+/// retired spelling later — another ADR, a CHANGELOG, a README — is out of
+/// scope here, and nothing in this file would see it. The repo-wide sweep that
+/// would is the slice's own review, not a clause.
+///
 /// The floor clause makes this a RENAME and not a deletion. Each document's
 /// floor is how many times it cited the constant BEFORE the slice, so quietly
 /// dropping the citing sentences reds here. It is a floor rather than an
 /// equality because the dated amendment and the new slice paragraph the rename
-/// forces both name the constant as well, so the count can only grow.
+/// forces both name the constant as well, so the count can only grow. It counts
+/// the text a READER sees, HTML comments stripped through the rb-67 helper: a
+/// floor over raw bytes is met by a run of mentions parked inside `<!-- -->`.
+///
+/// The CEILING beside it is what stops the whole test degenerating into a
+/// marker exercise. MEASURED: every old citation can stay exactly where it is,
+/// with the slice number appended to its line, and the new-name floor met by
+/// fresh mentions somewhere else in the file — the per-line rule, the floor and
+/// the split-token check are all green over that document, and the rename never
+/// happened. The ceiling is the number of retired-name mentions the rename
+/// RECORD needs, per document, and no more; two documents are pure citations
+/// with no history to keep, so theirs is ZERO.
 ///
 /// The marker rule is LINE-SCOPED, and that is the whole design. A file-level
 /// pair of containment checks, or a floor on the NUMBER of marked lines, is
@@ -23928,9 +24059,13 @@ fn rb110_the_delete_named_read_cap_is_gone_from_the_crate() {
 ///
 /// Kills: the four documents left citing a constant the crate no longer has;
 ///        a rename applied by deleting the citing sentences instead (the
-///        floors); a surviving mention left unmarked, which puts a reader who
-///        greps the retired name on live prose instead of on the record of its
-///        retirement (the per-line marker rule); a mention hidden from that
+///        floors); a floor met by mentions buried in an HTML comment (the
+///        visible-text view); a rename performed by MARKING every old citation
+///        rather than replacing it (the ceilings); a surviving mention left
+///        unmarked, which puts a reader who greps the retired name on live
+///        prose instead of on the record of its retirement (the per-line marker
+///        rule); a line "marked" by a longer slice number that merely starts
+///        with this one (the token-boundary check); a mention hidden from that
 ///        rule by a comment or a line break inside the identifier (the
 ///        split-token cross-check); the marked line that names the slice but
 ///        not the residual, leaving a reader arriving from the backlog with
@@ -23943,12 +24078,13 @@ fn rb110_docs_name_the_read_cap_correctly() {
     let marker = rb110_slice_marker();
     let residual = rb110_residual_id();
 
-    // Floors are the MEASURED pre-slice citation counts, per document.
-    let docs: [(&str, &str, usize); 4] = [
-        ("ADR-0238", RB110_ADR_0238_MD, 5),
-        ("ADR-0231", RB110_ADR_0231_MD, 1),
-        ("ADR-0265", RB110_ADR_0265_MD, 4),
-        ("ARCHITECTURE.md", RB110_ARCHITECTURE_MD, 3),
+    // Per document: the new-name FLOOR (the measured pre-slice citation count)
+    // and the retired-name CEILING (how many mentions the rename RECORD needs).
+    let docs: [(&str, &str, usize, usize); 4] = [
+        ("ADR-0238", RB110_ADR_0238_MD, 5, 4),
+        ("ADR-0231", RB110_ADR_0231_MD, 1, 0),
+        ("ADR-0265", RB110_ADR_0265_MD, 4, 0),
+        ("ARCHITECTURE.md", RB110_ARCHITECTURE_MD, 3, 2),
     ];
 
     // Five identifier-FREE claims, each scoped to the file it was measured in.
@@ -23989,13 +24125,21 @@ fn rb110_docs_name_the_read_cap_correctly() {
     ];
 
     // Every number this test can report, taken BEFORE the first assertion.
+    // THREE views per document, and each clause below needs a different one: the
+    // floor counts what a READER sees (HTML comments stripped, the rb-67
+    // idiom), so a document cannot meet it with mentions hidden inside
+    // `<!-- -->`; the split-token cross-check compares the RAW text against the
+    // identifier-only one, so it still sees a token cut in half by a comment.
+    let mut visible_new: Vec<usize> = Vec::new();
     let mut raw_new: Vec<usize> = Vec::new();
     let mut raw_old: Vec<usize> = Vec::new();
     let mut ident_new: Vec<usize> = Vec::new();
     let mut ident_old: Vec<usize> = Vec::new();
     let mut shortest = usize::MAX;
-    for (_, text, _) in docs {
+    for (_, text, _, _) in docs {
         let ident = rb110_ident_only(text);
+        let visible = rb67p_strip_html_comments(text);
+        visible_new.push(rb22p_count(&visible, new));
         raw_new.push(rb22p_count(text, new));
         raw_old.push(rb22p_count(text, old.as_str()));
         ident_new.push(rb22p_count(&ident, new));
@@ -24008,12 +24152,12 @@ fn rb110_docs_name_the_read_cap_correctly() {
     let mut unmarked: Vec<String> = Vec::new();
     let mut marked_lines = 0usize;
     let mut marked_with_residual = 0usize;
-    for (label, text, _) in docs {
+    for (label, text, _, _) in docs {
         for (idx, line) in text.lines().enumerate() {
             if !line.contains(old.as_str()) {
                 continue;
             }
-            if line.contains(marker) {
+            if rb110_carries_marker(line) {
                 marked_lines += 1;
                 if line.contains(residual) {
                     marked_with_residual += 1;
@@ -24034,14 +24178,15 @@ fn rb110_docs_name_the_read_cap_correctly() {
     }
 
     let mut per_doc = String::new();
-    for (i, (label, _, floor)) in docs.into_iter().enumerate() {
+    for (i, (label, _, floor, ceiling)) in docs.into_iter().enumerate() {
+        let vn = visible_new[i];
         let rn = raw_new[i];
         let ro = raw_old[i];
         let inew = ident_new[i];
         let iold = ident_old[i];
         let entry = format!(
-            " {label}: new name {rn} (floor {floor}), retired {ro}; identifier-only new {inew}, \
-             retired {iold}."
+            " {label}: new name {vn} visible (floor {floor}) / {rn} raw, retired {ro} (ceiling \
+             {ceiling}); identifier-only new {inew}, retired {iold}."
         );
         per_doc.push_str(&entry);
     }
@@ -24063,38 +24208,61 @@ fn rb110_docs_name_the_read_cap_correctly() {
          rule and both cross-checks below would pass over an empty string. {doc_dossier}"
     );
 
-    for (i, (label, _, floor)) in docs.into_iter().enumerate() {
-        let found = raw_new[i];
+    for (i, (label, _, floor, _)) in docs.into_iter().enumerate() {
+        let found = visible_new[i];
         assert!(
             found >= floor,
             "[rb110/doc-new-name]: {label} names the read cap by its new spelling {found} \
-             time(s); the floor is {floor}, which is exactly how many times that file cited the \
-             constant BEFORE this slice. A rename is not a deletion: dropping the citing \
-             sentences would leave every other clause in this test green over a document that no \
-             longer says anything about the cap at all. It is a floor and not an equality because \
-             the dated amendment and the slice paragraph the rename forces each name the \
-             constant as well. {doc_dossier}"
+             time(s) in the text a READER sees; the floor is {floor}, which is exactly how many \
+             times that file cited the constant BEFORE this slice. A rename is not a deletion: \
+             dropping the citing sentences would leave every other clause in this test green over \
+             a document that no longer says anything about the cap at all. It is a floor and not \
+             an equality because the dated amendment and the slice paragraph the rename forces \
+             each name the constant as well. The count is taken with HTML comments STRIPPED, \
+             because a floor over raw bytes is met by a run of mentions parked inside \
+             `<!-- -->` that no reader of the rendered document will ever see. {doc_dossier}"
         );
     }
 
-    for (label, text, _) in docs {
+    for (label, text, _, _) in docs {
         for (idx, line) in text.lines().enumerate() {
             if !line.contains(old.as_str()) {
                 continue;
             }
             let at = idx + 1;
-            let carries_marker = line.contains(marker);
+            let carries_marker = rb110_carries_marker(line);
             assert!(
                 carries_marker,
                 "[rb110/doc-old-name]: {label} line {at} still spells the retired name and does \
-                 not carry `{marker}`. The rule is PER LINE on purpose: a whole-file pair of \
-                 containment checks, or a floor on the number of marked lines, is GREEN on the \
-                 tree before this slice runs, because one ARCHITECTURE.md line already carries \
-                 the retired name, its source slice and the residual id together. A reader who \
-                 greps the retired spelling must land on the record of its retirement, never on \
-                 live prose. {unmarked_count} line(s) fail this rule: {unmarked:?}."
+                 not carry `{marker}` as a whole token. The rule is PER LINE on purpose: a \
+                 whole-file pair of containment checks, or a floor on the number of marked lines, \
+                 is GREEN on the tree before this slice runs, because one ARCHITECTURE.md line \
+                 already carries the retired name, its source slice and the residual id together. \
+                 A reader who greps the retired spelling must land on the record of its \
+                 retirement, never on live prose. The marker must END there — a plain containment \
+                 check is satisfied by a slice number that merely starts with it, which was \
+                 MEASURED. {unmarked_count} line(s) fail this rule: {unmarked:?}."
             );
         }
+    }
+
+    for (i, (label, _, _, ceiling)) in docs.into_iter().enumerate() {
+        let ro = raw_old[i];
+        assert!(
+            ro <= ceiling,
+            "[rb110/doc-old-name]: {label} still spells the retired name {ro} time(s) and the \
+             ceiling is {ceiling}. THE CEILING IS WHAT MAKES THIS A RENAME RATHER THAN A MARKER \
+             EXERCISE: the per-line rule above is satisfied by leaving every old citation in \
+             place and appending the slice number to each line, with the new-name floor met by \
+             fresh mentions somewhere else in the file — MEASURED, and green under every other \
+             clause here. The ceiling is exactly the mentions the rename RECORD needs and nothing \
+             else: for ADR-0238 the sentence it had already declared superseded history, the \
+             bracket note replacing the retention parenthetical, and the dated rb-110 amendment's \
+             own statement of what was renamed; for ARCHITECTURE.md the rb-86 paragraph's marked \
+             mention and the new rb-110 paragraph. ADR-0231 and ADR-0265 are pure citations with \
+             no history to keep, so their ceiling is ZERO. Counted on RAW text, so a mention \
+             hidden in an HTML comment counts against the ceiling too."
+        );
     }
 
     assert!(
@@ -24116,7 +24284,7 @@ fn rb110_docs_name_the_read_cap_correctly() {
          from the residual list is looking for."
     );
 
-    for (i, (label, _, _)) in docs.into_iter().enumerate() {
+    for (i, (label, _, _, _)) in docs.into_iter().enumerate() {
         let rn = raw_new[i];
         let inew = ident_new[i];
         assert_eq!(
@@ -24166,17 +24334,18 @@ fn rb110_docs_name_the_read_cap_correctly() {
 /// four-of-four could be printed over a tree that lost one.
 ///
 /// THIS IS THE SIBLING SHAPE AT ITS MINIMUM, and the reduction is deliberate.
-/// The rb-107 and rb-109 blocks carry a line-start declaration census, an
-/// attribute-block walker and six control fixtures for that walker. All three
-/// are DROPPED here in favour of the single squashed declaration total, which
-/// sees every visibility prefix and every indentation at once and cannot be fed
-/// by this file's own string fixtures — so a fifth test declared in any shape
-/// moves it. What the drop gives up is stated rather than hidden: the squashed
-/// total counts a DECLARATION, so a test that ships and is counted but never
-/// RUNS — carrying an ignore attribute, or a conditional-compilation attribute
-/// above its test attribute — is invisible to every text census in this block.
-/// That shape is owned by the acceptance ledger's exact full-suite totals and by
-/// its filtered four-of-four run, not by anything here.
+/// The sibling roster blocks carry a heavier walker; this one does not, because
+/// a single squashed declaration total sees every visibility prefix and every
+/// indentation at once, cannot be fed by this file's own string fixtures, and so
+/// moves for a fifth test declared in any shape. What the drop gives up is
+/// stated rather than hidden, in three parts. The squashed total counts a
+/// DECLARATION, so a test that ships and is counted but never RUNS is invisible
+/// to it: the ignore attribute is banned outright below, but a
+/// conditional-compilation attribute above a test attribute is not, and that
+/// shape is owned by the acceptance ledger's exact full-suite count. Nor does a
+/// prefix census see a test named `rb_110_…`, with an underscore: it escapes
+/// both the `fnrb110_` total and the ledger's name filter, and only the exact
+/// suite total moves for it.
 ///
 /// THE LABEL CENSUS is the sharp half. A test can keep its name, its attribute,
 /// its declaration and its place in every count while its assertions are
@@ -24199,12 +24368,16 @@ fn rb110_docs_name_the_read_cap_correctly() {
 ///
 /// Kills: a test renamed out of the ledger's filter or never written; a fifth
 ///        test slipped in without moving a ledger literal, whatever shape it is
-///        declared in; an unlisted helper; a load-bearing out-of-prefix test
+///        declared in; a test disabled by an ignore attribute above its test
+///        attribute; an unlisted helper; a load-bearing out-of-prefix test
 ///        deleted; a clause label deleted from the test that owns it while every
-///        declaration count stays green; a label copied into a second test, so
-///        that a failure no longer attributes to one place; and a body neutered
-///        by a dead conditional, a bare early return, or hollowing down to its
-///        label strings.
+///        declaration count stays green; that same deletion covered by
+///        re-planting the label in a line comment (the comment-blanked view); a
+///        label copied into a second test, so that a failure no longer
+///        attributes to one place; a clause shipped under a label no roster
+///        names (the set equality); and a body neutered by a leading conditional
+///        in ANY spelling, by a `return` in any spelling, or by hollowing down
+///        to its label strings.
 #[test]
 fn rb110_test_roster_is_closed() {
     let roster = rb110_test_roster();
@@ -24270,6 +24443,20 @@ fn rb110_test_roster_is_closed() {
          reported a closed set."
     );
 
+    let block_at = PRIVACY_TESTS_RS
+        .find(concat!("\nfn rb110", "_"))
+        .expect("[rb110/roster-closed]: this file declares no top-level rb110_ fn");
+    let ignored = rb22p_count(&PRIVACY_TESTS_RS[block_at..], concat!("#[ign", "ore]"));
+    assert_eq!(
+        ignored, 0,
+        "[rb110/roster-closed]: the rb-110 section carries {ignored} ignore attribute(s). Placed \
+         ABOVE a test attribute, one leaves both adjacency needles and every declaration census \
+         at four while the test never runs under the default profile — and a skipped test is not \
+         a failed one, so the suite still reports its full count passed. That is the one \
+         never-runs shape a text census CAN see, so it is banned outright: a test in this slice \
+         that needs skipping is a reviewed decision, not a one-line attribute."
+    );
+
     for name in helpers {
         let needle = format!("\nfn {name}(");
         let n = rb22p_count(PRIVACY_TESTS_RS, &needle);
@@ -24291,19 +24478,28 @@ fn rb110_test_roster_is_closed() {
         squashed_decls, declared,
         "[rb110/decl-total]: the SQUASHED source (strings and comments blanked, whitespace \
          removed) carries {squashed_decls} `rb110_` fn declaration(s); the two CLOSED rosters \
-         name {declared}. This one view replaces the line-start census, the attribute-block \
-         walker and the walker's six control fixtures the sibling blocks carry: it sees every \
-         visibility prefix and every indentation, and it cannot be fed by string fixtures. If it \
-         reds after an honest addition, add the name to the roster it belongs to in the same \
-         diff, which is the reviewed event this clause exists to force."
+         name {declared}. This one view replaces the heavier walker the sibling roster blocks \
+         carry: it sees every visibility prefix and every indentation, and it cannot be fed by \
+         string fixtures. If it reds after an honest addition, add the name to the roster it \
+         belongs to in the same diff, which is the reviewed event this clause exists to force."
     );
 
     // --- the label census: every clause a test SHIPS, still inside it --------
+    //
+    // Measured over a COMMENT-BLANKED view of each span rather than the raw
+    // text. MEASURED cheat (tests red-team I1/I2): delete a clause and re-plant
+    // its label in a line comment inside the same test, and a raw census counts
+    // it and reports the test intact. Comments ONLY — the full strip pipeline
+    // would blank the string literals the labels actually live in and leave
+    // every span with no labels at all, which is the opposite failure.
     let labels = rb110_label_roster();
-    let spans: Vec<String> = roster
-        .iter()
-        .map(|name| rb107_test_span(PRIVACY_TESTS_RS, name))
-        .collect();
+    let mut spans: Vec<String> = Vec::new();
+    let mut visible: Vec<String> = Vec::new();
+    for name in roster {
+        let span = rb107_test_span(PRIVACY_TESTS_RS, name);
+        visible.push(strip_rust_comments(&span));
+        spans.push(span);
+    }
 
     let mut label_names: Vec<&str> = labels.iter().map(|(label, _)| *label).collect();
     label_names.sort_unstable();
@@ -24336,51 +24532,95 @@ fn rb110_test_roster_is_closed() {
             roster.len()
         );
         let carriers: Vec<usize> = (0..roster.len())
-            .filter(|i| rb22p_count(&spans[*i], label) > 0)
+            .filter(|i| rb22p_count(&visible[*i], label) > 0)
             .collect();
         assert_eq!(
             carriers,
             [owner],
-            "[rb110/label-census]: `{label}` occurs inside the spans of tests {carriers:?}; it \
-             must occur inside exactly one — `{}`, at index {owner}. An EMPTY list means the \
-             clause that label names has been DELETED from the test that owns it while every \
-             census above stayed green: the name is declared, the attribute is there, the \
-             declaration total is unmoved, and the ledger's filtered run still reports four of \
-             four. A list with TWO entries means the label was copied into a second test, or \
-             quoted in a doc comment that falls inside the previous test's span, so a failure no \
-             longer attributes to one place.",
+            "[rb110/label-census]: `{label}` occurs inside the comment-blanked spans of tests \
+             {carriers:?}; it must occur inside exactly one — `{}`, at index {owner}. An EMPTY \
+             list means the clause that label names has been DELETED from the test that owns it \
+             while every census above stayed green: the name is declared, the attribute is there, \
+             the declaration total is unmoved, and the ledger's filtered run still reports four \
+             of four. Comments are blanked first because re-planting the deleted label in a line \
+             comment inside the same test was MEASURED to keep a raw census green. A list with \
+             TWO entries means the label was copied into a second test, or quoted in a doc \
+             comment that falls inside the previous test's span, so a failure no longer \
+             attributes to one place.",
             roster[owner]
         );
     }
 
+    // --- the SPAN-to-ROSTER direction: no label ships that nobody rostered ---
+    let mut found: Vec<String> = Vec::new();
+    for text in &visible {
+        for label in rb110_labels_in(text) {
+            let known = found.iter().any(|seen| seen.as_str() == label.as_str());
+            if !known {
+                found.push(label);
+            }
+        }
+    }
+    found.sort_unstable();
+    let mut rostered: Vec<String> = Vec::new();
+    for (label, _) in labels {
+        rostered.push(String::from(label));
+    }
+    rostered.sort_unstable();
+    assert_eq!(
+        found, rostered,
+        "[rb110/label-total]: the four test spans between them carry the label set {found:?}; the \
+         roster names {rostered:?}. The per-label clause above only looks for labels the ROSTER \
+         already knows, so it is blind in one direction: a clause shipped under a label nobody \
+         rostered attributes its failure to a name that appears in no census and in no record, \
+         and a rostered label occurring nowhere leaves the roster describing a clause that does \
+         not exist. This reads the same set from the other end, so the two together are a \
+         bijection between what ships and what is written down."
+    );
+
     // --- the body floor: the blunt backstop ----------------------------------
+    //
+    // MEASURED cheats (tests red-team E4/E5): round 2's two bans were needles
+    // for particular SPELLINGS, so `if 1 == 2 {` wrapping a whole body and a
+    // brace-terminated `return` above the assertions both survived. Both bans
+    // now read the BODY itself — nothing may open with a conditional, and the
+    // word `return` may not occur at all — which subsumes the old pair. The SIZE
+    // floor stays on the span, where the rb-107 and rb-109 blocks set the 300
+    // literal, so the number still means what it means there.
+    let squashed_file = stripped_for_scan(PRIVACY_TESTS_RS);
     for (owner, name) in roster.iter().enumerate() {
-        let squashed_span = stripped_for_scan(&spans[owner]);
-        let n_dead = rb22p_count(&squashed_span, concat!("iffal", "se{"));
-        assert_eq!(
-            n_dead, 0,
-            "[rb110/body-floor]: `{name}` contains {n_dead} never-taken conditional(s). A whole \
-             test body wrapped in one keeps every declaration census, the label census and the \
-             size floor below GREEN while not one of its assertions ever runs, and the ledger's \
-             filtered run still prints four of four."
+        let needle = format!("fn{name}(");
+        let body = extract_squashed_fn_body(&squashed_file, &needle)
+            .expect("[rb110/body-floor]: a roster test has no brace-balanced body");
+        assert!(
+            !body.starts_with("if"),
+            "[rb110/body-floor]: the squashed body of `{name}` OPENS with a conditional. A whole \
+             test body wrapped in a never-taken one keeps every declaration census, both label \
+             censuses and the size floor below GREEN while not one of its assertions ever runs, \
+             and the ledger's filtered run still prints four of four. The check is on the body's \
+             first two bytes rather than on a particular spelling, because `if false {{` and \
+             `if 1 == 2 {{` were both MEASURED to walk past a needle written for the first."
         );
-        let n_early = rb22p_count(&squashed_span, "return;");
+        let n_early = rb22p_count(body, "return");
         assert_eq!(
             n_early, 0,
-            "[rb110/body-floor]: `{name}` contains {n_early} bare early return(s). An early \
-             return above the assertions is the other way to keep a full body and run none of \
-             it; no rb-110 test returns early, so ZERO is the honest value."
+            "[rb110/body-floor]: the squashed body of `{name}` carries the word `return` \
+             {n_early} time(s). An early return above the assertions is the other way to keep a \
+             full body and run none of it, and it needs no semicolon to do it — a \
+             brace-terminated one was MEASURED to walk past a `return;` needle. No rb-110 test \
+             returns at all, so ZERO is the honest value; the body is read with strings and \
+             comments blanked, so the word inside these very messages does not count."
         );
-        let size = squashed_span.len();
+        let size = stripped_for_scan(&spans[owner]).len();
         assert!(
             size >= 300,
             "[rb110/body-floor]: the span of `{name}` is only {size} squashed byte(s) — comments \
              and string literals blanked, whitespace removed — and 300 is the floor the rb-107 \
-             and rb-109 blocks use, kept here on purpose as a NOT-A-STUB pin rather than a size \
-             pin. The value oracle is the TIGHTEST span in this block at roughly 350 bytes, \
-             because it is five bindings and three assertions; the three text tests run into the \
-             thousands. What this catches is a body hollowed down to its label strings, which the \
-             label census above cannot see."
+             and rb-109 blocks use, kept here as a NOT-A-STUB pin rather than a size pin and \
+             measured on the SPAN so the number means what it means there. The value oracle is \
+             the TIGHTEST span in this block at roughly 350 bytes, because it is five bindings \
+             and three assertions; the three text tests run into the thousands. What this catches \
+             is a body hollowed down to its label strings, which neither label census can see."
         );
     }
 }
