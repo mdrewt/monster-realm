@@ -64,8 +64,13 @@ as the old one did before the rename (a rename, not a deletion); that every line
 also carries `rb-110`, with at least one such line naming the residual; that no token is split across a
 comment or line break (the identifier-only count equals the raw count); and that the identifier-free stale
 claims ("name retained", "a crate-visible rename is its own slice", "keeps its now-misnamed name") are gone.
-A plain occurrence count was rejected as the ratchet: it would have forced ADR-0238's own dated amendment
-and ARCHITECTURE.md's rb-110 paragraph to describe a rename without naming what was renamed. This ADR is not
+The old spelling is also CAPPED per file — ADR-0238 at most four lines (the two bracket notes and the
+dated amendment), ARCHITECTURE.md at most two (the rb-86 and rb-110 slice paragraphs), ADR-0231 and
+ADR-0265 none — and the new-name floors are counted with HTML comments stripped, because a marker rule
+alone was MEASURED to admit a "rename" that kept every old citation, marked each, and met the floor with
+mentions a reader never sees. A plain occurrence count was rejected as the ratchet: it would have forced
+ADR-0238's own dated amendment and ARCHITECTURE.md's rb-110 paragraph to describe a rename without naming
+what was renamed. This ADR is not
 in that census — it is the one place the old spelling is legitimately quoted in full, and the census test
 reads it as the independent witness for its needle. Two `privacy_tests.rs` comments that transcribed the
 rb-109 criterion verbatim (the spec section and the rb-109 ledger are seed-hashed and keep the old spelling)
@@ -121,11 +126,16 @@ ARCHITECTURE.md's slice log and here.
 ## Confirmation
 
 `server-module/src/privacy_tests.rs`: the four `rb110_` tests — `rb110_read_cap_constant_is_named_for_the_read_and_valued_256`
-(value + single squashed declaration), `rb110_the_delete_named_read_cap_is_gone_from_the_crate` (raw,
-identifier-only and crate-wide zero-occurrence census; the three exact family counts; every quoted `EXPORT_*`
-needle in the test file still exists in production; the residual id gone from production),
-`rb110_docs_name_the_read_cap_correctly` (per-file new-name floors, the marker rule, the split-token
-cross-check, the stale-claim ban) and `rb110_test_roster_is_closed` — plus the seven re-frozen frozen-text
+(value + single squashed declaration), `rb110_the_delete_named_read_cap_is_gone_from_the_crate` (the
+identifier-only zero-occurrence census over `privacy.rs`, `privacy_tests.rs` and the transitive crate corpus —
+lib.rs plus every module reachable from it, 47 files pinned exactly, a declared-but-absent module reported;
+the three exact family counts 3 / 2 / 5; every quoted `EXPORT_*` needle in the test file still exists in
+production and no `format!`-assembled one; the residual id gone from production),
+`rb110_docs_name_the_read_cap_correctly` (per-file new-name floors over HTML-comment-stripped text, per-file
+old-name ceilings, the per-line marker rule with a whole-token check, the split-token cross-check, the
+stale-claim ban) and `rb110_test_roster_is_closed` (name, adjacency and squashed-declaration censuses over
+closed test/helper/dependency rosters, a label census over comment-stripped spans in both directions, a body
+floor with the dead-branch and early-return bans read off the extracted body) — plus the seven re-frozen frozen-text
 pins (`rb48 [E1/seam-params]`, `rb85_nd_take`, `rb85_helper_body_pin`, `rb85_helper_body_source`,
 `[rb86/cap-wiring]`, `rb107_nd_cap_decl`, `rb107_cap_decl_source`) and ten re-frozen value reads, RED before
 the rename (record: harness `memory/projects/gates/rb-110.red-before.md`) and GREEN after with zero further
