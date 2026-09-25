@@ -56,7 +56,7 @@ per tick, on an hourly interval, against a 7-day TTL constant.**
 expired ids (`now_ms.saturating_sub(created) >= ttl_ms`), **sorts internally**, then truncates to
 `batch`; the shell contains no sort statement, closing a hole the red-team measured (finding 12) and
 the reviewer confirmed (M7): without an internal sort, "oldest-id-first" and "input order preserved"
-only agree if the caller happens to pass sorted input. `EXPORT_REAP_MAX_DELETE_PER_TICK = 256`, not
+only agree if the caller happens to pass sorted input. `EXPORT_REAP_MAX_READ_PER_TICK = 256`, not
 the `playtest.rs`-analogous 8192: `export_bundle` rows carry `payload_json` chunks, not 40-byte
 scalars, and reducers serialize under one global write lock — an oversized batch could exceed the
 transaction budget and abort every tick, retrying forever (strictly worse than no reaper; red-team
@@ -299,7 +299,7 @@ them as `crate::privacy::…`) sit between the reducer and the arm: `export_reap
 now_ms.saturating_sub(ttl_ms)` — pure and one line so it has a return-value oracle AND a body-equality pin
 (a band-keyed cutoff that returns the clock inside the live wall-clock band was MEASURED to re-open the
 full read with every value table and text pin green); and `reap_expired_export_bundles(ctx, now_ms) ->
-usize`, which reads `ctx.db.export_bundle().created_at_ms().filter(..=cutoff).take(EXPORT_REAP_MAX_DELETE_PER_TICK)`
+usize`, which reads `ctx.db.export_bundle().created_at_ms().filter(..=cutoff).take(EXPORT_REAP_MAX_DELETE_PER_TICK)` [rb-110: this constant is now `EXPORT_REAP_MAX_READ_PER_TICK` — ADR-0267]
 — the FIRST range-terminated index read in the crate — runs the seam over those rows, deletes by primary
 key, and REPORTS its count (rb-40 idiom; consumers: the deferred native execution test and rb-86's
 one-shot drain). The read bound equals the delete cap, so a tick decodes at most 256 rows however large
@@ -420,7 +420,7 @@ equals the delete cap", and "outgrows the unchanged 256/h drain (≈361 bundles/
   of the window's order, and truncates to `max_stamps`. Every stamp it returns is at or below the cutoff,
   i.e. expired.
 - `reap_expired_export_bundles(ctx, now_ms) -> usize` keeps rb-85's bounded range read byte-for-byte as
-  the WINDOW (`.created_at_ms().filter(..=cutoff).take(EXPORT_REAP_MAX_DELETE_PER_TICK)`, ≤ 256 decoded
+  the WINDOW (`.created_at_ms().filter(..=cutoff).take(EXPORT_REAP_MAX_READ_PER_TICK)`, ≤ 256 decoded
   rows) and then, for each planned stamp, issues ONE
   `ctx.db.export_bundle().created_at_ms().delete(stamp)` — a `RangedIndex::delete` with a point key on
   the btree index rb-85 added, which the SDK routes to `datastore_delete_by_index_scan_point_bsatn`: every
@@ -434,8 +434,8 @@ equals the delete cap", and "outgrows the unchanged 256/h drain (≈361 bundles/
   uncapped delete).
 - A new constant `EXPORT_REAP_MAX_STAMPS_PER_TICK: usize = 16` — the tick's WRITE bound, counted in
   creation STAMPS: one stamp is one request's bundle, or every bundle committed inside that same
-  millisecond (see Bounds). The row cap `EXPORT_REAP_MAX_DELETE_PER_TICK` (name retained; it is pinned in
-  ten places and three documents, and a crate-visible rename is its own slice) is now the READ window
+  millisecond (see Bounds). The row cap `EXPORT_REAP_MAX_READ_PER_TICK` [rb-110 renamed it from `EXPORT_REAP_MAX_DELETE_PER_TICK`
+  (ADR-0267; residual R-rb-86-READCAP-NAME closed) — see the amendment below] is now the READ window
   only, and its doc comment says so. Sixteen minimum-size bundles (17 chunks each, one per exportable
   table, empty tables included) is 272 rows — the drain rate of the 256-row cap it replaces (≈384
   bundles/day, was ≈361) — and a 256-row window in ascending stamp order holds at most fifteen whole
@@ -534,7 +534,7 @@ plus a crate API with one caller), and no ban is lifted (nothing was in the way)
 
 - A private `#[derive(Debug, Clone, Copy)] struct ExportReapTick { read: usize, planned: usize, reaped:
   usize }` — the one-tick record. `read` is how many chunk rows the bounded window decoded (at most
-  `EXPORT_REAP_MAX_DELETE_PER_TICK`, 256); `planned` how many creation stamps the bundle seam selected
+  `EXPORT_REAP_MAX_READ_PER_TICK`, 256); `planned` how many creation stamps the bundle seam selected
   (at most `EXPORT_REAP_MAX_STAMPS_PER_TICK`, 16); `reaped` the datastore's own count of the rows the
   tick deleted, tails beyond the window included. Three RAW counts, never a derived verdict.
 - `reap_expired_export_bundles(ctx, now_ms) -> ExportReapTick` (was `-> usize`). Its read, plan and
@@ -735,3 +735,38 @@ second static for the comparator (either shifts the four out-of-touches line cit
 `native_host_tests.rs` — see the ADR-0222 amendment, D1); growing the T6 fixture past the
 insertion-sort threshold to make the stable-sort claim testable (tie order is no datastore contract
 and nothing may depend on it — the claim was retruthed instead).
+
+## Amendment (2026-09-25, rb-110 — residual R-rb-86-READCAP-NAME closed)
+
+The per-tick row cap this ADR introduced, `EXPORT_REAP_MAX_DELETE_PER_TICK`, is renamed by rb-110 to
+`EXPORT_REAP_MAX_READ_PER_TICK` (ADR-0267, which **Extends** this record; no ADR amends it, so per the
+rb-84/85/86/87/109 precedent this dated amendment is the closure record here). **Value, type, visibility
+and every consumer are unchanged; there is no alias and no deprecation shim (ADR-0267 D2).** rb-86 above
+split the tick's two bounds — the read window stayed this constant, the write side became
+`EXPORT_REAP_MAX_STAMPS_PER_TICK = 16` — and from that day the cap bounded only what a tick READS while
+its rb-48 spelling still said DELETE. rb-86 recorded the misnomer and deferred the fix as residual
+**R-rb-86-READCAP-NAME**; ADR-0265 (rb-107) then derived a second production constant from it
+(`EXPORT_LIVE_ROW_CAP = 256 × 168 = 43 008`), so the wrong name had begun to shape new reasoning about the
+WRITE side — which is what promoted the residual. It is DISCHARGED here.
+
+**Edited in place (identifier citations only; no decision text reworded):** `:59` (the rb-48 Decision's
+value-and-rationale citation), `:423` (the rb-86 amendment's WINDOW chain), `:437` (the rb-86 amendment's
+retention parenthetical, replaced by a bracket note that records the rename) and `:537` (the rb-87
+amendment's `ExportReapTick.read` bound). The same citations are renamed in ADR-0231 (one site, whose
+surrounding "so it can cut across one owner's request" sentence rb-86 had already made false and which is
+retruthed with it), in ADR-0265 (four sites in the D1 derivation) and in ARCHITECTURE.md (the rb-85 and
+rb-107 slice paragraphs; the rb-86 paragraph keeps one marked mention of the retired spelling, and a new
+rb-110 paragraph records this slice).
+
+**Left as history with a bracket note (not edited):** `:302`, whose sentence the rb-86 amendment above had
+already listed as SUPERSEDED. It keeps its wording, retired spelling included, and gains a same-line
+`[rb-110: …]` note naming the constant today. The rb-109 amendment's convention statement — superseded
+sentences are listed, none edited in place — therefore stays true.
+
+**Proof.** `server-module/src/privacy_tests.rs`: four `rb110_` tests — the value read plus the single
+squashed declaration; the raw, identifier-only and transitive crate-wide zero-occurrence census with three
+exact family counts; the four documents' new-name floors, retired-name ceilings, per-line marker rule,
+split-token cross-check and stale-claim ban; and a closed roster — plus seven re-frozen frozen-text pins
+and ten re-frozen value reads. RED before the rename (harness
+`memory/projects/gates/rb-110.red-before.md`), GREEN after with no further test edit; suite 1019 → 1023
+(1020 → 1024 with `dev_reducers`); `just ci`.

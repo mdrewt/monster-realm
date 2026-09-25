@@ -14,8 +14,8 @@
 ## Context
 
 ADR-0226 shipped `request_data_export`; ADR-0238 (rb-48) added the TTL reaper and rb-85/rb-86
-bounded its READ side — a tick reads a bounded btree range, deletes at most
-`EXPORT_REAP_MAX_DELETE_PER_TICK` rows and at most `EXPORT_REAP_MAX_STAMPS_PER_TICK` creation
+bounded its READ side — a tick reads a bounded btree range of at most
+`EXPORT_REAP_MAX_READ_PER_TICK` rows and deletes at most `EXPORT_REAP_MAX_STAMPS_PER_TICK` creation
 stamps. Nothing bounded the WRITE side. That gap is residual R-rb-85-EXPORTADMIT, promoted to this
 slice.
 
@@ -41,15 +41,15 @@ client all move for it.
 ## Decision
 
 **D1 — One global ceiling, derived from the drain, not chosen.**
-`EXPORT_LIVE_ROW_CAP = EXPORT_REAP_MAX_DELETE_PER_TICK × (EXPORT_BUNDLE_TTL_MS /
+`EXPORT_LIVE_ROW_CAP = EXPORT_REAP_MAX_READ_PER_TICK × (EXPORT_BUNDLE_TTL_MS /
 EXPORT_REAP_INTERVAL) = 256 × 168 = 43 008` — what the reaper retires in one whole retention
-window. The derivation, not a taste: whenever at least `EXPORT_REAP_MAX_DELETE_PER_TICK` expired
+window. The derivation, not a taste: whenever at least `EXPORT_REAP_MAX_READ_PER_TICK` expired
 rows exist, a tick READS that many (the range is keyed at or below the cutoff, so every row it
 reads has expired) and deletes every creation stamp it read WHOLE, so it retires **at least** as
 many rows as it read. The stamp cap cannot truncate first, because a bundle is at least one chunk
 per exportable table, which is exactly the inequality
 
-    EXPORT_REAP_MAX_STAMPS_PER_TICK × EXPORT_MIN_BUNDLE_ROWS ≥ EXPORT_REAP_MAX_DELETE_PER_TICK
+    EXPORT_REAP_MAX_STAMPS_PER_TICK × EXPORT_MIN_BUNDLE_ROWS ≥ EXPORT_REAP_MAX_READ_PER_TICK
     (16 × 17 = 272 ≥ 256)
 
 that `[rb86/stamp-cap-throughput]` (`privacy_tests.rs:16799-16812`) already asserts at runtime off
