@@ -431,10 +431,10 @@ rb-52 but nothing ever read the rows it produced.
   `incomplete` does not promise arrival.** The core deliberately returns `totalChunks: undefined`
   on `inconsistent` (`exportAssembly.ts:59-62`), so printing a number there would leak a fabricated
   total. `incomplete` is reached by two causes that the client cannot tell apart — still streaming,
-  and a server-side partial removal (the TTL reaper deletes at most
-  `EXPORT_REAP_MAX_DELETE_PER_TICK` rows per tick, oldest `chunk_id` first, so it can cut across one
-  owner's request) — so the copy says what is true (some chunks are missing) rather than telling the
-  player to wait for chunks that may never arrive.
+  and a bundle the TTL reaper removed between two client reads (a tick reads at most
+  `EXPORT_REAP_MAX_READ_PER_TICK` rows and, since rb-86, deletes whole bundles keyed on the creation
+  stamp, so it never tears one owner's request) — so the copy says what is true (some chunks are
+  missing) rather than telling the player to wait for chunks that may never arrive.
 
 - **A3-D6 — the export state does NOT enter `privacyModel.ts`; it is an OPTIONAL second argument to
   `buildPrivacyViewModel`.** `privacyStep`'s only double-submit guard is `inFlight`, and an

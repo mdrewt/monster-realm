@@ -1659,7 +1659,7 @@ fn my_export_bundle(ctx: &spacetimedb::ViewContext) -> Vec<ExportBundle> {
 // Retention ceiling for an export snapshot (spec M22 section 5: seven days).
 pub(crate) const EXPORT_BUNDLE_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 // Sweep cadence: an hour is 168 times finer than the TTL, and every tick is one
-// bounded range read of at most EXPORT_REAP_MAX_DELETE_PER_TICK rows plus at most
+// bounded range read of at most EXPORT_REAP_MAX_READ_PER_TICK rows plus at most
 // EXPORT_REAP_MAX_STAMPS_PER_TICK index-point deletes under the global write lock
 // — so the cadence argument is about transaction COUNT, not about scan cost.
 pub(crate) const EXPORT_REAP_INTERVAL: Duration = Duration::from_secs(3600);
@@ -1667,11 +1667,11 @@ pub(crate) const EXPORT_REAP_INTERVAL: Duration = Duration::from_secs(3600);
 // whole payload chunks, so a small batch that always commits beats a large one
 // that could abort every tick forever. Since rb-86 this bounds the READ ONLY —
 // the write bound is EXPORT_REAP_MAX_STAMPS_PER_TICK below, because a creation
-// stamp selected from inside this window carries a tail beyond its edge. The
-// name is therefore a misnomer, DISCLOSED rather than fixed: it is pinned in
-// roughly ten tests and three documents, and a crate-visible rename is its own
-// slice (residual R-rb-86-READCAP-NAME).
-pub(crate) const EXPORT_REAP_MAX_DELETE_PER_TICK: usize = 256;
+// stamp selected from inside this window carries a tail beyond its edge. rb-110
+// (ADR-0267) renamed it for the read it bounds, value and consumers unchanged:
+// the rb-48 spelling said DELETE, false since the stamp cap took the write
+// side, and the EXPORT_LIVE_ROW_CAP derivation below rests on this number.
+pub(crate) const EXPORT_REAP_MAX_READ_PER_TICK: usize = 256;
 // Per-tick STAMP cap (rb-86, ADR-0238 amendment): the WRITE bound. The row cap
 // above bounds what a tick READS; every creation stamp the window touches is then
 // deleted whole — its tail may lie beyond the window — so the write set is at
@@ -1689,7 +1689,7 @@ pub(crate) const EXPORT_REAP_MAX_STAMPS_PER_TICK: usize = 16;
 // retention window, so the write side cannot outpace the drain. The derivation
 // and its trade-offs live ONCE, in ADR-0265 D1 — what must be stated here is the
 // inequality it rests on: EXPORT_REAP_MAX_STAMPS_PER_TICK * EXPORT_MIN_BUNDLE_ROWS
-// >= EXPORT_REAP_MAX_DELETE_PER_TICK (16 * 17 = 272 >= 256), which is what makes
+// >= EXPORT_REAP_MAX_READ_PER_TICK (16 * 17 = 272 >= 256), which is what makes
 // a tick retire at least as many rows as it read. Stamps are deleted WHOLE, so
 // no bundle is ever partly reaped and the floor holds whatever order the window
 // arrives in; [rb86/stamp-cap-throughput] asserts that inequality off the live
@@ -1702,7 +1702,7 @@ pub(crate) const EXPORT_REAP_MAX_STAMPS_PER_TICK: usize = 16;
 // EXPORT_REQUEST_COOLDOWN_MS above: DoS knobs, not legal figures.
 // ===========================================================================
 
-const EXPORT_LIVE_ROW_CAP: u64 = (EXPORT_REAP_MAX_DELETE_PER_TICK as u64)
+const EXPORT_LIVE_ROW_CAP: u64 = (EXPORT_REAP_MAX_READ_PER_TICK as u64)
     * (EXPORT_BUNDLE_TTL_MS as u64 / EXPORT_REAP_INTERVAL.as_millis() as u64);
 
 const EXPORT_ANON_LIVE_ROW_CAP: u64 = EXPORT_LIVE_ROW_CAP / 2;
@@ -1843,7 +1843,7 @@ pub fn export_bundle_reaper(
 // tick's shape (the BattleSideOwnership / PlannedChunk precedent above).
 //
 // THREE RAW COUNTS, never a derived verdict. `read` is how many chunk rows the
-// bounded window decoded, at most EXPORT_REAP_MAX_DELETE_PER_TICK; `planned` is
+// bounded window decoded, at most EXPORT_REAP_MAX_READ_PER_TICK; `planned` is
 // how many creation stamps the bundle seam selected, at most
 // EXPORT_REAP_MAX_STAMPS_PER_TICK; `reaped` is the datastore's own count of the
 // rows the tick deleted, tails beyond the window included. A derived `backlog`
@@ -1905,7 +1905,7 @@ fn export_reap_cutoff_ms(now_ms: i64, ttl_ms: i64) -> i64 {
 // native host and EXECUTES this helper against it — the rb109_ tests — a model
 // of the btree contract, not a live-host observation, R-rb-109-ORDERMODEL.
 // Progress never depends on it: every planned bundle is deleted whole, so only
-// FAIRNESS does), and `.take` caps the read at EXPORT_REAP_MAX_DELETE_PER_TICK,
+// FAIRNESS does), and `.take` caps the read at EXPORT_REAP_MAX_READ_PER_TICK,
 // so the module decodes at most that many rows per tick however large the table
 // grows (the host may fill one buffer past the last decoded row). The bound is
 // on ROWS, not bytes: rb-107 (ADR-0265) closed R-rb-85-EXPORTADMIT with a
@@ -1929,7 +1929,7 @@ fn export_reap_cutoff_ms(now_ms: i64, ttl_ms: i64) -> i64 {
 // destroy EXPIRED rows: the whole-bundle reap rests on no reachability and no
 // purge-before-insert invariant.
 //
-// TWO bounds with two different jobs. EXPORT_REAP_MAX_DELETE_PER_TICK bounds the
+// TWO bounds with two different jobs. EXPORT_REAP_MAX_READ_PER_TICK bounds the
 // READ at 256 rows; EXPORT_REAP_MAX_STAMPS_PER_TICK bounds the WRITE at 16
 // stamps, because a stamp selected from inside the window carries a tail past
 // its edge. A stamp is one request's bundle, or every bundle committed in that
@@ -1975,7 +1975,7 @@ fn reap_expired_export_bundles(ctx: &ReducerContext, now_ms: i64) -> ExportReapT
         .export_bundle()
         .created_at_ms()
         .filter(..=cutoff)
-        .take(EXPORT_REAP_MAX_DELETE_PER_TICK)
+        .take(EXPORT_REAP_MAX_READ_PER_TICK)
         .map(|c| (c.chunk_id, c.created_at_ms))
         .collect();
     let stamps = plan_export_reap_stamps(
