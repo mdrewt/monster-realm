@@ -224,3 +224,13 @@ Re-frozen: `rb24_frozen_reaper_body` (two independent transcriptions, guard pref
 - The OBS-2 ratchet is untouched: no bare `log::`, no `use log`, `server-module/src/.log-baseline` byte-identical.
 - The `purge_export_bundles` helper and its frozen-body pins are unchanged; only two of its three
   callers' use of the return value changed (the claim site already bound and published it, rb-40).
+
+## Amendment (rb-114, 2026-09-25)
+
+Supervisor-direct doc-only body edit (residual `R-rb-87-ADR0243D10`, no new ADR number minted): D10's
+closing sentence, "The same identifier census holds privacy.rs at one," was true of rb-65's tree but is
+superseded — since rb-87 the module makes exactly TWO emissions, attributed per body (one `data_export`
+in `request_data_export`, one `export_bundle_reap` in `export_bundle_reaper`), with the D10 repayment
+re-applied in `privacy_tests.rs`: per-body counts, the file total, `total − scoped == 0` as arithmetic,
+and the bare-call/bare-identifier equalities plus the alias ban all at two (ADR-0238's rb-87 amendment
+already records this supersession; this ADR's own body was the only stale copy). No code changed.
