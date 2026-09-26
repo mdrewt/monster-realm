@@ -84,20 +84,24 @@ export class RaisingView {
   // flight for monster A silently swallow monster B's click (B's own button was
   // never disabled, so it looked clickable), and had no way to express "A is
   // still pending" to a mid-flight refresh() that rebuilds every button.
-  readonly #pending = new Set<bigint>();
+  //
+  // rb-120 (R-20r-a-CARE-GEN): the VALUE is a generation token, same shape as
+  // #pendingTrain below — `.finally()` releases only if the stored object is still
+  // its own. A membership-keyed release (`Set.delete`) let a STALE promise win: click
+  // → hide() clears the lock → reopen → click again → the FIRST call's `.finally()`
+  // settles, deletes the SECOND click's key, and re-enables the live button while
+  // that second call is still in flight.
+  readonly #pending = new Map<bigint, object>();
   // The Care button currently on screen for each monster. #renderMonsters
   // rebuilds every node via replaceChildren(), so the button a click closure
   // captured can be detached by the time its call settles — re-enabling that
   // stale node would leave the LIVE one disabled forever.
   readonly #careButtons = new Map<bigint, HTMLButtonElement>();
-  // 20r-a: the Train in-flight lock — a SIBLING of #pending, not a shared set: a Care
+  // 20r-a: the Train in-flight lock — a SIBLING of #pending, not a shared map (D6): a Care
   // rejection (cooldown) must not block Train and vice versa (different reducers, different
   // failure modes). Keyed per monster like Care; ALL of a monster's Train buttons (one per
   // food) disable together, since two different foods in flight is the same double-spend.
-  // The VALUE is the generation token: `.finally()` releases only if the stored object is
-  // still its own. A membership-keyed release (`Set.delete`) would let a stale promise —
-  // click → hide() cleared the lock → reopen → click again → FIRST promise settles — delete
-  // the SECOND click's key and re-enable the live buttons while that call is in flight.
+  // Same generation-token release shape as #pending above — see its comment for why.
   readonly #pendingTrain = new Map<bigint, object>();
   // The Train buttons currently on screen per monster (same detached-node reason as
   // #careButtons: a refresh() mid-flight rebuilds every node).
@@ -184,7 +188,9 @@ export class RaisingView {
     this.#root.style.display = 'none';
     // A stale "Cared!" must not greet the next open, and the in-flight lock is
     // released here because the SDK never settles a reducer promise after a link
-    // drop — .finally() may never run (shopView/renameView precedent).
+    // drop — .finally() may never run (shopView/renameView precedent). Clearing also
+    // makes every in-flight call STALE (its token is gone), so its late settle is a
+    // no-op; the reopen's refresh() (main.ts pairs show() with it) re-derives the buttons.
     this.#feedbackEl.textContent = '';
     this.#pending.clear();
     this.#pendingTrain.clear(); // 20r-a: same never-settles-after-drop reason as #pending.
@@ -259,17 +265,21 @@ export class RaisingView {
       // click the lock then swallows is worse than no button at all.
       careBtn.disabled = this.#pending.has(monsterId);
       this.#careButtons.set(monsterId, careBtn);
-      // Re-entrancy guard (ADR-0159 D1, shopView/renameView precedent): the
-      // callback's return value is wrapped so a genuinely pending care call holds
-      // the lock until it settles; .finally() resets on BOTH arms (no dead button).
-      // The lock is keyed by monsterId, so it only ever blocks a second click on
-      // the SAME monster — a sibling monster's Care button stays live.
+      // Re-entrancy guard (ADR-0159 D1, shopView/renameView precedent): a genuinely
+      // pending care call holds the lock until it settles; .finally() resets on BOTH
+      // arms. Keyed by monsterId, so a sibling monster's Care button stays live.
+      // rb-120 (R-20r-a-CARE-GEN) ported the Train shape here: the release is gated on
+      // this click's own token (see #pending), and the call runs INSIDE the executor —
+      // `Promise.resolve(onCare(id))` evaluates it as an argument, so a synchronous
+      // throw escaped the listener after the lock was taken and stranded it.
       careBtn.addEventListener('click', () => {
         if (this.#pending.has(monsterId)) return;
-        this.#pending.add(monsterId);
+        const lock = {};
+        this.#pending.set(monsterId, lock);
         careBtn.disabled = true;
-        void Promise.resolve(this.#callbacks.onCare(monsterId))
+        void new Promise<void>((resolve) => resolve(this.#callbacks.onCare(monsterId)))
           .finally(() => {
+            if (this.#pending.get(monsterId) !== lock) return;
             this.#pending.delete(monsterId);
             // Re-enable whichever button is on screen NOW: a refresh() during the
             // call replaces this closure's node, and re-enabling the detached one
@@ -287,11 +297,13 @@ export class RaisingView {
       });
       actions.appendChild(careBtn);
 
-      // 20r-a: Train carries the Care lock shape above (re-derived disabled state, the
-      // LIVE-button re-enable, .finally on both arms) with two deliberate differences:
-      // `new Promise((resolve) => resolve(...))` instead of `Promise.resolve(...)`, so a
-      // synchronously-throwing callback becomes a rejection rather than stranding the
-      // lock; and the generation-token release (see #pendingTrain).
+      // 20r-a/rb-120: Train and Care carry the SAME lock shape — re-derived disabled
+      // state, the LIVE-button re-enable, the throw-safe `new Promise((resolve) =>
+      // resolve(...))` executor, and the generation-token release — but in SEPARATE
+      // maps (D6: a Care rejection must not block Train and vice versa). Train's one
+      // remaining difference is that it disables ALL of a monster's Train buttons
+      // (one per food) together, since two different foods in flight is the same
+      // double-spend.
       const trainBtns: HTMLButtonElement[] = [];
       for (const item of items) {
         if (item.count > 0 && item.canTrain) {
