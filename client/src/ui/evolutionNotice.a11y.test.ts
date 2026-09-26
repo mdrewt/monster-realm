@@ -246,6 +246,68 @@ describe('RB125-ANN — the announce sink fires exactly once per distinct key', 
     for (let i = 0; i < 5; i++) banner.render(null);
     expect(sinks.announce).not.toHaveBeenCalled();
   });
+
+  it('RB125-ANN-6 BITES: render(A) then render(null) twice never re-announces the outgoing label', () => {
+    // WRONG IMPL KILLED: announcing the OUTGOING label on hide (e.g. reaching for the sink from
+    //   the `notice === null` branch to "read out" the banner's disappearance) — ADR-0272 §1
+    //   fires the sink only on an entry's OWN identity edge, never on a hide, and the label the
+    //   player was shown is never spoken a second time by this route.
+    const sinks = makeSinks();
+    const banner = new EvolutionNoticeBanner(() => Promise.resolve(), sinks);
+    banner.render(notice('k1', 'X'));
+    banner.render(null);
+    banner.render(null);
+    expect(sinks.announce).toHaveBeenCalledTimes(1);
+    expect(sinks.announce).toHaveBeenCalledWith('X');
+  });
+
+  it('RB125-ANN-7 BITES: reset() does not clear the last-announced key — a re-render of the SAME key after reset() still announces only once; a genuinely NEW key after that announces a second time', () => {
+    // WRONG IMPL KILLED (ADR-0272 §1 ★): clearing `#announcedKey` inside `reset()`. `main.ts`
+    //   calls `reset()` on the reconnect edge (a link flap), and re-speaking an entry every AT
+    //   user already heard on that flap is exactly the noise ADR-0272 §1 bans ("never re-speak
+    //   on a link flap") — `reset()` must only ever touch the in-flight ack lock, never the
+    //   announce dedupe.
+    const sinks = makeSinks();
+    const banner = new EvolutionNoticeBanner(() => Promise.resolve(), sinks);
+    banner.render(notice('k1', 'X'));
+    banner.reset();
+    banner.render(notice('k1', 'X'));
+    expect(sinks.announce).toHaveBeenCalledTimes(1);
+    // Non-vacuity: a genuinely new key still gets through after the reset().
+    banner.render(notice('k2', 'Y'));
+    expect(sinks.announce).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(sinks.announce).mock.calls).toEqual([['X'], ['Y']]);
+  });
+
+  it('RB125-ANN-8 BITES: a THROWING announce sink still leaves the DOM already updated, and the key is recorded BEFORE the sink call — a second render of the same key does not throw again', () => {
+    // WRONG IMPL KILLED (a): calling `sinks.announce()` before writing the label / display / OK
+    //   text — a throwing sink would then leave the banner's DOM stale (or still hidden) even
+    //   though `render()` was invoked with real content, which is exactly the "stale banner on
+    //   screen" ADR-0272 rules out for a throwing sink.
+    // WRONG IMPL KILLED (b): recording `#announcedKey = notice.key` only AFTER `sinks.announce()`
+    //   returns. A throwing sink never reaches that assignment under that ordering, so a second
+    //   render of the SAME key re-invokes (and re-throws from) the sink instead of treating the
+    //   entry as already announced.
+    const throwingAnnounce = vi.fn<(message: string) => void>(() => {
+      throw new Error('boom');
+    });
+    const banner = new EvolutionNoticeBanner(() => Promise.resolve(), {
+      announce: throwingAnnounce,
+      returnFocus: vi.fn(),
+    });
+
+    expect(() => banner.render(notice('k1', 'X'))).toThrow();
+    expect(labelEl().textContent).toBe('X');
+    expect(container().style.display).toBe('block');
+    expect(okBtn().textContent, 'the OK button label must already be resolved').not.toBe('');
+    expect(throwingAnnounce).toHaveBeenCalledTimes(1);
+
+    expect(
+      () => banner.render(notice('k1', 'X')),
+      'the key was already recorded before the sink threw, so the same key must not re-invoke it',
+    ).not.toThrow();
+    expect(throwingAnnounce).toHaveBeenCalledTimes(1);
+  });
 });
 
 // ===========================================================================
@@ -444,6 +506,37 @@ describe('RB125-FOCUS — render(null) returns focus to the sink ONLY when it he
     banner.render(notice('b', 'y')); // the next chain step, no null in between
     expect(returnFocus).not.toHaveBeenCalled();
     expect(document.activeElement).toBe(okBtn());
+  });
+
+  it('RB125-FOCUS-4 BITES: a NO-OP returnFocus sink (an unmounted canvas) never re-fires on later hides once the visible->hidden edge has already passed', () => {
+    // WRONG IMPL KILLED: a LEVEL-triggered `hadFocus` check — testing "is focus inside the
+    //   banner" on every `render(null)` instead of only on the visible->hidden EDGE. When the
+    //   sink cannot actually move focus (a canvas that has not mounted yet), the OK button stays
+    //   `document.activeElement` even after the banner hides, so a level check would call
+    //   `returnFocus` again on every LATER `render(null)`, fighting whatever the player has since
+    //   focused instead of firing exactly once on the edge.
+    const returnFocus = vi.fn<() => void>();
+    const banner = new EvolutionNoticeBanner(() => Promise.resolve(), {
+      announce: vi.fn(),
+      returnFocus,
+    });
+    banner.render(notice('k1', 'x'));
+    okBtn().focus();
+    expect(document.activeElement).toBe(okBtn());
+
+    banner.render(null);
+    expect(returnFocus).toHaveBeenCalledTimes(1);
+    expect(
+      document.activeElement,
+      'precondition: the no-op sink could not actually move focus off the now-hidden OK button',
+    ).toBe(okBtn());
+
+    banner.render(null);
+    banner.render(null);
+    expect(
+      returnFocus,
+      'a level check would re-fire on every later render(null) since focus never left the button',
+    ).toHaveBeenCalledTimes(1);
   });
 });
 
