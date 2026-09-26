@@ -1270,7 +1270,7 @@ fn heal_party_keeps_owner_and_escrow_checks_before_the_spend() {
 // retuning is then a deliberate two-line edit (constant + its one pin), never a
 // silent behaviour change. Everything else references the consts symbolically.
 // Exception since 20r-b: ESSENCE_SOFT_CAP is game-core SSOT and is pinned there
-// too; its note in `clamps_at_soft_cap_999_without_reject` names those pins.
+// too; the RETUNE note in its soft-cap clamp test below names those pins.
 // ###########################################################################
 
 use crate::schema::Monster;
@@ -4250,8 +4250,8 @@ fn rb80_raising_reducer_roster_and_open_writers_are_pinned() {
 // `game-core/src/content.rs::r14_essence_amount_999_accepted` /
 // `r14_essence_amount_1000_rejected` are now the SSOT pins, each carrying its
 // own `RETUNE:` marker. This block pins:
-//   (a) the note no longer claims exclusivity ("only"/"sole"/"single"/"lone"/
-//       "exclusive" near "pin"/"reference"/"source"/"place"/"witness"),
+//   (a) the note contains no exclusivity word ("only"/"sole"/"single"/
+//       "lone"/"exclusive") anywhere, as a whole word,
 //   (b) the note names `20r-b` and the three live game-core fixtures by file
 //       + name,
 //   (c) the local value pin (`ESSENCE_SOFT_CAP, 999,`) survives the reword,
@@ -4342,18 +4342,19 @@ fn rb122h_retune_note_text(window: &str) -> String {
         .join(" ")
 }
 
-/// Case-insensitive: does `text` contain an exclusivity word (only, sole,
-/// single, lone, exclusive) followed — within 40 chars, none of them a `.` —
-/// by a word naming what it is supposedly the only one of (pin, pins,
-/// reference, source, place, witness)? A hand-rolled word tokenizer, not the
-/// `regex` crate: server-module does not depend on it (see Cargo.toml), and a
-/// simple ASCII word-boundary walk is exact enough for an English-prose note.
+/// Case-insensitive: does `text` contain any of the exclusivity words (only,
+/// sole, single, lone, exclusive) as a WHOLE word, anywhere at all — no noun
+/// pairing, no proximity window; a single bare occurrence disqualifies the
+/// note. A hand-rolled ASCII word tokenizer, not the `regex` crate (server-
+/// module does not depend on it, see Cargo.toml): word chars include `_` so
+/// "lonely"/"singleton" never false-match a bare exclusivity word.
 fn rb122h_has_exclusivity_claim(text: &str) -> bool {
     let lower = text.to_lowercase();
     let bytes = lower.as_bytes();
     let is_word_byte = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
 
-    let mut words: Vec<(usize, usize)> = Vec::new();
+    let exclusivity_words = ["only", "sole", "single", "lone", "exclusive"];
+
     let mut i = 0usize;
     while i < bytes.len() {
         if is_word_byte(bytes[i]) {
@@ -4361,29 +4362,12 @@ fn rb122h_has_exclusivity_claim(text: &str) -> bool {
             while i < bytes.len() && is_word_byte(bytes[i]) {
                 i += 1;
             }
-            words.push((start, i));
-        } else {
-            i += 1;
-        }
-    }
-
-    let first_set = ["only", "sole", "single", "lone", "exclusive"];
-    let second_set = ["pin", "pins", "reference", "source", "place", "witness"];
-
-    for (idx, &(fs, fe)) in words.iter().enumerate() {
-        let first_word = &lower[fs..fe];
-        if !first_set.contains(&first_word) {
-            continue;
-        }
-        for &(ss, se) in &words[idx + 1..] {
-            let gap = &lower[fe..ss];
-            if gap.contains('.') || gap.chars().count() > 40 {
-                break;
-            }
-            let second_word = &lower[ss..se];
-            if second_set.contains(&second_word) {
+            let word = &lower[start..i];
+            if exclusivity_words.contains(&word) {
                 return true;
             }
+        } else {
+            i += 1;
         }
     }
     false
@@ -4469,14 +4453,18 @@ const RB122_CONTENT_SRC: &str = include_str!("../../game-core/src/content.rs");
 /// R-20r-b-B1: the note no longer claims to be the sole pin of the cap.
 ///
 /// RED on 23da96e: the note reads "the only pin of ESSENCE_SOFT_CAP's value"
-/// — `only` sits three characters from `pin`, well inside the 40-char,
-/// no-period window this clause scans.
+/// — `only` appears as a whole word, which this clause now bans outright,
+/// with no noun pairing and no proximity window to dodge.
 ///
 /// kills: a rewording that drops "only" but keeps "sole pin", "single
-/// reference", "the lone source" or any other exclusivity phrasing for the
-/// same false claim; a reword that moves the claim to a second `// RETUNE:`
-/// line instead of replacing the first (caught by the count assertion below,
-/// before the exclusivity text is even inspected).
+/// reference", "the lone source", or any other exclusivity word anywhere in
+/// the note, however far from a noun or split across a `.` — the survivors
+/// that beat the old paired/windowed check ("the only, e.g. authoritative,
+/// pin" resetting the window at the abbreviation period; an exclusivity
+/// word more than 40 chars from "pin") both still contain the bare word and
+/// are caught here; a reword that moves the claim to a second `// RETUNE:`
+/// line instead of replacing the first (caught by the count assertion
+/// below, before the exclusivity text is even inspected).
 #[test]
 fn rb122_note_has_no_exclusivity_claim() {
     let anchor = rb122h_target_fn_anchor();
@@ -4500,10 +4488,10 @@ fn rb122_note_has_no_exclusivity_claim() {
     let note = rb122h_retune_note_text(window.as_str());
     assert!(
         !rb122h_has_exclusivity_claim(note.as_str()),
-        "rb-122 TEETH (R-20r-b-B1): the RETUNE note still claims to be the ONLY/SOLE/SINGLE/LONE \
-         pin, reference, source, place or witness of ESSENCE_SOFT_CAP's value — false since \
-         20r-b promoted the constant (and its R14 boundary) into game-core, which now carries \
-         its own live pins. Got: {note:?}"
+        "rb-122 TEETH (R-20r-b-B1): the RETUNE note still contains an ONLY/SOLE/SINGLE/LONE/ \
+         EXCLUSIVE word — banned outright, anywhere in the note, with no noun pairing and no \
+         proximity window to dodge, since 20r-b promoted the constant (and its R14 boundary) \
+         into game-core, which now carries its own live pins. Got: {note:?}"
     );
 }
 
