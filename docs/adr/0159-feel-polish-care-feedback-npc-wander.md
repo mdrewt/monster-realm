@@ -275,3 +275,36 @@ still answers every tick (an NPC outside its radius can never stall); (iv) a re-
 vector pinning the salt/splitmix constants; (v) a behavioural bound on the measured reversal rate
 and bump count over a long simulated run, thresholds set strictly between the status-quo and
 post-change measurements so the pre-change implementation fails.
+
+## Amendment (2026-09-26, rb-120 — residual R-20r-a-CARE-GEN closed)
+
+D1's Care re-entrancy guard shipped as a per-monster `#pending: Set<bigint>` membership lock around
+`Promise.resolve(onCare(id))` (`raisingView.ts@16fe214:252-287`). 20r-a disclosed two defects in it
+when it built the Train lock beside it (`docs/specs/20r-a-plan.md` D3, D11 and line 116):
+
+- **Stale settle.** The `.finally` deleted the key unconditionally. Click (P1) → `hide()` clears the
+  set → reopen + `refresh()` → click again (P2) → P1 settles → P2's key is deleted and the live Care
+  button re-enabled while P2 is still in flight, so a third click sends a second `care`.
+- **Sync throw.** `Promise.resolve(onCare(id))` evaluates the call as an argument, so a synchronous
+  throw escaped the listener after the lock was taken and stranded it until `hide()`.
+
+**The port.** `#pending` (name kept — `main.ts` comments cite it) is now `Map<bigint, object>`
+holding a fresh token per click; the `.finally` releases, and re-enables the LIVE button, only when
+the stored token is still its own; the call runs inside
+`new Promise<void>((resolve) => resolve(onCare(id)))`, turning a synchronous throw into a rejection
+the chain releases from. Care and Train now carry the same lock shape in SEPARATE maps (20r-a D6:
+different reducers, different failure modes).
+
+**Accepted consequence (identical to Train).** `hide()` clearing the map makes every in-flight settle
+a no-op, so `hide()` → `show()` WITHOUT `refresh()` would leave the old node disabled. Unreachable:
+`main.ts` pairs `show()` with `refresh()` (the `backpack` menu leaf and the toggle path), and the
+Set shape had the same property (`hide()` never re-enabled a node). Residual 13 above (a stale
+"Cared!" across a reopen) is `main.ts`/`performCare` feedback, not the lock, and is unchanged.
+
+**Proof** (ordinary vitest per ADR-0224, no eval): `rb120-CARE-GEN`, `rb120-CARE-STALE-REJECT`,
+`rb120-CARE-THROW` and `rb120-CARE-TRAIN-INDEPENDENT` are RED on 16fe214 and green after;
+`rb120-CARE-LIVE` is a regression tooth (green before and after) and the only test that kills a
+re-enable of the click closure's detached node. C4/C6 assertions are unchanged; their prose is
+re-pinned. A 14-mutant register killed 13; the survivor also re-enables when the entry is ABSENT
+(`cur !== undefined && cur !== lock`), which only re-enables an already-enabled node and is
+unobservable. No new ADR: this ports the pattern 20r-a already recorded (plan D3/D11).

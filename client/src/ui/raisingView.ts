@@ -259,7 +259,7 @@ export class RaisingView {
       const careBtn = document.createElement('button');
       careBtn.textContent = t('raising.card.care');
       careBtn.style.cssText = 'font-size:11px;cursor:pointer;';
-      // Re-derive the disabled state from the pending SET rather than defaulting
+      // Re-derive the disabled state from the pending map rather than defaulting
       // to enabled: refresh() can rebuild this button while THIS monster's care
       // call is still in flight, and a brand-new enabled-looking button whose
       // click the lock then swallows is worse than no button at all.
