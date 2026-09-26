@@ -1995,3 +1995,506 @@ describe('m24s4 (ADR-0260): raisingView.ts scan — zero failing sinks', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// rb-121 (ADR-0271, residual R-20r-a-FOCUS) — a settle-released Care/Train lock
+// re-anchors focus that the no-batch path stranded on <body>, by re-calling
+// openOverlayA11y('raisingView', root) when the release finds
+// `this.#visible && document.activeElement === document.body`.
+//
+// SOURCE OF TRUTH: docs/adr/0271-rb121-settle-release-reanchors-stranded-focus.md;
+// memory/projects/gates/rb-121.gates.md X1/X5.
+//
+// RED REASON: raisingView.ts's Care and Train `.finally()` blocks (the rb-120
+// generation-token release) re-enable buttons but never call openOverlayA11y —
+// every rb121-RAISING-{CARE,TRAIN}-{REJECT,RESOLVE,THROW,DETACH} tooth below fails
+// its final `toBe(anchor)` assertion on master (document.activeElement stays
+// document.body forever). rb121-RAISING-STALE's NEGATIVE half (the stale
+// generation's settle) and every KEEP-*/HIDDEN control pass on master already —
+// master never steals focus, because it never MOVES it either. STALE's POSITIVE
+// half (the LIVE generation's own settle) is what reds the whole STALE tooth on
+// master, proving the suite is not vacuous.
+//
+// WRONG-IMPL-KILLED index (one per tooth, traced to the exact failing assertion):
+//   *-REJECT / *-RESOLVE / *-THROW
+//       -> a `.catch`-only re-anchor (never fires on the dominant RESOLVE path,
+//          since `main.ts`'s sendGuarded ALWAYS resolves) — reds -RESOLVE/-REJECT/
+//          -THROW alike, since all three route through `.finally()`.
+//       -> acting only on `.catch` while skipping the resolve arm — reds -RESOLVE.
+//       -> `Promise.resolve(cb())` instead of `new Promise((resolve) => resolve(cb()))`
+//          for THROW — would strand the lock and never even reach `.finally()`;
+//          caught by the `not.toThrow()` / disabled-before-callback preconditions.
+//   *-DETACH
+//       -> re-anchoring only when the CLOSURE-captured (now-detached) button is
+//          re-queried, instead of reading the LIVE `this.#root`/`this.#visible` at
+//          release time — the anchor is a static node the rebuild never replaces,
+//          so this control also catches a release that forgets to re-derive the
+//          live button set at all.
+//   *-KEEP-INROOT / *-KEEP-OUTROOT
+//       -> a condition broader than "focus === document.body" (e.g. "focus is not
+//          inside root", or "focus is not on an overlay control") — both would
+//          wrongly steal focus from the live in-root sentinel / the out-of-root
+//          sentinel these two teeth park it on.
+//   *-STALE
+//       -> acting in the STALE generation's `.finally()` (no token check gating the
+//          re-anchor step, or the re-anchor step placed ahead of the token check).
+//   *-HIDDEN
+//       -> a missing `#visible` guard — would create an ARIA dialog record (and move
+//          focus) on a display:none root.
+//   (cross-cutting) porting the re-anchor step onto Care's `.finally()` but not
+//       Train's, or vice versa — the CARE and TRAIN tooth pairs below are fully
+//       independent fixtures/assertions and both halves must pass.
+// ---------------------------------------------------------------------------
+
+describe('rb-121 RaisingView: a settle-released Care/Train lock re-anchors focus the no-batch path stranded on <body> (ADR-0271)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // --- CARE -----------------------------------------------------------------
+
+  it('rb121-RAISING-CARE-REJECT BITES: onCare REJECTS with no refresh() -> one macrotask after the settle, focus lands on the raisingView anchor (RED on master: activeElement stays <body>)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const d = raDeferred();
+    const onCare = vi.fn().mockReturnValue(d.promise);
+    const parent = mountParent();
+    const view = new RaisingView(parent, makeCallbacks({ onCare }));
+    view.show();
+    await s4FlushMacrotask(); // flush the initial open's own deferred focus
+    view.refresh(oneMonsterVm(101n));
+    const root = overlayRootOf(parent);
+    const careBtn = root.querySelector('button') as HTMLButtonElement;
+
+    careBtn.focus();
+    careBtn.click();
+    expect(onCare, 'precondition: the click dispatched onCare').toHaveBeenCalledTimes(1);
+    expect(careBtn.disabled, 'precondition: the click took the lock').toBe(true);
+    vi.mocked(openOverlayA11y).mockClear();
+    // happy-dom's blur() is a no-op on a DISABLED element, so model Chromium's focus fixup directly.
+    document.body.focus();
+    expect(
+      document.activeElement,
+      'precondition: happy-dom does not blur a disabled focused button -- body.focus() models ' +
+        "Chromium's real focus-fixup rule",
+    ).toBe(document.body);
+
+    d.reject(new Error('rb121-RAISING-CARE-REJECT: onCare rejected'));
+    await flushPromises();
+    await s4FlushMacrotask();
+
+    const anchor = root.querySelector(S4_META.initialFocusSelector);
+    expect(anchor, 'anti-vacuity: the anchor selector must resolve to a real node').not.toBeNull();
+    expect(
+      document.activeElement,
+      'rb121-RAISING-CARE-REJECT: a rejected settle with no refresh() must re-anchor focus via ' +
+        'openOverlayA11y',
+    ).toBe(anchor);
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledWith('raisingView', root);
+  });
+
+  it('rb121-RAISING-CARE-RESOLVE BITES: onCare RESOLVES with no refresh() (the dominant sendGuarded no-batch path) -> one macrotask after the settle, focus lands on the anchor (RED on master)', async () => {
+    const d = raDeferred();
+    const onCare = vi.fn().mockReturnValue(d.promise);
+    const parent = mountParent();
+    const view = new RaisingView(parent, makeCallbacks({ onCare }));
+    view.show();
+    await s4FlushMacrotask();
+    view.refresh(oneMonsterVm(102n));
+    const root = overlayRootOf(parent);
+    const careBtn = root.querySelector('button') as HTMLButtonElement;
+
+    careBtn.focus();
+    careBtn.click();
+    expect(onCare).toHaveBeenCalledTimes(1);
+    expect(careBtn.disabled).toBe(true);
+    vi.mocked(openOverlayA11y).mockClear();
+    // happy-dom's blur() is a no-op on a DISABLED element, so model Chromium's focus fixup directly.
+    document.body.focus();
+    expect(document.activeElement).toBe(document.body);
+
+    d.resolve();
+    await flushPromises();
+    await s4FlushMacrotask();
+
+    const anchor = root.querySelector(S4_META.initialFocusSelector);
+    expect(anchor).not.toBeNull();
+    expect(
+      document.activeElement,
+      'rb121-RAISING-CARE-RESOLVE: a resolved settle with no refresh() must re-anchor focus -- ' +
+        "this is the DOMINANT production path (main.ts's sendGuarded always resolves)",
+    ).toBe(anchor);
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledWith('raisingView', root);
+  });
+
+  it('rb121-RAISING-CARE-THROW BITES: onCare THROWS synchronously -> the auto-converted rejection still re-anchors focus after one macrotask (RED on master)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const onCare = vi.fn(() => {
+      throw new Error('rb121-RAISING-CARE-THROW: synchronous throw');
+    });
+    const parent = mountParent();
+    const view = new RaisingView(parent, makeCallbacks({ onCare }));
+    view.show();
+    await s4FlushMacrotask();
+    view.refresh(oneMonsterVm(103n));
+    const root = overlayRootOf(parent);
+    const careBtn = root.querySelector('button') as HTMLButtonElement;
+
+    careBtn.focus();
+    expect(
+      () => careBtn.click(),
+      'a synchronously-throwing onCare must not throw out of the click',
+    ).not.toThrow();
+    expect(onCare).toHaveBeenCalledTimes(1);
+    expect(careBtn.disabled, 'precondition: the lock was taken before the throw').toBe(true);
+    vi.mocked(openOverlayA11y).mockClear();
+    // happy-dom's blur() is a no-op on a DISABLED element, so model Chromium's focus fixup directly.
+    document.body.focus();
+    expect(document.activeElement).toBe(document.body);
+
+    await flushPromises();
+    await s4FlushMacrotask();
+
+    const anchor = root.querySelector(S4_META.initialFocusSelector);
+    expect(anchor).not.toBeNull();
+    expect(
+      document.activeElement,
+      'rb121-RAISING-CARE-THROW: the auto-converted rejection must re-anchor focus',
+    ).toBe(anchor);
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
+  });
+
+  it('rb121-RAISING-CARE-DETACH BITES: a mid-flight refresh() detaches the focused Care node -> the (resolved) settle still re-anchors focus after one macrotask (RED on master)', async () => {
+    const d = raDeferred();
+    const onCare = vi.fn().mockReturnValue(d.promise);
+    const parent = mountParent();
+    const view = new RaisingView(parent, makeCallbacks({ onCare }));
+    view.show();
+    await s4FlushMacrotask();
+    view.refresh(oneMonsterVm(104n));
+    const root = overlayRootOf(parent);
+    const careBtn = root.querySelector('button') as HTMLButtonElement;
+
+    careBtn.focus();
+    careBtn.click();
+    expect(onCare).toHaveBeenCalledTimes(1);
+    expect(careBtn.disabled).toBe(true);
+
+    view.refresh(oneMonsterVm(104n)); // mid-flight rebuild detaches the focused node
+    expect(careBtn.isConnected, 'precondition: the clicked node is now detached').toBe(false);
+    expect(
+      document.activeElement,
+      'precondition: happy-dom drops activeElement to <body> when the focused node is detached',
+    ).toBe(document.body);
+
+    vi.mocked(openOverlayA11y).mockClear();
+    d.resolve();
+    await flushPromises();
+    await s4FlushMacrotask();
+
+    const anchor = root.querySelector(S4_META.initialFocusSelector);
+    expect(anchor).not.toBeNull();
+    expect(
+      document.activeElement,
+      'rb121-RAISING-CARE-DETACH: the settle must re-anchor focus even after a mid-flight detach',
+    ).toBe(anchor);
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
+  });
+
+  // --- TRAIN ------------------------------------------------------------------
+
+  it('rb121-RAISING-TRAIN-REJECT BITES: onTrain REJECTS with no refresh() -> one macrotask after the settle, focus lands on the anchor (RED on master)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const d = raDeferred();
+    const onTrain = vi.fn().mockReturnValue(d.promise);
+    const parent = mountParent();
+    const view = new RaisingView(parent, makeCallbacks({ onTrain }));
+    view.show();
+    await s4FlushMacrotask();
+    view.refresh(raTrainVm());
+    const root = overlayRootOf(parent);
+    const [a] = raMonsterControls(parent);
+
+    a.trains[0]!.focus();
+    a.trains[0]!.click();
+    expect(onTrain).toHaveBeenCalledTimes(1);
+    expect(a.trains[0]!.disabled).toBe(true);
+    vi.mocked(openOverlayA11y).mockClear();
+    // happy-dom's blur() is a no-op on a DISABLED element, so model Chromium's focus fixup directly.
+    document.body.focus();
+    expect(document.activeElement).toBe(document.body);
+
+    d.reject(new Error('rb121-RAISING-TRAIN-REJECT: onTrain rejected'));
+    await flushPromises();
+    await s4FlushMacrotask();
+
+    const anchor = root.querySelector(S4_META.initialFocusSelector);
+    expect(anchor).not.toBeNull();
+    expect(
+      document.activeElement,
+      'rb121-RAISING-TRAIN-REJECT: a rejected settle with no refresh() must re-anchor focus',
+    ).toBe(anchor);
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledWith('raisingView', root);
+  });
+
+  it('rb121-RAISING-TRAIN-RESOLVE BITES: onTrain RESOLVES with no refresh() (the dominant sendGuarded no-batch path) -> focus lands on the anchor after one macrotask (RED on master)', async () => {
+    const d = raDeferred();
+    const onTrain = vi.fn().mockReturnValue(d.promise);
+    const parent = mountParent();
+    const view = new RaisingView(parent, makeCallbacks({ onTrain }));
+    view.show();
+    await s4FlushMacrotask();
+    view.refresh(raTrainVm());
+    const root = overlayRootOf(parent);
+    const [a] = raMonsterControls(parent);
+
+    a.trains[0]!.focus();
+    a.trains[0]!.click();
+    expect(onTrain).toHaveBeenCalledTimes(1);
+    expect(a.trains[0]!.disabled).toBe(true);
+    vi.mocked(openOverlayA11y).mockClear();
+    // happy-dom's blur() is a no-op on a DISABLED element, so model Chromium's focus fixup directly.
+    document.body.focus();
+    expect(document.activeElement).toBe(document.body);
+
+    d.resolve();
+    await flushPromises();
+    await s4FlushMacrotask();
+
+    const anchor = root.querySelector(S4_META.initialFocusSelector);
+    expect(anchor).not.toBeNull();
+    expect(document.activeElement, 'rb121-RAISING-TRAIN-RESOLVE: must re-anchor focus').toBe(
+      anchor,
+    );
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledWith('raisingView', root);
+  });
+
+  it('rb121-RAISING-TRAIN-THROW BITES: onTrain THROWS synchronously -> the auto-converted rejection still re-anchors focus after one macrotask (RED on master)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const onTrain = vi.fn(() => {
+      throw new Error('rb121-RAISING-TRAIN-THROW: synchronous throw');
+    });
+    const parent = mountParent();
+    const view = new RaisingView(parent, makeCallbacks({ onTrain }));
+    view.show();
+    await s4FlushMacrotask();
+    view.refresh(raTrainVm());
+    const root = overlayRootOf(parent);
+    const [a] = raMonsterControls(parent);
+
+    a.trains[0]!.focus();
+    expect(
+      () => a.trains[0]!.click(),
+      'a synchronously-throwing onTrain must not throw out of the click',
+    ).not.toThrow();
+    expect(onTrain).toHaveBeenCalledTimes(1);
+    expect(a.trains[0]!.disabled, 'precondition: the lock was taken before the throw').toBe(true);
+    vi.mocked(openOverlayA11y).mockClear();
+    // happy-dom's blur() is a no-op on a DISABLED element, so model Chromium's focus fixup directly.
+    document.body.focus();
+    expect(document.activeElement).toBe(document.body);
+
+    await flushPromises();
+    await s4FlushMacrotask();
+
+    const anchor = root.querySelector(S4_META.initialFocusSelector);
+    expect(anchor).not.toBeNull();
+    expect(document.activeElement, 'rb121-RAISING-TRAIN-THROW: must re-anchor focus').toBe(anchor);
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
+  });
+
+  it('rb121-RAISING-TRAIN-DETACH BITES: a mid-flight refresh() detaches the focused Train node -> the (resolved) settle still re-anchors focus after one macrotask (RED on master)', async () => {
+    const d = raDeferred();
+    const onTrain = vi.fn().mockReturnValue(d.promise);
+    const parent = mountParent();
+    const view = new RaisingView(parent, makeCallbacks({ onTrain }));
+    view.show();
+    await s4FlushMacrotask();
+    view.refresh(raTrainVm());
+    const root = overlayRootOf(parent);
+    const [aBefore] = raMonsterControls(parent);
+
+    aBefore.trains[0]!.focus();
+    aBefore.trains[0]!.click();
+    expect(onTrain).toHaveBeenCalledTimes(1);
+    expect(aBefore.trains[0]!.disabled).toBe(true);
+
+    view.refresh(raTrainVm()); // mid-flight rebuild detaches the focused node
+    expect(aBefore.trains[0]!.isConnected, 'precondition: the clicked node is now detached').toBe(
+      false,
+    );
+    expect(
+      document.activeElement,
+      'precondition: happy-dom drops activeElement to <body> when the focused node is detached',
+    ).toBe(document.body);
+
+    vi.mocked(openOverlayA11y).mockClear();
+    d.resolve();
+    await flushPromises();
+    await s4FlushMacrotask();
+
+    const anchor = root.querySelector(S4_META.initialFocusSelector);
+    expect(anchor).not.toBeNull();
+    expect(
+      document.activeElement,
+      'rb121-RAISING-TRAIN-DETACH: the settle must re-anchor focus even after a mid-flight detach',
+    ).toBe(anchor);
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
+  });
+
+  // --- KEEP / STALE / HIDDEN (view-wide, exercised via Care) -----------------
+
+  it('rb121-RAISING-KEEP-INROOT BITES: focus already on a live in-root sentinel survives a settle untouched, and openOverlayA11y is never re-invoked -- kills a guard broader than "focus === document.body"', async () => {
+    const d = raDeferred();
+    const onCare = vi.fn().mockReturnValue(d.promise);
+    const parent = mountParent();
+    const view = new RaisingView(parent, makeCallbacks({ onCare }));
+    view.show();
+    await s4FlushMacrotask();
+    view.refresh(oneMonsterVm(105n));
+    const root = overlayRootOf(parent);
+    const careBtn = root.querySelector('button') as HTMLButtonElement;
+
+    careBtn.click();
+    expect(onCare).toHaveBeenCalledTimes(1);
+
+    const sentinel = s4InsideSentinel(root);
+    sentinel.focus();
+    expect(document.activeElement).toBe(sentinel);
+    vi.mocked(openOverlayA11y).mockClear();
+
+    d.resolve();
+    await flushPromises();
+    await s4FlushMacrotask();
+
+    expect(
+      document.activeElement,
+      'rb121-RAISING-KEEP-INROOT: a settle must NEVER steal focus from a live in-root control',
+    ).toBe(sentinel);
+    expect(vi.mocked(openOverlayA11y)).not.toHaveBeenCalled();
+  });
+
+  it('rb121-RAISING-KEEP-OUTROOT BITES: focus on an element outside the overlay root survives a settle untouched, and openOverlayA11y is never re-invoked -- kills the spec-letter "body or outside root" condition', async () => {
+    const d = raDeferred();
+    const onCare = vi.fn().mockReturnValue(d.promise);
+    const parent = mountParent();
+    const view = new RaisingView(parent, makeCallbacks({ onCare }));
+    view.show();
+    await s4FlushMacrotask();
+    view.refresh(oneMonsterVm(106n));
+    const careBtn = overlayRootOf(parent).querySelector('button') as HTMLButtonElement;
+
+    careBtn.click();
+    expect(onCare).toHaveBeenCalledTimes(1);
+
+    const outside = document.createElement('button');
+    outside.id = 'rb121-raising-outside-sentinel';
+    document.body.appendChild(outside);
+    outside.focus();
+    expect(document.activeElement, 'precondition: focus parked outside the overlay root').toBe(
+      outside,
+    );
+    vi.mocked(openOverlayA11y).mockClear();
+
+    d.resolve();
+    await flushPromises();
+    await s4FlushMacrotask();
+
+    expect(
+      document.activeElement,
+      'rb121-RAISING-KEEP-OUTROOT: an out-of-root surface (e.g. the F8 error overlay) legitimately ' +
+        'owns focus and a settle must never steal it back',
+    ).toBe(outside);
+    expect(vi.mocked(openOverlayA11y)).not.toHaveBeenCalled();
+  });
+
+  it("rb121-RAISING-STALE BITES: a stale generation's settle must not touch focus; the LIVE generation's own settle re-anchors it (RED on master via the positive half)", async () => {
+    const p1 = raDeferred();
+    const p2 = raDeferred();
+    const onCare = vi.fn().mockReturnValueOnce(p1.promise).mockReturnValueOnce(p2.promise);
+    const parent = mountParent();
+    const view = new RaisingView(parent, makeCallbacks({ onCare }));
+    view.show();
+    await s4FlushMacrotask();
+    view.refresh(oneMonsterVm(107n));
+    const root = overlayRootOf(parent);
+    let careBtn = root.querySelector('button') as HTMLButtonElement;
+    careBtn.focus();
+    careBtn.click(); // generation 1
+    expect(onCare).toHaveBeenCalledTimes(1);
+
+    view.hide(); // releases generation 1's lock -- P1 is still in flight
+    view.show();
+    await s4FlushMacrotask(); // flush the reopen's own deferred focus
+    view.refresh(oneMonsterVm(107n));
+    vi.mocked(openOverlayA11y).mockClear();
+
+    careBtn = root.querySelector('button') as HTMLButtonElement;
+    careBtn.focus();
+    careBtn.click(); // generation 2 -- a NEW token for the same monster
+    expect(onCare).toHaveBeenCalledTimes(2);
+    expect(careBtn.disabled).toBe(true);
+    // happy-dom's blur() is a no-op on a DISABLED element, so model Chromium's focus fixup directly.
+    document.body.focus();
+    expect(
+      document.activeElement,
+      "precondition: generation 2's click stranded focus on <body>",
+    ).toBe(document.body);
+
+    p1.resolve(); // the STALE settle
+    await flushPromises();
+    await s4FlushMacrotask();
+    expect(
+      document.activeElement,
+      "rb121-RAISING-STALE: a stale generation's settle must NOT move focus while generation 2 " +
+        'is still in flight',
+    ).toBe(document.body);
+    expect(vi.mocked(openOverlayA11y)).not.toHaveBeenCalled();
+
+    p2.resolve(); // the LIVE generation's own settle
+    await flushPromises();
+    await s4FlushMacrotask();
+    const anchor = root.querySelector(S4_META.initialFocusSelector);
+    expect(anchor, 'anti-vacuity: proves this tooth is not vacuously green').not.toBeNull();
+    expect(
+      document.activeElement,
+      "rb121-RAISING-STALE: the LIVE generation's OWN settle must re-anchor focus (RED on master)",
+    ).toBe(anchor);
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
+  });
+
+  it('rb121-RAISING-HIDDEN BITES: a lock owned while the view is NOT visible never re-opens the overlay, and the root gains no role="dialog" -- kills a missing #visible guard', async () => {
+    const d = raDeferred();
+    const onCare = vi.fn().mockReturnValue(d.promise);
+    const parent = mountParent();
+    const view = new RaisingView(parent, makeCallbacks({ onCare }));
+    // Deliberately never call view.show() -- #visible stays false; refresh() alone renders
+    // buttons regardless of visibility (raisingView.ts's refresh() has no #visible guard).
+    view.refresh(oneMonsterVm(108n));
+    const root = overlayRootOf(parent);
+    expect(view.visible, 'precondition: the view never became visible').toBe(false);
+    const careBtn = root.querySelector('button') as HTMLButtonElement;
+
+    careBtn.click();
+    expect(onCare).toHaveBeenCalledTimes(1);
+    expect(careBtn.disabled).toBe(true);
+    vi.mocked(openOverlayA11y).mockClear();
+
+    d.resolve();
+    await flushPromises();
+    await s4FlushMacrotask();
+
+    expect(
+      vi.mocked(openOverlayA11y),
+      'rb121-RAISING-HIDDEN: the #visible guard must suppress the re-anchor step entirely -- ' +
+        'calling openOverlayA11y here would create an ARIA dialog record on a display:none root',
+    ).not.toHaveBeenCalled();
+    expect(
+      root.getAttribute('role'),
+      'rb121-RAISING-HIDDEN: a hidden root must never gain role="dialog"',
+    ).toBeNull();
+  });
+});

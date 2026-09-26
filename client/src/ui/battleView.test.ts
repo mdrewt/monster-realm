@@ -5770,3 +5770,326 @@ describe('m24s3 (ADR-0259): battleView.ts scan — zero failing sinks', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// rb-121 (ADR-0271, residual R-20r-a-FOCUS) — a settle-released PvE action lock
+// re-anchors focus that the no-batch path stranded on <body>, by re-calling
+// openOverlayA11y('battleView', root) when the release finds
+// `this.#visible && document.activeElement === document.body`.
+//
+// SOURCE OF TRUTH: docs/adr/0271-rb121-settle-release-reanchors-stranded-focus.md;
+// memory/projects/gates/rb-121.gates.md X4/X5.
+//
+// RED REASON: battleView.ts's `#dispatch` `.finally()` block re-enables the
+// skills/actions controls but never calls openOverlayA11y — every
+// rb121-BATTLE-{REJECT,RESOLVE,THROW,DETACH} tooth below fails its final
+// `toBe(anchor)` assertion on master. rb121-BATTLE-STALE's negative half and every
+// KEEP-*/HIDDEN control pass on master already; STALE's positive half is what reds
+// the whole tooth on master.
+//
+// HIDDEN MECHANISM NOTE: battleView's `refresh(vm)` ALWAYS calls `show()` when
+// `!this.#visible`, so a lock cannot be taken while `#visible` is false via
+// refresh() alone. The HIDDEN tooth below shows+refreshes, then calls `hide()`
+// DIRECTLY -- `hide()` does NOT clear the rendered `<button>`s from the DOM, only
+// `#pending` and the ARIA record, so a still-live skill button can be clicked
+// again while `#visible` is false, taking a BRAND NEW lock (hide() cleared the
+// old one). Scope note (ADR-0271 D6 / gates ledger): the PvP submit path
+// (onPvpAttack/onPvpSwap) takes no client lock and is out of scope; every tooth
+// below drives the PvE `#dispatch` path only.
+//
+// WRONG-IMPL-KILLED index (one per tooth):
+//   REJECT/RESOLVE/THROW -> a `.catch`-only re-anchor (never fires on the dominant
+//       RESOLVE path); `Promise.resolve(cb())` for THROW.
+//   DETACH -> a release that forgets to read the LIVE `#root`/`#visible` at settle
+//       time.
+//   KEEP-INROOT/KEEP-OUTROOT -> a condition broader than "focus === document.body".
+//   STALE -> a release keyed by mere battleId equality instead of lock-object
+//       IDENTITY (D11) with the re-anchor step gated behind it -- acting in the
+//       STALE generation's `.finally()`.
+//   HIDDEN -> a missing `#visible` guard.
+// ---------------------------------------------------------------------------
+
+describe('rb-121 BattleView: a settle-released PvE action lock re-anchors focus the no-batch path stranded on <body> (ADR-0271)', () => {
+  afterEach(() => {
+    document.body.replaceChildren();
+    vi.restoreAllMocks();
+  });
+
+  it('rb121-BATTLE-REJECT BITES: onAttack REJECTS with no refresh() -> one macrotask after the settle, focus lands on the battleView anchor (RED on master)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const d = raDeferred();
+    const callbacks = makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) });
+    const { parent, view } = raMount(callbacks);
+    await s4FlushMacrotask();
+    const root = parent.firstElementChild as HTMLElement;
+    const c = raControls(parent);
+
+    c.skills[0]!.focus();
+    c.skills[0]!.click();
+    expect(callbacks.onAttack).toHaveBeenCalledTimes(1);
+    expect(c.skills[0]!.disabled, 'precondition: the click took the lock').toBe(true);
+    vi.mocked(openOverlayA11y).mockClear();
+    // happy-dom's blur() is a no-op on a DISABLED element, so model Chromium's focus fixup directly.
+    document.body.focus();
+    expect(
+      document.activeElement,
+      'precondition: happy-dom does not blur a disabled focused button -- body.focus() models the real fixup',
+    ).toBe(document.body);
+
+    d.reject(new Error('rb121-BATTLE-REJECT: onAttack rejected'));
+    await raFlushPromises();
+    await s4FlushMacrotask();
+
+    const anchor = root.querySelector(S4_META.initialFocusSelector);
+    expect(anchor, 'anti-vacuity').not.toBeNull();
+    expect(
+      document.activeElement,
+      'rb121-BATTLE-REJECT: a rejected settle with no refresh() must re-anchor focus',
+    ).toBe(anchor);
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledWith('battleView', root);
+  });
+
+  it('rb121-BATTLE-RESOLVE BITES: onAttack RESOLVES with no refresh() (the dominant sendGuarded no-batch path) -> focus lands on the anchor after one macrotask (RED on master)', async () => {
+    const d = raDeferred();
+    const callbacks = makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) });
+    const { parent, view } = raMount(callbacks);
+    await s4FlushMacrotask();
+    const root = parent.firstElementChild as HTMLElement;
+    const c = raControls(parent);
+
+    c.skills[0]!.focus();
+    c.skills[0]!.click();
+    expect(callbacks.onAttack).toHaveBeenCalledTimes(1);
+    expect(c.skills[0]!.disabled).toBe(true);
+    vi.mocked(openOverlayA11y).mockClear();
+    // happy-dom's blur() is a no-op on a DISABLED element, so model Chromium's focus fixup directly.
+    document.body.focus();
+    expect(document.activeElement).toBe(document.body);
+
+    d.resolve();
+    await raFlushPromises();
+    await s4FlushMacrotask();
+
+    const anchor = root.querySelector(S4_META.initialFocusSelector);
+    expect(anchor).not.toBeNull();
+    expect(
+      document.activeElement,
+      'rb121-BATTLE-RESOLVE: a resolved settle with no refresh() must re-anchor focus -- the ' +
+        "DOMINANT production path (main.ts's sendGuarded always resolves)",
+    ).toBe(anchor);
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledWith('battleView', root);
+  });
+
+  it('rb121-BATTLE-THROW BITES: onAttack THROWS synchronously -> the auto-converted rejection still re-anchors focus after one macrotask (RED on master)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const callbacks = makeRaCallbacks({
+      onAttack: vi.fn(() => {
+        throw new Error('rb121-BATTLE-THROW: synchronous throw');
+      }),
+    });
+    const { parent, view } = raMount(callbacks);
+    await s4FlushMacrotask();
+    const root = parent.firstElementChild as HTMLElement;
+    const c = raControls(parent);
+
+    c.skills[0]!.focus();
+    expect(
+      () => c.skills[0]!.click(),
+      'a synchronously-throwing onAttack must not throw out of the click',
+    ).not.toThrow();
+    expect(callbacks.onAttack).toHaveBeenCalledTimes(1);
+    expect(c.skills[0]!.disabled, 'precondition: the lock was taken before the throw').toBe(true);
+    vi.mocked(openOverlayA11y).mockClear();
+    // happy-dom's blur() is a no-op on a DISABLED element, so model Chromium's focus fixup directly.
+    document.body.focus();
+    expect(document.activeElement).toBe(document.body);
+
+    await raFlushPromises();
+    await s4FlushMacrotask();
+
+    const anchor = root.querySelector(S4_META.initialFocusSelector);
+    expect(anchor).not.toBeNull();
+    expect(
+      document.activeElement,
+      'rb121-BATTLE-THROW: the auto-converted rejection must re-anchor focus',
+    ).toBe(anchor);
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
+  });
+
+  it('rb121-BATTLE-DETACH BITES: a mid-flight refresh() detaches the focused skill node -> the (resolved) settle still re-anchors focus after one macrotask (RED on master)', async () => {
+    const d = raDeferred();
+    const callbacks = makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) });
+    const { parent, view } = raMount(callbacks);
+    await s4FlushMacrotask();
+    const root = parent.firstElementChild as HTMLElement;
+    const c = raControls(parent);
+
+    c.skills[0]!.focus();
+    c.skills[0]!.click();
+    expect(callbacks.onAttack).toHaveBeenCalledTimes(1);
+    expect(c.skills[0]!.disabled).toBe(true);
+
+    view.refresh(makeRaVM()); // mid-flight rebuild detaches the focused node
+    expect(c.skills[0]!.isConnected, 'precondition: the clicked node is now detached').toBe(false);
+    expect(
+      document.activeElement,
+      'precondition: happy-dom drops activeElement to <body> when the focused node is detached',
+    ).toBe(document.body);
+
+    vi.mocked(openOverlayA11y).mockClear();
+    d.resolve();
+    await raFlushPromises();
+    await s4FlushMacrotask();
+
+    const anchor = root.querySelector(S4_META.initialFocusSelector);
+    expect(anchor).not.toBeNull();
+    expect(
+      document.activeElement,
+      'rb121-BATTLE-DETACH: the settle must re-anchor focus even after a mid-flight detach',
+    ).toBe(anchor);
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
+  });
+
+  it('rb121-BATTLE-KEEP-INROOT BITES: focus already on a live in-root sentinel survives a settle untouched, and openOverlayA11y is never re-invoked -- kills a guard broader than "focus === document.body"', async () => {
+    const d = raDeferred();
+    const callbacks = makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) });
+    const { parent, view } = raMount(callbacks);
+    await s4FlushMacrotask();
+    const root = parent.firstElementChild as HTMLElement;
+    const c = raControls(parent);
+
+    c.skills[0]!.click();
+    expect(callbacks.onAttack).toHaveBeenCalledTimes(1);
+
+    const sentinel = s4InsideSentinel(root);
+    sentinel.focus();
+    expect(document.activeElement).toBe(sentinel);
+    vi.mocked(openOverlayA11y).mockClear();
+
+    d.resolve();
+    await raFlushPromises();
+    await s4FlushMacrotask();
+
+    expect(
+      document.activeElement,
+      'rb121-BATTLE-KEEP-INROOT: a settle must NEVER steal focus from a live in-root control',
+    ).toBe(sentinel);
+    expect(vi.mocked(openOverlayA11y)).not.toHaveBeenCalled();
+  });
+
+  it('rb121-BATTLE-KEEP-OUTROOT BITES: focus on an element outside the overlay root survives a settle untouched, and openOverlayA11y is never re-invoked', async () => {
+    const d = raDeferred();
+    const callbacks = makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) });
+    const { parent } = raMount(callbacks);
+    await s4FlushMacrotask();
+    const c = raControls(parent);
+    c.skills[0]!.click();
+    expect(callbacks.onAttack).toHaveBeenCalledTimes(1);
+
+    const outside = s4OutsideSentinel();
+    outside.focus();
+    expect(document.activeElement).toBe(outside);
+    vi.mocked(openOverlayA11y).mockClear();
+
+    d.resolve();
+    await raFlushPromises();
+    await s4FlushMacrotask();
+
+    expect(
+      document.activeElement,
+      'rb121-BATTLE-KEEP-OUTROOT: an out-of-root surface legitimately owns focus and a settle must ' +
+        'never steal it back',
+    ).toBe(outside);
+    expect(vi.mocked(openOverlayA11y)).not.toHaveBeenCalled();
+  });
+
+  it("rb121-BATTLE-STALE BITES: a stale generation's settle must not touch focus; the LIVE generation's own settle re-anchors it (RED on master via the positive half)", async () => {
+    const p1 = raDeferred();
+    const p2 = raDeferred();
+    const onAttack = vi.fn().mockReturnValueOnce(p1.promise).mockReturnValueOnce(p2.promise);
+    const callbacks = makeRaCallbacks({ onAttack });
+    const { parent, view } = raMount(callbacks);
+    await s4FlushMacrotask();
+    const root = parent.firstElementChild as HTMLElement;
+    let c = raControls(parent);
+    c.skills[0]!.focus();
+    c.skills[0]!.click(); // generation 1
+    expect(onAttack).toHaveBeenCalledTimes(1);
+
+    view.hide(); // releases generation 1's lock -- P1 is still in flight
+    view.refresh(makeRaVM()); // re-show + rebuild, same battle
+    await s4FlushMacrotask(); // flush the re-show's own deferred focus
+    vi.mocked(openOverlayA11y).mockClear();
+
+    c = raControls(parent);
+    c.skills[0]!.focus();
+    c.skills[0]!.click(); // generation 2 -- a NEW token, same battleId
+    expect(onAttack).toHaveBeenCalledTimes(2);
+    expect(c.skills[0]!.disabled).toBe(true);
+    // happy-dom's blur() is a no-op on a DISABLED element, so model Chromium's focus fixup directly.
+    document.body.focus();
+    expect(
+      document.activeElement,
+      "precondition: generation 2's click stranded focus on <body>",
+    ).toBe(document.body);
+
+    p1.resolve(); // the STALE settle
+    await raFlushPromises();
+    await s4FlushMacrotask();
+    expect(
+      document.activeElement,
+      "rb121-BATTLE-STALE: a stale generation's settle must NOT move focus",
+    ).toBe(document.body);
+    expect(vi.mocked(openOverlayA11y)).not.toHaveBeenCalled();
+
+    p2.resolve(); // the LIVE generation's own settle
+    await raFlushPromises();
+    await s4FlushMacrotask();
+    const anchor = root.querySelector(S4_META.initialFocusSelector);
+    expect(anchor, 'anti-vacuity').not.toBeNull();
+    expect(
+      document.activeElement,
+      "rb121-BATTLE-STALE: the LIVE generation's OWN settle must re-anchor focus (RED on master)",
+    ).toBe(anchor);
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
+  });
+
+  it('rb121-BATTLE-HIDDEN BITES: a lock owned while the view is NOT visible never re-opens the overlay, and the root gains no role="dialog" -- kills a missing #visible guard', async () => {
+    const d = raDeferred();
+    const callbacks = makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) });
+    const { parent, view } = raMount(callbacks);
+    await s4FlushMacrotask();
+    const root = parent.firstElementChild as HTMLElement;
+    const c = raControls(parent);
+
+    view.hide(); // #visible -> false; the still-rendered skill buttons remain in the DOM
+    expect(view.visible).toBe(false);
+    expect(
+      root.getAttribute('role'),
+      'precondition: hide() already stripped the ARIA attributes',
+    ).toBeNull();
+
+    c.skills[0]!.click(); // takes a BRAND NEW lock while hidden -- hide() cleared #pending
+    expect(callbacks.onAttack).toHaveBeenCalledTimes(1);
+    expect(c.skills[0]!.disabled).toBe(true);
+    vi.mocked(openOverlayA11y).mockClear();
+    // happy-dom's blur() is a no-op on a DISABLED element, so model Chromium's focus fixup directly.
+    document.body.focus();
+    expect(document.activeElement).toBe(document.body);
+
+    d.resolve();
+    await raFlushPromises();
+    await s4FlushMacrotask();
+
+    expect(
+      vi.mocked(openOverlayA11y),
+      'rb121-BATTLE-HIDDEN: the #visible guard must suppress the re-anchor step entirely',
+    ).not.toHaveBeenCalled();
+    expect(
+      root.getAttribute('role'),
+      'rb121-BATTLE-HIDDEN: a hidden root must never gain role="dialog"',
+    ).toBeNull();
+  });
+});
