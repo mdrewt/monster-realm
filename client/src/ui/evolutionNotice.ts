@@ -329,7 +329,7 @@ export class EvolutionNoticeBanner {
       this.#announcedKey = notice.key;
       this.#sinks.announce(notice.label);
     }
-    if (notice === null && hadFocus) this.#sinks.returnFocus();
+    if (hadFocus) this.#sinks.returnFocus();
   }
 
   get visible(): boolean {
