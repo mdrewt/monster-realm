@@ -6791,6 +6791,586 @@ fn rb129_anonymize_battles_body_is_pinned() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// rb-129 pure seam tests. These call `super::battle_with_forced_terminal`
+// directly, so they are COMPILE-RED (E0425) until ADR-0274 D1 lands.
+// ---------------------------------------------------------------------------
+
+/// A combatant for the rb-129 fixtures, with distinct non-default stats so a
+/// seam that rebuilt a team instead of passing it through is visible to the
+/// whole-state comparison. A `current_hp` of 0 makes it fainted.
+fn rb129_mon(species_id: u32, current_hp: u16) -> game_core::BattleMonster {
+    game_core::BattleMonster {
+        species_id,
+        affinity: game_core::Affinity::Water,
+        level: 12,
+        current_hp,
+        max_hp: 40,
+        stats: game_core::StatBlock {
+            hp: 40,
+            attack: 21,
+            defense: 19,
+            speed: 17,
+            sp_attack: 23,
+            sp_defense: 18,
+        },
+        known_skill_ids: vec![1, 2],
+        status: None,
+    }
+}
+
+/// The three team shapes the totality matrix crosses on EACH side: empty, one
+/// living member behind a fainted lead, and every member fainted. `active` is
+/// non-zero wherever the team length allows it.
+fn rb129_team_shapes() -> [(&'static str, game_core::BattleSide); 3] {
+    [
+        (
+            "empty",
+            game_core::BattleSide {
+                active: 0,
+                team: vec![],
+            },
+        ),
+        (
+            "one-living",
+            game_core::BattleSide {
+                active: 1,
+                team: vec![rb129_mon(101, 0), rb129_mon(102, 30)],
+            },
+        ),
+        (
+            "all-fainted",
+            game_core::BattleSide {
+                active: 1,
+                team: vec![rb129_mon(103, 0), rb129_mon(104, 0)],
+            },
+        ),
+    ]
+}
+
+/// The rb-129 row: the `m22s3b_battle_row` shape (distinct party ids, opponent
+/// ids and creation stamp) PLUS non-default mechanical fields — turn 7, active
+/// weather, non-empty teams and a non-zero `active` on both sides — so a seam
+/// that rewrote anything but `state.outcome` shows up in the whole-state
+/// comparison.
+fn rb129_row(
+    id: u64,
+    player: spacetimedb::Identity,
+    opponent: spacetimedb::Identity,
+    outcome: game_core::BattleOutcome,
+) -> crate::schema::Battle {
+    crate::schema::Battle {
+        state: game_core::BattleState {
+            side_a: game_core::BattleSide {
+                active: 1,
+                team: vec![rb129_mon(1, 0), rb129_mon(2, 30)],
+            },
+            side_b: game_core::BattleSide {
+                active: 2,
+                team: vec![rb129_mon(3, 25), rb129_mon(4, 0), rb129_mon(5, 40)],
+            },
+            outcome,
+            turn_number: 7,
+            weather: Some(game_core::combat::WeatherEffect::Rain { turns_remaining: 3 }),
+        },
+        ..m22s3b_battle_row(id, player, opponent)
+    }
+}
+
+/// Assert the forced-terminal seam's verdict on ONE row: the outcome is `want`,
+/// and EVERYTHING else — both identity columns, every mechanical field, the
+/// weather and the team contents — is exactly what went in.
+///
+/// Composes the existing `m22s3b_assert_mechanical_fields_intact` (against the
+/// input row with only its outcome replaced) rather than re-listing fields, and
+/// adds the whole-`BattleState` equality that helper does not make: it compares
+/// team LENGTHS only and never reads the weather. `why` says what a wrong
+/// outcome on this row means, so each failure names its wrong implementation.
+fn rb129_assert_row(
+    label: &str,
+    why: &str,
+    before: &crate::schema::Battle,
+    after: &crate::schema::Battle,
+    want: game_core::BattleOutcome,
+) {
+    let got = after.state.outcome;
+    assert_eq!(
+        got, want,
+        "rb-129 E1 FAIL (outcome) {label}: the forced-terminal seam returned {got:?}; this \
+         row must come back {want:?}. {why}"
+    );
+    let expected = crate::schema::Battle {
+        state: game_core::BattleState {
+            outcome: want,
+            ..before.state.clone()
+        },
+        ..before.clone()
+    };
+    m22s3b_assert_mechanical_fields_intact(label, &expected, after);
+    assert_eq!(
+        after.state, expected.state,
+        "rb-129 E1 FAIL (state intact) {label}: the seam rewrote part of the battle state \
+         other than its outcome. ADR-0274 D1 lets it write `state.outcome` and NOTHING \
+         else: the weather, both teams (members, HP, stats, status) and both lead indices \
+         are the survivor's record of the fight. The mechanical-field helper compares team \
+         LENGTHS only and never reads the weather, which is why this clause exists."
+    );
+    assert_eq!(
+        after.player_identity, before.player_identity,
+        "rb-129 E1 FAIL (identities untouched) {label}: the seam moved `player_identity`. \
+         It must never touch an identity column: the swap is the tombstone seam's job, runs \
+         AFTER this one, and needs the original identities to find the owner's side. A seam \
+         that also tombstones breaks the every-field-survives contract of both seams."
+    );
+    assert_eq!(
+        after.opponent_identity, before.opponent_identity,
+        "rb-129 E1 FAIL (identities untouched) {label}: the seam moved `opponent_identity` \
+         — on a wild row that is the all-zero sentinel that classifies the row as wild."
+    );
+}
+
+/// **PRV1-6 post-terminal (pure)** — the forced-terminal seam ends EVERY Ongoing
+/// row that names the erased identity, with that side's forfeit (or, for a wild
+/// row, an auto-flee), and touches nothing else.
+///
+/// ADR-0274 D1 truth table, executed by value:
+/// - side A names the erased identity: side A forfeits, side B wins;
+/// - side B names it: side B forfeits, side A wins;
+/// - PRACTICE, both sides name it: side A's forfeit, because
+///   `forfeit_on_disconnect` runs its side-A pass first (ADR-0109 D8);
+/// - an Ongoing WILD row: `Fled`, the ADR-0138 D2 auto-flee, recognised by the
+///   SSOT predicate and checked before the player column.
+///
+/// (a) PRECONDITIONS, asserted rather than assumed: the four identities are
+/// pairwise distinct (otherwise a forced row and an untouched one, or a swapped
+/// identity and an intact one, are indistinguishable), and game-core's forfeit
+/// rule maps side A to a side-B win and side B to a side-A win — the literals
+/// below are that rule's output, not a second copy of it.
+///
+/// (b) BASELINE: the four rows on the rb-129 fixture (turn 7, weather, non-empty
+/// teams, non-zero `active`), with every mechanical field, the whole
+/// `BattleState` bar its outcome, and both identity columns asserted unchanged.
+///
+/// (c) THE TOTALITY MATRIX (red-team HIGH): a hand-written wrong seam that
+/// skipped `turn_number == 0` rows was MEASURED passing the entire suite. So
+/// every side is crossed with turn number 0, 1, 7 and `u16::MAX`; each side's
+/// team, independently, empty, one living or all fainted; a creation stamp of
+/// zero or real; no party and opponent ids or some; and no weather or rain —
+/// 1152 rows, each failure labelled with its parameters.
+///
+/// Kills:
+/// - a skip keyed on ANY mechanical field (turn 0, an empty or fainted team, a
+///   zero creation stamp, empty ids, no weather);
+/// - a uniform forfeit that ignores the wild case (the wild row reads a win);
+/// - `Fled` for every row (the PvP survivor is told they fled);
+/// - side A and side B swapped;
+/// - practice resolved opponent-column-first (it reads a side-A win);
+/// - a seam that also tombstones, or otherwise rewrites an identity column;
+/// - a seam that rebuilds the row and loses any mechanical field.
+///
+/// RED AT HEAD: compile error E0425 — the seam does not exist yet.
+#[test]
+fn rb129_forced_terminal_ends_every_ongoing_row_naming_the_erased_identity() {
+    let d = spacetimedb::Identity::from_byte_array([0x81u8; 32]);
+    let s = spacetimedb::Identity::from_byte_array([0x82u8; 32]);
+    let wild = crate::WILD_IDENTITY;
+    let tomb = crate::TOMBSTONE_IDENTITY;
+    let ongoing = game_core::BattleOutcome::Ongoing;
+
+    // --- (a) preconditions, asserted rather than assumed --------------------
+    let named = [("d", d), ("s", s), ("WILD", wild), ("TOMBSTONE", tomb)];
+    for (i, (name_a, id_a)) in named.iter().enumerate() {
+        for (name_b, id_b) in &named[i + 1..] {
+            assert_ne!(
+                id_a, id_b,
+                "rb-129 E1 FAIL (precondition): the fixture identities {name_a} and \
+                 {name_b} are equal. Every verdict below depends on them differing — a \
+                 forced row and an untouched one, or a swapped identity and an intact \
+                 one, would otherwise be indistinguishable."
+            );
+        }
+    }
+    let forfeits = (
+        game_core::pvp_forfeit_outcome(game_core::SideId::SideA),
+        game_core::pvp_forfeit_outcome(game_core::SideId::SideB),
+    );
+    assert_eq!(
+        forfeits,
+        (
+            game_core::BattleOutcome::SideBWins,
+            game_core::BattleOutcome::SideAWins,
+        ),
+        "rb-129 E1 FAIL (precondition): game-core's forfeit rule no longer maps a side-A \
+         forfeit to a side-B win and a side-B forfeit to a side-A win. The expected \
+         outcomes below are that rule's output written out; if the rule changed \
+         deliberately, re-derive them from ADR-0109 D8 and ADR-0274 D1 in the same change."
+    );
+
+    // --- (b) the four baseline rows on the rb-129 fixture -------------------
+    let sides = [
+        (
+            "side A (d vs s)",
+            d,
+            s,
+            game_core::BattleOutcome::SideBWins,
+            "Side A names the erased identity, so side A forfeits and side B wins \
+             (ADR-0109 D8). A side-A win here is the A/B swap; Fled tells a PvP survivor \
+             they fled; Ongoing is the retired skip.",
+        ),
+        (
+            "side B (s vs d)",
+            s,
+            d,
+            game_core::BattleOutcome::SideAWins,
+            "Side B names the erased identity, so side B forfeits and side A wins. A \
+             side-B win here is the A/B swap, or a uniform side-A forfeit that ignores \
+             which column holds the erased identity.",
+        ),
+        (
+            "practice (d vs d)",
+            d,
+            d,
+            game_core::BattleOutcome::SideBWins,
+            "A PRACTICE row names the erased identity on BOTH sides. The side-A pass runs \
+             first, exactly as in the disconnect forfeit, so it is side A's forfeit and \
+             side B wins. A side-A win here is a seam that tests the opponent column \
+             before the player column.",
+        ),
+        (
+            "wild (d vs WILD)",
+            d,
+            wild,
+            game_core::BattleOutcome::Fled,
+            "An Ongoing WILD row is auto-fled (ADR-0138 D2 parity) through the SSOT \
+             predicate, checked FIRST. A side-B win here is a uniform forfeit that treats \
+             the wild sentinel as a PvP survivor, or a player-column check placed before \
+             the wild check.",
+        ),
+    ];
+    for (i, (side, player, opponent, want, why)) in sides.iter().enumerate() {
+        let label = format!("[baseline {side}]");
+        let before = rb129_row(1290 + i as u64, *player, *opponent, ongoing);
+        let after = super::battle_with_forced_terminal(before.clone(), d);
+        rb129_assert_row(&label, why, &before, &after, *want);
+    }
+
+    // --- (c) THE TOTALITY MATRIX (red-team HIGH) ----------------------------
+    let shapes = rb129_team_shapes();
+    let mut team_pairs = Vec::new();
+    for (label_a, side_a) in &shapes {
+        for (label_b, side_b) in &shapes {
+            let label = format!("team_a={label_a} team_b={label_b}");
+            team_pairs.push((label, side_a.clone(), side_b.clone()));
+        }
+    }
+    let rain = game_core::combat::WeatherEffect::Rain { turns_remaining: 3 };
+    let mut field_sets = Vec::new();
+    for created_at_ms in [0i64, 1_700_000_000_123] {
+        for with_ids in [false, true] {
+            for weather in [None, Some(rain)] {
+                let (party, opp): (Vec<u64>, Vec<u64>) = if with_ids {
+                    (vec![11, 22, 33], vec![44])
+                } else {
+                    (Vec::new(), Vec::new())
+                };
+                let label = format!(
+                    "created_at_ms={created_at_ms} party_ids={party:?} \
+                     opponent_ids={opp:?} weather={weather:?}"
+                );
+                field_sets.push((label, created_at_ms, party, opp, weather));
+            }
+        }
+    }
+    assert_eq!(
+        (team_pairs.len(), field_sets.len()),
+        (9, 8),
+        "rb-129 E1 FAIL (matrix non-vacuity): the matrix axes must hold 9 team pairs and 8 \
+         field sets; a collapsed axis silently drops the rows a skip could hide in."
+    );
+    let why_matrix = "The matrix varies ONLY mechanical fields — turn number, both teams, \
+                      creation stamp, party and opponent ids, weather — none of which the \
+                      forced-terminal rule reads. A wrong outcome on ONE combination is a \
+                      seam that keys a skip, or a different verdict, on that field.";
+    for (side, player, opponent, want, _) in &sides {
+        for turn in [0u16, 1, 7, u16::MAX] {
+            for (teams, side_a, side_b) in &team_pairs {
+                for (fields, created_at_ms, party, opp, weather) in &field_sets {
+                    let label = format!("[matrix side={side} turn={turn} {teams} {fields}]");
+                    let before = crate::schema::Battle {
+                        state: game_core::BattleState {
+                            side_a: side_a.clone(),
+                            side_b: side_b.clone(),
+                            outcome: ongoing,
+                            turn_number: turn,
+                            weather: *weather,
+                        },
+                        party_monster_ids: party.clone(),
+                        opponent_monster_ids: opp.clone(),
+                        created_at_ms: *created_at_ms,
+                        ..rb129_row(1299, *player, *opponent, ongoing)
+                    };
+                    let after = super::battle_with_forced_terminal(before.clone(), d);
+                    assert_ne!(
+                        after.state.outcome, ongoing,
+                        "rb-129 E1 FAIL (totality) {label}: the seam left an Ongoing row \
+                         that names the erased identity Ongoing. EVERY such row must come \
+                         back terminal whatever its mechanical fields: a wrong seam that \
+                         skipped turn-0 rows was MEASURED passing the whole suite before \
+                         this matrix existed. A row left Ongoing survives the cascade \
+                         settleable by the erased identity — its wallet and \
+                         evolution-notice rows re-minted by a PvP action, or the win and \
+                         a ranking profile handed to it by the kept deadline reaper."
+                    );
+                    rb129_assert_row(&label, why_matrix, &before, &after, *want);
+                }
+            }
+        }
+    }
+}
+
+/// **PRV1-6 post-terminal (pure)** — the forced-terminal seam returns settled
+/// rows, and live rows the erased identity is not part of, UNCHANGED.
+///
+/// Settled history is never rewritten: the survivor's rating and record were
+/// computed from it. A bystander's live battle is not the erased identity's to
+/// end.
+///
+/// SEVEN ROWS, the erased identity is `d` throughout:
+/// - U1 side-A win (d vs s), U2 side-B win (s vs d), U3 `Fled` (d vs WILD) and
+///   U4 `Fled` (d vs s) — settled rows that DO name `d`;
+/// - U5 Ongoing (s vs o), U6 Ongoing (s vs WILD) and U7 Ongoing (TOMBSTONE vs
+///   s) — live rows that do NOT name `d`.
+///
+/// Kills:
+/// - the outcome guard inverted: U1-U4 get forced (and the forced rows of the
+///   sibling test stay Ongoing);
+/// - a force applied regardless of outcome: U1, U2 and U4 get a new winner;
+/// - a force of ANY Ongoing row, whoever it names: U5-U7;
+/// - a wild check missing its player conjunct: U6 reads `Fled`;
+/// - a seam that treats the tombstone as the erased identity: U7.
+///
+/// RED AT HEAD: compile error E0425 — the seam does not exist yet.
+#[test]
+fn rb129_forced_terminal_leaves_settled_and_bystander_rows_untouched() {
+    let d = spacetimedb::Identity::from_byte_array([0x81u8; 32]);
+    let s = spacetimedb::Identity::from_byte_array([0x82u8; 32]);
+    let o = spacetimedb::Identity::from_byte_array([0x83u8; 32]);
+    let wild = crate::WILD_IDENTITY;
+    let tomb = crate::TOMBSTONE_IDENTITY;
+
+    let named = [
+        ("d", d),
+        ("s", s),
+        ("o", o),
+        ("WILD", wild),
+        ("TOMBSTONE", tomb),
+    ];
+    for (i, (name_a, id_a)) in named.iter().enumerate() {
+        for (name_b, id_b) in &named[i + 1..] {
+            assert_ne!(
+                id_a, id_b,
+                "rb-129 E1 FAIL (precondition): the fixture identities {name_a} and \
+                 {name_b} are equal, so a bystander row could secretly name the erased \
+                 identity and the verdicts below would prove nothing."
+            );
+        }
+    }
+
+    let settled = "Settled history is never rewritten: the survivor's rating and record were \
+                   computed from this outcome, and the forced-terminal seam exists only for \
+                   rows the cascade would otherwise leave LIVE. A changed outcome here is the \
+                   outcome guard inverted, or a force applied regardless of outcome.";
+    let bystander = "The erased identity is not part of this live battle, so it is not the \
+                     cascade's to end. A changed outcome here is a seam that forces ANY \
+                     Ongoing row, a wild check missing its player conjunct (U6), or a seam \
+                     that treats the tombstone as the erased identity (U7).";
+    let rows = [
+        (
+            "[U1 settled side-A win (d vs s)]",
+            d,
+            s,
+            game_core::BattleOutcome::SideAWins,
+            settled,
+        ),
+        (
+            "[U2 settled side-B win (s vs d)]",
+            s,
+            d,
+            game_core::BattleOutcome::SideBWins,
+            settled,
+        ),
+        (
+            "[U3 settled Fled (d vs WILD)]",
+            d,
+            wild,
+            game_core::BattleOutcome::Fled,
+            settled,
+        ),
+        (
+            "[U4 settled Fled (d vs s)]",
+            d,
+            s,
+            game_core::BattleOutcome::Fled,
+            settled,
+        ),
+        (
+            "[U5 bystander Ongoing (s vs o)]",
+            s,
+            o,
+            game_core::BattleOutcome::Ongoing,
+            bystander,
+        ),
+        (
+            "[U6 bystander Ongoing (s vs WILD)]",
+            s,
+            wild,
+            game_core::BattleOutcome::Ongoing,
+            bystander,
+        ),
+        (
+            "[U7 bystander Ongoing (TOMBSTONE vs s)]",
+            tomb,
+            s,
+            game_core::BattleOutcome::Ongoing,
+            bystander,
+        ),
+    ];
+    for (i, (label, player, opponent, outcome, why)) in rows.iter().enumerate() {
+        let before = rb129_row(1300 + i as u64, *player, *opponent, *outcome);
+        let after = super::battle_with_forced_terminal(before.clone(), d);
+        rb129_assert_row(label, why, &before, &after, *outcome);
+    }
+}
+
+/// **PRV1-6 post-terminal (pure, composed)** — the shell's two seams, composed
+/// in the ADR-0274 D2 order, leave the erased identity in no Ongoing battle.
+///
+/// For each of the four forced rows the swept result is terminal, names the
+/// erased identity on NEITHER side, and keeps the survivor (or the wild
+/// sentinel) where it was. That is the EARS postcondition: with no Ongoing row
+/// naming the erased identity, the PvP action reducer's participant and Ongoing
+/// guards both refuse it, the deadline reaper finds nothing live, and the
+/// survivor's own ongoing-battle test reads false.
+///
+/// THE ORDER IS LOAD-BEARING, proven rather than asserted: composed the other
+/// way round, the swap runs first, the row stops naming the erased identity,
+/// and the forced-terminal seam correctly treats it as a bystander — so the row
+/// stays Ongoing under a tombstone. This test is the witness that makes the
+/// order in `rb129_anonymize_battles_body_is_pinned` meaningful; that pin is
+/// what holds the shell to it, because the native host cannot run the shell.
+///
+/// Kills: a forced-terminal seam keyed on the TOMBSTONE rather than the erased
+/// identity (the forward composition stays Ongoing); a tombstone seam that
+/// stops carrying the outcome through; a composition that leaves either side
+/// naming the erased identity.
+///
+/// RED AT HEAD: compile error E0425 — the seam does not exist yet.
+#[test]
+fn rb129_composed_sweep_leaves_the_erased_identity_in_no_ongoing_battle() {
+    let d = spacetimedb::Identity::from_byte_array([0x81u8; 32]);
+    let s = spacetimedb::Identity::from_byte_array([0x82u8; 32]);
+    let wild = crate::WILD_IDENTITY;
+    let tomb = crate::TOMBSTONE_IDENTITY;
+    let ongoing = game_core::BattleOutcome::Ongoing;
+
+    let rows = [
+        (
+            "[composed side A (d vs s)]",
+            d,
+            s,
+            (tomb, s),
+            game_core::BattleOutcome::SideBWins,
+        ),
+        (
+            "[composed side B (s vs d)]",
+            s,
+            d,
+            (s, tomb),
+            game_core::BattleOutcome::SideAWins,
+        ),
+        (
+            "[composed practice (d vs d)]",
+            d,
+            d,
+            (tomb, tomb),
+            game_core::BattleOutcome::SideBWins,
+        ),
+        (
+            "[composed wild (d vs WILD)]",
+            d,
+            wild,
+            (tomb, wild),
+            game_core::BattleOutcome::Fled,
+        ),
+    ];
+    for (i, (label, player, opponent, want_sides, want)) in rows.iter().enumerate() {
+        let swept = super::battle_with_tombstoned_party(
+            super::battle_with_forced_terminal(
+                rb129_row(1310 + i as u64, *player, *opponent, ongoing),
+                d,
+            ),
+            d,
+            tomb,
+        );
+        let got = swept.state.outcome;
+        assert_ne!(
+            got, ongoing,
+            "rb-129 E1 FAIL (composed, terminal) {label}: the swept row is still Ongoing. \
+             After the cascade's per-row sequence — force, then tombstone — no battle the \
+             erased identity was part of may stay live: a live row keeps the survivor \
+             locked in a battle nobody can finish, settleable by an identity that no longer \
+             exists."
+        );
+        assert_eq!(
+            got, *want,
+            "rb-129 E1 FAIL (composed, outcome) {label}: the swept row reads {got:?}; the \
+             forced outcome {want:?} must survive the tombstone swap, which carries every \
+             field but the two identity columns through untouched."
+        );
+        assert_ne!(
+            swept.player_identity, d,
+            "rb-129 E1 FAIL (composed, erased) {label}: side A of the swept row still names \
+             the erased identity."
+        );
+        assert_ne!(
+            swept.opponent_identity, d,
+            "rb-129 E1 FAIL (composed, erased) {label}: side B of the swept row still names \
+             the erased identity."
+        );
+        let got_sides = (swept.player_identity, swept.opponent_identity);
+        assert_eq!(
+            got_sides, *want_sides,
+            "rb-129 E1 FAIL (composed, survivor) {label}: the erased side must become the \
+             tombstone and the survivor, or the wild sentinel, must stay exactly where it \
+             was."
+        );
+    }
+
+    // --- The reversed composition: tombstone first, then force --------------
+    let reversed = super::battle_with_forced_terminal(
+        super::battle_with_tombstoned_party(rb129_row(1319, d, s, ongoing), d, tomb),
+        d,
+    );
+    let got = reversed.state.outcome;
+    assert_eq!(
+        got, ongoing,
+        "rb-129 E1 FAIL (order matters): composed the OTHER way round — tombstone first, \
+         then force — the side-A row came back {got:?}; it must stay Ongoing. After the \
+         swap the row no longer names the erased identity, so a correct forced-terminal \
+         seam treats it as a bystander. This is the witness that the shell's order is \
+         load-bearing: `rb129_anonymize_battles_body_is_pinned` holds the shell to \
+         force-then-tombstone because the reverse leaves exactly this live, tombstoned row \
+         behind. A failure here means the seam is not keyed on the erased identity."
+    );
+    let got_sides = (reversed.player_identity, reversed.opponent_identity);
+    assert_eq!(
+        got_sides,
+        (tomb, s),
+        "rb-129 E1 FAIL (order matters, identities): the reversed composition must still \
+         leave the tombstone on side A and the survivor on side B."
+    );
+}
+
 // ===========================================================================
 // rb-46 (residual R-m22-s5-X12, ADR-0236 D2/D3/D4) — the caller-only deletion
 // gate on PvE battle start.
