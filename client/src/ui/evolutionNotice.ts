@@ -315,9 +315,13 @@ export class EvolutionNoticeBanner {
    *
    *  `hadFocus` is read from `document.activeElement` BEFORE the hide's DOM writes run, because
    *  a real browser's blur fixup for a control that leaves the tree is asynchronous — reading it
-   *  afterwards could observe a focus the browser has not moved yet. */
+   *  afterwards could observe a focus the browser has not moved yet. It is read on the
+   *  visible-to-hidden EDGE only: if the sink cannot move focus (the canvas is not mounted yet),
+   *  focus stays inside the hidden strip, and a level check would re-fire the sink on every
+   *  later store batch. */
   render(notice: EvolutionNoticeContent | null): void {
-    const hadFocus = notice === null && this.#container.contains(document.activeElement);
+    const hadFocus =
+      notice === null && this.visible && this.#container.contains(document.activeElement);
     this.#label.textContent = notice === null ? '' : notice.label;
     this.#okBtn.textContent = t('evolutionNotice.ok');
     this.#container.style.display = notice === null ? 'none' : 'block';
