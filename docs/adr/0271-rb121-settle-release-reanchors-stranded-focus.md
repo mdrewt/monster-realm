@@ -18,7 +18,7 @@ lock, disables the clicked control(s) synchronously, and releases in `.finally()
 and only when the stored token is still this click's own. Five sites carry that shape:
 `raisingView.ts` Care and Train, `evolutionView.ts` evolve choice, `pvpView.ts` `#dispatch`
 (lifecycle: challenge / accept / decline / cancel), and `battleView.ts` `#dispatch` (PvE skill /
-flee / item / swap).
+flee / item / recruit / swap).
 
 Disabling the focused control, or a mid-flight `refresh()` that `replaceChildren()`s it, leaves
 `document.activeElement === <body>` (the HTML focus-fixup rule; happy-dom models the detach half
