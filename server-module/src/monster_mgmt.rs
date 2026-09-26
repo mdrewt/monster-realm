@@ -19,6 +19,8 @@ use spacetimedb::{Identity, ReducerContext};
 /// Ownership-checked: only the monster's owner may rename it.
 #[spacetimedb::reducer]
 pub fn set_nickname(ctx: &ReducerContext, monster_id: u64, nickname: String) -> Result<(), String> {
+    // Deletion gate (rb-128, ADR-0273 D2): the FIRST statement, before every read and write.
+    crate::guards::require_not_deleting(ctx, "set_nickname")?;
     let me = ctx.sender();
     let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
         let e = "monster not found".to_string();
@@ -57,6 +59,8 @@ pub fn set_nickname(ctx: &ReducerContext, monster_id: u64, nickname: String) -> 
 /// pure game-core check (`game_core::check_party_slot`, ADR-0053 SlotError pattern).
 #[spacetimedb::reducer]
 pub fn set_party_slot(ctx: &ReducerContext, monster_id: u64, slot: u8) -> Result<(), String> {
+    // Deletion gate (rb-128, ADR-0273 D2): the FIRST statement, before every read and write.
+    crate::guards::require_not_deleting(ctx, "set_party_slot")?;
     let me = ctx.sender();
     let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
         let e = "monster not found".to_string();

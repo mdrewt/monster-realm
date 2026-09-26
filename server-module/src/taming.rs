@@ -45,6 +45,8 @@ pub fn attempt_recruit(
     battle_id: u64,
     bait_item_id: Option<u32>,
 ) -> Result<(), String> {
+    // Deletion gate (rb-128, ADR-0273 D2): the FIRST statement, before every read and write.
+    crate::guards::require_not_deleting(ctx, "attempt_recruit")?;
     let me = ctx.sender();
     let mut battle = match ctx.db.battle().battle_id().find(battle_id) {
         Some(b) => b,

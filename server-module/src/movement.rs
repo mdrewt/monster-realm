@@ -47,6 +47,8 @@ pub struct MovementTickSchedule {
 /// monster). Rejects a double-join within the same session.
 #[spacetimedb::reducer]
 pub fn join_game(ctx: &ReducerContext, name: String) -> Result<(), String> {
+    // Deletion gate (rb-128, ADR-0273 D2): the FIRST statement, before every read and write.
+    crate::guards::require_not_deleting(ctx, "join_game")?;
     let me = ctx.sender();
     let name = validate_name(&name).inspect_err(|e| log_reject("join_game", me, e))?;
     if ctx.db.player().identity().find(me).is_some() {
@@ -126,6 +128,8 @@ pub fn join_game(ctx: &ReducerContext, name: String) -> Result<(), String> {
 /// intent only — NEVER computes movement. Atomic: queue + ack in one transaction.
 #[spacetimedb::reducer]
 pub fn enqueue_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<(), String> {
+    // Deletion gate (rb-128, ADR-0273 D2): the FIRST statement, before every read and write.
+    crate::guards::require_not_deleting(ctx, "enqueue_move")?;
     // Intake battle lock (ADR-0168 D2): reject-not-clamp movement intent while
     // the caller is in an ongoing battle, either role. `ctx.sender()` is correct
     // here — this is a player-called reducer (unlike scheduler-only movement_tick).
@@ -189,6 +193,8 @@ pub fn enqueue_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<
 /// change). Cap-safe (length 1).
 #[spacetimedb::reducer]
 pub fn set_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<(), String> {
+    // Deletion gate (rb-128, ADR-0273 D2): the FIRST statement, before every read and write.
+    crate::guards::require_not_deleting(ctx, "set_move")?;
     // Intake battle lock (ADR-0168 D2): same reject as enqueue_move — set_move
     // also ADDS movement intent, and the client is hostile.
     if is_in_ongoing_battle(ctx, ctx.sender()) {
@@ -206,6 +212,8 @@ pub fn set_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<(), 
 /// Empty the queue (key release).
 #[spacetimedb::reducer]
 pub fn clear_queue(ctx: &ReducerContext, seq: u64) -> Result<(), String> {
+    // Deletion gate (rb-128, ADR-0273 D2): the FIRST statement, before every read and write.
+    crate::guards::require_not_deleting(ctx, "clear_queue")?;
     // Deliberately NOT battle-guarded (ADR-0168 D3): pure cancellation — it
     // cannot cause movement. Guarding it would force the stale pre-battle queue
     // to survive to battle end and deny an honest key-release cancel while the
