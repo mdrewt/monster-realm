@@ -7,7 +7,7 @@
 **Amends:** —
 **Extends:** 0159, 0205
 **Subsystems:** client-ui
-**Decision:** When a view's own action lock releases and focus sits on <body>, the view re-calls openOverlayA11y(id, root) — the idempotent re-open re-installs the trap and defers focus to the registry anchor — so the no-batch paths never leave the trap inert.
+**Decision:** A view's lock release that finds focus on <body> re-calls openOverlayA11y(id, root); the idempotent re-open re-installs the trap and defers focus to the registry anchor, so no-batch paths never leave the trap inert.
 
 ---
 
