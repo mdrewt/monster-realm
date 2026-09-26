@@ -1349,9 +1349,9 @@ const DELIBERATE_EXEMPTIONS: &[(&str, &str)] = &[
         "operator-only behind the module-owner identity guard; no player caller exists",
     ),
     // (iv) — drained by rb-128 (ADR-0273). Its thirteen KNOWN-GAP rows are gated
-    // and listed in EXPECTED_GATED; the class stays EMPTY, and a reducer that
-    // creates or mutates the caller's assets without a gate is a CI failure
-    // rather than a candidate for a new row here.
+    // and listed in EXPECTED_GATED; the class stays EMPTY. A reducer that creates
+    // or mutates the caller's assets without a gate fails this census until a
+    // deliberate roster row WITH A BASIS is added -- never a silent new row.
     //
     // (v) acts ONLY on rows the caller already owns, minting nothing new. Open BY
     // DECISION (ADR-0254 keeps the evolution banner dismissable during grace),

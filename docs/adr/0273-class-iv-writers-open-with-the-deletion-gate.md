@@ -145,7 +145,7 @@ mid-grace player's pre-request queue (at most `MOVE_QUEUE_CAP` entries) drains t
   body→gated body, `rb80_taming_reducer_roster_and_open_writers_are_pinned` clause (a) 1→2 and clause (e)
   n_bare_in_body 0→1), the `clear_queue` D3 body pin (`movement_tests.rs::clear_queue_is_deliberately_not_battle_guarded`),
   and rb-78's per-module region anchors (`rb78_region_anchors` 10→13: `join_game`, `evolve`, `set_nickname` make
-  `movement.rs`, `evolution.rs`, `monster_mgmt.rs` gate-bearing; `rb78_rb80_anchor_roster_covers_the_new_gate_bearing_modules`
+  `movement.rs`, `evolution.rs`, `monster_mgmt.rs` gate-bearing; `rb80_rb78_anchor_roster_covers_the_new_gate_bearing_modules`
   re-pinned 13/13).
 
 ### D8 — The three movement reducers are not a PRV1-10 "trap state"
@@ -185,11 +185,20 @@ reducer's gate test to live beside it (checked: `evals/` contains no scanner ove
 - Gameplay is frozen for a deletion-gated account: no join, move, raise, evolve, rename, party edit, recruit or
   dialogue dismiss. `cancel_account_deletion` stays an owner (ungated) so the grace window is still reversible.
 - `enqueue_move` — the hot path — gains one `account` primary-key point read per call.
-- **Residual (client, outside touches):** the client issues `joinGame` on every connection build and treats only
-  the exact string `already joined` as benign (`connection.ts` `attemptJoin`); a mid-grace player who reconnects
-  now sees `join: <deletion reject>` as a status-line error (`main.ts` `onError` → `reportError`, no teardown;
-  the world still renders from the live subscription because nothing is erased before terminal). Registered as
-  a residual for a client-side benign-match or an explicit "pending deletion" banner.
+- **Residual (client, outside touches — R-rb-128-JOINGRACE):** the client issues `joinGame` on every connection build and
+  treats only the exact string `already joined` as benign (`connection.ts` `attemptJoin`); `on_disconnect` deletes the
+  caller's `player`/`character` rows when the last connection closes (`lib.rs`). So a mid-grace player who reloads or drops
+  gets the deletion reject on `join_game`, has NO avatar for the rest of the grace window (their monsters, wallet and account
+  rows persist — nothing is erased before terminal), and sees the reject through `main.ts` `onError` → `reportError` (status
+  line + error overlay; no link-level teardown, no reconnect churn). Cancelling is still possible (`cancel_account_deletion`
+  needs only the account row), but the client never re-issues `joinGame` after the account returns to `Active`, so play
+  resumes only on the next reload. The claim-UI `joinGame` call (`main.ts`) has no `.catch`, so the deletion reason there
+  surfaces as an unhandled rejection. Client follow-up: re-join when `my_account` returns to `Active`, a "deletion pending"
+  banner instead of a raw reject, and a `.catch` on the claim-UI join.
+- **Residual (client, outside touches — R-rb-128-HELDKEY):** a connected mid-grace player holding a movement key gets one
+  predicted step and snap-back per round trip (the reject path is the ordinary `dropRejected` → `reconcileFromStore`, no
+  desync) and one `log_reject` line per refused `enqueue_move`. Client follow-up: block movement input for a gated account
+  through a game-core/client-wasm-exposed predicate — never a TypeScript re-derivation of the status-or-marker rule.
 - **Residual:** a conversation opened before the request (multi-tab) persists through grace until disconnect.
 - **Residual (R-rb-80-REASONSCOPE grows):** `REJECT_DELETION_GATED`'s text names trades/battles/challenges only,
   yet it now also fires on join/move/raise/evolve/rename/party-edit/recruit/dismiss; it is pinned by m22-s5 and
