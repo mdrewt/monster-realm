@@ -1575,22 +1575,23 @@ pub(crate) fn battle_with_tombstoned_party(
 /// - a row naming `deleting` on neither side belongs to bystanders and is
 ///   returned unchanged.
 ///
-/// Postcondition (debug builds): a row naming `deleting` never leaves this
-/// seam `Ongoing`.
+/// Postcondition (debug builds, single exit so every path reaches it): a row
+/// naming `deleting` never leaves this seam `Ongoing`. It is a contract check
+/// for honest edits, not a fence — the mechanical guard is the rb129 truth
+/// table, totality matrix and property test in `battle_tests.rs`.
 pub(crate) fn battle_with_forced_terminal(mut b: Battle, deleting: Identity) -> Battle {
-    if b.state.outcome != BattleOutcome::Ongoing {
-        return b;
-    }
-    if is_ongoing_wild_battle(&b, deleting) {
-        b.state.outcome = BattleOutcome::Fled;
-    } else if b.player_identity == deleting {
-        b.state.outcome = game_core::pvp_forfeit_outcome(SideId::SideA);
-    } else if b.opponent_identity == deleting {
-        b.state.outcome = game_core::pvp_forfeit_outcome(SideId::SideB);
+    let names_deleting = b.player_identity == deleting || b.opponent_identity == deleting;
+    if b.state.outcome == BattleOutcome::Ongoing {
+        if is_ongoing_wild_battle(&b, deleting) {
+            b.state.outcome = BattleOutcome::Fled;
+        } else if b.player_identity == deleting {
+            b.state.outcome = game_core::pvp_forfeit_outcome(SideId::SideA);
+        } else if b.opponent_identity == deleting {
+            b.state.outcome = game_core::pvp_forfeit_outcome(SideId::SideB);
+        }
     }
     debug_assert!(
-        b.state.outcome != BattleOutcome::Ongoing
-            || (b.player_identity != deleting && b.opponent_identity != deleting),
+        !names_deleting || b.state.outcome != BattleOutcome::Ongoing,
         "forced-terminal seam left a row naming the deleting identity Ongoing"
     );
     b
