@@ -4234,3 +4234,378 @@ fn rb80_raising_reducer_roster_and_open_writers_are_pinned() {
         );
     }
 }
+
+// ===========================================================================
+// rb-122 — R-20r-b-B1: the `// RETUNE:` note inside the essence soft-cap clamp
+// test claims to be the ONLY pin of `ESSENCE_SOFT_CAP`'s value. That has been
+// false since 20r-b promoted the constant (and its 999/1000 boundary) into
+// game-core: `game-core/src/currency.rs::essence_soft_cap_is_999` and
+// `game-core/src/content.rs::r14_essence_amount_999_accepted` /
+// `r14_essence_amount_1000_rejected` are now the SSOT pins, each carrying its
+// own `RETUNE:` marker. This block pins:
+//   (a) the note no longer claims exclusivity ("only"/"sole"/"single"/"lone"/
+//       "exclusive" near "pin"/"reference"/"source"/"place"/"witness"),
+//   (b) the note names `20r-b` and the three live game-core fixtures by file
+//       + name,
+//   (c) the local value pin (`ESSENCE_SOFT_CAP, 999,`) survives the reword,
+//   (d) each named fixture is declared exactly once in its file and its own
+//       doc block carries a `RETUNE:` marker (a dangling pointer reds this).
+//
+// HONEST LIMITS. This is a TEXT scan of a comment, run three ways over
+// `include_str!`-captured sources — it proves the note's WORDING and that the
+// names it points at RESOLVE to live, still-`RETUNE:`-marked fixtures. It
+// cannot prove the note's claim is semantically correct (that those really
+// are game-core's essence-cap pins, versus some unrelated same-named
+// function); that is human review at PR time. ADR-0224: an ordinary Rust
+// test, no new `*.eval.mjs`.
+// ===========================================================================
+
+/// The bare identifier of the clamp test this slice retargets, split so this
+/// file's own source never spells it contiguously (this file scans itself via
+/// `RB122_RAISING_TESTS_SRC` below, and a contiguous copy here would be
+/// counted as a second declaration).
+fn rb122h_target_fn_name() -> String {
+    ["clamps_at_soft_cap_999_with", "out_reject"].concat()
+}
+
+/// The column-0 `\nfn <name>(` anchor for the target test, built from the
+/// fragment above for the same self-match reason.
+fn rb122h_target_fn_anchor() -> String {
+    ["\nfn ", rb122h_target_fn_name().as_str(), "("].concat()
+}
+
+/// The body window of a column-0 `fn` item: from a UNIQUE anchor to the first
+/// column-0 closing brace after it. `None` unless the anchor occurs EXACTLY
+/// once — a duplicate declaration makes "the" window ambiguous and every
+/// clause below meaningless.
+fn rb122h_fn_window(src: &str, anchor: &str) -> Option<String> {
+    if src.matches(anchor).count() != 1 {
+        return None;
+    }
+    let first = src.find(anchor)?;
+    let rest = &src[first..];
+    let end = rest.find("\n}\n")?;
+    Some(rest[..end + 3].to_string())
+}
+
+/// The bare word this slice's marker comment starts with, split so it is
+/// never written contiguously in this file (self-match hygiene).
+fn rb122h_retune_word() -> String {
+    ["RETU", "NE:"].concat()
+}
+
+/// The full `// RETUNE:` line-start marker, assembled from the fragment
+/// above.
+fn rb122h_retune_line_marker() -> String {
+    ["// ", rb122h_retune_word().as_str()].concat()
+}
+
+/// How many lines in `window`, once trimmed, start with the marker.
+fn rb122h_count_retune_lines(window: &str) -> usize {
+    let marker = rb122h_retune_line_marker();
+    window
+        .split('\n')
+        .filter(|line| line.trim_start().starts_with(marker.as_str()))
+        .count()
+}
+
+/// The NOTE: the marker line plus every contiguous `//` line after it,
+/// stripped of comment slashes and whitespace-normalized. Callers must have
+/// already confirmed `rb122h_count_retune_lines(window) == 1`.
+fn rb122h_retune_note_text(window: &str) -> String {
+    let marker = rb122h_retune_line_marker();
+    let lines: Vec<&str> = window.split('\n').collect();
+    let start = lines
+        .iter()
+        .position(|line| line.trim_start().starts_with(marker.as_str()))
+        .expect("rb-122: caller must confirm exactly one RETUNE line first");
+    let mut block: Vec<String> = Vec::new();
+    for line in &lines[start..] {
+        let trimmed = line.trim();
+        if trimmed.starts_with("//") {
+            block.push(trimmed.trim_start_matches('/').trim_start().to_string());
+        } else {
+            break;
+        }
+    }
+    block
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Case-insensitive: does `text` contain an exclusivity word (only, sole,
+/// single, lone, exclusive) followed — within 40 chars, none of them a `.` —
+/// by a word naming what it is supposedly the only one of (pin, pins,
+/// reference, source, place, witness)? A hand-rolled word tokenizer, not the
+/// `regex` crate: server-module does not depend on it (see Cargo.toml), and a
+/// simple ASCII word-boundary walk is exact enough for an English-prose note.
+fn rb122h_has_exclusivity_claim(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let bytes = lower.as_bytes();
+    let is_word_byte = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+
+    let mut words: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if is_word_byte(bytes[i]) {
+            let start = i;
+            while i < bytes.len() && is_word_byte(bytes[i]) {
+                i += 1;
+            }
+            words.push((start, i));
+        } else {
+            i += 1;
+        }
+    }
+
+    let first_set = ["only", "sole", "single", "lone", "exclusive"];
+    let second_set = ["pin", "pins", "reference", "source", "place", "witness"];
+
+    for (idx, &(fs, fe)) in words.iter().enumerate() {
+        let first_word = &lower[fs..fe];
+        if !first_set.contains(&first_word) {
+            continue;
+        }
+        for &(ss, se) in &words[idx + 1..] {
+            let gap = &lower[fe..ss];
+            if gap.contains('.') || gap.chars().count() > 40 {
+                break;
+            }
+            let second_word = &lower[ss..se];
+            if second_set.contains(&second_word) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// The SSOT essence-cap value pin's bare name, split for the same self-match
+/// reason as the target fn name above (this file's note-mention check would
+/// otherwise be satisfied by its own needle).
+fn rb122h_essence_soft_cap_is_999_name() -> String {
+    ["essence_soft_cap_is_", "999"].concat()
+}
+
+/// The R14 999-boundary (accepted) fixture's bare name, split likewise.
+fn rb122h_r14_999_accepted_name() -> String {
+    ["r14_essence_amount_999_", "accepted"].concat()
+}
+
+/// The R14 1000-boundary (rejected) fixture's bare name, split likewise.
+fn rb122h_r14_1000_rejected_name() -> String {
+    ["r14_essence_amount_1000_", "rejected"].concat()
+}
+
+/// Every string the reworded note must contain: the retune epoch and, by
+/// file + bare name, the three live game-core pins.
+fn rb122h_required_pointer_needles() -> Vec<String> {
+    vec![
+        "game-core/src/currency.rs".to_string(),
+        rb122h_essence_soft_cap_is_999_name(),
+        "game-core/src/content.rs".to_string(),
+        rb122h_r14_999_accepted_name(),
+        rb122h_r14_1000_rejected_name(),
+    ]
+}
+
+/// The local value pin's exact text, split so this file never spells it
+/// contiguously outside the original test's own assertion.
+fn rb122h_local_pin_text() -> String {
+    ["ESSENCE_SOFT_CAP, 9", "99,"].concat()
+}
+
+/// How many times a 4-space-indented `fn <name>(` declaration occurs in
+/// `src`. Indent-scoped (not a bare `fn <name>(`) so a same-named mention in
+/// prose — content.rs carries two, naming these very fixtures — is not
+/// mistaken for a second declaration.
+fn rb122h_count_declaration(src: &str, name: &str) -> usize {
+    let needle = ["    fn ", name, "("].concat();
+    src.matches(needle.as_str()).count()
+}
+
+/// The contiguous `///` doc block directly above a UNIQUE 4-space-indented
+/// `fn <name>(`, skipping any `#[...]` attribute lines in between (so a
+/// `#[test]` sitting between the doc comment and the fn line does not end the
+/// walk early). `None` if the declaration is missing or duplicated.
+fn rb122h_doc_block_above(src: &str, name: &str) -> Option<String> {
+    let anchor = ["\n    fn ", name, "("].concat();
+    if src.matches(anchor.as_str()).count() != 1 {
+        return None;
+    }
+    let first = src.find(anchor.as_str())?;
+    let head = &src[..first];
+    let mut doc: Vec<String> = Vec::new();
+    for line in head.split('\n').rev() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("///") {
+            doc.push(trimmed.to_string());
+        } else if trimmed.starts_with("#[") {
+            continue;
+        } else {
+            break;
+        }
+    }
+    doc.reverse();
+    Some(doc.join(" "))
+}
+
+/// This file's own source (INCLUDING this block), for the window/note scan.
+const RB122_RAISING_TESTS_SRC: &str = include_str!("raising_tests.rs");
+/// `game-core`'s currency SSOT — `ESSENCE_SOFT_CAP` and its value pin.
+const RB122_CURRENCY_SRC: &str = include_str!("../../game-core/src/currency.rs");
+/// `game-core`'s content validator — the R14 999/1000 boundary fixtures.
+const RB122_CONTENT_SRC: &str = include_str!("../../game-core/src/content.rs");
+
+/// R-20r-b-B1: the note no longer claims to be the sole pin of the cap.
+///
+/// RED on 23da96e: the note reads "the only pin of ESSENCE_SOFT_CAP's value"
+/// — `only` sits three characters from `pin`, well inside the 40-char,
+/// no-period window this clause scans.
+///
+/// kills: a rewording that drops "only" but keeps "sole pin", "single
+/// reference", "the lone source" or any other exclusivity phrasing for the
+/// same false claim; a reword that moves the claim to a second `// RETUNE:`
+/// line instead of replacing the first (caught by the count assertion below,
+/// before the exclusivity text is even inspected).
+#[test]
+fn rb122_note_has_no_exclusivity_claim() {
+    let anchor = rb122h_target_fn_anchor();
+    let window = rb122h_fn_window(RB122_RAISING_TESTS_SRC, anchor.as_str()).unwrap_or_else(|| {
+        panic!(
+            "rb-122 TEETH: the soft-cap clamp test's anchor was not found EXACTLY once in \
+             raising_tests.rs — it must exist, unambiguously, before its RETUNE note can be \
+             inspected."
+        )
+    });
+
+    let marker = rb122h_retune_line_marker();
+    let n_retune = rb122h_count_retune_lines(window.as_str());
+    assert_eq!(
+        n_retune, 1,
+        "rb-122 TEETH: found {n_retune} `{marker}` line(s) inside the clamp test's body and must \
+         find exactly one — zero means the pointer comment was deleted outright, two means a \
+         second note was appended instead of the first being replaced."
+    );
+
+    let note = rb122h_retune_note_text(window.as_str());
+    assert!(
+        !rb122h_has_exclusivity_claim(note.as_str()),
+        "rb-122 TEETH (R-20r-b-B1): the RETUNE note still claims to be the ONLY/SOLE/SINGLE/LONE \
+         pin, reference, source, place or witness of ESSENCE_SOFT_CAP's value — false since \
+         20r-b promoted the constant (and its R14 boundary) into game-core, which now carries \
+         its own live pins. Got: {note:?}"
+    );
+}
+
+/// R-20r-b-B1: the note names the live game-core SSOT pins, by file and bare
+/// fixture name, and the 20r-b epoch that moved them.
+///
+/// RED on 23da96e: the note names neither file nor any of the three
+/// fixtures, and never mentions `20r-b`.
+///
+/// kills: a reword that drops the exclusivity language (satisfying the sibling
+/// test) but points nowhere — "the value now lives in game-core" with no
+/// file or fixture named leaves a reader with no way to find the real pins.
+#[test]
+fn rb122_note_names_the_live_game_core_pins() {
+    let anchor = rb122h_target_fn_anchor();
+    let window = rb122h_fn_window(RB122_RAISING_TESTS_SRC, anchor.as_str())
+        .expect("rb-122 TEETH: covered by rb122_note_has_no_exclusivity_claim's anchor assertion");
+    let note = rb122h_retune_note_text(window.as_str());
+
+    assert!(
+        note.contains("20r-b"),
+        "rb-122 TEETH: the RETUNE note never mentions `20r-b`, the slice that promoted \
+         ESSENCE_SOFT_CAP (and its R14 boundary) into game-core. Got: {note:?}"
+    );
+    for needle in rb122h_required_pointer_needles() {
+        assert!(
+            note.contains(needle.as_str()),
+            "rb-122 TEETH: the RETUNE note never mentions `{needle}`, one of the live game-core \
+             pins a reader must be pointed at. Got: {note:?}"
+        );
+    }
+}
+
+/// The reword must be comment-only (ADR-0224 / X2 byte-pin): the local value
+/// pin the test's own assertion depends on must survive untouched.
+///
+/// Expected GREEN already on 23da96e — this is an anti-regression fixture for
+/// the fix, not the RED half of this slice's proof-of-teeth.
+///
+/// kills: a "fix" that deletes or rewords the `assert_eq!(ESSENCE_SOFT_CAP,
+/// 999, ..)` precondition while rewriting the comment above it — the exact
+/// shape X2's byte-pin exists to catch from the other direction.
+#[test]
+fn rb122_local_value_pin_survives_the_reword() {
+    let anchor = rb122h_target_fn_anchor();
+    let window = rb122h_fn_window(RB122_RAISING_TESTS_SRC, anchor.as_str())
+        .expect("rb-122 TEETH: covered by rb122_note_has_no_exclusivity_claim's anchor assertion");
+    let pin = rb122h_local_pin_text();
+    assert!(
+        window.contains(pin.as_str()),
+        "rb-122 TEETH: the clamp test's body no longer contains the local value pin `{pin}` — \
+         rewording the RETUNE comment must never touch the code around it."
+    );
+}
+
+/// R-20r-b-B1 (non-dangling pointer): each fixture the note (will) name is
+/// declared EXACTLY once in its file and its own doc block still carries a
+/// `RETUNE:` marker — proving the note's targets are real, current fixtures
+/// and not stale names a later rename or dedup left behind.
+///
+/// Expected GREEN already on 23da96e (these game-core fixtures exist from
+/// 20r-b) — this is the "the pointer resolves" half, kept green throughout so
+/// a rename in game-core (not just a bad reword here) reds this slice too.
+///
+/// kills: a rename of any of the three fixtures with no corresponding note
+/// update (declaration count drops to 0); a duplicate declaration ADR-0224
+/// content review would need to disambiguate (count goes to 2); a fixture
+/// whose own `RETUNE:` marker was dropped, silencing the retune-order chain
+/// this note promises a reader.
+#[test]
+fn rb122_target_fixtures_exist_and_carry_retune_notes() {
+    let word = rb122h_retune_word();
+    let targets: [(&str, String, &str); 3] = [
+        (
+            RB122_CURRENCY_SRC,
+            rb122h_essence_soft_cap_is_999_name(),
+            "game-core/src/currency.rs",
+        ),
+        (
+            RB122_CONTENT_SRC,
+            rb122h_r14_999_accepted_name(),
+            "game-core/src/content.rs",
+        ),
+        (
+            RB122_CONTENT_SRC,
+            rb122h_r14_1000_rejected_name(),
+            "game-core/src/content.rs",
+        ),
+    ];
+    for (src, name, path) in targets {
+        let n = rb122h_count_declaration(src, name.as_str());
+        assert_eq!(
+            n, 1,
+            "rb-122 TEETH: `{name}` is declared {n} time(s) in {path} and must be declared \
+             exactly once — zero means the note points at a fixture that no longer exists, two \
+             means the declaration is ambiguous."
+        );
+        let doc = rb122h_doc_block_above(src, name.as_str()).unwrap_or_else(|| {
+            panic!(
+                "rb-122 TEETH: could not read `{name}`'s doc block in {path} even though its \
+                 declaration count was exactly one — the fn was found but no contiguous `///` \
+                 block sits directly above it (skipping attributes)."
+            )
+        });
+        assert!(
+            doc.contains(word.as_str()),
+            "rb-122 TEETH: `{name}`'s doc block in {path} does not mention `{word}` — this \
+             fixture's own retune order is the thing the reworded note is supposed to point a \
+             reader at. Got: {doc:?}"
+        );
+    }
+}
