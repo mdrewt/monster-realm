@@ -1905,11 +1905,12 @@ pub fn export_bundle_reaper(
 // beyond the window included. A derived `backlog` flag was REJECTED: the
 // thresholds belong in ops/observability, where they can change without a
 // module publish, and a boolean the module derives is a second retention policy
-// nobody reviewed. `due` above `planned` is the stamp cap binding, observed
-// rather than inferred; while sixteen minimum bundles cover the read window that
-// needs a stamp of at most fifteen rows or a range read that interleaves stamps,
-// so for bundles this module writes it is a tripwire. A FULL window is silent
-// about rows past its edge (an open residual, ADR-0269).
+// nobody reviewed. `due` above `planned` means the stamp cap bound, observed
+// rather than inferred; sixteen minimum-size bundles (272 rows) overfill the
+// 256-row window, so that needs a stamp of at most fifteen rows or a range read
+// that interleaves stamps — for bundles this module writes it is a tripwire, not
+// a backlog signal. A FULL window is silent about rows past its edge (an open
+// residual, ADR-0269).
 //
 // Debug feeds the test failure messages; Copy (hence Clone) lets one tick reach
 // both reap_fields and the envelope builder in the same test. Nothing compares

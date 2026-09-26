@@ -27555,7 +27555,8 @@ fn rb115_count_is_the_distinct_expired_stamps_before_the_cap() {
     let twenty = rb115_rows(&twenty_spec);
 
     // --- the value table, FIRST (clause order is load-bearing) ---------------
-    let cases: [(&str, Vec<(u64, i64)>, i64, i64, usize); 11] = [
+    type Case = (&'static str, Vec<(u64, i64)>, i64, i64, usize);
+    let cases: [Case; 11] = [
         ("an EMPTY window", Vec::new(), now, ttl, 0),
         (
             "an ALL-LIVE window: three stamps one to three milliseconds above the cutoff, \
