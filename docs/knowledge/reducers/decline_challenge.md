@@ -5,7 +5,7 @@ slug: reducers/decline_challenge
 updated: 2026-09-19
 tags: [reducer, spacetimedb, pvp]
 abstract: "Decline a pending PvP challenge. Deletes the challenge row."
-resource: server-module/src/pvp.rs#L1085
+resource: server-module/src/pvp.rs#L1099
 source: scripts/okf-export.mjs@server-module/src/pvp.rs
 ---
 

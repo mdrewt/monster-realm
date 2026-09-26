@@ -5408,6 +5408,25 @@ fn m22s3b_disarm_pvp_deadlines_shape() {
          that collects the matching ids and stops there satisfies every clause above. Body \
          was: {squashed:?}"
     );
+    // rb-129 artifact red-team B8: the collected ids cut down before the delete
+    // loop (a take, first, next or last) disarm ONE deadline, leave the rest armed.
+    let lbrace = char::from(0x7Bu8).to_string();
+    let loop_head = [concat!("forid", "inids"), lbrace.as_str()].concat();
+    let cuts = [
+        concat!(".ta", "ke("),
+        concat!(".fir", "st("),
+        concat!(".ne", "xt("),
+        concat!(".la", "st("),
+    ];
+    let n_head = squashed.matches(loop_head.as_str()).count();
+    let found: Vec<&str> = cuts.into_iter().filter(|c| squashed.contains(*c)).collect();
+    assert!(
+        n_head == 1 && found.is_empty(),
+        "rb-129 FAIL (truncated sweep): `{name}` must loop over the WHOLE collected id list \
+         (`{loop_head}` once, found {n_head}) and never cut it down (found {found:?}): a \
+         sweep of a subset leaves the other deadline rows armed against a battle whose \
+         participant is erased. Body was: {squashed:?}"
+    );
 }
 
 // === rb-81 (R-rb-47-ROSTER-PVP) — ADR-0251 ================================

@@ -1444,7 +1444,8 @@ pub(crate) fn write_back_battle_results(
 /// SSOT row-predicate (ADR-0138 D1): is `b` an `Ongoing` WILD battle owned by
 /// `player`? The *selecting* dual of `guards::is_in_ongoing_battle_either_role`
 /// (which *tests* membership) — one definition of "an ongoing wild battle for a
-/// player", shared by `resolve_wild_battle_on_disconnect` and its proof-of-teeth.
+/// player", shared by `resolve_wild_battle_on_disconnect`, the deletion cascade's
+/// `battle_with_forced_terminal`, and their proof-of-teeth.
 pub(crate) fn is_ongoing_wild_battle(b: &Battle, player: Identity) -> bool {
     b.player_identity == player
         && b.opponent_identity == WILD_IDENTITY
@@ -1470,8 +1471,9 @@ pub(crate) fn is_ongoing_wild_battle(b: &Battle, player: Identity) -> bool {
 /// restore) keeps disconnect ≈ flee — no "disconnect-to-heal" advantage.
 ///
 /// Idempotent + caller-scoped (ADR-0138 D4): a no-op when the caller has no wild
-/// battle; never touches another player's rows. Called from `on_disconnect`
-/// BEFORE the player row is deleted so write-back identity lookups still resolve.
+/// battle; never touches another player's rows. Reached via
+/// `resolve_all_live_interactions` from `on_disconnect` and the deletion cascade's
+/// step 6a, both BEFORE any row its write-back reads is deleted or erased.
 pub(crate) fn resolve_wild_battle_on_disconnect(ctx: &ReducerContext, disconnected: Identity) {
     // Collect-then-mutate (mirrors `forfeit_on_disconnect`): never mutate a
     // SpacetimeDB table while iterating it. The `player_identity` index scopes the
@@ -1556,20 +1558,70 @@ pub(crate) fn battle_with_tombstoned_party(
     }
 }
 
+/// M22 §4.4 step 6c backstop (ADR-0274 D1, pure): the battle row with a
+/// still-`Ongoing` outcome forced terminal against the side that names the
+/// deleting identity. Rewrites ONLY `state.outcome` — never an identity column
+/// and no other field. This seam runs BEFORE the tombstone swap: both find the
+/// erased side by the original identities. The rule, in order:
+/// - a settled row (any outcome but `Ongoing`) is returned unchanged: settled
+///   history is never rewritten;
+/// - an `Ongoing` WILD row owned by `deleting`, recognised by the SSOT
+///   predicate `is_ongoing_wild_battle` and checked FIRST, becomes `Fled` — the
+///   auto-flee the disconnect path applies (ADR-0138 D2);
+/// - a row whose side A names `deleting` (a practice row names it on both
+///   sides) becomes side A's forfeit, else a row whose side B names it becomes
+///   side B's forfeit, both through `game_core::pvp_forfeit_outcome` — the
+///   ADR-0109 D8 rule `pvp::forfeit_on_disconnect` applies, side-A pass first;
+/// - a row naming `deleting` on neither side belongs to bystanders and is
+///   returned unchanged.
+///
+/// Postcondition (debug builds, single exit so every path reaches it): a row
+/// naming `deleting` never leaves this seam `Ongoing`. It is a contract check
+/// for honest edits, not a fence — the mechanical guard is the rb129 truth
+/// table, totality matrix and property test in `battle_tests.rs`.
+pub(crate) fn battle_with_forced_terminal(mut b: Battle, deleting: Identity) -> Battle {
+    let names_deleting = b.player_identity == deleting || b.opponent_identity == deleting;
+    if b.state.outcome == BattleOutcome::Ongoing {
+        if is_ongoing_wild_battle(&b, deleting) {
+            b.state.outcome = BattleOutcome::Fled;
+        } else if b.player_identity == deleting {
+            b.state.outcome = game_core::pvp_forfeit_outcome(SideId::SideA);
+        } else if b.opponent_identity == deleting {
+            b.state.outcome = game_core::pvp_forfeit_outcome(SideId::SideB);
+        }
+    }
+    debug_assert!(
+        !names_deleting || b.state.outcome != BattleOutcome::Ongoing,
+        "forced-terminal seam left a row naming the deleting identity Ongoing"
+    );
+    b
+}
+
 /// M22 §4.4 steps 6c+6d for `battle` and its JOIN-ONLY children (PRV1-6c/6d,
-/// ADR-0228 D2 deviation b): for every SETTLED battle naming `owner` on
+/// ADR-0228 D2 deviation b, ADR-0274 D2): for EVERY battle naming `owner` on
 /// either side, sweep the row's `battle_wild` sidecar and its
 /// `pvp_deadline_schedule` rows FIRST (after the identity swap the join key
-/// no longer names the owner, so a later pass has no route back), then swap
-/// the owner's side(s) to `crate::TOMBSTONE_IDENTITY` via the pure seam. Both
-/// index passes are collected BEFORE any mutation, and the second pass
-/// excludes rows the first already matched — the `my_battle` dedup idiom, so
-/// a practice battle is visited once (PRV1-19). An `Ongoing` row here means
-/// the cascade's 6a resolver failed on it (an already-logged anomaly): it is
-/// SKIPPED, keeping its live deadline machinery so the surviving opponent can
-/// still win by timeout — the named failure-path residual, never a silent
-/// sweep of a live battle's only settlement mechanism. Called only from
-/// `accounts::account_deletion_reaper` (D0 write-isolation).
+/// no longer names the owner, so a later pass has no route back), then FORCE a
+/// still-`Ongoing` row terminal against the erased side through the pure
+/// `battle_with_forced_terminal` seam, then swap the owner's side(s) to
+/// `crate::TOMBSTONE_IDENTITY` via the pure `battle_with_tombstoned_party`
+/// seam. The force runs BEFORE the swap because it needs the original
+/// identities to find the erased side. Both index passes are collected BEFORE
+/// any mutation, and the second pass excludes rows the first already matched
+/// — the `my_battle` dedup idiom, so a practice battle is visited once
+/// (PRV1-19).
+///
+/// Disarming the deadline is correct for every row, live ones included: each
+/// row is terminal by the end of this same transaction, so no deadline is left
+/// with anything to settle. An `Ongoing` row reaching this step means the 6a
+/// resolver left it live; forcing it closes the channels through which an
+/// erased identity could later settle it or be handed its win (ADR-0274). The
+/// forced outcome is a degraded settlement — no rating, HP, XP, currency or
+/// evolution write-back, and no `battle_action` sweep. A forced row emits one
+/// `deletion_cascade_forced_battle_terminal` line carrying only the battle id:
+/// it marks a 6a-resolver gap to investigate, and the cascade line carries the
+/// subject. Called only from `accounts::account_deletion_reaper` (D0
+/// write-isolation).
 pub(crate) fn anonymize_battles(ctx: &ReducerContext, owner: Identity) {
     let mut rows: Vec<Battle> = ctx.db.battle().player_identity().filter(owner).collect();
     rows.extend(
@@ -1580,17 +1632,22 @@ pub(crate) fn anonymize_battles(ctx: &ReducerContext, owner: Identity) {
             .filter(|b| b.player_identity != owner),
     );
     for b in rows {
-        if b.state.outcome == BattleOutcome::Ongoing {
-            continue;
-        }
         let id = b.battle_id;
         ctx.db.battle_wild().battle_id().delete(id);
         crate::pvp::disarm_pvp_deadlines(ctx, id);
+        let was = b.state.outcome;
+        let forced = battle_with_forced_terminal(b, owner);
+        if forced.state.outcome != was {
+            crate::observability::mr_log(
+                "deletion_cascade_forced_battle_terminal",
+                &format!("\"battle_id\":{id}"),
+            );
+        }
         ctx.db
             .battle()
             .battle_id()
             .update(battle_with_tombstoned_party(
-                b,
+                forced,
                 owner,
                 crate::TOMBSTONE_IDENTITY,
             ));

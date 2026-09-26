@@ -6,6 +6,7 @@
 **Supersedes:** —
 **Amends:** —
 **Extends:** ADR-0224, ADR-0228
+**Amended-by:** ADR-0274
 **Subsystems:** ci-gates, security-authz
 **Decision:** S6 ships five in-crate `#[test]`s in `accounts_tests.rs` — not new eval scanner scripts, not a `server-module/tests/` target (the manifest is crate-private); the Identity-column half reads SpacetimeDB's own derive metadata, not source text.
 
@@ -169,3 +170,18 @@ arms, one split after it was found to shadow the arm below it, one added when th
 red-team measured a bypass of the pre-fix clause) is
 `memory/projects/gates/m22-s6.x6-mutant-register.md` in the harness repo, and the acceptance ledger
 is `memory/projects/gates/m22-s6.gates.md` (gates X1-X8).
+
+## Amendment (rb-129, 2026-09-26)
+
+The "Scope of a green X5" bullet's present-tense example no longer holds: `battle::anonymize_battles`
+does not skip battles still `Ongoing` any more. ADR-0274 retired the skip — every battle row naming
+the deleted identity has its join children swept, is forced terminal against the erased side if it
+is still `Ongoing` (the pure `battle_with_forced_terminal` seam), and is tombstoned in the same
+visit, so no `battle` row naming that identity survives step 6c. Two premises of the bullet are also
+corrected: the skip branch was reachable only through `apply_pvp_forfeit`'s Err arm, which is
+unreachable today because `settle_pvp_battle` is infallible (the hole was latent, not live); and the
+`battle` table is private (ADR-0198), not public.
+
+The bullet's general point stands: a green X5 proves a keyed mutating call is REACHED in the terminal
+body, not that every row is swept. The X5 doc comment in `accounts_tests.rs` still carries the old
+present-tense wording; that is residual R-rb-129-X5-PROSE. Nothing else in this ADR changes.

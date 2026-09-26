@@ -5,7 +5,7 @@
 **Slice:** m17a
 **Supersedes:** —
 **Amends:** ADR-0109 (PvP orchestration — terminal-commit sites unified into one settle funnel)
-**Amended-by:** ADR-0122, ADR-0125, ADR-0132
+**Amended-by:** ADR-0122, ADR-0125, ADR-0132, ADR-0274
 **Subsystems:** battle, security-authz, schema-persistence
 **Decision:** Persistent world-readable `profile` table + pure integer-Elo `game-core::ranking` + a single `settle_pvp_battle` funnel (sole `apply_pvp_rating` caller) + PvP-reject guards on the four PvE battle reducers, eval-pinned in-slice.
 
@@ -235,3 +235,22 @@ amending this ADR when m17b lands.
 - RESIDUAL (pre-existing M14e): `use_battle_item`'s `.expect("index was valid above")`
   (`battle.rs` ~944) — style inconsistency, unreachable panic; left untouched to keep the
   diff scoped.
+
+## Amendment (rb-129, 2026-09-26)
+
+D3's "there is exactly one place that commits a terminal PvP outcome" gains one named exception.
+The deletion cascade's forced-terminal fallback — `battle::anonymize_battles` through the pure
+`battle_with_forced_terminal` seam (ADR-0274) — writes `SideAWins` / `SideBWins` on a PvP row still
+`Ongoing` at cascade step 6c OUTSIDE the `settle_pvp_battle` funnel. No rating is applied on that
+path, and none of the funnel's other steps run (no HP / XP / currency / evolution write-back, no
+stale `battle_action` sweep).
+
+`settle_pvp_battle` remains the sole caller of `apply_pvp_rating` (the call-site-count tooth is
+unchanged), so a rating is never applied twice. On the forced path only, exactly-once becomes
+at-most-once: the forced result is never rated. The forced row still classifies `is_ranked_pvp`
+(one side is the tombstone), but nothing rates it later — every path into `settle_pvp_battle` /
+`apply_pvp_rating` requires the row to be `Ongoing`. The path is unreachable today
+(`settle_pvp_battle` is infallible, so 6a's `forfeit_on_disconnect` never leaves a row live); it is a
+backstop. `rb129_forced_terminal_seam_is_contained_crate_wide` pins the seam to that one call site.
+The funnel claims in `pvp.rs` (module doc and `settle_pvp_battle` doc) name the exception. Nothing
+else in this ADR changes.

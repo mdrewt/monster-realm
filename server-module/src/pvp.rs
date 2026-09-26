@@ -23,6 +23,10 @@
 //!   PvP outcome (both-submit, deadline forfeit, disconnect forfeit) commits
 //!   through it, and it is the ONLY caller of `ranking::apply_pvp_rating`
 //!   (ADR-0119 D3, amends ADR-0109 — exactly-once rating by construction).
+//!   One named exception: the deletion cascade's forced-terminal fallback
+//!   (`battle::anonymize_battles`, ADR-0274) commits `SideAWins`/`SideBWins`
+//!   outside this funnel, without rating, HP, XP, currency or evolution
+//!   write-back and without the `battle_action` sweep.
 //!
 //! This file name is part of the canonical `touches:` vocabulary fixed by
 //! ADR-0056 — keep it stable.
@@ -543,7 +547,10 @@ fn resolve_pvp_turn_if_ready(ctx: &ReducerContext, battle_id: u64) -> Result<(),
 /// through which every decisive PvP result (both-submit resolution, deadline
 /// forfeit, disconnect forfeit) commits (ADR-0119 D3, RL-10). Sole caller of
 /// `ranking::apply_pvp_rating`, which makes rating application exactly-once
-/// by construction.
+/// by construction. One named exception: the deletion cascade's forced-terminal
+/// fallback (`battle::anonymize_battles`, ADR-0274) commits
+/// `SideAWins`/`SideBWins` outside this funnel, without rating, HP, XP, currency
+/// or evolution write-back and without the `battle_action` sweep.
 ///
 /// Invariant commit order (unified verbatim from the two pre-M17 sites):
 /// - `write_back_battle_results` runs while the battle row is still Ongoing in
@@ -637,11 +644,18 @@ fn write_back_party_hp_pvp_side_b(ctx: &ReducerContext, battle: &Battle) -> Resu
 }
 
 // ===========================================================================
-// on_disconnect helpers (called from lib.rs `on_disconnect`)
+// on_disconnect / deletion-cascade helpers (reached via lib.rs
+// `resolve_all_live_interactions`, or per cascade step from accounts.rs)
 // ===========================================================================
 
 /// Forfeit any ongoing PvP battle involving `disconnected` (either as challenger
-/// or opponent). Called from `on_disconnect` BEFORE the player row is deleted.
+/// or opponent). Reached via `crate::resolve_all_live_interactions` from BOTH
+/// `on_disconnect` (before the player row is deleted) and the deletion
+/// cascade's step 6a (before the 6b erasures). An `apply_pvp_forfeit` Err is
+/// logged and the loop continues, with no retry here: on a plain disconnect the
+/// still-armed deadline settles the battle later; on the cascade path step 6c
+/// (`battle::anonymize_battles`) forces any surviving `Ongoing` row terminal
+/// (ADR-0274).
 pub(crate) fn forfeit_on_disconnect(ctx: &ReducerContext, disconnected: Identity) {
     // Collect battle_ids first (collect-then-mutate discipline — never mutate
     // a SpacetimeDB table while iterating over it).
