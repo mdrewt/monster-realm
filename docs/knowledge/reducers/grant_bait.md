@@ -5,7 +5,7 @@ slug: reducers/grant_bait
 updated: 2026-09-19
 tags: [reducer, spacetimedb, taming]
 abstract: "DEV/TEST: grant bait to the CALLER only (self-scoped to `ctx.sender()`; no arbitrary-recipient parameter). Rejects non-…"
-resource: server-module/src/taming.rs#L282
+resource: server-module/src/taming.rs#L284
 source: scripts/okf-export.mjs@server-module/src/taming.rs
 ---
 

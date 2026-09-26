@@ -5,7 +5,7 @@ slug: reducers/train
 updated: 2026-09-19
 tags: [reducer, spacetimedb, raising]
 abstract: "Spend a training food to grant EVs toward its target stat and re-derive the monster's stats (server-authoritative, reje…"
-resource: server-module/src/raising.rs#L149
+resource: server-module/src/raising.rs#L151
 source: scripts/okf-export.mjs@server-module/src/raising.rs
 ---
 
