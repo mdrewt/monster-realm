@@ -1444,7 +1444,8 @@ pub(crate) fn write_back_battle_results(
 /// SSOT row-predicate (ADR-0138 D1): is `b` an `Ongoing` WILD battle owned by
 /// `player`? The *selecting* dual of `guards::is_in_ongoing_battle_either_role`
 /// (which *tests* membership) — one definition of "an ongoing wild battle for a
-/// player", shared by `resolve_wild_battle_on_disconnect` and its proof-of-teeth.
+/// player", shared by `resolve_wild_battle_on_disconnect`, the deletion cascade's
+/// `battle_with_forced_terminal`, and their proof-of-teeth.
 pub(crate) fn is_ongoing_wild_battle(b: &Battle, player: Identity) -> bool {
     b.player_identity == player
         && b.opponent_identity == WILD_IDENTITY
@@ -1560,8 +1561,8 @@ pub(crate) fn battle_with_tombstoned_party(
 /// M22 §4.4 step 6c backstop (ADR-0274 D1, pure): the battle row with a
 /// still-`Ongoing` outcome forced terminal against the side that names the
 /// deleting identity. Rewrites ONLY `state.outcome` — never an identity column
-/// (the tombstone seam runs AFTER this one and needs the original identities to
-/// find the erased side) and never a mechanical field. The rule, in order:
+/// and no other field. This seam runs BEFORE the tombstone swap: both find the
+/// erased side by the original identities. The rule, in order:
 /// - a settled row (any outcome but `Ongoing`) is returned unchanged: settled
 ///   history is never rewritten;
 /// - an `Ongoing` WILD row owned by `deleting`, recognised by the SSOT
@@ -1614,8 +1615,8 @@ pub(crate) fn battle_with_forced_terminal(mut b: Battle, deleting: Identity) -> 
 /// with anything to settle. An `Ongoing` row reaching this step means the 6a
 /// resolver left it live; forcing it closes the channels through which an
 /// erased identity could later settle it or be handed its win (ADR-0274). The
-/// forced outcome is a degraded settlement — no rating, HP, currency or
-/// essence write-back. A forced row emits one
+/// forced outcome is a degraded settlement — no rating, HP, XP, currency or
+/// evolution write-back, and no `battle_action` sweep. A forced row emits one
 /// `deletion_cascade_forced_battle_terminal` line carrying only the battle id:
 /// it marks a 6a-resolver gap to investigate, and the cascade line carries the
 /// subject. Called only from `accounts::account_deletion_reaper` (D0

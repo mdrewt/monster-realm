@@ -25,7 +25,8 @@
 //!   (ADR-0119 D3, amends ADR-0109 — exactly-once rating by construction).
 //!   One named exception: the deletion cascade's forced-terminal fallback
 //!   (`battle::anonymize_battles`, ADR-0274) commits `SideAWins`/`SideBWins`
-//!   outside this funnel, without rating, HP, currency or essence write-back.
+//!   outside this funnel, without rating, HP, XP, currency or evolution
+//!   write-back and without the `battle_action` sweep.
 //!
 //! This file name is part of the canonical `touches:` vocabulary fixed by
 //! ADR-0056 — keep it stable.
@@ -548,8 +549,8 @@ fn resolve_pvp_turn_if_ready(ctx: &ReducerContext, battle_id: u64) -> Result<(),
 /// `ranking::apply_pvp_rating`, which makes rating application exactly-once
 /// by construction. One named exception: the deletion cascade's forced-terminal
 /// fallback (`battle::anonymize_battles`, ADR-0274) commits
-/// `SideAWins`/`SideBWins` outside this funnel, without rating, HP, currency or
-/// essence write-back.
+/// `SideAWins`/`SideBWins` outside this funnel, without rating, HP, XP, currency
+/// or evolution write-back and without the `battle_action` sweep.
 ///
 /// Invariant commit order (unified verbatim from the two pre-M17 sites):
 /// - `write_back_battle_results` runs while the battle row is still Ongoing in
@@ -643,7 +644,8 @@ fn write_back_party_hp_pvp_side_b(ctx: &ReducerContext, battle: &Battle) -> Resu
 }
 
 // ===========================================================================
-// on_disconnect helpers (called via lib.rs `resolve_all_live_interactions`)
+// on_disconnect / deletion-cascade helpers (reached via lib.rs
+// `resolve_all_live_interactions`, or per cascade step from accounts.rs)
 // ===========================================================================
 
 /// Forfeit any ongoing PvP battle involving `disconnected` (either as challenger
