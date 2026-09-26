@@ -1696,16 +1696,16 @@ fn my_export_bundle(ctx: &spacetimedb::ViewContext) -> Vec<ExportBundle> {
 // arm and the two unindexed own-row export scans of ADR-0226 — are unaffected
 // and are censused by privacy_tests.rs.) The behavioural proof is the pair of
 // pure seams below — `plan_export_reap` (which rows have expired) and
-// `plan_export_reap_stamps` (which whole bundles this tick may delete); the
-// native test host models no table scan, no range scan and no writes. The shell,
-// the bundle-selection seam and the private helper that delegates to both are
-// each pinned byte-exactly in squashed form by privacy_tests.rs, so any
-// reshaping is a deliberate, test-visible change. Since rb-87 (a third dated
-// amendment) the tick also PUBLISHES what it did: the helper reports a
-// three-count record — the rows the window read, the stamps it planned, the rows
-// it reaped — the pure `reap_fields` seam renders that record, and the reducer
-// emits it as ONE terminal observation whose fragment privacy_tests.rs pins BY
-// VALUE, the first executable oracle this section has had.
+// `plan_export_reap_stamps` (which whole bundles this tick may delete); since
+// rb-109 the native test host models the range read and the index-point delete,
+// never a table scan. The shell, the bundle-selection seam and the private
+// helper that delegates to both are each pinned byte-exactly in squashed form,
+// so any reshaping is a deliberate, test-visible change. Since rb-87 (a third
+// dated amendment) the tick also PUBLISHES what it did: the helper reports a
+// record of raw counts — four since rb-115 (ADR-0269): the rows the window read,
+// the expired stamps it holds, the stamps it planned, the rows it reaped — the
+// pure `reap_fields` seam renders that record, and the reducer emits it as ONE
+// terminal observation.
 // ===========================================================================
 
 // Retention ceiling for an export snapshot (spec M22 section 5: seven days).
@@ -1828,7 +1828,7 @@ pub(crate) fn plan_export_reap(
 // WHOLE window (`rows.len()`, not a row cap: the read is already bounded) and
 // only the stamps of the ids it plans are kept — then the stamps are made
 // distinct, ordered oldest first regardless of the window's order, and capped
-// at `max_stamps`: the tick's write bound.
+// at `max_stamps`: the write bound from the helper, the window's length from the count.
 //
 // The projection is an EXPLICIT loop over the borrowed window rather than an
 // iterator chain, matching `plan_export_reap` above. That is this module's
@@ -1872,11 +1872,11 @@ fn plan_export_reap_stamps(
 // reject line is still an unbounded 30-day-store write for ticks that never
 // ran. ABSENCE of the hourly line is therefore the abort-loop dead-man
 // signal (the mr_heartbeat idiom, at an hourly cadence): a tick that aborts
-// before the last statement writes no line at all. A cap at its bound is a
-// backlog HINT, never a proof — the stamp cap may have been reached exactly
-// rather than truncated, and a full read window may still have drained
-// everything, because a whole-stamp delete takes its tail beyond the window, so
-// `reaped` can exceed `read`.
+// before the last statement writes no line at all. The tick reports its stamp
+// count before the write bound beside what it planned, so a binding cap is
+// observed rather than inferred. A FULL read window says nothing about rows past
+// its edge; only a tick that read less than a full window and planned every
+// stamp it saw has drained every row expired at its instant.
 #[spacetimedb::reducer]
 pub fn export_bundle_reaper(
     ctx: &ReducerContext,
@@ -1896,18 +1896,21 @@ pub fn export_bundle_reaper(
 // and reads them directly, and nothing else in the crate has business seeing a
 // tick's shape (the BattleSideOwnership / PlannedChunk precedent above).
 //
-// THREE RAW COUNTS, never a derived verdict. `read` is how many chunk rows the
-// bounded window decoded, at most EXPORT_REAP_MAX_READ_PER_TICK; `planned` is
-// how many creation stamps the bundle seam selected, at most
-// EXPORT_REAP_MAX_STAMPS_PER_TICK; `reaped` is the datastore's own count of the
-// rows the tick deleted, tails beyond the window included. A derived `backlog`
-// flag was REJECTED: the thresholds belong in ops/observability, where they can
-// change without a module publish, and a boolean the module derives is a second
-// retention policy nobody reviewed. A cap at its bound is a HINT, not a proof:
-// `planned` at the stamp cap may be exactly-that-many rather than truncated, and
-// a full window may still have drained everything, because a stamp delete takes
-// its tail beyond the window (so `reaped` can exceed `read`). Sound only across
-// consecutive ticks; the exact pre-truncation stamp count is R-rb-87-BACKLOGAMBIG.
+// FOUR RAW COUNTS, never a derived verdict. `read` is how many chunk rows the
+// bounded window decoded, at most EXPORT_REAP_MAX_READ_PER_TICK; `due` is how
+// many distinct expired creation stamps THAT WINDOW holds before the write
+// bound — a window-scoped count, never the store's backlog; `planned` is how
+// many of them the bundle seam selected, at most EXPORT_REAP_MAX_STAMPS_PER_TICK;
+// `reaped` is the datastore's own count of the rows the tick deleted, tails
+// beyond the window included. A derived `backlog` flag was REJECTED: the
+// thresholds belong in ops/observability, where they can change without a
+// module publish, and a boolean the module derives is a second retention policy
+// nobody reviewed. `due` above `planned` means the stamp cap bound, observed
+// rather than inferred; sixteen minimum-size bundles (272 rows) overfill the
+// 256-row window, so that needs a stamp of at most fifteen rows or a range read
+// that interleaves stamps — for bundles this module writes it is a tripwire, not
+// a backlog signal. A FULL window is silent about rows past its edge (an open
+// residual, ADR-0269).
 //
 // Debug feeds the test failure messages; Copy (hence Clone) lets one tick reach
 // both reap_fields and the envelope builder in the same test. Nothing compares
@@ -1915,6 +1918,7 @@ pub fn export_bundle_reaper(
 #[derive(Debug, Clone, Copy)]
 struct ExportReapTick {
     read: usize,
+    due: usize,
     planned: usize,
     reaped: usize,
 }
@@ -1933,6 +1937,8 @@ fn reap_fields(tick: ExportReapTick) -> String {
     let mut first = true;
     json_field_into(&mut out, &mut first, stringify!(read));
     json_usize_into(&mut out, tick.read);
+    json_field_into(&mut out, &mut first, stringify!(due));
+    json_usize_into(&mut out, tick.due);
     json_field_into(&mut out, &mut first, stringify!(planned));
     json_usize_into(&mut out, tick.planned);
     json_field_into(&mut out, &mut first, stringify!(reaped));
@@ -1948,6 +1954,14 @@ fn reap_fields(tick: ExportReapTick) -> String {
 // record the measured band-keyed bypass the equality pin closes).
 fn export_reap_cutoff_ms(now_ms: i64, ttl_ms: i64) -> i64 {
     now_ms.saturating_sub(ttl_ms)
+}
+
+// The window's DISTINCT expired creation stamps BEFORE the write bound, computed
+// by the bundle seam above with a cap it cannot reach (the window's own length),
+// so there is no second expiry rule and no second set definition. PURE and ONE
+// LINE; the result is only ever a count, never a plan.
+fn count_export_reap_stamps(rows: &[(u64, i64)], now_ms: i64, ttl_ms: i64) -> usize {
+    plan_export_reap_stamps(rows, now_ms, ttl_ms, rows.len()).len()
 }
 
 // The TTL sweep itself (rb-85, ADR-0238 amendment; closes R-rb-48-SCANCOST —
@@ -2012,11 +2026,11 @@ fn export_reap_cutoff_ms(now_ms: i64, ttl_ms: i64) -> i64 {
 // PRIVATE on purpose: the scheduler-only posture lives in the reducer's guard,
 // and nothing else in the crate may reach this delete path — the compiler, not a
 // convention, is what enforces that. It REPORTS the whole tick (`read` /
-// `planned` / `reaped`) and never emits (the rb-40 / ADR-0235 idiom; the calling
-// reducer owns the line), and its named consumer is that reducer's terminal
-// `mr_log`. `reaped` is the datastore's own count, summed over the tick's point
-// deletes; `read` is what the bounded window decoded and `planned` what the
-// bundle seam selected, so one number can no longer stand for all three.
+// `due` / `planned` / `reaped`) and never emits (the rb-40 / ADR-0235 idiom; the
+// calling reducer owns the line), and its named consumer is that reducer's
+// terminal `mr_log`. `reaped` is the datastore's own count, summed over the
+// tick's point deletes; `read` is what the bounded window decoded, `due` the
+// expired stamps it holds and `planned` what the bundle seam selected.
 fn reap_expired_export_bundles(ctx: &ReducerContext, now_ms: i64) -> ExportReapTick {
     let cutoff = export_reap_cutoff_ms(now_ms, EXPORT_BUNDLE_TTL_MS);
     let rows: Vec<(u64, i64)> = ctx
@@ -2027,6 +2041,7 @@ fn reap_expired_export_bundles(ctx: &ReducerContext, now_ms: i64) -> ExportReapT
         .take(EXPORT_REAP_MAX_READ_PER_TICK)
         .map(|c| (c.chunk_id, c.created_at_ms))
         .collect();
+    let due = count_export_reap_stamps(&rows, now_ms, EXPORT_BUNDLE_TTL_MS);
     let stamps = plan_export_reap_stamps(
         &rows,
         now_ms,
@@ -2040,6 +2055,7 @@ fn reap_expired_export_bundles(ctx: &ReducerContext, now_ms: i64) -> ExportReapT
     }
     ExportReapTick {
         read: rows.len(),
+        due,
         planned,
         reaped,
     }

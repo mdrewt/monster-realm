@@ -826,3 +826,76 @@ the mint), `[rb85/range-census]` 1 → 2 and `[rb85/bundle-census]` 9 → 10 wit
 `[rb86/stamp-index-reaches]` 2 → 3, rb-107's N1 needle welding the mint, `[rb107/exit-shape]`
 counting `?` by depth, and `rb65p [emit/no-try]` 0 → 1 attributed to the mint's `?`. RED record: harness `memory/projects/gates/rb-111.red-before.md`. Suite
 1023 → 1031 (1024 → 1032 with `dev_reducers`); `just ci`.
+
+## Amendment (2026-09-26, rb-115 — residual R-rb-87-BACKLOGAMBIG closed on the truncation half; R-rb-115-X8 opened)
+
+The rb-87 amendment above published the tick as three raw counts, disclosed that a cap at its bound is only
+a backlog HINT, and named the window's distinct-stamp count before `truncate(max_stamps)` as the number
+rb-86's frozen seam swallowed. rb-115 publishes that number and closes R-rb-87-BACKLOGAMBIG on its
+truncation half (ADR-0269, which **Extends** this record; no ADR amends it, so per the rb-110/rb-111
+precedent this dated amendment is the closure record here). A new private, pure, one-line
+`count_export_reap_stamps(rows, now_ms, ttl_ms) -> usize` runs the frozen `plan_export_reap_stamps` with
+the cap `rows.len()` — a cap the window cannot reach — and returns the length, so the seam is not
+reshaped and stays the only definition of the stamp set. `ExportReapTick` gains `due` in data-flow order
+(`read, due, planned, reaped`), bound in `reap_expired_export_bundles` over the same rows, instant and
+TTL as the capped call, and `reap_fields` renders it between `read` and `planned`. `due` is WINDOW-scoped
+— the distinct expired creation stamps the window holds before the write bound — so
+`planned == min(due, EXPORT_REAP_MAX_STAMPS_PER_TICK)` and `due > planned` means the stamp cap bound.
+
+**Superseded sentences in the rb-87 amendment above (listed, none edited in place):**
+
+- "*Backlog → a cap at its bound, as a HINT that is necessary-not-sufficient and sound only across
+  consecutive ticks.* `planned` at 16 means the stamp plan MAY have been truncated — or exactly sixteen
+  stamps expired; … and a saturated stamp cap can show `read` far below 256 (twenty expired stamps of
+  five chunks). The one unambiguous signal — the window's distinct-stamp count BEFORE
+  `truncate(max_stamps)` — is swallowed inside rb-86's frozen `plan_export_reap_stamps` and is
+  deliberately not reshaped here (residual R-rb-87-BACKLOGAMBIG)." What is true now: that count is
+  published as `due` without reshaping the seam. `due > planned` shows a truncation and `due == planned`
+  shows an exactly-that-many plan. The "twenty expired stamps of five chunks" tick reads read 100, due 20,
+  planned 16, reaped 80. The elided middle clause ("`read` at 256 means the window filled, but
+  whole-stamp deletes take the tails beyond it, so the tick may still have drained every expired row")
+  stays TRUE. "The one unambiguous signal" over-stated: the count is unambiguous about truncation INSIDE
+  the window and silent about rows past its edge (R-rb-115-X8, below).
+- The first bullet's `struct ExportReapTick { read: usize, planned: usize, reaped: usize }` … "Three RAW
+  counts, never a derived verdict." What is true now: four raw counts, `{ read, due, planned, reaped }`,
+  still never a derived verdict.
+- The third bullet's fragment `"read":N,"planned":K,"reaped":M` and the fourth bullet's composed line
+  `{"evt":"export_bundle_reap","read":N,"planned":K,"reaped":M}`. What is true now:
+  `"read":N,"due":D,"planned":K,"reaped":M` and
+  `{"evt":"export_bundle_reap","read":N,"due":D,"planned":K,"reaped":M}`.
+- One sentence in the rb-111 amendment above: "which sharpens the backlog HINT it publishes without
+  changing its shape". What is true now: the shape changes by one field. What that amendment says of
+  `planned` (it counts bundles minted since rb-111 exactly) holds for `due` as well.
+
+**What does NOT change:** the seam (`plan_export_reap_stamps`'s signature, body and explicit-loop idiom)
+and `plan_export_reap`, the SSOT expiry predicate; the reducer shell (guard → helper → `reap_fields` →
+`mr_log` → `Ok(())`), byte-identical; both bounds — READ ≤ `EXPORT_REAP_MAX_READ_PER_TICK` (256 decoded
+rows), WRITE ≤ `EXPORT_REAP_MAX_STAMPS_PER_TICK` (16 stamps); the delete loop, which iterates the capped
+plan alone (the seam's one uncapped caller only takes `.len()`); and the absence of any derived verdict —
+a `backlog` flag stays rejected for rb-87's reason. The line gains one bare number; nothing consumes it
+yet, and the alarm half is still the rb-87 X10 backlog item.
+
+**Bounds, stated honestly.** On the ascending host the three counts already decided WHETHER truncation
+happened (`reaped < read` proves it in any read order); `due` is the direct, order-independent observation
+of HOW MANY stamps the window held, which no function of the three counts can recover (ADR-0269's
+populations A and A′ both read `(read, planned, reaped) = (256, 16, 208)`, with `due` 20 versus 17). On
+shipped constants the cap can bind only when the window's sixteen oldest stamps total at most 255 rows — a
+stamp of at most fifteen rows, where this module writes seventeen or more — or when the range read
+interleaves stamps, so on live data `due` is a tripwire, not a backlog signal. It can reveal, but cannot
+rule out, a non-ascending yield: a descending read that keeps each stamp's rows together never produces
+`due > planned`, so **R-rb-109-ORDERMODEL stays open**. And a tick that reads a full window and plans
+every stamp it saw still cannot say whether expired rows remain past the window's edge: `due`, taken over
+the window, inherits that blindness (rb-109's oversized population, `(256, 16, 272)` with `due` 16, leaves
+four expired bundles). **R-rb-115-X8 stays open** (MED); consecutive full-window ticks remain the
+backlog heuristic, and ADR-0269 records the candidate fix (a post-delete range probe) and the zero-cost
+interim (an ops rule).
+
+**Proof (ADR-0224: ordinary Rust tests, no eval).** `server-module/src/privacy_tests.rs`: five `rb115_`
+tests — the count's value table (including a row at a non-shipped TTL); the native-host ticks through the
+shipped helper (A and A′ byte-identical in the three counts with `due` 20 versus 17; B `(256, 16, 272)`
+with `due` 16; C read 100, due 20, planned 16, reaped 80); source pins on the new fn and its one binding;
+the docs census; and a closed roster — plus the re-frozen `rb85_helper_body_exact`, the rb-86 seam-scope
+census 2 → 3 attributed, the rb-87 record, fragment and envelope pins with the helper's `let` census
+5 → 6, and the rb-109 tuple sites (`rb109_tick` widened with `due` last). RED record: harness
+`memory/projects/gates/rb-115.red-before.md`. Suite 1031 → 1036 (1032 → 1037 with `dev_reducers`)
+(provisional; confirmed at merge).

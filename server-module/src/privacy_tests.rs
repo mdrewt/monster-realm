@@ -11831,6 +11831,7 @@ fn rb85_cutoff_sig_pin() -> String {
 /// and the tail expression is the three-count `ExportReapTick` record rather than
 /// a bare `reaped`. The attributable clauses for the three counts live in
 /// `rb87_helper_reports_the_whole_tick`; this literal stays the equality backstop.
+/// rb-115 (ADR-0269) re-froze it in place: a `let due` binding and a `due` tail field.
 fn rb85_helper_body_pin() -> String {
     [
         concat!(
@@ -11843,6 +11844,8 @@ fn rb85_helper_body_pin() -> String {
         concat!(".created_at", "_ms().filter(..=cutoff)").to_string(),
         ".take(EXPORT_REAP_MAX_READ_PER_TICK)".to_string(),
         ".map(|c|(c.chunk_id,c.created_at_ms)).collect();".to_string(),
+        concat!("letdue=count_export_reap", "_stamps(&rows,now_ms,").to_string(),
+        "EXPORT_BUNDLE_TTL_MS);".to_string(),
         concat!("letstamps=plan_export_reap", "_stamps(&rows,now_ms,").to_string(),
         "EXPORT_BUNDLE_TTL_MS,EXPORT_REAP_MAX_STAMPS_PER_TICK,);".to_string(),
         "letplanned=stamps.len();".to_string(),
@@ -11850,7 +11853,7 @@ fn rb85_helper_body_pin() -> String {
         "forstampinstamps{reaped+=".to_string(),
         m22s4_nd_bundle_accessor(),
         concat!(".created_at", "_ms().del", "ete(stamp)asusize;}").to_string(),
-        concat!("ExportReap", "Tick{read:rows.len(),planned,reaped,}").to_string(),
+        concat!("ExportReap", "Tick{read:rows.len(),due,planned,reaped,}").to_string(),
     ]
     .concat()
 }
@@ -11868,13 +11871,8 @@ fn rb85_helper_body_pin() -> String {
 /// owning test asserts the one-byte difference so the accepted set cannot grow a
 /// member nobody reviewed.
 ///
-/// UNCHANGED IN CODE BY rb-87, and the doc says why so the next reader does not
-/// have to re-derive it: the seam call and its terminator are byte-identical, and
-/// the two statements rb-87 adds sit AFTER the replacement target — the count
-/// binding `letplanned=stamps.len();` immediately below it, and the tail
-/// expression, which is now the `ExportReapTick` record literal rather than a
-/// bare `reaped`. The target still occurs exactly once and the twin still differs
-/// from its sibling by exactly one byte.
+/// UNCHANGED IN CODE BY rb-87 AND rb-115: what they add lies outside the seam call,
+/// so the target still occurs once and the twin still differs by one byte.
 fn rb85_helper_body_pin_flat() -> String {
     rb85_helper_body_pin().replacen(
         "EXPORT_REAP_MAX_STAMPS_PER_TICK,);",
@@ -11959,6 +11957,8 @@ fn rb85_helper_body_source() -> String {
         "\n        .take(EXPORT_REAP_MAX_READ_PER_TICK)",
         "\n        .map(|c| (c.chunk_id, c.created_at_ms))",
         "\n        .collect();\n",
+        concat!("    let due = count_export", "_reap_stamps(&rows, "),
+        "now_ms, EXPORT_BUNDLE_TTL_MS);\n",
         concat!("    let stamps = plan_export_reap", "_stamps(\n"),
         "        &rows,\n        now_ms,\n        EXPORT_BUNDLE_TTL_MS,\n",
         "        EXPORT_REAP_MAX_STAMPS_PER_TICK,\n    );\n",
@@ -11969,7 +11969,7 @@ fn rb85_helper_body_source() -> String {
         concat!(".created_at", "_ms().del", "ete(stamp) as usize;"),
         "\n    }\n",
         concat!("    ExportReap", "Tick {\n"),
-        "        read: rows.len(),\n        planned,\n        reaped,\n    }\n",
+        "        read: rows.len(),\n        due,\n        planned,\n        reaped,\n    }\n",
     ]
     .concat()
 }
@@ -13481,7 +13481,7 @@ fn rb85_new_seams_declared_once_private_with_frozen_signatures() {
              instant arrives as a PARAMETER, never read inside — that split is what lets the \
              deferred native test inject its own clock below the guard, and it is why an in-helper \
              clock read is a compile error rather than a text-scan finding. SINCE rb-87 (ADR-0238 \
-             amendment) the return type is the private three-count `ExportReapTick` record, not a \
+             amendment) the return type is the private four-count `ExportReapTick` record, not a \
              bare `usize`: its named consumer is the reducer's terminal `mr_log`, which renders \
              the record through `reap_fields` and is the only thing that makes an aborting tick or \
              a building backlog visible at all. Narrowing it back to one number is a silent \
@@ -13608,11 +13608,11 @@ fn rb85_helper_body_exact() {
          module, and several of the shapes this pin exists to kill produce a reaper that reads \
          the WHOLE table, deletes NOTHING, or commits a bundle in a k-of-N state, while every \
          count and adjacency clause stays green. SINCE rb-87 (ADR-0238 amendment) the literal \
-         also carries the THREE-COUNT TICK RECORD the helper returns — the plan size bound BEFORE \
-         the loop that moves it, and a tail expression that names `rows.len()`, `planned` and \
-         `reaped` rather than one number — because that record is what the reducer's terminal \
-         observation publishes, and a constant or mis-sourced count there is an audit line that \
-         reports a tick nobody had. Read: {body:?}"
+         also carries the TICK RECORD the helper returns, FOUR counts since rb-115 (ADR-0269) — \
+         the pre-cap stamp count bound as `let due` over the same window, the plan size bound \
+         BEFORE the loop that moves it, and a tail naming `rows.len()`, `due`, `planned` and \
+         `reaped` — because that record is what the reducer's terminal observation publishes, \
+         and a constant or mis-sourced count there reports a tick nobody had. Read: {body:?}"
     );
 }
 
@@ -16448,8 +16448,8 @@ fn rb86_reap_bundles_seam_declared_once_private_with_frozen_signature_and_body()
 ///   trips the `if` clause first, and an unguarded one is `unreachable_code`
 ///   under `-D warnings` before any test runs.
 /// * a third reach of the stamp index → `[rb86/stamp-index-reaches]`; the caller's
-///   identity smuggled into a scheduled tick → `[rb86/no-sender-in-helper]`; a
-///   second caller of the seam anywhere in the crate → `[rb86/seam-scope]`.
+///   identity smuggled into a scheduled tick → `[rb86/no-sender-in-helper]`; an
+///   unattributed (fourth) caller of the seam in the crate → `[rb86/seam-scope]`.
 ///
 /// HONEST LIMITS: source structure. It cannot prove the host issues an
 /// index-point delete rather than a scan, and it is blind to an import alias
@@ -16703,15 +16703,15 @@ fn rb86_reaper_deletes_whole_bundles_by_stamp_and_never_by_chunk_id() {
          ceiling quietly stops being enforced."
     );
 
-    // --- (10) the seam has exactly two named sites, and both are here ---------
+    // --- (10) the seam has exactly three named sites, all in privacy.rs ------
     let named = rb86_nd_seam_named();
     let seam_sites = rb22p_count(&squashed, &named);
     assert_eq!(
-        seam_sites, 2,
-        "[rb86/seam-scope]: privacy.rs must name `{named}` EXACTLY twice — the declaration and the \
-         ONE call from the TTL helper; found {seam_sites}. ZERO is the intended RED before the \
-         implementer lands rb-86. ONE means the helper no longer plans through the seam (or the \
-         seam is dead code the equality pin still happily describes). THREE or more is a second \
+        seam_sites, 3,
+        "[rb86/seam-scope]: privacy.rs must name `{named}` EXACTLY three times — the declaration, \
+         the ONE capped call from the TTL helper, and the ONE uncapped call inside the pure stamp \
+         count rb-115 added (ADR-0269), which only takes `.len()`; found {seam_sites}. The 2 -> 3 \
+         move is ATTRIBUTED per body by `[rb115/seam-sites]`. FOUR or more is a second planning \
          caller of a decision function whose whole contract is `one tick, one plan`."
     );
     let tests_squashed = stripped_for_scan(PRIVACY_TESTS_RS);
@@ -17307,16 +17307,19 @@ fn rb86_test_roster_is_closed() {
 // owner-driven reject line is still a thirty-day-store write for ticks that
 // never ran (ADR-0243 D7 in its authenticated form).
 //
-// WHAT THE LINE CARRIES, AND WHAT IT DELIBERATELY DOES NOT. Three RAW counts and
-// no subject. `read` is how many chunk rows the bounded window decoded; `planned`
-// is how many creation stamps the bundle seam selected; `reaped` is the
-// datastore own count of the rows the tick deleted, tails beyond the window
-// included — so `reaped` can EXCEED `read`. No derived backlog flag: the
-// thresholds belong in ops/observability, where they change without a module
-// publish, and a boolean the module derives is a second retention policy nobody
-// reviewed. A cap at its bound is a HINT, sound only across consecutive ticks;
-// the unambiguous pre-truncation stamp count is residual R-rb-87-BACKLOGAMBIG.
-// ABSENCE of the hourly line is the dead-man signal.
+// WHAT THE LINE CARRIES, AND WHAT IT DELIBERATELY DOES NOT. RAW counts and no
+// subject — three at rb-87, four since rb-115. `read` is how many chunk rows the
+// bounded window decoded; `planned` is how many creation stamps the bundle seam
+// selected; `reaped` is the datastore own count of the rows the tick deleted,
+// tails beyond the window included — so `reaped` can EXCEED `read`. No derived
+// backlog flag: the thresholds belong in ops/observability, where they change
+// without a module publish, and a boolean the module derives is a second
+// retention policy nobody reviewed. At rb-87 a cap at its bound was a HINT,
+// sound only across consecutive ticks, and the pre-truncation stamp count it
+// lacked was residual R-rb-87-BACKLOGAMBIG. rb-115 (ADR-0269) publishes that
+// count as `due` and closes the residual on its TRUNCATION half; the window-edge
+// half — a full window says nothing about rows past its edge — stays open as
+// R-rb-115-X8. ABSENCE of the hourly line is the dead-man signal.
 //
 // THE SPLIT. The new LOGIC is one pure fn and one plain record, so T1 and T2
 // EXECUTE them: a value table over the rendered fragment, and the REAL composed
@@ -17358,9 +17361,10 @@ fn rb87_nd_tick_derive() -> String {
     concat!("#[der", "ive(Debug,Clone,Copy)]").to_string()
 }
 
-/// THE FROZEN squashed FIELD SPAN of the record: three counts, no verdict.
+/// THE FROZEN squashed FIELD SPAN of the record: four counts, no verdict — three
+/// at rb-87, and `due` inserted in data-flow order by rb-115 (ADR-0269).
 fn rb87_tick_fields_pin() -> String {
-    "read:usize,planned:usize,reaped:usize,".to_string()
+    "read:usize,due:usize,planned:usize,reaped:usize,".to_string()
 }
 
 /// The record DECLARATION as whitespace-bearing SOURCE text (control input),
@@ -17372,6 +17376,7 @@ fn rb87_tick_decl_source() -> String {
         concat!("#[der", "ive(Debug, Clone, Copy)]\n"),
         concat!("struct ExportReap", "Tick {\n"),
         "    read: usize,\n",
+        "    due: usize,\n",
         "    planned: usize,\n",
         "    reaped: usize,\n",
         "}\n",
@@ -17397,7 +17402,9 @@ fn rb87_fields_sig_pin() -> String {
 /// module: `rb22p_purge_body_exact`, `rb48_reaper_body_exact` and
 /// `rb65p_export_fields_is_pure` all exist because containment pins were proven
 /// insufficient for strictly simpler bodies. Here the family is sharper still —
-/// all three counts are `usize`, so transposing two encoder calls type-checks.
+/// all four counts are `usize`, so transposing two encoder calls type-checks.
+/// RE-FROZEN BY rb-115 (ADR-0269): the `due` pair sits between `read` and
+/// `planned`, the record's data-flow order.
 fn rb87_fields_body_pin() -> String {
     [
         "letmutout=String::new();",
@@ -17405,6 +17412,9 @@ fn rb87_fields_body_pin() -> String {
         concat!("json_field", "_into(&mutout,&mutfirst,"),
         "stringify!(read));",
         concat!("json_usize", "_into(&mutout,tick.read);"),
+        concat!("json_field", "_into(&mutout,&mutfirst,"),
+        "stringify!(due));",
+        concat!("json_usize", "_into(&mutout,tick.due);"),
         concat!("json_field", "_into(&mutout,&mutfirst,"),
         "stringify!(planned));",
         concat!("json_usize", "_into(&mutout,tick.planned);"),
@@ -17430,6 +17440,9 @@ fn rb87_fields_body_source() -> String {
         concat!("    json_field", "_into(&mut out, &mut first, "),
         "stringify!(read));\n",
         concat!("    json_usize", "_into(&mut out, tick.read);\n"),
+        concat!("    json_fie", "ld_into(&mut out, &mut first, "),
+        "stringify!(due));\n",
+        concat!("    json_us", "ize_into(&mut out, tick.due);\n"),
         concat!("    json_field", "_into(&mut out, &mut first, "),
         "stringify!(planned));\n",
         concat!("    json_usize", "_into(&mut out, tick.planned);\n"),
@@ -17482,10 +17495,11 @@ fn rb87_nd_tick_return() -> String {
     concat!("->ExportReap", "Tick").to_string()
 }
 
-/// The squashed TAIL EXPRESSION of the bounded-read helper: each of the three
-/// counts named against the thing it comes from.
+/// The squashed TAIL EXPRESSION of the bounded-read helper: each of the four
+/// counts named against the thing it comes from (three at rb-87; rb-115 added
+/// the pre-cap stamp count, bound as `due`, ADR-0269).
 fn rb87_nd_tick_tail() -> String {
-    concat!("ExportReap", "Tick{read:rows.len(),planned,reaped,}").to_string()
+    concat!("ExportReap", "Tick{read:rows.len(),due,planned,reaped,}").to_string()
 }
 
 /// The squashed plan-size binding, taken BEFORE the loop that moves the plan.
@@ -17523,25 +17537,33 @@ fn rb87_prose(needle: &str) -> String {
 /// A fixture tick. The record is PRIVATE with private fields and this module is a
 /// CHILD of `privacy`, which is the whole reason a value oracle is possible here
 /// at all.
-fn rb87_tick(read: usize, planned: usize, reaped: usize) -> super::ExportReapTick {
+///
+/// Arguments in RECORD order, `(read, due, planned, reaped)` — the data-flow
+/// order rb-115 (ADR-0269) inserted `due` into. `rb109_tick` returns the same
+/// four counts APPEND-ONLY instead, `(read, planned, reaped, due)`, because its
+/// callers read the first three by position; the two orders differ on purpose.
+fn rb87_tick(read: usize, due: usize, planned: usize, reaped: usize) -> super::ExportReapTick {
     super::ExportReapTick {
         read,
+        due,
         planned,
         reaped,
     }
 }
 
-/// X1 (behavioural, the payload): `reap_fields` renders EXACTLY the three
-/// sanctioned keys with BARE counts, in the order read, planned, reaped.
+/// X1 (behavioural, the payload): `reap_fields` renders EXACTLY the sanctioned
+/// keys with BARE counts, in the order read, due, planned, reaped. The NAME keeps
+/// its rb-87 `three` (the ADR-0238 amendment cites it); since rb-115 (ADR-0269)
+/// it pins FOUR counts.
 ///
 /// The counts are PAIRWISE DISTINCT on the three middle rows (the quiet-hour zero
 /// row and the all-MAX width row are deliberately uniform),
-/// on purpose: all three are `usize`, so an honest transposition of two encoder
+/// on purpose: all four are `usize`, so an honest transposition of two encoder
 /// calls type-checks, is clippy-clean and satisfies every source-scan clause in
 /// this slice. Equal fixture values would make this test green on it.
 ///
 /// Kills: M3, a constant-returning builder (any row disagrees);
-///        M2, two of the three values transposed with the key order intact;
+///        M2, two of the four values transposed with the key order intact;
 ///        M1, a key dropped or a value rendered twice;
 ///        M4, the separating comma lost (`first` re-set before every key);
 ///        M20, `planned` and `reaped` rendered through `json_u32_into(.. as u32)`
@@ -17551,7 +17573,7 @@ fn rb87_tick(read: usize, planned: usize, reaped: usize) -> super::ExportReapTic
 ///        a builder that omits a count when it is zero — the all-zero tick is the
 ///        ordinary quiet hour, and an absent key reads downstream as `unknown`
 ///        rather than as `none`;
-///        a fourth key, or any of the four RESERVED envelope keys, which
+///        a fifth key, or any of the four RESERVED envelope keys, which
 ///        last-key-wins parsing downstream would let forge the event type or a
 ///        breadcrumb.
 #[test]
@@ -17561,25 +17583,28 @@ fn rb87_reap_fields_renders_three_bare_counts() {
     // --- the value table, FIRST (clause order is load-bearing) ---------------
     let rows: [(super::ExportReapTick, String); 5] = [
         (
-            rb87_tick(0, 0, 0),
-            format!("{q}read{q}:0,{q}planned{q}:0,{q}reaped{q}:0"),
+            rb87_tick(0, 0, 0, 0),
+            format!("{q}read{q}:0,{q}due{q}:0,{q}planned{q}:0,{q}reaped{q}:0"),
         ),
         (
-            rb87_tick(7, 3, 11),
-            format!("{q}read{q}:7,{q}planned{q}:3,{q}reaped{q}:11"),
+            rb87_tick(7, 5, 3, 11),
+            format!("{q}read{q}:7,{q}due{q}:5,{q}planned{q}:3,{q}reaped{q}:11"),
         ),
         (
-            rb87_tick(256, 16, 4096),
-            format!("{q}read{q}:256,{q}planned{q}:16,{q}reaped{q}:4096"),
+            rb87_tick(256, 20, 16, 4096),
+            format!("{q}read{q}:256,{q}due{q}:20,{q}planned{q}:16,{q}reaped{q}:4096"),
         ),
         (
-            rb87_tick(4_294_967_296, 4_294_967_297, 4_294_967_298),
-            format!("{q}read{q}:4294967296,{q}planned{q}:4294967297,{q}reaped{q}:4294967298"),
-        ),
-        (
-            rb87_tick(usize::MAX, usize::MAX, usize::MAX),
+            rb87_tick(4_294_967_296, 4_294_967_297, 4_294_967_298, 4_294_967_299),
             format!(
-                "{q}read{q}:{m},{q}planned{q}:{m},{q}reaped{q}:{m}",
+                "{q}read{q}:4294967296,{q}due{q}:4294967297,{q}planned{q}:4294967298,\
+                 {q}reaped{q}:4294967299"
+            ),
+        ),
+        (
+            rb87_tick(usize::MAX, usize::MAX, usize::MAX, usize::MAX),
+            format!(
+                "{q}read{q}:{m},{q}due{q}:{m},{q}planned{q}:{m},{q}reaped{q}:{m}",
                 m = usize::MAX
             ),
         ),
@@ -17588,33 +17613,35 @@ fn rb87_reap_fields_renders_three_bare_counts() {
         assert_eq!(
             super::reap_fields(tick),
             expected,
-            "[rb87/fields-value]: the reaper fragment for {tick:?} must be EXACTLY three keys in \
-             this order — `read`, the BARE count of chunk rows the bounded window decoded; \
-             `planned`, the BARE count of creation stamps the bundle seam selected; `reaped`, the \
-             BARE count of rows the datastore actually deleted. The middle rows give all three \
-             counts DISTINCT values precisely so a transposition of two encoder calls, which \
-             type-checks and is clippy-clean, reds by VALUE here. The all-zero row is the ordinary \
-             quiet hour — the one case an operator must be able to tell from a tick that never \
-             ran — so a zero renders as `:0` and is never omitted or suppressed. The above-u32 row \
-             is the ONLY instrument that sees a `json_u32_into(.. as u32)` narrowing, which is \
-             byte-identical for every value below 2^32. SCOPE, STATED HONESTLY (the ADR-0243 D3 \
-             precedent): on wasm32 `usize` IS `u32`, so that row is unreachable in the shipped \
-             module and what it pins is the ENCODER CONTRACT — each count rendered at the width \
-             the helper reports it, with no cast between them."
+            "[rb87/fields-value]: the reaper fragment for {tick:?} must be EXACTLY four keys in \
+             this order — `read`, the BARE count of chunk rows the bounded window decoded; `due`, \
+             the BARE count of distinct expired creation stamps that window held BEFORE the stamp \
+             cap (rb-115, ADR-0269); `planned`, the BARE count of creation stamps the bundle seam \
+             selected; `reaped`, the BARE count of rows the datastore actually deleted. The middle \
+             rows give all four counts DISTINCT values precisely so a transposition of two encoder \
+             calls, which type-checks and is clippy-clean, reds by VALUE here. The all-zero row is \
+             the ordinary quiet hour — the one case an operator must be able to tell from a tick \
+             that never ran — so a zero renders as `:0` and is never omitted or suppressed. The \
+             above-u32 row is the ONLY instrument that sees a `json_u32_into(.. as u32)` \
+             narrowing, which is byte-identical for every value below 2^32. SCOPE, STATED \
+             HONESTLY (the ADR-0243 D3 precedent): on wasm32 `usize` IS `u32`, so that row is \
+             unreachable in the shipped module and what it pins is the ENCODER CONTRACT — each \
+             count rendered at the width the helper reports it, with no cast between them."
         );
     }
 
     // --- the quote census and the reserved envelope keys ---------------------
-    let fragment = super::reap_fields(rb87_tick(12, 34, 56));
+    let fragment = super::reap_fields(rb87_tick(12, 23, 34, 56));
     assert_eq!(
         fragment.matches(q).count(),
-        6,
-        "[rb87/fields-no-quote]: the fragment must carry EXACTLY six double quotes — three quoted \
-         KEYS and nothing else; got {fragment:?}. EIGHT or more means a count was QUOTED, which is \
-         the shape `json_u64_into` produces (ADR-0226 quotes 64-bit integers because the client \
-         assembler loses precision above 2^53) and which no panel, rule or alert can compare \
-         numerically. FOUR means a key lost its quotes, and the envelope this text splices into is \
-         then not JSON at all."
+        8,
+        "[rb87/fields-no-quote]: the fragment must carry EXACTLY eight double quotes — four \
+         quoted KEYS and nothing else; got {fragment:?}. TEN or more means a count was QUOTED, \
+         which is the shape `json_u64_into` produces (ADR-0226 quotes 64-bit integers because the \
+         client assembler loses precision above 2^53) and which no panel, rule or alert can \
+         compare numerically. SIX means a key lost its quotes or went missing — the pre-rb-115 \
+         three-key fragment is exactly six — and a key without quotes makes the envelope this \
+         text splices into not JSON at all."
     );
     for key in ["evt", "cause", "sched", "phase"] {
         let reserved = format!("{q}{key}{q}:");
@@ -17645,19 +17672,20 @@ fn rb87_reap_fields_renders_three_bare_counts() {
 ///        an envelope whose evt is not first (the relay reconstruction and the
 ///        Loki label set both key on that position being stable);
 ///        the evt renamed, which retires every operator query keyed on it;
-///        a fourth key or a quoted count, by byte equality against a line this
-///        test builds key by key.
+///        a key beyond the four counts, or a quoted count, by byte equality
+///        against a line this test builds key by key (four count keys since
+///        rb-115 inserted `due`, ADR-0269).
 #[test]
 fn rb87_reap_line_is_the_exact_json_envelope() {
     let q = rb22p_dq();
     let rows: [(super::ExportReapTick, String); 2] = [
         (
-            rb87_tick(0, 0, 0),
-            format!("{q}read{q}:0,{q}planned{q}:0,{q}reaped{q}:0"),
+            rb87_tick(0, 0, 0, 0),
+            format!("{q}read{q}:0,{q}due{q}:0,{q}planned{q}:0,{q}reaped{q}:0"),
         ),
         (
-            rb87_tick(256, 16, 4096),
-            format!("{q}read{q}:256,{q}planned{q}:16,{q}reaped{q}:4096"),
+            rb87_tick(256, 20, 16, 4096),
+            format!("{q}read{q}:256,{q}due{q}:20,{q}planned{q}:16,{q}reaped{q}:4096"),
         ),
     ];
     for (tick, fragment) in rows {
@@ -17674,7 +17702,7 @@ fn rb87_reap_line_is_the_exact_json_envelope() {
              an operator greps, a dashboard rule matches and the derived \
              `mr_log_events_total{{reducer,evt}}` series is labelled from, so it is pinned by \
              VALUE rather than by shape. The zero row is the ordinary quiet hour and must still \
-             produce a full four-key line: the ABSENCE of this line at the hourly cadence is the \
+             produce a full five-key line: the ABSENCE of this line at the hourly cadence is the \
              dead-man signal that the tick is aborting, and a line that renders empty or partial \
              on a quiet hour makes absence mean two different things at once."
         );
@@ -17682,21 +17710,22 @@ fn rb87_reap_line_is_the_exact_json_envelope() {
 }
 
 /// X1 (source): the one-tick observation record is declared EXACTLY once,
-/// PRIVATE, with the frozen derive set and the frozen three-field shape.
+/// PRIVATE, with the frozen derive set and the frozen field shape — three
+/// fields at rb-87, four since rb-115 (ADR-0269) inserted `due`.
 ///
 /// A SOURCE SCAN and it says so: the record VALUES are proven by the two
 /// behavioural tests above. What this one pins is that there is exactly one of
-/// it, that no other module can see it, and that its shape is the reviewed three.
+/// it, that no other module can see it, and that its shape is the reviewed four.
 ///
 /// Kills: M18, the record declared `pub` — and, through the derive ADJACENCY
 ///        clause, every other visibility spelling, since NOTHING may sit between
 ///        the derive and the `struct` keyword;
-///        M5, a fourth field (a derived `backlog: bool` is the obvious one, and
+///        M5, an extra field (a derived `backlog: bool` is the obvious one, and
 ///        it is exactly the retention verdict this slice left to ops);
 ///        a second declaration, including a cfg twin, which would make the shape
 ///        clause read whichever one the extractor reaches first;
 ///        a field renamed, re-typed or reordered, which silently re-points one of
-///        the builder three encoder calls at a different quantity;
+///        the builder four encoder calls at a different quantity;
 ///        `Debug` or `Copy` dropped — both have consumers in THIS file.
 #[test]
 fn rb87_tick_record_declared_once_private_with_frozen_shape() {
@@ -17747,7 +17776,7 @@ fn rb87_tick_record_declared_once_private_with_frozen_shape() {
         0,
         "[rb87/tick-blind]: the strip pipeline still sees the sanctioned field span after it was \
          placed ONLY inside a line comment and inside a string literal, so every clause in this \
-         block would be satisfiable by a doc comment naming the right three fields. Stripped: \
+         block would be satisfiable by a doc comment naming the right four fields. Stripped: \
          {stripped_prose:?}"
     );
 
@@ -17795,11 +17824,13 @@ fn rb87_tick_record_declared_once_private_with_frozen_shape() {
     assert_eq!(
         span,
         rb87_tick_fields_pin(),
-        "[rb87/tick-shape]: the tick record must be EXACTLY three `usize` fields in the order \
-         read, planned, reaped. A FOURTH field is the derived verdict this slice REJECTED: \
-         retention thresholds belong in ops/observability, where they change without a module \
-         publish, and a boolean the module derives is a second retention policy nobody reviewed. A \
-         renamed or re-typed field silently re-points one of the builder three encoder calls at a \
+        "[rb87/tick-shape]: the tick record must be EXACTLY four `usize` fields in the order \
+         read, due, planned, reaped — three raw counts at rb-87, and the window's distinct \
+         expired stamps BEFORE the stamp cap inserted in data-flow order by rb-115 (ADR-0269). \
+         A FIFTH field is the kind of derived verdict rb-87 REJECTED: retention thresholds \
+         belong in ops/observability, where they change without a module publish, and a boolean \
+         the module derives is a second retention policy nobody reviewed. A renamed, re-typed \
+         or reordered field silently re-points one of the builder four encoder calls at a \
          different quantity while every count clause in this slice stays green. Read: {span:?}"
     );
 }
@@ -17809,7 +17840,7 @@ fn rb87_tick_record_declared_once_private_with_frozen_shape() {
 ///
 /// The `rb65p_export_fields_is_pure` twin, clause for clause, with TWO deliberate
 /// differences. The KEY census is not restated: the body EQUALITY below carries
-/// all three `stringify!` keys, their order and their encoders in one literal, so
+/// all four `stringify!` keys, their order and their encoders in one literal, so
 /// a separate key clause would be a restatement of it (ADR-0224). And the EVT
 /// census is NOT here — the evt is spelled at the EMISSION, in the reducer, never
 /// in the builder, so `rb87_module_emits_exactly_two_observations_attributed`
@@ -17948,11 +17979,12 @@ fn rb87_reap_fields_is_pure() {
         body,
         rb87_fields_body_pin(),
         "[rb87/fields-body-exact]: the builder must be EXACTLY the frozen statement list — one \
-         `String::new()`, one `first` flag, three (key, value) encoder pairs in the order read, \
-         planned, reaped, then the bare tail expression. Containment was MEASURED insufficient for \
+         `String::new()`, one `first` flag, four (key, value) encoder pairs in the order read, \
+         due, planned, reaped (three at rb-87; rb-115 inserted the pre-cap stamp count, \
+         ADR-0269), then the bare tail expression. Containment was MEASURED insufficient for \
          strictly simpler bodies in this very module (a dead `if false` wrapper, a shadowed \
          binding, an appended aliased write — all clippy-clean, all green against every ban \
-         above), and here the family is sharper still: all three counts are `usize`, so an honest \
+         above), and here the family is sharper still: all four counts are `usize`, so an honest \
          transposition of two encoder calls type-checks and satisfies every containment clause \
          while every emitted line reports the counts in the wrong order. Each key is a \
          `stringify!` token and the quote is the JSON_QUOTE constant, which is what keeps this \
@@ -17962,13 +17994,18 @@ fn rb87_reap_fields_is_pure() {
 
 /// X1 (source): the bounded-read helper REPORTS the whole tick — the rows the
 /// window decoded, the stamps the seam planned and the rows the datastore deleted
-/// — and each of the three comes from the thing it names.
+/// — and each of the three comes from the thing it names. RE-FROZEN BY rb-115
+/// (ADR-0269): a fourth count, the window's distinct expired stamps BEFORE the
+/// stamp cap, is bound as one more `let` and named in the tail, so the constant
+/// ban, the tail needle and both binding censuses move with it. The test keeps
+/// its rb-87 NAME, which the ADR-0238 amendment cites.
 ///
-/// A SOURCE SCAN and it says so, for the reason the rb-85 naming ban records:
-/// CALLING this helper from a Rust test is a LINK failure of the whole lib-test
-/// binary, not a red test, because the range-scan syscall is undefined in the
-/// native host. The equality backstop is `rb85_helper_body_exact`; the clauses
-/// here are the ATTRIBUTABLE ones, which say WHICH of the three counts broke.
+/// A SOURCE SCAN and it says so. When rb-87 shipped, CALLING this helper from a
+/// Rust test was a LINK failure of the whole lib-test binary; since rb-109 the
+/// native host executes it through `rb109_tick`, and the behavioural tick values
+/// live there and in the rb-115 block. The equality backstop is
+/// `rb85_helper_body_exact`; the clauses here are the ATTRIBUTABLE ones, which
+/// say WHICH of the counts broke.
 ///
 /// Kills: the return type narrowed back to a bare count, which deletes the
 ///        backlog signal at its source;
@@ -18010,7 +18047,7 @@ fn rb87_helper_reports_the_whole_tick() {
         .expect("[rb87/tick-needle-control]: the control fixture has no body");
     for (what, needle, want) in [
         (
-            "the three-count tail expression",
+            "the four-count tail expression",
             rb87_nd_tick_tail(),
             1usize,
         ),
@@ -18021,6 +18058,7 @@ fn rb87_helper_reports_the_whole_tick() {
             1usize,
         ),
         ("a constant read count", "read:0".to_string(), 0usize),
+        ("a constant due count", "due:0".to_string(), 0usize),
         ("a constant planned count", "planned:0".to_string(), 0usize),
         ("a constant reaped count", "reaped:0".to_string(), 0usize),
     ] {
@@ -18031,17 +18069,18 @@ fn rb87_helper_reports_the_whole_tick() {
              {got} occurrence(s) of {what} (`{needle}`); it must read {want}. Every clause below \
              is an exact count against one of these needles, so a single wrong literal here would \
              be a permanently red gate that reads exactly like a missing implementation — and the \
-             three ZERO rows are what prove the constant-count ban is SATISFIABLE by the \
+             four ZERO rows are what prove the constant-count ban is SATISFIABLE by the \
              sanctioned text — its strictness is what register M15 measures."
         );
     }
 
     let n_lets_control = m22s4_left_bounded_count(control_body, "let");
     assert_eq!(
-        n_lets_control, 5,
+        n_lets_control, 6,
         "[rb87/tick-needle-control]: over the SANCTIONED helper body text the left-bounded `let` \
-         census reads {n_lets_control}; it must read 5, or the binding census below is a \
-         permanently red gate that reads exactly like a missing implementation."
+         census reads {n_lets_control}; it must read 6 (five at rb-87, plus the pre-cap stamp \
+         count rb-115 binds), or the binding census below is a permanently red gate that reads \
+         exactly like a missing implementation."
     );
 
     let body = rb85_helper_body(&squashed);
@@ -18049,6 +18088,7 @@ fn rb87_helper_reports_the_whole_tick() {
     // --- (2) never a CONSTANT count ------------------------------------------
     for (what, constant) in [
         ("the window read", "read:0"),
+        ("the pre-cap stamp count", "due:0"),
         ("the stamp plan", "planned:0"),
         ("the delete count", "reaped:0"),
     ] {
@@ -18072,8 +18112,9 @@ fn rb87_helper_reports_the_whole_tick() {
         n_tail, 1,
         "[rb87/tick-sources]: the helper must yield `{tail}` EXACTLY once; found {n_tail}. `read` \
          is the LENGTH OF THE WINDOW the bounded range actually decoded — not the cap, and not a \
-         counter any condition inside the loop could bias — while `planned` and `reaped` are the \
-         two bindings taken from the stamp plan and from the datastore own delete count. Naming \
+         counter any condition inside the loop could bias — while `due`, `planned` and `reaped` \
+         are the three bindings taken from the uncapped stamp count over that same window \
+         (rb-115, ADR-0269), from the stamp plan and from the datastore own delete count. Naming \
          the source of each field in ONE literal is what makes the published record evidence \
          rather than decoration."
     );
@@ -18093,10 +18134,13 @@ fn rb87_helper_reports_the_whole_tick() {
     // --- (4) the plan size is taken BEFORE the loop that MOVES the plan -------
     let n_lets = m22s4_left_bounded_count(&body, "let");
     assert_eq!(
-        n_lets, 5,
-        "[rb87/tick-sources]: the helper body must carry EXACTLY five `let` bindings — the cutoff, \
-         the window, the stamp plan, the plan size and the mutable delete count; found {n_lets} \
-         (left-bounded, so `.delete(` does not count). MEASURED (register M28, tests red-team): a \
+        n_lets, 6,
+        "[rb87/tick-sources]: the helper body must carry EXACTLY six `let` bindings — the cutoff, \
+         the window, the pre-cap stamp count, the stamp plan, the plan size and the mutable \
+         delete count; found {n_lets} (left-bounded, so `.delete(` does not count). FIVE at \
+         rb-87; the sixth is the pre-cap count rb-115 binds, and `[rb115/helper-binding]` \
+         attributes it statement by statement, so this 5 -> 6 is an attribution and not a \
+         relaxation. MEASURED (register M28, tests red-team): a \
          second `let stamps: Vec<i64> = Vec::new();` planted between the plan-size binding and the \
          delete loop leaves the tail expression, the plan-size binding, the loop header and their \
          ordering all intact — every other clause in this test green — while the tick publishes \
@@ -21657,13 +21701,23 @@ use crate::schema::export_bundle;
 /// counts ONE since rb-109 rather than zero.
 ///
 /// Returns the tick record as a bare tuple, so the private record type is never
-/// named here: `(read, planned, reaped)` — the rows the bounded window decoded,
-/// the creation stamps the bundle seam planned, and the datastore's own count of
-/// the rows the point deletes removed. The third can EXCEED the first: a stamp
-/// selected from inside the window carries its tail beyond the window's edge.
-fn rb109_tick(ctx: &spacetimedb::ReducerContext, now: i64) -> (usize, usize, usize) {
+/// named here: `(read, planned, reaped, due)` — the rows the bounded window
+/// decoded, the creation stamps the bundle seam planned, the datastore's own count
+/// of the rows the point deletes removed, and (since rb-115, ADR-0269) the
+/// distinct expired stamps the window held BEFORE the stamp cap. The third can
+/// EXCEED the first: a stamp selected from inside the window carries its tail
+/// beyond the window's edge.
+///
+/// `due` is LAST, not in the record's data-flow order, and that is append-only
+/// on purpose: the drain test reads `.0`, `.1` and `.2` by position, and a
+/// mid-tuple insert would compile and silently re-point the third of them. The
+/// rb-87 fixture constructor takes RECORD order instead, `(read, due, planned,
+/// reaped)`; the two orders differ deliberately. The stamp-cap test below binds
+/// the new count to `_` because this block's label roster is closed — rb-115's
+/// native-host test asserts it on that identical population.
+fn rb109_tick(ctx: &spacetimedb::ReducerContext, now: i64) -> (usize, usize, usize, usize) {
     let tick = crate::privacy::reap_expired_export_bundles(ctx, now);
-    (tick.read, tick.planned, tick.reaped)
+    (tick.read, tick.planned, tick.reaped, tick.due)
 }
 
 /// A distinct owner identity per seeded bundle.
@@ -21939,7 +21993,7 @@ fn rb109_oversized_tick_is_bounded_and_reaps_the_oldest_bundles_whole() {
     );
 
     // --- ONE tick ------------------------------------------------------------
-    let (read, planned, reaped) = rb109_tick(&ctx, now);
+    let (read, planned, reaped, _) = rb109_tick(&ctx, now);
 
     assert_eq!(
         read,
@@ -22038,10 +22092,10 @@ fn rb109_oversized_tick_is_bounded_and_reaps_the_oldest_bundles_whole() {
 /// cutoff itself) and three live ones (51 rows, the first one millisecond above
 /// it). Both caps are slack here on purpose: this test is about the BOUNDARY,
 /// not about the bounds, so every expired row is read, every stamp is planned
-/// and every expired row is deleted — `(85, 5, 85)`.
+/// and every expired row is deleted — `(85, 5, 85, 5)`.
 ///
 /// Kills: M3 the range narrowed to strictly-below the cutoff, which reports
-/// `(68, 4, 68)` and strands a bundle that the retention ceiling says must go —
+/// `(68, 4, 68, 4)` and strands a bundle that the retention ceiling says must go —
 /// the cutoff is the NEWEST stamp a chunk may carry and still be expired; M6 a
 /// point delete that ignores its key (the live rows disappear); M5 a point
 /// delete that reports zero (reaped 0 while the rows are gone, or the rows still
@@ -22078,10 +22132,11 @@ fn rb109_tick_deletes_exactly_the_expired_set_including_the_cutoff_stamp() {
     let tick = rb109_tick(&ctx, now);
     assert_eq!(
         tick,
-        (85usize, 5, 85),
-        "[rb109/expired-exact]: the tick reported (read, planned, reaped) = {tick:?}; five expired \
-         bundles of seventeen chunks is (85, 5, 85). A range spelled strictly BELOW the cutoff \
-         reports (68, 4, 68) — it silently stops expiring the bundle that turned seven days old \
+        (85usize, 5, 85, 5),
+        "[rb109/expired-exact]: the tick reported (read, planned, reaped, due) = {tick:?}; five \
+         expired bundles of seventeen chunks is (85, 5, 85, 5) — five distinct stamps in the \
+         window, all five under the cap. A range spelled strictly BELOW the cutoff reports \
+         (68, 4, 68, 4) — it silently stops expiring the bundle that turned seven days old \
          exactly on this tick, and the next tick has the same argument about it."
     );
 
@@ -22126,8 +22181,8 @@ fn rb109_tick_deletes_exactly_the_expired_set_including_the_cutoff_stamp() {
 ///
 /// The same 442-row population as the criterion test. The drain is the property
 /// a per-tick bound has to buy: a cap that never finishes is a retention
-/// ceiling that is never enforced. Three ticks — `(256, 16, 272)`, then
-/// `(68, 4, 68)`, then `(0, 0, 0)` — and the sequence is pinned as a whole,
+/// ceiling that is never enforced. Three ticks — `(256, 16, 272, 16)`, then
+/// `(68, 4, 68, 4)`, then `(0, 0, 0, 0)` — and the sequence is pinned as a whole,
 /// because a tick that made NO progress would loop here forever and a tick that
 /// suddenly made all of it would mean the caps stopped binding.
 ///
@@ -22152,7 +22207,7 @@ fn rb109_repeated_ticks_drain_to_the_live_set() {
     let ctx = fx.ctx();
     rb109_seed_population(&t, &bundles, 17, 8_192);
 
-    let mut ticks: Vec<(usize, usize, usize)> = Vec::new();
+    let mut ticks: Vec<(usize, usize, usize, usize)> = Vec::new();
     let mut drained = false;
     for _ in 0..10 {
         let tick = rb109_tick(&ctx, now);
@@ -22192,13 +22247,18 @@ fn rb109_repeated_ticks_drain_to_the_live_set() {
 
     assert_eq!(
         ticks,
-        [(256usize, 16usize, 272usize), (68, 4, 68), (0, 0, 0)],
-        "[rb109/drain-sequence]: the drain reported {ticks:?}; the spec's arithmetic gives \
-         (256, 16, 272) then (68, 4, 68) then (0, 0, 0). The first tick takes the sixteen oldest \
-         stamps whole, the second takes the four that are left — under both caps, so it reads and \
-         reaps the same 68 — and the third finds nothing expired. A sequence that is LONGER means \
-         a tick retired fewer rows than it read, which is the drain-rate inequality rb-107 sized \
-         the write-side admission cap against."
+        [
+            (256usize, 16usize, 272usize, 16usize),
+            (68, 4, 68, 4),
+            (0, 0, 0, 0),
+        ],
+        "[rb109/drain-sequence]: the drain reported {ticks:?} as (read, planned, reaped, due); \
+         the spec's arithmetic gives (256, 16, 272, 16) then (68, 4, 68, 4) then (0, 0, 0, 0). \
+         The first tick takes the sixteen oldest stamps whole — its window holds exactly those \
+         sixteen, so the pre-cap count equals the plan — the second takes the four that are left \
+         — under both caps, so it reads and reaps the same 68 — and the third finds nothing \
+         expired. A sequence that is LONGER means a tick retired fewer rows than it read, which \
+         is the drain-rate inequality rb-107 sized the write-side admission cap against."
     );
 
     let observed = rb109_observed_triples(&t);
@@ -22221,7 +22281,7 @@ fn rb109_repeated_ticks_drain_to_the_live_set() {
 }
 
 /// E1 (the no-op direction): a tick over an EMPTY table and a tick over an
-/// all-live table both report `(0, 0, 0)` and change nothing.
+/// all-live table both report `(0, 0, 0, 0)` and change nothing.
 ///
 /// A zero tick is the reaper's normal state — 167 of every 168 of them — so the
 /// interesting failure is a zero that means `read nothing` rather than `nothing
@@ -22246,10 +22306,10 @@ fn rb109_zero_expired_and_empty_tables_report_a_zero_tick() {
     let empty = rb109_tick(&ctx, now);
     assert_eq!(
         empty,
-        (0usize, 0, 0),
+        (0usize, 0, 0, 0),
         "[rb109/zero-tick]: a tick over an EMPTY table reported {empty:?}. Nothing read, nothing \
-         planned, nothing reaped is the only honest answer, and a non-zero `reaped` here is a \
-         delete issued against a plan that was never made."
+         planned, nothing reaped and nothing due is the only honest answer, and a non-zero \
+         `reaped` here is a delete issued against a plan that was never made."
     );
 
     let bundles = rb109_bundles(cutoff, 0, 3, 1_000);
@@ -22266,7 +22326,7 @@ fn rb109_zero_expired_and_empty_tables_report_a_zero_tick() {
     let live = rb109_tick(&ctx, now);
     assert_eq!(
         live,
-        (0usize, 0, 0),
+        (0usize, 0, 0, 0),
         "[rb109/zero-tick]: a tick over a table whose every row is LIVE reported {live:?}. The \
          oldest row here is one millisecond younger than the cutoff, so the range must select \
          nothing at all — a tick that reads rows it cannot act on pays the decode cost of the \
@@ -22309,8 +22369,8 @@ fn rb109_zero_expired_and_empty_tables_report_a_zero_tick() {
         "[rb109/zero-readable]: reading the live band straight through the host yields {readable} \
          row(s); all 51 are in it. THIS IS THE POSITIVE CONTROL for every zero above: without it, \
          a host that resolved this index to no table — a mis-derived index name, a registration \
-         that never happened — would report `(0, 0, 0)` for the most encouraging of wrong reasons, \
-         and so would every other count clause in this slice."
+         that never happened — would report `(0, 0, 0, 0)` for the most encouraging of wrong \
+         reasons, and so would every other count clause in this slice."
     );
 }
 
@@ -22360,7 +22420,10 @@ fn rb109_stamp_cap_binds_when_the_window_holds_more_than_sixteen_stamps() {
          twentieth stamp, so a fixture with a different one proves something else."
     );
 
-    let (read, planned, reaped) = rb109_tick(&ctx, now);
+    // The fourth count, `due`, is discarded here on purpose: this block's label
+    // roster is closed, and rb-115's own native-host test asserts it (twenty) on
+    // this identical population as its capped tick.
+    let (read, planned, reaped, _) = rb109_tick(&ctx, now);
     assert_eq!(
         (read, planned),
         (256usize, 16usize),
@@ -25721,7 +25784,7 @@ fn rb111_one_tick_reaps_sixteen_whole_bundles_from_a_same_millisecond_burst() {
 
     let newest = *sorted.last().expect("rb111: the population is not empty");
     let tick_now = newest.saturating_add(crate::privacy::EXPORT_BUNDLE_TTL_MS);
-    let (read, planned, reaped) = rb109_tick(&ctx, tick_now);
+    let (read, planned, reaped, _) = rb109_tick(&ctx, tick_now);
 
     assert_eq!(
         read, read_cap,
@@ -26981,6 +27044,1615 @@ fn rb111_test_roster_is_closed() {
              rb-109 and rb-110 blocks use, kept here as a NOT-A-STUB pin rather than a size pin \
              and measured on the SPAN so the number means what it means there. What this catches \
              is a body hollowed down to its label strings, which neither label census can see."
+        );
+    }
+}
+
+// ===========================================================================
+// rb-115 (ADR-0269, which Extends ADR-0238; closes residual R-rb-87-BACKLOGAMBIG
+// on its truncation half) — THE TTL REAPER'S TICK RECORD REPORTS THE WINDOW'S
+// PRE-TRUNCATION STAMP COUNT, `due`, BESIDE WHAT IT PLANNED.
+//
+// CRITERION (gates/rb-115.gates.md, the residual's own sentence): the rb-87
+// record published three raw counts, and a stamp cap at its bound could mean
+// truncated or exactly sixteen, because the window's distinct-stamp count
+// before the cap was swallowed inside rb-86's frozen bundle seam. rb-115 adds a
+// private, pure, one-line count that runs that SAME seam with a cap the window
+// cannot reach and returns the length; a fourth record field bound in the
+// helper over the same rows, instant and TTL as the capped call; and one more
+// bare number on the observation line. The seam, the reducer shell, both
+// bounds, the schema and the native host are byte-identical.
+//
+// WHAT IS BEHAVIOURAL HERE AND WHAT IS NOT. The count is PURE, so its value
+// table EXECUTES it. The helper runs in the native host through rb109_tick,
+// the file's one naming of it, so the four counts are read off real ticks over
+// seeded populations — and two populations whose three OLD counts are
+// byte-identical while the new one differs are the literal proof that no
+// function of the three recovers it. The declaration, its privacy, the frozen
+// body and the helper's one binding are SOURCE pins and say so; the documents
+// are text. What no test here claims: that the live btree yields in ascending
+// order (R-rb-109-ORDERMODEL), or that a full window says anything about the
+// rows past its edge (R-rb-115-X8). The tick test DISCLOSES the second
+// as a value rather than asserting it away.
+//
+// ONE LIVE NAMING. `rb115_count` is the only place this file spells the new fn
+// in code, as rb86_plan is for the seam and rb109_tick for the helper, and the
+// naming clause pins that at one, paren-bearing and paren-less.
+//
+// SCAN HYGIENE (rb22p_scan_hygiene scans THIS FILE): line comments only, no
+// block-comment delimiter, no raw-string prefix, no logging or output macro
+// token, no backslash before a double quote, and no double quote inside any
+// comment in this section. Every production identifier inside a needle is
+// assembled from concat! fragments. The retired read-cap spelling is the one
+// needle NOT assembled here: it is taken from rb110_old_name, because the rb-110
+// census reads this file through an IDENTIFIER-ONLY view, which re-fuses two
+// adjacent concat! fragments into the very name that census bans. No clause
+// LABEL appears in any comment or doc comment in this section — a span runs
+// from a test's own fn line to the next test attribute or flush-left banner —
+// so the label roster and every helper are declared ABOVE the first test, in
+// the region this banner cuts off from every span.
+// ===========================================================================
+
+// --- needles: the production tokens, never spelled contiguously -------------
+
+/// The squashed DECLARATION head of the pure pre-cap stamp count.
+fn rb115_nd_count_fn() -> String {
+    concat!("fncount_export", "_reap_stamps(").to_string()
+}
+
+/// The paren-bearing naming needle — declaration and call sites alike.
+fn rb115_nd_count_named() -> String {
+    concat!("count_export", "_reap_stamps(").to_string()
+}
+
+/// The same name with NO call parenthesis: a fn-ITEM binding carries none at its
+/// binding site, which is the escape rb-85 measured for its own helper.
+fn rb115_nd_count_ident() -> String {
+    concat!("count_export", "_reap_stamps").to_string()
+}
+
+/// The bundle seam's name with NO call parenthesis. The paren-bearing needle is
+/// rb-86's own; this is the paren-less half the seam-site census adds, because a
+/// parenthesised callee and a fn-item binding add nothing to the paren count and
+/// both were MEASURED clippy-clean.
+fn rb115_nd_seam_ident() -> String {
+    concat!("plan_export", "_reap_stamps").to_string()
+}
+
+/// The WHOLE pre-cap binding statement the helper must carry, squashed — the
+/// binding, the callee and all three window arguments together, so a binding
+/// taken over a different instant, TTL or row set is a different string.
+fn rb115_nd_due_stmt() -> String {
+    concat!(
+        "letdue=count_export",
+        "_reap_stamps(&rows,now_ms,EXPORT_BUNDLE_TTL_MS);"
+    )
+    .to_string()
+}
+
+// --- frozen pins and their independently spelled control inputs -------------
+
+/// THE FROZEN squashed signature of the pure count.
+///
+/// The flat spelling is 85 columns, under max_width, so rustfmt has exactly one
+/// canonical form and no trailing-comma twin is accepted. The window arrives as
+/// a borrowed slice of `(chunk_id, created_at_ms)` pairs and the instant and the
+/// retention ceiling as PARAMETERS — the seam's own convention — so the helper
+/// can hand it exactly what it hands the capped call.
+fn rb115_count_sig_pin() -> String {
+    concat!(
+        "fncount_export",
+        "_reap_stamps(rows:&[(u64,i64)],now_ms:i64,ttl_ms:i64)->usize"
+    )
+    .to_string()
+}
+
+/// THE FROZEN squashed BODY of the pure count: the frozen bundle seam run with
+/// the window's own length as its cap, and the length of what it returns.
+///
+/// EQUALITY, and it is the one instrument that separates the shipped body from
+/// its VALUE-equivalents: a `usize::MAX` or `rows.len() + 1` cap returns the
+/// same number on every window, and the READ cap does on every window the
+/// helper can actually hand it. It is also what keeps the count ONE line, with
+/// no second definition of the stamp set beside the seam.
+fn rb115_count_body_pin() -> String {
+    concat!(
+        "plan_export_reap",
+        "_stamps(rows,now_ms,ttl_ms,rows.len()).len()"
+    )
+    .to_string()
+}
+
+/// The count's DECLARATION as whitespace-bearing SOURCE text (control input).
+fn rb115_count_decl_source() -> String {
+    concat!(
+        "fn count_export_reap",
+        "_stamps(rows: &[(u64, i64)], now_ms: i64, ttl_ms: i64) -> usize "
+    )
+    .to_string()
+}
+
+/// The count's BODY as whitespace-bearing SOURCE text (control input), spelled
+/// INDEPENDENTLY of the pin: a pin fed its own needle helper proves nothing, and
+/// a hand-typed squashed literal with one character wrong is a permanently red
+/// gate that reads exactly like a missing implementation.
+fn rb115_count_body_source() -> String {
+    concat!(
+        "\n    plan_export",
+        "_reap_stamps(rows, now_ms, ttl_ms, rows.len()).len()\n"
+    )
+    .to_string()
+}
+
+/// A prose fixture carrying `needle` ONLY inside a line comment and inside a
+/// string literal — the blindness control for every pin in this block (the
+/// rb87_prose shape, re-spelled here because that block's helper roster is
+/// closed). The strip pipeline must see NOTHING of it.
+fn rb115_prose(needle: &str) -> String {
+    let mut prose = String::new();
+    prose.push_str("fn decoy_rb115() ");
+    prose.push('{');
+    prose.push_str("\n    ");
+    prose.push_str(concat!("/", "/ "));
+    prose.push_str(needle);
+    prose.push_str("\n    let s = ");
+    prose.push(rb22p_dq());
+    prose.push_str(needle);
+    prose.push(rb22p_dq());
+    prose.push_str(";\n");
+    prose.push('}');
+    prose.push('\n');
+    prose
+}
+
+// --- the behavioural seams, each reached exactly ONCE from this file --------
+
+/// THE ONLY PLACE this file names the pure pre-cap stamp count in code.
+///
+/// The rb86_plan / rb109_tick idiom: the fn is PRIVATE, this module is its only
+/// test-side reader, and the naming clause pins this one spelling, paren-bearing
+/// and paren-less, so a second call site cannot hide anywhere in the file.
+fn rb115_count(rows: &[(u64, i64)], now: i64, ttl: i64) -> usize {
+    crate::privacy::count_export_reap_stamps(rows, now, ttl)
+}
+
+/// A window of `(chunk_id, created_at_ms)` rows from `(stamp, rows)` pairs, ids
+/// assigned in spec order from one, exactly as an auto-inc column would.
+fn rb115_rows(spec: &[(i64, usize)]) -> Vec<(u64, i64)> {
+    let mut out: Vec<(u64, i64)> = Vec::new();
+    let mut id = 1u64;
+    for (stamp, rows) in spec {
+        for _ in 0..*rows {
+            out.push((id, *stamp));
+            id += 1;
+        }
+    }
+    out
+}
+
+/// THE SPEC RULE, written from the criterion and never read off the seam: how
+/// many DISTINCT creation stamps in `rows` the retention rule calls expired at
+/// `now` — an age that has REACHED `ttl`, measured with a saturating
+/// subtraction — with no cap of any kind.
+///
+/// A different construction from the seam's (a membership-checked push rather
+/// than plan, project, sort and dedup), used ONLY to cross-check the hand-written
+/// expectations in the value table: the table is a list of cases and this is
+/// the rule, so a disagreement between the two means one was fitted to the code.
+fn rb115_expected_due(rows: &[(u64, i64)], now: i64, ttl: i64) -> usize {
+    let mut stamps: Vec<i64> = Vec::new();
+    for (_, stamp) in rows {
+        if now.saturating_sub(*stamp) >= ttl && !stamps.contains(stamp) {
+            stamps.push(*stamp);
+        }
+    }
+    stamps.len()
+}
+
+/// A uniform population in rb-109's INTERLEAVED seed order — `expired` bundles
+/// at and below the cutoff and `live` bundles above it, `chunks` rows each — as
+/// `(owner byte, creation stamp, chunks)` entries for the seeder below.
+fn rb115_uniform(cutoff: i64, expired: usize, live: usize, chunks: u32) -> Vec<(u8, i64, u32)> {
+    rb109_bundles(cutoff, expired, live, 1_000)
+        .into_iter()
+        .map(|(owner, stamp)| (owner, stamp, chunks))
+        .collect()
+}
+
+/// Seed a RAGGED population: one `(owner byte, creation stamp, chunks)` entry per
+/// bundle, in list order, every row shaped like `rb109_row`.
+///
+/// Chunk ids come from ONE monotone counter across the whole population, never
+/// from the bundle's position: rb-109's position-derived scheme is unique only
+/// within one uniform call, and a ragged population is several shapes in one
+/// list. Ids start at one because zero is the auto-inc sentinel the real insert
+/// path writes, and this fixture seeds straight into the store.
+fn rb115_seed(
+    t: &crate::native_host_tests::Handle<'_, crate::schema::ExportBundle, i64>,
+    population: &[(u8, i64, u32)],
+    payload: usize,
+) {
+    let mut chunk_id = 1u64;
+    for (owner, stamp, chunks) in population {
+        for k in 0..*chunks {
+            t.seed(&rb109_row(*owner, *stamp, chunk_id, k, *chunks, payload));
+            chunk_id += 1;
+        }
+    }
+}
+
+/// ONE tick through the SHIPPED helper over a freshly seeded native host: the
+/// four counts in `rb109_tick`'s order — `(read, planned, reaped, due)`, `due`
+/// LAST — and every creation stamp the store still holds afterwards, sorted.
+///
+/// The fixture is acquired INSIDE and dropped on return: the host's
+/// serialisation lock is NOT reentrant, so two fixtures alive at once deadlock,
+/// and a fixture carried between ticks would carry one population's rows into
+/// the next. The population check fails loud here rather than letting every
+/// count become a statement about a store nobody seeded.
+fn rb115_tick_over(
+    population: &[(u8, i64, u32)],
+    now: i64,
+) -> ((usize, usize, usize, usize), Vec<i64>) {
+    let want: usize = population.iter().map(|(_, _, c)| *c as usize).sum();
+    let fx = crate::native_host_tests::fixture();
+    let t = rb109_table(&fx);
+    let ctx = fx.ctx();
+    rb115_seed(&t, population, 64);
+    let seeded = rb109_store_stamps(&t).len();
+    assert_eq!(
+        seeded, want,
+        "rb115 [population]: the host holds {seeded} row(s) for a population of {want}. Every \
+         count the tick reports is read over this store, so a fixture that seeded a different one \
+         would make each of them a statement about nothing."
+    );
+    let tick = rb109_tick(&ctx, now);
+    let mut survivors = rb109_store_stamps(&t);
+    survivors.sort_unstable();
+    (tick, survivors)
+}
+
+// --- residual ids and the documents ------------------------------------------
+
+/// The residual this slice closes on its truncation half, behind ONE helper so
+/// a rename is one line.
+fn rb115_closed_residual() -> &'static str {
+    concat!("R-rb-87-", "BACKLOGAMBIG")
+}
+
+/// The window-edge half, minted by this slice and OPEN.
+fn rb115_open_residual() -> &'static str {
+    concat!("R-rb-115-", "X8")
+}
+
+/// The ascending-yield model residual, which this slice does NOT close.
+fn rb115_order_residual() -> &'static str {
+    concat!("R-rb-109-", "ORDERMODEL")
+}
+
+/// This slice's own decision record, read as TEXT through the rb-67
+/// `include_str!` idiom (the reach out of `src/` is this file's shipped
+/// convention; a document that is never read cannot be gated).
+const RB115_ADR_0269_MD: &str = include_str!(
+    "../../docs/adr/0269-rb115-export-reap-tick-reports-pre-truncation-stamp-count.md"
+);
+
+/// The reaper's own decision record, which ADR-0269 EXTENDS. Its dated rb-115
+/// amendment is where the closure is recorded, and only that span is read.
+const RB115_ADR_0238_MD: &str =
+    include_str!("../../docs/adr/0238-rb48-export-bundle-ttl-reaper-interval-singleton.md");
+
+/// The slice log.
+const RB115_ARCHITECTURE_MD: &str = include_str!("../../ARCHITECTURE.md");
+
+// --- the roster census machinery --------------------------------------------
+
+/// Every DISTINCT rb-115 clause label spelled in `text`, sorted — the
+/// span-to-roster direction of the label census.
+fn rb115_labels_in(text: &str) -> Vec<String> {
+    let open = "[rb115/";
+    let mut out: Vec<String> = Vec::new();
+    let mut start = 0usize;
+    while let Some(rel) = text[start..].find(open) {
+        let at = start + rel;
+        let tail = &text[at..];
+        match tail.find(']') {
+            Some(end) => {
+                let label = &tail[..=end];
+                if !out.iter().any(|seen| seen.as_str() == label) {
+                    out.push(String::from(label));
+                }
+                start = at + end + 1;
+            }
+            None => {
+                start = at + open.len();
+            }
+        }
+    }
+    out.sort_unstable();
+    out
+}
+
+/// The FIVE `rb115_` test names this slice ships, in ledger order.
+///
+/// CLOSED on purpose: the acceptance ledger's X1 gate is a name filter over
+/// exactly these five and its EXPECT carries the literal count, and a filtered
+/// run does NOT red on a missing test — it matches fewer and still reports the
+/// same number passed as ran.
+fn rb115_test_roster() -> [&'static str; 5] {
+    [
+        "rb115_count_is_the_distinct_expired_stamps_before_the_cap",
+        "rb115_one_tick_reports_due_beside_planned_on_capped_and_exact_windows",
+        "rb115_count_is_declared_once_private_frozen_and_wired",
+        "rb115_docs_record_the_pre_truncation_count",
+        "rb115_test_roster_is_closed",
+    ]
+}
+
+/// Every non-test `rb115_` fn this block declares, CLOSED.
+///
+/// Closed because the declaration total is an EQUALITY against `tests +
+/// helpers`: an unlisted helper and an unlisted sixth test are the same number
+/// to that clause, so the roster has to name every one. The four roster fns
+/// name themselves, as the sibling blocks do.
+fn rb115_helper_roster() -> [&'static str; 24] {
+    [
+        "rb115_nd_count_fn",
+        "rb115_nd_count_named",
+        "rb115_nd_count_ident",
+        "rb115_nd_seam_ident",
+        "rb115_nd_due_stmt",
+        "rb115_count_sig_pin",
+        "rb115_count_body_pin",
+        "rb115_count_decl_source",
+        "rb115_count_body_source",
+        "rb115_prose",
+        "rb115_count",
+        "rb115_rows",
+        "rb115_expected_due",
+        "rb115_uniform",
+        "rb115_seed",
+        "rb115_tick_over",
+        "rb115_closed_residual",
+        "rb115_open_residual",
+        "rb115_order_residual",
+        "rb115_labels_in",
+        "rb115_test_roster",
+        "rb115_helper_roster",
+        "rb115_dependency_roster",
+        "rb115_label_roster",
+    ]
+}
+
+/// The NINETEEN tests OUTSIDE this slice's prefix that rb-115's proof rests on,
+/// asserted DECLARED so none can be deleted in the diff that would need them
+/// most.
+///
+/// Not decoration — each holds up a class of clause here:
+///   - the rb-85 helper-body equality pin, helper-name census and signature
+///     pins, which say the thing the tick test executes is still the bounded
+///     read, with one call site and the record-returning signature;
+///   - the rb-86 seam pins, whose frozen body is what makes the count the
+///     distinct expired stamp set at all, and the delete census and cap test
+///     that carry the re-frozen seam-site count and the cap wiring;
+///   - the five rb-87 record, fragment, envelope and helper pins this slice
+///     re-froze, which own the published line;
+///   - the five rb-109 tick oracles whose tuples widened, and their roster;
+///   - the one-cfg census, which keeps a conditionally compiled twin of the new
+///     fn impossible;
+///   - the hygiene scan the whole strip pipeline rests on.
+fn rb115_dependency_roster() -> [&'static str; 19] {
+    [
+        "rb85_helper_body_exact",
+        "rb85_helper_is_never_named_outside_privacy_rs",
+        "rb85_new_seams_declared_once_private_with_frozen_signatures",
+        "rb86_reap_bundles_seam_declared_once_private_with_frozen_signature_and_body",
+        "rb86_reaper_deletes_whole_bundles_by_stamp_and_never_by_chunk_id",
+        "rb86_bundle_cap_is_sixteen_and_the_read_cap_is_unchanged",
+        "rb87_reap_fields_renders_three_bare_counts",
+        "rb87_reap_line_is_the_exact_json_envelope",
+        "rb87_tick_record_declared_once_private_with_frozen_shape",
+        "rb87_reap_fields_is_pure",
+        "rb87_helper_reports_the_whole_tick",
+        "rb109_oversized_tick_is_bounded_and_reaps_the_oldest_bundles_whole",
+        "rb109_tick_deletes_exactly_the_expired_set_including_the_cutoff_stamp",
+        "rb109_repeated_ticks_drain_to_the_live_set",
+        "rb109_zero_expired_and_empty_tables_report_a_zero_tick",
+        "rb109_stamp_cap_binds_when_the_window_holds_more_than_sixteen_stamps",
+        "rb109_test_roster_is_closed",
+        "rb48_privacy_has_exactly_one_cfg_attribute",
+        "rb22p_scan_hygiene",
+    ]
+}
+
+/// Every clause label this block ships, paired with the index of the test that
+/// owns it in `rb115_test_roster()`.
+///
+/// An index rather than a name so the two rosters cannot drift: a renamed test
+/// moves one literal, not two. DECLARED HERE, above the first test, and that
+/// placement is load-bearing — a span runs from a test's own fn line to the
+/// next test attribute or flush-left banner, so these literals would otherwise
+/// be counted inside whichever test preceded them. The section banner above
+/// cuts this region off from every span.
+fn rb115_label_roster() -> [(&'static str, usize); 39] {
+    [
+        ("[rb115/count-value]", 0),
+        ("[rb115/count-order]", 0),
+        ("[rb115/count-vs-plan]", 0),
+        ("[rb115/tick-sizing]", 1),
+        ("[rb115/tick-capped]", 1),
+        ("[rb115/three-count-twin]", 1),
+        ("[rb115/tick-exact]", 1),
+        ("[rb115/window-edge]", 1),
+        ("[rb115/tick-low-read]", 1),
+        ("[rb115/twin]", 1),
+        ("[rb115/tick-bounds]", 1),
+        ("[rb115/tick-inference]", 1),
+        ("[rb115/count-control]", 2),
+        ("[rb115/count-blind]", 2),
+        ("[rb115/count-decl]", 2),
+        ("[rb115/count-vis]", 2),
+        ("[rb115/count-named]", 2),
+        ("[rb115/seam-sites]", 2),
+        ("[rb115/helper-binding]", 2),
+        ("[rb115/same-window]", 2),
+        ("[rb115/binding-before-plan]", 2),
+        ("[rb115/count-sig]", 2),
+        ("[rb115/count-body]", 2),
+        ("[rb115/prod-residual-closed]", 3),
+        ("[rb115/prod-stale-claim]", 3),
+        ("[rb115/doc-adr]", 3),
+        ("[rb115/doc-closure]", 3),
+        ("[rb115/doc-arch]", 3),
+        ("[rb115/doc-open]", 3),
+        ("[rb115/doc-no-retired-name]", 3),
+        ("[rb115/doc-split-token]", 3),
+        ("[rb115/roster-vacuity]", 4),
+        ("[rb115/roster-dup]", 4),
+        ("[rb115/roster-name]", 4),
+        ("[rb115/roster-closed]", 4),
+        ("[rb115/decl-total]", 4),
+        ("[rb115/label-census]", 4),
+        ("[rb115/label-total]", 4),
+        ("[rb115/body-floor]", 4),
+    ]
+}
+
+/// T1 (ledger X1), THE VALUE ORACLE: the pure count returns the number of
+/// DISTINCT expired creation stamps in the window, with NO cap — past the stamp
+/// cap, past the read cap, at both i64 extremes and at a TTL the module does
+/// not ship.
+///
+/// Every expectation is written from the spec and cross-checked against
+/// `rb115_expected_due`, the rule, BEFORE the shipped fn is called, so a
+/// fixture mistake reds as a table disagreement rather than as a missing
+/// implementation. The twenty-stamp row is the rb-109 stamp-cap window, 19 x 13
+/// rows plus 9 of a twentieth, which the capped plan sizes at sixteen.
+///
+/// Kills: the status-quo information content, the seam run at the STAMP cap
+/// (the twenty-stamp row reads 16); a count that ignores expiry (the all-live
+/// row reads 3); `rows.len()` (the all-live row reads 51); a constant zero (the
+/// one-bundle row); the READ cap as the count's cap (the 300-row row reads
+/// 256); a body that ignores its `ttl_ms` parameter for the shipped constant
+/// (the one-minute row reads 0) or for zero (the same row reads 4); a dedup
+/// with no sort (the interleaved window reads 256); a plain subtraction in
+/// place of the saturating one (the extreme rows PANIC under the workspace
+/// overflow checks rather than returning).
+#[test]
+fn rb115_count_is_the_distinct_expired_stamps_before_the_cap() {
+    let now: i64 = 1_760_000_000_000;
+    let ttl = crate::privacy::EXPORT_BUNDLE_TTL_MS;
+    let cutoff = now - ttl;
+    let stamp_cap = crate::privacy::EXPORT_REAP_MAX_STAMPS_PER_TICK;
+    let minute: i64 = 60_000;
+
+    let sixteen_spec: Vec<(i64, usize)> = (0..16i64).map(|i| (cutoff - 1_000 * i, 16)).collect();
+    let twenty_spec: Vec<(i64, usize)> = (0..20i64)
+        .map(|i| (cutoff - 1_000 * i, if i == 0 { 9 } else { 13 }))
+        .collect();
+    let three_hundred_spec: Vec<(i64, usize)> = (0..300i64).map(|i| (cutoff - i, 1)).collect();
+    let sixteen = rb115_rows(&sixteen_spec);
+    let twenty = rb115_rows(&twenty_spec);
+
+    // --- the value table, FIRST (clause order is load-bearing) ---------------
+    type Case = (&'static str, Vec<(u64, i64)>, i64, i64, usize);
+    let cases: [Case; 11] = [
+        ("an EMPTY window", Vec::new(), now, ttl, 0),
+        (
+            "an ALL-LIVE window: three stamps one to three milliseconds above the cutoff, \
+             seventeen rows each",
+            rb115_rows(&[(cutoff + 1, 17), (cutoff + 2, 17), (cutoff + 3, 17)]),
+            now,
+            ttl,
+            0,
+        ),
+        (
+            "ONE expired bundle of seventeen rows",
+            rb115_rows(&[(cutoff - 5_000, 17)]),
+            now,
+            ttl,
+            1,
+        ),
+        (
+            "sixteen expired stamps of sixteen rows — exactly the stamp cap",
+            sixteen.clone(),
+            now,
+            ttl,
+            16,
+        ),
+        (
+            "twenty expired stamps, 19 x 13 rows plus 9 — the rb-109 stamp-cap window",
+            twenty.clone(),
+            now,
+            ttl,
+            20,
+        ),
+        (
+            "three expired stamps interleaved with two live ones",
+            rb115_rows(&[
+                (cutoff - 3_000, 4),
+                (cutoff + 500, 4),
+                (cutoff - 2_000, 4),
+                (cutoff + 1, 4),
+                (cutoff - 1_000, 4),
+            ]),
+            now,
+            ttl,
+            3,
+        ),
+        (
+            "the BOUNDARY: a stamp ON the cutoff counts, one a millisecond above it does not",
+            rb115_rows(&[(cutoff, 3), (cutoff + 1, 3)]),
+            now,
+            ttl,
+            1,
+        ),
+        (
+            "three hundred single-row expired stamps — past the READ cap as well",
+            rb115_rows(&three_hundred_spec),
+            now,
+            ttl,
+            300,
+        ),
+        (
+            "the clock at the i64 CEILING over a stamp at the i64 FLOOR",
+            vec![(1u64, i64::MIN)],
+            i64::MAX,
+            ttl,
+            1,
+        ),
+        (
+            "the clock at the i64 FLOOR over a stamp at the i64 CEILING",
+            vec![(1u64, i64::MAX)],
+            i64::MIN,
+            ttl,
+            0,
+        ),
+        (
+            "a NON-shipped TTL of one minute: two stamps at and past it, two short of it",
+            rb115_rows(&[
+                (now - minute, 2),
+                (now - 2 * minute, 3),
+                (now - minute + 1, 1),
+                (now, 1),
+            ]),
+            now,
+            minute,
+            2,
+        ),
+    ];
+    for (what, rows, clock, window_ttl, want) in &cases {
+        let modelled = rb115_expected_due(rows, *clock, *window_ttl);
+        assert_eq!(
+            modelled, *want,
+            "[rb115/count-value]: over {what} the table expects {want} while the spec rule \
+             derives {modelled}. The two are written INDEPENDENTLY — the table is a list of \
+             hand-picked cases, the rule is the criterion — so a disagreement means one of them \
+             was fitted to the code. Revise the wrong one FROM THE SPEC."
+        );
+        let got = rb115_count(rows, *clock, *window_ttl);
+        assert_eq!(
+            got, *want,
+            "[rb115/count-value]: over {what} the pure count returned {got}; the window holds \
+             {want} DISTINCT creation stamps the retention rule calls expired at {clock} for a TTL \
+             of {window_ttl}, and the count takes NO cap. 16 on the twenty-stamp row is the \
+             status-quo information content — the seam run at the STAMP cap, which is `planned` \
+             under another name; 256 on the three-hundred row is the READ cap; 0 on the \
+             one-minute row is a body that ignores its TTL parameter for the shipped constant."
+        );
+    }
+
+    // --- the count does not depend on the order the window arrives in --------
+    // Row k of every bundle before row k + 1 of any, so no two adjacent rows
+    // share a stamp: the shape a dedup that never sorts counts row by row.
+    let mut interleaved: Vec<(u64, i64)> = Vec::new();
+    for k in 0..13usize {
+        for (stamp, rows) in &twenty_spec {
+            if k < *rows {
+                interleaved.push((0, *stamp));
+            }
+        }
+    }
+    for (id, row) in (1u64..).zip(interleaved.iter_mut()) {
+        row.0 = id;
+    }
+    let mut reversed = twenty.clone();
+    reversed.reverse();
+    let adjacent_distinct = interleaved.windows(2).all(|pair| pair[0].1 != pair[1].1);
+    assert!(
+        interleaved.len() == twenty.len() && adjacent_distinct,
+        "[rb115/count-order]: the interleaved fixture holds {} row(s) against the window's {}, \
+         and adjacent rows never sharing a stamp is {adjacent_distinct}. Both must hold, or the \
+         order clause below proves nothing about a dedup that never sorts.",
+        interleaved.len(),
+        twenty.len()
+    );
+    let n_reversed = rb115_count(&reversed, now, ttl);
+    let n_interleaved = rb115_count(&interleaved, now, ttl);
+    assert_eq!(
+        (n_reversed, n_interleaved),
+        (20usize, 20usize),
+        "[rb115/count-order]: the twenty-stamp window REVERSED counts {n_reversed} and \
+         INTERLEAVED counts {n_interleaved}; both must be 20. The range read arrives in whatever \
+         order the host yields — rb-109 MODELS ascending, and the live btree is \
+         R-rb-109-ORDERMODEL — so a count that depends on it is a claim about undocumented \
+         behaviour. A dedup with no sort counts the interleaved window row by row, 256."
+    );
+
+    // --- the count separates what the capped plan cannot ----------------------
+    let plans = (
+        rb86_plan(&sixteen, now, ttl, stamp_cap).len(),
+        rb86_plan(&twenty, now, ttl, stamp_cap).len(),
+    );
+    let counts = (
+        rb115_count(&sixteen, now, ttl),
+        rb115_count(&twenty, now, ttl),
+    );
+    assert_eq!(
+        (plans, counts),
+        ((16usize, 16usize), (16usize, 20usize)),
+        "[rb115/count-vs-plan]: at the shipped stamp cap of {stamp_cap} the capped plan sizes \
+         the exactly-sixteen window and the twenty-stamp window at {plans:?} — one number for two \
+         different windows, which is the whole of the residual — while the pure count reads them \
+         as {counts:?}. The count must tell the two apart: (16, 16) means it is the plan again."
+    );
+}
+
+/// T2 (ledger X1), THE EARS PROOF, EXECUTED: one tick through the SHIPPED
+/// helper in the native host reports `due` beside `planned`, and `due` is a
+/// number no function of the three old counts can recover.
+///
+/// FOUR POPULATIONS, each over its own fixture, sized against the shipped
+/// constants (the first clause pins them) and derived by hand from the
+/// ascending host model rb-109 executes:
+///   - A, rb-109's stamp-cap population: twenty expired bundles of thirteen
+///     rows and two live. The 256-row window is nineteen whole bundles and nine
+///     rows of a twentieth, so it holds TWENTY stamps; the cap plans sixteen,
+///     which reap 16 x 13 = 208.
+///   - A-prime: sixteen expired bundles of thirteen rows below ONE newest
+///     expired bundle of sixty, on the cutoff itself, and two live. The window
+///     is 208 rows plus 48 of the sixty-row bundle: SEVENTEEN stamps, the same
+///     sixteen planned, the same 208 reaped.
+///   - B, rb-109's oversized population: twenty expired bundles of seventeen
+///     rows and six live. The window is fifteen whole bundles and one row of a
+///     sixteenth: SIXTEEN stamps, all planned, 16 x 17 = 272 reaped.
+///   - C, the rb-87 residual's own case: twenty expired bundles of FIVE rows and
+///     none live. The range runs out at 100 rows holding twenty stamps; sixteen
+///     are planned and 80 rows reaped.
+///
+/// A and A-prime are the literal proof: byte-identical `(read, planned,
+/// reaped)`, (256, 16, 208), with `due` 20 against 17. B is the honest
+/// disclosure: a full window whose every stamp was planned still leaves four
+/// expired bundles past its edge, and `due` cannot see them. C is why `read`
+/// below the window is no drain proof without `due`.
+///
+/// Kills: `due` bound AFTER the truncation, taken from the plan, from the
+/// window length or hard-coded (A reads 16, 16, 256 or 0); the count run at the
+/// STAMP cap, the status-quo information content (A reads 16); the binding
+/// handed the cutoff as its instant (A reads 0); and any tick arithmetic
+/// regression the rb-109 oracles also own.
+#[test]
+fn rb115_one_tick_reports_due_beside_planned_on_capped_and_exact_windows() {
+    let now: i64 = 1_760_000_000_000;
+    let cutoff = now - crate::privacy::EXPORT_BUNDLE_TTL_MS;
+    let read_cap = crate::privacy::EXPORT_REAP_MAX_READ_PER_TICK;
+    let stamp_cap = crate::privacy::EXPORT_REAP_MAX_STAMPS_PER_TICK;
+    let min_bundle = m22s4_manifest_exportable().len();
+
+    assert_eq!(
+        (read_cap, stamp_cap, min_bundle),
+        (256usize, 16usize, 17usize),
+        "[rb115/tick-sizing]: the shipped read cap, stamp cap and minimum bundle read \
+         ({read_cap}, {stamp_cap}, {min_bundle}); the four populations below were sized against \
+         (256, 16, 17) — thirteen- and five-row bundles are SHORT stamps against a seventeen-row \
+         minimum, which is what lets the cap bind at all on an ascending read. A value that moves \
+         makes every tuple below a different, still self-consistent claim: re-derive each one \
+         from the spec before touching anything else."
+    );
+
+    let pop_a = rb115_uniform(cutoff, 20, 2, 13);
+    let mut pop_a_prime: Vec<(u8, i64, u32)> = vec![(1, cutoff, 60)];
+    for (owner, stamp) in rb109_bundles(cutoff - 1_000, 16, 0, 1_000) {
+        pop_a_prime.push((owner + 1, stamp, 13));
+    }
+    pop_a_prime.push((18, cutoff + 1, 13));
+    pop_a_prime.push((19, cutoff + 1_001, 13));
+    let pop_b = rb115_uniform(cutoff, 20, 6, 17);
+    let pop_c = rb115_uniform(cutoff, 20, 0, 5);
+
+    let (a, _) = rb115_tick_over(&pop_a, now);
+    let (a_prime, _) = rb115_tick_over(&pop_a_prime, now);
+    let (b, b_left) = rb115_tick_over(&pop_b, now);
+    let (c, c_left) = rb115_tick_over(&pop_c, now);
+
+    assert_eq!(
+        a,
+        (256usize, 16usize, 208usize, 20usize),
+        "[rb115/tick-capped]: tick A reported (read, planned, reaped, due) = {a:?}; the spec's \
+         arithmetic is (256, 16, 208, 20) — twenty distinct expired stamps in a 256-row window, \
+         sixteen of them planned. `due` is the count BEFORE the stamp cap: 16 here means it was \
+         taken after the truncation or run at the cap (the status-quo information content, which \
+         is `planned` again), 0 means it is hard-coded or handed the cutoff as its instant, and \
+         256 means it counts rows rather than stamps."
+    );
+
+    assert_eq!(
+        a_prime,
+        (256usize, 16usize, 208usize, 17usize),
+        "[rb115/three-count-twin]: tick A-prime reported {a_prime:?}; the spec's arithmetic is \
+         (256, 16, 208, 17) — sixteen thirteen-row bundles (208 rows) and 48 of the 60 rows of \
+         the newest expired bundle fill the window, so it holds SEVENTEEN stamps, the sixteen \
+         oldest are planned and 208 rows are reaped. The sixty-row bundle is never planned, so \
+         none of it is deleted."
+    );
+    assert!(
+        (a.0, a.1, a.2) == (a_prime.0, a_prime.1, a_prime.2) && a.3 != a_prime.3,
+        "[rb115/three-count-twin]: THE CRITERION. Ticks A {a:?} and A-prime {a_prime:?}, each \
+         read as (read, planned, reaped, due), must agree byte for byte on the three rb-87 \
+         counts and disagree on `due`. Equal triples with different `due` are the literal proof \
+         that NO function of the three counts yields the pre-truncation stamp count: an operator \
+         reading the rb-87 line sees one tick twice, and only the new field says one window held \
+         twenty stamps and the other seventeen."
+    );
+
+    assert_eq!(
+        b,
+        (256usize, 16usize, 272usize, 16usize),
+        "[rb115/tick-exact]: tick B reported {b:?}; the spec's arithmetic is (256, 16, 272, 16) \
+         — fifteen whole seventeen-row bundles and one row of a sixteenth fill the window, so it \
+         holds exactly SIXTEEN stamps, all of them planned, each deleted whole with its tail. \
+         `due` equal to `planned` here is not a coincidence: it is what a well-formed tick over \
+         bundles this module writes reports, which is why the new field is a tripwire and not a \
+         backlog signal."
+    );
+    let b_expired_left = b_left.iter().filter(|stamp| **stamp <= cutoff).count();
+    assert!(
+        b.3 == b.1 && b_expired_left == 68,
+        "[rb115/window-edge]: a DISCLOSURE, asserted as a value so it cannot drift into a claim. \
+         Tick B planned every stamp its window held ({b:?}), yet {b_expired_left} expired row(s) \
+         are still in the store; the spec says 68 — the four newest expired bundles of seventeen \
+         rows, all past the full window's edge. `due` is taken OVER the window, so it inherits \
+         that blindness: a full window whose every stamp was planned says nothing about rows past \
+         its edge. That half of the rb-87 residual is R-rb-115-X8, and it stays open."
+    );
+
+    assert_eq!(
+        c,
+        (100usize, 16usize, 80usize, 20usize),
+        "[rb115/tick-low-read]: tick C reported {c:?}; the spec's arithmetic is (100, 16, 80, 20) \
+         — the rb-87 residual's own case, twenty expired stamps of five chunks: the range runs \
+         out at 100 rows, far below the 256-row window, while twenty stamps compete for sixteen \
+         plan slots."
+    );
+    let c_expired_left = c_left.iter().filter(|stamp| **stamp <= cutoff).count();
+    assert_eq!(
+        c_expired_left, 20,
+        "[rb115/tick-low-read]: after tick C {c_expired_left} expired row(s) remain; the spec \
+         says 20 — the four newest five-row bundles the cap left for the next tick. So `read` \
+         below the window does NOT mean everything expired has drained: only `due` equal to \
+         `planned` beside it says that, and only the new field can say it."
+    );
+
+    assert!(
+        (a.0, a.1) == (b.0, b.1) && a.3 != b.3,
+        "[rb115/twin]: ticks A {a:?} and B {b:?}, each read as (read, planned, reaped, due), \
+         agree on `read` and `planned` — (256, 16) both — while `due` is 20 against 16: the \
+         residual's own sentence, a stamp cap at its bound that is truncated in one tick and \
+         exact in the other, told apart by the new field."
+    );
+
+    for (what, tick) in [("A", a), ("A-prime", a_prime), ("B", b), ("C", c)] {
+        assert!(
+            tick.1 == tick.3.min(stamp_cap) && tick.3 <= tick.0,
+            "[rb115/tick-bounds]: tick {what} reported {tick:?} as (read, planned, reaped, due). \
+             By construction `planned` is `due` capped at the stamp cap of {stamp_cap} — the SAME \
+             seam over the SAME window, once uncapped — and `due` can never exceed `read`, \
+             because a window of N rows holds at most N stamps. A tick that breaks either took \
+             the two counts over different windows, instants or TTLs."
+        );
+    }
+
+    assert!(
+        a.2 < a.0 && a_prime.2 < a_prime.0 && c.2 < c.0 && b.2 >= b.0,
+        "[rb115/tick-inference]: a DISCLOSURE of what the OLD record already carried on this \
+         ascending host. The three truncated ticks — A {a:?}, A-prime {a_prime:?}, C {c:?} — \
+         reap fewer rows than they read, and the untruncated B {b:?} reaps at least as many. \
+         `reaped < read` proves truncation in ANY read order; the converse needs the ascending \
+         yield the host models (R-rb-109-ORDERMODEL, open). What `due` adds is not WHETHER but \
+         HOW MANY stamps the window held — which the twin clauses above show the three counts \
+         cannot say."
+    );
+}
+
+/// T3 (ledger X1): the pure count is declared ONCE, PRIVATE, with a frozen
+/// signature and a frozen one-line body — and the helper binds it exactly
+/// once, over the SAME window arguments the capped seam call receives, before
+/// the plan.
+///
+/// SOURCE PINS and they say so: T1 proves the count's VALUE and T2 the tick's;
+/// what text adds is everything a value cannot see. The body EQUALITY owns the
+/// value-equivalents, a `usize::MAX` or `rows.len() + 1` cap. The seam-site
+/// census counts the bundle seam in BOTH its paren-bearing and its bare form,
+/// because a parenthesised callee and a fn-item binding add nothing to the
+/// paren count and both were MEASURED clippy-clean, and it ATTRIBUTES the three
+/// sites body by body: equal cardinalities over a subset are equal sets, so a
+/// fourth site shows up as a gap even with the file total moved to match it.
+/// The binding is pinned as ONE whole statement, which is what separates the
+/// window, the tick's instant and the shipped TTL from the cutoff, a zero TTL
+/// or another expired-only row set — all value-identical on every window the
+/// range read can return.
+///
+/// Every frozen literal is proved SATISFIABLE first, against source text
+/// spelled INDEPENDENTLY of it, and BLIND to a line comment and a string
+/// literal carrying the same bytes. The equality backstops run LAST, so every
+/// attributable clause gets to name what broke first.
+///
+/// Kills: the count missing, twinned behind an attribute, or visible outside
+/// the module; a second caller of it, or a helper that no longer calls it (the
+/// plan's length bound as the pre-cap count instead); an independent recount
+/// beside the seam, which drops the seam census to two; the binding handed the
+/// cutoff, a zero TTL or a different window; the binding moved below the plan;
+/// a type-annotated or mutable shadow of it; a changed parameter list or return
+/// type; and any body but the frozen one, including the value-equivalent caps.
+#[test]
+fn rb115_count_is_declared_once_private_frozen_and_wired() {
+    let squashed = stripped_for_scan(PRIVACY_RS);
+    let squashed_tests = stripped_for_scan(PRIVACY_TESTS_RS);
+    let fn_needle = rb115_nd_count_fn();
+    let named = rb115_nd_count_named();
+    let ident = rb115_nd_count_ident();
+    let stmt = rb115_nd_due_stmt();
+    let sig_pin = rb115_count_sig_pin();
+    let body_pin = rb115_count_body_pin();
+
+    // --- the frozen literals are SATISFIABLE, and BLIND to prose -------------
+    let control_src = [
+        rb115_count_decl_source(),
+        String::from("{"),
+        rb115_count_body_source(),
+        String::from("}"),
+    ]
+    .concat();
+    let control = stripped_for_scan(&control_src);
+    let control_sig = extract_squashed_fn_sig(&control, &fn_needle);
+    let control_body = extract_squashed_fn_body(&control, &fn_needle);
+    assert_eq!(
+        (control_sig, control_body),
+        (Some(sig_pin.as_str()), Some(body_pin.as_str())),
+        "[rb115/count-control]: the frozen SIGNATURE and BODY pins are UNSATISFIABLE — the live \
+         pipeline derives {control_sig:?} and {control_body:?} from the independently spelled \
+         declaration and body. An unsatisfiable equality is a gate that can never pass and reads \
+         exactly like a missing implementation. Revise the literal FROM THE SPEC."
+    );
+    let helper_control_src = format!(
+        "{}{}{}{}",
+        rb85_helper_decl_source(),
+        '{',
+        rb85_helper_body_source(),
+        '}'
+    );
+    let helper_control = stripped_for_scan(&helper_control_src);
+    let helper_needle = rb85_nd_helper_fn();
+    let helper_control_body = extract_squashed_fn_body(&helper_control, &helper_needle);
+    let n_stmt_control = rb22p_count(helper_control_body.unwrap_or(""), &stmt);
+    assert_eq!(
+        n_stmt_control, 1,
+        "[rb115/count-control]: over the SANCTIONED helper body text — the rb-85 control, spelled \
+         independently of every needle here — the whole binding statement `{stmt}` occurs \
+         {n_stmt_control} time(s); it must occur once, or the binding clause below is a \
+         permanently red gate."
+    );
+    for (what, needle) in [
+        ("the signature pin", sig_pin.as_str()),
+        ("the body pin", body_pin.as_str()),
+        ("the binding statement", stmt.as_str()),
+    ] {
+        let prose = rb115_prose(needle);
+        let seen = rb22p_count(&stripped_for_scan(&prose), needle);
+        assert!(
+            prose.contains(needle) && seen == 0,
+            "[rb115/count-blind]: {what}, placed ONLY inside a line comment and inside a string \
+             literal, is still seen {seen} time(s) by the strip pipeline (the fixture carries it: \
+             {}). It must be seen NEVER, or the clause it drives is satisfiable by a doc comment \
+             quoting the right code.",
+            prose.contains(needle)
+        );
+    }
+
+    // --- declared ONCE, PRIVATE ------------------------------------------------
+    let n_decl = rb22p_count(&squashed, &fn_needle);
+    assert_eq!(
+        n_decl, 1,
+        "[rb115/count-decl]: privacy.rs must define `{fn_needle}` exactly once; found {n_decl}. \
+         ZERO is the intended RED before the implementer lands rb-115; TWO — a twin behind a \
+         conditional-compilation attribute is the measured shape — makes every clause scoped to \
+         it read whichever definition the extractor reaches first, leaving the other ungated."
+    );
+    let vis = rb107_vis_window_text(&squashed, &fn_needle);
+    assert!(
+        !vis.contains("pub") && !vis.contains("#["),
+        "[rb115/count-vis]: the {RB85_VIS_WINDOW} squashed bytes before the count's declaration \
+         read {vis:?}; they must carry neither a visibility keyword nor an attribute. The count \
+         is the reaper's own machinery: PRIVATE is what makes the naming census below a complete \
+         account of its callers, and a WINDOW rather than a list of spellings is what sees \
+         `pub(super)` and `pub(in crate::x)` as well."
+    );
+
+    // --- NAMED exactly where it should be --------------------------------------
+    let n_named = rb22p_count(&squashed, &named);
+    let n_ident = rb22p_count(&squashed, &ident);
+    let n_tests_named = rb22p_count(&squashed_tests, &named);
+    let n_tests_ident = rb22p_count(&squashed_tests, &ident);
+    assert_eq!(
+        (n_named, n_ident, n_tests_named, n_tests_ident),
+        (2usize, 2usize, 1usize, 1usize),
+        "[rb115/count-named]: privacy.rs names the count {n_named} time(s) with a call \
+         parenthesis and {n_ident} time(s) as a bare identifier (both must be 2 — the declaration \
+         and the ONE call from the TTL helper); this file names it {n_tests_named} and \
+         {n_tests_ident} time(s) (both must be 1 — the `rb115_count` wrapper). ONE in privacy.rs \
+         is a helper that no longer calls it, which is how the pre-cap count quietly becomes the \
+         plan's length again; THREE is a second caller nobody attributed. The paren-LESS census \
+         is not book-keeping: a fn-item binding carries no parenthesis at its binding site."
+    );
+
+    // --- the bundle seam: THREE sites, attributed body by body ---------------
+    let seam_named = rb86_nd_seam_named();
+    let seam_ident = rb115_nd_seam_ident();
+    let helper = rb85_helper_body(&squashed);
+    let count_body = extract_squashed_fn_body(&squashed, &fn_needle).unwrap_or_else(|| {
+        panic!(
+            "rb115 [count-scope]: `{fn_needle}` was found but its body is not brace-balanced, so \
+             every clause scoped to it would run over an arbitrary span."
+        )
+    });
+    let file_named = rb22p_count(&squashed, &seam_named);
+    let file_ident = rb22p_count(&squashed, &seam_ident);
+    let decl_sites = rb22p_count(&squashed, &rb86_nd_seam_fn());
+    let helper_named = rb22p_count(&helper, &seam_named);
+    let helper_ident = rb22p_count(&helper, &seam_ident);
+    let body_named = rb22p_count(count_body, &seam_named);
+    let body_ident = rb22p_count(count_body, &seam_ident);
+    assert_eq!(
+        (
+            file_named,
+            file_ident,
+            decl_sites,
+            helper_named,
+            helper_ident,
+            body_named,
+            body_ident,
+        ),
+        (3usize, 3usize, 1usize, 1usize, 1usize, 1usize, 1usize),
+        "[rb115/seam-sites]: privacy.rs names the frozen bundle seam {file_named} time(s) with a \
+         call parenthesis and {file_ident} as a bare identifier (both must be 3); the declaration \
+         accounts for {decl_sites}, the TTL helper for {helper_named} and {helper_ident}, and the \
+         pure count for {body_named} and {body_ident} (each must be 1). THIS is the attribution \
+         behind the rb-86 seam-scope census moving 2 -> 3: the capped call that plans, and the \
+         ONE uncapped call whose result is only ever a length. TWO in the file means the count \
+         re-derives the stamp set beside the seam — a second retention rule — instead of \
+         running it."
+    );
+    let attributed_named = decl_sites + helper_named + body_named;
+    let attributed_ident = decl_sites + helper_ident + body_ident;
+    assert_eq!(
+        (attributed_named, attributed_ident),
+        (file_named, file_ident),
+        "[rb115/seam-sites]: the three attributed bodies account for {attributed_named} of the \
+         {file_named} paren-bearing and {attributed_ident} of the {file_ident} bare seam sites. \
+         Equal cardinalities over a subset are equal sets, which is what makes a fourth site \
+         visible even when the file totals have been moved to match it."
+    );
+
+    // --- the helper binds it ONCE, as one whole statement --------------------
+    let n_stmt = rb22p_count(&helper, &stmt);
+    let n_bind = m22s4_left_bounded_count(&helper, "letdue");
+    let n_mut_bind = m22s4_left_bounded_count(&helper, "letmutdue");
+    assert_eq!(
+        (n_stmt, n_bind, n_mut_bind),
+        (1usize, 1usize, 0usize),
+        "[rb115/helper-binding]: the TTL helper carries the whole binding `{stmt}` {n_stmt} \
+         time(s), binds the name {n_bind} time(s) and binds it mutably {n_mut_bind} time(s); \
+         exactly (1, 1, 0). The needle is the binding, the callee and all three arguments \
+         together, because each narrower one is value-blind: the cutoff as the instant, a zero \
+         TTL and any expired-only row set give the SAME number on every window the range read \
+         returns. The binding census carries no `=` on purpose — a type-annotated shadow \
+         squashes to a spelling a needle with the `=` cannot see — and a second or a mutable \
+         binding re-points the tail at another value."
+    );
+
+    // --- ... over the SAME window, instant and TTL as the capped call --------
+    let count_args = m22s4_call_arg_lists(&helper, &named);
+    let seam_args = m22s4_call_arg_lists(&helper, &seam_named);
+    assert!(
+        count_args.len() == 1 && seam_args.len() == 1,
+        "[rb115/same-window]: the TTL helper calls the count {} time(s) and the bundle seam {} \
+         time(s); each exactly once, or the argument comparison below reads the wrong call.",
+        count_args.len(),
+        seam_args.len()
+    );
+    let seam_wired = seam_args[0]
+        .strip_suffix(',')
+        .unwrap_or(seam_args[0].as_str());
+    let seam_window: Vec<&str> = seam_wired.split(',').take(3).collect();
+    let seam_window = seam_window.join(",");
+    assert!(
+        count_args[0] == seam_window && seam_window == "&rows,now_ms,EXPORT_BUNDLE_TTL_MS",
+        "[rb115/same-window]: the count receives {:?} and the capped seam call's first three \
+         arguments are {seam_window:?}; they must be the SAME text, and it must be the window, \
+         the tick's instant and the shipped retention ceiling. Two counts of one tick taken over \
+         two different windows, instants or TTLs are not comparable — `planned` stops being the \
+         pre-cap count capped by construction — and no value in this crate can see the \
+         difference while every window row is expired.",
+        count_args[0]
+    );
+
+    // --- ... and BEFORE the plan ---------------------------------------------
+    let plan_stmt = format!("letstamps={seam_named}");
+    let at_bind = m22s4_idx(&helper, "letdue", "the pre-cap count binding");
+    let at_plan = m22s4_idx(&helper, &plan_stmt, "the capped plan binding");
+    assert!(
+        at_bind < at_plan,
+        "[rb115/binding-before-plan]: the pre-cap count is bound at offset {at_bind} and the \
+         capped plan at {at_plan}; the count must come FIRST, directly after the bounded read. \
+         Bound below the plan it is still the same number — the seam borrows the window and \
+         moves nothing — which is exactly why only a position clause sees it drift toward the \
+         delete loop, where a later edit could hand it something other than the window."
+    );
+
+    // --- THE EQUALITY BACKSTOPS, last ----------------------------------------
+    let sig = extract_squashed_fn_sig(&squashed, &fn_needle)
+        .unwrap_or_else(|| panic!("rb115 [count-scope]: `{fn_needle}` has no opening brace."));
+    assert_eq!(
+        sig, sig_pin,
+        "[rb115/count-sig]: the count's signature is not the frozen one; it reads {sig:?}. It \
+         takes the window as a borrowed slice, the instant and the retention ceiling as \
+         PARAMETERS — never module constants, so the non-shipped-TTL value row stays able to \
+         see a body that reaches for the global — and returns a `usize`, a COUNT: a signature \
+         that returned the stamps would be a second plan beside the capped one."
+    );
+    assert_eq!(
+        count_body, body_pin,
+        "[rb115/count-body]: the count's body is not the frozen one; it reads {count_body:?}. \
+         EQUALITY owns everything the value table cannot see: the status-quo body run at the \
+         STAMP cap reds a value row too, but a `usize::MAX` or `rows.len() + 1` cap returns the \
+         same number on every window, and a second loop, sort and dedup beside the seam is a \
+         second definition of the stamp set that happens to agree today. The one sanctioned body \
+         is the frozen seam run with the window's own length as its cap, and its length."
+    );
+}
+
+/// T4 (ledger X1), THE DOCUMENTARY HALF: production no longer carries the
+/// stale three-count and HINT sentences or advertises the closed residual as
+/// open, the three documents record the closure, and NONE of them over-claims
+/// the window-edge half or the order model as closed with it.
+///
+/// THE STALE-CLAIM BAN IS THE ONLY INSTRUMENT HERE THAT SEES A FALSEHOOD WITH
+/// NO IDENTIFIER IN IT. Six raw phrase fragments, each MEASURED present exactly
+/// once in privacy.rs before this slice: the section banner's three-count
+/// record and its claim that the host models no range scan and no writes (false
+/// since rb-109), the reducer's and the record's two HINT sentences, the
+/// record's three-raw-counts heading, and the helper's closing line about one
+/// number standing for all three. Fragments, not sentences: rustfmt wraps
+/// sentences, and a wrapped needle is a ban passing over nothing.
+///
+/// THE CLOSURE AND OPEN-RESIDUAL CLAUSES ARE SPAN-SCOPED. ADR-0238 already names
+/// the closed residual in its rb-87 amendment, and ARCHITECTURE.md holds each
+/// slice on one very long line, so these clauses read only what this slice
+/// WRITES: ADR-0269 whole (it is new), the rb-115 amendment of ADR-0238 — from
+/// its header, found by a WHOLE-token slice marker and never by a date, to the
+/// next section — and the one line beginning with the rb-115 slice marker.
+///
+/// Kills: the closed residual id left in a production comment; any of the six
+/// stale sentences left standing; the record written without naming the fn,
+/// the record type or either residual, with an overlong decision line, or with
+/// an Amends header that forces a reciprocal edit; the ADR-0238 amendment or
+/// the ARCHITECTURE line missing, or missing what they must name; a sentence
+/// claiming the window-edge half or the order model closed; the retired
+/// read-cap spelling reintroduced by a new document; and a mention hidden from
+/// a contiguous scan by a markdown comment or a line break inside an identifier
+/// (the split-token cross-check, with a floor of one so an absent identifier
+/// cannot pass as zero equals zero).
+#[test]
+fn rb115_docs_record_the_pre_truncation_count() {
+    let closed = rb115_closed_residual();
+    let open = rb115_open_residual();
+    let order = rb115_order_residual();
+    let record = "ADR-0269";
+    let marker = "rb-115";
+    let amend_head = "## Amendment (";
+    let arch_head = concat!("**rb-", "115**");
+    let decision_head = "**Decision:**";
+    let count_ident = rb115_nd_count_ident();
+    let tick_ident = concat!("ExportReap", "Tick");
+    let retired = rb110_old_name();
+
+    // A WHOLE-token match: the marker may neither continue a longer token on
+    // its left (so another residual id that merely carries it is no match) nor
+    // run on into a digit or a hyphen on its right (so a longer slice number,
+    // measured as a forgery elsewhere in this file, is no match either).
+    let whole_token = |line: &str, needle: &str| -> bool {
+        let mut start = 0usize;
+        while let Some(rel) = line[start..].find(needle) {
+            let at = start + rel;
+            let after = at + needle.len();
+            let left_ok = !matches!(
+                line[..at].chars().next_back(),
+                Some(c) if c.is_ascii_alphanumeric() || c == '-' || c == '_'
+            );
+            let right_ok = !matches!(
+                line[after..].chars().next(),
+                Some(c) if c.is_ascii_digit() || c == '-'
+            );
+            if left_ok && right_ok {
+                return true;
+            }
+            start = after;
+        }
+        false
+    };
+
+    // Every number this test can report, taken BEFORE the first assertion, so
+    // one run of the runtime-RED stage records the whole pre-state.
+    let prod_closed = rb22p_count(PRIVACY_RS, closed);
+    let stale: [&str; 6] = [
+        concat!("three-count ", "record"),
+        concat!("no range scan ", "and no writes"),
+        concat!("HINT, never ", "a proof"),
+        concat!("THREE RAW ", "COUNTS"),
+        concat!("HINT, not ", "a proof"),
+        concat!("stand for ", "all three"),
+    ];
+    let stale_counts: Vec<usize> = stale.iter().map(|p| rb22p_count(PRIVACY_RS, p)).collect();
+
+    let decisions: Vec<&str> = RB115_ADR_0269_MD
+        .lines()
+        .filter(|line| line.starts_with(decision_head))
+        .collect();
+    let decision_len = decisions
+        .first()
+        .map_or(0, |line| line[decision_head.len()..].trim().chars().count());
+
+    let mut amend_heads = 0usize;
+    let mut amend_span = String::new();
+    let mut inside = false;
+    for line in RB115_ADR_0238_MD.lines() {
+        let is_head = line.starts_with(amend_head) && whole_token(line, marker);
+        if is_head {
+            amend_heads += 1;
+        }
+        if !inside && is_head {
+            inside = true;
+        } else if inside && line.starts_with("## ") {
+            break;
+        }
+        if inside {
+            amend_span.push_str(line);
+            amend_span.push('\n');
+        }
+    }
+
+    let arch_lines: Vec<&str> = RB115_ARCHITECTURE_MD
+        .lines()
+        .filter(|line| line.starts_with(arch_head))
+        .collect();
+    let arch_line = arch_lines.first().copied().unwrap_or("");
+
+    let spans: [(&str, &str); 3] = [
+        ("ADR-0269, read whole", RB115_ADR_0269_MD),
+        ("the rb-115 span of ADR-0238", amend_span.as_str()),
+        ("the rb-115 line of ARCHITECTURE.md", arch_line),
+    ];
+    let mut split_rows: Vec<String> = Vec::new();
+    let mut split_bad = 0usize;
+    for (what, text) in spans {
+        let view = rb110_ident_only(text);
+        for needle in [count_ident.as_str(), tick_ident] {
+            let raw = rb22p_count(text, needle);
+            let fused = rb22p_count(&view, needle);
+            if raw != fused || raw == 0 {
+                split_bad += 1;
+            }
+            split_rows.push(format!("{what} / {needle}: raw {raw} / ident {fused}"));
+        }
+    }
+
+    let dossier = format!(
+        "MEASURED IN ONE PASS before the first clause. privacy.rs — closed residual id \
+         {prod_closed} (must be 0; it was 1 before this slice), stale phrases {stale_counts:?} \
+         (each must be 0; each was 1). ADR-0269 — {} byte(s), {} decision line(s), the first \
+         {decision_len} char(s) long (1 to 240). ADR-0238 — {amend_heads} amendment header(s) \
+         carrying the slice marker as a whole token (at least 1), span {} byte(s). \
+         ARCHITECTURE.md — {} line(s) beginning with the slice marker (exactly 1). Split-token \
+         rows {split_rows:?}, {split_bad} failing.",
+        RB115_ADR_0269_MD.len(),
+        decisions.len(),
+        amend_span.len(),
+        arch_lines.len()
+    );
+
+    // --- production ------------------------------------------------------------
+    assert_eq!(
+        prod_closed, 0,
+        "[rb115/prod-residual-closed]: privacy.rs still names the residual this slice closes on \
+         its truncation half {prod_closed} time(s); it named it once before, in the record \
+         comment. A production comment advertising a closed residual as open is a false \
+         statement in the one file the change is about, and the archaeology belongs in the \
+         decision record and the slice log, where a later slice can keep it true. {dossier}"
+    );
+    for (phrase, n) in stale.iter().zip(stale_counts.iter()) {
+        assert_eq!(
+            *n, 0,
+            "[rb115/prod-stale-claim]: privacy.rs still carries {n} occurrence(s) of `{phrase}`, \
+             MEASURED present exactly once before this slice. Each of the six is false once the \
+             tick reports four counts: the record is no longer three counts, the pre-cap count is \
+             observed rather than hinted at, one number no longer stands for all three, and the \
+             native host has modelled the range read and the index-point delete since rb-109. \
+             {dossier}"
+        );
+    }
+
+    // --- the new record ----------------------------------------------------------
+    assert!(
+        RB115_ADR_0269_MD.len() > 200,
+        "[rb115/doc-adr]: ADR-0269 reads as only {} byte(s), too short to be the record this \
+         test means to read, so every containment clause below would pass over an empty string.",
+        RB115_ADR_0269_MD.len()
+    );
+    for needle in [
+        count_ident.as_str(),
+        tick_ident,
+        closed,
+        open,
+        "**Extends:** 0238",
+        "**Amends:** —",
+    ] {
+        assert!(
+            RB115_ADR_0269_MD.contains(needle),
+            "[rb115/doc-adr]: {record} does not carry `{needle}`. The record has to name what \
+             shipped — the count fn and the record type — the residual it closes and the one it \
+             opens; `Extends` is the header field the digest gate accepts WITHOUT a reciprocal \
+             edit to ADR-0238, and `Amends` must stay empty precisely because that field demands \
+             one. {dossier}"
+        );
+    }
+    assert!(
+        decisions.len() == 1 && (1..=240).contains(&decision_len),
+        "[rb115/doc-adr]: {record} carries {} decision line(s), and the first runs to \
+         {decision_len} char(s) after its marker; exactly one line of 1 to 240 chars is the \
+         contract. The digest renders that line whole, so an overlong one is cut where readers \
+         scan the ADR index. {dossier}",
+        decisions.len()
+    );
+
+    // --- the ADR-0238 amendment, SPAN-scoped -------------------------------------
+    assert!(
+        amend_heads >= 1,
+        "[rb115/doc-closure]: ADR-0238 carries {amend_heads} dated amendment header(s) carrying \
+         `{marker}` as a whole token; at least one is required. The header is found by the \
+         marker and never by a date, so a re-dated amendment is not a false red. {dossier}"
+    );
+    for needle in [closed, count_ident.as_str(), open] {
+        assert!(
+            amend_span.contains(needle),
+            "[rb115/doc-closure]: the rb-115 amendment span of ADR-0238 does not name `{needle}`. \
+             It must name the residual it closes, the fn that closes it and the residual it \
+             opens. SPAN-scoped, never file-wide: the rb-87 amendment already names the closed \
+             residual, so a file-level check is green before this slice writes a word. {dossier}"
+        );
+    }
+
+    // --- the slice log ---------------------------------------------------------
+    assert_eq!(
+        arch_lines.len(),
+        1,
+        "[rb115/doc-arch]: ARCHITECTURE.md must carry exactly ONE line beginning `{arch_head}`; \
+         found {}. {dossier}",
+        arch_lines.len()
+    );
+    for needle in [record, closed, count_ident.as_str()] {
+        assert!(
+            arch_line.contains(needle),
+            "[rb115/doc-arch]: the rb-115 line of ARCHITECTURE.md does not name `{needle}`. The \
+             slice log is where a reader who greps the residual id or the fn lands, and a line \
+             that records the change without naming its record, its residual and its fn leaves \
+             that reader nothing to follow. {dossier}"
+        );
+    }
+
+    // --- NEITHER sibling residual is over-claimed --------------------------------
+    for residual in [open, order] {
+        let stays_open = [residual, " stays open"].concat();
+        let claims = [
+            ["closes ", residual].concat(),
+            [residual, " closed"].concat(),
+        ];
+        for (what, text) in spans {
+            assert!(
+                text.contains(stays_open.as_str()),
+                "[rb115/doc-open]: {what} does not say `{stays_open}` in so many words. `due` \
+                 is taken OVER the window, so it cannot say whether expired rows remain past a \
+                 full window's edge, and it can reveal but never rule out a non-ascending yield \
+                 — both residuals are OPEN after this slice, and over-claiming either is the \
+                 most likely documentary error in it."
+            );
+            for claim in &claims {
+                assert!(
+                    !text.contains(claim.as_str()),
+                    "[rb115/doc-open]: {what} claims `{claim}`. It is not closed here: rb-115 \
+                     closes the TRUNCATION half of the rb-87 residual and nothing else."
+                );
+            }
+        }
+    }
+
+    // --- the retired read-cap spelling stays retired -----------------------------
+    for (what, text) in spans {
+        let raw = rb22p_count(text, retired.as_str());
+        let fused = rb22p_count(&rb110_ident_only(text), retired.as_str());
+        assert_eq!(
+            (raw, fused),
+            (0usize, 0usize),
+            "[rb115/doc-no-retired-name]: {what} spells the retired read-cap name {raw} time(s) \
+             contiguously and {fused} time(s) in the identifier-only view; both must be zero. \
+             rb-110 renamed the constant for the read it bounds and caps every older document's \
+             surviving mentions, so a NEW document spelling the old name re-teaches the misnomer \
+             to exactly the reader this slice writes for."
+        );
+    }
+
+    // --- the split-token cross-check, with a floor -----------------------------
+    assert_eq!(
+        split_bad, 0,
+        "[rb115/doc-split-token]: {split_bad} (document, identifier) pair(s) fail; each must \
+         carry the identifier at least once and its CONTIGUOUS count must equal its \
+         identifier-only count. A mismatch is a token split by an HTML comment or a line break — \
+         a construct this repository has MEASURED in markdown, which renders as an ordinary \
+         citation while defeating every contiguous scan above — and the floor of one is what \
+         stops an absent identifier passing as zero equals zero. Rows: {split_rows:?}"
+    );
+}
+
+/// T5 (ledger X1, the anchor): this file declares EXACTLY the five `rb115_`
+/// tests the roster names, each once, over a CLOSED set of helpers — and every
+/// clause label those tests ship still occurs inside the test that owns it, in
+/// a body that is not a stub.
+///
+/// The rb-111 shape, clause for clause, with `rb111_test_span` REUSED rather
+/// than re-derived: its terminators are a flush-left or an indented test
+/// attribute and a flush-left banner, and this block's own banner is what now
+/// ends the span of the last rb-111 test, which ran to end-of-file until this
+/// block was appended. Every test here is flush-left, so the indented adjacency
+/// count is zero today and is still summed, so a future generator-block test is
+/// seen.
+///
+/// Kills: a test renamed out of the ledger's filter or never written; a sixth
+/// test slipped in without moving a ledger literal; a test disabled by an
+/// ignore attribute; an unlisted helper; a load-bearing out-of-prefix test
+/// deleted; a clause label deleted from the test that owns it, or re-planted in
+/// a line comment (the comment-blanked view); a label copied into a second
+/// test; a clause shipped under a label no roster names (the set equality); and
+/// a body neutered by a leading conditional, a dead branch anywhere in it, or
+/// hollowed down to its label strings.
+#[test]
+fn rb115_test_roster_is_closed() {
+    let roster = rb115_test_roster();
+    let helpers = rb115_helper_roster();
+    let dependencies = rb115_dependency_roster();
+    let file_len = PRIVACY_TESTS_RS.len();
+
+    assert!(
+        file_len > 200,
+        "[rb115/roster-vacuity]: this file reads as only {file_len} bytes, so every count below \
+         would pass over nothing."
+    );
+
+    let mut seen: Vec<&str> = roster.to_vec();
+    seen.extend_from_slice(&helpers);
+    seen.extend_from_slice(&dependencies);
+    seen.sort_unstable();
+    for pair in seen.windows(2) {
+        assert_ne!(
+            pair[0], pair[1],
+            "[rb115/roster-dup]: the rosters name `{}` twice, so every total below is satisfied \
+             by one fewer distinct declaration plus a duplicate entry.",
+            pair[0]
+        );
+    }
+
+    for name in roster {
+        let needle = format!("fn {name}(");
+        let n = rb22p_count(PRIVACY_TESTS_RS, &needle);
+        assert_eq!(
+            n, 1,
+            "[rb115/roster-name]: `{needle}` must be declared exactly once in privacy_tests.rs; \
+             found {n}. ZERO means the test was renamed or never written, and the ledger's name \
+             filter does not red on that — it matches fewer tests and still reports the same \
+             count passed as ran."
+        );
+    }
+    for name in dependencies {
+        let needle = format!("fn {name}(");
+        let n = rb22p_count(PRIVACY_TESTS_RS, &needle);
+        assert_eq!(
+            n, 1,
+            "[rb115/roster-name]: the LOAD-BEARING test `{needle}` must still be declared exactly \
+             once in privacy_tests.rs; found {n}. Each of these nineteen holds up a class of \
+             clause in this slice — the helper body, name and signature pins; the frozen seam \
+             whose uncapped length the count IS; the re-frozen seam-site census and cap wiring; \
+             the re-frozen rb-87 record, fragment, envelope and helper pins; the widened rb-109 \
+             tick oracles and their roster; the one-cfg census; the hygiene scan. Deleting one \
+             is a way to disarm this slice without editing an rb-115 literal."
+        );
+    }
+
+    let flush = rb22p_count(PRIVACY_TESTS_RS, concat!("#[te", "st]\nfn rb115", "_"));
+    let indented = rb22p_count(PRIVACY_TESTS_RS, concat!("#[te", "st]\n    fn rb115", "_"));
+    let adjacent = flush + indented;
+    let tests = roster.len();
+    assert_eq!(
+        adjacent, tests,
+        "[rb115/roster-closed]: privacy_tests.rs declares {adjacent} `rb115_` test(s) by \
+         adjacency ({flush} flush-left, {indented} indented); the roster names {tests}. The two \
+         forms are SUMMED so a test hidden in a generator block could not be deleted while the \
+         roster still reported a closed set."
+    );
+
+    let block_at = PRIVACY_TESTS_RS
+        .find(concat!("\nfn rb115", "_"))
+        .expect("rb115: this file declares no top-level rb115_ fn");
+    let ignored = rb22p_count(&PRIVACY_TESTS_RS[block_at..], concat!("#[ign", "ore]"));
+    assert_eq!(
+        ignored, 0,
+        "[rb115/roster-closed]: the rb-115 section carries {ignored} ignore attribute(s). Placed \
+         ABOVE a test attribute, one leaves both adjacency needles and every declaration census \
+         at five while the test never runs under the default profile — and a skipped test is not \
+         a failed one, so the suite still reports its full count passed."
+    );
+
+    for name in helpers {
+        let needle = format!("\nfn {name}(");
+        let n = rb22p_count(PRIVACY_TESTS_RS, &needle);
+        assert_eq!(
+            n, 1,
+            "[rb115/decl-total]: the helper `{name}` must be declared exactly once at the top \
+             level of privacy_tests.rs; found {n}. The needle carries a leading newline so this \
+             block's own roster literals are not counted. ZERO means the roster names a helper \
+             that no longer exists, which would make the total below pass over a file missing one."
+        );
+    }
+    let squashed_file = stripped_for_scan(PRIVACY_TESTS_RS);
+    let squashed_decls = rb22p_count(&squashed_file, concat!("fnrb115", "_"));
+    let declared = roster.len() + helpers.len();
+    assert_eq!(
+        squashed_decls, declared,
+        "[rb115/decl-total]: the SQUASHED source (strings and comments blanked, whitespace \
+         removed) carries {squashed_decls} `rb115_` fn declaration(s); the two CLOSED rosters \
+         name {declared}. This one view sees every visibility prefix and every indentation at \
+         once, and it cannot be fed by this file's own string fixtures. If it reds after an \
+         honest addition, add the name to the roster it belongs to in the same diff."
+    );
+
+    // --- the label census, over COMMENT-BLANKED spans -------------------------
+    let labels = rb115_label_roster();
+    let mut spans: Vec<String> = Vec::new();
+    let mut visible: Vec<String> = Vec::new();
+    for name in roster {
+        let span = rb111_test_span(PRIVACY_TESTS_RS, name);
+        visible.push(strip_rust_comments(&span));
+        spans.push(span);
+    }
+
+    let mut label_names: Vec<&str> = labels.iter().map(|(label, _)| *label).collect();
+    label_names.sort_unstable();
+    for pair in label_names.windows(2) {
+        assert_ne!(
+            pair[0], pair[1],
+            "[rb115/label-census]: the label roster names `{}` TWICE, so the per-label clause \
+             below is satisfied by one fewer real clause plus a duplicate entry.",
+            pair[0]
+        );
+    }
+
+    for (owner, name) in roster.iter().enumerate() {
+        let owned = labels.iter().filter(|(_, idx)| *idx == owner).count();
+        assert!(
+            owned >= 2,
+            "[rb115/label-census]: the roster credits `{name}` with only {owned} clause label(s); \
+             every test in this slice ships at least two. ONE or ZERO means the roster was \
+             trimmed rather than the test."
+        );
+    }
+
+    for (label, owner) in labels {
+        assert!(
+            owner < roster.len(),
+            "[rb115/label-census]: the label `{label}` names owner index {owner}, past the end \
+             of a roster of {} test(s).",
+            roster.len()
+        );
+        let carriers: Vec<usize> = (0..roster.len())
+            .filter(|i| rb22p_count(&visible[*i], label) > 0)
+            .collect();
+        assert_eq!(
+            carriers,
+            [owner],
+            "[rb115/label-census]: `{label}` occurs inside the comment-blanked spans of tests \
+             {carriers:?}; it must occur inside exactly one — `{}`, at index {owner}. An EMPTY \
+             list means the clause that label names has been DELETED from the test that owns it \
+             while every census above stayed green; TWO entries mean the label was copied into a \
+             second test, so a failure no longer attributes to one place.",
+            roster[owner]
+        );
+    }
+
+    let mut found: Vec<String> = Vec::new();
+    for text in &visible {
+        for label in rb115_labels_in(text) {
+            if !found.iter().any(|seen| seen.as_str() == label.as_str()) {
+                found.push(label);
+            }
+        }
+    }
+    found.sort_unstable();
+    let mut rostered: Vec<String> = Vec::new();
+    for (label, _) in labels {
+        rostered.push(String::from(label));
+    }
+    rostered.sort_unstable();
+    assert_eq!(
+        found, rostered,
+        "[rb115/label-total]: the five test spans between them carry the label set {found:?}; \
+         the roster names {rostered:?}. The per-label clause above only looks for labels the \
+         ROSTER already knows; this reads the same set from the other end, so the two together \
+         are a bijection between what ships and what is written down."
+    );
+
+    // --- the body floor: the blunt backstop ----------------------------------
+    for (owner, name) in roster.iter().enumerate() {
+        let needle = format!("fn{name}(");
+        let body = extract_squashed_fn_body(&squashed_file, &needle)
+            .expect("rb115: a roster test has no brace-balanced body");
+        assert!(
+            !body.starts_with("if"),
+            "[rb115/body-floor]: the squashed body of `{name}` OPENS with a conditional. A whole \
+             test body wrapped in a never-taken one keeps every census above GREEN while not one \
+             of its assertions runs, and the ledger's filtered run still prints five of five."
+        );
+        let squashed_span = stripped_for_scan(&spans[owner]);
+        let n_dead = rb22p_count(&squashed_span, concat!("iffal", "se{"));
+        assert_eq!(
+            n_dead, 0,
+            "[rb115/body-floor]: `{name}` contains {n_dead} never-taken conditional(s) anywhere \
+             in its span — a dead branch wrapped around the assertions half-way down is the same \
+             defect one level deeper."
+        );
+        let size = squashed_span.len();
+        assert!(
+            size >= 300,
+            "[rb115/body-floor]: the span of `{name}` is only {size} squashed byte(s) — comments \
+             and string literals blanked, whitespace removed — and 300 is the floor the sibling \
+             blocks use: a NOT-A-STUB pin, which catches a body hollowed down to its label \
+             strings."
         );
     }
 }
