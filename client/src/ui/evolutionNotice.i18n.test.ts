@@ -48,6 +48,13 @@ function reveal(
   return { monsterId, fromSpecies, toSpecies, evolvedAtMs };
 }
 
+/** rb-125 (ADR-0272): every `new EvolutionNoticeBanner(` call in this file now needs a second
+ *  `sinks` argument. This file's own assertions are about the i18n resolver call sites, never
+ *  about WHICH sink fired — fresh vi.fn() defaults are enough. */
+function bannerSinks(): { announce: (message: string) => void; returnFocus: () => void } {
+  return { announce: vi.fn(), returnFocus: vi.fn() };
+}
+
 beforeEach(() => {
   document.body.innerHTML = '';
   vi.clearAllMocks();
@@ -124,7 +131,7 @@ describe('m24s5 (ADR-0261): evolutionNotice.ts routes its reveal copy and OK lab
     expect(i18nTf).toHaveBeenCalledWith('evolutionNotice.species.fallback', { id: 31 });
 
     // The banner: the OK label resolves in render(), never the constructor (D4).
-    const banner = new EvolutionNoticeBanner(() => Promise.resolve());
+    const banner = new EvolutionNoticeBanner(() => Promise.resolve(), bannerSinks());
     const ok = document.getElementById('evolution-notice-ok') as HTMLButtonElement;
     expect(
       ok.textContent,
@@ -135,12 +142,12 @@ describe('m24s5 (ADR-0261): evolutionNotice.ts routes its reveal copy and OK lab
       'the constructor must not call the resolver for the OK label',
     ).not.toHaveBeenCalledWith('evolutionNotice.ok');
 
-    banner.render('a synthetic label');
+    banner.render({ key: 'synthetic-1', label: 'a synthetic label' });
     expect(i18nT).toHaveBeenCalledWith('evolutionNotice.ok');
     expect(ok.textContent).toBe('OK');
 
     vi.mocked(i18nT).mockClear();
-    banner.render('another synthetic label');
+    banner.render({ key: 'synthetic-2', label: 'another synthetic label' });
     expect(
       i18nT,
       'a second render() re-requests the OK key -- it runs every store batch, unconditionally',
@@ -190,10 +197,10 @@ describe('m24s5 (ADR-0261): evolutionNotice.ts routes its reveal copy and OK lab
     // The banner DOM walk: a SYNTHETIC, non-nested label -- never a string that passed through
     // evolutionNoticeLabel/speciesLabel under the mock.
     document.body.innerHTML = '';
-    const banner = new EvolutionNoticeBanner(() => Promise.resolve());
+    const banner = new EvolutionNoticeBanner(() => Promise.resolve(), bannerSinks());
     try {
       vi.mocked(i18nT).mockImplementation((key: string) => `«${key}»`);
-      banner.render('zzz');
+      banner.render({ key: 'zzz-entry', label: 'zzz' });
       const ok = document.getElementById('evolution-notice-ok')!;
       expect(ok.textContent).toBe('«evolutionNotice.ok»');
       expect(

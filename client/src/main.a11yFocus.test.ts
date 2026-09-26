@@ -1203,6 +1203,148 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     runFrame(600); // NOW this really is the topOverlay -> null edge
     expect(document.activeElement, 'focus must still be on the badge, not stolen').toBe(helpHint);
   });
+
+  // ---------------------------------------------------------------------------------------
+  // rb-125 (ADR-0272) — the post-evolve reveal banner's announce + focus-return sinks, driven
+  // through the REAL AuthoritativeStore instance main.ts constructed: `opts.store` (captured
+  // from the mocked `./net/connection`'s `ConnectionOptions.store` field, `connection.ts:82`)
+  // IS the exact module-scope `store` main.ts reads inside its own `store.onBatchApplied(`
+  // listener (`main.ts` — `const store = new AuthoritativeStore(STEP_MS);`, then `store,` is
+  // handed to `connect({ … })` verbatim). Calling `opts.store.reconcileEvolutionNoticesFromView(`
+  // + `opts.store.flushBatch()` therefore drives main.ts's REAL listener synchronously, with no
+  // need for the mocked connection to ever deliver a row itself — the seam this whole file's
+  // other tests have no reason to reach for.
+  //
+  // SOURCE OF TRUTH: docs/adr/0272-evolution-notice-announcement-and-focus.md.
+  //
+  // RED REASON: `store.onBatchApplied` currently renders the OLD `string | null` shape and the
+  // banner has no `sinks` argument at all — no `liveRegion.announce(` call and no
+  // `worldCanvasEl?.focus()` call can ever fire from this path today.
+  // ---------------------------------------------------------------------------------------
+
+  /** One `StorePendingEvolutionNotice` row for `H.identity`, `entries` given verbatim (the
+   *  `my_pending_evolution_notices` view is an Option projection — at most one row, the
+   *  caller's own). Mirrors `reconcileEvolutionNoticesFromView`'s own "empty entries, row
+   *  present" post-dismissal shape (net/store.ts) rather than clearing the slot outright. */
+  function seedEvolutionNotices(
+    entries: ReadonlyArray<{
+      readonly monsterId: bigint;
+      readonly fromSpecies: number;
+      readonly toSpecies: number;
+      readonly evolvedAtMs: bigint;
+    }>,
+  ): void {
+    opts.store.reconcileEvolutionNoticesFromView([{ ownerIdentity: H.identity, entries }]);
+  }
+
+  function evolutionOkBtn(): HTMLButtonElement | null {
+    return document.getElementById('evolution-notice-ok') as HTMLButtonElement | null;
+  }
+
+  function worldCanvas(): Element | null {
+    return document.getElementById('app')?.querySelector('canvas') ?? null;
+  }
+
+  it('RB125-RT-ANNOUNCE BITES: the exact reveal sentence paints in #a11y-live only after its 500ms coalescing window, timed by performance.now() — never Date.now()', () => {
+    // WRONG IMPL KILLED (a) ★ THE MISSING SINK (RED AT AUTHORING TIME): the banner never calls
+    //   `liveRegion.announce(` at all, so `#a11y-live` never receives the sentence no matter how
+    //   long this test waits.
+    // WRONG IMPL KILLED (b) ★ A Date.now() CLOCK: this test stubs ONLY `performance.now()`
+    //   (exactly what `runFrame` itself stubs, and what a correct sink must read) — a sink
+    //   spelled `liveRegion.announce(m, Date.now())` opens its coalescing window at the REAL
+    //   wall-clock millisecond, which is not `t`, so `runFrame(t + 600)` below (`t + 600` on the
+    //   STUBBED clock) can never reach 500ms past that real window and the final assertion
+    //   fails — this is the runtime half of `W-RB125-ANNOUNCE-SINK`'s source-side pin.
+    // WRONG IMPL KILLED (c): a second, direct write to `#a11y-live` bypassing LiveRegion's
+    //   coalescing (e.g. `document.getElementById('a11y-live').textContent = label` inside the
+    //   listener) — the sentence would appear immediately after the batch, failing the FIRST
+    //   assertion below (it must NOT appear before the window elapses).
+    const t = 10_000;
+    // fromSpecies 1 -> toSpecies 5, no monster/species rows seeded at all: the anonymous,
+    // no-name-loaded fallback branch — 'Your Species #1 evolved into Species #5!' (the EXACT
+    // en copy: catalog.en.ts's `evolutionNotice.reveal.anonymous` + `.species.fallback`).
+    const nowSpy = vi.spyOn(performance, 'now').mockReturnValue(t);
+    seedEvolutionNotices([{ monsterId: 1n, fromSpecies: 1, toSpecies: 5, evolvedAtMs: 0n }]);
+    opts.store.flushBatch();
+    nowSpy.mockRestore();
+
+    const region = document.getElementById('a11y-live');
+    expect(region, '#a11y-live must exist (client/index.html)').not.toBeNull();
+
+    runFrame(t);
+    expect(
+      region!.textContent,
+      'the reveal sentence must NOT paint before its 500ms coalescing window has elapsed',
+    ).not.toBe('Your Species #1 evolved into Species #5!');
+
+    runFrame(t + 600);
+    expect(
+      region!.textContent,
+      'RED AT AUTHORING TIME: no sink exists yet, so this can never be exactly the reveal ' +
+        'sentence, timed on the stubbed performance.now() clock',
+    ).toBe('Your Species #1 evolved into Species #5!');
+  });
+
+  it('RB125-RT-FOCUS BITES: hiding the reveal after its OK button held focus returns focus to the world canvas', () => {
+    // WRONG IMPL KILLED (a) ★ THE MISSING SINK (RED AT AUTHORING TIME): `render(null)` never
+    //   calls `returnFocus()`, so a keyboard player who acked the reveal from its OK button is
+    //   stranded on a now-hidden, unreachable control — happy-dom does not auto-blur a focused
+    //   node inside a `display:none` subtree (see this file's own S5T-FOCUS-RETURN-STALE
+    //   header), so `document.activeElement` stays on the dead button forever without the fix.
+    // WRONG IMPL KILLED (b): a `returnFocus` wired to `document.body.focus()` instead of the
+    //   canvas — this assertion reads the canvas specifically (ADR-0206 D4's "the world
+    //   region"), not merely "somewhere neutral".
+    seedEvolutionNotices([{ monsterId: 2n, fromSpecies: 1, toSpecies: 5, evolvedAtMs: 0n }]);
+    opts.store.flushBatch();
+
+    const ok = evolutionOkBtn();
+    expect(ok, '#evolution-notice-ok must exist once the reveal has rendered').not.toBeNull();
+    ok!.focus();
+    expect(document.activeElement, 'precondition: the OK button holds focus').toBe(ok);
+
+    // The ack drains the entry; the row survives EMPTY (the player_wallet rule — the ack never
+    // deletes the row, net/store.ts's own `ownEvolutionNotices` doc comment).
+    seedEvolutionNotices([]);
+    opts.store.flushBatch();
+
+    const canvas = worldCanvas();
+    expect(
+      canvas,
+      'the mocked WorldRenderer.init must have appended a <canvas> to #app',
+    ).not.toBeNull();
+    expect(
+      document.activeElement,
+      'render(null) must check whether focus was inside the banner BEFORE hiding it, then call ' +
+        'the returnFocus sink main.ts wires to `worldCanvasEl?.focus()`',
+    ).toBe(canvas);
+  });
+
+  it('RB125-RT-NO-STEAL (green at fork): the reveal never steals focus from a control outside it, on show OR hide', () => {
+    // GREEN AT FORK BY DESIGN — a mutation pin: both the current banner and a correct ADR-0272
+    // implementation never move focus on SHOW, and a correct implementation's `returnFocus`
+    // guard is false here (focus was never inside the banner) on HIDE. It goes RED only against
+    // an UNCONDITIONAL `returnFocus()` call on every hide, or a show that steals focus onto its
+    // own OK button.
+    const helpHint = document.getElementById('help-hint') as HTMLElement | null;
+    expect(helpHint, '#help-hint must exist (client/index.html)').not.toBeNull();
+    helpHint!.focus();
+    expect(document.activeElement, 'anti-vacuity: the badge really is focusable').toBe(helpHint);
+
+    seedEvolutionNotices([{ monsterId: 3n, fromSpecies: 1, toSpecies: 5, evolvedAtMs: 0n }]);
+    opts.store.flushBatch();
+    expect(document.activeElement, 'showing the reveal must never move focus').toBe(helpHint);
+    expect(document.activeElement, 'the OK button must never receive focus on show').not.toBe(
+      evolutionOkBtn(),
+    );
+
+    seedEvolutionNotices([]);
+    opts.store.flushBatch();
+    expect(
+      document.activeElement,
+      'hiding a reveal that never held focus must leave the world-focus control alone — an ' +
+        'unconditional returnFocus() call would steal it here',
+    ).toBe(helpHint);
+  });
 });
 
 // -------------------------------------------------------------------------------------------
