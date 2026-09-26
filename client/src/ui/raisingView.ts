@@ -208,6 +208,15 @@ export class RaisingView {
     this.#renderInventory(vm.items);
   }
 
+  /** rb-121 (ADR-0271): a lock-owning release that finds focus stranded on `<body>` re-asserts the
+   *  dialog; the idempotent re-open re-installs the trap and defers focus to the registry anchor.
+   *  `#visible` is load-bearing: re-opening a hidden view would CREATE an open record. */
+  #reanchorStrandedFocus(): void {
+    if (this.#visible && document.activeElement === document.body) {
+      openOverlayA11y('raisingView', this.#root);
+    }
+  }
+
   #renderMonsters(
     monsters: RaisingViewModel['monsters'],
     items: readonly InventoryItemViewModel[],
@@ -286,6 +295,9 @@ export class RaisingView {
             // would strand the live button disabled forever.
             const live = this.#careButtons.get(monsterId) ?? careBtn;
             live.disabled = false;
+            // rb-121 (ADR-0271): a no-batch settle (reject/resolve/throw) can leave focus
+            // stranded on <body> — re-assert the dialog.
+            this.#reanchorStrandedFocus();
           })
           .catch((err: unknown) => {
             // Feedback is the caller's responsibility, so this is swallowed to
@@ -325,6 +337,9 @@ export class RaisingView {
                 for (const b of this.#trainButtons.get(monsterId) ?? trainBtns) {
                   b.disabled = false;
                 }
+                // rb-121 (ADR-0271): a no-batch settle can leave focus stranded on <body> —
+                // re-assert the dialog.
+                this.#reanchorStrandedFocus();
               })
               .catch((err: unknown) => {
                 // Feedback is main.ts's job (sendGuarded reported it); swallowed only to

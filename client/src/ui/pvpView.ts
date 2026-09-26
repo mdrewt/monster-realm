@@ -175,10 +175,22 @@ export class PvpView {
         this.#pending = null;
         // The LIVE nodes: a refresh() mid-flight replaced the clicked one.
         this.#setLifecycleDisabled(false);
+        // rb-121 (ADR-0271): a no-batch settle can leave focus stranded on <body> —
+        // re-assert the dialog.
+        this.#reanchorStrandedFocus();
       })
       .catch((err: unknown) => {
         console.error('pvp lifecycle handler error', err);
       });
+  }
+
+  /** rb-121 (ADR-0271): a lock-owning release that finds focus stranded on `<body>` re-asserts the
+   *  dialog; the idempotent re-open re-installs the trap and defers focus to the registry anchor.
+   *  `#visible` is load-bearing: re-opening a hidden view would CREATE an open record. */
+  #reanchorStrandedFocus(): void {
+    if (this.#visible && document.activeElement === document.body) {
+      openOverlayA11y('pvpView', this.#root);
+    }
   }
 
   /** The three dynamic containers ARE the live-button registry — never `#root`, which

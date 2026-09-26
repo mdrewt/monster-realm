@@ -346,10 +346,22 @@ export class BattleView {
         // replaced the clicked node, and re-enabling the detached one would strand the
         // live ones disabled until the next batch.
         this.#setActionButtonsDisabled(false);
+        // rb-121 (ADR-0271): a no-batch settle can leave focus stranded on <body> —
+        // re-assert the dialog.
+        this.#reanchorStrandedFocus();
       })
       .catch((err: unknown) => {
         console.error('battle action handler error', err);
       });
+  }
+
+  /** rb-121 (ADR-0271): a lock-owning release that finds focus stranded on `<body>` re-asserts the
+   *  dialog; the idempotent re-open re-installs the trap and defers focus to the registry anchor.
+   *  `#visible` is load-bearing: re-opening a hidden view would CREATE an open record. */
+  #reanchorStrandedFocus(): void {
+    if (this.#visible && document.activeElement === document.body) {
+      openOverlayA11y('battleView', this.#root);
+    }
   }
 
   /** The skills grid and the actions row ARE the live-button registry (no per-button map).
