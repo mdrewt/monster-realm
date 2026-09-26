@@ -1282,8 +1282,10 @@ const DELIBERATE_EXEMPTIONS: &[(&str, &str)] = &[
     // That is accepted under PRV1-10: during the grace window nothing has been
     // erased yet, so the update arm runs, and any row a helper does mint is swept
     // by the cascade at terminal time. The post-terminal case -- a battle still
-    // Ongoing after the cascade ran -- is a REGISTERED RESIDUAL, not a claim of
-    // safety.
+    // Ongoing after the cascade ran -- is closed mechanically:
+    // battle::anonymize_battles forces every still-Ongoing row terminal against
+    // the erased side before tombstoning it (ADR-0274), so no erased identity is
+    // left a live battle to settle.
     (
         "submit_attack",
         "acts on an already-open battle commitment (PRV1-10, ADR-0227 D5); on the way out it \

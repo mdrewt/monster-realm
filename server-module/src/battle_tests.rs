@@ -6206,8 +6206,8 @@ fn m22s3b_battle_tombstone_truth_table() {
 
 /// **PRV1-6c + PRV1-6d (scan)** — `anonymize_battles` collects BOTH filter
 /// passes before mutating anything, sweeps each row's JOIN-ONLY children BEFORE
-/// swapping that row's identity, skips `Ongoing` rows, and swaps through the
-/// pure seam.
+/// swapping that row's identity, forces a still-Ongoing row terminal before the
+/// swap, and swaps through the pure seam.
 ///
 /// COLLECT BEFORE MUTATE is not style: deleting or updating rows while iterating
 /// the table being iterated is the shape ADR-0126 and every disarm helper in
@@ -6219,11 +6219,18 @@ fn m22s3b_battle_tombstone_truth_table() {
 /// the swap, `battle.player_identity` no longer names the deleting identity, so
 /// a later pass has no way back to that row's children. Sweep first or never.
 ///
-/// THE `Ongoing` SKIP IS A NAMED FAILURE PATH (ADR-0228 D2 / RT-11): an Ongoing
-/// row reaching step 6c means step 6a's resolver failed on it. Sweeping its live
-/// `pvp_deadline_schedule` row would remove the only mechanism that can ever
-/// settle it and soft-lock the SURVIVING opponent, so such a row is skipped with
-/// its identity un-tombstoned — a recorded residual rather than a silent one.
+/// THE `Ongoing` SKIP IS RETIRED (rb-129, ADR-0274, amending ADR-0228 D2 and
+/// RT-11). It kept a live deadline so the survivor could win by timeout, and in
+/// doing so left the row open to two post-terminal channels against an erased
+/// identity: `submit_pvp_action` settling it and re-minting that identity's
+/// wallet and evolution-notice rows, and the kept deadline reaper able to hand
+/// the ERASED side the win and re-mint its ranking profile. Every row naming the
+/// owner now has its join children swept, is forced terminal against the erased
+/// side through the pure forced-terminal seam, and is then tombstoned like any
+/// settled row. This test pins only the ABSENCE of the skip, in either polarity;
+/// the exact per-row body — including a collect-side filter or a helper
+/// predicate standing in for a skip — is pinned by
+/// `rb129_anonymize_battles_body_is_pinned`.
 ///
 /// THE SWAP GOES THROUGH THE PURE SEAM. An inline `b.player_identity =
 /// tombstone;` here would put the PRV1-19 both-sides rule out of reach of
@@ -6236,7 +6243,7 @@ fn m22s3b_battle_tombstone_truth_table() {
 ///        must-never-leak value the manifest marks `exportable: false`); a
 ///        missing `pvp_deadline_schedule` sweep (an armed deadline against an
 ///        erased participant); an inlined identity swap that bypasses the pure
-///        seam; a body with no `Ongoing` skip at all.
+///        seam; a reinstated skip of either polarity.
 #[test]
 fn m22s3b_anonymize_battles_sweeps_joins_before_swap() {
     let stripped = strip_rust_strings(&strip_rust_comments(MODULE_SOURCE));
@@ -6428,167 +6435,37 @@ fn m22s3b_anonymize_battles_sweeps_joins_before_swap() {
         );
     }
 
-    // --- THE Ongoing SKIP, PINNED BY POLARITY (r3) --------------------------
+    // --- rb-129 (ADR-0274): THE Ongoing SKIP IS RETIRED, IN BOTH POLARITIES --
     //
-    // THE MEASURED SURVIVOR. cargo-mutants ran 60 mutants over this slice's
-    // diff and 59 were handled; the ONE that lived is battle.rs:1567,
-    // `replace == with != in anonymize_battles` — a single character, and the
-    // whole suite still reported 762 passing. The clause this replaces asked
-    // only that the token `Ongoing` APPEAR somewhere in the body, so an inverted
-    // comparison contains it just as happily as the correct one. Presence is not
-    // polarity, and for a guard whose entire content IS its comparison, a
-    // presence check is not a gate at all.
-    //
-    // ONE INVERSION, BOTH HARM DIRECTIONS AT ONCE — which is what makes this the
-    // worst mutant in the set rather than merely an uncaught one:
-    //   * it SKIPS every SETTLED battle, so PRV1-6c never runs on the entire
-    //     population it exists for. Every terminal row keeps naming the deleted
-    //     player forever, and spec §3 records exactly why that matters: terminal
-    //     `battle` rows demonstrably PERSIST (settle updates, never deletes; the
-    //     GC is lazy), so a surviving opponent's `my_battle` view still resolves
-    //     them months later. The cascade would report success having anonymized
-    //     nothing;
-    //   * and it PROCESSES the Ongoing ones — the precise rows ADR-0228 D2 /
-    //     RT-11 skips on purpose. Sweeping a live row's `pvp_deadline_schedule`
-    //     entry removes the only mechanism that can ever settle that battle, so
-    //     the SURVIVING opponent is soft-locked in a battle with no deadline and
-    //     no participant.
-    //
-    // THE PIN IS THE WHOLE STATEMENT, in the `m22s3_nd_reaper_recheck_guard`
-    // shape (accounts_tests): the comparison, its polarity, and the branch it
-    // guards, as one contiguous squashed needle. A condition that is present but
-    // whose branch does something other than skip is the same present-but-inert
-    // family that needle was written to close.
-    //
-    // TWO INDEPENDENT TRANSCRIPTIONS, split at different points, so the pin is
-    // not ONE artifact: a later edit that "fixes" the needle by copying it from a
-    // mutated implementation has to edit both, and the agreement clause below is
-    // what makes that checkable rather than merely hoped for. Neither spelling
-    // carries a contiguous `BattleOutcome` or `Ongoing` token, per this file's
-    // needle-assembly convention.
-    let ongoing_guard = concat!(
-        "ifb.state.out",
-        "come==BattleOutco",
-        "me::Ongo",
-        "ing{cont",
-        "inue;}"
-    );
-    let ongoing_guard_twin = [
-        "if",
-        "b.state.outcome==",
-        "BattleOut",
-        "come::Ong",
-        "oing{",
-        "continue;}",
-    ]
-    .concat();
+    // The r3 polarity pin and the r4 ordering pins that stood here asserted the
+    // skip's PRESENCE. ADR-0274 retires the skip: the body now forces a
+    // still-Ongoing row terminal against the erased side before the swap, so the
+    // pin inverts into an ABSENCE census. Neither token may survive in the body —
+    // not as the original skip, not inverted (which skips every SETTLED row and
+    // was the measured 762/762 survivor), and not relocated behind the join
+    // sweeps. The field name `outcome` is deliberately NOT counted: the new body
+    // reads it for its one log-only branch.
+    let ongoing = concat!("Ongo", "ing");
+    let cont = concat!("conti", "nue");
+    let n_ongoing = squashed.matches(ongoing).count();
+    let n_continue = squashed.matches(cont).count();
     assert_eq!(
-        ongoing_guard, ongoing_guard_twin,
-        "m22-s3b PRV1-6c FAIL (needle independence): the two transcriptions of the Ongoing \
-         skip disagree — `{ongoing_guard}` versus `{ongoing_guard_twin}`. They are split at \
-         different points on purpose so neither can be edited into agreement with a mutated \
-         implementation by accident; a mismatch means one was changed alone, and the clause \
-         below is then asserting something nobody chose. Re-derive BOTH from ADR-0228 D2 / \
-         RT-11 in the same change."
-    );
-
-    let n_ongoing = squashed.matches(ongoing_guard).count();
-    assert_eq!(
-        n_ongoing, 1,
-        "m22-s3b PRV1-6c FAIL (Ongoing skip): `{name}` must carry the outcome guard EXACTLY \
-         once, as the whole squashed statement `{ongoing_guard}`; found {n_ongoing}. \
-         THIS CLAUSE EXISTS BECAUSE OF A MEASURED SURVIVOR: cargo-mutants' \
-         `replace == with != in anonymize_battles` (battle.rs:1567) lived through the entire \
-         suite — 762 tests passing — against a presence-only check for the token `Ongoing`, \
-         which an inverted comparison satisfies exactly as well as a correct one. \
-         THE INVERSION DOES BOTH HARMS WITH ONE CHARACTER. It SKIPS every SETTLED battle, so \
-         PRV1-6c never runs on the whole population it exists for: terminal rows persist by \
-         design (spec §3 — settle updates, never deletes; the GC is lazy), so every one of \
-         them keeps naming the deleted player in the surviving opponent's `my_battle` view, \
-         and the cascade reports success having anonymized nothing. AND it PROCESSES the \
-         Ongoing rows, which is the failure path ADR-0228 D2 / RT-11 skips deliberately: an \
-         Ongoing row here means step 6a's resolver failed on it (an already-logged anomaly), \
-         and sweeping its LIVE `pvp_deadline_schedule` entry removes the only mechanism that \
-         can ever settle it — soft-locking the SURVIVING opponent in a battle with no \
-         deadline and no participant. \
-         ZERO means the guard is missing, mis-spelled, or was written as a condition whose \
-         branch does something other than `continue` — the present-but-inert family. A \
-         collect-side `filter(..)` in place of the loop-body skip is a DIFFERENT shape and is \
-         deliberately not accepted here: if that refactor is wanted, re-derive this pin from \
-         ADR-0228 D2 in the same change rather than relaxing it. Body was: {squashed:?}"
-    );
-    let at_ongoing = squashed
-        .find(ongoing_guard)
-        .expect("m22-s3b: the Ongoing skip counted 1 but could not be located");
-
-    // --- THE SKIP MUST PRECEDE BOTH JOIN SWEEPS, NOT MERELY THE SWAP (r4) ---
-    //
-    // MEASURED, AND THE REASON THIS CLAUSE MOVED. The assertion this replaces
-    // anchored on the identity SWAP while its own message claimed the join
-    // sweeps — and a skip relocated BETWEEN the sweeps and the update passes
-    // 762/762 with `battle_wild` already deleted and the deadline already
-    // disarmed. That is the RT-11 harm in full, and in its most deceptive form:
-    // the row is left un-tombstoned, so the skip looks like it worked, while the
-    // battle has already been stripped of the only mechanism that could ever
-    // settle it. A message that names the sweeps must anchor on the sweeps.
-    //
-    // ANCHOR 1 reuses `delete_verb` from the delete census above rather than
-    // re-spelling the `battle_wild` needle: that census pins the body's TOTAL
-    // `delete(` count at 1, and the join loop pins
-    // `battle_wild().battle_id().delete(` at 1, so the single occurrence located
-    // here IS the battle_wild sweep. No second spelling of that needle exists to
-    // drift.
-    //
-    // ANCHOR 2 re-spells the disarm call, because the join loop holds its needle
-    // only as a loop-local binding. The split points differ from the loop's on
-    // purpose, and the count is asserted HERE as well as there — so if the two
-    // spellings ever diverged, one of the two count-of-one clauses fails loudly
-    // instead of this pin going quiet.
-    //
-    // The old `at_ongoing < at_update` assertion is not restated: the join loop
-    // already pins both sweeps before the update, so the swap ordering follows
-    // by transitivity from the two clauses below, and repeating it would only
-    // add a third message that fires for somebody else's reason.
-    let at_wild = squashed
-        .find(delete_verb.as_str())
-        .expect("m22-s3b: the delete census counted 1 but the delete could not be located");
-    assert!(
-        at_ongoing < at_wild,
-        "m22-s3b PRV1-6c FAIL (skip before the battle_wild sweep): the Ongoing skip sits at \
-         squashed offset {at_ongoing}, AFTER the row's `battle_wild` delete at {at_wild}. The \
-         skip must be the FIRST thing the per-row body does. Placed after this delete it has \
-         already destroyed the live battle's wild side-table row — which carries the raw RNG \
-         individuality seed the encounter was rebuilt from — before deciding the row was not \
-         its business. `continue` cannot undo a delete: the reducer is one transaction, but \
-         the cascade goes on to commit it."
-    );
-
-    let disarm_call = concat!("disarm_pvp_dead", "lines(");
-    let n_disarm = squashed.matches(disarm_call).count();
-    assert_eq!(
-        n_disarm, 1,
-        "m22-s3b PRV1-6d FAIL (disarm anchor): `{name}` must call `{disarm_call}` EXACTLY \
-         once; found {n_disarm}. The join loop above asserts the same count through a \
-         differently-split spelling of the same needle — this clause is what keeps the two \
-         from drifting apart, and it must hold before the ordering clause below can use the \
-         offset."
-    );
-    let at_disarm = squashed
-        .find(disarm_call)
-        .expect("m22-s3b: the disarm call counted 1 but could not be located");
-    assert!(
-        at_ongoing < at_disarm,
-        "m22-s3b PRV1-6c/RT-11 FAIL (skip before the deadline disarm): the Ongoing skip sits \
-         at squashed offset {at_ongoing}, AFTER the `pvp_deadline_schedule` disarm at \
-         {at_disarm}. THIS IS THE ORDERING THE WHOLE SKIP EXISTS TO GUARANTEE. ADR-0228 D2 / \
-         RT-11: an Ongoing row reaching step 6c means step 6a's resolver failed on it, and \
-         its deadline schedule is the ONLY mechanism that can ever settle that battle — which \
-         is why the row is passed over with its identity un-tombstoned rather than processed. \
-         A skip placed after the disarm gets the visible half right (nothing is tombstoned) \
-         and the load-bearing half exactly wrong (the deadline is gone), so the SURVIVING \
-         opponent is left in a battle with no deadline, no participant and no exit. The \
-         clause this replaces anchored on the identity swap instead, and a skip relocated \
-         into precisely this gap was MEASURED passing 762/762."
+        (n_ongoing, n_continue),
+        (0, 0),
+        "rb-129 E1 FAIL (m22s3b no-skip): `{name}` contains {n_ongoing} occurrence(s) of \
+         `{ongoing}` and {n_continue} of `{cont}`; BOTH must be ZERO. ADR-0274 retires the \
+         ADR-0228 D2 / RT-11 skip: an Ongoing row reaching step 6c is swept, forced \
+         terminal against the erased side through the pure forced-terminal seam, and then \
+         tombstoned, because a skipped row stays open to two post-terminal channels — \
+         `submit_pvp_action` settling it for the erased identity and re-minting that \
+         identity's wallet and evolution-notice rows, and the kept deadline reaper able to \
+         hand the ERASED side the win and re-mint its ranking profile. A reinstated skip of \
+         EITHER polarity trips this clause: the original form re-opens those channels, and \
+         the inverted form skips every SETTLED row so nothing is anonymized at all. This \
+         census sees only these two tokens. Shapes that carry neither — a collect-side \
+         filter or retain through a helper predicate, an early return, a conditionally \
+         compiled statement — are `rb129_anonymize_battles_body_is_pinned`'s job, which \
+         freezes the whole body by equality (ADR-0274). Body was: {squashed:?}"
     );
 
     let seam = ["battle_with_tombstoned", "_party("].concat();
@@ -6611,6 +6488,306 @@ fn m22s3b_anonymize_battles_sweeps_joins_before_swap() {
          `game_core::TOMBSTONE_IDENTITY_BYTES` beside `WILD_IDENTITY`; a hand-typed byte \
          array here is a second copy of a value whose ONLY load-bearing property is that it \
          differs from the all-zero wild sentinel. Body was: {squashed:?}"
+    );
+}
+
+// ===========================================================================
+// rb-129 (residual R-rb-45-ONGOING-BATTLE, ADR-0274) — the deletion cascade
+// forces a still-Ongoing battle terminal against the erased side.
+//
+// EARS criterion covered here:
+//
+//   [PRV1-6 post-terminal]  WHEN the deletion cascade cannot forfeit a
+//   still-Ongoing PvP battle THE SYSTEM SHALL force that battle terminal (or
+//   delete it) rather than let an erased identity settle it later.
+//
+// TWO VEHICLES, because the native host cannot run `anonymize_battles` at all
+// (it models no update, no insert and no table scan):
+//
+//   PURE — `rb129_forced_terminal_*` and `rb129_composed_sweep_*` execute the
+//   new seam `battle_with_forced_terminal` by value over constructed rows,
+//   including a totality matrix across every mechanical field a wrong seam
+//   could key a skip on.
+//
+//   SOURCE PINS — `rb129_forced_terminal_takes_the_forfeit_rule_from_game_core`,
+//   `rb129_anonymize_battles_body_is_pinned` and the revised
+//   `m22s3b_anonymize_battles_sweeps_joins_before_swap` hold the seam to its
+//   game-core delegation and the shell to its exact wiring, which no pure test
+//   can observe.
+//
+// SCAN HYGIENE, as in the m22-s3b block above: every needle naming a production
+// symbol is assembled from fragments split mid-identifier, every literal brace
+// in an expected text is balanced or spelled as a NUMBER, and this section
+// contains no bare double-quote inside a comment and no block-comment delimiter.
+// ===========================================================================
+
+/// **PRV1-6 post-terminal (scan)** — the forced-terminal seam takes its forfeit
+/// mapping from game-core and its wild test from the SSOT row predicate.
+///
+/// ADR-0274 D1: a still-Ongoing PvP row that names the erased identity settles
+/// as that side's forfeit through `game_core::pvp_forfeit_outcome` — once for a
+/// side-A row, once for a side-B row, the ADR-0109 D8 rule that
+/// `forfeit_on_disconnect` already applies — and an Ongoing WILD row is
+/// auto-fled exactly as ADR-0138 D2 does on disconnect, recognised by
+/// `is_ongoing_wild_battle`, the ONE definition of that row class, checked
+/// first. Re-encoding either rule in battle.rs is a second source of truth
+/// (ADR-0003) that drifts silently the day game-core changes.
+///
+/// The body is read with comments AND string literals blanked, then squashed,
+/// so neither prose nor a log line can satisfy a count.
+///
+/// Kills:
+/// - a hand-written winner for either side (a literal side-B win for a side-A
+///   row, or the reverse): the win-token census reads non-zero;
+/// - the forfeit rule called for ONE side with the other hand-mapped: count 1;
+/// - a hand-rolled wild test (the opponent column against the wild sentinel)
+///   in place of the SSOT predicate, silently dropping that predicate's player
+///   and outcome conjuncts: count 0.
+///
+/// RED AT HEAD: battle.rs declares no such seam, so the extraction fails loud.
+/// HONEST LIMIT: a module constant plus a throwaway call could satisfy the
+/// counts; accepted, because the behaviour is pinned by value in
+/// `rb129_forced_terminal_ends_every_ongoing_row_naming_the_erased_identity`.
+#[test]
+fn rb129_forced_terminal_takes_the_forfeit_rule_from_game_core() {
+    let stripped = strip_rust_strings(&strip_rust_comments(MODULE_SOURCE));
+    let seam = ["battle_with_fo", "rced_terminal"].concat();
+    let (start, end) = extract_fn_body_range(&stripped, seam.as_str()).unwrap_or_else(|| {
+        panic!(
+            "rb-129 E1 FAIL (seam extraction): battle.rs declares no function named \
+             `{seam}`. THIS IS THE RED STATE AT HEAD. ADR-0274 D1 adds it as a pure seam \
+             directly after the tombstone seam: it rewrites ONLY `state.outcome`, forcing a \
+             still-Ongoing row that names the erased identity terminal against that side, \
+             and returns every other row unchanged. Fail LOUD rather than pass vacuously."
+        )
+    });
+    let body = squash_ws(&stripped[start..end]);
+    assert!(
+        !body.is_empty(),
+        "rb-129 E1 FAIL (non-vacuity): the `{seam}` body is empty."
+    );
+
+    let forfeit = ["pvp_forf", "eit_outcome("].concat();
+    let n_forfeit = body.matches(forfeit.as_str()).count();
+    assert_eq!(
+        n_forfeit, 2,
+        "rb-129 E1 FAIL (forfeit SSOT): the `{seam}` body calls game-core's forfeit rule \
+         {n_forfeit} time(s); it must call it EXACTLY twice — once for a row whose side A \
+         names the erased identity, once for side B — so the side-to-winner mapping lives \
+         only in game-core (ADR-0109 D8, ADR-0003). ONE means the other side is \
+         hand-mapped; ZERO means both are. Body was: {body:?}"
+    );
+
+    let wild = ["is_ongoing_wi", "ld_battle("].concat();
+    let n_wild = body.matches(wild.as_str()).count();
+    assert_eq!(
+        n_wild, 1,
+        "rb-129 E1 FAIL (wild SSOT): the `{seam}` body calls the SSOT Ongoing-wild row \
+         predicate {n_wild} time(s); it must call it EXACTLY once, checked first \
+         (ADR-0274 D1). That predicate is THE definition of the row class ADR-0138 D2 \
+         auto-flees on disconnect; a hand-rolled comparison of the opponent column against \
+         the wild sentinel is a second definition that drops its player and outcome \
+         conjuncts. Body was: {body:?}"
+    );
+
+    let side_a_wins = ["Side", "AWins"].concat();
+    let side_b_wins = ["Side", "BWins"].concat();
+    let n_a_wins = body.matches(side_a_wins.as_str()).count();
+    let n_b_wins = body.matches(side_b_wins.as_str()).count();
+    assert_eq!(
+        (n_a_wins, n_b_wins),
+        (0, 0),
+        "rb-129 E1 FAIL (no re-encoded mapping): the `{seam}` body names the side-A win \
+         outcome {n_a_wins} time(s) and the side-B win outcome {n_b_wins} time(s); both \
+         must be ZERO. Every decisive outcome this seam writes comes from game-core's \
+         forfeit rule; a literal winner here is that mapping re-encoded in battle.rs, which \
+         drifts silently the day game-core changes it. Body was: {body:?}"
+    );
+}
+
+/// **PRV1-6 post-terminal (scan)** — `anonymize_battles` forces every row it
+/// collects terminal through the seam BEFORE tombstoning it, and its whole body
+/// is frozen by equality.
+///
+/// The native host cannot execute this shell (it models no update, no insert
+/// and no table scan), so its wiring is proven here or nowhere. The pin is
+/// EXACT because the regressions that matter carry no distinctive token:
+/// - the forced row computed and then DISCARDED, the update still writing the
+///   original row, so every Ongoing row is tombstoned while live;
+/// - the two seams composed in the REVERSED order: after the swap the row no
+///   longer names the owner, so the force is a no-op on it (proven by value in
+///   `rb129_composed_sweep_leaves_the_erased_identity_in_no_ongoing_battle`);
+/// - the force keyed on the wrong identity (the tombstone, or the survivor);
+/// - a collect-side filter or retain through a helper predicate, or an early
+///   return, reinstating the retired skip without either token the m22s3b
+///   census counts;
+/// - a conditional-compilation attribute on any statement, present in every
+///   test build and absent from the shipped wasm;
+/// - a second update, a dropped log line, a dropped seam call.
+///
+/// CLAUSE 0: both declarations occur exactly once in the stripped file, and the
+/// shell's declaration is exactly the crate-visible two-parameter one — the
+/// body extractor takes the first match, so a decoy declared first would
+/// otherwise be the body scanned. CLAUSE A: one battle update, one call of the
+/// forced-terminal seam, and the update's argument is the tombstone seam
+/// applied to the FORCED row — a targeted message for the likeliest mistakes.
+/// CLAUSE B: the whole normalised body equals the ADR-0274 D2 canonical text.
+///
+/// NORMALISATION: comments stripped, then string literals blanked (quotes and
+/// contents become spaces, so the log call keeps only its punctuation), then
+/// ALL whitespace removed, then every comma directly before a closing paren
+/// folded away, so a rustfmt trailing comma cannot turn a correct body red.
+///
+/// THE LITERAL IS TYPED, NOT REBUILT from battle.rs, which would make it equal
+/// to itself for every possible body. Its fragments are split at points that
+/// differ from every m22s3b needle above, so neither can be edited into the
+/// other by copying.
+///
+/// RED AT HEAD: clause 0 — the forced-terminal seam is not declared.
+#[test]
+fn rb129_anonymize_battles_body_is_pinned() {
+    let stripped = strip_rust_strings(&strip_rust_comments(MODULE_SOURCE));
+    let file_sq = squash_ws(&stripped);
+    let lbrace = char::from(EA_PVE_LBRACE);
+
+    // --- Clause 0: one declaration each, and the shell's exact signature ----
+    let shell_decl = ["fnanonym", "ize_battles("].concat();
+    let n_shell = file_sq.matches(shell_decl.as_str()).count();
+    assert_eq!(
+        n_shell, 1,
+        "rb-129 E1 FAIL (clause 0, shell declared once): battle.rs declares the anonymize \
+         shell {n_shell} time(s) in the squashed, comment- and string-stripped view; it \
+         must declare it EXACTLY once. The body extractor takes the FIRST match, so a decoy \
+         declared above the shipped shell would be the body every clause below scans while \
+         the cascade calls the other one."
+    );
+    let at_decl = file_sq
+        .find(shell_decl.as_str())
+        .expect("rb-129: the shell declaration counted 1 but could not be located");
+    let visibility = ["pub(cr", "ate)"].concat();
+    let decl_end = file_sq[at_decl..]
+        .find(lbrace)
+        .map_or(file_sq.len(), |rel| at_decl + rel + 1);
+    let got_decl = file_sq
+        .get(at_decl.saturating_sub(visibility.len())..decl_end)
+        .unwrap_or("");
+    let lbrace_str = lbrace.to_string();
+    let want_decl = [
+        "pub(crate)fnano",
+        "nymize_battles(ctx:&Reduce",
+        "rContext,owner:Iden",
+        "tity)",
+        lbrace_str.as_str(),
+    ]
+    .concat();
+    assert_eq!(
+        got_decl, want_decl,
+        "rb-129 E1 FAIL (clause 0, shell signature): the anonymize shell must be declared \
+         exactly as the crate-visible two-parameter helper the cascade calls. A different \
+         visibility, parameter list or qualifier means the body below is not the body this \
+         pin was derived against. Re-derive from ADR-0274 in the same change."
+    );
+    let seam_decl = ["fnbattle_with_forc", "ed_terminal("].concat();
+    let n_seam = file_sq.matches(seam_decl.as_str()).count();
+    assert_eq!(
+        n_seam, 1,
+        "rb-129 E1 FAIL (clause 0, seam declared once): battle.rs declares the \
+         forced-terminal seam {n_seam} time(s); it must declare it EXACTLY once. ZERO IS \
+         THE RED STATE AT HEAD: ADR-0274 D1 adds it directly after the tombstone seam. TWO \
+         lets a decoy host the pinned tokens while the shell calls the other one."
+    );
+
+    // --- Clause A: one update, one force, and the update writes the FORCED row
+    let shell = ["anonym", "ize_battles"].concat();
+    let (start, end) = extract_fn_body_range(&stripped, shell.as_str()).unwrap_or_else(|| {
+        panic!("rb-129 E1 FAIL (extraction): the `{shell}` body could not be located.")
+    });
+    let body = squash_ws(&stripped[start..end]).replace(",)", ")");
+
+    let update = ["battle().batt", "le_id().upd", "ate("].concat();
+    let n_update = body.matches(update.as_str()).count();
+    assert_eq!(
+        n_update, 1,
+        "rb-129 E1 FAIL (clause A, one update): `{shell}` updates the battle row \
+         {n_update} time(s); it must update it EXACTLY once per collected row. ZERO leaves \
+         every row naming the erased identity; TWO is a second write — the unforced row, or \
+         a second forced one — that the argument pin below cannot see behind. Body was: \
+         {body:?}"
+    );
+    let force = ["battle_with_forced_te", "rminal("].concat();
+    let n_force = body.matches(force.as_str()).count();
+    assert_eq!(
+        n_force, 1,
+        "rb-129 E1 FAIL (clause A, one force): `{shell}` calls the forced-terminal seam \
+         {n_force} time(s); it must call it EXACTLY once per collected row. ZERO means a \
+         still-Ongoing row reaching step 6c is either skipped (the retired RT-11 skip) or \
+         tombstoned while still live, with its deadline already disarmed — no one can ever \
+         finish that battle. Body was: {body:?}"
+    );
+    let dot_update = [".up", "date("].concat();
+    let at_args = body
+        .find(update.as_str())
+        .map(|at| at + update.len() - dot_update.len())
+        .expect("rb-129: the battle update counted 1 but could not be located");
+    let args = paren_group(&body, at_args).unwrap_or("");
+    let want_args = [
+        "battle_with_tom",
+        "bstoned_party(forced,owner,crate::TOMBS",
+        "TONE_IDENT",
+        "ITY)",
+    ]
+    .concat();
+    assert_eq!(
+        args, want_args,
+        "rb-129 E1 FAIL (clause A, the update writes the FORCED row): the battle update's \
+         argument must be the tombstone seam applied to the forced row, the owner and the \
+         crate-level sentinel. KILLS the forced row computed and then discarded (the update \
+         still writes the original row, so every Ongoing row is tombstoned while live), \
+         the two seams nested the other way round (after the swap the row no longer names \
+         the owner, so the force is a no-op), and a swap keyed on anything but the owner. \
+         Body was: {body:?}"
+    );
+
+    // --- Clause B: the whole normalised body, by equality ------------------
+    let want_body = [
+        "letmutrows:Vec<Bat",
+        "tle>=ctx.db.batt",
+        "le().player_iden",
+        "tity().filt",
+        "er(owner).collect();rows.ext",
+        "end(ctx.db.bat",
+        "tle().opponent_iden",
+        "tity().filt",
+        "er(owner).filt",
+        "er(|b|b.player_iden",
+        "tity!=owner));forbinrows{letid=b.battle_",
+        "id;ctx.db.battle_wi",
+        "ld().battle_id().dele",
+        "te(id);crate::pvp::disarm_pv",
+        "p_deadlines(ctx,id);letwas=b.state.out",
+        "come;letforced=battle_with_for",
+        "ced_terminal(b,owner);ifforced.state.out",
+        "come!=was{crate::observability::mr_l",
+        "og(,&format!());}ctx.db.batt",
+        "le().battle_i",
+        "d().upd",
+        "ate(battle_with_tomb",
+        "stoned_party(forced,owner,crate::TOMB",
+        "STONE_IDEN",
+        "TITY));}",
+    ]
+    .concat();
+    assert!(
+        body == want_body,
+        "rb-129 E1 FAIL (clause B, exact body): the normalised `{shell}` body is not the \
+         ADR-0274 D2 canonical text. The pin is exact on purpose: the native host cannot \
+         execute this shell, and every realistic regression — a collect-side filter or \
+         retain through a helper predicate that reinstates the skip, an early return, a \
+         conditional-compilation attribute on a statement, a dropped log line, a reordered \
+         sweep, a force keyed on the wrong identity — is a byte difference here and \
+         nowhere else. Do NOT relax it and do NOT rebuild the expected text from battle.rs; \
+         if the body legitimately changes, re-derive from ADR-0274 in the same change.\n  \
+         EXPECTED: {want_body}\n  ACTUAL:   {body}"
     );
 }
 
