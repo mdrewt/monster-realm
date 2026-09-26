@@ -28,6 +28,10 @@
 // flag still swallows its click. See the new "★★ ... C6" describe block below —
 // BOTH of its tests are genuinely RED against the current shipped raisingView.ts.
 //
+// rb-120 (R-20r-a-CARE-GEN) later replaced the per-monster `#pending` SET narrated above with
+// a `Map<bigint, object>` generation-token lock (the Train shape, ported onto Care) — see the
+// rb-120 describe block appended after the 20r-a Train block below.
+//
 // This file did not exist before this change — RaisingView had no unit test file
 // (it is currently listed in vite.config.ts coverage.exclude as a "thin DOM shell";
 // this suite exercises its new feedback surface directly regardless of that
@@ -561,9 +565,11 @@ describe('★ RaisingView Care button: re-entrancy guard (C4, ADR-0159 D1)', () 
       resolveFlight = res;
     });
     // onCare is typed `(monsterId: bigint) => void | Promise<void>`, but (shopView/renameView
-    // precedent) the guard implementation is expected to wrap the callback's return
-    // value via `Promise.resolve(this.#cbs.onCare(...)).finally(...)` so a caller that
-    // genuinely returns a pending Promise keeps the lock held until it settles.
+    // precedent, later ported to the Train shape by rb-120 / R-20r-a-CARE-GEN) the guard
+    // implementation is expected to wrap the callback's return value via
+    // `new Promise<void>((resolve) => resolve(this.#callbacks.onCare(...)))` behind a
+    // generation-token `#pending: Map<bigint, object>`, so a caller that genuinely returns a
+    // pending Promise keeps the lock held until it settles.
     const onCare = vi.fn().mockReturnValue(flightPromise);
     const parent = mountParent();
     const view = new RaisingView(parent, makeCallbacks({ onCare }));
@@ -682,9 +688,9 @@ describe('★★ RaisingView Care button: #pending must be tracked PER MONSTER, 
     // pending state when building it — so a still-pending monster's BRAND NEW button
     // renders enabled, "looks clickable, silently does nothing" (the shared #pending
     // flag still swallows the click, per the sibling test above). Correct behaviour:
-    // pending state lives in a per-monster SET the render function consults when
-    // building each button, so a rebuilt button for a still-pending monster is
-    // re-derived as disabled, not lost.
+    // pending state lives in a per-monster pending map (rb-120: a generation-token
+    // `Map<bigint, object>`) the render function consults when building each button, so
+    // a rebuilt button for a still-pending monster is re-derived as disabled, not lost.
     let resolveA: (() => void) | undefined;
     const flightA = new Promise<void>((res) => {
       resolveA = res;
@@ -716,7 +722,7 @@ describe('★★ RaisingView Care button: #pending must be tracked PER MONSTER, 
     expect(
       careANew.disabled,
       "A's freshly-rebuilt button must come back DISABLED — A's pending state must be " +
-        're-derived from a per-monster pending SET when the button is built, not lost on ' +
+        're-derived from a per-monster pending map when the button is built, not lost on ' +
         'rebuild (the shared boolean #pending has no way to express this)',
     ).toBe(true);
     expect(
@@ -731,10 +737,13 @@ describe('★★ RaisingView Care button: #pending must be tracked PER MONSTER, 
 
 // ---------------------------------------------------------------------------
 // 20r-a — in-flight guard on the TRAIN buttons (plan D3/D6/D11; matrix RV-1..RV-5).
-// APPENDED BLOCK. C1-C6 above are BYTE-UNCHANGED: the shipped Care block
-// (raisingView.ts, the `careBtn.addEventListener` listener) stays as it is, and the
-// Train lock is a SEPARATE set/map (D6) — a pending Care must never block Train on the
-// same monster, and vice versa. Different reducers, different failure modes.
+// APPENDED BLOCK. C1-C6 above still hold — their ASSERTIONS are unchanged — but rb-120
+// (R-20r-a-CARE-GEN) later ported the Train lock's generation-token shape onto the Care
+// block too (raisingView.ts, the `careBtn.addEventListener` listener): `#pending` became a
+// `Map<bigint, object>` and the release is token-checked, not membership-keyed. See the
+// rb-120 describe block appended after this one. The Train lock remains a SEPARATE map
+// (D6) — a pending Care must never block Train on the same monster, and vice versa.
+// Different reducers, different failure modes.
 //
 // SOURCE OF TRUTH: docs/specs/20r-a-plan.md §0 D3/D6/D11, §1 raisingView.ts, §3 RV-*.
 //
@@ -1100,9 +1109,9 @@ describe('★ RaisingView 20r-a: in-flight guard on the Train buttons (separate 
     // WRONG IMPL KILLED: `Promise.resolve(cb())` (plan D3) — the throw escapes the listener
     //   after the lock is set and before any `.finally` exists; with happy-dom's error capturing
     //   disabled it comes straight out of `.click()`. The required shape is
-    //   `new Promise((resolve) => resolve(cb()))`. NOTE the shipped Care block DOES use
-    //   `Promise.resolve(...)` and is byte-pinned (C4/C6) — the Train listener is NEW code and
-    //   must not copy that shape.
+    //   `new Promise((resolve) => resolve(cb()))`. rb-120 (R-20r-a-CARE-GEN) later ported this
+    //   executor shape onto the Care block too — see the rb120-CARE-THROW tooth below; the two
+    //   listeners now carry the same lock shape.
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const onTrain = vi.fn(() => {
       throw new Error('20r-a RV-3b: synchronous throw');
@@ -1230,6 +1239,348 @@ describe('★ RaisingView 20r-a: in-flight guard on the Train buttons (separate 
     ).toEqual([false, false]);
     raMonsterControls(parent)[0].trains[0]!.click();
     expect(onTrain).toHaveBeenCalledTimes(3);
+    await flushPromises();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rb-120 — the Care lock carries the Train generation-token shape (residual
+// R-20r-a-CARE-GEN; ADR-0159 D1 rb-120 amendment; docs/specs/20r-a-plan.md D3/D11).
+//
+// SOURCE OF TRUTH: the 20r-a plan's D11 (generation-token release — "a release keyed by SET
+// MEMBERSHIP lets a stale settle release a live generation") and D3 (`new Promise((resolve) =>
+// resolve(cb()))` so a synchronous throw becomes a rejection, not a stranded lock) were applied
+// to the NEW Train lock only (#pendingTrain, raisingView.ts@16fe214:290-327) and never ported back onto
+// the pre-existing Care lock (#pending, raisingView.ts@16fe214:267-287) that plan D6 sits beside.
+// R-20r-a-CARE-GEN is that gap, filed against the Care block specifically.
+//
+// THE DEFECT (measured, raisingView.ts@16fe214:267-287):
+//   (a) membership-keyed release — `.finally(() => { this.#pending.delete(monsterId); ... })`
+//       unconditionally. click Care (P1 in flight) -> hide() clears the set -> show() +
+//       refresh() -> click Care again (P2 in flight, key re-added) -> P1 settles -> deletes
+//       P2's key and re-enables the LIVE Care button while P2 is still in flight; a third click
+//       then double-fires `care`.
+//   (b) `void Promise.resolve(this.#callbacks.onCare(monsterId))` — a synchronously-throwing
+//       onCare throws OUT OF the listener after the lock is taken and before any `.finally`
+//       exists -> the lock is stranded until hide().
+//
+// THE FIX (planned, ports raisingView.ts@16fe214:290-327's shape onto Care): `#pending` becomes
+// `Map<bigint, object>` (the field NAME is unchanged — only its value type moves), a
+// `const lock = {}` token is minted per click, `.finally` releases only if
+// `this.#pending.get(monsterId) === lock`, the re-enable target is
+// `this.#careButtons.get(monsterId) ?? careBtn`, and the callback is wrapped
+// `new Promise<void>((resolve) => resolve(this.#callbacks.onCare(monsterId)))`.
+//
+// RED REASON: raisingView.ts today has NEITHER a token NOR the executor-shaped wrap on the Care
+// listener — every `it` below traces its own exact failing assertion against the current
+// shipped code in its leading comment. rb120-CARE-LIVE is the one exception: master's
+// `.finally` already resolves the live re-enable target via `#careButtons.get(monsterId) ??
+// careBtn` (raisingView.ts@16fe214:277), so that tooth is a REGRESSION GUARD for the port, expected
+// GREEN today.
+//
+// WRONG-IMPL-KILLED index:
+//   rb120-CARE-GEN               -> membership-keyed release (D11): a stale generation's
+//                                    settle releases a LIVE generation's lock
+//   rb120-CARE-STALE-REJECT      -> the same defect via the REJECT arm — kills a release
+//                                    guarded on the resolve arm only, or a `.then(ok, release)`
+//                                    shape that never token-checks on rejection
+//   rb120-CARE-THROW             -> `Promise.resolve(cb())` (D3): a synchronous throw escapes
+//                                    the listener before any `.finally` exists
+//   rb120-CARE-LIVE              -> CLOSURE_REENABLE: the `.finally` re-enabling the
+//                                    click-closure's captured `careBtn` instead of
+//                                    `#careButtons.get(monsterId)` — regression guard, GREEN on
+//                                    master, must stay GREEN after the port
+//   rb120-CARE-TRAIN-INDEPENDENT -> a Care/Train shared pending map, or a release keyed on
+//                                    anything but the Care lock's OWN token (D6 + D11 together)
+// ---------------------------------------------------------------------------
+
+describe('★ RaisingView rb-120: the Care lock carries the Train generation-token shape (R-20r-a-CARE-GEN)', () => {
+  it('rb120-CARE-GEN BITES: two overlapping Care generations on the same monster — a stale settle must not release the live lock', async () => {
+    // RED REASON (current shipped raisingView.ts): `#pending` is `Set<bigint>` and the
+    // `.finally` release is `this.#pending.delete(monsterId)` — pure SET MEMBERSHIP, no
+    // generation token. hide() clears the whole set, so after the sequence below the STALE
+    // P1's settle deletes the SAME key generation 2 just re-added and re-enables the LIVE
+    // button while P2 is still in flight — the assertion
+    // `expect(careA1.disabled, '...').toBe(true)` right after `p1.resolve()` + flush FAILS on
+    // master (the button comes back enabled instead).
+    const p1 = raDeferred();
+    const p2 = raDeferred();
+    const onCare = vi.fn().mockReturnValueOnce(p1.promise).mockReturnValueOnce(p2.promise);
+    const parent = mountParent();
+    const view = new RaisingView(parent, makeCallbacks({ onCare }));
+    view.show();
+    view.refresh(twoMonsterVm(1n, 2n));
+
+    let buttons = overlayRootOf(parent).querySelectorAll('button');
+    const careA0 = buttons[0] as HTMLButtonElement;
+    const careB = buttons[1] as HTMLButtonElement;
+    expect(careB.disabled, 'rb120-CARE-GEN precondition: B starts enabled').toBe(false);
+
+    careA0.click(); // generation 1
+    expect(onCare, 'rb120-CARE-GEN precondition: generation 1 dispatched').toHaveBeenCalledTimes(1);
+    expect(careA0.disabled, 'rb120-CARE-GEN precondition: A locked').toBe(true);
+    expect(careB.disabled, "rb120-CARE-GEN: B must never be touched by A's lock").toBe(false);
+
+    view.hide(); // releases generation 1's lock — P1 is still in flight
+    view.show();
+    view.refresh(twoMonsterVm(1n, 2n));
+    buttons = overlayRootOf(parent).querySelectorAll('button');
+    const careA1 = buttons[0] as HTMLButtonElement;
+    const careB1 = buttons[1] as HTMLButtonElement;
+    expect(careA1, 'rb120-CARE-GEN precondition: refresh() rebuilt a new Care node for A').not.toBe(
+      careA0,
+    );
+    expect(
+      careA1.disabled,
+      'rb120-CARE-GEN precondition: hide() released — rebuilt A is enabled',
+    ).toBe(false);
+
+    careA1.click(); // generation 2 — same monsterId, NEW token
+    expect(onCare, 'rb120-CARE-GEN precondition: generation 2 dispatched').toHaveBeenCalledTimes(2);
+    expect(careA1.disabled, 'rb120-CARE-GEN precondition: generation 2 locked').toBe(true);
+    expect(careB1.disabled, 'rb120-CARE-GEN: B stays enabled through generation 2').toBe(false);
+
+    p1.resolve(); // the STALE settle
+    await flushPromises();
+    expect(
+      careA1.disabled,
+      'rb120-CARE-GEN BITES: generation 1 settling must NOT release generation 2 — the LIVE ' +
+        'Care button must still be disabled while P2 is in flight',
+    ).toBe(true);
+    expect(careB1.disabled, 'rb120-CARE-GEN: B is still untouched by either generation').toBe(
+      false,
+    );
+
+    careA1.disabled = false; // hostile re-enable
+    careA1.click();
+    expect(
+      onCare,
+      'rb120-CARE-GEN: a third click while generation 2 is in flight must be swallowed by the ' +
+        'pending key',
+    ).toHaveBeenCalledTimes(2);
+    careA1.disabled = true;
+
+    p2.resolve();
+    await flushPromises();
+    expect(careA1.disabled, "rb120-CARE-GEN: generation 2's own settle releases").toBe(false);
+    careA1.click();
+    expect(onCare).toHaveBeenCalledTimes(3);
+    await flushPromises();
+  });
+
+  it('rb120-CARE-STALE-REJECT BITES: a STALE generation REJECTS — the release must still be token-gated on the reject arm, not just resolve', async () => {
+    // RED REASON (current shipped raisingView.ts): the chain is `Promise.resolve(onCare(id))
+    //   .finally(() => { this.#pending.delete(monsterId); ...re-enable... })
+    //   .catch((err) => console.error(...))` — `.finally` runs on EITHER settlement, and since
+    // `#pending` is a plain Set with no token, generation 1's REJECTION deletes the SAME key
+    // generation 2 holds just as readily as a resolution would — the assertion
+    // `expect(careLive.disabled, '...').toBe(true)` right after `p1.reject(...)` + flush FAILS
+    // on master (the live button comes back enabled).
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const p1 = raDeferred();
+    const p2 = raDeferred();
+    const onCare = vi.fn().mockReturnValueOnce(p1.promise).mockReturnValueOnce(p2.promise);
+    const parent = mountParent();
+    const view = new RaisingView(parent, makeCallbacks({ onCare }));
+    view.show();
+    view.refresh(oneMonsterVm(7n));
+
+    const careBtn0 = overlayRootOf(parent).querySelector('button') as HTMLButtonElement;
+    careBtn0.click(); // generation 1
+    expect(onCare).toHaveBeenCalledTimes(1);
+
+    view.hide();
+    view.show();
+    view.refresh(oneMonsterVm(7n));
+    const careLive = overlayRootOf(parent).querySelector('button') as HTMLButtonElement;
+    expect(careLive, 'precondition: refresh() rebuilt a new Care node').not.toBe(careBtn0);
+    expect(careLive.disabled, 'precondition: hide() released — rebuilt enabled').toBe(false);
+
+    careLive.click(); // generation 2
+    expect(onCare).toHaveBeenCalledTimes(2);
+    expect(careLive.disabled, 'precondition: generation 2 locked').toBe(true);
+
+    p1.reject(new Error('rb120-CARE-STALE-REJECT: stale generation rejected'));
+    await flushPromises();
+    expect(
+      careLive.disabled,
+      'rb120-CARE-STALE-REJECT BITES: a REJECTED stale generation must not release a LIVE ' +
+        'pending generation — the live Care button must stay disabled',
+    ).toBe(true);
+
+    careLive.disabled = false; // hostile
+    careLive.click();
+    expect(
+      onCare,
+      'rb120-CARE-STALE-REJECT: a hostile click while generation 2 is pending must be swallowed',
+    ).toHaveBeenCalledTimes(2);
+    careLive.disabled = true;
+
+    p2.resolve();
+    await flushPromises();
+    expect(careLive.disabled, "generation 2's own settle releases").toBe(false);
+    careLive.click();
+    expect(onCare).toHaveBeenCalledTimes(3);
+    await flushPromises();
+  });
+
+  it('rb120-CARE-THROW BITES: onCare THROWS synchronously — the click must not throw, the lock is taken immediately, and one flush later the button is re-clickable', async () => {
+    // RED REASON (current shipped raisingView.ts): the listener wraps the callback as
+    // `Promise.resolve(this.#callbacks.onCare(monsterId))` (raisingView.ts@16fe214:271) —
+    // `Promise.resolve(cb())` calls `cb()` SYNCHRONOUSLY as an argument expression, so a
+    // throwing onCare throws directly out of the click listener, BEFORE `Promise.resolve` is
+    // ever reached. The very first assertion,
+    // `expect(() => careBtn.click(), '...').not.toThrow()`, FAILS on master (`.click()` throws).
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const onCare = vi.fn(() => {
+      throw new Error('rb120-CARE-THROW: synchronous throw');
+    });
+    const parent = mountParent();
+    const view = new RaisingView(parent, makeCallbacks({ onCare }));
+    view.refresh(oneMonsterVm(9n));
+    const careBtn = overlayRootOf(parent).querySelector('button') as HTMLButtonElement;
+
+    expect(
+      () => careBtn.click(),
+      'rb120-CARE-THROW: a synchronously-throwing onCare must not throw out of the click',
+    ).not.toThrow();
+    expect(onCare).toHaveBeenCalledTimes(1);
+    expect(
+      careBtn.disabled,
+      'rb120-CARE-THROW: the lock must be taken before the callback ran',
+    ).toBe(true);
+
+    await flushPromises();
+    expect(
+      careBtn.disabled,
+      'rb120-CARE-THROW BITES: the sync throw must settle the chain and RELEASE — ' +
+        '`Promise.resolve(cb())` leaves the button dead here',
+    ).toBe(false);
+    careBtn.click();
+    expect(onCare, 're-clickable after the throw').toHaveBeenCalledTimes(2);
+    await flushPromises();
+  });
+
+  it('rb120-CARE-LIVE BITES: a mid-flight refresh() detaches the clicked Care node — the settle must re-enable the LIVE (rebuilt) node, not the closure-captured stale one [CLOSURE_REENABLE]', async () => {
+    // RED-TEAM MEASURED SURVIVOR — CLOSURE_REENABLE: an impl whose `.finally()` re-enables the
+    // click-closure's captured `careBtn` variable instead of consulting
+    // `this.#careButtons.get(monsterId)` passes rb120-CARE-GEN and rb120-CARE-THROW (neither
+    // rebuilds the node mid-flight) but DIES here: after `refresh()` rebuilds the node,
+    // `careBtn !== ` the live node, so `careBtn.disabled = false` writes to the DETACHED node
+    // and the re-queried live node stays disabled forever.
+    //
+    // Expected on CURRENT shipped raisingView.ts: GREEN — its release target IS already
+    // `this.#careButtons.get(monsterId) ?? careBtn` (raisingView.ts@16fe214:277). This tooth is a
+    // REGRESSION GUARD for the rb-120 port: it must stay green once #pending becomes a
+    // generation-token Map.
+    const d = raDeferred();
+    const onCare = vi.fn((monsterId: bigint) => (monsterId === 1n ? d.promise : undefined));
+    const parent = mountParent();
+    const view = new RaisingView(parent, makeCallbacks({ onCare }));
+    view.refresh(twoMonsterVm(1n, 2n));
+
+    let buttons = overlayRootOf(parent).querySelectorAll('button');
+    const careA0 = buttons[0] as HTMLButtonElement;
+    careA0.click();
+    expect(careA0.disabled, 'precondition: A locked').toBe(true);
+
+    view.refresh(twoMonsterVm(1n, 2n)); // batch tick while A's call is in flight
+    buttons = overlayRootOf(parent).querySelectorAll('button');
+    const careA1 = buttons[0] as HTMLButtonElement;
+    const careB1 = buttons[1] as HTMLButtonElement;
+    expect(careA1, "refresh() rebuilt A's node").not.toBe(careA0);
+    expect(careA0.isConnected, 'the old (clicked) node is detached').toBe(false);
+    expect(careA1.disabled, "A's REBUILT node comes back disabled").toBe(true);
+    expect(careB1.disabled, "B's rebuilt node is enabled").toBe(false);
+
+    careA1.click(); // swallowed by disabled
+    careA1.disabled = false; // hostile
+    careA1.click();
+    expect(
+      onCare,
+      'a click on a rebuilt (and hand re-enabled) Care button is swallowed by the pending key',
+    ).toHaveBeenCalledTimes(1);
+    careA1.disabled = true;
+
+    d.resolve();
+    await flushPromises();
+    buttons = overlayRootOf(parent).querySelectorAll('button');
+    const careLive = buttons[0] as HTMLButtonElement;
+    expect(careLive, 'a settle does not re-render').toBe(careA1);
+    expect(
+      careLive.disabled,
+      'rb120-CARE-LIVE BITES [CLOSURE_REENABLE]: the LIVE (rebuilt) Care button must be ' +
+        're-enabled on settle',
+    ).toBe(false);
+    careLive.click();
+    expect(onCare).toHaveBeenCalledTimes(2);
+    await flushPromises();
+  });
+
+  it("rb120-CARE-TRAIN-INDEPENDENT BITES: the Care generation-token lock is a SEPARATE map from Train's — a stale settle on either side must not cross-release the other", async () => {
+    // RED REASON (current shipped raisingView.ts): the scenario below never needs Train's own
+    // lock to misbehave — it is already token-safe (20r-a). What it exercises is Care's OWN
+    // generations surviving a Train click in between. `#pending` is still a plain Set with a
+    // membership release, so the STALE Care generation 1 settle still deletes the SAME
+    // monsterId key generation 2 just re-added, and Aria's LIVE Care re-enables while
+    // generation 2 is in flight — `expect(afterPc.care.disabled, '...').toBe(true)` right after
+    // `pc.resolve()` + flush FAILS on master. (A wrong impl that shares ONE map between Care
+    // and Train instead fails earlier, at the `onTrain).toHaveBeenCalledTimes(1)` check right
+    // after the Train click, because the shared key is already held by Care.)
+    const pc = raDeferred();
+    const pt = raDeferred();
+    const pc2 = raDeferred();
+    const onCare = vi.fn().mockReturnValueOnce(pc.promise).mockReturnValueOnce(pc2.promise);
+    const onTrain = vi.fn().mockReturnValue(pt.promise);
+    const parent = mountParent();
+    const view = new RaisingView(parent, makeCallbacks({ onCare, onTrain }));
+    view.show();
+    view.refresh(raTrainVm());
+    const [a0] = raMonsterControls(parent);
+
+    a0.care.click(); // Pc — generation 1 of Care
+    expect(onCare).toHaveBeenCalledTimes(1);
+    a0.trains[0]!.click(); // Pt — Train, an INDEPENDENT lock
+    expect(onTrain).toHaveBeenCalledTimes(1);
+    expect(a0.care.disabled, 'precondition: Care locked').toBe(true);
+    expect(raDisabled(a0.trains), 'precondition: Train locked').toEqual([true, true]);
+
+    view.hide(); // releases Care AND Train generation 1 — Pc, Pt both still in flight
+    view.show();
+    view.refresh(raTrainVm());
+    const [gen2] = raMonsterControls(parent);
+    expect(gen2.care.disabled, 'precondition: hide() released Care').toBe(false);
+    expect(raDisabled(gen2.trains), 'precondition: hide() released Train').toEqual([false, false]);
+
+    gen2.care.click(); // Pc2 — Care generation 2, same monsterId
+    expect(onCare).toHaveBeenCalledTimes(2);
+    expect(gen2.care.disabled, 'precondition: Care generation 2 locked').toBe(true);
+
+    pc.resolve(); // the STALE Care settle
+    await flushPromises();
+    const [afterPc] = raMonsterControls(parent);
+    expect(
+      afterPc.care.disabled,
+      'rb120-CARE-TRAIN-INDEPENDENT BITES: the stale Care generation settling must NOT release ' +
+        "Care generation 2 — Aria's live Care button must still be disabled",
+    ).toBe(true);
+    expect(
+      raDisabled(afterPc.trains),
+      "Aria's Train buttons stay enabled — hide() already released Train and nothing re-locked it",
+    ).toEqual([false, false]);
+
+    pt.resolve(); // the stale TRAIN settle
+    await flushPromises();
+    expect(
+      afterPc.care.disabled,
+      'rb120-CARE-TRAIN-INDEPENDENT: a stale TRAIN settle must not touch the Care lock either',
+    ).toBe(true);
+
+    pc2.resolve();
+    await flushPromises();
+    expect(afterPc.care.disabled, "Care generation 2's own settle releases").toBe(false);
+    afterPc.care.click();
+    expect(onCare).toHaveBeenCalledTimes(3);
     await flushPromises();
   });
 });
