@@ -103,22 +103,50 @@ mid-grace player's pre-request queue (at most `MOVE_QUEUE_CAP` entries) drains t
 
 ### D7 — Proof vehicles
 
-- **Execution** (13 tests, `guards_tests.rs`, `rb128_*_refuses_only_a_deletion_gated_caller`): each shipped
-  reducer runs under the rb-41 native host through five account states — no row, `Active`, `PendingDeletion`,
-  terminal, row removed — with a mid-grace STRANGER row seeded throughout; the three admitted states return
-  the reducer's own first-guard result pinned EXACTLY, the two refused states return
-  `guards::REJECT_DELETION_GATED` compared against the constant. `dismiss_dialogue`'s test additionally asserts
-  through the registered handle that the caller's conversation row survives ONLY in the refused states
-  (reject-before-any-write, observed rather than inferred).
-- **Source pins** (`guards_tests.rs`): per reducer, on the blanked view, the gate statement is at body offset 0,
-  the opener and the bare name occur exactly once in the body, the body contains no `#[` and no `cfg!(`, and on
-  the strings-intact view the tag equals the reducer's own name; per file, the exact bare-name totals
-  (movement 4, evolution 1, monster_mgmt 2, raising 5, taming 2, npc 3) and zero raw-predicate spellings.
+- **Execution** (13 tests, `guards_tests.rs`): each reducer runs under the rb-41 native host through five account
+  states — no row, `Active`, `PendingDeletion`, terminal, row removed — with a mid-grace STRANGER row seeded
+  throughout; the three admitted states return the reducer's own first-guard result pinned EXACTLY, the two
+  refused states return `guards::REJECT_DELETION_GATED` compared against the constant.
+  - `rb128_join_game_refuses_only_a_deletion_gated_caller`
+  - `rb128_enqueue_move_refuses_only_a_deletion_gated_caller`
+  - `rb128_set_move_refuses_only_a_deletion_gated_caller`
+  - `rb128_clear_queue_refuses_only_a_deletion_gated_caller`
+  - `rb128_evolve_refuses_only_a_deletion_gated_caller`
+  - `rb128_care_refuses_only_a_deletion_gated_caller`
+  - `rb128_train_refuses_only_a_deletion_gated_caller`
+  - `rb128_essence_train_refuses_only_a_deletion_gated_caller`
+  - `rb128_consume_crystalized_essence_refuses_only_a_deletion_gated_caller`
+  - `rb128_attempt_recruit_refuses_only_a_deletion_gated_caller`
+  - `rb128_set_nickname_refuses_only_a_deletion_gated_caller`
+  - `rb128_set_party_slot_refuses_only_a_deletion_gated_caller`
+  - `rb128_dismiss_dialogue_refuses_only_a_deletion_gated_caller_and_keeps_its_row`: additionally asserts through
+    the registered handle that the caller's conversation row survives ONLY in the refused states (reject-before-any-write,
+    observed rather than inferred).
+
+- **Source pins** (`guards_tests.rs`):
+  - `rb128_class_iv_reducers_open_with_the_deletion_gate`: per reducer, (N) name once in the file's parsed reducer
+    list; (P) blanked view: gate at body offset 0 (equality) and first statement == blanked gate statement;
+    (F) bare name once in body; (E) no `#[` and no `cfg!(` in body; (T) comments-only view: text right after
+    `)->Result<(),String>{` starts with `crate::guards::require_not_deleting(ctx,"<own name>")?;`
+  - `rb128_gate_bearing_files_carry_exact_bare_name_totals`: bare-name totals for movement.rs 4, evolution.rs 1,
+    monster_mgmt.rs 2 ONLY (raising 5, npc 3, taming 2 are owned by the re-pinned rb-80 censuses in their
+    sibling files); zero raw-predicate spellings; zero occurrences in all six files of `crate::accounts::is_pending_deletion(`,
+    `should_reject_for_deletion(`, or `refuses_commitment_opened_at(`.
+  - `rb128_deletion_predicate_chain_is_declared_once_and_uncfgd`: anti-bypass — `should_reject_for_deletion` 
+    declared once in accounts.rs + exactly 1 `#[cfg` in that file; `deletion_gate` declared once in guards.rs + 
+    exactly 1 `#[cfg` in that file (closes the plan red-team's finding that a `#[cfg(not(test))]` twin of the 
+    pure predicate would void every gate crate-wide).
+
 - **The census**: `rb45_real_crate_matches_the_rosters` pins the 27-name gated set and the 12-row roster in both
   directions, so a lost gate and a stale roster row are each a CI failure.
-- **Re-derived pins**: rb-80's three file censuses, the `clear_queue` D3 body pin, and rb-78's per-module region
-  anchors (10 → 13: `join_game`, `evolve`, `set_nickname` make `movement.rs`, `evolution.rs`, `monster_mgmt.rs`
-  gate-bearing).
+
+- **Re-derived pins**: rb-80's three file censuses (`rb80_raising_reducer_roster_and_open_writers_are_pinned`
+  clause (a) 1→5, `rb80_npc_reducer_roster_and_open_writers_are_pinned` clause (a) 2→3 and clause (e) frozen
+  body→gated body, `rb80_taming_reducer_roster_and_open_writers_are_pinned` clause (a) 1→2 and clause (e)
+  n_bare_in_body 0→1), the `clear_queue` D3 body pin (`movement_tests.rs::clear_queue_is_deliberately_not_battle_guarded`),
+  and rb-78's per-module region anchors (`rb78_region_anchors` 10→13: `join_game`, `evolve`, `set_nickname` make
+  `movement.rs`, `evolution.rs`, `monster_mgmt.rs` gate-bearing; `rb78_rb80_anchor_roster_covers_the_new_gate_bearing_modules`
+  re-pinned 13/13).
 
 ### D8 — The three movement reducers are not a PRV1-10 "trap state"
 
