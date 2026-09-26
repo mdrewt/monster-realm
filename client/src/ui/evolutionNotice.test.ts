@@ -68,6 +68,19 @@
 // NO `new RegExp(...)` and no regex literal anywhere in this file (Semgrep bans
 // the former repo-wide; the latter blinds the repo's own comment strippers).
 // String scanning is indexOf / split / slice only.
+//
+// AMENDED BY rb-125 (ADR-0272), STATED HERE RATHER THAN REWRITING THE CONTRACT ABOVE (the
+// EN-LABEL/EN-NAMES/EN-BENIGN core is untouched): `EvolutionNoticeBanner`'s constructor now
+// takes a REQUIRED second `sinks: { announce, returnFocus }` argument and `render` now takes
+// `{ key, label } | null` instead of a bare `string | null`. Every construction/render call in
+// this file is migrated to the new shape via the local `bannerSinks()` helper below — this
+// file's OWN assertions stay about the DOM shell, the ack lock and the copy core, never about
+// which sink fired (that behaviour is gated by the NEW `evolutionNotice.a11y.test.ts`). The
+// in-flight ack lock is ALSO migrated here from `okBtn.disabled` to `aria-disabled` (ADR-0272
+// §2: the attribute is removed on release, never set to the string "false") — every
+// EN-BANNER-CLICK/REJECT/RESET/STALE assertion below now checks BOTH that `.disabled` stays
+// `false` and that `aria-disabled` carries the correct value. `EN-SOURCE-1` is intentionally
+// UNTOUCHED (byte-identical) — it does not construct or render a banner.
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -128,6 +141,14 @@ function deferred(): {
     reject = rej;
   });
   return { promise, resolve, reject };
+}
+
+/** rb-125 (ADR-0272): every `new EvolutionNoticeBanner(` call in this file now needs a second
+ *  `sinks` argument. Fresh vi.fn() defaults per call — this file's own assertions are about the
+ *  DOM shell, the ack lock and the copy core, never about WHICH sink fired (that behaviour is
+ *  gated by evolutionNotice.a11y.test.ts's RB125-ANN-n and RB125-FOCUS-n families). */
+function bannerSinks(): { announce: (message: string) => void; returnFocus: () => void } {
+  return { announce: vi.fn(), returnFocus: vi.fn() };
 }
 
 function container(): HTMLElement {
@@ -470,7 +491,7 @@ describe('20r-d EN-BANNER — the passive banner shell', () => {
     sentinel.id = 'sentinel-before-banner';
     document.body.appendChild(sentinel);
 
-    const banner = new EvolutionNoticeBanner(() => Promise.resolve());
+    const banner = new EvolutionNoticeBanner(() => Promise.resolve(), bannerSinks());
     expect(banner).toBeDefined();
 
     expect(
@@ -494,9 +515,9 @@ describe('20r-d EN-BANNER — the passive banner shell', () => {
     //   hidden, so a half-fix would disagree with every other overlay.
     // WRONG IMPL KILLED: a missing hide arm — a dismissed reveal stays on screen
     //   for the life of the page (the rb-51 countdown's documented failure).
-    const banner = new EvolutionNoticeBanner(() => Promise.resolve());
+    const banner = new EvolutionNoticeBanner(() => Promise.resolve(), bannerSinks());
 
-    banner.render('Sparky evolved from Flameling into Flamewing!');
+    banner.render({ key: 'toggle-entry', label: 'Sparky evolved from Flameling into Flamewing!' });
     expect(container().style.display).not.toBe('none');
     expect(container().style.display).not.toBe('');
     expect(banner.visible).toBe(true);
@@ -512,8 +533,11 @@ describe('20r-d EN-BANNER — the passive banner shell', () => {
     //   player-chosen NICKNAME, so an HTML write is a direct injection sink.
     //   `children.length === 0` is the oracle that survives a nickname that
     //   happens to contain no tags today.
-    const banner = new EvolutionNoticeBanner(() => Promise.resolve());
-    banner.render('<b>Sparky</b> evolved from <i>A</i> into <i>B</i>!');
+    const banner = new EvolutionNoticeBanner(() => Promise.resolve(), bannerSinks());
+    banner.render({
+      key: 'text-entry',
+      label: '<b>Sparky</b> evolved from <i>A</i> into <i>B</i>!',
+    });
     expect(labelEl().children.length, 'the label must hold TEXT only — zero element children').toBe(
       0,
     );
@@ -528,8 +552,8 @@ describe('20r-d EN-BANNER — the passive banner shell', () => {
     //   reviewed. A `tabindex` puts a passive banner into the Tab order, ahead of
     //   (or inside) whatever overlay is open.
     // WRONG IMPL KILLED: copying the overlay a11y wiring from a *View.ts shell.
-    const banner = new EvolutionNoticeBanner(() => Promise.resolve());
-    banner.render('Sparky evolved from Flameling into Flamewing!');
+    const banner = new EvolutionNoticeBanner(() => Promise.resolve(), bannerSinks());
+    banner.render({ key: 'a11y-entry', label: 'Sparky evolved from Flameling into Flamewing!' });
 
     for (const [name, el] of [
       ['container', container()],
@@ -560,8 +584,8 @@ describe('20r-d EN-BANNER — the passive banner shell', () => {
     //   leaving the BUTTON click-through-able — the OK control would be
     //   unclickable, the reveal undismissable, and nothing else in the slice
     //   would notice.
-    const banner = new EvolutionNoticeBanner(() => Promise.resolve());
-    banner.render('x');
+    const banner = new EvolutionNoticeBanner(() => Promise.resolve(), bannerSinks());
+    banner.render({ key: 'layout-entry', label: 'x' });
     expect(container().style.zIndex).toBe('60');
     expect(container().style.pointerEvents).toBe('none');
     expect(okBtn().style.pointerEvents).toBe('auto');
@@ -573,8 +597,8 @@ describe('20r-d EN-BANNER — the passive banner shell', () => {
     //   A <div role="button"> needs a keydown handler, a tabindex and a role — and
     //   the tabindex is banned here, so the div shape is unreachable by
     //   construction.
-    const banner = new EvolutionNoticeBanner(() => Promise.resolve());
-    banner.render('x');
+    const banner = new EvolutionNoticeBanner(() => Promise.resolve(), bannerSinks());
+    banner.render({ key: 'button-entry', label: 'x' });
     expect(okBtn().tagName).toBe('BUTTON');
     expect(okBtn() instanceof HTMLButtonElement).toBe(true);
     expect(okBtn().textContent).toBe('OK');
@@ -589,14 +613,25 @@ describe('20r-d EN-BANNER — the passive banner shell', () => {
     //   button is dead for the life of the page.
     const d = deferred();
     const onAck = vi.fn(() => d.promise);
-    const banner = new EvolutionNoticeBanner(onAck);
-    banner.render('Sparky evolved from Flameling into Flamewing!');
+    const banner = new EvolutionNoticeBanner(onAck, bannerSinks());
+    banner.render({
+      key: 'click-entry',
+      label: 'Sparky evolved from Flameling into Flamewing!',
+    });
 
     clickOk();
     expect(onAck).toHaveBeenCalledTimes(1);
-    expect(okBtn().disabled, 'the OK button must be disabled while the ack is in flight').toBe(
-      true,
-    );
+    // rb-125 (ADR-0272): the LOCK is aria-disabled="true", never the `disabled` PROPERTY — a
+    // focused control that becomes `disabled` is blurred by the HTML focus-fixup rule, which
+    // would strand a keyboard player mid-chain.
+    expect(
+      okBtn().disabled,
+      'the OK button`s `disabled` PROPERTY must stay false — the lock is aria-disabled, never disabled',
+    ).toBe(false);
+    expect(
+      okBtn().getAttribute('aria-disabled'),
+      'the OK button must be aria-disabled="true" while the ack is in flight',
+    ).toBe('true');
 
     clickOk();
     expect(
@@ -606,7 +641,13 @@ describe('20r-d EN-BANNER — the passive banner shell', () => {
 
     d.resolve();
     await settle();
-    expect(okBtn().disabled, 'settling the ack must RE-ENABLE the button').toBe(false);
+    expect(okBtn().disabled, 'settling the ack must never have used the disabled PROPERTY').toBe(
+      false,
+    );
+    expect(
+      okBtn().hasAttribute('aria-disabled'),
+      'settling the ack must REMOVE aria-disabled entirely',
+    ).toBe(false);
 
     const d2 = deferred();
     onAck.mockImplementation(() => d2.promise);
@@ -625,16 +666,21 @@ describe('20r-d EN-BANNER — the passive banner shell', () => {
     //   derived promise is handled. See this file's header.
     const d = deferred();
     const onAck = vi.fn(() => d.promise);
-    const banner = new EvolutionNoticeBanner(onAck);
-    banner.render('x');
+    const banner = new EvolutionNoticeBanner(onAck, bannerSinks());
+    banner.render({ key: 'reject-entry', label: 'x' });
 
     clickOk();
-    expect(okBtn().disabled).toBe(true);
+    expect(okBtn().disabled, 'the lock is aria-disabled, never the disabled PROPERTY').toBe(false);
+    expect(okBtn().getAttribute('aria-disabled')).toBe('true');
     d.reject(new Error('no pending evolution notices'));
     await settle();
     expect(
       okBtn().disabled,
-      'a rejected ack must release the lock — `.finally()`, never `.then()`',
+      'a rejected ack must never have used the disabled PROPERTY — `.finally()`, never `.then()`',
+    ).toBe(false);
+    expect(
+      okBtn().hasAttribute('aria-disabled'),
+      'a rejected ack must release the lock by REMOVING aria-disabled — `.finally()`, never `.then()`',
     ).toBe(false);
   });
 
@@ -646,14 +692,18 @@ describe('20r-d EN-BANNER — the passive banner shell', () => {
     //   flapped mid-chain.
     const d = deferred();
     const onAck = vi.fn(() => d.promise);
-    const banner = new EvolutionNoticeBanner(onAck);
-    banner.render('x');
+    const banner = new EvolutionNoticeBanner(onAck, bannerSinks());
+    banner.render({ key: 'reset-entry', label: 'x' });
 
     clickOk();
-    expect(okBtn().disabled).toBe(true);
+    expect(okBtn().disabled, 'the lock is aria-disabled, never the disabled PROPERTY').toBe(false);
+    expect(okBtn().getAttribute('aria-disabled')).toBe('true');
 
     banner.reset();
-    expect(okBtn().disabled, 'reset() must re-enable the button at once').toBe(false);
+    expect(okBtn().disabled, 'reset() must never have used the disabled PROPERTY').toBe(false);
+    expect(okBtn().hasAttribute('aria-disabled'), 'reset() must REMOVE aria-disabled at once').toBe(
+      false,
+    );
 
     const d2 = deferred();
     onAck.mockImplementation(() => d2.promise);
@@ -676,22 +726,26 @@ describe('20r-d EN-BANNER — the passive banner shell', () => {
     const d1 = deferred();
     const d2 = deferred();
     const onAck = vi.fn(() => d1.promise);
-    const banner = new EvolutionNoticeBanner(onAck);
-    banner.render('x');
+    const banner = new EvolutionNoticeBanner(onAck, bannerSinks());
+    banner.render({ key: 'stale-entry', label: 'x' });
 
     clickOk(); // send #1
     banner.reset(); // the onReconnect edge
     onAck.mockImplementation(() => d2.promise);
     clickOk(); // send #2 — now in flight
     expect(onAck).toHaveBeenCalledTimes(2);
-    expect(okBtn().disabled).toBe(true);
+    expect(okBtn().disabled, 'the lock is aria-disabled, never the disabled PROPERTY').toBe(false);
+    expect(okBtn().getAttribute('aria-disabled')).toBe('true');
 
     d1.resolve(); // the STALE settle
     await settle();
+    expect(okBtn().disabled, 'the stale settle must never have used the disabled PROPERTY').toBe(
+      false,
+    );
     expect(
-      okBtn().disabled,
-      'the stale send #1 settling must NOT re-enable the button while send #2 is still in flight — mint a generation token on each send and release only when it is still current',
-    ).toBe(true);
+      okBtn().getAttribute('aria-disabled'),
+      'the stale send #1 settling must NOT remove aria-disabled while send #2 is still in flight — mint a generation token on each send and release only when it is still current',
+    ).toBe('true');
 
     clickOk();
     expect(
@@ -701,7 +755,13 @@ describe('20r-d EN-BANNER — the passive banner shell', () => {
 
     d2.resolve();
     await settle();
-    expect(okBtn().disabled, 'send #2 settling releases its own lock').toBe(false);
+    expect(okBtn().disabled, 'send #2 settling must never have used the disabled PROPERTY').toBe(
+      false,
+    );
+    expect(
+      okBtn().hasAttribute('aria-disabled'),
+      'send #2 settling releases its own lock by REMOVING aria-disabled',
+    ).toBe(false);
   });
 
   it('20r-d EN-BANNER-REPEAT BITES: a HELD key is prevented on the button; a single press is not', () => {
@@ -712,8 +772,8 @@ describe('20r-d EN-BANNER — the passive banner shell', () => {
     // WRONG IMPL KILLED: no keydown handler at all; a handler that calls
     //   preventDefault UNCONDITIONALLY (that kills Enter-to-activate outright and
     //   makes the button mouse-only, breaking keyboard operability).
-    const banner = new EvolutionNoticeBanner(() => Promise.resolve());
-    banner.render('x');
+    const banner = new EvolutionNoticeBanner(() => Promise.resolve(), bannerSinks());
+    banner.render({ key: 'repeat-entry', label: 'x' });
 
     expect(keydownOk(true).defaultPrevented, 'a REPEAT keydown must be prevented').toBe(true);
     expect(
@@ -726,10 +786,10 @@ describe('20r-d EN-BANNER — the passive banner shell', () => {
     // WRONG IMPL KILLED: an unconditional `createElement` + `appendChild`, which
     //   after any second construction (a test harness, a future re-init) leaves
     //   two stacked banners, one of them permanently stale.
-    const first = new EvolutionNoticeBanner(() => Promise.resolve());
-    first.render('x');
-    const second = new EvolutionNoticeBanner(() => Promise.resolve());
-    second.render('y');
+    const first = new EvolutionNoticeBanner(() => Promise.resolve(), bannerSinks());
+    first.render({ key: 'idempotent-first', label: 'x' });
+    const second = new EvolutionNoticeBanner(() => Promise.resolve(), bannerSinks());
+    second.render({ key: 'idempotent-second', label: 'y' });
 
     expect(
       document.querySelectorAll('#evolution-notice').length,

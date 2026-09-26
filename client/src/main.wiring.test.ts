@@ -13705,3 +13705,221 @@ describe('★ main.ts wiring (20r-d / ADR-0254 D6): 20r-d W-20RD-RECONNECT — t
     ).toBe(1);
   });
 });
+
+// ===========================================================================
+// rb-125 (ADR-0272) — W-RB125-*: the banner's injected announce/returnFocus sinks and the
+// evolutionNoticeKey import, all inside the SAME `new EvolutionNoticeBanner(` ctor-args region
+// and `store.onBatchApplied(` render listener the 20r-d block above already extracts (helper
+// reuse: `rdStrippedMainTs`, `rdBannerCtorArgs`, `rdBatchListenerBodies`). ADDED describe
+// blocks; nothing above this line is modified.
+//
+// SOURCE OF TRUTH: docs/adr/0272-evolution-notice-announcement-and-focus.md.
+//
+// MIGRATION CHECK PERFORMED (per the rb-125 handoff): every existing W-20RD-* pin above was
+// re-read against the NEW `render({ key, label } | null)` shape and the new TWO-argument
+// ctor. None assert a string-shaped render argument or a single-argument ctor — `rdBannerCtorArgs`
+// extracts the WHOLE balanced-paren argument list regardless of arg count, and W-20RD-RENDER's
+// needles (`evolutionNoticeLabel(`, `=== undefined ? null :`, etc.) are substring checks that
+// remain present, verbatim, inside the new object-literal render argument
+// (`{ key: evolutionNoticeKey(head), label: evolutionNoticeLabel(head, …) }`). No existing
+// W-20RD-* test is edited by this slice.
+//
+// RED REASON AT AUTHORING TIME (verified against main.ts this session): `evolutionNoticeKey`
+// occurs ZERO times in main.ts; the banner ctor takes exactly ONE argument (`onAck`); no
+// `liveRegion.announce(` or `worldCanvasEl?.focus(` call lives inside its args.
+//
+// NO `new RegExp(...)` — indexOf / includes / split / slice only.
+// ===========================================================================
+
+describe('★ main.ts wiring (rb-125 / ADR-0272): W-RB125-ANNOUNCE-SINK — the banner`s announce sink calls liveRegion.announce( with performance.now(), never Date.now()', () => {
+  it('★★ W-RB125-ANNOUNCE-SINK BITES: exactly one liveRegion.announce( inside the ctor args, in the announce: property value, with performance.now() and no Date.now', () => {
+    // WRONG IMPL KILLED (a) ★ THE MISSING SINK (RED AT AUTHORING TIME): no `sinks` argument at
+    //   all — the banner never announces, and #a11y-live stays silent for every reveal.
+    // WRONG IMPL KILLED (b): a Date.now() clock. ui/liveRegion.ts's own header requires a
+    //   MONOTONIC clock — Date.now() can step backwards across an NTP correction and stalls the
+    //   pending message; main.a11yFocus.test.ts's RB125-RT-ANNOUNCE is the runtime kill, this is
+    //   the source-side one that catches it even if the runtime test is ever skipped.
+    // WRONG IMPL KILLED (c): the announce call parked in the `returnFocus:` property instead of
+    //   `announce:` — it would still satisfy a bare containment scan of the ctor args.
+    // WRONG IMPL KILLED (d): a second `liveRegion.announce(` call site elsewhere in main.ts — a
+    //   second caller can race the 500ms coalescing window against this one.
+    const stripped = rdStrippedMainTs();
+    const args = rdBannerCtorArgs(stripped);
+
+    expect(
+      countOccurrences(args, 'liveRegion.announce('),
+      'rb-125 W-RB125-ANNOUNCE-SINK: the banner ctor args must contain EXACTLY ONE ' +
+        '`liveRegion.announce(` call — the injected announce sink. RED AT AUTHORING TIME: 0. ' +
+        'Ctor args found: ' +
+        JSON.stringify(args),
+    ).toBe(1);
+
+    const announceIdx = args.indexOf('announce:');
+    expect(
+      announceIdx,
+      'rb-125 W-RB125-ANNOUNCE-SINK: the ctor args must contain an `announce:` property key',
+    ).toBeGreaterThanOrEqual(0);
+    const returnFocusIdx = args.indexOf('returnFocus:');
+    const announceCallIdx = args.indexOf('liveRegion.announce(');
+    expect(
+      announceCallIdx,
+      'rb-125 W-RB125-ANNOUNCE-SINK: `liveRegion.announce(` must appear AFTER `announce:`',
+    ).toBeGreaterThan(announceIdx);
+    if (returnFocusIdx >= 0) {
+      expect(
+        announceCallIdx,
+        'rb-125 W-RB125-ANNOUNCE-SINK: `liveRegion.announce(` must sit in the `announce:` ' +
+          'property VALUE — i.e. BEFORE `returnFocus:` — never in the returnFocus sink',
+      ).toBeLessThan(returnFocusIdx);
+    }
+
+    expect(
+      args.indexOf('performance.now()'),
+      'rb-125 W-RB125-ANNOUNCE-SINK: the announce sink must pass `performance.now()` — the one ' +
+        'MONOTONIC clock this app uses (ui/liveRegion.ts`s own header bans a clock that can step ' +
+        'backwards). Ctor args found: ' +
+        JSON.stringify(args),
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      countOccurrences(args, 'Date.now('),
+      'rb-125 W-RB125-ANNOUNCE-SINK: the ctor args must contain ZERO `Date.now(` calls — a ' +
+        'non-monotonic clock stalls the pending announcement across an NTP correction',
+    ).toBe(0);
+
+    // WHOLE-FILE CENSUS. The M23S5-A11YSNAPSHOT frame-loop pump (asserted verbatim by
+    // W-M23S5-LIVEREGION-PUMP above) already contains TWO textual `liveRegion.announce(` call
+    // sites (the `for` loop and the world-region `if` branch) — this slice adds exactly a THIRD.
+    expect(
+      countOccurrences(squashWhitespace(stripped), 'liveRegion.announce('),
+      'rb-125: `liveRegion.announce(` must occur EXACTLY 3 times whole-file — the two existing ' +
+        'frame-loop pump sites (main.wiring.test.ts`s own W-M23S5-LIVEREGION-PUMP literal) PLUS ' +
+        'this ONE new announce sink. Two here (no growth) means the sink was never wired',
+    ).toBe(3);
+    expect(
+      countOccurrences(squashWhitespace(stripped), 'new LiveRegion('),
+      'rb-125: `new LiveRegion(` must stay a SINGLETON — one coalescing state machine, never a ' +
+        'second instance the DOM #a11y-live node is not wired to',
+    ).toBe(1);
+  });
+});
+
+describe('★ main.ts wiring (rb-125 / ADR-0272): W-RB125-FOCUS-SINK — the banner`s returnFocus sink calls worldCanvasEl?.focus(', () => {
+  it('★★ W-RB125-FOCUS-SINK BITES: exactly one worldCanvasEl?.focus( inside the ctor args, in the returnFocus: property value, and the whole-file bare-call census gains exactly one site', () => {
+    // WRONG IMPL KILLED (a) ★ THE MISSING SINK (RED AT AUTHORING TIME): no `sinks` argument at
+    //   all — render(null) can never move focus back to the world, so a keyboard player who
+    //   acked the reveal from the OK button is stranded on a hidden, unreachable control.
+    // WRONG IMPL KILLED (b): the call parked in `announce:` instead of `returnFocus:`.
+    // WRONG IMPL KILLED (c): a `;`-suffixed STATEMENT form instead of the arrow's own expression
+    //   body — the two pre-existing `worldCanvasEl?.focus();` STATEMENT sites (main.wiring.
+    //   test.ts:11240, the frame close edge and the keydown stale-focus heal) must stay at
+    //   EXACTLY 2; this new site is an expression-bodied arrow's return value.
+    const stripped = rdStrippedMainTs();
+    const args = rdBannerCtorArgs(stripped);
+
+    expect(
+      countOccurrences(args, 'worldCanvasEl?.focus('),
+      'rb-125 W-RB125-FOCUS-SINK: the banner ctor args must contain EXACTLY ONE ' +
+        '`worldCanvasEl?.focus(` call — the injected returnFocus sink. RED AT AUTHORING TIME: 0. ' +
+        'Ctor args found: ' +
+        JSON.stringify(args),
+    ).toBe(1);
+
+    const returnFocusIdx = args.indexOf('returnFocus:');
+    expect(
+      returnFocusIdx,
+      'rb-125 W-RB125-FOCUS-SINK: the ctor args must contain a `returnFocus:` property key',
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      args.indexOf('worldCanvasEl?.focus('),
+      'rb-125 W-RB125-FOCUS-SINK: `worldCanvasEl?.focus(` must appear AFTER `returnFocus:`',
+    ).toBeGreaterThan(returnFocusIdx);
+    const announceIdx = args.indexOf('announce:');
+    if (announceIdx >= 0 && announceIdx < returnFocusIdx) {
+      expect(
+        args.slice(announceIdx, returnFocusIdx).indexOf('worldCanvasEl?.focus('),
+        'rb-125 W-RB125-FOCUS-SINK: `worldCanvasEl?.focus(` must NOT sit in the `announce:` ' +
+          'property value',
+      ).toBe(-1);
+    }
+
+    // WHOLE-FILE CENSUS, amended honestly per the rb-125 handoff: the `;`-suffixed STATEMENT
+    // form (main.wiring.test.ts:11240) stays at its CURRENT count — this slice adds no new
+    // statement site — while the BARE call (any suffix) gains exactly the one new expression
+    // site.
+    expect(
+      countOccurrences(stripped, 'worldCanvasEl?.focus();'),
+      'rb-125: the SEMICOLON-suffixed `worldCanvasEl?.focus();` STATEMENT form must stay at ' +
+        'exactly 2 (main.wiring.test.ts:11240) — this slice adds no new STATEMENT site',
+    ).toBe(2);
+    expect(
+      countOccurrences(stripped, 'worldCanvasEl?.focus()'),
+      'rb-125: the BARE `worldCanvasEl?.focus()` call must occur EXACTLY 3 times whole-file — ' +
+        'the two existing `;`-suffixed statement sites PLUS this ONE new expression-bodied ' +
+        'returnFocus sink. Two here (no growth) means the sink was never wired; four means an ' +
+        'extra, unpinned focus move was also added',
+    ).toBe(3);
+  });
+});
+
+describe('★ main.ts wiring (rb-125 / ADR-0272): W-RB125-KEY — the render listener keys through the pure evolutionNoticeKey, never a shim', () => {
+  it('★★ W-RB125-KEY BITES: evolutionNoticeKey is imported from ./ui/evolutionNotice, called exactly once as evolutionNoticeKey(head) inside the render listener, and nowhere shimmed', () => {
+    // WRONG IMPL KILLED (a) ★ THE MISSING KEY (RED AT AUTHORING TIME): the listener still
+    //   renders a bare string — the banner can never edge-trigger on entry IDENTITY, so a late
+    //   species name landing on the SAME entry (`Species #5` -> `Flamewing`) would re-announce
+    //   it, breaking ADR-0272's "announce once per key" contract.
+    // WRONG IMPL KILLED (b): a LOCAL shim (`function evolutionNoticeKey` / `const
+    //   evolutionNoticeKey =`) shadowing the imported, unit-tested pure function
+    //   (evolutionNotice.a11y.test.ts RB125-KEY-1) — the W-CARE-IMPORT / F2 defect class this
+    //   file already guards for the banner's other four imports (W-20RD-BANNER above).
+    // WRONG IMPL KILLED (c): a SECOND `evolutionNoticeKey(` call site — one seam for one fact.
+    const stripped = rdStrippedMainTs();
+
+    // --- the import edge (same anchor W-20RD-BANNER already uses) -----------------------
+    const terminator = "} from './ui/evolutionNotice';";
+    expectUniqueAnchor(stripped, terminator);
+    const end = stripped.indexOf(terminator);
+    const start = stripped.lastIndexOf('import', end);
+    expect(
+      start,
+      `rb-125: the \`${terminator}\` clause must be preceded by an \`import\` keyword`,
+    ).toBeGreaterThanOrEqual(0);
+    const importStmt = squashWhitespace(stripped.slice(start, end));
+    expect(
+      importStmt.indexOf('evolutionNoticeKey'),
+      'rb-125 W-RB125-KEY: the `./ui/evolutionNotice` import must name `evolutionNoticeKey`. RED ' +
+        'AT AUTHORING TIME: the export does not exist. Import statement found: ' +
+        JSON.stringify(importStmt),
+    ).toBeGreaterThanOrEqual(0);
+
+    // --- no local shim -------------------------------------------------------------------
+    for (const shim of ['function evolutionNoticeKey', 'const evolutionNoticeKey =']) {
+      expect(
+        countOccurrences(stripped, shim),
+        `rb-125 W-RB125-KEY: main.ts must contain NO \`${shim}\` — a local re-implementation ` +
+          'shadows the imported, unit-tested pure function',
+      ).toBe(0);
+    }
+
+    // --- exactly one call, inside the ownEvolutionNotices(identity) render listener -------
+    const bodies = rdBatchListenerBodies(stripped);
+    const owners = bodies.filter((b) => b.indexOf('ownEvolutionNotices(identity)') >= 0);
+    expect(
+      owners.length,
+      'rb-125: EXACTLY ONE `store.onBatchApplied(` listener must read ' +
+        '`ownEvolutionNotices(identity)` (see W-20RD-RENDER above)',
+    ).toBe(1);
+    const body = owners[0] ?? '';
+    expect(
+      countOccurrences(body, 'evolutionNoticeKey(head)'),
+      'rb-125 W-RB125-KEY: the render listener must call `evolutionNoticeKey(head)` EXACTLY ' +
+        'ONCE. RED AT AUTHORING TIME: 0. Listener body: ' +
+        JSON.stringify(body),
+    ).toBe(1);
+
+    expect(
+      countOccurrences(squashWhitespace(stripped), 'evolutionNoticeKey('),
+      'rb-125 W-RB125-KEY: `evolutionNoticeKey(` must be CALLED from EXACTLY ONE site in ' +
+        'main.ts — one seam for one fact',
+    ).toBe(1);
+  });
+});

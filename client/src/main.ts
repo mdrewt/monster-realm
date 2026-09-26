@@ -112,6 +112,7 @@ import {
 import { buildEvolutionViewModel } from './ui/evolutionModel';
 import {
   EvolutionNoticeBanner,
+  evolutionNoticeKey,
   evolutionNoticeLabel,
   isBenignAckRejection,
   resolveEvolutionNoticeNames,
@@ -2088,23 +2089,29 @@ store.onBatchApplied(() => {
   }
 });
 
-// --- 20r-d (ADR-0254 D6): post-evolve reveal banner ---------------------------------
+// --- 20r-d (ADR-0254 D6) / rb-125 (ADR-0272): post-evolve reveal banner --------------
 // The HEAD entry only: Vec order IS display order and the ack drains a PREFIX, so the head is
 // the one reveal a `count: 1` ack may acknowledge. The `null` arm hides the banner once the
 // queue drains — without it the last sentence would stay on screen and every further OK reject.
+// The render argument now carries the entry's `key` (rb-125) alongside its `label`, so the
+// banner's announce sink can edge-trigger on identity rather than on copy that a late species
+// name would still be changing under it.
 store.onBatchApplied(() => {
   const head = store.ownEvolutionNotices(identity)[0];
   evolutionNoticeBanner?.render(
     head === undefined
       ? null
-      : evolutionNoticeLabel(
-          head,
-          resolveEvolutionNoticeNames(
+      : {
+          key: evolutionNoticeKey(head),
+          label: evolutionNoticeLabel(
             head,
-            store.ownMonsters(identity),
-            (id) => store.species(id)?.name,
+            resolveEvolutionNoticeNames(
+              head,
+              store.ownMonsters(identity),
+              (id) => store.species(id)?.name,
+            ),
           ),
-        ),
+        },
   );
 });
 
@@ -2949,15 +2956,23 @@ async function main(): Promise<void> {
   // non-overlay shape as the countdown above. OK acks exactly ONE entry (the head is the only
   // reveal on screen); the two benign stale-banner races are swallowed, everything else is
   // rethrown into sendGuarded's single status reporter (ADR-0085 C6).
-  evolutionNoticeBanner = new EvolutionNoticeBanner(() =>
-    sendGuarded('ackEvolutionNotices', () =>
-      conn
-        ?.live()
-        ?.reducers.ackEvolutionNotices({ count: 1 })
-        .catch((err: unknown) => {
-          if (!isBenignAckRejection(reduceErrorMessage(err, 'ackEvolutionNotices'))) throw err;
-        }),
-    ),
+  // rb-125 (ADR-0272): the second constructor argument is the injected sink pair — `announce`
+  // reaches the one live region through its existing singleton, `returnFocus` reaches the house
+  // landing place (ADR-0206). The banner itself decides WHEN each fires; this is only WHERE.
+  evolutionNoticeBanner = new EvolutionNoticeBanner(
+    () =>
+      sendGuarded('ackEvolutionNotices', () =>
+        conn
+          ?.live()
+          ?.reducers.ackEvolutionNotices({ count: 1 })
+          .catch((err: unknown) => {
+            if (!isBenignAckRejection(reduceErrorMessage(err, 'ackEvolutionNotices'))) throw err;
+          }),
+      ),
+    {
+      announce: (m) => liveRegion.announce(m, performance.now()),
+      returnFocus: () => worldCanvasEl?.focus(),
+    },
   );
 
   // pt-b1 (ADR-0130): mount the F9 error overlay (self-mounting, starts hidden,
