@@ -91,6 +91,10 @@ if (this.#visible && document.activeElement === document.body) {
   constructor, or the static `index.html` shell for pvp). The timer re-queries it at fire time.
   A success batch landing AFTER the release can still drop focus to `<body>` (a pre-existing
   render-time behaviour, not a lock release); that is not this slice's defect.
+- The step's position after the re-enable is convention, not load-bearing: `openOverlayA11y`'s
+  synchronous part never reads `disabled`, and its only focus move fires a macrotask later, after
+  the whole `.finally()` has run. The implementation red-team measured "call before re-enable" as
+  a surviving mutant; it is equivalent, so no test pins the order.
 - Per-view duplication: a three-line private method in four files. A shared helper would need a
   file outside `touches:`; recorded as a follow-up, not built (YAGNI until a fifth site appears).
 

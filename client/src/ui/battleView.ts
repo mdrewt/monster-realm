@@ -346,8 +346,6 @@ export class BattleView {
         // replaced the clicked node, and re-enabling the detached one would strand the
         // live ones disabled until the next batch.
         this.#setActionButtonsDisabled(false);
-        // rb-121 (ADR-0271): a no-batch settle can leave focus stranded on <body> —
-        // re-assert the dialog.
         this.#reanchorStrandedFocus();
       })
       .catch((err: unknown) => {

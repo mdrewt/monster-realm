@@ -335,8 +335,6 @@ export class EvolutionView {
           if (this.#pending.get(monsterId) !== lock) return;
           this.#pending.delete(monsterId);
           for (const b of this.#choiceButtons.get(monsterId) ?? [btn]) b.disabled = false;
-          // rb-121 (ADR-0271): a no-batch settle can leave focus stranded on <body> —
-          // re-assert the dialog.
           this.#reanchorStrandedFocus();
         })
         .catch((err: unknown) => {

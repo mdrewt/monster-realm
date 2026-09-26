@@ -295,8 +295,6 @@ export class RaisingView {
             // would strand the live button disabled forever.
             const live = this.#careButtons.get(monsterId) ?? careBtn;
             live.disabled = false;
-            // rb-121 (ADR-0271): a no-batch settle (reject/resolve/throw) can leave focus
-            // stranded on <body> — re-assert the dialog.
             this.#reanchorStrandedFocus();
           })
           .catch((err: unknown) => {
@@ -337,8 +335,6 @@ export class RaisingView {
                 for (const b of this.#trainButtons.get(monsterId) ?? trainBtns) {
                   b.disabled = false;
                 }
-                // rb-121 (ADR-0271): a no-batch settle can leave focus stranded on <body> —
-                // re-assert the dialog.
                 this.#reanchorStrandedFocus();
               })
               .catch((err: unknown) => {

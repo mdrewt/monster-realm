@@ -175,8 +175,6 @@ export class PvpView {
         this.#pending = null;
         // The LIVE nodes: a refresh() mid-flight replaced the clicked one.
         this.#setLifecycleDisabled(false);
-        // rb-121 (ADR-0271): a no-batch settle can leave focus stranded on <body> —
-        // re-assert the dialog.
         this.#reanchorStrandedFocus();
       })
       .catch((err: unknown) => {
