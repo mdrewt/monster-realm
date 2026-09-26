@@ -73,6 +73,8 @@ pub(crate) fn evaluate_care(last_care_at_ms: i64, now: i64) -> Result<(), String
 /// (ADR-0059 §3, reject-never-burns).
 #[spacetimedb::reducer]
 pub fn care(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
+    // Deletion gate (rb-128, ADR-0273 D2): the FIRST statement, before every read and write.
+    crate::guards::require_not_deleting(ctx, "care")?;
     let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
         return Err("monster not found".to_string());
     };
@@ -147,6 +149,8 @@ pub(crate) fn evaluate_train(
 /// is not a heal (ADR-0058 residual (a) resolved).
 #[spacetimedb::reducer]
 pub fn train(ctx: &ReducerContext, monster_id: u64, food_item_id: u32) -> Result<(), String> {
+    // Deletion gate (rb-128, ADR-0273 D2): the FIRST statement, before every read and write.
+    crate::guards::require_not_deleting(ctx, "train")?;
     let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
         return Err("monster not found".to_string());
     };
@@ -629,6 +633,8 @@ pub fn essence_train(
     monster_id: u64,
     affinity: Affinity,
 ) -> Result<(), String> {
+    // Deletion gate (rb-128, ADR-0273 D2): the FIRST statement, before every read and write.
+    crate::guards::require_not_deleting(ctx, "essence_train")?;
     let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
         return Err("monster not found".to_string());
     };
@@ -676,6 +682,8 @@ pub fn consume_crystalized_essence(
     monster_id: u64,
     item_id: u32,
 ) -> Result<(), String> {
+    // Deletion gate (rb-128, ADR-0273 D2): the FIRST statement, before every read and write.
+    crate::guards::require_not_deleting(ctx, "consume_crystalized_essence")?;
     let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
         return Err("monster not found".to_string());
     };

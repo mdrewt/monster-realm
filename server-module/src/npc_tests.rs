@@ -2130,9 +2130,11 @@ fn rb41_dialogue_state_tracks_real_dialogue_rows() {
 // (`inventory` via `grant_item`, `player_wallet` via `grant_currency`,
 // `player_quest`, `player_dialogue_state`, `player_conversation`).
 //
-// `dismiss_dialogue` is CLASSIFY-OPEN (PRV1-10, ADR-0250 D5) and its whole body
-// is frozen by the census test below, so the classification is an assertion
-// rather than a snapshot.
+// `dismiss_dialogue` was CLASSIFY-OPEN here (PRV1-10, ADR-0250 D5); rb-128
+// (ADR-0273 D3) withdrew that classification and gated it as its first
+// statement. The census test below still freezes its WHOLE body — now the gate
+// followed by the one delete — so the shape stays an assertion rather than a
+// snapshot; its executed matrix lives in `guards_tests.rs` (ADR-0273 D9).
 //
 // SCAN SUBSTRATE. Every scan reuses THIS file's existing helpers only
 // (`NPC_SOURCE`, `strip_npc_comments`, `m22s3b_blank_strings`,
@@ -3097,25 +3099,29 @@ fn rb80_reducer_names(squashed: &str) -> Vec<String> {
     out
 }
 
-/// **E1 (the second arm, mechanically)** — `npc.rs` carries EXACTLY TWO deletion
-/// gates, its reducer roster is closed, it compiles unconditionally, its
+/// **E1 (the second arm, mechanically)** — `npc.rs` carries EXACTLY THREE
+/// deletion gates, its reducer roster is closed, it compiles unconditionally, its
 /// ERASE-table write verbs are the ones this slice reasoned about, and
-/// `dismiss_dialogue`'s whole body is frozen as the PRV1-10 classification it
-/// claims to be.
+/// `dismiss_dialogue`'s whole body is frozen as gate-then-delete.
 ///
-/// `dismiss_dialogue` is CLASSIFIED OPEN (PRV1-10, ADR-0250
-/// D5) because its whole body deletes only the caller's own transient
-/// conversation row, and gating it once `talk` and `advance_dialogue` are gated
-/// would STRAND that row for the rest of the grace window. The body freeze below
-/// is what makes that an assertion instead of a snapshot: the moment the body
-/// grows a second statement the classification has to be re-argued.
+/// `dismiss_dialogue` is GATED AS ITS FIRST STATEMENT per ADR-0273 D3, which
+/// withdrew ADR-0250 D5's OPEN classification: PRV1-10 protects an already-live
+/// battle, trade or challenge, not a conversation, and the `player_conversation`
+/// row is transient presence state that `on_disconnect` clears and the cascade
+/// erases. The body freeze now pins gate-then-delete: the gate first, then the
+/// one primary-key delete of the caller's own row, then `Ok`. The moment the body
+/// grows another statement, or the gate moves below the delete, the shape has to
+/// be re-argued.
 ///
-/// RED AT HEAD on clause `[rb80/file-count]`: the file mentions the wrapper ZERO
-/// times.
+/// RED AT HEAD (tests in, rb-128 fix absent) on clause `[rb80/file-count]`: the
+/// file mentions the wrapper TWICE (`talk`, `advance_dialogue`) and must mention
+/// it three times.
 ///
-/// kills: M19 (a gate quietly added to `dismiss_dialogue` — the file count goes
-/// to 3) · a gate hoisted into `apply_effects_to_db` or `apply_quest_trigger`,
-/// which take an owner identity and would fire twice per `talk` (same count) ·
+/// kills: a lost `dismiss_dialogue` gate (the file count goes back to 2, and the
+/// body freeze fails) · a gate ADDED to `apply_effects_to_db` or
+/// `apply_quest_trigger`, which take an owner identity and would fire twice per
+/// `talk` (the count goes to 4; a gate MOVED there instead fails `talk`'s own
+/// per-body pins) ·
 /// M17 (a wire-name twin over an ungated fn while the gated Rust item is demoted
 /// — the attribute counts disagree and the name SET changes) · M14 (a file-scope
 /// `cfg(debug_assertions)` constant pair — clause E is body-scoped and cannot
@@ -3132,16 +3138,17 @@ fn rb80_npc_reducer_roster_and_open_writers_are_pinned() {
     let bare = rb80_gate_bare_name();
     let n_bare = squashed.matches(bare.as_str()).count();
     assert_eq!(
-        n_bare, 2,
+        n_bare, 3,
         "rb-80 [rb80/file-count] E1 FAIL: `npc.rs` mentions the deletion-gate wrapper {n_bare} \
-         time(s) by BARE NAME and must mention it EXACTLY twice — `talk`'s call and \
-         `advance_dialogue`'s, and nothing else. ZERO IS THE RED STATE AT HEAD. THREE means \
-         either `dismiss_dialogue` was gated without re-arguing its PRV1-10 classification (which \
-         would strand the caller's conversation row for the rest of the grace window) or the gate \
-         was hoisted into `apply_effects_to_db` / `apply_quest_trigger`, both of which take an \
-         owner identity and would fire twice per `talk`. ONE means one of the two sites lost its \
-         gate while the other kept it. The needle is the BARE name, so it also catches an alias, \
-         a re-export and a function-pointer binding."
+         time(s) by BARE NAME and must mention it EXACTLY three times — `talk`'s call, \
+         `advance_dialogue`'s, and since rb-128 `dismiss_dialogue`'s (ADR-0273 D3 re-argued its \
+         old PRV1-10 OPEN classification and gated it as its first statement), and nothing \
+         else. TWO IS THE RED STATE BEFORE THE rb-128 FIX. FOUR means the gate was also added \
+         to `apply_effects_to_db` / `apply_quest_trigger`, both of which take an owner identity \
+         and would fire twice per `talk`, or was duplicated inside one body. TWO or fewer after \
+         the fix means one of the three sites lost its gate while the others kept theirs. The \
+         needle is the BARE name, so it also catches an alias, a re-export and a \
+         function-pointer binding."
     );
 
     // --- (b0) the file's WHOLE attribute budget -----------------------------
@@ -3301,10 +3308,15 @@ fn rb80_npc_reducer_roster_and_open_writers_are_pinned() {
         );
     }
 
-    // --- (e) dismiss_dialogue stays the PRV1-10 classification it claims ----
+    // --- (e) dismiss_dialogue is gate-then-delete, and nothing else ---------
+    // ADR-0273 D3 withdrew ADR-0250 D5's OPEN classification; the frozen body is
+    // re-derived from D2/D3 (the gate FIRST, tag blanked on this view), never
+    // pasted from the file. The gate fragment is split at different bytes from
+    // `rb80_gate_opener` so one wrong edit cannot move both.
     let dismiss = ["dismiss_", "dialogue"].concat();
     let dismiss_body = rb80_scan_body(dismiss.as_str());
     let expected_dismiss = [
+        concat!("crate::guards::requ", "ire_not_deleting(ctx,)?;"),
         concat!("ctx.db.player_conver", "sation()"),
         concat!(".owner_ide", "ntity()"),
         concat!(".del", "ete(ctx.sen", "der());"),
@@ -3313,16 +3325,15 @@ fn rb80_npc_reducer_roster_and_open_writers_are_pinned() {
     .concat();
     assert_eq!(
         dismiss_body, expected_dismiss,
-        "rb-80 [rb80/open-body] E1 FAIL (the deliberate classification): `dismiss_dialogue`'s \
-         whole squashed body is {dismiss_body:?} and the body ADR-0250 D5 classified OPEN is \
-         {expected_dismiss:?}. The classification is an ASSERTION, not a snapshot: the reducer is \
-         left ungated ONLY because its entire body is one PK point delete of the caller's own \
-         transient conversation row, which unwinds an existing interaction (PRV1-10) and whose \
-         gating would STRAND that row for the rest of the grace window once `talk` and \
-         `advance_dialogue` refuse to replace it. The moment this body grows a second statement — \
-         any read of another table, any grant, any second delete — that argument stops holding \
-         and the classification must be re-argued in a new ADR, not repaired by re-freezing this \
-         literal."
+        "rb-80 [rb80/gated-body] E1 FAIL (the deliberate shape): `dismiss_dialogue`'s whole \
+         squashed body is {dismiss_body:?} and the body ADR-0273 D2/D3 fixes is \
+         {expected_dismiss:?} — the caller-only deletion gate as the FIRST statement, then the \
+         one primary-key delete of the caller's own transient conversation row, then `Ok`. \
+         RED BEFORE THE rb-128 FIX: the body is the old ungated one-statement delete. The \
+         freeze is an ASSERTION, not a snapshot: a gate below the delete commits the delete \
+         for a deletion-gated caller before refusing them; a second statement — any read of \
+         another table, any grant, any second delete — is a write path nobody re-argued. Either \
+         must be re-argued in a new ADR, not repaired by re-freezing this literal."
     );
 }
 

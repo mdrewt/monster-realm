@@ -54,6 +54,8 @@ pub(crate) const MAX_EVOLUTION_CHAIN_STEPS: u32 = 7;
 ///    unambiguous next edge on its surviving level/Trust/Quality-Time)
 #[spacetimedb::reducer]
 pub fn evolve(ctx: &ReducerContext, monster_id: u64, to_species: u32) -> Result<(), String> {
+    // Deletion gate (rb-128, ADR-0273 D2): the FIRST statement, before every read and write.
+    crate::guards::require_not_deleting(ctx, "evolve")?;
     let Some(m) = ctx.db.monster().monster_id().find(monster_id) else {
         return Err("monster not found".to_string());
     };

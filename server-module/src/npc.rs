@@ -446,6 +446,8 @@ pub fn advance_dialogue(ctx: &ReducerContext, choice_idx: u32) -> Result<(), Str
 /// Dismiss the current dialogue (no-op if no active conversation).
 #[spacetimedb::reducer]
 pub fn dismiss_dialogue(ctx: &ReducerContext) -> Result<(), String> {
+    // Deletion gate (rb-128, ADR-0273 D2): the FIRST statement, before every read and write.
+    crate::guards::require_not_deleting(ctx, "dismiss_dialogue")?;
     ctx.db
         .player_conversation()
         .owner_identity()

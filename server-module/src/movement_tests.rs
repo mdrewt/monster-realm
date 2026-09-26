@@ -1595,14 +1595,21 @@ fn e2_intake_rejects_movement_intent_during_an_ongoing_battle() {
     );
 }
 
-/// **ADR-0168 D3 anti-decision sentinel** — `clear_queue` must stay UNGUARDED, and
-/// its body must not change at all.
+/// **ADR-0168 D3 anti-decision sentinel** — `clear_queue` must stay UNGUARDED
+/// against battles, and its body must not change beyond what ADR-0273 D6 added.
 ///
-/// GREEN at HEAD and GREEN after the fix; RED the moment someone "completes the
-/// symmetry". This is the load-bearing paragraph of the ADR rendered as a test:
-/// without it, the next consistency-minded pass adds the missing symmetric guard
-/// and ships a bug — the exact failure mode ADR-0166 D2 documented for
-/// "or flee" / "or forfeit".
+/// RED the moment someone "completes the symmetry". This is the load-bearing
+/// paragraph of the ADR rendered as a test: without it, the next
+/// consistency-minded pass adds the missing symmetric guard and ships a bug —
+/// the exact failure mode ADR-0166 D2 documented for "or flee" / "or forfeit".
+///
+/// rb-128 (ADR-0273 D6) RE-DERIVED THE PIN: the para-4.7 caller-only DELETION
+/// gate now opens the body, ahead of `authorize_move`. That is orthogonal to D3 —
+/// it refuses a deletion-gated ACCOUNT, not a battling player, and a mid-grace
+/// player's pre-request queue still drains through the ungated scheduler tick.
+/// ADR-0168 D3 still holds in full: there is no battle guard, direct or wrapped.
+/// RED AT HEAD (tests in, rb-128 fix absent): the body does not yet open with the
+/// deletion gate.
 ///
 /// WHY `clear_queue` IS NOT GUARDED (ADR-0168 D3 — keep these three reasons with
 /// the test; they are the whole justification for the asymmetry):
@@ -1662,21 +1669,29 @@ fn clear_queue_is_deliberately_not_battle_guarded() {
 
     // Assembled from fragments (house rule): the full body never appears
     // verbatim in this file, so no scan over the concatenated server sources can
-    // be satisfied by the test's own text.
+    // be satisfied by the test's own text. rb-128 (ADR-0273 D6) prepended the
+    // deletion gate — its tag is blanked on this view, so the call reads as
+    // `(ctx,)` — and changed nothing else.
     let body_pin = [
-        "{letmutch=authorize_move(ctx,,seq)?;ch.move_queue.clear();",
+        "{crate::guards::require_not_",
+        "deleting(ctx,)?;",
+        "letmutch=authorize_move(ctx,,seq)?;ch.move_queue.clear();",
         "ctx.db.character().entity_id().update(ch);Ok(())}",
     ]
     .concat();
     assert!(
         region.contains(body_pin.as_str()),
-        "ANTI-DECISION SENTINEL (ADR-0168 D3, green at HEAD): `clear_queue`'s ENTIRE \
-         body must remain, brace-to-brace — squashed and string-blanked (which is \
-         how this scan sees the file): \
-         `{{letmutch=authorize_move(ctx,,seq)?;ch.move_queue.clear();\
+        "ANTI-DECISION SENTINEL (ADR-0168 D3, re-derived by rb-128 / ADR-0273 D6): \
+         `clear_queue`'s ENTIRE body must remain, brace-to-brace — squashed and \
+         string-blanked (which is how this scan sees the file): the caller-only \
+         deletion gate, then \
+         `letmutch=authorize_move(ctx,,seq)?;ch.move_queue.clear();\
          ctx.db.character().entity_id().update(ch);Ok(())}}` — i.e. the source must \
-         still read `let mut ch = authorize_move(ctx, \"clear_queue\", seq)?;` and \
-         nothing else. \
+         read the ADR-0273 D2 deletion gate tagged with this reducer's own name, then \
+         `let mut ch = authorize_move(ctx, \"clear_queue\", seq)?;`, and nothing else. \
+         RED AT HEAD (tests in, rb-128 fix absent): the deletion gate is not there yet. \
+         The deletion gate is ORTHOGONAL to this sentinel: it refuses a deletion-gated \
+         ACCOUNT, not a battling player, and ADR-0168 D3 still holds in full. \
          `clear_queue` is deliberately NOT battle-guarded, and this is the fence \
          that keeps it that way. THE THREE REASONS (ADR-0168 D3): \
          (1) it is PURE CANCELLATION — it cannot cause movement and enables no \

@@ -103,8 +103,8 @@ pub(crate) fn deletion_gate(rejected: bool) -> Result<(), &'static str> {
 
 /// Reducer preamble for the para-4.7 deletion gate (ADR-0225 §2, ADR-0227,
 /// PRV1-9): reject the CALLER when their account is mid-grace or carries the
-/// terminal marker — such an account may not OPEN a new trade, battle or
-/// challenge commitment; existing commitments stay untouched.
+/// terminal marker — such an account may not open a commitment or create,
+/// mutate or discard its own state (ADR-0273); open commitments stay completable.
 ///
 /// Caller-only BY SIGNATURE: there is deliberately no identity parameter, so
 /// no call site can ever point this gate at a third party (a counterparty or
