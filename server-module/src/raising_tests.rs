@@ -3332,6 +3332,9 @@ fn rb41_has_heal_cooldown_tracks_real_cooldown_rows() {
 //     spelling, `?;`, brace depth zero, the statement boundary, the FROZEN
 //     prefix above the gate, the ordering against the first write, the tag;
 //   * the FILE census — what this slice deliberately leaves open, mechanically.
+//     Since rb-128 (ADR-0273 D5) nothing in this file is left open: the four
+//     raising writers carry their own first-statement gates (pinned and executed
+//     in `guards_tests.rs`), and the census counts all five gates.
 //
 // SCAN SUBSTRATE. Every scan reuses THIS file's existing helpers only
 // (`RAISING_SOURCE`, `strip_raising_comments`, `blank_heal_scan_strings`,
@@ -4038,31 +4041,31 @@ fn rb80_reducer_names(squashed: &str) -> Vec<String> {
     out
 }
 
-/// **E1 (the second arm, mechanically)** — `raising.rs` carries EXACTLY ONE
-/// deletion gate, its reducer roster is closed, it compiles unconditionally, and
-/// its ERASE-table write verbs are the ones this slice reasoned about.
+/// **E1 (the second arm, mechanically)** — `raising.rs` carries EXACTLY FIVE
+/// deletion gates, its reducer roster is closed, it compiles unconditionally,
+/// and its ERASE-table write verbs are the ones this slice reasoned about.
 ///
-/// THE DEFERRED RAISING WRITERS ARE A SCOPE DEFERRAL, NOT A DESIGN DECISION.
-/// `train`, `care`, `essence_train` and `consume_crystalized_essence` all write
-/// ERASE-policy tables (`inventory` via `consume_one`, `monster` /
-/// `monster_pub`) and §4.7's trigger predicate selects them exactly as it
-/// selects `heal_party`; no "value creation" class line is claimed for them.
-/// They are NOT gated by this slice because E1 names three sites and their only
-/// precedented placement sits below a `u64`-keyed `monster` lookup, where the
-/// native-host five-state matrix is unreachable (admitted and refused states
-/// both return "monster not found") — they need a different proof vehicle, i.e.
-/// their own slice, and they are registered as R-rb-80-RAISINGWRITERS. The
-/// FILE-WIDE count below is what makes their ungated state VISIBLE: it is
-/// exactly 1, so the day one of them is gated this census reds and the roster
-/// decision is re-argued deliberately instead of drifting in.
+/// FIVE GATES, ONE PER REDUCER. `heal_party`'s (ADR-0250 D1, below its joined
+/// check) and, since rb-128 (ADR-0273 D5), the four raising writers `care`,
+/// `train`, `essence_train` and `consume_crystalized_essence`, each gated as
+/// its FIRST statement. They write ERASE-policy tables (`inventory` via
+/// `consume_one`, `monster` / `monster_pub`) and §4.7's trigger predicate
+/// selects them exactly as it selects `heal_party`. ADR-0250 D7 deferred them
+/// BY SCOPE because their precedented placement — below the `u64`-keyed
+/// `monster` lookup — was unreachable by the native-host five-state matrix;
+/// ADR-0273 D2 moves the gate above that lookup, which closes the gap
+/// (R-rb-80-RAISINGWRITERS). Their per-reducer pins and executed matrices live
+/// in `guards_tests.rs` (ADR-0273 D9); this FILE-WIDE count is the census that
+/// sees what a per-body pin cannot.
 ///
-/// RED AT HEAD on clause `[rb80/file-count]`: the file mentions the wrapper ZERO
-/// times.
+/// RED AT HEAD (tests in, rb-128 fix absent) on clause `[rb80/file-count]`: the
+/// file mentions the wrapper ONCE (`heal_party`'s call) and must mention it
+/// five times.
 ///
-/// kills: M19 (a gate quietly added to `train`, `care`, `essence_train` or
-/// `consume_crystalized_essence` — the file count goes to 2) · a gate hoisted
-/// into a file-local helper or reached through a `..._for(ctx, other)` sibling
-/// (same count) · M17 (a wire-name twin — a PARAMETERISED reducer attribute
+/// kills: a gate hoisted into a file-local helper or reached through a
+/// `..._for(ctx, other)` sibling (SIX) · a gate on a non-reducer (SIX) · a lost
+/// gate on any of the five reducers (FOUR) · M17 (a wire-name twin — a
+/// PARAMETERISED reducer attribute
 /// republishing this reducer's wire name over an ungated fn while the gated Rust
 /// item is demoted: the bare and any-form attribute counts disagree and the name
 /// SET changes) · M14 (a file-scope `cfg(debug_assertions)` constant whose
@@ -4079,14 +4082,16 @@ fn rb80_raising_reducer_roster_and_open_writers_are_pinned() {
     let bare = rb80_gate_bare_name();
     let n_bare = squashed.matches(bare.as_str()).count();
     assert_eq!(
-        n_bare, 1,
+        n_bare, 5,
         "rb-80 [rb80/file-count] E1 FAIL: `raising.rs` mentions the deletion-gate wrapper \
-         {n_bare} time(s) by BARE NAME and must mention it EXACTLY once — `heal_party`'s call and \
-         nothing else. ZERO IS THE RED STATE AT HEAD. TWO or more means either a second reducer \
-         in this file was gated without the roster decision being re-argued (the four deferred \
-         writers are R-rb-80-RAISINGWRITERS, a SCOPE deferral) or the gate was hoisted into a \
-         file-local helper where no per-body pin can see it. The needle is the BARE name, so it \
-         also catches an alias, a re-export and a function-pointer binding."
+         {n_bare} time(s) by BARE NAME and must mention it EXACTLY five times — one call in each \
+         of its five reducers: `heal_party` (ADR-0250 D1) and, since rb-128 (ADR-0273 D5), \
+         `care`, `train`, `essence_train` and `consume_crystalized_essence`. ONE IS THE RED \
+         STATE BEFORE THE rb-128 FIX (only `heal_party` is gated). SIX or more means a gate was \
+         hoisted into a file-local helper where no per-body pin can see it, placed on a \
+         non-reducer, or duplicated inside one body. FOUR or fewer means a reducer lost its \
+         gate while its siblings kept theirs. The needle is the BARE name, so it also catches \
+         an alias, a re-export and a function-pointer binding."
     );
 
     // --- (b0) the file's WHOLE attribute budget -----------------------------
@@ -4219,10 +4224,10 @@ fn rb80_raising_reducer_roster_and_open_writers_are_pinned() {
         (
             concat!("consume_", "one("),
             3usize,
-            "exactly three inventory burns — `train` (:242), `heal_party` (:372) and \
-             `consume_crystalized_essence` (:731). A fourth is an unreviewed ERASE-table write; \
-             three is also the measured floor that makes R-rb-80-RAISINGWRITERS concrete rather \
-             than prose",
+            "exactly three inventory burns — `train`, `heal_party` and \
+             `consume_crystalized_essence` (each below its reducer's deletion gate since rb-128, \
+             ADR-0273 D5). A fourth is an unreviewed ERASE-table write, reachable from a body no \
+             per-reducer pin covers",
         ),
         (
             concat!("grant_", "item("),

@@ -557,12 +557,15 @@ fn taming_rs_carries_no_remaining_adr_0089_park_marker() {
 // reducer that ships in the CI-built dev wasm gets the same gate as a
 // client-callable one).
 //
-// `attempt_recruit` is CLASSIFY-OPEN (PRV1-10, ADR-0250 D6): its bait
-// `consume_one` (:119) and its success-path monster insert both happen INSIDE an
-// already-open wild battle behind the ownership and `Ongoing` guards — the
-// `submit_attack` / `use_battle_item` class, which rb-46's census explicitly
-// refuses to gate, and whose monster rows the cascade erases anyway (PRV1-6b).
-// The census below pins that classification mechanically.
+// `attempt_recruit` was CLASSIFY-OPEN here (PRV1-10, ADR-0250 D6). rb-128
+// (ADR-0273 D4) withdrew that classification on ADR-0258 D6's basis: on success
+// it inserts a NEW `monster` and `monster_pub` for the caller — it creates the
+// caller's assets, which is what separates class (iv) from the in-battle class
+// (i) — so it is now gated as its first statement. PRV1-10 still holds: the
+// already-open wild battle stays finishable through the ungated `submit_attack`,
+// `swap_active`, `flee` and `use_battle_item`; only the recruit is refused. The
+// census below pins the gate count and keeps the single bait burn ordered after
+// the gate; the executed matrix lives in `guards_tests.rs` (ADR-0273 D9).
 //
 // SCAN SUBSTRATE. Every scan reuses THIS file's existing helpers only
 // (`MODULE_SOURCE`, `strip_rust_comments`, `strip_rust_strings_taming`,
@@ -1124,29 +1127,29 @@ fn rb80_reducer_names(squashed: &str) -> Vec<String> {
     out
 }
 
-/// **E1 (the second arm, mechanically)** — `taming.rs` carries EXACTLY ONE
-/// deletion gate, its reducer roster is closed, its conditional-compilation
+/// **E1 (the second arm, mechanically)** — `taming.rs` carries EXACTLY TWO
+/// deletion gates, its reducer roster is closed, its conditional-compilation
 /// surface is exactly the three attributes the dev-reducer gate needs, its
 /// ERASE-table write verbs are the ones this slice reasoned about, and
-/// `attempt_recruit` keeps exactly the one bait burn its PRV1-10 classification
-/// is argued from.
+/// `attempt_recruit` keeps exactly one bait burn, ordered AFTER its gate.
 ///
-/// `attempt_recruit` is CLASSIFIED OPEN (PRV1-10, ADR-0250 D6)
-/// because its bait `consume_one` and its success-path monster insert happen
-/// INSIDE an already-open wild battle behind the ownership and `Ongoing` guards
-/// — the `submit_attack` / `use_battle_item` class (`battle.rs:1063`'s
-/// `consume_one` is ungated for the same reason, and rb-46's census refuses to
-/// gate in-battle reducers), and the cascade erases the monster rows anyway
-/// (PRV1-6b). Pinning the burn COUNT is what keeps that argument honest: a second
-/// `consume_one` in that body would be a bait burn on a path the PRV1-10 argument
-/// never covered.
+/// `attempt_recruit` is GATED AS ITS FIRST STATEMENT per ADR-0273 D4, which
+/// withdrew ADR-0250 D6's OPEN classification on ADR-0258 D6's basis: on
+/// success it inserts a NEW `monster` and `monster_pub` for the caller, so it
+/// creates the caller's assets — class (iv), not the in-battle class (i). The
+/// already-open wild battle stays finishable through the ungated in-battle
+/// reducers, so PRV1-10 is not violated. Pinning the burn COUNT still matters:
+/// a second `consume_one` in that body would be an inventory burn on a path
+/// nobody reasoned about, and the ORDER pins that the one burn sits below the
+/// gate.
 ///
-/// RED AT HEAD on clause `[rb80/file-count]`: the file mentions the wrapper ZERO
-/// times.
+/// RED AT HEAD (tests in, rb-128 fix absent) on clause `[rb80/file-count]`: the
+/// file mentions the wrapper ONCE (`grant_bait`'s call) and must mention it
+/// twice.
 ///
-/// kills: M19 (a gate quietly added to `attempt_recruit` — the file count goes to
-/// 2, and gating an in-battle action is the PRV1-10 violation ADR-0250 D6 argues
-/// against) · a gate hoisted into a file-local helper (same count) · M17 (a
+/// kills: a lost `attempt_recruit` gate (the file count goes back to 1, and the
+/// in-body count reads 0) · a gate hoisted into a file-local helper (the in-body
+/// count reads 0) · a duplicated gate (the count reads 3) · M17 (a
 /// wire-name twin over an ungated fn while the gated Rust item is demoted — the
 /// attribute counts disagree and the name SET changes) · M14 (a file-scope
 /// `cfg(debug_assertions)` constant pair, or a fourth `#[cfg]` that takes the
@@ -1162,15 +1165,16 @@ fn rb80_taming_reducer_roster_and_open_writers_are_pinned() {
     let bare = rb80_gate_bare_name();
     let n_bare = squashed.matches(bare.as_str()).count();
     assert_eq!(
-        n_bare, 1,
+        n_bare, 2,
         "rb-80 [rb80/file-count] E1 FAIL: `taming.rs` mentions the deletion-gate wrapper {n_bare} \
-         time(s) by BARE NAME and must mention it EXACTLY once — `grant_bait`'s call and nothing \
-         else. ZERO IS THE RED STATE AT HEAD. TWO means either `attempt_recruit` was gated \
-         without re-arguing its PRV1-10 classification (gating an action INSIDE an already-open \
-         battle is what PRV1-10 forbids, and it would trap the player in a battle they cannot \
-         finish) or the gate was hoisted into a file-local helper where no per-body pin can see \
-         it. The needle is the BARE name, so it also catches an alias, a re-export and a \
-         function-pointer binding."
+         time(s) by BARE NAME and must mention it EXACTLY twice — `grant_bait`'s call and, since \
+         rb-128, `attempt_recruit`'s (ADR-0273 D4 re-argued its old PRV1-10 OPEN classification: \
+         a recruit creates a NEW monster for the caller, and the open wild battle stays \
+         finishable through the ungated in-battle reducers), and nothing else. ONE IS THE RED \
+         STATE BEFORE THE rb-128 FIX. THREE means the gate was also placed in a file-local \
+         helper where no per-body pin can see it, or duplicated inside one body; ONE after the \
+         fix means a site lost its gate. The needle is the BARE name, so it also catches an \
+         alias, a re-export and a function-pointer binding."
     );
 
     // --- (b0) the file's WHOLE attribute budget -----------------------------
@@ -1301,9 +1305,9 @@ fn rb80_taming_reducer_roster_and_open_writers_are_pinned() {
         (
             concat!("consume_", "one("),
             1usize,
-            "ONE inventory burn, `attempt_recruit`'s bait consume (:119) — the write PRV1-10 \
-             classifies as an in-battle action rather than a new commitment. A second burn \
-             anywhere in this file is an ERASE-table write that argument never covered",
+            "ONE inventory burn, `attempt_recruit`'s bait consume — below that reducer's \
+             deletion gate since rb-128 (ADR-0273 D4). A second burn anywhere in this file is an \
+             ERASE-table write nobody reasoned about",
         ),
     ] {
         let n = squashed.matches(needle).count();
@@ -1316,32 +1320,45 @@ fn rb80_taming_reducer_roster_and_open_writers_are_pinned() {
         );
     }
 
-    // --- (e) attempt_recruit stays the PRV1-10 classification it claims -----
+    // --- (e) attempt_recruit: one gate, one burn, gate first ----------------
     let recruit = concat!("attempt_", "recruit");
     let recruit_body = rb80_scan_body(recruit);
     let burn = concat!("consume_", "one(");
     let n_burn = recruit_body.matches(burn).count();
     assert_eq!(
         n_burn, 1,
-        "rb-80 [rb80/open-body] E1 FAIL (the deliberate classification): `attempt_recruit` burns \
-         inventory {n_burn} time(s) and the body ADR-0250 D6 classified OPEN burns it exactly \
-         once — the optional bait, consumed BEFORE the roll, inside an already-open wild battle \
-         behind the ownership and `Ongoing` guards. That single burn is the whole PRV1-10 \
-         argument for leaving this reducer ungated (`battle.rs:1063`'s `consume_one` in \
-         `use_battle_item` is ungated for the identical reason). A SECOND burn would be a bait \
-         spend on a path the argument never covered, and ZERO would mean the argument is about a \
-         body that no longer exists — either way the classification must be re-argued in a new \
-         ADR, not repaired by loosening this count."
+        "rb-80 [rb80/recruit-body] E1 FAIL (the deliberate shape): `attempt_recruit` burns \
+         inventory {n_burn} time(s) and must burn it exactly once — the optional bait, consumed \
+         BEFORE the roll, inside the already-open wild battle behind the ownership and `Ongoing` \
+         guards. A SECOND burn is a bait spend on a path nobody reasoned about, and ZERO means \
+         this clause is about a body that no longer exists — either way re-argue it in a new \
+         ADR, never by loosening this count."
     );
-    let n_bare_in_body = recruit_body.matches(rb80_gate_bare_name().as_str()).count();
+    let n_bare_in_body = recruit_body.matches(bare.as_str()).count();
     assert_eq!(
-        n_bare_in_body, 0,
-        "rb-80 [rb80/open-body] E1 FAIL: `attempt_recruit` mentions the deletion-gate wrapper \
-         {n_bare_in_body} time(s) and must mention it ZERO times. This is the `m22s5_already_open_\
-         reducers_are_not_gated` shape: PRV1-10 says an already-live battle is never \
-         force-terminated, and a gate here refuses a mid-grace player's move INSIDE a battle they \
-         already opened, trapping the row until the reaper collects it. If a future slice decides \
-         otherwise, it re-argues PRV1-10 in an ADR and edits this clause deliberately."
+        n_bare_in_body, 1,
+        "rb-80 [rb80/recruit-body] E1 FAIL: `attempt_recruit` mentions the deletion-gate wrapper \
+         {n_bare_in_body} time(s) and must mention it EXACTLY once — its own first-statement \
+         gate (ADR-0273 D4, which withdrew ADR-0250 D6's OPEN classification: a recruit creates \
+         a NEW monster and monster_pub for the caller, and the open wild battle stays \
+         finishable through the ungated in-battle reducers, so PRV1-10 holds). ZERO IS THE RED \
+         STATE BEFORE THE rb-128 FIX, and after it means the gate was lost or hoisted out of \
+         this body; TWO is a second decision path spelled another way."
+    );
+    let gate_at = recruit_body
+        .find(bare.as_str())
+        .expect("rb-80: the gate counted 1 in attempt_recruit but could not be located");
+    let burn_at = recruit_body
+        .find(burn)
+        .expect("rb-80: the bait burn counted 1 in attempt_recruit but could not be located");
+    assert!(
+        gate_at < burn_at,
+        "rb-80 [rb80/recruit-body] E1 FAIL (decision before irreversible effect): in \
+         `attempt_recruit` the deletion gate is at squashed offset {gate_at}, AFTER the bait \
+         burn at {burn_at}. A gate below the burn refuses a deletion-gated caller only after \
+         the bait left their inventory — the transaction rolls back on the reject, but the \
+         reducer has reordered its own guards so a later refactor commits the burn. ADR-0273 D2 \
+         puts the gate FIRST."
     );
 }
 

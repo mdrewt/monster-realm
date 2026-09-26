@@ -6391,10 +6391,11 @@ fn rb78_live_sources() -> Vec<(String, String)> {
     out
 }
 
-/// TEN squashed function markers that MUST each fall inside some live gate
-/// region — at least one per GATE-BEARING MODULE: battle, economy, npc, pvp,
-/// raising, ranking, taming, trading. Not a floor, and not the site set
-/// (rb-46, rb-76 and rb-80 own those).
+/// THIRTEEN squashed function markers that MUST each fall inside some live gate
+/// region — at least one per GATE-BEARING MODULE, eleven of them: battle,
+/// economy, evolution, monster_mgmt, movement, npc, pvp, raising, ranking,
+/// taming, trading. Not a floor, and not the site set (rb-46, rb-76, rb-80 and
+/// rb-128 own those).
 ///
 /// WHY PER-MODULE COVERAGE, AND NOT FEWER ANCHORS. The per-needle control
 /// above only asks that each of the three wrapper needles matches somewhere in
@@ -6410,9 +6411,13 @@ fn rb78_live_sources() -> Vec<(String, String)> {
 /// at all (`begin_encounter`). It is one anchor per MODULE, never a second
 /// site census — which is why `propose_trade` and `advance_dialogue` are
 /// absent (their files are covered by `respond_trade` and `talk`). rb-80
-/// RE-DERIVED the last three rows when ADR-0250 D1-D4 made `raising.rs`,
-/// `npc.rs` and `taming.rs` gate-bearing; never just delete a row.
-fn rb78_region_anchors() -> [String; 10] {
+/// RE-DERIVED rows eight to ten when ADR-0250 D1-D4 made `raising.rs`,
+/// `npc.rs` and `taming.rs` gate-bearing, and rb-128 RE-DERIVED the last three
+/// when ADR-0273 D1 made `movement.rs`, `evolution.rs` and `monster_mgmt.rs`
+/// gate-bearing (one anchor each: `join_game`, `evolve`, `set_nickname` — the
+/// other ten rb-128 sites share a file with one of these, or with an anchor
+/// already listed); never just delete a row.
+fn rb78_region_anchors() -> [String; 13] {
     [
         ["fnstart_", "battle("].concat(),
         ["fnbegin_", "encounter("].concat(),
@@ -6424,6 +6429,9 @@ fn rb78_region_anchors() -> [String; 10] {
         ["fnheal_", "party("].concat(),
         ["fnt", "alk("].concat(),
         ["fngrant_", "bait("].concat(),
+        ["fnjoin_", "game("].concat(),
+        ["fnev", "olve("].concat(),
+        ["fnset_", "nickname("].concat(),
     ]
 }
 
@@ -6453,9 +6461,10 @@ fn rb78_line_caller_wrapper() -> String {
 /// substrate label. The assertions after it are POSITIVE CONTROLS, not floors
 /// for their own sake, and they are what stop this test passing over nothing:
 /// each of the three wrapper needles must still match live text, and the region
-/// slicer must still reach ten named reducer prefixes covering EVERY
-/// gate-bearing module — battle, economy, npc, pvp, raising, ranking, taming and
-/// trading. The per-module spread is the load-bearing half: `battle.rs` satisfies all three
+/// slicer must still reach thirteen named reducer prefixes covering EVERY
+/// gate-bearing module — battle, economy, evolution, monster_mgmt, movement,
+/// npc, pvp, raising, ranking, taming and trading (rb-128 re-derived the last
+/// three modules, ADR-0273). The per-module spread is the load-bearing half: `battle.rs` satisfies all three
 /// needles, so without it an entire other module could stop being scanned and
 /// only the anchors would notice. Without either, a renamed wrapper, a
 /// re-spelled qualification or a stranded depth counter would leave the region
@@ -6522,7 +6531,10 @@ fn rb78_no_macro_expands_above_any_deletion_gate() {
             "rb-78 ADR-0248 FAIL (live control): no gate region contains the squashed \
              declaration `{anchor}`, so EVERY GATE-BEARING MODULE NO LONGER CONTRIBUTES AT \
              LEAST ONE REGION — which is exactly what this control asserts, one anchor per \
-             module across battle, economy, npc, pvp, raising, ranking, taming and trading. \
+             module across battle, economy, evolution, monster_mgmt, movement, npc, pvp, \
+             raising, ranking, taming and trading. RB-128 RED STATE AT HEAD: the three anchors \
+             rb-128 added (the movement, evolution and monster_mgmt rows, ADR-0273 D1) find no \
+             region until those files carry their first fully-qualified deletion gate. \
              The needle control above cannot see this: `battle.rs` satisfies all three, so a whole \
              other module can fall out of the scan while that count stays happy, and every \
              macro clause for it is then skipped in silence. The likely causes, in order: that \
@@ -6778,27 +6790,29 @@ fn rb78_macro_divert_fixtures_are_rejected_by_clause() {
 /// region to the macro grammar.
 ///
 /// WHAT EACH CLAUSE KILLS, in the order they report:
-///   * THE ROSTER SIZE. Ten anchors, one per gate-bearing module (battle,
-///     economy, npc, pvp, raising, ranking, taming, trading). Seven is the state
-///     before this slice's roster edit and is a RED here: three modules would be
-///     gated and invisible to rb-78's grammar, so a macro expanded above any of
-///     the four new gates would pass CI in silence.
-///   * THE ROSTER'S TEN ROWS ARE DISTINCT. Size alone is forgeable, and register
+///   * THE ROSTER SIZE. Thirteen anchors since rb-128 (ADR-0273 D1 made
+///     `movement.rs`, `evolution.rs` and `monster_mgmt.rs` gate-bearing and
+///     re-derived one anchor for each); ten after rb-80, seven before it. A
+///     shorter roster is a RED here: a gated module with no anchor is invisible
+///     to rb-78's grammar, so a macro expanded above its gates would pass CI in
+///     silence.
+///   * THE ROSTER'S ROWS ARE DISTINCT. Size alone is forgeable, and register
 ///     row M20 is the measured shape: drop `respond_trade` and write `buy` twice.
-///     The count stays at ten, the size clause stays green, and `trading.rs`
+///     The count stays the same, the size clause stays green, and `trading.rs`
 ///     contributes no anchor at all — so rb-78's live control stops asserting
 ///     that the region slicer ever reached that file. A sorted, de-duplicated
-///     roster of ten refuses that trade.
-///   * THE ROSTER CONTENT — ALL TEN, not only this slice's three. Every anchor is
+///     roster of the full size refuses that trade.
+///   * THE ROSTER CONTENT — ALL THIRTEEN, not only rb-80's three. Every anchor is
 ///     asserted PRESENT by equality, so swapping one module's row for another's
 ///     is a failure instead of a silent narrowing. The fragments are split at
 ///     DIFFERENT points from the roster's own rows, one by one: with identical
 ///     splits, one transcription error copied into both places would satisfy this
 ///     clause while the roster pointed at a declaration that does not exist.
-///   * THE LIVE REGIONS. Each new anchor must fall inside a region the slicer
-///     actually cut out of a live source. This is the clause the implementation
-///     has to satisfy: it is RED until the four gates are wired, because a
-///     module with no fully-qualified gate call yields no region at all.
+///   * THE LIVE REGIONS. Each of rb-80's three anchors must fall inside a region
+///     the slicer actually cut out of a live source. rb-128's three are held
+///     live by `rb78_no_macro_expands_above_any_deletion_gate` itself, which
+///     walks the whole roster; this clause stays scoped to the slice it was
+///     written for.
 ///
 /// WHY `npc.rs` IS ANCHORED ONCE. `rb78_region_anchors()` is one anchor per
 /// MODULE, never a site census: `advance_dialogue`'s own region is pinned by
@@ -6816,31 +6830,33 @@ fn rb80_rb78_anchor_roster_covers_the_new_gate_bearing_modules() {
     let anchors = rb78_region_anchors();
     assert_eq!(
         anchors.len(),
-        10,
+        13,
         "rb-80 [rb80/anchor-roster] FAIL: `rb78_region_anchors()` carries {} anchor(s) and must \
-         carry 10 — one per GATE-BEARING MODULE, and this slice makes `raising.rs`, `npc.rs` and \
-         `taming.rs` three more of them (ADR-0250 D1-D4). SEVEN IS THE PRE-SLICE STATE: under it \
-         the three new modules contribute no anchor, so rb-78's live control would stay green \
-         while a macro-divert above any of the four new gates went unexamined — the region scan \
-         only bans what it reaches. Never shrink this roster to make a build green; re-derive the \
-         module's anchor instead.",
+         carry 13 — at least one per GATE-BEARING MODULE. rb-80 made `raising.rs`, `npc.rs` and \
+         `taming.rs` three more of them (ADR-0250 D1-D4, seven to ten), and rb-128 made \
+         `movement.rs`, `evolution.rs` and `monster_mgmt.rs` three more again (ADR-0273 D1, ten \
+         to thirteen). Under a shorter roster those modules contribute no anchor, so rb-78's \
+         live control would stay green while a macro-divert above any of their gates went \
+         unexamined — the region scan only bans what it reaches. Never shrink this roster to \
+         make a build green; re-derive the module's anchor instead.",
         anchors.len()
     );
 
-    // --- the roster's ten rows are DISTINCT ----------------------------------
+    // --- the roster's thirteen rows are DISTINCT -----------------------------
     let mut distinct: Vec<String> = anchors.to_vec();
     distinct.sort();
     distinct.dedup();
     let n_distinct = distinct.len();
     assert_eq!(
-        n_distinct, 10,
-        "rb-80 [rb80/anchor-roster] FAIL: the roster's ten rows collapse to {n_distinct} DISTINCT \
-         anchor(s) and must stay TEN. SIZE ALONE IS FORGEABLE, and register row M20 is the \
-         measured shape: drop `respond_trade` and write `buy` twice. The count stays at ten, the \
-         size clause above stays green, and `trading.rs` contributes no anchor at all — so \
-         rb-78's live control no longer asserts that the region slicer ever reached that file, and \
-         a macro expanded above that module's gate goes unexamined. Sorted and de-duplicated \
-         rather than compared pairwise so the failure prints what survived: {distinct:?}"
+        n_distinct, 13,
+        "rb-80 [rb80/anchor-roster] FAIL: the roster's thirteen rows collapse to {n_distinct} \
+         DISTINCT anchor(s) and must stay THIRTEEN. SIZE ALONE IS FORGEABLE, and register row \
+         M20 is the measured shape: drop `respond_trade` and write `buy` twice. The count stays \
+         the same, the size clause above stays green, and `trading.rs` contributes no anchor at \
+         all — so rb-78's live control no longer asserts that the region slicer ever reached \
+         that file, and a macro expanded above that module's gate goes unexamined. Sorted and \
+         de-duplicated rather than compared pairwise so the failure prints what survived: \
+         {distinct:?}"
     );
 
     // --- every gate-bearing module's anchor is PRESENT, by equality ----------
@@ -6851,7 +6867,7 @@ fn rb80_rb78_anchor_roster_covers_the_new_gate_bearing_modules() {
     let a_heal = ["fnheal_p", "arty("].concat();
     let a_talk = ["fnta", "lk("].concat();
     let a_bait = ["fngrant_b", "ait("].concat();
-    let expected: [String; 10] = [
+    let expected: [String; 13] = [
         ["fnsta", "rt_battle("].concat(),
         ["fnbeg", "in_encounter("].concat(),
         ["fnstart_w", "ild_battle("].concat(),
@@ -6862,13 +6878,16 @@ fn rb80_rb78_anchor_roster_covers_the_new_gate_bearing_modules() {
         a_heal.clone(),
         a_talk.clone(),
         a_bait.clone(),
+        ["fnjoin_g", "ame("].concat(),
+        ["fnevo", "lve("].concat(),
+        ["fnset_nick", "name("].concat(),
     ];
     for wanted in &expected {
         let present = anchors.iter().any(|a| a == wanted);
         assert!(
             present,
             "rb-80 [rb80/anchor-roster] FAIL: `rb78_region_anchors()` does not contain the \
-             squashed declaration `{wanted}`. ALL TEN are asserted here, not only this slice's \
+             squashed declaration `{wanted}`. ALL THIRTEEN are asserted here, not only rb-80's \
              three: a roster that swaps one module's anchor for another's keeps its size, keeps \
              its distinctness, and still stops covering a file (register row M20). Membership is \
              compared by EQUALITY against fragments split at different bytes from the roster's \
@@ -6907,4 +6926,1049 @@ fn rb80_rb78_anchor_roster_covers_the_new_gate_bearing_modules() {
             regions.len()
         );
     }
+}
+
+// ===========================================================================
+// rb-128 (residual R-rb-45-DRAIN, ADR-0273) — the thirteen class-(iv) gameplay
+// writers open with the caller-only deletion gate.
+//
+// EARS criterion encoded by this block:
+//
+//   E1  WHEN a class-(iv) KNOWN-GAP reducer (join_game, evolve, care, train,
+//       essence_train, consume_crystalized_essence, attempt_recruit,
+//       set_nickname, set_party_slot, enqueue_move, set_move, clear_queue,
+//       dismiss_dialogue) is called by a deletion-gated account THE SYSTEM
+//       SHALL reject before any write.
+//
+// ADR-0273 D2 fixes the placement: the gate is the FIRST statement of each of
+// the thirteen bodies, above the caller binding and every lookup. That is what
+// makes the rb-41 native-host five-state matrix reach the gate in every one of
+// them, with the reducer's OWN first guard as the positive control in the three
+// admitted states (`already joined`, `not joined`, `monster not found`,
+// `battle not found`, or a real `Ok` plus a real delete for `dismiss_dialogue`).
+// ADR-0273 D9 records why all of it lives HERE rather than beside each reducer:
+// one five-state helper and one set of m22-s5 strippers serve all thirteen.
+//
+// WHAT THIS BLOCK DELIBERATELY DOES NOT RE-PIN (ADR-0273 Consequences): reducer
+// rosters, attribute budgets, raw-predicate containment and the gated SET. The
+// ADR-0258 syn census (`privacy_enforcement_tests.rs`, EXPECTED_GATED) already
+// pins every reducer's verdict exactly, refuses a renaming import, gives a
+// parameterised-attribute twin its own verdict and treats a gate inside a
+// helper as no gate; rb-76 owns raw-predicate containment and rb-78 owns macros
+// above gates. The source pins below are only the clauses that census cannot
+// see.
+//
+// RED STATE OF THIS BLOCK AT HEAD (tests in, fix absent):
+//   * the thirteen `rb128_*_refuses_only_a_deletion_gated_caller*` tests — RED
+//     on state 3 of 5 (PendingDeletion): with no gate each reducer answers a
+//     mid-grace caller with its ordinary first-guard result.
+//   * `rb128_class_iv_reducers_open_with_the_deletion_gate` — RED on clause (P)
+//     for the first row of its table (`join_game`, whose body still opens with
+//     the caller binding).
+//   * `rb128_gate_bearing_files_carry_exact_bare_name_totals` — RED on its first
+//     row: `movement.rs` names the wrapper zero times and must name it four.
+//   * `rb128_deletion_predicate_chain_is_declared_once_and_uncfgd` — GREEN AT
+//     HEAD BY DESIGN: an anti-bypass fence (register row M17), a separate test
+//     so it can be observed passing.
+//
+// SCAN SUBSTRATE RULES, as in every block above (breaking them breaks OTHER
+// slices' gates): every needle naming a production symbol is assembled from
+// fragments, no failure message quotes a searched needle verbatim, the double
+// quote comes from `double_quote()` (a number), a brace is spelled as a number,
+// neither block-comment marker is ever spelled contiguously, and no reducer
+// declaration is ever written contiguously in this file (an eval takes the
+// FIRST declaration hit across sorted files, and this file sorts before
+// `movement.rs`, `monster_mgmt.rs`, `npc.rs`, `raising.rs` and `taming.rs`).
+// ===========================================================================
+
+/// `movement.rs`, for the rb-128 per-reducer and per-file pins.
+const RB128_MOVEMENT_RS: &str = include_str!("movement.rs");
+
+/// `evolution.rs`, for the rb-128 per-reducer and per-file pins.
+const RB128_EVOLUTION_RS: &str = include_str!("evolution.rs");
+
+/// `raising.rs`, for the rb-128 per-reducer pins (its file total is rb-80's).
+const RB128_RAISING_RS: &str = include_str!("raising.rs");
+
+/// `taming.rs`, for the rb-128 per-reducer pin (its file total is rb-80's).
+const RB128_TAMING_RS: &str = include_str!("taming.rs");
+
+/// `monster_mgmt.rs`, for the rb-128 per-reducer and per-file pins.
+const RB128_MONSTER_MGMT_RS: &str = include_str!("monster_mgmt.rs");
+
+/// `npc.rs`, for the rb-128 per-reducer pin (its file total is rb-80's).
+const RB128_NPC_RS: &str = include_str!("npc.rs");
+
+/// Seed the one `player` row `join_game`'s joined check needs.
+///
+/// A plain struct literal, the house pattern for `Player` (`rb46_seed_player`,
+/// `rb80_seed_player`): unlike `Account` it has no pure constructor to route
+/// through and carries no legal-state invariant. The handle is registered
+/// against the SAME fixture the account handle comes from — rows live in the
+/// host store, not in the handle.
+fn rb128_seed_player(fx: &crate::native_host_tests::Fixture, me: spacetimedb::Identity) {
+    let players = fx.table::<crate::schema::Player>("player", "identity", |r| r.identity);
+    players.seed(&crate::schema::Player {
+        identity: me,
+        entity_id: 7,
+        name: String::new(),
+        online: true,
+        last_input_seq: 0,
+    });
+}
+
+/// A mid-grace account row for somebody who is NOT the caller.
+///
+/// Seeded once per test and never removed, so the account table is never empty
+/// of deleting rows. Without it a TABLE-keyed gate — refuse if ANYBODY is
+/// deleting — is observationally identical to the caller-keyed one in all five
+/// states. `remove` and `find` are `Identity`-keyed, so this row never disturbs
+/// the per-state `remove(me) == 1` assertions.
+fn rb128_seed_deleting_stranger(
+    acct: &crate::native_host_tests::Handle<'_, crate::schema::Account>,
+) {
+    let stranger = spacetimedb::Identity::from_byte_array([9u8; 32]);
+    acct.seed(&crate::accounts::requested_deletion(
+        crate::accounts::new_account_row(stranger, String::new(), 0),
+        1,
+    ));
+}
+
+/// The per-state hook for the twelve reducers whose admitted path stops at a
+/// READ: nothing was written in any state, so there is nothing to observe.
+fn rb128_no_row_oracle(_refused: bool) {}
+
+/// The five-state executed matrix, driven once per class-(iv) reducer so a
+/// single dropped gate fails with a message naming which one.
+///
+/// States, in the rb-80 order: no account row, `Active`, `PendingDeletion`,
+/// `PendingDeletion` plus the terminal marker, row removed. A mid-grace
+/// STRANGER is seeded once before state 1 and never removed. Rows are built
+/// with the shipped pure constructors only, so this can never assemble a state
+/// the module itself cannot. `seed` PUSHES rather than upserting, so each
+/// transition removes the caller's previous row and asserts exactly one went.
+///
+/// `ordinary` is the reducer's own first-guard result in the admitted states,
+/// pinned EXACTLY, never as any-error: otherwise a regression in that guard
+/// (which returns a different error) would masquerade as a pass in all three
+/// admitted states and the positive control would go quietly vacuous. The
+/// refused states compare against the CONSTANT, never a re-typed literal.
+///
+/// `after` runs after every state's assertion, with `true` in the two refused
+/// states. `dismiss_dialogue` uses it to OBSERVE the reject-before-any-write
+/// claim through its registered table handle; every other reducer passes
+/// `rb128_no_row_oracle`.
+fn rb128_assert_refused_only_while_gated(
+    what: &str,
+    fx: &crate::native_host_tests::Fixture,
+    acct: &crate::native_host_tests::Handle<'_, crate::schema::Account>,
+    me: spacetimedb::Identity,
+    call: &dyn Fn() -> Result<(), String>,
+    ordinary: Result<(), String>,
+    after: &dyn Fn(bool),
+) {
+    let gated: Result<(), String> = Err(crate::guards::REJECT_DELETION_GATED.to_string());
+
+    let active = crate::accounts::new_account_row(me, String::new(), 0);
+    let pending = crate::accounts::requested_deletion(active.clone(), 1);
+    let terminal = crate::accounts::terminal_account(pending.clone(), 2);
+
+    rb128_seed_deleting_stranger(acct);
+
+    // --- State 1: no account row for the caller (a guest) -------------------
+    let got = call();
+    assert_eq!(
+        got,
+        ordinary,
+        "rb-128 E1 FAIL (state 1 of 5, ADMITTED: no account row): `{what}` returned {got:?} for \
+         a caller with NO account row, while a STRANGER's row is mid-grace; it must return its \
+         own first-guard result, pinned EXACTLY as {ordinary:?}. A deletion reject here is \
+         either an INVERTED gate — a total outage of this reducer for every honest player — or \
+         a TABLE-keyed fake that refuses because somebody ELSE is deleting. A different error \
+         means the reducer's own guard chain moved under this pin; re-derive the positive \
+         control from ADR-0273 D2 rather than loosening it. An `Ok` where the ordinary answer is \
+         an `Err` is an early return ABOVE the gate — on this host the sender is the all-zero \
+         wild identity, so a fixed-sender return fires here. Indexes the generated code asked \
+         the host for: {:?}",
+        fx.requested_indexes()
+    );
+    after(false);
+
+    // --- State 2: an Active account row --------------------------------------
+    acct.seed(&active);
+    let got = call();
+    assert_eq!(
+        got, ordinary,
+        "rb-128 E1 FAIL (state 2 of 5, ADMITTED: Active account): `{what}` returned {got:?} for a \
+         caller whose account row is `Active` (a stranger's row is mid-grace); it must return \
+         exactly {ordinary:?}. This is the ordinary player, and refusing them is a TOTAL OUTAGE \
+         of `{what}` that every source pin in this crate would report as correctly gated — the \
+         gate statement is byte-identical whichever way the decision runs. It is what an \
+         inverted branch, a row-EXISTS-keyed fake and an any-row-pending table scan all produce."
+    );
+    after(false);
+
+    // --- State 3: mid-grace (PendingDeletion) --------------------------------
+    assert_eq!(
+        acct.remove(me),
+        1,
+        "rb-128 fixture ({what}): exactly one `Active` account row was seeded for the CALLER and \
+         must be removed before the mid-grace row is pushed — `seed` appends rather than \
+         upserting, so a miscount would leave two rows for one identity and the unique-index \
+         lookup would assert instead of answering. `remove` is Identity-keyed, so the stranger's \
+         row is untouched and never counted here."
+    );
+    acct.seed(&pending);
+    let got = call();
+    assert_eq!(
+        got, gated,
+        "rb-128 E1 FAIL (state 3 of 5, REFUSED: mid-grace): `{what}` returned {got:?} for a caller \
+         whose account is `PendingDeletion`; it must return the module's single static deletion \
+         reject, compared against the CONSTANT. THIS IS THE RED STATE AT HEAD: `{what}` sat in \
+         the ADR-0258 class-(iv) KNOWN-GAP roster and no slice had gated it, so a mid-grace \
+         account keeps writing rows the deletion cascade is about to erase and the reducer \
+         answers with its ordinary first-guard result. AFTER THE FIX that same ordinary result \
+         means the gate is missing, its verdict is discarded (`let _ =`, `.ok()`), it sits BELOW \
+         the reducer's first guard (ADR-0273 D2 puts it first, above every lookup), or it is \
+         compiled out of this build; the stamp-aware sibling wrapper admits this row too."
+    );
+    after(true);
+
+    // --- State 4: terminal (PendingDeletion + the marker) -------------------
+    assert_eq!(
+        acct.remove(me),
+        1,
+        "rb-128 fixture ({what}): exactly one `PendingDeletion` account row was seeded for the \
+         CALLER and must be removed before the terminal row is pushed (`seed` appends, it never \
+         upserts; the stranger's row is Identity-keyed and stays put)."
+    );
+    acct.seed(&terminal);
+    let got = call();
+    assert_eq!(
+        got, gated,
+        "rb-128 E1 FAIL (state 4 of 5, REFUSED: terminal): `{what}` returned {got:?} for a caller \
+         whose account carries the M22 terminal marker. An already-erased account has no rows \
+         left — the cascade deleted them — so a write here recreates what the deletion just \
+         removed. The pure decision is an explicit disjunction \
+         (`accounts::should_reject_for_deletion`) precisely so this state is fail-closed even on \
+         the illegal `Active`-plus-marker shape."
+    );
+    after(true);
+
+    // --- State 5: the caller's row is gone again -----------------------------
+    assert_eq!(
+        acct.remove(me),
+        1,
+        "rb-128 fixture ({what}): exactly one terminal account row was seeded for the CALLER and \
+         must be removable; the stranger's mid-grace row stays."
+    );
+    let got = call();
+    assert_eq!(
+        got, ordinary,
+        "rb-128 E1 FAIL (state 5 of 5, ADMITTED: row removed): `{what}` returned {got:?} once the \
+         caller's account row was gone again (the stranger's mid-grace row is still there); it \
+         must return exactly {ordinary:?}. The verdict must track LIVE rows FOR THE CALLER: an \
+         answer that latches on a row it has already seen — a memoised predicate, a cached \
+         decision, a process-wide flag — keeps refusing this identity forever, and an \
+         any-row-pending answer refuses it because of somebody else. No state above can tell \
+         either of those from a correct gate on its own."
+    );
+    after(false);
+}
+
+/// **E1 (behaviour)** — `join_game` refuses a deletion-gated caller, admits
+/// everybody else, and answers from the CALLER's own row.
+///
+/// Positive control: `already joined` (movement.rs:52-56). The caller's `player`
+/// row is seeded FIRST on purpose: without it every admitted state runs past the
+/// joined check into the `character` insert, and every write syscall ABORTS the
+/// test process — a crash, not an assertion. The name argument must pass
+/// `validate_name`, which sits above the joined check.
+///
+/// RED AT HEAD on state 3: with no gate the reducer answers `already joined` to a
+/// mid-grace caller too.
+///
+/// kills: a dropped or discarded gate, and the ADR-0273 D10 rejected placement
+/// BELOW the joined check (state 3 answers `already joined` either way) · M9
+/// inverted polarity (states 1, 2 and 5) · a table-keyed fake (the admitted
+/// states, while the stranger is mid-grace) · a latched answer (state 5).
+#[test]
+fn rb128_join_game_refuses_only_a_deletion_gated_caller() {
+    let fx = crate::native_host_tests::fixture();
+    let acct = fx.table::<crate::schema::Account>("account", "identity", |r| r.identity);
+    let ctx = fx.ctx();
+    let me = ctx.sender();
+    rb128_seed_player(&fx, me);
+
+    let name = ["join_", "game"].concat();
+    let call = || crate::movement::join_game(&ctx, "Tester".to_string());
+    rb128_assert_refused_only_while_gated(
+        name.as_str(),
+        &fx,
+        &acct,
+        me,
+        &call,
+        Err(["already ", "joined"].concat()),
+        &rb128_no_row_oracle,
+    );
+}
+
+/// **E1 (behaviour)** — `enqueue_move` refuses a deletion-gated caller and
+/// admits everybody else.
+///
+/// Positive control: `not joined`, from `authorize_move` (guards.rs:234-238). No
+/// `player` row is seeded, so the player index is unregistered and reads nothing;
+/// the ADR-0168 D2 battle lock above it reads two unregistered battle indexes and
+/// answers false. Nothing is written in any state.
+///
+/// RED AT HEAD on state 3: with no gate the reducer answers `not joined`.
+///
+/// kills: M4 (the gate placed below `authorize_move` — state 3 answers
+/// `not joined`) · a dropped or discarded gate · M9 · a table-keyed fake · a
+/// latched answer. HONEST LIMIT: a gate placed between the battle lock and
+/// `authorize_move`, or hoisted INTO `authorize_move` (M8), still refuses here
+/// — clause (P) of `rb128_class_iv_reducers_open_with_the_deletion_gate` and the
+/// `movement.rs` file total own those.
+#[test]
+fn rb128_enqueue_move_refuses_only_a_deletion_gated_caller() {
+    let fx = crate::native_host_tests::fixture();
+    let acct = fx.table::<crate::schema::Account>("account", "identity", |r| r.identity);
+    let ctx = fx.ctx();
+    let me = ctx.sender();
+
+    let name = ["enqueue_", "move"].concat();
+    let call = || crate::movement::enqueue_move(&ctx, game_core::MoveInput::Jump, 1);
+    rb128_assert_refused_only_while_gated(
+        name.as_str(),
+        &fx,
+        &acct,
+        me,
+        &call,
+        Err(["not ", "joined"].concat()),
+        &rb128_no_row_oracle,
+    );
+}
+
+/// **E1 (behaviour)** — `set_move` refuses a deletion-gated caller and admits
+/// everybody else.
+///
+/// Positive control: `not joined`, from `authorize_move`, exactly as for
+/// `enqueue_move` (the battle lock above it answers false on this host). A
+/// SEPARATE test from `enqueue_move`'s so one dropped gate fails with a message
+/// naming which reducer lost it.
+///
+/// RED AT HEAD on state 3.
+///
+/// kills: a dropped, discarded or below-`authorize_move` gate on `set_move`
+/// only · M9 · a table-keyed fake · a latched answer.
+#[test]
+fn rb128_set_move_refuses_only_a_deletion_gated_caller() {
+    let fx = crate::native_host_tests::fixture();
+    let acct = fx.table::<crate::schema::Account>("account", "identity", |r| r.identity);
+    let ctx = fx.ctx();
+    let me = ctx.sender();
+
+    let name = ["set_", "move"].concat();
+    let call = || crate::movement::set_move(&ctx, game_core::MoveInput::Jump, 1);
+    rb128_assert_refused_only_while_gated(
+        name.as_str(),
+        &fx,
+        &acct,
+        me,
+        &call,
+        Err(["not ", "joined"].concat()),
+        &rb128_no_row_oracle,
+    );
+}
+
+/// **E1 (behaviour)** — `clear_queue` refuses a deletion-gated caller and admits
+/// everybody else.
+///
+/// Positive control: `not joined`, from `authorize_move` — `clear_queue` carries
+/// no battle lock (ADR-0168 D3, which ADR-0273 D6 keeps; the deletion gate is
+/// orthogonal to it).
+///
+/// RED AT HEAD on state 3.
+///
+/// kills: a dropped, discarded or below-`authorize_move` gate on `clear_queue` ·
+/// M9 · a table-keyed fake · a latched answer.
+#[test]
+fn rb128_clear_queue_refuses_only_a_deletion_gated_caller() {
+    let fx = crate::native_host_tests::fixture();
+    let acct = fx.table::<crate::schema::Account>("account", "identity", |r| r.identity);
+    let ctx = fx.ctx();
+    let me = ctx.sender();
+
+    let name = ["clear_", "queue"].concat();
+    let call = || crate::movement::clear_queue(&ctx, 1);
+    rb128_assert_refused_only_while_gated(
+        name.as_str(),
+        &fx,
+        &acct,
+        me,
+        &call,
+        Err(["not ", "joined"].concat()),
+        &rb128_no_row_oracle,
+    );
+}
+
+/// **E1 (behaviour)** — `evolve` refuses a deletion-gated caller and admits
+/// everybody else.
+///
+/// Positive control: `monster not found` (evolution.rs:57-59). The `u64`-keyed
+/// `monster` index is unregistered, so the lookup yields nothing and no
+/// `Monster` seed is needed — the ADR-0250 D7 proof-vehicle gap closes because
+/// the gate now sits ABOVE that lookup (ADR-0273 D5).
+///
+/// RED AT HEAD on state 3.
+///
+/// kills: a dropped or discarded gate, or one placed below the monster lookup
+/// (state 3 answers `monster not found`) · M14 (the stamp-aware sibling wrapper
+/// with an old stamp admits the mid-grace row) · M9 · a table-keyed fake · a
+/// latched answer. HONEST LIMIT: M3 (a test-only conditional attribute on the
+/// gate statement) runs the gate in THIS build, so it passes here; clauses (P)
+/// and (E) of the per-reducer source pin own it.
+#[test]
+fn rb128_evolve_refuses_only_a_deletion_gated_caller() {
+    let fx = crate::native_host_tests::fixture();
+    let acct = fx.table::<crate::schema::Account>("account", "identity", |r| r.identity);
+    let ctx = fx.ctx();
+    let me = ctx.sender();
+
+    let name = ["evo", "lve"].concat();
+    let call = || crate::evolution::evolve(&ctx, 1, 5);
+    rb128_assert_refused_only_while_gated(
+        name.as_str(),
+        &fx,
+        &acct,
+        me,
+        &call,
+        Err(["monster not ", "found"].concat()),
+        &rb128_no_row_oracle,
+    );
+}
+
+/// **E1 (behaviour)** — `care` refuses a deletion-gated caller and admits
+/// everybody else.
+///
+/// Positive control: `monster not found` (raising.rs:76-78), for the same
+/// unregistered-index reason as `evolve`.
+///
+/// RED AT HEAD on state 3.
+///
+/// kills: M1 (the dropped `care` gate) · a discarded or below-lookup gate · M9 ·
+/// a table-keyed fake · a latched answer.
+#[test]
+fn rb128_care_refuses_only_a_deletion_gated_caller() {
+    let fx = crate::native_host_tests::fixture();
+    let acct = fx.table::<crate::schema::Account>("account", "identity", |r| r.identity);
+    let ctx = fx.ctx();
+    let me = ctx.sender();
+
+    let name = ["ca", "re"].concat();
+    let call = || crate::raising::care(&ctx, 1);
+    rb128_assert_refused_only_while_gated(
+        name.as_str(),
+        &fx,
+        &acct,
+        me,
+        &call,
+        Err(["monster not ", "found"].concat()),
+        &rb128_no_row_oracle,
+    );
+}
+
+/// **E1 (behaviour)** — `train` refuses a deletion-gated caller and admits
+/// everybody else.
+///
+/// Positive control: `monster not found` (raising.rs:150-152), reached before
+/// the food-item escrow read, the item lookup and the `consume_one` burn.
+///
+/// RED AT HEAD on state 3.
+///
+/// kills: a dropped, discarded or below-lookup gate on `train` (including the
+/// M11 alias call, if its verdict is discarded) · M9 · a table-keyed fake · a
+/// latched answer.
+#[test]
+fn rb128_train_refuses_only_a_deletion_gated_caller() {
+    let fx = crate::native_host_tests::fixture();
+    let acct = fx.table::<crate::schema::Account>("account", "identity", |r| r.identity);
+    let ctx = fx.ctx();
+    let me = ctx.sender();
+
+    let name = ["tra", "in"].concat();
+    let call = || crate::raising::train(&ctx, 1, 1);
+    rb128_assert_refused_only_while_gated(
+        name.as_str(),
+        &fx,
+        &acct,
+        me,
+        &call,
+        Err(["monster not ", "found"].concat()),
+        &rb128_no_row_oracle,
+    );
+}
+
+/// **E1 (behaviour)** — `essence_train` refuses a deletion-gated caller and
+/// admits everybody else.
+///
+/// Positive control: `monster not found` (raising.rs:632-634).
+///
+/// RED AT HEAD on state 3.
+///
+/// kills: a dropped, discarded or below-lookup gate on `essence_train` · M9 · a
+/// table-keyed fake · a latched answer.
+#[test]
+fn rb128_essence_train_refuses_only_a_deletion_gated_caller() {
+    let fx = crate::native_host_tests::fixture();
+    let acct = fx.table::<crate::schema::Account>("account", "identity", |r| r.identity);
+    let ctx = fx.ctx();
+    let me = ctx.sender();
+
+    let name = ["essence_", "train"].concat();
+    let call = || crate::raising::essence_train(&ctx, 1, game_core::Affinity::Fire);
+    rb128_assert_refused_only_while_gated(
+        name.as_str(),
+        &fx,
+        &acct,
+        me,
+        &call,
+        Err(["monster not ", "found"].concat()),
+        &rb128_no_row_oracle,
+    );
+}
+
+/// **E1 (behaviour)** — `consume_crystalized_essence` refuses a deletion-gated
+/// caller and admits everybody else.
+///
+/// Positive control: `monster not found` (raising.rs:679-681), reached before the
+/// item escrow read, the content-registry lookup and the `consume_one` burn.
+///
+/// RED AT HEAD on state 3.
+///
+/// kills: a dropped, discarded or below-lookup gate on
+/// `consume_crystalized_essence` · M9 · a table-keyed fake · a latched answer.
+#[test]
+fn rb128_consume_crystalized_essence_refuses_only_a_deletion_gated_caller() {
+    let fx = crate::native_host_tests::fixture();
+    let acct = fx.table::<crate::schema::Account>("account", "identity", |r| r.identity);
+    let ctx = fx.ctx();
+    let me = ctx.sender();
+
+    let name = ["consume_crystalized_", "essence"].concat();
+    let call = || crate::raising::consume_crystalized_essence(&ctx, 1, 1);
+    rb128_assert_refused_only_while_gated(
+        name.as_str(),
+        &fx,
+        &acct,
+        me,
+        &call,
+        Err(["monster not ", "found"].concat()),
+        &rb128_no_row_oracle,
+    );
+}
+
+/// **E1 (behaviour)** — `attempt_recruit` refuses a deletion-gated caller and
+/// admits everybody else.
+///
+/// Positive control: `battle not found` (taming.rs:49-56). The `u64`-keyed
+/// `battle` index is unregistered, so the lookup yields nothing — well before the
+/// bait `consume_one` and the success-path `monster` insert that make this
+/// reducer class (iv) rather than class (i) (ADR-0258 D6, ADR-0273 D4).
+///
+/// RED AT HEAD on state 3.
+///
+/// kills: a dropped, discarded or below-lookup gate on `attempt_recruit` · M9 · a
+/// table-keyed fake · a latched answer.
+#[test]
+fn rb128_attempt_recruit_refuses_only_a_deletion_gated_caller() {
+    let fx = crate::native_host_tests::fixture();
+    let acct = fx.table::<crate::schema::Account>("account", "identity", |r| r.identity);
+    let ctx = fx.ctx();
+    let me = ctx.sender();
+
+    let name = ["attempt_", "recruit"].concat();
+    let call = || crate::taming::attempt_recruit(&ctx, 1, None);
+    rb128_assert_refused_only_while_gated(
+        name.as_str(),
+        &fx,
+        &acct,
+        me,
+        &call,
+        Err(["battle not ", "found"].concat()),
+        &rb128_no_row_oracle,
+    );
+}
+
+/// **E1 (behaviour)** — `set_nickname` refuses a deletion-gated caller and
+/// admits everybody else.
+///
+/// Positive control: `monster not found` (monster_mgmt.rs:23-27). The nickname
+/// argument is never reached in any state.
+///
+/// RED AT HEAD on state 3.
+///
+/// kills: M2 (a `let _ =` discard of the `set_nickname` gate — state 3 answers
+/// `monster not found`) · a dropped or below-lookup gate · M9 · a table-keyed
+/// fake · a latched answer.
+#[test]
+fn rb128_set_nickname_refuses_only_a_deletion_gated_caller() {
+    let fx = crate::native_host_tests::fixture();
+    let acct = fx.table::<crate::schema::Account>("account", "identity", |r| r.identity);
+    let ctx = fx.ctx();
+    let me = ctx.sender();
+
+    let name = ["set_", "nickname"].concat();
+    let call = || crate::monster_mgmt::set_nickname(&ctx, 1, "Rex".to_string());
+    rb128_assert_refused_only_while_gated(
+        name.as_str(),
+        &fx,
+        &acct,
+        me,
+        &call,
+        Err(["monster not ", "found"].concat()),
+        &rb128_no_row_oracle,
+    );
+}
+
+/// **E1 (behaviour)** — `set_party_slot` refuses a deletion-gated caller and
+/// admits everybody else.
+///
+/// Positive control: `monster not found` (monster_mgmt.rs:61-65).
+///
+/// RED AT HEAD on state 3.
+///
+/// kills: a dropped, discarded or below-lookup gate on `set_party_slot` · M6b (a
+/// fixed-sender `return Ok(())` above the gate — on this host the sender IS the
+/// all-zero wild identity, so state 1 answers `Ok`) · M9 · a table-keyed fake ·
+/// a latched answer. HONEST LIMIT: M6a (an argument-keyed early return above the
+/// gate on a slot value this test never sends) passes here; clause (P) owns it.
+#[test]
+fn rb128_set_party_slot_refuses_only_a_deletion_gated_caller() {
+    let fx = crate::native_host_tests::fixture();
+    let acct = fx.table::<crate::schema::Account>("account", "identity", |r| r.identity);
+    let ctx = fx.ctx();
+    let me = ctx.sender();
+
+    let name = ["set_party_", "slot"].concat();
+    let call = || crate::monster_mgmt::set_party_slot(&ctx, 1, 0);
+    rb128_assert_refused_only_while_gated(
+        name.as_str(),
+        &fx,
+        &acct,
+        me,
+        &call,
+        Err(["monster not ", "found"].concat()),
+        &rb128_no_row_oracle,
+    );
+}
+
+/// **E1 (behaviour)** — `dismiss_dialogue` refuses a deletion-gated caller
+/// BEFORE its delete, admits everybody else, and never touches a stranger's
+/// conversation row.
+///
+/// Positive control: `Ok(())` — the reducer's whole admitted path is ONE primary
+/// key delete of the caller's own `player_conversation` row. That delete is REAL
+/// on this host because the index is REGISTERED here (an index-point delete on a
+/// registered index is modelled; on an unregistered one it aborts), so the
+/// reject-before-any-write claim is OBSERVED through the handle rather than
+/// inferred: after every state the caller's row count must be 0 when admitted
+/// (the delete ran) and 1 when refused (nothing ran), and a STRANGER's row must
+/// be 1 in every state. The oracle then restores exactly one caller row for the
+/// next state.
+///
+/// Rows carry zero or empty payloads on purpose (`rb80_seed_conversation` is the
+/// precedent): the reducer reads no column but the key.
+///
+/// RED AT HEAD on state 3: with no gate the reducer deletes the row and answers
+/// `Ok` to a mid-grace caller.
+///
+/// kills: a dropped or discarded gate · M5 (delete THEN gate — the return values
+/// all match, the row oracle does not: on this host nothing rolls the delete
+/// back, which is exactly what makes the ordering observable) · M6b (a
+/// fixed-sender early `Ok` above the gate — the return value matches, the
+/// caller's row survives an admitted state) · M9 · a table-keyed fake · a
+/// latched answer · a delete keyed on anything but the caller (the stranger's
+/// row).
+#[test]
+fn rb128_dismiss_dialogue_refuses_only_a_deletion_gated_caller_and_keeps_its_row() {
+    let fx = crate::native_host_tests::fixture();
+    let acct = fx.table::<crate::schema::Account>("account", "identity", |r| r.identity);
+    let convs = fx.table::<crate::schema::PlayerConversation>(
+        "player_conversation",
+        "owner_identity",
+        |r| r.owner_identity,
+    );
+    let ctx = fx.ctx();
+    let me = ctx.sender();
+    let stranger = spacetimedb::Identity::from_byte_array([9u8; 32]);
+    let conversation = |owner: spacetimedb::Identity| crate::schema::PlayerConversation {
+        owner_identity: owner,
+        npc_entity_id: 0,
+        current_node_id: String::new(),
+    };
+    convs.seed(&conversation(me));
+    convs.seed(&conversation(stranger));
+
+    let name = ["dismiss_", "dialogue"].concat();
+    let oracle = |refused: bool| {
+        let want_mine = usize::from(refused);
+        let mine = convs.remove(me);
+        assert_eq!(
+            mine, want_mine,
+            "rb-128 E1 FAIL (dismiss_dialogue row oracle, refused = {refused}): the caller's \
+             conversation row count after the call is {mine} and must be {want_mine}. When \
+             ADMITTED the reducer's one delete must have run (0 rows left); when REFUSED it must \
+             not have run at all (1 row left). A surviving row in an admitted state is an early \
+             return ABOVE the delete (on this host the sender is the all-zero wild identity, so a \
+             fixed-sender return fires); a missing row in a refused state is a gate placed AFTER \
+             the delete — the reject a client sees is correct while the write already happened, \
+             which is precisely the ordering ADR-0273 D2 forbids."
+        );
+        let theirs = convs.remove(stranger);
+        assert_eq!(
+            theirs, 1,
+            "rb-128 E1 FAIL (dismiss_dialogue row oracle, refused = {refused}): the STRANGER's \
+             conversation row count is {theirs} and must be 1 in every state. The reducer may \
+             only ever delete the caller's own row; any other count is a delete keyed on \
+             something other than the caller."
+        );
+        convs.seed(&conversation(me));
+        convs.seed(&conversation(stranger));
+    };
+    let call = || crate::npc::dismiss_dialogue(&ctx);
+    rb128_assert_refused_only_while_gated(name.as_str(), &fx, &acct, me, &call, Ok(()), &oracle);
+}
+
+/// The thirteen class-(iv) reducers as `(file label, name fragments)`, grouped
+/// by file in ADR-0273 D1 order. Names are assembled from fragments, so this
+/// file never spells a reducer declaration.
+fn rb128_class_iv_roster() -> [(&'static str, [&'static str; 2]); 13] {
+    [
+        ("movement.rs", ["join_", "game"]),
+        ("movement.rs", ["enqueue_", "move"]),
+        ("movement.rs", ["set_", "move"]),
+        ("movement.rs", ["clear_", "queue"]),
+        ("evolution.rs", ["evo", "lve"]),
+        ("raising.rs", ["ca", "re"]),
+        ("raising.rs", ["tra", "in"]),
+        ("raising.rs", ["essence_", "train"]),
+        ("raising.rs", ["consume_crystalized_", "essence"]),
+        ("taming.rs", ["attempt_", "recruit"]),
+        ("monster_mgmt.rs", ["set_", "nickname"]),
+        ("monster_mgmt.rs", ["set_party_", "slot"]),
+        ("npc.rs", ["dismiss_", "dialogue"]),
+    ]
+}
+
+/// The compile-time embed behind one of the six rb-128 file labels. An unknown
+/// label panics rather than scanning nothing.
+fn rb128_source(label: &str) -> &'static str {
+    match label {
+        "movement.rs" => RB128_MOVEMENT_RS,
+        "evolution.rs" => RB128_EVOLUTION_RS,
+        "raising.rs" => RB128_RAISING_RS,
+        "taming.rs" => RB128_TAMING_RS,
+        "monster_mgmt.rs" => RB128_MONSTER_MGMT_RS,
+        "npc.rs" => RB128_NPC_RS,
+        other => panic!("rb-128: no embedded source for `{other}`"),
+    }
+}
+
+/// **E1 (source, per reducer)** — each class-(iv) reducer OPENS with the
+/// caller-only deletion gate, tagged with its own name, and nothing can run
+/// above it.
+///
+/// MINIMAL on purpose (ADR-0273 Consequences): only the clauses the ADR-0258 syn
+/// census cannot see. Per reducer, first failure wins, in this order:
+///   * (N) scan precondition — the name appears EXACTLY ONCE in the file's
+///     parsed reducer list (`m22s5_reducer_bodies`, which itself refuses a
+///     parameterised reducer attribute). Zero is a rename; two is a
+///     cfg-selected twin (register row M15).
+///   * (P) on the strings-BLANKED view the body STARTS with the gate statement,
+///     in the inline or the trailing-comma form. RED AT HEAD for every row (the
+///     first row reports). One offset-0 equality kills every above-the-gate
+///     shape at once: an early return (M6a, and the fixed-sender return on the
+///     all-zero wild identity M6b, which the executed matrix sees only where the
+///     ordinary answer differs), a file-scope cfg constant consulted above the
+///     gate (M13), a conditional attribute on the gate statement (M3), an alias
+///     or import-shadowed call (M11), `let _ =` or `.ok()` (M2), the gate moved
+///     below a lookup or a battle lock (M4, M5), and a hoist into
+///     `authorize_move` or `require_owner` (M8).
+///   * (F) the bare wrapper name occurs EXACTLY ONCE in the body — a duplicate
+///     gate (M12), a sibling wrapper call or a function-pointer binding.
+///   * (E) the body contains no attribute opener and no conditional-compilation
+///     macro — the class the syn census parses as a gate.
+///   * (T) on the strings-INTACT view the text right after the reducer's own
+///     opening brace starts with the gate call tagged with the reducer's OWN
+///     name (M7, a swapped tag, which no other clause can see because every
+///     other view blanks the payload).
+///
+/// HONEST LIMIT: source scan. Whether the gate DECIDES correctly is the executed
+/// matrix above; that no macro expands above it is rb-78's grammar.
+#[test]
+fn rb128_class_iv_reducers_open_with_the_deletion_gate() {
+    let call = m22s5_gate_call_needle();
+    let bare = m22s5_gate_bare_name();
+    let dq = double_quote();
+    let gate_plain = [call.as_str(), "ctx,)?;"].concat();
+    let gate_trailing = [call.as_str(), "ctx,,)?;"].concat();
+    let attr_open = ["#", "["].concat();
+    let cfg_macro = ["cfg", "!("].concat();
+    let brace_open = char::from(0x7Bu8);
+
+    for (label, fragments) in rb128_class_iv_roster() {
+        let src = rb128_source(label);
+        let name = fragments.concat();
+        let squashed = m22s5_stripped_squashed(label, src);
+        let bodies = m22s5_reducer_bodies(label, &squashed);
+
+        // --- (N) exactly one parsed reducer of this name ---------------------
+        let hits: Vec<&String> = bodies
+            .iter()
+            .filter(|(n, _)| *n == name)
+            .map(|(_, b)| b)
+            .collect();
+        let n_hits = hits.len();
+        let parsed: Vec<&String> = bodies.iter().map(|(n, _)| n).collect();
+        assert_eq!(
+            n_hits, 1,
+            "rb-128 [rb128/N] SCAN PRECONDITION: `{label}` declares {n_hits} reducer(s) named \
+             `{name}` and must declare EXACTLY ONE. ZERO means it was renamed or removed and \
+             every clause below would be about nothing — re-derive the class-(iv) roster from \
+             ADR-0273 D1, never shorten it. TWO is a twin selected by conditional compilation \
+             (register row M15): the build clients call can be the ungated one while every pin \
+             reads the gated one. Parsed reducers: {parsed:?}"
+        );
+        let body = hits[0];
+        let head: String = body.chars().take(160).collect();
+
+        // --- (P) the body OPENS with the gate statement ----------------------
+        let opens_plain = body.starts_with(gate_plain.as_str());
+        let opens_trailing = body.starts_with(gate_trailing.as_str());
+        assert!(
+            opens_plain || opens_trailing,
+            "rb-128 [rb128/P] E1 FAIL: `{name}` (`{label}`) does not OPEN with the caller-only \
+             deletion gate. On the comments-stripped, strings-blanked, whitespace-squashed view \
+             its body must begin with the fully-qualified gate call propagated with `?` \
+             (expected, inline form: {gate_plain:?}). THIS IS THE RED STATE AT HEAD: the body \
+             still begins with its old first statement, because no slice had gated this \
+             class-(iv) reducer. ADR-0273 D2 puts the gate FIRST — above the caller binding, \
+             every lookup and every battle lock — and this offset-0 equality is what kills every \
+             shape that can run above it: an early return (including a fixed-sender return on \
+             the all-zero wild identity, which is the native host's only sender and therefore \
+             invisible to the executed matrix), a file-scope cfg constant consulted first, a \
+             conditional attribute on the gate statement, an alias or import-shadowed call, a \
+             discarded verdict (`let _ =`, `.ok()`), a placement below a lookup, and a hoist \
+             into `authorize_move` or `require_owner`. Never relax this to `contains` or a \
+             search for the first statement. Body began: {head:?}"
+        );
+
+        // --- (F) the bare wrapper name exactly once in the body --------------
+        let n_bare = body.matches(bare.as_str()).count();
+        assert_eq!(
+            n_bare, 1,
+            "rb-128 [rb128/F] E1 FAIL: `{name}` (`{label}`) mentions the caller-only deletion \
+             wrapper {n_bare} time(s) by bare name and must mention it EXACTLY once. Clause (P) \
+             proves the FIRST statement is the gate; a second mention is a second decision path \
+             — a duplicated gate (register row M12), a call whose verdict is swallowed further \
+             down, a closure or function-pointer binding of the wrapper — which the syn census \
+             reads as the same one gate."
+        );
+
+        // --- (E) no conditional compilation anywhere in the body -------------
+        for needle in [attr_open.as_str(), cfg_macro.as_str()] {
+            let n = body.matches(needle).count();
+            assert_eq!(
+                n, 0,
+                "rb-128 [rb128/E] E1 FAIL: `{name}` (`{label}`) contains {n} occurrence(s) of \
+                 {needle:?} in its body and must contain ZERO. A conditional-compilation \
+                 attribute on ANY statement here — the gate statement above all — keeps the \
+                 statement in every source scan and in the test build while the published wasm \
+                 is compiled without it, and the syn census parses the attributed statement as \
+                 a gate. The expression-macro form is the same defect reached through an \
+                 expression."
+            );
+        }
+
+        // --- (T) the tag is the reducer's own name ---------------------------
+        let intact = m22s5_comments_only_squashed(label, src);
+        let decl = ["fn", name.as_str(), "("].concat();
+        let n_decl = intact.matches(decl.as_str()).count();
+        assert_eq!(
+            n_decl, 1,
+            "rb-128 [rb128/T] SCAN PRECONDITION: the squashed declaration of `{name}` occurs \
+             {n_decl} time(s) in the strings-intact view of `{label}` and must occur EXACTLY \
+             once; with any other count the tag below is read from the wrong body."
+        );
+        let decl_at = intact
+            .find(decl.as_str())
+            .expect("rb-128: the declaration counted 1 but could not be located");
+        let open_rel = intact[decl_at..].find(brace_open).unwrap_or_else(|| {
+            panic!(
+                "rb-128 [rb128/T] SCAN PRECONDITION: `{name}` (`{label}`) has no body brace \
+                 after its declaration on the strings-intact view."
+            )
+        });
+        let after_open = &intact[decl_at + open_rel + 1..];
+        let tagged_plain = [
+            call.as_str(),
+            "ctx,",
+            dq.as_str(),
+            name.as_str(),
+            dq.as_str(),
+            ")?;",
+        ]
+        .concat();
+        let tagged_trailing = [
+            call.as_str(),
+            "ctx,",
+            dq.as_str(),
+            name.as_str(),
+            dq.as_str(),
+            ",)?;",
+        ]
+        .concat();
+        let intact_head: String = after_open.chars().take(160).collect();
+        let tagged_opens_plain = after_open.starts_with(tagged_plain.as_str());
+        let tagged_opens_trailing = after_open.starts_with(tagged_trailing.as_str());
+        assert!(
+            tagged_opens_plain || tagged_opens_trailing,
+            "rb-128 [rb128/T] E1 FAIL: on the strings-INTACT view `{name}` (`{label}`) does not \
+             open with the gate call tagged with its OWN name (expected, inline form: \
+             {tagged_plain:?}). One wrapper serves every gated reducer in the crate, so the tag \
+             is the ONLY record of which reducer refused a deletion-gated caller; a copy-pasted \
+             sibling's tag (register row M7) files every refusal here under the wrong name, and \
+             no other clause can see it because every other view blanks the payload. Body \
+             began: {intact_head:?}"
+        );
+    }
+}
+
+/// **E1 (source, per file)** — exact bare-name totals for the three files rb-128
+/// makes gate-bearing: `movement.rs` 4, `evolution.rs` 1, `monster_mgmt.rs` 2.
+///
+/// ONLY these three: `raising.rs` (5), `npc.rs` (3) and `taming.rs` (2) are owned
+/// by the re-pinned rb-80 censuses in their sibling test files, and one number
+/// is never pinned twice.
+///
+/// WHY A FILE TOTAL AND NOT ONLY THE PER-BODY CLAUSES: every clause of the
+/// per-reducer pin is scoped to one body. A gate on `movement_tick` (scheduler
+/// only: there `ctx.sender()` is the MODULE identity, so a caller-keyed gate
+/// consults an account no player owns) or on `ack_evolution_notices` (open by
+/// decision, ADR-0254 — gating it strands the evolution banner) lives in a body
+/// no per-reducer clause reads, and so does a gate call hoisted into a file-local
+/// helper. Above the total is one of those; below it is a lost gate.
+///
+/// RED AT HEAD on the first row: `movement.rs` names the wrapper zero times.
+#[test]
+fn rb128_gate_bearing_files_carry_exact_bare_name_totals() {
+    let bare = m22s5_gate_bare_name();
+    let files: [(&str, &str, usize, &str); 3] = [
+        (
+            "movement.rs",
+            RB128_MOVEMENT_RS,
+            4,
+            "join_game, enqueue_move, set_move and clear_queue — and NOT movement_tick, the \
+             scheduler-only tick whose caller is the module identity",
+        ),
+        (
+            "evolution.rs",
+            RB128_EVOLUTION_RS,
+            1,
+            "evolve — and NOT ack_evolution_notices, which ADR-0254 keeps open by decision so a \
+             deleting player's banner stays dismissable",
+        ),
+        (
+            "monster_mgmt.rs",
+            RB128_MONSTER_MGMT_RS,
+            2,
+            "set_nickname and set_party_slot, and none of the re-key or erase helpers the \
+             deletion cascade calls",
+        ),
+    ];
+    for (label, src, want, sites) in files {
+        let squashed = m22s5_stripped_squashed(label, src);
+        let n = squashed.matches(bare.as_str()).count();
+        assert_eq!(
+            n, want,
+            "rb-128 [rb128/file-total] E1 FAIL: `{label}` names the caller-only deletion wrapper \
+             {n} time(s) by bare name (comments and strings stripped) and must name it exactly \
+             {want} — {sites}. ZERO IS THE RED STATE AT HEAD for every row. ABOVE the total is a \
+             gate on a reducer that must stay open, or a gate hoisted into a file-local helper \
+             where no per-body clause can see it; BELOW it is a lost gate. The needle is the BARE \
+             name, so an alias, a re-export and a function-pointer binding all count."
+        );
+    }
+}
+
+/// **Anti-bypass fence (register row M17)** — the deletion decision chain the
+/// thirteen gates delegate to is declared ONCE and compiled unconditionally.
+///
+/// THE MEASURED SHAPE (rb-128 plan red-team, finding 2): a conditional twin of
+/// the pure predicate `accounts::should_reject_for_deletion` — the real one
+/// under the test configuration, a copy answering `false` under its negation —
+/// keeps every native-host test in this crate green (tests build the real one)
+/// while the published wasm ships every para-4.7 gate crate-wide as a no-op. The
+/// same shape one hop up works on `guards::deletion_gate`. Two exact counts per
+/// file kill it: the declaration appears once, and the file carries exactly the
+/// one conditional attribute on its child test module (`accounts.rs:1110`,
+/// `guards.rs:484`) and no conditional-compilation macro at all.
+///
+/// GREEN AT HEAD BY DESIGN, and a separate test from every red one so it can be
+/// observed passing. Proven by executing M17 after the fix.
+#[test]
+fn rb128_deletion_predicate_chain_is_declared_once_and_uncfgd() {
+    let cfg_attr = ["#", "[cfg"].concat();
+    let cfg_macro = ["cfg", "!("].concat();
+
+    let accounts = m22s5_stripped_squashed("accounts.rs", M22S5_ACCOUNTS_RS);
+    let ssot_decl = ["fnshould_reject_for_", "deletion("].concat();
+    let n_ssot = accounts.matches(ssot_decl.as_str()).count();
+    assert_eq!(
+        n_ssot, 1,
+        "rb-128 [rb128/chain] FAIL: `accounts.rs` declares the pure deletion decision {n_ssot} \
+         time(s) and must declare it EXACTLY ONCE. TWO is the conditional-twin bypass: one copy \
+         for the test build, one answering false for the published wasm, and every executed \
+         matrix in this crate runs the honest one. ZERO means it was renamed and the gate chain \
+         no longer reaches the SSOT this fence protects."
+    );
+    let n_cfg_accounts = accounts.matches(cfg_attr.as_str()).count();
+    assert_eq!(
+        n_cfg_accounts, 1,
+        "rb-128 [rb128/chain] FAIL: `accounts.rs` carries {n_cfg_accounts} conditional-compilation \
+         attribute(s) and must carry EXACTLY ONE — the test-module wiring at its tail. A second is \
+         how a twin of any deletion predicate in this file is selected per build, which no \
+         native-host test can observe because they all build the test side."
+    );
+    let n_macro_accounts = accounts.matches(cfg_macro.as_str()).count();
+    assert_eq!(
+        n_macro_accounts, 0,
+        "rb-128 [rb128/chain] FAIL: `accounts.rs` uses the conditional-compilation macro \
+         {n_macro_accounts} time(s) and must use it ZERO times — the expression form of the same \
+         per-build twin, reachable inside a predicate body without a second declaration."
+    );
+
+    let guards = m22s5_stripped_squashed("guards.rs", GUARDS_RS);
+    let seam_decl = ["fndeletion_", "gate("].concat();
+    let n_seam = guards.matches(seam_decl.as_str()).count();
+    assert_eq!(
+        n_seam, 1,
+        "rb-128 [rb128/chain] FAIL: `guards.rs` declares the pure deletion-gate seam {n_seam} \
+         time(s) and must declare it EXACTLY ONCE — the same conditional-twin bypass one hop \
+         closer to the thirteen call sites."
+    );
+    let n_cfg_guards = guards.matches(cfg_attr.as_str()).count();
+    assert_eq!(
+        n_cfg_guards, 1,
+        "rb-128 [rb128/chain] FAIL: `guards.rs` carries {n_cfg_guards} conditional-compilation \
+         attribute(s) and must carry EXACTLY ONE — the test-module wiring. A second selects a \
+         twin of a deletion wrapper per build."
+    );
+    let n_macro_guards = guards.matches(cfg_macro.as_str()).count();
+    assert_eq!(
+        n_macro_guards, 0,
+        "rb-128 [rb128/chain] FAIL: `guards.rs` uses the conditional-compilation macro \
+         {n_macro_guards} time(s) and must use it ZERO times."
+    );
 }

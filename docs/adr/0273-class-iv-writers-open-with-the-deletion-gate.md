@@ -68,8 +68,10 @@ lookups, `require_owner`, and the ADR-0168 battle locks. Rationale:
    above the gate, a macro expanding to a conditional return (ADR-0248), an alias or import-shadowed call — in
    one clause, and it satisfies rb-78's macro grammar trivially.
 4. It overrides ADR-0227 D3/D4's "after caller standing" ordering for these 13 only: a mid-grace caller naming a
-   missing or foreign monster now receives the deletion reason instead of `monster not found` / `not owner`.
-   That reveals strictly less, not more.
+   missing or foreign monster now receives the deletion reason instead of `monster not found` / `not owner`,
+   and in `enqueue_move`/`set_move` the gate now precedes the ADR-0168 D2 battle lock, so a mid-grace caller
+   who is also mid-battle receives the deletion reason instead of `cannot move during an ongoing battle`.
+   Same verdict (refused), different message priority; it reveals strictly less, not more.
 
 ### D3 — `dismiss_dialogue` is gated; ADR-0250 D5's OPEN classification is withdrawn
 
@@ -118,7 +120,28 @@ mid-grace player's pre-request queue (at most `MOVE_QUEUE_CAP` entries) drains t
   anchors (10 → 13: `join_game`, `evolve`, `set_nickname` make `movement.rs`, `evolution.rs`, `monster_mgmt.rs`
   gate-bearing).
 
-### D8 — Rejected alternatives
+### D8 — The three movement reducers are not a PRV1-10 "trap state"
+
+ADR-0250's residual note R-rb-80-CRATEWIDEBARE flagged `enqueue_move`/`set_move`/`clear_queue` as "in-flight hot
+path; a gate there is a trap state". That framing does not survive the spec: PRV1-10 protects an already-live
+battle, trade or challenge — a multi-party commitment the cascade must unwind — and movement is none of those.
+§4.7 names the three by their trigger predicate (they write `character`, an ERASE-classified table, through
+`authorize_move`'s `player` ack and the queue update). Nothing traps: `cancel_account_deletion` stays an owner
+(ungated) escape valve for the whole grace window, the pre-request queue drains through the scheduler-only
+`movement_tick`, and a refused move leaves the character standing exactly where the server already had it.
+
+### D9 — Test placement: the thirteen behavioural tests and both source pins live in `guards_tests.rs`
+
+ADR-0250 D8/D9 put rb-80's tests in each file's own sibling module, and rb-76 (ADR-0246) split the wrapper
+matrix (`guards_tests.rs`) from the reducer test (`battle_tests.rs`). This slice departs deliberately: one
+five-state helper serves thirteen reducers, and the per-file precedent would copy that helper (and the
+strippers the source pins run on) six times for no extra reach. `guards_tests.rs` already owns the caller-gate
+family (m22-s5, rb-46, rb-76, rb-77, rb-78) and its m22-s5 strippers are file-agnostic. The six sibling files
+keep what is theirs — the re-derived rb-80 censuses and the `clear_queue` D3 pin — and no eval requires a
+reducer's gate test to live beside it (checked: `evals/` contains no scanner over `require_not_deleting`,
+`is_pending_deletion`, `DEL-06` or `REJECT_DELETION_GATED`).
+
+### D10 — Rejected alternatives
 
 - **Gate after `require_owner` / after the joined check** (the ADR-0227 D3 ordering): needs full `Monster` seeds
   and a per-reducer prefix literal for every pin, and for `join_game` it is unprovable under the native host
@@ -140,8 +163,16 @@ mid-grace player's pre-request queue (at most `MOVE_QUEUE_CAP` entries) drains t
   the world still renders from the live subscription because nothing is erased before terminal). Registered as
   a residual for a client-side benign-match or an explicit "pending deletion" banner.
 - **Residual:** a conversation opened before the request (multi-tab) persists through grace until disconnect.
-- **Residual:** `REJECT_DELETION_GATED`'s text names trades/battles/challenges only; it is pinned by m22-s5 and
-  unchanged here.
+- **Residual (R-rb-80-REASONSCOPE grows):** `REJECT_DELETION_GATED`'s text names trades/battles/challenges only,
+  yet it now also fires on join/move/raise/evolve/rename/party-edit/recruit/dismiss; it is pinned by m22-s5 and
+  unchanged here. The wrapper's own doc comment in `guards.rs` is reworded in place (same line count, so no
+  `path:line` citation moves) to describe the widened caller set.
+- Source-pin coverage is deliberately MINIMAL on top of the ADR-0258 census: per reducer only the clauses the
+  syn census cannot see — offset-0 prefix equality (a non-writing early return above the gate is invisible to a
+  "before the first write" rule), the body-scoped `#[`/`cfg!(` ban (an attribute on the gate statement parses
+  as a gate), the own-name tag (gate arguments are not inspected, ADR-0258 D4) and a bare-name-once clause (a
+  sibling wrapper call). Reducer rosters, attribute budgets and raw-predicate containment are NOT re-pinned per
+  file: the census already pins every reducer's verdict exactly and rb-76 owns the raw-predicate containment.
 - Supervisor follow-ups (outside touches): `Extended-by: 0273` / dated note in ADR-0250 that D5–D7 are superseded
   by the spec; `docs/adr/README.md` index row; close R-rb-45-DRAIN (and the absorbed R-rb-80-RAISINGWRITERS) in
   the ledger and the spec.

@@ -1266,6 +1266,12 @@ mod census {
 // every row here must still be ungated: the comparison is exact in BOTH
 // directions, never a count and never a floor. Paying the debt down is a
 // conscious edit of this roster, and so is widening it.
+//
+// rb-128 (ADR-0273) paid class (iv) down in full: its thirteen KNOWN-GAP rows
+// now open with the caller-only deletion gate and moved to EXPECTED_GATED
+// below (25 rows became 12; the gated set grew from 14 to 27). The partition of
+// the 54-reducer corpus is 3 owner + 3 lifecycle + 8 scheduled + 27 gated + 1
+// no-writes + 12 rostered.
 // ---------------------------------------------------------------------------
 
 const DELIBERATE_EXEMPTIONS: &[(&str, &str)] = &[
@@ -1342,67 +1348,14 @@ const DELIBERATE_EXEMPTIONS: &[(&str, &str)] = &[
         "sync_content",
         "operator-only behind the module-owner identity guard; no player caller exists",
     ),
-    // (iv) KNOWN GAP — spec para 4.7 names these as gate targets and no slice has
-    // gated them yet. The predicate that puts a reducer HERE rather than in class
-    // (i) is "creates or mutates the caller's assets", not merely "acts on an
-    // already-open commitment". Debt with a registered drain (one reject test per
-    // reducer), not a decision that they stay ungated.
-    (
-        "join_game",
-        "KNOWN GAP: a spec para 4.7 gate target, pending the roster-drain slice",
-    ),
-    (
-        "evolve",
-        "KNOWN GAP: a spec para 4.7 gate target, pending the roster-drain slice",
-    ),
-    (
-        "care",
-        "KNOWN GAP: a spec para 4.7 gate target, pending the roster-drain slice",
-    ),
-    (
-        "train",
-        "KNOWN GAP: a spec para 4.7 gate target, pending the roster-drain slice",
-    ),
-    (
-        "essence_train",
-        "KNOWN GAP: a spec para 4.7 gate target, pending the roster-drain slice",
-    ),
-    (
-        "consume_crystalized_essence",
-        "KNOWN GAP: a spec para 4.7 gate target, pending the roster-drain slice",
-    ),
-    (
-        "attempt_recruit",
-        "KNOWN GAP: inserts a brand-new monster and monster_pub for the caller -- a NEW asset, \
-         which is why it is debt and not class (i), even though it acts on an already-open \
-         wild battle",
-    ),
-    (
-        "set_nickname",
-        "KNOWN GAP: a spec para 4.7 gate target, pending the roster-drain slice",
-    ),
-    (
-        "set_party_slot",
-        "KNOWN GAP: a spec para 4.7 gate target, pending the roster-drain slice",
-    ),
-    (
-        "enqueue_move",
-        "KNOWN GAP: a spec para 4.7 gate target, pending the roster-drain slice",
-    ),
-    (
-        "set_move",
-        "KNOWN GAP: a spec para 4.7 gate target, pending the roster-drain slice",
-    ),
-    (
-        "clear_queue",
-        "KNOWN GAP: a spec para 4.7 gate target, pending the roster-drain slice",
-    ),
-    (
-        "dismiss_dialogue",
-        "KNOWN GAP: a spec para 4.7 gate target, pending the roster-drain slice",
-    ),
-    // (v) acts ONLY on rows the caller already owns, minting nothing new — the
-    // class the roster-drain slice does not have to gate.
+    // (iv) — drained by rb-128 (ADR-0273). Its thirteen KNOWN-GAP rows are gated
+    // and listed in EXPECTED_GATED; the class stays EMPTY, and a reducer that
+    // creates or mutates the caller's assets without a gate is a CI failure
+    // rather than a candidate for a new row here.
+    //
+    // (v) acts ONLY on rows the caller already owns, minting nothing new. Open BY
+    // DECISION (ADR-0254 keeps the evolution banner dismissable during grace),
+    // not debt: ADR-0273 left it ungated on purpose.
     (
         "ack_evolution_notices",
         "acts only on the caller's own existing notice queue (find sender then update, never \
@@ -1463,18 +1416,31 @@ const EXPECTED_SCHEDULED: &[&str] = &[
 const EXPECTED_GATED: &[&str] = &[
     "accept_challenge",
     "advance_dialogue",
+    "attempt_recruit",
     "buy",
+    "care",
     "challenge_pvp",
+    "clear_queue",
     "complete_guest_claim",
+    "consume_crystalized_essence",
+    "dismiss_dialogue",
+    "enqueue_move",
+    "essence_train",
+    "evolve",
     "grant_bait",
     "heal_party",
+    "join_game",
     "propose_trade",
     "request_data_export",
     "sell",
+    "set_move",
+    "set_nickname",
+    "set_party_slot",
     "set_profile_name",
     "start_battle",
     "start_wild_battle",
     "talk",
+    "train",
 ];
 
 /// Reducers that reach no classified write at all.
