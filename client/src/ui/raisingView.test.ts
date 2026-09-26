@@ -1264,19 +1264,19 @@ describe('★ RaisingView 20r-a: in-flight guard on the Train buttons (separate 
 //       onCare throws OUT OF the listener after the lock is taken and before any `.finally`
 //       exists -> the lock is stranded until hide().
 //
-// THE FIX (planned, ports raisingView.ts@16fe214:290-327's shape onto Care): `#pending` becomes
+// THE FIX (ports raisingView.ts@16fe214:290-327's shape onto Care): `#pending` becomes
 // `Map<bigint, object>` (the field NAME is unchanged — only its value type moves), a
 // `const lock = {}` token is minted per click, `.finally` releases only if
 // `this.#pending.get(monsterId) === lock`, the re-enable target is
 // `this.#careButtons.get(monsterId) ?? careBtn`, and the callback is wrapped
 // `new Promise<void>((resolve) => resolve(this.#callbacks.onCare(monsterId)))`.
 //
-// RED REASON: raisingView.ts today has NEITHER a token NOR the executor-shaped wrap on the Care
+// RED REASON: raisingView.ts@16fe214 has NEITHER a token NOR the executor-shaped wrap on the Care
 // listener — every `it` below traces its own exact failing assertion against the current
-// shipped code in its leading comment. rb120-CARE-LIVE is the one exception: master's
+// shipped code in its leading comment. rb120-CARE-LIVE is the one exception: 16fe214's
 // `.finally` already resolves the live re-enable target via `#careButtons.get(monsterId) ??
 // careBtn` (raisingView.ts@16fe214:277), so that tooth is a REGRESSION GUARD for the port, expected
-// GREEN today.
+// GREEN at 16fe214.
 //
 // WRONG-IMPL-KILLED index:
 //   rb120-CARE-GEN               -> membership-keyed release (D11): a stale generation's
@@ -1288,21 +1288,21 @@ describe('★ RaisingView 20r-a: in-flight guard on the Train buttons (separate 
 //                                    the listener before any `.finally` exists
 //   rb120-CARE-LIVE              -> CLOSURE_REENABLE: the `.finally` re-enabling the
 //                                    click-closure's captured `careBtn` instead of
-//                                    `#careButtons.get(monsterId)` — regression guard, GREEN on
-//                                    master, must stay GREEN after the port
+//                                    `#careButtons.get(monsterId)` — regression guard, GREEN at
+//                                    16fe214, must stay GREEN after the port
 //   rb120-CARE-TRAIN-INDEPENDENT -> a Care/Train shared pending map, or a release keyed on
 //                                    anything but the Care lock's OWN token (D6 + D11 together)
 // ---------------------------------------------------------------------------
 
 describe('★ RaisingView rb-120: the Care lock carries the Train generation-token shape (R-20r-a-CARE-GEN)', () => {
   it('rb120-CARE-GEN BITES: two overlapping Care generations on the same monster — a stale settle must not release the live lock', async () => {
-    // RED REASON (current shipped raisingView.ts): `#pending` is `Set<bigint>` and the
+    // RED REASON (raisingView.ts@16fe214, pre-port): `#pending` is `Set<bigint>` and the
     // `.finally` release is `this.#pending.delete(monsterId)` — pure SET MEMBERSHIP, no
     // generation token. hide() clears the whole set, so after the sequence below the STALE
     // P1's settle deletes the SAME key generation 2 just re-added and re-enables the LIVE
     // button while P2 is still in flight — the assertion
-    // `expect(careA1.disabled, '...').toBe(true)` right after `p1.resolve()` + flush FAILS on
-    // master (the button comes back enabled instead).
+    // `expect(careA1.disabled, '...').toBe(true)` right after `p1.resolve()` + flush FAILS at
+    // 16fe214 (the button comes back enabled instead).
     const p1 = raDeferred();
     const p2 = raDeferred();
     const onCare = vi.fn().mockReturnValueOnce(p1.promise).mockReturnValueOnce(p2.promise);
@@ -1369,13 +1369,13 @@ describe('★ RaisingView rb-120: the Care lock carries the Train generation-tok
   });
 
   it('rb120-CARE-STALE-REJECT BITES: a STALE generation REJECTS — the release must still be token-gated on the reject arm, not just resolve', async () => {
-    // RED REASON (current shipped raisingView.ts): the chain is `Promise.resolve(onCare(id))
+    // RED REASON (raisingView.ts@16fe214, pre-port): the chain is `Promise.resolve(onCare(id))
     //   .finally(() => { this.#pending.delete(monsterId); ...re-enable... })
     //   .catch((err) => console.error(...))` — `.finally` runs on EITHER settlement, and since
     // `#pending` is a plain Set with no token, generation 1's REJECTION deletes the SAME key
     // generation 2 holds just as readily as a resolution would — the assertion
     // `expect(careLive.disabled, '...').toBe(true)` right after `p1.reject(...)` + flush FAILS
-    // on master (the live button comes back enabled).
+    // at 16fe214 (the live button comes back enabled).
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const p1 = raDeferred();
     const p2 = raDeferred();
@@ -1425,12 +1425,12 @@ describe('★ RaisingView rb-120: the Care lock carries the Train generation-tok
   });
 
   it('rb120-CARE-THROW BITES: onCare THROWS synchronously — the click must not throw, the lock is taken immediately, and one flush later the button is re-clickable', async () => {
-    // RED REASON (current shipped raisingView.ts): the listener wraps the callback as
+    // RED REASON (raisingView.ts@16fe214, pre-port): the listener wraps the callback as
     // `Promise.resolve(this.#callbacks.onCare(monsterId))` (raisingView.ts@16fe214:271) —
     // `Promise.resolve(cb())` calls `cb()` SYNCHRONOUSLY as an argument expression, so a
     // throwing onCare throws directly out of the click listener, BEFORE `Promise.resolve` is
     // ever reached. The very first assertion,
-    // `expect(() => careBtn.click(), '...').not.toThrow()`, FAILS on master (`.click()` throws).
+    // `expect(() => careBtn.click(), '...').not.toThrow()`, FAILS at 16fe214 (`.click()` throws).
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const onCare = vi.fn(() => {
       throw new Error('rb120-CARE-THROW: synchronous throw');
@@ -1469,7 +1469,7 @@ describe('★ RaisingView rb-120: the Care lock carries the Train generation-tok
     // `careBtn !== ` the live node, so `careBtn.disabled = false` writes to the DETACHED node
     // and the re-queried live node stays disabled forever.
     //
-    // Expected on CURRENT shipped raisingView.ts: GREEN — its release target IS already
+    // Expected on raisingView.ts@16fe214 (pre-port): GREEN — its release target IS already
     // `this.#careButtons.get(monsterId) ?? careBtn` (raisingView.ts@16fe214:277). This tooth is a
     // REGRESSION GUARD for the rb-120 port: it must stay green once #pending becomes a
     // generation-token Map.
@@ -1518,13 +1518,13 @@ describe('★ RaisingView rb-120: the Care lock carries the Train generation-tok
   });
 
   it("rb120-CARE-TRAIN-INDEPENDENT BITES: the Care generation-token lock is a SEPARATE map from Train's — a stale settle on either side must not cross-release the other", async () => {
-    // RED REASON (current shipped raisingView.ts): the scenario below never needs Train's own
+    // RED REASON (raisingView.ts@16fe214, pre-port): the scenario below never needs Train's own
     // lock to misbehave — it is already token-safe (20r-a). What it exercises is Care's OWN
     // generations surviving a Train click in between. `#pending` is still a plain Set with a
     // membership release, so the STALE Care generation 1 settle still deletes the SAME
     // monsterId key generation 2 just re-added, and Aria's LIVE Care re-enables while
     // generation 2 is in flight — `expect(afterPc.care.disabled, '...').toBe(true)` right after
-    // `pc.resolve()` + flush FAILS on master. (A wrong impl that shares ONE map between Care
+    // `pc.resolve()` + flush FAILS at 16fe214. (A wrong impl that shares ONE map between Care
     // and Train instead fails earlier, at the `onTrain).toHaveBeenCalledTimes(1)` check right
     // after the Train click, because the shared key is already held by Care.)
     const pc = raDeferred();
