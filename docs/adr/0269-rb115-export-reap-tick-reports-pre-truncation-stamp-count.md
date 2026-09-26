@@ -92,7 +92,7 @@ window and plans every stamp it saw, rows expired at that instant may remain pas
 `due` is taken over the window and inherits that blindness: on live data (bundles of seventeen rows or
 more, grouped yield) `due == planned` on every well-formed tick, so `due` never shows a partly drained
 window. rb-109's oversized population is the measured case: one tick of `(256, 16, 272)` with `due` 16
-leaves four expired bundles in the store. That half of the residual is R-rb-115-WINDOWEDGE, which
+leaves four expired bundles in the store. That half of the residual is R-rb-115-X8, which
 stays open (Residuals).
 
 ## Decision
@@ -202,11 +202,11 @@ line-count-neutral, so the `docs/knowledge/**` anchors into privacy.rs do not mo
 - **`due` counts stamps, not bundles.** Pre-rb-111 shared stamps stay alive for one retention window
   (R-rb-111-LEGACYSTAMP). Until then, a shared stamp counts once in `due` just as it does in `planned`.
 - **R-rb-87-BACKLOGAMBIG is discharged on its truncation half.** Its window-edge half is not
-  discharged; it continues as R-rb-115-WINDOWEDGE.
+  discharged; it continues as R-rb-115-X8.
 
 ## Residuals
 
-- **R-rb-115-WINDOWEDGE** (MED) — stays open. A tick that reads a full window
+- **R-rb-115-X8** (MED) — stays open. A tick that reads a full window
   (`read == EXPORT_REAP_MAX_READ_PER_TICK`) and plans every stamp it saw cannot say whether expired rows
   remain past the window's edge; `due` is taken over the window and inherits that blindness. Measured
   case: rb-109's oversized population — one tick of `(256, 16, 272)` with `due` 16 still leaves four
@@ -215,7 +215,7 @@ line-count-neutral, so the `docs/knowledge/**` anchors into privacy.rs do not mo
   observation. It costs one range syscall and at most one buffer fill of the SDK's row iterator, and the
   native host already models the range read. It would re-freeze the range and index-reach censuses and
   the helper body pin. Zero-cost interim: an ops rule on consecutive full-window ticks. Until one of
-  those lands, R-rb-115-WINDOWEDGE stays open.
+  those lands, R-rb-115-X8 stays open.
 - **R-rb-109-ORDERMODEL stays open.** `due > planned` can reveal an interleaving read but cannot rule
   out a grouped non-ascending one (F1). Closing it still needs a live-instance probe, as the rb-109
   record says.

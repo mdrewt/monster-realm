@@ -827,7 +827,7 @@ the mint), `[rb85/range-census]` 1 → 2 and `[rb85/bundle-census]` 9 → 10 wit
 counting `?` by depth, and `rb65p [emit/no-try]` 0 → 1 attributed to the mint's `?`. RED record: harness `memory/projects/gates/rb-111.red-before.md`. Suite
 1023 → 1031 (1024 → 1032 with `dev_reducers`); `just ci`.
 
-## Amendment (2026-09-26, rb-115 — residual R-rb-87-BACKLOGAMBIG closed on the truncation half; R-rb-115-WINDOWEDGE opened)
+## Amendment (2026-09-26, rb-115 — residual R-rb-87-BACKLOGAMBIG closed on the truncation half; R-rb-115-X8 opened)
 
 The rb-87 amendment above published the tick as three raw counts, disclosed that a cap at its bound is only
 a backlog HINT, and named the window's distinct-stamp count before `truncate(max_stamps)` as the number
@@ -855,7 +855,7 @@ TTL as the capped call, and `reap_fields` renders it between `read` and `planned
   planned 16, reaped 80. The elided middle clause ("`read` at 256 means the window filled, but
   whole-stamp deletes take the tails beyond it, so the tick may still have drained every expired row")
   stays TRUE. "The one unambiguous signal" over-stated: the count is unambiguous about truncation INSIDE
-  the window and silent about rows past its edge (R-rb-115-WINDOWEDGE, below).
+  the window and silent about rows past its edge (R-rb-115-X8, below).
 - The first bullet's `struct ExportReapTick { read: usize, planned: usize, reaped: usize }` … "Three RAW
   counts, never a derived verdict." What is true now: four raw counts, `{ read, due, planned, reaped }`,
   still never a derived verdict.
@@ -886,7 +886,7 @@ rule out, a non-ascending yield: a descending read that keeps each stamp's rows 
 `due > planned`, so **R-rb-109-ORDERMODEL stays open**. And a tick that reads a full window and plans
 every stamp it saw still cannot say whether expired rows remain past the window's edge: `due`, taken over
 the window, inherits that blindness (rb-109's oversized population, `(256, 16, 272)` with `due` 16, leaves
-four expired bundles). **R-rb-115-WINDOWEDGE stays open** (MED); consecutive full-window ticks remain the
+four expired bundles). **R-rb-115-X8 stays open** (MED); consecutive full-window ticks remain the
 backlog heuristic, and ADR-0269 records the candidate fix (a post-delete range probe) and the zero-cost
 interim (an ops rule).
 
