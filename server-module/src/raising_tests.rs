@@ -1269,6 +1269,8 @@ fn heal_party_keeps_owner_and_escrow_checks_before_the_spend() {
 // ONCE, in the test whose arithmetic depends on it, with a `RETUNE` note —
 // retuning is then a deliberate two-line edit (constant + its one pin), never a
 // silent behaviour change. Everything else references the consts symbolically.
+// Exception since 20r-b: ESSENCE_SOFT_CAP is game-core SSOT and is pinned there
+// too; its note in `clamps_at_soft_cap_999_without_reject` names those pins.
 // ###########################################################################
 
 use crate::schema::Monster;
@@ -2164,7 +2166,12 @@ fn adds_to_the_matching_affinity_only() {
 ///        all (1_010 here); an impl that clamps to the wrong bound.
 #[test]
 fn clamps_at_soft_cap_999_without_reject() {
-    // RETUNE: the only pin of ESSENCE_SOFT_CAP's value (ADR-0175 D5 / EG1-1).
+    // RETUNE: a LOCAL pin of ESSENCE_SOFT_CAP's value (ADR-0175 D5 / EG1-1),
+    // re-exported from game-core since 20r-b. The SSOT pins live there:
+    // `essence_soft_cap_is_999` (game-core/src/currency.rs) and the R14 boundary
+    // fixtures, `r14_essence_amount_999_accepted` / `r14_essence_amount_1000_rejected`
+    // among them (game-core/src/content.rs). Retune order per currency.rs: content
+    // first, then the constant, then the pins, this one and the 990 + 20 below included.
     assert_eq!(
         ESSENCE_SOFT_CAP, 999,
         "fixture precondition: the essence soft cap is 999 per pool"
