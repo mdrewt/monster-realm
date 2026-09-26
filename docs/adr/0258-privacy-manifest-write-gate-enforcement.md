@@ -260,3 +260,5 @@ crate where the spec's §4.7 gate is, by design and by debt, absent from 25 redu
 - `syn` compiles into the test target only; the lib/wasm artifact is unchanged.
 - ADR-0225 and ADR-0228 Consequences named this mechanism as the deferred follow-up; both carry a
   dated amendment noting closure here.
+- **Closed (rb-129, 2026-09-26):** R-rb-45-ONGOING-BATTLE (D6 class (i)) is closed by ADR-0274 — the
+  cascade forces a still-`Ongoing` battle terminal against the erased side before tombstoning it.

@@ -5,7 +5,7 @@
 **Slice:** m22-s3b
 **Supersedes:** —
 **Amends:** —
-**Amended-by:** ADR-0245, ADR-0258
+**Amended-by:** ADR-0245, ADR-0258, ADR-0274
 **Subsystems:** security-authz, schema-persistence, ci-gates
 **Decision:** S3b lands the §4.4 cascade via per-module `erase_*`/`anonymize_*` delegation, re-arms the one-shot reaper (not-due branch + init/sync sweep), ships PRV1-8(b) fresh re-registration, and re-pins the reaper body pin.
 
@@ -256,3 +256,23 @@ already-open commitments (PRV1-10, ADR-0227 D5), `respond_trade`'s decline-befor
 (`join_game` among them), which a registered follow-up drains one reject-tested reducer at a
 time. The mid-grace non-conformance described in §4h therefore stays visible in CI rather than
 in prose until each entry is gated. Nothing else in this ADR changes.
+
+## Amendment (rb-129, 2026-09-26)
+
+ADR-0274 retires D2's `Ongoing` skip. The D2 passage from "`anonymize_battles` processes **only
+battles with a settled/terminal outcome**" through "Such a row is skipped (identity un-tombstoned)",
+and the recorded `battle_action` asymmetry that follows it, no longer describe the code.
+`anonymize_battles` now visits every battle row naming the owner: it sweeps the row's join children
+first (deviation (b), unchanged), forces a still-`Ongoing` row terminal against the erased side
+through the pure `battle_with_forced_terminal` seam (PvP: game-core's forfeit of the erased side;
+wild: `Fled`), emits one `deletion_cascade_forced_battle_terminal` anomaly line for a forced row, and
+then tombstones it through `battle_with_tombstoned_party` as before.
+
+The RT-11 rationale falls away. The skip existed so the surviving opponent could still win by
+deadline-timeout; the survivor now receives the decisive win immediately, in the cascade's own
+transaction, so disarming the deadline is correct for every row. The asymmetry about the erased
+side's `battle_action` rows is moot: nothing settles the row afterwards. The skip was also not
+safe — it left the row open to post-terminal settlement against the erased identity, including a
+deadline forfeit that could hand the erased side the win (ADR-0274 Context). The forced path is a
+degraded settlement with no rating and no HP / XP / currency / evolution write-back (ADR-0274
+Consequences). Nothing else in this ADR changes.

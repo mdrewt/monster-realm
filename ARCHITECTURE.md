@@ -568,8 +568,8 @@ the ONE by-name exemption to the ux2 never-delete gate) → 6d
 (both surviving rows get `game_core::TOMBSTONE_DISPLAY_NAME`) →
 `battle::anonymize_battles` (per-row: `battle_wild` + `pvp::disarm_pvp_deadlines`
 join sweeps BEFORE the identity swap to `TOMBSTONE_IDENTITY`; practice battles
-swapped both-sides-in-one-visit, PRV1-19; `Ongoing` rows skipped — a resolver
-failure must keep its deadline machinery) → 6e one final `account` update
+swapped both-sides-in-one-visit, PRV1-19; a still-`Ongoing` row (a 6a resolver gap) is forced
+terminal against the erased side FIRST, one `mr_log` anomaly line — ADR-0274) → 6e one final `account` update
 stamping `TOMBSTONE_AUTH_ISSUER` + `terminal_at_ms` (`terminal_account ∘
 anonymized_account`, both legality-asserted). The one-shot re-arms on the
 not-yet-due recheck from the row's OWN request stamp (`reaper_rearm_at_ms`;
