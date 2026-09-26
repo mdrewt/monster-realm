@@ -62,8 +62,15 @@ if (this.#visible && document.activeElement === document.body) {
    calling `openOverlayA11y` on a hidden view would CREATE a record: ARIA `role="dialog"` on a
    `display:none` root and a leaked trap. The guard makes that unreachable by construction instead
    of by a cross-method invariant.
-5. **Only the owning branch acts.** A stale settle (token no longer this click's) returns before
-   the step, so a hide()/reopen race never moves focus.
+5. **Only the owning branch acts, and it is `.finally()`, never `.catch()`.** A stale settle
+   (token no longer this click's) returns before the step, so a hide()/reopen race never moves
+   focus. The step must sit on BOTH arms because the dominant no-batch case RESOLVES:
+   `main.ts` `sendGuarded` (20r-a) always resolves — frozen link, dead handle, and a reported
+   reducer rejection alike — so a `.catch()`-only re-anchor would never fire in production.
+6. **Scope.** The five sites above are every client-side action lock in the four views. The PvP
+   battle submit path (`battleView.ts` `onPvpAttack`/`onPvpSwap`) takes no client lock — it is
+   gated by the server-derived `vm.pvpPendingSubmit` and its release IS a batch — so it is out
+   of scope. `main.ts` needs no change (it owns no lock; `sendGuarded` only supplies promises).
 
 ## Consequences
 
@@ -72,7 +79,18 @@ if (this.#visible && document.activeElement === document.body) {
   same step also re-anchors — strictly better than `<body>`.
 - A repeated re-open re-runs the open choreography (ARIA attributes re-set to identical values,
   trap re-installed). The accepted A8 gap (one macrotask where focus is still outside `root`)
-  applies here too, as it does at first open.
+  applies here too, as it does at first open — including its mirror image, measured by the
+  plan red-team: the deferred timer does not re-check `activeElement` at fire time, so a click
+  that lands in the SAME macrotask window (between the settle's microtask and the `setTimeout(0)`)
+  has its focus moved to the anchor; the click itself still dispatches. The window is a few
+  milliseconds after a network settle; closing it needs a fire-time re-check inside
+  `overlayA11y.ts` (outside `touches:`), recorded as a follow-up.
+- Ordering vs. a success batch does not matter: whichever of the settle's `.finally()` and the
+  batch's `replaceChildren()` runs first, the step re-anchors only if focus is on `<body>` at
+  release time, and the anchor is a static node the batch never replaces (created in the
+  constructor, or the static `index.html` shell for pvp). The timer re-queries it at fire time.
+  A success batch landing AFTER the release can still drop focus to `<body>` (a pre-existing
+  render-time behaviour, not a lock release); that is not this slice's defect.
 - Per-view duplication: a three-line private method in four files. A shared helper would need a
   file outside `touches:`; recorded as a follow-up, not built (YAGNI until a fifth site appears).
 
