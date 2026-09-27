@@ -110,7 +110,7 @@ describe('AUTH_REJECT_SUPPRESS_THRESHOLD', () => {
     //
     // WHY 2, not 1: the SDK throws the SAME "Failed to verify token: " message for a
     // transient 500/502/503 gateway error as for a genuine 401 (see the SDK-DRIFT
-    // gate in connection.test.ts) — suppressing on a single rejection would swap the
+    // test below) — suppressing on a single rejection would swap the
     // player's identity on a mere gateway blip, not just a real credential rejection.
     // WHY 2, not large: the suppression window is meant to resolve inside the
     // existing ADR-0085 backoff ladder's first couple of rungs (1s + 2s ≈ 3s); a
@@ -348,6 +348,48 @@ describe('isStoredCredentialRejected', () => {
     );
     expect(() => gate.onConnectFailed(throwingGetterErr)).not.toThrow();
     expect(() => gate.onConnectFailed(throwingProxyErr)).not.toThrow();
+  });
+});
+
+describe('SDK-DRIFT (nh4): the spacetimedb SDK still throws the exact token-rejection message string', () => {
+  it('BITES: dist/index.mjs contains the literal substring "Failed to verify token: ${response.statusText}"', () => {
+    // Moved here from connection.test.ts (ledger CT-src-net-connection#sdk-drift): it is the
+    // contract isStoredCredentialRejected above depends on, read from the installed SDK itself.
+    //
+    // WRONG IMPL KILLED: an SDK bump that changes this message's wording (e.g. adding
+    // punctuation, changing "verify" to "validate", or dropping the statusText
+    // interpolation) would silently disarm isStoredCredentialRejected in
+    // authToken.ts, restoring the infinite-reconnect-loop failure mode with EVERY
+    // OTHER classifier test still green (they feed hand-written messages). This is
+    // the only test that reads the SDK's own source.
+    const sdkPath = path.join(
+      path.dirname(fileURLToPath(import.meta.url)),
+      '..',
+      '..',
+      'node_modules',
+      'spacetimedb',
+      'dist',
+      'index.mjs',
+    );
+    let sdkSrc: string;
+    try {
+      sdkSrc = readFileSync(sdkPath, 'utf8');
+    } catch (err) {
+      // Fail loud — never let a missing/relocated SDK file pass this gate vacuously.
+      throw new Error(
+        'spacetimedb SDK dist/index.mjs could not be read at expected path: ' +
+          sdkPath +
+          ' — ' +
+          String(err),
+      );
+    }
+    const needle = 'Failed to verify token: ${response.statusText}';
+    expect(
+      sdkSrc.includes(needle),
+      'spacetimedb dist/index.mjs must contain the literal substring ' +
+        `"${needle}" — if this fails, the SDK has drifted and ` +
+        'isStoredCredentialRejected() in authToken.ts is silently disarmed',
+    ).toBe(true);
   });
 });
 

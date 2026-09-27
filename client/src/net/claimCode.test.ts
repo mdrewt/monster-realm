@@ -56,7 +56,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as fc from 'fast-check';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CLAIM_CODE_KEY_PREFIX, claimCode, claimCodeStorageKey } from './claimCode';
 
 // ---------------------------------------------------------------------------
@@ -853,5 +853,90 @@ describe('G30 (claimCode.ts source scan): the storage host is a PARAMETER, never
         `claimCode.ts may carry TYPE-ONLY module edges. Offending line: ${JSON.stringify(line)}`,
       ).toBe(true);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// G30 (runtime) — replaces the source scan above (ledger CT-src-net-claimCode#g30-source-scan).
+// Every ambient storage surface is replaced by a recording trap while every export runs, both
+// through a working injected host and with NO host (the degraded path, where an ambient
+// fallback would hide). Any read or write of a trap is a leak of the claim code (a bearer
+// credential) beyond this tab's injected sessionStorage.
+// ---------------------------------------------------------------------------
+
+const AMBIENT_SURFACES = [
+  'localStorage',
+  'sessionStorage',
+  'indexedDB',
+  'document',
+  'window',
+  'crypto',
+];
+
+function trapAmbientStorage(): string[] {
+  const hits: string[] = [];
+  for (const name of AMBIENT_SURFACES) {
+    const trap = new Proxy(
+      {},
+      {
+        get: (_t, k) => {
+          hits.push(`${name}.${String(k)}`);
+          return () => null; // callable, so a fallback runs to completion and is recorded
+        },
+        set: (_t, k) => {
+          hits.push(`${name}.${String(k)}=`);
+          return true;
+        },
+        has: (_t, k) => {
+          hits.push(`${String(k)} in ${name}`);
+          return false;
+        },
+      },
+    );
+    vi.stubGlobal(name, trap);
+  }
+  return hits;
+}
+
+describe('G30 (runtime): claimCode reaches storage ONLY through the injected host', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('★★ BITES: every export, with a working host and with no host, touches zero ambient storage', () => {
+    const hits = trapAmbientStorage();
+    const storage = new FakeSessionStorage();
+    const host = ascendingCryptoHost(storage);
+    const code = claimCode.mint(host, URI, DB);
+    expect(code).toBe(ASCENDING_HEX);
+    expect(claimCode.read(host, URI, DB)).toBe(ASCENDING_HEX);
+    expect(claimCode.hasUnconsumed(host, URI, DB)).toBe(true);
+    claimCode.markFirstRunNudgeSeen(host, URI, DB);
+    expect(claimCode.hasSeenFirstRunNudge(host, URI, DB)).toBe(true);
+    claimCode.clear(host, URI, DB);
+    expect(claimCode.read(host, URI, DB)).toBeUndefined();
+    expect(storage.calls.length, 'the injected host must actually be exercised').toBeGreaterThan(0);
+
+    // Partial hosts reach deeper than an absent one: storage without crypto, crypto without storage.
+    const partial = [
+      hostWith(new FakeSessionStorage()),
+      hostWith(undefined, new RecordingCrypto(() => 1)),
+    ];
+    for (const h of [undefined, {}, hostWith(null, null), ...partial]) {
+      expect(claimCode.mint(h, URI, DB)).toBeUndefined();
+      expect(claimCode.read(h, URI, DB)).toBeUndefined();
+      expect(claimCode.hasUnconsumed(h, URI, DB)).toBe(false);
+      expect(claimCode.hasSeenFirstRunNudge(h, URI, DB)).toBe(false);
+      claimCode.markFirstRunNudgeSeen(h, URI, DB);
+      claimCode.clear(h, URI, DB);
+    }
+    expect(hits, 'ambient storage reached — the claim code would outlive the tab').toEqual([]);
+  });
+
+  it('★ CALIBRATION: the trap records a bare ambient reach (the test is not vacuous)', () => {
+    const hits = trapAmbientStorage();
+    // What a regressed fallback would do: reach the ambient global by bare identifier.
+    (globalThis as unknown as { localStorage: Storage }).localStorage.getItem('x');
+    expect(hits).toEqual(['localStorage.getItem']);
   });
 });

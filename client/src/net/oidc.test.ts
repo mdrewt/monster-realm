@@ -99,7 +99,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as fc from 'fast-check';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { RenewalOutcome } from './credentialDecision';
 import {
   classifySignInReason,
@@ -1660,5 +1660,98 @@ describe('G30 (oidc.ts source scan): every ambient surface arrives through the i
         `oidc.ts may only import from './credentialDecision'. Offending line: ${JSON.stringify(line)}`,
       ).toBe(true);
     }
+  });
+});
+
+// ===========================================================================
+// G30 (runtime) — replaces the source scan above (ledger CT-src-net-oidc#g30-source-scan).
+// Every ambient surface oidc.ts could reach (storage, cookie, location, history, fetch,
+// crypto) is replaced by a recording trap while the full flow runs through an injected host:
+// sign-in, return leg, exchange, silent refresh, and every export with NO host. Any trap hit
+// means the PKCE verifier / refresh token could outlive the tab or bypass the injected host.
+// ===========================================================================
+
+const AMBIENT_SURFACES = [
+  'localStorage',
+  'sessionStorage',
+  'indexedDB',
+  'document',
+  'window',
+  'location',
+  'history',
+  'fetch',
+  'crypto',
+];
+
+function trapAmbient(): string[] {
+  const hits: string[] = [];
+  for (const name of AMBIENT_SURFACES) {
+    // `typeof` must match the real surface: callers guard with typeof === 'object' before a
+    // property read, so an all-function trap would be skipped silently (measured).
+    const target = name === 'fetch' ? () => null : {};
+    const trap = new Proxy(target, {
+      get: (_t, k) => {
+        hits.push(`${name}.${String(k)}`);
+        return () => null; // callable, so a fallback runs to completion and is recorded
+      },
+      set: (_t, k) => {
+        hits.push(`${name}.${String(k)}=`);
+        return true;
+      },
+      has: (_t, k) => {
+        hits.push(`${String(k)} in ${name}`);
+        return false;
+      },
+      apply: () => {
+        hits.push(`${name}()`);
+        return null;
+      },
+    });
+    vi.stubGlobal(name, trap);
+  }
+  return hits;
+}
+
+describe('G30 (runtime): oidc reaches every ambient surface ONLY through the injected host', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('★★ BITES: sign-in, return leg, exchange and refresh touch zero ambient surfaces', async () => {
+    const rig = makeRig();
+    const hits = trapAmbient();
+    const { outcome } = await completeSignIn(rig);
+    expect(outcome).toEqual({ kind: 'ok', token: ID_TOKEN_1 });
+    rig.setTokenResponse(OK_REFRESH);
+    expect(await createOidcClient(rig.host, CONFIG).renewOrExchange()).toEqual({
+      kind: 'ok',
+      token: ID_TOKEN_2,
+    });
+    expect(
+      rig.storage.keys().length,
+      'the injected storage must hold the flow state',
+    ).toBeGreaterThan(0);
+    expect(hits, 'ambient surface reached — a credential could outlive the tab').toEqual([]);
+  });
+
+  it('★★ BITES: with NO usable host every export degrades without an ambient fallback', async () => {
+    const hits = trapAmbient();
+    // Partial hosts reach DEEPER into each flow than an absent one: no crypto (discovery and
+    // storage work, the mint cannot), and no storage (fetch/crypto work, persistence cannot).
+    const noCrypto = makeRig({ omitCrypto: true }).host;
+    const noStorage = { ...makeRig().host, sessionStorage: undefined };
+    for (const host of [undefined, {}, noCrypto, noStorage]) {
+      const client = createOidcClient(host, CONFIG);
+      expect(client.consumeReturnLeg()).toBe(false);
+      expect((await client.beginSignIn()).kind).not.toBe('ready');
+      expect((await client.renewOrExchange()).kind).not.toBe('ok');
+    }
+    expect(hits).toEqual([]);
+  });
+
+  it('★ CALIBRATION: the trap records a bare ambient reach (the test is not vacuous)', () => {
+    const hits = trapAmbient();
+    (globalThis as unknown as { localStorage: Storage }).localStorage.setItem('k', 'v');
+    expect(hits).toEqual(['localStorage.setItem']);
   });
 });
