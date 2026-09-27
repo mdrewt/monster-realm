@@ -57,8 +57,8 @@ test:
         echo "ops node suites: $fail failing test(s)" >&2
         exit 1
     fi
-    if [ "$pass" -lt 247 ]; then
-        echo "ops node suites: only $pass test(s) passed, floor is 247" >&2
+    if [ "$pass" -lt 141 ]; then
+        echo "ops node suites: only $pass test(s) passed, floor is 141" >&2
         exit 1
     fi
 

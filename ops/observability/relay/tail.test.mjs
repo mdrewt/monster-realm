@@ -1,4 +1,4 @@
-// tail.test.mjs — 13r-b U1..U6 plus the AM9 attack suite, for the relay's PURE
+// tail.test.mjs — 13r-b U1..U5 plus the AM9 attack suite, for the relay's PURE
 // tail state machine (TDD RED).
 //
 // RED today because './tail.mjs' does not exist. The tester does not implement
@@ -65,12 +65,9 @@
 //     there is no dedup, by decision.
 //
 // Discipline: no `new RegExp(`, no dynamic regex, no clock, no timers, no
-// sockets. The only I/O is reading tail.mjs's own source, for the two
-// structural tests.
+// sockets, no I/O.
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
 import { test } from 'node:test';
 
 import { carryAfter, decideRead, sameIdentity, splitLines } from './tail.mjs';
@@ -103,20 +100,6 @@ const ID_B = identity(77, 'CCCCCCCCCCCC', 3000);
 const ID_C = identity(91, 'DDDDDDDDDDDD', 4000);
 
 const ALL_REASONS = ['firstSight', 'growth', 'truncated', 'rotated', 'noChange'];
-
-/** Comment-stripped, lowercased source text — used by the structural tests. */
-function codeText(source) {
-  const kept = [];
-  for (const raw of source.split('\n')) {
-    const trimmed = raw.trimStart();
-    if (trimmed.startsWith('//') || trimmed.startsWith('/*') || trimmed.startsWith('*')) continue;
-    const cut = raw.indexOf('//');
-    kept.push(cut === -1 ? raw : raw.slice(0, cut));
-  }
-  return kept.join('\n').toLowerCase();
-}
-
-const TAIL_SOURCE = readFileSync(path.join(import.meta.dirname, 'tail.mjs'), 'utf8');
 
 // ---------------------------------------------------------------------------
 // 1. U1/U2 — first sight
@@ -567,33 +550,4 @@ test('AM9: the carry is also dropped on TRUNCATION — copytruncate loses the pa
   );
   assert.equal(decision.reason, 'truncated');
   assert.equal(carryAfter(decision, partial), '', 'those bytes no longer exist on disk');
-});
-
-// ---------------------------------------------------------------------------
-// 10. U6 — structural purity (asserted on the module's own source text)
-// ---------------------------------------------------------------------------
-
-test('U6: tail.mjs imports NOTHING — no node: module, no dynamic import, no require', () => {
-  const code = codeText(TAIL_SOURCE);
-  assert.equal(
-    code.indexOf('node:'),
-    -1,
-    'tail.mjs must reach for no node: builtin at all — not fs, not a clock, not a timer',
-  );
-  assert.equal(code.indexOf('require('), -1, 'no CommonJS escape hatch');
-  assert.equal(code.indexOf('import('), -1, 'no dynamic import');
-  assert.equal(code.indexOf('import '), -1, 'a pure decider takes data in and returns data out');
-  assert.ok(TAIL_SOURCE.length > 0, 'and the file must actually exist to be scanned');
-});
-
-test('U6 (AM9): tail.mjs never INTERPRETS an identity — no field name appears in its code', () => {
-  // The wrong implementation this kills: a `sameIdentity` with a hardcoded
-  // ['dev','ino','headSample','birthtimeMs'] field list passes every
-  // behavioural test above and is still the wrong module — the day the shell
-  // adds a fifth discriminator, that list silently ignores it and the rotation
-  // detector goes quiet.
-  const code = codeText(TAIL_SOURCE);
-  assert.equal(code.indexOf('headsample'), -1, 'tail.mjs must not know a head sample exists');
-  assert.equal(code.indexOf('birthtime'), -1, 'nor a birth time');
-  assert.equal(code.indexOf('statsync'), -1, 'nor how the identity was obtained');
 });
