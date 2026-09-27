@@ -1,12 +1,9 @@
-//! `marshal` — server-module domain submodule (M8.9, ADR-0056).
+//! `marshal` — server-module domain submodule.
 //!
 //! Row <-> `game-core` domain marshaling helpers (and `now_ms`, the platform
 //! timestamp -> `game_core::Millis` i64 marshal). Intentionally repetitive — DRY
 //! does not cross the marshaling boundary. These are pure (no DB I/O); `now_ms`
 //! reads only `ctx.timestamp`.
-//!
-//! This file name is part of the canonical `touches:` vocabulary fixed by
-//! ADR-0056 — keep it stable.
 
 use crate::schema::{
     Character, EncounterEntryRow, EncounterRow, EvolutionPathRow, Monster, MonsterPub, SkillRow,
@@ -83,8 +80,8 @@ pub(crate) fn monster_from_instance(
         stat_sp_defense: inst.derived_stats.sp_defense,
         current_hp: inst.current_hp,
         party_slot,
-        last_care_at_ms: 0, // epoch ⇒ cooldown elapsed ⇒ first care allowed (ADR-0059)
-        // EG1-1/EG1-7: the 8 essence pools flatten from the instance array in
+        last_care_at_ms: 0, // epoch ⇒ cooldown elapsed ⇒ first care allowed
+        // The 8 essence pools flatten from the instance array in
         // Affinity::ALL order (each named column reads its own affinity index).
         essence_fire: inst.essence[Affinity::Fire.index()],
         essence_water: inst.essence[Affinity::Water.index()],
@@ -97,7 +94,7 @@ pub(crate) fn monster_from_instance(
         trust_favorable_count: inst.trust_favorable_count,
         trust_unfavorable_count: inst.trust_unfavorable_count,
         // Server-only columns (no MonsterInstance counterpart): 0 at creation —
-        // epoch anchors and empty accumulators (EG1-1; never seeded from now_ms,
+        // epoch anchors and empty accumulators (never seeded from now_ms,
         // which would put a brand-new monster on cooldown).
         trust_favorable_battle_day_epoch: 0,
         quality_time_ticks_total: inst.quality_time_ticks_total,
@@ -148,7 +145,7 @@ pub(crate) fn table_from_encounter_row(row: &EncounterRow) -> Result<EncounterTa
 }
 
 /// Build a wild `BattleMonster` (no owned `monster` row) from a species, the
-/// server-loaded skill ids, a level, and the individuality seed (M8c, ADR-0045).
+/// server-loaded skill ids, a level, and the individuality seed.
 /// PURE / deterministic in `seed` — no `ctx`. Full-HP, EVs zero; IVs+nature come
 /// from `roll_individuality(seed)` and stats from `derive_stats`, so the stored
 /// seed rebuilds THIS exact wild in M8d. `known_skill_ids` = the species'
@@ -200,10 +197,10 @@ pub(crate) fn wild_battle_monster(
 
 /// Derive the public projection from a private monster row. No hidden fields.
 ///
-/// EG1-8: `tier` comes from the CALLER — fresh from the species row at the 4
+/// `tier` comes from the CALLER — fresh from the species row at the 4
 /// creation/transform sites, copied forward from the existing `monster_pub` row
 /// everywhere else (never fabricated; a missing row is the caller's fail-loud
-/// problem, ADR-0174 D7/A3). The three history tiers are DERIVED here from the
+/// problem). The three history tiers are DERIVED here from the
 /// private counters via the game-core SSOT helpers — pure and infallible.
 pub(crate) fn pub_from_monster(m: &Monster, tier: u8) -> MonsterPub {
     // Sum the six EV columns in u32 (cannot overflow: 6 * 65535 << u32::MAX),
@@ -246,8 +243,8 @@ pub(crate) fn pub_from_monster(m: &Monster, tier: u8) -> MonsterPub {
     }
 }
 
-/// Marshal a Monster row to a game-core MonsterInstance (M10b; EG1-7 essence
-/// graph). Trust boundary: rejects illegal level (0 or >100) per Level::new
+/// Marshal a Monster row to a game-core MonsterInstance.
+/// Trust boundary: rejects illegal level (0 or >100) per Level::new
 /// bounds. The server-only Quality-Time/Trust bookkeeping columns stay behind
 /// (no instance counterpart).
 pub(crate) fn monster_to_instance(m: &Monster) -> Result<game_core::MonsterInstance, String> {
@@ -286,7 +283,7 @@ pub(crate) fn monster_to_instance(m: &Monster) -> Result<game_core::MonsterInsta
     } else {
         Some(m.party_slot)
     };
-    // EG1-7: rebuild the essence array from the 8 named columns, each landing at
+    // Rebuild the essence array from the 8 named columns, each landing at
     // its own Affinity::index() slot (the inverse of monster_from_instance).
     let mut essence = [0u32; 8];
     essence[Affinity::Fire.index()] = m.essence_fire;
@@ -341,9 +338,9 @@ pub(crate) fn species_from_row(row: &SpeciesRow) -> Result<game_core::Species, S
 }
 
 /// Marshal a public `evolution_path` row to the pure `game_core::EvolutionPath`
-/// content struct (EG1-4/EG1-5). Parse-don't-validate: `min_level` goes through
+/// content struct. Parse-don't-validate: `min_level` goes through
 /// the `Level` newtype, so a corrupt row is a loud `Err`, never a panic and
-/// never a silently clamped gate (ADR-0174 D4).
+/// never a silently clamped gate.
 pub(crate) fn evolution_path_from_row(
     row: &EvolutionPathRow,
 ) -> Result<game_core::EvolutionPath, String> {
@@ -401,7 +398,7 @@ pub(crate) fn build_ability_store(
 
 /// Marshal a Monster row + its species + its known skills into a BattleMonster.
 ///
-/// Trust boundary (ADR-0049, reject-not-clamp): a row with `stat_defense == 0`
+/// Trust boundary (reject-not-clamp): a row with `stat_defense == 0`
 /// is rejected with `Err` rather than passed into the pure core, where it would
 /// divide-by-zero in `calc_damage`.
 pub(crate) fn battle_monster_from_row(
@@ -417,7 +414,7 @@ pub(crate) fn battle_monster_from_row(
     }
     // Canonical content order: iterate species.learnable_skill_ids and retain
     // only those present in the provided skills slice (mirrors wild_battle_monster,
-    // so owned and wild monsters have the same ordering — ADR-0077 12.5e-4).
+    // so owned and wild monsters have the same ordering).
     let known_skill_ids: Vec<u32> = species
         .learnable_skill_ids
         .iter()
@@ -451,7 +448,7 @@ pub(crate) fn battle_monster_from_row(
 }
 
 /// Write post-battle HP back from a BattleMonster to the persistent Monster row,
-/// clamped to the ROW's current `stat_hp` (13.5c-3). A mid-battle `sync_content`
+/// clamped to the ROW's current `stat_hp`. A mid-battle `sync_content`
 /// nerf can lower the row's `stat_hp` while the in-flight BattleMonster still
 /// carries the stale pre-nerf `max_hp` — so the clamp target is the ROW's
 /// `stat_hp`, NOT `bm.max_hp`. Ordering caveat: this clamp is correct because
@@ -464,7 +461,7 @@ pub(crate) fn write_back_hp(monster: &mut Monster, bm: &BattleMonster) {
 
 /// Sum the six base stats of a species (for the XP formula).
 ///
-/// Pure marshaling (ADR-0049): the base-stat-total definition is owned by the
+/// Pure marshaling: the base-stat-total definition is owned by the
 /// rule layer (`game_core::base_stat_total`, SSOT). This shell only builds a
 /// `StatBlock` from the species row's six `base_*` columns and delegates.
 pub(crate) fn loser_base_stat_total(species: &SpeciesRow) -> u16 {
@@ -482,7 +479,7 @@ pub(crate) fn loser_base_stat_total(species: &SpeciesRow) -> u16 {
 /// Build a `Vec<SkillDef>` from the DB skill rows.
 ///
 /// Production battle paths (submit_attack, swap_active, attempt_recruit) all use
-/// `cached_skills()` (content cache, ADR-0089/ADR-0098 D2). This function is retained
+/// `cached_skills()` (content cache). This function is retained
 /// for marshal boundary tests (power > 0, accuracy ∈ [1, 100]); it sets
 /// `sets_weather: None, applies_status: None` which is intentional for unit tests
 /// that exercise the validation logic only.
@@ -507,7 +504,7 @@ pub(crate) fn skill_defs_from_rows(rows: &[SkillRow]) -> Result<Vec<SkillDef>, S
                 accuracy: r.accuracy,
                 pp: r.pp,
                 // DB SkillRow has no sets_weather or applies_status columns; these are
-                // only populated via cached_skills() (content cache, ADR-0089/ADR-0098 D2).
+                // only populated via cached_skills() (content cache).
                 // All battle-resolution paths (submit_attack, swap_active, attempt_recruit)
                 // use cached_skills(). skill_defs_from_rows is used only for schema
                 // validation and marshal tests where sets_weather/applies_status are not needed.
@@ -520,10 +517,10 @@ pub(crate) fn skill_defs_from_rows(rows: &[SkillRow]) -> Result<Vec<SkillDef>, S
 
 /// Build the type chart from DB rows.
 ///
-/// Trust boundary (ADR-0049): re-validates `effectiveness ∈ {0, 5, 10, 20}` —
+/// Trust boundary: re-validates `effectiveness ∈ {0, 5, 10, 20}` —
 /// the seed-time constraint from `validate_content`. An out-of-range value would
 /// scale damage by the raw number (`TypeChart::effectiveness` returns it verbatim)
-/// while `classify` would panic via `unreachable!` (M14.5g hardening, ADR-0010).
+/// while `classify` would panic via `unreachable!` (M14.5g hardening).
 pub(crate) fn type_chart_from_rows(
     rows: impl Iterator<Item = TypeRelationRow>,
 ) -> Result<TypeChart, String> {

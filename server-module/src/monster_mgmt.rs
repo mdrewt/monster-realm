@@ -1,11 +1,8 @@
-//! `monster_mgmt` — server-module domain submodule (M8.9, ADR-0056).
+//! `monster_mgmt` — server-module domain submodule.
 //!
 //! Monster-management reducers: rename and party-slot assignment. Both are
 //! ownership-checked and dual-write the private `monster` row and its public
 //! `monster_pub` projection.
-//!
-//! This file name is part of the canonical `touches:` vocabulary fixed by
-//! ADR-0056 — keep it stable.
 
 use crate::guards::{log_reject, reject_if_monster_in_trade, require_owner, validate_name};
 use crate::marshal::pub_from_monster;
@@ -19,7 +16,7 @@ use spacetimedb::{Identity, ReducerContext};
 /// Ownership-checked: only the monster's owner may rename it.
 #[spacetimedb::reducer]
 pub fn set_nickname(ctx: &ReducerContext, monster_id: u64, nickname: String) -> Result<(), String> {
-    // Deletion gate (rb-128, ADR-0273 D2): the FIRST statement, before every read and write.
+    // Deletion gate: the FIRST statement, before every read and write.
     crate::guards::require_not_deleting(ctx, "set_nickname")?;
     let me = ctx.sender();
     let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
@@ -28,7 +25,7 @@ pub fn set_nickname(ctx: &ReducerContext, monster_id: u64, nickname: String) -> 
         return Err(e);
     };
     require_owner(ctx, "set_nickname", m.owner_identity)?;
-    // Trade escrow guard (TR-4, ADR-0106).
+    // Trade escrow guard.
     reject_if_monster_in_trade(
         ctx.db
             .trade_offer()
@@ -43,7 +40,7 @@ pub fn set_nickname(ctx: &ReducerContext, monster_id: u64, nickname: String) -> 
         validate_name(&nickname).inspect_err(|e| log_reject("set_nickname", me, e))?
     };
     m.nickname = validated;
-    // Copy-forward tier (ADR-0174 D7/A3): a missing monster_pub row is a broken
+    // Copy-forward tier: a missing monster_pub row is a broken
     // dual-write invariant — fail loud, never fabricate a tier.
     let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(monster_id) else {
         return Err(format!("monster_pub row missing for monster {monster_id}"));
@@ -56,10 +53,10 @@ pub fn set_nickname(ctx: &ReducerContext, monster_id: u64, nickname: String) -> 
 
 /// Set or clear a monster's party slot. `slot = 255` moves to box; `slot < 6`
 /// assigns a party position. Ownership-checked; delegates slot legality to the
-/// pure game-core check (`game_core::check_party_slot`, ADR-0053 SlotError pattern).
+/// pure game-core check (`game_core::check_party_slot`).
 #[spacetimedb::reducer]
 pub fn set_party_slot(ctx: &ReducerContext, monster_id: u64, slot: u8) -> Result<(), String> {
-    // Deletion gate (rb-128, ADR-0273 D2): the FIRST statement, before every read and write.
+    // Deletion gate: the FIRST statement, before every read and write.
     crate::guards::require_not_deleting(ctx, "set_party_slot")?;
     let me = ctx.sender();
     let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
@@ -68,7 +65,7 @@ pub fn set_party_slot(ctx: &ReducerContext, monster_id: u64, slot: u8) -> Result
         return Err(e);
     };
     require_owner(ctx, "set_party_slot", m.owner_identity)?;
-    // Trade escrow guard (TR-5, ADR-0106).
+    // Trade escrow guard.
     reject_if_monster_in_trade(
         ctx.db
             .trade_offer()
@@ -93,7 +90,7 @@ pub fn set_party_slot(ctx: &ReducerContext, monster_id: u64, slot: u8) -> Result
         return Err(e);
     }
     m.party_slot = slot;
-    // Copy-forward tier (ADR-0174 D7/A3): fail loud on a missing monster_pub row.
+    // Copy-forward tier: fail loud on a missing monster_pub row.
     let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(monster_id) else {
         return Err(format!("monster_pub row missing for monster {monster_id}"));
     };
@@ -103,17 +100,16 @@ pub fn set_party_slot(ctx: &ReducerContext, monster_id: u64, slot: u8) -> Result
     Ok(())
 }
 
-// --- M21 guest→account re-key (ADR-0179 D6, AUTH-22) --------------------------
+// --- M21 guest→account re-key (AUTH-22) --------------------------
 
 /// Re-key every `monster` row (and its `monster_pub` twin) owned by `from` onto
-/// `to`, in ONE function body (AUTH-22 / `monster-dual-write.eval.mjs`). Called
-/// only from `accounts::rekey_all`; `accounts.rs` must NOT touch `monster`
-/// directly (D0 write-isolation). `owner_identity` is a non-PK indexed column on
-/// both tables → update in place (no PK collision; the destination owns zero
-/// monster rows, guaranteed by `complete_guest_claim`'s destination-collision
-/// guard). Collect ids before mutating (ADR-0126 convention). Fallible — a
+/// `to`, in ONE function body. Called only from `accounts::rekey_all`;
+/// `accounts.rs` must NOT touch `monster` directly. `owner_identity` is a non-PK
+/// indexed column on both tables → update in place (no PK collision; the
+/// destination owns zero monster rows, guaranteed by `complete_guest_claim`'s
+/// destination-collision guard). Collect ids before mutating. Fallible — a
 /// missing `monster_pub` twin is a broken dual-write invariant, fail loud and
-/// roll the whole claim back, never fabricate a tier (ADR-0174 D7/A3).
+/// roll the whole claim back, never fabricate a tier.
 pub(crate) fn rekey_monsters(
     ctx: &ReducerContext,
     from: Identity,
@@ -141,14 +137,13 @@ pub(crate) fn rekey_monsters(
     Ok(())
 }
 
-/// M22 §4.4 step 6b (PRV1-6b, ADR-0228 D1/D2): delete every `monster` row
-/// owned by `owner`, PUBLIC TWIN INCLUDED, in ONE function body — the
-/// dual-write invariant (`monster-dual-write.eval.mjs`) rides the same fn as
-/// the `monster` delete, exactly like `rekey_monsters` above. Called only
-/// from `accounts::account_deletion_reaper` (D0 write-isolation). Collect ids
-/// via the owner index before mutating (ADR-0126 convention); never an
-/// unbounded table iteration. Infallible: a missing `monster_pub` twin is a
-/// PK no-op delete, and an erase has no tier to fabricate.
+/// delete every `monster` row owned by `owner`, PUBLIC TWIN INCLUDED, in ONE
+/// function body — the dual-write invariant rides the same fn as the
+/// `monster` delete, exactly like `rekey_monsters` above. Called only from
+/// `accounts::account_deletion_reaper`. Collect ids via the owner index
+/// before mutating; never an unbounded table iteration. Infallible: a
+/// missing `monster_pub` twin is a PK no-op delete, and an erase has no tier
+/// to fabricate.
 pub(crate) fn erase_monsters(ctx: &ReducerContext, owner: Identity) {
     let ids: Vec<u64> = ctx
         .db
@@ -164,7 +159,7 @@ pub(crate) fn erase_monsters(ctx: &ReducerContext, owner: Identity) {
 }
 
 /// True if `owner` owns at least one `monster` row (existence check for
-/// `accounts::account_has_game_data`; ADR-0179 D5 guard 3). Read-only.
+/// `accounts::account_has_game_data`). Read-only.
 pub(crate) fn has_monsters(ctx: &ReducerContext, owner: Identity) -> bool {
     ctx.db
         .monster()

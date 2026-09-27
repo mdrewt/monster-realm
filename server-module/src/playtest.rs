@@ -1,8 +1,7 @@
-//! `playtest` — server-module domain submodule (pt-b2, ADR-0131).
+//! `playtest` — server-module domain submodule.
 //! Server-only playtest OBSERVABILITY (not a game rule). Additive PRIVATE
-//! append-only `playtest_event` table fed by attempt_recruit at the H1 decision
-//! point; bounded by an interval-singleton TTL+cap reaper. This file name extends
-//! the canonical touches: vocabulary (ADR-0056) — keep it stable.
+//! append-only `playtest_event` table fed by attempt_recruit;
+//! bounded by an interval-singleton TTL+cap reaper.
 use crate::marshal::now_ms;
 use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 use std::time::Duration;
@@ -12,7 +11,7 @@ pub(crate) const PLAYTEST_EVENT_CAP: u64 = 20_000;
 const PLAYTEST_REAP_INTERVAL: Duration = Duration::from_secs(300); // 5 min
 pub(crate) const PLAYTEST_REAP_MAX_DELETE_PER_TICK: usize = 8192;
 
-// PRIVATE table (NO `public`): must-never-leak per-identity behaviour data (ADR-0015).
+// PRIVATE table (NO `public`): must-never-leak per-identity behaviour data.
 #[spacetimedb::table(accessor = playtest_event)]
 pub struct PlaytestEvent {
     #[primary_key]
@@ -28,7 +27,7 @@ pub struct PlaytestEvent {
     pub success: bool,
 }
 
-// PRIVATE scheduled table colocated with its reducer (ADR-0056 exception).
+// PRIVATE scheduled table colocated with its reducer.
 #[spacetimedb::table(accessor = playtest_reaper_schedule, scheduled(playtest_reaper))]
 pub struct PlaytestReaperSchedule {
     #[primary_key]
@@ -201,14 +200,13 @@ pub(crate) fn ensure_playtest_reaper(ctx: &ReducerContext) {
     }
 }
 
-/// M22 §4.4 step 6b (PRV1-6b, ADR-0228 D1/D2): delete every `playtest_event`
+/// delete every `playtest_event`
 /// row belonging to `owner` — identity-scoped and IMMEDIATE, deliberately
-/// independent of the ADR-0131 TTL reaper above (a row younger than its TTL
+/// independent of the TTL reaper above (a row younger than its TTL
 /// must not survive account deletion, and this sweep is uncapped: the cascade
 /// deletes ALL of the identity's rows, never a per-tick batch). The column is
-/// unindexed, so this is one of the cascade's two accepted linear scans
-/// (spec §8.3 volume residual, ADR-0228). Called only from
-/// `accounts::account_deletion_reaper` (D0 write-isolation).
+/// unindexed, so this is one of the cascade's two accepted linear scans.
+/// Called only from `accounts::account_deletion_reaper`.
 pub(crate) fn erase_playtest_events(ctx: &ReducerContext, owner: Identity) {
     let ids: Vec<u64> = ctx
         .db

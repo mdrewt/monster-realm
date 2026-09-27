@@ -1,33 +1,30 @@
-//! `inventory` — server-module domain submodule (M8.9, ADR-0056 / ADR-0059).
+//! `inventory` — server-module domain submodule.
 //!
-//! The single item-mutation surface (ADR-0018): every grant/consume path for the
+//! The single item-mutation surface: every grant/consume path for the
 //! `inventory` table routes through `grant_item` / `consume_one` here, so the
 //! single-stack-per-`(owner, item_id)` discipline and the delete-at-zero / capped
 //! invariants live in one place (recruit bait now; training food, shop, quest
 //! reward later). Item counts are PUBLIC / world-readable — no transport RLS
-//! (no `client_visibility_filter` in this toolchain, ADR-0040/0046); owner-scoping
+//! (no `client_visibility_filter` in this toolchain); owner-scoping
 //! is a client subscription filter only; per-owner transport RLS is deferred
 //! until per-row RLS lands. The row carries ONLY (owner, item_id, count) — no
 //! gene/seed field.
-//!
-//! This file name is part of the canonical `touches:` vocabulary fixed by
-//! ADR-0056 — keep it stable.
 
 use crate::schema::{inventory, Inventory};
 use game_core::MAX_ITEM_STACK;
 use spacetimedb::{Identity, ReducerContext, Table};
 
-// MAX_ITEM_STACK sourced from game_core (ADR-0113): moved to the pure rule layer
+// MAX_ITEM_STACK sourced from game_core: moved to the pure rule layer
 // so check_headroom can reference it without a crate boundary crossing.
 
 /// Grant `qty` of `item_id` to `owner`, merging into the owner's existing stack
 /// if present (capped, monotone) or inserting a new row otherwise. SINGLE stack
 /// per `(owner, item_id)`: always find-then-update.
 ///
-/// Hardened (ADR-0059 red-team F2/F3): a `qty == 0` grant is a no-op (never an
+/// Hardened: a `qty == 0` grant is a no-op (never an
 /// empty zombie row); the existing-stack branch only grows when below the cap, so
 /// a grant can never SHRINK an already-at/over-cap stack. Keeps `saturating_add`.
-// Crate-internal; the sole inventory inserter (ADR-0018/0046 single-stack surface).
+// Crate-internal; the sole inventory inserter.
 pub(crate) fn grant_item(ctx: &ReducerContext, owner: Identity, item_id: u32, qty: u32) {
     if qty == 0 {
         return;
@@ -41,7 +38,7 @@ pub(crate) fn grant_item(ctx: &ReducerContext, owner: Identity, item_id: u32, qt
     match existing {
         Some(mut row) => {
             // Monotone cap: only grow when below the cap, so an already-over-cap
-            // stack is never shrunk by the `.min(MAX_ITEM_STACK)` (red-team F3).
+            // stack is never shrunk by the `.min(MAX_ITEM_STACK)`.
             if row.count < MAX_ITEM_STACK {
                 row.count = row.count.saturating_add(qty).min(MAX_ITEM_STACK);
                 ctx.db.inventory().inv_id().update(row);
@@ -61,7 +58,7 @@ pub(crate) fn grant_item(ctx: &ReducerContext, owner: Identity, item_id: u32, qt
 /// Consume exactly one of `item_id` from `owner`. Rejects (`Err`) when the stack
 /// is absent or already empty. Uses `checked_sub` — NEVER a bare decrement — so
 /// an empty stack can never underflow into a 2^32 windfall. Delete-at-zero on both
-/// paths (ADR-0059): a pre-existing zombie (`count == 0`) is deleted before the
+/// paths: a pre-existing zombie (`count == 0`) is deleted before the
 /// reject, and a stack drained to 0 is deleted rather than left as an empty row.
 pub(crate) fn consume_one(
     ctx: &ReducerContext,
@@ -92,16 +89,15 @@ pub(crate) fn consume_one(
     Ok(())
 }
 
-// --- M21 guest→account re-key (ADR-0179 D6) ----------------------------------
+// --- M21 guest→account re-key ----------------------------------
 
 /// Re-key every `inventory` row owned by `from` onto `to`. Called only from
 /// `accounts::rekey_all` (D0 write-isolation — `accounts.rs` must not touch
 /// `inventory` directly). `owner_identity` is a non-PK indexed column → update
 /// in place; this must NOT insert (the single-stack inserter is `grant_item`
-/// only, `inventory-single-stack.eval.mjs`). No stack merge is needed — the
-/// destination owns zero inventory rows (`complete_guest_claim` guard 3), so the
-/// single-stack-per-`(owner, item_id)` invariant is preserved for free. Collect
-/// ids before mutating (ADR-0126).
+/// only). No stack merge is needed — the destination owns zero inventory rows
+/// (`complete_guest_claim` guard 3), so the single-stack-per-`(owner, item_id)`
+/// invariant is preserved for free. Collect ids before mutating.
 pub(crate) fn rekey_inventory(ctx: &ReducerContext, from: Identity, to: Identity) {
     let ids: Vec<u64> = ctx
         .db
@@ -118,10 +114,10 @@ pub(crate) fn rekey_inventory(ctx: &ReducerContext, from: Identity, to: Identity
     }
 }
 
-/// M22 §4.4 step 6b (PRV1-6b, ADR-0228 D1/D2): delete every `inventory` row
-/// owned by `owner`. Called only from `accounts::account_deletion_reaper`
-/// (D0 write-isolation). Collect ids via the owner index before mutating
-/// (ADR-0126); never an unbounded table iteration.
+/// delete every `inventory` row
+/// owned by `owner`. Called only from `accounts::account_deletion_reaper`.
+/// Collect ids via the owner index before mutating;
+/// never an unbounded table iteration.
 pub(crate) fn erase_inventory(ctx: &ReducerContext, owner: Identity) {
     let ids: Vec<u64> = ctx
         .db
@@ -136,7 +132,7 @@ pub(crate) fn erase_inventory(ctx: &ReducerContext, owner: Identity) {
 }
 
 /// True if `owner` holds at least one `inventory` row (for
-/// `accounts::account_has_game_data`; ADR-0179 D5 guard 3). Read-only.
+/// `accounts::account_has_game_data`). Read-only.
 pub(crate) fn has_items(ctx: &ReducerContext, owner: Identity) -> bool {
     ctx.db
         .inventory()
