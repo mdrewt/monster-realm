@@ -97,7 +97,12 @@
 
 import * as fc from 'fast-check';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { RenewalOutcome } from './credentialDecision';
+import { claimCode } from './claimCode';
+import {
+  AUTH_SERVICE_TRANSIENT_THRESHOLD,
+  decideConnectCredential,
+  type RenewalOutcome,
+} from './credentialDecision';
 import {
   classifySignInReason,
   createOidcClient,
@@ -1587,5 +1592,153 @@ describe('G30 (runtime): oidc reaches every ambient surface ONLY through the inj
     const hits = trapAmbient();
     (globalThis as unknown as { localStorage: Storage }).localStorage.setItem('k', 'v');
     expect(hits).toEqual(['localStorage.setItem']);
+  });
+});
+
+// ===========================================================================
+// AUTH-57 sentinel oracle (debloat Phase 2, EV-client-no-pii-logs condition).
+//
+// Real sentinel credentials are pushed through every credential path of the three
+// credential modules — oidc (exchange, refresh, definitive rejection, network failure),
+// credentialDecision (every outcome it maps) and claimCode (mint / read / clear) — while
+// every log-shaped sink these modules could reach is spied: all console methods and the
+// ambient `reportError`. The oracle is the sinks' recorded ARGUMENTS and every value a
+// module hands back that is not the sanctioned credential itself: no sentinel may appear
+// in either. (The `opts.on*` callbacks and main.ts's telemetry / reportError call sites
+// live in connection.ts / main.ts, which this node suite cannot import: residual for the
+// OIDC e2e spec the ledger row names.)
+// ===========================================================================
+
+describe('AUTH-57 sentinel: no credential value reaches a log sink or a failure value', () => {
+  const SENTINEL_ID = 'sentinel-id-token-q7';
+  const SENTINEL_ACCESS = 'sentinel-access-token-q7';
+  const SENTINEL_REFRESH = 'sentinel-refresh-token-q7';
+  const SENTINEL_DETAIL = 'sentinel-provider-detail-q7';
+
+  function render(value: unknown): string {
+    if (value instanceof Error) return `${value.message} ${value.stack ?? ''}`;
+    try {
+      return typeof value === 'string' ? value : (JSON.stringify(value) ?? String(value));
+    } catch {
+      return String(value);
+    }
+  }
+
+  function spySinks(): () => string[] {
+    const methods = ['log', 'info', 'warn', 'error', 'debug', 'trace'] as const;
+    const spies = methods.map((m) => vi.spyOn(console, m).mockImplementation(() => undefined));
+    const reportError = vi.fn();
+    vi.stubGlobal('reportError', reportError);
+    return () =>
+      [...spies.map((s) => s.mock.calls), reportError.mock.calls].flatMap((calls) =>
+        calls.flatMap((args) => args.map(render)),
+      );
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('★★ BITES: exchange, refresh, rejection and outage paths leak no sentinel', async () => {
+    const recorded = spySinks();
+    const secrets = [SENTINEL_ID, SENTINEL_ACCESS, SENTINEL_REFRESH, SENTINEL_DETAIL];
+    const handedBack: unknown[] = [];
+
+    // 1. Successful exchange carrying sentinel tokens. The id token is the ONE sanctioned
+    //    output (it is the credential), so it is checked separately.
+    const rig = makeRig({
+      tokenResponse: {
+        ok: true,
+        status: 200,
+        body: {
+          id_token: SENTINEL_ID,
+          access_token: SENTINEL_ACCESS,
+          refresh_token: SENTINEL_REFRESH,
+          token_type: 'Bearer',
+        },
+      },
+    });
+    const { outcome } = await completeSignIn(rig);
+    expect(outcome).toEqual({ kind: 'ok', token: SENTINEL_ID });
+    expect(decideConnectCredential(outcome, false, 0, undefined)).toEqual({
+      kind: 'account',
+      token: SENTINEL_ID,
+    });
+
+    // 2. A definitive refresh rejection whose provider text quotes the stored refresh token.
+    rig.setTokenResponse({
+      ok: false,
+      status: 400,
+      body: { error: 'invalid_grant', error_description: `${SENTINEL_REFRESH} ${SENTINEL_DETAIL}` },
+    });
+    const refreshed = await createOidcClient(rig.host, CONFIG).renewOrExchange();
+    handedBack.push(refreshed, decideConnectCredential(refreshed, true, 0, undefined));
+
+    // 3. A definitive EXCHANGE rejection quoting the provider detail.
+    const rejected = makeRig({
+      tokenResponse: {
+        ok: false,
+        status: 400,
+        body: { error: 'access_denied', error_description: `${SENTINEL_DETAIL} ${SENTINEL_ID}` },
+      },
+    });
+    const failed = (await completeSignIn(rejected)).outcome;
+    expect(failed.kind).toBe('exchange-failed');
+    handedBack.push(failed, decideConnectCredential(failed, false, 0, undefined));
+
+    // 4. A network failure whose error message carries the detail (a proxy echoing the body).
+    const outage = makeRig();
+    const outageClient = createOidcClient(outage.host, CONFIG);
+    const begun = await outageClient.beginSignIn();
+    const state = queryParam((begun as { authorizationUrl: string }).authorizationUrl, 'state');
+    outage.setSearch(`?code=${AUTH_CODE}&state=${state}`);
+    outageClient.consumeReturnLeg();
+    (outage.host as { fetch: unknown }).fetch = async () => {
+      throw new TypeError(`Failed to fetch ${SENTINEL_DETAIL}`);
+    };
+    const down = await outageClient.renewOrExchange();
+    expect(down).toEqual({ kind: 'transient-error' });
+    handedBack.push(
+      down,
+      decideConnectCredential(down, false, AUTH_SERVICE_TRANSIENT_THRESHOLD, undefined),
+      decideConnectCredential(down, true, AUTH_SERVICE_TRANSIENT_THRESHOLD, undefined),
+    );
+
+    for (const value of handedBack) {
+      const text = render(value);
+      for (const s of secrets) {
+        expect(text.indexOf(s), `a failure value carries ${s}: ${text}`).toBe(-1);
+      }
+      const reason = (value as { reason?: unknown }).reason;
+      if (reason !== undefined) expect(SIGN_IN_REASONS).toContain(reason);
+    }
+    const logs = recorded();
+    for (const s of [...secrets, AUTH_CODE]) {
+      expect(
+        logs.filter((line) => line.indexOf(s) >= 0),
+        `${s} reached a log sink`,
+      ).toEqual([]);
+    }
+  });
+
+  it('★★ BITES: the claim secret never reaches a log sink through mint / read / clear', () => {
+    const recorded = spySinks();
+    const rig = makeRig();
+    const minted = claimCode.mint(rig.host, URI, DB);
+    expect(typeof minted, 'the fixture must mint a real code or the oracle is vacuous').toBe(
+      'string',
+    );
+    expect(minted).toHaveLength(64);
+    expect(claimCode.read(rig.host, URI, DB)).toBe(minted);
+    expect(claimCode.hasUnconsumed(rig.host, URI, DB)).toBe(true);
+    claimCode.clear(rig.host, URI, DB);
+    expect(claimCode.read(rig.host, URI, DB)).toBeUndefined();
+    // A host whose storage throws must fail closed, still silently.
+    expect(claimCode.mint({ ...rig.host, sessionStorage: new ThrowingSetStorage() }, URI, DB)).toBe(
+      undefined,
+    );
+    expect(recorded().filter((line) => line.indexOf(minted as string) >= 0)).toEqual([]);
+    expect(recorded(), 'claimCode logs nothing at all').toEqual([]);
   });
 });
