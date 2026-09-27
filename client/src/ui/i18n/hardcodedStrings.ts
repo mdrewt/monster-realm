@@ -411,17 +411,24 @@ function setAttributeValueSpan(
 // ---------------------------------------------------------------------------
 
 /** Plan R3: an exempt call starts at unmasked `i` iff the name is exactly `t` or `tf`, the char
- *  before it is neither an identifier char nor `.`, and `(` follows with no whitespace. Returns
- *  the index just after that `(`, or -1. */
+ *  before it is not an identifier char, and `(` follows with no whitespace. Returns the index
+ *  just after that `(`, or -1.
+ *
+ *  rb-130 (R-m24-s4-RT1): a member or private call is not the resolver. Skipping any ASCII
+ *  whitespace backward, the nearest char must not be `.` (`obj.t(`, `obj.\n  t(`), `#`
+ *  (`this.#t(`) or non-ASCII (an accented letter glued to the name; an NBSP inside the gap).
+ *  Failing closed on non-ASCII keeps the literal scanned. Out of reach of a lexical scan: a
+ *  locally shadowed `t`. */
 function exemptCallOpenAt(src: string, mask: LiteralMask, i: number): number {
   if (mask.masked[i] || src.charAt(i) !== 't') return -1;
   let open = i + 1;
   if (src.charAt(open) === 'f') open++;
   if (src.charAt(open) !== '(') return -1;
-  if (i > 0) {
-    const before = src.charAt(i - 1);
-    if (before === '.' || isIdentifierChar(before)) return -1;
-  }
+  if (isIdentifierChar(src.charAt(i - 1))) return -1;
+  let j = i - 1;
+  while (j >= 0 && isWhitespace(src.charAt(j))) j--;
+  const prev = src.charAt(j);
+  if (prev === '.' || prev === '#' || prev.charCodeAt(0) > 127) return -1;
   return open + 1;
 }
 
