@@ -175,7 +175,12 @@ test.describe
       await expect(page.locator('[data-testid="evo-choice"]')).toHaveCount(0);
 
       // Nothing has fired yet: the box still lists the tier-0 form at the seeded level.
-      await page.keyboard.press('KeyB'); // hide-switch sibling: replaces the evolution overlay
+      // Close the evolution overlay first: opening it moved focus inside it, and the KeyB hotkey
+      // only fires while the WORLD owns focus (main.ts worldHasFocus) or the box is already open.
+      await page.keyboard.press('Escape');
+      await expect(readyNote).toBeHidden({ timeout: 5_000 });
+      await focusWorld(page);
+      await page.keyboard.press('KeyB');
       await expect
         .poll(() => overlayText(page, t('box.title')), { timeout: 10_000 })
         .toContain(boxCardPrefix(FROM_NAME, SEED_LEVEL));
@@ -222,14 +227,21 @@ test.describe
       await expect(ok).toHaveText(t('evolutionNotice.ok'));
 
       const { identity } = await snap(page);
-      const pendingFor = (): number =>
-        sqlRows(sql('SELECT * FROM pending_evolution_notice', 'V3'), 'V3').filter(
+      // The caller's queue row SURVIVES an empty drain by design (evolution.rs
+      // ack_evolution_notices doc), so the oracle is its `entries` cell: the CLI renders each
+      // reveal as "(monster_id = N, from_species = A, to_species = B, ...)" and an empty Vec as
+      // a blank cell (measured live).
+      const entriesFor = (): string | undefined =>
+        sqlRows(sql('SELECT * FROM pending_evolution_notice', 'V3'), 'V3').find(
           (r) => normId(r.owner_identity ?? '') === normId(identity),
-        ).length;
-      expect(pendingFor(), 'the reveal must be queued server-side before the ack').toBe(1);
+        )?.entries;
+      const queued = entriesFor() ?? '';
+      expect(queued, 'the reveal must be queued server-side before the ack').toContain(
+        `monster_id = ${monsterId}, from_species = 1, to_species = ${TO_SPECIES_ID}`,
+      );
 
       await ok.click();
       await expect(banner).toBeHidden({ timeout: 10_000 });
-      await expect.poll(pendingFor, { timeout: 10_000 }).toBe(0);
+      await expect.poll(entriesFor, { timeout: 10_000 }).toBe('');
     });
   });
