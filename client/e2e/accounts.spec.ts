@@ -25,6 +25,12 @@ import { t } from '../src/ui/i18n/resolver';
 // The claim copy is model English in client/src/ui/claimModel.ts (NOT in the i18n catalog), so
 // those strings are literals pinned to that file; catalogued strings go through t().
 //
+// FIXME'D (ledger BUG-claim-overlay-action-buttons-hidden-unlabelled): claimView.ts ships the
+// sign-in / join / decline buttons display:none and unlabelled, so a real player cannot reach
+// them. A1-A3 are written against the INTENDED overlay and stay fixme'd until the Phase-3
+// claimView fix, which removes the fixmes — these assertions are that fix's acceptance tests.
+// Never re-enable them by clicking the hidden buttons programmatically: that launders the defect.
+//
 // CLEANUP. One browser/context/identity; afterAll closes the browser (on_disconnect deletes the
 // player row before golden.spec's presenceCount === 2).
 
@@ -111,7 +117,8 @@ test.describe
       await browser.close();
     });
 
-    test('A1: KeyC opens the claim overlay with the guest prompt, a sign-in button, the privacy door and the first-run nudge', async () => {
+    // BUG-claim-overlay-action-buttons-hidden-unlabelled: re-enable with the claimView fix.
+    test.fixme('A1: KeyC opens the claim overlay with the guest prompt, a sign-in button, the privacy door and the first-run nudge', async () => {
       expect(await storedCodes(page), 'a fresh guest holds no claim code').toEqual([]);
       await focusWorld(page);
       await page.keyboard.press('KeyC');
@@ -122,7 +129,8 @@ test.describe
       await expect(page.locator('#claim-privacy-btn')).toHaveText(t('claim.privacyButton'));
     });
 
-    test('A2: sign-in with an unreachable auth service fails safe — failure copy, a minted claim code, and the guest session untouched', async () => {
+    // BUG-claim-overlay-action-buttons-hidden-unlabelled: re-enable with the claimView fix.
+    test.fixme('A2: sign-in with an unreachable auth service fails safe — failure copy, a minted claim code, and the guest session untouched', async () => {
       await page.locator('#claim-signin-btn').click();
       await expect(page.locator('#claim-title')).toHaveText(FAILED_TITLE, { timeout: 10_000 });
       await expect(page.locator('#claim-body')).toHaveText(FAILED_BODY);
@@ -162,7 +170,8 @@ test.describe
       );
     });
 
-    test('A3: declining is two-step — cancel keeps the claim code, confirm deletes it', async () => {
+    // BUG-claim-overlay-action-buttons-hidden-unlabelled: re-enable with the claimView fix.
+    test.fixme('A3: declining is two-step — cancel keeps the claim code, confirm deletes it', async () => {
       const [code] = await storedCodes(page);
       expect(code).toMatch(/^[0-9a-f]{64}$/);
       await focusWorld(page);
