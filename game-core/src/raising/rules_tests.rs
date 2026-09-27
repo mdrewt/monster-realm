@@ -1,4 +1,4 @@
-//! M9a gating tests — proof-of-teeth for the raising rules.
+//! Raising rules: focus training (EV top-off, re-derive, reject precedence) and the care cooldown.
 //!
 //! EARS criteria covered:
 //!   Criterion A — focus_train (EV top-off → re-derive; reject precedence)

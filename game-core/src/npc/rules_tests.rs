@@ -1,4 +1,4 @@
-//! M12a NPC gating tests — proof-of-teeth for `npc_decide`.
+//! NPC rules: `npc_decide` wander/return-home behavior.
 //!
 //! EARS criteria covered:
 //!   Determinism — same (current, home, radius, facing, npc_id, tick, map) → same Option<Direction>

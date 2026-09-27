@@ -40,7 +40,7 @@ use game_core::focus_train;
 use game_core::{EVs, IVs, Level, Nature, NatureKind, StatBlock, StatKind};
 use proptest::prelude::*;
 
-/// Bulbasaur-like base stats fixture (matches m9a_gating_tests canonical fixture).
+/// Bulbasaur-like base stats fixture (matches the game-core `raising::rules_tests` canonical fixture).
 fn train_base() -> StatBlock {
     StatBlock {
         hp: 45,

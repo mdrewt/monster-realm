@@ -18,7 +18,7 @@ mod battle_redteam_tests;
 // warnings` gate passes.
 #[cfg(test)]
 #[allow(clippy::assertions_on_constants)]
-mod m8d_gating_tests;
+mod rolls_tests;
 
 pub use rolls::{build_monster, roll_individuality, roll_starter};
 pub use rules::{derive_stats, level_bounds, level_for_xp, xp_for_level};

@@ -1,8 +1,8 @@
 // Cosmetic doc-formatting lint only (Rust 1.96 `doc_overindented_list_items` fires
 // on the 5-space EARS list below); suppressing it changes NO test assertion.
 #![allow(clippy::doc_overindented_list_items)]
-//! M8c gating tests — acceptance criteria for the grass-encounter spine (pure
-//! game-core surface).
+//! Grass-encounter spine: grass tiles, stepping onto grass and encounter
+//! resolution (pure game-core surface).
 //!
 //! EARS criteria covered:
 //!   - "WHEN a player character enters a NEW grass tile (position actually changed

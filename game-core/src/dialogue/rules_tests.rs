@@ -1,5 +1,5 @@
-//! M12a dialogue gating tests — proof-of-teeth for the dialogue model and
-//! evaluation rules.
+//! Dialogue rules: condition evaluation, entry-node selection and the
+//! dialogue model.
 //!
 //! EARS criteria covered:
 //!   Condition evaluation — HasFlag, NotFlag, QuestActive, QuestDone (all four variants)

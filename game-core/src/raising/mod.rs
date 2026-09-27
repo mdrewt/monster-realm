@@ -7,7 +7,7 @@ pub mod rules;
 pub mod types;
 
 #[cfg(test)]
-pub mod m9a_gating_tests;
+pub mod rules_tests;
 
 pub use rules::{focus_train, is_cooldown_ready, CARE_COOLDOWN_MS};
 pub use types::{FocusTrainError, FocusTrainResult};

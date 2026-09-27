@@ -4,7 +4,7 @@ pub mod model;
 pub mod rules;
 
 #[cfg(test)]
-pub mod m12a_gating_tests;
+pub mod rules_tests;
 
 pub use model::{
     PlayerQuestProgress, QuestAdvance, QuestDef, QuestReward, QuestStep, RewardItem, StepTrigger,

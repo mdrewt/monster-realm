@@ -20,7 +20,7 @@ pub mod eligibility;
 pub mod transform;
 
 #[cfg(test)]
-mod m10a_gating_tests;
+mod eligibility_tests;
 
 pub use eligibility::{
     eligible_evolution_paths, nutrition_pct_from_ev_total, nutrition_pct_of, path_satisfied,

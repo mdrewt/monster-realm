@@ -28,7 +28,7 @@ pub mod types;
 pub mod world;
 
 #[cfg(test)]
-mod m8c_gating_tests;
+mod grass_encounter_tests;
 
 pub use accounts::{
     is_deletion_due, DELETION_GRACE_MS_DEFAULT, EXPORT_CHUNK_ROWS, STATE_TRANSITION_OWNERS,

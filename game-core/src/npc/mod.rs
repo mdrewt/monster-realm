@@ -3,6 +3,6 @@
 pub mod rules;
 
 #[cfg(test)]
-pub mod m12a_gating_tests;
+pub mod rules_tests;
 
 pub use rules::npc_decide;

@@ -1,4 +1,4 @@
-//! EG1 gating tests — the essence-graph eligibility contract (proof-of-teeth).
+//! Evolution eligibility: the essence-graph path contract.
 //!
 //! Covered here:
 //!   - `path_satisfied`   — the five AND-combined gates, their inclusive

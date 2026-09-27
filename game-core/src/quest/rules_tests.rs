@@ -1,4 +1,4 @@
-//! M12a quest gating tests — proof-of-teeth for the quest/flag advance rules.
+//! Quest rules: start conditions, trigger matching and step advance.
 //!
 //! EARS criteria covered:
 //!   can_start_quest — start_conditions gating; already-active guard; already-done guard

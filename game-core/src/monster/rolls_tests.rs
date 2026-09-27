@@ -1,7 +1,7 @@
 // Cosmetic doc-formatting lint only (Rust 1.96 `doc_overindented_list_items` fires
 // on the 5-space EARS list below); suppressing it changes NO test assertion.
 #![allow(clippy::doc_overindented_list_items)]
-//! M8d gating tests — acceptance criteria for the recruit slice (pure game-core surface).
+//! `build_monster` rolls: determinism, individuality and level postconditions.
 //!
 //! EARS criteria covered:
 //!   A1 — `build_monster` determinism: same (seed, species, level) → identical MonsterInstance.
