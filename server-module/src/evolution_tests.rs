@@ -7304,3 +7304,634 @@ fn s20rd_has_evolution_notices_is_row_exists() {
         fx.requested_indexes()
     );
 }
+
+// ===========================================================================
+// Native-host behavioural suite (debloat Phase 2: EV-evolution-reducer-security,
+// ST-evolution_tests#evolve-reducer-guards, ST-evolution_tests#view-scope-erase).
+//
+// Every case runs the SHIPPED reducer / helper through `Fixture::run_as(_at)`
+// against the tables it reads through their real indexes (the seam suite above
+// runs a hand mirror). HOST LIMIT: no transaction rollback, so a rejection is
+// asserted as refusal BEFORE any write (the whole store byte-identical). The
+// owner-scoped `my_pending_evolution_notices` view is a private fn in schema.rs
+// and cannot be called from here (residual; Phase-3 candidate: pub(crate)).
+// ===========================================================================
+mod nh {
+    use crate::evolution::{
+        ack_evolution_notices, check_and_evolve, erase_evolution_notices, evolve,
+        has_evolution_notices, rekey_evolution_notices, MAX_EVOLUTION_CHAIN_STEPS,
+    };
+    use crate::marshal::{monster_to_instance, pub_from_monster, species_from_row};
+    use crate::native_host_tests::{fixture, Fixture, Handle};
+    use crate::schema::{
+        Battle, EssenceRequirementRow, EvolutionPathRow, EvolutionRevealRow, Monster, MonsterPub,
+        PendingEvolutionNotice, SpeciesRow, TradeOffer,
+    };
+    use game_core::{Affinity, BattleOutcome, TradeStatus};
+    use spacetimedb::sats::bsatn::to_vec;
+    use spacetimedb::{Identity, Timestamp};
+
+    const T0: i64 = 1_750_000_000_000;
+
+    fn a() -> Identity {
+        Identity::from_byte_array([0xA1; 32])
+    }
+    fn b() -> Identity {
+        Identity::from_byte_array([0xB2; 32])
+    }
+    fn c() -> Identity {
+        Identity::from_byte_array([0xC3; 32])
+    }
+    fn at(ms: i64) -> Timestamp {
+        Timestamp::from_micros_since_unix_epoch(ms * 1000)
+    }
+
+    fn species(id: u32, base: u16, tier: u8) -> SpeciesRow {
+        SpeciesRow {
+            id,
+            name: format!("s{id}"),
+            base_hp: base,
+            base_attack: base + 1,
+            base_defense: base + 2,
+            base_speed: base + 3,
+            base_sp_attack: base + 4,
+            base_sp_defense: base + 5,
+            affinity: Affinity::Fire,
+            learnable_skill_ids: vec![1],
+            ability: None,
+            tier,
+        }
+    }
+
+    fn edge(id: u32, from: u32, to: u32, min_level: u8, fire: u32) -> EvolutionPathRow {
+        EvolutionPathRow {
+            path_id: u64::from(id),
+            edge_id: id,
+            from_species: from,
+            to_species: to,
+            min_level,
+            essence: if fire == 0 {
+                vec![]
+            } else {
+                vec![EssenceRequirementRow {
+                    affinity: Affinity::Fire,
+                    amount: fire,
+                }]
+            },
+            min_trust_tier: None,
+            min_quality_time_tier: None,
+            min_nutrition_pct: None,
+        }
+    }
+
+    /// Distinct, non-zero growth history so a transform that dropped or zeroed
+    /// the lifetime columns is visible.
+    fn monster(monster_id: u64, owner: Identity, species_id: u32) -> Monster {
+        Monster {
+            monster_id,
+            owner_identity: owner,
+            species_id,
+            nickname: format!("m{monster_id}"),
+            level: 7,
+            xp: 120,
+            iv_hp: 10,
+            iv_attack: 11,
+            iv_defense: 12,
+            iv_speed: 13,
+            iv_sp_attack: 14,
+            iv_sp_defense: 15,
+            nature_kind: game_core::NatureKind::Hardy,
+            ev_hp: 4,
+            ev_attack: 5,
+            ev_defense: 6,
+            ev_speed: 7,
+            ev_sp_attack: 8,
+            ev_sp_defense: 9,
+            stat_hp: 40,
+            stat_attack: 20,
+            stat_defense: 20,
+            stat_speed: 20,
+            stat_sp_attack: 20,
+            stat_sp_defense: 20,
+            current_hp: 33,
+            party_slot: 0,
+            last_care_at_ms: 5,
+            essence_fire: 10,
+            essence_water: 3,
+            essence_plant: 0,
+            essence_electric: 1,
+            essence_earth: 0,
+            essence_wind: 0,
+            essence_light: 2,
+            essence_dark: 0,
+            trust_favorable_count: 9,
+            trust_unfavorable_count: 1,
+            trust_favorable_battle_day_epoch: 3,
+            quality_time_ticks_total: 44,
+            quality_time_accum_ms: 1_000,
+            quality_time_window_ms: 2_000,
+            quality_time_window_start_ms: 7,
+            last_essence_train_at_ms: 11,
+        }
+    }
+
+    fn battle(
+        battle_id: u64,
+        player: Identity,
+        opponent: Identity,
+        party: Vec<u64>,
+        opp: Vec<u64>,
+        outcome: BattleOutcome,
+    ) -> Battle {
+        let lead = game_core::BattleMonster {
+            species_id: 1,
+            affinity: Affinity::Fire,
+            level: 7,
+            current_hp: 30,
+            max_hp: 30,
+            stats: game_core::StatBlock {
+                hp: 30,
+                attack: 20,
+                defense: 20,
+                speed: 20,
+                sp_attack: 20,
+                sp_defense: 20,
+            },
+            known_skill_ids: vec![1],
+            status: None,
+        };
+        Battle {
+            battle_id,
+            player_identity: player,
+            opponent_identity: opponent,
+            state: game_core::BattleState {
+                side_a: game_core::BattleSide {
+                    active: 0,
+                    team: vec![lead.clone()],
+                },
+                side_b: game_core::BattleSide {
+                    active: 0,
+                    team: vec![lead],
+                },
+                outcome,
+                turn_number: 1,
+                weather: None,
+            },
+            party_monster_ids: party,
+            opponent_monster_ids: opp,
+            created_at_ms: 0,
+        }
+    }
+
+    fn offer(trade_id: u64, initiator: Identity, counterparty: Identity) -> TradeOffer {
+        TradeOffer {
+            trade_id,
+            initiator,
+            counterparty,
+            initiator_monster_ids: vec![],
+            initiator_items: vec![],
+            initiator_currency: 0,
+            counterparty_monster_ids: vec![],
+            counterparty_items: vec![],
+            counterparty_currency: 0,
+            initiator_cards: vec![],
+            counterparty_cards: vec![],
+            status: TradeStatus::Pending,
+            created_at_ms: T0,
+        }
+    }
+
+    /// Every table `evolve` / `apply_evolution` / `check_and_evolve` / the notice
+    /// helpers touch, under each index they read. Writes are opened only on the
+    /// tables the success path writes.
+    struct World<'a> {
+        monsters: Handle<'a, Monster, u64>,
+        pubs: Handle<'a, MonsterPub, u64>,
+        species: Handle<'a, SpeciesRow, u32>,
+        paths: Handle<'a, EvolutionPathRow, u32>,
+        notices: Handle<'a, PendingEvolutionNotice>,
+        battles: Handle<'a, Battle>,
+        offers: Handle<'a, TradeOffer>,
+    }
+
+    fn world(fx: &Fixture) -> World<'_> {
+        let w = World {
+            monsters: fx
+                .table_keyed::<Monster, u64>("monster", "monster_id", |r| r.monster_id)
+                .writable()
+                .unique(),
+            pubs: fx
+                .table_keyed::<MonsterPub, u64>("monster_pub", "monster_id", |r| r.monster_id)
+                .writable()
+                .unique(),
+            species: fx.table_keyed::<SpeciesRow, u32>("species_row", "id", |r| r.id),
+            paths: fx.table_keyed::<EvolutionPathRow, u32>("evolution_path", "from_species", |r| {
+                r.from_species
+            }),
+            notices: fx
+                .table::<PendingEvolutionNotice>(
+                    "pending_evolution_notice",
+                    "owner_identity",
+                    |r| r.owner_identity,
+                )
+                .writable()
+                .unique(),
+            battles: fx.table::<Battle>("battle", "player_identity", |r| r.player_identity),
+            offers: fx.table::<TradeOffer>("trade_offer", "initiator", |r| r.initiator),
+        };
+        let _ = fx.table::<Battle>("battle", "opponent_identity", |r| r.opponent_identity);
+        let _ = fx.table::<TradeOffer>("trade_offer", "counterparty", |r| r.counterparty);
+        w
+    }
+
+    impl World<'_> {
+        fn seed_monster(&self, m: &Monster, tier: u8) {
+            self.pubs.seed(&pub_from_monster(m, tier));
+            self.monsters.seed(m);
+        }
+        fn monster(&self, id: u64) -> Monster {
+            self.monsters
+                .rows()
+                .into_iter()
+                .find(|m| m.monster_id == id)
+                .expect("monster row")
+        }
+        fn pub_row(&self, id: u64) -> MonsterPub {
+            self.pubs
+                .rows()
+                .into_iter()
+                .find(|m| m.monster_id == id)
+                .expect("monster_pub row")
+        }
+        fn entries(&self, owner: Identity) -> Option<Vec<EvolutionRevealRow>> {
+            self.notices
+                .rows()
+                .into_iter()
+                .find(|n| n.owner_identity == owner)
+                .map(|n| n.entries)
+        }
+        fn snapshot(&self) -> Vec<Vec<u8>> {
+            vec![
+                to_vec(&self.monsters.rows()).unwrap(),
+                to_vec(&self.pubs.rows()).unwrap(),
+                to_vec(&self.notices.rows()).unwrap(),
+            ]
+        }
+    }
+
+    /// The standard graph: 1 (tier 0) -> 2 (tier 1) at level 5 + 10 Fire essence.
+    fn standard(fx: &Fixture) -> World<'_> {
+        let w = world(fx);
+        w.species.seed(&species(1, 30, 0));
+        w.species.seed(&species(2, 60, 1));
+        w.paths.seed(&edge(1, 1, 2, 5, 10));
+        w
+    }
+
+    fn reveal(monster_id: u64, from: u32, to: u32, ms: i64) -> EvolutionRevealRow {
+        EvolutionRevealRow {
+            monster_id,
+            from_species: from,
+            to_species: to,
+            evolved_at_ms: ms,
+        }
+    }
+
+    /// Success: the real reducer applies the edge through the pure transform,
+    /// dual-writes monster + monster_pub consistently (tier read FRESH from the
+    /// target species), zeroes every essence pool, keeps the lifetime Trust /
+    /// Quality-Time history, and files exactly one reveal with the PRE and POST
+    /// species under the monster's owner.
+    #[test]
+    fn nh_evolve_success_dual_writes_and_files_one_notice() {
+        let fx = fixture();
+        let w = standard(&fx);
+        let m = monster(11, a(), 1);
+        w.seed_monster(&m, 0);
+        let expected = game_core::evolve(
+            &monster_to_instance(&m).unwrap(),
+            &species_from_row(&species(2, 60, 1)).unwrap(),
+        );
+
+        let got = fx.run_as_at(a(), at(T0), |ctx| evolve(ctx, 11, 2));
+        assert_eq!(got, Ok(()), "indexes asked: {:?}", fx.requested_indexes());
+
+        let after = w.monster(11);
+        assert_eq!(after.species_id, 2);
+        assert_eq!(after.stat_hp, expected.derived_stats.hp);
+        assert_eq!(after.stat_sp_defense, expected.derived_stats.sp_defense);
+        assert_ne!(
+            after.stat_hp, m.stat_hp,
+            "stats re-derived from the TARGET base"
+        );
+        assert_eq!(
+            [
+                after.essence_fire,
+                after.essence_water,
+                after.essence_plant,
+                after.essence_electric,
+                after.essence_earth,
+                after.essence_wind,
+                after.essence_light,
+                after.essence_dark,
+            ],
+            [0; 8],
+            "every essence pool is zeroed by the transform"
+        );
+        assert_eq!(
+            (
+                after.trust_favorable_count,
+                after.trust_unfavorable_count,
+                after.quality_time_ticks_total,
+                after.quality_time_window_start_ms,
+                after.last_care_at_ms,
+            ),
+            (9, 1, 44, 7, 5),
+            "lifetime Trust / Quality-Time history and bookkeeping survive the evolution"
+        );
+        assert_eq!(
+            to_vec(&w.pub_row(11)).unwrap(),
+            to_vec(&pub_from_monster(&after, 1)).unwrap(),
+            "monster_pub == pub_from_monster(monster, fresh target tier 1)"
+        );
+        assert_eq!(w.entries(a()), Some(vec![reveal(11, 1, 2, T0)]));
+    }
+
+    /// A second evolution APPENDS to the owner's existing reveal queue.
+    #[test]
+    fn nh_evolve_appends_to_an_existing_notice_queue() {
+        let fx = fixture();
+        let w = standard(&fx);
+        w.seed_monster(&monster(11, a(), 1), 0);
+        w.notices.seed(&PendingEvolutionNotice {
+            owner_identity: a(),
+            entries: vec![reveal(99, 7, 8, 1)],
+        });
+        assert_eq!(fx.run_as_at(a(), at(T0), |ctx| evolve(ctx, 11, 2)), Ok(()));
+        assert_eq!(
+            w.entries(a()),
+            Some(vec![reveal(99, 7, 8, 1), reveal(11, 1, 2, T0)])
+        );
+        assert_eq!(w.notices.rows().len(), 1, "one queue row per owner");
+    }
+
+    /// Refusals: unknown monster, non-owner, owner's monster in an ONGOING battle
+    /// (side A party and PvP side B), monster in trade escrow (both roles), and a
+    /// foreign / non-existent edge — each refused with the store byte-identical.
+    #[test]
+    fn nh_evolve_refusals_write_nothing() {
+        type Setup = fn(&World<'_>);
+        let cases: [(&str, Identity, u64, u32, Setup, &str); 7] = [
+            ("unknown monster", a(), 12, 2, |_| {}, "monster not found"),
+            ("non-owner", b(), 11, 2, |_| {}, "not owner"),
+            (
+                "in battle, side A",
+                a(),
+                11,
+                2,
+                |w| {
+                    w.battles.seed(&battle(
+                        1,
+                        a(),
+                        crate::WILD_IDENTITY,
+                        vec![11],
+                        vec![],
+                        BattleOutcome::Ongoing,
+                    ))
+                },
+                "monster is in an ongoing battle",
+            ),
+            (
+                "in battle, PvP side B",
+                a(),
+                11,
+                2,
+                |w| {
+                    w.battles.seed(&battle(
+                        1,
+                        b(),
+                        a(),
+                        vec![21],
+                        vec![11],
+                        BattleOutcome::Ongoing,
+                    ))
+                },
+                "monster is in an ongoing battle",
+            ),
+            (
+                "escrowed as initiator",
+                a(),
+                11,
+                2,
+                |w| {
+                    let mut o = offer(1, a(), b());
+                    o.initiator_monster_ids = vec![11];
+                    w.offers.seed(&o);
+                },
+                "monster is in an active trade",
+            ),
+            (
+                "escrowed as counterparty",
+                a(),
+                11,
+                2,
+                |w| {
+                    let mut o = offer(1, b(), a());
+                    o.counterparty_monster_ids = vec![11];
+                    w.offers.seed(&o);
+                },
+                "monster is in an active trade",
+            ),
+            (
+                "foreign edge (3 -> 2 exists, 1 -> 3 does not)",
+                a(),
+                11,
+                3,
+                |w| w.paths.seed(&edge(2, 3, 2, 1, 0)),
+                "no such evolution: species 1 has no path to species 3",
+            ),
+        ];
+        for (label, caller, id, to, setup, want) in cases {
+            let fx = fixture();
+            let w = standard(&fx);
+            w.seed_monster(&monster(11, a(), 1), 0);
+            setup(&w);
+            let before = w.snapshot();
+            let got = fx.run_as_at(caller, at(T0), |ctx| evolve(ctx, id, to));
+            assert_eq!(got, Err(want.to_string()), "{label}");
+            assert_eq!(w.snapshot(), before, "{label}: a refusal writes nothing");
+        }
+    }
+
+    /// Control for the battle/escrow refusals: a COMPLETED battle and an offer
+    /// that escrows a DIFFERENT monster do not block the evolution.
+    #[test]
+    fn nh_evolve_completed_battle_and_foreign_escrow_do_not_block() {
+        let fx = fixture();
+        let w = standard(&fx);
+        w.seed_monster(&monster(11, a(), 1), 0);
+        w.battles.seed(&battle(
+            1,
+            b(),
+            a(),
+            vec![21],
+            vec![11],
+            BattleOutcome::SideAWins,
+        ));
+        let mut o = offer(1, a(), b());
+        o.initiator_monster_ids = vec![12];
+        w.offers.seed(&o);
+        assert_eq!(fx.run_as_at(a(), at(T0), |ctx| evolve(ctx, 11, 2)), Ok(()));
+        assert_eq!(w.monster(11).species_id, 2);
+    }
+
+    /// The gate at its boundaries, on the REAL reducer: level 4 vs min 5 and
+    /// Fire 9 vs 10 each refuse naming the requirement with nothing written;
+    /// exactly at the thresholds the evolution applies.
+    #[test]
+    fn nh_evolve_gate_boundaries() {
+        let mk = |level: u8, fire: u32| {
+            let mut m = monster(11, a(), 1);
+            m.level = level;
+            m.essence_fire = fire;
+            m
+        };
+        for (label, m, want) in [
+            ("level one below", mk(4, 10), Some("requires level 5")),
+            ("essence one below", mk(5, 9), Some("essence")),
+            ("exactly at both thresholds", mk(5, 10), None),
+        ] {
+            let fx = fixture();
+            let w = standard(&fx);
+            w.seed_monster(&m, 0);
+            let before = w.snapshot();
+            let got = fx.run_as_at(a(), at(T0), |ctx| evolve(ctx, 11, 2));
+            match want {
+                Some(needle) => {
+                    let e = got.expect_err(label);
+                    assert!(e.contains(needle), "{label}: {e:?} must name {needle:?}");
+                    assert_eq!(w.snapshot(), before, "{label}: nothing written");
+                }
+                None => {
+                    assert_eq!(got, Ok(()), "{label}");
+                    assert_eq!(w.monster(11).species_id, 2, "{label}");
+                }
+            }
+        }
+    }
+
+    /// check_and_evolve on the REAL helper: an unambiguous chain 1 -> 2 -> 3
+    /// resolves in one call with the reveals in order; two eligible out-edges
+    /// leave the choice to the player (nothing written).
+    #[test]
+    fn nh_check_and_evolve_chain_and_ambiguity() {
+        let fx = fixture();
+        let w = world(&fx);
+        w.species.seed(&species(1, 30, 0));
+        w.species.seed(&species(2, 40, 1));
+        w.species.seed(&species(3, 50, 2));
+        w.paths.seed(&edge(1, 1, 2, 1, 0));
+        w.paths.seed(&edge(2, 2, 3, 1, 0));
+        w.seed_monster(&monster(11, a(), 1), 0);
+        fx.run_as_at(b(), at(T0), |ctx| check_and_evolve(ctx, 11));
+        assert_eq!(w.monster(11).species_id, 3);
+        assert_eq!(w.pub_row(11).tier, 2);
+        assert_eq!(
+            w.entries(a()),
+            Some(vec![reveal(11, 1, 2, T0), reveal(11, 2, 3, T0)]),
+            "filed under the monster's OWNER, never the caller"
+        );
+
+        drop(fx);
+        let fx = fixture();
+        let w = world(&fx);
+        w.species.seed(&species(1, 30, 0));
+        w.species.seed(&species(2, 40, 1));
+        w.species.seed(&species(3, 50, 1));
+        w.paths.seed(&edge(1, 1, 2, 1, 0));
+        w.paths.seed(&edge(2, 1, 3, 1, 0));
+        w.seed_monster(&monster(11, a(), 1), 0);
+        let before = w.snapshot();
+        fx.run_as_at(a(), at(T0), |ctx| check_and_evolve(ctx, 11));
+        assert_eq!(w.snapshot(), before, "2 eligible: the player chooses");
+    }
+
+    /// Degenerate (R5-violating) cycle 1 <-> 2: the chain stops after exactly
+    /// MAX_EVOLUTION_CHAIN_STEPS applications instead of looping forever.
+    #[test]
+    fn nh_check_and_evolve_cycle_stops_at_the_cap() {
+        let fx = fixture();
+        let w = world(&fx);
+        w.species.seed(&species(1, 30, 0));
+        w.species.seed(&species(2, 40, 1));
+        w.paths.seed(&edge(1, 1, 2, 1, 0));
+        w.paths.seed(&edge(2, 2, 1, 1, 0));
+        w.seed_monster(&monster(11, a(), 1), 0);
+        fx.run_as_at(a(), at(T0), |ctx| check_and_evolve(ctx, 11));
+        let n = w.entries(a()).expect("notice row").len();
+        assert_eq!(n, MAX_EVOLUTION_CHAIN_STEPS as usize);
+        let expected_species = if n % 2 == 1 { 2 } else { 1 };
+        assert_eq!(w.monster(11).species_id, expected_species);
+    }
+
+    /// ack is keyed on the CALLER: B cannot drain A's queue; A drains the
+    /// acknowledged prefix; an emptied row survives; over-ack is refused.
+    #[test]
+    fn nh_ack_is_sender_scoped_and_drains_the_prefix() {
+        let fx = fixture();
+        let w = world(&fx);
+        let q = vec![reveal(1, 1, 2, 1), reveal(2, 1, 2, 2), reveal(3, 1, 2, 3)];
+        w.notices.seed(&PendingEvolutionNotice {
+            owner_identity: a(),
+            entries: q.clone(),
+        });
+        let before = w.snapshot();
+        assert_eq!(
+            fx.run_as(b(), |ctx| ack_evolution_notices(ctx, 1)),
+            Err("no pending evolution notices".to_string())
+        );
+        assert_eq!(w.snapshot(), before, "B's ack touches nothing of A's");
+
+        assert_eq!(fx.run_as(a(), |ctx| ack_evolution_notices(ctx, 2)), Ok(()));
+        assert_eq!(w.entries(a()), Some(vec![q[2].clone()]));
+        assert!(fx.run_as(a(), |ctx| ack_evolution_notices(ctx, 2)).is_err());
+        assert_eq!(w.entries(a()), Some(vec![q[2].clone()]), "over-ack refused");
+        assert_eq!(fx.run_as(a(), |ctx| ack_evolution_notices(ctx, 1)), Ok(()));
+        assert_eq!(w.entries(a()), Some(vec![]), "the emptied row survives");
+    }
+
+    /// Claim re-key moves the queue verbatim; erase removes it (idempotently);
+    /// has_evolution_notices is ROW-exists (an emptied row still counts).
+    #[test]
+    fn nh_rekey_erase_and_row_exists() {
+        let fx = fixture();
+        let w = world(&fx);
+        let q = vec![reveal(1, 1, 2, 1)];
+        w.notices.seed(&PendingEvolutionNotice {
+            owner_identity: a(),
+            entries: q.clone(),
+        });
+        w.notices.seed(&PendingEvolutionNotice {
+            owner_identity: b(),
+            entries: vec![],
+        });
+        let ctx = fx.ctx();
+        assert!(
+            has_evolution_notices(&ctx, b()),
+            "an emptied row still exists"
+        );
+        assert!(!has_evolution_notices(&ctx, c()));
+
+        rekey_evolution_notices(&ctx, a(), c());
+        assert_eq!(w.entries(a()), None);
+        assert_eq!(w.entries(c()), Some(q));
+        rekey_evolution_notices(&ctx, a(), c()); // no source row: no-op
+        assert_eq!(w.notices.rows().len(), 2);
+
+        erase_evolution_notices(&ctx, c());
+        assert_eq!(w.entries(c()), None);
+        erase_evolution_notices(&ctx, c());
+        assert_eq!(w.entries(b()), Some(vec![]), "erase is owner-scoped");
+        assert!(!has_evolution_notices(&ctx, c()));
+    }
+}
