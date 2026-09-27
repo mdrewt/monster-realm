@@ -4201,3 +4201,444 @@ fn rb76_grass_path_skips_the_deletion_refusal_before_the_limiter() {
          rather than on the reason."
     );
 }
+
+// ===========================================================================
+// Native-host behavioural suite (debloat Phase 2: ST-movement_tests#intake-guards).
+//
+// The SHIPPED reducers run through `Fixture::run_as(_at)` with a real sender and
+// clock. HOST LIMIT: no transaction rollback, so every rejection is asserted as a
+// refusal BEFORE any write (the store byte-identical). Growth under scheduler
+// time-skip is owned by raising_tests (`nh_movement_tick_time_skip_never_grows_monsters`).
+// ===========================================================================
+mod nh {
+    use crate::marshal::pub_from_monster;
+    use crate::movement::{
+        clear_queue, enqueue_move, movement_tick, set_move, MovementTickSchedule,
+    };
+    use crate::native_host_tests::{fixture, Fixture, Handle, DEFAULT_DATABASE_IDENTITY};
+    use crate::raising::QT_TICK_MS;
+    use crate::schema::{Battle, Character, Monster, MonsterPub, Player, SpeciesRow, TradeOffer};
+    use game_core::{ActionState, Affinity, BattleOutcome, Direction, MoveInput, TradeStatus};
+    use spacetimedb::sats::bsatn::to_vec;
+    use spacetimedb::{Identity, ScheduleAt, Timestamp};
+
+    const T0: i64 = 1_750_000_000_000;
+    const REJECT_IN_BATTLE: &str = "cannot move during an ongoing battle";
+
+    fn a() -> Identity {
+        Identity::from_byte_array([0xA1; 32])
+    }
+    fn b() -> Identity {
+        Identity::from_byte_array([0xB2; 32])
+    }
+    fn at(ms: i64) -> Timestamp {
+        Timestamp::from_micros_since_unix_epoch(ms * 1000)
+    }
+
+    fn battle(
+        battle_id: u64,
+        player: Identity,
+        opponent: Identity,
+        outcome: BattleOutcome,
+    ) -> Battle {
+        let lead = game_core::BattleMonster {
+            species_id: 1,
+            affinity: Affinity::Fire,
+            level: 7,
+            current_hp: 30,
+            max_hp: 30,
+            stats: game_core::StatBlock {
+                hp: 30,
+                attack: 20,
+                defense: 20,
+                speed: 20,
+                sp_attack: 20,
+                sp_defense: 20,
+            },
+            known_skill_ids: vec![1],
+            status: None,
+        };
+        Battle {
+            battle_id,
+            player_identity: player,
+            opponent_identity: opponent,
+            state: game_core::BattleState {
+                side_a: game_core::BattleSide {
+                    active: 0,
+                    team: vec![lead.clone()],
+                },
+                side_b: game_core::BattleSide {
+                    active: 0,
+                    team: vec![lead],
+                },
+                outcome,
+                turn_number: 1,
+                weather: None,
+            },
+            party_monster_ids: vec![],
+            opponent_monster_ids: vec![],
+            created_at_ms: 0,
+        }
+    }
+
+    fn monster(monster_id: u64, owner: Identity, party_slot: u8) -> Monster {
+        Monster {
+            monster_id,
+            owner_identity: owner,
+            species_id: 1,
+            nickname: format!("m{monster_id}"),
+            level: 7,
+            xp: 120,
+            iv_hp: 10,
+            iv_attack: 11,
+            iv_defense: 12,
+            iv_speed: 13,
+            iv_sp_attack: 14,
+            iv_sp_defense: 15,
+            nature_kind: game_core::NatureKind::Hardy,
+            ev_hp: 4,
+            ev_attack: 5,
+            ev_defense: 6,
+            ev_speed: 7,
+            ev_sp_attack: 8,
+            ev_sp_defense: 9,
+            stat_hp: 40,
+            stat_attack: 20,
+            stat_defense: 20,
+            stat_speed: 20,
+            stat_sp_attack: 20,
+            stat_sp_defense: 20,
+            current_hp: 40,
+            party_slot,
+            last_care_at_ms: 0,
+            essence_fire: 0,
+            essence_water: 0,
+            essence_plant: 0,
+            essence_electric: 0,
+            essence_earth: 0,
+            essence_wind: 0,
+            essence_light: 0,
+            essence_dark: 0,
+            trust_favorable_count: 0,
+            trust_unfavorable_count: 0,
+            trust_favorable_battle_day_epoch: 0,
+            quality_time_ticks_total: 10,
+            quality_time_accum_ms: 0,
+            quality_time_window_ms: 0,
+            quality_time_window_start_ms: T0,
+            last_essence_train_at_ms: 0,
+        }
+    }
+
+    fn species1() -> SpeciesRow {
+        SpeciesRow {
+            id: 1,
+            name: "s1".to_string(),
+            base_hp: 30,
+            base_attack: 31,
+            base_defense: 32,
+            base_speed: 33,
+            base_sp_attack: 34,
+            base_sp_defense: 35,
+            affinity: Affinity::Fire,
+            learnable_skill_ids: vec![1],
+            ability: None,
+            tier: 0,
+        }
+    }
+
+    fn offer(trade_id: u64, initiator: Identity, counterparty: Identity) -> TradeOffer {
+        TradeOffer {
+            trade_id,
+            initiator,
+            counterparty,
+            initiator_monster_ids: vec![],
+            initiator_items: vec![],
+            initiator_currency: 0,
+            counterparty_monster_ids: vec![],
+            counterparty_items: vec![],
+            counterparty_currency: 0,
+            initiator_cards: vec![],
+            counterparty_cards: vec![],
+            status: TradeStatus::Pending,
+            created_at_ms: T0,
+        }
+    }
+
+    fn character(entity_id: u64, queue: Vec<MoveInput>, action: ActionState) -> Character {
+        Character {
+            entity_id,
+            zone_id: 0,
+            tile_x: 1,
+            tile_y: 1,
+            facing: Direction::South,
+            action,
+            move_started_at_ms: 0,
+            sprite_id: 0,
+            move_queue: queue,
+        }
+    }
+
+    struct World<'a> {
+        players: Handle<'a, Player>,
+        chars: Handle<'a, Character, u64>,
+        battles: Handle<'a, Battle>,
+        monsters: Handle<'a, Monster, u64>,
+        pubs: Handle<'a, MonsterPub, u64>,
+        offers: Handle<'a, TradeOffer>,
+    }
+
+    /// Every table the movement reducers read or write: `player` (seq ack),
+    /// `character` (queue), both battle-role indexes (the ADR-0122 SSOT), and
+    /// the growth tail's monster / monster_pub / trade_offer / species rows.
+    fn world(fx: &Fixture) -> World<'_> {
+        let _ = fx.table_keyed::<Player, u64>("player", "entity_id", |r| r.entity_id);
+        let _ = fx.table_keyed::<Character, u32>("character", "zone_id", |r| r.zone_id);
+        let _ = fx.table::<Battle>("battle", "opponent_identity", |r| r.opponent_identity);
+        let _ = fx.table::<TradeOffer>("trade_offer", "counterparty", |r| r.counterparty);
+        let _ = fx.table::<Monster>("monster", "owner_identity", |r| r.owner_identity);
+        fx.table_keyed::<SpeciesRow, u32>("species_row", "id", |r| r.id)
+            .seed(&species1());
+        World {
+            players: fx
+                .table::<Player>("player", "identity", |r| r.identity)
+                .writable()
+                .unique(),
+            chars: fx
+                .table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id)
+                .writable()
+                .unique(),
+            battles: fx.table::<Battle>("battle", "player_identity", |r| r.player_identity),
+            monsters: fx
+                .table_keyed::<Monster, u64>("monster", "monster_id", |r| r.monster_id)
+                .writable()
+                .unique(),
+            pubs: fx
+                .table_keyed::<MonsterPub, u64>("monster_pub", "monster_id", |r| r.monster_id)
+                .writable()
+                .unique(),
+            offers: fx.table::<TradeOffer>("trade_offer", "initiator", |r| r.initiator),
+        }
+    }
+
+    impl World<'_> {
+        fn join(&self, who: Identity, entity_id: u64, ch: Character) {
+            self.players.seed(&Player {
+                identity: who,
+                entity_id,
+                name: String::new(),
+                online: true,
+                last_input_seq: 0,
+            });
+            self.chars.seed(&ch);
+        }
+        fn seed_monster(&self, m: &Monster) {
+            self.pubs.seed(&pub_from_monster(m, 1));
+            self.monsters.seed(m);
+        }
+        fn ticks(&self, id: u64) -> u32 {
+            self.monsters
+                .rows()
+                .into_iter()
+                .find(|m| m.monster_id == id)
+                .expect("monster row")
+                .quality_time_ticks_total
+        }
+        fn character(&self, entity_id: u64) -> Character {
+            self.chars
+                .rows()
+                .into_iter()
+                .find(|c| c.entity_id == entity_id)
+                .expect("character row")
+        }
+        fn snapshot(&self) -> Vec<Vec<u8>> {
+            vec![
+                to_vec(&self.players.rows()).unwrap(),
+                to_vec(&self.chars.rows()).unwrap(),
+                to_vec(&self.monsters.rows()).unwrap(),
+            ]
+        }
+    }
+
+    /// ADR-0168 D2 intake lock, both roles: while the caller is in an Ongoing
+    /// battle as side A (PvE or PvP) OR as the PvP side-B opponent,
+    /// `enqueue_move` and `set_move` refuse before any write (no seq ack, no
+    /// queued intent). `clear_queue` is deliberately NOT guarded (ADR-0168 D3)
+    /// and still cancels. Positive control: once the battle is decided the very
+    /// same call is admitted and queues the intent.
+    ///
+    /// kills: the lock deleted / moved below `authorize_move` (the seq ack is
+    /// written) / side-A-only predicate (the side-B arm) / keyed on the wrong
+    /// identity / clear_queue gaining the lock.
+    #[test]
+    fn nh_intake_refuses_movement_during_an_ongoing_battle_in_either_role() {
+        let arms: [(&str, Identity, Identity); 3] = [
+            ("side A vs wild", a(), crate::WILD_IDENTITY),
+            ("side A vs player", a(), b()),
+            ("side B (PvP opponent)", b(), a()),
+        ];
+        for (label, player, opponent) in arms {
+            let fx = fixture();
+            let w = world(&fx);
+            w.join(a(), 1, character(1, vec![], ActionState::Idle));
+            w.battles
+                .seed(&battle(1, player, opponent, BattleOutcome::Ongoing));
+            let before = w.snapshot();
+            assert_eq!(
+                fx.run_as_at(a(), at(T0), |ctx| enqueue_move(ctx, MoveInput::Jump, 1)),
+                Err(REJECT_IN_BATTLE.to_string()),
+                "{label}: enqueue_move"
+            );
+            assert_eq!(
+                fx.run_as_at(a(), at(T0), |ctx| set_move(
+                    ctx,
+                    MoveInput::Step(Direction::North),
+                    2
+                )),
+                Err(REJECT_IN_BATTLE.to_string()),
+                "{label}: set_move"
+            );
+            assert_eq!(w.snapshot(), before, "{label}: refused before any write");
+
+            w.chars.remove(1);
+            w.chars
+                .seed(&character(1, vec![MoveInput::Jump], ActionState::Idle));
+            assert_eq!(
+                fx.run_as_at(a(), at(T0), |ctx| clear_queue(ctx, 3)),
+                Ok(()),
+                "{label}: clear_queue is pure cancellation and stays open in battle"
+            );
+            assert!(w.character(1).move_queue.is_empty(), "{label}: cancelled");
+
+            assert_eq!(w.battles.remove(player), 1);
+            w.battles
+                .seed(&battle(1, player, opponent, BattleOutcome::SideAWins));
+            assert_eq!(
+                fx.run_as_at(a(), at(T0), |ctx| enqueue_move(ctx, MoveInput::Jump, 4)),
+                Ok(()),
+                "{label}: a decided battle no longer locks intake"
+            );
+            assert_eq!(w.character(1).move_queue, vec![MoveInput::Jump], "{label}");
+
+            // authorize_move's replay guard (guards.rs `seq <= last_input_seq`):
+            // re-sending the ACKED seq is stale and queues nothing; the next seq
+            // is admitted. Kills the `<=` -> `<` boundary mutant.
+            assert_eq!(
+                fx.run_as_at(a(), at(T0), |ctx| enqueue_move(ctx, MoveInput::Jump, 4)),
+                Err("stale seq".to_string()),
+                "{label}: the acked seq replayed"
+            );
+            assert_eq!(
+                w.character(1).move_queue.len(),
+                1,
+                "{label}: nothing queued"
+            );
+            assert_eq!(
+                fx.run_as_at(a(), at(T0), |ctx| enqueue_move(ctx, MoveInput::Jump, 5)),
+                Ok(()),
+                "{label}: the next seq"
+            );
+            assert_eq!(w.character(1).move_queue.len(), 2, "{label}");
+        }
+    }
+
+    /// ADR-0168 D1 drain lock, both roles: the scheduled `movement_tick`
+    /// (running as the module) SKIPS an in-battle character with its queue
+    /// INTACT and its position unchanged, normalising `action` to Idle; the
+    /// lock is keyed on the CHARACTER's player identity, never the module
+    /// sender. Positive control: after the battle is decided the next tick
+    /// drains the queued move.
+    ///
+    /// kills: the drain lock deleted / keyed on `ctx.sender()` (always the
+    /// module, never in battle) / side-A-only / clearing the queue instead of
+    /// keeping it.
+    #[test]
+    fn nh_movement_tick_freezes_an_in_battle_character_with_its_queue_intact() {
+        let sched = || MovementTickSchedule {
+            id: 1,
+            zone_id: 0,
+            scheduled_at: ScheduleAt::Time(at(T0)),
+        };
+        let module = Identity::from_byte_array(DEFAULT_DATABASE_IDENTITY);
+        let queued = vec![MoveInput::Step(Direction::East), MoveInput::Jump];
+        for (label, player, opponent) in
+            [("side A", a(), crate::WILD_IDENTITY), ("side B", b(), a())]
+        {
+            let fx = fixture();
+            let w = world(&fx);
+            w.join(a(), 1, character(1, queued.clone(), ActionState::Walking));
+            w.battles
+                .seed(&battle(1, player, opponent, BattleOutcome::Ongoing));
+            assert_eq!(
+                fx.run_as_at(module, at(T0 + 500), |ctx| movement_tick(ctx, sched())),
+                Ok(()),
+                "{label}"
+            );
+            let frozen = w.character(1);
+            assert_eq!(frozen.move_queue, queued, "{label}: queue kept intact");
+            assert_eq!(
+                (frozen.zone_id, frozen.tile_x, frozen.tile_y),
+                (0, 1, 1),
+                "{label}: no move applied"
+            );
+            assert_eq!(
+                frozen.action,
+                ActionState::Idle,
+                "{label}: normalised to Idle"
+            );
+
+            assert_eq!(w.battles.remove(player), 1);
+            w.battles
+                .seed(&battle(1, player, opponent, BattleOutcome::SideBWins));
+            assert_eq!(
+                fx.run_as_at(module, at(T0 + 1000), |ctx| movement_tick(ctx, sched())),
+                Ok(()),
+                "{label}"
+            );
+            assert!(
+                w.character(1).move_queue.len() < queued.len(),
+                "{label}: once the battle is decided the tick drains again"
+            );
+        }
+    }
+
+    /// TR-6 / ADR-0106: the `enqueue_move` growth tail credits Quality Time to
+    /// every party monster EXCEPT one escrowed in an active trade offer, in
+    /// either trade role, and never rejects the move. Positive control: the
+    /// identical non-escrowed party member ticks in the same call.
+    ///
+    /// kills: the escrow skip deleted / initiator-role-only / counterparty-
+    /// role-only / the move rejected instead of the monster skipped.
+    #[test]
+    fn nh_enqueue_move_growth_tail_skips_trade_escrowed_party_monsters() {
+        for (label, as_initiator) in [("initiator", true), ("counterparty", false)] {
+            let fx = fixture();
+            let w = world(&fx);
+            w.join(a(), 1, character(1, vec![], ActionState::Idle));
+            w.seed_monster(&monster(11, a(), 0));
+            w.seed_monster(&monster(12, a(), 1));
+            let mut t = if as_initiator {
+                offer(1, a(), b())
+            } else {
+                offer(1, b(), a())
+            };
+            if as_initiator {
+                t.initiator_monster_ids = vec![12];
+            } else {
+                t.counterparty_monster_ids = vec![12];
+            }
+            w.offers.seed(&t);
+            assert_eq!(
+                fx.run_as_at(a(), at(T0 + QT_TICK_MS), |ctx| enqueue_move(
+                    ctx,
+                    MoveInput::Jump,
+                    1
+                )),
+                Ok(()),
+                "{label}: a pending offer never freezes the player"
+            );
+            assert_eq!(w.ticks(11), 11, "{label}: the free party member ticks");
+            assert_eq!(w.ticks(12), 10, "{label}: the escrowed monster does not");
+        }
+    }
+}

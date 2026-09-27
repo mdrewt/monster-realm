@@ -1138,3 +1138,74 @@ fn m22s3b_erase_playtest_events_shape() {
         );
     }
 }
+
+// ===========================================================================
+// Native-host behaviour (debloat Phase 2: ST-playtest_tests#reaper-scheduler-guard).
+// Replaces the scheduler-guard text pin: the SHIPPED reducer runs with a chosen
+// sender through `Fixture::run_as_at`, against the fixture's module identity.
+// ===========================================================================
+
+/// `playtest_reaper` is scheduler-only: every non-module caller (a player, the
+/// all-zero wild/dummy identity, and the identity that WAS the module before it
+/// changed) is refused before a single row is deleted; the module identity reaps
+/// exactly the expired rows (TTL boundary inclusive) and keeps the fresh one.
+///
+/// kills: the guard deleted / placed after the deletes / inverted / compared
+/// against a hard-coded identity instead of `ctx.database_identity()`.
+#[test]
+fn nh_playtest_reaper_is_scheduler_only_and_refuses_before_any_delete() {
+    use crate::native_host_tests::{fixture, DEFAULT_DATABASE_IDENTITY};
+    use spacetimedb::{ScheduleAt, Timestamp};
+
+    let fx = fixture();
+    let events = fx
+        .table_keyed::<super::PlaytestEvent, u64>("playtest_event", "event_id", |r| r.event_id)
+        .writable()
+        .scannable()
+        .unique();
+    let player = Identity::from_byte_array([0x11; 32]);
+    let now = super::PLAYTEST_EVENT_TTL_MS * 3;
+    let ev = |event_id: u64, created_at_ms: i64| super::PlaytestEvent {
+        event_id,
+        identity: player,
+        kind: 1,
+        created_at_ms,
+        battle_id: 0,
+        species_id: 1,
+        hp_permille: 500,
+        bait_item_id: 0,
+        success: false,
+    };
+    events.seed(&ev(1, 0));
+    events.seed(&ev(2, now - super::PLAYTEST_EVENT_TTL_MS));
+    events.seed(&ev(3, now - 1));
+    let ids = || {
+        let mut v: Vec<u64> = events.rows().iter().map(|e| e.event_id).collect();
+        v.sort_unstable();
+        v
+    };
+    let sched = || super::PlaytestReaperSchedule {
+        id: 1,
+        scheduled_at: ScheduleAt::Time(Timestamp::from_micros_since_unix_epoch(0)),
+    };
+    let at = Timestamp::from_micros_since_unix_epoch(now * 1000);
+    let reap = |who: Identity| fx.run_as_at(who, at, |ctx| super::playtest_reaper(ctx, sched()));
+
+    let old_module = Identity::from_byte_array(DEFAULT_DATABASE_IDENTITY);
+    let module = Identity::from_byte_array([0x7E; 32]);
+    fx.set_database_identity(module);
+    for (label, caller) in [
+        ("a player", player),
+        ("the all-zero identity", Identity::from_byte_array([0; 32])),
+        ("a stale module identity", old_module),
+    ] {
+        assert_eq!(
+            reap(caller),
+            Err("playtest_reaper is scheduler-only".to_string()),
+            "{label} must be refused"
+        );
+        assert_eq!(ids(), vec![1, 2, 3], "{label}: refused before any delete");
+    }
+    assert_eq!(reap(module), Ok(()), "the module identity is admitted");
+    assert_eq!(ids(), vec![3], "the module reaps exactly the expired rows");
+}

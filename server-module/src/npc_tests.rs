@@ -4299,3 +4299,150 @@ fn nh_quest_complete_grants_exactly_the_content_currency_reward() {
     );
     assert!(state.done_quests.contains(&def.id) && !state.active_quests.contains(&def.id));
 }
+
+// ===========================================================================
+// Native-host behaviour (debloat Phase 2: ST-npc_tests). Replaces the talk /
+// advance_dialogue operator-mutant text pins (`*_uses_ne_not_eq`,
+// `*_uses_subtraction_not_addition`, `*_uses_gt_not_lt`, ...): the SHIPPED
+// reducers run with a real sender against a zone + Manhattan-range matrix. The
+// NPC's dialogue tree id matches no shipped tree, so an ADMITTED call stops at
+// `dialogue tree not found` — past both checks, before any write.
+// ===========================================================================
+mod nh_range {
+    use crate::native_host_tests::{fixture, Fixture, Handle};
+    use crate::schema::{Character, Npc, Player, PlayerConversation};
+    use game_core::{ActionState, Direction, NpcInteraction};
+    use spacetimedb::Identity;
+
+    const NPC: u64 = 50;
+    const ADMITTED: &str = "dialogue tree not found";
+
+    fn me() -> Identity {
+        Identity::from_byte_array([0x5A; 32])
+    }
+
+    fn character(entity_id: u64, zone_id: u32, tile_x: i32, tile_y: i32) -> Character {
+        Character {
+            entity_id,
+            zone_id,
+            tile_x,
+            tile_y,
+            facing: Direction::South,
+            action: ActionState::Idle,
+            move_started_at_ms: 0,
+            sprite_id: 0,
+            move_queue: vec![],
+        }
+    }
+
+    /// The player stands at (5, 5) in zone 0; the NPC's character is re-seeded
+    /// per case. Returns the character handle for the per-case NPC moves.
+    fn world(fx: &Fixture) -> Handle<'_, Character, u64> {
+        fx.table::<Player>("player", "identity", |r| r.identity)
+            .seed(&Player {
+                identity: me(),
+                entity_id: 1,
+                name: String::new(),
+                online: true,
+                last_input_seq: 0,
+            });
+        fx.table_keyed::<Npc, u64>("npc", "entity_id", |r| r.entity_id)
+            .seed(&Npc {
+                entity_id: NPC,
+                npc_id: "nh-range-npc".to_string(),
+                zone_id: 0,
+                home_x: 5,
+                home_y: 5,
+                wander_radius: 0,
+                dialogue_tree_id: "nh-range-no-such-tree".to_string(),
+                interaction: NpcInteraction::Dialogue,
+            });
+        let chars = fx.table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id);
+        chars.seed(&character(1, 0, 5, 5));
+        chars
+    }
+
+    /// `(label, npc zone, npc x, npc y, in range)` around the player at (5, 5):
+    /// the TALK_RANGE = 2 Manhattan boundary on both signs of both axes, the
+    /// mixed-axis boundary, one step past each, and the same tile in ANOTHER zone.
+    const CASES: [(&str, u32, i32, i32, Option<bool>); 11] = [
+        ("same tile", 0, 5, 5, Some(true)),
+        ("diagonal 1+1", 0, 6, 6, Some(true)),
+        ("+x 2", 0, 7, 5, Some(true)),
+        ("-x 2", 0, 3, 5, Some(true)),
+        ("-y 2", 0, 5, 3, Some(true)),
+        ("+x 3", 0, 8, 5, Some(false)),
+        ("-x 3", 0, 2, 5, Some(false)),
+        ("+y 3", 0, 5, 8, Some(false)),
+        ("1+2", 0, 6, 7, Some(false)),
+        ("-1-2", 0, 4, 3, Some(false)),
+        ("same tile, other zone", 1, 5, 5, None),
+    ];
+
+    /// `talk` admits exactly the in-range, same-zone cases and refuses the rest
+    /// with the zone or range error, before any write (no conversation row).
+    #[test]
+    fn nh_talk_enforces_same_zone_and_manhattan_talk_range() {
+        let fx = fixture();
+        let chars = world(&fx);
+        let convs = fx.table::<PlayerConversation>("player_conversation", "owner_identity", |r| {
+            r.owner_identity
+        });
+        for (label, zone, x, y, in_range) in CASES {
+            chars.remove(NPC);
+            chars.seed(&character(NPC, zone, x, y));
+            let want = match in_range {
+                Some(true) => ADMITTED,
+                Some(false) => "too far away",
+                None => "npc not in same zone",
+            };
+            assert_eq!(
+                fx.run_as(me(), |ctx| super::talk(ctx, NPC)),
+                Err(want.to_string()),
+                "talk, {label}"
+            );
+            assert!(convs.rows().is_empty(), "talk, {label}: nothing written");
+        }
+    }
+
+    /// `advance_dialogue` re-checks zone and range against the NPC's CURRENT
+    /// tile (RT-ADV-01): in range it proceeds (and keeps the conversation);
+    /// out of range or zone it refuses with its own error AND dismisses the
+    /// caller's conversation row.
+    #[test]
+    fn nh_advance_dialogue_rechecks_zone_and_range_and_dismisses_on_refusal() {
+        let fx = fixture();
+        let chars = world(&fx);
+        let convs = fx
+            .table::<PlayerConversation>("player_conversation", "owner_identity", |r| {
+                r.owner_identity
+            })
+            .writable()
+            .unique();
+        for (label, zone, x, y, in_range) in CASES {
+            chars.remove(NPC);
+            chars.seed(&character(NPC, zone, x, y));
+            convs.remove(me());
+            convs.seed(&PlayerConversation {
+                owner_identity: me(),
+                npc_entity_id: NPC,
+                current_node_id: "start".to_string(),
+            });
+            let want = match in_range {
+                Some(true) => ADMITTED,
+                Some(false) => "walked too far away",
+                None => "no longer in same zone",
+            };
+            assert_eq!(
+                fx.run_as(me(), |ctx| super::advance_dialogue(ctx, 0)),
+                Err(want.to_string()),
+                "advance_dialogue, {label}"
+            );
+            assert_eq!(
+                convs.rows().len(),
+                usize::from(in_range == Some(true)),
+                "advance_dialogue, {label}: the conversation is kept only while in range"
+            );
+        }
+    }
+}
