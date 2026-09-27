@@ -23,6 +23,7 @@ jobs the workflow declares — no more, no fewer.
 | `smoke-republish` | Insert as the NEXT slice in the milestone queue, same tier as fix-red-master, below it in ordering. The supervisor picks it up as a priority target on the next supervision tick. | build-loop supervisor | ADR-0079 — the failure policy this row mirrors |
 | `changelog-freshness` | Queue a ledger-refresh slice as the next slice. The gate fires only on the conjunction of lag and age, so one red is already two independent signals. | build-loop supervisor | ADR-0196 — the freshness gate and its thresholds |
 | `a11y-e2e` | Queue a fix slice as the next slice. Restore the deleted or renamed a11y eval or spec — the gate exists because neither `just eval` nor `just client-test` can see that deletion. Raise the floor ONLY in the commit that deliberately removes a11y tests, and say which; never to make a red go away. | build-loop supervisor | ADR-0050 — the nightly-gate policy this job joins; ADR-0205 — the overlay a11y contract it ratchets |
+| `i18n-completion` | Queue a fix slice as the next slice. REGRESSION (a locale's gap grew, or a locale vanished) — translate the missing entries or restore the locale. STALE (a gap shrank, or a locale is absent from the baseline) or BASELINE-MISSING — regenerate the baseline with `just i18n-completion` in that slice. Never hand-edit the baseline file to make a red go away. | build-loop supervisor | ADR-0264 — D8, the completion baseline and its gap-only ratchet |
 | `notify` | Highest-priority queue insertion, and re-read the recent nights by hand: while this job is broken, every other job's red is silent. | operator (Drew) | ADR-0200 — the notifier design and its zero-guard |
 
 ## Escalation ladder
@@ -68,7 +69,7 @@ a number.
 keys must be exactly equal to the set of jobs the workflow declares — a job with no row and a
 row for a job that no longer exists are both red, and the failure names which way it drifted.
 Every declared job must cite this file's path from its own contiguous comment preamble, so a
-seventh job added tomorrow is red until it is both rowed here and cited there. Each row's
+job added tomorrow is red until it is both rowed here and cited there. Each row's
 Response must name a route, its Owner must be one of the two enum members exactly as written,
 and its Escalation must cite an ADR that actually exists in `docs/adr/`.
 
