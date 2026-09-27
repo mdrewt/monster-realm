@@ -1,0 +1,31 @@
+{"file":"server-module/src/economy_tests.rs","test_name":"max_balance_is_accessible_and_has_correct_value","verdict":"KEEP","reason":"calls production pure fn/const/manifest (unflagged by worksheet; hand-reviewed)"}
+{"file":"server-module/src/economy_tests.rs","test_name":"player_wallet_table_is_not_public","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/economy_tests.rs","test_name":"economy_has_no_direct_balance_mutations","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/economy_tests.rs","test_name":"grant_currency_has_zero_amount_guard","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/economy_tests.rs","test_name":"spend_currency_has_zero_amount_guard","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/economy_tests.rs","test_name":"shop_reducers_exist_in_economy","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/economy_tests.rs","test_name":"buy_reducer_calls_require_owner_before_spend","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/economy_tests.rs","test_name":"sell_reducer_calls_require_owner_before_grant","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/economy_tests.rs","test_name":"buy_reducer_has_no_price_parameter","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/economy_tests.rs","test_name":"dead_code_allow_removed","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/economy_tests.rs","test_name":"shop_tables_are_public","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/economy_tests.rs","test_name":"item_row_has_sell_price","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/economy_tests.rs","test_name":"heal_party_calls_spend_currency","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/economy_tests.rs","test_name":"require_owner_before_spend_in_heal_party","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/economy_tests.rs","test_name":"apply_quest_trigger_calls_grant_currency","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/economy_tests.rs","test_name":"write_back_battle_results_calls_grant_currency","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/economy_tests.rs","test_name":"rt_m13c_01_heal_party_require_owner_is_tautological","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/economy_tests.rs","test_name":"buy_reducer_calls_headroom_before_spend","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/economy_tests.rs","test_name":"sell_reducer_calls_headroom_before_consume","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/economy_tests.rs","test_name":"my_wallet_view_is_owner_scoped","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/economy_tests.rs","test_name":"player_wallet_rows_are_never_deleted","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/economy_tests.rs","test_name":"m22s3b_erase_wallet_sanctioned_shape","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/economy_tests.rs","test_name":"no_forged_view_context_construction","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/economy_tests.rs","test_name":"auth24_zeroed_wallet_zeroes_balance_preserves_owner","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/economy_tests.rs","test_name":"auth24_rekey_wallet_credits_before_zero_never_deletes","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/economy_tests.rs","test_name":"rb41_wallet_exists_tracks_real_wallet_rows","verdict":"KEEP","reason":"native-host/dummy-ctx test runs shipped reducer/helper against real rows"}
+{"file":"server-module/src/economy_tests.rs","test_name":"rb46_buy_is_refused_only_while_the_caller_is_deletion_gated","verdict":"KEEP","reason":"native-host/dummy-ctx test runs shipped reducer/helper against real rows"}
+{"file":"server-module/src/economy_tests.rs","test_name":"rb46_sell_is_refused_only_while_the_caller_is_deletion_gated","verdict":"KEEP","reason":"native-host/dummy-ctx test runs shipped reducer/helper against real rows"}
+{"file":"server-module/src/economy_tests.rs","test_name":"rb46_buy_carries_the_deletion_gate","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/economy_tests.rs","test_name":"rb46_sell_carries_the_deletion_gate","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/economy_tests.rs","test_name":"rb81_economy_reducer_roster_is_closed","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}

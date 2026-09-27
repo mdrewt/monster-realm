@@ -1,0 +1,26 @@
+{"file": "server-module/src/content_cache_tests.rs", "test_name": "cached_zone_maps_matches_load", "verdict": "KEEP", "reason": "behavioral: builds state and calls production code"}
+{"file": "server-module/src/content_cache_tests.rs", "test_name": "cached_evolution_paths_matches_load", "verdict": "KEEP", "reason": "behavioral: builds state and calls production code"}
+{"file": "server-module/src/content_cache_tests.rs", "test_name": "cached_dialogue_trees_matches_load", "verdict": "KEEP", "reason": "behavioral: builds state and calls production code"}
+{"file": "server-module/src/content_cache_tests.rs", "test_name": "cached_quest_defs_matches_load", "verdict": "KEEP", "reason": "behavioral: builds state and calls production code"}
+{"file": "server-module/src/content_cache_tests.rs", "test_name": "cached_zone_maps_ptr_eq_second_call", "verdict": "KEEP", "reason": "behavioral: builds state and calls production code"}
+{"file": "server-module/src/content_cache_tests.rs", "test_name": "cached_evolution_paths_ptr_eq_second_call", "verdict": "KEEP", "reason": "behavioral: builds state and calls production code"}
+{"file": "server-module/src/content_cache_tests.rs", "test_name": "cached_zone_maps_is_consistent_with_map_for", "verdict": "KEEP", "reason": "behavioral: builds state and calls production code"}
+{"file": "server-module/src/content_cache_tests.rs", "test_name": "cached_skills_matches_load", "verdict": "KEEP", "reason": "behavioral: builds state and calls production code"}
+{"file": "server-module/src/content_cache_tests.rs", "test_name": "cached_items_matches_load", "verdict": "KEEP", "reason": "behavioral: builds state and calls production code"}
+{"file": "server-module/src/content_cache_tests.rs", "test_name": "cached_skills_ptr_eq_second_call", "verdict": "KEEP", "reason": "behavioral: builds state and calls production code"}
+{"file": "server-module/src/content_cache_tests.rs", "test_name": "cached_items_ptr_eq_second_call", "verdict": "KEEP", "reason": "behavioral: builds state and calls production code"}
+{"file": "server-module/src/content_cache_tests.rs", "test_name": "hot_path_reducers_use_cached_content_not_load", "verdict": "DELETE", "reason": "asserts on production source text (shape-pin), no behavior executed"}
+{"file": "server-module/src/content_cache_tests.rs", "test_name": "cached_abilities_matches_load", "verdict": "KEEP", "reason": "behavioral: builds state and calls production code"}
+{"file": "server-module/src/content_cache_tests.rs", "test_name": "cached_abilities_ptr_eq_second_call", "verdict": "KEEP", "reason": "behavioral: builds state and calls production code"}
+{"file": "server-module/src/content_cache_tests.rs", "test_name": "cached_heal_locations_matches_load", "verdict": "KEEP", "reason": "behavioral: builds state and calls production code"}
+{"file": "server-module/src/content_cache_tests.rs", "test_name": "cached_heal_locations_ptr_eq_second_call", "verdict": "KEEP", "reason": "behavioral: builds state and calls production code"}
+{"file": "server-module/src/content_cache_tests.rs", "test_name": "type_chart_cache_returns_the_cached_arc_on_a_version_hit", "verdict": "KEEP", "reason": "behavioral: builds state and calls production code"}
+{"file": "server-module/src/content_cache_tests.rs", "test_name": "type_chart_cache_rebuilds_when_the_content_version_changes", "verdict": "KEEP", "reason": "behavioral: builds state and calls production code"}
+{"file": "server-module/src/content_cache_tests.rs", "test_name": "type_chart_cache_never_caches_a_failed_rebuild", "verdict": "KEEP", "reason": "behavioral: builds state and calls production code"}
+{"file": "server-module/src/content_cache_tests.rs", "test_name": "type_chart_cache_keeps_the_older_entry_after_a_failed_rebuild", "verdict": "KEEP", "reason": "behavioral: builds state and calls production code"}
+{"file": "server-module/src/content_cache_tests.rs", "test_name": "type_chart_cache_recovers_from_a_poisoned_lock", "verdict": "KEEP", "reason": "behavioral: builds state and calls production code"}
+{"file": "server-module/src/content_cache_tests.rs", "test_name": "sync_content_reachable_modules_never_call_cached_type_chart", "verdict": "DELETE", "reason": "asserts on production source text (shape-pin), no behavior executed"}
+{"file": "server-module/src/content_cache_tests.rs", "test_name": "battle_reducers_use_cached_abilities_and_cached_type_chart", "verdict": "DELETE", "reason": "asserts on production source text (shape-pin), no behavior executed"}
+{"file": "server-module/src/content_cache_tests.rs", "test_name": "battle_rs_carries_no_remaining_adr_0089_park_markers", "verdict": "DELETE", "reason": "asserts on production source text (shape-pin), no behavior executed"}
+{"file": "server-module/src/content_cache_tests.rs", "test_name": "pvp_and_taming_hot_paths_use_the_cached_accessors", "verdict": "DELETE", "reason": "asserts on production source text (shape-pin), no behavior executed"}
+{"file": "server-module/src/content_cache_tests.rs", "test_name": "pvp_and_taming_no_longer_call_the_uncached_loaders", "verdict": "DELETE", "reason": "asserts on production source text (shape-pin), no behavior executed"}
