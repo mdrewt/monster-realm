@@ -162,17 +162,44 @@ The comment is stale, economy.rs is outside `touches:`, and the handoff carries 
 
 ## Proof of teeth (ADR-0224: ordinary Rust tests, no eval)
 
-Four new tests in `server-module/src/privacy_tests.rs`, prefixed `rb132_`, and the rb-107 pins
-re-frozen as attributions (never relaxations): the tier signature and body pins now spell the
-two-bool seam and its three arms; the frozen pre-gate statement now includes the wrapped `let cap`
-with both SSOT asks in order; the `[rb107/tier-value]` rows become `(true, false)` and
-`(false, true)`, whose union with `[rb132/tier-value]` is exhaustive over bool × bool. New clauses:
-the newcomer ceiling's value, `/2` derivation, strict ordering and private, derived declaration;
-the seam by value over all four inputs against constants AND literals; the economy SSOT body pinned
-by equality (row PRESENT, not balance > 0 — the meaning the tier relies on); the wallet ask exactly
-once file-wide and once in the reducer body, with the call's argument list pinned verbatim; a
-word-bounded identifier census over the comment-stripped, UNSQUASHED source (`export_live_row_cap`
-= 2, `export_admission_open` = 3, `::*` = 0) that kills the measured glob-import and local-closure
-shadows of a seam, which every squashed pin admits; and a closed `rb132_` roster with a label
-census. RED-before record, suite counts and the mutant register are cited from the acceptance
-ledger `memory/projects/gates/rb-132.gates.md` (X7 the manual register on the real privacy.rs).
+Four new tests in `server-module/src/privacy_tests.rs`, prefixed `rb132_`, twenty clause labels, and
+the rb-107 pins re-frozen as attributions (never relaxations): the tier signature and body pins now
+spell the two-bool seam and its three arms; the frozen pre-gate statement (N1) now includes the
+wrapped `let cap` with both SSOT asks in order, trailing comma included; the `[rb107/tier-value]`
+rows become `(true, false)` and `(false, true)`, whose union with `[rb132/tier-value]` is exhaustive
+over bool × bool; `m22s4 [X9/dispatch-args]` becomes an EQUALITY at eight context-passing calls.
+
+- **`rb132_tier_selection_is_exhaustive_over_account_and_wallet`** — the newcomer ceiling's value
+  and `/2` derivation; strict ordering newcomer < anonymous < full by value and by seam output; the
+  seam over all four inputs against the named constant AND the literal, anti-vacuity first (a
+  slice-typed table, so a deleted row compiles and reds).
+- **`rb132_newcomer_ceiling_is_declared_once_private_and_derived`** — the declaration head censused
+  exactly once BEFORE the visibility window (a control through the live strip pipeline, a blindness
+  fixture, prefix-freedom against the three sibling heads), the full derived declaration pinned, a
+  24-byte window free of `pub`/`#[`, and `#!` banned file-wide (`[rb132/no-inner-attr]`: rb48's
+  `#[cfg` census is blind to a fn-body `#![cfg(not(test))]` twin, measured).
+- **`rb132_reducer_asks_the_wallet_ssot_exactly_once`** — the economy SSOT body pinned by equality
+  (rb41 owns the present-not-positive VALUE; this clause's own contribution is `fnwallet_exists(`
+  exactly once, which kills a cfg twin); the wallet ask as a word-bounded identifier exactly once on
+  the stripped UNSQUASHED source and as `crate::economy::wallet_exists(ctx,me)` exactly once file-wide
+  and once in the reducer body; the call's argument list pinned by equality after dropping one
+  trailing comma; `[rb132/economy-once]` — the identifier `economy` exactly once file-wide and the
+  reducer body's `ctx` tokens exactly fifteen (kills the measured in-reducer wallet MINT and ERASE);
+  `[rb132/seam-ident]` — word-bounded `export_live_row_cap` = 2, `export_admission_open` = 3 and no
+  use-tree glob on the squashed view (kills the measured glob-import shadow of the tier seam and the
+  local-closure shadow of the admission predicate, which every squashed pin admitted; the honest
+  `json_field_into` squashes to `{*first`, so the glob needles are `::*`, `{*}`, `{*,`, `,*}`, `,*,`).
+- **`rb132_test_roster_is_closed`** — the rb-115 roster shape plus an attribute-block reader that
+  requires EXACTLY `#[test]` above each roster and dependency test (kills the measured
+  `#[should_panic]` forgery and `#[ignore = "…"]`), the split `should_panic` token banned in the
+  section, a label census in both directions on a comment-blanked view, and a body floor.
+
+RED-before is recorded at `memory/projects/gates/rb-132.red-before.md`: stage 1 (pristine
+`privacy.rs`, the two symbol-naming tests `#[cfg(any())]`-stripped) — 1067 run, exactly five failed,
+each on the clause the tester predicted (`[rb107/pre-gate-adjacency]` found 0, `[rb132/newcomer-
+source]` head census 0, `[rb132/wallet-ask]` 0, `[rb132/roster-attributed]` on the cfg'd test — the
+protocol's own artifact — and `[X9/dispatch-args]` reading seven); stage 2 (unstripped) — a build
+failure of exactly `E0061` ×7 and `E0425` ×1. The suite goes 1065 → 1069 (1066 → 1070 with
+`--features dev_reducers`). The mutant register is `memory/projects/gates/rb-132.mutants.py` with
+its run record in `memory/projects/gates/rb-132.x7-register.md`, cited from the acceptance ledger
+`memory/projects/gates/rb-132.gates.md` (X7); X5 additionally pins the shipped test file's sha256.
