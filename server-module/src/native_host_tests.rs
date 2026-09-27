@@ -1091,6 +1091,9 @@ unsafe extern "C" {
     /// `#[spacetimedb::view(accessor = my_account, public)]` in schema.rs.
     #[link_name = "__preinit__20_register_describer_my_account"]
     fn register_view_my_account();
+    /// `#[spacetimedb::view(accessor = my_conversation, public)]` in schema.rs.
+    #[link_name = "__preinit__20_register_describer_my_conversation"]
+    fn register_view_my_conversation();
     /// spacetimedb 2.8.1 `rt.rs:1267` (`#[unsafe(no_mangle)]`).
     fn __call_view__(
         id: usize,
@@ -1104,14 +1107,20 @@ unsafe extern "C" {
 }
 
 /// Registered in this order, so a view's `VIEWS` id is its index here.
-const VIEW_DESCRIBERS: [unsafe extern "C" fn(); 2] =
-    [register_view_my_wallet, register_view_my_account];
+const VIEW_DESCRIBERS: [unsafe extern "C" fn(); 3] = [
+    register_view_my_wallet,
+    register_view_my_account,
+    register_view_my_conversation,
+];
 
 /// `VIEWS` id of `my_wallet` (its index in [`VIEW_DESCRIBERS`]).
 pub(crate) const VIEW_MY_WALLET: usize = 0;
 
 /// `VIEWS` id of `my_account` (its index in [`VIEW_DESCRIBERS`]).
 pub(crate) const VIEW_MY_ACCOUNT: usize = 1;
+
+/// `VIEWS` id of `my_conversation` (its index in [`VIEW_DESCRIBERS`]).
+pub(crate) const VIEW_MY_CONVERSATION: usize = 2;
 
 const VIEW_SINK: u32 = 0x71E5;
 

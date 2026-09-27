@@ -2344,6 +2344,22 @@ fn nh_trade_confirm_swaps_every_asset_and_conserves_every_total() {
         !w.stacks.rows().iter().any(|s| s.count == 0),
         "a fully traded stack is deleted, not left at zero"
     );
+    // EV-inventory-single-stack: B's received item 5 merges into B's existing stack
+    // and A's received item 8 opens one — never a second row for the same pair.
+    let mut pairs: Vec<_> = w
+        .stacks
+        .rows()
+        .iter()
+        .map(|s| (s.owner_identity, s.item_id))
+        .collect();
+    let total = pairs.len();
+    pairs.sort_unstable();
+    pairs.dedup();
+    assert_eq!(
+        pairs.len(),
+        total,
+        "one inventory row per (owner, item) after the swap"
+    );
     assert_eq!((w.balance(nh_a()), w.balance(nh_b())), (425, 375));
     assert_eq!(
         (w.count(nh_c(), 5), w.balance(nh_c())),

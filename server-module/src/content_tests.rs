@@ -1960,3 +1960,632 @@ fn rb54_oracle_is_driven_by_the_type_not_the_label() {
          StatusEffect declare identical variant names."
     );
 }
+
+// ===========================================================================
+// Native-host content sync (debloat Phase 2).
+//
+// Replaces three eval families that pinned `sync_content_inner` / `init` /
+// `sync_content` source text:
+//   * EV-bsatn-compat-smoke#additive-content-coupling — every Option content
+//     column lands its RON value (content.rs builds npc rows with `..npc`
+//     spreads, so the compiler does not force a new field through);
+//   * EV-dev-reducer-gating#content-version-wired — the version stamp and the
+//     equal-version skip;
+//   * EV-migration-smoke-test / EV-zone-warp-server-runtime#runtime-guards (W5)
+//     — a republish (init, then sync_content, then sync_content again) keeps
+//     exactly one movement tick schedule per zone and never re-mints ids.
+// The shipped code runs against the SHIPPED RON through the native host; the
+// expected values are read from the same game-core loaders it reads.
+//
+// Not drivable here: "invalid zone maps are rejected before any write" (W4 /
+// migration-smoke-test). Content is compiled-in RON with no injection seam, so
+// no invalid map can reach sync_content_inner; the rejection predicate itself is
+// game-core's validate_zone_maps (unit-tested there). Recorded as a ledger
+// residual.
+// ===========================================================================
+mod nh_sync {
+    use crate::accounts::AccountDeletionReaperSchedule;
+    use crate::movement::MovementTickSchedule;
+    use crate::native_host_tests::{fixture, Fixture, Handle};
+    use crate::observability::MrHeartbeatSchedule;
+    use crate::playtest::PlaytestReaperSchedule;
+    use crate::privacy::ExportBundleReaperSchedule;
+    use crate::schema::{
+        Account, Character, Config, EncounterRow, EvolutionPathRow, HealLocationRow, ItemRow,
+        Monster, MonsterPub, Npc, PlayerConversation, ShopItemRow, ShopRow, SkillRow, SpeciesRow,
+        TypeRelationRow, ZoneDefRow,
+    };
+    use crate::CONTENT_VERSION;
+    use spacetimedb::Identity;
+
+    fn owner() -> Identity {
+        Identity::from_byte_array([77u8; 32])
+    }
+
+    fn bytes<T: spacetimedb::Serialize>(row: &T) -> Vec<u8> {
+        spacetimedb::sats::bsatn::to_vec(row).expect("rows encode")
+    }
+
+    /// Every table `init` / `sync_content` touch, registered writable + scannable.
+    struct World<'a> {
+        config: Handle<'a, Config, u32>,
+        zones: Handle<'a, ZoneDefRow, u32>,
+        species: Handle<'a, SpeciesRow, u32>,
+        items: Handle<'a, ItemRow, u32>,
+        paths: Handle<'a, EvolutionPathRow, u64>,
+        npcs: Handle<'a, Npc, u64>,
+        heals: Handle<'a, HealLocationRow, u32>,
+        ticks: Handle<'a, MovementTickSchedule, u64>,
+    }
+
+    fn world(fx: &Fixture) -> World<'_> {
+        let _ = fx
+            .table_keyed::<Monster, u64>("monster", "monster_id", |r| r.monster_id)
+            .writable()
+            .scannable()
+            .unique();
+        let _ = fx
+            .table_keyed::<MonsterPub, u64>("monster_pub", "monster_id", |r| r.monster_id)
+            .writable()
+            .unique();
+        let _ = fx
+            .table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id)
+            .writable()
+            .unique()
+            .auto_inc(|r| r.entity_id, |r, id| r.entity_id = id);
+        let _ = fx.table_keyed::<Character, u32>("character", "zone_id", |r| r.zone_id);
+        let _ = fx
+            .table_keyed::<SkillRow, u32>("skill_row", "id", |r| r.id)
+            .writable()
+            .scannable()
+            .unique();
+        let _ = fx
+            .table_keyed::<TypeRelationRow, u64>("type_relation_row", "id", |r| r.id)
+            .writable()
+            .scannable()
+            .unique()
+            .auto_inc(|r| r.id, |r, id| r.id = id);
+        let _ = fx
+            .table_keyed::<ShopItemRow, u64>("shop_item_row", "shop_item_id", |r| r.shop_item_id)
+            .writable()
+            .scannable()
+            .unique()
+            .auto_inc(|r| r.shop_item_id, |r, id| r.shop_item_id = id);
+        let _ = fx.table_keyed::<ShopItemRow, u32>("shop_item_row", "shop_id", |r| r.shop_id);
+        let _ = fx
+            .table_keyed::<ShopRow, u32>("shop_row", "shop_id", |r| r.shop_id)
+            .writable()
+            .scannable()
+            .unique();
+        let _ = fx
+            .table_keyed::<EncounterRow, u32>("encounter", "zone_id", |r| r.zone_id)
+            .writable()
+            .scannable()
+            .unique();
+        let _ = fx.table_keyed::<EvolutionPathRow, u32>("evolution_path", "from_species", |r| {
+            r.from_species
+        });
+        let _ = fx.table_keyed::<Npc, u32>("npc", "zone_id", |r| r.zone_id);
+        let _ =
+            fx.table_keyed::<HealLocationRow, u32>("heal_location_row", "zone_id", |r| r.zone_id);
+        let _ = fx
+            .table::<PlayerConversation>("player_conversation", "owner_identity", |r| {
+                r.owner_identity
+            })
+            .writable()
+            .scannable();
+        // init / sync_content's singleton + per-account reaper arms.
+        let _ = fx
+            .table_keyed::<PlaytestReaperSchedule, u64>("playtest_reaper_schedule", "id", |r| r.id)
+            .writable()
+            .scannable()
+            .unique()
+            .auto_inc(|r| r.id, |r, id| r.id = id);
+        let _ = fx
+            .table_keyed::<MrHeartbeatSchedule, u64>("mr_heartbeat_schedule", "id", |r| r.id)
+            .writable()
+            .scannable()
+            .unique()
+            .auto_inc(|r| r.id, |r, id| r.id = id);
+        let _ = fx
+            .table_keyed::<ExportBundleReaperSchedule, u64>(
+                "export_bundle_reaper_schedule",
+                "id",
+                |r| r.id,
+            )
+            .writable()
+            .scannable()
+            .unique()
+            .auto_inc(|r| r.id, |r, id| r.id = id);
+        let _ = fx
+            .table::<Account>("account", "identity", |r| r.identity)
+            .unique()
+            .writable()
+            .scannable();
+        let _ = fx
+            .table::<AccountDeletionReaperSchedule>(
+                "account_deletion_reaper_schedule",
+                "account_identity",
+                |r| r.account_identity,
+            )
+            .writable()
+            .scannable()
+            .auto_inc(|r| r.scheduled_id, |r, v| r.scheduled_id = v);
+        World {
+            config: fx
+                .table_keyed::<Config, u32>("config", "id", |r| r.id)
+                .writable()
+                .unique(),
+            zones: fx
+                .table_keyed::<ZoneDefRow, u32>("zone_def", "zone_id", |r| r.zone_id)
+                .writable()
+                .scannable()
+                .unique(),
+            species: fx
+                .table_keyed::<SpeciesRow, u32>("species_row", "id", |r| r.id)
+                .writable()
+                .scannable()
+                .unique(),
+            items: fx
+                .table_keyed::<ItemRow, u32>("item_row", "id", |r| r.id)
+                .writable()
+                .scannable()
+                .unique(),
+            paths: fx
+                .table_keyed::<EvolutionPathRow, u64>("evolution_path", "path_id", |r| r.path_id)
+                .writable()
+                .scannable()
+                .unique()
+                .auto_inc(|r| r.path_id, |r, id| r.path_id = id),
+            npcs: fx
+                .table_keyed::<Npc, u64>("npc", "entity_id", |r| r.entity_id)
+                .writable()
+                .scannable()
+                .unique(),
+            heals: fx
+                .table_keyed::<HealLocationRow, u32>("heal_location_row", "location_id", |r| {
+                    r.location_id
+                })
+                .writable()
+                .scannable()
+                .unique(),
+            ticks: fx
+                .table_keyed::<MovementTickSchedule, u64>("movement_tick_schedule", "id", |r| r.id)
+                .writable()
+                .scannable()
+                .unique()
+                .auto_inc(|r| r.id, |r, id| r.id = id),
+        }
+    }
+
+    fn seed_config(w: &World<'_>, version: u32) {
+        w.config.remove(0);
+        w.config.seed(&Config {
+            id: 0,
+            content_version: version,
+            owner_identity: owner(),
+        });
+    }
+
+    fn sync(fx: &Fixture) {
+        let got = fx.run_as(owner(), super::super::sync_content_inner);
+        assert_eq!(
+            got,
+            Ok(()),
+            "sync_content_inner; asked {:?}",
+            fx.requested_indexes()
+        );
+    }
+
+    fn version(w: &World<'_>) -> u32 {
+        w.config.rows()[0].content_version
+    }
+
+    /// A stale DB whose content rows carry the OPPOSITE of every shipped Option
+    /// value (Some where the RON says None and vice versa), then one sync. Every
+    /// Option content column must end equal to its RON value, every npc row must
+    /// equal its def-derived row in full, and the version must be stamped.
+    /// kills: an Option column dropped from a row literal or left to a `..old`
+    /// spread (the stale value survives), a spread that loses a def field, a
+    /// missing version stamp.
+    #[test]
+    fn nh_sync_content_lands_every_option_column_and_stamps_the_version() {
+        let fx = fixture();
+        let w = world(&fx);
+        seed_config(&w, 0);
+        let species = game_core::load_species().expect("species RON");
+        let items = game_core::load_items().expect("items RON");
+        let paths = game_core::load_evolution_paths().expect("evolution paths RON");
+        let heals = game_core::load_heal_locations().expect("heal locations RON");
+        let npcs = game_core::load_npc_defs().expect("npc RON");
+        for sp in &species {
+            w.species.seed(&SpeciesRow {
+                id: sp.id,
+                name: sp.name.clone(),
+                base_hp: 1,
+                base_attack: 1,
+                base_defense: 1,
+                base_speed: 1,
+                base_sp_attack: 1,
+                base_sp_defense: 1,
+                affinity: sp.affinity,
+                learnable_skill_ids: vec![],
+                ability: if sp.ability.is_some() {
+                    None
+                } else {
+                    Some(9_999)
+                },
+                tier: sp.tier,
+            });
+        }
+        for it in &items {
+            w.items.seed(&ItemRow {
+                id: it.id,
+                name: it.name.clone(),
+                description: it.description.clone(),
+                recruit_bonus: it.recruit_bonus,
+                train_stat: if it.train_stat.is_some() {
+                    None
+                } else {
+                    Some(game_core::StatKind::Speed)
+                },
+                train_amount: it.train_amount,
+                sell_price: it.sell_price,
+                cure_status: if it.cure_status.is_some() {
+                    None
+                } else {
+                    Some(game_core::StatusKind::Poison)
+                },
+            });
+        }
+        for h in &heals {
+            w.heals.seed(&HealLocationRow {
+                location_id: h.location_id,
+                zone_id: h.zone_id,
+                tile_x: h.tile_x,
+                tile_y: h.tile_y,
+                cost_item_id: if h.cost_item_id.is_some() {
+                    None
+                } else {
+                    Some(9_999)
+                },
+                cost_qty: h.cost_qty,
+                cooldown_ms: h.cooldown_ms,
+                cost_currency: h.cost_currency,
+            });
+        }
+        // Non-vacuity: the shipped content must exercise both Some and None somewhere,
+        // or the flipped seed above proves only one direction.
+        assert!(
+            species.iter().any(|s| s.ability.is_some()),
+            "no species ability is Some"
+        );
+        assert!(
+            items.iter().any(|i| i.train_stat.is_some()),
+            "no item train_stat is Some"
+        );
+        assert!(
+            items.iter().any(|i| i.cure_status.is_some()),
+            "no item cure_status is Some"
+        );
+        assert!(
+            paths.iter().any(|p| p.min_trust_tier.is_some()),
+            "no path min_trust_tier"
+        );
+
+        sync(&fx);
+
+        assert_eq!(
+            version(&w),
+            CONTENT_VERSION,
+            "sync must stamp CONTENT_VERSION"
+        );
+        let sp_rows = w.species.rows();
+        assert_eq!(
+            sp_rows.len(),
+            species.len(),
+            "one species_row per RON species"
+        );
+        for sp in &species {
+            let row = sp_rows.iter().find(|r| r.id == sp.id).expect("species row");
+            assert_eq!(row.ability, sp.ability, "species {} ability", sp.id);
+        }
+        let item_rows = w.items.rows();
+        assert_eq!(item_rows.len(), items.len(), "one item_row per RON item");
+        for it in &items {
+            let row = item_rows.iter().find(|r| r.id == it.id).expect("item row");
+            assert_eq!(row.train_stat, it.train_stat, "item {} train_stat", it.id);
+            assert_eq!(
+                row.cure_status, it.cure_status,
+                "item {} cure_status",
+                it.id
+            );
+        }
+        let path_rows = w.paths.rows();
+        assert_eq!(
+            path_rows.len(),
+            paths.len(),
+            "one evolution_path row per RON edge"
+        );
+        for p in &paths {
+            let row = path_rows
+                .iter()
+                .find(|r| r.edge_id == p.edge_id)
+                .expect("path row");
+            assert_eq!(
+                row.min_trust_tier, p.min_trust_tier,
+                "edge {} trust",
+                p.edge_id
+            );
+            assert_eq!(
+                row.min_quality_time_tier, p.min_quality_time_tier,
+                "edge {} quality-time",
+                p.edge_id
+            );
+            assert_eq!(
+                row.min_nutrition_pct, p.min_nutrition_pct,
+                "edge {} nutrition",
+                p.edge_id
+            );
+        }
+        let heal_rows = w.heals.rows();
+        assert_eq!(
+            heal_rows.len(),
+            heals.len(),
+            "one heal_location_row per RON location"
+        );
+        for h in &heals {
+            let row = heal_rows
+                .iter()
+                .find(|r| r.location_id == h.location_id)
+                .expect("heal row");
+            assert_eq!(
+                row.cost_item_id, h.cost_item_id,
+                "heal {} cost_item_id",
+                h.location_id
+            );
+        }
+        let npc_rows = w.npcs.rows();
+        assert_eq!(npc_rows.len(), npcs.len(), "one npc row per RON npc");
+        for def in &npcs {
+            let row = npc_rows
+                .iter()
+                .find(|r| r.npc_id == def.npc_id)
+                .expect("npc row");
+            assert_eq!(
+                bytes(row),
+                bytes(&super::super::npc_row_from_def(def, row.entity_id)),
+                "npc {} must equal its def-derived row in full",
+                def.npc_id
+            );
+        }
+    }
+
+    /// The version gate: with the stamp current a second sync writes NOTHING (a
+    /// species row deleted after the first sync stays gone), and a stale stamp
+    /// reseeds (it comes back).
+    /// kills: the equal-version early return deleted (reseed every init) or
+    /// inverted, the stamp written before the gate.
+    #[test]
+    fn nh_sync_content_skips_at_the_current_version_and_reseeds_a_stale_one() {
+        let fx = fixture();
+        let w = world(&fx);
+        seed_config(&w, 0);
+        sync(&fx);
+        let victim = w.species.rows()[0].id;
+        assert_eq!(w.species.remove(victim), 1, "removed one species row");
+
+        sync(&fx);
+        assert!(
+            !w.species.rows().iter().any(|r| r.id == victim),
+            "an equal-version sync must be a no-op, but species {victim} was reseeded"
+        );
+        assert_eq!(version(&w), CONTENT_VERSION);
+
+        seed_config(&w, CONTENT_VERSION.wrapping_sub(1));
+        sync(&fx);
+        assert!(
+            w.species.rows().iter().any(|r| r.id == victim),
+            "a stale-version sync must reseed species {victim}"
+        );
+        assert_eq!(
+            version(&w),
+            CONTENT_VERSION,
+            "the reseed restamps the version"
+        );
+    }
+
+    fn ticks_by_zone(w: &World<'_>) -> Vec<(u32, u64)> {
+        let mut v: Vec<(u32, u64)> = w.ticks.rows().iter().map(|t| (t.zone_id, t.id)).collect();
+        v.sort_unstable();
+        v
+    }
+
+    /// A republish: `init` on a fresh DB, then the owner's `sync_content` twice
+    /// (the first after one zone's schedule was lost). After every step each
+    /// zone_def zone has EXACTLY one movement tick schedule; sync_content heals the
+    /// lost one, and no pass adds, drops or re-mints any other schedule row or zone.
+    /// kills: ensure_zone_schedules dropped from init or from sync_content (no
+    /// schedule / a zone stops ticking), a non-additive reconcile (duplicate rows or
+    /// fresh ids every republish), zone_def delete+reinsert.
+    #[test]
+    fn nh_init_then_sync_content_keeps_one_tick_schedule_per_zone() {
+        let fx = fixture();
+        let w = world(&fx);
+        fx.run_as(owner(), crate::init);
+        let zone_ids = |w: &World<'_>| {
+            let mut z: Vec<u32> = w.zones.rows().iter().map(|z| z.zone_id).collect();
+            z.sort_unstable();
+            z
+        };
+        let zones = zone_ids(&w);
+        assert!(!zones.is_empty(), "init seeds the shipped zones");
+        let after_init = ticks_by_zone(&w);
+        assert_eq!(
+            after_init.iter().map(|(z, _)| *z).collect::<Vec<_>>(),
+            zones,
+            "init: exactly one tick schedule per zone"
+        );
+        assert_eq!(version(&w), CONTENT_VERSION, "init stamps the version");
+
+        // Pass 1 takes the reseed path with one zone's schedule lost (the state a
+        // republish must heal); pass 2 takes the equal-version skip path.
+        let (lost_zone, lost_id) = after_init[0];
+        assert_eq!(
+            w.ticks.remove(lost_id),
+            1,
+            "dropped zone {lost_zone}'s schedule"
+        );
+        seed_config(&w, 0);
+        let got = fx.run_as(owner(), crate::sync_content);
+        assert_eq!(got, Ok(()), "sync_content pass 1");
+        assert_eq!(zone_ids(&w), zones, "pass 1: zone set unchanged");
+        let after_pass1 = ticks_by_zone(&w);
+        assert_eq!(
+            after_pass1.iter().map(|(z, _)| *z).collect::<Vec<_>>(),
+            zones,
+            "pass 1: sync_content restores exactly one schedule per zone"
+        );
+        assert!(
+            after_init
+                .iter()
+                .filter(|(z, _)| *z != lost_zone)
+                .all(|t| after_pass1.contains(t)),
+            "pass 1: untouched zones keep their schedule rows and ids"
+        );
+
+        let got = fx.run_as(owner(), crate::sync_content);
+        assert_eq!(got, Ok(()), "sync_content pass 2");
+        assert_eq!(zone_ids(&w), zones, "pass 2: zone set unchanged");
+        assert_eq!(
+            ticks_by_zone(&w),
+            after_pass1,
+            "pass 2: the same one schedule row per zone, same ids"
+        );
+    }
+}
+
+// ===========================================================================
+// Dialogue content contract (debloat Phase 2: EV-dialogue-client-integrity
+// #ron-bundle-crossref). The client ships a hand-maintained mirror of the
+// dialogue trees (client/src/ui/dialogueContent.ts) and `advance_dialogue` is
+// index-based, so a drifted mirror makes the player pick a different server
+// choice than the one shown. This test renders the SHIPPED trees (the game-core
+// loader the server reads) into a canonical text artifact; the client test
+// `client/src/ui/dialogueContent.contract.test.ts` renders the runtime
+// DIALOGUE_TREES value the same way and compares it to the same file. Neither
+// side parses the other's source.
+//
+// Canonical form (both renderers MUST agree byte-for-byte): trees sorted by id,
+// nodes sorted by id within a tree, choices in authored order; one record per
+// line; `\` and newlines in text escaped as `\\` and `\n`; a missing next node is
+// `-`.
+//     tree <id>
+//     node <id>
+//     text <text>
+//     choice <next-node-or-dash> <text>
+// Regenerate after an intentional RON change (then update dialogueContent.ts
+// until the client test agrees):
+//     MR_BLESS_DIALOGUE_TREES=1 cargo test -p monster-realm-module --lib dialogue_trees_contract
+// ===========================================================================
+
+const DIALOGUE_TREES_CONTRACT: &str = "../evals/baselines/dialogue-trees.txt";
+
+fn contract_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('\n', "\\n")
+}
+
+fn render_dialogue_contract(trees: &[game_core::DialogueTree]) -> String {
+    let mut trees: Vec<&game_core::DialogueTree> = trees.iter().collect();
+    trees.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut out = String::new();
+    for tree in trees {
+        out.push_str(&format!("tree {}\n", contract_escape(&tree.id)));
+        let mut nodes: Vec<_> = tree.nodes.iter().collect();
+        nodes.sort_by(|a, b| a.id.cmp(&b.id));
+        for node in nodes {
+            out.push_str(&format!("node {}\n", contract_escape(&node.id)));
+            out.push_str(&format!("text {}\n", contract_escape(&node.text)));
+            for choice in &node.choices {
+                let next = choice
+                    .next_node
+                    .as_deref()
+                    .map_or("-".to_string(), contract_escape);
+                out.push_str(&format!(
+                    "choice {next} {}\n",
+                    contract_escape(&choice.text)
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// The committed dialogue contract equals the shipped RON trees.
+/// kills: a RON edit (node text, a choice added/removed/reordered, a next node)
+/// that is not carried into the contract the client mirror is checked against.
+#[test]
+fn dialogue_trees_contract_matches_the_shipped_ron() {
+    let trees = game_core::load_dialogue_trees().expect("shipped dialogue RON parses");
+    assert!(!trees.is_empty(), "no shipped dialogue trees");
+    let rendered = render_dialogue_contract(&trees);
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(DIALOGUE_TREES_CONTRACT);
+    if std::env::var_os("MR_BLESS_DIALOGUE_TREES").is_some() {
+        std::fs::write(&path, &rendered).expect("write the dialogue contract");
+    }
+    let committed = std::fs::read_to_string(&path).unwrap_or_default();
+    assert_eq!(
+        committed,
+        rendered,
+        "{} is stale against game-core/content/dialogue_trees/*.ron — regenerate with \
+         MR_BLESS_DIALOGUE_TREES=1 cargo test -p monster-realm-module --lib \
+         dialogue_trees_contract, then bring client/src/ui/dialogueContent.ts in line",
+        path.display()
+    );
+}
+
+/// The renderer itself: escaping, ordering and the missing-next dash — the rules
+/// the client renderer must mirror. kills: an unescaped newline (a text that forges
+/// a record), a sort that drops, trees/nodes emitted in authored order.
+#[test]
+fn dialogue_trees_contract_renderer_escapes_and_orders() {
+    use game_core::{DialogueChoice, DialogueNode, DialogueTree};
+    let choice = |text: &str, next: Option<&str>| DialogueChoice {
+        text: text.to_string(),
+        conditions: vec![],
+        effects: vec![],
+        next_node: next.map(str::to_string),
+    };
+    let node = |id: &str, text: &str, choices: Vec<DialogueChoice>| DialogueNode {
+        id: id.to_string(),
+        text: text.to_string(),
+        entry_conditions: vec![],
+        auto_effects: vec![],
+        choices,
+    };
+    let trees = vec![
+        DialogueTree {
+            id: "b".to_string(),
+            root_node_id: "z".to_string(),
+            nodes: vec![
+                node("z", "line1\nchoice x forged", vec![choice("go", Some("a"))]),
+                node(
+                    "a",
+                    "back\\slash",
+                    vec![choice("second", None), choice("first", None)],
+                ),
+            ],
+        },
+        DialogueTree {
+            id: "a".to_string(),
+            root_node_id: "n".to_string(),
+            nodes: vec![node("n", "hi", vec![])],
+        },
+    ];
+    assert_eq!(
+        render_dialogue_contract(&trees),
+        "tree a\nnode n\ntext hi\n\
+         tree b\nnode a\ntext back\\\\slash\nchoice - second\nchoice - first\n\
+         node z\ntext line1\\nchoice x forged\nchoice a go\n"
+    );
+}

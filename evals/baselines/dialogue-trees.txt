@@ -1,0 +1,8 @@
+tree elder_oak_talk
+node greeting
+text The ancient oak spirit greets you.
+choice - I seek a quest.
+tree shopkeeper_greeting
+node greeting
+text Hello, customer!
+choice - Leave

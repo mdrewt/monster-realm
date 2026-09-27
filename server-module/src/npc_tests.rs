@@ -1179,3 +1179,215 @@ mod nh_range {
         }
     }
 }
+
+// ===========================================================================
+// Native-host dialogue security (debloat Phase 2: EV-npc-dialogue-quest-security
+// C1/C8/C9, EV-conversation-privacy#table-view-scope). Replaces function-body
+// needles (`apply_choice(`, `player_conversation()`, `owner_identity().find(`)
+// with the observable refusals, and the view-scope pin with the SHIPPED
+// `my_conversation` view served through the runtime's own view entry point.
+// ===========================================================================
+mod nh_dialogue_security {
+    use crate::native_host_tests::{fixture, Fixture, Handle, VIEW_MY_CONVERSATION};
+    use crate::schema::{
+        Character, Npc, Player, PlayerConversation, PlayerDialogueStateRow, PlayerQuestRow,
+    };
+    use game_core::{ActionState, Direction, NpcInteraction};
+    use spacetimedb::Identity;
+
+    const NPC: u64 = 60;
+    /// The shipped one-node tree: `greeting` has exactly ONE choice (index 0,
+    /// StartQuest("quest_001"), ends the conversation).
+    const TREE: &str = "elder_oak_talk";
+
+    fn a() -> Identity {
+        Identity::from_byte_array([0x6A; 32])
+    }
+    fn b() -> Identity {
+        Identity::from_byte_array([0x6B; 32])
+    }
+    fn c() -> Identity {
+        Identity::from_byte_array([0x6C; 32])
+    }
+
+    fn conv(owner: Identity, node: &str) -> PlayerConversation {
+        PlayerConversation {
+            owner_identity: owner,
+            npc_entity_id: NPC,
+            current_node_id: node.to_string(),
+        }
+    }
+
+    fn bytes<T: spacetimedb::Serialize>(row: &T) -> Vec<u8> {
+        spacetimedb::sats::bsatn::to_vec(row).expect("rows encode")
+    }
+
+    struct World<'a> {
+        convs: Handle<'a, PlayerConversation>,
+        states: Handle<'a, PlayerDialogueStateRow>,
+        quests: Handle<'a, PlayerQuestRow>,
+    }
+
+    /// A and B are joined and stand next to the NPC (zone 0) whose dialogue tree is
+    /// the shipped `elder_oak_talk`.
+    fn world(fx: &Fixture) -> World<'_> {
+        let players = fx.table::<Player>("player", "identity", |r| r.identity);
+        let chars = fx.table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id);
+        for (i, who) in [a(), b()].into_iter().enumerate() {
+            let entity_id = i as u64 + 1;
+            players.seed(&Player {
+                identity: who,
+                entity_id,
+                name: String::new(),
+                online: true,
+                last_input_seq: 0,
+            });
+            chars.seed(&Character {
+                entity_id,
+                zone_id: 0,
+                tile_x: 5,
+                tile_y: 5,
+                facing: Direction::South,
+                action: ActionState::Idle,
+                move_started_at_ms: 0,
+                sprite_id: 0,
+                move_queue: vec![],
+            });
+        }
+        chars.seed(&Character {
+            entity_id: NPC,
+            zone_id: 0,
+            tile_x: 6,
+            tile_y: 5,
+            facing: Direction::South,
+            action: ActionState::Idle,
+            move_started_at_ms: 0,
+            sprite_id: 0,
+            move_queue: vec![],
+        });
+        fx.table_keyed::<Npc, u64>("npc", "entity_id", |r| r.entity_id)
+            .seed(&Npc {
+                entity_id: NPC,
+                npc_id: "nh-dialogue-npc".to_string(),
+                zone_id: 0,
+                home_x: 6,
+                home_y: 5,
+                wander_radius: 0,
+                dialogue_tree_id: TREE.to_string(),
+                interaction: NpcInteraction::Dialogue,
+            });
+        World {
+            convs: fx
+                .table::<PlayerConversation>("player_conversation", "owner_identity", |r| {
+                    r.owner_identity
+                })
+                .writable()
+                .scannable()
+                .unique(),
+            states: fx
+                .table::<PlayerDialogueStateRow>("player_dialogue_state", "owner_identity", |r| {
+                    r.owner_identity
+                })
+                .writable()
+                .unique(),
+            quests: fx
+                .table::<PlayerQuestRow>("player_quest", "owner_identity", |r| r.owner_identity)
+                .writable()
+                .auto_inc(|r| r.pq_id, |r, id| r.pq_id = id),
+        }
+    }
+
+    /// C1: the server re-checks the chosen index against the node. An index the
+    /// node does not offer is refused before ANY write — no dialogue state, no
+    /// quest, the conversation untouched — while the offered index 0 (positive
+    /// control, same world) starts the quest and ends the conversation.
+    /// (The choice-CONDITION half of apply_choice is game-core's
+    /// `apply_choice_unavailable_choice_error`; no shipped tree carries a
+    /// conditional choice to drive it through the reducer.)
+    /// kills: apply_choice skipped / its Err swallowed, the choice indexed without
+    /// a bounds check, effects written before the gate.
+    #[test]
+    fn nh_advance_dialogue_refuses_a_choice_the_node_does_not_offer() {
+        let fx = fixture();
+        let w = world(&fx);
+        w.convs.seed(&conv(a(), "greeting"));
+        for idx in [1u32, 7, u32::MAX] {
+            let got = fx.run_as(a(), |ctx| super::advance_dialogue(ctx, idx));
+            assert!(got.is_err(), "choice {idx} must be refused, got {got:?}");
+            assert!(
+                w.states.rows().is_empty(),
+                "choice {idx}: no dialogue state written"
+            );
+            assert!(w.quests.rows().is_empty(), "choice {idx}: no quest started");
+            assert_eq!(
+                w.convs.rows().iter().map(bytes).collect::<Vec<_>>(),
+                vec![bytes(&conv(a(), "greeting"))],
+                "choice {idx}: the conversation is untouched"
+            );
+        }
+        let got = fx.run_as(a(), |ctx| super::advance_dialogue(ctx, 0));
+        assert_eq!(got, Ok(()), "control: the offered choice 0 is admitted");
+        assert_eq!(
+            w.quests
+                .rows()
+                .iter()
+                .map(|q| (q.owner_identity, q.quest_id.clone()))
+                .collect::<Vec<_>>(),
+            vec![(a(), "quest_001".to_string())],
+            "control: choice 0 starts quest_001 for the caller"
+        );
+        assert!(
+            w.convs.rows().is_empty(),
+            "control: the one-node tree ends the conversation"
+        );
+    }
+
+    /// C8/C9: the conversation lookup is keyed on the SENDER. A caller with no
+    /// conversation of their own is refused even while another player holds one
+    /// with the same NPC, and that player's row is left exactly as it was.
+    /// kills: a lookup that takes any/the first conversation row, or keys on the
+    /// NPC instead of ctx.sender().
+    #[test]
+    fn nh_advance_dialogue_never_advances_another_players_conversation() {
+        let fx = fixture();
+        let w = world(&fx);
+        w.convs.seed(&conv(b(), "greeting"));
+        assert_eq!(
+            fx.run_as(a(), |ctx| super::advance_dialogue(ctx, 0)),
+            Err("no active conversation".to_string()),
+            "A has no conversation of their own"
+        );
+        assert_eq!(
+            w.convs.rows().iter().map(bytes).collect::<Vec<_>>(),
+            vec![bytes(&conv(b(), "greeting"))],
+            "B's conversation is untouched"
+        );
+        assert!(w.quests.rows().is_empty(), "nothing started for anyone");
+        assert!(w.states.rows().is_empty(), "no dialogue state for anyone");
+    }
+
+    /// `my_conversation` (the only client read path onto the private
+    /// `player_conversation`) serves each sender exactly their own row.
+    /// kills: a view that scans the table, keys on anything but ctx.sender(), or
+    /// returns a fixed/first row.
+    #[test]
+    fn nh_my_conversation_view_returns_only_the_senders_row() {
+        let fx = fixture();
+        let w = world(&fx);
+        w.convs.seed(&conv(a(), "greeting"));
+        w.convs.seed(&conv(b(), "elsewhere"));
+        for (who, node) in [(a(), "greeting"), (b(), "elsewhere")] {
+            let seen: Vec<PlayerConversation> = fx.call_view(VIEW_MY_CONVERSATION, who);
+            assert_eq!(
+                seen.iter().map(bytes).collect::<Vec<_>>(),
+                vec![bytes(&conv(who, node))],
+                "each sender sees exactly their own conversation"
+            );
+        }
+        let stranger: Vec<PlayerConversation> = fx.call_view(VIEW_MY_CONVERSATION, c());
+        assert!(
+            stranger.is_empty(),
+            "a sender with no conversation sees no row"
+        );
+    }
+}
