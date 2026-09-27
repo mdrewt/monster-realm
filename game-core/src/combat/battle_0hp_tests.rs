@@ -26,7 +26,7 @@ use crate::content::SkillDef;
 use crate::monster::types::{Affinity, StatBlock};
 
 // ===========================================================================
-// Fixture helpers (idiom borrowed from m14_5h_tests.rs)
+// Fixture helpers (idiom borrowed from `ability_tests::entry_on_ko_switch`)
 // ===========================================================================
 
 fn make_stat_block(speed: u16) -> StatBlock {

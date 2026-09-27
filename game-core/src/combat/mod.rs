@@ -17,16 +17,12 @@
 //! - `pvp`        — pure PvP orchestration rules: `PvpAction`, forfeit/deadline logic
 
 pub mod ability;
+#[cfg(test)]
+pub mod ability_tests;
 pub mod ai;
 #[cfg(test)]
 pub mod battle_0hp_tests;
 pub mod damage;
-#[cfg(test)]
-pub mod m14_5c_tests;
-#[cfg(test)]
-pub mod m14_5h_tests;
-#[cfg(test)]
-pub mod m14c_tests;
 #[cfg(test)]
 pub mod m14d_tests;
 #[cfg(test)]
@@ -34,8 +30,6 @@ pub mod m7b_gating_tests;
 #[cfg(test)]
 pub mod m7b_redteam_tests;
 pub mod pvp;
-#[cfg(test)]
-pub mod redteam_m14c_tests;
 #[cfg(test)]
 pub mod redteam_m14d_tests;
 #[cfg(test)]
