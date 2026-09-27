@@ -1,4 +1,4 @@
-// ui/evolutionView.ts — thin DOM shell for the evolution screen (EG4, ADR-0174).
+// ui/evolutionView.ts — thin DOM shell for the evolution screen.
 //
 // Renders an EvolutionViewModel produced by evolutionModel.ts into a DOM overlay.
 // No game logic, no SDK imports, no store writes, no eligibility computation of its own —
@@ -12,11 +12,11 @@
 //   * `choices` is non-empty ONLY at 2+ eligible paths, so a choice control is rendered
 //     from `choices` and NEVER re-derived from `paths.filter(met)`. At exactly one
 //     eligible path the server auto-applies the evolution — an Evolve affordance there
-//     offers the player an action that does not exist (EG4-2).
+//     offers the player an action that does not exist.
 //   * Nicknames and species names are PLAYER-CONTROLLED (`set_nickname`). Every string
 //     reaches the DOM through `textContent` / `createElement` — NEVER `innerHTML`.
 //
-// m23-s9 (M23 §2.7, ADR-0253) — COLOURS AND SIZES ARE A CONTRACT, NOT DECORATION. Every colour
+// COLOURS AND SIZES ARE A CONTRACT, NOT DECORATION. Every colour
 // below is a `var(--mr-evo-*)` token declared in `client/src/styles.css`, never a literal: a
 // literal is unreachable by the sheet's `@media (prefers-contrast: more)` override, so one stray
 // hex would leave that string un-recoloured for a high-contrast user. Backgrounds use the
@@ -29,7 +29,7 @@
 // (m23s9 X1–X4), with the four fixture states named there; a new element or colour here must
 // be added to those censuses in the same change.
 //
-// m24-s4 (ADR-0260) — every player-facing string this view renders is resolved through the i18n
+// Every player-facing string this view renders is resolved through the i18n
 // resolver (`t()`/`tf()`, ui/i18n/resolver.ts) with an `evolution.*` key from
 // ui/i18n/catalog.en.ts; the English bytes are unchanged (the catalog pins them). The name row
 // `${nick} (${species})` is deliberately NOT keyed — a glyph-only compound (ADR-0257 §2.2 tier
@@ -37,7 +37,7 @@
 // text) flow through as params or raw, never as catalog text. Every `t(`/`tf(` first argument is
 // a string LITERAL — the gate row's ternary picks between two calls, never between two keys.
 //
-// m23-s4 (M23 §2.2, ADR-0205 D1/D2/A3) — overlay a11y wiring. This view is a CONSTRUCTED shell:
+// m23-s4 (ADR-0205 D1/D2/A3) — overlay a11y wiring. This view is a CONSTRUCTED shell:
 // its root is `document.createElement`'d here and appended into the shared `#app` MOUNT, so unlike
 // the ten static shells S3 wired it ships NO ARIA of its own from `client/index.html` — every
 // attribute below comes from `openOverlayA11y`, never from a literal in this file.
@@ -75,7 +75,7 @@ import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 export interface EvolutionViewCallbacks {
   /** Called when the player picks one of 2+ eligible paths. The CHOSEN target species is
    *  forwarded — the client never resolves an ambiguous evolution on the player's behalf.
-   *  May return a promise (20r-a): the monster's choice buttons stay disabled until it
+   *  May return a promise: the monster's choice buttons stay disabled until it
    *  settles and are re-enabled in `.finally()` — on rejection too, without waiting for
    *  an unrelated batch. A `=> void` type would let a future implementation silently reduce
    *  that to a one-microtask debounce (see raisingView's onCare for the same argument). */
@@ -86,12 +86,12 @@ export class EvolutionView {
   readonly #root: HTMLDivElement;
   /** The "Evolution" heading; its text is resolved in show(), not here (m24-s4, see show()). */
   readonly #titleEl: HTMLHeadingElement;
-  /** The static explainer under the heading; text resolved in show() (m24-s4). */
+  /** The static explainer under the heading; text resolved in show(). */
   readonly #hintEl: HTMLParagraphElement;
   readonly #listEl: HTMLDivElement;
   readonly #callbacks: EvolutionViewCallbacks;
   #visible = false;
-  // 20r-a: per-monster in-flight lock (raisingView Care/Train shape). A click disables ALL
+  // per-monster in-flight lock (raisingView Care/Train shape). A click disables ALL
   // of that monster's choice buttons — a second, DIFFERENT choice while the first evolve
   // is in flight is the irreversible double-evolve. The value is the generation token:
   // `.finally()` releases only if the stored object is still its own, so a stale promise
@@ -111,9 +111,9 @@ export class EvolutionView {
       'display:none;flex-direction:column;align-items:center;padding:24px;' +
       'overflow-y:auto;font-family:monospace;color:var(--mr-evo-fg);';
 
-    // m24-s4 (ADR-0260): NO text here — `evolution.title` is resolved in show() (see there for why).
+    // NO text here — `evolution.title` is resolved in show() (see there for why).
     const title = document.createElement('h2');
-    // m23-s4: the OVERLAY_A11Y initialFocusSelector anchor for this overlay. `tabindex="-1"`
+    // The OVERLAY_A11Y initialFocusSelector anchor for this overlay. `tabindex="-1"`
     // (never "0") makes the heading programmatically focusable WITHOUT adding a permanent tab
     // stop ahead of the overlay's real controls. `setAttribute`, not `dataset` — the selector is
     // frozen in ui/overlayRegistry.ts and the DOM moves to it, never the reverse.
@@ -123,7 +123,7 @@ export class EvolutionView {
     this.#titleEl = title;
     this.#root.appendChild(title);
 
-    // Its text (`evolution.hint`) is resolved in show() (m24-s4), not here.
+    // Its text (`evolution.hint`) is resolved in show(), not here.
     const hint = document.createElement('p');
     hint.style.cssText =
       'margin:0 0 16px;color:var(--mr-evo-muted);font-size:14px;max-width:700px;';
@@ -146,15 +146,15 @@ export class EvolutionView {
     // The read is hoisted above BOTH writes: this view writes `display` before `#visible`,
     // and "read the visibility source first" must hold uniformly across all five S4 files.
     const wasVisible = this.#visible;
-    // m24-s4 (ADR-0260 D4, the ADR-0259 R1 rule): the two strings that are set ONCE and never
-    // rewritten by a render — the heading and the explainer — are resolved HERE, on every
-    // show(), not in the constructor. A constructor-time `t()` would freeze the English unless
-    // S6's `setLocale` ran before main.ts constructs this view (deep inside the async connect
-    // path) — an unenforced cross-file boot-order invariant. UNCONDITIONAL, not gated on
-    // `wasVisible`: a repeat show() on an already-open overlay must re-resolve too, or a
-    // mid-session locale switch would leave stale text. Idempotent by design. These writes sit
-    // AFTER the `wasVisible` read (the header's "first statement" edge) and BEFORE the display
-    // write, so the open stays the last statement of the open path.
+    // the two strings that are set ONCE and never rewritten by a render — the heading and the
+    // explainer — are resolved HERE, on every show(), not in the constructor. A
+    // constructor-time `t()` would freeze the English unless S6's `setLocale` ran before
+    // main.ts constructs this view (deep inside the async connect path) — an unenforced
+    // cross-file boot-order invariant. UNCONDITIONAL, not gated on `wasVisible`: a repeat
+    // show() on an already-open overlay must re-resolve too, or a mid-session locale switch
+    // would leave stale text. Idempotent by design. These writes sit AFTER the `wasVisible`
+    // read (the header's "first statement" edge) and BEFORE the display write, so the open
+    // stays the last statement of the open path.
     this.#titleEl.textContent = t('evolution.title');
     this.#hintEl.textContent = t('evolution.hint');
     this.#root.style.display = 'flex';
@@ -165,7 +165,7 @@ export class EvolutionView {
   hide(): void {
     this.#root.style.display = 'none';
     this.#visible = false;
-    // 20r-a: the SDK never settles an in-flight reducer promise after a link drop, so
+    // The SDK never settles an in-flight reducer promise after a link drop, so
     // `.finally()` may never run — onReconnect hides this view to release the lock here.
     // No node re-enable needed: the next refresh() re-derives from the (now empty) map.
     this.#pending.clear();
@@ -206,7 +206,7 @@ export class EvolutionView {
     name.style.cssText = 'font-weight:bold;margin-bottom:4px;';
     card.appendChild(name);
 
-    // The three server-derived tiers, surfaced verbatim beside level and stage (EG4-6).
+    // The three server-derived tiers, surfaced verbatim beside level and stage.
     const stats = document.createElement('div');
     stats.textContent = tf('evolution.card.stats', {
       level: mon.level,
@@ -237,7 +237,7 @@ export class EvolutionView {
       card.appendChild(ready);
     }
 
-    // EG4-2: rendered from `choices`, which the model keeps empty below 2 eligible.
+    // Rendered from `choices`, which the model keeps empty below 2 eligible.
     if (mon.choices.length > 0) {
       const prompt = document.createElement('div');
       prompt.textContent = t('evolution.card.choosePrompt');
@@ -273,7 +273,7 @@ export class EvolutionView {
 
     const status = document.createElement('div');
     // `unmetReason` is null exactly when the path is reachable, so this is total. The model's
-    // reason text stays raw (model data); only the fallback is catalogued (m24-s4).
+    // reason text stays raw (model data); only the fallback is catalogued.
     status.textContent = path.unmetReason ?? t('evolution.path.allMet');
     status.style.cssText = `font-size:12px;margin-bottom:4px;color:${path.met ? 'var(--mr-evo-ok)' : 'var(--mr-evo-warn)'};`;
     row.appendChild(status);
@@ -290,7 +290,7 @@ export class EvolutionView {
   static #renderGateRow(gate: EvolutionGateViewModel): HTMLDivElement {
     const row = document.createElement('div');
     row.setAttribute('data-testid', 'evo-gate-row');
-    // m24-s4 (ADR-0260 D2): two whole-row keys, the ternary OUTSIDE the call — every `tf(` first
+    // Two whole-row keys, the ternary OUTSIDE the call — every `tf(` first
     // argument stays a string literal. One text node in one element (the m23s9 census is
     // unaffected).
     const p = { label: gate.label, current: gate.currentText, required: gate.requiredText };
@@ -299,7 +299,7 @@ export class EvolutionView {
     return row;
   }
 
-  /** rb-121 (ADR-0271): a lock-owning release that finds focus stranded on `<body>` re-asserts the
+  /** A lock-owning release that finds focus stranded on `<body>` re-asserts the
    *  dialog; the idempotent re-open re-installs the trap and defers focus to the registry anchor.
    *  `#visible` is load-bearing: re-opening a hidden view would CREATE an open record. */
   #reanchorStrandedFocus(): void {
@@ -315,7 +315,7 @@ export class EvolutionView {
     btn.style.cssText =
       'padding:4px 12px;background-color:var(--mr-evo-button);border:none;border-radius:4px;' +
       'color:var(--mr-evo-fg);cursor:pointer;font-size:14px;';
-    // 20r-a: re-derive from the lock, not default-enabled — a batch can rebuild this card
+    // re-derive from the lock, not default-enabled — a batch can rebuild this card
     // while the monster's evolve is still in flight.
     btn.disabled = this.#pending.has(monsterId);
     btn.addEventListener('click', () => {

@@ -1,7 +1,6 @@
-// ui/overlayRegistry.ts — the pure modality core for the 17 mutual-exclusion overlays
-// (uxd3, ADR-0162).
+// ui/overlayRegistry.ts — the pure modality core for the 17 mutual-exclusion overlays.
 //
-// FUNCTIONAL CORE (ADR-0014). No DOM, no SDK, no import from `main.ts`, no view handles,
+// FUNCTIONAL CORE. No DOM, no SDK, no import from `main.ts`, no view handles,
 // no thunks — every export here is a data table, a total pure function, or (since uxd3-b)
 // the TYPE of the caller-supplied probe table, so the whole module stays node-testable
 // with zero mocks. `anyVisible` takes the probes as an argument and holds no state of its
@@ -18,7 +17,7 @@
 //
 // SCOPE (uxd3-a + uxd3-b + uxd3-c): this module holds the DECISIONS, plus the READ substrate
 // — `OverlayProbes` and `anyVisible`, which uxd3-b's five `main.ts` fan-out surfaces consume
-// — plus, since uxd3-c (ADR-0164), the WRITE substrate: `visibleIds()` and the
+// — plus, since uxd3-c, the WRITE substrate: `visibleIds()` and the
 // `OverlayHandles` TYPE, which together let all twelve `main.ts` hotkey open-guards and
 // `refreshBattle` route through `canOpen`/`hideAllExceptPlan` instead of fourteen
 // hand-maintained guard lists. `visibleIds()` is an explicit REVERSAL of A7's deletion, and
@@ -48,11 +47,11 @@ export type OverlayId =
   | 'tradeProposeView'
   | 'helpView'
   | 'menuView'
-  // M21b-2 (ADR-0182 D17 / G19): the claim overlay owns a text input, so it must GUARD movement
+  // the claim overlay owns a text input, so it must GUARD movement
   // input while open — GUARD_ONLY registration gives that for free. sessionView is DELIBERATELY
   // NOT a member (a second EXCLUSIVE_TOP breaks decide(); D17): it is driven by conn.sessionState().
   | 'claimView'
-  // rb-52 (ADR-0231 A2-D1): the privacy surface. GUARD_ONLY, like every other modal a player
+  // the privacy surface. GUARD_ONLY, like every other modal a player
   // OPENS — it owns a two-step confirmation for an irreversible action, so it must never be
   // dismissed out from under that confirmation by a stray keypress.
   | 'privacyView';
@@ -110,10 +109,10 @@ export const OVERLAY_IDS: readonly OverlayId[] = Object.keys(OVERLAY_TIERS) as O
  * lands the moment it opens (`initialFocusSelector`), and whether Escape closes it
  * (`dismissible`). M23 §2.1 / ADR-0205.
  *
- * `labelKey` is a CATALOG KEY, never a literal name. That is the M24 seam (ADR-0033): M24 swaps
+ * `labelKey` is a CATALOG KEY, never a literal name. That is the M24 seam: M24 swaps
  * the resolver and these keys become catalog entries with ZERO renaming.
  *
- * `role` is a CLOSED two-member union rather than `string` on purpose (ADR-0205 D3). It is what
+ * `role` is a CLOSED two-member union rather than `string` on purpose. It is what
  * makes `role="presentation"` — the single most common way to silently un-label a modal — a
  * COMPILE error here rather than something a text scan might miss. `alertdialog` is unused
  * today and stays in the union anyway: an id earns it only when its sole purpose is a blocking
@@ -127,13 +126,13 @@ export interface A11yMeta {
 }
 
 /**
- * The a11y metadata SSOT (M23 §2.0, ADR-0205). Typed `Record<OverlayId, _>` for exactly the
+ * The a11y metadata SSOT. Typed `Record<OverlayId, _>` for exactly the
  * reason OVERLAY_TIERS is (`:76`): omitting an id is a COMPILE error, not a test failure, so an
  * eighteenth overlay cannot ship half-registered. Declaration order mirrors OVERLAY_TIERS, so
  * OVERLAY_IDS (`:100`) indexes this table too — one derived id list, never a second hand-kept
  * one. Seventeen per-view ARIA retrofits have no completeness oracle; one total table does.
  *
- * WHY THIS BELONGS IN THIS MODULE (ADR-0205 D7, recorded as a verification — spec §2.0 made the
+ * WHY THIS BELONGS IN THIS MODULE (recorded as a verification — spec §2.0 made the
  * placement call). The purity rule at `:4`-`:8` bans DOM, SDK, `main.ts` imports, view handles
  * and thunks; every export here is a data table, a total pure function, or the TYPE of a
  * caller-supplied table. A CSS selector string and an ARIA role name are STRINGS IN A DATA
@@ -152,9 +151,9 @@ export interface A11yMeta {
  *
  * `dismissible` IS THE CONSTRAINT, NOT THE VARIATION: spec §2.1 phrases it over the TIER
  * (`EXCLUSIVE_TOP`/`GUARD_ONLY` ⇒ `true`, `HIDE_SWITCH` unconstrained), and the gate reads
- * OVERLAY_TIERS rather than a hardcoded id list so a RETIERING cannot slip past it (ADR-0205 D7).
+ * OVERLAY_TIERS rather than a hardcoded id list so a RETIERING cannot slip past it.
  *
- * `initialFocusSelector` IS A STABLE, CONSTRUCTOR-TIME ANCHOR (ADR-0205 D1/D2) — never a
+ * `initialFocusSelector` IS A STABLE, CONSTRUCTOR-TIME ANCHOR — never a
  * render-time control. `battleView` calls `replaceChildren()` on its skills container and its
  * action row on every server tick (`ui/battleView.ts:241`, `:270`), so a focused skill button is
  * destroyed mid-battle and focus falls to `<body>`: pointing at one would be INCORRECT, not
@@ -162,7 +161,7 @@ export interface A11yMeta {
  * first content node and the shell-owning slice (S2 for the static shells, S4 for the four
  * `#app`-mounted overlays) makes it focusable with `tabindex` — the ARIA APG dialog fallback.
  * That obligation is DERIVED from this table by S2/S4's own gates, never listed here as a second
- * array (ADR-0205 D1; the A7/A15 zero-consumer rule at `:26`-`:30`). One landmine
+ * array (the A7/A15 zero-consumer rule at `:26`-`:30`). One landmine
  * worth restating: `#menu-rows` takes `tabindex="0"`, never `-1` — it is the `aria-activedescendant`
  * listbox AND it carries a delegated click listener.
  */
@@ -266,10 +265,7 @@ export const OVERLAY_A11Y: Readonly<Record<OverlayId, A11yMeta>> = {
   privacyView: {
     role: 'dialog',
     labelKey: 'a11y.overlay.privacyView.title',
-    // A NATIVE <button>, not a tabindex-ed heading (ADR-0231 A2-D3):
-    // `evals/keyboard-operable-rows.eval.mjs` hard-fails a `tabindex` write from any file outside
-    // its frozen table, and that eval is outside this slice's touches. `#claim-signin-btn` is the
-    // same shape for the same reason.
+    // A NATIVE <button>, not a tabindex-ed heading (ADR-0231 A2-D3).
     //
     // THE CLOSE BUTTON, NOT THE DELETE BUTTON (A2-D10). `#privacy-delete-btn` carries `disabled`
     // in every phase except `active` — and a disabled control is unfocusable, so in `grace`
@@ -303,7 +299,7 @@ export const BATTLE_FORCE_HIDE: readonly OverlayId[] = [
   'renameView',
   'tradeProposeView',
   'menuView',
-  // rb-52 (ADR-0231 A2-D4): one modal at a time. `refreshBattle` does NOT consult `canOpen`, so
+  // one modal at a time. `refreshBattle` does NOT consult `canOpen`, so
   // omitting an id does not deny the auto-show — it leaves the omitted overlay painted under the
   // battle with a second aria-modal root and a second focus trap. Safe to force-hide because
   // `PrivacyView.hide()` disarms the delete confirmation on its way out.

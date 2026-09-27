@@ -42,7 +42,7 @@ import { cldr, selectPlural } from './plural';
 // `one` covers BOTH 0 and 1 (« 0 tour », « 1 tour »); `other` is every other integer
 // (« 2 tours »); `many` is CLDR's 10^6 case (1 000 000, 2 000 000 …), rendered with the
 // partitive « de » as in « 1 000 000 de tours ». The three categories fr never selects (`zero`,
-// `two`, `few`) mirror the nearest live form so the record stays total (ADR-0256 D2).
+// `two`, `few`) mirror the nearest live form so the record stays total.
 const WEATHER_TURN_FORMS = cldr({
   zero: 'tour',
   one: 'tour',

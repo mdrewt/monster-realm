@@ -1,5 +1,5 @@
 // ui/i18n/locale.ts — BCP-47 locale negotiation and the RTL primary-subtag table
-// (m24-s1, ADR-0256 D6, I18N-11).
+// (I18N-11).
 //
 // PURE: no `navigator`, no `document`, no URL — S6 owns the boot-time wiring that feeds
 // `navigator.languages` in here and hands the answer to `setLocale`. Zero `RegExp` (the module

@@ -1,4 +1,4 @@
-// ui/a11yCopy.ts — the flat accessible-name copy catalog and its resolver (m23-s0, ADR-0205 D4/D5).
+// ui/a11yCopy.ts — the flat accessible-name copy catalog and its resolver.
 //
 // A typed SSOT `const` (the `helpModel` / `dialogueContent` / `renameModel` precedent) — NOT a
 // RON data file (YAGNI: this is client chrome, not game content). Pure and total in the shape
@@ -6,14 +6,14 @@
 // `buildHelpViewModel` (ui/helpModel.ts:14) there is nothing here a caller could mutate and
 // poison for the next call — the catalog itself is never handed out.
 //
-// THE M24 SEAM (ADR-0033, M23 §2.8). Accessible names are CATALOG KEYS from the first commit,
+// THE M24 SEAM. Accessible names are CATALOG KEYS from the first commit,
 // never string literals at the call site, so M24 swaps the resolver — this `t` for a real i18n
 // one — and M23's keys become catalog entries with ZERO renaming. What M23 deliberately does NOT
 // ship, because nothing consumes it yet: no ICU syntax (`{`/`}` are banned in a key AND in a
 // value, and that ban is mechanically gated), no placeholders, no plural rules, no fallback
 // chain, no locale switching. The key shape is `a11y.<namespace>.<…>` with the OverlayId kept
 // VERBATIM — `a11y.overlay.boxView.title`, capital V — so the key is DERIVABLE from `OverlayId`
-// with zero mapping table (ADR-0205 D5). A kebab-cased key would reintroduce exactly the
+// with zero mapping table. A kebab-cased key would reintroduce exactly the
 // hand-kept id↔key correspondence the derivation exists to kill.
 //
 // WHY `t` THROWS RATHER THAN RETURNING THE KEY (ADR-0205 D4 — reject, do not clamp; the same
@@ -42,7 +42,7 @@
  * OVERLAY_IDS, in both directions — a missing entry and a stowaway are each a red. It is
  * deliberately NOT gated as "only this namespace" or "exactly N keys": S1 lands `a11y.world.*`
  * and `a11y.announce.*` the moment it starts, and each namespace is orphan-checked by the slice
- * that owns its consumer (ADR-0205 D5).
+ * that owns its consumer.
  */
 export const a11yCopy: Readonly<Record<string, string>> = Object.freeze({
   // Constructed overlays — the wording is the <h2> each view builds today.
@@ -67,10 +67,10 @@ export const a11yCopy: Readonly<Record<string, string>> = Object.freeze({
   'a11y.overlay.helpView.title': 'Controls & Goals', // index.html:86
   'a11y.overlay.menuView.title': 'Menu', // ui/menuModel.ts:325
   'a11y.overlay.claimView.title': 'Account & Sign-in', // ui/menuModel.ts:103
-  // rb-52: reached from the Account & Sign-in overlay (ADR-0231 A2-D5), so the name says what the
+  // Reached from the Account & Sign-in overlay (ADR-0231 A2-D5), so the name says what the
   // surface is FOR rather than repeating its parent's label.
   'a11y.overlay.privacyView.title': 'Privacy & Account Data',
-  // The canvas world region (m23-s4, M23 §2.3). NOT an overlay: `render/world.ts` sets
+  // The canvas world region. NOT an overlay: `render/world.ts` sets
   // role="application" + tabindex="0" on `app.canvas` itself and labels it from here, so the
   // hotkey-vs-quick-nav collision has a named landing place a screen reader can reach. The S0
   // header predicted this `a11y.world.*` namespace; the set-equality gate is scoped to
@@ -81,7 +81,7 @@ export const a11yCopy: Readonly<Record<string, string>> = Object.freeze({
 
 /**
  * Resolve one catalog key. Pure and total on the catalog's own domain; THROWS on a miss, naming
- * the key (ADR-0205 D4). Never returns the key, never returns '', never caches, never mutates.
+ * the key. Never returns the key, never returns '', never caches, never mutates.
  *
  * `Object.hasOwn`, NOT `key in a11yCopy`: an object literal inherits `toString`, `constructor`,
  * `hasOwnProperty` and `valueOf` from `Object.prototype`, and `in` is true for every one of

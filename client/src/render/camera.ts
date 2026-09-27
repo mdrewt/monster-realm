@@ -1,4 +1,4 @@
-// render/camera.ts — FollowCamera (M11c, ADR-0067; per-axis centering uxd1/ADR-0160).
+// render/camera.ts — FollowCamera (per-axis centering uxd1/ADR-0160).
 //
 // PURE. No side effects, no DOM, no Pixi. Converts tile-space player position
 // to a pixel-space camera offset, clamped so the viewport never shows pixels

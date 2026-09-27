@@ -1,4 +1,4 @@
-// ui/pvpModel.ts — pure view-model for the PvP challenge overlay (m16b, ADR-0110).
+// ui/pvpModel.ts — pure view-model for the PvP challenge overlay.
 //
 // No DOM, no SDK, no side effects. Takes store data and returns view-models.
 // PvpView renders these; the batch listener in main.ts refreshes on each batch.

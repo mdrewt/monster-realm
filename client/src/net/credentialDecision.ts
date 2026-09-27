@@ -1,4 +1,4 @@
-// net/credentialDecision.ts — the PURE credential decision (ADR-0182 D13/D17, M21b-2).
+// net/credentialDecision.ts — the PURE credential decision.
 //
 // This module is deliberately importless and side-effect free: zero I/O, zero storage,
 // zero SDK. It owns its own input alphabet (`RenewalOutcome`) so `oidc.ts` imports the

@@ -1,4 +1,4 @@
-// ui/interactModel.ts — pure context-sensitive interact core (uxd2, ADR-0161 D3/D6).
+// ui/interactModel.ts — pure context-sensitive interact core.
 //
 // No DOM, no SDK, no reducer identifiers. TOTAL: never throws — the resolver
 // runs EVERY FRAME in main.ts (the prompt) and on every KeyT press; one throw
@@ -37,7 +37,7 @@ export type Interactable =
 
 /** Descriptor for an NPC-row candidate at its CHARACTER tile. Exhaustive over
  *  the interaction union — NO default arm, so a 4th variant compiler-flags
- *  this site (the enum-SSOT rule, ADR-0161 D1). */
+ *  this site (the enum-SSOT rule). */
 function npcDescriptor(npc: StoreNpcRow, tile: InteractTile): Interactable {
   const anchorWorldX = (tile.tileX + 0.5) * TILE_PX;
   const anchorWorldY = tile.tileY * TILE_PX;
@@ -63,7 +63,7 @@ function npcDescriptor(npc: StoreNpcRow, tile: InteractTile): Interactable {
 
 /**
  * Nearest interactable within CLIENT_INTERACT_RANGE of the own AUTHORITATIVE
- * tile (uxd2, ADR-0161 D3). Same-zone only:
+ * tile. Same-zone only:
  *   - NPC zone comes from the CHARACTER-row join (live wander position), never
  *     the npc registry row's zoneId; NPCs without a character row are skipped.
  *   - Heal rows are filtered by an EXPLICIT `loc.zoneId === own.zoneId` (they
@@ -127,7 +127,7 @@ export function nearestInteractable(
   return best;
 }
 
-/** The on-world prompt view model (ADR-0161 D6). `visible` is the literal
+/** The on-world prompt view model. `visible` is the literal
  *  `true`: "hidden" is represented by null and ONLY by null. The anchor stays
  *  in SOURCE px — screenFor applies the one tested transform. */
 export interface InteractPromptViewModel {

@@ -1,14 +1,13 @@
-// ui/privacyView.ts — DOM shell for the privacy surface (rb-52, PRV1-3/PRV1-4;
+// ui/privacyView.ts — DOM shell for the privacy surface (
 // ADR-0231 Amendment A2).
 //
 // DOM shell, but FULLY UNIT-COVERED via happy-dom (the helpView / leaderboardView / renameView
-// precedent), so this file is deliberately NOT in `vite.config.ts` coverage.exclude and NOT in
-// `evals/dom-shell-coverage-exclusion.eval.mjs`'s DOM_SHELLS. Every decision it could have made
-// lives in `ui/privacyBanner.ts`'s `buildPrivacyViewModel`; this file only paints.
+// precedent), so this file is deliberately NOT in `vite.config.ts` coverage.exclude.
+// Every decision it could have made lives in `ui/privacyBanner.ts`'s `buildPrivacyViewModel`; this
+// file only paints.
 //
 // THE SHELL IS CONSTRUCTED, NOT STATIC MARKUP (A2-D2). A static shell in `client/index.html` must
-// carry `role="dialog" aria-modal="true"`, and `evals/overlay-live-region-custody.eval.mjs` pins
-// the count of those in `index.html` at EXACTLY eleven — an eval outside this slice's `touches:`.
+// carry `role="dialog" aria-modal="true"`.
 // `claimView.ts` / `sessionView.ts` established the constructed route and it costs nothing here.
 //
 // ★ ensureElement CREATES EVERY NODE display:none, AND THAT IS A TRAP. `claimView.ts` never
@@ -18,15 +17,8 @@
 // `privacyView.test.ts` asserts reachability by walking the ancestor chain rather than by clicking.
 //
 // ★ NO `.focus()` ANYWHERE IN THIS FILE, in any spelling.
-// `evals/overlay-a11y-manifest.eval.mjs` bans `.focus(`, `?.focus`, `['focus']` and `autofocus`
-// in every `client/src/ui/**/*View.ts` (A11Y-15): focus placement belongs to `overlayA11y.ts`,
-// which is the single owner. The initial anchor is `#privacy-close-btn` (overlayRegistry.ts's
-// `initialFocusSelector`), a NATIVE <button> —
-// `evals/keyboard-operable-rows.eval.mjs` hard-fails a `tabindex` write from any file outside its
-// frozen table, so a tabindex-ed heading anchor is not available to us (A2-D3). That same eval
-// only accepts a `this.#field` click receiver as native when the FIELD'S DECLARED TYPE is
-// `HTMLButtonElement`, which is why the five button fields below are typed that way rather than
-// as `HTMLElement` (the `renameView.ts` `#submitBtn` precedent).
+// focus placement belongs to `overlayA11y.ts`, which is the single owner. The initial anchor is
+// `#privacy-close-btn` (overlayRegistry.ts's `initialFocusSelector`), a NATIVE <button>.
 //
 // ★ hide() CALLS onDismissed (A2-D4). `privacyView` is in BATTLE_FORCE_HIDE, and a force-hide runs
 // `main.ts`'s handle thunk — a byte-identical `privacyView?.hide()` pinned by
@@ -37,7 +29,7 @@
 // NO aria-live / role="status" / role="alert" on the notice: exactly one live region exists and
 // `ui/liveRegion.ts` owns it (the rb-51 A1-D4 call, which applies to this notice too).
 //
-// m24-s5 (ADR-0261 D4) — the four strings this view owns are resolved through the i18n resolver
+// The four strings this view owns are resolved through the i18n resolver
 // (`t()`, ui/i18n/resolver.ts), never in the constructor (S6 may negotiate the locale after this
 // view is constructed): the heading (`privacy.title`) and the close anchor's label
 // (`privacy.close`) in show() — the only door that opens this overlay; `render()` never does —
@@ -59,7 +51,7 @@ export interface PrivacyViewHandlers {
   readonly onConfirmCancelled: () => void;
   readonly onCancelDeletion: () => void;
   readonly onExportRequested: () => void;
-  /** rb-53: save the artifact that has already ARRIVED. Distinct from `onExportRequested`,
+  /** Save the artifact that has already ARRIVED. Distinct from `onExportRequested`,
    *  which asks the server to build a new one. */
   readonly onExportDownload: () => void;
   /** Called from `hide()` — every close path, including the battle force-hide. */
@@ -93,7 +85,7 @@ export class PrivacyView {
   readonly #confirmCancelBtn: HTMLButtonElement;
   readonly #cancelBtn: HTMLButtonElement;
   readonly #exportBtn: HTMLButtonElement;
-  // rb-53 (A3-D4): ALWAYS painted, only ever `disabled`. Unlike every other control here its
+  // ALWAYS painted, only ever `disabled`. Unlike every other control here its
   // enablement is driven by INCOMING SERVER DATA, so it can flip while the player has it
   // focused — and a control that becomes `display:none` under focus drops focus to <body>,
   // which is outside the overlay root, so focusTrap's capture listener never fires and Tab
@@ -154,7 +146,7 @@ export class PrivacyView {
     // is written ONCE here rather than on every render. It must be present in EVERY state — it
     // is the §9 language, and a render path that blanked it on the terminal branch would drop it
     // exactly when it matters most. The title is un-hidden here but its TEXT is resolved in
-    // show() (m24-s5, header).
+    // show() (header).
     this.#title.style.display = '';
     this.#disclosure.textContent = PRIVACY_PSEUDONYMIZATION_DISCLOSURE;
     this.#disclosure.style.display = '';
@@ -216,7 +208,7 @@ export class PrivacyView {
     // already-open overlay, and a re-open would re-schedule overlayA11y's deferred focus and yank
     // the player back to the anchor mid-interaction.
     const wasVisible = this.visible;
-    // m24-s5 (ADR-0261 D4): the heading and the close anchor's label are resolved HERE, on EVERY
+    // The heading and the close anchor's label are resolved HERE, on EVERY
     // show() — unconditionally, after the `wasVisible` read, before the display write.
     this.#title.textContent = t('privacy.title');
     this.#paintButton(this.#closeBtn, t('privacy.close'), true);

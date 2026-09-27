@@ -1,4 +1,4 @@
-// net/warpDetect.ts — pure warp-detection predicate (M11c, ADR-0067).
+// net/warpDetect.ts — pure warp-detection predicate.
 //
 // PURE. No side effects. Extracted from connection.ts so it can be unit-tested
 // without the SpacetimeDB SDK. isOwnZoneChange is the sole place that decides

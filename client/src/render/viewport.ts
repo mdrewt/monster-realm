@@ -1,4 +1,4 @@
-// render/viewport.ts — responsive, device-integer viewport scaling (uxd1, ADR-0160).
+// render/viewport.ts — responsive, device-integer viewport scaling.
 //
 // PURE. No DOM, no Pixi, no `window`, no clock — a sibling of `camera.ts`: CSS
 // pixels + devicePixelRatio in, a scale record and pixel transforms out. It lives
@@ -110,8 +110,7 @@ export function appInitOptions(cssW: number, cssH: number, dpr: number, backgrou
  * result (SOURCE px); the result's origin is the canvas top-left. This is the ONE
  * expression of the stage transform — `world.ts` positions the stage with it, so
  * a sign error or a dropped `* stageScale` cannot hide in the shell. Deliberately
- * NOT rounded to a pixel grid: quantizing here would judder the sub-tile slide
- * (ADR-0013).
+ * NOT rounded to a pixel grid: quantizing here would judder the sub-tile slide.
  */
 export function worldToScreen(
   world: { x: number; y: number },

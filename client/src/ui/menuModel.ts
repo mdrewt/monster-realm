@@ -1,6 +1,6 @@
-// ui/menuModel.ts — the pure two-level main-menu core (uxd3, ADR-0162).
+// ui/menuModel.ts — the pure two-level main-menu core.
 //
-// FUNCTIONAL CORE (ADR-0014): no DOM, no SDK, no store access. Availability enters as
+// FUNCTIONAL CORE: no DOM, no SDK, no store access. Availability enters as
 // three plain booleans, so every nav rule is node-testable with zero mocks and the DOM
 // shell (`menuView.ts`) stays a dumb painter.
 //
@@ -12,7 +12,7 @@
 //    screen the game does not have, which is the worst outcome for a discoverability
 //    surface. So the words ship as leaf TITLES at zero cost, and a Backpack leaf can split
 //    in place if an items-only overlay ever lands.
-//  - "Shop & Trade" became "Trade": uxd2 (ADR-0161 D5) deleted the global shop/heal hotkeys
+//  - "Shop & Trade" became "Trade": uxd2 deleted the global shop/heal hotkeys
 //    on Drew's explicit instruction, so Shop and Heal are world-contextual and reachable
 //    only through Interact. A "first shop" leaf would resurrect exactly what was removed.
 //  - `battleView` / `dialogueView` are registry members but NOT leaves — context overlays
@@ -97,7 +97,7 @@ export const MENU_TREE: readonly MenuCategoryDef[] = [
     title: 'System',
     leaves: [
       { id: 'rename', title: 'Rename Profile', keyGlyph: 'N', target: 'renameView' },
-      // M21b-2 (ADR-0182 D16/D17): the discoverable path to the account & guest-claim UI. Its
+      // The discoverable path to the account & guest-claim UI. Its
       // KeyC direct hotkey ships alongside (AUTH-48 needs it reachable before join); the leaf is
       // NON-contextual (always available) — session-level chrome, like Rename and Help beside it.
       { id: 'account', title: 'Account & Sign-in', keyGlyph: 'C', target: 'claimView' },

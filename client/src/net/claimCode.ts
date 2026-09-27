@@ -1,4 +1,4 @@
-// net/claimCode.ts — the guest-claim code primitive (AUTH-60 / AUTH-58, ADR-0182 D16).
+// net/claimCode.ts — the guest-claim code primitive (AUTH-60 / AUTH-58).
 //
 // The claim code IS the whole secret (ADR-0179 D3: the server never mints one, so its
 // entropy is entirely client-side). This module owns three things and nothing else:
@@ -20,7 +20,7 @@
 
 import type { TokenStorageHost } from './authToken';
 
-/** The injected host: `sessionStorage` (per-tab, ADR-0150 D3) plus a `crypto` that may
+/** The injected host: `sessionStorage` (per-tab) plus a `crypto` that may
  *  expose `getRandomValues`. Both typed `unknown` — parse-don't-validate happens below. */
 export interface ClaimCodeHost extends TokenStorageHost {
   readonly crypto?: unknown;

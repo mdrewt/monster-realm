@@ -1,4 +1,4 @@
-// ui/careAction.ts — the care-button decision core (feel-polish D1, ADR-0159).
+// ui/careAction.ts — the care-button decision core (feel-polish D1).
 //
 // WHY THIS MODULE EXISTS: `onCare` used to live inline in main.ts, which is
 // coverage-excluded and whose wiring closures are not exported — so the ADR's

@@ -57,7 +57,7 @@ function resolveEndpoint(raw: string | undefined, isDev: boolean): TelemetryConf
   }
 
   if (url.username !== '' || url.password !== '') {
-    // OBS-16: the ingest takes no secret; reject outright rather than silently stripping.
+    // The ingest takes no secret; reject outright rather than silently stripping.
     return disabled('VITE_MR_OTLP_ENDPOINT carries URL userinfo');
   }
   if (url.pathname !== '/' || url.search !== '' || url.hash !== '') {

@@ -11,10 +11,10 @@
 // camelCase tail is deliberate — the M23 `OverlayId` stays verbatim inside a key
 // (`a11y.overlay.boxView.title`, ADR-0205 D5), so the spec's own `[a-z0-9]+` is corrected here.
 
-/** Every message the catalogs must define. S1 seeded the `chrome.*` namespace; S3 (ADR-0259)
- *  added `battle.*` and `pvp.*` as it migrated battleView.ts/pvpView.ts; S4 (ADR-0260) added
+/** Every message the catalogs must define. S1 seeded the `chrome.*` namespace; S3
+ *  added `battle.*` and `pvp.*` as it migrated battleView.ts/pvpView.ts; S4 added
  *  `evolution.*`, `raising.*`, `box.*`, `trade.*` and `shop.*` for the five mid-density views;
- *  S5 (ADR-0261) added the tail — `tradePropose.*`, `dialogue.*`, `claim.*`, `leaderboard.*`,
+ *  S5 added the tail — `tradePropose.*`, `dialogue.*`, `claim.*`, `leaderboard.*`,
  *  `errorOverlay.*`, `questLog.*`, `heal.*`, `privacy.*`, `evolutionNotice.*` — and gave three
  *  `chrome.*` keys their first call sites; S6 wires boot. Adding a literal here is what forces EVERY
  *  registered catalog to grow (the mapped `Catalog` below is total over this union). Keys are
@@ -63,7 +63,7 @@ export type MessageId =
   | 'pvp.outgoing.cancel'
   | 'pvp.players.none'
   | 'pvp.players.heading'
-  // m24-s4 (ADR-0260) — evolution.* : the evolution screen (evolutionView.ts).
+  // Evolution.* : the evolution screen (evolutionView.ts).
   | 'evolution.title'
   | 'evolution.hint'
   | 'evolution.monsters.empty'
@@ -76,7 +76,7 @@ export type MessageId =
   | 'evolution.gate.metRow'
   | 'evolution.gate.unmetRow'
   | 'evolution.choice.evolve'
-  // m24-s4 — raising.* : the raising / inventory screen (raisingView.ts).
+  // Raising.* : the raising / inventory screen (raisingView.ts).
   | 'raising.title'
   | 'raising.monsters.heading'
   | 'raising.inventory.heading'
@@ -87,7 +87,7 @@ export type MessageId =
   | 'raising.card.train'
   | 'raising.inventory.empty'
   | 'raising.inventory.item'
-  // m24-s4 — box.* : the party / box screen (boxView.ts).
+  // Box.* : the party / box screen (boxView.ts).
   | 'box.title'
   | 'box.heal'
   | 'box.hint'
@@ -101,7 +101,7 @@ export type MessageId =
   | 'box.card.toBox'
   | 'box.card.toParty'
   | 'box.rename.prompt'
-  // m24-s4 — trade.* : the live-trade overlay (tradeView.ts); `tradePropose.*` is the dialog.
+  // Trade.* : the live-trade overlay (tradeView.ts); `tradePropose.*` is the dialog.
   | 'trade.status.none'
   | 'trade.side.offer'
   | 'trade.side.receive'
@@ -112,7 +112,7 @@ export type MessageId =
   | 'trade.action.reject'
   | 'trade.action.confirm'
   | 'trade.action.cancel'
-  // m24-s4 — shop.* : the shop overlay (shopView.ts).
+  // Shop.* : the shop overlay (shopView.ts).
   | 'shop.title'
   | 'shop.noShop'
   | 'shop.forSale.empty'
@@ -122,41 +122,41 @@ export type MessageId =
   | 'shop.sell.row'
   | 'shop.sell.submit'
   | 'shop.sell.unsellable'
-  // m24-s5 (ADR-0261) — tradePropose.* : the trade-proposal dialog (tradeProposeView.ts); its
+  // tradePropose.* : the trade-proposal dialog (tradeProposeView.ts); its
   // submit label is the S1-seeded `chrome.tradePropose.submit`.
   | 'tradePropose.target.placeholder'
-  // m24-s5 (ADR-0261) — dialogue.* : the NPC dialogue overlay (dialogueView.ts).
+  // Dialogue.* : the NPC dialogue overlay (dialogueView.ts).
   | 'dialogue.action.shop'
-  // m24-s5 (ADR-0261) — claim.* : the guest-claim overlay (claimView.ts). Its button and the
-  // privacy heading below share English bytes today but are TWO keys (ADR-0261 D2).
+  // Claim.* : the guest-claim overlay (claimView.ts). Its button and the
+  // privacy heading below share English bytes today but are TWO keys.
   | 'claim.privacyButton'
-  // m24-s5 (ADR-0261) — leaderboard.* : the ranked leaderboard overlay (leaderboardView.ts).
+  // Leaderboard.* : the ranked leaderboard overlay (leaderboardView.ts).
   | 'leaderboard.empty'
   | 'leaderboard.row'
-  // m24-s5 (ADR-0261) — errorOverlay.* : the F9 error overlay (errorOverlayView.ts).
+  // errorOverlay.* : the F9 error overlay (errorOverlayView.ts).
   | 'errorOverlay.footer'
-  // m24-s5 (ADR-0261) — questLog.* : the quest log overlay (questLogView.ts).
+  // questLog.* : the quest log overlay (questLogView.ts).
   | 'questLog.entry'
-  // m24-s5 (ADR-0261) — heal.* : the heal overlay (healView.ts).
+  // Heal.* : the heal overlay (healView.ts).
   | 'heal.location'
-  // m24-s5 (ADR-0261) — privacy.* : the privacy surface (privacyView.ts).
+  // Privacy.* : the privacy surface (privacyView.ts).
   | 'privacy.title'
   | 'privacy.close'
   | 'privacy.confirm.delete'
   | 'privacy.confirm.keep'
-  // m24-s5 (ADR-0261) — evolutionNotice.* : the post-evolve reveal banner (evolutionNotice.ts).
+  // evolutionNotice.* : the post-evolve reveal banner (evolutionNotice.ts).
   | 'evolutionNotice.ok'
   | 'evolutionNotice.species.fallback'
   | 'evolutionNotice.reveal.nicknamed'
   | 'evolutionNotice.reveal.anonymous';
 
-/** The ONE hand-written parameter table (ADR-0256 D7): a key appears here iff its message takes
+/** The ONE hand-written parameter table: a key appears here iff its message takes
  *  parameters, and `ParamMessageId` is DERIVED from it — one table, not two lists to keep in
  *  sync. A key listed here that is not a `MessageId` fails to compile at the resolver's catalog
  *  indexing, so no separate subset assert is needed. */
 export interface MessageParams {
   readonly 'chrome.status.disconnected': { readonly where: string };
-  // m24-s3 (ADR-0259 D2/D3): every param below is MODEL DATA — affinity names, weather labels,
+  // Every param below is MODEL DATA — affinity names, weather labels,
   // status names, species/skill/item names, player display names and counts — interpolated
   // verbatim, never catalogued (M24 §2.5: content stays English this milestone).
   readonly 'battle.weather.banner': { readonly label: string; readonly turns: number };
@@ -186,7 +186,7 @@ export interface MessageParams {
   };
   readonly 'pvp.incoming.label': { readonly challenger: string };
   readonly 'pvp.outgoing.label': { readonly target: string };
-  // m24-s4 (ADR-0260 D3): again MODEL DATA only — species/nick/item names, server-derived
+  // Again MODEL DATA only — species/nick/item names, server-derived
   // tiers, stats, counts and prices. `bigint` where the model is bigint (trade currency, shop
   // prices): template interpolation of a bigint is byte-identical to the literal it replaced.
   readonly 'evolution.card.stats': {
@@ -247,7 +247,7 @@ export interface MessageParams {
     readonly price: bigint;
   };
   readonly 'shop.sell.unsellable': { readonly name: string; readonly count: number };
-  // m24-s5 (ADR-0261 D5): MODEL DATA only, again — ranked numbers, a quest content id and step,
+  // MODEL DATA only, again — ranked numbers, a quest content id and step,
   // the heal model's own cost text, species/nickname names. The leaderboard DISPLAY NAME is
   // deliberately NOT a param (I18N-21): it renders in a sibling `<bdi>`, never through a catalog.
   readonly 'leaderboard.row': {
@@ -273,7 +273,7 @@ export type ParamMessageId = keyof MessageParams;
 export type PlainMessageId = Exclude<MessageId, ParamMessageId>;
 
 /**
- * The accessible-name keys `t()` also accepts. EMPTY TODAY (ADR-0256 D4): M23's
+ * The accessible-name keys `t()` also accepts. EMPTY TODAY: M23's
  * `ui/a11yCopy.ts` exports `a11yCopy: Readonly<Record<string, string>>`, whose `keyof` is
  * `string` — importing it would widen `t` to `(key: string) => string` and silently destroy
  * every totality guarantee in this file (the compile suite's `bad-t-wide` fixture is the oracle

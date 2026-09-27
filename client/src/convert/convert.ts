@@ -84,7 +84,7 @@ export function characterFieldsFromWasm(s: WasmCharacterState): SdkCharacterFiel
   };
 }
 
-// --- the time-rebasing baseline (ADR-0012; LOSSY, never round-tripped) ----------
+// --- the time-rebasing baseline (LOSSY, never round-tripped) ----------
 // There is no clock sync: the server's `move_started_at` is epoch ms; the local
 // drain runs off `performance.now()` (which starts at 0). Rebase to a LOCAL
 // "two steps ago" so the first queued move is immediately due. `floor` is required

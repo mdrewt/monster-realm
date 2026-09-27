@@ -1,4 +1,4 @@
-// render/characterView.ts — one POOLED sprite per entity (M4b, ADR-0004).
+// render/characterView.ts — one POOLED sprite per entity.
 //
 // Imperative shell (no pixel tests — the renderer is validated by the M5 e2e via
 // `window.__game()`; its LOGIC lives in the tested pure modules). A CharacterView

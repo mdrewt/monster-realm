@@ -1,6 +1,6 @@
-// ui/exportAssembly.ts — the PURE data-export assembly core (M22 S8, ADR-0231).
+// ui/exportAssembly.ts — the PURE data-export assembly core.
 //
-// FUNCTIONAL CORE (ADR-0014). No DOM, no SDK, no store, no clock, no I/O — the whole module is
+// FUNCTIONAL CORE. No DOM, no SDK, no store, no clock, no I/O — the whole module is
 // one total function over rows the caller has already normalised. PRV1-11/12/13.
 //
 // THE CHUNK FIELDS ARE READ REQUEST-WIDE, VERBATIM FROM THE PRODUCER. `chunk_index` is globally

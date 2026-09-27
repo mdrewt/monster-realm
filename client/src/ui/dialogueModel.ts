@@ -1,6 +1,6 @@
-// ui/dialogueModel.ts — pure dialogue view model (M12d, ADR-0071).
+// ui/dialogueModel.ts — pure dialogue view model.
 // TOTAL: never throws. All error paths return null or a safe default.
-// uxd2 (ADR-0161 D3): the nearest-NPC resolver moved to interactModel.ts
+// the nearest-NPC resolver moved to interactModel.ts
 // (nearestInteractable) — this module is view-model derivation only.
 import type { StoreNpcRow, StorePlayerConversation } from '../net/store';
 import type { ClientDialogueTree } from './dialogueContent';
@@ -15,7 +15,7 @@ export interface DialogueViewModel {
   nodeText: string;
   choices: ReadonlyArray<DialogueChoiceViewModel>;
   canDismiss: boolean; // always true from model; dismissPending guard lives in main.ts
-  /** uxd2 (ADR-0161 D4): the greet-then-shop affordance, derived from the
+  /** The greet-then-shop affordance, derived from the
    *  SERVER enum (npc.interaction) — never from choice text, never from a
    *  second content source. null for every non-Shop NPC. */
   shopAction: { readonly shopId: number } | null;

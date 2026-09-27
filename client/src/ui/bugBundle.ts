@@ -1,4 +1,4 @@
-// ui/bugBundle.ts — PURE F9 bug-bundle assembler (pt-b1, ADR-0130).
+// ui/bugBundle.ts — PURE F9 bug-bundle assembler (pt-b1).
 //
 // Source-of-truth: M-playtest-b F9 bug-bundle assembler (EARS E-10 shape, U-3/H-2/H-3 no-PII).
 //

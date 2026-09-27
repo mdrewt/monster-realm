@@ -11,7 +11,7 @@
 // crash the animation frame that drives it. Data reaches the DOM via textContent only (never
 // innerHTML) — error messages can echo server strings, so this is the XSS firewall (U-4).
 //
-// m24-s5 (ADR-0261 D4) — the footer is the one string this view owns. It is resolved through the
+// The footer is the one string this view owns. It is resolved through the
 // i18n resolver (`t('errorOverlay.footer')`, ui/i18n/resolver.ts) in show(), on every show() —
 // NOT in the constructor (S6 may negotiate the locale after construction) and NOT inside
 // render()'s hostile-VM try, where a mis-keyed call would be swallowed to console.error and a
@@ -54,7 +54,7 @@ export class ErrorOverlayView {
   }
 
   show(): void {
-    // m24-s5 (ADR-0261 D4): unconditional, on every show(), before the display write (header).
+    // Unconditional, on every show(), before the display write (header).
     this.#footer.textContent = t('errorOverlay.footer');
     this.#root.style.display = '';
   }

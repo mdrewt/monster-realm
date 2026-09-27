@@ -1,10 +1,10 @@
-// ui/tradeProposeModel.ts — pure view model for the trade-PROPOSE overlay (pt-c2, ADR-0134).
+// ui/tradeProposeModel.ts — pure view model for the trade-PROPOSE overlay.
 //
 // No DOM, no SDK, no side-effects. TOTAL — never throws on any input. It is called
 // from the KeyO handler AND from live DOM input/change listeners; a throw here would
 // starve sibling store batch-listeners (store.ts one-way flow).
 //
-// D3 (ADR-0134): this is a PROJECTION + non-degeneracy gate, NOT a validation SSOT. It
+// D3: this is a PROJECTION + non-degeneracy gate, NOT a validation SSOT. It
 // does NOT re-implement server validation (join / self-trade / balance / ownership /
 // active-trade). The server is the reject-not-clamp SSOT. `canSubmit` mirrors only the
 // server's `total_assets >= 1` non-degeneracy gate (validate_proposal, rules.rs:52-61),
@@ -121,9 +121,7 @@ export function parseCurrency(raw: string): bigint {
  * Per-side monster-count cap for a proposed trade.
  *
  * NOT an SSOT — a MIRROR of `server-module/src/trading.rs:37`
- * (`MAX_TRADE_MONSTERS_PER_SIDE: usize = 64`), kept honest by
- * `evals/trade-cap-parity.eval.mjs`, which reads the Rust literal directly and
- * reds if the two drift or if `buildProposeSubmission` stops reading this name.
+ * (`MAX_TRADE_MONSTERS_PER_SIDE: usize = 64`).
  * The server stays authoritative and rejects (never clamps); this exists only so
  * an over-cap offer fails visibly in the UI instead of as an opaque reducer
  * reject.

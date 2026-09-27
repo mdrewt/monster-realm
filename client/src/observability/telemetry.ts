@@ -46,7 +46,7 @@ export interface Counter {
 export interface TelemetryInit {
   /** `<configured origin>` + OTLP_METRICS_PATH, exactly. */
   readonly exporterUrl: string;
-  /** Absent (or `{}`): the export request carries no extra request headers, ever (OBS-16). */
+  /** Absent (or `{}`): the export request carries no extra request headers, ever. */
   readonly exporterHeaders?: Record<string, string>;
   /** The resolved config value, verbatim. */
   readonly exportIntervalMillis: number;

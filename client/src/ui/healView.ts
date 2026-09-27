@@ -1,10 +1,10 @@
-// ui/healView.ts — DOM shell for the heal overlay (M12d, ADR-0071).
+// ui/healView.ts — DOM shell for the heal overlay.
 // DOM shell — coverage-excluded
 //
-// m23-s3 -- THE SECOND WIRING MECHANISM. This overlay has NO `show()`: it is opened and closed by
+// THE SECOND WIRING MECHANISM. This overlay has NO `show()`: it is opened and closed by
 // `render(vm | null)`, driven every store batch from `main.ts`. So the a11y open/close cannot hang
 // off `show()`/`hide()` the way the other seven views' do; it hangs off the null<->non-null EDGE of
-// the vm, detected against `this.visible` BEFORE the display write (M23 spec 2.2, A11Y-34).
+// the vm, detected against `this.visible` BEFORE the display write.
 //
 // WHY THE EDGE IS DERIVED FROM `visible` AND NOT FROM A `#lastVmWasNull` FIELD. A field updated
 // inside `render()` never sees `hide()` -- and for THIS view that is not hypothetical, since it is
@@ -18,7 +18,7 @@
 // guarded -- see the reasoning in `ui/pvpView.ts`'s `hide()`: an unguarded close is the self-healing
 // path, and `closeOverlayA11y` with no open record is a documented no-op.
 //
-// m24-s5 (ADR-0261) — the one string this view owns, the location row, is resolved through the
+// The one string this view owns, the location row, is resolved through the
 // i18n resolver (`tf('heal.location', { cost })`, ui/i18n/resolver.ts); `cost` is
 // `formatHealCostLine(loc)`'s text — model-owned copy (healModel.ts), interpolated verbatim.
 
@@ -53,7 +53,7 @@ export class HealView {
       li.dataset.locationId = String(loc.locationId);
       this.list.appendChild(li);
     });
-    // m23-s3: the null->non-null EDGE, and only the edge -- paint first, then claim the
+    // The null->non-null EDGE, and only the edge -- paint first, then claim the
     // overlay (D7: openOverlayA11y is the LAST statement, so its deferred focus resolves
     // `initialFocusSelector` against a fully-painted root).
     if (!wasVisible) openOverlayA11y('healView', this.overlay);

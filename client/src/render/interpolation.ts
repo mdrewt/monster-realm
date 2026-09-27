@@ -1,5 +1,5 @@
-// render/interpolation.ts — the remote-character interpolation delay buffer
-// (M4b, ADR-0013/0090). PURE. The chief fix for v1's remote stutter/rubberband.
+// render/interpolation.ts — the remote-character interpolation delay buffer.
+// PURE. The chief fix for v1's remote stutter/rubberband.
 //
 // A remote character is drawn at `now - interpDelay` BETWEEN its bracketing
 // authoritative snapshots. The delay is a jitter shock-absorber: brief arrival
@@ -8,7 +8,7 @@
 // overshoots, then snaps back: the v1 rubberband). Before the earliest snapshot we
 // clamp to it.
 //
-// ADR-0090 (M13.5e): the delay is now ADAPTIVE per character — derived from an EWMA
+// The delay is now ADAPTIVE per character — derived from an EWMA
 // jitter estimate so burst-delivery (two ticks in one flush) widens the window rather
 // than collapsing to a zero-span jump. `interpDelayMs` is kept for backward compat.
 
@@ -59,7 +59,7 @@ export function interpolate(
   };
 }
 
-/** m23-s7 (A11Y-27, spec §2.5): the minimal structural slice of a store row the
+/** The minimal structural slice of a store row the
  *  reduced-motion arm reads. Deliberately NOT `InterpSample` (a store row carries no
  *  `receivedAt`) and NOT an import from `../net/store` — this module stays pure with
  *  `./config` as its only import. `StoreCharacter` satisfies it structurally. */
@@ -69,7 +69,7 @@ interface AuthoritativeTile {
 }
 
 /**
- * m23-s7 (A11Y-27): the reduced-motion remote position — the authoritative row tile,
+ * The reduced-motion remote position — the authoritative row tile,
  * identically. Under the OS reduced-motion preference remotes are drawn AT their
  * current server tile: no delay buffer, no lerp, no dependence on any clock.
  *
@@ -89,7 +89,7 @@ export function interpolateReducedMotion(row: AuthoritativeTile): RenderPos {
 // =============================================================================
 
 /**
- * Per-character EWMA jitter estimator (ADR-0090).
+ * Per-character EWMA jitter estimator.
  *
  * WHAT: Tracks the exponentially-weighted moving average of absolute deviation
  * of the inter-arrival interval from the nominal server step (STEP_MS).
@@ -99,7 +99,7 @@ export function interpolateReducedMotion(row: AuthoritativeTile): RenderPos {
  * to zero → instant position pop. This estimator detects burst patterns so the
  * adaptive delay can widen the render window to bracket the pre-burst snapshot.
  *
- * DIVERGENCE (ADR-0171 D4): this class is the documentary mirror of the PRE-11r-f
+ * DIVERGENCE: this class is the documentary mirror of the PRE-11r-f
  * rule and has no production caller — the shipped estimator (store.ts
  * `upsertCharacter`) additionally skips intervals > JITTER_IDLE_GAP_STEPS×stepMs
  * (idleness is not jitter). Unification/deletion is queued as D-B.
@@ -163,7 +163,7 @@ export function adaptiveInterpDelayMs(jitterMs: number, stepMs: number): number 
 }
 
 /**
- * ADR-0171 D2: a bracket whose RAW span is STRICTLY greater than this many steps is
+ * A bracket whose RAW span is STRICTLY greater than this many steps is
  * an idle gap — `interpolateHistory` re-anchors its lerp window to
  * [next − stepMs, next] and holds at `prev` below it.
  *
@@ -187,7 +187,7 @@ export const REANCHOR_SPAN_STEPS = 2;
  * `receivedAt`) is available as the lower bracket — enabling smooth interpolation
  * even when the two burst snapshots share the same `receivedAt`.
  *
- * ADR-0171 (11r-f) re-anchor: when `stepMs > 0` and a bracket's raw span exceeds
+ * ADR-0171 re-anchor: when `stepMs > 0` and a bracket's raw span exceeds
  * REANCHOR_SPAN_STEPS×stepMs, the lerp window becomes [next.receivedAt − stepMs,
  * next.receivedAt]; at or below its lower edge the position HOLDS at `prev` (the
  * dead zone). Brackets re-anchor per-bracket; the outer HOLD/clamp paths are
@@ -257,7 +257,7 @@ export function interpolateHistory(
   // happen with a valid oldest-first array — the HOLD path (renderTime >= newest) fires
   // first for same-receivedAt bursts at renderTime. The guard is retained as a defensive
   // check against future ring-buffer invariant violations. Holds at `next`.
-  // Evaluated FIRST, on the RAW span (ADR-0171 D2): re-anchoring an inverted/zero
+  // Evaluated FIRST, on the RAW span: re-anchoring an inverted/zero
   // span would put `lower` below `prev` and corrupt the bracket.
   if (span <= 0) return { x: next.tileX, y: next.tileY };
 

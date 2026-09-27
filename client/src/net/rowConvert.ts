@@ -39,7 +39,7 @@ import type {
   StoreWeather,
 } from './store';
 
-// --- m17.5f (ADR-0127): SDK-boundary enum exhaustiveness --------------------------
+// --- m17.5f: SDK-boundary enum exhaustiveness --------------------------
 //
 // HANDLED_ENUM_VARIANTS is the client-side registry of every enum whose `.tag`
 // crosses the SDK→store boundary in this file (row READS only — write-direction
@@ -55,7 +55,7 @@ import type {
 //   3. narrowTag is the runtime net: an unknown tag is logged and passed through
 //      (fail-soft — NEVER throw; flushBatch has no per-listener isolation).
 // Registry entries WITHOUT a narrowTag call site feed bare-string store fields,
-// where the eval alone forces author awareness (accepted limitation, ADR-0127).
+// where the eval alone forces author awareness (accepted limitation).
 //
 // The variant lists mirror module_bindings/types.ts EXACTLY (unit-test-pinned).
 export const HANDLED_ENUM_VARIANTS = {
@@ -68,7 +68,7 @@ export const HANDLED_ENUM_VARIANTS = {
   ActionState: ['Idle', 'Walking', 'Jumping'],
   Direction: ['North', 'South', 'East', 'West'],
   NpcInteraction: ['Dialogue', 'Shop', 'Heal'],
-  // EG4 (ADR-0174): TWO new boundary reads — monsterPubRowToStore reads
+  // TWO new boundary reads — monsterPubRowToStore reads
   // `row.trustTier.tag` and evolutionPathRowToStore reads `row.minTrustTier?.tag`.
   // Order mirrors types.ts declaration order, which for TrustTier IS the ranking the
   // eligibility port compares through (see TRUST_TIER_ORDER in ui/evolutionModel.ts).
@@ -90,7 +90,7 @@ export function narrowTag<T extends string>(raw: string, known: readonly T[], en
       `[rowConvert] unknown ${enumName} tag '${raw}' — not in the handled-variant registry; passing through raw (ADR-0127 fail-soft)`,
     );
   }
-  // The ONE centralized, audited cast (ADR-0127): known tags are provably in T;
+  // The ONE centralized, audited cast: known tags are provably in T;
   // unknown tags widen at runtime only — callers see the raw string.
   return raw as T;
 }
@@ -164,7 +164,7 @@ export interface SdkMonsterPubRow {
   readonly statSpAttack: number;
   readonly statSpDefense: number;
   readonly partySlot: number;
-  // --- EG4 (Migration A, ADR-0174): the essence-graph columns. `bond` and `evolvesTo`
+  // --- EG4 (Migration A): the essence-graph columns. `bond` and `evolvesTo`
   // are deliberately absent — the converter no longer reads either.
   readonly tier: number;
   readonly essenceFire: number;
@@ -321,7 +321,7 @@ function battleMonsterToStore(m: SdkBattleMonster): StoreBattleMonster {
 }
 
 export function battleRowToStore(row: SdkBattleRow): StoreBattle {
-  // m14.5d: map state.weather → StoreBattle.weather.
+  // Map state.weather → StoreBattle.weather.
   // ANTI-PATTERN: do NOT use `?.value || null` — falsy-value trap when value=0.
   // Use explicit object-truthiness check so turnsRemaining:0 is preserved as 0
   // (parallel to status.value→turnsRemaining at line 211).
@@ -377,7 +377,7 @@ export interface SdkItemRowRow {
   // SpacetimeDB 2.6 decodes Option<StatKind> as {tag} for Some, undefined for None.
   readonly trainStat: { readonly tag: string } | undefined;
   readonly trainAmount: number;
-  /** M13b: sell price in currency units (u64 in Rust; bigint in TS). */
+  /** sell price in currency units (u64 in Rust; bigint in TS). */
   readonly sellPrice: bigint;
   // SpacetimeDB 2.6 decodes Option<StatusKind> as {tag} for Some, undefined for None.
   readonly cureStatus: { readonly tag: string } | undefined;
@@ -488,7 +488,7 @@ export function evolutionPathRowToStore(row: SdkEvolutionPathRow): StoreEvolutio
 
 // --- M12d: player_conversation / player_quest / heal_location_row / npc converters ----
 
-// M13.5c (ADR-0087): rows now arrive through the owner-scoped `my_conversation`
+// Rows now arrive through the owner-scoped `my_conversation`
 // VIEW binding — structurally identical to the old table row (the view returns
 // Option<PlayerConversation>), so this converter is unchanged.
 interface SdkPlayerConversation {
@@ -507,7 +507,7 @@ export function playerConversationRowToStore(row: SdkPlayerConversation): StoreP
 
 /**
  * Net-effect delete gate for the owner-scoped `my_conversation` VIEW subscription
- * (M13.5c, ADR-0087 — T0 spike finding 4): through a view, a row UPDATE arrives as
+ * (ADR-0087 — T0 spike finding 4): through a view, a row UPDATE arrives as
  * `onInsert(new)` + `onDelete(old)` — NO onUpdate (the view table has no PK for SDK
  * correlation) — and the pair is UNORDERED. A naive onDelete → remove(owner) would
  * wipe the just-updated conversation on every advance_dialogue.
@@ -518,7 +518,7 @@ export function playerConversationRowToStore(row: SdkPlayerConversation): StoreP
  * either field (the delete-of-the-old-version half of an update pair). npcEntityId
  * is compared as bigint (coercion-free: Number() would collapse ids past 2^53).
  *
- * KNOWN EDGE (RT-M13.5C-03, ADR-0087): an UPDATE to IDENTICAL values is
+ * KNOWN EDGE (RT-M13.5C-03): an UPDATE to IDENTICAL values is
  * indistinguishable from a genuine delete here (insert-first ordering would
  * remove the live row). Unreachable from this client — KeyT is overlay-guarded,
  * so `talk` is never sent while a conversation exists, and no current dialogue
@@ -535,7 +535,7 @@ export function shouldRemoveOnViewDelete(
   );
 }
 
-// --- ux2b (ADR-0169 D3): the owner-scoped `my_wallet` VIEW row -----------------------
+// --- ux2b: the owner-scoped `my_wallet` VIEW row -----------------------
 
 export interface SdkPlayerWalletRow {
   readonly ownerIdentity: { toHexString(): string };
@@ -544,7 +544,7 @@ export interface SdkPlayerWalletRow {
 
 /**
  * Map a `my_wallet` view row to the store's wallet slot. PURE PASS-THROUGH — and that
- * is the whole contract (ADR-0169 D3):
+ * is the whole contract:
  *
  * - NO numeric coercion. `Number(row.balance)` loses precision past 2^53 (the server
  *   column is u64) and lies about the type; `BigInt(Number(...))` restores the type
@@ -576,7 +576,7 @@ export function playerWalletRowToStore(row: SdkPlayerWalletRow): StoreWallet {
   };
 }
 
-// --- M21b-2 (ADR-0182 D15): the owner-scoped `my_account` VIEW row --------------------
+// --- M21b-2: the owner-scoped `my_account` VIEW row --------------------
 
 export interface SdkAccountRow {
   readonly identity: { toHexString(): string };
@@ -598,7 +598,7 @@ export interface SdkAccountRow {
  * pass through as `undefined`, never fabricated to `0n`/`''` — the broke-vs-dark rule at
  * rowConvert.ts:543-568), and NO throw of its own.
  *
- * m22-s8 (ADR-0231) added the ninth key, `terminalAtMs` (M22 S2's `terminal_at_ms`): the PRV1-4
+ * m22-s8 added the ninth key, `terminalAtMs` (M22 S2's `terminal_at_ms`): the PRV1-4
  * permanent-deletion marker `ui/privacyModel.ts` reads as its PRIMARY route to the terminal
  * state. It is `Option<i64>`, so `0n` is a REAL marker and must survive as `0n` — and a `null`
  * is normalised to `undefined`, exactly as `claimedFrom` already is, because a raw `null` would
@@ -679,9 +679,9 @@ export function exportChunkRowToStore(row: SdkExportChunkRow): StoreExportChunk 
   };
 }
 
-// --- 20r-d (ADR-0254 D6): the owner-scoped `my_pending_evolution_notices` VIEW row -----
+// --- 20r-d: the owner-scoped `my_pending_evolution_notices` VIEW row -----
 
-/** One nested `EvolutionRevealRow` as the bindings deliver it (ADR-0254 D1). */
+/** One nested `EvolutionRevealRow` as the bindings deliver it. */
 export interface SdkEvolutionRevealRow {
   readonly monsterId: bigint;
   readonly fromSpecies: number;
@@ -759,7 +759,7 @@ interface SdkHealLocationRow {
   readonly costItemId?: number;
   readonly costQty: number;
   readonly cooldownMs: number;
-  // u64 → bigint from the SDK (12r-d). Carried verbatim — the no-coercion
+  // u64 → bigint from the SDK. Carried verbatim — the no-coercion
   // contract documented at playerWalletRowToStore applies: no Number(), no
   // defaulting, no clamping.
   readonly costCurrency: bigint;
@@ -786,12 +786,12 @@ interface SdkNpcRow {
   readonly homeY: number;
   readonly wanderRadius: number;
   readonly dialogueTreeId: string;
-  /** uxd2 (ADR-0161): NpcInteraction as the SDK delivers it — unit variants carry
+  /** NpcInteraction as the SDK delivers it — unit variants carry
    *  no `value`; Shop/Heal carry a u32 payload. */
   readonly interaction: { readonly tag: string; readonly value?: number };
 }
 
-/** uxd2 (ADR-0161 D1 / AC-16): TOTAL NpcInteraction normalizer. Runs inside a
+/** TOTAL NpcInteraction normalizer. Runs inside a
  *  subscription callback, so it NEVER throws: an unknown tag (a newer server's
  *  4th variant) and a missing/non-numeric payload both degrade to dialogue.
  *  `typeof value === 'number'` — never `||`/truthiness — so shop id 0 and
@@ -881,7 +881,7 @@ export function tradeOfferRowToStore(row: SdkTradeOfferRow): StoreTradeOffer {
     counterpartyCurrency: row.counterpartyCurrency,
     initiatorCards: row.initiatorCards.map(sdkCardToStore),
     counterpartyCards: row.counterpartyCards.map(sdkCardToStore),
-    // SDK boundary (ADR-0127, supersedes the m16.5c ADR-0114 trust-cast): an unknown
+    // SDK boundary (supersedes the m16.5c ADR-0114 trust-cast): an unknown
     // TradeStatus variant is logged and passed through raw via narrowTag (fail-soft).
     status: narrowTag(row.status.tag, HANDLED_ENUM_VARIANTS.TradeStatus, 'TradeStatus'),
     createdAtMs: row.createdAtMs,
@@ -906,7 +906,7 @@ export function battleChallengeRowToStore(row: SdkBattleChallengeRow): StoreBatt
     target: row.target.toHexString(),
     challengerPartyIds: [...row.challengerPartyIds],
     // narrowTag intentionally absent: StoreBattleChallenge.status is string-typed (not
-    // a union), so narrowing is a type no-op — the eval is the sole ratchet (ADR-0127).
+    // a union), so narrowing is a type no-op — the eval is the sole ratchet.
     status: row.status.tag,
     createdAtMs: row.createdAtMs,
   };

@@ -1,4 +1,4 @@
-// net/connectionConfig.ts — pure SpacetimeDB connection-target resolver (pt-a1, ADR-0128).
+// net/connectionConfig.ts — pure SpacetimeDB connection-target resolver (pt-a1).
 //
 // PURE. No side effects; `env` + `isDev` are passed IN (no `import.meta` read inside), so it
 // is deterministically unit-testable without a build. This is the single place that decides

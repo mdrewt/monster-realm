@@ -1,4 +1,4 @@
-// ui/claimModel.ts — the PURE guest-claim decision core (ADR-0182 D16, M21b-2).
+// ui/claimModel.ts — the PURE guest-claim decision core.
 //
 // AUTH-48/52/54/55/56/59. No DOM, no SDK, no storage, and NO CLOCK (AUTH-55 — enforced on the
 // event alphabet AND by a source scan of this file). The storage half lives in net/claimCode.ts;
@@ -53,7 +53,7 @@ export function claimRejectPermitsJoin(outcome: ClaimRejectOutcome): boolean {
 
 export type InvalidCodeSense = 'claim-already-succeeded' | 'code-unusable';
 
-/** The ONE client-side disambiguation of ERR_INVALID_CODE (ADR-0182 D16): if OUR OWN account row
+/** The ONE client-side disambiguation of ERR_INVALID_CODE: if OUR OWN account row
  *  now carries `claimed_from`, the code was consumed BY US and the claim SUCCEEDED. Takes exactly
  *  ONE input — no elapsed time, no attempt count (AUTH-55). */
 export function senseInvalidCode(claimedFrom: string | undefined): InvalidCodeSense {

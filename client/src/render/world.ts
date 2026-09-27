@@ -1,4 +1,4 @@
-// render/world.ts — the WorldRenderer (M4b, ADR-0013/0014). Imperative shell.
+// render/world.ts — the WorldRenderer. Imperative shell.
 //
 // Draws the authoritative world: the tile map ONCE from the wasm `zone_map()`
 // value (never a hard-coded TS grid), then one POOLED CharacterView per entity,
@@ -6,7 +6,7 @@
 // It owns NO game state and reads NO store/predictor directly — the M4c loop feeds
 // it already-resolved `RenderEntity` positions (own from the predictor's slide
 // clock, remote from the interpolation buffer), keeping `server -> store -> render`
-// one-way (ADR-0014). The renderer's correctness is validated by the M5 e2e via
+// one-way. The renderer's correctness is validated by the M5 e2e via
 // `window.__game()` (no pixel tests); its decision logic is the tested pure core
 // (map / interpolation / slideClock / zorder / viewRegistry).
 import { Application, Container, Graphics } from 'pixi.js';
@@ -52,7 +52,7 @@ export class WorldRenderer {
   // with a valid record: an undefined-gated field would leave any frame drawn
   // before the first resize() with NO camera transform at all.
   #vs: ViewportScale = viewportScale(1, 1, 1);
-  // uxd2 (ADR-0161 D6): the camera offset render() ACTUALLY applied last frame,
+  // The camera offset render() ACTUALLY applied last frame,
   // stashed so screenFor() reuses the exact stage transform (never a parallel
   // camera recomputation, which desyncs by the sub-tile slide amount).
   #lastOffset = { x: 0, y: 0 };
@@ -66,11 +66,11 @@ export class WorldRenderer {
     const cssW = window.innerWidth;
     const cssH = window.innerHeight;
     const dpr = window.devicePixelRatio;
-    // M11c: viewport-sized canvas; camera offset via stage.position. uxd1: the
+    // viewport-sized canvas; camera offset via stage.position. uxd1: the
     // DPR-correct backing store (resolution/autoDensity) is decided in viewport.ts.
     await app.init(appInitOptions(cssW, cssH, dpr, FLOOR_COLOR));
     mount.appendChild(app.canvas);
-    // m23-s4 (M23 §2.3, A11Y-17): the canvas IS the world region, and it is the ONLY node that may
+    // The canvas IS the world region, and it is the ONLY node that may
     // carry role="application". NOT `mount` (`#app`): main.ts passes that same element as the
     // parent of battleView/boxView/raisingView/evolutionView, so an application role there would
     // swallow four dialogs into an application region and destroy their dialog semantics.
@@ -90,7 +90,7 @@ export class WorldRenderer {
     app.stage.scale.set(this.#vs.stageScale);
     app.stage.addChild(this.#bg);
     app.stage.addChild(this.#actors);
-    // e-4 (ADR-0090): Pixi sorts children by zIndex when sortableChildren is true.
+    // e-4: Pixi sorts children by zIndex when sortableChildren is true.
     // This replaces the O(n²) setChildIndex loop with O(n log n) auto-sort.
     this.#actors.sortableChildren = true;
     this.#app = app;
@@ -139,7 +139,7 @@ export class WorldRenderer {
 
   /** Render one frame: pool create/destroy (teardown on despawn — no ghost),
    *  mutate each view in place, apply a stable z-order, and scroll the
-   *  follow-camera to keep the own entity centred. (M11c, ADR-0067) */
+   *  follow-camera to keep the own entity centred. */
   render(entities: readonly RenderEntity[], ownTileX = 0, ownTileY = 0): void {
     const assets = this.#assets;
     if (assets === undefined) return; // not initialised yet
@@ -189,8 +189,8 @@ export class WorldRenderer {
     }
   }
 
-  /** uxd1: resize to CSS viewport dimensions at the live dpr, and apply the
-   *  device-integer stage scale (ADR-0160). Pixi's 3-arg resize re-resolutions the
+  /** Resize to CSS viewport dimensions at the live dpr, and apply the
+   *  device-integer stage scale. Pixi's 3-arg resize re-resolutions the
    *  backing store, so a monitor drag re-crisps without a reload. */
   resize(cssW: number, cssH: number, dpr: number): void {
     const vs = viewportScale(cssW, cssH, dpr);
@@ -201,7 +201,7 @@ export class WorldRenderer {
     app.stage.scale.set(vs.stageScale);
   }
 
-  /** uxd2 (ADR-0161 D6): world (SOURCE px) → screen (CSS px) under the camera
+  /** World (SOURCE px) → screen (CSS px) under the camera
    *  offset + stageScale the last render() ACTUALLY applied — the DOM interact
    *  prompt reuses the stage's own transform, so it cannot swim against the
    *  canvas mid-slide. Built on the tested worldToScreen (render/viewport.ts). */

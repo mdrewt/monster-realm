@@ -1,4 +1,4 @@
-// ui/statusModel.ts — pure status-message view model (M13.5b, ADR-0085 D1).
+// ui/statusModel.ts — pure status-message view model.
 //
 // Reduces SDK reducer-promise rejections and subscription-error payloads to the
 // user-visible status-line strings. LAYERING NOTE: this is a pure MODEL (no DOM,

@@ -1,18 +1,13 @@
-// render/motionPreference.ts — the OS reduced-motion preference read (m23-s7,
-// M23-accessibility spec §2.5, A11Y-27/A11Y-28). SHELL-ONLY: this module mirrors one
+// render/motionPreference.ts — the OS reduced-motion preference read (
+// M23-accessibility spec §2.5). SHELL-ONLY: this module mirrors one
 // OS bit and decides nothing — what reduced motion *means* is RenderResolver's
 // business, reached only through the injected `ResolveInput.reduceMotion` field.
 //
 // THE SOLE matchMedia CALLER. A11Y-28 pins mechanically that `matchMedia` appears in
-// non-test client/src ONLY here (in-slice: the S7T-SCAN source scan in
-// motionPreference.test.ts; repo-wide: evals/reduced-motion-purity.eval.mjs, an S10
-// deliverable). Do not read matchMedia — or any global — anywhere else; inject this
-// module's output instead.
+// non-test client/src ONLY here (the S7T-SCAN source scan in
+// motionPreference.test.ts). Do not read matchMedia — or any global — anywhere else;
+// inject this module's output instead.
 //
-// S7 → S5 CROSS-SLICE CONTRACT: S7 ships this module UNCONSUMED. S5 (the sole
-// main.ts slice) wires it at the existing render-loop call site:
-//   const motion = motionPreferenceFromWindow();          // beside main.ts:236
-//   … resolver.resolve({ …, reduceMotion: motion.reduceMotion });  // main.ts:2719
 // Two functions on purpose: a purely-injected module would satisfy A11Y-28
 // VACUOUSLY (zero occurrences) and force S5 to write the matchMedia read inline in
 // main.ts — violating A11Y-28 the moment it lands. `motionPreferenceFromWindow` IS

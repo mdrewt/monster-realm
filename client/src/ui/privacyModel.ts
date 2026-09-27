@@ -1,15 +1,15 @@
-// ui/privacyModel.ts — the PURE account-deletion / data-export decision core (M22 S8, ADR-0231).
+// ui/privacyModel.ts — the PURE account-deletion / data-export decision core.
 //
-// FUNCTIONAL CORE (ADR-0014). No DOM, no SDK, no store, no clock, no storage: `nowMs` and
+// FUNCTIONAL CORE. No DOM, no SDK, no store, no clock, no storage: `nowMs` and
 // `graceMs` are INPUTS. The grace window's single source of truth is game-core, reached from the
-// client through the `deletion_grace_ms_default()` wasm accessor (ADR-0212) — this module must
+// client through the `deletion_grace_ms_default()` wasm accessor — this module must
 // never carry the number, and neither may its sibling spec: the SSOT eval scans all of `client/`
 // for a numeric duplicate and does not exempt test files.
 //
-// UPDATED 2026-09-05 (rb-51, then rb-52): the countdown's DOM shell, its `main.ts` frame tick and
+// UPDATED 2026-09-05 (then rb-52): the countdown's DOM shell, its `main.ts` frame tick and
 // the wasm read shipped in rb-51; rb-52 shipped the delete/cancel/export surface itself
 // (`ui/privacyView.ts`) and the `main.ts` wiring that CALLS all three reducers, so `privacyStep`
-// now has a production caller. Still deferred: the export TRANSPORT + download (rb-53).
+// now has a production caller. Still deferred: the export TRANSPORT + download.
 // This module still emits notice CODES and the VERBATIM server message, never player-facing copy —
 // that copy now lives in `ui/privacyBanner.ts`, where rb-52 gates spec §9's required
 // pseudonymization language exactly as this note anticipated.
@@ -21,7 +21,7 @@
  * Where an account sits on the deletion path.
  *
  * `unknown` is DARK — no row yet, or a status tag this client does not recognise. It is not a
- * synonym for `active`: the whole broke-vs-dark discipline (ADR-0154) turns on keeping "we do not
+ * synonym for `active`: the whole broke-vs-dark discipline turns on keeping "we do not
  * know" distinguishable from "we know it is fine".
  */
 export type PrivacyPhase = 'unknown' | 'active' | 'grace' | 'due' | 'terminal';

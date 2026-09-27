@@ -1,11 +1,11 @@
-// ui/battleView.ts — thin DOM shell for the battle screen (M7c, ADR-0014).
+// ui/battleView.ts — thin DOM shell for the battle screen.
 //
 // Renders BattleViewModels produced by battleModel.ts into a DOM overlay.
 // No game logic, no SDK imports, no store writes — one-way flow only.
 // The loop calls refresh() on batch-applied; the user triggers reducer intents
 // via callbacks passed at construction (never called directly by this module).
 //
-// m23-s4 (M23 §2.2, ADR-0205 D1/D2/A3) — overlay a11y wiring. This view is a CONSTRUCTED shell:
+// m23-s4 (ADR-0205 D1/D2/A3) — overlay a11y wiring. This view is a CONSTRUCTED shell:
 // its root is `document.createElement`'d here and appended into the shared `#app` MOUNT, so unlike
 // the ten static shells S3 wired it ships NO ARIA of its own from `client/index.html` — every
 // attribute below comes from `openOverlayA11y`, never from a literal in this file.
@@ -26,7 +26,7 @@
 // `.focus()` on a `display:none` node is a silent no-op, so an open-before-paint overlay announces
 // itself and then never receives focus.
 //
-// m24-s3 (ADR-0259) — every player-facing string this view renders is resolved through the i18n
+// Every player-facing string this view renders is resolved through the i18n
 // resolver (`t()`/`tf()`, ui/i18n/resolver.ts) with a `battle.*` key from ui/i18n/catalog.en.ts;
 // the English bytes are unchanged (the catalog pins them). Two rows are deliberately NOT keyed:
 // the card header `${label}: ${species}` and the bait option `${name} (+${n}‰) ×${count}` are
@@ -45,7 +45,7 @@ import { t, tf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 
 /**
- * The five PvE callbacks may return a promise (20r-a): the view's per-battle in-flight
+ * The five PvE callbacks may return a promise: the view's per-battle in-flight
  * lock is held until that promise settles, so the return type must express it. Typing
  * these `=> void` would let a future implementation type-check cleanly while silently
  * reducing the lock to a one-microtask no-op (a held Enter would fire two attacks).
@@ -81,12 +81,12 @@ export class BattleView {
   readonly #opponentCardEl: HTMLDivElement;
   readonly #skillsEl: HTMLDivElement;
   readonly #actionsEl: HTMLDivElement;
-  /** Empty-swap explainer; shown only on an ongoing battle with no swap (ux4, ADR-0155). */
+  /** Empty-swap explainer; shown only on an ongoing battle with no swap (ux4). */
   readonly #swapHintEl: HTMLDivElement;
   readonly #outcomeEl: HTMLDivElement;
-  /** PvP status banner ("Waiting for opponent…" / ""); hidden when not in PvP (m16b). */
+  /** PvP status banner ("Waiting for opponent…" / ""); hidden when not in PvP. */
   readonly #pvpStatusEl: HTMLDivElement;
-  /** "Press Esc to continue" hint; shown only on a terminal outcome (ux1, ADR-0151). */
+  /** "Press Esc to continue" hint; shown only on a terminal outcome (ux1). */
   readonly #continueHintEl: HTMLDivElement;
   readonly #callbacks: BattleViewCallbacks;
   /** The bait `<select>` for the current recruit render (null when not wild). */
@@ -94,7 +94,7 @@ export class BattleView {
   /** The cure-item `<select>` for the current battle render (null when no cure items). */
   #cureSelectEl: HTMLSelectElement | null = null;
   #visible = false;
-  // 20r-a: the PvE in-flight lock. ONE lock for the whole battle, not per action: attack,
+  // The PvE in-flight lock. ONE lock for the whole battle, not per action: attack,
   // flee, swap, recruit and use-item all spend the same turn, so a second click on ANY of
   // them while the first call is unsettled is the double-fire (`submit_attack` runs a full
   // turn twice; `attempt_recruit` consumes bait twice — the server has no idempotency guard).
@@ -118,9 +118,9 @@ export class BattleView {
       'display:none;flex-direction:column;align-items:center;justify-content:center;' +
       'padding:24px;font-family:monospace;color:#e0e0e0;';
 
-    // m24-s3 (ADR-0259): NO text here — `battle.title` is resolved in show() (see there for why).
+    // NO text here — `battle.title` is resolved in show() (see there for why).
     const title = document.createElement('h2');
-    // m23-s4: the OVERLAY_A11Y initialFocusSelector anchor for this overlay. `tabindex="-1"`
+    // The OVERLAY_A11Y initialFocusSelector anchor for this overlay. `tabindex="-1"`
     // (never "0") makes the heading programmatically focusable WITHOUT adding a permanent tab
     // stop ahead of the overlay's real controls. `setAttribute`, not `dataset` — the selector is
     // frozen in ui/overlayRegistry.ts and the DOM moves to it, never the reverse.
@@ -138,14 +138,13 @@ export class BattleView {
       'border-radius:3px;background:#334;color:#aaf;font-size:12px;font-weight:bold;display:none;';
     this.#root.appendChild(this.#weatherEl);
 
-    // The opponent card (top) and the player card (bottom). rb-59 closes residual
-    // R-m23-s8-postmerge-border, which docs/adr/0233 §Residuals spells R-m23-s8-BORDER:
+    // The opponent card (top) and the player card (bottom).
     // these two ROLES used to be separated by HUE ALONE — `1px solid #844` against
     // `1px solid #484`, red against green, a classic worst-case pair for protanopia and
     // deuteranopia and only 1.64:1 apart in relative luminance (`#525252` against `#757575`
     // under `filter: grayscale(1)`), far below any threshold at which two 1px lines read as
     // two different lines. That is WCAG 1.4.1 "use of colour", the same failure class m23-s8
-    // already fixed in this file for the HP-severity palette (ADR-0233, A11Y-29). Border
+    // already fixed in this file for the HP-severity palette. Border
     // STYLE is the hue-free channel: `dashed` against `solid` is perceivable with NO colour
     // vision at all, and it survives Windows forced-colors mode, where both hues are
     // discarded outright but border-style is preserved.
@@ -189,11 +188,8 @@ export class BattleView {
     // species name is a weaker announcement than a leading role word, and because the slice
     // was in its landing phase. The successor should pick the spelling on merit.
     // Do NOT re-home these hexes into `:root` custom properties in styles.css — docs/adr/0233
-    // bans it. NOTHING IN CI ENFORCES THAT BAN: reduced-motion-hp-bar.eval.mjs's
-    // custom-property clause is scoped to the two .hp-fill rules and anything nested under the
-    // reduced-motion guard, so a top-level :root token would ship green. It is a convention,
-    // not a gate, and styles.css separately expects a later slice to add :root tokens for
-    // OTHER values — the ban is on re-homing THESE border hexes.
+    // bans it. It is a convention, not a gate, and styles.css separately expects a later slice
+    // to add :root tokens for OTHER values — the ban is on re-homing THESE border hexes.
     this.#opponentCardEl = document.createElement('div');
     this.#opponentCardEl.style.cssText =
       'border:2px dashed #b66;border-radius:4px;padding:8px;width:100%;max-width:320px;' +
@@ -217,14 +213,14 @@ export class BattleView {
     this.#actionsEl.style.cssText = 'display:flex;gap:8px;margin-bottom:12px;';
     this.#root.appendChild(this.#actionsEl);
 
-    // ux4 (ADR-0155): explains the ABSENCE of a swap control. A SIBLING of #actionsEl — never
+    // ux4: explains the ABSENCE of a swap control. A SIBLING of #actionsEl — never
     // its child, since #renderActions calls #actionsEl.replaceChildren() before rendering (which
     // would detach it on the next refresh) — and never appended to the caller-supplied `parent`.
     // Copy (catalog key `battle.swap.hint`) is honesty-constrained (dead KeyB, persistent terminal
     // overlay, zone-gated heal, mutable party_slot) — ADR-0155 §3; teeth in battleView.test.ts H1.
     // The claim is scoped "in this battle" deliberately: party_slot is mutable mid-battle while
     // sideA.team is a snapshot, so an unscoped "no healthy party monster" is falsifiable — keep
-    // the scope. The text itself is resolved in show() (m24-s3), not here.
+    // the scope. The text itself is resolved in show(), not here.
     this.#swapHintEl = document.createElement('div');
     this.#swapHintEl.setAttribute('data-testid', 'battle-swap-hint');
     this.#swapHintEl.style.cssText =
@@ -246,10 +242,10 @@ export class BattleView {
     this.#outcomeEl.style.cssText = 'font-size:18px;font-weight:bold;color:#ffd700;display:none;';
     this.#root.appendChild(this.#outcomeEl);
 
-    // ux1 (ADR-0151 D3): the battle-result exit affordance. A SIBLING of #outcomeEl — never its
+    // ux1: the battle-result exit affordance. A SIBLING of #outcomeEl — never its
     // child (#renderOutcome writes #outcomeEl.textContent, which would wipe a child every render)
     // and never merged into its text (three e2e specs use getByText('Victory!', {exact:true})).
-    // Its text (`battle.continueHint`) is resolved in show() (m24-s3), not here.
+    // Its text (`battle.continueHint`) is resolved in show(), not here.
     this.#continueHintEl = document.createElement('div');
     this.#continueHintEl.setAttribute('data-testid', 'battle-continue-hint');
     this.#continueHintEl.style.cssText = 'margin-top:8px;font-size:12px;color:#aab;display:none;';
@@ -265,7 +261,7 @@ export class BattleView {
   show(): void {
     const wasVisible = this.#visible;
     this.#visible = true;
-    // m24-s3 (ADR-0259, plan R1): the three strings that are set ONCE and never rewritten by a
+    // the three strings that are set ONCE and never rewritten by a
     // render — the heading, the empty-swap explainer and the Esc hint — are resolved HERE, on
     // every show(), not in the constructor. A constructor-time `t()` would freeze the English
     // unless S6's `setLocale` ran before main.ts constructs this view (deep inside the async
@@ -283,7 +279,7 @@ export class BattleView {
   hide(): void {
     this.#visible = false;
     this.#root.style.display = 'none';
-    // 20r-a: release the in-flight lock (tradeProposeView hide()-time precedent, ADR-0085
+    // Release the in-flight lock (tradeProposeView hide()-time precedent, ADR-0085
     // C6): onReconnect and the battle-end paths hide this overlay, and the SDK never settles
     // an in-flight reducer promise after a link drop — so `.finally()` may never run.
     // Without this reset the next battle's controls would render dead. No node re-enable
@@ -297,9 +293,9 @@ export class BattleView {
       this.#weatherEl.style.display = 'none';
       this.#weatherEl.textContent = '';
       this.#pvpStatusEl.style.display = 'none';
-      // ux1 (ADR-0151 D3): reset the hint too, per this branch's weather/pvpStatus precedent.
+      // ux1: reset the hint too, per this branch's weather/pvpStatus precedent.
       this.#continueHintEl.style.display = 'none';
-      // ux4 (ADR-0155): same precedent; defense-only — LIVE reset is #renderActions' 'none' arm.
+      // ux4: same precedent; defense-only — LIVE reset is #renderActions' 'none' arm.
       this.#swapHintEl.style.display = 'none';
       this.hide();
       return;
@@ -308,7 +304,7 @@ export class BattleView {
 
     this.#renderWeather(vm);
     // Show opponent name for PvP battles so the player knows who they are fighting. The name is
-    // model data, rendered raw — no catalog key is requested when it is set (ADR-0259 D3).
+    // model data, rendered raw — no catalog key is requested when it is set.
     const opponentLabel =
       vm.isPvp && vm.pvpOpponentName ? vm.pvpOpponentName : t('battle.card.opponent');
     this.#renderMonsterCard(this.#opponentCardEl, vm.opponentCard, opponentLabel);
@@ -317,14 +313,14 @@ export class BattleView {
     this.#renderSkills(vm);
     this.#renderActions(vm);
     this.#renderOutcome(vm);
-    // 20r-a: re-derive the lock on the rebuilt controls rather than defaulting to enabled —
+    // re-derive the lock on the rebuilt controls rather than defaulting to enabled —
     // a batch can re-render this battle while its call is still in flight, and a fresh
     // enabled-looking button whose click the lock then swallows is worse than no button.
     if (this.#pending?.battleId === vm.battleId) this.#setActionButtonsDisabled(true);
   }
 
   /**
-   * 20r-a: every PvE click routes through here. No-op while THIS battle has a call in
+   * Every PvE click routes through here. No-op while THIS battle has a call in
    * flight; otherwise take the lock, disable every PvE control, and release in
    * `.finally()` on BOTH arms — a rejected or short-circuited call must never leave a
    * dead control. `new Promise((resolve) => resolve(run()))` calls `run` synchronously
@@ -353,7 +349,7 @@ export class BattleView {
       });
   }
 
-  /** rb-121 (ADR-0271): a lock-owning release that finds focus stranded on `<body>` re-asserts the
+  /** A lock-owning release that finds focus stranded on `<body>` re-asserts the
    *  dialog; the idempotent re-open re-installs the trap and defers focus to the registry anchor.
    *  `#visible` is load-bearing: re-opening a hidden view would CREATE an open record. */
   #reanchorStrandedFocus(): void {
@@ -415,13 +411,13 @@ export class BattleView {
     hpBar.style.cssText =
       'margin-top:4px;background:#333;border-radius:2px;height:12px;overflow:hidden;';
     const hpFill = document.createElement('div');
-    // rb-10 (residual R-m23-s2-X4, M23 §2.5, ADR-0213): this class is the ONLY handle a
-    // stylesheet has on an element built by `createElement`, and the width animation lives
-    // on `.hp-fill` in `client/src/styles.css` precisely so the reduced-motion media query
-    // there can neutralise it. An inline animation declaration wins over every stylesheet
-    // rule at every specificity, so re-adding one here — in any spelling, including
-    // `el.animate(...)` or `cssText +=` — silently defeats that guard.
-    // Gated by `evals/reduced-motion-hp-bar.eval.mjs` and the `RM3-HP-FILL` tooth below.
+    // this class is the ONLY handle a stylesheet has on an element built by
+    // `createElement`, and the width animation lives on `.hp-fill` in
+    // `client/src/styles.css` precisely so the reduced-motion media query there can
+    // neutralise it. An inline animation declaration wins over every stylesheet rule at
+    // every specificity, so re-adding one here — in any spelling, including
+    // `el.animate(...)` or `cssText +=` — silently defeats that guard. Gated by the
+    // `RM3-HP-FILL` tooth below.
     // `width` and `background` stay inline: both are computed per render.
     hpFill.className = 'hp-fill';
     const pct = card.hpPercent;
@@ -473,7 +469,7 @@ export class BattleView {
       // hover-only `title`; no-hover, touch and screen-reader users never see a tooltip.
       // Mirrors the monster card's own `HP x/y · Affinity` line in #renderMonsterCard.
       // Rendered VERBATIM, NOT as a short A11Y_TOKENS token: `game-core/src/content.rs`
-      // records (ADR-0233) that the eight affinity token rows are DELIBERATELY unconsumed
+      // records that the eight affinity token rows are DELIBERATELY unconsumed
       // BECAUSE this client renders the affinity name as text; a client-side token map
       // would be a second SSOT with no parity oracle. APPEND only — never prepend or
       // infix: `e2e/pvp-side-b.spec.ts` matches `/^Submit: /` (start-anchored),
@@ -523,9 +519,9 @@ export class BattleView {
     if (vm.canSwap) {
       this.#renderSwapButtons(vm);
     }
-    // ux4 (ADR-0155): toggled inline so the hint and the swap buttons read the SAME `vm.canSwap`
+    // ux4: toggled inline so the hint and the swap buttons read the SAME `vm.canSwap`
     // in the SAME method. The `Ongoing` conjunct is required — canSwap is false on EVERY terminal
-    // outcome, so without it the hint would sit beside "Victory!". No isPvp branch (ADR-0151 D3).
+    // outcome, so without it the hint would sit beside "Victory!". No isPvp branch.
     this.#swapHintEl.style.display = vm.outcome === 'Ongoing' && !vm.canSwap ? 'block' : 'none';
     // Recruit is wild-only (canRecruit). Render the bait selector first so the
     // Recruit button can read the current selection at click time.
@@ -573,7 +569,7 @@ export class BattleView {
       const opt = document.createElement('option');
       opt.value = String(bait.itemId);
       opt.textContent = `${bait.name} (+${bait.recruitBonus}‰) ×${bait.count}`;
-      // data-recruit-bonus is the classify-by-data contract surface (ADR-0047).
+      // data-recruit-bonus is the classify-by-data contract surface.
       opt.setAttribute('data-recruit-bonus', String(bait.recruitBonus));
       select.appendChild(opt);
     }
@@ -596,7 +592,7 @@ export class BattleView {
 
   #renderCureItems(vm: BattleViewModel): void {
     // Cure-item selector: classify-by-data — each option carries data-cure-status so
-    // the DOM exposes the classification contract (ADR-0047). No "bare" option (unlike
+    // the DOM exposes the classification contract. No "bare" option (unlike
     // bait's "No bait") — clicking Use Item with empty selection is a no-op.
     const select = document.createElement('select');
     select.setAttribute('data-testid', 'cure-item-selector');
@@ -675,7 +671,7 @@ export class BattleView {
       return;
     }
     this.#outcomeEl.style.display = 'block';
-    // ux1 (ADR-0151 D3): rides this existing predicate; no isPvp branch — the Escape-dismiss
+    // ux1: rides this existing predicate; no isPvp branch — the Escape-dismiss
     // branch (main.ts, gated only on battleView?.visible) is battle-kind-agnostic.
     this.#continueHintEl.style.display = 'block';
     let text: string;

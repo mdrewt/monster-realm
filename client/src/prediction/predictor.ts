@@ -1,4 +1,4 @@
-// predictor.ts — the client-side prediction layer (ADR-0012/0013). M3b.
+// predictor.ts — the client-side prediction layer. M3b.
 //
 // Runs the SAME compiled movement rule locally (an injected `applyMove`, the
 // client-wasm export) so the browser moves the player the instant a key is
@@ -31,14 +31,14 @@ export type QueueOp =
   | { readonly kind: 'Clear' };
 
 // Internal bookkeeping shape of #pending — deliberately unexported: callers see
-// only IntentToSend out and a (seq, epoch) pair into dropRejected (simplify F2, m13.5b; nh3).
+// only IntentToSend out and a (seq, epoch) pair into dropRejected (simplify F2).
 interface PendingOp {
   readonly seq: number;
   readonly op: QueueOp;
 }
 
 /**
- * nh3 (ADR-0152): the predictor's generation identifier — a BRANDED number, not a bare
+ * The predictor's generation identifier — a BRANDED number, not a bare
  * alias. The brand makes it a compile error to pass a plain number (e.g. the seq itself)
  * where a generation is required, so the self-approving call `dropRejected(seq, seq)` is
  * unwriteable at every call site. Values are minted ONLY at `Predictor` construction (one
@@ -52,7 +52,7 @@ export type PredictorEpoch = number & { readonly __brand: unique symbol };
 export interface IntentToSend {
   readonly seq: number;
   readonly op: QueueOp;
-  /** The issuing instance's generation (nh3): captured as a primitive at send time and
+  /** The issuing instance's generation: captured as a primitive at send time and
    *  passed back to `dropRejected`, so a stale rejection addressed to a discarded
    *  predictor can be told apart from a live one. */
   readonly epoch: PredictorEpoch;
@@ -62,7 +62,7 @@ export interface DrainResult {
   /** How many queued moves were applied this drain (bounded by the queue). */
   readonly applied: number;
   /** True when the gap since the last drain is large (backgrounded tab): M4 should
-   *  JUMP the render to `predicted` rather than animate the backlog (ADR-0013). */
+   *  JUMP the render to `predicted` rather than animate the backlog. */
   readonly snapped: boolean;
 }
 
@@ -101,7 +101,7 @@ export function boundSeq(seq: bigint): number {
 }
 
 export class Predictor {
-  // nh3 (ADR-0152): module-wide generation counter — class-scoped rather than loose
+  // module-wide generation counter — class-scoped rather than loose
   // module state (same idiom as connection.ts's buildGen, different scope). Pre-
   // incremented at construction, so the first epoch is 1 and a plausible literal 0
   // can never match any instance.
@@ -111,7 +111,7 @@ export class Predictor {
   readonly #stepMs: number;
   readonly #queueCap: number;
   readonly #pendingCap: number; // ADR-0013.5: unacked-ops backpressure bound
-  readonly #epoch: PredictorEpoch; // nh3: this instance's generation, constructor-assigned ONCE
+  readonly #epoch: PredictorEpoch; // This instance's generation, constructor-assigned ONCE
 
   #predicted: WasmCharacterState | undefined; // undefined until the first own-row seeds it
   #queue: WasmMoveInput[] = []; //               the LOCAL intent queue
@@ -122,7 +122,7 @@ export class Predictor {
   // batch listener between rAF frames) from masking a large inter-frame gap; a
   // backgrounded-tab wake correctly produces snapped=true on the next frame drain.
   #lastFrameDrainAt: number | undefined = undefined;
-  // nh2 (ADR-0148): the server's undrained `move_queue` length AS OF the last reconcile.
+  // The server's undrained `move_queue` length AS OF the last reconcile.
   // Written ONLY by reconcile(), from the same coherent snapshot as #queue/#predicted.
   // Between reconciles it is deliberately stale — that staleness IS the closed loop the
   // held-key continuation gate rides on (see `outstandingSteps`).
@@ -137,7 +137,7 @@ export class Predictor {
     this.#stepMs = stepMs;
     this.#queueCap = queueCap;
     this.#pendingCap = pendingCap;
-    // nh3: assigned ONCE here — #record must never re-read the static counter (a
+    // Assigned ONCE here — #record must never re-read the static counter (a
     // per-record read would stamp intents from ONE instance with drifting generations
     // whenever another instance is constructed in between; N5 pins this). The single
     // `as PredictorEpoch` cast in the codebase lives at this mint site.
@@ -147,8 +147,8 @@ export class Predictor {
   // --- input: mutate the QUEUE (+ record the op in pending), never `predicted` ---
 
   /**
-   * Enqueue a move, bounded to the move-queue cap (reject-not-clamp, ADR-0052) AND
-   * to the unacked-ops pending cap (backpressure, ADR-0013.5). When the local
+   * Enqueue a move, bounded to the move-queue cap (reject-not-clamp) AND
+   * to the unacked-ops pending cap (backpressure). When the local
    * `#queue` is already at `#queueCap`, OR `#pending` is already at `#pendingCap`,
    * the move is *declined*: no push, no pending op recorded (no `seq` consumed),
    * returns `undefined` — exactly as the server declines an over-cap enqueue. The
@@ -166,7 +166,7 @@ export class Predictor {
    */
   enqueue(input: WasmMoveInput): IntentToSend | undefined {
     if (this.#queue.length >= this.#queueCap || this.#pending.length >= this.#pendingCap)
-      return undefined; // ADR-0052: queue full / ADR-0013.5: pending full
+      return undefined; // Queue full / ADR-0013.5: pending full
     this.#queue.push(input);
     return this.#record({ kind: 'Enqueue', input });
   }
@@ -184,12 +184,12 @@ export class Predictor {
   #record(op: QueueOp): IntentToSend {
     const seq = ++this.#nextSeq; // strictly increasing
     this.#pending.push({ seq, op });
-    return { seq, op, epoch: this.#epoch }; // nh3: stamp the constructor-assigned generation
+    return { seq, op, epoch: this.#epoch }; // Stamp the constructor-assigned generation
   }
 
   /**
-   * Evict the pending op with exactly this `seq` (M13.5b, ADR-0085) — PROVIDED the
-   * rejection belongs to THIS predictor generation (nh3, ADR-0152). `epoch` is the
+   * Evict the pending op with exactly this `seq` — PROVIDED the
+   * rejection belongs to THIS predictor generation. `epoch` is the
    * generation the caller captured from the issued intent at send time; when it is
    * not this instance's own, the call is a TOTAL no-op — returns `false`, mutates
    * nothing — because the rejection was addressed to a discarded (pre-warp /
@@ -202,7 +202,7 @@ export class Predictor {
    * seq will NEVER be acked and the op would otherwise survive reconcile's
    * `seq > ackedSeq` prune forever, replaying a phantom move onto the authoritative
    * queue at every reconcile (the silent 1-tile desync with diverged=false). That is
-   * categorically different from the `#pendingCap` backpressure (ADR-0013.5), which
+   * categorically different from the `#pendingCap` backpressure, which
    * NEVER drops recorded ops — it only declines new ones.
    *
    * Mutates ONLY `#pending`; never touches `#queue` (reconcile step 2 is the ONLY
@@ -212,7 +212,7 @@ export class Predictor {
    * force a reconcile from current store state (main.ts `reconcileFromStore()`);
    * a `false` return needs no forced reconcile — nothing was removed.
    *
-   * nh3 epoch guard (ADR-0152, closing the ptc5f/ADR-0142 D4 accepted risk): within
+   * nh3 epoch guard (closing the ptc5f/ADR-0142 D4 accepted risk): within
    * ONE predictor `#nextSeq` is strictly increasing and never reused, so this evicts
    * exactly the intended dead op. ACROSS an own-zone warp, `resetPredictionState()`
    * rebuilds the predictor on a LIVE socket, so a still-in-flight pre-warp rejection
@@ -225,7 +225,7 @@ export class Predictor {
    * existence (Case M2). The nh3-2 block in predictor.test.ts pins both.
    */
   dropRejected(seq: number, epoch: PredictorEpoch): boolean {
-    // nh3: the generation guard comes FIRST and is TOTAL — a foreign epoch means the
+    // The generation guard comes FIRST and is TOTAL — a foreign epoch means the
     // rejection targets a dead instance's op, and touching #pending here would evict
     // a live op purely by seq collision. `false` also keeps the caller's contract
     // coherent: nothing was removed, so no forced reconcile is owed.
@@ -269,7 +269,7 @@ export class Predictor {
     now: number,
   ): boolean {
     const before = this.#predicted?.pos;
-    // nh2 (ADR-0148): record the authoritative queue depth BEFORE the ADR-0012 four-step,
+    // Record the authoritative queue depth BEFORE the ADR-0012 four-step,
     // so it is visibly outside it. Reads only the `authQueue` parameter.
     this.#lastAuthQueueLen = authQueue.length;
     // 1. drop acked pending.
@@ -279,7 +279,7 @@ export class Predictor {
     for (const p of this.#pending) q = applyOp(q, p.op);
     // Clamp the rebuilt queue to the cap (keep-head), mirroring the server's
     // reject-when-full semantics — the over-prediction stays unrepresentable even
-    // when the authoritative queue surprises the client (ADR-0052).
+    // when the authoritative queue surprises the client.
     this.#queue = q.slice(0, this.#queueCap);
     // 3. reset prediction to the authoritative (rebased) truth.
     this.#predicted = authBaseline;
@@ -302,7 +302,7 @@ export class Predictor {
    */
   #stepForward(now: number): number {
     if (this.#predicted === undefined) return 0;
-    // `#queue.length <= #queueCap` is invariant (ADR-0052).
+    // `#queue.length <= #queueCap` is invariant.
     const maxApply = this.#queueCap;
     let applied = 0;
     while (
@@ -322,7 +322,7 @@ export class Predictor {
    * Frame-loop drain: detect inter-frame gaps, advance prediction by due moves, and
    * update `#lastFrameDrainAt`. Called ONLY from the rAF frame loop (M4c).
    *
-   * Bounded prediction (ADR-0013/0052): a single drain applies at most `#queueCap`
+   * Bounded prediction: a single drain applies at most `#queueCap`
    * moves (the queue invariant holds by construction), so the predictor never runs
    * more than the cap ahead of authority. `snapped` is true when the gap since the
    * last FRAME drain (not since the last reconcile drain) exceeds SNAP_GAP_STEPS —
@@ -355,7 +355,7 @@ export class Predictor {
   }
 
   /**
-   * nh2 (ADR-0148): how far prediction is allowed to run AHEAD of authority — the steps the
+   * How far prediction is allowed to run AHEAD of authority — the steps the
    * SERVER still owes: its undrained `move_queue` as of the last reconcile, plus every op
    * sent but not yet seen acked. M4 gates the HELD-KEY continuation re-issue on this being
    * 0, which bounds the pipeline to one in-flight step instead of one per animation frame.
@@ -377,11 +377,11 @@ export class Predictor {
    * OPEN RESIDUAL (named, deliberately NOT fixed by nh3): a fresh `Predictor` (zone warp /
    * reconnect, main.ts `resetPredictionState`) starts with `#lastAuthQueueLen = 0` while the
    * server may still owe a queued step, so exactly one extra continuation can slip through
-   * per rebuild. nh3 (ADR-0152) closed the OTHER two rebuild hazards in this family — the
+   * per rebuild. nh3 closed the OTHER two rebuild hazards in this family — the
    * cross-generation EVICTION (the `dropRejected` epoch guard) and, with the main.ts
    * send-seq floor, the seq COLLISION itself — but neither touches this under-count. Its
    * window is near-zero in practice, for a DIFFERENT reason per rebuild path (desync-guard
-   * review, nh3): on a zone warp the rebuild is followed in the SAME microtask flush by a
+   * review): on a zone warp the rebuild is followed in the SAME microtask flush by a
    * reconcile (the warp's own row burst → MicrotaskBatcher → reconcileFromStore), which
    * rewrites `#lastAuthQueueLen` from the authoritative queue; on a RECONNECT that reconcile
    * may be deferred (when the server's on_disconnect deleted the player/character rows —

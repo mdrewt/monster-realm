@@ -1,4 +1,4 @@
-// ui/leaderboardView.ts — thin DOM shell for the ranked leaderboard overlay (m17b, ADR-0120).
+// ui/leaderboardView.ts — thin DOM shell for the ranked leaderboard overlay.
 // Pure rendering from LeaderboardViewModel. No logic — all logic is in leaderboardModel.ts.
 // NOT coverage-excluded (unlike the sibling DOM shells): fully unit-covered via
 // happy-dom tests — the vite.config.ts exclude list is exact-set-guarded by an
@@ -7,7 +7,7 @@
 // displayName is player-controlled (profile.name): textContent + dataset only,
 // NEVER innerHTML with data (XSS).
 //
-// m24-s5 (ADR-0261 D3) — the two strings this view owns are resolved through the i18n resolver
+// The two strings this view owns are resolved through the i18n resolver
 // (ui/i18n/resolver.ts): the empty-board row (`t('leaderboard.empty')`) and the numbers that
 // follow a name on a row (`tf('leaderboard.row', { rating, wins, losses })`). The display name
 // is NEVER a resolver argument (I18N-21): each row is `[<bdi>name</bdi>, textNode]` — the
@@ -60,7 +60,7 @@ export class LeaderboardView {
   }
 
   /** Render or re-render the board. Rows render in VM order — never re-sort here
-   *  (the comparator is the model's contract, ADR-0120). replaceChildren keeps
+   *  (the comparator is the model's contract). replaceChildren keeps
    *  re-renders replace-not-append. */
   render(vm: LeaderboardViewModel): void {
     if (vm.isEmpty) {

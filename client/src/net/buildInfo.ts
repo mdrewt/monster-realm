@@ -1,4 +1,4 @@
-// net/buildInfo.ts — pure build-provenance stamp (pt-a1, ADR-0128).
+// net/buildInfo.ts — pure build-provenance stamp (pt-a1).
 //
 // PURE data + formatter. Exposes the git short-SHA + build time captured at BUILD time
 // (injected via `client/vite.config.ts` `define`) so a playtest finding can be pinned to the

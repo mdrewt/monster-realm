@@ -1,7 +1,7 @@
 // ui/raisingModel.ts — pure view-model for the raising/inventory screen (M9c).
 //
 // No DOM, no SDK, no side effects, no stat recompute, no id-classification.
-// Monster stats are server-DERIVED (ADR-0016) and copied VERBATIM. Items are
+// Monster stats are server-DERIVED and copied VERBATIM. Items are
 // classified as trainable purely by DATA (def.trainStat present), never by a
 // hardcoded id list. TOTAL: never throws on empty/unknown/missing input — a throw
 // here would starve sibling store batch-listeners (store.ts one-way flow).
@@ -12,7 +12,7 @@ export interface RaisingMonsterViewModel {
   readonly monsterId: bigint;
   readonly nickname: string;
   readonly level: number;
-  /** EG4-4: replaces the retired `bond`. A VERBATIM copy of the server-derived tier —
+  /** Replaces the retired `bond`. A VERBATIM copy of the server-derived tier —
    *  never re-derived here (the Bayesian smoothing lives in game-core). */
   readonly trustTier: TrustTierName;
   readonly currentHp: number;

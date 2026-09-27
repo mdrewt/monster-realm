@@ -1,4 +1,4 @@
-// ui/focusTrap.ts — the Tab-only focus trap for the 16 mutual-exclusion overlays (m23-s1, M23 §2.2).
+// ui/focusTrap.ts — the Tab-only focus trap for the 16 mutual-exclusion overlays.
 //
 // Two halves on purpose: `nextFocusTarget` is the PURE list arithmetic (no DOM reads, no events,
 // node-testable) and `installTrap` is the thin DOM shell around it. `FOCUSABLE_SELECTOR` and the
@@ -95,7 +95,7 @@ function focusablesIn(root: HTMLElement): HTMLElement[] {
 
 /**
  * Where Tab (`shift=false`) or Shift+Tab (`shift=true`) should send focus next, wrapping at both
- * ends (A11Y-6). Returns `null` ONLY for an empty ring.
+ * ends. Returns `null` ONLY for an empty ring.
  *
  * `noUncheckedIndexedAccess` is OFF (client/tsconfig.json), so `focusables[0]` types as
  * `HTMLElement` while being runtime-`undefined` on an empty list — hence the explicit length guard

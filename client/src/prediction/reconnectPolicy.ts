@@ -1,5 +1,4 @@
-// prediction/reconnectPolicy.ts — the pure app-level reconnect state machine
-// (M13.5b, ADR-0085 D3).
+// prediction/reconnectPolicy.ts — the pure app-level reconnect state machine.
 //
 // WHAT: backoff delays + a flat link/attempt state with four transitions, feeding
 // connection.ts's rebuild-with-backoff loop and main.ts's input freeze.
@@ -12,7 +11,7 @@
 /**
  * Base retry delay (attempt 0). WHY 1000: mirrors the SDK ConnectionManager's own
  * constant (`min(1000·2^attempt, 30_000)`) so app-level behavior matches what the
- * framework-integration layer would have done (ADR-0085 D3).
+ * framework-integration layer would have done.
  */
 export const RECONNECT_BASE_DELAY_MS = 1000;
 
@@ -43,7 +42,7 @@ export function reconnectDelayMs(attempt: number): number {
 export type LinkState = 'connected' | 'disconnected' | 'reconnecting';
 
 /**
- * Flat policy state (ADR-0085 S1/S3): `attempt` is NOT nested inside a tagged
+ * Flat policy state: `attempt` is NOT nested inside a tagged
  * union — every transition reads/writes the same two fields, and the input freeze
  * is DERIVED from `link` (see `linkFrozen`), never stored as a third field that
  * could drift.
@@ -106,7 +105,7 @@ export function onAttemptFailed(s: ReconnectState): ReconnectState {
 
 /**
  * Whether input/sends must be gated off. DEFINITIONAL, never stored:
- * `linkFrozen(s) ≡ s.link !== 'connected'` (ADR-0085 S1). WHY event-driven (from
+ * `linkFrozen(s) ≡ s.link !== 'connected'`. WHY event-driven (from
  * link state) and never promise-driven: in-flight reducer promises NEVER settle
  * after a drop (the SDK settles callbacks only on message receipt), so a
  * promise-based freeze would simply never fire.

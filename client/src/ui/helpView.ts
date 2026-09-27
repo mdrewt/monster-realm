@@ -1,19 +1,18 @@
-// ui/helpView.ts — thin DOM shell for the in-client help overlay (pt-c2b, ADR-0135).
+// ui/helpView.ts — thin DOM shell for the in-client help overlay.
 //
 // Display-only: no text <input>, no submit, no #pending lock, no callbacks
 // (zero-arg construction — leaderboardView precedent), no server reducer. Pure
 // rendering from a HelpViewModel; all content lives in helpModel's typed SSOT.
 //
 // Fully unit-covered via happy-dom (leaderboardView / renameView precedent) — this
-// file is therefore NOT in vite.config.ts coverage.exclude and NOT in the
-// dom-shell-coverage-exclusion eval's DOM_SHELLS.
+// file is therefore NOT in vite.config.ts coverage.exclude.
 //
-// XSS firewall (ADR-0135): render() paints via textContent / createTextNode ONLY,
+// XSS firewall: render() paints via textContent / createTextNode ONLY,
 // NEVER innerHTML — even though the content is a static const today, a future edit
 // sourcing content from anywhere untrusted must not be able to inject a node. Each
 // render() rebuilds authoritatively (replaceChildren) so no stale <li> survives.
 //
-// m24-s5 (ADR-0261) — the overlay heading `#help-title` is the one string this view owns. It is
+// The overlay heading `#help-title` is the one string this view owns. It is
 // resolved through the i18n resolver (`t('chrome.help.title')`, ui/i18n/resolver.ts) in show(),
 // on every show(); `index.html` no longer ships the "Controls & Goals" text, so the heading is
 // EMPTY until the first show(). `#help-title` keeps its static `tabindex="-1"` — it is this
@@ -26,7 +25,7 @@ import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 
 export class HelpView {
   readonly #overlay: HTMLElement;
-  /** The heading; text resolved in show() (m24-s5). */
+  /** The heading; text resolved in show(). */
   readonly #titleEl: HTMLElement;
   readonly #controlsEl: HTMLElement;
   readonly #goalsEl: HTMLElement;
@@ -59,7 +58,7 @@ export class HelpView {
     // re-schedules overlayA11y's deferred focus -- which would yank focus back to the initial
     // anchor on every store batch. Only the hidden->visible EDGE opens.
     const wasVisible = this.visible;
-    // m24-s5 (ADR-0261 D4): the heading is resolved HERE, on EVERY show() — unconditionally,
+    // The heading is resolved HERE, on EVERY show() — unconditionally,
     // after the `wasVisible` read, before the display write (the ADR-0260 D4 shape; see
     // evolutionView.show() for the boot-order / locale-switch reasoning).
     this.#titleEl.textContent = t('chrome.help.title');

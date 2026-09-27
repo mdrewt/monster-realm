@@ -1,4 +1,4 @@
-// net/oidc.ts — the OIDC / PKCE sign-in flow (ADR-0182 D11/D12/D13, M21b-2).
+// net/oidc.ts — the OIDC / PKCE sign-in flow.
 //
 // Everything the flow touches — storage, the URL bar, history, crypto and the network — is
 // INJECTED through OidcHost (never an ambient reach), so every branch is unit-testable in

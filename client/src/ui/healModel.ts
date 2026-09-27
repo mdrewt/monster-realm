@@ -1,7 +1,7 @@
-// ui/healModel.ts — pure heal location view model (M12d, ADR-0071).
+// ui/healModel.ts — pure heal location view model.
 // TOTAL: never throws.
 //
-// 12r-d (closes ADR-0170 residual 1): the heal-cost currency seam is LIVE.
+// the heal-cost currency seam is LIVE.
 // `StoreHealLocationRow.costCurrency` is a REQUIRED bigint fed from the
 // `heal_location_row.cost_currency` column (u64 — bigint end-to-end, same
 // no-Number() doctrine as the wallet balance; see rowConvert.ts), so the VM
@@ -17,7 +17,7 @@ export interface HealLocationViewModel {
   costQty: number;
   // REQUIRED (not optional) so every future consumer must reckon with it —
   // an optional field could be silently defaulted past (ADR-0170 D3, amended
-  // 12r-d: bigint, not number — a Number() hop lies above 2^53).
+  // bigint, not number — a Number() hop lies above 2^53).
   costCurrency: bigint;
   cooldownMs: number;
   isFree: boolean; // costItemId === undefined AND costQty === 0 AND costCurrency === 0n
@@ -29,7 +29,7 @@ export interface HealViewModel {
 
 /**
  * Pick the heal location to target: the FIRST location's id (matching the
- * pre-M13.5b behavior), or `undefined` when none are loaded (M13.5b, ADR-0085 §D).
+ * pre-M13.5b behavior), or `undefined` when none are loaded (ADR-0085 §D).
  *
  * WHY `undefined` and not 0: the old call site did `locations[0]?.locationId ?? 0`
  * — with no locations loaded it dispatched the heal reducer with locationId 0, a
@@ -45,7 +45,7 @@ export function healTargetLocationId(
 }
 
 /**
- * Bound-location view (uxd2, ADR-0161 D5): the heal view model for ONE
+ * Bound-location view: the heal view model for ONE
  * location id. THIN filter-then-delegate — cost/isFree resolution stays in
  * buildHealViewModel. Unknown id → `{ locations: [] }` (never the full list,
  * never the first pad, never a throw). `===` on the id — location id 0 is a
@@ -90,7 +90,7 @@ export function buildHealViewModel(
 }
 
 /**
- * The cost line the heal overlay renders for one location (12r-d, closes
+ * The cost line the heal overlay renders for one location (closes
  * ADR-0170 residual 1's display arm). Pure + TOTAL: never throws, never returns
  * an empty string. The item wording is byte-identical to the pre-12r-d shell
  * (`3x Herb` / `1x Unknown item`) — this function exists so the currency channel

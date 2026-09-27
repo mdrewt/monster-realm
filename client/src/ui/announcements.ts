@@ -48,7 +48,7 @@ export interface A11ySnapshot {
 /**
  * What should be announced for the transition `prev → next`, in the order it should be spoken:
  * overlay first, then message (§2.4). Total and pure; returns a fresh array (never a shared
- * constant a caller could mutate). An unchanged snapshot yields `[]` (A11Y-8).
+ * constant a caller could mutate). An unchanged snapshot yields `[]`.
  */
 export function announcementsFor(prev: A11ySnapshot, next: A11ySnapshot): readonly string[] {
   const out: string[] = [];

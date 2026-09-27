@@ -1,7 +1,7 @@
 // ui/i18n/plural.ts — CLDR-total plural selection and locale-aware number formatting
-// (m24-s1, ADR-0256 D2/D6, I18N-9/I18N-10).
+// (I18N-9/I18N-10).
 //
-// WHY THE FORMS TYPE IS TOTAL AND NEVER `Partial` (ADR-0256 D2). Branching on `n === 1` at a
+// WHY THE FORMS TYPE IS TOTAL AND NEVER `Partial`. Branching on `n === 1` at a
 // call site is structurally incapable of Russian's four categories or Arabic's six, and a
 // `Partial<Record<…>>` would let a Russian catalog omit `few` and ship a runtime blank. So
 // `PluralForms` names all six `Intl.LDMLPluralRule` categories, and a two-category locale fills

@@ -1,8 +1,8 @@
-// ui/claimView.ts — DOM shell for the guest-claim overlay (M21b-2, ADR-0182 D16).
+// ui/claimView.ts — DOM shell for the guest-claim overlay.
 // DOM shell — coverage-excluded (all logic lives in claimModel.ts). Joins overlayRegistry as
 // GUARD_ONLY, so `anyOverlayVisible()` suppresses movement input for free while it is open.
 //
-// m23-s4 (M23 §2.2, ADR-0205 D1/D2/A3) — overlay a11y wiring. THREE DOORS, ONE NULLITY SOURCE.
+// m23-s4 (ADR-0205 D1/D2/A3) — overlay a11y wiring. THREE DOORS, ONE NULLITY SOURCE.
 // This shell is opened and closed through `show()`, `hide()` AND `render(vm)` (whose `vm.visible`
 // drives `display` directly), so all three must agree. They do, because they all read the SAME
 // existing derived `visible` getter below — never a shadow field. A `#lastRenderVisible` field
@@ -36,7 +36,7 @@
 // Fixing it needs `claimModel.ts` (a new `ClaimEvent`) or `client/src/main.ts` (route the `KeyC`
 // close through `applyClaim`), both outside this slice's scope and `main.ts` reserved for S5.
 //
-// m24-s5 (ADR-0261 D4) — the privacy button's label is the one string this view owns, resolved
+// The privacy button's label is the one string this view owns, resolved
 // through the i18n resolver as `t('claim.privacyButton')` in BOTH open doors — `render()` (whose
 // `vm.visible` is the real open edge) and `show()` (`main.ts`'s `onSignInFailed` calls `show()`
 // BEFORE `renderClaim()`) — unconditionally, on every call, never in the constructor (S6 may
@@ -54,7 +54,7 @@ export interface ClaimViewHandlers {
   readonly onDeclineRequested: () => void;
   readonly onDeclineConfirmed: () => void;
   readonly onDeclineCancelled: () => void;
-  /** rb-52 (ADR-0231 A2-D5): the front door to the privacy surface. It lives HERE rather than on
+  /** the front door to the privacy surface. It lives HERE rather than on
    *  a menu leaf of its own because a leaf needs a `keyGlyph` in `helpModel.ts`'s CONTROLS SSOT,
    *  which is set-equality-gated against `docs/PLAYTEST.md` — outside rb-52's touches. Account
    *  deletion and data export are account management, so this is also where they belong. */
@@ -104,7 +104,7 @@ export class ClaimView {
     // fires them. That is a real defect (tracked as a follow-up, not fixed here — it is
     // claimView's own copy, outside rb-52's criterion); this one must not inherit it, because
     // rb-52's criterion is REACHABILITY. Its label is NOT written here: `render()` and `show()`
-    // each resolve `t('claim.privacyButton')` (m24-s5, header), so pre-open the button is
+    // each resolve `t('claim.privacyButton')` (header), so pre-open the button is
     // visible but empty.
     this.#privacyBtn.style.display = '';
   }
@@ -130,7 +130,7 @@ export class ClaimView {
     this.#feedback.style.display = vm.feedback === undefined ? 'none' : 'block';
     this.#confirm.textContent = vm.confirmPrompt ?? '';
     this.#confirm.style.display = vm.confirmPrompt === undefined ? 'none' : 'block';
-    // m24-s5 (ADR-0261 D4): door 1 of 2 for the privacy label — every render, unconditionally.
+    // Door 1 of 2 for the privacy label — every render, unconditionally.
     this.#privacyBtn.textContent = t('claim.privacyButton');
     // LAST, after every write above, so the deferred focus resolves against a painted root.
     if (vm.visible && !wasVisible) openOverlayA11y('claimView', this.#overlay);
@@ -143,7 +143,7 @@ export class ClaimView {
 
   show(): void {
     const wasVisible = this.visible;
-    // m24-s5 (ADR-0261 D4): door 2 of 2 for the privacy label — every show(), unconditionally,
+    // Door 2 of 2 for the privacy label — every show(), unconditionally,
     // after the `wasVisible` read and before the display write.
     this.#privacyBtn.textContent = t('claim.privacyButton');
     this.#overlay.style.display = 'block';
