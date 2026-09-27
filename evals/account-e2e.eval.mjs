@@ -69,9 +69,38 @@ import {
   requireSoleDefinition,
   stripRustComments,
 } from './deletion-grace-wasm-ssot.eval.mjs';
-// CHECKER-IMPORT REUSE (ADR-0121): the YAML job-block extractor already exists
-// and is already teeth-tested by the eval that owns it.
-import { extractJobBlock } from './e2e-desync-teeth.eval.mjs';
+
+// YAML job-block extractor, copied verbatim from the retired
+// evals/e2e-desync-teeth.eval.mjs (de-bloat Commit A deleted that eval).
+// Returns the text of the named job's block (lines under `  <jobName>:` at deeper
+// indent, up to the next 2-space-indented job key or EOF), or '' if absent.
+function extractJobBlock(yaml, jobName) {
+  const lines = yaml.split('\n');
+  const keyLine = `  ${jobName}:`;
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i] === keyLine || lines[i].startsWith(`${keyLine} `)) {
+      start = i;
+      break;
+    }
+  }
+  if (start === -1) return '';
+  const block = [lines[start]];
+  for (let i = start + 1; i < lines.length; i++) {
+    const line = lines[i];
+    // Blank lines belong to the block (they may sit between steps).
+    if (line.trim() === '') {
+      block.push(line);
+      continue;
+    }
+    const indent = line.length - line.trimStart().length;
+    // A 0-indent line or a next 2-space-indented job key ends the block.
+    if (indent === 0) break;
+    if (indent === 2) break;
+    block.push(line);
+  }
+  return `${block.join('\n')}\n`;
+}
 
 // ---------------------------------------------------------------------------
 // Contract constants — every one of these is a VALUE PIN against a committed

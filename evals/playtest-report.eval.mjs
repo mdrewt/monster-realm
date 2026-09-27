@@ -57,11 +57,6 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 // ---------------------------------------------------------------------------
-// Import extractRecipeBody from build-ci-hygiene.eval.mjs (confirmed exported).
-// ---------------------------------------------------------------------------
-import { extractRecipeBody } from './build-ci-hygiene.eval.mjs';
-
-// ---------------------------------------------------------------------------
 // Helper: strip `#` line-comment lines from justfile/shell text.
 // ---------------------------------------------------------------------------
 function stripJustfileComments(text) {

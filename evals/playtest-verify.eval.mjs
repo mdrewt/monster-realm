@@ -62,10 +62,53 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 // ---------------------------------------------------------------------------
-// Import extractRecipeBody from build-ci-hygiene.eval.mjs (it IS exported —
-// confirmed by reading the file). Do not copy it; import it.
+// extractRecipeBody, copied verbatim from the retired
+// evals/build-ci-hygiene.eval.mjs (de-bloat Commit A deleted that eval).
 // ---------------------------------------------------------------------------
-import { extractRecipeBody } from './build-ci-hygiene.eval.mjs';
+function extractRecipeBody(text, recipeName) {
+  // Search for the recipe header: either "\n<name>:" or "\n<name> " (parameterised)
+  const exactMarker = `\n${recipeName}:`;
+  const paramMarker = `\n${recipeName} `;
+  const exactIdx = text.indexOf(exactMarker);
+  const paramIdx = text.indexOf(paramMarker);
+
+  let headerIdx = -1;
+  if (exactIdx !== -1 && paramIdx !== -1) headerIdx = Math.min(exactIdx, paramIdx);
+  else if (exactIdx !== -1) headerIdx = exactIdx;
+  else if (paramIdx !== -1) headerIdx = paramIdx;
+
+  // Also handle recipe at very start of file
+  if (headerIdx === -1) {
+    if (text.startsWith(`${recipeName}:`) || text.startsWith(`${recipeName} `)) {
+      headerIdx = 0;
+    } else {
+      return '';
+    }
+  }
+
+  const afterHeader = text.indexOf('\n', headerIdx === 0 ? 0 : headerIdx + 1);
+  if (afterHeader === -1) return '';
+
+  let body = '';
+  let pos = afterHeader + 1;
+  while (pos < text.length) {
+    const lineEnd = text.indexOf('\n', pos);
+    const line = lineEnd === -1 ? text.slice(pos) : text.slice(pos, lineEnd);
+    if (line.length > 0 && (line[0] === ' ' || line[0] === '\t')) {
+      // Strip comment lines
+      const trimmed = line.trimStart();
+      if (!trimmed.startsWith('#')) {
+        body += `${line}\n`;
+      }
+      pos = lineEnd === -1 ? text.length : lineEnd + 1;
+    } else if (line.length === 0) {
+      pos = lineEnd === -1 ? text.length : lineEnd + 1;
+    } else {
+      break;
+    }
+  }
+  return body;
+}
 
 // ---------------------------------------------------------------------------
 // Helper: strip `#` line comments from justfile/shell text before scanning
