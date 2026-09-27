@@ -4190,3 +4190,112 @@ fn s20rc_load_error_limiter_is_a_private_file_scope_static_consulted_exactly_onc
          transitive text, never relaxed to tolerate one."
     );
 }
+
+// ===========================================================================
+// Native-host behaviour (debloat Phase 2: EV-economy-sinks-sources#sink-source-wiring,
+// quest source). Replaces the economy_tests.rs `apply_quest_trigger_calls_grant_currency`
+// text twin: the balance DELTA is asserted, not the call token.
+// ===========================================================================
+
+/// Completing a quest credits EXACTLY its content-authored `reward.currency` (read
+/// from the same process-wide quest cache the shipped code reads) on top of an existing
+/// balance, removes the finished `player_quest` row, moves the quest to done, and pays
+/// nobody else. A non-matching trigger pays nothing.
+/// kills: `grant_currency(ctx, owner, reward.currency)` deleted / wrong owner / wrong
+/// amount, QuestComplete arm skipped, trigger-match ignored.
+#[test]
+fn nh_quest_complete_grants_exactly_the_content_currency_reward() {
+    use crate::native_host_tests::fixture;
+    use crate::schema::{Inventory, PlayerWallet};
+    let defs = crate::content_cache::cached_quest_defs().expect("shipped quest RON parses");
+    let def = defs
+        .iter()
+        .find(|d| d.steps.len() == 1 && d.reward.currency > 0)
+        .expect("shipped content has a one-step quest with a currency reward");
+    let game_core::StepTrigger::Talk { npc_id } = &def.steps[0].trigger else {
+        panic!("expected the one-step currency quest to be a Talk trigger: {def:?}");
+    };
+    let me = Identity::from_byte_array([0x51; 32]);
+    let other = Identity::from_byte_array([0x52; 32]);
+    let fx = fixture();
+    let wallets = fx
+        .table::<PlayerWallet>("player_wallet", "owner_identity", |r| r.owner_identity)
+        .writable()
+        .unique();
+    let _ = fx
+        .table::<Inventory>("inventory", "owner_identity", |r| r.owner_identity)
+        .writable()
+        .auto_inc(|r| r.inv_id, |r, id| r.inv_id = id);
+    let _ = fx
+        .table_keyed::<Inventory, u64>("inventory", "inv_id", |r| r.inv_id)
+        .unique();
+    let quests = fx
+        .table::<PlayerQuestRow>("player_quest", "owner_identity", |r| r.owner_identity)
+        .writable();
+    let _ = fx
+        .table_keyed::<PlayerQuestRow, u64>("player_quest", "pq_id", |r| r.pq_id)
+        .unique();
+    for (pq_id, owner) in [(1, me), (2, other)] {
+        quests.seed(&PlayerQuestRow {
+            pq_id,
+            owner_identity: owner,
+            quest_id: def.id.clone(),
+            step_index: 0,
+        });
+    }
+    for owner in [me, other] {
+        wallets.seed(&PlayerWallet {
+            owner_identity: owner,
+            balance: 7,
+        });
+    }
+    let balance = |who: Identity| {
+        wallets
+            .rows()
+            .into_iter()
+            .find(|w| w.owner_identity == who)
+            .map(|w| w.balance)
+    };
+    let mut state = PlayerDialogueState {
+        flags: Default::default(),
+        active_quests: [def.id.clone()].into_iter().collect(),
+        done_quests: Default::default(),
+    };
+    let ctx = fx.ctx();
+
+    apply_quest_trigger(
+        &ctx,
+        me,
+        &TriggerEvent::Talked {
+            npc_id: format!("{npc_id}-not-this-one"),
+        },
+        &mut state,
+    );
+    assert_eq!(balance(me), Some(7), "a non-matching trigger pays nothing");
+    assert_eq!(quests.rows().len(), 2, "and completes nothing");
+
+    apply_quest_trigger(
+        &ctx,
+        me,
+        &TriggerEvent::Talked {
+            npc_id: npc_id.clone(),
+        },
+        &mut state,
+    );
+    assert_eq!(
+        balance(me),
+        Some(7 + def.reward.currency),
+        "completion credits exactly reward.currency on top of the balance"
+    );
+    assert_eq!(
+        balance(other),
+        Some(7),
+        "another player on the same quest is not paid"
+    );
+    assert_eq!(
+        quests.rows().iter().map(|r| r.pq_id).collect::<Vec<_>>(),
+        vec![2],
+        "only the completer's player_quest row is removed"
+    );
+    assert!(state.done_quests.contains(&def.id) && !state.active_quests.contains(&def.id));
+}

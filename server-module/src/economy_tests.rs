@@ -3702,3 +3702,482 @@ fn nh_buy_success_spends_wallet_and_grants_one_stack() {
         "the SAME stack grows in place: one row, id 1"
     );
 }
+
+// ===========================================================================
+// Native-host behavioural suite (debloat Phase 2: EV-currency-integrity#arithmetic,
+// EV-shop-reducer-security, EV-wallet-privacy, ST-economy_tests#wallet).
+//
+// Every helper/reducer runs against real rows through the native host. HOST LIMIT:
+// no transaction rollback, so each refusal is asserted as refusal BEFORE any write
+// (wallets + stacks byte-identical). `buy`/`sell` never take a client price: the
+// generated reducer signature is pinned by client-surface-privacy clause (D).
+// ===========================================================================
+
+use crate::native_host_tests::{fixture as ec_fixture, Fixture as EcFixture, Handle as EcHandle};
+use crate::schema::{Inventory, ItemRow, Player, PlayerWallet, ShopItemRow, TradeOffer};
+
+fn ec_me() -> Identity {
+    Identity::from_byte_array([0xE1; 32])
+}
+fn ec_other() -> Identity {
+    Identity::from_byte_array([0xE2; 32])
+}
+
+/// Every table the economy surface reads or writes, under the indexes it uses.
+struct EcWorld<'a> {
+    wallets: EcHandle<'a, PlayerWallet>,
+    stacks: EcHandle<'a, Inventory>,
+    stock: EcHandle<'a, ShopItemRow, u32>,
+    items: EcHandle<'a, ItemRow, u32>,
+    offers: EcHandle<'a, TradeOffer, u64>,
+}
+
+fn ec_world(fx: &EcFixture) -> EcWorld<'_> {
+    let players = fx.table::<Player>("player", "identity", |r| r.identity);
+    for who in [ec_me(), ec_other()] {
+        players.seed(&Player {
+            identity: who,
+            entity_id: u64::from(who.to_byte_array()[0]),
+            name: String::new(),
+            online: true,
+            last_input_seq: 0,
+        });
+    }
+    let wallets = fx
+        .table::<PlayerWallet>("player_wallet", "owner_identity", |r| r.owner_identity)
+        .writable()
+        .unique();
+    let stacks = fx
+        .table::<Inventory>("inventory", "owner_identity", |r| r.owner_identity)
+        .writable()
+        .auto_inc(|r| r.inv_id, |r, id| r.inv_id = id);
+    let _ = fx
+        .table_keyed::<Inventory, u64>("inventory", "inv_id", |r| r.inv_id)
+        .unique();
+    let stock = fx.table_keyed::<ShopItemRow, u32>("shop_item_row", "shop_id", |r| r.shop_id);
+    let items = fx.table_keyed::<ItemRow, u32>("item_row", "id", |r| r.id);
+    let offers = fx.table_keyed::<TradeOffer, u64>("trade_offer", "trade_id", |r| r.trade_id);
+    let _ = fx.table::<TradeOffer>("trade_offer", "initiator", |r| r.initiator);
+    let _ = fx.table::<TradeOffer>("trade_offer", "counterparty", |r| r.counterparty);
+    // Shop 3 stocks item 5 at 10 and item 6 at 7; shop 4 stocks item 5 at 99 (a
+    // wrong-shop price lookup is visible). Item 5 sells for 4, item 8 is unsellable.
+    for (shop_item_id, shop_id, item_id, buy_price) in [(1, 3, 5, 10), (2, 3, 6, 7), (3, 4, 5, 99)]
+    {
+        stock.seed(&ShopItemRow {
+            shop_item_id,
+            shop_id,
+            item_id,
+            buy_price,
+        });
+    }
+    for (id, sell_price) in [(5, 4), (6, 3), (8, 0)] {
+        items.seed(&ItemRow {
+            id,
+            name: format!("item{id}"),
+            description: String::new(),
+            recruit_bonus: 0,
+            train_stat: None,
+            train_amount: 0,
+            sell_price,
+            cure_status: None,
+        });
+    }
+    EcWorld {
+        wallets,
+        stacks,
+        stock,
+        items,
+        offers,
+    }
+}
+
+impl EcWorld<'_> {
+    fn wallet(&self, owner: Identity, balance: u64) {
+        self.wallets.seed(&PlayerWallet {
+            owner_identity: owner,
+            balance,
+        });
+    }
+    /// Seeded stack ids start at 1000 so the modelled auto-inc (1, 2, ...) never collides.
+    fn stack(&self, owner: Identity, item_id: u32, count: u32) {
+        self.stacks.seed(&Inventory {
+            inv_id: 1000 + u64::from(owner.to_byte_array()[0]) * 100 + u64::from(item_id),
+            owner_identity: owner,
+            item_id,
+            count,
+        });
+    }
+    fn balance(&self, owner: Identity) -> Option<u64> {
+        self.wallets
+            .rows()
+            .into_iter()
+            .find(|w| w.owner_identity == owner)
+            .map(|w| w.balance)
+    }
+    fn count(&self, owner: Identity, item_id: u32) -> Option<u32> {
+        self.stacks
+            .rows()
+            .into_iter()
+            .find(|r| r.owner_identity == owner && r.item_id == item_id)
+            .map(|r| r.count)
+    }
+    fn snapshot(&self) -> Vec<Vec<u8>> {
+        use spacetimedb::sats::bsatn::to_vec;
+        vec![
+            to_vec(&self.wallets.rows()).unwrap(),
+            to_vec(&self.stacks.rows()).unwrap(),
+            to_vec(&self.stock.rows()).unwrap(),
+            to_vec(&self.items.rows()).unwrap(),
+        ]
+    }
+    /// A Pending offer from `ec_me()` listing `currency` and item 5 x `qty`.
+    fn escrow(&self, currency: u64, qty: u32) {
+        self.offers.seed(&TradeOffer {
+            trade_id: 77,
+            initiator: ec_me(),
+            counterparty: ec_other(),
+            initiator_monster_ids: vec![],
+            initiator_items: if qty > 0 {
+                vec![game_core::TradeItem { item_id: 5, qty }]
+            } else {
+                vec![]
+            },
+            initiator_currency: currency,
+            counterparty_monster_ids: vec![],
+            counterparty_items: vec![],
+            counterparty_currency: 0,
+            initiator_cards: vec![],
+            counterparty_cards: vec![],
+            status: game_core::TradeStatus::Pending,
+            created_at_ms: 0,
+        });
+    }
+}
+
+/// EV-currency-integrity#arithmetic (grant half): `grant_currency` inserts a missing
+/// wallet with exactly the amount, adds to an existing one, saturates at exactly
+/// MAX_BALANCE (both at and past the headroom boundary), creates no phantom row for 0,
+/// and touches no other wallet.
+/// kills: grant_currency -> (), `== 0` -> `!= 0`, update/insert swapped, a replace-not-add.
+#[test]
+fn nh_grant_currency_upserts_adds_and_saturates_at_max_balance() {
+    let fx = ec_fixture();
+    let w = ec_world(&fx);
+    w.wallet(ec_other(), 5);
+    let ctx = fx.ctx();
+    grant_currency(&ctx, ec_me(), 0);
+    assert_eq!(
+        w.balance(ec_me()),
+        None,
+        "a 0 grant inserts no phantom wallet row"
+    );
+    grant_currency(&ctx, ec_me(), 40);
+    assert_eq!(
+        w.balance(ec_me()),
+        Some(40),
+        "a missing wallet is created with exactly the amount"
+    );
+    grant_currency(&ctx, ec_me(), 2);
+    assert_eq!(
+        w.balance(ec_me()),
+        Some(42),
+        "an existing wallet is ADDED to, not replaced"
+    );
+    grant_currency(&ctx, ec_me(), 0);
+    assert_eq!(
+        w.balance(ec_me()),
+        Some(42),
+        "a 0 grant leaves an existing balance alone"
+    );
+    grant_currency(&ctx, ec_me(), MAX_BALANCE - 43);
+    assert_eq!(
+        w.balance(ec_me()),
+        Some(MAX_BALANCE - 1),
+        "one below the cap is exact"
+    );
+    grant_currency(&ctx, ec_me(), 1);
+    assert_eq!(
+        w.balance(ec_me()),
+        Some(MAX_BALANCE),
+        "landing exactly on the cap is exact"
+    );
+    grant_currency(&ctx, ec_me(), 1);
+    assert_eq!(
+        w.balance(ec_me()),
+        Some(MAX_BALANCE),
+        "past the cap saturates, never wraps"
+    );
+    grant_currency(&ctx, ec_me(), u64::MAX);
+    assert_eq!(
+        w.balance(ec_me()),
+        Some(MAX_BALANCE),
+        "a u64::MAX grant saturates too"
+    );
+    assert_eq!(
+        w.wallets.rows().len(),
+        2,
+        "exactly one wallet row per owner"
+    );
+    assert_eq!(
+        w.balance(ec_other()),
+        Some(5),
+        "a bystander's wallet is untouched"
+    );
+}
+
+/// EV-currency-integrity#arithmetic (spend half): `spend_currency` debits exactly,
+/// admits spending the whole balance (boundary), refuses one more than the balance with
+/// the row unchanged, refuses a missing wallet without creating one, and treats 0 as a
+/// no-op.
+/// kills: spend_currency -> Ok(()), checked_sub -> saturating_sub, `== 0` guard removed.
+#[test]
+fn nh_spend_currency_debits_exactly_and_refuses_overdraft() {
+    let fx = ec_fixture();
+    let w = ec_world(&fx);
+    w.wallet(ec_me(), 30);
+    w.wallet(ec_other(), 5);
+    let ctx = fx.ctx();
+    assert_eq!(spend_currency(&ctx, ec_me(), 0), Ok(()));
+    assert_eq!(w.balance(ec_me()), Some(30), "a 0 spend changes nothing");
+    assert_eq!(spend_currency(&ctx, ec_me(), 12), Ok(()));
+    assert_eq!(w.balance(ec_me()), Some(18), "debits exactly the amount");
+    assert!(
+        spend_currency(&ctx, ec_me(), 19).is_err(),
+        "one past the balance is refused"
+    );
+    assert_eq!(
+        w.balance(ec_me()),
+        Some(18),
+        "a refused spend writes nothing"
+    );
+    assert_eq!(
+        spend_currency(&ctx, ec_me(), 18),
+        Ok(()),
+        "the whole balance is spendable"
+    );
+    assert_eq!(
+        w.balance(ec_me()),
+        Some(0),
+        "an emptied wallet stays (balance 0)"
+    );
+    let ghost = Identity::from_byte_array([0xEF; 32]);
+    assert_eq!(spend_currency(&ctx, ghost, 1), Err("no wallet".to_string()));
+    assert_eq!(
+        spend_currency(&ctx, ghost, 0),
+        Ok(()),
+        "0 from a missing wallet is a no-op"
+    );
+    assert_eq!(
+        w.balance(ghost),
+        None,
+        "no wallet is ever created by a spend"
+    );
+    assert_eq!(
+        w.balance(ec_other()),
+        Some(5),
+        "a bystander's wallet is untouched"
+    );
+}
+
+/// EV-shop-reducer-security: `buy` charges exactly the SERVER price of the (shop, item)
+/// row times qty and refuses — before any write — an unjoined caller, qty 0, an item this
+/// shop does not stock, funds one short, currency escrowed in a live offer, and a buy that
+/// would overflow the item stack cap (boundary: cap-qty is admitted).
+/// kills: price lookup ignoring shop_id, `total > available` -> `>=`, headroom skipped,
+/// spend_currency before the guards, grant_item skipped.
+#[test]
+fn nh_buy_refuses_before_writing_and_charges_the_server_price() {
+    const CAP: u32 = game_core::MAX_ITEM_STACK;
+    let fx = ec_fixture();
+    let w = ec_world(&fx);
+    w.wallet(ec_me(), 30);
+    w.wallet(ec_other(), 1000);
+    let before = w.snapshot();
+    let refusals: Vec<(&str, Identity, u32, u32, u32)> = vec![
+        (
+            "unjoined caller",
+            Identity::from_byte_array([0xEF; 32]),
+            3,
+            5,
+            1,
+        ),
+        ("qty 0", ec_me(), 3, 5, 0),
+        ("item not stocked by this shop", ec_me(), 4, 6, 1),
+        ("unknown shop", ec_me(), 9, 5, 1),
+        ("funds one short (4 x 10 > 30)", ec_me(), 3, 5, 4),
+    ];
+    for (label, who, shop, item, qty) in refusals {
+        let got = fx.run_as(who, |ctx| buy(ctx, shop, item, qty));
+        assert!(got.is_err(), "{label}: must be refused, got {got:?}");
+        assert_eq!(w.snapshot(), before, "{label}: refused before any write");
+    }
+    // Exact funds: 3 x 10 == 30 is admitted and empties the wallet (shop 3's price,
+    // never shop 4's 99 for the same item).
+    assert_eq!(fx.run_as(ec_me(), |ctx| buy(ctx, 3, 5, 3)), Ok(()));
+    assert_eq!(
+        w.balance(ec_me()),
+        Some(0),
+        "charged exactly shop 3's 10 x 3"
+    );
+    assert_eq!(w.count(ec_me(), 5), Some(3), "credited exactly qty");
+    assert_eq!(
+        w.balance(ec_other()),
+        Some(1000),
+        "a stranger is never debited"
+    );
+
+    // Escrow: 25 of a 30 balance is listed in a live offer, so 1 x 7 > 5 is refused.
+    drop(fx);
+    let fx = ec_fixture();
+    let w = ec_world(&fx);
+    w.wallet(ec_me(), 30);
+    w.escrow(25, 0);
+    let before = w.snapshot();
+    assert_eq!(
+        fx.run_as(ec_me(), |ctx| buy(ctx, 3, 6, 1)),
+        Err("currency is in an active trade".to_string())
+    );
+    assert_eq!(w.snapshot(), before, "escrow refusal writes nothing");
+
+    // Item-cap headroom: at CAP-1 buying 2 is refused (wallet untouched), buying 1 lands
+    // exactly on the cap.
+    drop(fx);
+    let fx = ec_fixture();
+    let w = ec_world(&fx);
+    w.wallet(ec_me(), 1000);
+    w.stack(ec_me(), 5, CAP - 1);
+    let before = w.snapshot();
+    let want = game_core::check_item_headroom(CAP - 1, 2, 5)
+        .unwrap_err()
+        .to_string();
+    assert_eq!(fx.run_as(ec_me(), |ctx| buy(ctx, 3, 5, 2)), Err(want));
+    assert_eq!(w.snapshot(), before, "headroom refusal before the spend");
+    assert_eq!(fx.run_as(ec_me(), |ctx| buy(ctx, 3, 5, 1)), Ok(()));
+    assert_eq!(
+        w.count(ec_me(), 5),
+        Some(CAP),
+        "cap reached exactly, same stack"
+    );
+    assert_eq!(
+        w.stacks.rows().len(),
+        1,
+        "grew the existing stack, no second row"
+    );
+    assert_eq!(w.balance(ec_me()), Some(990));
+}
+
+/// EV-shop-reducer-security: `sell` credits exactly item_row.sell_price x qty and
+/// consumes exactly qty (deleting an emptied stack); it refuses — before any write — qty
+/// 0, an unknown or unsellable item, more than held, items escrowed in a live offer, and
+/// proceeds that would overflow MAX_BALANCE (boundary: landing on the cap is admitted).
+/// kills: sell -> Ok(()), sell_price from the wrong row, headroom skipped, consume loop
+/// off-by-one, grant_currency skipped.
+#[test]
+fn nh_sell_refuses_before_writing_and_credits_the_server_price() {
+    let fx = ec_fixture();
+    let w = ec_world(&fx);
+    w.wallet(ec_me(), 10);
+    w.stack(ec_me(), 5, 3);
+    w.stack(ec_me(), 8, 2);
+    let before = w.snapshot();
+    let refusals: Vec<(&str, Identity, u32, u32)> = vec![
+        (
+            "unjoined caller",
+            Identity::from_byte_array([0xEF; 32]),
+            5,
+            1,
+        ),
+        ("qty 0", ec_me(), 5, 0),
+        ("unknown item", ec_me(), 404, 1),
+        ("unsellable item (sell_price 0)", ec_me(), 8, 1),
+        ("more than held", ec_me(), 5, 4),
+    ];
+    for (label, who, item, qty) in refusals {
+        let got = fx.run_as(who, |ctx| sell(ctx, item, qty));
+        assert!(got.is_err(), "{label}: must be refused, got {got:?}");
+        assert_eq!(w.snapshot(), before, "{label}: refused before any write");
+    }
+    assert_eq!(fx.run_as(ec_me(), |ctx| sell(ctx, 5, 2)), Ok(()));
+    assert_eq!(w.balance(ec_me()), Some(18), "credited exactly 4 x 2");
+    assert_eq!(w.count(ec_me(), 5), Some(1), "consumed exactly 2");
+    assert_eq!(fx.run_as(ec_me(), |ctx| sell(ctx, 5, 1)), Ok(()));
+    assert_eq!(w.count(ec_me(), 5), None, "an emptied stack is deleted");
+    assert_eq!(w.balance(ec_me()), Some(22));
+
+    // Escrow: 2 of 3 listed in a live offer, so selling 2 is refused; 1 is admitted.
+    drop(fx);
+    let fx = ec_fixture();
+    let w = ec_world(&fx);
+    w.stack(ec_me(), 5, 3);
+    w.escrow(0, 2);
+    let before = w.snapshot();
+    assert_eq!(
+        fx.run_as(ec_me(), |ctx| sell(ctx, 5, 2)),
+        Err("item is in an active trade".to_string())
+    );
+    assert_eq!(w.snapshot(), before, "escrow refusal writes nothing");
+    assert_eq!(fx.run_as(ec_me(), |ctx| sell(ctx, 5, 1)), Ok(()));
+    assert_eq!(
+        w.balance(ec_me()),
+        Some(4),
+        "a missing wallet is created by the proceeds"
+    );
+
+    // Currency-cap headroom: 3 x 4 = 12 onto MAX-11 is refused (inventory untouched);
+    // 2 x 4 = 8 onto MAX-11 is admitted; then 3 more lands exactly on the cap.
+    drop(fx);
+    let fx = ec_fixture();
+    let w = ec_world(&fx);
+    w.wallet(ec_me(), MAX_BALANCE - 11);
+    w.stack(ec_me(), 5, 5);
+    let before = w.snapshot();
+    let want = game_core::check_currency_headroom(MAX_BALANCE - 11, 12)
+        .unwrap_err()
+        .to_string();
+    assert_eq!(fx.run_as(ec_me(), |ctx| sell(ctx, 5, 3)), Err(want));
+    assert_eq!(w.snapshot(), before, "cap refusal before any consume");
+    assert_eq!(fx.run_as(ec_me(), |ctx| sell(ctx, 5, 2)), Ok(()));
+    assert_eq!(w.balance(ec_me()), Some(MAX_BALANCE - 3));
+    w.stack(ec_me(), 6, 1);
+    assert_eq!(fx.run_as(ec_me(), |ctx| sell(ctx, 6, 1)), Ok(()));
+    assert_eq!(
+        w.balance(ec_me()),
+        Some(MAX_BALANCE),
+        "exactly the cap is admitted"
+    );
+}
+
+/// AUTH-23/24 + PRV1-6b as behaviour: `rekey_wallet` credits the whole guest balance
+/// forward onto the destination (adding to any existing balance) and ZEROES the guest row
+/// in place — never deletes it; a missing guest is a no-op. `erase_wallet` deletes exactly
+/// the owner's row.
+/// kills: rekey_wallet -> (), zero-before-read, delete instead of zero, erase_wallet -> ().
+#[test]
+fn nh_rekey_wallet_credits_forward_and_erase_wallet_deletes_only_the_owner() {
+    let fx = ec_fixture();
+    let w = ec_world(&fx);
+    let dest = Identity::from_byte_array([0xE3; 32]);
+    w.wallet(ec_me(), 40);
+    w.wallet(dest, 2);
+    w.wallet(ec_other(), 9);
+    let ctx = fx.ctx();
+    rekey_wallet(&ctx, ec_me(), dest);
+    assert_eq!(
+        w.balance(dest),
+        Some(42),
+        "the guest balance is credited forward, added"
+    );
+    assert_eq!(
+        w.balance(ec_me()),
+        Some(0),
+        "the guest row is zeroed in place, not deleted"
+    );
+    let ghost = Identity::from_byte_array([0xEF; 32]);
+    rekey_wallet(&ctx, ghost, dest);
+    assert_eq!(w.balance(dest), Some(42), "a missing guest re-keys nothing");
+    assert_eq!(w.balance(ghost), None);
+    erase_wallet(&ctx, ec_me());
+    assert_eq!(w.balance(ec_me()), None, "erase deletes the owner's row");
+    assert_eq!(w.balance(dest), Some(42), "and no other");
+    assert_eq!(w.balance(ec_other()), Some(9));
+}

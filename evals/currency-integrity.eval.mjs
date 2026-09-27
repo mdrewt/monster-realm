@@ -248,6 +248,10 @@ export const ACCESSOR_BYPASS_ALLOWLIST = [
   // Test-only (declared under the test cfg in trading.rs); it never reaches the
   // published wasm, so it cannot be a runtime wallet surface.
   'trading_tests.rs',
+  // debloat Phase 2 (EV-economy-sinks-sources): the npc native-host quest test seeds
+  // wallet rows to assert the quest-completion currency delta. Test-only, same
+  // standing as trading_tests.rs.
+  'npc_tests.rs',
 ];
 
 // ---------------------------------------------------------------------------
