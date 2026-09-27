@@ -1129,8 +1129,8 @@ describe('EvolutionView V7 (totality): show/hide/refresh in any order, no throw'
 // ORACLE = the RENDERED DOM + WCAG 2.x arithmetic — never the view's source text. Every colour
 // operand is read off a LIVE element through happy-dom's CSSStyleDeclaration LONGHANDS
 // (`style.color`, `style.backgroundColor`), resolved against the two `:root` token scopes parsed
-// out of client/src/styles.css by the hp-bar eval's exported CSS parser (`parseCssStyleRules` +
-// `atStack` + `normaliseMediaPrelude` — never text slicing), alpha-composited from the innermost
+// out of client/src/styles.css by the local CSS reader below (`s9ParseRules` + `atStack` +
+// `s9NormalisePrelude` — never text slicing), alpha-composited from the innermost
 // surface outward onto BOTH a white and a black page, and ratioed here.
 //
 // RED REASON (verified against client/src/ui/evolutionView.ts and client/src/styles.css in this
@@ -1170,12 +1170,6 @@ describe('EvolutionView V7 (totality): show/hide/refresh in any order, no throw'
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-  declarations,
-  normaliseMediaPrelude,
-  parseCssStyleRules,
-  stripCssComments,
-} from '../../../evals/reduced-motion-hp-bar.eval.mjs';
 
 type S9Rgba = readonly [number, number, number, number];
 type S9Rgb = readonly [number, number, number];
@@ -1194,14 +1188,231 @@ interface S9Declaration {
   readonly important: boolean;
 }
 
-// The .mjs module is untyped from a .ts spec (client/tsconfig excludes specs); these are the
-// shapes read from evals/reduced-motion-hp-bar.eval.mjs at `parseCssStyleRules` (`{ prelude,
-// body, atStack, startIndex, endIndex }`), `declarations` (`{ prop, value, important, custom }`),
-// `normaliseMediaPrelude` and `stripCssComments`.
-const s9ParseRules = parseCssStyleRules as unknown as (css: string) => readonly S9CssRule[];
-const s9Declarations = declarations as unknown as (body: string) => readonly S9Declaration[];
-const s9NormalisePrelude = normaliseMediaPrelude as unknown as (prelude: string) => string;
-const s9StripComments = stripCssComments as unknown as (css: string) => string;
+// ---------------------------------------------------------------------------
+// Minimal CSS reader — a local, typed port of the parser that used to be imported from
+// evals/reduced-motion-hp-bar.eval.mjs (which the de-bloat program deletes, EV-reduced-motion-hp-bar;
+// CT-src-ui-evolutionView#contrast-X1-X2 keeps X1/X2). Quote-, paren- and url()-aware; THROWS on
+// anything it cannot parse, so an unreadable sheet never reads as a clean one.
+// ---------------------------------------------------------------------------
+
+// Comment delimiters are COMPOSED so this file holds no raw opener outside a real comment.
+const S9_SLASH_STAR = ['/', '*'].join('');
+const S9_STAR_SLASH = ['*', '/'].join('');
+
+function s9IsIdentChar(ch: string): boolean {
+  if (ch === '') return false;
+  if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')) return true;
+  if (ch === '-' || ch === '_') return true;
+  return ch.charCodeAt(0) > 127;
+}
+
+/** Remove CSS comments (keeping newlines). Refuses comment delimiters inside strings/url(). */
+function s9StripComments(src: string): string {
+  let out = '';
+  let state: 'normal' | 'comment' | 'dq' | 'sq' = 'normal';
+  let i = 0;
+  while (i < src.length) {
+    const ch = src.charAt(i);
+    const pair = src.slice(i, i + 2);
+    if (state === 'comment') {
+      if (pair === S9_STAR_SLASH) {
+        state = 'normal';
+        i += 2;
+        continue;
+      }
+      if (ch === '\n') out += '\n';
+      i += 1;
+      continue;
+    }
+    if (state === 'dq' || state === 'sq') {
+      if (ch === '\\') {
+        out += pair;
+        i += 2;
+        continue;
+      }
+      if (pair === S9_SLASH_STAR || pair === S9_STAR_SLASH) {
+        throw new Error(`CSS parse REFUSED at offset ${i}: comment delimiter inside a string`);
+      }
+      out += ch;
+      if ((state === 'dq' && ch === '"') || (state === 'sq' && ch === "'")) state = 'normal';
+      i += 1;
+      continue;
+    }
+    if (pair === S9_SLASH_STAR) {
+      state = 'comment';
+      i += 2;
+      continue;
+    }
+    if (
+      ch === 'u' &&
+      src.slice(i, i + 4).toLowerCase() === 'url(' &&
+      !s9IsIdentChar(i === 0 ? '' : src.charAt(i - 1))
+    ) {
+      let j = i + 4;
+      while (j < src.length && (src.charAt(j) === ' ' || src.charAt(j) === '\t')) j += 1;
+      if (src.charAt(j) !== '"' && src.charAt(j) !== "'") {
+        const close = src.indexOf(')', i + 4);
+        if (close === -1) throw new Error(`CSS parse failed: unterminated url() at offset ${i}`);
+        const body = src.slice(i + 4, close);
+        if (body.includes(S9_SLASH_STAR) || body.includes(S9_STAR_SLASH)) {
+          throw new Error(`CSS parse REFUSED at offset ${i}: comment delimiter inside url()`);
+        }
+        out += src.slice(i, close + 1);
+        i = close + 1;
+        continue;
+      }
+    }
+    if (ch === '"') state = 'dq';
+    if (ch === "'") state = 'sq';
+    out += ch;
+    i += 1;
+  }
+  if (state !== 'normal')
+    throw new Error(`CSS parse failed: unterminated ${state} at end of input`);
+  return out;
+}
+
+/**
+ * Every STYLE rule with its full at-rule stack (outermost first) and the offsets of its own braces
+ * in the comment-stripped source (for source-ORDER checks). Paren-shielded and quote-aware.
+ */
+function s9ParseRules(css: string): readonly S9CssRule[] {
+  const clean = s9StripComments(css);
+  const rules: S9CssRule[] = [];
+  const stack: { kind: 'at' | 'style'; prelude: string; start: number }[] = [];
+  let pending = '';
+  let paren = 0;
+  let quote: string | null = null;
+  for (let i = 0; i < clean.length; i += 1) {
+    const ch = clean.charAt(i);
+    if (quote !== null) {
+      pending += ch;
+      if (ch === '\\') {
+        pending += clean.charAt(i + 1);
+        i += 1;
+      } else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      pending += ch;
+      continue;
+    }
+    if (ch === '\\') {
+      pending += ch + clean.charAt(i + 1);
+      i += 1;
+      continue;
+    }
+    if (ch === '(') paren += 1;
+    else if (ch === ')' && paren > 0) paren -= 1;
+    if (ch === '(' || ch === ')' || paren > 0) {
+      pending += ch;
+      continue;
+    }
+    if (ch === '{') {
+      const prelude = pending.trim();
+      stack.push({ kind: prelude.startsWith('@') ? 'at' : 'style', prelude, start: i });
+      pending = '';
+      continue;
+    }
+    if (ch === '}') {
+      const frame = stack.pop();
+      if (frame === undefined) throw new Error(`CSS parse failed: unbalanced '}' at offset ${i}`);
+      if (frame.kind === 'style') {
+        rules.push({
+          prelude: frame.prelude,
+          body: clean.slice(frame.start + 1, i),
+          atStack: stack.filter((f) => f.kind === 'at').map((f) => f.prelude),
+          startIndex: frame.start,
+          endIndex: i,
+        });
+      }
+      pending = '';
+      continue;
+    }
+    if (ch === ';') {
+      pending = '';
+      continue;
+    }
+    pending += ch;
+  }
+  if (quote !== null) throw new Error('CSS parse failed: unterminated string at end of input');
+  if (stack.length > 0) throw new Error(`CSS parse failed: ${stack.length} unclosed block(s)`);
+  return rules;
+}
+
+/** Split `text` at `sep` characters that sit at paren depth 0 and outside strings. */
+function s9SplitTopLevel(text: string, sep: string): string[] {
+  const parts: string[] = [];
+  let pending = '';
+  let paren = 0;
+  let quote: string | null = null;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text.charAt(i);
+    if (quote !== null) {
+      pending += ch;
+      if (ch === '\\') {
+        pending += text.charAt(i + 1);
+        i += 1;
+      } else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") quote = ch;
+    else if (ch === '(') paren += 1;
+    else if (ch === ')' && paren > 0) paren -= 1;
+    else if (ch === sep && paren === 0) {
+      parts.push(pending);
+      pending = '';
+      continue;
+    }
+    pending += ch;
+  }
+  parts.push(pending);
+  return parts;
+}
+
+/**
+ * A rule body's declarations in SOURCE ORDER. `!important` is split off the value; custom
+ * properties keep their verbatim case, everything else is lowercased.
+ */
+function s9Declarations(body: string): readonly S9Declaration[] {
+  const out: S9Declaration[] = [];
+  for (const chunk of s9SplitTopLevel(body, ';')) {
+    const [rawPropPart, ...rest] = s9SplitTopLevel(chunk, ':');
+    if (rest.length === 0) continue;
+    const rawProp = (rawPropPart ?? '').trim();
+    if (rawProp === '') continue;
+    let value = rest.join(':').trim();
+    let important = false;
+    const bang = value.lastIndexOf('!');
+    if (
+      bang !== -1 &&
+      value
+        .slice(bang + 1)
+        .trim()
+        .toLowerCase() === 'important'
+    ) {
+      important = true;
+      value = value.slice(0, bang).trim();
+    }
+    const custom = rawProp.startsWith('--');
+    out.push({
+      prop: custom ? rawProp : rawProp.toLowerCase(),
+      value: custom ? value : value.toLowerCase(),
+      important,
+    });
+  }
+  return out;
+}
+
+/** A media prelude lowercased, whitespace-collapsed, with no spacing around `( ) , :`. */
+function s9NormalisePrelude(prelude: string): string {
+  return prelude
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\s*([(),:])\s*/g, '$1');
+}
 
 const S9_TOKEN_PREFIX = '--mr-evo-';
 const S9_VAR_PREFIX = 'var(--mr-evo-';

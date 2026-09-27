@@ -7,6 +7,7 @@ import {
   type Page,
   test,
 } from '@playwright/test';
+import { t } from '../src/ui/a11yCopy';
 
 // rb-19 (residual R-m23-s11-X10) — the axe-core + real-browser a11y tier that
 // M23-accessibility.spec.md §5.7 DECIDED should exist and that no M23 slice owned.
@@ -200,6 +201,39 @@ async function scanState(
   ).toBeLessThanOrEqual(incompleteCeiling);
 }
 
+/**
+ * Assert #a11y-live is present in Chromium's FULL accessibility tree, not ignored, and still
+ * polite. Matched by backend DOM node id, so a text child or another region cannot stand in.
+ */
+async function expectLiveRegionExposed(
+  context: BrowserContext,
+  page: Page,
+  state: string,
+): Promise<void> {
+  const cdp = await context.newCDPSession(page);
+  try {
+    const { root } = await cdp.send('DOM.getDocument', { depth: 0 });
+    const { nodeId } = await cdp.send('DOM.querySelector', {
+      nodeId: root.nodeId,
+      selector: '#a11y-live',
+    });
+    expect(nodeId, `${state}: #a11y-live is not in the DOM`).not.toBe(0);
+    const { node } = await cdp.send('DOM.describeNode', { nodeId });
+    await cdp.send('Accessibility.enable');
+    const { nodes } = await cdp.send('Accessibility.getFullAXTree', {});
+    const ax = nodes.find((n) => n.backendDOMNodeId === node.backendNodeId);
+    expect(
+      ax,
+      `${state}: #a11y-live is missing from the accessibility tree (pruned — it would be silent)`,
+    ).toBeDefined();
+    expect(ax?.ignored, `${state}: #a11y-live is in the AX tree but ignored`).toBe(false);
+    const live = ax?.properties?.find((p) => p.name === 'live')?.value.value;
+    expect(live, `${state}: #a11y-live lost its polite live-region semantics`).toBe('polite');
+  } finally {
+    await cdp.detach();
+  }
+}
+
 test.describe
   .serial('rb-19 — axe-core over the real client', () => {
     let browser: Browser;
@@ -243,5 +277,97 @@ test.describe
       await scanState(page, 'menu overlay', PASSES_FLOOR_MENU, INCOMPLETE_CEILING_MENU);
       await page.keyboard.press('Escape');
       await expect(page.locator('#menu-overlay')).toBeHidden();
+    });
+
+    // CT-src-render-world#canvas-aria: the live canvas carries the world-region ARIA that
+    // render/world.ts writes in init(), and #app itself carries no role (A11Y-08/A11Y-17).
+    test('the live world canvas is an application region with the catalog name, and #app has no role', async () => {
+      const canvas = page.locator('#app canvas');
+      await expect(canvas).toHaveCount(1);
+      await expect(canvas).toHaveAttribute('role', 'application');
+      await expect(canvas).toHaveAttribute('tabindex', '0');
+      const label = t('a11y.world.region');
+      expect(label.trim(), 'catalog copy for a11y.world.region is empty').not.toBe('');
+      await expect(canvas).toHaveAttribute('aria-label', label);
+      expect(await page.locator('#app').getAttribute('role'), '#app must carry no role').toBeNull();
+    });
+
+    // #a11y-live must be EXPOSED in Chromium's accessibility tree in every state, not merely
+    // present in the DOM: a live region stranded under a display:none ancestor is pruned from the
+    // AX tree entirely and goes silent. Exposure is re-asserted independently per state. This is
+    // NOT an inertness oracle — Chromium does not model aria-modal inertness. While the menu is
+    // open the region must also sit INSIDE the open overlay (EV-overlay-live-region-custody's
+    // custody rule, asserted behaviourally), since aria-modal tells AT to ignore everything outside.
+    test('the #a11y-live region stays exposed in the accessibility tree: world, menu open (inside the overlay), and after close', async () => {
+      await expectLiveRegionExposed(context, page, 'world');
+
+      await page.keyboard.press('KeyM');
+      await expect(page.locator('#menu-overlay')).toBeVisible();
+      await expect
+        .poll(
+          () =>
+            page.evaluate(() => {
+              const overlay = document.getElementById('menu-overlay');
+              const live = document.getElementById('a11y-live');
+              return overlay !== null && live !== null && overlay.contains(live);
+            }),
+          { message: 'menu open: #a11y-live must be re-parented INSIDE #menu-overlay' },
+        )
+        .toBe(true);
+      await expectLiveRegionExposed(context, page, 'menu open');
+
+      await page.keyboard.press('Escape');
+      await expect(page.locator('#menu-overlay')).toBeHidden();
+      await expect
+        .poll(
+          () =>
+            page.evaluate(
+              () => document.getElementById('a11y-live')?.parentElement?.tagName ?? 'MISSING',
+            ),
+          { message: 'after close: #a11y-live must be back as a direct <body> child' },
+        )
+        .toBe('BODY');
+      await expectLiveRegionExposed(context, page, 'after close');
+    });
+
+    // EV-keyboard-operable-rows new home: Tab reaches the menu launcher, Enter and Space both
+    // activate it, and the menu listbox rows are operable from the keyboard alone.
+    test('keyboard pass: Tab reaches the launcher, Enter/Space open the menu, arrows/Enter operate its rows', async () => {
+      const hint = page.locator('#help-hint');
+      const overlay = page.locator('#menu-overlay');
+      const rows = page.locator('#menu-rows');
+
+      let reached = false;
+      for (let i = 0; i < 20 && !reached; i += 1) {
+        await page.keyboard.press('Tab');
+        reached = await page.evaluate(() => document.activeElement?.id === 'help-hint');
+      }
+      expect(reached, 'Tab never reached #help-hint within 20 presses').toBe(true);
+
+      // Enter on the focused launcher opens the menu, and focus lands on the listbox.
+      await page.keyboard.press('Enter');
+      await expect(overlay).toBeVisible();
+      await expect(rows).toBeFocused();
+      const first = await rows.getAttribute('aria-activedescendant');
+      expect(first, 'menu opened with no active option').toMatch(/^menu-option-categories-/);
+
+      // ArrowDown moves the selection; Enter descends into that category; ArrowLeft backs out.
+      await page.keyboard.press('ArrowDown');
+      await expect(rows).not.toHaveAttribute('aria-activedescendant', first ?? '');
+      await expect(rows).toHaveAttribute('aria-activedescendant', /^menu-option-categories-/);
+      await page.keyboard.press('Enter');
+      await expect(rows).toHaveAttribute('aria-activedescendant', /^menu-option-leaves-/);
+      await page.keyboard.press('ArrowLeft');
+      await expect(rows).toHaveAttribute('aria-activedescendant', /^menu-option-categories-/);
+      await page.keyboard.press('Escape');
+      await expect(overlay).toBeHidden();
+
+      // Space activates the native launcher too (it must not be swallowed as a world jump).
+      await hint.focus();
+      await expect(hint).toBeFocused();
+      await page.keyboard.press('Space');
+      await expect(overlay).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(overlay).toBeHidden();
     });
   });
