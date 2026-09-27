@@ -733,4 +733,11 @@ playtest-report:
 observability-validate:
     node ops/observability/validate.mjs --require-docker
 
-ci: lint typecheck test eval security wasm client-typecheck client-test observability-validate
+# Prove the PRODUCTION client bundle ships no DEV debug hooks (__game/__mrTrade/__mrPvp):
+# build it the way playtest-up does (the playtest DB baked in, which the script also
+# checks), then scan the emitted client/dist. Guards the artifact, not main.ts's text.
+client-verify-build: wasm
+    cd client && VITE_STDB_DB=monster-realm-playtest npm run build
+    MR_PLAYTEST_DB=monster-realm-playtest node scripts/verify-build-hooks.mjs
+
+ci: lint typecheck test eval security wasm client-typecheck client-test client-verify-build observability-validate
