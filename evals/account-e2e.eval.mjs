@@ -1424,14 +1424,6 @@ export function buildSeedStatements(aHex, playtestRows, baseMs, aMonsterId) {
   return stmts;
 }
 
-// --- ci.yml step ordering (read-only) --------------------------------------
-
-/**
- * The ci job must install the SpacetimeDB CLI BEFORE `just eval` runs, or this
- * eval's live phase silently degrades to the note-skip path in CI. Reading the
- * workflow is allowed; editing it is outside this slice's touches.
- */
-
 // --- orphan marker ----------------------------------------------------------
 
 export function formatMarker(m) {

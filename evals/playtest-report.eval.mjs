@@ -1,164 +1,26 @@
-// playtest-report.eval.mjs — pt-b2 server observability (ADR-0131)
+// playtest-report.eval.mjs — scripts/playtest-report.mjs (pt-b2, ADR-0131), shrunk.
 //
-// Encodes EARS criteria for scripts/playtest-report.mjs and the
-// `just playtest-report` justfile recipe:
+// Debloat Phase 2 (EV-playtest-report#script-units, KEEP-SHRUNK): only the
+// behavioural cases survive —
+//   * the real exported aggregateReport / sortByEventId / decodeSqlJson /
+//     coerceRow against hand-computed fixtures (zeroed rates with no NaN, the
+//     PII firewall, a verbatim `spacetime sql --format json` capture, the
+//     must-throw table, the fail-loud row coercion);
+//   * the DRIVER tooth: the real main-guarded script run as a subprocess with a
+//     fake `spacetime` first on PATH (argv, printed rates, whole-run abort on a
+//     malformed row, no identity in any output).
+// Deleted: the Section-1 reference-predicate proof-of-teeth (meta) and the
+// Section-4 justfile/script source scans (EV-playtest-report#source-scans, DELETE —
+// the driver tooth covers argv/format/fail-loud behaviourally).
+// The row's home is a colocated scripts/*.test.mjs; nothing runs those today, so
+// the cases stay here, live under evals/run.mjs, until the CI reshape wires a
+// runner (handoff recorded in the ledger).
 //
-//   1. `aggregateReport([])` returns zeroed rates with NO NaN/Infinity, no throw.
-//   2. A fixture of recruit rows (mix of hp, success, bait, recatch) → correct
-//      weakenFirstRate, successRate, baitRate, recatchRate (hand-computed).
-//   3. The return object contains NO identity/hex string field (PII-firewall).
-//   4. justfile has a `playtest-report` recipe.
-//   5. scripts/playtest-report.mjs exports `aggregateReport`.
-//   6. script uses `execFileSync` (array-args safety) — no shell-string interpolation
-//      of `spacetime sql`.
-//   7. script has a `process.exit(1)` fail-loud path.
-//   8. script filters `kind === 1` (only RecruitAttempt events).
-//   9. script consumes `spacetime sql --format json` (pinned 2.8.1 CLI), decoding
-//      via an exported pure `decodeSqlJson(stdout) -> Array<row objects>` that
-//      zips the positional `rows` arrays against `schema.elements` order — the
-//      OLD pipe-table parser (`parseSqlTable`) is deleted outright, no fallback.
-//  10. `coerceRow` is fail-loud (throws on malformed/short/mistyped raw rows,
-//      never silently produces NaN) and unwraps the one-element Identity array
-//      to a bare hex string.
-//
-// IMPORTANT: NO new RegExp() anywhere — Semgrep detect-non-literal-regexp.
-// Only literal regex and String methods (indexOf / includes / startsWith / split).
-//
-// All proof-of-teeth for pure predicates run UNCONDITIONALLY before real scans.
-//
-// HARDENING PASS (post red-team, gate-bypass close-out): a red-team run found 4
-// real `just playtest-report` bypasses that this eval's Section-3 pure-fn teeth
-// and Section-4 source scans did not reach, because NOTHING exercised the
-// main-guarded driver block itself:
-//   A. the driver ran the real query but discarded `out`, feeding decodeSqlJson
-//      a hardcoded constant instead;
-//   B. `'--format', 'json'` removed from the real argv, with a decoy BLOCK
-//      comment left nearby (stripMjsComments only strips `//` lines, so a block
-//      comment's contents survive and satisfy a Section-4 scan);
-//   C. `sortByEventId(coerced)` called but its return value discarded, so
-//      aggregateReport ran on unsorted rows (silently reintroducing PT-B2-RT-01);
-//   D. `coerceRow` wrapped per-row in try/catch + `.filter(Boolean)`, swallowing
-//      its fail-loud throws and printing a report over an undisclosed subset.
-// SECTION 3.5 below closes all four with ONE behavioral tooth that runs the real
-// script as a subprocess with a fake `spacetime` first on PATH (the ADR-0153 /
-// evals/playtest-verify.eval.mjs CALL-SITE idiom). Section 4 also gained a direct
-// `/*`-anywhere negative scan (kills B at the scan layer too, without a risky
-// full block-comment stripper). Section 3 gained T3p/T3q for a tightened
-// `identity` contract the specialist landed: a bare-string identity, or a
-// one-element array holding an empty string, now throws instead of being accepted.
-//
-// scripts/playtest-report.mjs currently exports aggregateReport, sortByEventId,
-// decodeSqlJson and coerceRow (Section 2's dynamic-import check below verifies
-// this on every run — if any export regresses, that check fails first).
-
+// No new RegExp() (Semgrep detect-non-literal-regexp).
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-
-// ---------------------------------------------------------------------------
-// Helper: strip `#` line-comment lines from justfile/shell text.
-// ---------------------------------------------------------------------------
-function stripJustfileComments(text) {
-  return text
-    .split('\n')
-    .map((line) => {
-      const t = line.trimStart();
-      if (t.startsWith('#')) return '';
-      const idx = line.indexOf(' #');
-      return idx !== -1 ? line.slice(0, idx) : line;
-    })
-    .join('\n');
-}
-
-// ---------------------------------------------------------------------------
-// Helper: strip `//` line comments from .mjs source text.
-// ---------------------------------------------------------------------------
-function stripMjsComments(text) {
-  return text
-    .split('\n')
-    .map((line) => {
-      const idx = line.indexOf('//');
-      return idx === -1 ? line : line.slice(0, idx);
-    })
-    .join('\n');
-}
-
-// ---------------------------------------------------------------------------
-// Helper: check whether justfile has a recipe named `recipeName`.
-// ---------------------------------------------------------------------------
-function justfileHasRecipe(justfile, recipeName) {
-  const exactMarker = `\n${recipeName}:`;
-  const paramMarker = `\n${recipeName} `;
-  return (
-    justfile.indexOf(exactMarker) !== -1 ||
-    justfile.indexOf(paramMarker) !== -1 ||
-    justfile.startsWith(`${recipeName}:`) ||
-    justfile.startsWith(`${recipeName} `)
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Pure reference implementations — used for proof-of-teeth fixtures only.
-// These mirror the CONTRACT that the real aggregateReport must satisfy.
-//
-// Reference: the spec defines for a set of PlaytestEvent rows:
-//   - weakenFirstRate: fraction of first encounters where hp_permille < 500
-//     (a "weakened" wild) out of all first encounters per (identity, species_id) pair.
-//   - successRate:     fraction of recruit attempts that succeeded.
-//   - baitRate:        fraction of recruit attempts where bait_item_id != 0.
-//   - recatchRate:     fraction of (identity, species_id) pairs that appear ≥ 2×.
-//     (i.e. the player tried to recruit the same species more than once)
-// ---------------------------------------------------------------------------
-
-/**
- * Reference implementation of aggregateReport for proof-of-teeth fixture checks.
- * Mirrors the CONTRACT. The real imported version must produce identical results.
- * @param {Array<{kind:number,identity:string,species_id:number,hp_permille:number,bait_item_id:number,success:boolean}>} rows
- * @returns {{weakenFirstRate:number, successRate:number, baitRate:number, recatchRate:number}}
- */
-function _refAggregateReport(rows) {
-  // Filter to kind=1 (RecruitAttempt) only.
-  const r1 = rows.filter((r) => r.kind === 1);
-  if (r1.length === 0) {
-    return { weakenFirstRate: 0, successRate: 0, baitRate: 0, recatchRate: 0 };
-  }
-
-  // successRate: fraction of rows where success===true.
-  const successCount = r1.filter((r) => r.success).length;
-  const successRate = successCount / r1.length;
-
-  // baitRate: fraction of rows where bait_item_id !== 0.
-  const baitCount = r1.filter((r) => r.bait_item_id !== 0).length;
-  const baitRate = baitCount / r1.length;
-
-  // weakenFirstRate + recatchRate require grouping by (identity, species_id).
-  // Build a map: key = `${identity}:${species_id}` → array of rows.
-  const groups = new Map();
-  for (const row of r1) {
-    const key = `${row.identity}:${row.species_id}`;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(row);
-  }
-
-  // weakenFirstRate: for each (identity, species_id) group, take the FIRST row
-  // (by encounter order in the array — already sorted ascending by event_id per spec).
-  // Count those where hp_permille < 500.
-  let weakenedFirstCount = 0;
-  for (const group of groups.values()) {
-    if (group[0].hp_permille < 500) weakenedFirstCount++;
-  }
-  const weakenFirstRate = weakenedFirstCount / groups.size;
-
-  // recatchRate: fraction of (identity, species_id) pairs that appear ≥ 2 times.
-  let recatchCount = 0;
-  for (const group of groups.values()) {
-    if (group.length >= 2) recatchCount++;
-  }
-  const recatchRate = recatchCount / groups.size;
-
-  return { weakenFirstRate, successRate, baitRate, recatchRate };
-}
 
 // ---------------------------------------------------------------------------
 // Helper: check that a value is a finite number (not NaN, not Infinity).
@@ -222,12 +84,6 @@ const FIXTURE_C = [
   { kind: 2, identity: 'ccc', species_id: 5, hp_permille: 0, bait_item_id: 0, success: false }, // ignored
 ];
 // Only 1 kind=1 row: success=true, bait=0, hp=800 (not weakened), 1 group (ccc,5) — not weakened, not recatch.
-const EXPECTED_C = {
-  weakenFirstRate: 0,
-  successRate: 1,
-  baitRate: 0,
-  recatchRate: 0,
-};
 
 // ---------------------------------------------------------------------------
 // GROUND-TRUTH FIXTURES — captured VERBATIM from the pinned 2.8.1 `spacetime`
@@ -485,157 +341,10 @@ function extractAfterLabel(output, label) {
 // ---------------------------------------------------------------------------
 
 export default async function () {
-  const name =
-    'playtest-report (pt-b2: aggregateReport pure-fn + justfile recipe + script structural scans)';
-
-  // =========================================================================
-  // SECTION 1: PROOF-OF-TEETH FOR REFERENCE PREDICATES
-  // =========================================================================
-
-  // ── T1a: empty fixture → zeroed rates, no NaN/Infinity, no throw.
-  {
-    let result;
-    try {
-      result = _refAggregateReport(FIXTURE_EMPTY);
-    } catch (e) {
-      return {
-        name,
-        pass: false,
-        detail: `TEETH T1a: _refAggregateReport([]) threw: ${e.message}`,
-      };
-    }
-    for (const [key, val] of Object.entries(EXPECTED_EMPTY)) {
-      if (result[key] !== val) {
-        return {
-          name,
-          pass: false,
-          detail: `TEETH T1a: _refAggregateReport([]) returned ${key}=${result[key]}, expected ${val}`,
-        };
-      }
-    }
-    for (const [key, val] of Object.entries(result)) {
-      if (!isFiniteNumber(val)) {
-        return {
-          name,
-          pass: false,
-          detail: `TEETH T1a: _refAggregateReport([]) returned ${key}=${val} (NaN or Infinity) — empty input must produce zeros`,
-        };
-      }
-    }
-  }
-
-  // ── T1b: fixture B → hand-computed rates (exact floating-point equality is fine
-  //          for these small rationals).
-  {
-    let result;
-    try {
-      result = _refAggregateReport(FIXTURE_B);
-    } catch (e) {
-      return {
-        name,
-        pass: false,
-        detail: `TEETH T1b: _refAggregateReport(FIXTURE_B) threw: ${e.message}`,
-      };
-    }
-    const eps = 1e-9;
-    for (const [key, expected] of Object.entries(EXPECTED_B)) {
-      if (Math.abs(result[key] - expected) > eps) {
-        return {
-          name,
-          pass: false,
-          detail: `TEETH T1b: _refAggregateReport(FIXTURE_B) returned ${key}=${result[key]}, expected ${expected} (±${eps}). Hand-computed: successRate=0.5, baitRate=0.5, weakenFirstRate=2/3, recatchRate=1/3.`,
-        };
-      }
-    }
-  }
-
-  // ── T1c: fixture C — kind=2 rows filtered out.
-  {
-    let result;
-    try {
-      result = _refAggregateReport(FIXTURE_C);
-    } catch (e) {
-      return {
-        name,
-        pass: false,
-        detail: `TEETH T1c: _refAggregateReport(FIXTURE_C) threw: ${e.message}`,
-      };
-    }
-    if (result.successRate !== 1) {
-      return {
-        name,
-        pass: false,
-        detail: `TEETH T1c: kind=2 row must be filtered out; successRate should be 1 (1 kind=1 success). Got ${result.successRate}`,
-      };
-    }
-    if (result.baitRate !== 0) {
-      return {
-        name,
-        pass: false,
-        detail: `TEETH T1c: kind=2 row must be filtered out; baitRate should be 0. Got ${result.baitRate}`,
-      };
-    }
-  }
-
-  // ── T1d: PII-firewall — BAD: an object with a 64-hex identity string must be flagged.
-  {
-    const badObj = {
-      weakenFirstRate: 0.5,
-      identity: 'a'.repeat(64),
-    };
-    if (!containsPiiHex(badObj)) {
-      return {
-        name,
-        pass: false,
-        detail:
-          'TEETH T1d: containsPiiHex should flag an object with a 64-hex string identity field — PII check is broken',
-      };
-    }
-  }
-
-  // ── T1e: PII-firewall — GOOD: the aggregate result object must NOT be flagged.
-  {
-    const goodObj = { weakenFirstRate: 0.5, successRate: 0.25, baitRate: 0.5, recatchRate: 0.33 };
-    if (containsPiiHex(goodObj)) {
-      return {
-        name,
-        pass: false,
-        detail:
-          'TEETH T1e: containsPiiHex incorrectly flagged a clean aggregate result object — false positive',
-      };
-    }
-  }
-
-  // ── T1f: justfileHasRecipe BAD — recipe absent must return false.
-  {
-    const jf = 'ci: lint\nlint:\n    cargo fmt --check\n';
-    if (justfileHasRecipe(jf, 'playtest-report')) {
-      return {
-        name,
-        pass: false,
-        detail:
-          'TEETH T1f: justfileHasRecipe returned true for a justfile with no playtest-report recipe',
-      };
-    }
-  }
-
-  // ── T1g: justfileHasRecipe GOOD — recipe present must return true.
-  {
-    const jf = 'ci: lint\n\nplaytest-report:\n    node scripts/playtest-report.mjs\n';
-    if (!justfileHasRecipe(jf, 'playtest-report')) {
-      return {
-        name,
-        pass: false,
-        detail:
-          'TEETH T1g: justfileHasRecipe returned false for a justfile that does contain playtest-report',
-      };
-    }
-  }
+  const name = 'playtest-report (pt-b2: report script pure fns + subprocess driver)';
 
   // =========================================================================
   // SECTION 2: DYNAMIC IMPORT OF REAL EXPORTS
-  // RED state: scripts/playtest-report.mjs does not export decodeSqlJson yet
-  // (it still only has the old parseSqlTable pipe-table parser).
   // =========================================================================
 
   let aggregateReport, sortByEventId, decodeSqlJson, coerceRow;
@@ -686,7 +395,7 @@ export default async function () {
     return {
       name,
       pass: false,
-      detail: `scripts/playtest-report.mjs not yet implemented (import failed: ${e?.message ?? String(e)}) — RED state expected`,
+      detail: `scripts/playtest-report.mjs failed to import (${e?.message ?? String(e)})`,
     };
   }
 
@@ -1614,231 +1323,6 @@ export default async function () {
   }
 
   // =========================================================================
-  // SECTION 4: STRUCTURAL SCANS — justfile + script
-  // =========================================================================
-
-  const root = path.resolve('.');
-  const justfilePath = path.join(root, 'justfile');
-  const reportScriptPath = path.join(root, 'scripts/playtest-report.mjs');
-
-  // ── 4.1: justfile has `playtest-report` recipe.
-  let justfile;
-  try {
-    justfile = readFileSync(justfilePath, 'utf8');
-  } catch {
-    return { name, pass: false, detail: 'cannot read justfile' };
-  }
-
-  if (!justfileHasRecipe(justfile, 'playtest-report')) {
-    return {
-      name,
-      pass: false,
-      detail: 'justfile missing recipe "playtest-report" — implementer must add it (pt-b2)',
-    };
-  }
-
-  // ── 4.2: script exists and is non-trivial.
-  if (!existsSync(reportScriptPath)) {
-    return {
-      name,
-      pass: false,
-      detail: 'scripts/playtest-report.mjs does not exist — implementer must create it',
-    };
-  }
-  const scriptSrc = readFileSync(reportScriptPath, 'utf8');
-  if (scriptSrc.trim().length < 100) {
-    return {
-      name,
-      pass: false,
-      detail:
-        'scripts/playtest-report.mjs is trivially short (< 100 chars) — must be a real implementation',
-    };
-  }
-
-  // ── 4.2b: NEGATIVE — the script must contain NO block comment opener at
-  // all. stripMjsComments (below) is LINE-BASED: it only strips `//` line
-  // comments, so a `/* … */` block comment's CONTENTS survive stripping and
-  // can satisfy any Section-4 scan with a decoy (e.g. a dead
-  // `/* … '--format' … 'json' … */` left behind after the real argv entries
-  // were deleted — bypass B). Rather than writing a full block-comment
-  // stripper (this repo has a memory card about exactly that going wrong —
-  // a naive block-comment regex blanking a LATER function when an earlier
-  // file has a stray glob slash-star in a comment), forbid `/*` outright.
-  // The file has none today and the implementer's brief already requires this.
-  if (scriptSrc.indexOf('/*') !== -1) {
-    return {
-      name,
-      pass: false,
-      detail:
-        'scripts/playtest-report.mjs contains "/*" — a block comment. stripMjsComments only strips ' +
-        "`//` line comments, so a block comment's contents survive stripping and can satisfy any " +
-        'Section-4 structural scan with a decoy (e.g. a dead `/* ... "--format" ... "json" ... */` left ' +
-        'behind after the real argv entries were removed). No block comments are allowed in this file.',
-    };
-  }
-
-  const scriptStripped = stripMjsComments(scriptSrc);
-
-  // ── 4.3: script exports `aggregateReport`.
-  if (!scriptSrc.includes('aggregateReport')) {
-    return {
-      name,
-      pass: false,
-      detail:
-        'scripts/playtest-report.mjs does not contain the name "aggregateReport" — must export the pure aggregation function',
-    };
-  }
-
-  // ── 4.4: script uses `execFileSync` (array-args), not string-interpolated shell.
-  // execFileSync with an array avoids shell injection via the DB name argument.
-  if (!scriptStripped.includes('execFileSync')) {
-    return {
-      name,
-      pass: false,
-      detail:
-        'scripts/playtest-report.mjs does not use execFileSync — must use execFileSync(cmd, argsArray) to avoid shell-string injection of spacetime sql arguments',
-    };
-  }
-
-  // Negative: must NOT contain a shell-string spacetime sql interpolation.
-  // The forbidden pattern: `spacetime sql` embedded in a template literal or string concat.
-  // We look for the literal substring "spacetime sql" in the comment-stripped source —
-  // if it appears OUTSIDE of an execFileSync args array, it is a shell injection risk.
-  // The safe form passes ["spacetime", "sql", ...] as separate array elements.
-  // The check: "spacetime sql" as a single string (with a space) in the stripped source
-  // indicates a shell string.  Safe calls use separate array elements and would not
-  // have the two words joined in a single string token.
-  // We check the stripped source to exclude comment-only appearances.
-  if (scriptStripped.includes('spacetime sql')) {
-    return {
-      name,
-      pass: false,
-      detail:
-        'scripts/playtest-report.mjs contains the shell string "spacetime sql" — must pass spacetime and sql as separate array elements to execFileSync, not as a single shell string',
-    };
-  }
-
-  // ── 4.4c: positive — the driver invokes `--format json` as SEPARATE quoted
-  // array elements (guard against a joined '--format json' single-string arg,
-  // which execFileSync would pass through as one literal CLI token spacetime
-  // would not recognise).
-  const hasQuotedFormatFlag =
-    scriptStripped.includes("'--format'") || scriptStripped.includes('"--format"');
-  const hasQuotedJsonToken = scriptStripped.includes("'json'") || scriptStripped.includes('"json"');
-  const hasJoinedFormatJson =
-    scriptStripped.includes("'--format json'") || scriptStripped.includes('"--format json"');
-  if (!hasQuotedFormatFlag || !hasQuotedJsonToken || hasJoinedFormatJson) {
-    return {
-      name,
-      pass: false,
-      detail:
-        "scripts/playtest-report.mjs must pass '--format' and 'json' as SEPARATE quoted array elements to " +
-        "execFileSync (not a joined '--format json' single string) — the pinned 2.8.1 CLI requires them as " +
-        'distinct argv entries.',
-    };
-  }
-
-  // ── 4.4d: positive — the output is actually decoded via JSON.parse(, not just
-  // flag-passed-and-ignored ("added the flag, ignored the output").
-  if (!scriptStripped.includes('JSON.parse(')) {
-    return {
-      name,
-      pass: false,
-      detail:
-        'scripts/playtest-report.mjs does not call JSON.parse( — passing --format json is useless unless the ' +
-        'stdout is actually decoded as JSON (decodeSqlJson must parse it).',
-    };
-  }
-
-  // ── 4.4e: negative — the old pipe-table parser must be gone entirely, no
-  // vestigial second parser and no text-format fallback path.
-  if (scriptStripped.includes('parseSqlTable')) {
-    return {
-      name,
-      pass: false,
-      detail:
-        'scripts/playtest-report.mjs still contains "parseSqlTable" — the old pipe-table parser must be ' +
-        'DELETED outright (no rename, no fallback) now that the driver consumes --format json.',
-    };
-  }
-
-  // ── 4.4f: negative — must not reintroduce the optional-chaining-to-silent-empty
-  // shape that produces a bogus "0 events captured" report (reviewer finding m-3)
-  // instead of failing loud on a malformed/zero-statement envelope.
-  if (scriptStripped.includes('?? []') || scriptStripped.includes('?.rows')) {
-    return {
-      name,
-      pass: false,
-      detail:
-        'scripts/playtest-report.mjs contains "?? []" or "?.rows" — this optional-chaining-to-silent-empty ' +
-        'shape swallows a malformed or zero-statement-result envelope into a bogus "0 events captured" report ' +
-        'instead of throwing (reviewer finding m-3). decodeSqlJson must fail loud on that shape instead.',
-    };
-  }
-
-  // ── 4.5: script has a process.exit(1) fail-loud path.
-  if (!scriptStripped.includes('process.exit(1)')) {
-    return {
-      name,
-      pass: false,
-      detail:
-        'scripts/playtest-report.mjs does not contain process.exit(1) — must fail loud (non-zero exit) when spacetime sql fails or output is empty',
-    };
-  }
-
-  // ── 4.6: script filters kind === 1 (only RecruitAttempt events).
-  // We check that "kind === 1" or "kind==1" appears in the stripped source.
-  const hasKindFilter = scriptStripped.includes('kind === 1') || scriptStripped.includes('kind==1');
-  if (!hasKindFilter) {
-    return {
-      name,
-      pass: false,
-      detail:
-        'scripts/playtest-report.mjs does not contain "kind === 1" or "kind==1" — must filter to RecruitAttempt (kind=1) events only before aggregating',
-    };
-  }
-
-  // ── 4.7: query must NOT use ORDER BY (regression guard). SpacetimeDB 2.8.1's
-  // SQL dialect rejects it outright (re-verified live 2026-08-22: "Unsupported:
-  // ...ORDER BY..." 400 Bad Request) — a query containing it means
-  // `just playtest-report` is broken end-to-end again, exactly the failure mode
-  // this eval previously could not catch (it string-scanned FOR "ORDER BY
-  // event_id", which is the opposite of what's safe).
-  if (scriptStripped.includes('ORDER BY') || scriptStripped.includes('order by')) {
-    return {
-      name,
-      pass: false,
-      detail:
-        'scripts/playtest-report.mjs SQL query text contains "ORDER BY" — SpacetimeDB 2.8.1 ' +
-        '(re-verified 2026-08-22) rejects this clause (400 Unsupported), which breaks `just playtest-report` ' +
-        'end-to-end. The group[0]="first encounter" ordering (PT-B2-RT-01) must instead be enforced ' +
-        'client-side via the exported sortByEventId() applied to the parsed rows before aggregateReport().',
-    };
-  }
-
-  // ── 4.7b: driver selects event_id (required by sortByEventId) and calls sortByEventId
-  // before aggregateReport — the ordering guarantee must actually be wired up, not just exist.
-  if (!scriptStripped.includes('event_id')) {
-    return {
-      name,
-      pass: false,
-      detail:
-        'scripts/playtest-report.mjs does not reference "event_id" anywhere — the SELECT query ' +
-        'must fetch it so sortByEventId can order rows by encounter sequence (PT-B2-RT-01).',
-    };
-  }
-  if (!scriptStripped.includes('sortByEventId(')) {
-    return {
-      name,
-      pass: false,
-      detail:
-        'scripts/playtest-report.mjs does not call sortByEventId(...) — parsed rows must be sorted ' +
-        'by event_id before aggregateReport(), or weakenFirstRate\'s "first encounter" group[0] is ' +
-        'non-deterministic (PT-B2-RT-01).',
-    };
-  }
-
-  // =========================================================================
   // ALL CHECKS PASSED
   // =========================================================================
 
@@ -1847,14 +1331,12 @@ export default async function () {
     pass: true,
     detail:
       [
-        'All pt-b2 playtest-report criteria satisfied:',
+        'playtest-report script behaviour verified:',
         'aggregateReport pure-fn teeth: empty→zeros (no NaN), fixture-B hand-computed rates (successRate=0.5 baitRate=0.5 weakenFirstRate=2/3 recatchRate=1/3), kind=2 filtered, PII-firewall (no hex identity in return);',
         'sortByEventId teeth: out-of-order→ascending, non-mutating, group[0] after sort is the lowest event_id (PT-B2-RT-01, enforced client-side since SpacetimeDB 2.8.1 rejects ORDER BY);',
         'decodeSqlJson teeth: verbatim 4-row --format json capture decoded positionally (unsorted, typed event_id/success, bait_item_id=42 on event 30), valid-empty→[], 13-case must-throw table (count self-checked against buildMustThrowCases()) covering non-JSON, empty, non-array top level, zero/multi statement results, missing/empty/unnamed/duplicate schema columns, missing/non-array rows, non-array row, 7-vs-5 arity mismatch, __proto__-column safety;',
         'coerceRow teeth: one-element Identity→bare hex string, two-element Identity throws, missing key throws, non-finite numeric throws, success:"true" string throws, full decodeSqlJson→coerceRow→sortByEventId→aggregateReport round-trip over the 4-row capture reproduces hand-computed rates (successRate=2/3 baitRate=1/3 weakenFirstRate=1 recatchRate=0.5), a reverse-input-order re-run still recovers weakenFirstRate=1 (ordering-sensitive discriminator), a strictly-between-0-and-1 hand-written fixture (weakenFirstRate=0.5) rules out hard-coded 0/1 returns, and (T3p/T3q, tightened contract) a bare-string identity and an identity:[\'\'] both throw;',
         'behavioral driver tooth (Section 3.5): runs scripts/playtest-report.mjs as a real subprocess with a fake spacetime first on PATH — the recorded argv has SEPARATE "sql"/"--format"/"json" entries (kills a decoy-comment argv removal), the printed rates exactly match a fixture whose four rates are distinct and non-0/1 and whose weakenFirstRate flips between 0.5000 (sorted) and 0.2500 (unsorted) (kills a discarded `out` and a discarded sortByEventId return), a malformed-row envelope aborts the WHOLE run with no rates line printed (kills a per-row try/catch swallow), and neither stdout nor stderr ever contains a fixture identity (PII firewall) across every run;',
-        'justfile: playtest-report recipe present;',
-        'script: exists, non-trivial, contains no block comment ("/*" — a decoy could otherwise survive the line-based comment stripper), exports aggregateReport/sortByEventId/decodeSqlJson/coerceRow, uses execFileSync (no shell-string), passes --format and json as separate array elements, calls JSON.parse(, has no vestigial parseSqlTable, has no "?? []"/"?.rows" silent-empty shape, has process.exit(1), filters kind===1, query has no ORDER BY, selects event_id, calls sortByEventId before aggregateReport.',
       ].join(' ') + driverSkipDetail,
   };
 }
