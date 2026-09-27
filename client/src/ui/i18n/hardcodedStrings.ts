@@ -414,21 +414,25 @@ function setAttributeValueSpan(
  *  before it is not an identifier char, and `(` follows with no whitespace. Returns the index
  *  just after that `(`, or -1.
  *
- *  rb-130 (R-m24-s4-RT1): a member or private call is not the resolver. Skipping any ASCII
- *  whitespace backward, the nearest char must not be `.` (`obj.t(`, `obj.\n  t(`), `#`
- *  (`this.#t(`) or non-ASCII (an accented letter glued to the name; an NBSP inside the gap).
- *  Failing closed on non-ASCII keeps the literal scanned. Out of reach of a lexical scan: a
- *  locally shadowed `t`. */
+ *  rb-130 (R-m24-s4-RT1): a member, private or escape-named call is not the resolver. The char
+ *  glued before the name must not be `}` either (`\u{61}t(` is `at(`). Skipping space, tab, CR
+ *  and LF backward, the nearest char must not be `.` (`obj.t(`, `obj.\n  t(`), `#` (`this.#t(`)
+ *  or outside printable ASCII (another whitespace char in the gap, a non-ASCII letter glued to the
+ *  name): failing closed keeps the literal scanned. Out of reach of a lexical scan: a locally
+ *  shadowed `t`, and `new t(` / `typeof t(`. */
 function exemptCallOpenAt(src: string, mask: LiteralMask, i: number): number {
   if (mask.masked[i] || src.charAt(i) !== 't') return -1;
   let open = i + 1;
   if (src.charAt(open) === 'f') open++;
   if (src.charAt(open) !== '(') return -1;
-  if (isIdentifierChar(src.charAt(i - 1))) return -1;
+  const glued = src.charAt(i - 1);
+  if (glued === '}' || isIdentifierChar(glued)) return -1;
   let j = i - 1;
   while (j >= 0 && isWhitespace(src.charAt(j))) j--;
   const prev = src.charAt(j);
-  if (prev === '.' || prev === '#' || prev.charCodeAt(0) > 127) return -1;
+  // At the start of source `prev` is empty and its code NaN compares false: still exempt.
+  const code = prev.charCodeAt(0);
+  if (prev === '.' || prev === '#' || code < 0x21 || code > 0x7e) return -1;
   return open + 1;
 }
 
