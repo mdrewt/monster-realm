@@ -16,6 +16,12 @@
 //       transitively — and assert no HIDDEN_FIELDS / HIDDEN_TYPES row is reachable
 //       outside that row's `allowedIn` accessors (owner-scoped views that expose a
 //       field to its owner BY DESIGN: my_wallet.balance, my_account.*, ...).
+//   (D) REDUCER SURFACE (T2 contract). The `*_reducer.ts` arg schemas == the
+//       index.ts `__reducerSchema` roster == evals/baselines/client-callable-reducers.json,
+//       including every argument's name and type, in order. Catches a client-supplied
+//       price on buy/sell and any new client-callable reducer (a second profile writer
+//       beside set_profile_name). Any change needs conductor sign-off + bindings
+//       regeneration + a deliberate baseline update.
 //
 // Why a reachability walk and not "does the type exist": types.ts ALSO defines the
 // row types of PRIVATE tables (Monster with its genes, GuestClaim, PlayerSession),
@@ -270,6 +276,103 @@ export function analyze({ accessors, typesSrc, indexSrc, allowlist, hiddenFields
 }
 
 // ---------------------------------------------------------------------------
+// (D) CLIENT REDUCER SURFACE — the generated reducer roster IS the frozen client
+// contract (EV-shop-reducer-security, EV-ranking-security#rating-integrity (a)).
+// Every `*_reducer.ts` arg schema == the index.ts `__reducerSchema` roster == the
+// committed baseline, down to each argument's name and type. Kills: a client
+// price/total/amount argument on buy/sell, a new client-callable reducer (e.g. a
+// second profile writer beside set_profile_name), a renamed or retyped argument.
+// Scheduled/lifecycle reducers are not generated, so they are not in the surface.
+// ---------------------------------------------------------------------------
+
+export const REDUCER_BASELINE = 'evals/baselines/client-callable-reducers.json';
+const SURFACE_CHANGED =
+  'client reducer surface changed — intentional changes need conductor sign-off + ' +
+  'bindings regeneration + baseline update';
+
+/** Top-level `export default { … }` entries of a reducer arg file → ['name: type', …] in order. */
+export function reducerArgs(src) {
+  const body = stripComments(src);
+  const m = /export\s+default\s+\{/.exec(body);
+  if (!m) return null;
+  const entries = [];
+  let depth = 0;
+  let start = m.index + m[0].length;
+  for (let i = start; i < body.length; i++) {
+    const c = body[i];
+    if (c === '"' || c === "'" || c === '`') {
+      let j = i + 1;
+      while (j < body.length && body[j] !== c) j += body[j] === '\\' ? 2 : 1;
+      i = j;
+    } else if (c === '(' || c === '{' || c === '[') depth++;
+    else if ((c === ')' || c === '}' || c === ']') && depth > 0) depth--;
+    else if ((c === ',' && depth === 0) || (c === '}' && depth === 0)) {
+      const text = body.slice(start, i).replace(/\s+/g, '');
+      if (text) entries.push(text);
+      start = i + 1;
+      if (c === '}') break;
+    }
+  }
+  return entries.map((e) => {
+    const getter = /^get([A-Za-z_$][\w$]*)\(\)\{return(.*);?\}$/.exec(e);
+    const [key, type] = getter
+      ? [getter[1], getter[2]]
+      : [e.slice(0, e.indexOf(':')), e.slice(e.indexOf(':') + 1)];
+    return `${toSnake(key)}: ${type.replace(/;$/, '').replaceAll('__t.', '')}`;
+  });
+}
+
+/** index.ts → Map(reducer name → reducer file stem its arg schema import resolves to). */
+export function parseIndexReducers(indexSrc) {
+  const src = stripComments(indexSrc);
+  const imports = new Map();
+  for (const m of src.matchAll(
+    /import\s+([A-Za-z_$][\w$]*)\s+from\s+["']\.\/([a-z0-9_]+)_reducer["']/g,
+  )) {
+    imports.set(m[1], m[2]);
+  }
+  const out = new Map();
+  for (const m of src.matchAll(
+    /__reducerSchema\(\s*["']([a-z0-9_]+)["']\s*,\s*([A-Za-z_$][\w$]*)\s*\)/g,
+  )) {
+    out.set(m[1], imports.get(m[2]) ?? `<unresolved ${m[2]}>`);
+  }
+  return out;
+}
+
+export function analyzeReducers({ reducerFiles, indexSrc, baseline }) {
+  const failures = [];
+  const actual = {};
+  for (const [name, src] of reducerFiles) {
+    const args = reducerArgs(src);
+    if (args === null) failures.push(`[D walk] ${name}_reducer.ts has no \`export default {\``);
+    else actual[name] = args;
+  }
+  const have = Object.keys(actual).sort();
+  const want = Object.keys(baseline).sort();
+  const extra = have.filter((r) => !want.includes(r));
+  const missing = want.filter((r) => !have.includes(r));
+  if (extra.length || missing.length) {
+    failures.push(`[D roster] ${SURFACE_CHANGED}: extra=[${extra}] missing=[${missing}]`);
+  }
+  for (const r of have.filter((x) => want.includes(x))) {
+    const a = actual[r].join(', ');
+    const b = baseline[r].join(', ');
+    if (a !== b) failures.push(`[D args] ${SURFACE_CHANGED}: ${r}(${a}) != baseline ${r}(${b})`);
+  }
+  const idx = parseIndexReducers(indexSrc);
+  const idxNames = [...idx.keys()].sort();
+  if (idxNames.join() !== have.join()) {
+    failures.push(`[D index] index.ts reducersSchema [${idxNames}] != reducer files [${have}]`);
+  }
+  for (const [name, stem] of idx) {
+    if (stem !== name)
+      failures.push(`[D index] reducer '${name}' binds its args from ./${stem}_reducer`);
+  }
+  return { failures, actual };
+}
+
+// ---------------------------------------------------------------------------
 // Teeth — synthetic bindings proving each clause bites
 // ---------------------------------------------------------------------------
 
@@ -367,7 +470,64 @@ export function teeth() {
   if (dead.filter((x) => x.startsWith('[C liveness]')).length !== 2) {
     bad.push(`T10 liveness: expected 2 [C liveness] failures, got [${dead.join(' | ')}]`);
   }
-  return { count: 11, bad };
+
+  // (D) reducer surface teeth
+  const fxReducer = (entries) =>
+    `import { t as __t } from "spacetimedb";\nimport { Act } from "./types";\nexport default {\n${entries}\n};`;
+  const fxRIndex = (names) =>
+    names.map((n) => `import R_${n} from "./${n}_reducer";`).join('\n') +
+    `\nconst r = __reducers(\n${names.map((n) => `  __reducerSchema("${n}", R_${n}),`).join('\n')}\n);`;
+  const cleanR = {
+    buy: fxReducer('  shopId: __t.u32(),\n  qty: __t.u32(),'),
+    act: fxReducer('  battleId: __t.u64(),\n  get action() {\n    return Act;\n  },'),
+  };
+  const rBase = { buy: ['shop_id: u32()', 'qty: u32()'], act: ['battle_id: u64()', 'action: Act'] };
+  const expectR = (label, files, needle, { base = rBase, index } = {}) => {
+    const f = analyzeReducers({
+      reducerFiles: new Map(Object.entries(files)),
+      indexSrc: index ?? fxRIndex(Object.keys(files)),
+      baseline: base,
+    }).failures;
+    const ok = needle === null ? f.length === 0 : f.some((x) => x.includes(needle));
+    if (!ok) bad.push(`${label}: expected ${needle ?? 'PASS'}, got [${f.join(' | ')}]`);
+  };
+  expectR('T11 clean reducer surface', cleanR, null);
+  expectR(
+    'T12 client price argument on buy',
+    { ...cleanR, buy: fxReducer('  shopId: __t.u32(),\n  qty: __t.u32(),\n  price: __t.u64(),') },
+    `[D args] ${SURFACE_CHANGED}: buy(`,
+  );
+  expectR(
+    'T13 new client-callable reducer',
+    { ...cleanR, set_rating: fxReducer('  rating: __t.i32(),') },
+    `[D roster] ${SURFACE_CHANGED}: extra=[set_rating]`,
+  );
+  expectR(
+    'T14 retyped argument',
+    { ...cleanR, buy: fxReducer('  shopId: __t.u32(),\n  qty: __t.u64(),') },
+    '[D args]',
+  );
+  expectR(
+    'T15 getter-typed argument swapped',
+    {
+      ...cleanR,
+      act: fxReducer('  battleId: __t.u64(),\n  get action() {\n    return Other;\n  },'),
+    },
+    '[D args]',
+  );
+  expectR('T16 index/file drift', cleanR, '[D index]', { index: fxRIndex(['buy']) });
+  expectR('T17 baseline lists a removed reducer', cleanR, 'missing=[gone]', {
+    base: { ...rBase, gone: [] },
+  });
+  expectR(
+    'T18 commented-out argument is not surface',
+    {
+      ...cleanR,
+      buy: fxReducer('  shopId: __t.u32(),\n  // price: __t.u64(),\n  qty: __t.u32(),'),
+    },
+    null,
+  );
+  return { count: 19, bad };
 }
 
 // ---------------------------------------------------------------------------
@@ -401,6 +561,33 @@ export default async function clientSurfacePrivacyEval() {
     hiddenFields: HIDDEN_FIELDS,
     hiddenTypes: HIDDEN_TYPES,
   });
+  let reducerBaseline;
+  try {
+    reducerBaseline = JSON.parse(readFileSync(REDUCER_BASELINE, 'utf8')).reducers;
+  } catch (e) {
+    return { name, pass: false, detail: `cannot read ${REDUCER_BASELINE}: ${e.message}` };
+  }
+  if (
+    !reducerBaseline ||
+    typeof reducerBaseline !== 'object' ||
+    Object.keys(reducerBaseline).length === 0
+  ) {
+    return { name, pass: false, detail: `${REDUCER_BASELINE} has no non-empty "reducers" object` };
+  }
+  const reducerFiles = new Map();
+  for (const f of readdirSync(BINDINGS)) {
+    if (f.endsWith('_reducer.ts'))
+      reducerFiles.set(
+        f.slice(0, -'_reducer.ts'.length),
+        readFileSync(path.join(BINDINGS, f), 'utf8'),
+      );
+  }
+  const d = analyzeReducers({
+    reducerFiles,
+    indexSrc: readFileSync(path.join(BINDINGS, 'index.ts'), 'utf8'),
+    baseline: reducerBaseline,
+  });
+  failures.push(...d.failures);
   if (failures.length > 0) return { name, pass: false, detail: failures.join(' | ') };
   return {
     name,
@@ -408,7 +595,8 @@ export default async function clientSurfacePrivacyEval() {
     detail:
       `${accessors.size} client-visible accessors == allowlist == index.ts; ${walked} type reference(s) ` +
       `walked; none reaches any of ${HIDDEN_FIELDS.length} hidden fields / ${HIDDEN_TYPES.length} hidden ` +
-      `types outside its allowedIn (${t.count} teeth verified)`,
+      `types outside its allowedIn; ${reducerFiles.size} client reducers == ${REDUCER_BASELINE} ` +
+      `(names + arg names/types) (${t.count} teeth verified)`,
   };
 }
 
