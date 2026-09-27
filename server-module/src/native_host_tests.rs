@@ -1015,11 +1015,91 @@ fn run_as_trampoline(ctx: &ReducerContext, _args: &[u8]) -> spacetimedb::Reducer
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Caller-scoped view invocation (debloat Phase 2, EV-wallet-privacy native half)
+//
+// A `#[view]` fn is private to the module that declares it (schema.rs), so no test
+// module can call it directly — and a copy of its body would be vacuous. Instead
+// the view macro's exported describer registers the SHIPPED fn with the runtime
+// before `__describe_module__`, and `Fixture::call_view` runs it through the
+// runtime's own `__call_view__` entry point with a chosen sender: the exact path a
+// host takes to serve a subscription. The result is `ViewResultHeader::RowData`
+// (tag 0) followed by the BSATN `Vec<Row>`.
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    /// `#[spacetimedb::view(accessor = my_wallet, public)]` in schema.rs.
+    #[link_name = "__preinit__20_register_describer_my_wallet"]
+    fn register_view_my_wallet();
+    /// spacetimedb 2.8.1 `rt.rs:1267` (`#[unsafe(no_mangle)]`).
+    fn __call_view__(
+        id: usize,
+        sender_0: u64,
+        sender_1: u64,
+        sender_2: u64,
+        sender_3: u64,
+        args: u32,
+        sink: u32,
+    ) -> i16;
+}
+
+/// Registered in this order, so a view's `VIEWS` id is its index here.
+const VIEW_DESCRIBERS: [unsafe extern "C" fn(); 1] = [register_view_my_wallet];
+
+/// `VIEWS` id of `my_wallet` (its index in [`VIEW_DESCRIBERS`]).
+pub(crate) const VIEW_MY_WALLET: usize = 0;
+
+const VIEW_SINK: u32 = 0x71E5;
+
+thread_local! {
+    /// Bytes the runtime wrote to [`VIEW_SINK`] during one `call_view`.
+    static VIEW_OUT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
+
+impl Fixture {
+    /// Run the shipped view registered at `view_id` as `sender` and decode its rows.
+    pub(crate) fn call_view<R: DeserializeOwned>(
+        &self,
+        view_id: usize,
+        sender: Identity,
+    ) -> Vec<R> {
+        ensure_run_as_registered();
+        VIEW_OUT.with(|b| b.borrow_mut().clear());
+        let s = sender.to_byte_array();
+        let word = |i: usize| u64::from_ne_bytes(s[i * 8..i * 8 + 8].try_into().unwrap());
+        // SAFETY: the shipped entry point; args are the INVALID (empty) source (a
+        // zero-argument view), and the sink is one `bytes_sink_write` accepts.
+        let rc =
+            unsafe { __call_view__(view_id, word(0), word(1), word(2), word(3), 0, VIEW_SINK) };
+        assert_eq!(
+            rc, 2,
+            "native_host_tests: __call_view__ must answer with the header ABI (2)"
+        );
+        let out = VIEW_OUT.with(|b| std::mem::take(&mut *b.borrow_mut()));
+        assert_eq!(
+            out.first(),
+            Some(&0u8),
+            "native_host_tests: expected ViewResultHeader::RowData (tag 0), got {out:?}"
+        );
+        bsatn::from_slice::<Vec<R>>(&out[1..])
+            .expect("native_host_tests: view rows must decode as Vec<R>")
+    }
+}
+
 /// Registers the trampoline and publishes `REDUCERS`, once per process.
 fn ensure_run_as_registered() {
     static READY: OnceLock<()> = OnceLock::new();
     READY.get_or_init(|| {
         spacetimedb::rt::register_reducer::<(), RunAsTrampoline>(run_as_signature);
+        // The shipped `#[view]` describers, in `VIEWS` order (see `call_view`). Each is
+        // the `pub extern "C"` symbol the view macro exports; calling it pushes the
+        // SHIPPED view fn into the module's `views` list, exactly as a host's preinit
+        // pass would.
+        for register in VIEW_DESCRIBERS {
+            // SAFETY: a macro-generated zero-argument describer; it only appends to the
+            // not-yet-described module def.
+            unsafe { register() };
+        }
         // SAFETY: the shipped describe entry point; the sink is one
         // `bytes_sink_write` below accepts.
         unsafe { __describe_module__(DESCRIBE_SINK) };
@@ -1196,11 +1276,16 @@ unsafe extern "C" fn identity(out_ptr: *mut u8) {
 #[no_mangle]
 unsafe extern "C" fn bytes_sink_write(
     sink: u32,
-    _buffer_ptr: *const u8,
-    _len_ptr: *mut usize,
+    buffer_ptr: *const u8,
+    len_ptr: *mut usize,
 ) -> u16 {
     // Returning 0 leaves `*len_ptr` at the full buffer length: all consumed.
     if sink == DESCRIBE_SINK || sink == ERROR_SINK {
+        0
+    } else if sink == VIEW_SINK {
+        // SAFETY: the runtime hands a valid `buffer_ptr[..*len_ptr]`.
+        let bytes = unsafe { std::slice::from_raw_parts(buffer_ptr, *len_ptr) };
+        VIEW_OUT.with(|b| b.borrow_mut().extend_from_slice(bytes));
         0
     } else {
         unmodelled("bytes_sink_write to a sink this host never handed out")

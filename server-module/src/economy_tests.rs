@@ -4147,6 +4147,38 @@ fn nh_sell_refuses_before_writing_and_credits_the_server_price() {
     );
 }
 
+/// EV-wallet-privacy (native half): the SHIPPED `my_wallet` view, run through the
+/// runtime's own view entry point, answers each sender with exactly their own row —
+/// a stranger with no wallet sees nothing, a stranger with a wallet sees only theirs.
+/// kills: a view keyed on anything but ctx.sender(), a whole-table view, `find` -> None.
+#[test]
+fn nh_my_wallet_view_returns_only_the_senders_row() {
+    use crate::native_host_tests::VIEW_MY_WALLET;
+    let fx = ec_fixture();
+    let w = ec_world(&fx);
+    w.wallet(ec_me(), 77);
+    let mine: Vec<PlayerWallet> = fx.call_view(VIEW_MY_WALLET, ec_me());
+    assert_eq!(
+        mine.iter()
+            .map(|r| (r.owner_identity, r.balance))
+            .collect::<Vec<_>>(),
+        vec![(ec_me(), 77)],
+        "the owner sees exactly their own row"
+    );
+    let theirs: Vec<PlayerWallet> = fx.call_view(VIEW_MY_WALLET, ec_other());
+    assert!(theirs.is_empty(), "a stranger without a wallet sees no row");
+    w.wallet(ec_other(), 5);
+    let theirs: Vec<PlayerWallet> = fx.call_view(VIEW_MY_WALLET, ec_other());
+    assert_eq!(
+        theirs
+            .iter()
+            .map(|r| (r.owner_identity, r.balance))
+            .collect::<Vec<_>>(),
+        vec![(ec_other(), 5)],
+        "a stranger with a wallet sees only their own, never the owner's 77"
+    );
+}
+
 /// AUTH-23/24 + PRV1-6b as behaviour: `rekey_wallet` credits the whole guest balance
 /// forward onto the destination (adding to any existing balance) and ZEROES the guest row
 /// in place — never deletes it; a missing guest is a no-op. `erase_wallet` deletes exactly
