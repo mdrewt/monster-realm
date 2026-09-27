@@ -76,7 +76,7 @@ function itemDef(id: number, overrides: Partial<StoreItemRow> = {}): StoreItemRo
     // this default preserves every existing assertion (sell-screen is shopModel's job).
     sellPrice: 0n,
     ...overrides,
-  };
+  } as StoreItemRow;
 }
 
 function trainItemDef(id: number, trainStat: string): StoreItemRow {
@@ -168,7 +168,13 @@ describe('buildRaisingViewModel: server-derived stats (ADR-0016, criterion 1)', 
     // (whatever it is) fails on four of them.
     fc.assert(
       fc.property(
-        fc.constantFrom('Hostile', 'Wary', 'Neutral', 'Friendly', 'Devoted'),
+        fc.constantFrom<'Hostile' | 'Wary' | 'Neutral' | 'Friendly' | 'Devoted'>(
+          'Hostile',
+          'Wary',
+          'Neutral',
+          'Friendly',
+          'Devoted',
+        ),
         fc.integer({ min: 1, max: 100 }),
         (trustTier, level) => {
           const m = monster(1n, { trustTier, level });

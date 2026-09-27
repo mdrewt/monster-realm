@@ -11,7 +11,14 @@ import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import type { WasmCharacterState, WasmDirection, WasmMoveInput } from '../convert/convert';
 import { HeldDirections, reissueDir } from './heldKeys';
-import { type ApplyMove, boundSeq, type IntentToSend, Predictor, type QueueOp } from './predictor';
+import {
+  type ApplyMove,
+  boundSeq,
+  type IntentToSend,
+  Predictor,
+  type PredictorEpoch,
+  type QueueOp,
+} from './predictor';
 
 const STEP_MS = 200;
 const QUEUE_CAP = 8;
@@ -1813,8 +1820,8 @@ describe('Predictor nh3 (ADR-0152): epoch/generation guard on dropRejected', () 
     // strictly BELOW and one strictly ABOVE the live value, both against a seq that
     // IS pending: a guard written `epoch < this.#epoch` (or `>`) passes one and fails
     // the other; only `!==` passes both.
-    expect(p.dropRejected(i1.seq, liveEpoch - 1)).toBe(false);
-    expect(p.dropRejected(i1.seq, liveEpoch + 1)).toBe(false);
+    expect(p.dropRejected(i1.seq, (liveEpoch - 1) as PredictorEpoch)).toBe(false);
+    expect(p.dropRejected(i1.seq, (liveEpoch + 1) as PredictorEpoch)).toBe(false);
     expect(p.pendingCount).toBe(2); // nothing evicted by either
 
     const pendingBefore = p.pendingCount;
@@ -1834,7 +1841,7 @@ describe('Predictor nh3 (ADR-0152): epoch/generation guard on dropRejected', () 
     const foreignEpochArb = foreignBase.filter((e) => e !== liveEpoch);
     fc.assert(
       fc.property(seqArb, foreignEpochArb, (seq, foreignEpoch) => {
-        expect(p.dropRejected(seq, foreignEpoch)).toBe(false);
+        expect(p.dropRejected(seq, foreignEpoch as PredictorEpoch)).toBe(false);
         expect(p.pendingCount).toBe(pendingBefore);
         expect(p.queueDepth).toBe(depthBefore);
       }),

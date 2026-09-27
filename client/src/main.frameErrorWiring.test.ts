@@ -69,8 +69,8 @@
  *     `reportError` -> `pushError('reducer', …)`, which adds a SECOND overlay row; the captured
  *     `.errors` array is clean (it is snapshotted first) but the DOM is not.
  *
- * ★ THIS FILE IS NEVER TYPECHECKED. `client/tsconfig.json:15` excludes every test file, and
- * vitest strips types via esbuild. The `Connection` stub below was therefore HAND-DIFFED against
+ * ★ vitest strips types via esbuild, so a type error never reds this suite (tsc checks it
+ * separately in `just client-typecheck`). The `Connection` stub below was HAND-DIFFED against
  * `client/src/net/connection.ts`'s `export interface Connection` (8 members: `conn`, `live`,
  * `identity`, `linkFrozen`, `continueAnonymously`, `sessionState`, `startSignIn`,
  * `reconnectNow`), and every element/record this file reads back is fetched through a NAMED
@@ -320,7 +320,7 @@ function runFrame(): void {
   ).not.toBeNull();
 }
 
-// --- named runtime readers (this file is never typechecked — see the header) ------------
+// --- named runtime readers (see the header) ---------------------------------------------
 
 /** The self-mounted `#mr-error-overlay` root. Fails by NAME if main.ts did not mount it, rather
  *  than throwing an unreadable TypeError on `null.style` at the point of use. */

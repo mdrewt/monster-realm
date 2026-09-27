@@ -11,10 +11,9 @@
 // code SET comes back wrong (a TS2307 "cannot find module", never the pinned code), and every
 // grouped assertion below reds for that reason until the specialist ships the five files.
 //
-// THE NEGATIVE COMPILE MECHANISM (ADR-0256 D3, extending ADR-0205 D6). `client/tsconfig.json`
-// excludes `**/*.test.ts`, so nothing written in THIS file is ever typechecked by
-// `just client-typecheck`, and `@ts-expect-error` is not this repo's house style (zero
-// occurrences in `client/src`). Instead this file writes small probe `.ts` MODULES to a fresh
+// THE NEGATIVE COMPILE MECHANISM (ADR-0256 D3, extending ADR-0205 D6). A deliberately ill-typed
+// line in THIS file would fail `just client-typecheck` itself, and `@ts-expect-error` proves only
+// that SOME error occurs. Instead this file writes small probe `.ts` MODULES to a fresh
 // temp dir and spawns `tsc --noEmit` on ALL of them in ONE invocation, then hand-parses the
 // `name.ts(line,col): error TSnnnn` diagnostics with `indexOf`/`slice` (no RegExp) and asserts
 // the EXACT error-code set per fixture.

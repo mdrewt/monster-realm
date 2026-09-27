@@ -71,7 +71,7 @@ function makeItemDef(id: number, overrides: Partial<StoreItemRow> = {}): StoreIt
     trainAmount: 0,
     sellPrice: 0n,
     ...overrides,
-  };
+  } as StoreItemRow;
 }
 
 function makeInventoryItem(

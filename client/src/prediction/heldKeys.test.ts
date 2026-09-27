@@ -28,7 +28,7 @@ const WASM_BIN = path.join(
  * A missing pkg FAILS (run `just wasm`), never skips.
  */
 function wasmStepMs(): number {
-  let bytes: Buffer;
+  let bytes: Buffer<ArrayBuffer>;
   try {
     bytes = readFileSync(WASM_BIN);
   } catch (err) {

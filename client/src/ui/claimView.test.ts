@@ -112,9 +112,8 @@ function makeHandlers(): ClaimViewHandlers {
     onDeclineRequested: vi.fn(),
     onDeclineConfirmed: vi.fn(),
     onDeclineCancelled: vi.fn(),
-    // Client specs are NOT typechecked (`client/tsconfig.json` excludes `*.test.ts`), so a
-    // missing required handler here is silent until something clicks the button and calls
-    // `undefined()`. Spelled out rather than relying on the compiler that does not run.
+    // Every required handler is spelled out: vitest does not typecheck, so a missing one would
+    // stay silent in the test run until something clicks the button and calls `undefined()`.
     onPrivacy: vi.fn(),
   };
 }

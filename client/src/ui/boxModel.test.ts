@@ -9,11 +9,9 @@
 // spread-from-a-partial: a field that silently defaults is a field whose gate can never
 // be exercised here.
 //
-// RED-TEAM CORRECTION (D4): an earlier draft of this header called the above a "compile
-// gate". IT IS NOT ONE. `client/tsconfig.json` sets `"exclude": ["**/*.test.ts"]`, and
-// vitest strips types through esbuild without checking them — so NO type annotation in
-// ANY test file in this repo is ever verified. Do not rely on a test-file literal to
-// enforce a store-type change. The teeth that actually enforce EG4-7 are RUNTIME:
+// `just client-typecheck` checks this literal, but vitest strips types through esbuild
+// without checking them, so do not rely on a test-file literal to gate the test run on a
+// store-type change. The teeth that enforce EG4-7 at runtime are:
 // `store.test.ts`'s required-field list (`Object.keys` must contain the five new fields)
 // and `rowConvert.test.ts`'s `expect(keys).not.toContain('bond')` on the converter output.
 //

@@ -46,6 +46,7 @@ import { describe, expect, it } from 'vitest';
 // the implementation is exactly what a hand-typed pin cannot see.
 // VERIFIED BEFORE ADOPTING: `evals/account-e2e.eval.mjs` has
 // NO top-level side effects (its live phase runs only inside the exported `run()`).
+// @ts-expect-error -- evals/*.mjs ship no type declarations; the import is a plain string constant.
 import { PIN_PSEUDONYMIZATION } from '../../../evals/account-e2e.eval.mjs';
 import {
   buildPrivacyViewModel,

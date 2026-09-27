@@ -622,7 +622,8 @@ describe('overlayRegistry — canOpen over arbitrary visible sets (A3)', () => {
     expect(canOpen('boxView', ['raisingView', 'evolutionView']).kind).toBe('allow');
     expect(
       sorted(
-        (canOpen('boxView', ['raisingView', 'evolutionView']) as { forceHide: string[] }).forceHide,
+        (canOpen('boxView', ['raisingView', 'evolutionView']) as unknown as { forceHide: string[] })
+          .forceHide,
       ),
       'BOTH siblings must be force-hidden, not just the first',
     ).toEqual(['evolutionView', 'raisingView']);
@@ -997,9 +998,8 @@ describe('overlayRegistry — OverlayHandles, the force-hide write table (uxd3-c
     // table before a single test runs. The runtime assertions here can only prove that a
     // CONFORMING table built from the imported NEVER_FORCE_HIDE looks right; they CANNOT catch a
     // LOOSENING of the type to `Partial<Record<OverlayId, () => void>>` (which would let ANY id
-    // go missing, not just dialogueView) — `@ts-expect-error` appears ZERO times in
-    // `client/src` and is not this repo's house style, so asserting the type is not
-    // `Partial<>`-loosened is NOT this tooth's job. That loosening is caught instead by
+    // go missing, not just dialogueView), so asserting the type is not `Partial<>`-loosened is
+    // NOT this tooth's job. That loosening is caught instead by
     // `W-UXD3C-HANDLE-TABLE` (main.wiring.test.ts), whose bidirectional per-id loop over
     // `main.ts`'s ACTUAL handle table checks every one of the OTHER 14 ids too, so a `Partial<>`
     // table that dropped a random id (not just dialogueView) reds there.
@@ -1045,10 +1045,9 @@ describe('overlayRegistry — OverlayHandles, the force-hide write table (uxd3-c
 // dynamic import per-test keeps the RED CONFINED to these five new tests; the pre-existing 18
 // stay green throughout.
 //
-// THE NEGATIVE COMPILE MECHANISM (ADR-0205 D6). `client/tsconfig.json` excludes `**/*.test.ts`,
-// so nothing written in a test file is typechecked by `just client-typecheck`, and
-// `@ts-expect-error` is unusable here — it occurs zero times in `client/src`, recorded as not
-// this repo's house style at `overlayRegistry.test.ts:1050`. Instead OR-A11Y-TOTALITY-COMPILE
+// THE NEGATIVE COMPILE MECHANISM (ADR-0205 D6). A deliberately ill-typed line in a test file
+// would fail `just client-typecheck` itself, and `@ts-expect-error` proves only that SOME error
+// occurs. Instead OR-A11Y-TOTALITY-COMPILE
 // and OR-A11Y-ROLE-CLOSED-UNION-COMPILE write small probe `.ts` modules to a fresh temp dir and
 // SPAWN `tsc --noEmit` on each, asserting the POLARITY of the compiler's own verdict — never a
 // text scan, never `@ts-expect-error`. Red-team measured (ADR-0205 D6) that a text-pin

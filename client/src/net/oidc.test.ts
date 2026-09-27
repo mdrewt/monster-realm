@@ -1543,7 +1543,7 @@ describe('G30 (runtime): oidc reaches every ambient surface ONLY through the inj
     const noCrypto = makeRig({ omitCrypto: true }).host;
     const noStorage = { ...makeRig().host, sessionStorage: undefined };
     for (const host of [undefined, {}, noCrypto, noStorage]) {
-      const client = createOidcClient(host, CONFIG);
+      const client = createOidcClient(host as Parameters<typeof createOidcClient>[0], CONFIG);
       expect(client.consumeReturnLeg()).toBe(false);
       expect((await client.beginSignIn()).kind).not.toBe('ready');
       expect((await client.renewOrExchange()).kind).not.toBe('ok');

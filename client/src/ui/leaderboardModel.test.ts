@@ -18,11 +18,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { StoreProfile } from '../net/store';
-import {
-  buildLeaderboardViewModel,
-  type LeaderboardRowViewModel,
-  type LeaderboardViewModel,
-} from './leaderboardModel';
+import { buildLeaderboardViewModel } from './leaderboardModel';
 
 // ---------------------------------------------------------------------------
 // Factories

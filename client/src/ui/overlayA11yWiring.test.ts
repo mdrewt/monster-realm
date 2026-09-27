@@ -10,12 +10,10 @@
 //      opener table is `Readonly<Record<OverlayId, …>>` (`overlayRegistry.ts:76`/`:164`'s device),
 //      belt-and-braced with a runtime key-set equality, a runtime SHAPE equality over what each
 //      opener hands back, and a `checked === 16` counter.
-//      CORRECTION (rb-18): the `Record` is an EDITOR-time device only. `client/tsconfig.json`
-//      excludes `**/*.test.ts`, so `just client-typecheck` — and therefore `just ci` — never
-//      typechecks this file, and vitest transpiles without checking. The header previously called
-//      a missing id "a COMPILE error"; in CI it is not one. Every totality claim below is
-//      therefore carried by a RUNTIME assertion, which is why `S10-WIRE-TOTALITY` pins the opener
-//      RETURN SHAPE and not merely the key set.
+//      The `Record` is checked by `just client-typecheck` (test files are typechecked), but
+//      vitest transpiles without checking, so every totality claim below is ALSO carried by a
+//      RUNTIME assertion — which is why `S10-WIRE-TOTALITY` pins the opener RETURN SHAPE and not
+//      merely the key set.
 //   2. FIXTURE FIDELITY. The per-view specs copy their shell markup into the test file, so they
 //      keep passing if `client/index.html` loses a `tabindex` — the very attribute ADR-0205 D1
 //      makes ten of the seventeen anchors depend on. This file adopts the REAL `client/index.html`,
@@ -413,7 +411,7 @@ const OPENERS: Readonly<Record<OverlayId, () => Opened>> = {
       onCancelDeletion: noop,
       onExportRequested: noop,
       onDismissed: noop,
-    });
+    } as ConstructorParameters<typeof PrivacyView>[0]);
     view.show();
     return {
       root: capturedRoot('privacyView'),
@@ -433,7 +431,7 @@ const OPENERS: Readonly<Record<OverlayId, () => Opened>> = {
       onDeclineRequested: noop,
       onDeclineConfirmed: noop,
       onDeclineCancelled: noop,
-    });
+    } as ConstructorParameters<typeof ClaimView>[0]);
     view.show();
     return { root: capturedRoot('claimView'), close: () => view.hide(), reopen: () => view.show() };
   },
@@ -555,8 +553,8 @@ describe.sequential('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wir
     );
 
     // SHAPE totality, not just KEY totality. `Opened.reopen` is what makes the repeat and
-    // reopen-after-close teeth possible, and since this file is not typechecked in CI (see the
-    // header correction) a `reopen`-less opener is a RUNTIME question. Asserted here, over every
+    // reopen-after-close teeth possible, and since vitest runs without typechecking (see the
+    // header) a `reopen`-less opener is also asserted at RUNTIME. Asserted here, over every
     // id, so a seventeenth overlay cannot ship an opener that satisfies the key set while handing
     // back nothing to re-open — which is exactly how the guarantee would drift back to resting on
     // seventeen separately-maintained per-view specs.

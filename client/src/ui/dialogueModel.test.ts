@@ -13,7 +13,7 @@
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { DIALOGUE_TREES } from './dialogueContent';
-import { buildDialogueViewModel } from './dialogueModel';
+import { buildDialogueViewModel as buildDialogueViewModelReal } from './dialogueModel';
 
 // ---------------------------------------------------------------------------
 // Local type definitions (mirrors of what store.ts + dialogueContent.ts will export).
@@ -44,6 +44,16 @@ interface ClientDialogueTree {
   rootNodeId: string;
   nodes: ReadonlyMap<string, ClientDialogueNode>;
 }
+
+// The fixtures use the file-local mirrors above (no `interaction`; choices without
+// `nextNodeId`), which the model tolerates at runtime; the shipped DIALOGUE_TREES and the
+// real-row cases below fit the same parameter types. Re-typing the SAME function to accept
+// them is compile-time only.
+const buildDialogueViewModel = buildDialogueViewModelReal as unknown as (
+  conv: StorePlayerConversation | undefined,
+  npcs: ReadonlyMap<bigint, StoreNpcRow>,
+  content: ReadonlyMap<string, Pick<ClientDialogueTree, 'nodes'>>,
+) => ReturnType<typeof buildDialogueViewModelReal>;
 
 // ---------------------------------------------------------------------------
 // Factories

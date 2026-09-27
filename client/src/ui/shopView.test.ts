@@ -728,7 +728,10 @@ function m24s4NoShopVm(): ShopScreenViewModel {
 }
 
 function m24s4EmptyShopVm(): ShopScreenViewModel {
-  return { ...shopVm(m24s4Balance('Coins: 100')), shopName: 'Wayside Stall' };
+  return {
+    ...shopVm(m24s4Balance('Coins: 100')),
+    shopName: 'Wayside Stall',
+  } as ShopScreenViewModel;
 }
 
 /** One buy row, one sellable row, one unsellable row — every fixture name is
@@ -744,7 +747,7 @@ function m24s4PopulatedShopVm(): ShopScreenViewModel {
       { invId: 1n, itemId: 2, name: 'Feather', count: 3, sellPrice: 23n, canSell: true },
       { invId: 2n, itemId: 3, name: 'Talisman', count: 1, sellPrice: 0n, canSell: false },
     ],
-  };
+  } as ShopScreenViewModel;
 }
 
 // m24s4 hardening (mirrors m24s3's H1, battleView.test.ts): the shopView keys this

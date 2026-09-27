@@ -53,7 +53,7 @@ function battleMonster(overrides: Partial<StoreBattleMonster> = {}): StoreBattle
     statSpDefense: 10,
     knownSkillIds: [1],
     ...overrides,
-  };
+  } as StoreBattleMonster;
 }
 
 function battleSide(overrides: Partial<StoreBattleSide> = {}): StoreBattleSide {
@@ -1511,7 +1511,7 @@ describe('battleModel m14.5d invariant: battleVMsEqual weather=undefined never t
     // Simulate a VM built without the weather field (e.g., from a test factory
     // that predates m14.5d). We must use `as` to bypass TypeScript's required field.
     const vmUndefinedWeather = { ...vmBase } as BattleViewModel;
-    delete (vmUndefinedWeather as Record<string, unknown>).weather;
+    delete (vmUndefinedWeather as unknown as Record<string, unknown>).weather;
 
     // Both VMs have weather=undefined. Must return true (no weather === no weather),
     // not throw TypeError: Cannot read properties of undefined (reading 'label').
@@ -1528,7 +1528,7 @@ describe('battleModel m14.5d invariant: battleVMsEqual weather=undefined never t
     } as Partial<StoreBattle>);
     const vmBase = makeFullVM();
     const vmUndefinedWeather = { ...vmBase } as BattleViewModel;
-    delete (vmUndefinedWeather as Record<string, unknown>).weather;
+    delete (vmUndefinedWeather as unknown as Record<string, unknown>).weather;
 
     expect(() => battleVMsEqual(vmWithWeather, vmUndefinedWeather)).not.toThrow();
     expect(battleVMsEqual(vmWithWeather, vmUndefinedWeather)).toBe(false);
@@ -1583,7 +1583,7 @@ describe('battleModel RT-CI-01: cureItems null-cureStatus runtime filter invaria
       withNull as never,
     );
     expect(vm).not.toBeNull();
-    const cureItems = (vm as Record<string, unknown>).cureItems as CureItemStub[];
+    const cureItems = (vm as unknown as Record<string, unknown>).cureItems as CureItemStub[];
     // Only the non-null cureStatus item must appear; the null one must be filtered out.
     expect(cureItems).toHaveLength(1);
     expect(cureItems[0]!.itemId).toBe(1);
@@ -1603,7 +1603,7 @@ describe('battleModel RT-CI-01: cureItems null-cureStatus runtime filter invaria
       input as never,
     );
     expect(vm).not.toBeNull();
-    const cureItems = (vm as Record<string, unknown>).cureItems as CureItemStub[];
+    const cureItems = (vm as unknown as Record<string, unknown>).cureItems as CureItemStub[];
     expect(cureItems).toHaveLength(0);
   });
 });
@@ -1625,7 +1625,7 @@ describe('battleModel m14.5d-1b: buildBattleViewModel — cureItems classify-by-
       cureItemsInput as never,
     );
     expect(vm).not.toBeNull();
-    const cureItems = (vm as Record<string, unknown>).cureItems as CureItemStub[];
+    const cureItems = (vm as unknown as Record<string, unknown>).cureItems as CureItemStub[];
     expect(cureItems).toHaveLength(1);
     expect(cureItems[0]!.itemId).toBe(1);
     // Kills: an impl that lists all items regardless of cureStatus
@@ -1646,7 +1646,7 @@ describe('battleModel m14.5d-1b: buildBattleViewModel — cureItems classify-by-
       cureItemsInput as never,
     );
     expect(vm).not.toBeNull();
-    const cureItems = (vm as Record<string, unknown>).cureItems as CureItemStub[];
+    const cureItems = (vm as unknown as Record<string, unknown>).cureItems as CureItemStub[];
     expect(cureItems).toHaveLength(0);
     // Kills: an impl that shows the cure item even when count is 0
   });
@@ -1666,7 +1666,7 @@ describe('battleModel m14.5d-1b: buildBattleViewModel — cureItems classify-by-
       cureItemsInput as never,
     );
     expect(vm).not.toBeNull();
-    const cureItems = (vm as Record<string, unknown>).cureItems as CureItemStub[];
+    const cureItems = (vm as unknown as Record<string, unknown>).cureItems as CureItemStub[];
     expect(cureItems).toHaveLength(0);
     // Kills: an impl that gates only on cureStatus/count but ignores outcome
   });
@@ -1677,7 +1677,7 @@ describe('battleModel m14.5d-1b: buildBattleViewModel — cureItems classify-by-
     const b = makeBattle({ outcome: 'Ongoing' });
     const vm = buildBattleViewModel(b, makeSkillMap(1), makeSpeciesMap(speciesRow(1)));
     expect(vm).not.toBeNull();
-    const cureItems = (vm as Record<string, unknown>).cureItems;
+    const cureItems = (vm as unknown as Record<string, unknown>).cureItems;
     // Must be an empty array — not undefined, not null, not throwing
     expect(Array.isArray(cureItems)).toBe(true);
     expect((cureItems as unknown[]).length).toBe(0);

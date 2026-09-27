@@ -340,7 +340,7 @@ function makeRecruitVM(overrides: Partial<BattleViewModel> = {}): BattleViewMode
     // cureItems field — empty by default; cure-item tests supply a real value via makeCureItemVM.
     cureItems: [],
     ...overrides,
-  };
+  } as BattleViewModel;
 }
 
 function makeCallbacks(): BattleViewCallbacks {
@@ -350,7 +350,7 @@ function makeCallbacks(): BattleViewCallbacks {
     onSwap: vi.fn(),
     onRecruit: vi.fn(),
     onUseItem: vi.fn(),
-  };
+  } as unknown as BattleViewCallbacks;
 }
 
 // ---------------------------------------------------------------------------
@@ -1497,7 +1497,7 @@ describe('BattleView ux1-2: "Press Esc to continue" hint on battle-result overla
 //   `expect(callbacks.onPvpSwap).not.toHaveBeenCalled()` would be
 //   `expect(undefined).not.toHaveBeenCalled()` — a HARD ERROR, not a pass — and
 //   `makeRecruitVM()` (:39-76) omits `isPvp`/`pvpPendingSubmit`/`pvpOpponentName`.
-//   `client/tsconfig.json` excludes `**/*.test.ts`, so nothing type-checks either
+//   Both factories cast their literals, so the type check sees neither
 //   omission. `isPvp` is set EXPLICITLY on every VM below (never relying on
 //   `undefined` being falsy in cases whose whole purpose is pinning the PvE arm).
 // =============================================================================
@@ -3561,8 +3561,8 @@ const RB59_BASE = makeUx4VM();
  * The FIVE battle states the X1 pair relation must hold in — the S2 tooth family.
  *
  * `makeUx4VM` (NOT `makeRecruitVM`) is the factory here on purpose: `makeRecruitVM`
- * omits `isPvp`/`pvpPendingSubmit`/`pvpOpponentName` entirely, and `client/tsconfig.json`
- * excludes every test file so nothing would type-check that omission — a PvP row built on
+ * omits `isPvp`/`pvpPendingSubmit`/`pvpOpponentName` entirely, and its return is cast to
+ * `BattleViewModel`, so the type check does not see that omission — a PvP row built on
  * it would silently be a PvE row and the whole S2 family would be vacuous. Every row
  * sets `isPvp` EXPLICITLY rather than relying on `undefined` being falsy.
  *
@@ -5665,7 +5665,7 @@ describe('rb-121 BattleView: a settle-released PvE action lock re-anchors focus 
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const d = raDeferred();
     const callbacks = makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) });
-    const { parent, view } = raMount(callbacks);
+    const { parent } = raMount(callbacks);
     await s4FlushMacrotask();
     const root = parent.firstElementChild as HTMLElement;
     const c = raControls(parent);
@@ -5699,7 +5699,7 @@ describe('rb-121 BattleView: a settle-released PvE action lock re-anchors focus 
   it('rb121-BATTLE-RESOLVE BITES: onAttack RESOLVES with no refresh() (the dominant sendGuarded no-batch path) -> focus lands on the anchor after one macrotask (RED on master)', async () => {
     const d = raDeferred();
     const callbacks = makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) });
-    const { parent, view } = raMount(callbacks);
+    const { parent } = raMount(callbacks);
     await s4FlushMacrotask();
     const root = parent.firstElementChild as HTMLElement;
     const c = raControls(parent);
@@ -5735,7 +5735,7 @@ describe('rb-121 BattleView: a settle-released PvE action lock re-anchors focus 
         throw new Error('rb121-BATTLE-THROW: synchronous throw');
       }),
     });
-    const { parent, view } = raMount(callbacks);
+    const { parent } = raMount(callbacks);
     await s4FlushMacrotask();
     const root = parent.firstElementChild as HTMLElement;
     const c = raControls(parent);
@@ -5801,7 +5801,7 @@ describe('rb-121 BattleView: a settle-released PvE action lock re-anchors focus 
   it('rb121-BATTLE-KEEP-INROOT BITES: focus already on a live in-root sentinel survives a settle untouched, and openOverlayA11y is never re-invoked -- kills a guard broader than "focus === document.body"', async () => {
     const d = raDeferred();
     const callbacks = makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) });
-    const { parent, view } = raMount(callbacks);
+    const { parent } = raMount(callbacks);
     await s4FlushMacrotask();
     const root = parent.firstElementChild as HTMLElement;
     const c = raControls(parent);

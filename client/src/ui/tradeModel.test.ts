@@ -699,7 +699,10 @@ describe('buildTradeViewModel [m15b-TM-10]: property — never throws on any val
             ),
             // Status narrowed to 'Pending' | 'ConfirmedByCounterparty' — 'UnknownFutureStatus'
             // removed because it is now a TypeScript compile error at the call site.
-            status: fc.constantFrom('Pending', 'ConfirmedByCounterparty'),
+            status: fc.constantFrom<'Pending' | 'ConfirmedByCounterparty'>(
+              'Pending',
+              'ConfirmedByCounterparty',
+            ),
             createdAtMs: fc.bigInt({ min: 0n, max: 999999n }),
           }),
           { maxLength: 10 },
@@ -727,7 +730,10 @@ describe('buildTradeViewModel [m15b-TM-11]: property — initiator role detectio
         fc.string({ minLength: 4, maxLength: 32 }), // viewer identity
         fc.string({ minLength: 4, maxLength: 32 }), // counterparty (different)
         fc.bigInt({ min: 1n, max: 9999n }), // tradeId
-        fc.constantFrom('Pending', 'ConfirmedByCounterparty'),
+        fc.constantFrom<'Pending' | 'ConfirmedByCounterparty'>(
+          'Pending',
+          'ConfirmedByCounterparty',
+        ),
         (viewerId, cpId, tradeId, status) => {
           // Skip when viewerId===cpId to avoid ambiguous cases
           if (viewerId === cpId) return;
@@ -749,7 +755,10 @@ describe('buildTradeViewModel [m15b-TM-11]: property — initiator role detectio
         fc.string({ minLength: 4, maxLength: 32 }), // initiator (third party)
         fc.string({ minLength: 4, maxLength: 32 }), // viewer = counterparty
         fc.bigInt({ min: 1n, max: 9999n }),
-        fc.constantFrom('Pending', 'ConfirmedByCounterparty'),
+        fc.constantFrom<'Pending' | 'ConfirmedByCounterparty'>(
+          'Pending',
+          'ConfirmedByCounterparty',
+        ),
         (initiatorId, viewerId, tradeId, status) => {
           if (initiatorId === viewerId) return;
           const offer = makeOffer(tradeId, initiatorId, viewerId, { status });

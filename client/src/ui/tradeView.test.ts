@@ -731,7 +731,7 @@ describe('m24s0 sink elimination (ADR-0255) — tradeView clears', () => {
  *  fixture value is chosen to contain NONE of the M24S4_TV_ROSTER words. */
 function m24s4TradeVm(
   actions: Array<'accept' | 'reject' | 'confirm' | 'cancel'>,
-): TradeScreenViewModel {
+): Extract<TradeScreenViewModel, { statusLabel: string }> {
   return {
     ...makePendingTradeVM('Awaiting counterparty', actions),
     mySide: {
@@ -748,7 +748,7 @@ function m24s4TradeVm(
       items: [{ itemId: 1, name: 'Charm', qty: 3 }],
       currency: 250n,
     },
-  };
+  } as Extract<TradeScreenViewModel, { statusLabel: string }>;
 }
 
 /** `JSON.stringify` throws on a bare bigint (trade currency IS bigint,

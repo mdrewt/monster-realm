@@ -30,9 +30,8 @@
 // ⚠ FALSE-GREEN GUARD.
 // A 2-parameter fake STRUCTURALLY SATISFIES a 3-parameter interface, so a fake that records
 // only {w, h} would compile, silently drop dpr, and report GREEN on an impl that never
-// threads it. And `client/tsconfig.json:15` excludes `**/*.test.ts` while vitest transpiles
-// without typechecking, so NO type error in this file is ever caught by `just ci`. Therefore,
-// by construction below:
+// threads it. And vitest transpiles without typechecking, so a type error in this file never
+// reds the test run. Therefore, by construction below:
 //   - every fake renderer declares resize(w, h, dpr) and records ALL THREE values;
 //   - the fake window's devicePixelRatio is a MUTABLE field (like innerWidth/innerHeight);
 //   - every assertion is on the full {w, h, dpr} triple, never just {w, h}.

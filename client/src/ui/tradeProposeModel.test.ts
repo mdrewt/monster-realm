@@ -24,7 +24,6 @@ import {
   buildProposeSubmission,
   parseCurrency,
   type TradeProposeDraft,
-  type TradeProposeLists,
   type TradeProposeTarget,
 } from './tradeProposeModel';
 

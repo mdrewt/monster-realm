@@ -1443,7 +1443,7 @@ describe('rb-121 PvpView: a settle-released lifecycle lock re-anchors focus the 
   });
 
   it('rb121-PVP-KEEP-OUTROOT BITES: focus on an element outside the overlay root survives a settle untouched, and openOverlayA11y is never re-invoked', async () => {
-    const root = mountPvpOverlay();
+    mountPvpOverlay();
     const d = raDeferred();
     const cbs = makeCallbacks();
     (cbs.onAccept as ReturnType<typeof vi.fn>).mockReturnValue(d.promise);

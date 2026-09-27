@@ -859,7 +859,7 @@ function battleMonster(overrides: Partial<StoreBattleMonster> = {}): StoreBattle
     statSpDefense: 10,
     knownSkillIds: [1],
     ...overrides,
-  };
+  } as StoreBattleMonster;
 }
 
 /** Factory: minimal valid StoreBattleSide. */
@@ -1385,7 +1385,7 @@ function itemDefRow(id: number, trainStat: string | null = null): StoreItemRow {
     recruitBonus: 0,
     trainStat,
     trainAmount: trainStat != null ? 10 : 0,
-  };
+  } as StoreItemRow;
 }
 
 // --- Inventory: upsert / retrieve / batch signal -------------------------------
@@ -2031,8 +2031,8 @@ describe('★ AuthoritativeStore EG4-5: the fusion store surface is DELETED, not
     // is invisible to every other test in this slice: dead ingest wiring that still
     // compiles, still runs, and still accumulates rows nothing reads.
     // Kills: leaving `#fusions` + its four members in place "just in case".
-    // (Runtime probe, not a type probe: client/tsconfig.json excludes **/*.test.ts, so a
-    // tsc-only assertion would gate nothing.)
+    // (Runtime probe through an `unknown` cast: naming a deleted member directly would not
+    // compile.)
     const s = new AuthoritativeStore();
     const probe = s as unknown as Record<string, unknown>;
     expect(

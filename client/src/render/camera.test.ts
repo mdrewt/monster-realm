@@ -314,7 +314,7 @@ describe('FollowCamera C1d: pure computation (no side effects)', () => {
     // player (5,3) with 160×112 viewport in 10×7 map → x=96, y=56
     // ((5+0.5)*32 - 80 = 96; (3+0.5)*32 - 56 = 56)
     const cam = new FollowCamera();
-    const _irrelevant = cam.offsetFor(9, 6, 160, 112, 10, 7); // far corner
+    cam.offsetFor(9, 6, 160, 112, 10, 7); // far corner
     const center = cam.offsetFor(5, 3, 160, 112, 10, 7);
     expect(center.x).toBe(96);
     expect(center.y).toBe(56);

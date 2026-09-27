@@ -53,7 +53,7 @@ const EXPECTED_COUNTERS: readonly string[] = [
  *  The length guard excludes a bare `'mr_client_'` PREFIX constant (a legitimate thing to export
  *  if the names are assembled from it) so it is not miscounted as a ninth metric. */
 const METRIC_PREFIX = 'mr_client_';
-const NAME_CONSTANTS: readonly string[] = Object.values(names).filter(
+const NAME_CONSTANTS: readonly string[] = (Object.values(names) as unknown[]).filter(
   (v): v is string =>
     typeof v === 'string' && v.startsWith(METRIC_PREFIX) && v.length > METRIC_PREFIX.length,
 );

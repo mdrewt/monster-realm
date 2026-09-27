@@ -6,8 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 // import is what lets the deletion tooth at the foot of the fusion section PROVE the
 // export is gone at runtime. A named `import { fusionRowToStore }` cannot express
 // "this must not exist" — it would either red at module-eval or (once deleted) fail to
-// compile; the namespace object is the only runtime-inspectable surface, and
-// client/tsconfig.json EXCLUDES **/*.test.ts, so a tsc-only probe would gate nothing.
+// compile; the namespace object is the only runtime-inspectable surface.
 import * as rowConvertModule from './rowConvert';
 import {
   battleRowToStore,
@@ -722,14 +721,14 @@ describe('rowConvert M9c: itemRowToStore — SDK row -> StoreItemRow', () => {
   it('S3: BITES trainStat Some({tag:"Speed"}) maps to string "Speed" (not the object)', () => {
     // VERIFIED SDK shape: SpacetimeDB 2.6 decodes Some(StatKind::Speed) as {tag:"Speed"}.
     // Kills: an impl that stores the {tag:"Speed"} object or maps it to "" instead of "Speed".
-    const sdk: SdkItemRowRow = {
+    const sdk = {
       id: 1,
       name: 'Speed Berry',
       description: 'Increases speed',
       recruitBonus: 0,
       trainStat: { tag: 'Speed' },
       trainAmount: 10,
-    };
+    } as SdkItemRowRow;
     const store = itemRowToStore(sdk);
     expect(typeof store.trainStat).toBe('string');
     expect(store.trainStat).toBe('Speed');
@@ -739,14 +738,14 @@ describe('rowConvert M9c: itemRowToStore — SDK row -> StoreItemRow', () => {
     // VERIFIED SDK shape: SpacetimeDB 2.6 decodes None as undefined (not null).
     // The store normalizes undefined->null so callers use strict null checks not undefined checks.
     // Kills: an impl that passes through undefined, or uses ?? "" instead of ?? null.
-    const sdk: SdkItemRowRow = {
+    const sdk = {
       id: 2,
       name: 'Bait',
       description: 'A simple bait',
       recruitBonus: 5,
       trainStat: undefined,
       trainAmount: 0,
-    };
+    } as SdkItemRowRow;
     const store = itemRowToStore(sdk);
     expect(store.trainStat).toBeNull();
     expect(store.trainStat).not.toBeUndefined();
@@ -757,28 +756,28 @@ describe('rowConvert M9c: itemRowToStore — SDK row -> StoreItemRow', () => {
     // Kills: an impl that hard-codes one tag or uses a partial mapping table.
     const tags = ['Hp', 'Attack', 'Defense', 'Speed', 'SpAttack', 'SpDefense'] as const;
     for (const tag of tags) {
-      const sdk: SdkItemRowRow = {
+      const sdk = {
         id: 1,
         name: 'Item',
         description: '',
         recruitBonus: 0,
         trainStat: { tag },
         trainAmount: 1,
-      };
+      } as SdkItemRowRow;
       expect(itemRowToStore(sdk).trainStat).toBe(tag);
     }
   });
 
   it('BITES: id, recruitBonus, trainAmount are number (not bigint or string)', () => {
     // Kills: an impl that accidentally bigints u32/u16 fields.
-    const sdk: SdkItemRowRow = {
+    const sdk = {
       id: 42,
       name: 'Power Root',
       description: 'Boosts attack',
       recruitBonus: 3,
       trainStat: { tag: 'Attack' },
       trainAmount: 20,
-    };
+    } as SdkItemRowRow;
     const store = itemRowToStore(sdk);
     expect(typeof store.id).toBe('number');
     expect(store.id).toBe(42);
@@ -790,14 +789,14 @@ describe('rowConvert M9c: itemRowToStore — SDK row -> StoreItemRow', () => {
 
   it('BITES: name and description are preserved verbatim as strings', () => {
     // Kills: an impl that drops or truncates text fields.
-    const sdk: SdkItemRowRow = {
+    const sdk = {
       id: 1,
       name: 'Power Root',
       description: 'Raises the Attack stat when used as food.',
       recruitBonus: 0,
       trainStat: undefined,
       trainAmount: 0,
-    };
+    } as SdkItemRowRow;
     const store = itemRowToStore(sdk);
     expect(store.name).toBe('Power Root');
     expect(store.description).toBe('Raises the Attack stat when used as food.');
@@ -1085,8 +1084,7 @@ describe('★ rowConvert EG4: the three Option thresholds normalize absent -> nu
 // proves connection.ts stopped IMPORTING it — a dead-but-exported converter satisfies
 // every other gate in this slice and is precisely the shape a half-done EG4-5 takes.
 //
-// Runtime probe on the module namespace, not a type probe: client/tsconfig.json excludes
-// **/*.test.ts, so a tsc-only assertion would gate nothing at all.
+// Runtime probe on the module namespace: naming a deleted export directly would not compile.
 // ---------------------------------------------------------------------------
 describe('★ rowConvert EG4-5: the fusion converter surface is DELETED from the module', () => {
   it('★ BITES: rowConvert exports no fusionRowToStore', () => {
@@ -1296,7 +1294,7 @@ describe('M12d converters', () => {
       wanderRadius: 3,
       dialogueTreeId: 'elder_oak_talk',
     };
-    const store = npcRowToStore(sdkRow);
+    const store = npcRowToStore(sdkRow as Parameters<typeof npcRowToStore>[0]);
     expect(typeof store.entityId).toBe('bigint');
     expect(store.entityId).toBe(largeEid);
     expect(store.npcId).toBe('elder_oak');
@@ -1319,7 +1317,7 @@ describe('M12d converters', () => {
       wanderRadius: 0,
       dialogueTreeId: 'MyTree_v2',
     };
-    const store = npcRowToStore(sdkRow);
+    const store = npcRowToStore(sdkRow as Parameters<typeof npcRowToStore>[0]);
     expect(store.npcId).toBe('Weird_NPC_ID_v2');
     expect(store.dialogueTreeId).toBe('MyTree_v2');
   });
@@ -1578,7 +1576,7 @@ import {
 describe('rowConvert M13d: itemRowToStore — sellPrice field passthrough [m13d-8]', () => {
   it('[m13d-8] BITES: sellPrice=100n on SDK row → sellPrice=100n on store row', () => {
     // Kills: an impl that omits sellPrice from the converter or defaults it to 0n.
-    const sdk: SdkItemRowRow = {
+    const sdk = {
       id: 3,
       name: 'Herb',
       description: 'A healing herb',
@@ -1586,7 +1584,7 @@ describe('rowConvert M13d: itemRowToStore — sellPrice field passthrough [m13d-
       trainStat: undefined,
       trainAmount: 0,
       sellPrice: 100n,
-    };
+    } as SdkItemRowRow;
     const store = itemRowToStore(sdk);
     expect((store as Record<string, unknown>).sellPrice).toBe(100n);
     expect(typeof (store as Record<string, unknown>).sellPrice).toBe('bigint');
@@ -1594,7 +1592,7 @@ describe('rowConvert M13d: itemRowToStore — sellPrice field passthrough [m13d-
 
   it('[m13d-8] BITES: sellPrice=0n on SDK row → sellPrice=0n on store row (not undefined or omitted)', () => {
     // Kills: an impl that omits sellPrice when it is 0n or treats 0n as falsy/missing.
-    const sdk: SdkItemRowRow = {
+    const sdk = {
       id: 5,
       name: 'Quest Key',
       description: 'Cannot be sold',
@@ -1602,7 +1600,7 @@ describe('rowConvert M13d: itemRowToStore — sellPrice field passthrough [m13d-
       trainStat: undefined,
       trainAmount: 0,
       sellPrice: 0n,
-    };
+    } as SdkItemRowRow;
     const store = itemRowToStore(sdk);
     expect((store as Record<string, unknown>).sellPrice).toBe(0n);
     expect((store as Record<string, unknown>).sellPrice).not.toBeUndefined();
@@ -1612,7 +1610,7 @@ describe('rowConvert M13d: itemRowToStore — sellPrice field passthrough [m13d-
   it('[m13d-8] BITES: sellPrice stays bigint (not converted to number)', () => {
     // Kills: an impl that Number()-casts sellPrice (lossy for large values).
     const largeSellPrice = 9007199254740993n; // 2^53 + 1 — lossy if Number()-cast
-    const sdk: SdkItemRowRow = {
+    const sdk = {
       id: 1,
       name: 'Rare Gem',
       description: 'Very expensive',
@@ -1620,7 +1618,7 @@ describe('rowConvert M13d: itemRowToStore — sellPrice field passthrough [m13d-
       trainStat: undefined,
       trainAmount: 0,
       sellPrice: largeSellPrice,
-    };
+    } as SdkItemRowRow;
     const store = itemRowToStore(sdk);
     expect(typeof (store as Record<string, unknown>).sellPrice).toBe('bigint');
     expect((store as Record<string, unknown>).sellPrice).toBe(largeSellPrice);
@@ -1631,7 +1629,7 @@ describe('rowConvert M13d: itemRowToStore — sellPrice field passthrough [m13d-
   it('[m13d-8] BITES: existing fields still correct when sellPrice is added (no regression)', () => {
     // Kills: an impl that adds sellPrice by spreading the SDK row, accidentally
     // breaking existing field mappings (e.g., trainStat object not flattened).
-    const sdk: SdkItemRowRow = {
+    const sdk = {
       id: 2,
       name: 'Power Root',
       description: 'Boosts attack',
@@ -1639,7 +1637,7 @@ describe('rowConvert M13d: itemRowToStore — sellPrice field passthrough [m13d-
       trainStat: { tag: 'Attack' },
       trainAmount: 10,
       sellPrice: 50n,
-    };
+    } as SdkItemRowRow;
     const store = itemRowToStore(sdk);
     expect(store.id).toBe(2);
     expect(store.name).toBe('Power Root');
@@ -1796,7 +1794,7 @@ describe('rowConvert m14.5d-1b: itemRowToStore — cureStatus field [m14.5d-1b]'
     // The store normalizes undefined → null so callers use strict null checks,
     // not undefined checks (matches the trainStat pattern).
     // Kills: an impl that passes through undefined, or uses ?? "" instead of ?? null.
-    const sdk: SdkItemRowRow = {
+    const sdk = {
       id: 2,
       name: 'Potion',
       description: 'Restores HP',
@@ -1805,7 +1803,7 @@ describe('rowConvert m14.5d-1b: itemRowToStore — cureStatus field [m14.5d-1b]'
       trainAmount: 0,
       sellPrice: 30n,
       // cureStatus field absent/undefined (None)
-    };
+    } as SdkItemRowRow;
     const store = itemRowToStore(sdk);
     expect((store as Record<string, unknown>).cureStatus).toBeNull();
     expect((store as Record<string, unknown>).cureStatus).not.toBeUndefined();
@@ -1816,7 +1814,7 @@ describe('rowConvert m14.5d-1b: itemRowToStore — cureStatus field [m14.5d-1b]'
     // The field must always be present on StoreItemRow — not just when non-null.
     // Downstream code can use `item.cureStatus !== null` without optional chaining.
     // Kills: an impl that omits the cureStatus key from the returned object when undefined.
-    const sdk: SdkItemRowRow = {
+    const sdk = {
       id: 3,
       name: 'Berry',
       description: 'A basic item',
@@ -1824,7 +1822,7 @@ describe('rowConvert m14.5d-1b: itemRowToStore — cureStatus field [m14.5d-1b]'
       trainStat: undefined,
       trainAmount: 0,
       sellPrice: 10n,
-    };
+    } as SdkItemRowRow;
     const store = itemRowToStore(sdk);
     expect(Object.keys(store as Record<string, unknown>)).toContain('cureStatus');
     expect((store as Record<string, unknown>).cureStatus).toBeNull();
@@ -1912,7 +1910,7 @@ describe('rowConvert m14.5d: battleRowToStore — weather field threading', () =
     // status.value→turnsRemaining.
     const row = makeSdkBattleRowWithWeather({ tag: 'Rain', value: 3 });
     const store = battleRowToStore(row as unknown as ReturnType<typeof makeSdkBattleRow>);
-    const weather = (store as Record<string, unknown>).weather as {
+    const weather = (store as unknown as Record<string, unknown>).weather as {
       tag: string;
       turnsRemaining: number;
     } | null;
@@ -1928,7 +1926,7 @@ describe('rowConvert m14.5d: battleRowToStore — weather field threading', () =
     // where falsy value (0) gets swallowed.
     const row = makeSdkBattleRowWithWeather({ tag: 'Rain', value: 0 });
     const store = battleRowToStore(row as unknown as ReturnType<typeof makeSdkBattleRow>);
-    const weather = (store as Record<string, unknown>).weather as {
+    const weather = (store as unknown as Record<string, unknown>).weather as {
       tag: string;
       turnsRemaining: number;
     } | null;
@@ -1940,7 +1938,7 @@ describe('rowConvert m14.5d: battleRowToStore — weather field threading', () =
     // Kills: an impl that maps null → undefined, or that crashes on null input.
     const row = makeSdkBattleRowWithWeather(null);
     const store = battleRowToStore(row as unknown as ReturnType<typeof makeSdkBattleRow>);
-    const weather = (store as Record<string, unknown>).weather;
+    const weather = (store as unknown as Record<string, unknown>).weather;
     expect(weather).toBeNull();
   });
 
@@ -1953,7 +1951,7 @@ describe('rowConvert m14.5d: battleRowToStore — weather field threading', () =
     // still produce a valid StoreBattle where weather===null.
     const row = makeSdkBattleRowWithWeather(undefined); // field absent from state
     const store = battleRowToStore(row as unknown as ReturnType<typeof makeSdkBattleRow>);
-    const weather = (store as Record<string, unknown>).weather;
+    const weather = (store as unknown as Record<string, unknown>).weather;
     // null is the required sentinel; undefined is NOT acceptable.
     expect(weather).toBeNull();
   });
@@ -2944,9 +2942,8 @@ describe('rowConvert 11r-e: playerWalletRowToStore — totality (RC-PW-05)', () 
 //   * NO throw of its own: this runs inside an SDK row callback, dispatched in a bare
 //     unguarded loop — a throw starves every sibling table's ingest for that transaction.
 //
-// Note client/tsconfig.json EXCLUDES `**/*.test.ts`, so `npm run typecheck` does NOT see
-// this file — the gating signal is the runtime failure under vitest, exactly as the 11r-e
-// wallet block above.
+// vitest does not typecheck, so the gating signal in the test run is the runtime failure,
+// exactly as the 11r-e wallet block above (`just client-typecheck` checks the types).
 // =============================================================================
 
 import type { StoreHealLocationRow } from './store';
@@ -3086,9 +3083,8 @@ describe('rowConvert 12r-d [E1]: healLocationRowToStore — costCurrency is a pa
   it('RC-HL-CC-08 BITES: the result is assignable to StoreHealLocationRow (compile-time contract pin)', () => {
     // A tsc tooth, not a runtime one: if the implementer types the field `number` (or names
     // it `cost_currency` / `costGold`), THIS ANNOTATION stops compiling even though every
-    // runtime assertion above could be rewritten to pass. HONEST LIMIT: client/tsconfig.json
-    // excludes `**/*.test.ts`, so this arm surfaces in the editor and in review — NOT in
-    // `npm run typecheck`. The runtime assertions beside it are the gating signal.
+    // runtime assertion above could be rewritten to pass (`just client-typecheck` checks test
+    // files). The runtime assertions beside it are the gating signal in the vitest run.
     const store: StoreHealLocationRow = healLocationRowToStore(makeSdkHealRow(42n));
     expect(store.costCurrency).toBe(42n);
     expect(store.locationId).toBe(3);
@@ -3133,9 +3129,8 @@ describe('rowConvert 12r-d [E1]: healLocationRowToStore — costCurrency is a pa
 // FOUR. ADR-0182 D15 listed eight; M22 S4 added `terminal_at_ms` as the ninth —
 // the PRV1-4 permanent-deletion marker. NINE fields, no more, no fewer.
 //
-// NOTE, as the 12r-d block above already records: client/tsconfig.json EXCLUDES
-// `**/*.test.ts`, so `npm run typecheck` does not see this file — the gating signal is the
-// runtime failure under vitest.
+// NOTE, as in the 12r-d block above: the gating signal in the vitest run is the runtime
+// failure (`just client-typecheck` checks the types separately).
 // =============================================================================
 
 import { accountRowToStore, type SdkAccountRow } from './rowConvert';
@@ -3356,10 +3351,9 @@ describe('rowConvert M21b-2: accountRowToStore — exact key set, explicit mappi
   });
 
   it('★ RC-AC-04d BITES: the result is assignable to StoreAccount (compile-time contract pin)', () => {
-    // A tsc tooth, not a runtime one — and, as RC-HL-CC-08 records, client/tsconfig.json
-    // excludes `**/*.test.ts`, so it surfaces in the editor and in review rather than in
-    // `npm run typecheck`. It pins the field NAMES against store.ts: a converter emitting
-    // `issuer`/`created` would fail here rather than mysteriously never matching.
+    // A tsc tooth, not a runtime one (`just client-typecheck` checks test files). It pins the
+    // field NAMES against store.ts: a converter emitting `issuer`/`created` would fail here
+    // rather than mysteriously never matching.
     const stored: StoreAccount = accountRowToStore(makeSdkAccountRow());
     expect(stored.identity).toBe(ACCOUNT_HEX);
     expect(stored.authIssuer).toBe('issuer-under-test');
@@ -3551,8 +3545,7 @@ describe('rowConvert M22 S8: accountRowToStore carries terminal_at_ms (PRV1-4)',
 // in it would red for the wrong reason. Through the namespace, a missing implementation reds
 // exactly the cases below, with "exportChunkRowToStore is not a function".
 //
-// NOTE, as the blocks above already record: client/tsconfig.json EXCLUDES `**/*.test.ts`, so
-// `npm run typecheck` does not see this file — the gating signal is the runtime failure.
+// NOTE, as in the blocks above: the gating signal in the vitest run is the runtime failure.
 // =============================================================================
 
 /** Type-only, therefore ERASED at runtime: a not-yet-existing type cannot break collection. */
@@ -3642,10 +3635,9 @@ describe('rowConvert rb-53: exportChunkRowToStore — the exact eight-key roster
   });
 
   it('★ RC-EX-01d BITES: the result is assignable to StoreExportChunk (compile-time contract pin)', () => {
-    // A tsc tooth, not a runtime one — and, as RC-HL-CC-08 records, client/tsconfig.json
-    // excludes `**/*.test.ts`, so it surfaces in the editor and in review rather than in
-    // `npm run typecheck`. It pins the field NAMES against store.ts: a converter emitting
-    // `chunk_id` / `owner` would fail here rather than mysteriously never matching.
+    // A tsc tooth, not a runtime one (`just client-typecheck` checks test files). It pins the
+    // field NAMES against store.ts: a converter emitting `chunk_id` / `owner` would fail here
+    // rather than mysteriously never matching.
     const stored: StoreExportChunk = rowConvertModule.exportChunkRowToStore(
       makeSdkExportChunkRow(),
     );

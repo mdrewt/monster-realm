@@ -19,7 +19,10 @@ const win = new Window({
     disableJavaScriptEvaluation: true,
   },
 });
-const doc = new win.DOMParser().parseFromString(readFileSync(INDEX_HTML, 'utf8'), 'text/html');
+const doc = new win.DOMParser().parseFromString(
+  readFileSync(INDEX_HTML, 'utf8'),
+  'text/html',
+) as unknown as Document;
 
 /** Overlays whose shells main.ts constructs at runtime: no static anchor in index.html. */
 const CONSTRUCTED: ReadonlySet<OverlayId> = new Set<OverlayId>([
