@@ -90,9 +90,7 @@ import { EvolutionView, type EvolutionViewCallbacks } from './evolutionView';
 // ---------------------------------------------------------------------------
 
 import { beforeEach } from 'vitest';
-import { stripComments } from '../../../evals/dom-shell-coverage-exclusion.eval.mjs';
 import { t } from './a11yCopy';
-import { scanSource } from './i18n/hardcodedStrings';
 import { t as i18nT, tf as i18nTf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
@@ -1146,26 +1144,25 @@ describe('EvolutionView V7 (totality): show/hide/refresh in any order, no throw'
 //     serialisation, so `getAttribute('style')` is happy-dom's canonical spelling, not the
 //     author's. A declaration happy-dom cannot parse is DROPPED from both the object model and the
 //     attribute, and an upper-case NAME is stored under a key no getter reads — both render in a
-//     browser. Closed by `s9Recording`: the CSSStyleDeclaration setters are wrapped during
-//     construct/refresh/show so every RAW author write is recorded and required to SURVIVE
-//     serialisation by name (`s9AssertRawWritesSurvive`).
+//     browser. (The raw-write recorder and the X3/X4 token/font-size hygiene audits that
+//     closed this were removed by the de-bloat program, CT-src-ui-evolutionView#X3-X4-and-i18n-scan;
+//     X1/X2 remain.)
 //   * `rgba(0,0,0,0.8)` reads back re-spaced as `rgba(0, 0, 0, 0.8)`; 4/8-digit hex and named
 //     colours pass happy-dom and are REFUSED here.
 //   * `background: var(--x)` (SHORTHAND) is stored under the `background` key only and leaves
 //     `style.backgroundColor` EMPTY — the longhand is the only var()-safe surface. For today's
 //     hex/rgba-literal shorthands the longhand IS populated (getBackground → getBackgroundColor
 //     per part), and `s9OwnBg` additionally falls back to a bare-colour `style.background` so X1
-//     reds on CONTRAST rather than on a thrown read. X3 enforces the longhand.
+//     reds on CONTRAST rather than on a thrown read.
 //   * `border: 1px solid var(--x)`: the var() PART matches happy-dom's width, style AND colour
 //     part-parsers, so the manager holds `border-width` / `border-style` / `border-color` =
 //     `var(--x)` beside the four literal sides; `style.border` reconstructs `1px solid` (colour
 //     initial → omitted) and `style.borderColor` carries the var(). `border-left: 3px solid …`
-//     is ALWAYS serialised as the three `border-left-*` longhands. The declaration allow-list
-//     admits exactly those serialisations.
+//     is ALWAYS serialised as the three `border-left-*` longhands.
 //
 // CI HYGIENE: literal regexes and indexOf/includes only (`new RegExp` is Semgrep-banned); no
 // `innerHTML`; plain `describe(` / `it(` (an eval scans for the literal); the four `it` titles
-// below are the ONLY names in this file carrying the ledger's `-t` prefixes.
+// below are the ONLY names in this file carrying the ledger's `-t` prefixes (X3/X4 since removed).
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -1429,8 +1426,6 @@ const S9_AA = 4.5;
 const S9_AAA = 7.0;
 /** WCAG 1.4.11 non-text — the card boundary under `more` (default scope is out of scope, §3.1). */
 const S9_NON_TEXT = 3.0;
-/** 0.85em → 14px, 0.8em → 13px, 0.75em → 12px (plan D2). */
-const S9_PX_SIZES: readonly number[] = [12, 13, 14];
 
 // ---------------------------------------------------------------------------
 // Colour reader — REFUSES, never defaults
@@ -1612,8 +1607,7 @@ function s9TokenName(raw: string): string | null {
 
 /**
  * A DOM colour source resolved in `scope`: `var(--mr-evo-x)` → the token's declared value; a bare
- * literal → itself (so X1 is evaluable against TODAY's hex-literal tree and reds on CONTRAST; X3
- * is where "must be a token" is asserted). THROWS on a fallback (`var(--x, #fb)`) or a token the
+ * literal → itself (so X1 is evaluable against a hex-literal tree and reds on CONTRAST). THROWS on a fallback (`var(--x, #fb)`) or a token the
  * scope does not declare — the browser would render the fallback / initial colour while this
  * gate measured nothing.
  */
@@ -1753,19 +1747,11 @@ interface S9Pair {
   readonly bgRaws: readonly string[];
 }
 
-/** One RAW author write to an element's inline style, as the view wrote it (pre-happy-dom). */
-interface S9RawWrite {
-  readonly name: string;
-  readonly value: string;
-}
-
 interface S9Render {
   readonly state: S9StateName;
   readonly root: HTMLElement;
   readonly listEl: HTMLElement;
   readonly pairs: readonly S9Pair[];
-  /** Every raw inline-style write recorded during construct + refresh + show, per declaration. */
-  readonly writes: ReadonlyMap<CSSStyleDeclaration, readonly S9RawWrite[]>;
 }
 
 function s9Label(el: HTMLElement): string {
@@ -1787,94 +1773,10 @@ function s9TextElements(root: HTMLElement): HTMLElement[] {
 }
 
 /**
- * The CSSStyleDeclaration setters this section intercepts to see the AUTHOR's text: `cssText`
- * (the view's idiom; `el.style = '…'` routes through it too) plus the four property setters a
- * view could style a colour or size through. Kebab name '' marks the cssText setter.
- *
- * WHY: happy-dom DROPS any declaration it cannot parse — `color:var(--x, #666)` (fallback),
- * `VAR(--x)`, `font-size:0.85EM` — and stores an upper-case NAME (`COLOR`, `FONT-SIZE`) under a
- * key the longhand getters never read. Each one renders in a browser and is invisible to every
- * `style.*` read (red-team, five measured GREEN cheats). Recording the raw write and requiring it
- * to SURVIVE serialisation closes the class DOM-side, without a source-text oracle.
- */
-const S9_SPIED_SETTERS: readonly (readonly [string, string])[] = [
-  ['cssText', ''],
-  ['color', 'color'],
-  ['backgroundColor', 'background-color'],
-  ['background', 'background'],
-  ['fontSize', 'font-size'],
-];
-
-/** The prototype that OWNS an accessor with a setter for `key`, walking up from `proto`. */
-function s9FindSetter(proto: object, key: string): { owner: object; desc: PropertyDescriptor } {
-  let cur: object | null = proto;
-  while (cur !== null) {
-    const desc = Object.getOwnPropertyDescriptor(cur, key);
-    if (desc !== undefined) {
-      if (typeof desc.set !== 'function') {
-        throw new Error(
-          `m23s9 SPY: CSSStyleDeclaration.${key} exists but is not an accessor with a setter — the ` +
-            'raw-write recorder cannot intercept it; a source-level absence tripwire is needed instead',
-        );
-      }
-      return { owner: cur, desc };
-    }
-    cur = Object.getPrototypeOf(cur);
-  }
-  throw new Error(`m23s9 SPY: CSSStyleDeclaration.${key} not found on the prototype chain`);
-}
-
-/**
- * Run `body` with every spied setter wrapped to RECORD the raw author string per declaration
- * object (then call the original), restoring the prototypes in `finally`. `element.style` is
- * cached per element in happy-dom (HTMLElement `[PropertySymbol.style]`), so the map key later
- * resolves back to the subtree's elements; writes to anything else are simply ignored.
- */
-function s9Recording<T>(body: () => T): {
-  readonly result: T;
-  readonly writes: Map<CSSStyleDeclaration, S9RawWrite[]>;
-} {
-  const writes = new Map<CSSStyleDeclaration, S9RawWrite[]>();
-  const proto = Object.getPrototypeOf(document.createElement('div').style) as object;
-  const restores: (() => void)[] = [];
-  for (const [key, kebab] of S9_SPIED_SETTERS) {
-    const { owner, desc } = s9FindSetter(proto, key);
-    const original = desc.set!;
-    Object.defineProperty(owner, key, {
-      ...desc,
-      set(this: CSSStyleDeclaration, value: unknown) {
-        const text = String(value);
-        const list = writes.get(this) ?? [];
-        if (kebab === '') {
-          for (const chunk of text.split(';')) {
-            const colon = chunk.indexOf(':');
-            if (colon === -1) continue;
-            list.push({ name: chunk.slice(0, colon).trim(), value: chunk.slice(colon + 1).trim() });
-          }
-        } else {
-          list.push({ name: kebab, value: text });
-        }
-        writes.set(this, list);
-        original.call(this, value);
-      },
-    });
-    restores.push(() => {
-      Object.defineProperty(owner, key, desc);
-    });
-  }
-  try {
-    return { result: body(), writes };
-  } finally {
-    for (const restore of restores) restore();
-  }
-}
-
-/**
  * An element's OWN inline background: the `background-color` LONGHAND (the only surface happy-dom
  * reads a `var()` back through). Falls back to a bare-colour `background` SHORTHAND ONLY so that
- * today's literal tree is measurable and X1 reds on contrast; the implementation is REQUIRED to
- * use the longhand and X3's coherence + allow-list assertions enforce it (a `background: var(…)`
- * shorthand leaves this read empty AND names `background` in the attribute).
+ * a literal tree is measurable and X1 reds on contrast (a `background: var(…)` shorthand leaves
+ * this read empty).
  */
 function s9OwnBg(el: HTMLElement): string {
   const longhand = el.style.backgroundColor;
@@ -1919,12 +1821,9 @@ function s9Render(state: S9StateName): S9Render {
     document.querySelectorAll('style, link'),
     `${state}: the test document must start with no <style>/<link>`,
   ).toHaveLength(0);
-  const { result, writes } = s9Recording(() => {
-    const h = mount();
-    h.view.refresh(s9StateVm(state));
-    h.view.show();
-    return h;
-  });
+  const result = mount();
+  result.view.refresh(s9StateVm(state));
+  result.view.show();
   expect(
     document.querySelectorAll('style, link'),
     `${state}: the view must not inject a <style>/<link> anywhere — every colour must be an ` +
@@ -1948,7 +1847,7 @@ function s9Render(state: S9StateName): S9Render {
       bgRaws: s9BgRaws(el, root),
     }),
   );
-  return { state, root, listEl, pairs, writes };
+  return { state, root, listEl, pairs };
 }
 
 /** The per-state census + marker pins that make every "for each pair" loop non-vacuous. */
@@ -2065,63 +1964,6 @@ function s9Describe(pair: S9Pair, reading: S9Reading, pageName: string): string 
 // Inline-declaration hygiene helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Every declaration NAME the shipped view may carry inline, as happy-dom SERIALISES it (see the
- * section header). Absent on purpose — and each is a measured or plan-named cheat: `background`
- * (shorthand: the var()-blind read AND `background-image`), `opacity`, `filter`,
- * `mix-blend-mode`, `text-shadow`, `-webkit-text-fill-color`, `font` (shorthand), `zoom`,
- * `transform`, `visibility`, `clip-path`.
- */
-const S9_ALLOWED_DECLARATIONS: ReadonlySet<string> = new Set([
-  'position',
-  'inset',
-  'z-index',
-  'background-color',
-  'display',
-  'flex-direction',
-  'align-items',
-  'padding',
-  'overflow-y',
-  'font-family',
-  'color',
-  'margin',
-  'margin-top',
-  'margin-bottom',
-  'font-size',
-  'max-width',
-  'grid-template-columns',
-  'gap',
-  'width',
-  'border-radius',
-  'border',
-  // happy-dom serialises the var() colour part of `border: 1px solid var(--x)` as these three
-  // beside `border: 1px solid` (measured in CSSStyleDeclarationPropertySetParser.getBorder).
-  'border-width',
-  'border-style',
-  'border-color',
-  // `border-left: …` is ALWAYS serialised as its three longhands; `border-left` itself is kept
-  // for the day happy-dom starts reconstructing it.
-  'border-left',
-  'border-left-width',
-  'border-left-style',
-  'border-left-color',
-  'font-weight',
-  'flex-wrap',
-  'cursor',
-]);
-
-/** Declaration names in the element's (happy-dom-serialised) `style` attribute, lowercased. */
-function s9DeclaredNames(el: HTMLElement): string[] {
-  const out: string[] = [];
-  for (const chunk of (el.getAttribute('style') ?? '').split(';')) {
-    const colon = chunk.indexOf(':');
-    if (colon === -1) continue;
-    const name = chunk.slice(0, colon).trim().toLowerCase();
-    if (name !== '') out.push(name);
-  }
-  return out;
-}
-
 /** Every read through which happy-dom can surface the card's `border` colour part. */
 function s9BorderText(el: HTMLElement): string {
   return [el.style.border, el.style.borderColor, el.style.borderTopColor].join(' ');
@@ -2171,111 +2013,6 @@ function s9BorderToken(
     `m23s9 BORDER ${where}: ${ref} must be VISIBLE in the default scope`,
   ).toBeGreaterThan(0);
   return { name: names[0]!, base, more };
-}
-
-/** Is a raw author declaration NAME accounted for in the serialised names (self or longhands)? */
-function s9Explains(raw: string, serialised: string): boolean {
-  return serialised === raw || serialised.startsWith(`${raw}-`);
-}
-
-/** How many times `needle` occurs in `text` (indexOf loop — no dynamic regex). */
-function s9Count(text: string, needle: string): number {
-  let count = 0;
-  let from = 0;
-  for (;;) {
-    const at = text.indexOf(needle, from);
-    if (at === -1) return count;
-    count += 1;
-    from = at + needle.length;
-  }
-}
-
-/**
- * Every raw write to `el` must SURVIVE happy-dom's serialisation, and vice versa, by NAME:
- *   forward — each raw name is itself a serialised name or the parent of serialised longhands
- *             (`border` → `border-width`…, `border-left` → `border-left-*`; a dropped
- *             declaration has neither);
- *   reverse — each serialised name is explained by some raw write (a `setProperty` /
- *             `setAttribute('style')` route the recorder cannot see leaves it unexplained);
- *   unique  — no raw name is written twice (a later same-name override is how a dropped or
- *             literal declaration would hide behind a clean first one);
- *   spelled — raw names are lower-case (`COLOR:` is stored under a key no getter reads) and every
- *             `var(` is lower-case with NO fallback comma (both are dropped by happy-dom, both
- *             render in a browser).
- * Exact COUNT equality is deliberately NOT used: happy-dom expands one `border` into four names
- * and one `border-left` into three (measured), so a count would false-RED the honest impl.
- */
-function s9AssertRawWritesSurvive(
-  el: HTMLElement,
-  raw: readonly S9RawWrite[],
-  label: string,
-): void {
-  const serialised = s9DeclaredNames(el);
-  const rawNames = raw.map((w) => w.name);
-  expect(
-    new Set(rawNames).size,
-    `m23s9 RAW ${label}: no declaration may be written twice (raw: ${rawNames.join(', ')})`,
-  ).toBe(rawNames.length);
-  for (const write of raw) {
-    expect(
-      write.name,
-      `m23s9 RAW ${label}: declaration name ${JSON.stringify(write.name)} must be lower-case — ` +
-        'happy-dom stores an upper-case name under a key no longhand getter reads, so it renders ' +
-        'in a browser and is invisible to every style.* read',
-    ).toBe(write.name.toLowerCase());
-    const lower = write.value.toLowerCase();
-    expect(
-      s9Count(write.value, 'var('),
-      `m23s9 RAW ${label}: every var( in ${JSON.stringify(write.value)} must be lower-case`,
-    ).toBe(s9Count(lower, 'var('));
-    let from = 0;
-    for (;;) {
-      const at = lower.indexOf('var(', from);
-      if (at === -1) break;
-      const close = lower.indexOf(')', at);
-      const inner = close === -1 ? lower.slice(at) : lower.slice(at, close);
-      expect(
-        inner.includes(','),
-        `m23s9 RAW ${label}: ${JSON.stringify(write.value)} carries a var() FALLBACK — happy-dom drops ` +
-          'it, a browser renders the fallback, and the token scope is never consulted',
-      ).toBe(false);
-      from = close === -1 ? lower.length : close + 1;
-    }
-    expect(
-      serialised.some((s) => s9Explains(write.name, s)),
-      `m23s9 RAW ${label}: raw declaration \`${write.name}: ${write.value}\` did NOT survive ` +
-        `happy-dom's serialisation (style="${el.getAttribute('style') ?? ''}") — a declaration happy-dom ` +
-        'cannot parse is dropped from every read this oracle makes yet renders in a browser',
-    ).toBe(true);
-  }
-  for (const name of serialised) {
-    expect(
-      rawNames.some((r) => s9Explains(r, name)),
-      `m23s9 RAW ${label}: serialised declaration \`${name}\` has no recorded raw write — a ` +
-        'setProperty() / setAttribute("style") route bypasses the recorder and is refused',
-    ).toBe(true);
-  }
-}
-
-/** The layout containers that must declare NO font-size (plan: "containers declare no font-size"). */
-function s9Containers(r: S9Render): { readonly label: string; readonly el: HTMLElement }[] {
-  const out: { readonly label: string; readonly el: HTMLElement }[] = [
-    { label: 'root', el: r.root },
-    { label: 'list', el: r.listEl },
-  ];
-  for (const card of r.root.querySelectorAll(CARD_SELECTOR)) {
-    out.push({ label: 'card', el: card as HTMLElement });
-  }
-  for (const row of r.root.querySelectorAll(PATH_ROW_SELECTOR)) {
-    out.push({ label: 'path row', el: row as HTMLElement });
-  }
-  const pickers = new Set<HTMLElement>();
-  for (const choice of r.root.querySelectorAll(CHOICE_SELECTOR)) {
-    const picker = choice.parentElement;
-    if (picker !== null) pickers.add(picker);
-  }
-  for (const picker of pickers) out.push({ label: 'picker', el: picker });
-  return out;
 }
 
 // ===========================================================================
@@ -2465,237 +2202,6 @@ describe('EvolutionView — m23-s9 contrast tokens, prefers-contrast: more, em�
         }
       }
     }
-  });
-
-  it('m23s9 X3 token hygiene: every inline colour is a var(--mr-evo-*), both scopes declare the same names exactly once, every token is consumed, and only allow-listed declarations ship', () => {
-    // WRONG IMPLEMENTATIONS KILLED: a hex literal left inline (today's tree); a token declared in
-    // the default scope but missing from `more` (the override would be PARTIAL — the browser
-    // falls through to the default value); a token declared twice (the Map dedupes, the count does
-    // not); a decoy token nothing reads; a `--mr-evo-*` smuggled into another rule/at-rule;
-    // `opacity` / `filter` / `mix-blend-mode` / `text-shadow` / `-webkit-text-fill-color` /
-    // `background-image` / bare `background` / `font` / `zoom` / `transform`, which all change
-    // rendered contrast without touching `color` or `background-color`; a `background: var(…)`
-    // SHORTHAND (empty longhand read → the pair silently measures against the wrong surface).
-    // RED-TEAM ROUND 2 (measured GREEN, now closed here): a class/id on an element + a rule in
-    // styles.css (`.evo-dim{opacity:.3}`), `p{color:#666 !important}` in styles.css, a textless
-    // positioned cover element inside the card, and five happy-dom-DROPPED declarations
-    // (`var(--x, #666)` fallback, `COLOR:`, `VAR(`, `0.85EM`, `FONT-SIZE:`) that render in a browser.
-    const consumed = new Set<string>();
-    const scopes = s9TokenScopes();
-
-    for (const state of S9_STATES) {
-      const render = s9Render(state);
-      s9AssertCensus(render);
-      for (const el of s9AllElements(render.root)) {
-        const label = `${state}/${s9Label(el)}`;
-        const colour = el.style.color;
-        if (colour !== '') {
-          expect(
-            colour.startsWith(S9_VAR_PREFIX) && s9TokenName(colour) !== null,
-            `m23s9 X3 TOKEN ${label}: inline color ${JSON.stringify(colour)} must be a bare ` +
-              `${S9_VAR_PREFIX}…) reference — a literal is invisible to the prefers-contrast override`,
-          ).toBe(true);
-        }
-        const bg = el.style.backgroundColor;
-        if (bg !== '') {
-          expect(
-            bg.startsWith(S9_VAR_PREFIX) && s9TokenName(bg) !== null,
-            `m23s9 X3 TOKEN ${label}: inline background-color ${JSON.stringify(bg)} must be a ` +
-              `bare ${S9_VAR_PREFIX}…) reference`,
-          ).toBe(true);
-        }
-        // STYLESHEET ROUTE, element side (red-team: `className = 'evo-dim'` + `.evo-dim{opacity:.3}`
-        // in styles.css passed). No element in the subtree may be reachable by a class or id rule.
-        expect(
-          el.className,
-          `m23s9 X3 NO-CLASS ${label}: no element in the overlay may carry a class — a stylesheet ` +
-            'rule reaching it changes rendered contrast behind every inline read',
-        ).toBe('');
-        expect(el.id, `m23s9 X3 NO-ID ${label}: no element in the overlay may carry an id`).toBe(
-          '',
-        );
-        const names = s9DeclaredNames(el);
-        for (const name of names) {
-          expect(
-            S9_ALLOWED_DECLARATIONS.has(name),
-            `m23s9 X3 ALLOW-LIST ${label}: inline declaration \`${name}\` is not in the allow-list ` +
-              `(style="${el.getAttribute('style') ?? ''}"). Every name outside it is a way to change ` +
-              'rendered contrast that no colour read can see',
-          ).toBe(true);
-          // COVER ELEMENT (red-team: a textless absolutely-positioned child painted over the card
-          // passed). Only the root positions itself; nothing below it may.
-          if (el !== render.root) {
-            expect(
-              name === 'position' || name === 'inset' || name === 'z-index',
-              `m23s9 X3 NO-COVER ${label}: \`${name}\` is allowed on the root only — a positioned ` +
-                'descendant can paint over the text this oracle measured',
-            ).toBe(false);
-          }
-        }
-        // happy-dom populates the longhand from a LITERAL shorthand too, so this equivalence is
-        // about the attribute's own spelling: a `background:` shorthand (literal or var()) names
-        // `background`, never `background-color`, and is refused by the ALLOW-LIST above; here the
-        // two reads are pinned to agree so neither can be gamed without the other noticing.
-        expect(
-          names.includes('background-color'),
-          `m23s9 X3 COHERENCE ${label}: the attribute names background-color ⇔ ` +
-            `style.backgroundColor is non-empty (read ${JSON.stringify(bg)}; names: ${names.join(', ')})`,
-        ).toBe(bg !== '');
-        // RAW WRITES: what the view actually wrote must be what happy-dom kept (see the helper).
-        s9AssertRawWritesSurvive(el, render.writes.get(el.style) ?? [], label);
-      }
-      // Consumption: every fg / bg source the walk EVALUATED.
-      for (const pair of render.pairs) {
-        for (const raw of [pair.fgRaw, ...pair.bgRaws]) {
-          const name = s9TokenName(raw);
-          if (name !== null) consumed.add(name);
-        }
-      }
-      // Border references — the two consumers that are not text pairs; counts pinned first.
-      const cards = [...render.root.querySelectorAll(CARD_SELECTOR)] as HTMLElement[];
-      expect(cards, `m23s9 X3 ${state}: ${S9_CARD_COUNT[state]} card(s)`).toHaveLength(
-        S9_CARD_COUNT[state],
-      );
-      for (const card of cards) {
-        consumed.add(s9BorderToken(s9BorderText(card), scopes, `${state} card border`).name);
-      }
-      const rows = [...render.root.querySelectorAll(PATH_ROW_SELECTOR)] as HTMLElement[];
-      expect(rows, `m23s9 X3 ${state}: ${S9_ROW_COUNT[state]} row(s)`).toHaveLength(
-        S9_ROW_COUNT[state],
-      );
-      for (const row of rows) {
-        const where = `${state} ${s9Label(row)} border-left`;
-        consumed.add(s9BorderToken(s9BorderLeftText(row), scopes, where).name);
-      }
-    }
-
-    // ---- stylesheet hygiene ----
-    // STYLESHEET ROUTE, sheet side (red-team: `p{color:#666 !important}` in styles.css passed).
-    // Every rule is a single class selector or `:root`, and nothing is `!important`. The exact
-    // rule roster is deliberately NOT pinned — a future class rule must not red this gate.
-    expect(
-      scopes.rules.length,
-      'm23s9 X3 SHEET ANTI-VACUITY: styles.css must parse to at least one style rule',
-    ).toBeGreaterThanOrEqual(1);
-    for (const rule of scopes.rules) {
-      const where = [...rule.atStack, rule.prelude].join(' > ');
-      for (const part of rule.prelude.split(',')) {
-        const selector = part.trim();
-        const simpleClass =
-          selector.startsWith('.') &&
-          !selector.includes(' ') &&
-          !selector.includes('>') &&
-          !selector.includes('+') &&
-          !selector.includes('~') &&
-          !selector.includes('*') &&
-          !selector.includes('[') &&
-          !selector.includes(':');
-        expect(
-          selector === ':root' || simpleClass,
-          `m23s9 X3 SHEET SELECTOR \`${where}\`: every selector must be \`:root\` or a single ` +
-            `class selector (\`.name\`, \`.a.b\`); \`${selector}\` could reach the class-less ` +
-            'evolution subtree (element / attribute / universal selectors match it directly; a ' +
-            'combinator reaches it through a classed ancestor)',
-        ).toBe(true);
-      }
-      for (const decl of s9Declarations(rule.body)) {
-        expect(
-          decl.important,
-          `m23s9 X3 SHEET IMPORTANT \`${where}\`: \`${decl.prop}\` is !important — the only way a ` +
-            'stylesheet beats an inline declaration, and therefore banned sheet-wide',
-        ).toBe(false);
-      }
-    }
-    const baseNames = [...scopes.base.keys()].sort();
-    const moreNames = [...scopes.more.keys()].sort();
-    expect(
-      baseNames.length,
-      'm23s9 X3 ANTI-VACUITY: the default `:root` scope must declare at least one --mr-evo-* ' +
-        'token (the plan table has nine)',
-    ).toBeGreaterThanOrEqual(1);
-    expect(
-      moreNames,
-      'm23s9 X3 TOTAL OVERRIDE: the `prefers-contrast: more` scope must declare EXACTLY the same ' +
-        'SET of names as the default scope — a missing name falls through to the default value ' +
-        'and the override is partial',
-    ).toEqual(baseNames);
-    for (const [name, count] of scopes.baseCounts) {
-      expect(count, `m23s9 X3 ONCE: ${name} declared ${count}× in the default scope`).toBe(1);
-    }
-    for (const [name, count] of scopes.moreCounts) {
-      expect(count, `m23s9 X3 ONCE: ${name} declared ${count}× in the more scope`).toBe(1);
-    }
-    expect(
-      scopes.outside,
-      'm23s9 X3 SCOPE: no rule outside the two `:root` scopes may declare a --mr-evo-* token',
-    ).toEqual([]);
-    for (const name of baseNames) {
-      expect(
-        consumed.has(name),
-        `m23s9 X3 CONSUMED: ${name} is declared but no evaluated fg/bg pair or border reference ` +
-          `across the four states reads it — a decoy token. Consumed: ${[...consumed].sort().join(', ')}`,
-      ).toBe(true);
-    }
-    // The converse: every name the DOM consumes is declared in BOTH scopes (a reference to an
-    // undeclared token renders the initial colour; a reference declared only in one scope is a
-    // partial override that the set-equality above cannot see if the name is missing from both).
-    for (const name of [...consumed].sort()) {
-      expect(
-        scopes.base.has(name),
-        `m23s9 X3 DECLARED: the DOM references ${name} but the default :root scope does not declare it`,
-      ).toBe(true);
-      expect(
-        scopes.more.has(name),
-        `m23s9 X3 DECLARED: the DOM references ${name} but the more :root scope does not declare it`,
-      ).toBe(true);
-    }
-  });
-
-  it('m23s9 X4 every inline font-size is 12, 13 or 14 px, no font shorthand, and the layout containers declare none', () => {
-    // WRONG IMPLEMENTATIONS KILLED: today's `0.85em` / `0.8em` / `0.75em` (WCAG 1.4.3's large-text
-    // threshold is stated in px/pt, and an em chain is unauditable without layout); `rem` / `%`;
-    // a `font:` shorthand hiding the size; a container `font-size` that rescales every child at
-    // once (defeats per-element auditing and browser zoom uniformity, WCAG 1.4.4); a size outside
-    // the plan's three values.
-    let declared = 0;
-    for (const state of S9_STATES) {
-      const render = s9Render(state);
-      s9AssertCensus(render);
-      for (const el of s9AllElements(render.root)) {
-        const label = `${state}/${s9Label(el)}`;
-        const names = s9DeclaredNames(el);
-        expect(
-          names.includes('font'),
-          `m23s9 X4 SHORTHAND ${label}: a \`font\` shorthand hides the size from this audit`,
-        ).toBe(false);
-        const size = el.style.fontSize;
-        if (size === '') continue;
-        declared += 1;
-        expect(
-          size.endsWith('px'),
-          `m23s9 X4 UNIT ${label}: font-size ${JSON.stringify(size)} must be in px (plan D2: ` +
-            '0.85em→14px, 0.8em→13px, 0.75em→12px)',
-        ).toBe(true);
-        const px = Number.parseFloat(size.slice(0, -'px'.length));
-        expect(
-          S9_PX_SIZES.includes(px),
-          `m23s9 X4 SIZE ${label}: font-size ${JSON.stringify(size)} must be one of ` +
-            `${S9_PX_SIZES.join(' / ')}px`,
-        ).toBe(true);
-      }
-      for (const { label, el } of s9Containers(render)) {
-        expect(
-          el.style.fontSize,
-          `m23s9 X4 CONTAINER ${state}/${label}: layout containers declare NO font-size, so every ` +
-            'text element carries its own auditable px size and zoom scales them uniformly',
-        ).toBe('');
-      }
-    }
-    expect(
-      declared,
-      'm23s9 X4 ANTI-VACUITY: at least six text elements across the four states must declare an ' +
-        'inline font-size (hint, stats, headings, statuses, gates, ready note, prompt, buttons)',
-    ).toBeGreaterThanOrEqual(6);
   });
 });
 
@@ -3119,9 +2625,8 @@ describe('★ EvolutionView 20r-a: in-flight guard on the Evolve choice buttons'
 // anywhere today — every literal below is still a bare string literal or
 // template, and the file imports nothing from `./i18n/resolver`. EV-01/EV-02
 // therefore fail on their very first assertion (the spied `i18nT`/`i18nTf` are
-// never called at all, and the roster-word scan finds unbracketed English);
-// EV-03 fails because `scanSource(stripComments(...))` reports >=13 FAILING
-// sinks (raw English segments), not the required `failing: []`.
+// never called at all, and the roster-word scan finds unbracketed English).
+// (The EV-03 source-scan sibling was removed by the de-bloat program.)
 //
 // Do NOT edit these tests to match a buggy implementation — correct them from
 // the plan/ADR-0260 only.
@@ -3528,33 +3033,6 @@ describe('m24s4 (ADR-0260): evolutionView.ts routes its migrated sinks through t
     // Post-restore call-through control (an existing S1 key — the new evolution.* keys do not
     // exist in the catalog until the specialist ships them).
     expect(i18nT('chrome.help.title')).toBe('Controls & Goals');
-  });
-});
-
-describe('m24s4 (ADR-0260): evolutionView.ts scan — zero failing sinks', () => {
-  it('m24s4 EV-03: scanSource(stripComments(evolutionView.ts)) has zero failing sinks, a >=13 sink floor, and no truncation/masking tripwires', () => {
-    const src = readFileSync(
-      path.join(path.dirname(fileURLToPath(import.meta.url)), 'evolutionView.ts'),
-      'utf8',
-    );
-    const result = scanSource(stripComments(src));
-
-    expect(
-      result.failing.map((s) => `${s.kind}@L${s.line}: ${s.failingSegments.join(' | ')}`),
-      'every sink must route through t()/tf() — any surviving English segment is listed above',
-    ).toEqual([]);
-    expect(
-      result.sinks.length,
-      'SINK_FLOOR idiom (plan measured census): a floor, never an exact count',
-    ).toBeGreaterThanOrEqual(13);
-    expect(
-      result.unterminated,
-      'the literal mask must not end inside an unterminated literal',
-    ).toBe(false);
-    expect(result.maskedSinkTokens, 'no parity-flip mask desync').toBe(0);
-    for (const sink of result.sinks) {
-      expect(sink.truncated, `${sink.kind}@L${sink.line} must not be truncated`).toBe(false);
-    }
   });
 });
 
