@@ -1,0 +1,4 @@
+nextest tests: 2500
+vitest tests: 3447
+playwright: Total: 77 tests in 21 files
+eval files: 99

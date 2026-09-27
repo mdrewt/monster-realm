@@ -1,0 +1,4 @@
+{
+  "_comment": "Released stable STRING npc ids — APPEND-ONLY (ADR-0006, 11r-i/T3). append-only-string-ids eval fails if any id here disappears from game-core/content/npcs/*.ron (Npc.npc_id is #[unique]; quests' Talk triggers key on these). The NUMERIC entity `id:` values are a separate gate (evals/baselines/npc-ids.json). Derived by reading the RON by hand (000-core.ron `npc_id:` = \"elder_oak\", \"tideglass_shopkeeper\" — the sibling dialogue_tree_id values \"elder_oak_talk\"/\"shopkeeper_greeting\" are NOT npc ids), then cross-checked against parseStringIds.",
+  "npc_ids": ["elder_oak", "tideglass_shopkeeper"]
+}

@@ -1,0 +1,4 @@
+{
+  "_comment": "Released stable zone_map ids — APPEND-ONLY (ADR-0006/M11a). The zone-id-append-only eval fails if any id here disappears from game-core/content/zone_maps/. Add new ids; never remove or renumber.",
+  "zone_maps": [0, 1]
+}

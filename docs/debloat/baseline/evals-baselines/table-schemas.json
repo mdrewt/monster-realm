@@ -1,0 +1,894 @@
+{
+  "guest_claim_reaper_schedule": {
+    "pk": "scheduled_id",
+    "visibility": "private",
+    "columns": {
+      "scheduled_id": "u64",
+      "scheduled_at": "ScheduleAt",
+      "guest_identity": "Identity"
+    },
+    "order": [
+      "scheduled_id",
+      "scheduled_at",
+      "guest_identity"
+    ]
+  },
+  "movement_tick_schedule": {
+    "pk": "id",
+    "visibility": "private",
+    "columns": {
+      "id": "u64",
+      "zone_id": "u32",
+      "scheduled_at": "ScheduleAt"
+    },
+    "order": [
+      "id",
+      "zone_id",
+      "scheduled_at"
+    ]
+  },
+  "mr_heartbeat_schedule": {
+    "pk": "id",
+    "visibility": "private",
+    "columns": {
+      "id": "u64",
+      "scheduled_at": "ScheduleAt"
+    },
+    "order": [
+      "id",
+      "scheduled_at"
+    ]
+  },
+  "playtest_event": {
+    "pk": "event_id",
+    "visibility": "private",
+    "columns": {
+      "event_id": "u64",
+      "identity": "Identity",
+      "kind": "u16",
+      "created_at_ms": "i64",
+      "battle_id": "u64",
+      "species_id": "u32",
+      "hp_permille": "u16",
+      "bait_item_id": "u32",
+      "success": "bool"
+    },
+    "order": [
+      "event_id",
+      "identity",
+      "kind",
+      "created_at_ms",
+      "battle_id",
+      "species_id",
+      "hp_permille",
+      "bait_item_id",
+      "success"
+    ]
+  },
+  "playtest_reaper_schedule": {
+    "pk": "id",
+    "visibility": "private",
+    "columns": {
+      "id": "u64",
+      "scheduled_at": "ScheduleAt"
+    },
+    "order": [
+      "id",
+      "scheduled_at"
+    ]
+  },
+  "pvp_deadline_schedule": {
+    "pk": "scheduled_id",
+    "visibility": "private",
+    "columns": {
+      "scheduled_id": "u64",
+      "scheduled_at": "ScheduleAt",
+      "battle_id": "u64",
+      "turn_number": "u16"
+    },
+    "order": [
+      "scheduled_id",
+      "scheduled_at",
+      "battle_id",
+      "turn_number"
+    ]
+  },
+  "battle_challenge_reaper_schedule": {
+    "pk": "scheduled_id",
+    "visibility": "private",
+    "columns": {
+      "scheduled_id": "u64",
+      "scheduled_at": "ScheduleAt",
+      "challenge_id": "u64"
+    },
+    "order": [
+      "scheduled_id",
+      "scheduled_at",
+      "challenge_id"
+    ]
+  },
+  "character": {
+    "pk": "entity_id",
+    "visibility": "public",
+    "columns": {
+      "entity_id": "u64",
+      "zone_id": "u32",
+      "tile_x": "i32",
+      "tile_y": "i32",
+      "facing": "Direction",
+      "action": "ActionState",
+      "move_started_at_ms": "i64",
+      "sprite_id": "u32",
+      "move_queue": "Vec<MoveInput>"
+    },
+    "order": [
+      "entity_id",
+      "zone_id",
+      "tile_x",
+      "tile_y",
+      "facing",
+      "action",
+      "move_started_at_ms",
+      "sprite_id",
+      "move_queue"
+    ]
+  },
+  "player": {
+    "pk": "identity",
+    "visibility": "public",
+    "columns": {
+      "identity": "Identity",
+      "entity_id": "u64",
+      "name": "String",
+      "online": "bool",
+      "last_input_seq": "u64"
+    },
+    "order": [
+      "identity",
+      "entity_id",
+      "name",
+      "online",
+      "last_input_seq"
+    ]
+  },
+  "config": {
+    "pk": "id",
+    "visibility": "public",
+    "columns": {
+      "id": "u32",
+      "content_version": "u32",
+      "owner_identity": "Identity"
+    },
+    "order": [
+      "id",
+      "content_version",
+      "owner_identity"
+    ]
+  },
+  "zone_def": {
+    "pk": "zone_id",
+    "visibility": "public",
+    "columns": {
+      "zone_id": "u32",
+      "name": "String",
+      "width": "u32",
+      "height": "u32"
+    },
+    "order": [
+      "zone_id",
+      "name",
+      "width",
+      "height"
+    ]
+  },
+  "species_row": {
+    "pk": "id",
+    "visibility": "public",
+    "columns": {
+      "id": "u32",
+      "name": "String",
+      "base_hp": "u16",
+      "base_attack": "u16",
+      "base_defense": "u16",
+      "base_speed": "u16",
+      "base_sp_attack": "u16",
+      "base_sp_defense": "u16",
+      "affinity": "Affinity",
+      "learnable_skill_ids": "Vec<u32>",
+      "ability": "Option<u32>",
+      "tier": "u8"
+    },
+    "order": [
+      "id",
+      "name",
+      "base_hp",
+      "base_attack",
+      "base_defense",
+      "base_speed",
+      "base_sp_attack",
+      "base_sp_defense",
+      "affinity",
+      "learnable_skill_ids",
+      "ability",
+      "tier"
+    ]
+  },
+  "skill_row": {
+    "pk": "id",
+    "visibility": "public",
+    "columns": {
+      "id": "u32",
+      "name": "String",
+      "affinity": "Affinity",
+      "power": "u16",
+      "accuracy": "u8",
+      "pp": "u8"
+    },
+    "order": [
+      "id",
+      "name",
+      "affinity",
+      "power",
+      "accuracy",
+      "pp"
+    ]
+  },
+  "type_relation_row": {
+    "pk": "id",
+    "visibility": "public",
+    "columns": {
+      "id": "u64",
+      "attacker": "Affinity",
+      "defender": "Affinity",
+      "effectiveness": "u8"
+    },
+    "order": [
+      "id",
+      "attacker",
+      "defender",
+      "effectiveness"
+    ]
+  },
+  "item_row": {
+    "pk": "id",
+    "visibility": "public",
+    "columns": {
+      "id": "u32",
+      "name": "String",
+      "description": "String",
+      "recruit_bonus": "u16",
+      "train_stat": "Option<StatKind>",
+      "train_amount": "u16",
+      "sell_price": "u64",
+      "cure_status": "Option<StatusKind>"
+    },
+    "order": [
+      "id",
+      "name",
+      "description",
+      "recruit_bonus",
+      "train_stat",
+      "train_amount",
+      "sell_price",
+      "cure_status"
+    ]
+  },
+  "shop_row": {
+    "pk": "shop_id",
+    "visibility": "public",
+    "columns": {
+      "shop_id": "u32",
+      "name": "String"
+    },
+    "order": [
+      "shop_id",
+      "name"
+    ]
+  },
+  "shop_item_row": {
+    "pk": "shop_item_id",
+    "visibility": "public",
+    "columns": {
+      "shop_item_id": "u64",
+      "shop_id": "u32",
+      "item_id": "u32",
+      "buy_price": "u64"
+    },
+    "order": [
+      "shop_item_id",
+      "shop_id",
+      "item_id",
+      "buy_price"
+    ]
+  },
+  "encounter": {
+    "pk": "zone_id",
+    "visibility": "private",
+    "columns": {
+      "zone_id": "u32",
+      "encounter_rate": "u16",
+      "entries": "Vec<EncounterEntryRow>"
+    },
+    "order": [
+      "zone_id",
+      "encounter_rate",
+      "entries"
+    ]
+  },
+  "monster": {
+    "pk": "monster_id",
+    "visibility": "private",
+    "columns": {
+      "monster_id": "u64",
+      "owner_identity": "Identity",
+      "species_id": "u32",
+      "nickname": "String",
+      "level": "u8",
+      "xp": "u32",
+      "iv_hp": "u8",
+      "iv_attack": "u8",
+      "iv_defense": "u8",
+      "iv_speed": "u8",
+      "iv_sp_attack": "u8",
+      "iv_sp_defense": "u8",
+      "nature_kind": "NatureKind",
+      "ev_hp": "u16",
+      "ev_attack": "u16",
+      "ev_defense": "u16",
+      "ev_speed": "u16",
+      "ev_sp_attack": "u16",
+      "ev_sp_defense": "u16",
+      "stat_hp": "u16",
+      "stat_attack": "u16",
+      "stat_defense": "u16",
+      "stat_speed": "u16",
+      "stat_sp_attack": "u16",
+      "stat_sp_defense": "u16",
+      "current_hp": "u16",
+      "party_slot": "u8",
+      "last_care_at_ms": "i64",
+      "essence_fire": "u32",
+      "essence_water": "u32",
+      "essence_plant": "u32",
+      "essence_electric": "u32",
+      "essence_earth": "u32",
+      "essence_wind": "u32",
+      "essence_light": "u32",
+      "essence_dark": "u32",
+      "trust_favorable_count": "u32",
+      "trust_unfavorable_count": "u32",
+      "trust_favorable_battle_day_epoch": "u32",
+      "quality_time_ticks_total": "u32",
+      "quality_time_accum_ms": "u32",
+      "quality_time_window_ms": "u32",
+      "quality_time_window_start_ms": "i64",
+      "last_essence_train_at_ms": "i64"
+    },
+    "order": [
+      "monster_id",
+      "owner_identity",
+      "species_id",
+      "nickname",
+      "level",
+      "xp",
+      "iv_hp",
+      "iv_attack",
+      "iv_defense",
+      "iv_speed",
+      "iv_sp_attack",
+      "iv_sp_defense",
+      "nature_kind",
+      "ev_hp",
+      "ev_attack",
+      "ev_defense",
+      "ev_speed",
+      "ev_sp_attack",
+      "ev_sp_defense",
+      "stat_hp",
+      "stat_attack",
+      "stat_defense",
+      "stat_speed",
+      "stat_sp_attack",
+      "stat_sp_defense",
+      "current_hp",
+      "party_slot",
+      "last_care_at_ms",
+      "essence_fire",
+      "essence_water",
+      "essence_plant",
+      "essence_electric",
+      "essence_earth",
+      "essence_wind",
+      "essence_light",
+      "essence_dark",
+      "trust_favorable_count",
+      "trust_unfavorable_count",
+      "trust_favorable_battle_day_epoch",
+      "quality_time_ticks_total",
+      "quality_time_accum_ms",
+      "quality_time_window_ms",
+      "quality_time_window_start_ms",
+      "last_essence_train_at_ms"
+    ]
+  },
+  "monster_pub": {
+    "pk": "monster_id",
+    "visibility": "private",
+    "columns": {
+      "monster_id": "u64",
+      "owner_identity": "Identity",
+      "species_id": "u32",
+      "nickname": "String",
+      "level": "u8",
+      "xp": "u32",
+      "current_hp": "u16",
+      "stat_hp": "u16",
+      "stat_attack": "u16",
+      "stat_defense": "u16",
+      "stat_speed": "u16",
+      "stat_sp_attack": "u16",
+      "stat_sp_defense": "u16",
+      "party_slot": "u8",
+      "tier": "u8",
+      "essence_fire": "u32",
+      "essence_water": "u32",
+      "essence_plant": "u32",
+      "essence_electric": "u32",
+      "essence_earth": "u32",
+      "essence_wind": "u32",
+      "essence_light": "u32",
+      "essence_dark": "u32",
+      "trust_tier": "TrustTier",
+      "quality_time_tier": "u8",
+      "nutrition_pct": "u8"
+    },
+    "order": [
+      "monster_id",
+      "owner_identity",
+      "species_id",
+      "nickname",
+      "level",
+      "xp",
+      "current_hp",
+      "stat_hp",
+      "stat_attack",
+      "stat_defense",
+      "stat_speed",
+      "stat_sp_attack",
+      "stat_sp_defense",
+      "party_slot",
+      "tier",
+      "essence_fire",
+      "essence_water",
+      "essence_plant",
+      "essence_electric",
+      "essence_earth",
+      "essence_wind",
+      "essence_light",
+      "essence_dark",
+      "trust_tier",
+      "quality_time_tier",
+      "nutrition_pct"
+    ]
+  },
+  "battle": {
+    "pk": "battle_id",
+    "visibility": "private",
+    "columns": {
+      "battle_id": "u64",
+      "player_identity": "Identity",
+      "opponent_identity": "Identity",
+      "state": "BattleState",
+      "party_monster_ids": "Vec<u64>",
+      "opponent_monster_ids": "Vec<u64>",
+      "created_at_ms": "i64"
+    },
+    "order": [
+      "battle_id",
+      "player_identity",
+      "opponent_identity",
+      "state",
+      "party_monster_ids",
+      "opponent_monster_ids",
+      "created_at_ms"
+    ]
+  },
+  "battle_wild": {
+    "pk": "battle_id",
+    "visibility": "private",
+    "columns": {
+      "battle_id": "u64",
+      "wild_species_id": "u32",
+      "wild_level": "u8",
+      "individuality_seed": "u32"
+    },
+    "order": [
+      "battle_id",
+      "wild_species_id",
+      "wild_level",
+      "individuality_seed"
+    ]
+  },
+  "inventory": {
+    "pk": "inv_id",
+    "visibility": "public",
+    "columns": {
+      "inv_id": "u64",
+      "owner_identity": "Identity",
+      "item_id": "u32",
+      "count": "u32"
+    },
+    "order": [
+      "inv_id",
+      "owner_identity",
+      "item_id",
+      "count"
+    ]
+  },
+  "evolution_path": {
+    "pk": "path_id",
+    "visibility": "public",
+    "columns": {
+      "path_id": "u64",
+      "edge_id": "u32",
+      "from_species": "u32",
+      "to_species": "u32",
+      "min_level": "u8",
+      "essence": "Vec<EssenceRequirementRow>",
+      "min_trust_tier": "Option<TrustTier>",
+      "min_quality_time_tier": "Option<u8>",
+      "min_nutrition_pct": "Option<u8>"
+    },
+    "order": [
+      "path_id",
+      "edge_id",
+      "from_species",
+      "to_species",
+      "min_level",
+      "essence",
+      "min_trust_tier",
+      "min_quality_time_tier",
+      "min_nutrition_pct"
+    ]
+  },
+  "npc": {
+    "pk": "entity_id",
+    "visibility": "public",
+    "columns": {
+      "entity_id": "u64",
+      "npc_id": "String",
+      "zone_id": "u32",
+      "home_x": "i32",
+      "home_y": "i32",
+      "wander_radius": "u8",
+      "dialogue_tree_id": "String",
+      "interaction": "NpcInteraction"
+    },
+    "order": [
+      "entity_id",
+      "npc_id",
+      "zone_id",
+      "home_x",
+      "home_y",
+      "wander_radius",
+      "dialogue_tree_id",
+      "interaction"
+    ]
+  },
+  "player_dialogue_state": {
+    "pk": "owner_identity",
+    "visibility": "private",
+    "columns": {
+      "owner_identity": "Identity",
+      "flags": "Vec<String>",
+      "done_quests": "Vec<String>"
+    },
+    "order": [
+      "owner_identity",
+      "flags",
+      "done_quests"
+    ]
+  },
+  "player_quest": {
+    "pk": "pq_id",
+    "visibility": "public",
+    "columns": {
+      "pq_id": "u64",
+      "owner_identity": "Identity",
+      "quest_id": "String",
+      "step_index": "u32"
+    },
+    "order": [
+      "pq_id",
+      "owner_identity",
+      "quest_id",
+      "step_index"
+    ]
+  },
+  "player_conversation": {
+    "pk": "owner_identity",
+    "visibility": "private",
+    "columns": {
+      "owner_identity": "Identity",
+      "npc_entity_id": "u64",
+      "current_node_id": "String"
+    },
+    "order": [
+      "owner_identity",
+      "npc_entity_id",
+      "current_node_id"
+    ]
+  },
+  "heal_location_row": {
+    "pk": "location_id",
+    "visibility": "public",
+    "columns": {
+      "location_id": "u32",
+      "zone_id": "u32",
+      "tile_x": "i32",
+      "tile_y": "i32",
+      "cost_item_id": "Option<u32>",
+      "cost_qty": "u32",
+      "cooldown_ms": "i64",
+      "cost_currency": "u64"
+    },
+    "order": [
+      "location_id",
+      "zone_id",
+      "tile_x",
+      "tile_y",
+      "cost_item_id",
+      "cost_qty",
+      "cooldown_ms",
+      "cost_currency"
+    ]
+  },
+  "heal_cooldown": {
+    "pk": "owner_identity",
+    "visibility": "private",
+    "columns": {
+      "owner_identity": "Identity",
+      "last_heal_at_ms": "i64"
+    },
+    "order": [
+      "owner_identity",
+      "last_heal_at_ms"
+    ]
+  },
+  "trade_offer": {
+    "pk": "trade_id",
+    "visibility": "public",
+    "columns": {
+      "trade_id": "u64",
+      "initiator": "Identity",
+      "counterparty": "Identity",
+      "initiator_monster_ids": "Vec<u64>",
+      "initiator_items": "Vec<game_core::TradeItem>",
+      "initiator_currency": "u64",
+      "counterparty_monster_ids": "Vec<u64>",
+      "counterparty_items": "Vec<game_core::TradeItem>",
+      "counterparty_currency": "u64",
+      "initiator_cards": "Vec<game_core::MonsterCard>",
+      "counterparty_cards": "Vec<game_core::MonsterCard>",
+      "status": "game_core::TradeStatus",
+      "created_at_ms": "i64"
+    },
+    "order": [
+      "trade_id",
+      "initiator",
+      "counterparty",
+      "initiator_monster_ids",
+      "initiator_items",
+      "initiator_currency",
+      "counterparty_monster_ids",
+      "counterparty_items",
+      "counterparty_currency",
+      "initiator_cards",
+      "counterparty_cards",
+      "status",
+      "created_at_ms"
+    ]
+  },
+  "player_wallet": {
+    "pk": "owner_identity",
+    "visibility": "private",
+    "columns": {
+      "owner_identity": "Identity",
+      "balance": "u64"
+    },
+    "order": [
+      "owner_identity",
+      "balance"
+    ]
+  },
+  "account": {
+    "pk": "identity",
+    "visibility": "private",
+    "columns": {
+      "identity": "Identity",
+      "auth_issuer": "String",
+      "created_at_ms": "i64",
+      "last_login_at_ms": "i64",
+      "status": "AccountStatus",
+      "deletion_requested_at_ms": "Option<i64>",
+      "claimed_from": "Option<Identity>",
+      "claimed_at_ms": "Option<i64>",
+      "terminal_at_ms": "Option<i64>"
+    },
+    "order": [
+      "identity",
+      "auth_issuer",
+      "created_at_ms",
+      "last_login_at_ms",
+      "status",
+      "deletion_requested_at_ms",
+      "claimed_from",
+      "claimed_at_ms",
+      "terminal_at_ms"
+    ]
+  },
+  "guest_claim": {
+    "pk": "guest_identity",
+    "visibility": "private",
+    "columns": {
+      "guest_identity": "Identity",
+      "code": "String",
+      "guest_name": "String",
+      "created_at_ms": "i64",
+      "expires_at_ms": "i64"
+    },
+    "order": [
+      "guest_identity",
+      "code",
+      "guest_name",
+      "created_at_ms",
+      "expires_at_ms"
+    ]
+  },
+  "profile": {
+    "pk": "identity",
+    "visibility": "public",
+    "columns": {
+      "identity": "Identity",
+      "name": "String",
+      "rating": "i32",
+      "wins": "u32",
+      "losses": "u32"
+    },
+    "order": [
+      "identity",
+      "name",
+      "rating",
+      "wins",
+      "losses"
+    ]
+  },
+  "battle_challenge": {
+    "pk": "challenge_id",
+    "visibility": "public",
+    "columns": {
+      "challenge_id": "u64",
+      "challenger": "Identity",
+      "target": "Identity",
+      "challenger_party_ids": "Vec<u64>",
+      "status": "ChallengeStatus",
+      "created_at_ms": "i64"
+    },
+    "order": [
+      "challenge_id",
+      "challenger",
+      "target",
+      "challenger_party_ids",
+      "status",
+      "created_at_ms"
+    ]
+  },
+  "battle_action": {
+    "pk": "action_id",
+    "visibility": "private",
+    "columns": {
+      "action_id": "u64",
+      "battle_id": "u64",
+      "player_identity": "Identity",
+      "action": "game_core::PvpAction",
+      "turn_number": "u16",
+      "submitted_at_ms": "i64"
+    },
+    "order": [
+      "action_id",
+      "battle_id",
+      "player_identity",
+      "action",
+      "turn_number",
+      "submitted_at_ms"
+    ]
+  },
+  "trade_offer_reaper_schedule": {
+    "pk": "scheduled_id",
+    "visibility": "private",
+    "columns": {
+      "scheduled_id": "u64",
+      "scheduled_at": "ScheduleAt",
+      "trade_id": "u64"
+    },
+    "order": [
+      "scheduled_id",
+      "scheduled_at",
+      "trade_id"
+    ]
+  },
+  "export_bundle": {
+    "pk": "chunk_id",
+    "visibility": "private",
+    "columns": {
+      "chunk_id": "u64",
+      "owner_identity": "Identity",
+      "request_id": "u64",
+      "table_name": "String",
+      "chunk_index": "u32",
+      "total_chunks": "u32",
+      "payload_json": "String",
+      "created_at_ms": "i64"
+    },
+    "order": [
+      "chunk_id",
+      "owner_identity",
+      "request_id",
+      "table_name",
+      "chunk_index",
+      "total_chunks",
+      "payload_json",
+      "created_at_ms"
+    ]
+  },
+  "account_deletion_reaper_schedule": {
+    "pk": "scheduled_id",
+    "visibility": "private",
+    "columns": {
+      "scheduled_id": "u64",
+      "scheduled_at": "ScheduleAt",
+      "account_identity": "Identity"
+    },
+    "order": [
+      "scheduled_id",
+      "scheduled_at",
+      "account_identity"
+    ]
+  },
+  "export_bundle_reaper_schedule": {
+    "pk": "id",
+    "visibility": "private",
+    "columns": {
+      "id": "u64",
+      "scheduled_at": "ScheduleAt"
+    },
+    "order": [
+      "id",
+      "scheduled_at"
+    ]
+  },
+  "player_session": {
+    "pk": "connection_id",
+    "visibility": "private",
+    "columns": {
+      "connection_id": "ConnectionId",
+      "identity": "Identity"
+    },
+    "order": [
+      "connection_id",
+      "identity"
+    ]
+  },
+  "pending_evolution_notice": {
+    "pk": "owner_identity",
+    "visibility": "private",
+    "columns": {
+      "owner_identity": "Identity",
+      "entries": "Vec<EvolutionRevealRow>"
+    },
+    "order": [
+      "owner_identity",
+      "entries"
+    ]
+  }
+}
