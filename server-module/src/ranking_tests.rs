@@ -3271,3 +3271,333 @@ fn rb81_ranking_reducer_roster_is_closed() {
          stripped numbers TOGETHER."
     );
 }
+
+// ===========================================================================
+// Native-host behavioural suite (debloat Phase 2: EV-ranking-security#rating-integrity,
+// ST-ranking_tests). The bindings half — set_profile_name is the ONLY client reducer
+// that can reach `player`/`profile` names, and no client reducer takes a rating — is
+// client-surface-privacy clause (D).
+// ===========================================================================
+
+use crate::native_host_tests::{fixture as rk_fixture, Fixture as RkFixture, Handle as RkHandle};
+use crate::schema::{Account as RkAccount, Battle as RkBattle, Player as RkPlayer};
+use game_core::BattleOutcome as RkOutcome;
+
+fn rk_a() -> Identity {
+    Identity::from_byte_array([0x3A; 32])
+}
+fn rk_b() -> Identity {
+    Identity::from_byte_array([0x3B; 32])
+}
+
+struct RkWorld<'a> {
+    players: RkHandle<'a, RkPlayer>,
+    profiles: RkHandle<'a, Profile>,
+    accounts: RkHandle<'a, RkAccount>,
+}
+
+fn rk_world(fx: &RkFixture) -> RkWorld<'_> {
+    let w = RkWorld {
+        players: fx
+            .table::<RkPlayer>("player", "identity", |r| r.identity)
+            .writable()
+            .unique(),
+        profiles: fx
+            .table::<Profile>("profile", "identity", |r| r.identity)
+            .writable()
+            .unique(),
+        accounts: fx.table::<RkAccount>("account", "identity", |r| r.identity),
+    };
+    for (who, name) in [(rk_a(), "Alice"), (rk_b(), "Bob")] {
+        w.players.seed(&RkPlayer {
+            identity: who,
+            entity_id: u64::from(who.to_byte_array()[0]),
+            name: name.to_string(),
+            online: true,
+            last_input_seq: 0,
+        });
+    }
+    w
+}
+
+impl RkWorld<'_> {
+    fn name(&self, who: Identity) -> Option<String> {
+        self.players
+            .rows()
+            .into_iter()
+            .find(|p| p.identity == who)
+            .map(|p| p.name)
+    }
+    fn profile(&self, who: Identity) -> Option<(String, i32, u32, u32)> {
+        self.profiles
+            .rows()
+            .into_iter()
+            .find(|p| p.identity == who)
+            .map(|p| (p.name, p.rating, p.wins, p.losses))
+    }
+    fn seed_profile(&self, who: Identity, name: &str, rating: i32, wins: u32, losses: u32) {
+        self.profiles.seed(&Profile {
+            identity: who,
+            name: name.to_string(),
+            rating,
+            wins,
+            losses,
+        });
+    }
+    fn snapshot(&self) -> Vec<Vec<u8>> {
+        use spacetimedb::sats::bsatn::to_vec;
+        vec![
+            to_vec(&self.players.rows()).unwrap(),
+            to_vec(&self.profiles.rows()).unwrap(),
+        ]
+    }
+}
+
+/// EV-ranking-security#rating-integrity: `set_profile_name` refuses an unjoined or a
+/// deletion-gated caller and an invalid name without writing; on success it writes ONLY
+/// the caller's `player.name` (validated/normalised) — the caller's profile row (rating,
+/// W/L, leaderboard name) and every other row stay byte-identical.
+/// kills: set_profile_name -> Ok(()), validation skipped, deletion gate removed, a
+/// profile write added, the wrong player row updated.
+#[test]
+fn nh_set_profile_name_writes_only_the_callers_player_name() {
+    let fx = rk_fixture();
+    let w = rk_world(&fx);
+    w.seed_profile(rk_a(), "Alice", 1234, 5, 6);
+    w.seed_profile(rk_b(), "Bob", 999, 1, 2);
+    let before = w.snapshot();
+    let ghost = Identity::from_byte_array([0x3F; 32]);
+    assert_eq!(
+        fx.run_as(ghost, |ctx| super::set_profile_name(
+            ctx,
+            "Ghost".to_string()
+        )),
+        Err("not joined".to_string())
+    );
+    let long = "x".repeat(crate::MAX_NAME_LEN + 1);
+    for bad in ["", "   ", "(claimed guest)", long.as_str()] {
+        let got = fx.run_as(rk_a(), |ctx| super::set_profile_name(ctx, bad.to_string()));
+        assert_eq!(
+            got,
+            crate::guards::validate_name(bad).map(|_| ()),
+            "invalid name {bad:?}"
+        );
+        assert!(got.is_err(), "{bad:?} must be refused");
+    }
+    assert_eq!(w.snapshot(), before, "refusals write nothing");
+    assert_eq!(
+        fx.run_as(rk_a(), |ctx| super::set_profile_name(
+            ctx,
+            "  Alicia ".to_string()
+        )),
+        Ok(())
+    );
+    assert_eq!(
+        w.name(rk_a()),
+        Some("Alicia".to_string()),
+        "the validated (trimmed) name lands"
+    );
+    assert_eq!(
+        w.name(rk_b()),
+        Some("Bob".to_string()),
+        "no other player is renamed"
+    );
+    assert_eq!(
+        w.profile(rk_a()),
+        Some(("Alice".to_string(), 1234, 5, 6)),
+        "the profile row (rating, W/L, leaderboard name) is untouched"
+    );
+    assert_eq!(w.profile(rk_b()), Some(("Bob".to_string(), 999, 1, 2)));
+
+    // Deletion-gated caller (m22-s3b): refused before any write.
+    drop(fx);
+    let fx = rk_fixture();
+    let w = rk_world(&fx);
+    w.accounts.seed(&crate::accounts::requested_deletion(
+        crate::accounts::new_account_row(rk_a(), String::new(), 0),
+        1,
+    ));
+    let before = w.snapshot();
+    assert!(fx
+        .run_as(rk_a(), |ctx| super::set_profile_name(
+            ctx,
+            "Evil".to_string()
+        ))
+        .is_err());
+    assert_eq!(
+        w.snapshot(),
+        before,
+        "a deletion-gated caller cannot un-tombstone a name"
+    );
+}
+
+/// ST-pvp_tests#settle-rating (rt_m17_01 as behaviour): `apply_pvp_rating` maps the
+/// winner from the outcome — SideAWins rates `player_identity` up, SideBWins rates
+/// `opponent_identity` up — updating existing rows IN PLACE from their current ratings
+/// (one compute for both) and refreshing the leaderboard name from the live player row;
+/// Fled / Ongoing and a practice self-battle never touch the ladder.
+/// kills: winner/loser swapped, wins/losses swapped, INITIAL used instead of the stored
+/// rating, is_ranked_pvp guard removed, Fled rated.
+#[test]
+fn nh_apply_pvp_rating_maps_winner_from_outcome_and_updates_in_place() {
+    let battle = |player: Identity, opponent: Identity, outcome: RkOutcome| {
+        let mut b = RkBattle {
+            battle_id: 1,
+            player_identity: player,
+            opponent_identity: opponent,
+            state: game_core::BattleState {
+                side_a: game_core::BattleSide {
+                    active: 0,
+                    team: vec![],
+                },
+                side_b: game_core::BattleSide {
+                    active: 0,
+                    team: vec![],
+                },
+                outcome: RkOutcome::Ongoing,
+                turn_number: 3,
+                weather: None,
+            },
+            party_monster_ids: vec![],
+            opponent_monster_ids: vec![],
+            created_at_ms: 0,
+        };
+        b.state.outcome = outcome;
+        b
+    };
+    for (outcome, winner, loser) in [
+        (RkOutcome::SideAWins, rk_a(), rk_b()),
+        (RkOutcome::SideBWins, rk_b(), rk_a()),
+    ] {
+        let fx = rk_fixture();
+        let w = rk_world(&fx);
+        let start = |who: Identity| if who == rk_a() { 1200 } else { 800 };
+        w.seed_profile(rk_a(), "stale-a", start(rk_a()), 3, 4);
+        w.seed_profile(rk_b(), "stale-b", start(rk_b()), 1, 1);
+        let record = |who: Identity| if who == rk_a() { (3u32, 4u32) } else { (1, 1) };
+        super::apply_pvp_rating(&fx.ctx(), &battle(rk_a(), rk_b(), outcome));
+        let (rw, rl) = game_core::compute_rating_update(start(winner), start(loser));
+        let live = |who: Identity| (if who == rk_a() { "Alice" } else { "Bob" }).to_string();
+        let (ww, wl) = record(winner);
+        let (lw, ll) = record(loser);
+        assert_eq!(
+            w.profile(winner),
+            Some((live(winner), rw, ww + 1, wl)),
+            "{outcome:?}: winner"
+        );
+        assert_eq!(
+            w.profile(loser),
+            Some((live(loser), rl, lw, ll + 1)),
+            "{outcome:?}: loser"
+        );
+        assert_eq!(
+            w.profiles.rows().len(),
+            2,
+            "updated in place, nothing inserted or deleted"
+        );
+    }
+    for (label, b) in [
+        ("Fled", battle(rk_a(), rk_b(), RkOutcome::Fled)),
+        ("Ongoing", battle(rk_a(), rk_b(), RkOutcome::Ongoing)),
+        (
+            "practice self-battle",
+            battle(rk_a(), rk_a(), RkOutcome::SideAWins),
+        ),
+        (
+            "wild battle",
+            battle(rk_a(), crate::WILD_IDENTITY, RkOutcome::SideAWins),
+        ),
+    ] {
+        let fx = rk_fixture();
+        let w = rk_world(&fx);
+        super::apply_pvp_rating(&fx.ctx(), &b);
+        assert!(
+            w.profiles.rows().is_empty(),
+            "{label}: never rated (no profile created)"
+        );
+    }
+    // First rated game for fresh identities: both rows inserted from INITIAL_RATING.
+    let fx = rk_fixture();
+    let w = rk_world(&fx);
+    super::apply_pvp_rating(&fx.ctx(), &battle(rk_a(), rk_b(), RkOutcome::SideAWins));
+    let (rw, rl) =
+        game_core::compute_rating_update(game_core::INITIAL_RATING, game_core::INITIAL_RATING);
+    assert_eq!(w.profile(rk_a()), Some(("Alice".to_string(), rw, 1, 0)));
+    assert_eq!(w.profile(rk_b()), Some(("Bob".to_string(), rl, 0, 1)));
+}
+
+/// EV-ranking-security#rating-integrity (rekey) + AUTH-23/25: `rekey_profile` carries the
+/// guest's rating/W/L onto the destination (creating it with the destination's live name
+/// when absent, keeping an existing destination's name) and TOMBSTONES the guest row in
+/// place — the un-typable claimed-guest name, zeroed stats — never deleting it; a guest
+/// with no profile is a no-op.
+/// kills: rekey_profile -> (), tombstone skipped, stats not carried, guest deleted.
+#[test]
+fn nh_rekey_profile_carries_stats_and_tombstones_the_guest() {
+    let fx = rk_fixture();
+    let w = rk_world(&fx);
+    w.seed_profile(rk_a(), "Guest", 1300, 5, 2);
+    let ctx = fx.ctx();
+    super::rekey_profile(&ctx, rk_a(), rk_b());
+    assert_eq!(
+        w.profile(rk_b()),
+        Some(("Bob".to_string(), 1300, 5, 2)),
+        "stats carried, live name"
+    );
+    assert_eq!(
+        w.profile(rk_a()),
+        Some((super::PROFILE_TOMBSTONE_NAME.to_string(), 0, 0, 0)),
+        "the guest row is tombstoned in place, not deleted"
+    );
+    assert!(
+        crate::guards::validate_name(super::PROFILE_TOMBSTONE_NAME).is_err(),
+        "un-typable"
+    );
+
+    drop(fx);
+    let fx = rk_fixture();
+    let w = rk_world(&fx);
+    w.seed_profile(rk_a(), "Guest", 1300, 5, 2);
+    w.seed_profile(rk_b(), "Kept", 700, 9, 9);
+    super::rekey_profile(&fx.ctx(), rk_a(), rk_b());
+    assert_eq!(
+        w.profile(rk_b()),
+        Some(("Bob".to_string(), 1300, 5, 2)),
+        "existing dest overwritten with carried stats"
+    );
+    assert_eq!(w.profiles.rows().len(), 2);
+
+    drop(fx);
+    let fx = rk_fixture();
+    let w = rk_world(&fx);
+    super::rekey_profile(&fx.ctx(), rk_a(), rk_b());
+    assert!(
+        w.profiles.rows().is_empty(),
+        "no guest profile: nothing created"
+    );
+}
+
+/// PRV1-6 display-name anonymize as behaviour: `anonymize_display_names` renames the
+/// owner's `player` AND `profile` rows to the deletion tombstone (keeping every other
+/// field), leaves other players alone, and is a no-op for absent rows.
+/// kills: either loop removed, the wrong owner renamed, stats clobbered.
+#[test]
+fn nh_anonymize_display_names_tombstones_only_the_owner() {
+    let fx = rk_fixture();
+    let w = rk_world(&fx);
+    w.seed_profile(rk_a(), "Alice", 1111, 2, 3);
+    w.seed_profile(rk_b(), "Bob", 999, 1, 1);
+    super::anonymize_display_names(&fx.ctx(), rk_a());
+    let t = game_core::TOMBSTONE_DISPLAY_NAME.to_string();
+    assert_eq!(w.name(rk_a()), Some(t.clone()));
+    assert_eq!(
+        w.profile(rk_a()),
+        Some((t, 1111, 2, 3)),
+        "only the name changes"
+    );
+    assert_eq!(w.name(rk_b()), Some("Bob".to_string()));
+    assert_eq!(w.profile(rk_b()), Some(("Bob".to_string(), 999, 1, 1)));
+    let before = w.snapshot();
+    super::anonymize_display_names(&fx.ctx(), Identity::from_byte_array([0x3F; 32]));
+    assert_eq!(w.snapshot(), before, "absent rows: no-op");
+}
