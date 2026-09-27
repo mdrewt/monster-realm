@@ -204,11 +204,10 @@ test('with the preference off, the same rule animates (the guard is conditional,
 // THE THREE IDIOMS CONSIDERED AT rb-38, AND WHY THE NARROW GUARD WON THEN — kept
 // because the reasoning still governs any FUTURE known-defect disclosure in this
 // file, and records why `test.fixme()`/`test.fail()` must not be used here (both
-// are still live traps for the nightly tier):
+// are still traps here):
 //   * `test.fixme()` is this repo's existing idiom for a blocked-on-another-slice
-//     e2e (`client/e2e/recruit.spec.ts:1008`), but it SKIPS — and `just a11y-e2e`
-//     half 4 reds on `stats.skipped !== 0` by design, because "a skipped a11y
-//     test is a silently ungated one". A fixme here would break the nightly tier.
+//     e2e (`client/e2e/recruit.spec.ts:1008`), but it SKIPS — and a skipped a11y
+//     test is a silently ungated one.
 //   * `test.fail()` was implemented and then REJECTED, on measured evidence. It
 //     marks the WHOLE test body expected-to-fail, so it swallows every OTHER
 //     failure too: with `window.__game` deleted (total boot failure) this test
@@ -383,16 +382,10 @@ async function rendererArmStepEastAndSettle(
   await p.waitForTimeout(Math.round(stepMs * 1.5));
 }
 
-// THE TITLE STILL SAYS "KNOWN DEFECT — guarded" AND THAT IS NOW INACCURATE. It is kept
-// BYTE-IDENTICAL on purpose: `just a11y-e2e` half 4 pins this title's leading substring
-// (up to and including the parenthesised defect label) and requires exactly one
-// matching test title in the reduced-motion report, and the WHOLE
-// a11y-e2e recipe body is byte-pinned as A11Y_E2E_RECIPE_REGION in
-// `evals/ci-gate-wiring.eval.mjs`. Renaming here therefore reds two gates and needs a
-// justfile edit that was outside 17r-a's touch-set. Do not "just fix" the title in
-// isolation — retiring it is a self-contained follow-up slice that must move the title,
-// the justfile pin and the eval region together, in one commit.
-test('RENDERER ARM (E1, KNOWN DEFECT — guarded): under the reduced-motion project, the own character NEVER renders a fractional sub-tile position', async ({
+// BUG-a11y-renderer-arm-stale-known-defect: this test used to be titled "KNOWN DEFECT —
+// guarded". The defect was fixed in 17r-a and the title pin died with the a11y-e2e recipe,
+// so the title now states what the test actually proves.
+test('RENDERER ARM (E1): under the reduced-motion project, the own character NEVER renders a fractional sub-tile position', async ({
   page,
 }) => {
   // NO emulateMedia call anywhere in this test — same load-bearing absence, and

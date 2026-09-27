@@ -13,10 +13,8 @@ import { t } from '../src/ui/a11yCopy';
 // M23-accessibility.spec.md §5.7 DECIDED should exist and that no M23 slice owned.
 // ADR-0218.
 //
-// WHERE THIS RUNS, both of them. Half 3 of `just a11y-e2e` runs it nightly, and the
-// nightly job provisions the browser and the SpacetimeDB instance it needs. But
-// playwright.config.ts has `testDir: './e2e'`, so `just e2e` collects this file too
-// and the PER-PR `e2e:` job in ci.yml runs it as well. That is deliberate, not an
+// WHERE THIS RUNS. playwright.config.ts has `testDir: './e2e'`, so `just e2e` collects
+// this file and the PER-PR `e2e:` job in ci.yml runs it. That is deliberate, not an
 // oversight: it costs ~3s in a job that already has a browser and a server, and
 // excluding it would need a `--grep-invert` neuter-shaped construct in the `e2e`
 // recipe. If your PR reds here, it red on a real WCAG A/AA violation in the
@@ -29,7 +27,7 @@ import { t } from '../src/ui/a11yCopy';
 // is a second context on it under another name, which the SORT ORDER note below
 // forbids; no rule in this suite's `wcag2a/2aa/21a/21aa/22aa` tag set has a
 // `prefers-reduced-motion`-dependent outcome (SC 2.3.3 is Level AAA, outside the
-// §5.6 claim); and it would double half 3's `stats.expected` floor. Do not drop that
+// §5.6 claim); and it would run every test here twice. Do not drop that
 // `testMatch` without re-reading ADR-0219 D2.
 //
 // SORT ORDER, considered. Playwright orders spec FILES by path, so `a11y` runs

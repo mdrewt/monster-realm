@@ -537,11 +537,6 @@ afterEach(async () => {
 //
 // A `vite.config.ts` SETTING CANNOT SUBSTITUTE: the criterion is the CLI flag, and the CLI flag
 // overrides config. Moving this into the runner config would satisfy nobody and gate nothing.
-//
-// IF YOU DELETE THIS: `RB37-CONCURRENT-SAFE` and `RB37-RATIONALE-DURABLE` in the sibling
-// `overlayA11yWiring.concurrency.test.ts` both red — the first spawns a child vitest carrying the
-// flag, the second pins this marker and this block's content. If you ever make the file genuinely
-// per-test-isolated, delete the annotation AND that spec in the same commit.
 describe.sequential('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wiring spec', () => {
   it('S10-WIRE-TOTALITY BITES: the opener table covers EVERY OverlayId and nothing else, and the manifest is the real seventeen', () => {
     // Compile-time totality is the primary device (Record<OverlayId, _>); these are the runtime
@@ -948,8 +943,7 @@ describe.sequential('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wir
     // co-located and a future reader cannot delete one half. Not redundant with the compile-time
     // `Record<OverlayId, …>` (which forces the openers to EXIST) nor with `checked` (which only
     // proves the FOCUS-IDENTITY loop ran): neither notices an `it.skip` on one id's repeat tooth,
-    // and `just ci` does not run the nightly `a11y-e2e` recipe whose `numPendingTests` clause
-    // would otherwise catch it.
+    // and nothing else in the run would catch it.
     expect(repeatChecked, 'S10-WIRE-REPEAT-NO-REOPEN must have executed once per OverlayId').toBe(
       17,
     );
