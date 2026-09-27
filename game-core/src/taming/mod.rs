@@ -1,5 +1,5 @@
 //! Taming module — encounter triggering, weighted species selection,
-//! and recruit-chance arithmetic (M8a). All pure and deterministic (ADR-0003).
+//! and recruit-chance arithmetic (M8a). All pure and deterministic.
 
 pub mod rules;
 pub mod types;

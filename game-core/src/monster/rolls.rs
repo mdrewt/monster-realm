@@ -1,5 +1,5 @@
 //! Seeded RNG-based construction of monster individuality and starter monsters.
-//! Deterministic: same seed always produces the same result (ADR-0003).
+//! Deterministic: same seed always produces the same result.
 //! Never reads a wall-clock or system RNG — seed is injected by the caller.
 
 use super::types::{IVs, MonsterInstance, Nature};
@@ -42,7 +42,7 @@ pub fn roll_individuality(seed: u32) -> (IVs, Nature) {
 /// from [`roll_individuality`] (so the SAME seed always rebuilds the SAME
 /// individual — the M8d "recruit THAT exact wild" trust invariant), EVs are
 /// zero, all 8 essence pools and both Trust counters and the Quality-Time
-/// total start at 0 (EG1-7), `current_hp` equals the derived HP (full HP on
+/// total start at 0, `current_hp` equals the derived HP (full HP on
 /// grant), and `xp` is `xp_for_level(level)` (the start of the target level
 /// band, not 0).
 #[must_use]
@@ -150,11 +150,8 @@ mod tests {
         assert_eq!(m.evs, EVs::zero());
     }
 
-    /// #50 (EG1-7 REWRITE): a fresh monster starts with all 8 essence pools,
+    /// a fresh monster starts with all 8 essence pools,
     /// both Trust counters and its Quality-Time total at zero.
-    /// `bond` no longer exists on `MonsterInstance` — the old default-bond
-    /// assertion's subject is gone (and `Bond` itself was retired from game-core
-    /// at 16r-g, ADR-0177 D3).
     /// Kills: an impl that seeds a new monster with non-zero growth state.
     #[test]
     fn roll_starter_has_zero_growth_state() {
@@ -224,12 +221,9 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Nightly mutation hardening: known-answer vectors pin the exact
-    // splitmix32 mixing chain (ADR-0003 seed-stability: the SAME seed must
-    // rebuild the SAME individual forever — saved-monster compatibility).
     // -----------------------------------------------------------------------
 
-    /// Kills: all bit-mixing mutants inside `splitmix32` (9 survivors).
+    /// Kills: all bit-mixing mutants inside `splitmix32`.
     /// Vectors computed with an independent Python replica.
     #[test]
     fn splitmix32_known_answer_sequence() {
@@ -248,8 +242,8 @@ mod tests {
         assert_eq!(splitmix32(&mut s2), 0xF2C8_0841);
     }
 
-    /// Kills: the `% 32` -> `/`/`+` mutants in `roll_individuality` (2
-    /// survivors) plus any draw-order regression. Exact (IVs, Nature) per seed.
+    /// Kills: the `% 32` -> `/`/`+` mutants in `roll_individuality`
+    /// plus any draw-order regression. Exact (IVs, Nature) per seed.
     #[test]
     fn roll_individuality_known_answer_vectors() {
         use crate::monster::types::Nature;

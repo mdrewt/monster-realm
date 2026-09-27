@@ -1,27 +1,5 @@
 //! M14e gating tests — acceptance criteria for the M14e status-curing items +
 //! client battle-event display slice.
-//!
-//! ALL tests start RED (compile error OR runtime failure) because the following
-//! do not exist yet:
-//!   - `BattleEvent::StatusApplied { side: SideId, status: StatusEffect }` variant
-//!   - `SkillDef.applies_status: Option<StatusKind>` field
-//!   - `ItemDef.cure_status: Option<StatusKind>` field
-//!   - Status-application logic in `resolve_full_turn` / `resolve_one_attack`
-//!   - No-stack guard in `resolve_full_turn`
-//!   - Post-turn StatusApplied application to BattleStatusStore
-//!
-//! Criterion → test mapping:
-//!   EARS-1  (variant exists)          → status_applied_event_exists
-//!   EARS-2  (skill default)           → skill_def_applies_status_field_defaults_to_none
-//!   EARS-3  (skill parse)             → skill_def_applies_status_field_parses_some_burn
-//!   EARS-4  (item default)            → item_def_cure_status_field_defaults_to_none
-//!   EARS-5  (item parse)              → item_def_cure_status_field_parses_some_poison
-//!   EARS-6  (emitted on hit)          → status_applied_emitted_when_skill_hits_unstatused_target
-//!   EARS-7  (not emitted on miss)     → status_applied_not_emitted_on_miss
-//!   EARS-8  (not on already statused) → status_applied_not_emitted_when_target_already_statused
-//!   EARS-9  (both sides get status)   → status_applied_not_stacked_same_turn_by_two_attacks
-//!   EARS-10 (next-turn DoT only)      → status_applied_next_turn_dot_not_same_turn
-//!   EARS-11 (M7 regression)           → m14e_m7_regression_plain_attack_identical_events
 
 use crate::combat::ability::{AbilityStore, StatusKind};
 use crate::combat::resolve::resolve_full_turn;
@@ -90,8 +68,6 @@ fn plain_fire_skill() -> SkillDef {
         accuracy: 100,
         pp: 25,
         sets_weather: None,
-        // M14e adds this field. Red before implementation: struct literal will
-        // complain "missing field `applies_status`" until the field is added.
         applies_status: None,
     }
 }
@@ -165,10 +141,7 @@ fn empty_status() -> BattleStatusStore {
 }
 
 // ---------------------------------------------------------------------------
-// TEST 1 (EARS-1): BattleEvent::StatusApplied variant exists and is constructible
-//
-// This is a COMPILE-TIME gate. If the variant does not exist, this entire
-// test module fails to compile — the desired red state.
+// BattleEvent::StatusApplied variant exists and is constructible
 //
 // Kills: an impl that ships the slice without adding the StatusApplied variant.
 // ---------------------------------------------------------------------------
@@ -177,7 +150,7 @@ fn empty_status() -> BattleStatusStore {
 /// the struct literal below fails to compile if the variant or its fields are absent.
 #[test]
 fn status_applied_event_exists() {
-    // Construct the variant — compile-RED if the variant or any field is absent.
+    // Construct the variant.
     let ev = BattleEvent::StatusApplied {
         side: SideId::SideA,
         slot: 0,
@@ -218,7 +191,7 @@ fn status_applied_event_exists() {
 }
 
 // ---------------------------------------------------------------------------
-// TEST 2 (EARS-2): SkillDef.applies_status defaults to None (additive compat)
+// SkillDef.applies_status defaults to None (additive compat)
 //
 // A SkillDef parsed from RON without the `applies_status` field must have
 // `applies_status = None`. This is the #[serde(default)] contract.
@@ -258,7 +231,7 @@ fn skill_def_applies_status_field_defaults_to_none() {
 }
 
 // ---------------------------------------------------------------------------
-// TEST 3 (EARS-3): SkillDef.applies_status parses Some(Burn) correctly
+// SkillDef.applies_status parses Some(Burn) correctly
 //
 // A SkillDef with `applies_status: Some(Burn)` in RON must parse to
 // `Some(StatusKind::Burn)`. Tests the happy-path serde for the new field.
@@ -305,7 +278,7 @@ fn skill_def_applies_status_field_parses_some_burn() {
 }
 
 // ---------------------------------------------------------------------------
-// TEST 4 (EARS-4): ItemDef.cure_status defaults to None (additive compat)
+// ItemDef.cure_status defaults to None (additive compat)
 //
 // An ItemDef parsed from RON without the `cure_status` field must have
 // `cure_status = None`. This is the #[serde(default)] contract.
@@ -315,7 +288,7 @@ fn skill_def_applies_status_field_parses_some_burn() {
 
 /// Kills: an impl that adds `cure_status` to ItemDef WITHOUT `#[serde(default)]` —
 /// parsing old item RON that lacks the field would break, making the entire item
-/// registry unloadable. The red state: ItemDef doesn't have `cure_status` yet.
+/// registry unloadable.
 #[test]
 fn item_def_cure_status_field_defaults_to_none() {
     // Hand-crafted RON without cure_status — matches all existing item RON files.
@@ -341,7 +314,7 @@ fn item_def_cure_status_field_defaults_to_none() {
 }
 
 // ---------------------------------------------------------------------------
-// TEST 5 (EARS-5): ItemDef.cure_status parses Some(Poison) correctly
+// ItemDef.cure_status parses Some(Poison) correctly
 //
 // An ItemDef with `cure_status: Some(Poison)` in RON must parse to
 // `Some(StatusKind::Poison)`. Tests the happy-path serde for the new field.
@@ -381,7 +354,7 @@ fn item_def_cure_status_field_parses_some_poison() {
 }
 
 // ---------------------------------------------------------------------------
-// TEST 6 (EARS-6): StatusApplied emitted when a status-applying skill hits an
+// StatusApplied emitted when a status-applying skill hits an
 // unstatused, non-fainted target.
 //
 // Scenario: Side A uses Poison Sting (applies_status=Some(Poison)) against a
@@ -444,7 +417,7 @@ fn status_applied_emitted_when_skill_hits_unstatused_target() {
 }
 
 // ---------------------------------------------------------------------------
-// TEST 7 (EARS-7): StatusApplied NOT emitted when the skill misses.
+// StatusApplied NOT emitted when the skill misses.
 //
 // Scenario: Side A uses an always-miss skill with applies_status=Some(Burn).
 // The accuracy check fails → Miss event is emitted, NO StatusApplied.
@@ -511,7 +484,7 @@ fn status_applied_not_emitted_on_miss() {
 }
 
 // ---------------------------------------------------------------------------
-// TEST 8 (EARS-8): StatusApplied NOT emitted when the target is already statused.
+// StatusApplied NOT emitted when the target is already statused.
 //
 // Scenario: Side B already has Burn. Side A uses a Poison-applying skill.
 // → No StatusApplied for SideB (no stacking). The pre-existing Burn remains.
@@ -580,7 +553,7 @@ fn status_applied_not_emitted_when_target_already_statused() {
 }
 
 // ---------------------------------------------------------------------------
-// TEST 9 (EARS-9): Both sides receive their respective status when both use
+// Both sides receive their respective status when both use
 // status-applying skills in the same turn.
 //
 // Scenario: Side A uses Poison Sting (speed 80, faster). Side B uses a Burn
@@ -672,7 +645,7 @@ fn status_applied_independently_both_sides_same_turn() {
 }
 
 // ---------------------------------------------------------------------------
-// TEST 10 (EARS-10): StatusApplied is stored in BattleStatusStore, but no DoT
+// StatusApplied is stored in BattleStatusStore, but no DoT
 // fires in the SAME turn (DoT starts NEXT turn).
 //
 // Scenario: Side A hits Side B with a Poison-applying skill. After resolve_full_turn:
@@ -758,7 +731,7 @@ fn status_applied_next_turn_dot_not_same_turn() {
 }
 
 // ---------------------------------------------------------------------------
-// TEST 11 (EARS-11): M7 regression — resolve_full_turn with a plain-attack
+// M7 regression — resolve_full_turn with a plain-attack
 // skill (no applies_status) and empty BattleStatusStore + no weather produces
 // IDENTICAL events to resolve_turn called directly.
 //

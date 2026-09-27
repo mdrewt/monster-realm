@@ -1,5 +1,5 @@
-//! Ranked-ladder rating rules (M17, ADR-0119 D2): a pure, deterministic
-//! integer linear approximation of Elo. No floats (determinism, ADR-0055),
+//! Ranked-ladder rating rules: a pure, deterministic
+//! integer linear approximation of Elo. No floats (determinism),
 //! no ambient entropy, no clock — identical inputs always yield identical
 //! deltas (RL-12). `compute_rating_update` is the SSOT for applying a delta
 //! to a winner/loser rating pair; the server shell never does rating
@@ -9,8 +9,8 @@
 /// `get_or_init_profile` seeds from this constant, never the bare literal.
 pub const INITIAL_RATING: i32 = 1000;
 
-/// Elo K-factor. Private by design (ADR-0119 D2): tuning it is an ADR-level
-/// decision, and exposing it would invite callers to couple to `K / 2`
+/// Elo K-factor. Private by design: tuning it is,
+/// and exposing it would invite callers to couple to `K / 2`
 /// instead of to the function contracts. Equal ratings swing `K / 2`; the
 /// delta is always within `[1, K - 1]`.
 const K: i32 = 32;
@@ -44,10 +44,10 @@ pub fn apply_elo(winner_rating: i32, loser_rating: i32) -> i32 {
 
 /// Apply the Elo delta to both sides: `(winner + delta, loser - delta)`.
 ///
-/// The SSOT for applying a delta (RL-11): one `apply_elo` call, applied with
+/// The SSOT for applying a delta: one `apply_elo` call, applied with
 /// opposite signs, so the update is zero-sum on the practical domain
 /// (|rating| well below the i32 extremes). Saturating arithmetic at the i32
-/// extremes is the documented tolerated boundary (ADR-0119 D2): the pinned
+/// extremes is the documented tolerated boundary: the pinned
 /// side stops moving while the other still moves, intentionally violating
 /// conservation there — reaching that boundary would take on the order of
 /// 69 million consecutive decided games, so it is tolerated as unreachable
@@ -62,12 +62,8 @@ pub fn compute_rating_update(winner_rating: i32, loser_rating: i32) -> (i32, i32
 }
 
 // ===========================================================================
-// Unit + property tests (m17a EARS criteria → one test per criterion)
+// Unit + property tests
 // ===========================================================================
-//
-// The #[cfg(test)] block below encodes every acceptance criterion from
-// ADR-0119 D2 / spec RL-3..RL-4/RL-11/RL-12 against `INITIAL_RATING`,
-// `apply_elo`, and `compute_rating_update` above.
 
 #[cfg(test)]
 mod tests {
@@ -75,13 +71,13 @@ mod tests {
     use proptest::prelude::*;
 
     // -----------------------------------------------------------------------
-    // RL-4: INITIAL_RATING == 1000
+    // INITIAL_RATING == 1000
     //
     // Kills: an impl that seeds with a different starting value (e.g. 1200 or 0).
     // SSOT pin: get_or_init_profile must read this constant, never the literal 1000.
     // -----------------------------------------------------------------------
 
-    /// RL-4: INITIAL_RATING const must equal exactly 1000.
+    /// INITIAL_RATING const must equal exactly 1000.
     ///
     /// Kills: any impl that changes the constant value, or that defines it as
     /// a different type (the spec requires i32 to match the `rating: i32` column).
@@ -94,7 +90,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // RL-3: spot-value pins (kill arithmetic / boundary mutants)
+    // spot-value pins (kill arithmetic / boundary mutants)
     //
     // Equal ratings → K/2 = 16.
     // Upset (winner rated below loser by 100) → 20 (strictly more than mirror).
@@ -104,7 +100,7 @@ mod tests {
     // Clamped beyond boundary (raw changes value): diff = +400 → 1, diff = −400 → 31.
     // -----------------------------------------------------------------------
 
-    /// RL-3: equal ratings (1000 vs 1000) yield delta = K/2 = 16.
+    /// equal ratings (1000 vs 1000) yield delta = K/2 = 16.
     ///
     /// Kills: an impl using integer division K/2 that rounds wrong, or that
     /// uses a different K value (e.g. K=30 would give 15).
@@ -117,7 +113,7 @@ mod tests {
         );
     }
 
-    /// RL-3: upset — winner (1000) below loser (1100) → delta = 20.
+    /// upset — winner (1000) below loser (1100) → delta = 20.
     ///
     /// Kills: an impl that gives the same delta for upset and mirror (broken
     /// symmetry), or one that uses truncating `/` instead of `div_euclid`
@@ -132,7 +128,7 @@ mod tests {
         );
     }
 
-    /// RL-3: mirror of the upset — winner (1100) above loser (1000) → delta = 12.
+    /// mirror of the upset — winner (1100) above loser (1000) → delta = 12.
     ///
     /// Kills: an impl where apply_elo(1100,1000) == apply_elo(1000,1100) = 20,
     /// meaning favoritism is absent (wrong symmetry-breaking).
@@ -146,7 +142,7 @@ mod tests {
         );
     }
 
-    /// RL-3: div_euclid floor pin at diff = −13 (winner rated 13 below loser).
+    /// div_euclid floor pin at diff = −13 (winner rated 13 below loser).
     ///
     /// With div_euclid: (winner − loser) = −13; (−13).div_euclid(25) = −1
     /// (floors toward −∞), so raw = 16 − (−1) = 17.
@@ -164,7 +160,7 @@ mod tests {
         );
     }
 
-    /// RL-3: mirror of the div_euclid pin — diff = +13 → delta = 16.
+    /// mirror of the div_euclid pin — diff = +13 → delta = 16.
     ///
     /// With div_euclid: 13.div_euclid(25) = 0, so raw = 16 − 0 = 16.
     /// Confirms asymmetry: apply_elo(1000,1013)=17 != apply_elo(1013,1000)=16.
@@ -181,7 +177,7 @@ mod tests {
         );
     }
 
-    /// RL-3: exact boundary — diff = +375 → delta = 1 (raw equals lower bound, clamp is no-op).
+    /// exact boundary — diff = +375 → delta = 1 (raw equals lower bound, clamp is no-op).
     ///
     /// raw = K/2 − diff.div_euclid(ELO_DIVISOR)
     ///     = 16 − (375).div_euclid(25) = 16 − 15 = 1
@@ -190,11 +186,6 @@ mod tests {
     /// This is a boundary pin, not a clamp-activation test. The first diff where
     /// the clamp actually changes the value (raw 0 → clamped to 1) is diff = +400
     /// (tested by `clamp_lower_saturated_beyond_boundary`).
-    ///
-    /// Rationale (spec correction vs previous name): the old name "clamp_activation"
-    /// was misleading — the clamp is present at this boundary but has no effect on
-    /// the output value. The test value (1) is correct against the spec; only the name
-    /// and comment were inaccurate. (ADR-0119 D2, hardening 12)
     ///
     /// Kills: an impl with a different divisor or K that produces a different value at
     /// diff = +375, or one that returns 0 (missing the raw==1 boundary).
@@ -208,17 +199,13 @@ mod tests {
         );
     }
 
-    /// RL-3: exact boundary — diff = −375 → delta = 31 (raw equals upper bound, clamp is no-op).
+    /// exact boundary — diff = −375 → delta = 31 (raw equals upper bound, clamp is no-op).
     ///
     /// raw = K/2 − (−375).div_euclid(25) = 16 − (−15) = 31
     ///
     /// The clamp [1, 31] does NOT change the value here — raw is already 31.
     /// The first diff where the clamp actually changes the value (raw 32 → clamped to 31)
     /// is diff = −400 (tested by `clamp_upper_saturated_beyond_boundary`).
-    ///
-    /// Rationale (spec correction vs previous name): same as `delta_boundary_exact_at_plus_375` —
-    /// the old name was misleading; the assertion value (31) is correct against the spec.
-    /// (ADR-0119 D2, hardening 12)
     ///
     /// Kills: an impl where the upper bound fires at a different diff magnitude.
     #[test]
@@ -231,7 +218,7 @@ mod tests {
         );
     }
 
-    /// RL-3: beyond clamp — diff = +400 → delta still 1 (saturated at lower bound).
+    /// beyond clamp — diff = +400 → delta still 1 (saturated at lower bound).
     ///
     /// raw = 16 − 400/25 = 16 − 16 = 0, clamped up to 1.
     /// Confirms the clamp fires for values beyond the activation threshold.
@@ -246,7 +233,7 @@ mod tests {
         );
     }
 
-    /// RL-3: beyond clamp — diff = −400 → delta still 31 (saturated at upper bound).
+    /// beyond clamp — diff = −400 → delta still 31 (saturated at upper bound).
     ///
     /// raw = 16 − (−400).div_euclid(25) = 16 − (−16) = 32, clamped down to 31.
     ///
@@ -261,19 +248,19 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // RL-11: compute_rating_update spot pins
+    // compute_rating_update spot pins
     //
     // compute_rating_update(1000, 1000) == (1016, 984).
-    // Boundary saturation pins (ADR-0119 D2 documented tolerance):
+    // Boundary saturation pins:
     //   compute_rating_update(i32::MAX, 1000) == (i32::MAX, 999)
     //   compute_rating_update(1000, i32::MIN) == (1001, i32::MIN)
     //
     // Note: at the i32 extremes, conservation is intentionally violated
     // (winner's rating is pinned by saturating_add, loser still moves).
-    // This is the documented tolerated boundary behavior (ADR-0119 D2).
+    // This is the documented tolerated boundary behavior.
     // -----------------------------------------------------------------------
 
-    /// RL-11: compute_rating_update(1000, 1000) == (1016, 984).
+    /// compute_rating_update(1000, 1000) == (1016, 984).
     ///
     /// apply_elo(1000, 1000) = 16; winner gains 16, loser loses 16.
     /// Sum = 1016 + 984 = 2000 = 1000 + 1000 (zero-sum in the practical domain).
@@ -290,14 +277,14 @@ mod tests {
         );
     }
 
-    /// RL-11 boundary: compute_rating_update(i32::MAX, 1000) saturates winner.
+    /// compute_rating_update(i32::MAX, 1000) saturates winner.
     ///
     /// apply_elo(i32::MAX, 1000) ∈ [1,31]; winner.saturating_add(delta) = i32::MAX
     /// (already maxed). Loser goes to 1000 − delta ∈ [969, 999]; delta = 1 for
     /// extreme diff, so loser = 999.
     ///
     /// This is the DOCUMENTED TOLERATED BOUNDARY where conservation is violated:
-    /// winner is pinned at i32::MAX while loser still moves. (ADR-0119 D2).
+    /// winner is pinned at i32::MAX while loser still moves.
     /// Asserted here to make the saturating semantics deliberate, not accidental.
     #[test]
     fn compute_rating_update_winner_at_i32_max_saturates() {
@@ -317,13 +304,13 @@ mod tests {
         );
     }
 
-    /// RL-11 boundary: compute_rating_update(1000, i32::MIN) saturates loser.
+    /// compute_rating_update(1000, i32::MIN) saturates loser.
     ///
     /// apply_elo(1000, i32::MIN) → winner above loser by i32::MAX−999 (huge diff)
     /// → apply_elo clamps to 1 → winner = 1001, loser.saturating_sub(1) = i32::MIN
     /// (already at floor).
     ///
-    /// Documented tolerated boundary (ADR-0119 D2): loser pinned at i32::MIN,
+    /// Documented tolerated boundary: loser pinned at i32::MIN,
     /// conservation intentionally violated.
     #[test]
     fn compute_rating_update_loser_at_i32_min_saturates() {
@@ -344,7 +331,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // RL-3/RL-12: property tests
+    // RL-3/ property tests
     // -----------------------------------------------------------------------
 
     proptest! {
@@ -369,10 +356,10 @@ mod tests {
             );
         }
 
-        /// RL-12: determinism — apply_elo is referentially transparent.
+        /// determinism — apply_elo is referentially transparent.
         ///
         /// Identical inputs must yield identical outputs across repeated calls.
-        /// Kills: any impl that draws from ambient entropy or wall-clock (ADR-0055).
+        /// Kills: any impl that draws from ambient entropy or wall-clock.
         #[test]
         fn prop_apply_elo_is_deterministic(
             winner in i32::MIN..=i32::MAX,

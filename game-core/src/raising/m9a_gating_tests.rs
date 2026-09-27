@@ -1,16 +1,10 @@
-//! M9a gating tests — proof-of-teeth for the raising rules, authored from the
-//! M9 spec §3 EARS criteria (ADR-0058 §"Proof-of-teeth"). Populated by the tester.
+//! M9a gating tests — proof-of-teeth for the raising rules.
 //!
 //! EARS criteria covered:
 //!   Criterion A — focus_train (EV top-off → re-derive; reject precedence)
 //!
 //! Each test carries a `/// kills:` comment naming which wrong implementation it
-//! catches, so the verifier can match failing assertion → eliminated bug class.
-//!
-//! Red state: every test will PANIC on the `todo!()` stub in `rules.rs`
-//! (for `focus_train`).
-//!
-//! Run: cargo test m9a_gating -- --nocapture
+//! catches.
 
 use crate::monster::rules::derive_stats;
 use crate::monster::types::{EVs, IVs, Level, Nature, NatureKind, StatBlock, StatKind};
@@ -317,7 +311,7 @@ fn focus_train_noeffect_precedes_stat_at_cap() {
         &hardy(),
         lv50(),
         StatKind::Attack,
-        0, // amount=0 — NoEffect guard fires first per ADR-0058 §2
+        0, // amount=0 — NoEffect guard fires first
     )
     .expect_err("should fail");
 
@@ -469,10 +463,10 @@ fn focus_train_hp_monotonic_on_train() {
     );
 }
 
-// Test 25 — red-team M9a finding #1
+// Test 25
 /// Guard-order precedence: StatAtCap PRECEDES BudgetExhausted when BOTH hold simultaneously.
 /// Fixture: attack=252 (per-stat cap hit), total=510 (budget exhausted), amount=1.
-/// Guard order from ADR-0058 §2: (1) NoEffect → (2) StatAtCap → (3) BudgetExhausted.
+/// Guard order: (1) NoEffect → (2) StatAtCap → (3) BudgetExhausted.
 /// The simultaneous-double-cap state (cur==252 AND total==510) is the ONLY state where
 /// swapping guards 2 and 3 produces a different observable result.
 /// kills: an impl that checks total==510 (BudgetExhausted) BEFORE cur==252 (StatAtCap),
@@ -507,11 +501,10 @@ fn focus_train_stat_at_cap_precedes_budget_exhausted() {
     );
 }
 
-// Test 26 — red-team M9a finding #2
+// Test 26
 /// Single-SSOT cap self-test: `focus_train`'s StatAtCap boundary and `EVs::new`'s
-/// per-stat cap are now ONE shared constant imported from `monster::types`
-/// (ADR-0058 residual (b) resolved — no longer two separate consts that could
-/// drift). This test guards that the shared cap value (252) is consistently
+/// per-stat cap are now ONE shared constant imported from `monster::types`.
+/// This test guards that the shared cap value (252) is consistently
 /// enforced at both sites: training from cur=251 must succeed (StatAtCap not yet
 /// hit), and training from the resulting cur=252 must return StatAtCap (boundary
 /// reached). A wrong shared-cap value (e.g. 251) would cause the first call to
@@ -843,7 +836,7 @@ proptest! {
     }
 
     // Test 23
-    /// Branch classification: the exact error variant matches the guard order from ADR-0058 §2.
+    /// Branch classification: the exact error variant matches the guard order.
     /// Guard order (load-bearing): NoEffect (amount==0) FIRST; StatAtCap SECOND; BudgetExhausted THIRD.
     /// kills: any impl that checks caps before the amount guard, or swaps StatAtCap and BudgetExhausted.
     #[test]
@@ -890,27 +883,14 @@ proptest! {
 }
 
 // ---------------------------------------------------------------------------
-// ptc5e e-1 — CARE_COOLDOWN_MS constant + is_cooldown_ready
+// CARE_COOLDOWN_MS constant + is_cooldown_ready
 //
-// RED state: CARE_COOLDOWN_MS and is_cooldown_ready do not yet exist in
-// game-core/src/raising/rules.rs (compile-RED: E0432 on the new names in the
-// import above until the implementer adds them).
-//
-// EARS criteria covered (ptc5e §e-1):
-//   Const pin — CARE_COOLDOWN_MS has an exact value.
-//   Boundary triad — is_cooldown_ready boundary at ==, ==−1, and future clock.
-//   Non-zero base — predicate works from an arbitrary non-zero last_ms.
-//   Shared heal — a non-CARE cooldown length returns the right bool (generic fn).
-//   Property — is_cooldown_ready(l, n, c) == (n.saturating_sub(l) >= c) for all.
 // ---------------------------------------------------------------------------
 
 // Test e-1a
 /// CARE_COOLDOWN_MS == 21_600_000 (6 h × 60 m × 60 s × 1000 ms).
 ///
-/// kills: mutating `6*60*60*1000` — `*`→`+` gives 60_066, `*`→`/` gives 0;
-/// or moving the value back to server-module without re-exporting it from
-/// game-core (making the nightly game-core mutation gate unable to pin it in its
-/// owning crate).
+/// kills: mutating `6*60*60*1000` — `*`→`+` gives 60_066, `*`→`/` gives 0.
 #[test]
 fn care_cooldown_ms_exact_value() {
     assert_eq!(
@@ -999,7 +979,7 @@ fn is_cooldown_ready_nonzero_base_boundary() {
 /// is_cooldown_ready returns the right answer for a heal-sized cooldown (30_000 ms).
 ///
 /// kills: an impl that special-cases CARE_COOLDOWN_MS rather than being a
-/// generic predicate shared by care AND heal (ptc5e §e-1: "shared by care AND heal").
+/// generic predicate shared by care AND heal.
 #[test]
 fn is_cooldown_ready_heal_sized_cooldown() {
     let heal_cd = 30_000i64;

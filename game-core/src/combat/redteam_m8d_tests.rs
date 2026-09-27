@@ -1,18 +1,13 @@
 //! Red-team tests for M8d `attempt_recruit` and related inventory/recruit logic.
 //!
 //! Every test here is written to FAIL against a naive/plausible wrong implementation.
-//! They prove concrete exploits; none should be trivially green.
-//!
-//! Run: cargo test redteam_m8d -- --nocapture
 
 use crate::taming::rules::{attempt_recruit, recruit_chance};
 
 // ---------------------------------------------------------------------------
 // FINDING 1 (HIGH): TOCTOU — can an already-terminal battle be re-recruited?
 //
-// The plan says guard checks outcome == Ongoing.  But the plan also says
-// "set battle outcome = SideAWins" and "DELETE battle_wild row" happen in
-// the same reducer transaction.  SpacetimeDB reducers are atomic per-call.
+// SpacetimeDB reducers are atomic per-call.
 // However: can a client submit TWO concurrent calls before the first commits?
 //
 // SpacetimeDB serialises reducer calls per-table-row under its MVCC model —
@@ -50,15 +45,11 @@ fn recruit_success_is_not_idempotent_gate() {
         );
     }
     // The guard we need the server to enforce: outcome != Ongoing → reject.
-    // Documented here as a spec invariant that must be tested end-to-end.
 }
 
 // ---------------------------------------------------------------------------
 // FINDING 2 (HIGH): Bait consumed BEFORE the roll — failed recruit still burns
-// bait. This is documented as "intended" in the plan, but it creates a specific
-// economic exploit: a player can spam `attempt_recruit` with chance ≈ 0 to burn
-// bait on a near-dead wild that was about to be KO'd, intentionally wasting the
-// opponent's item via a self-sabotage pattern.
+// bait.
 //
 // More critically: the consume-before-roll ordering means the server MUST NOT
 // refund bait on a failed roll.  Any implementation that refunds on failure is
@@ -75,7 +66,7 @@ fn recruit_success_is_not_idempotent_gate() {
 #[test]
 fn zero_chance_recruit_still_consumes_bait() {
     // With chance=0, attempt_recruit always fails.
-    // Bait was consumed BEFORE the roll per the plan.
+    // Bait was consumed BEFORE the roll.
     // The arithmetic contract: consume_one happens, then attempt_recruit(0,..) = false.
     // If consume_one is called ONLY on success, bait is never spent — infinite bait exploit.
     assert!(
@@ -101,10 +92,8 @@ fn zero_chance_recruit_still_consumes_bait() {
 }
 
 // ---------------------------------------------------------------------------
-// FINDING 3 (CRITICAL): Inventory integer overflow — `grant_item` saturating add
-// claim is UNVERIFIED in the plan.
+// FINDING 3 (CRITICAL): Inventory integer overflow — `grant_item` saturating add.
 //
-// The plan says "saturating add" for grant_item on u32 count.
 // u32::MAX + 1 with saturating add stays at u32::MAX (correct).
 // But: what if the inventory row stores `count` as a smaller type that gets
 // cast to u32?  Or what if the implementer uses `count + amount` without
@@ -183,9 +172,8 @@ fn inventory_consume_one_on_zero_must_not_underflow() {
 // ---------------------------------------------------------------------------
 // FINDING 5 (HIGH): IV inversion channel via public BattleState.
 //
-// ADR-0045 explicitly documents this: "the wild's derived stats ARE published in
-// the public battle.state BattleState" and "those derived stats are theoretically
-// invertible to the underlying IVs/nature."
+// "the wild's derived stats ARE published in the public battle.state BattleState" and
+// "those derived stats are theoretically invertible to the underlying IVs/nature."
 //
 // For a wild monster: EVs=0, species base stats are public (species_row is public),
 // level is public (in battle.state.side_b.team[0].level).
@@ -197,7 +185,7 @@ fn inventory_consume_one_on_zero_must_not_underflow() {
 
 /// FINDING 5: IV inversion is feasible from public BattleState data.
 ///
-/// ADR-0045: "the wild's derived stats ARE published in the public battle.state
+/// "the wild's derived stats ARE published in the public battle.state
 /// BattleState" and "those derived stats are theoretically invertible to the
 /// underlying IVs/nature." This test proves the inversion is not merely theoretical —
 /// it is exact and trivially fast (32-candidate brute force).
@@ -207,12 +195,6 @@ fn inventory_consume_one_on_zero_must_not_underflow() {
 /// 32-candidate search ALWAYS narrows to exactly 1 result, proving the channel is
 /// fully determined (not just "a few candidates").
 ///
-/// The oracle is INDEPENDENT: public_stat_hp is computed once from the known true
-/// IV (input construction), and the assertion checks the SEARCH RESULT — a Vec
-/// collected by a separate brute-force loop. No branch recomputes the expected
-/// value with the function under test (the old self-oracle fallback is deleted).
-///
-/// ADR-0045 acknowledges this channel but defers mitigation to a future milestone.
 /// The test FAILS if derive_stats collapses IVs (e.g. quantises HP), making the
 /// candidate set larger or smaller than {15}.
 #[test]
@@ -264,10 +246,10 @@ fn wild_iv_recoverable_from_public_derived_stats() {
     // BRUTE-FORCE INVERSION — collect ALL matching IVs (no break on first match).
     // The SET is the proof: {15} means the channel is fully determined.
     // -----------------------------------------------------------------------
-    // 32 possible IVs narrowed to exactly 1 → the ADR-0045 inversion channel is
-    // real; level 100 makes derive_stats HP injective (200+iv), so any narrowing
-    // failure would balloon the set (duplicate HPs → multiple matches) or shrink
-    // it to 0 (no match → derive_stats is broken).
+    // 32 possible IVs narrowed to exactly 1 → is real; level 100 makes
+    // derive_stats HP injective (200+iv), so any narrowing failure would balloon
+    // the set (duplicate HPs → multiple matches) or shrink it to 0 (no match →
+    // derive_stats is broken).
     let mut candidates: Vec<u8> = Vec::new();
     for candidate_iv in 0u8..=31 {
         let ivs = IVs::new(candidate_iv, 0, 0, 0, 0, 0).unwrap();
@@ -298,13 +280,9 @@ fn wild_iv_recoverable_from_public_derived_stats() {
 // So values [0..295] appear 4_294_968 times and [296..999] appear 4_294_967 times.
 // Bias per bucket: (4_294_968 - 4_294_967) / 4_294_967_296 ≈ 2.3e-10.
 //
-// This is documented in taming/rules.rs line 30:
-//   "Note: modulo 1000 introduces ~0.007% per-bucket bias on a u32 input"
-//
 // The practical exploit: recruit_chance values in [0..295] are slightly MORE
 // likely to succeed than [296..999] at the margin.  This is ~0.007% per bucket —
-// not a practical exploit, but a documented precision issue the implementer
-// should be aware of when choosing the RNG and modulus.
+// not a practical exploit.
 // ---------------------------------------------------------------------------
 
 /// FINDING 6: Document the modulo bias for the recruit roll.
@@ -331,7 +309,6 @@ fn recruit_roll_modulo_bias_is_documented() {
 // FINDING 7 (MED): The on-fail wild counterattack creates a grinding exploit.
 //
 // When attempt_recruit fails, the wild strikes back via resolve_enemy_turn.
-// The plan does NOT implement a "flee attempt" cost per turn on wild battles.
 // A player can:
 //   1. Weaken the wild to near-0 HP for ~100% recruit chance.
 //   2. Call attempt_recruit repeatedly.
@@ -346,7 +323,6 @@ fn recruit_roll_modulo_bias_is_documented() {
 // The wild can faint the player's monsters, but a max-HP team vs a 1-HP wild
 // is essentially free retries.
 //
-// More critically: there is NO turn limit on wild battles in the plan.
 // ---------------------------------------------------------------------------
 
 /// FINDING 7: A 1-HP wild can be attempt_recruited indefinitely if the player
@@ -362,22 +338,16 @@ fn near_dead_wild_recruit_chance_is_near_max_factor() {
          with ~50% chance each attempt, expected ~2 tries to succeed; \
          but there's NO attempt limit — a player can spam recruit_attempt until it lands"
     );
-    // INVARIANT (grinding residual, accepted for M8d): there is NO per-battle
+    // INVARIANT (grinding residual): there is NO per-battle
     // attempt cap. At MISSING_HP_FACTOR=500 a 0-HP wild sits at 50% + base + bait,
     // so even ~50% per attempt means a tanky party vs a 1-HP wild WILL eventually
-    // recruit (each failed attempt just advances the turn). A turn/attempt limit is
-    // a future-milestone follow-up; the `chance==495` tooth above pins the formula.
+    // recruit (each failed attempt just advances the turn).
 }
 
 // NOTE: FINDING 8 (battle_wild orphan rows on non-recruit battle end) was CUT:
 // it is now FALSE. `write_back_battle_results` unconditionally deletes the
 // battle_wild row (a no-op for PvP), so flee/loss/combat-win all GC the wild row;
 // `attempt_recruit` GCs on its own success/terminal paths. No orphan accumulates.
-
-// NOTE: FINDING 9 (the `assert!(true, "structural: ...")` tautology about the
-// "is wild" signal) was CUT: it asserted nothing. The real guard is verified by
-// the recruit-reducer-security eval (checkWildBattleGuard scans attempt_recruit
-// for the `battle_wild(` lookup) — a text tooth, not a pure-arithmetic one.
 
 // ---------------------------------------------------------------------------
 // FINDING 10 (MED): recruit_chance integer truncation can produce IDENTICAL
@@ -439,8 +409,6 @@ fn recruit_chance_truncation_can_plateau() {
 // ---------------------------------------------------------------------------
 // FINDING 11 (LOW/MED): Public inventory table leaks count information.
 //
-// The plan says: "The inventory table is public (counts deemed low-stakes)"
-// But count information reveals:
 // - Which players have acquired bait (guild spying)
 // - Approximate session length / farming rate
 // - Whether a target has bait before a competitive encounter
@@ -448,17 +416,13 @@ fn recruit_chance_truncation_can_plateau() {
 // For a PvP expansion (M16), inventory visibility becomes a cheating surface:
 // a player can monitor an opponent's bait count to time PvP challenges.
 //
-// This is rated LOW for M8d (PvE only) but must be flagged for M16 planning.
 // ---------------------------------------------------------------------------
 
-// INVARIANT (M16 design debt, not an M8d arithmetic tooth): the `inventory` table
-// is public with NO transport RLS — `client_visibility_filter` does not exist in
-// this toolchain (ADR-0040/0046), so every client can already read every owner's
-// counts (consistent with FINDING 11 above). Owner-scoping today is only a client
-// subscription filter. The residual to revisit at M16 (PvP): counts are already
-// world-readable, so an item count of 0 vs N reveals whether an opponent can
-// attempt_recruit — a timing/spying surface. The fix at that point is a per-owner
-// transport RLS filter (tracked for M16), not the client subscription filter that
-// exists now.
-// (The original test only asserted `5 > 0` / `0 == 0`, which were tautological, so
-// the prose is preserved here and the empty test fn was removed.)
+// INVARIANT: the `inventory` table is public with NO transport RLS —
+// `client_visibility_filter` does not exist in this toolchain, so every client can
+// already read every owner's counts (consistent with FINDING 11 above).
+// Owner-scoping today is only a client subscription filter. The residual to
+// revisit at M16 (PvP): counts are already world-readable, so an item count of 0
+// vs N reveals whether an opponent can attempt_recruit — a timing/spying surface.
+// The fix at that point is a per-owner transport RLS filter (tracked for M16), not
+// the client subscription filter that exists now.

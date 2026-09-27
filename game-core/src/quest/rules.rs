@@ -1,4 +1,4 @@
-//! Pure quest advance rules (ADR-0068).
+//! Pure quest advance rules.
 //!
 //! All functions are stateless, deterministic, and free of side effects.
 
@@ -40,7 +40,7 @@ pub fn can_start_quest(
 ///
 /// The outer match on `trigger` is exhaustive over `StepTrigger`; each inner match
 /// is exhaustive over `TriggerEvent` — no wildcard arms, so adding a new variant to
-/// either enum is a compile error at this site (no-wildcard doctrine, ADR-0003).
+/// either enum is a compile error at this site (no-wildcard doctrine).
 #[must_use]
 pub fn trigger_matches(trigger: &StepTrigger, event: &TriggerEvent) -> bool {
     match trigger {

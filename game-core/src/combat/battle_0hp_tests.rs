@@ -1,23 +1,4 @@
-//! battle-0hp-fix gating tests — the 0 HP lead defect (ADR-0156).
-//!
-//! Criterion → test mapping:
-//!   EARS E5 (regression reproducing Drew's r2 sequence)
-//!       → drew_r2_zero_hp_lead_is_never_sent_out_and_produces_no_phantom_swap
-//!         [GREEN since ADR-0156 D1 landed; was RED — `with_lead` did not exist]
-//!   EARS E5 (proof-of-teeth control for the above)
-//!       → drew_r2_control_the_old_hardcoded_lead_did_produce_the_phantom_swap
-//!         [GREEN before AND after `with_lead` landed — by design; see its doc]
-//!   ADR-0156 "Consequences" (entry abilities fire on the REAL lead)
-//!       → entry_ability_fires_on_the_real_lead_not_on_the_corpse
-//!         [GREEN since ADR-0156 D1 landed; was RED]
-//!   ADR-0156 D3 (rejected: hardening the pure resolver against a fainted actor)
-//!       → a_zero_hp_active_state_self_repairs_and_never_becomes_a_fixpoint
-//!         [GREEN today — pins the behavior D3 forbids removing; the ONLY test
-//!          here that catches an ACTING-side fainted early-return]
-//!   ADR-0156 D3 + ADR-0100 D6 (Faint→Switch adjacency)
-//!       → fainted_defender_still_faints_and_auto_switches
-//!         [GREEN today — pins the self-repair mechanism D3 depends on;
-//!          DEFENDER-side only, see its docstring]
+//! battle-0hp-fix gating tests — the 0 HP lead defect.
 //!
 //! # Deterministic-fixture discipline
 //!
@@ -150,12 +131,7 @@ fn is_switch(e: &BattleEvent, s: SideId) -> bool {
 // EARS E5 — the regression: a 0 HP lead is never sent out, and no phantom swap
 // ===========================================================================
 
-/// EARS E5 (ADR-0156 D1): Drew's r2 playtest sequence, reproduced.
-///
-/// Repro from the ledger (episode `r2-2026-07-26`, items 005/030/031/036–039):
-/// the lead party monster is at 0 HP at battle start, it is still sent out for
-/// round 1, the attack button appears to work, and round 2 "silently swaps" to
-/// the next monster with no player-visible explanation.
+/// EARS E5: Drew's r2 playtest sequence, reproduced.
 ///
 /// With `BattleSide::with_lead` the corpse is never seated, so the enemy's
 /// counter-attack lands on a *conscious* monster and the faint/auto-switch
@@ -169,7 +145,7 @@ fn is_switch(e: &BattleEvent, s: SideId) -> bool {
 /// would make the "no Faint / no Switch" assertions fail for a reason that has
 /// nothing whatsoever to do with lead selection.
 ///
-/// Non-vacuity (S4): the two "no such event" claims are ABSENCE claims, and an
+/// the two "no such event" claims are ABSENCE claims, and an
 /// absence claim is trivially true on an empty stream. Two drifts inside THIS
 /// body — an `outcome` other than `Ongoing` (every resolver early-returns, so
 /// `events == []`) and a `Pass` for side B (the lead is never attacked) — were
@@ -337,13 +313,12 @@ fn drew_r2_zero_hp_lead_is_never_sent_out_and_produces_no_phantom_swap() {
 /// hit `Immune`, an accuracy roll that misses, team HP that lets the corpse
 /// survive, or a `StatusVariance` that blocks the action.
 ///
-/// SCOPE LIMIT (S4): this control only covers what E5 and it hold in COMMON —
+/// this control only covers what E5 and it hold in COMMON —
 /// `drew_party()`, `lone_opponent()`, `fire_skill()`, `always_hit_variance()`,
 /// `no_block_sv()`. Anything E5 constructs INLINE (its `outcome:` field, its two
-/// `TurnChoice`s) is invisible here, and both of those were verified to defuse
-/// E5 while leaving this control green. E5 therefore carries its own positive
-/// "the enemy actually hit side A's lead" assertions; do not remove them on the
-/// grounds that this control exists.
+/// `TurnChoice`s) is invisible here. E5 therefore carries its own positive "the enemy
+/// actually hit side A's lead" assertions; do not remove them on the grounds that
+/// this control exists.
 #[test]
 fn drew_r2_control_the_old_hardcoded_lead_did_produce_the_phantom_swap() {
     let chart = make_type_chart();
@@ -410,17 +385,10 @@ fn drew_r2_control_the_old_hardcoded_lead_did_produce_the_phantom_swap() {
 }
 
 // ===========================================================================
-// ADR-0156 "Consequences" — entry abilities fire on the REAL lead
 // ===========================================================================
 
-/// ADR-0156 Consequences (EARS E1 follow-on): the battle-start entry ability
-/// must fire for the monster that is actually sent out.
-///
-/// Before this slice a 0 HP slot-0 monster was seated as active, so
-/// `apply_entry_ability` looked up `abilities.side_a[0]`, found the corpse's
-/// (absent) ability, and the *backup's* ability only fired a turn later via the
-/// KO auto-switch. After `with_lead`, `active == 1` and slot 1's `EntryHeal`
-/// fires at turn 0.
+/// the battle-start entry ability must fire for the monster that is actually sent
+/// out.
 ///
 /// `EntryHeal` is chosen because its effect is directly observable in state:
 /// slot 1 sits at 50/500 and `denom: 4` heals `500 / 4 = 125` → 175 HP.
@@ -477,10 +445,10 @@ fn entry_ability_fires_on_the_real_lead_not_on_the_corpse() {
 }
 
 // ===========================================================================
-// ADR-0156 D3 — the resolver is deliberately NOT hardened against a fainted actor
+// The resolver is deliberately NOT hardened against a fainted actor
 // ===========================================================================
 
-/// ADR-0156 **D3**: a legacy state whose actives are BOTH fainted must
+/// a legacy state whose actives are BOTH fainted must
 /// self-repair; it must never become a permanent fixpoint.
 ///
 /// This test pins a deliberate decision that reads like an omission. The obvious
@@ -498,7 +466,7 @@ fn entry_ability_fires_on_the_real_lead_not_on_the_corpse() {
 /// corpse, re-triggers the already-fainted defender branch, and both sides
 /// auto-switch to a conscious backup within two turns.
 ///
-/// Consequence, stated plainly and on purpose (ADR-0156 D3): a fainted active
+/// Consequence, stated plainly and on purpose: a fainted active
 /// **remains a valid target** for enemy attacks, DoT and weather chip.
 ///
 /// Kills: any future "harden the pure resolver" change — an acting-side fainted
@@ -585,12 +553,12 @@ fn a_zero_hp_active_state_self_repairs_and_never_becomes_a_fixpoint() {
     );
 }
 
-/// ADR-0156 D3 + ADR-0100 D6: attacking an already-0 HP active still emits
+/// attacking an already-0 HP active still emits
 /// `Faint` and an immediately-adjacent `Switch`.
 ///
 /// This is the atomic mechanism the self-repair test above depends on, pinned
 /// on its own so a regression is attributed precisely. It also pins the
-/// Faint→Switch **adjacency** invariant (ADR-0100 D6): the outer resolvers detect
+/// Faint→Switch **adjacency** invariant: the outer resolvers detect
 /// KO auto-switches by scanning the event stream with `windows(2)` in
 /// `apply_ko_switch_entry_abilities`, so inserting any event between the pair
 /// silently stops entry abilities firing on the switched-in monster.

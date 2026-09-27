@@ -1,15 +1,11 @@
-//! M12a NPC gating tests — proof-of-teeth for `npc_decide`, authored from the
-//! M12 spec §3 EARS criteria (ADR-0068 §"Proof-of-teeth"), extended by
-//! ADR-0159 D2 (collision-/radius-aware wander, feel-polish slice).
+//! M12a NPC gating tests — proof-of-teeth for `npc_decide`.
 //!
 //! EARS criteria covered:
 //!   Determinism — same (current, home, radius, facing, npc_id, tick, map) → same Option<Direction>
 //!   Outside-radius — deterministic toward-home direction (L1 Manhattan, dominant axis),
-//!                    answered EVERY tick, never None (ADR-0159 G3)
+//!                    answered EVERY tick, never None
 //!   Within-radius / at-boundary — seeded wander (varies over ticks, stays sometimes)
 //!   Known-answer — exact splitmix64 output pinned for several (npc_id, tick, facing) vectors
-//!   ADR-0159 D2 ("WHEN NPCs move, THE npc_decide/movement tick SHALL avoid abrupt
-//!   stop/start bursts"):
 //!     G1 — no legal-direction result is ever a wall or outside the radius (headline tooth)
 //!     G2 — continue-facing: a still-legal facing is returned unchanged
 //!     G3 — homing (outside-radius) answers every tick, never None
@@ -20,26 +16,7 @@
 //!     G5 — behavioural bound: zero bumps, bounded reversal rate over a long walk
 //!     G6 — unchanged contracts (radius=0, determinism, toward_home axis/tiebreak) still hold
 //!     G7 — full-coverage: driven from the real start state, the NPC must visit
-//!          EVERY legal tile, not orbit a subset forever (the desync-guard-audit tooth)
-//!
-//! Each test carries a `/// kills:` comment naming which wrong implementation it
-//! catches, so the verifier can match failing assertion → eliminated bug class.
-//!
-//! NEW SIGNATURE (ADR-0159 D2):
-//!   npc_decide(current, home, wander_radius, facing, npc_id, tick, map) -> Option<Direction>
-//!
-//! Red state: `npc_decide` now compiles against this signature (the legality +
-//! continue-facing half of ADR-0159 D2 is implemented), but it ships an
-//! ABSORBING-STATE bug — "continue whenever facing is legal" with NO voluntary
-//! re-roll — caught by an independent desync-guard-audit simulation: once
-//! `facing` becomes East or West on elder_oak's shipped pocket (home (5,5),
-//! radius 2, zone 0), every interior tile has E/W legal, so the NPC oscillates
-//! forever along the y=5 row (5 of the 8 legal tiles) and NEVER visits
-//! (4,4)/(5,4)/(6,4). G7 and G4b below are RED against this real, compiling,
-//! but behaviourally-wrong implementation; they will go GREEN once the fix (a
-//! `(h >> 33) % NPC_CONTINUE_REROLL` voluntary re-roll, K=6) lands.
-//!
-//! Run: cargo nextest run -p game-core npc::m12a_gating_tests -- --nocapture
+//!          EVERY legal tile, not orbit a subset forever
 
 use crate::npc::npc_decide;
 use crate::types::{
@@ -115,7 +92,7 @@ proptest! {
 // Test 3 — Outside radius moves toward home on X axis (pure East)
 // kills: an impl that uses a random direction even when outside the wander
 //        radius (any seeded-random path applied here is a correctness bug).
-//        ADR-0159 D2: the homing branch is UNCHANGED — no facing/map influence.
+//        the homing branch is UNCHANGED — no facing/map influence.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -211,16 +188,15 @@ fn npc_decide_within_radius_varies_over_ticks() {
 //        causing an NPC at exactly `radius` distance to walk toward home when
 //        it should wander freely (spec says "within wander radius" is distance ≤ radius).
 //
-// ADR-0159 D2 migration note: `current = (5,8)` is OUTSIDE the real zone-0
+// `current = (5,8)` is OUTSIDE the real zone-0
 // grid's bounds (height 7, valid y is 0..6), so under the NEW legality-aware
 // wander path every step target is off-map (`is_walkable` is bounds-safe and
 // returns `false`), making the legal set L empty and the result ALWAYS `None`
-// across all 20 ticks. This is a DIFFERENT constant than the old
-// "varies over ticks" result, but the assertion below (`!all_north`) is still
-// exactly the right tooth: an impl that wrongly treats distance==radius as
-// "outside" would deterministically return `Some(Direction::North)` on EVERY
-// tick (toward_home doesn't consult ticks), which the assertion below still
-// catches. All-`None` correctly passes; all-`Some(North)` correctly fails.
+// across all 20 ticks. the assertion below (`!all_north`) is still exactly the right
+// tooth: an impl that wrongly treats distance==radius as "outside" would
+// deterministically return `Some(Direction::North)` on EVERY tick (toward_home doesn't
+// consult ticks), which the assertion below still catches. All-`None` correctly passes;
+// all-`Some(North)` correctly fails.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -251,7 +227,7 @@ fn npc_decide_at_radius_boundary_treated_as_within() {
 // Test 8 — Stay probability: within radius, None appears at least once in 100 ticks
 // kills: an impl that never returns None (always moves), violating the
 //        1-in-5 stay probability (hash mod 5 == 0 → stay per the plan).
-//        ADR-0159 D2: the stay roll happens BEFORE the legality/continue-facing
+//        the stay roll happens BEFORE the legality/continue-facing
 //        check, so this remains unaffected by facing/map.
 // ---------------------------------------------------------------------------
 
@@ -278,7 +254,7 @@ fn npc_decide_stay_sometimes() {
 // kills: any impl that changes the toward-home axis-selection logic for the
 //        outside-radius path — the result must be Some(East) for this exact
 //        fixture regardless of the hash/salt (no RNG used outside radius), and
-//        regardless of `facing`/`map` (ADR-0159 D2 leaves this branch UNCHANGED).
+//        regardless of `facing`/`map`.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -319,14 +295,9 @@ fn npc_decide_outside_radius_larger_dy_chooses_y_axis() {
 //        silently alters the wander distribution — property tests won't catch this
 //        because they only check determinism/direction-class invariants, not exact values.
 //
-// ADR-0159 D2 re-derivation (the old fixture's expected value genuinely changed:
-// old code had no legality filter, so `home==current, radius=5, npc_id=1, tick=0`
-// used to hash-pick among ALL FOUR compass directions and landed on West.
-// The new algorithm restricts the pick to the LEGAL set. `facing=South` is used
-// below (rather than the arbitrary facing the old signature didn't have) so the
-// wander STILL exercises the hash-pick branch (not continue-facing) — South is
-// illegal at home (5,5) on the real zone-0 grid, so this vector still pins
-// NPC_DECIDE_SALT/splitmix64.):
+// `facing=South` is used below so the wander STILL exercises the hash-pick branch (not
+// continue-facing) — South is illegal at home (5,5) on the real zone-0 grid, so this
+// vector still pins NPC_DECIDE_SALT/splitmix64
 //
 //   Independent oracle (Python model of npc_hash + the real shipped zone-0 grid):
 //   npc_hash(1, 0) % 5 == 4 (not a stay); legal set at (5,5), radius=5, is
@@ -350,8 +321,8 @@ fn npc_decide_known_answer_within_radius() {
 }
 
 // ---------------------------------------------------------------------------
-// RED-TEAM FINDING RT-NPC-01 (HIGH): tick_seed aliasing — NPC A at tick T
-// produces the same hash as NPC (A+k) at tick (T-k) for any k.
+// tick_seed aliasing — NPC A at tick T produces the same hash as NPC (A+k) at tick
+// (T-k) for any k.
 //
 // Root cause: tick_seed(npc_id, tick, SALT) uses ADDITIVE mixing as its
 // first step: (npc_id + tick + SALT + GOLDEN) & MASK.  Since addition is
@@ -380,39 +351,9 @@ fn npc_decide_known_answer_within_radius() {
 //     A player who logs NPC positions can extrapolate future NPC positions
 //     for NPCs they have never observed.
 //
-// Fix: use a mixing function where npc_id and tick are NOT additively
-// combined before the avalanche — e.g. xor them, or use a two-input hash
-// (Cantor pairing, bit-interleaving, or feeding them as separate rounds).
-// Example fix:  tick_seed(npc_id ^ (tick.wrapping_mul(0x517CC1B727220A95)), 0, SALT)
-//
-// This test encodes the INVARIANT that must hold after the fix is applied:
 // two distinct (npc_id, tick) pairs that sum to the same value must produce
 // DIFFERENT hashes (and therefore potentially different move decisions).
 //
-// ADR-0159 D2 MIGRATION NOTE: `npc_decide` now filters the raw hash pick
-// through a per-position LEGAL direction set and a continue-facing branch, so
-// its OWN output alphabet is narrower and position-dependent (e.g. South is
-// never a reachable `npc_decide` output at home (5,5) on the real grid — it is
-// walled). The original direct-comparison fixture (npc_id=1,tick=100 →
-// Some(North) vs npc_id=100,tick=1 → Some(South)) can therefore no longer be
-// expressed as a fixed, position-independent `npc_decide`-level pair. Per the
-// migration plan, the PRECISE proof of non-commutativity is moved to the raw,
-// legality-filter-independent `npc_hash` itself (which ADR-0159 D2 leaves
-// UNCHANGED) — see `npc_hash_non_commutative_known_pair` and
-// `npc_hash_sum_aliasing_pairs_do_not_all_collide` in
-// `game-core/src/npc/rules.rs`'s `mod tests` (the only seam that can reach the
-// module-private `npc_hash`). Both reuse the EXACT SAME (npc_id, tick) pairs
-// as this test did pre-migration; see their doc-comments for the full
-// derivation (in short: the pre-migration version of THIS test, which passed,
-// already proved those hashes differ — reusing the same pairs at the hash
-// level is strictly more precise, not weaker).
-//
-// This test is KEPT (not deleted) and still carries a black-box, public-API
-// proof: a DIFFERENT id/tick pair, backed by the independently-derived oracle
-// (see the module doc for the full known-answer table), that shows two
-// distinct npc_ids at the SAME tick and SAME position/facing produce
-// different `npc_decide` outputs — the observable, end-to-end symptom
-// RT-NPC-01 worried about ("two NPCs behaving identically").
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -454,10 +395,9 @@ fn npc_decide_aliasing_distinct_id_tick_pairs_differ() {
 }
 
 // ---------------------------------------------------------------------------
-// RED-TEAM FINDING RT-NPC-02 (MEDIUM): radius=0 produces undefined/arbitrary
-// "outside" behaviour rather than a defined "stationary NPC" contract.
+// radius=0 produces undefined/arbitrary "outside" behaviour rather than a
+// defined "stationary NPC" contract.
 //
-// The plan defines:
 //   "within radius → random direction"
 //   "outside radius → toward home"
 //
@@ -469,9 +409,6 @@ fn npc_decide_aliasing_distinct_id_tick_pairs_differ() {
 // the NPC is ALWAYS outside radius → always moves toward home.
 // A stationary NPC is modelled by NpcKind::Stationary (deferred) not radius=0.
 //
-// ADR-0159 D2: the outside-radius (homing) branch is UNCHANGED — no
-// facing/map influence — so this fixture's expected value is unaffected by
-// the migration; only the call site gains the two new params.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -489,8 +426,7 @@ fn npc_decide_radius_zero_current_outside_always_moves_toward_home() {
 }
 
 // ===========================================================================
-// ADR-0159 D2 gates (feel-polish slice) — EARS: "WHEN NPCs move, THE
-// npc_decide/movement tick SHALL avoid abrupt stop/start bursts."
+// gates
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
@@ -501,13 +437,7 @@ fn npc_decide_radius_zero_current_outside_always_moves_toward_home() {
 // whenever npc_decide returns Some(d) on the wander path, the target tile MUST
 // be walkable AND still within wander_radius.
 //
-// kills: the STATUS-QUO implementation, which ignores `map` entirely and
-// uniformly hash-picks among all FOUR compass directions with no legality or
-// radius filter. At current=(5,5), facing=South, npc_id=1, tick=0 the status
-// quo returns Some(South) — stepping into (5,6), which is a WALL (row y=6 of
-// content/zone_maps/000-core.ron is "##########"). This exhaustive sweep
-// catches that exact bug (and any regression to unrestricted 4-way choice)
-// without hardcoding a single example.
+// kills: any regression to unrestricted 4-way choice.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -564,7 +494,7 @@ fn npc_decide_never_returns_illegal_move_on_real_zone_0_wander_positions() {
 //
 // When the current facing is legal (walkable + within radius), npc_decide
 // must return Some(facing) unchanged (continue heading) rather than
-// re-rolling — the persistence half of ADR-0159 D2 that halves reversals.
+// re-rolling.
 //
 // kills: an impl that drops the continue-facing check entirely and always
 // hash-picks from L (ignoring `facing`), even when the current facing is
@@ -602,22 +532,21 @@ fn npc_decide_continues_current_facing_when_legal() {
 //
 // Outside the wander radius, npc_decide must return Some(toward_home) on
 // EVERY tick and never None — the homing branch has no hash, no legality
-// filter, no stay roll (unchanged, ADR-0159 D2).
+// filter, no stay roll (unchanged).
 //
 // kills: any impl that mistakenly applies the legality filter (L-empty check)
 // or the 1-in-5 stay roll to the `dist > wander_radius` branch, which could
 // freeze a returning NPC forever outside its radius.
 //
-// Red-team finding (MAJOR, fixed here): the ORIGINAL fixture — current=(1,1),
-// home=(5,5), r=2 — has toward_home = East, and (2,1) (the East step from
-// (1,1)) is walkable, so a mutant that adds a legality filter to the homing
-// branch produces the IDENTICAL answer (filtering never removes a legal
-// choice when the only candidate is already legal). That mutant PASSED
-// against this fixture. Fixed by adding a SECOND fixture below where
-// toward_home's step target is a genuine on-map WALL, so a legality-filtered
-// mutant is forced to diverge (either to `None`, because the empty legal set
-// L has no fallback, or to some other direction chosen via the hash) from the
-// correct, unconditional `Some(toward_home(...))`.
+// the ORIGINAL fixture — current=(1,1), home=(5,5), r=2 — has toward_home =
+// East, and (2,1) (the East step from (1,1)) is walkable, so a mutant that
+// adds a legality filter to the homing branch produces the IDENTICAL answer
+// (filtering never removes a legal choice when the only candidate is already
+// legal). That mutant PASSED against this fixture. Fixed by adding a SECOND
+// fixture below where toward_home's step target is a genuine on-map WALL, so
+// a legality-filtered mutant is forced to diverge (either to `None`, because
+// the empty legal set L has no fallback, or to some other direction chosen
+// via the hash) from the correct, unconditional `Some(toward_home(...))`.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -626,11 +555,10 @@ fn npc_decide_homing_answers_every_tick_never_stalls() {
     let home = pos(5, 5);
     let radius = 2u8;
 
-    // Fixture A (kept): current=(1,1), home=(5,5), r=2 -> dist=8>2, outside.
+    // Fixture A: current=(1,1), home=(5,5), r=2 -> dist=8>2, outside.
     // toward_home dx=4,dy=4 (tied -> X wins) -> East. (2,1) is walkable floor,
     // so this fixture alone does NOT distinguish "unconditional homing" from
-    // "homing filtered through legality" (see red-team finding above) — kept
-    // as a baseline "answers every tick" regression check.
+    // "homing filtered through legality".
     let current_a = pos(1, 1);
     for tick in 0u64..4 {
         let result = npc_decide(current_a, home, radius, Direction::North, 1, tick, &map);
@@ -641,7 +569,7 @@ fn npc_decide_homing_answers_every_tick_never_stalls() {
         );
     }
 
-    // Fixture B (NEW, the actual tooth): current=(5,2), home=(5,5), r=2.
+    // Fixture B: current=(5,2), home=(5,5), r=2.
     // Derivation from the real zone-0 grid (content/zone_maps/000-core.ron):
     //   dist((5,2),(5,5)) = |5-5| + |2-5| = 3 > radius(2) -> outside/homing.
     //   toward_home: dx=5-5=0, dy=5-2=3; |dx| < |dy| -> Y-axis dominant;
@@ -649,7 +577,7 @@ fn npc_decide_homing_answers_every_tick_never_stalls() {
     //   Step target = (5,2).step(South) = (5,3). Row y=3 of the grid is
     //   "#...##..~#" -> index 5 (0-based) is '#' -- a genuine WALL, not an
     //   off-map coordinate.
-    // The homing branch is UNCHANGED by ADR-0159 D2 (no hash, no legality
+    // The homing branch is UNCHANGED (no hash, no legality
     // filter, no stay roll), so npc_decide MUST still return Some(South)
     // here, on every tick, even though that exact tile is a wall (apply_move,
     // not npc_decide, is responsible for ever rejecting the step). A mutant
@@ -758,12 +686,9 @@ fn npc_decide_known_answer_vectors_pin_hash_and_legality() {
 // `facing` IS legal but the correct output is still a re-roll — the exact
 // scenario an unconditional-continue implementation can never produce.
 //
-// kills: the shipped "continue whenever legal, no re-roll" bug — these
-// vectors are RED against it (it returns `Some(facing)` unconditionally,
-// never `Some(East)` when facing is the illegal-to-continue North/West here).
-// Also kills an impl that ALWAYS re-rolls (ignores `facing` entirely): the
-// trailing "control" pair proves continuation still happens when
-// `(h >> 33) % 6 != 0`.
+// kills: an impl that ALWAYS re-rolls (ignores `facing` entirely): the
+// trailing "control" pair proves continuation still happens when `(h >> 33) %
+// 6 != 0`.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -812,22 +737,15 @@ fn npc_decide_known_answer_vectors_pin_the_continue_reroll() {
 }
 
 // ---------------------------------------------------------------------------
-// G5 — BEHAVIOURAL BOUND (encodes the playtest complaint).
+// G5 — BEHAVIOURAL BOUND.
 //
-// Simulate a long walk (60 000 ticks — the ADR's own measurement window) on
-// the REAL zone-0 grid starting at elder_oak's home, driving the NPC's actual
-// position/facing tick-by-tick (mirroring how movement.rs drives npc_decide +
-// apply_move in production). Assert:
+// Simulate a long walk (60 000 ticks) on the REAL zone-0 grid starting at
+// elder_oak's home, driving the NPC's actual position/facing tick-by-tick
+// (mirroring how movement.rs drives npc_decide + apply_move in production).
+// Assert:
 //   - bump count == 0 (exact).
 //   - IMMEDIATE reversal rate < 28% of moves.
 //   - the NPC never leaves its wander_radius.
-//
-// THRESHOLD RE-DERIVATION (2nd red-team pass): the FIRST fix considered
-// ("always continue when legal", no re-roll) measured 19.97% immediate
-// reversals — but that fix has an ABSORBING STATE (G4b/G7): it never visits
-// 3 of the 8 legal tiles. The desync-guard-audit's actual fix adds a 1-in-6
-// voluntary re-roll (`(h >> 33) % NPC_CONTINUE_REROLL`, K=6), which reaches
-// all 8 tiles but costs a somewhat higher reversal rate:
 //
 //   rule                     tiles  rev%   bump%  meanRun   (60k ticks, real grid)
 //   status quo (pre-slice)    13*   32.26  14.33  1.14      (*incl. out-of-radius)
@@ -837,31 +755,18 @@ fn npc_decide_known_answer_vectors_pin_the_continue_reroll() {
 //   K=8                        8    23.23   0.00  1.96
 //   K=16                       8    21.75   0.00  2.16
 //
-// `< 0.25` (the prior threshold, derived against the absorbing-state 19.97%
-// figure) would leave K=6's honest 24.05% only ~1pp of margin — the SAME
-// knife-edge problem red-team already flagged once (see the METRIC note
-// below for that history). Threshold moved to `< 0.28`: status quo 32.26%
-// fails by 4.3pp; the K=6 fix's 24.05% passes by 4.0pp — comparable margin on
-// both sides, at the ADR's actual measurement window (N=60000).
+// status quo 32.26% fails by 4.3pp; the K=6 fix's 24.05% passes by 4.0pp —
+// comparable margin on both sides.
 //
 // METRIC (precise, do not re-introduce ambiguity here): a reversal is an
 // IMMEDIATE reversal — a MOVE tick whose direction is the exact opposite of
 // the PREVIOUS MOVE tick's direction, with NO intervening stay (`None`) tick
 // between them. `last_move_dir` is therefore reset to `None` on every stay
-// tick below: "move East, stay, stay, move West" is NOT a reversal. A prior
-// version of this test tracked `last_move_dir` across stay ticks (an
-// "any-gap" metric); red-team showed that metric converges to EXACTLY 25.00%
-// regardless of implementation correctness (measured 24.9937% at N=5000,
-// 25.0005% at N=60000, 25.0002% at N=200000) — i.e. that `< 0.25` assertion
-// was a coin-flip on sample-size noise, not a tooth. Both historical issues
-// (wrong metric, then a too-tight threshold against the RIGHT metric) are
-// folded into the `< 0.28` / N=60000 combination above.
+// tick below: "move East, stay, stay, move West" is NOT a reversal.
 //
 // kills: any impl that ignores the map (status quo: 14.33% of ticks were
 // bumps), or that is collision-aware but drops continue-facing entirely
-// (measured 35.44% immediate-reversal rate in the ADR's alternative (B) —
-// still over this bound), or the shipped absorbing-state bug's sibling
-// failure mode were its reversal rate ever to regress upward past 28%.
+// (measured 35.44% immediate-reversal rate — still over this bound).
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -881,7 +786,7 @@ fn npc_decide_behavioural_bound_zero_bumps_bounded_reversals_over_long_walk() {
     }
 
     let mut current = home;
-    let mut facing = Direction::South; // matches the ADR's measured starting facing
+    let mut facing = Direction::South;
     let mut bumps: u64 = 0;
     let mut moves: u64 = 0;
     let mut reversals: u64 = 0;
@@ -952,7 +857,7 @@ fn npc_decide_behavioural_bound_zero_bumps_bounded_reversals_over_long_walk() {
 // G6 — UNCHANGED CONTRACTS still pass.
 //
 // wander_radius == 0 with current == home must still return None (the
-// "pinned to home" special case, ADR-0068, UNCHANGED by ADR-0159 D2).
+// "pinned to home" special case).
 //
 // kills: an impl that, while adding legality-awareness, accidentally routes
 // the radius==0 pinned-stay special case through the new legal-set logic
@@ -982,21 +887,16 @@ fn npc_decide_radius_zero_pinned_to_home_never_moves_regardless_of_facing() {
 }
 
 // ---------------------------------------------------------------------------
-// G7 — FULL COVERAGE, NOT AN ABSORBING STATE (desync-guard-audit finding,
-// HIGHEST PRIORITY: this is the tooth that would have caught the shipped bug).
+// G7 — FULL COVERAGE, NOT AN ABSORBING STATE.
 //
 // G1 sweeps every diamond position and asserts "IF Some(d) is returned, it's
 // legal" — that is necessary but NOT sufficient: it never drives the NPC from
 // its real start state, so it cannot see that a legality-correct decision
 // function can still be a de-facto metronome if it always continues a legal
-// facing. The shipped implementation does exactly that: "continue whenever
-// facing is legal", no voluntary re-roll. On elder_oak's real pocket (home
-// (5,5), radius 2, zone 0) every interior tile has East/West legal, so once
-// `facing` becomes East or West it NEVER changes again (the two end tiles,
-// (3,5) and (7,5), force the exact reverse, which is still East/West). The
-// independent desync-guard-audit simulation confirmed the NPC visits only 5
-// of the 8 legal tiles — the whole y=5 row — and never reaches
-// (4,4), (5,4), (6,4), for 7 of 8 sampled npc_ids.
+// facing. On elder_oak's real pocket (home (5,5), radius 2, zone 0) every
+// interior tile has East/West legal, so once `facing` becomes East or West it
+// NEVER changes again (the two end tiles, (3,5) and (7,5), force the exact
+// reverse, which is still East/West).
 //
 // This test drives `npc_decide` + the REAL `apply_move` (not a hand-rolled
 // step) from the REAL production start state — home (5,5), facing South,
@@ -1005,12 +905,7 @@ fn npc_decide_radius_zero_pinned_to_home_never_moves_regardless_of_facing() {
 // untouched, exactly as encoded here). It collects the SET of tiles visited
 // and asserts it equals the full set of legal tiles, computed PROGRAMMATICALLY
 // from the map + radius (not hardcoded), so the test stays honest if content
-// ever changes. It repeats for 8 different npc_ids, since the bug reproduced
-// for 7 of the 8 ids the audit sampled.
-//
-// kills: the shipped "continue whenever legal, no re-roll" absorbing-state
-// bug. RED against it: the visited set is a strict subset (size 5, the y=5
-// row only) of the expected set (size 8) for the affected npc_ids.
+// ever changes.
 //
 // SCOPE NOTE — this gate bites the absorbing *class*, NOT the value of
 // NPC_CONTINUE_REROLL. Any K in 1..~1000 passes this test (and K up to ~1000
@@ -1054,14 +949,7 @@ fn npc_decide_visits_every_legal_tile_from_real_start_state_not_an_absorbing_sta
         expected.len()
     );
 
-    // Several npc_ids, not just one -- the audit measured coverage
-    // [5,5,5,7,5,5,5,5] across these 8 ids: EVERY one of them falls short of
-    // the full 8-tile set under the shipped bug (one outlier reaches 7, via
-    // whichever end tile it happens to bounce off first, before settling into
-    // the same y=5-row oscillation as the rest) -- a single-id test could
-    // still catch this, but sampling all 8 matches the audit's own evidence
-    // and guards against a fix that only breaks the absorbing state for some
-    // ids (e.g. an off-by-one in the re-roll bit-slice for certain hashes).
+    // Several npc_ids, not just one.
     for npc_id in 1u64..=8 {
         let mut state = CharacterState {
             pos: home,

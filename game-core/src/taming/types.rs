@@ -1,5 +1,5 @@
 //! Taming value types — encounter tables and entries.
-//! All types are pure data; no I/O, no clock, no RNG (ADR-0003).
+//! All types are pure data; no I/O, no clock, no RNG.
 
 use serde::Deserialize;
 

@@ -1,16 +1,4 @@
-//! M14.5c gating tests — end-to-end ability wiring (ADR-0100).
-//!
-//! Criterion → test mapping:
-//!   EARS-14.5c-1 (schema: species content assigns abilities)
-//!       → content_flameling_has_flame_body_ability
-//!       → content_sproutlet_has_regeneration_ability
-//!       → content_tidalin_has_no_ability
-//!   EARS-14.5c-2 (wiring: ability store resolves correctly from content)
-//!       → content_driven_ability_store_resolves_flame_body
-//!       → content_driven_ability_store_resolves_regeneration
-//!   EARS-14.5c-3 (gameplay: each ability kind exercised by a shipped species)
-//!       → flameling_flame_body_clears_burn_via_modifiers       (StatusImmunity)
-//!       → sproutlet_regeneration_heals_on_entry                (EntryHeal)
+//! M14.5c gating tests — end-to-end ability wiring.
 
 use crate::combat::ability::{
     apply_ability_modifiers, apply_entry_ability, AbilityEffect, AbilityStore, StatusKind,
@@ -67,10 +55,10 @@ fn make_state_1v1(monster_a: BattleMonster, monster_b: BattleMonster) -> BattleS
 }
 
 // ---------------------------------------------------------------------------
-// EARS-14.5c-1: species content assigns ability IDs (schema → content level)
+// species content assigns ability IDs (schema → content level)
 // ---------------------------------------------------------------------------
 
-/// EARS-14.5c-1a: Flameling (id=1) must have ability_id=1 (Flame Body).
+/// Flameling (id=1) must have ability_id=1 (Flame Body).
 ///
 /// Kills: a species RON that omits the `ability` field on Flameling (the field
 /// defaults to `None` via `#[serde(default)]`, leaving ability_id unset).
@@ -92,7 +80,7 @@ fn content_flameling_has_flame_body_ability() {
     );
 }
 
-/// EARS-14.5c-1b: Sproutlet (id=3) must have ability_id=3 (Regeneration).
+/// Sproutlet (id=3) must have ability_id=3 (Regeneration).
 ///
 /// Kills: omitting `ability: Some(3)` in the Sproutlet RON entry; the field
 /// would default to `None` and EntryHeal would never fire for Sproutlet in game.
@@ -112,7 +100,7 @@ fn content_sproutlet_has_regeneration_ability() {
     );
 }
 
-/// EARS-14.5c-1c: Tidalin (id=2) must have no ability (baseline species).
+/// Tidalin (id=2) must have no ability (baseline species).
 ///
 /// Keeps the registry honest: not every species needs an ability, and Tidalin
 /// is the control case for `ability: None` in the default content set.
@@ -131,10 +119,10 @@ fn content_tidalin_has_no_ability() {
 }
 
 // ---------------------------------------------------------------------------
-// EARS-14.5c-2: ability store resolves correctly from content
+// ability store resolves correctly from content
 // ---------------------------------------------------------------------------
 
-/// EARS-14.5c-2a: ability_id=1 resolves to `StatusImmunity { immune_to: Burn }`.
+/// ability_id=1 resolves to `StatusImmunity { immune_to: Burn }`.
 ///
 /// Kills: a content author who sets the wrong effect on ability id=1 (e.g.
 /// `EntryHeal` instead of `StatusImmunity`), or mixes up ability IDs. The
@@ -160,7 +148,7 @@ fn content_driven_ability_store_resolves_flame_body() {
     );
 }
 
-/// EARS-14.5c-2b: ability_id=3 resolves to `EntryHeal { denom: 4 }`.
+/// ability_id=3 resolves to `EntryHeal { denom: 4 }`.
 ///
 /// Kills: wrong denom (e.g. denom=8 would halve the heal) or wrong effect kind.
 #[test]
@@ -179,10 +167,10 @@ fn content_driven_ability_store_resolves_regeneration() {
 }
 
 // ---------------------------------------------------------------------------
-// EARS-14.5c-3: each ability kind is exercised end-to-end by a shipped species
+// each ability kind is exercised end-to-end by a shipped species
 // ---------------------------------------------------------------------------
 
-/// EARS-14.5c-3a: Flameling's Flame Body clears Burn via `apply_ability_modifiers`.
+/// Flameling's Flame Body clears Burn via `apply_ability_modifiers`.
 ///
 /// Uses actual content IDs: loads Flameling's ability_id, resolves it against the
 /// abilities registry, populates an AbilityStore, and calls apply_ability_modifiers.
@@ -237,7 +225,7 @@ fn flameling_flame_body_clears_burn_via_modifiers() {
     );
 }
 
-/// EARS-14.5c-3b: Sproutlet's Regeneration heals on entry via `apply_entry_ability`.
+/// Sproutlet's Regeneration heals on entry via `apply_entry_ability`.
 ///
 /// Uses actual content IDs: resolves Sproutlet's EntryHeal, populates an AbilityStore,
 /// calls apply_entry_ability, and asserts the active monster's HP increased by
@@ -340,7 +328,7 @@ fn sproutlet_regeneration_heals_on_entry() {
 // The Burn DoT can be fatal if the Flameling enters at very low HP.
 // ---------------------------------------------------------------------------
 
-/// RT-D6a: Flameling KO-auto-switched in does NOT have its Burn cleared on entry.
+/// Flameling KO-auto-switched in does NOT have its Burn cleared on entry.
 ///
 /// This test DOCUMENTS the gap. The Burn in the store is cleared only at
 /// Phase 0 of the NEXT turn (apply_ability_modifiers), not on auto-switch.

@@ -79,12 +79,12 @@ pub enum TradeError {
         item_id: u32,
     },
     /// Crediting items to the receiver would push their stack above MAX_ITEM_STACK.
-    /// confirm_trade returns Err and rolls back — reject-not-clamp (ADR-0113, 16.5b-1).
+    /// confirm_trade returns Err and rolls back — reject-not-clamp.
     ItemStackCapExceeded {
         item_id: u32,
     },
     /// Crediting currency to the receiver would push their balance above MAX_BALANCE.
-    /// confirm_trade returns Err and rolls back — reject-not-clamp (ADR-0113, 16.5b-1).
+    /// confirm_trade returns Err and rolls back — reject-not-clamp.
     CurrencyCapExceeded,
 }
 
@@ -135,7 +135,7 @@ mod tests {
     use super::*;
 
     /// TradeError variants must display meaningful, non-empty error messages.
-    /// kills: 89:9 replace fmt -> std::fmt::Result with Ok(Default::default()) —
+    /// kills: replace fmt -> std::fmt::Result with Ok(Default::default()) —
     ///        the mutation makes ALL Display calls return Ok(()) with no output,
     ///        so format!("{}", err) returns "" for every variant; the non-empty
     ///        assertion kills the mutant on the very first variant checked.

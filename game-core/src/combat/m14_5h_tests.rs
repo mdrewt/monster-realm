@@ -1,16 +1,6 @@
 //! M14.5h gating tests — D6 wiring: entry abilities fire on KO auto-switch.
 //!
-//! Criterion → test mapping:
-//!   EARS-h-1 (boundary documentation for `<` comparison in apply_entry_ability)
-//!       → boundary_full_hp_no_heal          [PASSES already — pure documentation]
-//!       → boundary_one_below_full_hp_heals  [PASSES already — pure documentation]
-//!   EARS-h-2 (entry abilities fire on KO auto-switch via resolve_full_turn)
-//!       → ko_auto_switch_fires_entry_heal_via_resolve_full_turn   [RED until D6 fix]
-//!       → ko_auto_switch_fires_status_immunity_via_resolve_full_turn [RED until D6 fix]
-//!
-//! # EARS-h-1: boundary documentation tests
-//!
-//! These tests pass regardless of the D6 fix — they document the boundary
+//! These tests pass — they document the boundary
 //! semantics of the `<` comparison in `apply_entry_ability`:
 //!
 //!   ```text
@@ -241,27 +231,11 @@ fn boundary_one_below_full_hp_heals() {
 }
 
 // ===========================================================================
-// EARS-h-2: Entry abilities fire on KO auto-switch via resolve_full_turn
+// Entry abilities fire on KO auto-switch via resolve_full_turn
 //
-// These tests are RED until the D6 fix is implemented. The fix adds a call to
-// `apply_ko_switch_entry_abilities` (or equivalent) inside `resolve_full_turn`
-// AFTER `resolve_turn` returns, so that when a KO-triggered auto-switch fires
-// inside `resolve_one_attack`, the switched-in monster's entry ability is applied
-// in the same turn rather than being deferred to Phase 0 of the next turn.
-//
-// CURRENT behavior (RED):
-//   - EntryHeal is NOT called on KO auto-switch → switched-in monster stays
-//     at its pre-entry HP.
-//   - StatusImmunity is NOT cleared on KO auto-switch → matching status persists
-//     in the slot until Phase 0 of the NEXT turn.
-//
-// DESIRED behavior after fix (GREEN):
-//   - EntryHeal fires immediately when the switched-in monster enters the active
-//     slot via KO auto-switch → HP increases by max_hp/denom.
-//   - StatusImmunity fires immediately → matching status is cleared to None.
 // ===========================================================================
 
-/// EARS-h-2a: EntryHeal fires on KO auto-switch via resolve_full_turn.
+/// EntryHeal fires on KO auto-switch via resolve_full_turn.
 ///
 /// Setup (2v1 battle):
 /// - SideA slot 0: 1 HP, Plant affinity (KO'd by SideB's Fire attack in one hit).
@@ -272,12 +246,11 @@ fn boundary_one_below_full_hp_heals() {
 ///   A Fire skill is super-effective vs Plant → guaranteed KO on 1-HP slot 0.
 ///
 /// Turn: both sides Attack. SideB goes first (higher speed), KOs SideA slot 0,
-/// triggering auto-switch to slot 1. The D6 fix causes apply_entry_ability to
-/// be called for slot 1 during (or immediately after) that auto-switch.
+/// triggering auto-switch to slot 1.
 ///
 /// Assert: after resolve_full_turn, SideA slot 1 current_hp == 75 (50 + 25).
 ///
-/// TEETH (EARS-h-2a): an impl that omits apply_entry_ability on KO auto-switch
+/// an impl that omits apply_entry_ability on KO auto-switch
 /// leaves slot 1 at 50 HP — this assertion kills that gap.
 /// A wrong denom (e.g. denom=8 → heal=12) would land at 62, not 75 — also killed.
 #[test]
@@ -352,11 +325,8 @@ fn ko_auto_switch_fires_entry_heal_via_resolve_full_turn() {
     // After the turn:
     // - SideB attacked first (speed 200 > 10), KO'd SideA slot 0 (Plant, 1 HP vs Fire SE).
     // - Auto-switch fired: SideA.active moved to slot 1.
-    // - D6 fix: apply_entry_ability fires for SideA slot 1 → heal = 100/4 = 25 HP.
+    // - apply_entry_ability fires for SideA slot 1 → heal = 100/4 = 25 HP.
     // - SideA slot 1 should have current_hp = 50 + 25 = 75.
-    //
-    // CURRENT (RED): slot 1 stays at 50 HP (no entry ability called on KO auto-switch).
-    // DESIRED (GREEN after fix): slot 1 is healed to 75 HP.
 
     assert_eq!(
         state.side_a.active, 1,
@@ -373,7 +343,7 @@ fn ko_auto_switch_fires_entry_heal_via_resolve_full_turn() {
     );
 }
 
-/// EARS-h-2b: StatusImmunity fires on KO auto-switch via resolve_full_turn.
+/// StatusImmunity fires on KO auto-switch via resolve_full_turn.
 ///
 /// Setup (2v1 battle):
 /// - SideA slot 0: 1 HP, Plant affinity → KO'd by SideB's Fire attack.
@@ -384,12 +354,11 @@ fn ko_auto_switch_fires_entry_heal_via_resolve_full_turn() {
 /// - SideB: strong Fire attacker, very high speed (goes first).
 ///
 /// Turn: both sides Attack. SideB goes first, KOs SideA slot 0, triggering
-/// auto-switch to slot 1. The D6 fix causes apply_entry_ability to fire for
-/// slot 1 during the auto-switch, clearing the Burn immediately.
+/// auto-switch to slot 1.
 ///
 /// Assert: after resolve_full_turn, status.side_a[1] is None (Burn cleared).
 ///
-/// TEETH (EARS-h-2b): an impl that omits apply_entry_ability on KO auto-switch
+/// an impl that omits apply_entry_ability on KO auto-switch
 /// leaves the Burn in place (Some(Burn)) — this assertion kills that gap.
 /// An impl that only clears on Phase 0 of the NEXT turn would also fail (the
 /// Burn persists through this turn's post-turn DoT, potentially dealing damage).
@@ -467,13 +436,8 @@ fn ko_auto_switch_fires_status_immunity_via_resolve_full_turn() {
     // After the turn:
     // - SideB attacked first, KO'd SideA slot 0.
     // - Auto-switch fired: SideA.active moved to slot 1.
-    // - D6 fix: apply_entry_ability fires for SideA slot 1 (StatusImmunity { Burn }).
+    // - apply_entry_ability fires for SideA slot 1 (StatusImmunity { Burn }).
     //   This clears the Burn from status.side_a[1].
-    //
-    // CURRENT (RED): Burn stays in status.side_a[1] = Some(Burn).
-    //   (apply_entry_ability is not called on KO auto-switch; the Burn only gets
-    //   cleared at Phase 0 of the NEXT turn via apply_ability_modifiers.)
-    // DESIRED (GREEN after fix): status.side_a[1] == None (Burn cleared on entry).
 
     assert_eq!(
         state.side_a.active, 1,

@@ -1,4 +1,4 @@
-//! Pure account-deletion and data-export contract surface (M22, ADR-0031).
+//! Pure account-deletion and data-export contract surface.
 //!
 //! Everything here is deterministic, I/O-free and framework-free — no database
 //! crate types, no reducer context, no tables. The imperative shell
@@ -7,36 +7,16 @@
 //! `server-module/src/accounts.rs` and calls into these helpers, so the
 //! grace-window rule, the anonymization sentinels, the export chunk size and
 //! the state-transition exemption list are each written exactly once.
-//!
-//! Spec `M22-privacy-compliance.spec.md` §4.3 (deletion grace window and its
-//! reaper), §4.5 (cancellation clears the request), §4.7 (the deletion gate
-//! and its declared exemptions), §5 (data export sub-chunking) and §8.1
-//! (unresolved escalations — see the note on `DELETION_GRACE_MS_DEFAULT`).
 
 // ===========================================================================
-// Deletion grace window (spec §4.3, §4.5, §8.1)
+// Deletion grace window
 // ===========================================================================
 
-/// Grace window between a deletion request and irreversible erasure, in ms
-/// (spec §4.3, §4.5, §8.1; ADR-0031).
+/// Grace window between a deletion request and irreversible erasure, in ms.
 //
-// HONESTY NOTE — 7 days (604_800_000 ms) is an arbitrary placeholder. It was
-// picked only because it is a legible, operationally sane duration that gives
-// a player a real chance to change their mind; there is no sourced basis for
-// it in this repo or in either research library, and the M22 ceremony
-// explicitly refused to borrow a figure from an incomparable consumer service
-// reported at second hand. Spec §8.1 escalation #1 is UNRESOLVED — the
-// operator picks the real number. `_DEFAULT` here means "the literal an
-// operator replaces", NOT that a runtime override column exists; S2 must not
-// invent one.
-//
-// WHEN YOU RETUNE IT, keep the right-hand side a BARE INTEGER LITERAL (digits
-// and `_` separators only). `evals/deletion-grace-wasm-ssot.eval.mjs` reads
-// this declaration as the oracle for the value the `client-wasm` accessor
-// `deletion_grace_ms_default()` must return, and it refuses to evaluate an
-// expression such as `7 * 24 * 60 * 60 * 1000` rather than guess -- so an
-// expression form fails that gate loudly. Retuning the VALUE is otherwise
-// free: that eval pins the delegation, never the number. (rb-8, ADR-0212)
+// 7 days (604_800_000 ms) is an arbitrary placeholder.
+// `_DEFAULT` here means "the literal an operator replaces", NOT that a
+// runtime override column exists.
 pub const DELETION_GRACE_MS_DEFAULT: i64 = 604_800_000;
 
 /// Is a pending deletion request past its grace window at `now_ms`?
@@ -56,9 +36,8 @@ pub const DELETION_GRACE_MS_DEFAULT: i64 = 604_800_000;
 /// The subtraction saturates in both directions. A future-dated request
 /// (clock skew) yields a negative elapsed value and reads as not due; the
 /// `i64` extremes clamp instead of overflowing, which matters because
-/// `[profile.release] overflow-checks = true` (workspace `Cargo.toml:65-66`)
-/// turns a wrapping subtraction into a panic that would abort the reaper's
-/// whole transaction in production.
+/// `[profile.release] overflow-checks = true` turns a wrapping subtraction into
+/// a panic that would abort the reaper's whole transaction in production.
 #[must_use]
 pub fn is_deletion_due(requested_at_ms: Option<i64>, now_ms: i64) -> bool {
     match requested_at_ms {
@@ -68,24 +47,19 @@ pub fn is_deletion_due(requested_at_ms: Option<i64>, now_ms: i64) -> bool {
 }
 
 // ===========================================================================
-// Anonymization sentinels (spec §3, §4.5)
+// Anonymization sentinels
 // ===========================================================================
 
-/// Sentinel identity bytes stamped onto anonymized rows (spec §3, §4.5).
+/// Sentinel identity bytes stamped onto anonymized rows.
 //
 // SSOT: server-module must derive its `Identity` const as
 // `Identity::from_byte_array(game_core::TOMBSTONE_IDENTITY_BYTES)`, never a
-// second hand-typed `[0xFFu8; 32]` literal — the `MAX_PARTY_SIZE` /
-// `PARTY_SLOT_NONE` precedent at `server-module/src/lib.rs:77,80`.
-// PLACEMENT: that const belongs beside `WILD_IDENTITY`
-// (`server-module/src/lib.rs:84`), NOT in `accounts.rs`, whose
-// `[R/identity-ctor]` clause in `evals/guest-claim-integrity.eval.mjs` flatly
-// bans `Identity::from_byte_array(` in that file. Distinct by construction
-// from `WILD_IDENTITY`'s all-zero value, so an anonymized PvP battle is never
-// reclassified as a wild battle.
+// second hand-typed `[0xFFu8; 32]` literal.
+// Distinct by construction from `WILD_IDENTITY`'s all-zero value, so an
+// anonymized PvP battle is never reclassified as a wild battle.
 pub const TOMBSTONE_IDENTITY_BYTES: [u8; 32] = [0xFF; 32];
 
-/// Sentinel written to `account.auth_issuer` on anonymization (spec §3).
+/// Sentinel written to `account.auth_issuer` on anonymization.
 //
 // Deliberately not shaped like a live OAuth issuer value: no scheme
 // punctuation, no host separator, so nothing downstream can mistake it for a
@@ -93,31 +67,18 @@ pub const TOMBSTONE_IDENTITY_BYTES: [u8; 32] = [0xFF; 32];
 // unset one.
 pub const TOMBSTONE_AUTH_ISSUER: &str = "account-deleted-tombstone";
 
-/// Sentinel written to `player.name` and `profile.name` on anonymization
-/// (spec §3).
+/// Sentinel written to `player.name` and `profile.name` on anonymization.
 //
 // SSOT: this is the ONE deletion display-name tombstone. The imperative
-// shell (S3, `server-module/src/accounts.rs`) must write this constant, never
+// shell (`server-module/src/accounts.rs`) must write this constant, never
 // a hand-typed literal and never `ranking.rs`'s `PROFILE_TOMBSTONE_NAME` —
 // that one is the M21 GUEST-CLAIM sentinel for a claimed guest's retained
 // profile row, so reusing it would make a genuinely deleted account read as
 // an unclaimed guest. Both that constant and `tombstoned_profile`, the only
-// other symbol that writes it, are module-private as of this slice, so the
+// other symbol that writes it, are module-private so the
 // compiler refuses the two reuse paths rather than a convention asking nicely.
 //
-// WHAT IS NOT COMPILER-ENFORCED, stated plainly rather than implied away: S3
-// can still hand-type the guest-claim string as a bare literal in
-// `accounts.rs`, or smuggle it out of `ranking.rs` under a second identifier
-// spelled `concat!("(claimed ", "guest)")` or `"\u{28}claimed guest)"` — both
-// measured green against this slice's scans, which are substring searches and
-// cannot evaluate a macro or an escape. Closing that needs a check over
-// `accounts.rs` itself, which is S3's file and outside this slice; it is
-// handed off as a named residual in ADR-0211 rather than left implicit.
-//
-// THE VALUE IS NOT PINNED BY THE SPEC. §3 requires "the tombstone constant"
-// without naming one, and §8.2 decided the tombstone SHAPE (one shared
-// sentinel, not per-account) while explicitly not escalating the string to
-// the operator. What IS load-bearing, and is what the tests assert, are its
+// What IS load-bearing, and is what the tests assert, are its
 // properties: non-blank, trim-stable, printable ASCII only (a zero-width or
 // bidi-override value would render blank or reversed on a leaderboard),
 // within server-module's `MAX_NAME_LEN`, rejected by `guards::validate_name`
@@ -132,10 +93,10 @@ pub const TOMBSTONE_AUTH_ISSUER: &str = "account-deleted-tombstone";
 pub const TOMBSTONE_DISPLAY_NAME: &str = "(deleted account)";
 
 // ===========================================================================
-// Data export (spec §5)
+// Data export
 // ===========================================================================
 
-/// Rows per data-export sub-chunk (spec §5).
+/// Rows per data-export sub-chunk.
 //
 // Non-zero is load-bearing: S4 sub-chunks with `slice::chunks(..)`, which
 // panics unconditionally on a zero chunk size. `u32` matches this repo's
@@ -145,10 +106,10 @@ pub const TOMBSTONE_DISPLAY_NAME: &str = "(deleted account)";
 pub const EXPORT_CHUNK_ROWS: u32 = 500;
 
 // ===========================================================================
-// Deletion-gate exemptions (spec §4.7)
+// Deletion-gate exemptions
 // ===========================================================================
 
-/// Reducers exempt from the §4.7 deletion gate (spec §4.7).
+/// Reducers exempt from the deletion gate.
 //
 // A DECLARED, gate-checked exemption list — not an ad-hoc allowlist. S6's
 // `[DEL-06]` CI scan consumes it verbatim, so adding an entry here EXEMPTS

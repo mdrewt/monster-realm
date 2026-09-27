@@ -1,4 +1,4 @@
-//! Pure dialogue evaluation rules (ADR-0068).
+//! Pure dialogue evaluation rules.
 //!
 //! All functions are stateless, deterministic, and free of side effects.
 //! The server reducer owns the actual table mutations; these functions
@@ -93,7 +93,7 @@ pub fn available_choices(node: &DialogueNode, state: &PlayerDialogueState) -> Ve
 /// # Security contract
 /// This function checks availability **internally** — it does NOT trust the
 /// caller to pre-filter via `available_choices`. This makes it safe to call
-/// directly from M12b reducers without a separate pre-check.
+/// directly without a separate pre-check.
 ///
 /// Proof-of-teeth: an impl that skips the condition check here would allow a
 /// player to bypass flag gates by sending a raw choice index.
@@ -132,8 +132,7 @@ pub fn apply_choice<'a>(
 /// in the future forces a deliberate decision at every call site.
 ///
 /// `GrantXp` and `GrantItem` are explicit no-ops here — they are server-side
-/// only. The server retrieves them from `ChoiceResult.effects` and routes them
-/// through the M9 inventory/XP helpers.
+/// only. The server retrieves them from `ChoiceResult.effects` and routes them.
 pub fn apply_effects(effects: &[DialogueEffect], state: &mut PlayerDialogueState) {
     for effect in effects {
         match effect {

@@ -1,10 +1,5 @@
 //! Red-team attack tests for the M7b plan.
 //!
-//! These tests are written against the M7b design plan. They target the
-//! server-side reducer layer (battle table + reducers) and the combat engine
-//! integration, focusing on attack vectors specific to the planned server
-//! implementation.
-//!
 //! Each test is annotated with:
 //!   - Finding number and severity
 //!   - Attack description
@@ -14,8 +9,6 @@
 //! Tests for server-side reducer logic (SpacetimeDB context) are annotated
 //! with `#[cfg(FALSE)]` — they document the required reducer behaviour and
 //! serve as a specification for the implementation.
-//!
-//! Run: cargo test m7b_redteam -- --nocapture
 
 use crate::combat::{
     apply_xp_gain, battle_xp_reward,
@@ -79,10 +72,6 @@ fn ongoing_battle(a_hp: u16, b_hp: u16) -> BattleState {
 // simultaneous battles.
 //
 // Attack: call start_battle twice before the first battle completes.
-// The plan's `start_battle` reducer is described as thin: "validate ownership
-// / legality → delegate to game-core → write back". There is NO mention of
-// checking whether the caller already has an active battle row before
-// inserting a new one.
 //
 // Impact: a player with two live battle rows can interleave submit_attack
 // calls against both, earning double XP from a single set of monsters. The
@@ -137,31 +126,28 @@ fn m7b_1_double_battle_double_xp_arithmetic() {
 //   3. Player A wins the battle. The HP write-back reducer does:
 //        let m = ctx.db.monster().find(party_monster_ids[0]);
 //        if m.owner_identity != ctx.sender { return Err } -- CORRECT CHECK
-//        BUT: the plan says "Re-verify owner_identity against CURRENT state,
-//        not battle-time snapshot." This means monster_42 now belongs to B,
+//        monster_42 now belongs to B,
 //        so the re-verify REJECTS the write-back. The player wins but their
 //        HP damage is silently lost — or worse, if the impl writes WITHOUT
 //        re-verifying, they write reduced HP onto B's monster.
 //
-// Impact: The plan's description of "re-verify owner_identity" is correct
-// intent, but the consequence is SILENT HP LOSS for the winner when any
-// monster changes hands during battle (even if that path doesn't exist yet).
+// Impact:
+// SILENT HP LOSS for the winner when any monster changes hands during battle
+// (even if that path doesn't exist yet).
 // The spec MUST define what happens: abort with an error, or write-back only
 // monsters that still belong to the caller.
 //
-// NOTE: evals/spec-gap-revival.eval.mjs mechanically force-revives this test —
-// the gate FAILS if a trade/transfer reducer lands while this stays #[ignore].
 // ===========================================================================
 
 #[test]
 fn m7b_2_owner_change_mid_battle_spec_gap() {
-    // Spec gap CLOSED (M15a, ADR-0106) + battle↔trade interlock (m16.5a, ADR-0112).
+    // Spec gap CLOSED + battle↔trade interlock.
     //
     // write_back_party_hp cannot be called from game-core (server-module depends on
     // game-core, not vice-versa). Source-scan asserts the abort-on-owner-change
     // contract in write_back_party_hp and the two-direction interlock in trading.rs.
 
-    // --- Criterion 1: write_back_party_hp aborts on owner mismatch (ADR-0106 M15a) ---
+    // --- Criterion 1: write_back_party_hp aborts on owner mismatch ---
     let battle_src = include_str!("../../../server-module/src/battle.rs");
     // Strip line-comment lines so commented-out code cannot satisfy assertions.
     let stripped_battle: String = battle_src
@@ -202,7 +188,7 @@ fn m7b_2_owner_change_mid_battle_spec_gap() {
          so the other player's monster row is untouched on owner mismatch (ADR-0106 M15a)."
     );
 
-    // --- Criterion 2: both-direction battle↔trade interlock (m16.5a, ADR-0112) ---
+    // --- Criterion 2: both-direction battle↔trade interlock ---
     let trading_src = include_str!("../../../server-module/src/trading.rs");
     let stripped_trading: String = trading_src
         .lines()
@@ -242,10 +228,6 @@ fn m7b_2_owner_change_mid_battle_spec_gap() {
 // Attack: Player submits a `submit_attack` after the battle has already ended
 // (outcome = SideAWins or SideBWins) but before the client processes the
 // final event.
-//
-// The plan says reducers "validate ownership/legality". The legality check
-// MUST include: `if battle.state.outcome != BattleOutcome::Ongoing { return Err }`.
-// The plan does not explicitly list this guard.
 //
 // Impact: If the guard is missing, a second submit_attack on a finished battle
 // runs resolve_turn on a terminal state. resolve_turn increments turn_number
@@ -347,10 +329,6 @@ fn m7b_3_resolve_turn_on_terminal_state_increments_turn_number() {
 // (player fled = enemy wins?), the heal is still blocked until the next
 // disambiguation.
 //
-// The plan MUST define: what outcome value does `flee` set? The plan says
-// "flee(battle_id)" but does not define the resulting BattleOutcome variant.
-// BattleOutcome currently has: Ongoing, SideAWins, SideBWins. There is NO
-// Fled variant.
 // ===========================================================================
 
 #[test]
@@ -546,14 +524,7 @@ fn m7b_6_public_battlestate_leaks_opponent_derived_stats() {
 //   3. write-back calls apply_xp_gain(Xp(1000), gained) → new_xp=1200.
 //   4. Writes new_xp=1200, new_level=10 back to monster 42.
 //
-// This is correct if the monster's XP was not modified between steps 1 and 4.
-// BUT: if the player also ran heal_party between steps 1 and 4 (allowed,
-// since heal_party is rejected only if in-battle), and heal_party for some
-// reason modifies xp... actually heal_party only modifies current_hp, not xp.
-// So this specific path is safe.
-//
-// The REAL risk: the plan says "derive_stats recomputation" after level-up.
-// But the XP write-back reads the LIVE monster from DB (correct), yet the
+// XP write-back reads the LIVE monster from DB (correct), yet the
 // level comparison uses the BattleState snapshot's derived stats. If the
 // monster leveled up via some OTHER path between battle start and write-back,
 // the write-back may incorrectly re-apply derive_stats at the wrong level.
@@ -613,10 +584,10 @@ fn m7b_7_xp_writeback_must_use_live_db_state_not_snapshot() {
 // values 101..255 are invalid (too high — produce 2.55x intended max damage).
 //
 // This is not just a theoretical concern: SpacetimeDB's ctx.random() returns
-// a u32, which the caller must range-narrow. The narrowing is not specified
-// in the plan. The common mistake is: damage_roll = (ctx.random() % 16 + 85) as u8
-// which correctly gives 85..=100. But accuracy_roll = ctx.random() % 100 as u8
-// gives 0..=99 correctly. Missing a `% 100` or using wrong modulus is easy.
+// a u32, which the caller must range-narrow. The common mistake is: damage_roll =
+// (ctx.random() % 16 + 85) as u8 which correctly gives 85..=100. But accuracy_roll =
+// ctx.random() % 100 as u8 gives 0..=99 correctly. Missing a `% 100` or using
+// wrong modulus is easy.
 // ===========================================================================
 
 #[test]
@@ -706,7 +677,6 @@ fn m7b_8_turnvariance_out_of_range_damage_roll_produces_wrong_damage() {
 // ===========================================================================
 // FINDING M7b-9 (MEDIUM): party_monster_ids contains indices into the player's
 // party, but these IDs are monster_ids (u64 PKs), not party slot indices.
-// The plan says `party_monster_ids: Vec<u64>` — so they ARE the monster PKs.
 //
 // Attack: start_battle with party_monster_ids that includes:
 //   - monster_ids from a DIFFERENT player (authz bypass attempt)
@@ -714,7 +684,6 @@ fn m7b_8_turnvariance_out_of_range_damage_roll_produces_wrong_damage() {
 //   - monster_ids that don't exist (deleted monsters)
 //   - monster_ids for monsters with current_hp = 0 (all-fainted party)
 //
-// The plan does not enumerate these validation checks on start_battle.
 // ===========================================================================
 
 #[test]
@@ -792,22 +761,14 @@ fn m7b_9b_duplicate_monster_id_in_party_spec_gap() {
 // matching, NOT for the SpacetimeType wire format. Adding a new BattleEvent
 // variant in M14 with existing clients breaks those clients.
 //
-// The plan must add: "BattleEvent is NOT stored as a SpacetimeType column.
-// It is returned as a transient Vec<BattleEvent> from resolver calls and
-// never persisted to the DB. The SpacetimeType derive on BattleEvent is
-// therefore unnecessary and should be removed to avoid the false impression
-// that it is schema-stable."
 // ===========================================================================
 
 // gap closed (type-level): BattleEvent does NOT derive SpacetimeType.
-// The enforced invariant lives at game-core/src/combat/types.rs:121:
 //   "DO NOT add SpacetimeType here — BattleEvent is transient (resolver return
 //    value only, never stored in a table). Adding it would make new variants a
-//    breaking wire-format change for old clients. See ADR-0042."
+//    breaking wire-format change for old clients."
 // No runtime assertion is possible for a compile-time derivation absence;
-// the type definition is the enforcement. If SpacetimeType is ever added to
-// BattleEvent, the types.rs comment and ADR-0042 will both contradict it.
-// fn m7b_10_non_exhaustive_plus_spacetimetype_compatibility_spec_gap — removed (tautology)
+// the type definition is the enforcement.
 
 // ===========================================================================
 // FINDING M7b-11 (MEDIUM): XP reward formula uses loser's base_stat_total,
@@ -815,16 +776,15 @@ fn m7b_9b_duplicate_monster_id_in_party_spec_gap() {
 // The XP formula needs the LOSER'S SPECIES base stat total (BST), but
 // BattleMonster.stats is the DERIVED stats (computed from base+IV+EV+nature+level).
 //
-// The plan says: "On SideAWins via battle_xp_reward + apply_xp_gain".
 // battle_xp_reward signature: fn(winner_level, loser_base_stat_total: u16, loser_level)
 //
 // Where does loser_base_stat_total come from? The write-back reducer must:
 //   1. Look up the loser's species_id from the battle state.
 //   2. Look up the species in species_row by species_id.
 //   3. Sum the six base stats.
-// This chain is NOT described in the plan. If the impl incorrectly passes
-// BattleMonster.stats (derived) instead of species base stats, the XP reward
-// is wildly inflated for high-level monsters (derived stats >> base stats).
+// If the impl incorrectly passes BattleMonster.stats (derived) instead of species base
+// stats, the XP reward is wildly inflated for high-level monsters (derived stats >>
+// base stats).
 // ===========================================================================
 
 #[test]
@@ -867,7 +827,6 @@ fn m7b_11_derived_stats_vs_base_stats_xp_inflation() {
 // For PvP (M16): if a player disconnects mid-battle, the battle row persists
 // with outcome=Ongoing indefinitely. The opponent's monsters are locked in
 // that battle (they cannot start a new one due to the double-battle guard).
-// The plan does not specify a battle timeout.
 //
 // A turn limit at u16::MAX (65535) is the natural overflow guard, but 65535
 // turns of a never-ending battle is a resource concern (the battle row stays
@@ -900,8 +859,7 @@ fn m7b_12_battle_turn_number_max_value() {
 // Attack: submit_attack(battle_id, skill_id=9999) where 9999 is not in the
 // active monster's known_skill_ids.
 //
-// The plan says: "validate ... legality → delegate to game-core → ...".
-// But resolve_turn calls resolve_one_attack which calls:
+// resolve_turn calls resolve_one_attack which calls:
 //   skills.iter().find(|s| s.id == skill_id).unwrap_or_else(|| panic!(...))
 //
 // So an unknown skill_id causes a PANIC in the resolver, which aborts the

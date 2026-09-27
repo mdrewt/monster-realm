@@ -1,9 +1,5 @@
 //! EG1 gating tests — the essence-graph eligibility contract (proof-of-teeth).
 //!
-//! Spec: `M-evolution-essence-graph.spec.md` EG1-6 / EG1-7 / EG2-2, ADR-0174
-//! D2 (essence zeroed on evolve), D3 (nutrition), D4 (Trust smoothing, `K=10`,
-//! bands `[30,45,60,80]`), D6 (Quality-Time bands `[10,50,150,400]`).
-//!
 //! Covered here:
 //!   - `path_satisfied`   — the five AND-combined gates, their inclusive
 //!     boundaries, affinity-indexed (never positional) essence lookup,
@@ -11,7 +7,7 @@
 //!   - `trust_tier_of`    — anti-saturation teeth, all four exact-tie band
 //!     boundaries, reachability at both ends, overflow totality, monotonicity.
 //!   - `quality_time_tier_of` / `nutrition_pct_of` — band and range boundaries.
-//!   - `eligible_evolution_paths` — the FULL eligible set (EG2-2), the
+//!   - `eligible_evolution_paths` — the FULL eligible set, the
 //!     `from_species` filter, input-slice index addressing, and an oracle
 //!     property against `path_satisfied`.
 //!   - `evolve` — zeroes all 8 essence pools, carries Trust/Quality-Time verbatim.
@@ -26,8 +22,6 @@
 //! the exported constants over a wide random domain — so a hand-written
 //! lookup table or `match` ladder that agrees at the pinned boundaries but
 //! drifts from the constants anywhere else is caught.
-//!
-//! Run: cargo test -p game-core m10a_gating
 
 use crate::content::{EssenceRequirement, EvolutionPath, Species, TrustTier};
 use crate::evolution::{
@@ -166,7 +160,7 @@ fn evs_totalling(total: u16) -> EVs {
 // path_satisfied — level gate
 // ===========================================================================
 
-/// EG1-6: the level threshold is INCLUSIVE.
+/// The level threshold is INCLUSIVE.
 /// kills: a `>` (strict) comparison — level == min_level would read as unmet.
 #[test]
 fn path_satisfied_level_threshold_is_inclusive() {
@@ -189,7 +183,7 @@ fn path_satisfied_level_threshold_is_inclusive() {
 // path_satisfied — essence gate
 // ===========================================================================
 
-/// EG1-6: EVERY essence entry must be met (AND, never "any of").
+/// EVERY essence entry must be met (AND, never "any of").
 /// kills: an impl that returns true as soon as one requirement is satisfied.
 #[test]
 fn path_satisfied_requires_every_essence_entry() {
@@ -221,7 +215,7 @@ fn path_satisfied_requires_every_essence_entry() {
     );
 }
 
-/// EG1-6 TRANSPOSITION KILL: essence is looked up by `Affinity`, never by the
+/// essence is looked up by `Affinity`, never by the
 /// requirement's POSITION in the list.
 ///
 /// kills: `instance.essence[i]` for the i-th requirement. The path asks for
@@ -250,7 +244,7 @@ fn path_satisfied_indexes_essence_by_affinity_not_position() {
 // path_satisfied — permissive-when-absent
 // ===========================================================================
 
-/// EG1-6: a path with no essence and all three history gates `None` is
+/// A path with no essence and all three history gates `None` is
 /// satisfied by a level-1 monster with zero everything.
 ///
 /// kills: treating `None` as "requires the LOWEST tier and therefore some
@@ -270,7 +264,7 @@ fn path_satisfied_absent_gates_are_permissive() {
 // path_satisfied — Trust gate uses Ord >=
 // ===========================================================================
 
-/// EG1-6: `min_trust_tier` is an `Ord` `>=` comparison over the ascending
+/// `min_trust_tier` is an `Ord` `>=` comparison over the ascending
 /// tier enum — an EQUAL tier passes and a HIGHER tier passes.
 ///
 /// kills: `==` (only the exact tier passes, so Devoted would be locked out)
@@ -367,7 +361,7 @@ fn second_five_gate_monster() -> MonsterInstance {
     )
 }
 
-/// EG1-6: all five gates met exactly at their thresholds -> satisfied.
+/// All five gates met exactly at their thresholds -> satisfied.
 /// kills: any gate implemented with a strict `>` instead of `>=`.
 #[test]
 fn path_satisfied_all_five_gates_at_their_exact_thresholds() {
@@ -378,7 +372,7 @@ fn path_satisfied_all_five_gates_at_their_exact_thresholds() {
     );
 }
 
-/// EG1-6 AND-COMBINATION: five variants, each failing EXACTLY ONE gate, all
+/// five variants, each failing EXACTLY ONE gate, all
 /// must be rejected.
 ///
 /// kills: a gate dropped from the conjunction (that gate's variant would pass),
@@ -425,7 +419,7 @@ fn path_satisfied_rejects_when_any_single_gate_fails() {
 }
 
 // ===========================================================================
-// unmet_requirement — the explanatory twin of path_satisfied (EG1-6 SSOT)
+// unmet_requirement — the explanatory twin of path_satisfied
 // ===========================================================================
 
 /// Assert that `instance` fails `path`, that `unmet_requirement` reports it,
@@ -455,7 +449,7 @@ fn assert_unmet_names(
     }
 }
 
-/// EG1-6: `unmet_requirement` is `None` EXACTLY when `path_satisfied` is
+/// `unmet_requirement` is `None` EXACTLY when `path_satisfied` is
 /// `true`, over two paths with different thresholds and a 324-cell instance
 /// grid spanning satisfying/failing values on all five dimensions.
 ///
@@ -510,7 +504,7 @@ fn unmet_requirement_agrees_with_path_satisfied() {
     }
 }
 
-/// EG1-6 / EG2-1: each of the five gates, on BOTH paths, produces a message
+/// Each of the five gates, on BOTH paths, produces a message
 /// naming that gate AND that path's OWN threshold.
 ///
 /// Every fixture below satisfies its path's other four gates, so the reported
@@ -592,16 +586,13 @@ fn unmet_requirement_names_each_gate() {
     );
 }
 
-// MUTATION SURVIVOR NOTE (eligibility.rs:125:64, `<` -> `<=` in
-// `unmet_requirement`'s essence branch:
-// `.find(|req| instance.essence[req.affinity.index()] < req.amount)`):
 // every existing essence fixture above (`five_gate_path` /
 // `second_five_gate_path`) carries a SINGLE essence entry, so `<` and `<=`
 // select the very same entry and produce the very same message — the
-// mutant is invisible there. `essence_gate_met` (eligibility.rs:55-59) is a
+// mutant is invisible there. `essence_gate_met` is a
 // SEPARATE `>=` comparison, not the mutated line, so it can never diverge
 // from this one; and because `<=` matches a superset of what `<` matches,
-// the `.expect()` on eligibility.rs:126 can never panic under the mutation
+// the `.expect()` can never panic under the mutation
 // either — the mutant only changes WHICH entry gets named when there is a
 // CHOICE of more than one unmet-or-not entry to pick from.
 // `unmet_requirement_agrees_with_path_satisfied` above compares only
@@ -680,7 +671,7 @@ fn unmet_requirement_essence_names_the_strictly_unmet_entry_not_an_at_threshold_
 // trust_tier_of — teeth
 // ===========================================================================
 
-/// EG1-6 ANTI-SATURATION TEETH: one favorable event is `Neutral`, not `Devoted`.
+/// one favorable event is `Neutral`, not `Devoted`.
 ///
 /// The un-smoothed ratio `1/1 = 100%` would saturate to the top band; the
 /// `K = 10` smoothing puts `11/21 = 52.4%` squarely in the middle band.
@@ -695,7 +686,7 @@ fn trust_tier_of_one_favorable_event_is_neutral() {
     );
 }
 
-/// EG1-2/EG1-6: zero history smooths to exactly 50% -> `Neutral`.
+/// Zero history smooths to exactly 50% -> `Neutral`.
 /// kills: defaulting to the lowest variant (`Hostile`), which is also the
 /// schema default this pins (`MonsterPub.trust_tier` defaults to Neutral).
 #[test]
@@ -742,7 +733,7 @@ fn trust_tier_of_hostile_is_reachable_at_fourteen_unfavorable() {
     );
 }
 
-/// ALL FOUR band boundaries at their EXACT ties (spec §5 / ADR-0174 D4).
+/// ALL FOUR band boundaries at their EXACT ties.
 ///
 /// Each pair lands the smoothed ratio exactly on a band percentage, so the
 /// `>=` (inclusive) semantics decide the answer. These fixtures ARE the pin on
@@ -800,7 +791,7 @@ fn trust_tier_of_is_total_at_the_u32_extremes() {
 // quality_time_tier_of
 // ===========================================================================
 
-/// ADR-0174 D6: the four Quality-Time bands `[10, 50, 150, 400]` with
+/// The four Quality-Time bands `[10, 50, 150, 400]` with
 /// INCLUSIVE lower bounds, probed one tick either side of each.
 /// kills: a strict `>` at any band, an off-by-one band value, and a tier that
 /// keeps climbing past 4.
@@ -830,7 +821,7 @@ fn quality_time_tier_of_band_boundaries() {
 // nutrition_pct_of
 // ===========================================================================
 
-/// ADR-0174 D3: Nutrition is the EV pool as a percentage of its 510 budget.
+/// Nutrition is the EV pool as a percentage of its 510 budget.
 /// kills: a per-stat percentage, a 252-denominator, and an unscaled passthrough.
 #[test]
 fn nutrition_pct_of_spans_zero_to_one_hundred() {
@@ -871,7 +862,7 @@ fn nutrition_pct_from_ev_total_is_clamped_at_one_hundred() {
 // eligible_evolution_paths
 // ===========================================================================
 
-/// EG2-2 FORWARD PIN: two simultaneously-satisfied paths yield BOTH indices —
+/// two simultaneously-satisfied paths yield BOTH indices —
 /// never a single first-match winner.
 ///
 /// kills: `.find()`/`.position()` (returns one), and any dominance ordering.
@@ -888,7 +879,7 @@ fn eligible_evolution_paths_returns_every_satisfied_path() {
     );
 }
 
-/// EG1-6: a path whose `from_species` is a DIFFERENT species is never eligible,
+/// A path whose `from_species` is a DIFFERENT species is never eligible,
 /// however satisfied its gates are.
 /// kills: a `path_satisfied`-only filter that forgets the species match.
 #[test]
@@ -911,7 +902,7 @@ fn eligible_evolution_paths_on_an_empty_slice_is_empty() {
     );
 }
 
-/// EG1-6: the returned indices address the INPUT slice, not a filtered
+/// The returned indices address the INPUT slice, not a filtered
 /// sub-list.
 ///
 /// Non-matching entries are interleaved at positions 0 and 2 so a
@@ -934,10 +925,10 @@ fn eligible_evolution_paths_indices_address_the_input_slice() {
 }
 
 // ===========================================================================
-// evolve — essence reset + history carry (ADR-0174 D2)
+// evolve — essence reset + history carry
 // ===========================================================================
 
-/// ADR-0174 D2 / spec §4: EVERY essence pool is zeroed by a successful evolve.
+/// EVERY essence pool is zeroed by a successful evolve.
 /// kills: zeroing only the pools the path consumed, only the first pool, or
 /// carrying essence through verbatim (the clone-based transform's default).
 #[test]
@@ -967,7 +958,7 @@ fn evolve_zeroes_every_essence_pool() {
     );
 }
 
-/// ADR-0174 D2 / EG2-1: Trust and Quality-Time are LIFETIME history and are
+/// Trust and Quality-Time are LIFETIME history and are
 /// carried through an evolution verbatim.
 /// kills: an over-eager reset that zeroes the history stats alongside essence.
 #[test]
@@ -992,7 +983,7 @@ fn evolve_carries_trust_and_quality_time_verbatim() {
     );
 }
 
-/// Determinism (ADR-0003): evolve twice on identical input is byte-identical.
+/// Determinism: evolve twice on identical input is byte-identical.
 /// kills: any hidden RNG, wall-clock read, or global counter inside evolve.
 #[test]
 fn evolve_is_deterministic() {
@@ -1064,7 +1055,7 @@ fn arb_path() -> impl Strategy<Value = EvolutionPath> {
 }
 
 proptest! {
-    /// EG1-6 MONOTONICITY: raising any single gate-relevant stat can never
+    /// raising any single gate-relevant stat can never
     /// close a gate that was already open.
     ///
     /// kills: an inverted comparison on any gate (a `<=` where `>=` belongs
@@ -1158,7 +1149,7 @@ proptest! {
 
     /// ORACLE: `nutrition_pct_from_ev_total` is `min(total, 510) * 100 / 510`
     /// over a domain that runs well past the 510 budget, so the clamp is
-    /// exercised on ~half the draws (ADR-0174 D3).
+    /// exercised on ~half the draws.
     ///
     /// kills: a lookup table or a piecewise approximation; kills an unclamped
     /// formula (which exceeds 100 above 510); kills a wrong denominator.
@@ -1238,9 +1229,7 @@ proptest! {
     }
 
     /// Nutrition never exceeds 100 over the whole valid EV space, and the
-    /// instance-based helper AGREES with the total-based one (ADR-0174 D3's
-    /// one-formula requirement — the server computes the row-side value with
-    /// the total-based helper).
+    /// instance-based helper AGREES with the total-based one.
     #[test]
     fn nutrition_pct_of_agrees_with_the_total_based_helper(evs in arb_evs()) {
         let pct = nutrition_pct_of(&evs);
@@ -1257,8 +1246,7 @@ proptest! {
     /// `from_species` matches AND `path_satisfied` holds — nothing more,
     /// nothing less, in ascending index order.
     ///
-    /// kills: a divergent second copy of the gate logic in the read path (the
-    /// exact drift EG1-6's "one shared predicate" requirement forbids).
+    /// kills: a divergent second copy of the gate logic in the read path.
     #[test]
     fn eligible_evolution_paths_agrees_with_path_satisfied(
         level in 1u8..=100u8,

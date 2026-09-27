@@ -1,7 +1,7 @@
-//! Combat engine — pure, deterministic, integer-only (ADR-0003).
+//! Combat engine — pure, deterministic, integer-only.
 //!
 //! All battle resolution lives here exactly once (ADR-0003 SSOT). The server
-//! resolves battles authoritatively (ADR-0017); the client does NOT predict
+//! resolves battles authoritatively; the client does NOT predict
 //! battles (client-wasm prediction applies to movement only). Re-implementing a
 //! battle rule in another crate is the desync bug.
 //!
@@ -10,11 +10,11 @@
 //! - `type_chart` — `TypeChart` lookup struct
 //! - `damage`     — damage formula (`calc_damage`) and accuracy check
 //! - `resolve`    — turn resolution (`resolve_turn`, `resolve_full_turn`, `resolve_enemy_turn`, …)
-//! - `status`     — per-monster status conditions, DoT, action-block rules (M14a, ADR-0010 OCP gate)
-//! - `ability`    — passive per-species ability rules (M14c, ADR-0094)
+//! - `status`     — per-monster status conditions, DoT, action-block rules (ADR-0010 OCP gate)
+//! - `ability`    — passive per-species ability rules
 //! - `ai`         — enemy AI skill picker (`pick_best_skill`)
 //! - `xp`         — XP reward, practice penalty, and level-up (`battle_xp_reward`, `practice_xp_reward`, `apply_xp_gain`)
-//! - `pvp`        — pure PvP orchestration rules: `PvpAction`, forfeit/deadline logic (M16, ADR-0109)
+//! - `pvp`        — pure PvP orchestration rules: `PvpAction`, forfeit/deadline logic
 
 pub mod ability;
 pub mod ai;

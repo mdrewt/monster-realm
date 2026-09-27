@@ -1,7 +1,7 @@
-// tiled_import.rs — M11a: pure Tiled JSON → ZoneMapDef converter.
+// tiled_import.rs — pure Tiled JSON → ZoneMapDef converter.
 //
 // Architecture: std-only recursive-descent JSON parser. No serde_json —
-// game-core Cargo.toml must not gain new deps (constraint from build plan).
+// game-core Cargo.toml must not gain new deps.
 // GID convention: 0 = wall('#'), 1 = floor('.'), 2 = grass('~').
 // Object layer "Warps": objects with to_zone, to_x, to_y int properties.
 
@@ -518,7 +518,6 @@ pub fn parse_tiled_json(json: &str, zone_id: u32) -> Result<ZoneMapDef, String> 
 
 fn main() {
     // Thin wrapper: arg parsing + file I/O + parse_tiled_json + RON output.
-    // No logic lives here (no-logic-in-wrapper eval, ADR-0051).
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 3 {
         eprintln!("Usage: tiled_import <input.json> <zone_id>");
@@ -748,7 +747,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Red-team gating tests (M11a hardening)
+    // Red-team gating tests
     // -----------------------------------------------------------------------
 
     /// Gate: fractional f64 GID values must be rejected, not silently truncated.
@@ -857,7 +856,7 @@ mod tests {
     }
 
     // =======================================================================
-    // fix-nightly (ADR-0088): Parser-direct mutant-killing tests.
+    // Parser-direct mutant-killing tests.
     //
     // These drive the private `Parser` methods DIRECTLY (in-file `mod tests`
     // can reach them) so each census mutant gets a precise, terminating bite.
@@ -866,16 +865,8 @@ mod tests {
     // wrong way yields a shorter/longer parse and trips the pos assert even
     // when the f64 happens to coincide.
     //
-    // The `*=` (identity) variants at 196:26 and 206:26 are digit-loop cursor
-    // mutants that SPIN forever (pos * 1 == pos) rather than terminate-wrong;
-    // they surface as tolerated TIMEOUTs under the mutate-core wrapper (ADR-0088
-    // R5), not as MISSED. Every OTHER census cursor mutant terminates with a
-    // wrong pos/value and is CAUGHT by the asserts below.
     // =======================================================================
 
-    /// kills: game-core/src/bin/tiled_import.rs:89:23: replace > with == in Parser<'a>::parse_value
-    /// kills: game-core/src/bin/tiled_import.rs:89:23: replace > with >= in Parser<'a>::parse_value
-    ///
     /// N=64 nested arrays reach depth exactly MAX_DEPTH (64). The guard is
     /// `depth > MAX_DEPTH`, so `64 > 64` is false → must parse Ok. Both `==`
     /// (`64 == 64` true → Err) and `>=` (`64 >= 64` true → Err) would wrongly
@@ -898,9 +889,6 @@ mod tests {
         );
     }
 
-    /// kills: game-core/src/bin/tiled_import.rs:116:20: replace -= with += in Parser<'a>::parse_value
-    /// kills: game-core/src/bin/tiled_import.rs:116:20: replace -= with /= in Parser<'a>::parse_value
-    ///
     /// One document with two SIBLING 60-deep arrays. With a correct `depth -= 1`
     /// on exit, each sibling independently reaches depth 61 (≤ 64) and the whole
     /// document parses Ok. A `+=` (or `/=` no-op) never releases depth, so the
@@ -918,8 +906,6 @@ mod tests {
         );
     }
 
-    /// kills: game-core/src/bin/tiled_import.rs:73:26: replace match guard got == b with true in Parser<'a>::expect_byte
-    ///
     /// `{"k"01}` is missing the `:` separator: `0` is at the colon position and `1`
     /// is a valid JSON value. The real guard `got == b` is false for `'0' != ':'` → Err.
     ///
@@ -940,10 +926,6 @@ mod tests {
         );
     }
 
-    /// kills: game-core/src/bin/tiled_import.rs:121:9: replace Parser<'a>::expect_literal -> Result<(), String> with Ok(())
-    /// kills: game-core/src/bin/tiled_import.rs:123:30: replace match guard got == b with true in Parser<'a>::expect_literal
-    /// kills: game-core/src/bin/tiled_import.rs:123:34: replace == with != in Parser<'a>::expect_literal
-    ///
     /// Malformed literals `truX` / `falsX` / `nulX` must Err. If expect_literal
     /// is stubbed to `Ok(())` (121:9) or its guard is forced `true` (123:30),
     /// the byte mismatch at `X` is ignored and the value parses Ok — the is_err
@@ -961,9 +943,6 @@ mod tests {
         }
     }
 
-    /// kills: game-core/src/bin/tiled_import.rs:123:30: replace match guard got == b with false in Parser<'a>::expect_literal
-    /// kills: game-core/src/bin/tiled_import.rs:123:34: replace == with != in Parser<'a>::expect_literal
-    ///
     /// Valid `true` / `false` / `null` must parse Ok with full consumption.
     /// A guard forced to `false` (123:30) or flipped to `!=` (123:34) makes the
     /// matching byte take the Err arm, so even a correct literal fails — the
@@ -985,10 +964,6 @@ mod tests {
         }
     }
 
-    /// kills: game-core/src/bin/tiled_import.rs:185:24: replace == with != in Parser<'a>::parse_number
-    /// kills: game-core/src/bin/tiled_import.rs:186:22: replace += with -= in Parser<'a>::parse_number
-    /// kills: game-core/src/bin/tiled_import.rs:186:22: replace += with *= in Parser<'a>::parse_number
-    ///
     /// `-12` known-answer. The minus-sign check `peek() == Some(b'-')` and its
     /// cursor advance are exercised: `!=` skips the advance so the leading `-`
     /// blocks the digit loop → empty span → Err; `-=` underflows pos (0-1) →
@@ -1010,15 +985,8 @@ mod tests {
         );
     }
 
-    /// kills: game-core/src/bin/tiled_import.rs:194:22: replace += with -= in Parser<'a>::parse_number
-    /// kills: game-core/src/bin/tiled_import.rs:194:22: replace += with *= in Parser<'a>::parse_number
-    /// kills: game-core/src/bin/tiled_import.rs:196:26: replace += with -= in Parser<'a>::parse_number
-    ///
-    /// `1.5` known-answer. The `.`-advance (194:22) and the fractional-digit
-    /// cursor (196:26 `-=`) are exercised: a wrong cursor step consumes fewer
-    /// bytes → n becomes 1.0 and pos < 3. The exact 1.5 + full-consumption
-    /// asserts kill the terminating variants. (196:26 `*=` spins → tolerated
-    /// TIMEOUT, ADR-0088 R5.)
+    /// `1.5` known-answer. a wrong cursor step consumes fewer bytes → n becomes 1.0 and pos < 3.
+    /// The exact 1.5 + full-consumption asserts kill the terminating variants.
     #[test]
     fn parse_number_fraction_known_answer() {
         let input = "1.5";
@@ -1035,15 +1003,8 @@ mod tests {
         );
     }
 
-    /// kills: game-core/src/bin/tiled_import.rs:201:22: replace += with -= in Parser<'a>::parse_number
-    /// kills: game-core/src/bin/tiled_import.rs:201:22: replace += with *= in Parser<'a>::parse_number
-    /// kills: game-core/src/bin/tiled_import.rs:206:26: replace += with -= in Parser<'a>::parse_number
-    ///
-    /// `1e3` known-answer (== 1000.0). The exponent `e`-advance (201:22 both
-    /// variants terminate wrong) and the exp-digit cursor (206:26 `-=`) are
-    /// exercised: a wrong step truncates the exponent → n != 1000.0 and/or pos
-    /// short. Exact 1000.0 + full-consumption asserts kill the terminating
-    /// variants. (206:26 `*=` spins → tolerated TIMEOUT, ADR-0088 R5.)
+    /// `1e3` known-answer (== 1000.0). a wrong step truncates the exponent → n != 1000.0 and/or pos
+    /// short. Exact 1000.0 + full-consumption asserts kill the terminating variants.
     #[test]
     fn parse_number_exponent_known_answer() {
         let input = "1e3";
@@ -1060,14 +1021,10 @@ mod tests {
         );
     }
 
-    /// kills: game-core/src/bin/tiled_import.rs:203:26: replace += with -= in Parser<'a>::parse_number
-    /// kills: game-core/src/bin/tiled_import.rs:203:26: replace += with *= in Parser<'a>::parse_number
-    ///
-    /// `1.5e-2` known-answer (== 0.015). The signed-exponent advance (203:26)
-    /// is exercised: a wrong step over the `-` sign truncates the exponent so
-    /// the number no longer equals 0.015. Both `-=` and `*=` here terminate
-    /// (the sign byte is not a digit, so no loop spins) with a wrong span, so
-    /// the exact-value + full-consumption asserts kill both.
+    /// `1.5e-2` known-answer (== 0.015). a wrong step over the `-` sign truncates the exponent so
+    /// the number no longer equals 0.015. Both `-=` and `*=` here terminate (the sign byte is not a
+    /// digit, so no loop spins) with a wrong span, so the exact-value + full-consumption asserts
+    /// kill both.
     #[test]
     fn parse_number_signed_exponent_known_answer() {
         let input = "1.5e-2";
@@ -1086,9 +1043,6 @@ mod tests {
         );
     }
 
-    /// kills: game-core/src/bin/tiled_import.rs:251:22: replace += with -= in Parser<'a>::parse_object
-    /// kills: game-core/src/bin/tiled_import.rs:251:22: replace += with *= in Parser<'a>::parse_object
-    ///
     /// `{}` empty-object early return. After `expect_byte(b'{')` (pos=1) and the
     /// `}` peek, the real code does `self.pos += 1` (pos=2) then returns an empty
     /// Obj. `-=` (pos=0) and `*=` (pos=1) both leave the cursor short. Asserting
@@ -1109,8 +1063,6 @@ mod tests {
         );
     }
 
-    /// kills: game-core/src/bin/tiled_import.rs:367:19: replace < with > in parse_tiled_json
-    ///
     /// Trailing garbage after a valid map must Err ("trailing content"). The
     /// guard is `parser.pos < parser.input.len()`. Flipped to `>`, `pos > len`
     /// is never true (pos can't exceed len) → the trailing bytes are silently
@@ -1129,8 +1081,6 @@ mod tests {
         );
     }
 
-    /// kills: game-core/src/bin/tiled_import.rs:399:38: replace && with || in parse_tiled_json
-    ///
     /// Two tile layers: layer0 is all GID 1 (floor `.`), layer1 is all GID 0
     /// (wall `#`). The real guard `layer_type == "tilelayer" && tile_data.is_none()`
     /// takes only the FIRST tile layer, so the rows are all `.`. Flipped to `||`,
@@ -1156,8 +1106,6 @@ mod tests {
         );
     }
 
-    /// kills: game-core/src/bin/tiled_import.rs:495:46: replace * with / in parse_tiled_json
-    ///
     /// A 3×2 (non-square) map with distinct GIDs per cell pins the row-major
     /// flatten index `row_idx * width + col_idx`. Row 0 is `.#~`, row 1 is `#~.`.
     /// Flipped to `row_idx / width + col_idx`, row 1's index collapses onto row

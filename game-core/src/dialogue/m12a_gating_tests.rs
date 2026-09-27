@@ -1,6 +1,5 @@
 //! M12a dialogue gating tests — proof-of-teeth for the dialogue model and
-//! evaluation rules, authored from the M12 spec §3 EARS criteria (ADR-0068
-//! §"Proof-of-teeth"). Populated by the tester.
+//! evaluation rules.
 //!
 //! EARS criteria covered:
 //!   Condition evaluation — HasFlag, NotFlag, QuestActive, QuestDone (all four variants)
@@ -11,11 +10,7 @@
 //!   Determinism — same tree + state → same available_choices
 //!
 //! Each test carries a `/// kills:` comment naming which wrong implementation it
-//! catches, so the verifier can match failing assertion → eliminated bug class.
-//!
-//! Red state: every test will PANIC on the `todo!()` stubs in `rules.rs`.
-//!
-//! Run: cargo nextest run -p game-core dialogue::m12a_gating_tests -- --nocapture
+//! catches.
 
 // ChoiceResult is imported for use in the test module's type-level assertions;
 // clippy sees it as unused because the tests use it only through apply_choice's
@@ -656,11 +651,11 @@ fn apply_effects_grant_effects_preserved_in_choice() {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// CRITERION: apply_node_auto_effects (red-team F1 — M12b silent-drop trap)
+// CRITERION: apply_node_auto_effects
 // ---------------------------------------------------------------------------
 
 // Test 24 — apply_node_auto_effects applies the node's auto_effects to state
-/// kills: an M12b impl that calls find_entry_node but never calls apply_node_auto_effects —
+/// kills: an impl that calls find_entry_node but never calls apply_node_auto_effects —
 ///        all node-entry effects (SetFlag, StartQuest) would be silently discarded.
 ///
 /// PROOF-OF-TEETH: any impl that skips apply_effects(&node.auto_effects, state) would leave
@@ -684,7 +679,7 @@ fn apply_node_auto_effects_applies_entry_effects() {
 }
 
 // ---------------------------------------------------------------------------
-// CRITERION: apply_effects idempotency (red-team F2 — completed-quest re-open)
+// CRITERION: apply_effects idempotency
 // ---------------------------------------------------------------------------
 
 // Test 25 — StartQuest on a completed quest is a no-op (idempotency guard)

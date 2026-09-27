@@ -1,14 +1,4 @@
 //! M14d red-team / regression tests — weather/field-state slice.
-//!
-//! Criterion → test mapping:
-//!   RT-W14-01 (M7 regression proof-of-teeth)   → m7_regression_weather_none_byte_identical
-//!   RT-W14-02 (chip KO + faint cascade)        → weather_chip_faint_cascade
-//!   RT-W14-03 (chip floor at tiny HP)          → weather_chip_floor_at_tiny_hp
-//!   RT-W14-04 (Earth immune to Sandstorm)      → sandstorm_immune_earth
-//!   RT-W14-05 (Water immune to Hail)           → hail_immune_water
-//!   RT-W14-06 (Rain has no chip)               → rain_has_no_chip
-//!   RT-W14-07 (Sun has no chip)                → sun_has_no_chip
-//!   RT-W14-08 (weather tick preserves until 0) → weather_tick_preserves_weather_until_zero
 
 use crate::combat::ability::AbilityStore;
 use crate::combat::resolve::{resolve_full_turn, resolve_turn};
@@ -109,7 +99,7 @@ fn skills_vec() -> Vec<SkillDef> {
 }
 
 // ===========================================================================
-// RT-W14-01: M7 regression proof-of-teeth (LOAD-BEARING)
+// M7 regression proof-of-teeth (LOAD-BEARING)
 //
 // resolve_full_turn with weather=None, empty status store, no-blocking variance
 // must produce byte-identical events to resolve_turn called directly.
@@ -133,8 +123,7 @@ fn skills_vec() -> Vec<SkillDef> {
 /// resolve_full_turn with weather=None and empty status MUST produce a Vec<BattleEvent>
 /// that is == (byte-identical struct values) to the Vec returned by resolve_turn.
 ///
-/// A SetMove replayed as a raw append lands on the wrong tile — in combat terms,
-/// a weather event injected when weather=None produces an event that didn't come
+/// weather event injected when weather=None produces an event that didn't come
 /// from resolve_turn, failing the == assertion.
 #[test]
 fn m7_regression_weather_none_byte_identical() {
@@ -192,7 +181,7 @@ fn m7_regression_weather_none_byte_identical() {
 }
 
 // ===========================================================================
-// RT-W14-02: Sandstorm chip on a 1-HP non-immune monster KOs it
+// Sandstorm chip on a 1-HP non-immune monster KOs it
 //
 // A Fire monster with current_hp=1 under Sandstorm must:
 //   - Receive WeatherDamage{amount:1} (floor of 1)
@@ -293,7 +282,7 @@ fn weather_chip_faint_cascade() {
 }
 
 // ===========================================================================
-// RT-W14-03: Weather chip floor at tiny HP (max_hp=1)
+// Weather chip floor at tiny HP (max_hp=1)
 //
 // A monster with max_hp=1 under Sandstorm: 1/16 = 0, but the floor of 1
 // ensures exactly 1 chip damage (not 0).
@@ -366,7 +355,7 @@ fn weather_chip_floor_at_tiny_hp() {
 }
 
 // ===========================================================================
-// RT-W14-04: Earth monster does NOT take Sandstorm chip
+// Earth monster does NOT take Sandstorm chip
 //
 // apply_weather_damage with Sandstorm and an Earth active monster:
 // no WeatherDamage event, HP unchanged.
@@ -415,7 +404,7 @@ fn sandstorm_immune_earth() {
 }
 
 // ===========================================================================
-// RT-W14-05: Water monster does NOT take Hail chip
+// Water monster does NOT take Hail chip
 //
 // apply_weather_damage with Hail and a Water active monster:
 // no WeatherDamage event, HP unchanged.
@@ -465,7 +454,7 @@ fn hail_immune_water() {
 }
 
 // ===========================================================================
-// RT-W14-06: Rain deals NO chip damage (attack modifier only)
+// Rain deals NO chip damage (attack modifier only)
 //
 // apply_weather_damage with Rain: no WeatherDamage events for either side
 // (Rain has no end-of-turn chip; it only modifies attack power).
@@ -475,7 +464,7 @@ fn hail_immune_water() {
 // ===========================================================================
 
 /// Kills: an impl that applies chip damage under Rain — emitting WeatherDamage
-/// for non-immune monsters even though Rain has no end-of-turn chip in ADR-0095.
+/// for non-immune monsters even though Rain has no end-of-turn chip.
 #[test]
 fn rain_has_no_chip() {
     // Fire and Plant: both non-immune to Sandstorm/Hail, but Rain has no chip.
@@ -513,7 +502,7 @@ fn rain_has_no_chip() {
 }
 
 // ===========================================================================
-// RT-W14-07: Sun deals NO chip damage (attack modifier only)
+// Sun deals NO chip damage (attack modifier only)
 //
 // apply_weather_damage with Sun: no WeatherDamage events for either side.
 //
@@ -559,7 +548,7 @@ fn sun_has_no_chip() {
 }
 
 // ===========================================================================
-// RT-W14-08: Weather tick preserves weather until turns_remaining reaches 0
+// Weather tick preserves weather until turns_remaining reaches 0
 //
 // Weather with turns=3: tick → 2, tick → 1, tick → expires (None + WeatherExpired).
 // At turns=2 and turns=1 (before the final tick), no WeatherExpired is emitted.
@@ -642,7 +631,7 @@ fn weather_tick_preserves_weather_until_zero() {
 }
 
 // ===========================================================================
-// RT-W14-09: Rain attack modifier is applied after variance step
+// Rain attack modifier is applied after variance step
 //
 // Known-answer: Fire attacker (L5, atk=40) using Water skill (power=40, variance=100)
 // vs Plant defender (def=40) under Rain.
@@ -750,9 +739,8 @@ fn rain_boosts_water_damage_known_answer() {
 }
 
 // ===========================================================================
-// RT-W14-10: Sun nerfs Water damage known-answer
+// Sun nerfs Water damage known-answer
 //
-// Same formula as RT-W14-09 but with Sun + Water skill.
 // variance_mod = 2 (Water vs Plant = NVE); Sun + Water → (1,2): 2*1/2=1; max(1,1)=1.
 // No weather: 2. Sun halves Water: 1 < 2.
 //

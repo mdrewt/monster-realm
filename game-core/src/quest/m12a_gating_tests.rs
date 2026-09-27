@@ -1,6 +1,4 @@
-//! M12a quest gating tests — proof-of-teeth for the quest/flag advance rules,
-//! authored from the M12 spec §3 EARS criteria (ADR-0068 §"Proof-of-teeth").
-//! Populated by the tester.
+//! M12a quest gating tests — proof-of-teeth for the quest/flag advance rules.
 //!
 //! EARS criteria covered:
 //!   can_start_quest — start_conditions gating; already-active guard; already-done guard
@@ -9,11 +7,7 @@
 //!                     step-level conditions block advance even on matching trigger
 //!
 //! Each test carries a `/// kills:` comment naming which wrong implementation it
-//! catches, so the verifier can match failing assertion → eliminated bug class.
-//!
-//! Red state: every test will PANIC on the `todo!()` stubs in `rules.rs`.
-//!
-//! Run: cargo nextest run -p game-core quest::m12a_gating_tests -- --nocapture
+//! catches.
 
 // &progress coercion from [T; N] to &[T] is flagged by clippy::needless_borrow
 // in some Rust versions. Allow it so the fixture reads naturally.
@@ -474,9 +468,9 @@ fn process_trigger_step_conditions_block() {
     );
 }
 
-// Test 18 — Red-team RT-COLLECT-QTY0: Collect trigger with qty=0 in a step is satisfied
+// Test 18 — Collect trigger with qty=0 in a step is satisfied
 //           by ANY collection event with qty >= 0 — i.e. a zero-qty collect is always true.
-//           The invariant: `validate_content` (M12c) MUST reject a step with Collect { qty: 0 }.
+//           The invariant: `validate_content` MUST reject a step with Collect { qty: 0 }.
 //           This test pins the CURRENT behaviour so if `trigger_matches` is ever hardened to
 //           reject qty=0 triggers at the rule layer, the test author must update it deliberately.
 //

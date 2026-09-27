@@ -1,24 +1,4 @@
 //! Red-team findings for the M14e status-applying skill + cure-item slice.
-//!
-//! Each test is a permanent gating test protecting a concrete adversarial invariant.
-//! ALL tests start RED (compile error until BattleEvent::StatusApplied, SkillDef.applies_status,
-//! ItemDef.cure_status, and the apply-status logic in resolve_full_turn exist).
-//!
-//! Findings summary (ranked by severity):
-//!
-//!   RT-M14E-01 (HIGH)   — Immune targets must NOT receive StatusApplied even when the
-//!                          skill has applies_status set. An immune hit deals 0 damage
-//!                          and must be treated like a complete miss for status purposes.
-//!   RT-M14E-02 (HIGH)   — A skill that KOs the target AND has applies_status must NOT
-//!                          emit StatusApplied (the target is fainted — applying a status
-//!                          to a fainted monster is pointless and misleading to the client).
-//!   RT-M14E-03 (MEDIUM) — Two separate skills both targeting the same slot in the same
-//!                          turn (dual-status scenario): only the first application should
-//!                          succeed; the second must be a no-op because the target is
-//!                          already statused after the first attack resolves.
-//!   RT-M14E-04 (MEDIUM) — Source-guard: use_battle_item must call require_owner (server
-//!                          ownership guard). This is a security invariant — a player
-//!                          must not be able to use an item on someone else's battle.
 
 use crate::combat::ability::{AbilityStore, StatusKind};
 use crate::combat::resolve::resolve_full_turn;
@@ -125,7 +105,6 @@ fn burn_skill_fire_type() -> SkillDef {
         accuracy: 100,
         pp: 15,
         sets_weather: None,
-        // M14e adds this field — compile-RED until the field exists.
         applies_status: Some(StatusKind::Burn),
     }
 }
@@ -509,7 +488,7 @@ fn rt_m14e_no_double_status_same_target() {
 }
 
 // ---------------------------------------------------------------------------
-// RT-M14E-04 (MEDIUM): use_battle_item must call require_owner — source guard
+// use_battle_item must call require_owner — source guard
 //
 // The `use_battle_item` reducer must call `require_owner` to verify the caller
 // owns the battle being modified. Without this check, any player could use
@@ -518,15 +497,9 @@ fn rt_m14e_no_double_status_same_target() {
 // This is a SOURCE-GUARD test: it reads the text of battle.rs and verifies
 // the body of `use_battle_item` contains a `require_owner` call.
 //
-// Why this pattern: reducers need ReducerContext to run, making pure unit tests
-// infeasible. Source-guard tests (the established pattern in battle_tests.rs)
-// are the canonical way to verify security invariants in server reducer code.
-//
 // Kills: an impl of use_battle_item that skips the ownership check — the reducer
 // body would not contain `require_owner`, failing this assertion.
 //
-// RED state: use_battle_item does not exist yet in battle.rs, so extract_fn_body
-// returns None and the .expect() panics → runtime-RED.
 // ---------------------------------------------------------------------------
 
 /// Source-guard test: use_battle_item body must contain `require_owner`.
@@ -534,29 +507,16 @@ fn rt_m14e_no_double_status_same_target() {
 /// Kills: any impl of use_battle_item that omits the ownership guard —
 /// a player would then be able to use items on any battle, not just their own.
 /// This is the authorization gate for the use_battle_item reducer.
-///
-/// RED state: use_battle_item does not exist in battle.rs → expect() panics.
 #[test]
 fn rt_m14e_use_battle_item_ownership_guard() {
     // Include battle.rs at compile time (same pattern as battle_tests.rs).
     // This file is game-core/src/combat/redteam_m14e_tests.rs; it is NOT
     // inside server-module/src/battle.rs, so there is no self-match risk.
-    //
-    // Note: this test lives in game-core but uses include_str! to read the
-    // server-module file. The relative path from game-core/src/combat/ to
-    // server-module/src/battle.rs requires going up several directory levels.
-    // We use a path relative to this file's location.
-    //
-    // Alternative: this test would more naturally live in battle_tests.rs
-    // (server-module), but the spec asks for it here in redteam_m14e_tests.rs
-    // per the handoff instructions. We use the same include_str! + extract_fn_body
-    // pattern, reading the correct path from this file's location.
     const BATTLE_SOURCE: &str = include_str!("../../../server-module/src/battle.rs");
 
     let stripped = strip_rust_comments(BATTLE_SOURCE);
 
-    // Extract the body of use_battle_item. The function doesn't exist yet →
-    // expect() panics → runtime-RED (desired state before implementation).
+    // Extract the body of use_battle_item.
     // Assembled from parts so the literal `fn use_battle_item(` does not appear
     // in this test's own text (would confuse a future extract_fn_body call on
     // this file, which is NOT in battle.rs anyway — but the convention is clear).

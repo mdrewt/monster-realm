@@ -1,16 +1,5 @@
 //! M14.5b gating tests — acceptance criteria for the `StatusApplied` slot-field fix.
 //!
-//! ## What these tests protect
-//!
-//! `BattleEvent::StatusApplied` currently carries only `side` and `status`.
-//! When Sandstorm/Hail chip damage kills the targeted monster between Phase 2
-//! (attack resolution, where `StatusApplied` is emitted) and Phase 4.5 (where
-//! the event is committed to `BattleStatusStore`), `run_post_turn_phases` used
-//! to write the status to whichever slot happened to be active AFTER the
-//! auto-switch — the wrong monster.
-//!
-//! The fix (m14.5b) closes two gaps left by the m14.5a partial fix:
-//!
 //!   1. `BattleEvent::StatusApplied` gains a `slot: u32` field — the team index
 //!      of the monster that was attacked at the time the event was emitted.
 //!
@@ -18,22 +7,6 @@
 //!      `current_hp == 0` (fainted from DoT or weather chip since Phase 2), the
 //!      write is DROPPED — the status must not be applied to a fainted monster or
 //!      (worse) redirected to the auto-switched-in backup.
-//!
-//! ## Criterion → test mapping
-//!
-//!   14.5b-1a (slot in event)           → `m14_5b_1a_status_applied_event_carries_target_slot`
-//!   14.5b-1b (drop write on faint)     → (covered by 14.5b-2 proof-of-teeth below)
-//!   14.5b-2  (proof-of-teeth, full     → `m14_5b_2_proof_of_teeth_near_lethal_status_hit_sandstorm_chip_faint`
-//!              scenario)
-//!
-//! ## RED state today (before the implementation)
-//!
-//!   * `m14_5b_1a_*`: **compile error** — `StatusApplied { slot: 0, ... }` references
-//!     a field that does not yet exist on `BattleEvent::StatusApplied`.
-//!
-//!   * `m14_5b_2_*`: **runtime failure** — current `run_post_turn_phases` writes
-//!     `Some(Burn)` to `status.side_b[0]` regardless of whether the targeted monster
-//!     is still conscious. The test asserts `None`, so it fails.
 
 use crate::combat::ability::{AbilityStore, StatusKind};
 use crate::combat::resolve::resolve_full_turn;
@@ -48,8 +21,7 @@ use crate::content::{SkillDef, TypeRelation};
 use crate::monster::types::{Affinity, StatBlock};
 
 // ---------------------------------------------------------------------------
-// Fixture helpers — mirrors redteam_m14_5a_tests.rs convention so the two
-// files stay in sync. Copy rather than re-export avoids coupling test modules.
+// Fixture helpers.
 // ---------------------------------------------------------------------------
 
 fn make_type_chart_neutral() -> TypeChart {
@@ -126,14 +98,10 @@ fn always_hit_variance() -> TurnVariance {
 }
 
 // ===========================================================================
-// TEST 1 (EARS 14.5b-1a): StatusApplied event carries the target's team slot.
+// StatusApplied event carries the target's team slot.
 //
 // Invariant: when Side A applies Burn to Side B (slot 0 active), the emitted
 // `BattleEvent::StatusApplied` must have `slot == 0`.
-//
-// RED today: compile error — `BattleEvent::StatusApplied` has no `slot` field.
-// The struct literal `StatusApplied { side, status, slot }` and the destructure
-// below both fail to compile until `slot: u32` is added to the variant.
 //
 // Kills: any impl that adds `slot` to the variant but hard-codes it (e.g. always
 // `slot: 0`) — the test would accidentally pass; the proof-of-teeth scenario in
@@ -219,7 +187,6 @@ fn m14_5b_1a_status_applied_event_carries_target_slot() {
     );
 
     // Destructure and assert the slot field.
-    // COMPILE-RED today: `slot` does not exist on `StatusApplied` until the fix.
     // This exhaustive destructure (no `..`) ensures no new fields can be silently added.
     match applied_event.unwrap() {
         BattleEvent::StatusApplied {
@@ -250,10 +217,10 @@ fn m14_5b_1a_status_applied_event_carries_target_slot() {
 }
 
 // ===========================================================================
-// TEST 2 (EARS 14.5b-2, proof-of-teeth): near-lethal Burn hit + Sandstorm chip
-// faint in ONE resolve_full_turn call → BOTH status slots remain None.
+// near-lethal Burn hit + Sandstorm chip faint in ONE resolve_full_turn call → BOTH status slots
+// remain None.
 //
-// Scenario (matches the exact EARS 14.5b-2 specification):
+// Scenario:
 //   - SideA active:  attacker with high HP, attack=40, speed=80, Fire affinity
 //   - SideB slot 0 (active, targeted): 3 HP, max_hp=16, Fire affinity (not
 //     Sandstorm-immune — Earth is immune, Fire is not). defense=200 so the
@@ -274,15 +241,6 @@ fn m14_5b_1a_status_applied_event_carries_target_slot() {
 // Expected after resolve_full_turn returns:
 //   status.side_b[0] == None   (targeted, but fainted before 4.5 → dropped)
 //   status.side_b[1] == None   (auto-switch-in, never targeted)
-//
-// RED today (runtime failure): current run_post_turn_phases captures active_slot_b
-// at the top of the function (== 0 at that point), then Phase 3.5 kills slot 0
-// and switches to slot 1 (state.side_b.active becomes 1). Phase 4.5 still reads
-// the captured active_slot_b (== 0) and writes Some(Burn) to status.side_b[0]
-// WITHOUT checking consciousness. So current code produces:
-//   status.side_b[0] == Some(Burn)  ← WRONG: fainted monster got the status
-//   status.side_b[1] == None
-// The assertion `status.side_b[0] == None` catches this and turns RED.
 //
 // Kills: any impl that writes StatusApplied to slot 0 without checking
 // current_hp == 0 after the chip-damage phase.
@@ -429,15 +387,12 @@ fn m14_5b_2_proof_of_teeth_near_lethal_status_hit_sandstorm_chip_faint() {
     );
 
     // -----------------------------------------------------------------------
-    // Invariant assertions — the actual RED/GREEN gate for this slice.
+    // Invariant assertions.
     // -----------------------------------------------------------------------
 
     // INVARIANT A: The targeted slot (SideB slot 0) must NOT have Burn in the store.
     // It was targeted by the Burn skill, but it fainted from Sandstorm chip before
     // Phase 4.5 ran. The fix DROPS the write when current_hp == 0 at Phase 4.5.
-    //
-    // RED today: current code writes Some(Burn) to status.side_b[0] without
-    // checking consciousness. This assertion fails.
     assert_eq!(
         status.side_b[0], None,
         "14.5b-2 FAILED (INVARIANT A): status.side_b[0] is {:?} but must be None. \
@@ -452,11 +407,6 @@ fn m14_5b_2_proof_of_teeth_near_lethal_status_hit_sandstorm_chip_faint() {
     // INVARIANT B: The auto-switched-in monster (SideB slot 1) must also have None.
     // It was never targeted by any Burn skill — it just happened to be the switch-in.
     // The fix must not redirect the Burn write to slot 1 either.
-    //
-    // RED today if the fix mistakenly writes to the current active slot instead of
-    // dropping: slot 1 (the auto-switch backup) would get Some(Burn). This assertion
-    // ensures the fix doesn't "fix" the wrong-slot write by just switching from slot 0
-    // to slot 1 — it must DROP the write entirely.
     assert_eq!(
         status.side_b[1], None,
         "14.5b-2 FAILED (INVARIANT B): status.side_b[1] is {:?} but must be None. \
@@ -485,7 +435,7 @@ fn m14_5b_2_proof_of_teeth_near_lethal_status_hit_sandstorm_chip_faint() {
 }
 
 // ===========================================================================
-// TEST 3 (EARS 14.5b-3): Both sides apply status in the same turn.
+// Both sides apply status in the same turn.
 //
 // Invariant: when A applies Burn to B (slot 0) AND B applies Poison to A (slot 0)
 // in the SAME turn, BOTH StatusApplied events must be emitted and BOTH statuses
@@ -630,7 +580,7 @@ fn m14_5b_3_both_sides_apply_status_in_same_turn_both_committed() {
 }
 
 // ===========================================================================
-// TEST 4 (EARS 14.5b-4): Slot captured from DEFENDER side — not from attacker.
+// Slot captured from DEFENDER side — not from attacker.
 //
 // Invariant: when A (slot 0 active) applies status to B, the emitted
 // StatusApplied.slot must be B's active slot (state.side_b.active), NOT
@@ -764,7 +714,7 @@ fn m14_5b_4_status_applied_slot_is_defender_slot_not_attacker_slot() {
 }
 
 // ===========================================================================
-// TEST 5 (EARS 14.5b-5): A KOs B in Phase 2 — only ONE StatusApplied event.
+// A KOs B in Phase 2 — only ONE StatusApplied event.
 //
 // Invariant: when A applies status to B AND KOs B in the same attack, the
 // `!fainted` guard in resolve_one_attack must suppress the StatusApplied

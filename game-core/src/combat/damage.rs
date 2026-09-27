@@ -1,6 +1,6 @@
 //! Damage formula and accuracy check for the combat engine.
 //!
-//! The damage formula (extended with weather modifier, M14d, ADR-0095):
+//! The damage formula (extended with weather modifier):
 //!
 //! ```text
 //! base = (2 * level / 5 + 2) * power * attack / defense / 50 + 2
@@ -23,7 +23,7 @@ use super::types::{BattleMonster, Effectiveness};
 use super::weather::WeatherEffect;
 
 /// Compute damage dealt by `attacker` using `skill` against `defender`,
-/// optionally scaled by the active field weather (M14d, ADR-0095).
+/// optionally scaled by the active field weather.
 ///
 /// Returns `(damage, effectiveness)` — a pair so the caller can emit
 /// `BattleEvent::Damage` with the correct effectiveness label.
@@ -194,7 +194,6 @@ mod tests {
 
     /// Kills: an impl that uses floating-point, rounds wrong, forgets STAB,
     /// forgets the type multiplier, or gets the formula order wrong.
-    /// Starts red because `calc_damage` is `todo!()`.
     #[test]
 
     fn known_answer_fire_vs_plant_level5_power40_var100() {
@@ -216,7 +215,6 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Kills: an impl that ignores STAB or applies it to both branches equally.
-    /// Starts red because `calc_damage` is `todo!()`.
     #[test]
 
     fn stab_increases_damage_vs_no_stab() {
@@ -274,7 +272,6 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Kills: an impl that ignores the type multiplier.
-    /// Starts red because `calc_damage` is `todo!()`.
     #[test]
 
     fn super_effective_deals_more_than_neutral() {
@@ -324,11 +321,10 @@ mod tests {
     // Immune (effectiveness 0) → 0 damage
     // -----------------------------------------------------------------------
 
-    /// This requires an immune entry. The current type chart has no immune pairs
-    /// (effectiveness 0). We test via a hand-crafted TypeChart with an immune entry.
+    /// This requires an immune entry. We test via a hand-crafted TypeChart with an
+    /// immune entry.
     ///
     /// Kills: an impl that ignores immune effectiveness and still deals damage.
-    /// Starts red because `TypeChart::new` is `todo!()`.
     #[test]
 
     fn immune_effectiveness_deals_zero_damage() {
@@ -354,25 +350,7 @@ mod tests {
     /// Proof-of-teeth fixture: a very weak attacker vs a very strong defender
     /// where the formula would produce 0 without the max(1) floor.
     ///
-    /// With: level=1, power=1, attack=1, defense=255, variance=85
-    /// base = (2*1/5 + 2) * 1 * 1 / 255 / 50 + 2 = (0+2)*1/255/50+2 = 0+2 = 2
-    /// Hmm, the +2 term prevents 0 in this formula. Try with the intermediate:
-    /// (2*1/5+2) = (0+2) = 2; 2*1*1/255/50 = 0 (truncating); +2 = 2 — always ≥ 2.
-    ///
-    /// We need a formula where the variance step produces 0 before the max(1).
-    /// With base=1 (minimum from formula), variance=85:
-    /// 1 * 85 / 100 = 0 (truncating integer division) → max(1) saves it.
-    ///
-    /// To get base=1: use special TypeRelation with effectiveness=5 (NVE):
-    /// Need stab*eff/10 * var/100 = 0 → need stab*eff/10 = 1, then *85/100 = 0.
-    /// stab=1: 1*5/10=0 (already 0 without variance).
-    ///
-    /// Actually the +2 in the formula guarantees a minimum of 2 before type modifiers.
-    /// NVE: 2 * 5 / 10 = 1 (truncating). Then 1 * 85 / 100 = 0. max(1) → 1.
-    /// This is the scenario we want to test.
-    ///
     /// Kills: an impl that forgets `max(1, result)` for non-immune hits.
-    /// Starts red because `calc_damage` is `todo!()`.
     #[test]
 
     fn non_immune_deals_at_least_1_damage_floor() {
@@ -445,7 +423,6 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Kills: an impl that ignores variance or applies it as addition instead of scaling.
-    /// Starts red because `calc_damage` is `todo!()`.
     #[test]
 
     fn variance_85_deals_less_than_variance_100() {
@@ -466,7 +443,6 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Kills: an impl with the wrong comparison operator (e.g. `<=` instead of `<`).
-    /// Starts red because `accuracy_check` is `todo!()`.
     #[test]
 
     fn accuracy_check_roll_below_accuracy_is_hit() {
@@ -477,7 +453,6 @@ mod tests {
     }
 
     /// Kills: an impl that always returns true regardless of roll.
-    /// Starts red because `accuracy_check` is `todo!()`.
     #[test]
 
     fn accuracy_check_roll_at_or_above_accuracy_is_miss() {
@@ -573,7 +548,6 @@ mod tests {
 
     proptest! {
         /// Kills: any non-deterministic impl (unseeded RNG in calc_damage).
-        /// Starts red because `calc_damage` is `todo!()`.
         #[test]
         fn prop_calc_damage_is_deterministic(
             atk_affinity in arb_affinity(),
@@ -603,7 +577,6 @@ mod tests {
         }
 
         /// Kills: any impl that panics for valid inputs.
-        /// Starts red because `calc_damage` is `todo!()`.
         #[test]
         fn prop_calc_damage_never_panics_for_valid_inputs(
             atk_affinity in arb_affinity(),
@@ -655,7 +628,7 @@ mod tests {
     // Nightly mutation hardening.
     // -----------------------------------------------------------------------
 
-    /// Kills: the final `+ 2` -> `* 2` base-term mutant (60:31).
+    /// Kills: the final `+ 2` -> `* 2` base-term mutant.
     /// Non-STAB, neutral, variance 100: base = (2*5/5+2)*40*40/40/50 + 2
     /// = 3 + 2 = 5 -> damage 5. The mutant yields 3 * 2 = 6.
     #[test]
@@ -674,7 +647,7 @@ mod tests {
         assert_eq!(dmg, 5);
     }
 
-    /// Kills: the level-term `+ 2` -> `* 2` mutant (60:31). At level 5 that
+    /// Kills: the level-term `+ 2` -> `* 2` mutant. At level 5 that
     /// mutant is INVISIBLE (2*5/5 + 2 == 2*5/5 * 2 == 4), so this probe runs
     /// at level 10 where 6 != 8: damage 6 (correct) vs 8 (mutant).
     #[test]

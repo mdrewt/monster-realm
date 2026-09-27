@@ -1,16 +1,15 @@
 //! Red-team gating tests for M14d weather desync and validate_content findings.
 //!
-//! RT-W14-DESYNC-01 (FIXED — M14.5a, ADR-0098 D2): attempt_recruit now uses
+//! RT-W14-DESYNC-01: attempt_recruit now uses
 //!     load_skills() (sets_weather/applies_status populated) instead of
-//!     skill_defs_from_rows() (sets_weather: None for all skills). The desync
-//!     between submit_attack/swap_active and attempt_recruit is closed.
-//!     The gating test now pins the FIX: a wild's weather-setting strike-back
+//!     skill_defs_from_rows() (sets_weather: None for all skills).
+//!     a wild's weather-setting strike-back
 //!     during resolve_recruit_failure must set state.weather when skills carry
 //!     sets_weather=Some(Rain) (as load_skills() returns).
 //!
-//! RT-W14-VALID-01 (FIXED — B-1): validate_content's weather guard was dead code.
+//! RT-W14-VALID-01: validate_content's weather guard was dead code.
 //!     The original `let _valid = matches!(kind, ...)` discarded the result without
-//!     asserting it. Fixed in this review: replaced with an exhaustive `match` with
+//!     asserting it. replaced with an exhaustive `match` with
 //!     no wildcard arm, which IS a compile-time OCP gate. Valid WeatherKind values
 //!     still pass validation. This test gates that valid weather skills remain accepted.
 
@@ -63,7 +62,7 @@ fn always_hit_variance_weather() -> TurnVariance {
 
 // ===========================================================================
 // RT-W14-DESYNC-01 (HIGH): skill_defs_from_rows strips sets_weather, silently
-// FIXED (M14.5a, ADR-0098 D2): attempt_recruit now uses load_skills()
+// FIXED: attempt_recruit now uses load_skills()
 // (sets_weather/applies_status populated). The desync is closed.
 //
 // Gating test: pin that a wild's weather-setting strike-back during
@@ -80,7 +79,7 @@ fn always_hit_variance_weather() -> TurnVariance {
 ///
 /// Before the fix: attempt_recruit used skill_defs_from_rows (sets_weather=None),
 /// so the wild's Rain Dance strike-back silently dropped the weather effect.
-/// After the fix (ADR-0098 D2): attempt_recruit uses load_skills() which returns
+/// After the fix: attempt_recruit uses load_skills() which returns
 /// sets_weather=Some(Rain), so state.weather is correctly set.
 ///
 /// This test pins the FIX: state.weather must be Some(Rain{turns:5}) after a
@@ -155,7 +154,7 @@ fn rt_w14_desync_01_recruit_failure_weather_set_by_load_skills_path() {
         &abilities,
     );
 
-    // FIX PINNED: the wild (faster, B) attacks with Rain Dance (sets_weather=Some(Rain)).
+    // the wild (faster, B) attacks with Rain Dance (sets_weather=Some(Rain)).
     // Phase 5 weather tick then decrements turns_remaining from WEATHER_DEFAULT_TURNS to
     // WEATHER_DEFAULT_TURNS-1. Both D2 (load_skills set the weather) and D1 (post-turn
     // phases ran the tick) are proven by this assertion. A regression to skill_defs_from_rows
@@ -180,7 +179,7 @@ fn rt_w14_desync_01_recruit_failure_weather_set_by_load_skills_path() {
 // ===========================================================================
 // RT-W14-VALID-01: validate_content accepts EVERY WeatherKind (runtime pin).
 //
-// 11r-h (ADR-0172 D5) — WHAT CHANGED HERE, STATED PLAINLY. The previous version of
+// WHAT CHANGED HERE, STATED PLAINLY. The previous version of
 // this test was named `..._weather_guard_is_vacuous` and carried a 25-line block
 // comment quoting a `let _valid = matches!(...)` in content.rs that NO LONGER EXISTS.
 // content.rs now uses an exhaustive `match` with no wildcard arm. The test's name and
@@ -194,31 +193,24 @@ fn rt_w14_desync_01_recruit_failure_weather_set_by_load_skills_path() {
 // unguarded.
 // ===========================================================================
 
-/// RT-W14-VALID-01 (rewritten): pin that `validate_content` ACCEPTS a skill setting
+/// pin that `validate_content` ACCEPTS a skill setting
 /// each of the four `WeatherKind` variants at RUNTIME, one skill per case so a failure
 /// names the offending variant.
 ///
 /// HONEST SCOPE — read this before trusting the test for more than it proves:
 /// * What it pins: RUNTIME acceptance of `sets_weather: Some(k)` for every `k`.
 /// * What it does NOT pin: the OCP property. The open/closed gate for `WeatherKind` is
-///   the COMPILER — `content.rs:824-834` is an exhaustive `match` with no wildcard arm,
+///   the COMPILER — an exhaustive `match` with no wildcard arm,
 ///   so a new variant is a compile error there. No runtime test can red the replacement
-///   of that `match` with `_ => {}`. The old doc-comment claimed a runtime gate; this
-///   one does not.
+///   of that `match` with `_ => {}`.
 ///
 /// NEGATIVE CONTROL (mandatory, see the last case in the table): a positive `is_ok()`
 /// pin over inputs that structurally cannot be rejected is barely stronger than the
 /// vacuity it replaced — the whole-function mutant `validate_content(..) { Ok(()) }`
 /// survives it untouched. The final case is a weather-setting skill that is ALSO
-/// independently invalid (`power: 0`, rejected by the guard at content.rs:807-812,
+/// independently invalid (`power: 0`, rejected by the guard,
 /// which sits inside the same per-skill loop), asserted `is_err()`. That proves the RON
 /// fixture really reaches the skill-validation loop and kills the always-`Ok` mutant.
-///
-/// NOTE FOR A VERIFIER MUTATING content.rs: `content.rs:828-833` is a SINGLE COMBINED
-/// arm (`Rain | Sun | Sandstorm | Hail => {}`). A kill mutation must SPLIT the arm
-/// first, e.g. `WeatherKind::Hail => return Err("mutant".to_string()),` — then this test
-/// reds naming Hail. Sibling reds from `validate_content_passes_for_embedded` are
-/// expected collateral; the required signal is THIS test reding with the variant named.
 #[test]
 fn rt_w14_valid_01_validate_content_accepts_every_weather_kind() {
     use crate::content::{parse_skills, parse_species, parse_type_chart, validate_content};
@@ -281,8 +273,8 @@ fn rt_w14_valid_01_validate_content_accepts_every_weather_kind() {
     );
 
     // --- NEGATIVE CONTROL ---------------------------------------------------------
-    // A weather-setting skill that is INDEPENDENTLY invalid: power == 0 is rejected by
-    // content.rs:807-812, inside the same per-skill loop the weather match lives in.
+    // A weather-setting skill that is INDEPENDENTLY invalid: power == 0 is rejected by,
+    // inside the same per-skill loop the weather match lives in.
     // Kills the whole-function mutant `validate_content(..) -> Result<(),String> {
     // Ok(()) }`, which every `is_ok()` assertion above survives, and proves the fixture
     // really reaches skill validation rather than short-circuiting somewhere earlier.
@@ -308,17 +300,17 @@ fn rt_w14_valid_01_validate_content_accepts_every_weather_kind() {
 }
 
 // ===========================================================================
-// RT-W14-ORDERING-01 (LOW): WeatherSet fires AFTER BattleEnd when a weather
+// WeatherSet fires AFTER BattleEnd when a weather
 // move KOs the opponent on the same hit.
 //
 // When skill.sets_weather is Some AND the skill's damage KOs the defender,
-// resolve_one_attack (resolve.rs:105-148) emits:
+// resolve_one_attack emits:
 //   1. Damage { side: defender }
 //   2. Faint { side: defender }
 //   3. BattleEnd { winner: acting_side }
 //   4. WeatherSet { weather: Rain{turns:5} }   <-- AFTER BattleEnd
 //
-// The comment in resolve.rs says this is intentional (ADR-0095 D4):
+// The comment in resolve.rs says this is intentional:
 //   "Fires even if the move KOs (the weather still changes)."
 //
 // This means clients see a BattleEnd event before the WeatherSet. The weather
@@ -326,18 +318,12 @@ fn rt_w14_valid_01_validate_content_accepts_every_weather_kind() {
 // On the NEXT load of the battle (if the row persists), state.weather shows Rain.
 // The client must handle: BattleEnd followed by WeatherSet gracefully.
 //
-// This is low severity because:
-//   1. It is intentional per ADR-0095 D4.
-//   2. state.weather IS set correctly in the DB.
-//   3. After write_back_battle_results, the battle row is GC'd — so state.weather
-//      in the terminal row is irrelevant to gameplay.
-//   4. Clients rendering the event stream must be aware of this ordering.
 // ===========================================================================
 
 /// Documents and gates the WeatherSet-after-BattleEnd ordering invariant.
 ///
 /// This test confirms the intentional design: a KO + weather-set skill emits
-/// BattleEnd BEFORE WeatherSet, which is the ADR-0095 D4 design choice.
+/// BattleEnd BEFORE WeatherSet.
 ///
 /// If this test breaks (WeatherSet fires before BattleEnd), a regression was
 /// introduced in resolve_one_attack's ordering.
@@ -448,7 +434,7 @@ fn rt_w14_ordering_01_weather_set_fires_after_battle_end_on_ko_turn() {
          weather fires AFTER damage+faint resolve)"
     );
 
-    // ADR-0095 D4: WeatherSet fires AFTER BattleEnd (intentional design).
+    // WeatherSet fires AFTER BattleEnd (intentional design).
     // Clients must handle this ordering. If WeatherSet precedes BattleEnd,
     // the resolve_one_attack ordering was changed, breaking this invariant.
     let be = battle_end_pos.unwrap();

@@ -1,8 +1,5 @@
 //! New red-team findings for the M7b battle implementation.
 //!
-//! These tests probe the 12 attack vectors requested and document new
-//! exploitable bugs not yet covered by the existing redteam suites.
-//!
 //! Severity ranking used:
 //!   CRITICAL — exploitable for state corruption, resource duplication, or
 //!              unauthenticated writes that the attacker can trigger reliably.
@@ -10,8 +7,6 @@
 //!              corruption in specific but reachable scenarios.
 //!   MEDIUM   — logic error or information leak with bounded impact.
 //!   LOW      — defence-in-depth concern; not directly exploitable today.
-//!
-//! Run: cargo test redteam_new -- --nocapture
 
 use crate::combat::{
     ability::AbilityStore,
@@ -97,33 +92,6 @@ fn two_sided_state(hp_a: u16, hp_b: u16) -> BattleState {
 
 // ===========================================================================
 // FINDING R-01 (CRITICAL): resolve_turn mutates state on a finished battle.
-//
-// Attack vector #2: "Can someone act on a finished battle?"
-//
-// The server reducer checks `battle.state.outcome != Ongoing` before calling
-// resolve_turn — that guard is correct.  But resolve_turn itself also has a
-// terminal-outcome guard (lines 141-143 of resolve.rs) that returns an empty
-// Vec if outcome != Ongoing.  The issue: the guard fires AFTER
-// `state.turn_number += 1` has already been written (line 145 increments
-// BEFORE the guard on line 141).
-//
-// Wait — actually the guard is at line 141 (BEFORE line 145).  Let me verify
-// the exact sequence in resolve.rs:
-//
-//   139: if state.outcome != BattleOutcome::Ongoing {
-//   140:     return events;                          // ← returns empty, NO mutation
-//   141: }
-//   142: (empty line)
-//   143: state.turn_number += 1;                   // ← only reached if Ongoing
-//
-// Re-reading resolve.rs:
-//   line 141: if state.outcome != BattleOutcome::Ongoing { return events; }
-//   line 145: state.turn_number += 1;
-//
-// The guard IS correct — turn_number does NOT increment on a finished battle.
-// This test CONFIRMS the guard works correctly (the earlier redteam suite
-// M7b-3 was written against the plan before implementation; the implementation
-// added the guard).
 //
 // VERDICT: The guard in resolve_turn is correct.  The REAL risk is at the
 // SERVER REDUCER layer — if the reducer's own outcome check is missing or
@@ -994,7 +962,7 @@ fn r10_from_ctx_random_all_256_stride_seeds_in_range() {
 // (iv + ev/4) values.  The total candidate space is 32 IVs * 64 EV/4 values =
 // 2048 combinations per stat, which reduces dramatically with the known equation.
 //
-// For PvE this is accepted (ADR-0042).  For PvP (M16) this is CRITICAL.
+// For PvE this is accepted.  For PvP (M16) this is CRITICAL.
 // ===========================================================================
 
 #[test]
@@ -1041,8 +1009,6 @@ fn r11_derived_stats_in_public_battle_table_leak_iv_information() {
 
 // ===========================================================================
 // FINDING R-12 (MEDIUM): turn_number wraps to 0 after u16::MAX turns.
-//
-// Attack vector — derived from M7b-12.
 //
 // BattleState.turn_number is u16.  resolve_turn increments it by 1 each call.
 // After 65535 turns, the next increment wraps to 0 (Rust u16 wraps in

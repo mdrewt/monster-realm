@@ -1,8 +1,5 @@
 //! M8a gating tests — acceptance criteria for the taming module.
 //!
-//! These tests are intentionally RED until the implementer makes the functions
-//! in `taming::rules` and the content pipeline in `content` correct.
-//!
 //! EARS criteria covered:
 //!   Criterion 1 — encounter_triggers + roll_encounter
 //!   Criterion 2 — recruit_chance (formula, caps, guards)
@@ -10,8 +7,6 @@
 //! Each test is annotated with:
 //!   - which EARS criterion it covers
 //!   - which wrong implementation it kills
-//!
-//! Run: cargo test m8a_gating -- --nocapture
 
 #[allow(unused_imports)]
 use crate::content::{
@@ -711,9 +706,8 @@ fn item_without_recruit_bonus_defaults_to_zero() {
 }
 
 // ---------------------------------------------------------------------------
-// Proof-of-teeth (ADR-0010)
-// Each of these fixtures is known-bad. The test passes only if the validation
-// returns Err. If a stub blindly returns Ok(()), these tests are RED.
+// Proof-of-teeth Each of these fixtures is known-bad. The test passes only if
+// the validation returns Err.
 // ---------------------------------------------------------------------------
 
 /// Proof-of-teeth: a dangling species_id MUST be rejected.
@@ -789,12 +783,8 @@ fn roll_encounter_teeth_no_panic_on_empty_after_filter() {
 }
 
 // ---------------------------------------------------------------------------
-// M8b CRITERION B1 — validate_encounters: empty entries guard
+// validate_encounters: empty entries guard
 //
-// The current impl iterates `&table.entries` (zero times when empty) and
-// returns Ok(()) — so a zone with no spawnable species is accepted.
-// The implementer will add: `if table.entries.is_empty() { return Err(...) }`
-// These two tests are RED until that guard is added.
 // ---------------------------------------------------------------------------
 
 /// EARS B1: a table with an empty entries vec is invalid — nothing can spawn.
@@ -814,8 +804,6 @@ fn rejects_empty_entries() {
 }
 
 /// Proof-of-teeth for the empty-entries guard.
-/// The CURRENT impl returns Ok(()) for this fixture (iterates zero entries,
-/// no check fires). This test MUST be RED until the guard is implemented.
 /// Wrong impl killed: any validate_encounters that returns Ok on empty entries.
 #[test]
 fn validate_encounters_teeth_empty_entries() {
@@ -831,12 +819,8 @@ fn validate_encounters_teeth_empty_entries() {
 }
 
 // ---------------------------------------------------------------------------
-// M8b CRITERION B1 — validate_encounters: duplicate species_id within a zone
+// validate_encounters: duplicate species_id within a zone
 //
-// The current impl has no intra-zone dedup check. Two entries with the same
-// species_id in one zone are accepted. The implementer will add a per-table
-// seen-species set that errors on the second occurrence.
-// These two tests are RED until that guard is added.
 // ---------------------------------------------------------------------------
 
 /// EARS B1: two entries sharing a species_id in the same zone must be rejected.
@@ -858,8 +842,6 @@ fn rejects_duplicate_species_within_zone() {
 }
 
 /// Proof-of-teeth for the duplicate-species guard.
-/// The CURRENT impl returns Ok(()) for this fixture (no intra-zone dedup).
-/// This test MUST be RED until the guard is implemented.
 /// Wrong impl killed: any validate_encounters that allows two entries with the
 /// same species_id in one zone.
 #[test]
@@ -877,16 +859,3 @@ fn validate_encounters_teeth_duplicate_species() {
          this is the known red-state before the dup-species guard is added"
     );
 }
-
-// ---------------------------------------------------------------------------
-// M8b REGRESSION — embedded encounters.ron still passes after new guards
-//
-// The test `validate_encounters_passes_for_embedded` already exists above and
-// covers this criterion. It is preserved here as a named regression marker so
-// it is trivially searchable as a regression gate for M8b.
-//
-// If the embedded content violates the new guards (empty entries or duplicate
-// species within a zone), it means the content itself needs to be fixed too.
-// The existing test already acts as this regression; we do NOT duplicate it.
-// ---------------------------------------------------------------------------
-// (regression covered by the existing `validate_encounters_passes_for_embedded` test above)

@@ -1,25 +1,4 @@
 //! M14b gating tests — acceptance criteria for the M14b status persistence slice.
-//!
-//! ALL tests start RED because the following do not exist yet in this branch:
-//!   - `BattleMonster.status: Option<StatusEffect>` field (in `types.rs`)
-//!   - `StatusCured { side: SideId, slot: u32 }` — `slot` field missing from variant
-//!   - `StatusVariance::from_ctx_random(seed: u32) -> StatusVariance` method
-//!   - `#[cfg_attr(feature = "spacetimedb", derive(spacetimedb::SpacetimeType))]`
-//!     on `StatusEffect` (compile-visible via feature; structural test covers field)
-//!
-//! Criterion → test mapping:
-//!   M14b-1 (serde round-trip)       → m14b_battle_monster_with_status_serde_round_trip
-//!   M14b-1 (default deserialize)    → m14b_battle_monster_status_field_defaults_to_none
-//!   M14b-2 (StatusCured slot)       → m14b_status_cured_carries_slot_field
-//!   M14b-2 (bench slot correctness) → m14b_sleep_cure_on_bench_slot_carries_correct_slot_index
-//!   M14b-3 (determinism same seed)  → m14b_status_variance_from_ctx_random_is_deterministic
-//!   M14b-3 (all fields in range)    → m14b_status_variance_from_ctx_random_all_fields_in_range
-//!   M14b-3 (different seeds differ) → m14b_status_variance_from_ctx_random_different_seeds_differ
-//!   M14b-3 (known-answer vectors)   → m14b_status_variance_from_ctx_random_known_answer_vectors
-//!   M14b-4 (poison DoT via status)  → m14b_resolve_full_turn_reads_battle_monster_status_for_dot
-//!   M14b-4 (post-turn persists)     → m14b_resolve_full_turn_battle_monster_status_unchanged_no_cure
-//!   M14b-5 (M7 regression)          → m14b_resolve_full_turn_empty_status_identical_to_resolve_turn
-//!   RT-S14-01 (slot proof-of-teeth) → m14b_status_cured_slot_nonzero_for_bench_monster
 
 use crate::combat::ability::AbilityStore;
 use crate::combat::resolve::resolve_full_turn;
@@ -50,8 +29,6 @@ fn make_stat_block(attack: u16, defense: u16, speed: u16) -> StatBlock {
 }
 
 /// Build a `BattleMonster` WITH the new `status` field set to `None`.
-/// This is the canonical fixture after M14b; any test that still constructs
-/// `BattleMonster` without the `status` field will fail to compile (red phase).
 fn make_monster_with_status(
     affinity: Affinity,
     hp: u16,
@@ -66,8 +43,6 @@ fn make_monster_with_status(
         max_hp: hp,
         stats: make_stat_block(40, 40, speed),
         known_skill_ids: vec![1],
-        // M14b adds this field. Red before implementation: struct literal will
-        // complain "missing field `status`" until the field is added to BattleMonster.
         status,
     }
 }
@@ -135,7 +110,7 @@ fn empty_abilities() -> AbilityStore {
 }
 
 // ===========================================================================
-// M14b-1: BattleMonster serde round-trip with status field
+// BattleMonster serde round-trip with status field
 //
 // After M14b, `BattleMonster` gains `pub status: Option<StatusEffect>`.
 // This test verifies:
@@ -143,8 +118,6 @@ fn empty_abilities() -> AbilityStore {
 //   (b) A round-trip with `Some(StatusEffect::Poison)` preserves the value.
 //   (c) The field does NOT cause any existing serde paths to break.
 //
-// RED because: `BattleMonster` currently has no `status` field — the struct
-// literal in `make_monster_with_status` will fail to compile.
 // ===========================================================================
 
 /// Kills: an impl that adds the `status` field but skips serde derive (e.g. adds
@@ -172,12 +145,9 @@ fn m14b_battle_monster_with_status_serde_round_trip() {
 }
 
 // ===========================================================================
-// M14b-1 (cont.): #[serde(default)] allows deserializing old records that
-// lack the `status` field (e.g. records written before M14b was deployed).
+// #[serde(default)] allows deserializing old records that
+// lack the `status` field.
 //
-// RED because: without the `status` field the test trivially passes by
-// deserializing a struct that already doesn't have the field. After M14b,
-// the explicit `#[serde(default)]` is what makes old-format records round-trip.
 // ===========================================================================
 
 /// Kills: an impl that adds `status` WITHOUT `#[serde(default)]`, which would
@@ -199,7 +169,7 @@ fn m14b_battle_monster_status_field_defaults_to_none() {
     );
 }
 
-/// ADR-0006 / ADR-0093: `#[serde(default)]` on `BattleMonster.status` means rows
+/// `#[serde(default)]` on `BattleMonster.status` means rows
 /// written BEFORE M14b (which have no `status` field at all) must still deserialize.
 ///
 /// Kills: removing `#[serde(default)]`. Without it, RON returns an error on a
@@ -237,26 +207,20 @@ fn m14b_serde_default_allows_missing_status_field() {
 }
 
 // ===========================================================================
-// M14b-2: StatusCured must carry a `slot` field
+// StatusCured must carry a `slot` field
 //
 // SPEC: "StatusCured { side: SideId, slot: u32 }" — `slot` identifies WHICH
 // team slot's status was cured, not just which side. Without `slot`, a client
 // cannot distinguish a bench-monster cure from an active-monster cure.
 //
-// RED because: `BattleEvent::StatusCured` currently has only `{ side: SideId }`.
-// Any struct/enum literal or match that references `.slot` will fail to compile.
 // ===========================================================================
 
 /// Kills: an impl that adds `StatusCured` without the `slot` field — the
 /// struct literal `BattleEvent::StatusCured { side: SideId::SideA, slot: 0 }`
 /// fails to compile if `slot` is absent.
-///
-/// This is a compile-time gate: the test body only needs to construct the
-/// variant with the `slot` field. If the variant lacks `slot`, the whole
-/// test module fails to compile — which is the desired red state.
 #[test]
 fn m14b_status_cured_carries_slot_field() {
-    // Construct the variant with the slot field — compile-RED if field is absent.
+    // Construct the variant with the slot field.
     let ev = BattleEvent::StatusCured {
         side: SideId::SideA,
         slot: 0,
@@ -291,12 +255,8 @@ fn m14b_status_cured_carries_slot_field() {
 }
 
 // ===========================================================================
-// RT-S14-01 (proof-of-teeth): tick_status on a bench Sleep slot must emit
+// tick_status on a bench Sleep slot must emit
 // StatusCured with the CORRECT non-zero slot index.
-//
-// The RT-S14-01 finding from m14a (tracked in redteam_m14a_tests.rs) said:
-// "tick_status emits StatusCured with no slot identifier — ambiguous."
-// M14b FIXES this by adding `slot: u32` to StatusCured.
 //
 // This test is the PROOF-OF-TEETH: it uses a 2-monster team where only the
 // BENCH monster (slot 1) is sleeping. After tick_status, the StatusCured
@@ -305,7 +265,6 @@ fn m14b_status_cured_carries_slot_field() {
 // Wrong impl: a naive fix that always emits `slot: 0` would pass the
 // m14b_status_cured_carries_slot_field compile gate but fail THIS test.
 //
-// RED because: the `slot` field does not exist yet on StatusCured.
 // ===========================================================================
 
 /// Kills: a naive implementation that adds `slot: u32` but always sets it to 0
@@ -372,7 +331,7 @@ fn m14b_sleep_cure_on_bench_slot_carries_correct_slot_index() {
 }
 
 // ===========================================================================
-// M14b-2 (cont.): active slot (slot 0) cure also carries correct slot index.
+// active slot (slot 0) cure also carries correct slot index.
 //
 // Proof that tick emits slot=0 for the active monster, not always the bench.
 // Kills: an off-by-one that sets slot = slot_index + 1 or uses the bench index.
@@ -417,7 +376,7 @@ fn m14b_sleep_cure_on_active_slot_carries_slot_zero() {
 }
 
 // ===========================================================================
-// M14b-2 (cont.): Freeze thaw also carries correct slot index.
+// Freeze thaw also carries correct slot index.
 //
 // Freeze thaw events must also carry the slot of the frozen monster.
 // Kills: an impl that adds slot to Sleep cures but forgets Freeze thaw.
@@ -479,11 +438,10 @@ fn m14b_freeze_thaw_on_bench_slot_carries_correct_slot_index() {
 }
 
 // ===========================================================================
-// M14b-3: StatusVariance::from_ctx_random determinism + range
+// StatusVariance::from_ctx_random determinism + range
 //
 // SPEC: same seed → same rolls; all rolls in 0..=99.
 //
-// RED because: `StatusVariance::from_ctx_random` does not exist yet.
 // ===========================================================================
 
 /// Kills: any non-deterministic impl (hidden RNG, wall clock, thread_local state).
@@ -601,7 +559,7 @@ fn m14b_status_variance_from_ctx_random_different_seeds_differ() {
 }
 
 // ===========================================================================
-// M14b-3: Known-answer vectors for StatusVariance::from_ctx_random
+// Known-answer vectors for StatusVariance::from_ctx_random
 //
 // These exact expected values pin the splitmix64-style derivation so that
 // the computed outputs match the spec's algorithm, parallel to
@@ -616,52 +574,12 @@ fn m14b_status_variance_from_ctx_random_different_seeds_differ() {
 //   sleep_wake_roll_a  = next() % 100
 //   sleep_wake_roll_b  = next() % 100
 //
-// Continuing from where TurnVariance::from_ctx_random left off after 5 draws,
-// StatusVariance uses draws 1–6 of its own sequence (fresh from the seed),
-// NOT a continuation of TurnVariance's sequence — each function is independent.
-//
-// Rationale: the spec says "parallel to TurnVariance::from_ctx_random", meaning
-// the same algorithm but applied independently from the same seed. Each call to
-// from_ctx_random starts fresh with `s = seed as u64`.
-//
-// IMPLEMENTATION NOTE FOR THE IMPLEMENTER:
-//   The expected values below MUST match whatever algorithm is specified.
-//   If the implementer uses a different sub-algorithm (e.g., starting from
-//   where TurnVariance left off, or using a different mixing constant), these
-//   vectors must be re-derived from the spec. The vector values below assume
-//   the SAME splitmix64 body as TurnVariance::from_ctx_random, applied to
-//   draws 1–6 for the 6 StatusVariance fields (each draw %100).
-//
-//   The implementer owns deriving exact values; the SPEC constraint is:
-//   (a) deterministic per seed, (b) each field in 0..=99, (c) independent
-//   from TurnVariance derivation (separate from_ctx_random call from same seed).
-//
-// TESTER NOTE: The known-answer vectors below are INTENTIONALLY LEFT AS
-// PLACEHOLDERS (marked with a comment) to be filled in by the implementer
-// and verified by the verifier. The test structure is correct; the values
-// should be derived by running the splitmix64 sequence from each seed for
-// 6 draws each modulo 100.
-//
-// The STRUCTURE of this test (6 fields, each in 0..=99, identical for same
-// seed) is the mutation-killing gate. The exact numeric values are secondary
-// and must be confirmed when the implementer produces them.
 // ===========================================================================
 
 /// Kills: all bit-mixing mutants in `StatusVariance::from_ctx_random`.
 /// Each tuple is (seed, (skip_a, skip_b, thaw_a, thaw_b, wake_a, wake_b)).
-///
-/// IMPLEMENTATION NOTE: these vectors must be replaced with values computed
-/// from the actual splitmix64 derivation chosen by the implementer.
-/// The test framework is correct; fill in the known-answer table.
 #[test]
 fn m14b_status_variance_from_ctx_random_known_answer_vectors() {
-    // To avoid a chicken-and-egg problem (we can't know the exact values
-    // before implementation), we test structural properties that all valid
-    // implementations must satisfy, and add ONE additional property:
-    // that seed=0 produces a DIFFERENT output from seed=1 in at least one field.
-    // The full known-answer table is reserved for the verifier to fill in
-    // after the implementer provides the values.
-    //
     // The BITE of this test is three-fold:
     //   (1) It calls from_ctx_random — fails to COMPILE if the method is absent.
     //   (2) It asserts all 6 fields are in range for multiple seeds.
@@ -728,7 +646,7 @@ fn m14b_status_variance_from_ctx_random_known_answer_vectors() {
 }
 
 // ===========================================================================
-// M14b-3 (property test): all fields always in 0..=99
+// all fields always in 0..=99
 // ===========================================================================
 
 proptest! {
@@ -803,9 +721,9 @@ proptest! {
 }
 
 // ===========================================================================
-// M14b-4: resolve_full_turn reads BattleMonster.status for DoT
+// resolve_full_turn reads BattleMonster.status for DoT
 //
-// After M14b, the `submit_attack` reducer constructs a `BattleStatusStore`
+// `submit_attack` reducer constructs a `BattleStatusStore`
 // FROM the `BattleMonster.status` fields and passes it to `resolve_full_turn`.
 // This is the pure game-core side of that contract: the test verifies that
 // when `BattleMonster.status` is set to Poison and `resolve_full_turn` is
@@ -818,8 +736,6 @@ proptest! {
 // store manually from the monster's status field — mirroring what the reducer
 // would do.
 //
-// RED because: `BattleMonster` lacks the `status` field. The struct literal
-// `make_monster_with_status(…, Some(StatusEffect::Poison))` fails to compile.
 // ===========================================================================
 
 /// Kills: an impl where the reducer reads `BattleMonster.status` but doesn't
@@ -891,7 +807,7 @@ fn m14b_resolve_full_turn_reads_battle_monster_status_for_dot() {
 }
 
 // ===========================================================================
-// M14b-4 (cont.): After a non-curing turn, BattleMonster.status is unchanged.
+// After a non-curing turn, BattleMonster.status is unchanged.
 //
 // The reducer writes status BACK to the BattleMonster after the turn.
 // With Poison (which never self-cures via tick_status), the status field
@@ -957,7 +873,7 @@ fn m14b_resolve_full_turn_battle_monster_status_unchanged_for_poison() {
 }
 
 // ===========================================================================
-// M14b-4 (cont.): Sleep cure — status cleared to None after write-back.
+// Sleep cure — status cleared to None after write-back.
 //
 // After tick_status cures a Sleep(1→0) monster, the BattleStatusStore slot
 // becomes None. The reducer writes this back to BattleMonster.status.
@@ -1024,17 +940,9 @@ fn m14b_resolve_full_turn_battle_monster_status_cleared_after_sleep_cure() {
 }
 
 // ===========================================================================
-// M14b-5 (M7 regression): resolve_full_turn with empty status + new status
+// resolve_full_turn with empty status + new status
 // field on BattleMonster must still be byte-identical to bare resolve_turn.
 //
-// This extends the M14a EARS-1 regression test to ensure that adding the
-// `status` field to BattleMonster does NOT change the events produced when
-// both monsters have status=None and an empty BattleStatusStore is used.
-//
-// The key difference from m14a_tests.rs EARS-1: the BattleMonster structs
-// here use `make_monster_with_status(…, None)` (the new form with the field),
-// whereas m14a_tests.rs used the old form without the field. Both must produce
-// the same results.
 // ===========================================================================
 
 /// Kills: a resolve_full_turn that emits extra events, changes damage amounts,

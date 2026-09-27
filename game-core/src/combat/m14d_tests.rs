@@ -1,30 +1,4 @@
 //! M14d gating tests — acceptance criteria for the M14d weather/field-state slice.
-//!
-//! ALL tests start RED (compile error) because the following do not exist yet:
-//!   - `game-core/src/combat/weather.rs` (module, all types, all functions)
-//!   - `WeatherEffect { Rain | Sun | Sandstorm | Hail }` enum
-//!   - `WeatherKind { Rain | Sun | Sandstorm | Hail }` enum
-//!   - `WEATHER_DEFAULT_TURNS: u8`
-//!   - `weather_attack_modifier`, `sandstorm_immune`, `hail_immune` fns
-//!   - `apply_weather_damage`, `tick_weather` fns
-//!   - `BattleState.weather: Option<WeatherEffect>` field
-//!   - `BattleEvent::WeatherSet`, `WeatherDamage`, `WeatherExpired` variants
-//!   - `SkillDef.sets_weather: Option<WeatherKind>` field
-//!   - `calc_damage` weather parameter
-//!
-//! Criterion → test mapping:
-//!   EARS-1  (Rain boosts Water)       → weather_modifier_rain_boosts_water
-//!   EARS-2  (Rain nerfs Fire)         → weather_modifier_rain_nerfs_fire
-//!   EARS-3  (Sun boosts Fire)         → weather_modifier_sun_boosts_fire
-//!   EARS-4  (Sun nerfs Water)         → weather_modifier_sun_nerfs_water
-//!   EARS-5  (neutral unchanged)       → weather_modifier_neutral_is_unchanged
-//!   EARS-6  (sandstorm chips)         → sandstorm_chips_non_earth
-//!   EARS-7  (hail chips)              → hail_chips_non_water
-//!   EARS-8  (chip floor 1)            → chip_amount_floor_1
-//!   EARS-9  (weather ticks down)      → weather_ticks_down
-//!   EARS-10 (weather expires)         → weather_expires
-//!   EARS-11 (skill sets weather)      → skill_sets_weather
-//!   EARS-12 (no self-boost)           → weather_does_not_boost_own_hit
 
 use crate::combat::ability::AbilityStore;
 use crate::combat::resolve::resolve_full_turn;
@@ -667,13 +641,10 @@ fn skill_sets_weather() {
         assert_eq!(
             *turns_remaining,
             // After resolve_full_turn, tick_weather ran once — so it should be WEATHER_DEFAULT_TURNS - 1
-            // unless the battle ended before tick. With two Water attackers vs Plant:
-            // A (faster, Water Rain Dance, STAB, SE vs Plant) will likely KO B.
-            // If battle ended, tick_weather is skipped. Let's check what actually happens.
-            // The spec says tick_weather runs in phase 5 only if state.outcome == Ongoing.
+            // unless the battle ended before tick.
             // With a 200-HP plant defender and level-5 Water attacker (attack=40, power=40),
             // the damage won't KO. So tick_weather WILL run, decrementing from 5 to 4.
-            // But wait: both sides use skill_id=7 (Rain Dance). A goes first, sets Rain.
+            // both sides use skill_id=7 (Rain Dance). A goes first, sets Rain.
             // B also uses Rain Dance — resets weather to Rain{5}. Then tick_weather → Rain{4}.
             // So turns_remaining = WEATHER_DEFAULT_TURNS - 1 = 4.
             WEATHER_DEFAULT_TURNS - 1,
@@ -712,7 +683,7 @@ fn skill_sets_weather() {
 // TEST 12 (EARS-12): A Rain-setting Water skill does NOT get the Rain bonus on
 // its own hit (weather is set AFTER damage)
 //
-// ADR-0095 D4: `sets_weather` fires AFTER the attack's damage is resolved.
+// `sets_weather` fires AFTER the attack's damage is resolved.
 // So a Water skill that sets Rain should calculate damage WITHOUT Rain's 3/2
 // bonus on the same hit.
 //

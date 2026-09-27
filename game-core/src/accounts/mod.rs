@@ -1,8 +1,8 @@
-//! Account lifecycle module — pure, deterministic, I/O-free (M22, ADR-0031).
+//! Account lifecycle module — pure, deterministic, I/O-free.
 //!
 //! Houses the rules that govern an account's privacy lifecycle: the deletion
 //! grace window, the anonymization sentinels, the data-export chunk size and
-//! the deletion-gate exemption list (spec `M22-privacy-compliance.spec.md`).
+//! the deletion-gate exemption list.
 
 pub mod deletion;
 

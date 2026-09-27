@@ -1,28 +1,4 @@
 //! Red-team findings for the M14a/M14b status-effect implementation.
-//!
-//! Each test is a permanent gating test that protects a concrete invariant.
-//! All were confirmed by adversarial analysis of `status.rs` and `resolve.rs`.
-//!
-//! Findings summary (ranked by severity):
-//!
-//!   RT-S14-01 (HIGH)    — tick_status emits StatusCured with no slot index.
-//!                          Bench-slot cures produce client-ambiguous events.
-//!   RT-S14-02 (MEDIUM)  — Sleep{turns_remaining:0} handled correctly by `<= 1`
-//!                          guard; mutant `== 1` would survive existing EARS tests
-//!                          and underflow/panic on this input. This test pins it.
-//!   RT-S14-03 (MEDIUM)  — Undersized BattleStatusStore silently drops all status
-//!                          effects for the active slot after auto-switch. No panic,
-//!                          wrong behavior.
-//!   RT-S14-04 (LOW)     — Simultaneous-DoT-KO: SideA always processed first.
-//!                          If both sides die from DoT the same turn, SideB wins.
-//!                          Deterministic but undocumented; this test pins the order.
-//!   RT-S14-05 (MEDIUM)  — resolve_player_swap (the swap_active reducer path) does NOT
-//!                          apply pre-turn status effects to the enemy side. A paralyzed,
-//!                          sleeping, or frozen enemy always attacks back after a player
-//!                          swap, bypassing the 25%/100% action-block checks that
-//!                          apply_pre_turn_effects would enforce on a normal attack turn.
-//!                          This is a game-correctness gap: the player cannot exploit
-//!                          enemy status to get a free-swap turn. (M14b, ADR-0093)
 
 use crate::combat::ability::AbilityStore;
 use crate::combat::resolve::resolve_player_swap;
@@ -95,7 +71,7 @@ fn no_block_variance() -> StatusVariance {
 // ambiguity exists. A correct design would include slot index in StatusCured.
 // ===========================================================================
 
-/// RT-S14-01 FIX (m14b): `StatusCured` now carries `slot: u32` identifying which
+/// RT-S14-01 FIX: `StatusCured` now carries `slot: u32` identifying which
 /// team slot was cured. This test verifies the fix: a bench cure on slot 1 must
 /// emit `StatusCured { side: SideA, slot: 1 }`, not an ambiguous side-only event.
 ///
@@ -153,16 +129,15 @@ fn rt_s14_01_bench_slot_status_cure_carries_correct_slot_index() {
 }
 
 // ===========================================================================
-// RT-S14-02 (MEDIUM): Sleep{turns_remaining:0} must NOT underflow.
+// Sleep{turns_remaining:0} must NOT underflow.
 //
 // The `tick_one_slot` guard is `*turns_remaining <= 1`.
 // A survivable mutant changes this to `== 1`:
-//   - turns_remaining=1 → still cures (== 1 is true) — EARS-12 still passes
-//   - turns_remaining=3 → still decrements — EARS-11 still passes
+//   - turns_remaining=1 → still cures (== 1 is true)
+//   - turns_remaining=3 → still decrements
 //   - turns_remaining=0 → would NOT cure under `== 1`, falls to else:
 //       `*turns_remaining -= 1` → u8 underflow → panic (debug) / 255 (release)
 //
-// The existing EARS tests don't pin the turns_remaining=0 path.
 // This test pins it: Sleep{0} must cure immediately, not underflow.
 //
 // Source: the `<= 1` guard covers both 0 and 1 → cures, never decrements.
@@ -402,7 +377,7 @@ fn rt_s14_04_simultaneous_dot_ko_side_a_processed_first_side_b_wins() {
 // change is visible and deliberate.
 // ===========================================================================
 
-/// RT-S14-05: Pins that resolve_player_swap does NOT block a paralyzed enemy.
+/// Pins that resolve_player_swap does NOT block a paralyzed enemy.
 ///
 /// Setup: Enemy (side B) has Paralysis loaded via status store. Player swaps.
 /// Expected: enemy always attacks (no ActionBlocked event).
@@ -410,7 +385,6 @@ fn rt_s14_04_simultaneous_dot_ko_side_a_processed_first_side_b_wins() {
 /// Kills: a "fix" that wraps resolve_player_swap in apply_pre_turn_effects
 /// without deliberate intent — the enemy would sometimes be blocked and
 /// sometimes not, making swap turns depend on status in a new undocumented way.
-/// Also pins the gap so the code reviewer knows the omission is intentional.
 #[test]
 fn rt_s14_05_resolve_player_swap_does_not_apply_enemy_status_block() {
     let fire_skill = SkillDef {

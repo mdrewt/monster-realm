@@ -1,5 +1,4 @@
-//! Evolution eligibility — the pure predicate layer of the essence-graph model
-//! (spec EG1-6, ADR-0174).
+//! Evolution eligibility — the pure predicate layer of the essence-graph model.
 //!
 //! `path_satisfied` is the ONE shared gate predicate: it AND-combines an
 //! `EvolutionPath`'s five gates (level, per-`Affinity` essence, Trust,
@@ -10,7 +9,7 @@
 //!
 //! `unmet_requirement` is its explanatory twin: the SAME gate order, rendered
 //! as the player-facing reason. It lives here rather than in the reducer so
-//! the rejection message and the client requirements panel (EG4-1, which ports
+//! the rejection message and the client requirements panel (which ports
 //! this logic) describe a gate identically — gate-describing logic is rules,
 //! not reducer plumbing.
 //!
@@ -19,17 +18,13 @@
 //! `quality_time_tier_of` (tick bands), `nutrition_pct_of` (the EV pool as a
 //! percentage of its 510 budget).
 //!
-//! Fusion is DELETED, not repurposed (`fusion_eligible`, `FusionError`,
-//! `MIN_FUSION_LEVEL`, `MIN_FUSION_BOND`), as are `resolve_evolution` and
-//! `evolves_to` — the whole trigger model they served no longer exists.
-//!
-//! Pure and deterministic (ADR-0003): integer math only, no floats, no clock,
+//! Pure and deterministic: integer math only, no floats, no clock,
 //! no RNG.
 
 use crate::content::{EvolutionPath, TrustTier};
 use crate::monster::types::{EVs, MonsterInstance, EV_TOTAL_CAP};
 
-/// Bayesian smoothing constant for Trust (spec EG1-6, ADR-0174 D4).
+/// Bayesian smoothing constant for Trust.
 ///
 /// `smoothed = (fav + K) / (fav + unfav + 2K)`. FIXED by directive — unlike the
 /// band boundaries, this is a structural design choice, not a playtest knob:
@@ -38,11 +33,11 @@ pub const TRUST_K: u32 = 10;
 
 /// Lower bounds (percent, INCLUSIVE) of the four upper Trust bands, ascending:
 /// `>= 30%` Wary, `>= 45%` Neutral, `>= 60%` Friendly, `>= 80%` Devoted.
-/// Below the first band is `Hostile`. Playtest-tunable (spec §6).
+/// Below the first band is `Hostile`. Playtest-tunable.
 pub const TRUST_BAND_PCT: [u32; 4] = [30, 45, 60, 80];
 
 /// Lower bounds (INCLUSIVE) of Quality-Time tiers 1..=4 in lifetime ticks.
-/// Below the first entry is tier 0. Playtest-tunable (spec §6).
+/// Below the first entry is tier 0. Playtest-tunable.
 pub const QUALITY_TIME_TIER_TICKS: [u32; 4] = [10, 50, 150, 400];
 
 /// The level gate: INCLUSIVE `>=` against `path.min_level`.
@@ -101,10 +96,10 @@ pub fn path_satisfied(instance: &MonsterInstance, path: &EvolutionPath) -> bool 
 /// Why `instance` does NOT satisfy `path` — `None` exactly when
 /// [`path_satisfied`] returns `true`.
 ///
-/// Lives HERE, not in the server reducer (EG1-6's shared-predicate rule): the
-/// reducer's "reject naming the specific failing requirement" message (EG2-1)
-/// and the EG4 client requirements panel must describe the SAME gate the SAME
-/// way, so the description logic is rules-layer state, not reducer state.
+/// Lives HERE, not in the server reducer: the reducer's "reject naming the
+/// specific failing requirement" message and the client requirements panel
+/// must describe the SAME gate the SAME way, so the description logic is
+/// rules-layer state, not reducer state.
 ///
 /// Returns the FIRST unmet gate in the canonical gate order
 /// `level -> essence -> trust -> quality time -> nutrition`. The message names
@@ -153,7 +148,7 @@ pub fn unmet_requirement(instance: &MonsterInstance, path: &EvolutionPath) -> Op
 /// Indices INTO `paths` of every edge whose `from_species` matches the
 /// monster's current species AND whose gates are all satisfied.
 ///
-/// Returns the FULL eligible set — never a first-match winner (EG2-2): a
+/// Returns the FULL eligible set — never a first-match winner: a
 /// monster simultaneously eligible for two paths yields both indices, which is
 /// what the player-choice UX is built on.
 #[must_use]
@@ -169,11 +164,11 @@ pub fn eligible_evolution_paths(instance: &MonsterInstance, paths: &[EvolutionPa
 }
 
 /// Trust tier from the lifetime favorable/unfavorable counts, with Drew's
-/// Bayesian smoothing applied BEFORE any band lookup (EG1-6):
+/// Bayesian smoothing applied BEFORE any band lookup:
 /// `smoothed = (fav + TRUST_K) / (fav + unfav + 2 * TRUST_K)`.
 ///
 /// Evaluated in integer math by cross-multiplication against `TRUST_BAND_PCT`
-/// (no floats in game-core, ADR-0003). Zero history is exactly 50% -> `Neutral`.
+/// (no floats in game-core). Zero history is exactly 50% -> `Neutral`.
 /// Must be TOTAL: the widened sum must not overflow for `fav`/`unfav` at
 /// `u32::MAX` (the workspace builds release with overflow checks on).
 #[must_use]
@@ -215,9 +210,9 @@ pub fn quality_time_tier_of(ticks: u32) -> u8 {
 }
 
 /// Nutrition as a percentage (0..=100) of the EV budget: the existing EV pool
-/// relabeled, no new storage (spec §1). Delegates to
+/// relabeled, no new storage. Delegates to
 /// [`nutrition_pct_from_ev_total`] so the server's row-based caller and this
-/// instance-based one share ONE formula (ADR-0174 D3).
+/// instance-based one share ONE formula.
 #[must_use]
 pub fn nutrition_pct_of(evs: &EVs) -> u8 {
     nutrition_pct_from_ev_total(evs.total())

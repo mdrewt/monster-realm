@@ -1,32 +1,4 @@
 //! M14a gating tests — acceptance criteria for the M14a status effect system.
-//!
-//! ALL tests start RED (compile error) because the following do not exist yet:
-//!   - `game-core/src/combat/status.rs` (module, all types, all functions)
-//!   - `StatusEffect`, `BattleStatusStore`, `StatusVariance` types
-//!   - `apply_pre_turn_effects`, `apply_post_turn_effects`, `tick_status` functions
-//!   - `resolve_full_turn` in `resolve.rs`
-//!   - `TurnChoice::Pass` variant in `types.rs`
-//!   - `BattleEvent::StatusDamage`, `ActionBlocked`, `StatusCured` variants
-//!
-//! Criterion → test mapping:
-//!   EARS-1 (regression)        → m14a_plain_attack_unchanged_with_empty_status
-//!   EARS-2 (exhaustive match)  → m14a_status_effect_match_is_exhaustive
-//!   EARS-3 (poison amount)     → m14a_poison_deals_max_hp_over_8_damage
-//!   EARS-4 (poison min)        → m14a_poison_deals_at_least_1_damage
-//!   EARS-5 (burn amount)       → m14a_burn_deals_max_hp_over_16_damage
-//!   EARS-6 (no status no DoT)  → m14a_no_status_no_dot_events
-//!   EARS-7 (paralysis blocks)  → m14a_paralysis_blocks_action_when_roll_under_25
-//!   EARS-8 (paralysis allows)  → m14a_paralysis_does_not_block_when_roll_25_or_above
-//!   EARS-9 (sleep always)      → m14a_sleep_always_blocks_action
-//!   EARS-10 (freeze always)    → m14a_freeze_always_blocks_action
-//!   EARS-11 (sleep decrement)  → m14a_sleep_turns_decrement_each_tick
-//!   EARS-12 (sleep cure)       → m14a_sleep_cures_when_turns_reach_zero
-//!   EARS-13 (freeze thaws)     → m14a_freeze_thaws_when_roll_ge_80
-//!   EARS-14 (freeze persists)  → m14a_freeze_persists_when_roll_lt_80
-//!   EARS-15 (blocked no atk)   → m14a_paralysis_block_prevents_attack_in_resolve_full_turn
-//!   EARS-16 (determinism)      → m14a_resolve_full_turn_is_deterministic
-//!   EARS-17 (DoT KO)           → m14a_poison_dot_ko_triggers_faint_and_battle_end
-//!   EARS-18 (independent)      → m14a_both_sides_can_have_independent_status
 
 use crate::combat::ability::AbilityStore;
 use crate::combat::resolve::resolve_full_turn;
@@ -133,7 +105,7 @@ fn empty_status() -> BattleStatusStore {
 }
 
 // ---------------------------------------------------------------------------
-// TEST 1 (EARS-1): M7 regression proof-of-teeth
+// M7 regression proof-of-teeth
 //
 // resolve_full_turn with empty status + no-paralysis variance must produce
 // IDENTICAL events to resolve_turn called directly.
@@ -198,7 +170,7 @@ fn m14a_plain_attack_unchanged_with_empty_status() {
 }
 
 // ---------------------------------------------------------------------------
-// TEST 2 (EARS-2): Exhaustive match proof-of-teeth (compile-time OCP gate)
+// Exhaustive match proof-of-teeth (compile-time OCP gate)
 //
 // An exhaustive match over ALL StatusEffect variants with no wildcard arm.
 // This test FAILS TO COMPILE if a new StatusEffect variant is added without
@@ -239,7 +211,7 @@ fn m14a_status_effect_match_is_exhaustive() {
 }
 
 // ---------------------------------------------------------------------------
-// TEST 3 (EARS-3): Poison DoT amount = max_hp / 8 (integer division)
+// Poison DoT amount = max_hp / 8 (integer division)
 //
 // Monster with max_hp=100, Poison. apply_post_turn_effects → StatusDamage
 // amount = 12 (100/8 = 12 via integer division), HP decreases by 12.
@@ -312,7 +284,7 @@ fn m14a_poison_deals_max_hp_over_8_damage() {
 }
 
 // ---------------------------------------------------------------------------
-// TEST 4 (EARS-4): Poison DoT minimum damage = 1
+// Poison DoT minimum damage = 1
 //
 // Monster with max_hp=4, Poison. max(1, 4/8) = max(1, 0) = 1.
 // apply_post_turn_effects → amount >= 1.
@@ -372,7 +344,7 @@ fn m14a_poison_deals_at_least_1_damage() {
 }
 
 // ---------------------------------------------------------------------------
-// TEST 5 (EARS-5): Burn DoT amount = max_hp / 16
+// Burn DoT amount = max_hp / 16
 //
 // Monster with max_hp=160, Burn. apply_post_turn_effects → amount = 10 (160/16).
 //
@@ -441,7 +413,7 @@ fn m14a_burn_deals_max_hp_over_16_damage() {
 }
 
 // ---------------------------------------------------------------------------
-// TEST 6 (EARS-6): No status = no DoT events
+// No status = no DoT events
 //
 // Monster with None status. apply_post_turn_effects → empty events.
 //
@@ -479,7 +451,7 @@ fn m14a_no_status_no_dot_events() {
 }
 
 // ---------------------------------------------------------------------------
-// TEST 7 (EARS-7): Paralysis blocks when roll < 25
+// Paralysis blocks when roll < 25
 //
 // Side A active: Paralysis. StatusVariance.action_skip_roll_a = 24.
 // apply_pre_turn_effects → a_can_act = false, ActionBlocked { side: SideA }.
@@ -541,7 +513,7 @@ fn m14a_paralysis_blocks_action_when_roll_under_25() {
 }
 
 // ---------------------------------------------------------------------------
-// TEST 8 (EARS-8): Paralysis does NOT block when roll >= 25
+// Paralysis does NOT block when roll >= 25
 //
 // action_skip_roll_a = 25 → a_can_act = true, NO ActionBlocked for SideA.
 //
@@ -589,7 +561,7 @@ fn m14a_paralysis_does_not_block_when_roll_25_or_above() {
 }
 
 // ---------------------------------------------------------------------------
-// TEST 9 (EARS-9): Sleep ALWAYS blocks regardless of roll
+// Sleep ALWAYS blocks regardless of roll
 //
 // Side A: Sleep{turns_remaining: 3}. action_skip_roll_a = 99 (maximum possible).
 // a_can_act = false, ActionBlocked emitted.
@@ -640,7 +612,7 @@ fn m14a_sleep_always_blocks_action() {
 }
 
 // ---------------------------------------------------------------------------
-// TEST 10 (EARS-10): Freeze ALWAYS blocks regardless of roll
+// Freeze ALWAYS blocks regardless of roll
 //
 // Side A: Freeze. action_skip_roll_a = 99.
 // a_can_act = false.
@@ -680,7 +652,7 @@ fn m14a_freeze_always_blocks_action() {
 }
 
 // ---------------------------------------------------------------------------
-// TEST 11 (EARS-11): Sleep turns decrement each tick
+// Sleep turns decrement each tick
 //
 // BattleStatusStore with side_a[0] = Sleep{turns_remaining: 3}.
 // tick_status → side_a[0] = Sleep{turns_remaining: 2}, no StatusCured event.
@@ -725,7 +697,7 @@ fn m14a_sleep_turns_decrement_each_tick() {
 }
 
 // ---------------------------------------------------------------------------
-// TEST 12 (EARS-12): Sleep cures when turns_remaining reaches 0 after decrement
+// Sleep cures when turns_remaining reaches 0 after decrement
 //
 // side_a[0] = Sleep{turns_remaining: 1}. tick_status → side_a[0] = None,
 // StatusCured { side: SideA } event emitted.
@@ -765,7 +737,7 @@ fn m14a_sleep_cures_when_turns_reach_zero() {
 }
 
 // ---------------------------------------------------------------------------
-// TEST 13 (EARS-13): Freeze thaws on high roll (freeze_thaw_roll >= 80)
+// Freeze thaws on high roll (freeze_thaw_roll >= 80)
 //
 // side_a[0] = Freeze. freeze_thaw_roll_a = 80.
 // tick_status → side_a[0] = None, StatusCured { side: SideA }.
@@ -810,7 +782,7 @@ fn m14a_freeze_thaws_when_roll_ge_80() {
 }
 
 // ---------------------------------------------------------------------------
-// TEST 14 (EARS-14): Freeze persists on low roll (freeze_thaw_roll < 80)
+// Freeze persists on low roll (freeze_thaw_roll < 80)
 //
 // side_a[0] = Freeze. freeze_thaw_roll_a = 79.
 // tick_status → side_a[0] = Some(Freeze), no StatusCured.
@@ -854,7 +826,7 @@ fn m14a_freeze_persists_when_roll_lt_80() {
 }
 
 // ---------------------------------------------------------------------------
-// TEST 15 (EARS-15): ActionBlocked prevents attack in resolve_full_turn
+// ActionBlocked prevents attack in resolve_full_turn
 //
 // Side A has Paralysis with action_skip_roll_a = 0 (guaranteed block).
 // Both sides choose Attack. Assert: ActionBlocked for SideA in events,
@@ -922,7 +894,7 @@ fn m14a_paralysis_block_prevents_attack_in_resolve_full_turn() {
 }
 
 // ---------------------------------------------------------------------------
-// TEST 16 (EARS-16): Determinism property test
+// Determinism property test
 //
 // Same (state, choices, status, variance) inputs → same outputs every time.
 //
@@ -1022,7 +994,7 @@ proptest! {
 }
 
 // ---------------------------------------------------------------------------
-// TEST 17 (EARS-17): DoT KO triggers Faint + BattleEnd
+// DoT KO triggers Faint + BattleEnd
 //
 // Monster with current_hp=1, max_hp=8, Poison, no backup on SideA.
 // apply_post_turn_effects → StatusDamage with amount=1, then Faint for SideA,
@@ -1111,7 +1083,7 @@ fn m14a_poison_dot_ko_triggers_faint_and_battle_end() {
 }
 
 // ---------------------------------------------------------------------------
-// TEST 18 (EARS-18): Both sides can have independent status
+// Both sides can have independent status
 //
 // Side A: Poison, Side B: Paralysis.
 // apply_post_turn_effects emits StatusDamage for A only (Paralysis has no DoT).
@@ -1190,14 +1162,10 @@ fn m14a_both_sides_can_have_independent_status() {
 }
 
 // ---------------------------------------------------------------------------
-// TEST 19 (mutation gate): Poison on SideB emits StatusDamage{side:SideB}
+// Poison on SideB emits StatusDamage{side:SideB}
 //
 // Kills: a mutant that hardcodes SideId::SideA in the StatusDamage event
 // regardless of which side the loop is processing.
-// Every DoT test in EARS-3 through EARS-5 and EARS-17 places Poison/Burn only
-// on SideA. A hardcode-SideA mutant passes all 18 EARS tests. This test closes
-// that mutation gap by putting Poison exclusively on SideB and verifying the
-// event targets SideB (not SideA).
 // ---------------------------------------------------------------------------
 
 /// Kills: any mutant that hardcodes SideId::SideA in StatusDamage or in the
@@ -1263,10 +1231,10 @@ fn m14a_poison_on_side_b_deals_dot_to_side_b() {
 }
 
 // ---------------------------------------------------------------------------
-// TEST 20 (mutation gate): Burn minimum damage = 1
+// Burn minimum damage = 1
 //
-// Parallel to EARS-4 (Poison floor). Kills a mutant that removes `.max(1)` from
-// burn_dot_amount — for max_hp=8, 8/16=0 without the floor, emitting 0 damage.
+// Kills a mutant that removes `.max(1)` from burn_dot_amount — for max_hp=8,
+// 8/16=0 without the floor, emitting 0 damage.
 // ---------------------------------------------------------------------------
 
 /// Kills: a mutant that removes `.max(1)` from burn_dot_amount.

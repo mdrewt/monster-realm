@@ -1,53 +1,4 @@
 //! Red-team findings for the M14.5a post-turn pipeline wiring slice.
-//!
-//! Each test is a permanent gating test protecting a concrete adversarial
-//! invariant. Tests that expose real bugs start RED (fail) and turn GREEN
-//! once the fix is applied.
-//!
-//! Findings summary (ranked by severity):
-//!
-//!   RT-M14.5A-01 (HIGH) — Phase 4.5 `StatusApplied` slot-mismatch after
-//!     Sandstorm/Hail chip-damage KO during `resolve_player_swap`.
-//!     The enemy attack inflicts status on the newly-swapped-in monster (slot 1).
-//!     `StatusApplied { SideA, Burn }` is captured before post-turn phases run.
-//!     Phase 3.5 weather chip kills slot 1 → auto-switch fires → `state.side_a.active`
-//!     changes to slot 0. Phase 4.5 then writes the Burn to slot 0 (the backup,
-//!     which was never attacked). Slot 1 (the correct target, now fainted) stays
-//!     `None`. Slot 0 ends up Burned even though no Burn-applying skill hit it.
-//!
-//!   RT-M14.5A-02 (MEDIUM) — `resolve_recruit_failure` calls
-//!     `run_post_turn_phases(…, &events.clone(), &mut events)`. The `action_events`
-//!     slice is a clone of `events` at call time (strike-back events). The phase 4.5
-//!     StatusApplied scan operates on this clone, which is correct. However, if the
-//!     wild's strike-back KOs the player's active and auto-switch fires, the same
-//!     slot-mismatch as RT-M14.5A-01 applies: `state.side_a.active` points to the
-//!     backup when phase 4.5 writes. Demonstrates the slot-mismatch is structural to
-//!     `run_post_turn_phases`, not specific to one call-site.
-//!
-//!   RT-M14.5A-03 (LOW) — `use_battle_item` clears `BattleMonster.status` in the
-//!     live battle row. No corresponding `BattleStatusStore` update happens inside
-//!     the reducer. The store is always rebuilt from `BattleMonster.status` at the
-//!     start of subsequent reducers, so this is correct in the current architecture.
-//!     BUT: if any future path calls `resolve_full_turn` / `resolve_player_swap`
-//!     inline WITHIN `use_battle_item` (without a fresh store rebuild), the store
-//!     would be stale. This test pins the invariant: store and BattleMonster.status
-//!     must agree before any resolve call.
-//!
-//! Repro steps for RT-M14.5A-01:
-//!   1. Set up a 2-slot player team: slot 0 (backup A), slot 1 (low-HP B, active).
-//!   2. Set Sandstorm weather active (any turns_remaining > 0).
-//!   3. Give the enemy a Burn-applying skill.
-//!   4. Call resolve_player_swap to swap to slot 1 (B becomes active).
-//!   5. Configure variance so the enemy hits B and applies Burn, B survives with 1 HP.
-//!   6. Phase 3.5: Sandstorm chip (max_hp/16 >= 1) kills B. Auto-switch to slot 0.
-//!   7. Phase 4.5: `state.side_a.active == 0` → Burn written to slot 0 (A). BUG.
-//!
-//!   BUG (pre-m14.5a/pre-m14.5b): slot 0 (A) has Burn, slot 1 (B) has None.
-//!
-//!   CORRECT (after m14.5b, ADR-0099 D2 drop-if-not-conscious):
-//!     slot 0 (A, backup switch-in) = None (never targeted)
-//!     slot 1 (B, fainted target)   = None (targeted, but B fainted from chip
-//!                                         before Phase 4.5 → write is dropped)
 
 use crate::combat::ability::{AbilityStore, StatusKind};
 use crate::combat::resolve::{resolve_player_swap, resolve_recruit_failure};
@@ -62,7 +13,7 @@ use crate::content::{SkillDef, TypeRelation};
 use crate::monster::types::{Affinity, StatBlock};
 
 // ---------------------------------------------------------------------------
-// Shared fixture helpers (mirrors redteam_m14e_tests.rs convention)
+// Shared fixture helpers
 // ---------------------------------------------------------------------------
 
 fn make_type_chart_neutral() -> TypeChart {
@@ -138,16 +89,13 @@ fn always_hit_variance() -> TurnVariance {
 }
 
 // ===========================================================================
-// RT-M14.5A-01 (HIGH): Phase 4.5 writes StatusApplied to the wrong slot when
+// Phase 4.5 writes StatusApplied to the wrong slot when
 // Sandstorm/Hail chip damage kills the swap-in target before phase 4.5 runs.
 //
 // Invariant: `StatusApplied { side: SideA, status: Burn }` must be committed to
 // the BattleStatusStore slot of the ATTACKED monster (slot 1 — the one that was
 // targeted by the Burn skill), not the slot of the monster that auto-switched in
 // after the target fainted from weather chip damage.
-//
-// This test was RED before m14.5b (ADR-0099). It is GREEN after the slot-capture
-// fix: slot is now carried in the event (D1) and dropped if the target fainted (D2).
 //
 // Kills: any impl that reads `state.side_X.active` in phase 4.5 AFTER DoT/weather
 // phases have possibly changed it via auto-switch, rather than capturing the slot
@@ -254,13 +202,10 @@ fn rt_m14_5a_01_status_applied_written_to_correct_slot_after_weather_chip_ko() {
     // After the call:
     // - B (slot 1) was attacked and survived → StatusApplied { SideA, Burn } emitted.
     // - Sandstorm chip killed B (slot 1) → auto-switch to A (slot 0).
-    // - Phase 4.5 SHOULD write Burn to slot 1 (B, the attack target).
-    //   BUT: current impl writes Burn to state.side_a.active (= slot 0 after auto-switch).
     //
-    // CORRECT invariant (ADR-0099 D2 drop-if-not-conscious):
+    // CORRECT invariant:
     //   slot 0 (A, backup switch-in): None — never targeted
     //   slot 1 (B, fainted target):   None — dropped because B fainted from chip
-    // Previous (pre-m14.5b) behavior: slot 1 had Some(Burn) (write-even-if-fainted).
 
     // First confirm that StatusApplied was emitted (enemy hit and applied Burn).
     let status_applied = events.iter().any(|e| {
@@ -322,7 +267,7 @@ fn rt_m14_5a_01_status_applied_written_to_correct_slot_after_weather_chip_ko() {
 
     // CORRECT: slot 0 (A, backup — never targeted by Burn skill) must be None.
     // CORRECT: slot 1 (B, the Burn target) must also be None — B fainted from
-    //          Sandstorm chip before Phase 4.5, so ADR-0099 D2 drops the write.
+    //          Sandstorm chip before Phase 4.5.
     assert_eq!(
         status.side_a[0], None,
         "RT-M14.5A-01 FAILED: slot 0 (backup A, never targeted by Burn skill) \
@@ -335,7 +280,7 @@ fn rt_m14_5a_01_status_applied_written_to_correct_slot_after_weather_chip_ko() {
         status.side_a[0]
     );
 
-    // ADR-0099 D2: if the targeted monster fainted (from Sandstorm chip here), Phase 4.5
+    // If the targeted monster fainted (from Sandstorm chip here), Phase 4.5
     // drops the StatusApplied write. Slot 1 (B, the Burn target) must be None — applying
     // status to a fainted monster would be inconsistent with game state.
     assert_eq!(
@@ -451,7 +396,7 @@ fn rt_m14_5a_02_recruit_failure_status_applied_to_correct_slot_after_auto_switch
     // Active slot 0 starts at 3 HP, burn_applying_skill deals 2 damage → 1 HP remains
     // (not fainted), so StatusApplied MUST be emitted. The Sandstorm chip (max_hp/16 = 1)
     // then kills slot 0. If this assert fires, the damage formula changed and the stats
-    // in the fixture need updating — do NOT remove or weaken it (ptc5d-3, ADR-0137 D3).
+    // in the fixture need updating — do NOT remove or weaken it.
     assert!(
         status_applied,
         "RT-M14.5A-02: StatusApplied was not emitted — precondition violated. \

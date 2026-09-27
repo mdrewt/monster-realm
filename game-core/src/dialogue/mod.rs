@@ -1,4 +1,4 @@
-//! Dialogue tree model + pure evaluation rules (ADR-0021, ADR-0068).
+//! Dialogue tree model + pure evaluation rules.
 
 pub mod model;
 pub mod rules;

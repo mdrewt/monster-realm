@@ -1,6 +1,6 @@
 //! monster-realm `game-core` — the single, pure, deterministic rule layer.
 //!
-//! Every game rule lives here exactly once (ADR-0003, SSOT). The server runs it
+//! Every game rule lives here exactly once (SSOT). The server runs it
 //! for truth; the client runs the *same compiled code* (via `client-wasm`) for
 //! prediction. Re-implementing a rule elsewhere is the desync bug.
 //!
@@ -102,10 +102,10 @@ pub use world::{
     STEP_MS,
 };
 
-/// The trivial M0 proof-rule: a pure, deterministic state transition over an
-/// explicit seed (splitmix64-style mix). It proves the determinism/parity gates
-/// have teeth. Identical `(state, input, seed)` returns byte-identical output on
-/// every target (native server path and the wasm client path).
+/// a pure, deterministic state transition over an
+/// explicit seed (splitmix64-style mix). Identical `(state, input, seed)`
+/// returns byte-identical output on every target (native server path and the
+/// wasm client path).
 #[must_use]
 pub fn tick_seed(state: u64, input: u64, seed: u64) -> u64 {
     let mut z = state
@@ -156,13 +156,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Nightly mutation hardening: known-answer vectors pin the exact
-    // splitmix64 finalizer of `tick_seed`. Any XOR/shift mutation
-    // (`^`->`|`, `^`->`&`, `>>`->`<<`) alters every vector below.
-    // Determinism contract: ADR-0003 (same seed -> same result, forever).
+    // Any XOR/shift mutation (`^`->`|`, `^`->`&`, `>>`->`<<`) alters every
+    // vector below.
     // -----------------------------------------------------------------------
 
-    /// Kills: all bit-mixing mutants in `tick_seed` (9 nightly survivors).
+    /// Kills: all bit-mixing mutants in `tick_seed`.
     /// Vectors computed with an independent Python splitmix64 replica;
     /// `tick_seed(0,0,0)` equals the canonical first splitmix64(0) output.
     #[test]

@@ -1,30 +1,4 @@
 //! Red-team findings for the M14c passive ability system.
-//!
-//! Each test is a permanent gating test that protects a concrete invariant.
-//! All were confirmed by adversarial analysis of `ability.rs` and `content.rs`.
-//!
-//! Findings summary (ranked by severity):
-//!
-//!   RT-A14-01 (HIGH)   — `validate_abilities` is NOT called from `sync_content_inner`.
-//!                         Invalid species ability references (dangling ids, illegal denoms)
-//!                         slip through to the live server if the caller only runs
-//!                         `validate_content`. The gate here pins the mandatory call-site
-//!                         in `sync_content_inner`'s source text.
-//!
-//!   RT-A14-02 (MEDIUM) — AbilityStore/BattleStatusStore size contract is unchecked.
-//!                         `apply_entry_ability` and `apply_ability_modifiers` use `Vec::get`
-//!                         so an undersized AbilityStore silently produces a no-op instead of
-//!                         applying the ability. Same contract gap as RT-S14-03 (BattleStatusStore).
-//!                         Probe: AbilityStore with 1 slot, BattleState.active=1 → ability is
-//!                         silently skipped, monster heals nothing.
-//!
-//!   RT-A14-03 (MEDIUM) — `debug_assert!(denom >= 2)` precondition fires loudly in debug
-//!                         builds when `denom < 2` bypasses `validate_abilities`. This test
-//!                         confirms the debug guard is active (project ADR-0055 policy).
-//!
-//!   RT-A14-05 (LOW)    — `apply_ability_modifiers` with EntryHeal does NOT heal per-turn
-//!                         (entry-only). Pins this so a per-turn heal exploit is not
-//!                         accidentally introduced.
 
 use crate::combat::ability::{
     apply_ability_modifiers, apply_entry_ability, AbilityEffect, AbilityStore,
@@ -82,7 +56,7 @@ fn make_state(
 }
 
 // ===========================================================================
-// RT-A14-01 (HIGH): validate_abilities is NOT called from sync_content_inner.
+// validate_abilities is NOT called from sync_content_inner.
 //
 // `sync_content_inner` calls validate_content, validate_encounters,
 // validate_evolution_fusion, validate_npc_content, and validate_shops — but
@@ -91,9 +65,7 @@ fn make_state(
 // exist in the abilities registry) and the server will accept it without error.
 //
 // This test gates that the word "validate_abilities" appears in the
-// sync_content_inner source body.  It uses the source-guard pattern (include_str!)
-// established by the project for analogous cross-registry validators
-// (validate_shops, validate_evolution_fusion).
+// sync_content_inner source body.
 // ===========================================================================
 
 /// RT-A14-01: pins that sync_content_inner calls validate_abilities.
@@ -166,10 +138,10 @@ fn rt_a14_02_undersized_ability_store_silently_skips_entry_heal() {
 }
 
 // ===========================================================================
-// RT-A14-03 (MEDIUM): debug_assert!(denom >= 2) fires in debug builds when
+// debug_assert!(denom >= 2) fires in debug builds when
 // denom=1 bypasses validate_abilities.
 //
-// The precondition guard in apply_entry_ability (ADR-0055 policy):
+// The precondition guard in apply_entry_ability:
 //   debug_assert!(denom >= 2, "EntryHeal denom {denom} bypassed ...")
 //
 // When denom < 2 reaches apply_entry_ability (bypassing validate_abilities),
@@ -177,7 +149,6 @@ fn rt_a14_02_undersized_ability_store_silently_skips_entry_heal() {
 // "fail loud" policy for precondition violations. This test pins that the
 // guard is active by confirming the panic message.
 //
-// Root fix: RT-A14-01 (validate_abilities called server-side).
 // ===========================================================================
 
 /// RT-A14-03: debug_assert fires loudly on denom=1 (precondition violation).
@@ -203,8 +174,8 @@ fn rt_a14_03_denom_1_triggers_debug_assert_precondition() {
 }
 
 // ===========================================================================
-// RT-A14-05 (LOW / correctness pin): apply_ability_modifiers with EntryHeal
-// ability does NOT heal on modifier calls (per-turn hook only touches immunity).
+// apply_ability_modifiers with EntryHeal ability does NOT heal on modifier calls
+// (per-turn hook only touches immunity).
 //
 // AbilityEffect::EntryHeal is matched exhaustively in apply_entry_ability but
 // NOT in apply_ability_modifiers. The modifier loop only acts on StatusImmunity:

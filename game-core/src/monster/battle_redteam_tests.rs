@@ -1,24 +1,4 @@
 //! Red-team attack tests for the M7a combat-rules plan.
-//!
-//! These tests are written BEFORE the battle module exists. Each test documents
-//! a confirmed design flaw or edge-case that MUST be handled by the implementation.
-//!
-//! Tests are grouped by finding number and severity. They call hypothetical APIs
-//! that the plan describes. Each test includes a comment explaining:
-//!   - what the finding is
-//!   - how severe it is
-//!   - what the test proves
-//!
-//! IMPORTANT: These tests are intended to FAIL against a naive implementation.
-//! They serve as a specification of required behavior. A passing test suite
-//! means the implementation has addressed the finding.
-//!
-//! Run with: cargo test battle_redteam -- --nocapture
-//!
-//! NOTE: The battle module (game_core::monster::battle) does not exist yet.
-//! This file uses `#[cfg(FALSE)]` blocks around calls to unimplemented APIs
-//! to keep it compilable while still being a runnable specification.
-//! The arithmetic-only tests run today and prove the plan's claims are wrong.
 
 use super::rules::{derive_stats, level_for_xp, xp_for_level};
 use super::types::{Affinity, EVs, IVs, Level, Nature, NatureKind, StatBlock, StatKind, Xp};
@@ -80,14 +60,14 @@ fn make_skill(id: u32, affinity: Affinity, power: u16, accuracy: u8) -> SkillDef
     }
 }
 
-/// The damage formula as described in the plan.
+/// The damage formula.
 /// base = (((2 * level / 5 + 2) * power * atk) / def) / 50 + 2
 /// Applied sequentially with integer truncation.
 fn plan_damage_base(level: u32, power: u32, atk: u32, def: u32) -> u32 {
     (((2 * level / 5 + 2) * power * atk) / def) / 50 + 2
 }
 
-/// Apply the multiplicative chain as the plan describes it, LEFT-TO-RIGHT,
+/// Apply the multiplicative chain, LEFT-TO-RIGHT,
 /// with truncating integer division at each step.
 fn plan_damage_chain_sequential(base: u32, effectiveness: u32, stab: u32, variance: u32) -> u32 {
     let after_eff = base * effectiveness / 10;
@@ -102,14 +82,13 @@ fn plan_damage_chain_deferred(base: u32, effectiveness: u32, stab: u32, variance
 
 // ---------------------------------------------------------------------------
 // FINDING 1 (MEDIUM): Multiplicative chain -- sequential truncation diverges
-//   from deferred-division result. The plan does not specify order of operations
-//   for the three multipliers, meaning implementations can give different answers.
+//   from deferred-division result.
 //   The divergence is up to 2 damage points per hit, which compounds over a battle.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn f1_damage_chain_order_matters_stab_plus_neutral() {
-    // FINDING 1: the plan's three multipliers (STAB, type effectiveness, variance)
+    // FINDING 1: (STAB, type effectiveness, variance)
     // give different results depending on the application order under integer division.
     //
     // base=5, neutral effectiveness=10, STAB (3/2), variance=85
@@ -292,7 +271,7 @@ fn f2_damage_formula_safe_with_current_content() {
 
 // ---------------------------------------------------------------------------
 // FINDING 3 (HIGH): TurnVariance has no constructor enforcement.
-//   The plan's struct has u8 fields with documented ranges 85..=100 and 0..=99,
+//   with documented ranges 85..=100 and 0..=99,
 //   but u8 holds 0..=255. An out-of-range damage_roll=0 gives minimum damage
 //   of 0 (before max(1) clamp). An out-of-range damage_roll=255 gives 2.55x
 //   the expected maximum damage. An accuracy_roll=255 means skills never miss.
@@ -301,10 +280,6 @@ fn f2_damage_formula_safe_with_current_content() {
 #[test]
 fn f3_damage_roll_zero_gives_zero_before_clamp() {
     // damage_roll=0: base * 0 / 100 = 0
-    // The plan says max(1) applies "for non-immune" -- but if the impl applies
-    // max(1) AFTER the variance step, damage_roll=0 would give 1 (clamped).
-    // If the plan intends damage_roll in 85..=100, roll=0 is INVALID INPUT.
-    // Without a constructor that validates, any caller can pass roll=0.
     let base: u32 = 100;
     let zero_roll: u32 = 0;
     let damage_with_zero_roll = base * zero_roll / 100;
@@ -353,7 +328,6 @@ fn f3_accuracy_roll_255_never_misses() {
 
 // ---------------------------------------------------------------------------
 // FINDING 4 (HIGH): Species struct has no xp_yield field.
-//   The plan says base_xp_yield is derived from base_stat_total / 3.
 //   This computation is not in Species, not in validate_content, not in rules.rs.
 //   An implementer must either add a field (schema change) or embed the
 //   derivation. If it's embedded, content authors cannot override it.
@@ -362,10 +336,9 @@ fn f3_accuracy_roll_255_never_misses() {
 #[test]
 fn f4_species_has_no_xp_yield_field() {
     // Species struct currently has: id, name, base_stats, affinity, learnable_skill_ids.
-    // No xp_yield field. The plan says it's "derived from base stat total / 3".
+    // No xp_yield field.
     // If a future species should give MORE or LESS XP than BST/3 implies
     // (e.g., rare species or event content), there's no way to configure it.
-    // This is a schema gap that must be resolved before M7a ships.
 
     let flameling = Species {
         id: 1,
@@ -409,7 +382,7 @@ fn f4_species_has_no_xp_yield_field() {
 
 // ---------------------------------------------------------------------------
 // FINDING 5 (HIGH): apply_xp_gain with no no-op guard at level 100.
-//   XP gain at max level: the plan's formula gives nonzero XP for ANY battle.
+//   XP gain at max level: nonzero XP for ANY battle.
 //   If apply_xp_gain adds XP to a level-100 monster, it changes Xp(1_000_000)
 //   to Xp(1_002_120). level_for_xp(1_002_120) still returns level 100 (correct),
 //   but the XP field on the monster is now incorrect relative to xp_for_level(100).
@@ -432,8 +405,6 @@ fn f5_xp_gain_at_level_100_must_noop() {
     let battles_to_overflow = (u32::MAX - current_xp) / xp_per_battle + 1;
 
     // This is ~2 million battles -- not reachable in practice, but:
-    // 1. The spec should say apply_xp_gain no-ops at level 100.
-    // 2. The Xp field should be capped at 1_000_000 to prevent drift.
     current_xp = current_xp.wrapping_add(battles_to_overflow * xp_per_battle);
 
     // After wrapping, raw level_for_xp gives a WRONG level (< 100).
@@ -506,11 +477,10 @@ fn f6_is_fainted_requires_saturating_sub() {
 // ---------------------------------------------------------------------------
 // FINDING 7 (HIGH): Simultaneous KO -- no winner defined.
 //   If the slower monster's attack is resolved EVEN THOUGH the faster monster
-//   fainted first (because the plan says "Faster KO prevents slower from acting"),
+//   fainted first,
 //   then a situation where BOTH KO each other is impossible by spec.
 //   BUT: what if they have the same speed and BOTH attack? Both could faint
 //   in the same turn (speed tie, both attacks resolved, mutual KO).
-//   The plan does not specify who wins a mutual KO.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -524,16 +494,6 @@ fn f7_mutual_ko_winner_is_undefined() {
     //
     // Scenario B: speed_tie_breaker=false -> SideB attacks first -> SideA faints ->
     //   SideA cannot attack -> SideB wins. Clear.
-    //
-    // BUT: what if the plan means speed determines which monster attacks first,
-    // and ties are resolved by the breaker, but the slower monster STILL attacks
-    // if it wasn't KO'd by the faster? That's the standard Pokemon rule.
-    //
-    // In that standard model: if SideA is faster and KOs SideB, SideB does NOT attack.
-    // Mutual KO only occurs if BOTH monsters survive the first hit.
-    // With the min-damage floor of 1, and 1 HP remaining, both would faint after
-    // the slower's attack. Then BOTH sides have 0 conscious members.
-    // Who wins? The plan says "Battle end when no conscious members" but not who wins.
 
     // Prove the ambiguity with a concrete damage scenario:
     let hp_remaining: u16 = 1;
@@ -543,10 +503,8 @@ fn f7_mutual_ko_winner_is_undefined() {
     let sideb_hp_after_a: u16 = hp_remaining.saturating_sub(guaranteed_damage as u16);
     assert_eq!(sideb_hp_after_a, 0, "SideB fainted after SideA's attack");
 
-    // Per the plan's "Faster KO prevents slower from acting":
     // If SideB HP == 0 after SideA's attack, SideB should NOT attack.
-    // In this case SideA wins. But the plan must EXPLICITLY state this check
-    // happens BETWEEN the two attacks, not after both.
+    // In this case SideA wins.
 
     // The ambiguous case: what if check_fainted() is called AFTER both attacks?
     let sidea_hp_if_both_attack: u16 = hp_remaining.saturating_sub(guaranteed_damage as u16);
@@ -614,11 +572,9 @@ fn f8_validate_content_accepts_illegal_effectiveness() {
 
 // ---------------------------------------------------------------------------
 // FINDING 9 (HIGH): Power=0 skills in SkillDef -- no validation gate.
-//   The plan's formula: base = (... * power * ...) / def / 50 + 2
+//   base = (... * power * ...) / def / 50 + 2
 //   With power=0: base = 0 + 2 = 2. A "status" skill (power=0) used in the
-//   damage formula always deals 2 base damage. The plan must either:
-//   (a) forbid power=0 in validate_content, or
-//   (b) explicitly handle power=0 as a non-damaging status (skip damage calc).
+//   damage formula always deals 2 base damage.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -672,7 +628,7 @@ fn f9_validate_content_accepts_zero_power_skill() {
 
 // ---------------------------------------------------------------------------
 // FINDING 10 (MEDIUM): AI ignores accuracy in pick_best_skill.
-//   The plan says AI picks the highest estimated damage (variance=100).
+//   the highest estimated damage (variance=100).
 //   But a 75%-accuracy, power=80 skill (expected = 60) beats a 100%-accuracy,
 //   power=65 skill (expected = 65) in expected value -- yet the AI picks the
 //   80-power move. Against accuracy-reducing moves (M14+), this worsens.
@@ -796,8 +752,6 @@ fn f12_extreme_defense_debuff_approaches_zero() {
         );
     }
 
-    // Even if we don't hit 0, we must assert the plan guards against it.
-    // Document the minimum viable defense:
     assert!(
         base_defense >= 4,
         "FINDING 12 (documentation): Minimum derivable defense={base_defense} \
@@ -812,8 +766,6 @@ fn f12_extreme_defense_debuff_approaches_zero() {
 //   A level-1 monster defeating a level-50 opponent gains ~1060 XP.
 //   Level 1 requires 1 XP; level 10 requires 1000 XP.
 //   level_for_xp(1 + 1060) = 10. The monster jumps 9 levels.
-//   The plan does not say whether derived_stats are recomputed at the new level,
-//   or whether per-level events (learning skills at specific levels) are emitted.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -846,7 +798,7 @@ fn f13_multilevel_jump_xp_math() {
 //   The risk is silent logic gaps in game-core's own battle resolution code.
 // ---------------------------------------------------------------------------
 
-// FINDING 14 (language property — no runtime test possible, tautology removed):
+// FINDING 14:
 // #[non_exhaustive] on BattleEvent only protects EXTERNAL crates. Within
 // game-core, exhaustive matches compile without a wildcard arm even after M14
 // adds new variants — silent logic gap risk.
@@ -855,26 +807,21 @@ fn f13_multilevel_jump_xp_math() {
 //   All internal matches on BattleEvent MUST include explicit wildcard arms
 //   (`_ => {}`) from day one to avoid silent gaps when M14 adds variants.
 //   The #[non_exhaustive] attribute gates only external consumers.
-//
-// fn f14_non_exhaustive_within_crate_gives_no_protection — removed (tautology;
-// asserted a Rust-language fact, zero regression value)
 
 // ---------------------------------------------------------------------------
 // FINDING 15 (MEDIUM): resolve_player_swap naming implies asymmetric API.
 //   For M16 PvP, both sides need equivalent swap capability. A function named
 //   `resolve_player_swap` implies it only operates on one side (the "player").
-//   The SideA/SideB symmetry stated in the plan is undermined if the swap
-//   API is structurally asymmetric.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn f15_pvp_requires_symmetric_swap_api() {
-    // Gap CLOSED in-core: resolve_player_swap accepts swap_side: SideId (resolve.rs:311)
+    // Gap CLOSED in-core: resolve_player_swap accepts swap_side: SideId
     // and handles both SideId::SideA and SideId::SideB symmetrically.
     //
-    // This test is STRENGTHENED: it calls resolve_player_swap with SideId::SideB
-    // and asserts that state.side_b.active is updated. If the symmetric API is
-    // ever narrowed (e.g., hard-coded to SideA), this assertion turns RED.
+    // calls resolve_player_swap with SideId::SideB and asserts that state.side_b.active
+    // is updated. If the symmetric API is ever narrowed (e.g., hard-coded to SideA),
+    // this assertion turns RED.
     use crate::combat::type_chart::TypeChart;
     use crate::combat::{
         resolve_player_swap,
@@ -991,26 +938,11 @@ fn f15_pvp_requires_symmetric_swap_api() {
 }
 
 // ---------------------------------------------------------------------------
-// FINDING 16 (gap closed — tautological assertion removed):
-//   The M7a plan did not specify a write-back contract for post-battle HP/XP.
-//   This gap is now CLOSED: server-module implements `write_back_battle_results`
-//   and `write_back_party_hp` (~lib.rs:2440+) which write current_hp, xp, level,
-//   and derived_stats back to the `monster` and `monster_pub` tables after battle.
-//   The server-module reducer tests cover these paths.
-//
-//   The original test asserted `has_current_hp && has_xp_field` on a freshly
-//   constructed MonsterInstance — always true on constructed values, zero
-//   regression value. Removed per M8.5c anchor-cleanup (no tautology shall remain).
-//
-// fn f16_no_write_back_spec_for_battle_result — removed (tautology; gap closed server-side)
-
-// ---------------------------------------------------------------------------
 // FINDING 17 (LOW): Damage formula minimum is 2, not 1.
-//   The plan says "max(1) for non-immune". But the formula always produces
+//   formula always produces
 //   base >= 2 (the +2 term). The actual minimum is 2 for neutral, or 1 for
 //   half-effective (2 * 5 / 10 = 1), or 0 for immune (handled separately).
 //   "max(1)" only catches the immune->0 case and the variance->0 truncation.
-//   The floor is misleadingly documented.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1018,9 +950,6 @@ fn f17_formula_minimum_is_2_not_1_before_chain() {
     // For ANY non-zero power, non-zero atk, non-zero def, any valid level:
     // base >= 0/50 + 2 = 2
     // The formula can never produce base < 2 from valid inputs.
-    // The plan saying "max(1) for non-immune" is technically correct (it's a
-    // floor on the FINAL damage, not on base), but misleads implementers into
-    // thinking single-point damage is the minimum case.
     // The true minimum for a neutral, non-STAB hit is:
     //   base=2, eff=10, stab=10, var=85: 2*10/10=2, 2*10/10=2, 2*85/100=1
     // So final damage CAN be 1 even without the max(1) clamp.

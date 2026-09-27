@@ -1,4 +1,4 @@
-//! Quest flag-advance module — pure, deterministic (ADR-0021, ADR-0068).
+//! Quest flag-advance module — pure, deterministic.
 
 pub mod model;
 pub mod rules;

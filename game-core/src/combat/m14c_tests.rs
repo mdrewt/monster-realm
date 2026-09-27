@@ -1,26 +1,4 @@
 //! M14c gating tests — acceptance criteria for the passive ability system slice.
-//!
-//! Criterion → test mapping:
-//!   EARS-1  (StatusKind::matches true)            → ears_1_status_kind_matches_true
-//!   EARS-2  (StatusKind::matches false)           → ears_2_status_kind_matches_false_wrong_variant
-//!   EARS-3  (StatusKind::Sleep any turns)         → ears_3_status_kind_sleep_matches_any_turns_remaining
-//!   EARS-4  (EntryHeal heals HP)                  → ears_4_entry_heal_restores_hp
-//!   EARS-5  (EntryHeal no overheal)               → ears_5_entry_heal_does_not_overheal
-//!   EARS-6  (EntryHeal skip fainted)              → ears_6_entry_heal_skips_fainted_monster
-//!   EARS-7  (EntryHeal skip full HP)              → ears_7_entry_heal_skips_full_hp_monster
-//!   EARS-8  (StatusImmunity clears matching)      → ears_8_entry_ability_status_immunity_clears_matching
-//!   EARS-9  (StatusImmunity keeps non-matching)   → ears_9_entry_ability_status_immunity_keeps_non_matching
-//!   EARS-10 (no ability is no-op)                 → ears_10_entry_ability_none_is_noop
-//!   EARS-11 (per-turn immunity clears matching)   → ears_11_modifiers_clears_immunity_matching_status
-//!   EARS-12 (per-turn immunity keeps other)       → ears_12_modifiers_keeps_non_matching_status
-//!   EARS-13 (validate duplicate id)               → ears_13_validate_abilities_rejects_duplicate_id
-//!   EARS-14 (validate denom < 2)                  → ears_14_validate_abilities_rejects_entry_heal_denom_below_2
-//!   EARS-15 (validate dangling species ability)   → ears_15_validate_abilities_rejects_dangling_species_ref
-//!   EARS-16 (validate accepts valid data)         → ears_16_validate_abilities_accepts_valid_data
-//!   EARS-17 (parse_abilities RON)                 → ears_17_parse_abilities_parses_core_ron
-//!   EARS-18 (load_abilities loads 3 items)        → ears_18_load_abilities_returns_three_items
-//!   EARS-19 (Species ability defaults to None)    → ears_19_species_ability_field_defaults_to_none
-//!   EARS-20 (EntryHeal minimum heal is 1)         → ears_20_entry_heal_minimum_heal_is_1
 
 use crate::combat::ability::{
     apply_ability_modifiers, apply_entry_ability, AbilityEffect, AbilityStore, StatusKind,
@@ -753,7 +731,7 @@ fn ears_20_entry_heal_minimum_heal_is_1() {
 }
 
 // ===========================================================================
-// EARS-21: StatusKind::matches full truth table — all 5 variants, true arms
+// StatusKind::matches full truth table — all 5 variants, true arms
 //
 // Invariant protected: every StatusKind variant has a DISTINCT true arm in
 // StatusKind::matches that returns true exactly when the paired StatusEffect

@@ -1,4 +1,4 @@
-//! NPC wander module — pure, seeded, deterministic (ADR-0068).
+//! NPC wander module — pure, seeded, deterministic.
 
 pub mod rules;
 

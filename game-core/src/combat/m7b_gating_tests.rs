@@ -1,16 +1,4 @@
 //! M7b gating tests — acceptance criteria for the M7b combat type changes.
-//!
-//! These tests are intentionally RED until the implementer makes the changes
-//! described in the M7b spec:
-//!   - `BattleSide.active` changed from `usize` to `u32`
-//!   - `TurnChoice::Swap.team_index` changed from `usize` to `u32`
-//!   - `BattleEvent::Switch.new_active` changed from `usize` to `u32`
-//!   - `BattleOutcome::Fled` variant added
-//!   - `TurnVariance::from_ctx_random(seed: u32)` constructor added
-//!
-//! Each test is annotated with which wrong implementation it kills.
-//!
-//! Run: cargo test m7b_gating -- --nocapture
 
 use crate::combat::types::{
     BattleEvent, BattleMonster, BattleOutcome, BattleSide, BattleState, SideId, TurnChoice,
@@ -222,7 +210,6 @@ fn battle_event_switch_new_active_is_u32() {
 //   - produces accuracy_roll outside 0..=99
 //   - uses the wrong bit for speed_tie_breaker
 //
-// The constructor does not exist yet — the test starts red (compile error).
 // ---------------------------------------------------------------------------
 
 #[test]

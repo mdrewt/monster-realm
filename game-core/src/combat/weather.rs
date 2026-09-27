@@ -1,17 +1,14 @@
-//! Weather / field-state pure rules — game-core layer (M14d, ADR-0095).
+//! Weather / field-state pure rules — game-core layer.
 //!
 //! No I/O, no clock, no RNG. Weather damage is deterministic (1/16 max HP),
 //! weather effectiveness modifiers are integer-only (3/2 or 1/2 scale).
 //!
-//! # Affinity-to-immunity mapping (ADR-0095)
+//! # Affinity-to-immunity mapping
 //!
 //! The game uses `Fire | Water | Plant | Electric | Earth | Wind | Light | Dark`.
 //! Classic Sandstorm/Hail immunities (Rock/Ground/Steel, Ice) are approximated:
 //! - **Sandstorm**: immune if affinity is `Earth` (closest to Rock/Ground)
 //! - **Hail**: immune if affinity is `Water` (ice-resistant by lore)
-//!
-//! These are intentional design decisions recorded in ADR-0095; they are the
-//! game's rule, not a mis-mapping of Pokémon mechanics.
 
 use serde::{Deserialize, Serialize};
 
@@ -26,7 +23,7 @@ use crate::monster::types::Affinity;
 /// and as the result of `WeatherEffect::kind()`.
 ///
 /// Exhaustive — a new variant forces a compile-time update at every match site
-/// (OCP gate, ADR-0010). Does NOT need `SpacetimeType` (content-only; the
+/// (OCP gate). Does NOT need `SpacetimeType` (content-only; the
 /// runtime type is `WeatherEffect`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WeatherKind {
@@ -47,7 +44,7 @@ pub enum WeatherKind {
 /// set by a skill is [`WEATHER_DEFAULT_TURNS`].
 ///
 /// `SpacetimeType` is cfg-gated: `WeatherEffect` is nested inside `BattleState`
-/// which is stored in the `battle` table (M14d, ADR-0095).
+/// which is stored in the `battle` table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "spacetimedb", derive(spacetimedb::SpacetimeType))]
 pub enum WeatherEffect {
@@ -113,7 +110,7 @@ impl WeatherEffect {
 /// Applied to damage AFTER the type-effectiveness and variance steps:
 /// `final_dmg = base_dmg * numer / denom`.
 ///
-/// Rules (ADR-0095):
+/// Rules:
 /// - Rain: Water attacks × 3/2, Fire attacks × 1/2, others × 1
 /// - Sun:  Fire attacks × 3/2, Water attacks × 1/2, others × 1
 /// - Sandstorm, Hail, None: no attack modifier (× 1)
@@ -147,7 +144,7 @@ pub fn weather_attack_modifier(
 
 /// Returns `true` if the given affinity is immune to Sandstorm chip damage.
 ///
-/// Earth types (approximating Rock/Ground/Steel) are immune (ADR-0095).
+/// Earth types (approximating Rock/Ground/Steel) are immune.
 #[must_use]
 pub fn sandstorm_immune(affinity: Affinity) -> bool {
     matches!(affinity, Affinity::Earth)
@@ -155,7 +152,7 @@ pub fn sandstorm_immune(affinity: Affinity) -> bool {
 
 /// Returns `true` if the given affinity is immune to Hail chip damage.
 ///
-/// Water types (approximating Ice resistance) are immune (ADR-0095).
+/// Water types (approximating Ice resistance) are immune.
 #[must_use]
 pub fn hail_immune(affinity: Affinity) -> bool {
     matches!(affinity, Affinity::Water)
@@ -291,11 +288,6 @@ pub fn tick_weather(state: &mut BattleState, events: &mut Vec<BattleEvent>) {
 // ---------------------------------------------------------------------------
 // Tests: WeatherEffect::turns_remaining exact accessor
 // ---------------------------------------------------------------------------
-//
-// AC-M7: these tests kill the following 2 cargo-mutants survivors:
-//
-//   // kills: game-core/src/combat/weather.rs:97:9 replace WeatherEffect::turns_remaining -> u8 with 0
-//   // kills: game-core/src/combat/weather.rs:97:9 replace WeatherEffect::turns_remaining -> u8 with 1
 //
 // Strategy: test ALL four variants with a stored value of 5 (≠ 0 and ≠ 1).
 // The constant-0 mutant returns 0 when we expect 5 → assertion fails.
