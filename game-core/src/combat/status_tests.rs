@@ -4,7 +4,7 @@
 //! One nested module per facet; each keeps its own fixtures.
 
 pub mod dot_and_blocking {
-    //! M14a gating tests — acceptance criteria for the M14a status effect system.
+    //! Status DoT and action blocking (poison/burn chip, paralysis/sleep/freeze gates).
 
     use crate::combat::ability::AbilityStore;
     use crate::combat::resolve::resolve_full_turn;
@@ -1303,7 +1303,7 @@ pub mod dot_and_blocking {
 }
 
 pub mod persistence {
-    //! M14b gating tests — acceptance criteria for the M14b status persistence slice.
+    //! Status persistence on `BattleMonster`: serde, slot-carrying cure events, variance derivation.
 
     use crate::combat::ability::AbilityStore;
     use crate::combat::resolve::resolve_full_turn;
@@ -2407,7 +2407,7 @@ pub mod persistence {
 }
 
 pub mod cure_slot_hardening {
-    //! Red-team findings for the M14a/M14b status-effect implementation.
+    //! Status hardening: bench-slot cures, sleep underflow, undersized stores, simultaneous DoT KOs.
 
     use crate::combat::ability::AbilityStore;
     use crate::combat::resolve::resolve_player_swap;
@@ -2966,7 +2966,7 @@ pub mod cure_slot_hardening {
 }
 
 pub mod applied_slot {
-    //! M14.5b gating tests — acceptance criteria for the `StatusApplied` slot-field fix.
+    //! `StatusApplied` carries the defender slot; a status never lands on a fainted monster.
     //!
     //!   1. `BattleEvent::StatusApplied` gains a `slot: u32` field — the team index
     //!      of the monster that was attacked at the time the event was emitted.
@@ -3804,7 +3804,7 @@ pub mod applied_slot {
 }
 
 pub mod post_turn_pipeline {
-    //! Red-team findings for the M14.5a post-turn pipeline wiring slice.
+    //! Post-turn pipeline: status writes hit the right slot after chip KOs and auto-switches.
 
     use crate::combat::ability::{AbilityStore, StatusKind};
     use crate::combat::resolve::{resolve_player_swap, resolve_recruit_failure};
@@ -4296,8 +4296,8 @@ pub mod post_turn_pipeline {
 }
 
 pub mod applying_skills_and_cure_items {
-    //! M14e gating tests — acceptance criteria for the M14e status-curing items +
-    //! client battle-event display slice.
+    //! Status-applying skills and cure items: `StatusApplied` emission rules and item/skill
+    //! fields.
 
     use crate::combat::ability::{AbilityStore, StatusKind};
     use crate::combat::resolve::resolve_full_turn;
@@ -5101,7 +5101,7 @@ pub mod applying_skills_and_cure_items {
 }
 
 pub mod applying_hardening {
-    //! Red-team findings for the M14e status-applying skill + cure-item slice.
+    //! Status-applying hardening: immunity, faint, no double status, battle-item ownership guard.
 
     use crate::combat::ability::{AbilityStore, StatusKind};
     use crate::combat::resolve::resolve_full_turn;

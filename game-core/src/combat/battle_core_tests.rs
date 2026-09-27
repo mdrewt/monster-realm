@@ -4,7 +4,7 @@
 //! fixtures.
 
 pub mod core_types {
-    //! M7b gating tests — acceptance criteria for the M7b combat type changes.
+    //! Battle core type shapes: u32 slot indices, `Fled` outcome, turn-variance derivation.
 
     use crate::combat::types::{
         BattleEvent, BattleMonster, BattleOutcome, BattleSide, BattleState, SideId, TurnChoice,
@@ -379,7 +379,7 @@ pub mod core_types {
 }
 
 pub mod resolver_attacks {
-    //! Red-team attack tests for the M7b plan.
+    //! Resolver attack tests: terminal-state turns, swaps, XP arithmetic, malformed inputs.
     //!
     //! Each test is annotated with:
     //!   - Finding number and severity
@@ -1299,7 +1299,7 @@ pub mod resolver_attacks {
 }
 
 pub mod resolver_findings {
-    //! New red-team findings for the M7b battle implementation.
+    //! Resolver findings: guards, stale reads, write-back arithmetic, overflow and leak checks.
     //!
     //! Severity ranking used:
     //!   CRITICAL — exploitable for state corruption, resource duplication, or

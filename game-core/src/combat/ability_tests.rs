@@ -3,7 +3,7 @@
 //! KO auto-switch. One nested module per facet; each keeps its own fixtures.
 
 pub mod passive_system {
-    //! M14c gating tests — acceptance criteria for the passive ability system slice.
+    //! Passive ability system: `StatusKind` matching, entry heal / immunity, validation, loading.
 
     use crate::combat::ability::{
         apply_ability_modifiers, apply_entry_ability, AbilityEffect, AbilityStore, StatusKind,
@@ -806,7 +806,7 @@ pub mod passive_system {
 }
 
 pub mod passive_hardening {
-    //! Red-team findings for the M14c passive ability system.
+    //! Passive ability hardening: validation wiring, undersized stores, modifier semantics.
 
     use crate::combat::ability::{
         apply_ability_modifiers, apply_entry_ability, AbilityEffect, AbilityStore,
@@ -1031,7 +1031,7 @@ pub mod passive_hardening {
 }
 
 pub mod content_wiring {
-    //! M14.5c gating tests — end-to-end ability wiring.
+    //! End-to-end ability wiring from species content to battle effects.
 
     use crate::combat::ability::{
         apply_ability_modifiers, apply_entry_ability, AbilityEffect, AbilityStore, StatusKind,
@@ -1518,7 +1518,7 @@ pub mod content_wiring {
 }
 
 pub mod entry_on_ko_switch {
-    //! M14.5h gating tests — D6 wiring: entry abilities fire on KO auto-switch.
+    //! Entry abilities fire on a KO auto-switch (D6 wiring; heal boundary at full HP).
     //!
     //! These tests pass — they document the boundary
     //! semantics of the `<` comparison in `apply_entry_ability`:

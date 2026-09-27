@@ -3,7 +3,7 @@
 //! and event ordering. One nested module per facet; each keeps its own fixtures.
 
 pub mod field_state {
-    //! M14d gating tests — acceptance criteria for the M14d weather/field-state slice.
+    //! Weather / field state: modifiers, chip, tick-down, skill-set weather, immunities.
 
     use crate::combat::ability::AbilityStore;
     use crate::combat::resolve::resolve_full_turn;
@@ -931,7 +931,7 @@ pub mod field_state {
 }
 
 pub mod chip_and_damage {
-    //! M14d red-team / regression tests — weather/field-state slice.
+    //! Weather regression and hardening: byte-identical no-weather turns, chip cascades, known answers.
 
     use crate::combat::ability::AbilityStore;
     use crate::combat::resolve::{resolve_full_turn, resolve_turn};
@@ -1762,7 +1762,7 @@ pub mod chip_and_damage {
 }
 
 pub mod recruit_and_ordering {
-    //! Red-team gating tests for M14d weather desync and validate_content findings.
+    //! Weather on the recruit-failure path, validate_content coverage, and event ordering.
     //!
     //! RT-W14-DESYNC-01: attempt_recruit now uses
     //!     load_skills() (sets_weather/applies_status populated) instead of
