@@ -180,13 +180,9 @@ fn ea_ra_06a_ranked_enforcement_inert_until_activation_canary() {
 
 #[test]
 fn ea_ra_06b_issuers_configured_matrix() {
-    // Every URL literal is built with a concat! split across the scheme
-    // slashes — the same construction accounts.rs uses, because this repo's
-    // comment-first source scanners truncate at a contiguous scheme and
-    // unbalance their quote pairing for the rest of the file.
-    let placeholder = concat!("https:/", "/auth.monster-realm.invalid/");
-    let real = concat!("https:/", "/auth.monster-realm.example/");
-    let real_with_invalid_substring = concat!("https:/", "/auth.invalid-corp.example/");
+    let placeholder = "https://auth.monster-realm.invalid/";
+    let real = "https://auth.monster-realm.example/";
+    let real_with_invalid_substring = "https://auth.invalid-corp.example/";
 
     assert!(
         !super::issuers_configured(&[placeholder]),

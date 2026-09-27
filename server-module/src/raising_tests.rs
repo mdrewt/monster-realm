@@ -1957,10 +1957,7 @@ fn rb41_has_heal_cooldown_tracks_real_cooldown_rows() {
 // SCAN SUBSTRATE. Every scan reuses THIS file's existing helpers only
 // (`RAISING_SOURCE`, `strip_raising_comments`, `blank_heal_scan_strings`,
 // `assert_no_heal_scan_landmines`, `reducer_body`, `eg2_scan_body`) — no third
-// stripper. Every production needle is assembled from fragments and
-// the double quote and both braces are spelled as NUMBERS: four evals
-// concatenate every `.rs` under `server-module/src` and take the FIRST hit of a
-// declaration needle, and this file sorts before `taming.rs`.
+// stripper.
 //
 // HONEST LIMITS, stated once for the block. The source pins read text, never
 // behaviour. The executed matrix reads behaviour but stops at the first guard

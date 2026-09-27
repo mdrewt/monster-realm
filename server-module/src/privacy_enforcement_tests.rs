@@ -10,19 +10,6 @@
 //! OWNERSHIP SPLIT. The `rb45_*` tests and the rosters below are GATING: they are
 //! revised from ADR-0258 and the slice plan, NEVER edited to fit an engine. The
 //! `census` module is the implementation half; the rest of the file is its contract.
-//!
-//! FIXTURE HYGIENE — MANDATORY for every future editor. Several eval scripts
-//! concatenate the `*_tests.rs` files and scan them as TEXT with string-unaware
-//! comment strippers, so a contiguous production marker here reds an unrelated CI
-//! gate. Therefore, in this file:
-//!   - every production-looking marker inside a fixture is assembled from
-//!     `concat!` pieces, spelled ONCE in a `fixture_*` helper or a const near the
-//!     top (reducer and table attributes, the accessor spelling, write calls, the
-//!     guard paths, the pending predicate, macro and impl-block shapes, the
-//!     table-handle type, cfg and path attributes);
-//!   - no forward slash inside ANY string literal, no block comment, no raw
-//!     string, no include macro, no macro metavariable splice;
-//!   - lines stay inside 100 columns and the file stays rustfmt-clean.
 
 use std::collections::BTreeSet;
 
@@ -58,8 +45,8 @@ mod census {
     const REQUIRE_NOT_DELETING: &str = "require_not_deleting";
     const REQUIRE_SUBJECT: &str = "require_subject_not_deleting";
     const REQUIRE_COMMITMENT: &str = "require_commitment_predates_deletion";
-    const PENDING_PREDICATE: &str = concat!("is_pending_", "deletion");
-    const REJECT_PREDICATE: &str = concat!("should_reject_", "for_deletion");
+    const PENDING_PREDICATE: &str = "is_pending_deletion";
+    const REJECT_PREDICATE: &str = "should_reject_for_deletion";
     /// The only three wrapper spellings ADR-0248 D1 pins as gate shape (a).
     const GATE_WRAPPERS: &[&str] = &[REQUIRE_NOT_DELETING, REQUIRE_SUBJECT, REQUIRE_COMMITMENT];
     /// Guard-family fn names that may only be DEFINED in guards or accounts.
@@ -74,11 +61,11 @@ mod census {
     /// Chain methods that turn a table handle into rows, so a binding of such a
     /// chain is a row, never a handle alias.
     const ROW_METHODS: &[&str] = &["iter", "count", "len"];
-    const HANDLE_SUFFIX: &str = concat!("Table", "Handle");
+    const HANDLE_SUFFIX: &str = "TableHandle";
     const TABLE_TRAIT: &str = "Table";
     const CTX_TYPE: &str = "ReducerContext";
     const SENDER_METHOD: &str = "sender";
-    const HOST_IDENTITY_METHOD: &str = concat!("database_", "identity");
+    const HOST_IDENTITY_METHOD: &str = "database_identity";
     const OK_VARIANT: &str = "Ok";
     const TEST_CFG: &str = "test";
     const CFG_ATTR: &str = "cfg";
@@ -1577,13 +1564,13 @@ fn assert_ungated(
     }
 }
 
-const CTX_DB: &str = concat!("ctx", ".db.");
+const CTX_DB: &str = "ctx.db.";
 const REDUCER_CTX: &str = "ctx: &ReducerContext";
 const OK_TAIL: &str = "Ok(())";
 
-/// The qualified reducer-attribute head. Spelled ONCE here, split so it is never
-/// contiguous in this file; the real-crate test counts reducers with this needle.
-const REDUCER_ATTR_HEAD: &str = concat!("#[spacetimedb", "::reducer");
+/// The qualified reducer-attribute head. Spelled ONCE here; the real-crate test
+/// counts reducers with this needle.
+const REDUCER_ATTR_HEAD: &str = "#[spacetimedb::reducer";
 
 fn fixture_reducer_attr(arg: &str) -> String {
     if arg.is_empty() {
@@ -1594,7 +1581,7 @@ fn fixture_reducer_attr(arg: &str) -> String {
 }
 
 fn fixture_table_attr(accessor: &str, extra: &str) -> String {
-    let head = concat!("#[spacetimedb", "::table(", "accessor", " = ");
+    let head = "#[spacetimedb::table(accessor = ";
     if extra.is_empty() {
         format!("{head}{accessor})]")
     } else {

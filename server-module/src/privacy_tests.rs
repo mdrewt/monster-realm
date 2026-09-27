@@ -7,10 +7,6 @@
 //! resolves to `privacy`. The reducer-level export owner scope, admission and
 //! the reaper's scheduler guard are exercised natively in `accounts_tests.rs`
 //! (`acct_export_*`).
-//!
-//! SCAN HYGIENE: some evals concatenate every `.rs` file under
-//! `server-module/src` and strip block comments with a naive regex, so this
-//! file carries no block comments, no raw strings and no escaped double quote.
 
 #![cfg(test)]
 
@@ -213,30 +209,6 @@ fn rb22p_dq() -> char {
 // SOURCE-STRUCTURE pin over PRIVACY_RS through this module's existing
 // three-stage strip pipeline. Source pins are the weaker instrument and each
 // one says so; the behavioural tests carry the real teeth.
-//
-// SCAN HYGIENE (this file is scanned by rb22p_scan_hygiene, and concatenated by
-// a dozen evals that strip comments naively):
-//   * line comments only, never a block-comment delimiter, and no regex literal
-//     in a comment (a slash-star or star-slash inside one blanks a span of every
-//     LATER module in a concatenated blob);
-//   * no raw-string prefix, no logging token, no print macro;
-//   * NO backslash immediately followed by a double quote anywhere. Every
-//     backslash below comes from m22s4_bs() and every double quote from
-//     rb22p_dq(), and no string literal ends in a backslash escape;
-//   * no double quote inside a comment (balanced-quote rule) and none inside a
-//     char literal (it desynchronises downstream eval string strippers);
-//   * the purge helper is NEVER spelled contiguously (crate-wide naming census,
-//     accounts_tests.rs) — always a concat! split;
-//   * the wallet row struct is reached through an IMPORT ALIAS and the wallet
-//     accessor spelling is never followed by an empty argument list, because
-//     evals/currency-integrity.eval.mjs scans EVERY .rs under server-module/src
-//     (test files included) and its allowlist is an exact-path match that does
-//     not cover this file. The alternative (adding privacy_tests.rs to that
-//     allowlist, the economy_tests.rs precedent) is recorded as an open review
-//     question in ADR-0226 implementation-time discoveries;
-//   * attribute needles are assembled from concat! fragments (the
-//     accounts_tests.rs house convention) so a scanner that concatenates this
-//     file cannot mistake a pinned literal for a live declaration.
 
 use crate::playtest::{PlaytestEvent, PLAYTEST_EVENT_CAP};
 use crate::schema::PlayerWallet as M22s4WalletRow;
@@ -258,9 +230,7 @@ use spacetimedb::Identity;
 // ===========================================================================
 
 /// A literal backslash, built from its byte so this file never carries a
-/// backslash adjacent to a double quote (the rb22p_scan_hygiene ban, which
-/// exists because that pair desynchronises a naive quote-pairing stripper in
-/// every eval that concatenates this crate).
+/// backslash adjacent to a double quote.
 fn m22s4_bs() -> char {
     char::from(92u8)
 }
@@ -3714,7 +3684,7 @@ fn rb65p_export_fields_is_exact() {
 #[test]
 fn rb65p_export_line_composes_into_the_envelope() {
     let dq = rb22p_dq();
-    let evt = concat!("data", "_export");
+    let evt = "data_export";
     let hex = rb65p_ident(9).to_string();
     let line = crate::observability::build_log_line(
         evt,
@@ -3797,13 +3767,8 @@ const RB85_MARSHAL_RS: &str = include_str!("marshal.rs");
 const RB85_VIS_WINDOW: usize = 24;
 
 /// The squashed `fn` needle for the injected-clock marshal in marshal.rs.
-///
-/// Fragmented like every other declaration needle in this block: a dozen evals
-/// concatenate every `.rs` under `server-module/src`, this file included, and a
-/// raw-corpus scanner must never be able to mistake a pinned literal here for a
-/// live declaration of a fn that really lives in another module.
 fn rb85_nd_clock_fn() -> String {
-    concat!("fnnow", "_ms(").to_string()
+    "fnnow_ms(".to_string()
 }
 
 /// THE FROZEN INJECTED-CLOCK BODY, squashed (`marshal::now_ms`).
@@ -3819,7 +3784,7 @@ fn rb85_clock_body_pin() -> String {
 
 /// The injected-clock DECLARATION as source text (positive-control input).
 fn rb85_clock_decl_source() -> String {
-    concat!("fn now", "_ms(ctx: &ReducerContext) -> i64 ").to_string()
+    "fn now_ms(ctx: &ReducerContext) -> i64 ".to_string()
 }
 
 /// The injected-clock BODY as whitespace-bearing source text (control input).
@@ -5347,7 +5312,7 @@ fn rb87_reap_line_is_the_exact_json_envelope() {
 
 /// The squashed `fn` needle for the tier-selection seam.
 fn rb107_nd_tier_fn() -> String {
-    concat!("fnexport_live", "_row_cap(").to_string()
+    "fnexport_live_row_cap(".to_string()
 }
 
 /// The frozen squashed SIGNATURE slice of the tier seam. It starts at the `fn`
@@ -5376,9 +5341,9 @@ fn rb107_tier_sig_pin() -> String {
 fn rb107_tier_body_pin() -> String {
     [
         "ifhas_account{",
-        concat!("EXPORT_LIVE", "_ROW_CAP}elseifhas_wallet{"),
-        concat!("EXPORT_ANON", "_LIVE_ROW_CAP}else{"),
-        concat!("EXPORT_", "NEWCOMER_LIVE_ROW_CAP}"),
+        "EXPORT_LIVE_ROW_CAP}elseifhas_wallet{",
+        "EXPORT_ANON_LIVE_ROW_CAP}else{",
+        "EXPORT_NEWCOMER_LIVE_ROW_CAP}",
     ]
     .concat()
 }
@@ -5386,11 +5351,7 @@ fn rb107_tier_body_pin() -> String {
 /// The tier seam's DECLARATION line as whitespace-bearing source text (rb-132's
 /// two-bool form, 68 columns flat, so rustfmt keeps it on one line).
 fn rb107_tier_decl_source() -> String {
-    concat!(
-        "fn export_live",
-        "_row_cap(has_account: bool, has_wallet: bool) -> u64 "
-    )
-    .to_string()
+    "fn export_live_row_cap(has_account: bool, has_wallet: bool) -> u64 ".to_string()
 }
 
 /// The tier seam's BODY as whitespace-bearing source text (rb-132's three arms,
@@ -5398,11 +5359,11 @@ fn rb107_tier_decl_source() -> String {
 fn rb107_tier_body_source() -> String {
     [
         "\n    if has_account {\n        ",
-        concat!("EXPORT_LIVE", "_ROW_CAP\n"),
+        "EXPORT_LIVE_ROW_CAP\n",
         "    } else if has_wallet {\n        ",
-        concat!("EXPORT_ANON", "_LIVE_ROW_CAP\n"),
+        "EXPORT_ANON_LIVE_ROW_CAP\n",
         "    } else {\n        ",
-        concat!("EXPORT_", "NEWCOMER_LIVE_ROW_CAP\n"),
+        "EXPORT_NEWCOMER_LIVE_ROW_CAP\n",
         "    }\n",
     ]
     .concat()
@@ -5419,10 +5380,10 @@ fn rb107_tier_body_source() -> String {
 /// that never held it.
 fn rb107_blind_count(needle: &str) -> usize {
     let mut prose = String::new();
-    prose.push_str(concat!("fn rb107", "_blindness_decoy() "));
+    prose.push_str("fn rb107_blindness_decoy() ");
     prose.push('{');
     prose.push_str("\n    ");
-    prose.push_str(concat!("/", "/ "));
+    prose.push_str("// ");
     prose.push_str(needle);
     prose.push_str("\n    let s = ");
     prose.push(rb22p_dq());
@@ -5669,7 +5630,7 @@ const RB107_ACCOUNTS_RS: &str = include_str!("accounts.rs");
 
 /// The squashed `fn` needle for the crate's account-holder SSOT predicate.
 fn rb107_nd_holder_fn() -> String {
-    concat!("fnis_account", "_holder(").to_string()
+    "fnis_account_holder(".to_string()
 }
 
 /// THE FROZEN SQUASHED BODY of that predicate (accounts.rs).
@@ -5681,8 +5642,8 @@ fn rb107_nd_holder_fn() -> String {
 /// it asks.
 fn rb107_holder_body_pin() -> String {
     [
-        concat!("ctx", ".db."),
-        concat!("acc", "ount()"),
+        "ctx.db.",
+        "account()",
         ".identity().find(identity).is_some()",
     ]
     .concat()
@@ -5692,7 +5653,7 @@ fn rb107_holder_body_pin() -> String {
 /// positive control's input, spelled independently of the pin above.
 fn rb107_holder_decl_source() -> String {
     [
-        concat!("pub(crate) fn is_account", "_holder(ctx: &ReducerContext, "),
+        "pub(crate) fn is_account_holder(ctx: &ReducerContext, ",
         "identity: Identity) -> bool ",
     ]
     .concat()
@@ -5702,8 +5663,8 @@ fn rb107_holder_decl_source() -> String {
 fn rb107_holder_body_source() -> String {
     [
         "\n    ",
-        concat!("ctx", ".db."),
-        concat!("acc", "ount()"),
+        "ctx.db.",
+        "account()",
         ".identity().find(identity).is_some()\n",
     ]
     .concat()
@@ -5957,7 +5918,7 @@ fn rb107_cap_selection_is_tiered_by_account() {
          spellings: an enumerated ban is satisfied by the restricted visibility forms."
     );
     assert!(
-        !window.contains(concat!("#", "[")),
+        !window.contains("#["),
         "[rb107/tier-vis]: `{needle}` is preceded by an ATTRIBUTE — the {RB85_VIS_WINDOW} squashed \
          bytes before it read {window:?}; ZERO is allowed. A conditional-compilation twin of this \
          seam would ship one tier decision to the test target and another to the wasm the database \
@@ -6052,7 +6013,7 @@ fn rb107_cap_selection_is_tiered_by_account() {
          rests on it; accounts.rs owns the decision, and this clause only makes the decision \
          load-bearing visible."
     );
-    let holder_named = concat!("is_account", "_holder(");
+    let holder_named = "is_account_holder(";
     let n_asked = rb22p_count(&squashed, holder_named);
     assert_eq!(
         n_asked, 1,
@@ -6164,17 +6125,6 @@ fn rb107_cap_selection_is_tiered_by_account() {
 // 340) beside the frozen body pin, not the count alone. (d) A cfg attribute above
 // a test attribute disables the test while every text census stays green; only
 // the ledger's filtered run count (E1) and the suite total (X2) see that.
-//
-// SCAN HYGIENE (rb22p_scan_hygiene scans THIS FILE): line comments only, no
-// block-comment delimiter, no raw-string prefix, no output or debug macro token,
-// no backslash before a double quote, and no double quote inside any comment in
-// this section. The table and column names handed to the fixture are assembled
-// from concat! fragments and are never spelled contiguously, so a raw-corpus
-// scanner that concatenates this file cannot mistake a fixture argument for a
-// live declaration. The deliberate exceptions are the LIVE ones: the call to
-// the private helper (`reap_expired_export` + `_bundles`) inside rb109_tick, the
-// three constants read by their real names, and the ctx.db chain the host-side
-// oracles take — a value oracle has to reach the real item.
 // ===========================================================================
 
 // The generated accessor TRAIT for the export chunk table, imported for the
@@ -6274,17 +6224,12 @@ fn rb109_row(
 /// Register the export chunk table with the native host, keyed on the creation
 /// stamp — the single-column btree index the reaper reads and deletes through.
 ///
-/// The two names are the only strings this block hands the host, and they are
-/// assembled from fragments for the reason the module header gives. The index
+/// The two names are the only strings this block hands the host. The index
 /// name itself is DERIVED inside the fixture from these two, never passed in.
 fn rb109_table(
     fx: &crate::native_host_tests::Fixture,
 ) -> crate::native_host_tests::Handle<'_, crate::schema::ExportBundle, i64> {
-    fx.table_keyed(
-        concat!("export", "_bundle"),
-        concat!("created_at", "_ms"),
-        |r| r.created_at_ms,
-    )
+    fx.table_keyed("export_bundle", "created_at_ms", |r| r.created_at_ms)
 }
 
 /// Seed one whole population: every bundle in LIST order, `chunks` rows each, so
@@ -7306,17 +7251,12 @@ fn rb111_mint(ctx: &spacetimedb::ReducerContext, now: i64) -> Result<i64, String
 /// through.
 ///
 /// Re-spelled rather than shared with the rb-109 fixture: that block's helper
-/// roster is CLOSED and its tests are a different slice's evidence. The two
-/// names are assembled from fragments and the index name itself is DERIVED
-/// inside the fixture from them, never passed in.
+/// roster is CLOSED and its tests are a different slice's evidence. The index
+/// name itself is DERIVED inside the fixture from the two names, never passed in.
 fn rb111_table(
     fx: &crate::native_host_tests::Fixture,
 ) -> crate::native_host_tests::Handle<'_, crate::schema::ExportBundle, i64> {
-    fx.table_keyed(
-        concat!("export", "_bundle"),
-        concat!("created_at", "_ms"),
-        |r| r.created_at_ms,
-    )
+    fx.table_keyed("export_bundle", "created_at_ms", |r| r.created_at_ms)
 }
 
 /// A distinct owner identity per seeded bundle.
@@ -7450,8 +7390,8 @@ fn rb111_expected_free(occupied: &[i64], now: i64, width: i64) -> Option<i64> {
 fn rb111_mint_returns_the_first_free_stamp_at_or_after_the_clock() {
     let w = crate::privacy::EXPORT_STAMP_PROBE_WINDOW_MS;
     let now: i64 = 1_760_000_000_000;
-    let reason = concat!("export_reject_stamp", "_contention");
-    let index = concat!("export", "_bundle_created_at", "_ms_idx_btree");
+    let reason = "export_reject_stamp_contention";
+    let index = "export_bundle_created_at_ms_idx_btree";
 
     assert!(
         w >= 2,
@@ -7654,7 +7594,7 @@ fn rb111_mint_returns_the_first_free_stamp_at_or_after_the_clock() {
 #[test]
 fn rb111_a_same_millisecond_burst_takes_distinct_stamps_until_the_window_is_full() {
     let w = crate::privacy::EXPORT_STAMP_PROBE_WINDOW_MS;
-    let reason = concat!("export_reject_stamp", "_contention");
+    let reason = "export_reject_stamp_contention";
     let now: i64 = 1_760_000_000_000;
     let chunks =
         u32::try_from(m22s4_manifest_exportable().len()).expect("rb111: the manifest fits a u32");
@@ -7999,7 +7939,7 @@ proptest! {
         shift in -3i64..4i64,
     ) {
         let w = crate::privacy::EXPORT_STAMP_PROBE_WINDOW_MS;
-        let reason = concat!("export_reject_stamp", "_contention");
+        let reason = "export_reject_stamp_contention";
         let now = base.saturating_add(shift);
         let mut occupied: Vec<i64> = offsets.iter().map(|o| base.saturating_add(*o)).collect();
         occupied.sort_unstable();

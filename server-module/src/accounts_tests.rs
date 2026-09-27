@@ -816,7 +816,7 @@ fn data_lifecycle_partition_matches_spec_section3() {
         "player_dialogue_state",
         "player_quest",
         "player_session",
-        concat!("player", "_wallet"),
+        "player_wallet",
         "playtest_event",
         "trade_offer",
     ];
@@ -863,7 +863,7 @@ fn data_lifecycle_partition_matches_spec_section3() {
     );
 
     let expected_not_owned = [
-        concat!("account_deletion_reaper", "_schedule"),
+        "account_deletion_reaper_schedule",
         "config",
         "encounter",
         "evolution_path",
@@ -1005,7 +1005,7 @@ fn data_lifecycle_export_scope_structurally_narrower() {
         "player_conversation",
         "player_dialogue_state",
         "player_quest",
-        concat!("player", "_wallet"),
+        "player_wallet",
         "playtest_event",
         "profile",
         "trade_offer",
@@ -2767,7 +2767,7 @@ fn m22s6_table_row_types() -> Vec<(&'static str, AlgebraicType)> {
             <crate::schema::Account as SpacetimeType>::make_type(&mut ts),
         ),
         (
-            concat!("account_deletion_reaper", "_schedule"),
+            "account_deletion_reaper_schedule",
             <crate::accounts::AccountDeletionReaperSchedule as SpacetimeType>::make_type(&mut ts),
         ),
         (
@@ -2883,7 +2883,7 @@ fn m22s6_table_row_types() -> Vec<(&'static str, AlgebraicType)> {
             <crate::schema::PlayerSession as SpacetimeType>::make_type(&mut ts),
         ),
         (
-            concat!("player", "_wallet"),
+            "player_wallet",
             <crate::schema::PlayerWallet as SpacetimeType>::make_type(&mut ts),
         ),
         (
@@ -3255,7 +3255,7 @@ fn m22s6_not_owned_identity_exceptions_are_frozen() {
         "config",
         "guest_claim",
         "guest_claim_reaper_schedule",
-        concat!("account_deletion_reaper", "_schedule"),
+        "account_deletion_reaper_schedule",
     ];
 
     let mut population = 0usize;
@@ -3615,7 +3615,7 @@ fn m22s9_export_bundle_struct_shape_tripwire() {
 
 /// The event name.
 fn rb40_evt() -> String {
-    concat!("guest_claim_export", "_purge").to_string()
+    "guest_claim_export_purge".to_string()
 }
 
 /// X1 (behavioural): `purge_fields` renders EXACTLY the sanctioned
@@ -3806,7 +3806,7 @@ fn rb40_claim_purge_line_composes_into_the_envelope() {
 
 /// The cascade event name.
 fn rb65_evt() -> String {
-    concat!("account_deletion", "_cascade").to_string()
+    "account_deletion_cascade".to_string()
 }
 
 /// X1 (behavioural): `cascade_fields` renders EXACTLY the sanctioned two-key
