@@ -1,0 +1,62 @@
+{"file":"server-module/src/raising_tests.rs","test_name":"evaluate_train_rejects_non_training_food","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"evaluate_train_delegates_to_focus_train","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"evaluate_train_maps_stat_at_cap","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"evaluate_train_maps_budget_exhausted","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"evaluate_train_maps_no_effect","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"evaluate_train_double_cap_simultaneous_topoff","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"evaluate_train_delegation_property","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"cooldown_boundary_exact_is_ok","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"cooldown_boundary_one_ms_before_is_err","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"cooldown_elapsed_from_nonzero_base_is_ok","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"future_last_care_at_ms_only_over_rejects","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"evaluate_heal_passes_when_cooldown_elapsed","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"evaluate_heal_rejects_when_within_cooldown","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"evaluate_heal_rejects_future_last_heal","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"care_cooldown_ms_is_six_hours_in_milliseconds","verdict":"KEEP","reason":"calls production pure fn/const/manifest (unflagged by worksheet; hand-reviewed)"}
+{"file":"server-module/src/raising_tests.rs","test_name":"care_battle_guard_wired","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/raising_tests.rs","test_name":"train_battle_guard_wired","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/raising_tests.rs","test_name":"both_role_predicate_scenarios","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"differential_level_up_heal_documents_laundering_vector","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"heal_party_reads_the_cached_heal_location_registry","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/raising_tests.rs","test_name":"heal_party_keeps_owner_and_escrow_checks_before_the_spend","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/raising_tests.rs","test_name":"credits_gap_within_idle_window","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"reanchors_without_credit_beyond_idle_gap","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"first_call_only_anchors","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"reanchors_on_backwards_clock","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"converts_whole_ticks_and_keeps_remainder","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"below_min_write_gap_is_a_pure_noop_returning_false","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"min_write_gap_boundary_exactly_credits","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"daily_cap_stops_credit","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"capped_and_active_still_reanchors_at_the_idle_bound","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"daily_cap_resets_on_next_utc_day","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"daily_cap_resets_after_an_idle_overnight_gap","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"saturates_ticks_total","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"partial_cap_credit","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"adds_to_the_matching_affinity_only","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"clamps_at_soft_cap_999_without_reject","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"saturates_before_clamp","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"rejects_within_cooldown","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"allows_at_exact_boundary","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"zero_anchor_first_train_allowed","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"rejects_item_without_essence_affinity","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"rejects_within_shared_cooldown","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"ok_returns_affinity_and_amount","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"shared_cooldown_boundary_allowed","verdict":"KEEP","reason":"calls production fn and asserts on its return/state"}
+{"file":"server-module/src/raising_tests.rs","test_name":"essence_train_body_has_full_guard_set","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/raising_tests.rs","test_name":"consume_body_has_item_escrow_and_decision_before_consume","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/raising_tests.rs","test_name":"consume_body_tails","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/raising_tests.rs","test_name":"care_body_has_trust_increment_and_tails","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/raising_tests.rs","test_name":"train_body_has_tails","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/raising_tests.rs","test_name":"tails_ordering","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/raising_tests.rs","test_name":"accrue_quality_time_body_never_fabricates_tier","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/raising_tests.rs","test_name":"m22s3b_erase_heal_cooldown_shape","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/raising_tests.rs","test_name":"accrue_quality_time_returns_before_the_row_write_when_the_seam_declines","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/raising_tests.rs","test_name":"care_reject_still_never_burns","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/raising_tests.rs","test_name":"rb41_has_heal_cooldown_tracks_real_cooldown_rows","verdict":"KEEP","reason":"native-host/dummy-ctx test runs shipped reducer/helper against real rows"}
+{"file":"server-module/src/raising_tests.rs","test_name":"rb80_heal_party_carries_the_deletion_gate","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/raising_tests.rs","test_name":"rb80_heal_party_is_refused_only_while_the_caller_is_deletion_gated","verdict":"KEEP","reason":"native-host/dummy-ctx test runs shipped reducer/helper against real rows"}
+{"file":"server-module/src/raising_tests.rs","test_name":"rb80_raising_reducer_roster_and_open_writers_are_pinned","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/raising_tests.rs","test_name":"rb122_note_has_no_exclusivity_claim","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/raising_tests.rs","test_name":"rb122_note_names_the_live_game_core_pins","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/raising_tests.rs","test_name":"rb122_local_value_pin_survives_the_reword","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}
+{"file":"server-module/src/raising_tests.rs","test_name":"rb122_target_fixtures_exist_and_carry_retune_notes","verdict":"DELETE","reason":"asserts on production source text (needle/body/order pin), executes nothing"}

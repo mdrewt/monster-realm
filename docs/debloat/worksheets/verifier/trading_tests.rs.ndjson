@@ -1,0 +1,55 @@
+{"file":"server-module/src/trading_tests.rs","test_name":"trade_status_is_active_covers_both_variants","verdict":"KEEP","reason":"calls game-core/pure fn and asserts on return value"}
+{"file":"server-module/src/trading_tests.rs","test_name":"monster_card_has_no_iv_ev_nature_fields","verdict":"KEEP","reason":"calls game-core/pure fn and asserts on return value"}
+{"file":"server-module/src/trading_tests.rs","test_name":"validate_proposal_rejects_self_trade","verdict":"KEEP","reason":"calls game-core/pure fn and asserts on return value"}
+{"file":"server-module/src/trading_tests.rs","test_name":"validate_proposal_rejects_empty_offer","verdict":"KEEP","reason":"calls game-core/pure fn and asserts on return value"}
+{"file":"server-module/src/trading_tests.rs","test_name":"validate_proposal_rejects_initiator_already_in_trade","verdict":"KEEP","reason":"calls game-core/pure fn and asserts on return value"}
+{"file":"server-module/src/trading_tests.rs","test_name":"validate_proposal_rejects_counterparty_already_in_trade","verdict":"KEEP","reason":"calls game-core/pure fn and asserts on return value"}
+{"file":"server-module/src/trading_tests.rs","test_name":"validate_proposal_rejects_duplicate_monster_ids","verdict":"KEEP","reason":"calls game-core/pure fn and asserts on return value"}
+{"file":"server-module/src/trading_tests.rs","test_name":"validate_proposal_rejects_zero_qty_item","verdict":"KEEP","reason":"calls game-core/pure fn and asserts on return value"}
+{"file":"server-module/src/trading_tests.rs","test_name":"validate_proposal_accepts_valid_offer","verdict":"KEEP","reason":"calls game-core/pure fn and asserts on return value"}
+{"file":"server-module/src/trading_tests.rs","test_name":"validate_proposal_rejects_duplicate_item_id_same_side","verdict":"KEEP","reason":"calls game-core/pure fn and asserts on return value"}
+{"file":"server-module/src/trading_tests.rs","test_name":"build_swap_plan_rejects_if_ownership_changed","verdict":"KEEP","reason":"calls game-core/pure fn and asserts on return value"}
+{"file":"server-module/src/trading_tests.rs","test_name":"build_swap_plan_rejects_if_counterparty_ownership_changed","verdict":"KEEP","reason":"calls game-core/pure fn and asserts on return value"}
+{"file":"server-module/src/trading_tests.rs","test_name":"build_swap_plan_transfers_monsters_cross_side","verdict":"KEEP","reason":"calls game-core/pure fn and asserts on return value"}
+{"file":"server-module/src/trading_tests.rs","test_name":"build_swap_plan_transfers_items","verdict":"KEEP","reason":"calls game-core/pure fn and asserts on return value"}
+{"file":"server-module/src/trading_tests.rs","test_name":"build_swap_plan_transfers_currency","verdict":"KEEP","reason":"calls game-core/pure fn and asserts on return value"}
+{"file":"server-module/src/trading_tests.rs","test_name":"build_swap_plan_empty_when_no_assets","verdict":"KEEP","reason":"calls game-core/pure fn and asserts on return value"}
+{"file":"server-module/src/trading_tests.rs","test_name":"reject_if_monster_in_trade_rejects_active_offer","verdict":"KEEP","reason":"calls production fn and asserts on its return"}
+{"file":"server-module/src/trading_tests.rs","test_name":"reject_if_monster_in_trade_passes_with_no_offers","verdict":"KEEP","reason":"calls production fn and asserts on its return"}
+{"file":"server-module/src/trading_tests.rs","test_name":"escrowed_item_qty_sums_across_active_offers","verdict":"KEEP","reason":"calls production fn and asserts on its return"}
+{"file":"server-module/src/trading_tests.rs","test_name":"escrowed_currency_amount_sums_active_offers","verdict":"KEEP","reason":"calls production fn and asserts on its return"}
+{"file":"server-module/src/trading_tests.rs","test_name":"escrowed_item_qty_uses_counterparty_items_when_owner_is_counterparty","verdict":"KEEP","reason":"calls production fn and asserts on its return"}
+{"file":"server-module/src/trading_tests.rs","test_name":"ea_trade_battle_01_propose_trade_calls_reject_if_in_battle","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/trading_tests.rs","test_name":"ea_trade_battle_02_propose_trade_chains_both_battle_indexes","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/trading_tests.rs","test_name":"ea_trade_battle_03_confirm_trade_calls_reject_if_in_battle_before_build_swap_plan","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/trading_tests.rs","test_name":"ea_trade_battle_04_reject_if_in_battle_present_in_both_propose_and_confirm","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/trading_tests.rs","test_name":"ea_conservation_headroom_01_confirm_trade_calls_check_headroom","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/trading_tests.rs","test_name":"ea_conservation_headroom_02_check_headroom_before_build_swap_plan","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/trading_tests.rs","test_name":"ea_authorize_respond_01_respond_trade_propagates_authorize_result","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/trading_tests.rs","test_name":"ea_authorize_confirm_01_confirm_trade_propagates_authorize_result","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/trading_tests.rs","test_name":"ea_authorize_operator_01_role_boolean_uses_equality_against_me","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/trading_tests.rs","test_name":"ea_reaper_03_scheduler_guard_is_first_statement","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/trading_tests.rs","test_name":"ea_cancel_party_01_guard_is_operator_exact","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/trading_tests.rs","test_name":"ea_reaper_01_propose_arms_reaper_after_offer_insert","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/trading_tests.rs","test_name":"ea_reaper_02_disarm_called_at_all_offer_deletion_sites","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/trading_tests.rs","test_name":"ea_conservation_order_01_confirm_trade_uses_ordered_steps_loop","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/trading_tests.rs","test_name":"ea_conservation_order_inline_01_span_check_requires_inline_netting_expressions","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/trading_tests.rs","test_name":"e4_trade_side_size_caps_reject_oversized_and_admit_empty","verdict":"KEEP","reason":"calls game-core/pure fn and asserts on return value"}
+{"file":"server-module/src/trading_tests.rs","test_name":"e4_propose_trade_bounds_both_sides_before_validate_proposal","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/trading_tests.rs","test_name":"m22s5_propose_trade_carries_the_deletion_gate","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/trading_tests.rs","test_name":"m22s3b_resolver_extraction_chain","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/trading_tests.rs","test_name":"m22s3b_erase_trade_offers_shape","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/trading_tests.rs","test_name":"rb47_opened_commitment_is_refused_truth_table","verdict":"KEEP","reason":"calls production fn and asserts on its return"}
+{"file":"server-module/src/trading_tests.rs","test_name":"rb47_accounts_seam_is_declared_once_and_delegates","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/trading_tests.rs","test_name":"rb47_ctx_predicate_answers_from_the_callers_row","verdict":"KEEP","reason":"executes production reducer/helper against native host or dummy ctx"}
+{"file":"server-module/src/trading_tests.rs","test_name":"rb47_guards_wrapper_is_fused_and_unconditional","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/trading_tests.rs","test_name":"rb47_guards_wrapper_refuses_only_offers_created_after_the_request","verdict":"KEEP","reason":"executes production reducer/helper against native host or dummy ctx"}
+{"file":"server-module/src/trading_tests.rs","test_name":"rb47_respond_trade_carries_the_offer_age_gate","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/trading_tests.rs","test_name":"rb47_propose_trade_gate_has_no_attribute_or_cfg_escape","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/trading_tests.rs","test_name":"rb47_respond_trade_refuses_a_post_request_accept","verdict":"KEEP","reason":"executes production reducer/helper against native host or dummy ctx"}
+{"file":"server-module/src/trading_tests.rs","test_name":"rb47_no_reducer_module_reaches_the_stamp_seam_directly","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/trading_tests.rs","test_name":"rb47_trading_reducer_roster_is_closed","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/trading_tests.rs","test_name":"rb79_prefix_bypass_fixtures_are_rejected_by_clause","verdict":"DELETE","reason":"meta: tests the source-scan machinery itself"}
+{"file":"server-module/src/trading_tests.rs","test_name":"rb79_propose_trade_admits_no_predecessor_above_its_deletion_gate","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/trading_tests.rs","test_name":"rb83_open_offers_addressed_to_reads_only_the_counterparty_column","verdict":"KEEP","reason":"executes production reducer/helper against native host or dummy ctx"}
+{"file":"server-module/src/trading_tests.rs","test_name":"rb83_new_seams_are_declared_once_and_frozen","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}

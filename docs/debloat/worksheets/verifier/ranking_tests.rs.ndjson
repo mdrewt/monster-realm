@@ -1,0 +1,35 @@
+{"file":"server-module/src/ranking_tests.rs","test_name":"rl4_initial_rating_ssot_pin","verdict":"DELETE","reason":"value pin of a game-core tuning constant"}
+{"file":"server-module/src/ranking_tests.rs","test_name":"d1_refresh_replaces_name_when_live_present","verdict":"KEEP","reason":"calls game-core/pure fn and asserts on return value"}
+{"file":"server-module/src/ranking_tests.rs","test_name":"d1_refresh_keeps_name_when_absent","verdict":"KEEP","reason":"calls game-core/pure fn and asserts on return value"}
+{"file":"server-module/src/ranking_tests.rs","test_name":"d1_refresh_idempotent_same_name","verdict":"KEEP","reason":"calls game-core/pure fn and asserts on return value"}
+{"file":"server-module/src/ranking_tests.rs","test_name":"d2_rename_then_rated_surfaces_new_name_winner_side","verdict":"KEEP","reason":"calls game-core/pure fn and asserts on return value"}
+{"file":"server-module/src/ranking_tests.rs","test_name":"d2_rename_then_rated_surfaces_new_name_loser_side","verdict":"KEEP","reason":"calls game-core/pure fn and asserts on return value"}
+{"file":"server-module/src/ranking_tests.rs","test_name":"d1_scan_some_arm_composes_refresh","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/ranking_tests.rs","test_name":"d1_scan_live_player_name_is_inline_chained_map","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/ranking_tests.rs","test_name":"d1_scan_helper_used_by_both_arms","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/ranking_tests.rs","test_name":"d1_scan_no_eager_write_in_get_or_init","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/ranking_tests.rs","test_name":"d1_scan_apply_rating_refreshes_both_roles","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/ranking_tests.rs","test_name":"d1_scan_rated_write_survivor_pins","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/ranking_tests.rs","test_name":"scan_machinery_teeth","verdict":"DELETE","reason":"meta: tests the source-scan machinery itself"}
+{"file":"server-module/src/ranking_tests.rs","test_name":"ptc1_scan_set_profile_name_fn_present","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/ranking_tests.rs","test_name":"ptc1_scan_body_validates_and_writes_player_name","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/ranking_tests.rs","test_name":"ptc1_scan_body_is_profile_untouching","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/ranking_tests.rs","test_name":"ptc1_scan_body_rejects_when_not_joined","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/ranking_tests.rs","test_name":"ptc1_scan_rejects_not_joined_teeth","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/ranking_tests.rs","test_name":"ptc1_scan_profile_insert_count_is_one","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/ranking_tests.rs","test_name":"ptc1_scan_machinery_teeth","verdict":"DELETE","reason":"meta: tests the source-scan machinery itself"}
+{"file":"server-module/src/ranking_tests.rs","test_name":"auth25_tombstoned_profile_zeroes_all_stats_and_tombstones_name","verdict":"KEEP","reason":"calls game-core/pure fn and asserts on return value"}
+{"file":"server-module/src/ranking_tests.rs","test_name":"auth25_profile_with_carried_stats_preserves_dest_identity_and_name","verdict":"KEEP","reason":"calls production fn and asserts on its return"}
+{"file":"server-module/src/ranking_tests.rs","test_name":"auth25_tombstone_name_is_bounded_and_untypable","verdict":"KEEP","reason":"calls production fn and asserts on its return"}
+{"file":"server-module/src/ranking_tests.rs","test_name":"rb7_deletion_tombstone_is_bounded_and_untypable","verdict":"KEEP","reason":"calls production fn and asserts on its return"}
+{"file":"server-module/src/ranking_tests.rs","test_name":"rb7_deletion_tombstone_is_distinct_from_guest_claim","verdict":"KEEP","reason":"relational: deletion tombstone name distinct from guest-claim tombstone"}
+{"file":"server-module/src/ranking_tests.rs","test_name":"rb7_guest_claim_tombstone_declaration_is_module_private","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/ranking_tests.rs","test_name":"rb7_guest_claim_tombstone_identifier_is_not_re_exported","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/ranking_tests.rs","test_name":"rb7_guest_claim_tombstone_value_is_not_duplicated","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/ranking_tests.rs","test_name":"rb7_guest_claim_tombstone_writer_is_module_private","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/ranking_tests.rs","test_name":"rb7_scan_machinery_teeth","verdict":"DELETE","reason":"meta: tests the source-scan machinery itself"}
+{"file":"server-module/src/ranking_tests.rs","test_name":"m22s3b_deleted_name_rows","verdict":"KEEP","reason":"calls production fn and asserts on its return"}
+{"file":"server-module/src/ranking_tests.rs","test_name":"m22s3b_anonymize_display_names_shape","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/ranking_tests.rs","test_name":"m22s3b_set_profile_name_gated","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
+{"file":"server-module/src/ranking_tests.rs","test_name":"rb41_profile_exists_tracks_real_profile_rows","verdict":"KEEP","reason":"executes production reducer/helper against native host or dummy ctx"}
+{"file":"server-module/src/ranking_tests.rs","test_name":"rb81_ranking_reducer_roster_is_closed","verdict":"DELETE","reason":"asserts over production source text (needles/body pins); shape-pin"}
