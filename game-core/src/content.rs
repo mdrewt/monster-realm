@@ -1956,7 +1956,10 @@ mod tests {
     #[test]
     fn embedded_species_parse_and_validate() {
         let species = load_species().expect("embedded species must parse");
-        assert!(species.is_empty() || !species.is_empty());
+        assert!(
+            !species.is_empty(),
+            "embedded species registry must have entries"
+        );
     }
 
     /// #56: load_skills() parses the embedded RON without error.

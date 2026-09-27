@@ -153,21 +153,6 @@ mod tests {
         }
     }
 
-    /// Skill with power 40, Water affinity, 100% accuracy.
-    #[allow(dead_code)]
-    fn water_skill_40() -> SkillDef {
-        SkillDef {
-            id: 3,
-            name: "Water Gun".to_string(),
-            affinity: Affinity::Water,
-            power: 40,
-            accuracy: 100,
-            pp: 25,
-            sets_weather: None,
-            applies_status: None,
-        }
-    }
-
     // -----------------------------------------------------------------------
     // Known-answer damage test
     //

@@ -317,5 +317,4 @@ pub(crate) fn wallet_exists(ctx: &ReducerContext, owner: Identity) -> bool {
 
 #[cfg(test)]
 #[path = "economy_tests.rs"]
-#[allow(unused_imports)]
 mod economy_tests;
