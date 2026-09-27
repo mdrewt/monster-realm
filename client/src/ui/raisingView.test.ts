@@ -453,6 +453,7 @@ describe('RaisingView showFeedback(): writes the message (C1, ADR-0159 D1)', () 
     const parent = mountParent();
     const view = new RaisingView(parent, makeCallbacks());
 
+    view.show(); // showFeedback is a no-op while hidden
     view.showFeedback('Cared!');
 
     const feedbackEl = document.getElementById('raising-feedback');
@@ -512,6 +513,7 @@ describe('★ RaisingView showFeedback(): NO markup injection — textContent on
     const view = new RaisingView(parent, makeCallbacks());
     const payload = '<img src=x onerror=alert(1)>';
 
+    view.show(); // showFeedback is a no-op while hidden
     view.showFeedback(payload);
 
     const feedbackEl = document.getElementById('raising-feedback');

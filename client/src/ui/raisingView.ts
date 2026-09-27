@@ -198,8 +198,12 @@ export class RaisingView {
   }
 
   /** Display a care outcome. textContent ONLY — the message can carry a
-   * server-supplied error reason, so innerHTML would be an injection vector. */
+   * server-supplied error reason, so innerHTML would be an injection vector.
+   * No-op while hidden: KeyB/KeyE force-hide this view (hide() clears the line), so a
+   * care that settles afterwards would otherwise leave a stale message for the NEXT
+   * open, with no click behind it. */
   showFeedback(message: string): void {
+    if (!this.#visible) return;
     this.#feedbackEl.textContent = message;
   }
 

@@ -2622,14 +2622,8 @@ async function main(): Promise<void> {
             conn === undefined || conn.linkFrozen()
               ? undefined
               : conn.live()?.reducers.care({ monsterId }),
-          // Visibility gate (onBuy/onSell idiom): KeyB/KeyE call
-          // raisingView.hide() unconditionally, which clears the feedback
-          // line. Without this check a care that settles after the overlay
-          // was force-hidden writes a stale message the player then sees on
-          // the NEXT open, with no click behind it.
-          showFeedback: (message) => {
-            if (raisingView?.visible) raisingView.showFeedback(message);
-          },
+          // RaisingView.showFeedback is a no-op while hidden (stale-message guard).
+          showFeedback: (message) => raisingView?.showFeedback(message),
         }),
     });
     evolutionView = new EvolutionViewClass(mount, {
