@@ -15,7 +15,6 @@
 //!   RW3-07  (folded into rw3c_6_placement_is_zone_1_only) zone 0 stays
 //!                     byte-identical (entries, weights, encounter_rate); the
 //!                     RW3-07 band-sanity half lives in rw3c_7_*
-//!   RW3-09  rw3c_9_*  CONTENT_VERSION floor >= 21
 //!
 //! Every predicate is derived from the LIVE registries (`load_species`,
 //! `load_encounters`, `load_evolution_paths`) — the wave-3 id set is never
@@ -333,40 +332,6 @@ fn wave3_band_violations(
         }
     }
     out
-}
-
-/// RW3-09 needle parser. Copied VERBATIM from
-/// `game-core/tests/rw3b_roster_wave3.rs` / `pt_d3_tuning.rs` (same
-/// rationale: each `tests/*.rs` binary compiles independently, so a shared
-/// helper would require a crate dependency for a five-line function; the
-/// decoy-hardened shape — word-boundary anchored, `None` on ambiguity — is
-/// load-bearing and must not be re-derived).
-fn parse_content_version(src: &str) -> Option<u32> {
-    let needle = ["CONTENT_VERSION", ": u32 = "].concat();
-    let mut found: Option<u32> = None;
-    let mut from = 0usize;
-    while let Some(rel) = src[from..].find(&needle) {
-        let idx = from + rel;
-        from = idx + needle.len();
-        let preceded_by_ident = src[..idx]
-            .chars()
-            .next_back()
-            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
-        if preceded_by_ident {
-            continue;
-        }
-        let rest = &src[from..];
-        let end = match rest.find(';') {
-            Some(e) => e,
-            None => continue,
-        };
-        let value = rest[..end].trim().parse::<u32>().ok()?;
-        if found.is_some() {
-            return None;
-        }
-        found = Some(value);
-    }
-    found
 }
 
 // ===========================================================================
@@ -842,78 +807,5 @@ fn rw3c_teeth_band_pre_evolution_strictness_bites_at_the_gate_and_above() {
     assert!(
         wave3_band_violations(&ids, &[below_gate], &edges).is_empty(),
         "TEETH(GOOD): max_level strictly below the gate must NOT be flagged"
-    );
-}
-
-// ===========================================================================
-// RW3-09 — CONTENT_VERSION floor >= 21
-// ===========================================================================
-
-/// WHY this test exists: `server-module/src/content.rs` early-returns from
-/// `sync_content_inner` when the DB's stored content version EQUALS
-/// `CONTENT_VERSION`. Without a bump, Voltkit/Aurelet's new zone-1 placement
-/// parses, validates, hashes and passes CI while NEVER reaching a deployed
-/// database — the ADR-0054 silent-skip trap.
-#[test]
-fn rw3c_9_content_version_floor_is_at_least_21() {
-    let src = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../server-module/src/lib.rs"
-    ))
-    .expect("server-module/src/lib.rs must be readable from game-core/tests");
-    let version = parse_content_version(&src)
-        .expect("rw3c-9: the CONTENT_VERSION declaration must be present and parseable");
-    assert!(
-        version >= 21,
-        "rw3c-9: CONTENT_VERSION is {version}; the rw3c tuning pass (zone-1 placement for \
-         Voltkit/Aurelet) needs >= 21 or sync_content_inner early-returns and the new placement \
-         never reaches a live DB (CONTENT_VERSION was 20 when this slice opened)"
-    );
-}
-
-#[test]
-fn rw3c_teeth_content_version_parser_is_decoy_hardened() {
-    let synthetic = ["pub(crate) const ", "CONTENT_VERSION", ": u32 = ", "21;\n"].concat();
-    assert_eq!(
-        parse_content_version(&synthetic),
-        Some(21),
-        "TEETH(g/1): the needle parser must read the version out of a canonical declaration"
-    );
-
-    // (g) a decoy MIN_SUPPORTED_CONTENT_VERSION declared ABOVE the real one
-    // must not shadow it — proves word-boundary anchoring.
-    let decoyed = [
-        "pub(crate) const MIN_SUPPORTED_",
-        "CONTENT_VERSION",
-        ": u32 = ",
-        "99;\npub(crate) const ",
-        "CONTENT_VERSION",
-        ": u32 = ",
-        "21;\n",
-    ]
-    .concat();
-    assert_eq!(
-        parse_content_version(&decoyed),
-        Some(21),
-        "TEETH(g/2): a decoy constant merely ending in the needle, declared above the real one, \
-         must NOT shadow the real CONTENT_VERSION"
-    );
-
-    // (g) a genuine SECOND CONTENT_VERSION declaration must return None, not
-    // guess by taking the first hit.
-    let doubled = [
-        "const ",
-        "CONTENT_VERSION",
-        ": u32 = ",
-        "21;\nconst ",
-        "CONTENT_VERSION",
-        ": u32 = ",
-        "22;\n",
-    ]
-    .concat();
-    assert_eq!(
-        parse_content_version(&doubled),
-        None,
-        "TEETH(g/3): two real declarations must be reported as unparseable, not guessed"
     );
 }

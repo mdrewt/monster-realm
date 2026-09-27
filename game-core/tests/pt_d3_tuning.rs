@@ -21,7 +21,6 @@
 //!   pt-d3-3  no player level in [5,20] is ever encounter-less
 //!   pt-d3-4  H1 recruit-chance weakening invariant holds for every wild species
 //!   pt-d3-5  every status-curing item is stocked, and stocking is arbitrage-free
-//!   pt-d3-6  CONTENT_VERSION floor is at least 15
 //!   (T6)     RON comment hygiene extended to encounters/items/shops directories
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -511,104 +510,6 @@ fn pt_d3_5_cures_stocked_and_arbitrage_free() {
             );
         }
     }
-}
-
-// ===========================================================================
-// pt-d3-6 — CONTENT_VERSION floor
-// ===========================================================================
-
-/// Copied verbatim from `game-core/tests/pt_d1_roster.rs` (already correct:
-/// word-boundary-anchored, uniqueness-required, `None` on two genuine
-/// declarations). Not re-derived here to avoid two subtly-different parsers
-/// drifting apart; `pt_d1_roster.rs` is deliberately NOT edited by this slice
-/// (its residual note about `evals/content-version.eval.mjs`'s weaker
-/// first-substring-wins scan is recorded as ADR-0145 here, not fixed there).
-fn parse_content_version(src: &str) -> Option<u32> {
-    let needle = ["CONTENT_VERSION", ": u32 = "].concat();
-    let mut found: Option<u32> = None;
-    let mut from = 0usize;
-    while let Some(rel) = src[from..].find(&needle) {
-        let idx = from + rel;
-        from = idx + needle.len();
-        let preceded_by_ident = src[..idx]
-            .chars()
-            .next_back()
-            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
-        if preceded_by_ident {
-            continue;
-        }
-        let rest = &src[from..];
-        let end = match rest.find(';') {
-            Some(e) => e,
-            None => continue,
-        };
-        let value = rest[..end].trim().parse::<u32>().ok()?;
-        if found.is_some() {
-            return None;
-        }
-        found = Some(value);
-    }
-    found
-}
-
-#[test]
-fn pt_d3_6_content_version_floor_is_at_least_15() {
-    let src = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../server-module/src/lib.rs"
-    ))
-    .expect("server-module/src/lib.rs must be readable from game-core/tests");
-    let version = parse_content_version(&src)
-        .expect("pt-d3-6: the CONTENT_VERSION declaration must be present and parseable");
-    // An upper bound was considered and declined: an oversized CONTENT_VERSION
-    // is harmless (it only gates the re-seed), so there is no failure mode
-    // behind such a gate.
-    assert!(
-        version >= 15,
-        "pt-d3-6: CONTENT_VERSION is {version}; the tuning pass (zone-1 encounters, Antidote \
-         shop stock) needs >= 15 or sync_content_inner early-returns and the new content never \
-         reaches a live DB"
-    );
-}
-
-#[test]
-fn pt_d3_6_teeth_needle_parser_survives_a_decoy_above_the_real_declaration() {
-    // TEETH(pt-d3-6/1): a decoy constant whose name merely ENDS IN the needle,
-    // declared ABOVE the real one, must not shadow it.
-    let decoyed = [
-        "pub(crate) const MIN_SUPPORTED_",
-        "CONTENT_VERSION",
-        ": u32 = ",
-        "99;\npub(crate) const ",
-        "CONTENT_VERSION",
-        ": u32 = ",
-        "15;\n",
-    ]
-    .concat();
-    assert_eq!(
-        parse_content_version(&decoyed),
-        Some(15),
-        "TEETH(pt-d3-6/1): a decoy constant ending in the needle, declared above the real \
-         one, must NOT shadow the real CONTENT_VERSION"
-    );
-
-    // TEETH(pt-d3-6/2): two genuine declarations are ambiguous; refuse to guess.
-    let doubled = [
-        "const ",
-        "CONTENT_VERSION",
-        ": u32 = ",
-        "15;\nconst ",
-        "CONTENT_VERSION",
-        ": u32 = ",
-        "16;\n",
-    ]
-    .concat();
-    assert_eq!(
-        parse_content_version(&doubled),
-        None,
-        "TEETH(pt-d3-6/2): two real declarations must be reported as unparseable, not silently \
-         resolved to the first hit"
-    );
 }
 
 // ===========================================================================

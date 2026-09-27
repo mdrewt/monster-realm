@@ -11,7 +11,6 @@
 //!   pt-d1-2  derived forms 9/10 are never wild-catchable
 //!   pt-d1-3  STAB invariant (registry-wide: every species can learn its own type)
 //!   pt-d1-4  relative archetype separation, scoped to the NEW rows only
-//!   pt-d1-6  CONTENT_VERSION floor  (pt-d1-5 lives in the spritesheet eval)
 //!
 //! EG1 RETIREMENT: the `evolutions.ron` branch-shape arms of pt-d1-2 are gone
 //! with the file and the `EvolutionTrigger`/`SpeciesEvolutions` model itself
@@ -188,52 +187,6 @@ fn comment_needle_violations(file_label: &str, src: &str) -> Vec<String> {
     out
 }
 
-/// pt-d1-6 needle parser. The needle is built by CONCATENATION so this test file
-/// contains no literal a source-scan could confuse with the real declaration.
-///
-/// The match is anchored on a WORD BOUNDARY and must be UNIQUE. A bare substring
-/// search on the first hit is defeatable: a constant whose name merely *ends in*
-/// the needle — `MIN_SUPPORTED_CONTENT_VERSION: u32 = 13;` declared above the real
-/// one — would shadow it, so this gate would report 13 while the module shipped 12
-/// and `sync_content_inner` silently skipped the re-seed. That is precisely the
-/// ADR-0054 trap this criterion exists to catch, so the parser must not fall for it.
-///
-/// (`evals/content-version.eval.mjs`'s `readContentVersion` has the same
-/// first-substring-wins shape and is defeatable the same way. That is a
-/// pre-existing gate weakness outside this slice's touch set — recorded as a
-/// residual in ADR-0143 rather than fixed here.)
-fn parse_content_version(src: &str) -> Option<u32> {
-    let needle = ["CONTENT_VERSION", ": u32 = "].concat();
-    let mut found: Option<u32> = None;
-    let mut from = 0usize;
-    while let Some(rel) = src[from..].find(&needle) {
-        let idx = from + rel;
-        from = idx + needle.len();
-        // Reject a match glued to an identifier character on its left — that is a
-        // DIFFERENT constant (e.g. `..._CONTENT_VERSION`), not this one.
-        let preceded_by_ident = src[..idx]
-            .chars()
-            .next_back()
-            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
-        if preceded_by_ident {
-            continue;
-        }
-        let rest = &src[from..];
-        let end = match rest.find(';') {
-            Some(e) => e,
-            None => continue,
-        };
-        let value = rest[..end].trim().parse::<u32>().ok()?;
-        if found.is_some() {
-            // Two genuine declarations: ambiguous, so refuse to guess.
-            return None;
-        }
-        found = Some(value);
-    }
-    found
-}
-
-fn stats(
     hp: u16,
     attack: u16,
     defense: u16,
@@ -534,90 +487,6 @@ fn pt_d1_4_teeth_predicate_flags_a_slow_umbrafang() {
              `{needle}`; got {violations:?}"
         );
     }
-}
-
-// ===========================================================================
-// pt-d1-6 — CONTENT_VERSION floor
-// ===========================================================================
-
-/// WHY this test exists: `server-module/src/content.rs` early-returns from
-/// `sync_content_inner` when the DB's stored content version EQUALS
-/// `CONTENT_VERSION`. Without a bump, species 7-10 parse, validate, hash and
-/// pass CI while NEVER reaching a deployed database — the ADR-0054 silent-skip
-/// trap. A green test suite over content that no player can ever encounter is
-/// exactly the failure this floor prevents.
-#[test]
-fn pt_d1_6_content_version_floor_is_at_least_13() {
-    let src = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../server-module/src/lib.rs"
-    ))
-    .expect("server-module/src/lib.rs must be readable from game-core/tests");
-    let version = parse_content_version(&src)
-        .expect("pt-d1-6: the CONTENT_VERSION declaration must be present and parseable");
-    assert!(
-        version >= 13,
-        "pt-d1-6: CONTENT_VERSION is {version}; the wave-1 roster needs >= 13 or sync_content_inner early-returns and the new species never reach a live DB"
-    );
-}
-
-#[test]
-fn pt_d1_6_teeth_needle_parser_is_not_vacuous() {
-    // TEETH(pt-d1-6): if a refactor renames/reformats the declaration so the scan
-    // finds nothing, the test above fails LOUDLY (expect panics) rather than
-    // passing vacuously. Prove the parser both matches and rejects.
-    let synthetic = ["pub(crate) const ", "CONTENT_VERSION", ": u32 = ", "13;\n"].concat();
-    assert_eq!(
-        parse_content_version(&synthetic),
-        Some(13),
-        "TEETH(pt-d1-6): the needle parser must read the version out of a canonical declaration"
-    );
-    assert_eq!(
-        parse_content_version("pub const OTHER_VERSION: u32 = 99;"),
-        None,
-        "TEETH(pt-d1-6): the parser must NOT match an unrelated constant"
-    );
-    assert_eq!(
-        parse_content_version("CONTENT_VERSION: u32 = twelve;"),
-        None,
-        "TEETH(pt-d1-6): a non-numeric payload must be None, not a silent 0"
-    );
-    // The attack this parser exists to survive: a DIFFERENT constant whose name
-    // merely ENDS IN the needle, declared ABOVE the real one. A first-substring
-    // -wins scan reads 13 off the decoy while the module still ships 12 — a green
-    // gate over the exact ADR-0054 silent-skip it is supposed to catch.
-    let decoyed = [
-        "pub(crate) const MIN_SUPPORTED_",
-        "CONTENT_VERSION",
-        ": u32 = ",
-        "13;\npub(crate) const ",
-        "CONTENT_VERSION",
-        ": u32 = ",
-        "12;\n",
-    ]
-    .concat();
-    assert_eq!(
-        parse_content_version(&decoyed),
-        Some(12),
-        "TEETH(pt-d1-6): a constant ending in the needle must NOT shadow the real \
-         declaration — kills a scan that takes the first substring hit"
-    );
-    // Two genuine declarations are ambiguous; refuse to guess rather than pick one.
-    let doubled = [
-        "const ",
-        "CONTENT_VERSION",
-        ": u32 = ",
-        "13;\nconst ",
-        "CONTENT_VERSION",
-        ": u32 = ",
-        "14;\n",
-    ]
-    .concat();
-    assert_eq!(
-        parse_content_version(&doubled),
-        None,
-        "TEETH(pt-d1-6): two real declarations must be reported as unparseable"
-    );
 }
 
 // ---------------------------------------------------------------------------

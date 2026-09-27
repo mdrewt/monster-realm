@@ -1,127 +1,72 @@
-// content-version eval (ADR-0073, M12.5b): couples game-core/content/** changes to
-// CONTENT_VERSION in server-module/src/lib.rs via a committed hash baseline.
-//
-// A content file edited without bumping CONTENT_VERSION fails CI.
-// The baseline is updated deliberately (alongside every CONTENT_VERSION bump).
-//
-// IMPORTANT: No dynamic RegExp (detect-non-literal-regexp Semgrep rule).
-// Use only String.includes / indexOf / literal regex.
+// content-version eval: any change under game-core/content/** must come with a
+// CONTENT_VERSION bump in server-module/src/lib.rs. sync_content skips
+// re-seeding when the stored version equals CONTENT_VERSION, so unbumped content
+// never reaches a live DB. The pair (version, sha256 of every content file's
+// path + raw bytes — comment-only edits count) is pinned in
+// evals/baselines/content-hash.json.
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-// Walk a directory recursively, returning sorted relative paths + full paths.
-function walkFiles(dir, base) {
-  const entries = readdirSync(dir).sort();
-  const files = [];
-  for (const e of entries) {
+const BASELINE = 'evals/baselines/content-hash.json';
+const REGEN =
+  'bump CONTENT_VERSION in server-module/src/lib.rs FIRST, then regenerate the baseline: ' +
+  `node -e "import('./evals/content-version.eval.mjs').then((m) => require('node:fs').writeFileSync('${BASELINE}', ` +
+  `JSON.stringify({ version: m.readContentVersion('server-module/src/lib.rs'), hash: m.hashContentDir('game-core/content') }) + '\\n'))"`;
+
+export function hashContentDir(dir, base = dir, h = createHash('sha256'), top = true) {
+  for (const e of readdirSync(dir).sort()) {
     const full = path.join(dir, e);
-    const rel = path.relative(base, full).replace(/\\/g, '/');
-    if (statSync(full).isDirectory()) {
-      files.push(...walkFiles(full, base));
-    } else {
-      files.push({ rel, full });
-    }
+    if (statSync(full).isDirectory()) hashContentDir(full, base, h, false);
+    else
+      h.update(`${path.relative(base, full).replace(/\\/g, '/')}\n`)
+        .update(readFileSync(full))
+        .update('\n');
   }
-  return files;
+  return top ? h.digest('hex') : undefined;
 }
 
-// Compute a deterministic SHA-256 of the content tree: sorted paths + file bytes.
-// Sorting is already enforced by walkFiles, but document it explicitly.
-export function hashContentDir(contentDir) {
-  const files = walkFiles(contentDir, contentDir);
-  const h = createHash('sha256');
-  for (const { rel, full } of files) {
-    h.update(`${rel}\n`);
-    h.update(readFileSync(full));
-    h.update('\n');
-  }
-  return h.digest('hex');
-}
-
-// Read CONTENT_VERSION from server-module/src/lib.rs.
-// Parses: `pub(crate) const CONTENT_VERSION: u32 = N;`
-// Returns the version as a number, or null if not found.
+// The single `pub(crate) const CONTENT_VERSION: u32 = N;` declaration, or null
+// (absent or ambiguous).
 export function readContentVersion(libRsPath) {
   const src = readFileSync(libRsPath, 'utf8');
-  // Use indexOf to avoid dynamic RegExp; find the anchor then extract digits.
-  const anchor = 'CONTENT_VERSION: u32 = ';
-  const idx = src.indexOf(anchor);
-  if (idx === -1) return null;
-  const after = src.slice(idx + anchor.length);
-  const semi = after.indexOf(';');
-  if (semi === -1) return null;
-  const digits = after.slice(0, semi).trim();
-  const v = Number(digits);
-  return Number.isFinite(v) ? v : null;
+  const m = [...src.matchAll(/^pub\(crate\) const CONTENT_VERSION: u32 = (\d+);/gm)];
+  return m.length === 1 ? Number(m[0][1]) : null;
 }
 
-export default async function () {
-  const name = 'content-version coupling (content/** hash must match CONTENT_VERSION baseline)';
-
-  // --- TEETH A: hash detection works ---
-  // Simulated mismatch: hash of one string should differ from another.
-  const h1 = createHash('sha256').update('a').digest('hex');
-  const h2 = createHash('sha256').update('b').digest('hex');
-  if (h1 === h2) {
-    return { name, pass: false, detail: 'TEETH A: sha256("a") === sha256("b") — hash is broken' };
-  }
-
-  // --- TEETH B: mismatched version fails ---
-  // Simulate a baseline with a wrong hash; the eval must reject it.
-  const realHash = hashContentDir('game-core/content');
-  const wrongHash = realHash === 'aaaaaa' ? 'bbbbbb' : 'aaaaaa';
-  // A comparison against the wrong hash MUST fail:
-  if (realHash === wrongHash) {
+export default async function contentVersionEval() {
+  const name = 'content-version (content/** hash is pinned to CONTENT_VERSION)';
+  const version = readContentVersion('server-module/src/lib.rs');
+  if (version === null) {
     return {
       name,
       pass: false,
-      detail: 'TEETH B: real hash equals a constant wrong hash — proof-of-teeth impossible',
+      detail: 'expected exactly one CONTENT_VERSION declaration in server-module/src/lib.rs',
     };
   }
-  // (This confirms the check below would catch a doctored baseline.)
-
-  // --- Read CONTENT_VERSION from lib.rs ---
-  const libRsPath = 'server-module/src/lib.rs';
-  const currentVersion = readContentVersion(libRsPath);
-  if (currentVersion === null) {
+  const hash = hashContentDir('game-core/content');
+  const base = JSON.parse(readFileSync(BASELINE, 'utf8'));
+  if (base.version === version && base.hash === hash) {
     return {
       name,
-      pass: false,
-      detail: 'CONTENT_VERSION constant not found in server-module/src/lib.rs',
+      pass: true,
+      detail: `CONTENT_VERSION=${version} hash=${hash.slice(0, 16)}… matches ${BASELINE}`,
     };
   }
+  const why =
+    base.version === version
+      ? 'game-core/content changed without a CONTENT_VERSION bump'
+      : `CONTENT_VERSION=${version} but ${BASELINE} pins version ${base.version}`;
+  return { name, pass: false, detail: `${why} — ${REGEN}` };
+}
 
-  // --- Load the committed baseline ---
-  const baselinePath = 'evals/baselines/content-hash.json';
-  let baseline;
-  try {
-    baseline = JSON.parse(readFileSync(baselinePath, 'utf8'));
-  } catch (e) {
-    return { name, pass: false, detail: `Failed to read baseline ${baselinePath}: ${e.message}` };
-  }
-
-  // --- Check version matches ---
-  if (baseline.version !== currentVersion) {
-    return {
-      name,
-      pass: false,
-      detail: `CONTENT_VERSION=${currentVersion} but baseline is for version=${baseline.version}. Update evals/baselines/content-hash.json (run: node evals/content-version.eval.mjs --update) when bumping CONTENT_VERSION.`,
-    };
-  }
-
-  // --- Check content hash matches ---
-  if (realHash !== baseline.hash) {
-    return {
-      name,
-      pass: false,
-      detail: `game-core/content/ hash mismatch for CONTENT_VERSION=${currentVersion}. Content changed without a CONTENT_VERSION bump. Either bump CONTENT_VERSION in server-module/src/lib.rs (and update the baseline) or revert the content change. Expected: ${baseline.hash}. Got: ${realHash}`,
-    };
-  }
-
-  return {
-    name,
-    pass: true,
-    detail: `CONTENT_VERSION=${currentVersion} hash=${realHash.slice(0, 16)}… matches baseline (TEETH A+B verified)`,
-  };
+if (path.resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) {
+  const r = await contentVersionEval().catch((e) => ({
+    name: 'content-version',
+    pass: false,
+    detail: `threw: ${e.message}`,
+  }));
+  console.log(`eval ${r.pass ? 'PASS' : 'FAIL'}: ${r.name} — ${r.detail}`);
+  process.exit(r.pass ? 0 : 1);
 }

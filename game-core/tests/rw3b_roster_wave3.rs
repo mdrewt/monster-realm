@@ -15,7 +15,6 @@
 //!                      edge ids banded
 //!   RW3-05  rw3b_5_*   ADR-0176 D2 no-auto-evolution-race
 //!   RW3-08  rw3b_8_*   live merged registry still validates end to end
-//!   RW3-09  rw3b_9_*   CONTENT_VERSION floor >= 20
 //!   (ADR-0143 D7) rw3b_comment_hygiene_* — RON comment hygiene over the four
 //!                      new wave-3 files
 //!
@@ -311,36 +310,6 @@ fn comment_needle_violations(file_label: &str, src: &str) -> Vec<String> {
         }
     }
     out
-}
-
-/// RW3-09 needle parser, mirroring `pt_d1_roster.rs::parse_content_version`
-/// verbatim (same rationale: independent compilation unit per `tests/*.rs`).
-fn parse_content_version(src: &str) -> Option<u32> {
-    let needle = ["CONTENT_VERSION", ": u32 = "].concat();
-    let mut found: Option<u32> = None;
-    let mut from = 0usize;
-    while let Some(rel) = src[from..].find(&needle) {
-        let idx = from + rel;
-        from = idx + needle.len();
-        let preceded_by_ident = src[..idx]
-            .chars()
-            .next_back()
-            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
-        if preceded_by_ident {
-            continue;
-        }
-        let rest = &src[from..];
-        let end = match rest.find(';') {
-            Some(e) => e,
-            None => continue,
-        };
-        let value = rest[..end].trim().parse::<u32>().ok()?;
-        if found.is_some() {
-            return None;
-        }
-        found = Some(value);
-    }
-    found
 }
 
 // ===========================================================================
@@ -773,80 +742,6 @@ fn rw3b_8_teeth_validate_content_still_rejects_a_wave3_shaped_empty_moveset() {
     assert!(
         validate_content(&bad, &skills, &type_chart, &items).is_err(),
         "TEETH(rw3b-8): an empty learnable_skill_ids for a wave-3-shaped species must be rejected"
-    );
-}
-
-// ===========================================================================
-// RW3-09 — CONTENT_VERSION floor >= 20
-// ===========================================================================
-
-/// WHY this test exists: `server-module/src/content.rs` early-returns from
-/// `sync_content_inner` when the DB's stored content version EQUALS
-/// `CONTENT_VERSION`. Without a bump, Voltkit/Voltarion/Aurelet/Aurelith parse,
-/// validate, hash and pass CI while NEVER reaching a deployed database — the
-/// ADR-0054 silent-skip trap.
-#[test]
-fn rw3b_9_content_version_floor_is_at_least_20() {
-    let src = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../server-module/src/lib.rs"
-    ))
-    .expect("server-module/src/lib.rs must be readable from game-core/tests");
-    let version = parse_content_version(&src)
-        .expect("rw3b-9: the CONTENT_VERSION declaration must be present and parseable");
-    assert!(
-        version >= 20,
-        "rw3b-9: CONTENT_VERSION is {version}; wave 3 needs >= 20 or sync_content_inner \
-         early-returns and Voltkit/Voltarion/Aurelet/Aurelith never reach a live DB \
-         (CONTENT_VERSION was 19 when this spec was written)"
-    );
-}
-
-#[test]
-fn rw3b_9_teeth_needle_parser_is_not_vacuous() {
-    let synthetic = ["pub(crate) const ", "CONTENT_VERSION", ": u32 = ", "20;\n"].concat();
-    assert_eq!(
-        parse_content_version(&synthetic),
-        Some(20),
-        "TEETH(rw3b-9): the needle parser must read the version out of a canonical declaration"
-    );
-    assert_eq!(
-        parse_content_version("pub const OTHER_VERSION: u32 = 99;"),
-        None,
-        "TEETH(rw3b-9): the parser must NOT match an unrelated constant"
-    );
-    // The attack this parser exists to survive: a DIFFERENT constant whose name
-    // merely ENDS IN the needle, declared ABOVE the real one.
-    let decoyed = [
-        "pub(crate) const MIN_SUPPORTED_",
-        "CONTENT_VERSION",
-        ": u32 = ",
-        "20;\npub(crate) const ",
-        "CONTENT_VERSION",
-        ": u32 = ",
-        "19;\n",
-    ]
-    .concat();
-    assert_eq!(
-        parse_content_version(&decoyed),
-        Some(19),
-        "TEETH(rw3b-9): a decoy constant merely ending in the needle must NOT shadow the \
-         real declaration — kills a scan that takes the first substring hit"
-    );
-    let doubled = [
-        "const ",
-        "CONTENT_VERSION",
-        ": u32 = ",
-        "20;\nconst ",
-        "CONTENT_VERSION",
-        ": u32 = ",
-        "21;\n",
-    ]
-    .concat();
-    assert_eq!(
-        parse_content_version(&doubled),
-        None,
-        "TEETH(rw3b-9): two real declarations must be reported as unparseable, not guessed"
     );
 }
 
