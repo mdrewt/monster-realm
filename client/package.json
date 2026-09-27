@@ -8,8 +8,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "e2e": "playwright test",
-    "gen": "spacetime generate --lang typescript --module-path ../server-module --out-dir src/module_bindings",
-    "postinstall": "node ../scripts/wire-pixijs-skills.mjs"
+    "gen": "spacetime generate --lang typescript --module-path ../server-module --out-dir src/module_bindings"
   },
   "dependencies": {
     "@opentelemetry/api": "1.9.1",
