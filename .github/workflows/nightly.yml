@@ -1,15 +1,8 @@
-# Nightly mutation + coverage gates (ADR-0050). These are slow / informational
-# gates kept OFF the per-PR path so `just ci` stays the fast inner loop
-# (ADR-0043). They run on a schedule and on manual dispatch only.
-#
-# NOTE: all actions are pinned to 40-hex SHAs (M8.5d; the human-readable
-# version tag rides as an inline comment). There is deliberately NO
-# `continue-on-error` on the threshold steps — a soft failure would make
-# these gates toothless.
+# Slow gates kept off the PR path. A red night is triaged per docs/nightly-red-response-policy.md;
+# `notify` opens one issue per non-success job.
 name: Nightly
 on:
   schedule:
-    # 07:00 UTC daily.
     - cron: '0 7 * * *'
   workflow_dispatch:
 permissions:
@@ -17,38 +10,20 @@ permissions:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 jobs:
-  # cargo-mutants scoped to the rule core (game-core). Surviving mutants fail
-  # the job (default cargo-mutants behavior); policy in ADR-0050.
-  # Failure policy for `mutation`: triaged and inserted as the next slice in
-  # the milestone queue, same tier as fix-red-master, below it in ordering.
-  # Response policy + owner: docs/nightly-red-response-policy.md.
+  # game-core, zero tolerance.
   mutation:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6 # v6
       - uses: dtolnay/rust-toolchain@stable # stable
-      # Distinct prefix-key (v1-nightly) so this cache never collides with the
-      # ci (v1-ci) / e2e (v1-e2e) job caches.
       - uses: Swatinem/rust-cache@v2 # v2
         with: { prefix-key: v1-nightly }
       - uses: taiki-e/install-action@v2 # v2
         with: { tool: cargo-mutants }
-      # `just mutate-core` shells out through `just`; without this the step dies
-      # with `just: command not found` (exit 127). Same SHA-pin as ci.yml + the
-      # coverage job below. cargo-mutants policy is unchanged (ADR-0050).
       - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
       - run: just mutate-core
-      # ADR-0200 D7. `if: always()` is LOAD-BEARING, not hygiene: the GitHub
-      # default is `success()`, which uploads the survivor list only on the
-      # nights it is worthless and skips it on exactly the nights someone needs
-      # it to triage. `if-no-files-found: warn` is pinned EXPLICITLY even though
-      # `warn` is already the action's default — it is a ratchet against someone
-      # raising it to `error`, not an override: at `error` a job that died in the
-      # toolchain install, before cargo-mutants ever produced mutants.out/, would
-      # report a failing upload step instead of its REAL failure. The artifact
-      # name is distinct per job because upload-artifact v4 hard-errors on a
-      # duplicate name within one run.
-      - name: Upload mutants.out (failure evidence)
+      # always(): the survivor list matters most on the nights the gate fails.
+      - name: Upload mutants.out
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -57,45 +32,21 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-  # cargo-mutants over the server shell (ADR-0050 amendment A2 / D-13.5-2). The
-  # cargo package is `monster-realm-module` (the server-module/ directory's crate
-  # name — `-p server-module` fails "Package not found"). Survivor-count RATCHET,
-  # not zero-tolerance: the shell's reducers are covered by evals/integration/e2e
-  # rather than in-crate units (game-core above keeps zero-tolerance). Baseline
-  # 180 missed @ e875af0; cap policy in ADR-0050. Deliberately no soft-failure
-  # keys on any step (a soft mutation gate is toothless); wiring + neuter-freedom
-  # are guarded by evals/nightly-smoke-wiring.eval.mjs from this job's first commit.
-  # Failure policy for `mutation-server`: triaged and inserted as the next
-  # slice in the milestone queue, same tier as fix-red-master, below it in
-  # ordering.
-  # Response policy + owner: docs/nightly-red-response-policy.md.
+  # server-module survivor-count ratchet (cap in the justfile recipe).
   mutation-server:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6 # v6
       - uses: dtolnay/rust-toolchain@stable # stable
-      # Distinct prefix-key (v1-nightly-server) so this cache never collides with
-      # the mutation (v1-nightly) / coverage / smoke (v1-smoke) job caches.
       - uses: Swatinem/rust-cache@v2 # v2
         with: { prefix-key: v1-nightly-server }
       - uses: taiki-e/install-action@v2 # v2
         with: { tool: cargo-mutants }
-      # cargo-nextest as its own step (matching the sibling jobs' single-tool
-      # style): the mutate-server recipe pins --test-tool nextest for determinism
-      # with the ADR-0050 recorded baseline, so a missing nextest must fail the
-      # install step loudly, not fall back to a different test runner.
       - uses: taiki-e/install-action@v2 # v2
         with: { tool: cargo-nextest }
       - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
       - run: just mutate-server
-      # ADR-0200 D7 — same reasoning as the `mutation` job above. `if: always()`
-      # is load-bearing: the default `success()` uploads the survivor list only
-      # on the nights it is worthless. `warn` is the action's OWN default; pinning
-      # it here is a ratchet against a later raise to `error`, which would mask a
-      # job that died before cargo-mutants wrote mutants.out/ behind a failing
-      # upload step. The name differs from `mutants-out-core` because
-      # upload-artifact v4 hard-errors on a duplicate name within one run.
-      - name: Upload mutants.out (failure evidence)
+      - name: Upload mutants.out
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -104,30 +55,13 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-  # vitest line-coverage threshold (vitest exits non-zero below the threshold).
-  # Failure policy for `coverage`: triaged and inserted as the next slice in
-  # the milestone queue, same tier as fix-red-master, below it in ordering.
-  # Response policy + owner: docs/nightly-red-response-policy.md.
-  #
-  # Rust + wasm-pack are present because `just coverage` depends on `just wasm`
-  # (justfile): client/src/main.ts imports
-  # the gitignored client-wasm pkg, so without it the main.ts-importing specs fail
-  # to RESOLVE and vitest emits no coverage report at all — the threshold silently
-  # stops being evaluated. Adding the just-dependency WITHOUT these steps would
-  # only trade that red for `wasm-pack: command not found`.
-  # NOTE: deliberately no `- name: Install client deps` run step: the `coverage:`
-  # recipe already runs `npm ci` itself, and a shell step
-  # before the gate trips jobIsNotNeutered's "gate must be the FIRST run: step"
-  # rule in evals/nightly-smoke-wiring.eval.mjs. `uses:` steps before it are fine.
+  # Client line coverage, report-only. Rust + wasm-pack because `just coverage` builds the wasm pkg.
   coverage:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6 # v6
       - uses: dtolnay/rust-toolchain@stable # stable
         with: { targets: wasm32-unknown-unknown }
-      # Distinct prefix-key (v1-coverage) so this cache never collides with the
-      # mutation (v1-nightly) / mutation-server (v1-nightly-server) / smoke
-      # (v1-smoke) job caches, or ci.yml's v1-ci / v1-e2e.
       - uses: Swatinem/rust-cache@v2 # v2
         with: { prefix-key: v1-coverage }
       - uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
@@ -139,13 +73,27 @@ jobs:
           cache-dependency-path: client/package-lock.json
       - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
       - run: just coverage
+      - name: Upload coverage summary
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: coverage-summary
+          path: client/coverage/
+          if-no-files-found: warn
+          retention-days: 14
 
-  # Publish → edit-content → republish-WITHOUT-delete-data → sync_content →
-  # assert data survives + new content version served (spec §12.5b-6, ADR-0079).
-  # Failure policy: any failure is inserted as the NEXT slice in the milestone
-  # queue (priority: same tier as fix-red-master, below it in ordering).
-  # Response policy + owner: docs/nightly-red-response-policy.md.
-  # Uses an isolated per-run DB name so concurrent nightly runs don't collide.
+  # game-core hot-path criterion budgets.
+  perf-budget:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6 # v6
+      - uses: dtolnay/rust-toolchain@stable # stable
+      - uses: Swatinem/rust-cache@v2 # v2
+        with: { prefix-key: v1-perf }
+      - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
+      - run: just perf-budget
+
+  # Republish over live data without --delete-data; data must survive and re-seed (ADR-0079).
   smoke-republish:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -157,9 +105,6 @@ jobs:
         with: { prefix-key: v1-smoke }
       - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
       - name: Install SpacetimeDB CLI
-        # Download-then-execute (not `curl | sh`): satisfies semgrep
-        # gha-curl-pipe-shell and leaves an artifact for inspection.
-        # `--yes`: installer prompts to confirm on a non-tty runner without it.
         run: |
           curl -sSf -o /tmp/spacetime-install.sh https://install.spacetimedb.com
           sh /tmp/spacetime-install.sh --yes
@@ -169,7 +114,6 @@ jobs:
           spacetime version install 2.8.1
           spacetime version use 2.8.1
           spacetime --version
-      # Ephemeral in-memory SpacetimeDB instance on 127.0.0.1:3000.
       - name: Start SpacetimeDB
         run: nohup spacetime start --in-memory --listen-addr 127.0.0.1:3000 > /tmp/stdb-smoke.log 2>&1 &
       - name: Wait for SpacetimeDB
@@ -184,56 +128,17 @@ jobs:
       - name: Run smoke-republish test
         env:
           STDB_SERVER: http://127.0.0.1:3000
-          # Per-run isolated DB name: never collides with concurrent nightly runs
-          # or the regular monster-realm dev/e2e database.
           MR_SMOKE_DB: monster-realm-smoke-${{ github.run_id }}
         run: just smoke-republish
       - name: Dump SpacetimeDB logs on failure
         if: failure()
         run: cat /tmp/stdb-smoke.log || true
 
-  # Failure NOTIFICATION fan-in (ADR-0200). The gates above had teeth and no
-  # voice: `mutation-server` was RED for five consecutive nights with nobody
-  # reacting, because failure handling existed only as the prose triage comments
-  # above each job. This job is that voice.
-  #
-  # Failure policy for `notify`: a failure here means the notifier itself is
-  # broken (a 403 on the API call, a malformed jq filter, or the D6 zero-guard
-  # firing) — triaged and inserted as the next slice in the milestone queue, same
-  # tier as fix-red-master, below it in ordering. There is deliberately NO
-  # `continue-on-error` and no `|| true`: a notifier that swallows its own errors
-  # is indistinguishable from a green night, which is the exact bug being fixed.
-  # Response policy + owner: docs/nightly-red-response-policy.md.
-  #
-  # D2a — the condition admits THREE non-success results, not just `failure()`.
-  # GitHub evaluates `failure()` true only when a needed job actually FAILED, so a
-  # job neutered into `skipped` would leave this job skipped too, reproducing "red
-  # and silent" one level up. `cancelled` is the third term because a
-  # `timeout-minutes` expiry concludes the job as CANCELLED, satisfying neither
-  # `failure` nor `skipped`: `smoke-republish` carries a 20-minute timeout and the
-  # mutation jobs run 1.5-2.5 h against the 6 h hosted cap, so that is a real
-  # red-and-silent night, not a hypothetical one.
-  # The leading `!cancelled()` is a different predicate from the
-  # `contains(needs.*.result, 'cancelled')` term and still does what it always did:
-  # `cancelled()` is true only when the WHOLE RUN was cancelled (someone hit Cancel,
-  # or a newer run superseded this one), which is a human action needing no issue —
-  # whereas a single needed job concluding `cancelled` leaves the run itself
-  # uncancelled and must be reported. It also keeps the job quiet on a fully green
-  # night, so D6's zero-guard cannot misfire.
-  #
-  # D3 — the `issues: write` grant is JOB-scoped. Top-level `permissions:` stays
-  # `contents: read`, so the mutation jobs, which compile third-party build
-  # scripts under cargo-mutants, never hold issue-write.
-  #
-  # D1/D5 — `gh` (preinstalled on ubuntu-latest) rather than a third-party
-  # notification Action: nothing extra to pin, trust or renovate, and a 403 exits
-  # non-zero and REDs the job loudly. Every `${{ }}` value is passed through
-  # `env:` and referenced as `$VAR`, never interpolated into the script body.
-  # No `--label`: `gh issue create --label X` fails the API call when X does not
-  # exist in the repo (D4), which would convert the notification back into a
-  # silent-failure surface.
+  # One issue per failed, skipped or cancelled job (ADR-0200). A job that times out concludes
+  # `cancelled`; `!cancelled()` only suppresses a whole-run cancel. No soft-fail anywhere: a
+  # notifier that swallows its errors looks like a green night.
   notify:
-    needs: [mutation, mutation-server, coverage, smoke-republish]
+    needs: [mutation, mutation-server, coverage, perf-budget, smoke-republish]
     if: ${{ !cancelled() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'skipped') || contains(needs.*.result, 'cancelled')) }}
     runs-on: ubuntu-latest
     permissions:
@@ -243,43 +148,21 @@ jobs:
       - name: Open one issue per non-success job
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # `gh` resolves the target repo from the current git remote, and this
-          # job deliberately has no checkout step — without GH_REPO every
-          # `gh issue create` dies with "not a git repository".
           GH_REPO: ${{ github.repository }}
           NEEDS_JSON: ${{ toJSON(needs) }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           RUN_ID: ${{ github.run_id }}
-        # `shell: bash` for the `-o pipefail` it brings: the default Linux shell is
-        # `bash -e` WITHOUT pipefail, and were it ever to fall back to `sh -e {0}` the
-        # `set -o pipefail` below would itself error out.
         shell: bash
         run: |
           set -euo pipefail
-          # D2: the failing set is ENUMERATED from toJSON(needs), never hardcoded —
-          # five hardcoded needs.<job>.result branches would silently drop the sixth
-          # job the day someone adds one. Selecting non-success (rather than
-          # == "failure") also reports a `skipped` job, which is what a successful
-          # job-level neuter looks like at runtime.
-          #
-          # The enumeration is CAPTURED INTO A VARIABLE first, never inlined as
-          # `for job in $(jq …)`: a command substitution in a `for` list is
-          # `set -e`-EXEMPT, so a malformed NEEDS_JSON or a missing jq would yield
-          # zero iterations and then be laundered into D6's "enumerated zero
-          # non-success jobs" message — reporting the wrong cause for the red. An
-          # assignment DOES trip `set -e`, so the notifier fails on its real error.
+          # Assigned first: a failing command substitution in a `for` list would be set -e-exempt.
           failed_jobs=$(printf '%s' "$NEEDS_JSON" | jq -r 'to_entries[] | select(.value.result != "success") | .key')
           opened=0
           for job in $failed_jobs; do
             result=$(printf '%s' "$NEEDS_JSON" | jq -r --arg j "$job" '.[$j].result')
             gh issue create --title "nightly failure: $job (run $RUN_ID)" --body "Nightly job $job finished with result $result. Run: $RUN_URL"
-            # An assignment, NOT a bare `$((opened + 1))` command: under
-            # `set -euo pipefail` a bare arithmetic expansion evaluating to 0
-            # exits non-zero and would abort the loop on the very first issue.
             opened=$((opened + 1))
           done
-          # D6: a notification path that runs and quietly creates nothing is
-          # indistinguishable from a green night — the failure mode being fixed.
           if [ "$opened" -eq 0 ]; then
             echo "notify fired but enumerated zero non-success jobs: $NEEDS_JSON" >&2
             exit 1
