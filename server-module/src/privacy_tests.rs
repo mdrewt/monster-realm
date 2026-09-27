@@ -6887,11 +6887,16 @@ fn m22s4_sender_bound_once_and_sole_identity_source() {
         }
         scan = at + 4;
     }
-    assert!(
-        ctx_calls >= 3,
-        "m22s4 [X9/dispatch-args]: only {ctx_calls} context-passing call(s) were found in the \
-         reducer body; SEVEN exist since rb-111. A scan that finds too few stopped looking; the \
-         floor guards a broken walk, not a changed statement list, each call pinned by name."
+    assert_eq!(
+        ctx_calls, 8,
+        "m22s4 [X9/dispatch-args]: the reducer body makes {ctx_calls} context-passing call(s); \
+         EXACTLY eight are sanctioned since rb-132 (the wallet ask joined rb-111's seven). An \
+         EQUALITY since rb-132, no longer a floor, and that is MEASURED (rb-132 tests red team): a \
+         prefix call such as the economy module's wallet ERASE, passed the context and the bound \
+         subject, is well-formed to every clause above, so a floor let the reducer destroy the \
+         wallet row the newcomer tier asks about and then shed and rob every credited guest. \
+         SEVEN means a call was removed or rewritten off the `(ctx` spelling; NINE is a call \
+         nobody reviewed."
     );
 
     // The only tables this body may touch are the three the guards need.
@@ -18910,6 +18915,16 @@ fn rb87_test_roster_is_closed() {
 // against the smallest bundle this reducer can write, and once after the
 // manifest walk against this request's EXACT row count.
 //
+// AMENDED BY rb-132 (ADR-0275, which Amends ADR-0265): the caller without an
+// account row is now split once more on the economy SSOT's wallet-row test. A
+// caller with a wallet row keeps the HALF above; a caller with neither row is
+// held to a QUARTER (the newcomer ceiling, derived as half the anonymous one).
+// The tier seam therefore takes TWO answers, account first, and the frozen
+// pre-gate statement below carries both asks. The rb-132 block at the end of
+// this file owns the newcomer value, the four-row seam oracle, the wallet-SSOT
+// body pin and the word-bounded seam census; the pins here were RE-FROZEN, not
+// relaxed, and each re-freeze says so where it sits.
+//
 // WHY THE SEAMS ARE PURE, AND WHY THAT IS A CONSTRAINT RATHER THAN A STYLE
 // CHOICE. The native test host (`native_host_tests.rs`) models eleven syscalls
 // (since rb-109) and the row-count one is NOT among them, so after rb-107 the export
@@ -18917,8 +18932,9 @@ fn rb87_test_roster_is_closed() {
 // lib-test binary rather than red one test, which reads like a toolchain problem
 // instead of a finding. Nothing in this block therefore names the reducer as a
 // Rust symbol or calls anything that reaches a table. The only executable
-// surfaces are the two scalar-argued seams and the three constants; everything
-// else in this block is a SOURCE scan and compiles on the pre-fix tree.
+// surfaces are the two scalar-argued seams and the three constants this block
+// reads (rb-132 adds a fourth, the newcomer ceiling, whose value oracle lives in
+// the rb-132 block); everything else in this block is a SOURCE scan.
 //
 // SCAN HYGIENE (rb22p_scan_hygiene scans THIS FILE): line comments only, no
 // block-comment delimiter, no raw-string prefix, no output or debug macro token,
@@ -18939,8 +18955,14 @@ fn rb87_test_roster_is_closed() {
 // comma before comparing (the rb-86 `[rb86/cap-wiring]` idiom), so that if the
 // call is ever lengthened the reader is told the ARGUMENTS are still the
 // reviewed ones and it is the STATEMENT SHAPE that moved. The two-sided
-// statement needle itself is NOT widened: a wrapped call is a lengthened call,
-// which plan §8.2 forbids outright, and it must red rather than be absorbed.
+// statement needle itself is NOT widened: a wrapped PRE-GATE call is a
+// lengthened call, which plan §8.2 forbids outright, and it must red rather
+// than be absorbed. That ban is about the pre-gate call ONLY. Since rb-132
+// (ADR-0275) the same statement needle also carries the `let cap` binding, and
+// THAT call wraps ON PURPOSE: two SSOT asks are 119 columns flat, past both
+// max_width and fn_call_width, so rustfmt emits exactly one vertical form with
+// a trailing comma. It is pinned VERBATIM in that form — no second spelling is
+// accepted anywhere in this block, so this is still the only tolerance here.
 // ===========================================================================
 
 // --- squashed needles, assembled from fragments ------------------------------
@@ -19013,17 +19035,32 @@ fn rb107_nd_min_decl() -> String {
 /// The frozen squashed SIGNATURE slice of the tier seam. It starts at the `fn`
 /// needle, so the (absent) visibility keyword is not part of it and is pinned
 /// separately by the twenty-four-byte window.
+///
+/// RE-FROZEN BY rb-132 (ADR-0275): two plain bools, account FIRST. Still
+/// context-free, which is the purity property this pin exists for, and the
+/// parameter order is now part of the frozen text as well.
 fn rb107_tier_sig_pin() -> String {
-    [rb107_nd_tier_fn(), "has_account:bool)->u64".to_string()].concat()
+    [
+        rb107_nd_tier_fn(),
+        "has_account:bool,has_wallet:bool)->u64".to_string(),
+    ]
+    .concat()
 }
 
-/// THE FROZEN SQUASHED BODY of the tier seam. Names BOTH constants, so a tier
-/// collapse that returns one of them from both arms cannot satisfy it.
+/// THE FROZEN SQUASHED BODY of the tier seam. Names all THREE ceilings, so a
+/// tier collapse that returns one of them from two arms cannot satisfy it.
+///
+/// RE-FROZEN BY rb-132 (ADR-0275): the account arm is tested first and ignores
+/// the wallet bit; the wallet bit only splits the callers without an account.
+/// The newcomer name is assembled so that no literal in this file opens with
+/// that constant's full prefix — the rb-110 live-roster rule, which would
+/// otherwise red on the tree before the constant exists.
 fn rb107_tier_body_pin() -> String {
     [
         "ifhas_account{",
-        concat!("EXPORT_LIVE", "_ROW_CAP}else{"),
-        concat!("EXPORT_ANON", "_LIVE_ROW_CAP}"),
+        concat!("EXPORT_LIVE", "_ROW_CAP}elseifhas_wallet{"),
+        concat!("EXPORT_ANON", "_LIVE_ROW_CAP}else{"),
+        concat!("EXPORT_", "NEWCOMER_LIVE_ROW_CAP}"),
     ]
     .concat()
 }
@@ -19089,18 +19126,26 @@ fn rb107_min_decl_source() -> String {
     .concat()
 }
 
-/// The tier seam's DECLARATION line as whitespace-bearing source text.
+/// The tier seam's DECLARATION line as whitespace-bearing source text (rb-132's
+/// two-bool form, 68 columns flat, so rustfmt keeps it on one line).
 fn rb107_tier_decl_source() -> String {
-    concat!("fn export_live", "_row_cap(has_account: bool) -> u64 ").to_string()
+    concat!(
+        "fn export_live",
+        "_row_cap(has_account: bool, has_wallet: bool) -> u64 "
+    )
+    .to_string()
 }
 
-/// The tier seam's BODY as whitespace-bearing source text.
+/// The tier seam's BODY as whitespace-bearing source text (rb-132's three arms,
+/// in rustfmt's canonical else-if layout).
 fn rb107_tier_body_source() -> String {
     [
         "\n    if has_account {\n        ",
         concat!("EXPORT_LIVE", "_ROW_CAP\n"),
-        "    } else {\n        ",
+        "    } else if has_wallet {\n        ",
         concat!("EXPORT_ANON", "_LIVE_ROW_CAP\n"),
+        "    } else {\n        ",
+        concat!("EXPORT_", "NEWCOMER_LIVE_ROW_CAP\n"),
         "    }\n",
     ]
     .concat()
@@ -19228,16 +19273,29 @@ fn rb107_exact_gate_args_pin() -> String {
 /// accumulator as well. The needle is spelled through `rb111_nd_mint_stmt()` —
 /// the same helper the rb-111 block's call-site clauses read — so the statement
 /// this pin demands and the statement those clauses count cannot drift apart.
+///
+/// RE-FROZEN BY rb-132 (ADR-0275), and again the re-freeze is a STRENGTHENING:
+/// the cap binding now asks TWO crate SSOT questions, the account-holder test
+/// FIRST and the economy module's wallet-row test SECOND, and it is spelled in
+/// rustfmt's vertical form with its trailing comma, because two asks do not fit
+/// on one line. The needle fixes where the wallet ask sits (inside the one cap
+/// binding, between the purge and the pre-gate) and the argument order, so two
+/// bools passed the wrong way round, a negated ask, or an ask moved out of the
+/// binding all move this literal. The wallet ask is spelled through
+/// `rb132_nd_wallet_ask()`, the helper the rb-132 block's own census reads, so
+/// the two cannot drift apart; the control below retypes it independently.
 fn rb107_nd_pre_gate() -> String {
     [
         rb65p_nd_purge_binding(),
         rb107_nd_cap_binding(),
         // The binding needle above is deliberately `=`-less (round-2 red team
-        // C1), so the pre-gate statement pin re-supplies the byte here. N1 is
-        // unchanged: the same squashed text as before this revision.
+        // C1), so the pre-gate statement pin re-supplies the byte here. From
+        // here to the gate head is the rb-132 binding, trailing comma included.
         "=".to_string(),
         rb107_nd_tier_named(),
-        concat!("crate::accounts::is_account", "_holder(ctx,me));").to_string(),
+        concat!("crate::accounts::is_account", "_holder(ctx,me),").to_string(),
+        rb132_nd_wallet_ask(),
+        ",);".to_string(),
         rb107_nd_gate_head(),
         rb107_pre_gate_args_pin(),
         "){".to_string(),
@@ -19278,14 +19336,18 @@ fn rb107_nd_exact_gate() -> String {
 /// controls proves nothing, and the comment block the implementer lands above
 /// that statement contributes no bytes, because the live pipeline blanks
 /// comments before the squash.
+///
+/// The rb-132 cap binding is retyped here the same way, in the exact vertical
+/// form rustfmt emits for it (one argument per line, trailing comma, closing
+/// paren on its own line), and never from `rb132_nd_wallet_ask()`.
 fn rb107_pre_gate_source() -> String {
     [
         concat!("}\n    let purged = purge_export", "_bundles(ctx, me);\n"),
-        concat!(
-            "    let cap = export_live",
-            "_row_cap(crate::accounts::is_account"
-        ),
-        "_holder(ctx, me));\n",
+        concat!("    let cap = export_live", "_row_cap(\n"),
+        "        crate::accounts::",
+        concat!("is_account", "_holder(ctx, me),\n"),
+        concat!("        crate::economy::wallet", "_exists(ctx, me),\n"),
+        "    );\n",
         concat!("    if !export_admission", "_open(ctx"),
         concat!(".db.export", "_bundle().count(), EXPORT_MIN"),
         "_BUNDLE_ROWS, cap) {\n",
@@ -19969,7 +20031,9 @@ fn rb107_caps_are_the_reapers_drain_and_the_manifest_minimum() {
          cap, about 1_264 minimum-size bundles. This is the number that bounds what JWT-less \
          identities can take: `join_game` needs no token, so nothing else stops a sybil from \
          filling the store, and the half they cannot reach is the account holders' structural \
-         headroom (residual R-rb-107-LOCKOUT records what the half they CAN take still costs)."
+         headroom. rb-132 (ADR-0275) splits that half: a caller with no wallet row either is \
+         held to the newcomer ceiling, half of THIS number, so this value is also what the \
+         newcomer tier is derived from."
     );
     assert_eq!(
         anon_cap,
@@ -20097,8 +20161,10 @@ fn rb107_caps_are_the_reapers_drain_and_the_manifest_minimum() {
 }
 
 /// X1 (ledger anchor; register rows M7, M8, M28): the cap a caller gets is
-/// TIERED on whether they hold an account row, and the seam that decides it is
-/// declared once, private, with a frozen signature and a frozen body.
+/// TIERED on whether they hold an account row — and, since rb-132 (ADR-0275),
+/// on whether a caller without one holds a wallet row — and the seam that
+/// decides it is declared once, private, with a frozen signature and a frozen
+/// body.
 ///
 /// WHY A NAMED SEAM AND NOT AN INLINE CONDITIONAL. `/simplify` flagged this
 /// layer and it was KEPT as a named exception: inlined into the `let cap`
@@ -20111,44 +20177,59 @@ fn rb107_caps_are_the_reapers_drain_and_the_manifest_minimum() {
 /// crate SSOT for `does this identity hold a verified account row` (ADR-0189 D2;
 /// ADR-0179 records why `has_jwt()` is not the predicate — the host mints its own
 /// token, so it is true for every connection). Its own tests own its behaviour;
-/// what rb-107 owns is that the reducer asks THAT question and maps the answer
-/// onto these two ceilings. The mapping is this seam, and the asking is pinned by
-/// the pre-gate needle in
+/// what rb-107 owns is that the reducer asks THAT question. Since rb-132 the
+/// reducer asks a SECOND crate SSOT question as well, the economy module's
+/// wallet-row test, and the seam maps the two answers onto THREE ceilings. That
+/// second question's body pin, the newcomer ceiling and the four-row value
+/// oracle over both bools live in the rb-132 block
+/// (`rb132_reducer_asks_the_wallet_ssot_exactly_once` and
+/// `rb132_tier_selection_is_exhaustive_over_account_and_wallet`); this test
+/// keeps rb-107's two rows, the account row and the anonymous-with-wallet row.
+/// The mapping is this seam, and BOTH asks are pinned by the pre-gate needle in
 /// `rb107_reducer_admits_twice_before_the_first_write`.
 ///
-/// Kills: M7 the two arms swapped, which hands every anonymous caller the
-/// account holders' ceiling and every account holder half a store; M8 the body
-/// collapsed to the full cap, which deletes the tier while leaving both
-/// constants declared and both value clauses in the caps test green; M28 the
-/// seam widened to `pub(crate)`, which makes the tier decision reachable from a
-/// module that never reviewed it; a literal ceiling inlined into either arm.
+/// Kills: M7 the full and anonymous arms swapped, which hands every anonymous
+/// caller the account holders' ceiling and every account holder half a store;
+/// M8 the body collapsed to the full cap, which deletes the tier while leaving
+/// every constant declared and every value clause in the caps test green; M28
+/// the seam widened to `pub(crate)`, which makes the tier decision reachable
+/// from a module that never reviewed it; a literal ceiling inlined into any arm.
 #[test]
 fn rb107_cap_selection_is_tiered_by_account() {
     let full = crate::privacy::EXPORT_LIVE_ROW_CAP;
     let anon = crate::privacy::EXPORT_ANON_LIVE_ROW_CAP;
 
-    // --- [rb107/tier-value]: exhaustive over the input ------------------------
-    let holder = crate::privacy::export_live_row_cap(true);
+    // --- [rb107/tier-value]: the account row and the anonymous-with-wallet row -
+    //
+    // Two of the four inputs, the two rb-107 named. The pair also disagrees
+    // under an argument swap, which is what makes it the ORDER discriminator:
+    // the seam takes account first, and two bools compile either way round.
+    // The union with the rb-132 four-row oracle is exhaustive over both bools.
+    let holder = crate::privacy::export_live_row_cap(true, false);
     assert_eq!(
         (holder, holder),
         (full, 43_008),
-        "[rb107/tier-value]: a caller HOLDING an account row is given a ceiling of {holder}; it \
-         must be the full live-row cap, {full}, which is 43_008. Both the named constant AND its \
+        "[rb107/tier-value]: a caller HOLDING an account row and no wallet row is given a ceiling \
+         of {holder}; it must be the full live-row cap, {full}, which is 43_008 — the account bit \
+         is tested first and the wallet bit is irrelevant to it. Both the named constant AND its \
          literal value are asserted here on purpose: against swapped arms (M7) a name-only clause \
          is green whenever the two constants are compared to each other rather than to what the \
          seam returned, and against a tier collapse (M8) the literal is what says WHICH ceiling \
-         came back."
+         came back. A seam whose two parameters were swapped reads this row as a wallet-only \
+         caller and returns the anonymous cap."
     );
-    let guest = crate::privacy::export_live_row_cap(false);
+    let guest = crate::privacy::export_live_row_cap(false, true);
     assert_eq!(
         (guest, guest),
         (anon, 21_504),
-        "[rb107/tier-value]: a caller with NO account row is given a ceiling of {guest}; it must \
-         be the anonymous cap, {anon}, which is 21_504. This arm is the whole security property of \
-         the slice: `join_game` needs no token, so unlimited anonymous identities exist by design, \
-         and the only thing that stops them taking the entire store is that this arm returns the \
-         SMALLER number. Returning the full cap here (M8) is the tier deleted, silently, with both \
-         constants still declared and every clause in the caps test still green."
+        "[rb107/tier-value]: a caller with NO account row but a wallet row is given a ceiling of \
+         {guest}; it must be the anonymous cap, {anon}, which is 21_504. This arm is rb-107's \
+         security property: `join_game` needs no token, so unlimited anonymous identities exist \
+         by design, and the only thing that stops them taking the entire store is that this arm \
+         returns the SMALLER number. Returning the full cap here (M8) is the tier deleted, \
+         silently, with every constant still declared and every clause in the caps test still \
+         green. The newcomer arm, no account and no wallet, is rb-132's row and is asserted by \
+         the rb-132 value oracle, not here."
     );
 
     // --- [rb107/tier-ordering]: the shed order, stated as an inequality -------
@@ -20218,17 +20299,20 @@ fn rb107_cap_selection_is_tiered_by_account() {
     assert_eq!(
         sig,
         rb107_tier_sig_pin(),
-        "[rb107/tier-sig]: the tier seam's signature is not the frozen one. It takes the ANSWER to \
-         the subject question as a plain `bool` and reaches no context at all — that split is what \
-         keeps it executable in the native test host, where the reducer that computes the bool \
-         can never run. A `ctx` parameter here would make the value clauses above a LINK failure \
-         of the whole lib-test binary rather than a red test."
+        "[rb107/tier-sig]: the tier seam's signature is not the frozen one. Since rb-132 it takes \
+         the ANSWERS to two SSOT questions as plain bools, the account answer FIRST and the \
+         wallet answer second, and reaches no context at all — that split is what keeps it \
+         executable in the native test host, where the reducer that computes the bools can never \
+         run. A `ctx` parameter here would make the value clauses above a LINK failure of the \
+         whole lib-test binary rather than a red test, and the parameter ORDER is frozen because \
+         two bools compile either way round."
     );
 
     // --- [rb107/tier-ssot]: the QUESTION the tier asks ------------------------
     //
-    // The seam above maps a bool onto two ceilings. What that bool MEANS lives
-    // in another module, and nothing in this crate pinned it: patching
+    // The seam above maps two bools onto three ceilings (rb-132). What the
+    // ACCOUNT bool means lives in another module, and nothing in this crate
+    // pinned it before rb-107 (the wallet bool's twin clause is rb-132's): patching
     // `is_account_holder` to `true` deletes the anonymous tier for every caller
     // — and opens the pvp guards that share the same predicate — while every
     // value clause here, both source pins, the whole reducer test and the full
@@ -20330,13 +20414,14 @@ fn rb107_cap_selection_is_tiered_by_account() {
     assert_eq!(
         body,
         rb107_tier_body_pin(),
-        "[rb107/tier-body]: the tier seam's body must be EXACTLY the two-armed selection, naming \
-         BOTH ceilings and nothing else. Equality rather than containment, for the reason this \
-         module has MEASURED three times on strictly simpler bodies: a correct body wrapped in a \
-         dead conditional, a shadowed binding, or an appended statement are all clippy-clean and \
-         green against every containment clause. This one literal closes a third arm that cannot \
-         exist, a literal ceiling inlined in place of either constant, and any prefix statement \
-         at once."
+        "[rb107/tier-body]: the tier seam's body must be EXACTLY the three-armed selection rb-132 \
+         froze — the account bit tested first, then the wallet bit — naming all THREE ceilings \
+         and nothing else. Equality rather than containment, for the reason this module has \
+         MEASURED three times on strictly simpler bodies: a correct body wrapped in a dead \
+         conditional, a shadowed binding, or an appended statement are all clippy-clean and green \
+         against every containment clause. This one literal closes a fourth arm that cannot \
+         exist, a literal ceiling inlined in place of any constant, the two bits tested in the \
+         other order, and any prefix statement at once."
     );
 }
 
@@ -20677,9 +20762,10 @@ fn rb107_reducer_admits_twice_before_the_first_write() {
          above does not reach. THREE is any one of the four GONE, and each of the three ways that \
          happens is a different defect with the same signature: the tier seam no longer consulted \
          (the binding replaced by a literal ceiling, which hands every anonymous caller the \
-         account holders' cap), a gate no longer reading the bound ceiling (which hands one of \
-         the two tiers to everybody), or a whole GATE deleted — so a reader who lands here must \
-         diff the body rather than assume which. A bare substring makes every spelling of every \
+         account holders' cap), a gate no longer reading the bound ceiling (which hands one \
+         tier's ceiling to every caller at that gate), or a whole GATE deleted — so a reader who \
+         lands here must diff the body rather than assume which. A bare substring makes every \
+         spelling of every \
          one of those one clause, and that is the point: the measured bypass walked straight \
          through a needle that named a specific binding form. THIS CLAUSE IS COARSE ON PURPOSE \
          and it runs EARLY, so it shadows the statement needles below for any mutation that \
@@ -21043,8 +21129,12 @@ fn rb107_reducer_admits_twice_before_the_first_write() {
          creation-stamp mint statement as its last member, exactly once; found \
          {n_n1}. RE-FROZEN BY rb-111 (ADR-0268), a STRENGTHENING: the needle now also fixes the \
          mint's POSITION — hoisted above the gate, sunk below the walk, or wrapped in anything at \
-         all, it moves this literal. ADJACENCY, not containment, and it closes a family in one \
-         clause: a statement or \
+         all, it moves this literal. RE-FROZEN AGAIN BY rb-132 (ADR-0275), also a STRENGTHENING: \
+         the cap binding asks the account-holder SSOT and then the economy wallet-row SSOT, and \
+         it WRAPS ON PURPOSE — two asks are 119 columns flat — so it is pinned verbatim in \
+         rustfmt's vertical form, trailing comma included; the two asks swapped, one negated, or \
+         the wallet ask moved out of the binding all move this literal. ADJACENCY, not \
+         containment, and it closes a family in one clause: a statement or \
          an ATTRIBUTE wedged between the purge and the cap binding or between the binding and the \
          gate (a conditional-compilation attribute on the gate, M21, is the MEASURED shape — it \
          leaves the host build, the lint run and every Rust test green while the wasm the database \
@@ -21052,8 +21142,9 @@ fn rb107_reducer_admits_twice_before_the_first_write() {
          hands every anonymous caller the account holders' cap; the subject test replaced by a \
          constant, M27, which does the same thing one call deeper; the gate deleted or relocated; a \
          debug assertion substituted for the reject, which is compiled out of the release profile \
-         entirely. IF THE ARGUMENT LIST WRAPPED VERTICALLY, the call was lengthened past \
-         fn_call_width — plan §8.2 forbids that; fix the call, not this pin."
+         entirely. IF THE PRE-GATE CALL'S ARGUMENT LIST WRAPPED VERTICALLY, that call was \
+         lengthened past fn_call_width — plan §8.2 forbids that; fix the call, not this pin. (The \
+         cap binding above it is the one call in this statement that wraps by design.)"
     );
 
     // --- [rb107/exact-gate-adjacency] LAST ------------------------------------
@@ -28651,6 +28742,1565 @@ fn rb115_test_roster_is_closed() {
             size >= 300,
             "[rb115/body-floor]: the span of `{name}` is only {size} squashed byte(s) — comments \
              and string literals blanked, whitespace removed — and 300 is the floor the sibling \
+             blocks use: a NOT-A-STUB pin, which catches a body hollowed down to its label \
+             strings."
+        );
+    }
+}
+
+// ===========================================================================
+// rb-132 (ADR-0275, which Amends ADR-0265) — A THIRD, NEWCOMER ADMISSION TIER
+// ON THE EXPORT REDUCER, KEYED ON THE CALLER'S WALLET ROW.
+//
+// CRITERION (gates/rb-132.gates.md X1; the slice carries no SHALL of its own,
+// so its gates are authored from the plan, the rb-107 precedent): a caller
+// holding an account row is admitted against the full live-row ceiling whatever
+// its wallet says; a caller with no account row but a wallet row against the
+// anonymous ceiling, half of that; and a caller with neither against the NEW
+// newcomer ceiling, half again. One count, one binding, one static reason and
+// both gates stay exactly where rb-107 left them. What moved is the ceiling the
+// binding selects, and the binding now asks a SECOND crate SSOT question, the
+// economy module's wallet-row test, eagerly, after the account-holder one.
+//
+// WHAT IS BEHAVIOURAL HERE AND WHAT IS NOT. The tier seam is bool-in and
+// u64-out, so the first test EXECUTES it over all four inputs and reads the
+// new ceiling by value. The reducer that computes the two bools reaches a
+// metadata syscall the native host does not model, so it stays LINK-fatal to
+// any test that names it (the rb-107 constraint, unchanged): the wallet ask,
+// its position and its argument order are SOURCE pins and say so. The economy
+// SSOT's VALUE is owned by rb-41 in economy_tests.rs, which runs it against
+// real rows, a zero-balance row included. What this block adds on that side is
+// the one-definition census in economy.rs, which is what kills a conditionally
+// compiled twin there (rb-41 only ever runs the arm the test target compiles),
+// with a body equality beside it. It also pins, read-only, the PREMISE the
+// tier rests on: movement.rs's join reducer, and movement.rs as a whole, never
+// reach the economy module, so an identity that has only joined holds no
+// wallet row. Two files are therefore read beside privacy.rs: economy.rs and
+// movement.rs.
+//
+// THE MEASURED SHADOW FAMILY, AND WHY ONE CLAUSE READS AN UNSQUASHED VIEW. The
+// plan red-team measured a CI-clean cheat: a glob import in the reducer prefix
+// plus a private module re-exporting another fn under the tier seam's name
+// shadows the seam at its call site while every squashed pin stays green (one
+// definition, one call, the cap census, the whole pre-gate needle). A local
+// closure bound under the admission predicate's name opens both rb-107 gates
+// the same way. Both are an EXTRA NAMING of a seam, so the closure is a census
+// of word-bounded identifiers over the comment- and string-blanked source with
+// its whitespace kept. It must never run on the squashed view: there the
+// definition fuses with its keyword and an alias with the word after it, both
+// sides of the name become identifier bytes, and the census reads low. A
+// fixture in the owning test measures that blindness rather than asserting it.
+//
+// RUSTFMT TOLERANCE, ONCE AND ONLY ONCE IN THIS BLOCK. The tier-call argument
+// clause drops ONE trailing comma before comparing (the rb-86 cap-wiring
+// idiom), because the two asks wrap vertically by design. The rb-107 pre-gate
+// needle pins that same statement verbatim, comma included, so the tolerance
+// buys an attributable message and loses no tooth.
+//
+// SCAN HYGIENE (rb22p_scan_hygiene scans THIS FILE): line comments only, no
+// block-comment delimiter, no raw-string prefix, no output or debug macro
+// token, no backslash before a double quote, and no double quote inside any
+// comment in this section. Every production needle is assembled from concat!
+// fragments. NO literal opens with the newcomer ceiling's full name: the
+// rb-110 live-roster clause reads every complete quoted EXPORT-family token in
+// this file and requires privacy.rs to carry it, which it does not until the
+// implementer lands the constant. The wallet accessor and its row type are
+// never spelled contiguously, because the currency-integrity eval reads this
+// file. No clause LABEL appears in any comment or doc comment in this section:
+// the label roster and every helper are declared ABOVE the first test, in the
+// region this banner cuts off from every span.
+// ===========================================================================
+
+/// economy.rs, for the wallet-row SSOT body pin in
+/// `rb132_reducer_asks_the_wallet_ssot_exactly_once`.
+///
+/// `include_str!` is relative to the including file, and this file sits beside
+/// economy.rs in `server-module/src/`. WHOLE-FILE, and sound for the reason
+/// rb-107's accounts.rs const records: every way the strip pipeline could
+/// desynchronise over that file is fail-LOUD. Its one hazard is a doc comment
+/// holding two balanced quote pairs directly above the fn this block pins; the
+/// owning test retypes that shape as a positive control, and a census of the
+/// file's closing module declaration proves the live read re-synchronises.
+const RB132_ECONOMY_RS: &str = include_str!("economy.rs");
+
+/// movement.rs, for the PREMISE pin in
+/// `rb132_reducer_asks_the_wallet_ssot_exactly_once`: the join reducer writes
+/// no wallet row, so an identity that has only joined really does read as a
+/// newcomer.
+///
+/// Read-only and whole-file, on the RB132_ECONOMY_RS precedent. The file's
+/// only quote pairs in comments are balanced on their own lines and its
+/// escaped quotes sit inside ordinary string literals, which the string
+/// stripper steps over. A desync could only blank text, which reads LOW, the
+/// dangerous direction for a zero census; the owning clause's body-length
+/// floor is what catches one that blanks the join reducer.
+const RB132_MOVEMENT_RS: &str = include_str!("movement.rs");
+
+// --- needles: the production tokens, never spelled contiguously -------------
+
+/// THE WALLET ASK as the export reducer must spell it, squashed: the economy
+/// SSOT, fully qualified, keyed on the bound subject.
+///
+/// SHARED on purpose — the rb-111 mint-statement precedent. The rb-107 pre-gate
+/// needle (`rb107_nd_pre_gate`) spells the cap binding through this helper and
+/// the census in `rb132_reducer_asks_the_wallet_ssot_exactly_once` counts it,
+/// so the statement one pin demands and the call the other counts cannot drift
+/// apart. Every CONTROL input in this file retypes the ask independently.
+fn rb132_nd_wallet_ask() -> String {
+    concat!("crate::economy::wallet", "_exists(ctx,me)").to_string()
+}
+
+/// The BARE identifier of the economy SSOT, with no call parenthesis, because
+/// a fn-item binding or a `use` alias names it without one.
+fn rb132_nd_wallet_ident() -> String {
+    concat!("wallet", "_exists").to_string()
+}
+
+/// The squashed DECLARATION head of the economy SSOT, in economy.rs.
+fn rb132_nd_wallet_fn() -> String {
+    concat!("fnwallet", "_exists(").to_string()
+}
+
+/// THE FROZEN SQUASHED BODY of the economy SSOT: one unique-index point read on
+/// the wallet table, answering whether a row is PRESENT.
+///
+/// rb-41 owns this fn's VALUE and already kills a constant body or a balance
+/// test (it seeds a zero-balance row and asserts true). This equality is the
+/// source-side companion of the one-definition census in the owning test,
+/// which is this block's own contribution. The accessor is assembled so this
+/// file never carries it contiguously.
+fn rb132_wallet_body_pin() -> String {
+    [
+        concat!("ctx", ".db."),
+        concat!("player", "_wallet()"),
+        ".owner_identity().find(owner).is_some()",
+    ]
+    .concat()
+}
+
+/// That SSOT's DECLARATION line as whitespace-bearing source text — the
+/// control input, spelled independently of every needle above.
+fn rb132_wallet_decl_source() -> String {
+    concat!(
+        "pub(crate) fn wallet",
+        "_exists(ctx: &ReducerContext, owner: Identity) -> bool "
+    )
+    .to_string()
+}
+
+/// That SSOT's BODY as whitespace-bearing source text, in the rustfmt chain
+/// layout economy.rs ships (control input).
+fn rb132_wallet_body_source() -> String {
+    [
+        "\n    ",
+        concat!("ctx", ".db"),
+        "\n        .",
+        concat!("player", "_wallet()"),
+        "\n        .owner_identity()\n        .find(owner)\n        .is_some()\n",
+    ]
+    .concat()
+}
+
+/// The squashed DECLARATION HEAD of the newcomer ceiling, up to the type colon:
+/// the twin needle, because a second declaration of the same name with a
+/// different right-hand side still carries it.
+fn rb132_nd_newcomer_head() -> String {
+    concat!("constEXPORT_", "NEWCOMER_LIVE_ROW_CAP:").to_string()
+}
+
+/// THE FROZEN SQUASHED DECLARATION of the newcomer ceiling: typed `u64` and
+/// DERIVED from the anonymous ceiling rather than transcribed, so re-sizing the
+/// drain moves all three tiers together and their strict order cannot invert.
+/// Spelled independently of the head needle above, never built from it.
+fn rb132_nd_newcomer_decl() -> String {
+    [
+        concat!("constEXPORT_NEW", "COMER_LIVE_ROW_CAP:u64="),
+        concat!("EXPORT_ANON", "_LIVE_ROW_CAP/2;"),
+    ]
+    .concat()
+}
+
+/// The newcomer ceiling's DECLARATION as whitespace-bearing source text (the
+/// control input, spelled independently of both needles above).
+fn rb132_newcomer_decl_source() -> String {
+    [
+        concat!("const EXPORT_NEW", "COMER_LIVE_ROW_CAP: u64 = "),
+        concat!("EXPORT_ANON", "_LIVE_ROW_CAP / 2;\n"),
+    ]
+    .concat()
+}
+
+/// THE FROZEN ARGUMENT LIST of the one tier-seam call, squashed, with ONE
+/// trailing comma dropped: the account-holder SSOT FIRST and the wallet SSOT
+/// second, both keyed on the bound subject.
+fn rb132_tier_args_pin() -> String {
+    [
+        concat!("crate::accounts::is_account", "_holder(ctx,me),").to_string(),
+        rb132_nd_wallet_ask(),
+    ]
+    .concat()
+}
+
+/// The cap binding exactly as rustfmt emits it, inside a throwaway fn: the
+/// control input for the ask census and the argument clause, retyped
+/// independently of every needle above.
+fn rb132_tier_call_source() -> String {
+    [
+        concat!("fn f() {\n    let cap = export_live", "_row_cap(\n"),
+        "        crate::accounts::",
+        concat!("is_account", "_holder(ctx, me),\n"),
+        concat!("        crate::economy::wallet", "_exists(ctx, me),\n"),
+        "    );\n}\n",
+    ]
+    .concat()
+}
+
+// --- the value table and the word-bounded census ----------------------------
+
+/// The tier seam's value table: `(what, has_account, has_wallet, ceiling)`,
+/// all four inputs, every ceiling a LITERAL.
+///
+/// Literals and never the constants, deliberately: this table is the seam's
+/// value oracle and must stay an independent statement of what each caller
+/// class is owed. The owning test pairs every literal with its named constant
+/// inside its own body, so each row is checked against BOTH. If the drain is
+/// ever re-sized, these move with the constants, in the same diff, from the
+/// spec. A SLICE rather than a fixed-size array, so a deleted row still
+/// compiles and is caught by the owning test's length clause instead of being
+/// a build error that attributes to nothing.
+fn rb132_tier_rows() -> &'static [(&'static str, bool, bool, u64)] {
+    &[
+        (
+            "an account holder who also holds a wallet row",
+            true,
+            true,
+            43_008,
+        ),
+        (
+            "an account holder with NO wallet row, never credited currency",
+            true,
+            false,
+            43_008,
+        ),
+        (
+            "no account row but a wallet row, a guest credited at least once",
+            false,
+            true,
+            21_504,
+        ),
+        (
+            "neither row, an identity that has only joined: the newcomer",
+            false,
+            false,
+            10_752,
+        ),
+    ]
+}
+
+/// The COMMENT- and STRING-blanked source with its whitespace KEPT: the view
+/// the word-bounded census reads. The same two stages as `stripped_for_scan`
+/// with the squash omitted, exactly as rb-107's reason-count clause takes it.
+fn rb132_code_view(src: &str) -> String {
+    strip_rust_comments(&strip_rust_strings(src))
+}
+
+/// How many WORD-BOUNDED occurrences of `ident` `text` carries: a hit counts
+/// only when the byte before it and the byte after it are each absent or
+/// outside the identifier alphabet.
+///
+/// Meant for `rb132_code_view`. On the squashed view a definition fuses with
+/// its keyword and an alias with the word after it, so both sides of the name
+/// become identifier bytes and the census silently reads low; the owning test
+/// carries the fixture that measures exactly that.
+fn rb132_ident_count(text: &str, ident: &str) -> usize {
+    if ident.is_empty() {
+        return 0;
+    }
+    let bytes = text.as_bytes();
+    let mut n = 0usize;
+    let mut start = 0usize;
+    while let Some(rel) = text[start..].find(ident) {
+        let at = start + rel;
+        let end = at + ident.len();
+        start = end;
+        let left = at == 0 || !is_word_byte(bytes[at - 1]);
+        let right = end == bytes.len() || !is_word_byte(bytes[end]);
+        if left && right {
+            n += 1;
+        }
+    }
+    n
+}
+
+// --- the roster census machinery --------------------------------------------
+
+/// Every DISTINCT rb-132 clause label spelled in `text`, sorted: the
+/// span-to-roster direction of the label census (the rb-115 helper, re-spelled
+/// because that block's helper roster is closed).
+fn rb132_labels_in(text: &str) -> Vec<String> {
+    let open = "[rb132/";
+    let mut out: Vec<String> = Vec::new();
+    let mut start = 0usize;
+    while let Some(rel) = text[start..].find(open) {
+        let at = start + rel;
+        let tail = &text[at..];
+        match tail.find(']') {
+            Some(end) => {
+                let label = &tail[..=end];
+                if !out.iter().any(|seen| seen.as_str() == label) {
+                    out.push(String::from(label));
+                }
+                start = at + end + 1;
+            }
+            None => {
+                start = at + open.len();
+            }
+        }
+    }
+    out.sort_unstable();
+    out
+}
+
+/// The ATTRIBUTE BLOCK of the first declaration `fn <name>(` in `src`, read
+/// bottom-up: every trimmed line walking UPWARD from the declaration that is
+/// neither blank nor a line comment, until the first line that ends an earlier
+/// item (it ends with a closing brace, a semicolon or an opening brace) or the
+/// start of the text.
+///
+/// Doc comments and blank lines are walked THROUGH, so an attribute parked
+/// above the doc comment is still read. Every other line is COLLECTED rather
+/// than parsed, so a multi-line attribute contributes each of its lines and no
+/// continuation rule has to be right for the block to be complete. Anything
+/// written BEFORE the keyword on the declaration's own line is collected first,
+/// so an attribute sharing that line is read as well. An empty vector means the
+/// declaration is absent or carries no attribute at all. The owning test
+/// requires EXACTLY one collected line, the test attribute, for every roster
+/// and dependency test; `rb85_attr_block_line`'s continuation rule is
+/// deliberately NOT reused, because a wedged attribute it failed to recognise
+/// would end the walk early and read as a clean block.
+fn rb132_attr_block(src: &str, name: &str) -> Vec<String> {
+    let decl = format!("fn {name}(");
+    let Some(at) = src.find(decl.as_str()) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = Vec::new();
+    let mut cursor = src[..at].rfind('\n').map_or(0, |i| i + 1);
+    let prefix = src[cursor..at].trim();
+    if !prefix.is_empty() {
+        out.push(prefix.to_string());
+    }
+    while cursor > 0 {
+        let prev_end = cursor - 1;
+        let prev_start = src[..prev_end].rfind('\n').map_or(0, |i| i + 1);
+        let line = src[prev_start..prev_end].trim();
+        cursor = prev_start;
+        if line.is_empty() || line.starts_with("//") {
+            continue;
+        }
+        if line.ends_with('}') || line.ends_with(';') || line.ends_with('{') {
+            break;
+        }
+        out.push(line.to_string());
+    }
+    out
+}
+
+/// The FOUR `rb132_` test names this block ships, in ledger order.
+///
+/// CLOSED on purpose: the acceptance ledger's X1 gate is an exact-name filter
+/// over these four and its EXPECT carries the literal count, and a filtered run
+/// does NOT red on a missing test — it matches fewer and still reports the same
+/// number passed as ran.
+fn rb132_test_roster() -> [&'static str; 4] {
+    [
+        "rb132_tier_selection_is_exhaustive_over_account_and_wallet",
+        "rb132_newcomer_ceiling_is_declared_once_private_and_derived",
+        "rb132_reducer_asks_the_wallet_ssot_exactly_once",
+        "rb132_test_roster_is_closed",
+    ]
+}
+
+/// Every non-test `rb132_` fn this block declares, CLOSED — including
+/// `rb132_nd_wallet_ask`, which the rb-107 pre-gate needle calls from outside
+/// this block, so it cannot be deleted in the diff that needs it most. The four
+/// roster fns name themselves, as the sibling blocks do.
+fn rb132_helper_roster() -> [&'static str; 20] {
+    [
+        "rb132_nd_wallet_ask",
+        "rb132_nd_wallet_ident",
+        "rb132_nd_wallet_fn",
+        "rb132_wallet_body_pin",
+        "rb132_wallet_decl_source",
+        "rb132_wallet_body_source",
+        "rb132_nd_newcomer_head",
+        "rb132_nd_newcomer_decl",
+        "rb132_newcomer_decl_source",
+        "rb132_tier_args_pin",
+        "rb132_tier_call_source",
+        "rb132_tier_rows",
+        "rb132_code_view",
+        "rb132_ident_count",
+        "rb132_labels_in",
+        "rb132_attr_block",
+        "rb132_test_roster",
+        "rb132_helper_roster",
+        "rb132_dependency_roster",
+        "rb132_label_roster",
+    ]
+}
+
+/// The NINE tests OUTSIDE this block's prefix that rb-132's proof rests on,
+/// asserted DECLARED so none can be deleted in the diff that would need it
+/// most.
+///
+/// Each holds up a class of clause. The four rb-107 tests carry the pins this
+/// slice RE-FROZE or reads: the predicate's value table the tiers feed, the
+/// ceilings' values and derivations, the two-row tier oracle with the account
+/// SSOT's body pin, and the pre-gate needle that welds both asks into the one
+/// binding. The X9 identity test owns the dispatch census, an EQUALITY at
+/// eight context-passing calls since rb-132, which reds an extra economy call
+/// passed the context and an ask keyed off the bound subject. The bare-quote
+/// census and the hygiene scan keep the strip pipeline that every squashed and
+/// word-bounded clause here reads in step with the source. The one-cfg census
+/// counts OUTER conditional attributes file-wide; the inner form is this
+/// block's own ban. The rb-85 bounded-range test bans a macro in privacy.rs,
+/// which is what keeps the word-bounded seam census complete: a macro can paste
+/// a seam's name from fragments no census reads.
+fn rb132_dependency_roster() -> [&'static str; 9] {
+    [
+        "rb107_admission_is_exact_at_both_caps_and_saturates",
+        "rb107_caps_are_the_reapers_drain_and_the_manifest_minimum",
+        "rb107_cap_selection_is_tiered_by_account",
+        "rb107_reducer_admits_twice_before_the_first_write",
+        "m22s4_sender_bound_once_and_sole_identity_source",
+        "rb22p_no_bare_quote_in_privacy",
+        "rb22p_scan_hygiene",
+        "rb48_privacy_has_exactly_one_cfg_attribute",
+        "rb85_reaper_reads_a_bounded_range_and_never_sweeps",
+    ]
+}
+
+/// Every clause label this block ships, paired with the index of the test that
+/// owns it in `rb132_test_roster()`.
+///
+/// An index rather than a name so the two rosters cannot drift: a renamed test
+/// moves one literal, not two. DECLARED HERE, above the first test, and that
+/// placement is load-bearing: a span runs from a test's own fn line to the next
+/// test attribute or flush-left banner, so these literals would otherwise be
+/// counted inside whichever test preceded them.
+fn rb132_label_roster() -> [(&'static str, usize); 21] {
+    [
+        ("[rb132/tier-value]", 0),
+        ("[rb132/newcomer-value]", 0),
+        ("[rb132/tier-ordering]", 0),
+        ("[rb132/newcomer-source]", 1),
+        ("[rb132/newcomer-vis]", 1),
+        ("[rb132/no-inner-attr]", 1),
+        ("[rb132/wallet-ssot]", 2),
+        ("[rb132/join-no-wallet]", 2),
+        ("[rb132/wallet-ask]", 2),
+        ("[rb132/economy-once]", 2),
+        ("[rb132/tier-args]", 2),
+        ("[rb132/seam-ident]", 2),
+        ("[rb132/roster-vacuity]", 3),
+        ("[rb132/roster-dup]", 3),
+        ("[rb132/roster-name]", 3),
+        ("[rb132/roster-closed]", 3),
+        ("[rb132/decl-total]", 3),
+        ("[rb132/roster-attributed]", 3),
+        ("[rb132/label-census]", 3),
+        ("[rb132/label-total]", 3),
+        ("[rb132/body-floor]", 3),
+    ]
+}
+
+/// T0 (ledger X1), THE VALUE ORACLE: the newcomer ceiling is exactly half the
+/// anonymous one, the three ceilings are strictly ordered, and the tier seam
+/// maps all FOUR inputs onto them, each checked against the named constant AND
+/// the literal.
+///
+/// The one test in this block that reads what the code RETURNS. The table is
+/// checked for shape before anything is read or called: four distinct inputs,
+/// exactly the three ceilings, and the account-only and wallet-only rows named
+/// as the pair that trades answers under an argument swap. Two bools compile in
+/// either order, and that pair is the only one that tells the orders apart.
+///
+/// Kills (register rows): R1 the newcomer ceiling set to the anonymous one,
+/// and a value one off it, on the value clause; R6 the newcomer arm returning
+/// the anonymous ceiling, which is rb-107's behaviour; R7 the wallet test
+/// negated; R8 the wallet bit tested before the account bit, which sheds an
+/// account holder who has a wallet; R9 the two parameters swapped with the body
+/// unchanged; R10 the anonymous arm returning the newcomer ceiling. Those five
+/// die on the row clause, each at the first row whose answer it changes. TF1,
+/// a table row deleted, still COMPILES because the table is a slice, and dies
+/// on the length clause that opens the test.
+#[test]
+fn rb132_tier_selection_is_exhaustive_over_account_and_wallet() {
+    let rows = rb132_tier_rows();
+
+    // --- the table itself, BEFORE anything is read or called -----------------
+    assert_eq!(
+        rows.len(),
+        4,
+        "[rb132/tier-value]: the value table carries {} row(s); the seam takes two bools, so it \
+         has exactly FOUR inputs and the oracle must name every one. A table that shrank stops \
+         reading the arm its missing row exercised (TF1), and every clause below would still \
+         report green over what is left.",
+        rows.len()
+    );
+    let mut inputs: Vec<(bool, bool)> = rows.iter().map(|r| (r.1, r.2)).collect();
+    inputs.sort_unstable();
+    inputs.dedup();
+    assert_eq!(
+        inputs.len(),
+        4,
+        "[rb132/tier-value]: the four rows name only {} DISTINCT (account, wallet) input(s). A \
+         duplicated input is a missing one, and the arm it would have exercised ships unread.",
+        inputs.len()
+    );
+    let mut ceilings: Vec<u64> = rows.iter().map(|r| r.3).collect();
+    ceilings.sort_unstable();
+    ceilings.dedup();
+    assert_eq!(
+        ceilings,
+        [10_752u64, 21_504, 43_008],
+        "[rb132/tier-value]: the table's distinct expected ceilings are {ceilings:?}; exactly the \
+         three tiers are required. With two, a seam that collapsed a pair of tiers into one agrees \
+         with every row."
+    );
+    let expectation = |account: bool, wallet: bool| {
+        rows.iter()
+            .find(|r| r.1 == account && r.2 == wallet)
+            .map(|r| r.3)
+    };
+    let account_only = expectation(true, false);
+    let wallet_only = expectation(false, true);
+    assert!(
+        account_only == Some(43_008) && wallet_only == Some(21_504),
+        "[rb132/tier-value]: the ARGUMENT-ORDER discriminator is not in the table as the spec \
+         gives it: the account-only row expects {account_only:?} (must be 43_008) and the \
+         wallet-only row expects {wallet_only:?} (must be 21_504). They are the only two inputs \
+         whose answers trade places when the seam's two bool parameters are swapped (R9), so \
+         naming them here, before the loop, stops a future edit from quietly deleting the one \
+         pair that separates the two orders."
+    );
+
+    // --- the new ceiling, by value and by derivation ---------------------------
+    let full = crate::privacy::EXPORT_LIVE_ROW_CAP;
+    let anon = crate::privacy::EXPORT_ANON_LIVE_ROW_CAP;
+    let newcomer = crate::privacy::EXPORT_NEWCOMER_LIVE_ROW_CAP;
+    assert_eq!(
+        newcomer, 10_752,
+        "[rb132/newcomer-value]: the newcomer ceiling must be exactly 10_752 live rows, a quarter \
+         of the reaper's one-window drain and about 632 minimum-size bundles. It is the most the \
+         residual's named pattern, a join and then an export per identity, can ever occupy; set \
+         equal to the anonymous ceiling (R1) the tier is deleted, and a value one off it moves \
+         the threshold every never-credited guest is shed at."
+    );
+    assert_eq!(
+        newcomer,
+        anon / 2,
+        "[rb132/newcomer-value]: the newcomer ceiling ({newcomer}) is not half the anonymous \
+         ceiling ({anon}). The three ceilings are ONE knob, the drain, halved twice, never three \
+         numbers: a literal here drifts the moment the drain is re-sized, and the strict order the \
+         tier exists to guarantee then means whatever the older number happens to say."
+    );
+
+    // --- every row, against the named constant AND the literal -----------------
+    let named: [(u64, u64); 3] = [(43_008, full), (21_504, anon), (10_752, newcomer)];
+    for &(what, account, wallet, literal) in rows {
+        let constant = named.iter().find(|n| n.0 == literal).map(|n| n.1);
+        let got = crate::privacy::export_live_row_cap(account, wallet);
+        assert_eq!(
+            (Some(got), got),
+            (constant, literal),
+            "[rb132/tier-value]: {what} (account {account}, wallet {wallet}) is given a ceiling \
+             of {got}; it must be the named constant {constant:?} AND its literal value \
+             {literal}. Both are asserted on purpose: a clause comparing constants to each other \
+             is green on swapped arms, and only the literal says WHICH ceiling came back. The \
+             account bit is tested FIRST and ignores the wallet bit, and the wallet bit splits \
+             only the callers with no account, so a negated wallet test (R7), the wallet bit \
+             tested first (R8), swapped parameters (R9), or either lower arm returning the other \
+             lower ceiling (R6, R10) each answers at least one of these four rows wrongly."
+        );
+    }
+
+    // --- the shed order, by value and by what the seam returns -----------------
+    assert!(
+        newcomer < anon && anon < full,
+        "[rb132/tier-ordering]: the ceilings read newcomer {newcomer}, anonymous {anon}, full \
+         {full}; they must be STRICTLY increasing in that order. This is the clause that survives \
+         any future re-sizing of the drain: whatever the numbers become, the caller who has \
+         invested less is shed first, or two tiers are one control wearing two names."
+    );
+    let neither = crate::privacy::export_live_row_cap(false, false);
+    let wallet_only_cap = crate::privacy::export_live_row_cap(false, true);
+    let account_only_cap = crate::privacy::export_live_row_cap(true, false);
+    let both = crate::privacy::export_live_row_cap(true, true);
+    assert!(
+        neither < wallet_only_cap && wallet_only_cap < account_only_cap && account_only_cap == both,
+        "[rb132/tier-ordering]: the seam returns {neither} for neither row, {wallet_only_cap} for \
+         a wallet row only, {account_only_cap} for an account row only and {both} for both; the \
+         shed order requires neither < wallet only < account only == both. An account holder's \
+         ceiling ignores the wallet bit, so the last two must be EQUAL: an account holder who was \
+         never credited currency is not a lesser account holder."
+    );
+}
+
+/// T1 (ledger X1): the newcomer ceiling is declared EXACTLY once, PRIVATE and
+/// UNCONDITIONAL, as half the anonymous ceiling, by frozen declaration text.
+///
+/// The value test above cannot tell the derivation from a transcribed literal
+/// of the same value, or from the full ceiling divided by four: all three read
+/// 10_752. Only the declaration text can, so it is pinned by equality, with a
+/// positive control through the live pipeline, a blindness fixture and a
+/// prefix-freedom check against the three sibling heads. The HEAD census runs
+/// before the visibility window on purpose: the window helper panics under
+/// rb-107's own label when its needle is absent, and a missing ceiling must red
+/// HERE, under this block's label.
+///
+/// Kills: R2 the right-hand side respelled as the full ceiling over four, the
+/// same value by a different derivation, and the literal 10_752 likewise; R5
+/// the ceiling widened to crate visibility; a conditional-compilation twin,
+/// which is two heads; an attribute on the declaration; and an INNER
+/// conditional-compilation attribute anywhere in privacy.rs, the one form the
+/// file-wide outer-attribute census in rb-48 cannot see (measured by the tests
+/// red team as a way to fence a fn body off the wasm).
+#[test]
+fn rb132_newcomer_ceiling_is_declared_once_private_and_derived() {
+    let squashed = stripped_for_scan(PRIVACY_RS);
+    let head = rb132_nd_newcomer_head();
+    let pin = rb132_nd_newcomer_decl();
+
+    // --- the pin is satisfiable, blind to prose, and prefix-free ---------------
+    let control = stripped_for_scan(&rb132_newcomer_decl_source());
+    assert_eq!(
+        control, pin,
+        "[rb132/newcomer-source]: the frozen DECLARATION pin is UNSATISFIABLE: the live pipeline \
+         derives {control:?} from the sanctioned declaration text, not the pinned literal. A \
+         hand-typed squashed literal with one character wrong is a permanently red gate that reads \
+         exactly like a missing implementation. Revise the literal FROM THE SPEC."
+    );
+    assert!(
+        control.starts_with(head.as_str()),
+        "[rb132/newcomer-source]: the head needle `{head}` is not the opening of the sanctioned \
+         declaration {control:?}, so the twin census below would count something other than the \
+         declaration the pin freezes."
+    );
+    for (what, needle) in [
+        ("the frozen declaration", pin.as_str()),
+        ("the declaration head", head.as_str()),
+    ] {
+        assert_eq!(
+            rb107_blind_count(needle),
+            0,
+            "[rb132/newcomer-source]: the strip pipeline still sees {what} after it was placed \
+             ONLY inside a line comment and inside a string literal, so a doc comment naming the \
+             right declaration would satisfy the census below."
+        );
+    }
+    for sibling in [
+        concat!("constEXPORT_LIVE", "_ROW_CAP:"),
+        concat!("constEXPORT_ANON", "_LIVE_ROW_CAP:"),
+        concat!("constEXPORT_MIN", "_BUNDLE_ROWS:"),
+    ] {
+        let crossed = rb22p_count(&pin, sibling) + rb22p_count(sibling, &head);
+        assert_eq!(
+            crossed, 0,
+            "[rb132/newcomer-source]: the newcomer head and the sibling head `{sibling}` are not \
+             PREFIX-FREE: one occurs inside the other or inside the newcomer's frozen \
+             declaration. Two exactly-once censuses over overlapping needles can both be \
+             satisfied by one span, which is a census that counts nothing."
+        );
+    }
+
+    // --- the head census FIRST, then the frozen declaration --------------------
+    let n_head = rb22p_count(&squashed, &head);
+    assert_eq!(
+        n_head, 1,
+        "[rb132/newcomer-source]: privacy.rs must open the declaration of the newcomer ceiling, \
+         the bare head `{head}`, EXACTLY once; found {n_head}. ZERO is the intended RED before the \
+         implementer lands rb-132: no newcomer tier exists, and a caller who has only joined is \
+         shed at rb-107's anonymous threshold. TWO is a conditional-compilation twin, which ships \
+         one ceiling to the test target and another to the wasm the database runs while the \
+         equality pin below counts the arm the test target compiles."
+    );
+    let n_decl = rb22p_count(&squashed, &pin);
+    assert_eq!(
+        n_decl, 1,
+        "[rb132/newcomer-source]: privacy.rs must declare the newcomer ceiling EXACTLY as pinned, \
+         `{pin}`, exactly once; found {n_decl}. This is the one instrument that tells the \
+         DERIVATION from a value-identical respelling: the full ceiling over four (R2) and the \
+         bare literal both read 10_752 to every value clause in this block, and both drift the \
+         day the drain is re-sized."
+    );
+
+    // --- private and unconditional, by window, with the window proven live -----
+    let decl_text = rb132_newcomer_decl_source();
+    let cfg_attr = concat!("#[c", "fg(test)]");
+    let widened = stripped_for_scan(&format!("pub(crate) {decl_text}"));
+    let fenced = stripped_for_scan(&format!("{cfg_attr}\n{decl_text}"));
+    let widened_window = rb107_vis_window_text(&widened, &head);
+    let fenced_window = rb107_vis_window_text(&fenced, &head);
+    assert!(
+        widened_window.contains("pub") && fenced_window.contains(concat!("#", "[")),
+        "[rb132/newcomer-vis]: the visibility window does not see a visibility keyword or an \
+         attribute placed immediately before the newcomer head in a fixture (it read \
+         {widened_window:?} and {fenced_window:?}), so the two ZEROS below would be \
+         unfalsifiable. A window nobody can trip reads exactly like a private declaration."
+    );
+    let window = rb107_vis_window_text(&squashed, &head);
+    assert!(
+        !window.contains("pub"),
+        "[rb132/newcomer-vis]: the newcomer ceiling is preceded by a visibility keyword: the \
+         {RB85_VIS_WINDOW} squashed bytes before it read {window:?}. It is PRIVATE like the two \
+         ceilings it is derived beside (R5): a DoS knob, not a legal figure, and a crate-visible \
+         ceiling invites a second reader who treats it as a retention rule. A WINDOW rather than \
+         a list of spellings, because an enumerated ban is satisfied by the restricted forms."
+    );
+    assert!(
+        !window.contains(concat!("#", "[")),
+        "[rb132/newcomer-vis]: the newcomer ceiling is preceded by an ATTRIBUTE: the \
+         {RB85_VIS_WINDOW} squashed bytes before it read {window:?}; ZERO is allowed. A \
+         conditional-compilation arm ships one ceiling to the test target and another to the \
+         wasm. `rb48_privacy_has_exactly_one_cfg_attribute` counts OUTER conditional attributes \
+         file-wide and this window sees one on this declaration; neither sees the INNER form, \
+         which the clause below bans."
+    );
+
+    // --- no INNER attribute anywhere in privacy.rs -----------------------------
+    let inner = concat!("#", "!");
+    let inner_fixture = [
+        concat!("/", "/", "! a module doc line, which is a comment\n"),
+        "fn f() {\n    ",
+        concat!("#", "![c", "fg(not(test))]\n"),
+        "    g();\n}\n",
+    ]
+    .concat();
+    let n_inner_fixture = rb22p_count(&stripped_for_scan(&inner_fixture), inner);
+    let n_inner = rb22p_count(&squashed, inner);
+    assert!(
+        n_inner_fixture == 1 && n_inner == 0,
+        "[rb132/no-inner-attr]: the squashed privacy.rs carries {n_inner} inner-attribute \
+         opener(s); ZERO is allowed. The census reads {n_inner_fixture} over a fixture holding one \
+         inner conditional attribute in a fn body and one module doc line, and must read exactly \
+         one there, so it is neither blind to the attribute nor fooled by the doc comment. \
+         MEASURED (tests red team): an inner conditional attribute fences a whole fn body off the \
+         wasm, and rb-48's one-cfg census counts only the OUTER spelling, so it passes over it."
+    );
+}
+
+/// T2 (ledger X1): the export reducer asks the economy module's wallet-row
+/// SSOT EXACTLY once, as the SECOND argument of the one tier call, and nothing
+/// in privacy.rs names either rb-107 seam a second time.
+///
+/// Every clause is a SOURCE scan, so this test compiles on the pre-fix tree:
+/// the reducer is link-fatal in the native host, and the ask, its position and
+/// its argument order can only be read. The SSOT's VALUE is executed against
+/// real rows by rb-41 in economy_tests.rs; what this test adds on that side is
+/// the one-definition census in economy.rs, with a body equality beside it,
+/// taken FIRST and GREEN before the fix so the pipeline is proven to read
+/// economy.rs past a doc comment holding quote pairs before any clause about
+/// privacy.rs is allowed to red. Right after it, and GREEN before the fix as
+/// well, a PREMISE pin over movement.rs: the join reducer, and the file as a
+/// whole, never name the economy module or its credit fn, because the tier
+/// reads a missing wallet row as never credited and that holds only while
+/// joining writes none.
+///
+/// THE ECONOMY IS REACHED ONCE. The tests red team MEASURED two CI-clean ways
+/// to defeat the tier without touching the ask: MINT a wallet for the caller
+/// first (a local copy of the context passed to the economy's credit fn, which
+/// the literal context-walk of the X9 dispatch census never sees), or ERASE the
+/// caller's wallet in the prefix. Both name the economy module a second time
+/// and the minting one names the context a sixteenth time inside the reducer,
+/// so the census counts both, on whitespace-preserving views where no squash
+/// can fuse a name into its neighbour.
+///
+/// Kills: R17 a conditionally compiled twin of the SSOT, and R16 its body
+/// replaced by a constant; a starter credit added to the join reducer, the
+/// verifier's MEASURED mutant, directly or through a module-level alias of the
+/// credit fn; R12 the wallet ask replaced by a constant, R15 a
+/// second ask anywhere in the module, and a fn-item binding or alias of the
+/// SSOT, which no paren-bearing needle sees; R14 the ask keyed on a
+/// constructed identity rather than the bound subject; a wallet minted or
+/// erased before the ask; R11 the two arguments swapped and R21 the ask
+/// negated, at the call site; R19 a glob import plus a private re-export
+/// shadowing the tier seam at its call site, in any use-tree spelling, and R20
+/// a local closure shadowing the admission predicate, which opens both rb-107
+/// gates.
+#[test]
+fn rb132_reducer_asks_the_wallet_ssot_exactly_once() {
+    let squashed = stripped_for_scan(PRIVACY_RS);
+    let body = m22s4_reducer_body(&squashed);
+    let code = rb132_code_view(PRIVACY_RS);
+    let dq = rb22p_dq();
+    let slash = concat!("/", "/");
+    let doc = concat!("/", "/", "/");
+
+    // --- the economy SSOT: one declaration, the body pinned by equality -------
+    let economy = stripped_for_scan(RB132_ECONOMY_RS);
+    let wallet_fn = rb132_nd_wallet_fn();
+    let pin = rb132_wallet_body_pin();
+    let mut control_src = format!(
+        "{doc} True if `owner` has a wallet row. Distinct from\n{doc} `wallet_balance`: \
+         {dq}row present{dq} is not {dq}balance > 0{dq}, a zeroed row\n{doc} still exists.\n"
+    );
+    assert_eq!(
+        control_src.matches(dq).count(),
+        4,
+        "[rb132/wallet-ssot]: the control's doc comment does not carry the two quote pairs \
+         economy.rs ships above this fn, so the control below would prove nothing about the one \
+         hazard this file read carries."
+    );
+    control_src.push_str(&rb132_wallet_decl_source());
+    control_src.push('{');
+    control_src.push_str(&rb132_wallet_body_source());
+    control_src.push('}');
+    let control = stripped_for_scan(&control_src);
+    let control_body = extract_squashed_fn_body(&control, &wallet_fn)
+        .expect("[rb132/wallet-ssot]: the control fixture has no body");
+    assert_eq!(
+        control_body, pin,
+        "[rb132/wallet-ssot]: the frozen BODY pin for the economy SSOT is UNSATISFIABLE, or the \
+         live pipeline desynchronises over a doc comment holding two quote pairs: it derives \
+         {control_body:?} from sanctioned text carrying exactly that doc shape. Revise the literal \
+         FROM ECONOMY.RS, never to match the code."
+    );
+    assert_eq!(
+        rb107_blind_count(&pin),
+        0,
+        "[rb132/wallet-ssot]: the strip pipeline still sees the sanctioned SSOT body after it was \
+         placed ONLY inside a line comment and inside a string literal."
+    );
+    let tail = concat!("modeconomy", "_tests;");
+    let n_tail = rb22p_count(&economy, tail);
+    assert_eq!(
+        n_tail, 1,
+        "[rb132/wallet-ssot]: the squashed economy.rs closes with its test-module declaration \
+         `{tail}` {n_tail} time(s); exactly one is required. A missing tail means the strip \
+         pipeline never re-synchronised after the SSOT's doc comment, which holds two quote \
+         pairs, and the path literal below it, so every census over this file would be reading a \
+         truncated world."
+    );
+    let n_wallet_fn = rb22p_count(&economy, &wallet_fn);
+    assert_eq!(
+        n_wallet_fn, 1,
+        "[rb132/wallet-ssot]: economy.rs must define `{wallet_fn}` EXACTLY once; found \
+         {n_wallet_fn}. THIS is what rb-132 adds beside rb-41: TWO definitions is a \
+         conditionally compiled twin (R17), one arm under the test cfg answering from real rows \
+         and one under its negation shipped in the wasm, and rb-41 only ever executes the arm the \
+         test target compiles. ZERO means the SSOT is gone or the strip pipeline swallowed it."
+    );
+    let live_body = extract_squashed_fn_body(&economy, &wallet_fn)
+        .expect("[rb132/wallet-ssot]: the economy SSOT has no brace-balanced body");
+    assert_eq!(
+        live_body, pin,
+        "[rb132/wallet-ssot]: the economy SSOT's body must be EXACTLY the unique-index point read \
+         that answers whether a wallet row is PRESENT. rb-41 owns the VALUE, a zero-balance row \
+         included, and kills a constant body (R16) on real rows; this equality is the source-side \
+         companion of the one-definition census above, which is this clause's own contribution."
+    );
+
+    // --- the PREMISE: joining writes no wallet ---------------------------------
+    //
+    // GREEN before the fix and after it: this pins what the newcomer tier ASSUMES,
+    // not what rb-132 changes, so it is not a RED-before clause. The tier reads
+    // the ABSENCE of a wallet row as never credited, which is only true while
+    // the join reducer writes none. MEASURED by the verifier: one starter-credit
+    // line in that reducer survived the whole suite, clippy and eleven evals,
+    // and reverted admission to rb-107's two tiers for every join-only identity.
+    let economy_ident = concat!("econ", "omy");
+    let grant_ident = concat!("grant", "_currency");
+    let join_head = concat!("fn join", "_game(");
+    let log_open = concat!("lo", "g::info!(");
+    let credit = concat!("crate::economy::grant", "_currency(ctx, me, 1);\n");
+    let join_open = format!(
+        "pub {join_head}ctx: &ReducerContext, name: String) -> Result<(), String> {{\n    \
+         let me = ctx.sender();\n    let n = name.len();\n"
+    );
+    let join_tail = format!("    {log_open}{dq}join{dq});\n    Ok(())\n}}\n");
+    let premise = |src: &str| -> ((usize, usize), (usize, usize)) {
+        let view = rb132_code_view(src);
+        let scoped = extract_squashed_fn_body(&view, join_head).unwrap_or("");
+        (
+            (
+                rb132_ident_count(scoped, economy_ident),
+                rb132_ident_count(scoped, grant_ident),
+            ),
+            (
+                rb132_ident_count(&view, economy_ident),
+                rb132_ident_count(&view, grant_ident),
+            ),
+        )
+    };
+    let honest_join = format!("{join_open}{join_tail}");
+    let credited_join = format!("{join_open}    {credit}{join_tail}");
+    let aliased_join = format!(
+        "use crate::economy::{grant_ident} as g;\n{join_open}    g(ctx, me, 1);\n{join_tail}"
+    );
+    let prose_join = format!(
+        "{join_open}    {slash} {credit}    let s = \
+         {dq}crate::economy::{grant_ident}{dq};\n{join_tail}"
+    );
+    let premises = (
+        premise(&honest_join),
+        premise(&credited_join),
+        premise(&aliased_join),
+        premise(&prose_join),
+    );
+    assert_eq!(
+        premises,
+        (
+            ((0, 0), (0, 0)),
+            ((1, 1), (1, 1)),
+            ((0, 0), (1, 1)),
+            ((0, 0), (0, 0))
+        ),
+        "[rb132/join-no-wallet]: the premise census reads {premises:?} over four join fixtures, \
+         each as ((economy and credit namings in the join body), (the same file-wide)): the \
+         honest body; a starter credit before the final log line; the credit reached through a \
+         file-level `use` alias; and the credit named only in a comment and a string. It must \
+         read (((0, 0), (0, 0)), ((1, 1), (1, 1)), ((0, 0), (1, 1)), ((0, 0), (0, 0))). The \
+         alias row is why the file-wide count stands beside the body count."
+    );
+    let movement = rb132_code_view(RB132_MOVEMENT_RS);
+    let n_join = rb22p_count(&movement, join_head);
+    let join_body = extract_squashed_fn_body(&movement, join_head).unwrap_or("");
+    let join_counts = (
+        rb132_ident_count(join_body, economy_ident),
+        rb132_ident_count(join_body, grant_ident),
+    );
+    assert!(
+        n_join == 1 && join_body.len() > 200 && join_counts == (0, 0),
+        "[rb132/join-no-wallet]: movement.rs must define the join reducer EXACTLY once (found \
+         {n_join}) with a real body ({} byte(s) read in the comment- and string-blanked view, \
+         floor 200), and that body must name neither the economy module nor its credit fn (it \
+         reads {join_counts:?}). A PREMISE PIN, green before and after the fix: the newcomer \
+         tier is keyed on the ABSENCE of a wallet row, which means never credited only while \
+         joining writes none. MEASURED (verifier): a one-line starter credit in the join \
+         reducer gives every join-only identity a wallet row, so the newcomer tier never \
+         applies and admission reverts to rb-107's two tiers with every gate green.",
+        join_body.len()
+    );
+    let file_counts = (
+        rb132_ident_count(&movement, economy_ident),
+        rb132_ident_count(&movement, grant_ident),
+    );
+    assert_eq!(
+        file_counts,
+        (0, 0),
+        "[rb132/join-no-wallet]: movement.rs, comments and strings blanked, names the economy \
+         module and its credit fn {file_counts:?} time(s) file-wide; ZERO of each is the only \
+         honest value. The body census above cannot see a module-level `use` alias that renames \
+         the credit fn and is then called under the new name, so this count owns that spelling."
+    );
+
+    // --- the ask: one whole identifier, one call, inside the reducer -----------
+    let ident = rb132_nd_wallet_ident();
+    let ask = rb132_nd_wallet_ask();
+    let binding = stripped_for_scan(&rb132_tier_call_source());
+    let alias_fixture = [
+        concat!("use crate::economy::wallet", "_exists as w;\n"),
+        "fn g() {\n    let cap = pick(w(ctx, me));\n}\n",
+    ]
+    .concat();
+    let alias_code = rb132_ident_count(&rb132_code_view(&alias_fixture), &ident);
+    let alias_squashed = rb132_ident_count(&stripped_for_scan(&alias_fixture), &ident);
+    let alias_calls = rb22p_count(&stripped_for_scan(&alias_fixture), &ask);
+    let prose = format!("{slash} {ident}\nlet s = {dq}{ident}{dq};\n");
+    let prose_code = rb132_ident_count(&rb132_code_view(&prose), &ident);
+    let bound = rb22p_count(&binding, &ask);
+    let blind = rb107_blind_count(&ask);
+    assert_eq!(
+        (
+            alias_code,
+            alias_squashed,
+            alias_calls,
+            prose_code,
+            bound,
+            blind
+        ),
+        (1, 0, 0, 0, 1, 0),
+        "[rb132/wallet-ask]: the census instruments misread their fixtures. In order (an alias, \
+         unsquashed; the same alias, squashed; the call needle over it; the name only in a comment \
+         and a string; the sanctioned binding under the call needle; the blindness fixture) they \
+         must read (1, 0, 0, 0, 1, 0). The first pair is the measured reason the identifier census \
+         runs on the UNSQUASHED view: the squash fuses the name into the word after it, so an \
+         alias vanishes, and a census that cannot see an alias cannot see a second, \
+         differently-keyed ask spelled through one. The binding count is what makes the call \
+         census below falsifiable."
+    );
+    let n_ident = rb132_ident_count(&code, &ident);
+    assert_eq!(
+        n_ident, 1,
+        "[rb132/wallet-ask]: privacy.rs, comments and strings blanked and whitespace kept, must \
+         name the economy SSOT `{ident}` EXACTLY once as a whole identifier; found {n_ident}. The \
+         one sanctioned naming is the second argument of the one tier call. ZERO is the intended \
+         RED before the implementer lands rb-132, and it is also a constant in place of the ask \
+         (R12): every caller without an account is then one tier, whatever they have earned. TWO \
+         is a second ask (R15), a fn-item binding or a `use` alias: a second place a caller's \
+         tier can be decided, and the one spelling no paren-bearing needle can see."
+    );
+    let n_file = rb22p_count(&squashed, &ask);
+    let n_body = rb22p_count(&body, &ask);
+    assert!(
+        n_file == 1 && n_body == 1,
+        "[rb132/wallet-ask]: the squashed privacy.rs carries the ask `{ask}` {n_file} time(s), \
+         {n_body} of them inside the export reducer; exactly one, and that one inside the reducer, \
+         is sanctioned. The identifier census above is satisfied by an ask keyed on some OTHER \
+         identity (R14), a constructed one or a victim's read off a row, which hands the caller \
+         that identity's tier; the call needle names the bound subject, so this pair is what sees \
+         it."
+    );
+
+    // --- the economy module is reached ONCE, the context fifteen times ---------
+    let reducer_fn = concat!("fn request_data", "_export(");
+    let honest_call = rb132_tier_call_source();
+    let rest = honest_call
+        .strip_prefix("fn f() {\n")
+        .expect("[rb132/economy-once]: the sanctioned binding fixture lost its fn head");
+    let grant = concat!("economy::grant", "_currency(c, me, 1);");
+    let erase = concat!("economy::erase", "_wallet(ctx, me);");
+    let minted_call = format!("fn f() {{\n    let c = ctx;\n    crate::{grant}\n{rest}");
+    let erased_call = format!("fn f() {{\n    crate::{erase}\n{rest}");
+    let census = |src: &str| -> (usize, usize) {
+        let view = rb132_code_view(src);
+        let scoped = extract_squashed_fn_body(&view, "fn f(").unwrap_or("");
+        (
+            rb132_ident_count(&view, economy_ident),
+            rb132_ident_count(scoped, "ctx"),
+        )
+    };
+    let fixtures = (
+        census(&honest_call),
+        census(&minted_call),
+        census(&erased_call),
+    );
+    assert_eq!(
+        fixtures,
+        ((1, 2), (2, 3), (2, 3)),
+        "[rb132/economy-once]: over the sanctioned binding, the same binding after a wallet is \
+         MINTED through a local copy of the context, and the same binding after the wallet is \
+         ERASED, the (economy namings, context tokens in the fn) census reads {fixtures:?}; it \
+         must read ((1, 2), (2, 3), (2, 3)). Both cheats were MEASURED CI-clean by the tests red \
+         team, so a census that does not move on them proves nothing about the tree."
+    );
+    let n_economy = rb132_ident_count(&code, economy_ident);
+    let reducer_code = extract_squashed_fn_body(&code, reducer_fn)
+        .expect("[rb132/economy-once]: the export reducer has no brace-balanced body");
+    let n_ctx_code = rb132_ident_count(reducer_code, "ctx");
+    let n_ctx_squashed = rb132_ident_count(&body, "ctx");
+    assert_eq!(
+        (n_economy, n_ctx_code, n_ctx_squashed),
+        (1, 15, 15),
+        "[rb132/economy-once]: privacy.rs names the economy module {n_economy} time(s) as a whole \
+         identifier (comments and strings blanked, whitespace kept), and the export reducer names \
+         the context {n_ctx_code} time(s) in that view and {n_ctx_squashed} in the squashed one; \
+         exactly (1, 15, 15) is sanctioned. ONE economy naming is the wallet ask itself; a second \
+         is the economy reached for something else before the tier is chosen. MEASURED: a wallet \
+         MINTED for the caller through a local copy of the context turns every join-only sybil \
+         into a credited guest, and the literal context walk of the X9 dispatch census never \
+         sees the copy; a wallet ERASED in the prefix sheds every credited guest as a newcomer and \
+         destroys their balance. Fifteen context tokens is the honest body on the fixed tree \
+         (fourteen at rb-107, plus the wallet ask), counted in BOTH views so a spelling the \
+         squash fuses into a neighbouring word cannot hide one; the dispatch census in \
+         `m22s4_sender_bound_once_and_sole_identity_source` pins the context-passing CALLS at \
+         exactly eight beside it."
+    );
+
+    // --- the one tier call receives both asks, account FIRST -------------------
+    let tier_named = rb107_nd_tier_named();
+    let args_pin = rb132_tier_args_pin();
+    let one_call = |src: &str| -> Vec<String> {
+        m22s4_call_arg_lists(&stripped_for_scan(src), &tier_named)
+            .iter()
+            .map(|a| a.strip_suffix(',').unwrap_or(a.as_str()).to_string())
+            .collect()
+    };
+    let flat_src = [
+        "fn g() {\n    let cap = ",
+        concat!("export_live", "_row_cap(crate::accounts::"),
+        concat!("is_account", "_holder(ctx, me), crate::economy::"),
+        concat!("wallet", "_exists(ctx, me));\n}\n"),
+    ]
+    .concat();
+    let swapped_src = [
+        "fn h() {\n    let cap = ",
+        concat!("export_live", "_row_cap(crate::economy::"),
+        concat!("wallet", "_exists(ctx, me), crate::accounts::"),
+        concat!("is_account", "_holder(ctx, me));\n}\n"),
+    ]
+    .concat();
+    let negated_src = [
+        "fn k() {\n    let cap = ",
+        concat!("export_live", "_row_cap(crate::accounts::"),
+        concat!("is_account", "_holder(ctx, me), !crate::economy::"),
+        concat!("wallet", "_exists(ctx, me));\n}\n"),
+    ]
+    .concat();
+    let vertical = one_call(&rb132_tier_call_source());
+    let flat = one_call(&flat_src);
+    let swapped = one_call(&swapped_src);
+    let negated = one_call(&negated_src);
+    assert!(
+        vertical == [args_pin.as_str()]
+            && flat == [args_pin.as_str()]
+            && swapped.len() == 1
+            && swapped[0] != args_pin
+            && negated.len() == 1
+            && negated[0] != args_pin
+            && rb107_blind_count(&args_pin) == 0,
+        "[rb132/tier-args]: the argument pin `{args_pin}` does not separate its fixtures. The \
+         vertical binding reads {vertical:?} and the flat one {flat:?}, and both must equal the \
+         pin once ONE trailing comma is dropped; the swapped call reads {swapped:?} and the \
+         negated one {negated:?}, and neither may. A pin both spellings cannot reach is \
+         unsatisfiable, a pin the swapped or negated call can reach is blind to the defect it \
+         exists for, and the pin must also be invisible in a comment or a string."
+    );
+    let calls = m22s4_call_arg_lists(&body, &tier_named);
+    assert_eq!(
+        calls.len(),
+        1,
+        "[rb132/tier-args]: the export reducer calls the tier seam {} time(s); exactly one is \
+         sanctioned, so the argument clause below would read the wrong list or none at all.",
+        calls.len()
+    );
+    let args = calls[0].strip_suffix(',').unwrap_or(calls[0].as_str());
+    assert_ne!(
+        args, M22S4_UNBALANCED,
+        "[rb132/tier-args]: the tier call is not paren-balanced. Refusing to classify is the safe \
+         direction: an unclassifiable ceiling choice is an ungated one."
+    );
+    assert_eq!(
+        args, args_pin,
+        "[rb132/tier-args]: the one tier call must receive the account-holder SSOT FIRST and the \
+         wallet-row SSOT second, both keyed on the bound subject; it reads {args:?}. Two bools \
+         compile in either order, so the order is TEXT. Swapped (R11), every account holder \
+         without a wallet is shed as an anonymous caller and every credited guest is handed the \
+         full ceiling; negated (R21), every credited guest becomes a newcomer and every newcomer \
+         an anonymous caller. ONE trailing comma is dropped before comparing because rustfmt \
+         wraps this call by design; the rb-107 pre-gate needle pins the comma itself."
+    );
+
+    // --- no second naming of either seam, and no glob import -------------------
+    let tier = concat!("export_live", "_row_cap");
+    let admit = concat!("export_admission", "_open");
+    let glob = concat!("::", "*");
+    // Every use-tree position a glob can take, read on the SQUASHED view so no
+    // spacing or line break inside the tree hides one. A bare brace-star is NOT
+    // a needle: a dereference after an opening brace squashes to exactly that,
+    // and privacy.rs has one (the field-separator helper's first-flag test).
+    let globs = |text: &str| -> usize {
+        let squashed_text = stripped_for_scan(text);
+        [
+            concat!("::", "*"),
+            concat!("{", "*}"),
+            concat!("{", "*,"),
+            concat!(",", "*}"),
+            concat!(",", "*,"),
+        ]
+        .iter()
+        .map(|needle| rb22p_count(&squashed_text, needle))
+        .sum()
+    };
+    let spellings = [
+        concat!("use legacy::", "*;\n"),
+        concat!("use legacy :: ", "* ;\n"),
+        concat!("use legacy::{x, ", "*};\n"),
+        concat!("use legacy::{", "*, x};\n"),
+        concat!("use legacy::{", "*};\n"),
+        concat!("use legacy::{x, ", "*, y};\n"),
+    ];
+    let spelled: Vec<usize> = spellings.into_iter().map(globs).collect();
+    let deref = concat!(
+        "fn f(first: &mut bool, b: &u32) {\n    if *first {\n        *first = false;\n",
+        "    }\n    g(1, *b, 2);\n    h(*b, 3 * 4);\n}\n"
+    );
+    let n_deref = globs(deref);
+    assert!(
+        spelled == [1usize, 1, 1, 1, 1, 1] && n_deref == 0,
+        "[rb132/seam-ident]: the glob census reads {spelled:?} over the six use-tree spellings \
+         (a plain glob, the same spaced out, a glob last, first, alone and in the middle of a \
+         brace list) and {n_deref} over a fixture of dereferences and a product; it must read one \
+         for each spelling and ZERO for the dereferences. A census keyed on the plain spelling \
+         alone was MEASURED blind to the brace-list forms, and one keyed on a bare brace-star \
+         would red on the honest file."
+    );
+    let honest = format!(
+        "fn {tier}(a: bool, w: bool) -> u64 {{ 0 }}\nfn {admit}(l: u64, n: u32, c: u64) -> bool \
+         {{ true }}\nfn go() {{\n    let cap = {tier}(x, y);\n    if !{admit}(1, 2, cap) {{}}\n    \
+         if !{admit}(3, 4, cap) {{}}\n}}\n"
+    );
+    let glob_shadow = format!(
+        "use legacy::*;\nmod legacy {{\n    pub(in crate::privacy) use super::old_cap as \
+         {tier};\n}}\n"
+    );
+    let closure_shadow =
+        format!("fn go2() {{\n    let {admit} = |_: u64, _: u32, _: u64| true;\n}}\n");
+    let honest_code = rb132_code_view(&honest);
+    let honest_counts = (
+        rb132_ident_count(&honest_code, tier),
+        rb132_ident_count(&honest_code, admit),
+        globs(&honest),
+        rb132_ident_count(&stripped_for_scan(&honest), tier),
+    );
+    assert_eq!(
+        honest_counts,
+        (2, 3, 0, 1),
+        "[rb132/seam-ident]: over an honest fixture (one definition and one call of the tier seam, \
+         one definition and two calls of the admission predicate, no glob) the census reads \
+         {honest_counts:?}; it must read (2, 3, 0, 1). The last number is the SQUASHED view of the \
+         same fixture, where the definition fuses with its keyword and stops being a whole \
+         identifier: it is the measured reason the NAME census must never run on the squashed \
+         view, while the glob census must, since a squash is what joins a spaced-out tree."
+    );
+    let seam_prose =
+        format!("{slash} {tier} {admit} {glob}\nlet s = {dq}{tier} {admit} {glob}{dq};\n");
+    let prose_code = rb132_code_view(&seam_prose);
+    let prose_counts = (
+        rb132_ident_count(&prose_code, tier),
+        rb132_ident_count(&prose_code, admit),
+        globs(&seam_prose),
+    );
+    assert_eq!(
+        prose_counts,
+        (0, 0, 0),
+        "[rb132/seam-ident]: the census still sees a seam name or a glob placed ONLY inside a \
+         line comment and inside a string literal (it reads {prose_counts:?}), so a comment or a \
+         message naming a seam would move the live counts below, and a real extra naming could \
+         hide behind a deleted mention."
+    );
+    let shadowed_src = format!("{honest}{glob_shadow}");
+    let shadowed = rb132_code_view(&shadowed_src);
+    let closure = rb132_code_view(&format!("{honest}{closure_shadow}"));
+    let bites = (
+        rb132_ident_count(&shadowed, tier),
+        globs(&shadowed_src),
+        rb132_ident_count(&closure, admit),
+    );
+    assert_eq!(
+        bites,
+        (3, 1, 4),
+        "[rb132/seam-ident]: the census does not move on the two MEASURED shadow cheats: it \
+         reads {bites:?} and must read (3, 1, 4). The glob import plus a private re-export under \
+         the tier seam's name adds a third naming and a glob, and a local closure under the \
+         admission predicate's name adds a fourth naming. A census that does not move on the \
+         cheat it was written for proves nothing about the tree."
+    );
+    let live_names = (
+        rb132_ident_count(&code, tier),
+        rb132_ident_count(&code, admit),
+        globs(PRIVACY_RS),
+    );
+    assert_eq!(
+        live_names,
+        (2, 3, 0),
+        "[rb132/seam-ident]: privacy.rs names the tier seam and the admission predicate \
+         {live_names:?} time(s) as whole identifiers (comments and strings blanked, whitespace \
+         kept), the last number being its glob imports in every use-tree position (squashed); \
+         exactly (2, 3, 0) is sanctioned: the seam's definition and its one call, the \
+         predicate's definition and its two gates, and no glob anywhere. MEASURED (plan red \
+         team): a glob import in the reducer prefix plus a private module re-exporting another \
+         fn under the seam's name shadows the seam at the call site (R19), and a local closure \
+         under the predicate's name opens both gates (R20), while the definition census, both \
+         call censuses, the cap census and the whole pre-gate needle stay green, because every \
+         one of them reads the squashed view by NAME and the name is still there."
+    );
+}
+
+/// T3 (ledger X1, the anchor): this file declares EXACTLY the four `rb132_`
+/// tests the roster names, each once and each carrying a test attribute, over
+/// a CLOSED set of helpers; the nine out-of-prefix tests this block's pins rest
+/// on are still declared; and every clause label the four tests ship still
+/// occurs inside the test that owns it, in a body that is not a stub.
+///
+/// The rb-115 shape, clause for clause, with `rb111_test_span` REUSED rather
+/// than re-derived, plus an EXACT attribute-block reader over the four tests
+/// and the nine dependencies alike. This block's banner is what now ends the
+/// span of the last rb-115 test, which ran to end-of-file until this block was
+/// appended.
+///
+/// Kills: a test renamed out of the ledger's filter or never written; a fifth
+/// test slipped in without moving a ledger literal; ANY attribute beside the
+/// test attribute in the block of a roster or dependency test, wherever it is
+/// parked, which covers the MEASURED should-panic-plus-mutant bypass, an ignore
+/// carrying a reason and a disabling conditional attribute; a roster name
+/// declared without a test attribute; an unlisted helper; a load-bearing
+/// out-of-prefix test deleted; TF2, a clause deleted from the test that owns
+/// it, or re-planted in a line comment; a label copied into a second test; a
+/// clause shipped under a label no roster names; and a body neutered by a
+/// leading conditional, a dead branch, an early exit, or hollowed down to its
+/// label strings.
+#[test]
+fn rb132_test_roster_is_closed() {
+    let roster = rb132_test_roster();
+    let helpers = rb132_helper_roster();
+    let dependencies = rb132_dependency_roster();
+    let file_len = PRIVACY_TESTS_RS.len();
+
+    assert!(
+        file_len > 200,
+        "[rb132/roster-vacuity]: this file reads as only {file_len} bytes, so every count below \
+         would pass over nothing."
+    );
+
+    let mut seen: Vec<&str> = roster.to_vec();
+    seen.extend_from_slice(&helpers);
+    seen.extend_from_slice(&dependencies);
+    seen.sort_unstable();
+    for pair in seen.windows(2) {
+        assert_ne!(
+            pair[0], pair[1],
+            "[rb132/roster-dup]: the rosters name `{}` twice, so every total below is satisfied \
+             by one fewer distinct declaration plus a duplicate entry.",
+            pair[0]
+        );
+    }
+
+    for name in roster.iter().chain(dependencies.iter()) {
+        let needle = format!("fn {name}(");
+        let n = rb22p_count(PRIVACY_TESTS_RS, &needle);
+        assert_eq!(
+            n, 1,
+            "[rb132/roster-name]: `{needle}` must be declared exactly once in privacy_tests.rs; \
+             found {n}. ZERO means the test was renamed or never written, and the ledger's \
+             exact-name filter does not red on that: it matches fewer tests and still reports the \
+             same count passed as ran. For an out-of-prefix name it means a test this block's pins \
+             rest on was deleted, which disarms rb-132 without editing an rb-132 literal."
+        );
+    }
+
+    let flush = rb22p_count(PRIVACY_TESTS_RS, concat!("#[te", "st]\nfn rb132", "_"));
+    let indented = rb22p_count(PRIVACY_TESTS_RS, concat!("#[te", "st]\n    fn rb132", "_"));
+    let adjacent = flush + indented;
+    let tests = roster.len();
+    assert_eq!(
+        adjacent, tests,
+        "[rb132/roster-closed]: privacy_tests.rs declares {adjacent} `rb132_` test(s) by \
+         adjacency ({flush} flush-left, {indented} indented); the roster names {tests}. The two \
+         forms are SUMMED so a test hidden in a generator block could not be deleted while the \
+         roster still reported a closed set."
+    );
+    let block_at = PRIVACY_TESTS_RS
+        .find(concat!("\nfn rb132", "_"))
+        .expect("[rb132/roster-closed]: this file declares no top-level rb-132 fn");
+    let section = &PRIVACY_TESTS_RS[block_at..];
+    let ignored = rb22p_count(section, concat!("#[ign", "ore"));
+    let panicking = rb22p_count(section, concat!("should", "_panic"));
+    assert_eq!(
+        (ignored, panicking),
+        (0, 0),
+        "[rb132/roster-closed]: the rb-132 section carries {ignored} ignore attribute(s), in the \
+         bare or the reason-carrying form, and {panicking} should-panic token(s); ZERO of each is \
+         allowed. Placed ABOVE a test attribute, an ignore leaves both adjacency needles and every \
+         declaration census at four while the test never runs under the default profile, and a \
+         skipped test is not a failed one. A should-panic attribute is worse: MEASURED (tests red \
+         team) on two tests of this block together with a mutant, the suite reported every test \
+         passed, because a test that panics on the mutant PASSES under it."
+    );
+
+    for name in helpers {
+        let needle = format!("\nfn {name}(");
+        let n = rb22p_count(PRIVACY_TESTS_RS, &needle);
+        assert_eq!(
+            n, 1,
+            "[rb132/decl-total]: the helper `{name}` must be declared exactly once at the top \
+             level of privacy_tests.rs; found {n}. ZERO means the roster names a helper that no \
+             longer exists, which would make the total below pass over a file missing one."
+        );
+    }
+    let squashed_file = stripped_for_scan(PRIVACY_TESTS_RS);
+    let squashed_decls = rb22p_count(&squashed_file, concat!("fnrb132", "_"));
+    let declared = roster.len() + helpers.len();
+    assert_eq!(
+        squashed_decls, declared,
+        "[rb132/decl-total]: the SQUASHED source (strings and comments blanked, whitespace \
+         removed) carries {squashed_decls} `rb132_` fn declaration(s); the two CLOSED rosters \
+         name {declared}. This one view sees every visibility prefix and every indentation at \
+         once, and it cannot be fed by this file's own string fixtures. If it reds after an \
+         honest addition, add the name to the roster it belongs to in the same diff."
+    );
+
+    // --- every attribute block is EXACTLY the test attribute -----------------
+    let test_attr = concat!("#[te", "st]");
+    let panic_attr = concat!("#[should", "_panic]");
+    let cfg_any = concat!("#[c", "fg(any())]");
+    let cfg_open = concat!("#[c", "fg(");
+    let dq = rb22p_dq();
+    let doc = concat!("/", "/", "/");
+    let ignore_why = format!("{}{dq}slow{dq}]", concat!("#[ign", "ore = "));
+    let block_cases: [(&str, String, Vec<&str>); 7] = [
+        (
+            "the honest shape: a doc comment, then the test attribute alone",
+            format!("}}\n\n{doc} doc\n{test_attr}\nfn probe() {{}}\n"),
+            vec![test_attr],
+        ),
+        (
+            "a should-panic attribute on the line ABOVE the test attribute (MEASURED)",
+            format!("}}\n\n{panic_attr}\n{test_attr}\nfn probe() {{}}\n"),
+            vec![test_attr, panic_attr],
+        ),
+        (
+            "an ignore attribute carrying a reason, parked ABOVE the doc comment",
+            format!("}}\n{ignore_why}\n{doc} doc\n{test_attr}\nfn probe() {{}}\n"),
+            vec![test_attr, ignore_why.as_str()],
+        ),
+        (
+            "the stage-1 disabling attribute above the test attribute",
+            format!("}}\n{cfg_any}\n{test_attr}\nfn probe() {{}}\n"),
+            vec![test_attr, cfg_any],
+        ),
+        (
+            "a MULTI-LINE attribute whose bracket stays open across two further lines",
+            format!("}}\n{cfg_open}\n    test\n)]\n{test_attr}\nfn probe() {{}}\n"),
+            vec![test_attr, ")]", "test", cfg_open],
+        ),
+        (
+            "a should-panic attribute sharing the declaration's own line",
+            format!("}}\n{test_attr}\n{panic_attr} fn probe() {{}}\n"),
+            vec![panic_attr, test_attr],
+        ),
+        (
+            "no attribute at all under a doc comment",
+            format!("}}\n{doc} doc\nfn probe() {{}}\n"),
+            vec![],
+        ),
+    ];
+    for (what, text, want) in &block_cases {
+        let got = rb132_attr_block(text, "probe");
+        assert_eq!(
+            got, *want,
+            "[rb132/roster-attributed]: over {what} the attribute-block reader collects {got:?}; \
+             it must collect {want:?}, bottom-up. A reader that stopped at the doc comment, or at \
+             the first line it could not parse, would report a wedged attribute as a clean block. \
+             Fixture: {text:?}"
+        );
+    }
+    for name in roster.iter().chain(dependencies.iter()) {
+        let block = rb132_attr_block(PRIVACY_TESTS_RS, name);
+        assert_eq!(
+            block,
+            [test_attr],
+            "[rb132/roster-attributed]: the attribute block above `{name}` reads {block:?}; it \
+             must be EXACTLY the test attribute and nothing else, for every rb-132 test and \
+             every test this block depends on. MEASURED (tests red team): a should-panic \
+             attribute on the line above the test attribute of two rb-132 tests, with a mutant \
+             applied, left the whole suite green, and an ignore attribute carrying a reason slips \
+             every exact-token ignore ban. The adjacency needles only read the line directly \
+             above the declaration, so this is the clause that sees an attribute parked above the \
+             test attribute or above the doc comment, and the one that reds when a roster name \
+             carries no test attribute at all."
+        );
+    }
+
+    // --- the label census, over COMMENT-BLANKED spans --------------------------
+    let labels = rb132_label_roster();
+    let mut spans: Vec<String> = Vec::new();
+    let mut visible: Vec<String> = Vec::new();
+    for name in roster {
+        let span = rb111_test_span(PRIVACY_TESTS_RS, name);
+        visible.push(strip_rust_comments(&span));
+        spans.push(span);
+    }
+
+    let mut label_names: Vec<&str> = labels.iter().map(|(label, _)| *label).collect();
+    label_names.sort_unstable();
+    for pair in label_names.windows(2) {
+        assert_ne!(
+            pair[0], pair[1],
+            "[rb132/label-census]: the label roster names `{}` TWICE, so the per-label clause \
+             below is satisfied by one fewer real clause plus a duplicate entry.",
+            pair[0]
+        );
+    }
+
+    for (owner, name) in roster.iter().enumerate() {
+        let owned = labels.iter().filter(|(_, idx)| *idx == owner).count();
+        assert!(
+            owned >= 2,
+            "[rb132/label-census]: the roster credits `{name}` with only {owned} clause label(s); \
+             every test in this block ships at least two. ONE or ZERO means the roster was \
+             trimmed rather than the test."
+        );
+    }
+
+    for (label, owner) in labels {
+        assert!(
+            owner < roster.len(),
+            "[rb132/label-census]: the label `{label}` names owner index {owner}, past the end \
+             of a roster of {} test(s).",
+            roster.len()
+        );
+        let carriers: Vec<usize> = (0..roster.len())
+            .filter(|i| rb22p_count(&visible[*i], label) > 0)
+            .collect();
+        assert_eq!(
+            carriers,
+            [owner],
+            "[rb132/label-census]: `{label}` occurs inside the comment-blanked spans of tests \
+             {carriers:?}; it must occur inside exactly one, `{}`, at index {owner}. An EMPTY list \
+             means the clause that label names was DELETED from the test that owns it (TF2), or \
+             re-planted in a line comment, while every census above stayed green; TWO entries \
+             mean the label was copied into a second test, so a failure no longer attributes to \
+             one place.",
+            roster[owner]
+        );
+    }
+
+    let mut found: Vec<String> = Vec::new();
+    for text in &visible {
+        for label in rb132_labels_in(text) {
+            if !found.iter().any(|seen| seen.as_str() == label.as_str()) {
+                found.push(label);
+            }
+        }
+    }
+    found.sort_unstable();
+    let mut rostered: Vec<String> = Vec::new();
+    for (label, _) in labels {
+        rostered.push(String::from(label));
+    }
+    rostered.sort_unstable();
+    assert_eq!(
+        found, rostered,
+        "[rb132/label-total]: the four test spans between them carry the label set {found:?}; \
+         the roster names {rostered:?}. The per-label clause above only looks for labels the \
+         ROSTER already knows; this reads the same set from the other end, so the two together \
+         are a bijection between what ships and what is written down."
+    );
+
+    // --- the body floor: the blunt backstop ------------------------------------
+    for (owner, name) in roster.iter().enumerate() {
+        let needle = format!("fn{name}(");
+        let body = extract_squashed_fn_body(&squashed_file, &needle)
+            .expect("[rb132/body-floor]: a roster test has no brace-balanced body");
+        assert!(
+            !body.starts_with("if"),
+            "[rb132/body-floor]: the squashed body of `{name}` OPENS with a conditional. A whole \
+             test body wrapped in a never-taken one keeps every census above GREEN while not one \
+             of its assertions runs, and the ledger's filtered run still prints four of four."
+        );
+        let n_exit = rb22p_count(body, concat!("ret", "urn"));
+        assert_eq!(
+            n_exit, 0,
+            "[rb132/body-floor]: the squashed body of `{name}` carries the early-exit keyword \
+             {n_exit} time(s). An early exit above the assertions keeps a full body and runs none \
+             of it; no rb-132 test exits early, so ZERO is the honest value, and the body is read \
+             with strings and comments blanked, so the keyword inside a message does not count."
+        );
+        let squashed_span = stripped_for_scan(&spans[owner]);
+        let n_dead = rb22p_count(&squashed_span, concat!("iffal", "se{"));
+        assert_eq!(
+            n_dead, 0,
+            "[rb132/body-floor]: `{name}` contains {n_dead} never-taken conditional(s) anywhere \
+             in its span: a dead branch wrapped around the assertions half-way down is the same \
+             defect one level deeper."
+        );
+        let size = squashed_span.len();
+        assert!(
+            size >= 300,
+            "[rb132/body-floor]: the span of `{name}` is only {size} squashed byte(s), comments \
+             and string literals blanked and whitespace removed, and 300 is the floor the sibling \
              blocks use: a NOT-A-STUB pin, which catches a body hollowed down to its label \
              strings."
         );

@@ -5,12 +5,12 @@
 **Slice:** rb-107 (residual R-rb-85-EXPORTADMIT, promoted from source slice rb-85; M-residual-backlog.spec.md#rb-107)
 **Supersedes:** —
 **Amends:** —
+**Amended-by:** ADR-0275 (rb-132 — a NEWCOMER tier below the anonymous one keyed on the wallet row; the net-neutral re-export consequence retruthed in place)
 **Extends:** 0238, 0226, 0189
 **Subsystems:** schema-persistence, security-authz
 **Decision:** `request_data_export` is admitted against a global `export_bundle` live-row cap (43 008 = the reaper's one-TTL drain), halved for callers with no `account` row, by two pure-predicate gates after the purge; reject, never clamp.
 
 ---
-
 ## Context
 
 ADR-0226 shipped `request_data_export`; ADR-0238 (rb-48) added the TTL reaper and rb-85/rb-86
@@ -232,10 +232,11 @@ invariant "a chunk exists ⇒ the singleton is armed" survives literally — the
 armed when written — but its self-healing reading does not: only `init`/`sync_content` restore an
 absent schedule row. Registered as **R-rb-107-ARMSKIP** (MED).
 
-**A net-neutral re-export at exactly the cap is rejected.** Because `count()` reflects the purge and
-the gate then adds the whole new bundle, a caller who purges N rows and would write N rows is
-refused at a full store. That is the exact-not-approximate rule applied consistently; admitting it
-would require a headroom predicate that gives up the hard ceiling.
+**A net-neutral re-export at exactly the caller's own tier cap is ADMITTED** (retruthed by the rb-132
+amendment below; revision 1 of this paragraph claimed the opposite). `count()` reflects the purge, so a
+caller who purges N rows and would write N rows compares (cap − N) + N ≤ cap and is admitted — D3's
+fair reading, applied consistently. Only a re-export that GROWS past the remaining headroom is
+refused; the hard ceiling holds because the request's whole size is added before the comparison.
 
 **The anonymous arm has no live proof.** `evals/account-e2e.eval.mjs:3448-3449` calls
 `requestDataExport()` on the success path against a live SpacetimeDB 2.8.1 host with a JWT-bearing
@@ -330,3 +331,17 @@ The mutant register is `memory/projects/gates/rb-107.mutants.py` with its manual
 `memory/projects/gates/rb-107.gates.md` (X7 the manual live register on the real privacy.rs, X8 an
 automated four-row subset at merge across four tests and four mutant families, reporting row ids as
 well as labels). See the register for row counts and verdicts.
+
+## Amendment (2026-09-27, rb-132 — ADR-0275)
+
+- D1b's two thresholds become three: a caller with neither an `account` row nor a `player_wallet` row
+  (`crate::economy::wallet_exists`, the economy SSOT) is capped at `EXPORT_NEWCOMER_LIVE_ROW_CAP =
+  EXPORT_ANON_LIVE_ROW_CAP / 2` = 10 752; the anonymous and account ceilings are unchanged.
+- D2b's seam becomes `fn export_live_row_cap(has_account: bool, has_wallet: bool) -> u64`, exhaustive
+  over bool × bool; both predicates are read eagerly at the single `let cap` binding.
+- The Consequences paragraph on net-neutral re-exports is retruthed in place above: such a re-export is
+  ADMITTED, per D3's fair reading; no semantics changed.
+- R-rb-107-LOCKOUT is narrowed, not closed: the join-only pattern it names is confined to the newcomer
+  quarter; the cheap escalation (a wallet minted by `quest_001` or a currency-only trade chain) is
+  R-rb-132-WALLETSYBIL and the newcomer shedding cost is R-rb-132-NEWCOMERSHED. Everything else in this
+  ADR stands.
