@@ -3596,3 +3596,109 @@ fn rb81_economy_reducer_roster_is_closed() {
          attribute moves the raw and the stripped numbers TOGETHER."
     );
 }
+
+/// **ST-native_host_tests demonstration** — `buy`'s SUCCESS path, executed.
+///
+/// Before the host extension every `buy` test stopped at the stock lookup (no
+/// `u32`-keyed index could be seeded) and every write aborted the process, so
+/// the spend-then-grant sequence had no executed oracle at all. Here the caller
+/// is set with `run_as` (not the all-zero dummy), the wallet is writable, and the
+/// inventory is registered under BOTH its owner index (the reducer's read) and
+/// its primary key (the update's lookup) with the auto-inc id modelled.
+///
+/// Post-state is pinned in full: the caller pays exactly `price * qty`, a
+/// STRANGER's wallet is untouched (the debit keys on `ctx.sender()`), the first
+/// purchase INSERTS one stack with a generated id, and the second UPDATES that
+/// same stack in place (still one row, same id). kills: a skipped spend, a spend
+/// against the wrong wallet, a grant that appends a second stack instead of
+/// updating, an auto-inc id never written back, and a price not multiplied by qty.
+#[test]
+fn nh_buy_success_spends_wallet_and_grants_one_stack() {
+    use crate::schema::{Inventory, PlayerWallet, ShopItemRow};
+    let fx = crate::native_host_tests::fixture();
+    let me = Identity::from_byte_array([21u8; 32]);
+    let stranger = Identity::from_byte_array([22u8; 32]);
+    rb46_seed_player(&fx, me);
+    let stock = fx.table_keyed::<ShopItemRow, u32>("shop_item_row", "shop_id", |r| r.shop_id);
+    stock.seed(&ShopItemRow {
+        shop_item_id: 1,
+        shop_id: 3,
+        item_id: 5,
+        buy_price: 10,
+    });
+    let wallets = fx
+        .table::<PlayerWallet>("player_wallet", "owner_identity", |r| r.owner_identity)
+        .writable()
+        .unique();
+    wallets.seed(&PlayerWallet {
+        owner_identity: me,
+        balance: 100,
+    });
+    wallets.seed(&PlayerWallet {
+        owner_identity: stranger,
+        balance: 100,
+    });
+    let stacks = fx
+        .table::<Inventory>("inventory", "owner_identity", |r| r.owner_identity)
+        .writable()
+        .auto_inc(|r| r.inv_id, |r, id| r.inv_id = id);
+    let _by_id = fx
+        .table_keyed::<Inventory, u64>("inventory", "inv_id", |r| r.inv_id)
+        .unique();
+
+    let balance_of = |who: Identity| {
+        wallets
+            .rows()
+            .into_iter()
+            .find(|w| w.owner_identity == who)
+            .map(|w| w.balance)
+    };
+    let stack_rows = || {
+        stacks
+            .rows()
+            .into_iter()
+            .map(|r| (r.inv_id, r.owner_identity, r.item_id, r.count))
+            .collect::<Vec<_>>()
+    };
+
+    let got = fx.run_as(me, |ctx| crate::economy::buy(ctx, 3, 5, 3));
+    assert_eq!(
+        got,
+        Ok(()),
+        "first buy must succeed; indexes asked: {:?}",
+        fx.requested_indexes()
+    );
+    assert_eq!(
+        balance_of(me),
+        Some(70),
+        "the caller pays price * qty = 30 out of 100"
+    );
+    assert_eq!(
+        balance_of(stranger),
+        Some(100),
+        "a stranger's wallet must never be debited"
+    );
+    assert_eq!(
+        stack_rows(),
+        vec![(1, me, 5, 3)],
+        "one new stack, auto-inc id 1, count 3"
+    );
+
+    let got = fx.run_as(me, |ctx| crate::economy::buy(ctx, 3, 5, 3));
+    assert_eq!(got, Ok(()), "second buy must succeed");
+    assert_eq!(
+        balance_of(me),
+        Some(40),
+        "the second purchase debits another 30"
+    );
+    assert_eq!(
+        balance_of(stranger),
+        Some(100),
+        "the stranger is still untouched"
+    );
+    assert_eq!(
+        stack_rows(),
+        vec![(1, me, 5, 6)],
+        "the SAME stack grows in place: one row, id 1"
+    );
+}

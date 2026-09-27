@@ -17,8 +17,10 @@
 //! (`native_host_tests`, ADR-0224) and pins its answer to the rows that
 //! actually exist, which no source scan can do. Rows are seeded and removed
 //! through the fixture handle, never through a database write path — so the
-//! private-row/public-projection dual-write discipline is untouched here (this
-//! file creates no projection row and no monster write of any kind).
+//! private-row/public-projection dual-write discipline is untouched here: the
+//! only monster writes in this file are the SHIPPED `set_nickname` reducer's own
+//! (the `nh_` demonstration test, via the host's opt-in update path), and its
+//! projection row is built by the shipped `marshal::pub_from_monster`.
 
 use crate::native_host_tests::fixture;
 use crate::schema::Monster;
@@ -170,5 +172,68 @@ fn rb41_has_monsters_tracks_real_monster_rows() {
          the negative above could be explained by an emptied table rather than by owner \
          scoping. Indexes the generated code asked the host for: {:?}",
         fx.requested_indexes()
+    );
+}
+
+/// **ST-native_host_tests demonstration** — the ownership guard, executed from
+/// BOTH sides with a real sender.
+///
+/// Under the dummy context every caller is the all-zero identity, so an owner
+/// check could only be probed with a monster owned by `[0; 32]` — which is
+/// also `WILD_IDENTITY`. `run_as` sets the caller. The same monster, in the same
+/// state, is renamed first by a STRANGER (must be refused with the exact
+/// reject, and neither the private row nor its projection may change) and then
+/// by its OWNER (the positive control: both rows carry the new nickname, which
+/// also executes the private/projection dual-write through the host's update
+/// path). kills: a deleted or inverted `require_owner`, an owner check against
+/// the wrong identity, and a write that lands before the guard.
+#[test]
+fn nh_set_nickname_refuses_a_stranger_and_admits_the_owner() {
+    use crate::schema::MonsterPub;
+    let fx = fixture();
+    let owner = Identity::from_byte_array([31u8; 32]);
+    let stranger = Identity::from_byte_array([32u8; 32]);
+    let monsters = fx
+        .table_keyed::<Monster, u64>("monster", "monster_id", |r| r.monster_id)
+        .writable();
+    let projections = fx
+        .table_keyed::<MonsterPub, u64>("monster_pub", "monster_id", |r| r.monster_id)
+        .writable();
+    let m = rb41_owned_monster(owner, 41);
+    projections.seed(&crate::marshal::pub_from_monster(&m, 0));
+    monsters.seed(&m);
+    let nicknames = || {
+        let private: Vec<String> = monsters.rows().into_iter().map(|r| r.nickname).collect();
+        let public: Vec<String> = projections.rows().into_iter().map(|r| r.nickname).collect();
+        (private, public)
+    };
+
+    let got = fx.run_as(stranger, |ctx| {
+        crate::monster_mgmt::set_nickname(ctx, 41, "Thief".to_string())
+    });
+    assert_eq!(
+        got,
+        Err("not owner".to_string()),
+        "a stranger must get the exact owner reject"
+    );
+    assert_eq!(
+        nicknames(),
+        (vec![String::new()], vec![String::new()]),
+        "a refused rename must leave both the private row and its projection untouched"
+    );
+
+    let got = fx.run_as(owner, |ctx| {
+        crate::monster_mgmt::set_nickname(ctx, 41, "Sparky".to_string())
+    });
+    assert_eq!(
+        got,
+        Ok(()),
+        "the owner's rename must succeed: {:?}",
+        fx.requested_indexes()
+    );
+    assert_eq!(
+        nicknames(),
+        (vec!["Sparky".to_string()], vec!["Sparky".to_string()]),
+        "the owner's rename must land on the private row AND its projection, in place"
     );
 }
