@@ -159,6 +159,22 @@ should be: `count()` reflects the purge, so purging N rows and writing N rows co
 store; the anonymous and newcomer arms rest on the value oracles and the frozen binding. Disclosed,
 not gated, as in ADR-0265.
 
+**The premise pin is one module deep, and what it does not see is registered.** `[rb132/join-no-wallet]`
+reads `movement.rs` only. The verifier measured the shape that still survives every gate: `join_game`
+calling a NEW context-taking helper in another module (`crate::marshal::starter_kit(ctx, me)` crediting
+one unit) — 1069/1069, clippy, fmt and ten currency/wallet evals green while every join-only identity
+gets a wallet. Two sibling shapes share the gap: a credit hidden inside a context-taking callee
+`join_game` already has (`now_ms`, `require_not_deleting`), and a credit that reaches every identity
+without `join_game` at all (a connect hook, a scheduled reducer). Helpers without a `ReducerContext`
+(`roll_starter`, `monster_from_instance`, `pub_from_monster`) CANNOT credit a wallet, so they are not
+the gap — the registered row R-rb-132-GRANTSITES names them by mistake; this paragraph is the
+corrected text (the residual sink is append-only). Accepted as LOW: the failure mode only degrades
+admission to the ADR-0265 baseline and opens nothing new. Closures, cheapest first: an exact count of
+`ctx` identifiers in `join_game`'s body (the `[rb132/economy-once]` idea; closes the first shape only), or
+a crate-wide per-file census of `grant_currency` call sites (the five today: `battle.rs:1275`,
+`npc.rs:250`, `trading.rs:786`, `economy.rs:273`, `economy.rs:311`; closes all three), which this slice
+judged too coupling — any new legitimate reward site would move a privacy test.
+
 **A follow-up outside this slice's touches.** `economy.rs:319-320` documents
 `accounts::account_has_game_data` as `wallet_exists`'s only consumer; this reducer is now a second.
 The comment is stale, economy.rs is outside `touches:`, and the handoff carries the flag.
