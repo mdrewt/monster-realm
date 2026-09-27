@@ -24,16 +24,10 @@ pub mod ai;
 pub mod battle_0hp_tests;
 pub mod damage;
 #[cfg(test)]
-pub mod m14d_tests;
-#[cfg(test)]
 pub mod m7b_gating_tests;
 #[cfg(test)]
 pub mod m7b_redteam_tests;
 pub mod pvp;
-#[cfg(test)]
-pub mod redteam_m14d_tests;
-#[cfg(test)]
-pub mod redteam_m14d_weather_desync;
 #[cfg(test)]
 pub mod redteam_m8d_tests;
 #[cfg(test)]
@@ -45,6 +39,8 @@ pub mod status_tests;
 pub mod type_chart;
 pub mod types;
 pub mod weather;
+#[cfg(test)]
+pub mod weather_tests;
 pub mod xp;
 
 pub use ability::{
