@@ -37,28 +37,12 @@ export interface SdkCharacterFields {
   readonly moveStartedAtMs: bigint;
 }
 
-// --- Direction ------------------------------------------------------------------
-export function directionToWasm(d: SdkDirection): WasmDirection {
-  return d.tag;
-}
-export function directionToSdk(d: WasmDirection): SdkDirection {
-  return { tag: d };
-}
-
 // --- MoveInput ------------------------------------------------------------------
 export function moveInputToWasm(m: SdkMoveInput): WasmMoveInput {
   return m.tag === 'Jump' ? 'Jump' : { Step: m.value.tag };
 }
 export function moveInputToSdk(m: WasmMoveInput): SdkMoveInput {
   return m === 'Jump' ? { tag: 'Jump' } : { tag: 'Step', value: { tag: m.Step } };
-}
-
-// --- move_queue -----------------------------------------------------------------
-export function moveQueueToWasm(q: readonly SdkMoveInput[]): WasmMoveInput[] {
-  return q.map(moveInputToWasm);
-}
-export function moveQueueToSdk(q: readonly WasmMoveInput[]): SdkMoveInput[] {
-  return q.map(moveInputToSdk);
 }
 
 // --- CharacterState -------------------------------------------------------------

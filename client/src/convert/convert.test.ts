@@ -8,12 +8,8 @@ import {
   characterFieldsFromWasm,
   characterToPredictedBaseline,
   characterToWasm,
-  directionToSdk,
-  directionToWasm,
   moveInputToSdk,
   moveInputToWasm,
-  moveQueueToSdk,
-  moveQueueToWasm,
   type SdkCharacterFields,
   type WasmAction,
   type WasmCharacterState,
@@ -40,31 +36,10 @@ const wasmCharArb: fc.Arbitrary<WasmCharacterState> = fc.record({
 });
 
 describe('convert: faithful round-trips (handles tagged unions + bigint)', () => {
-  it('Direction wasm -> sdk -> wasm', () => {
-    fc.assert(
-      fc.property(dirArb, (d) => {
-        expect(directionToWasm(directionToSdk(d))).toBe(d);
-      }),
-    );
-  });
-  it('Direction sdk -> wasm -> sdk', () => {
-    fc.assert(
-      fc.property(dirArb, (d) => {
-        expect(directionToSdk(directionToWasm({ tag: d }))).toEqual({ tag: d });
-      }),
-    );
-  });
   it('MoveInput wasm -> sdk -> wasm (Step replaces, Jump unit)', () => {
     fc.assert(
       fc.property(moveInputArb, (m) => {
         expect(moveInputToWasm(moveInputToSdk(m))).toEqual(m);
-      }),
-    );
-  });
-  it('move_queue round-trips elementwise (order + arity preserved)', () => {
-    fc.assert(
-      fc.property(fc.array(moveInputArb), (q) => {
-        expect(moveQueueToWasm(moveQueueToSdk(q))).toEqual(q);
       }),
     );
   });
