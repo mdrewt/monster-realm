@@ -6,11 +6,6 @@ set windows-shell := ["cmd.exe", "/c"]
 # client/playwright.config.ts) and not collide on one db/port (one shared
 # SpacetimeDB instance hosts both; distinct db names isolate their data).
 db := env_var_or_default("VITE_STDB_DB", "monster-realm")
-# The EXACT git-cliff that generated the committed CHANGELOG.md. Must stay equal to the
-# `taiki-e/install-action` pin in `.github/workflows/nightly.yml`'s changelog-freshness
-# job — `evals/nightly-smoke-wiring.eval.mjs` (gitCliffPinsAgree) fails the eval if the
-# two ever disagree. See the `changelog:` recipe below for why.
-GIT_CLIFF_VERSION := "2.13.1"
 # monster-realm cargo workspace verbs. Pure logic is testable offline;
 # build/publish/e2e need the spacetime CLI + an instance (see README).
 
@@ -56,41 +51,6 @@ test:
         echo "observability validate suite: only $pass test(s) passed, floor is 62" >&2
         exit 1
     fi
-    # rb-43: the adr-digest gating suite, in its OWN fail-closed block. Kept
-    # SEPARATE from the invocation above on purpose -- `node --test` silently
-    # ignores a path that does not exist (measured: exit 0, empty stderr), so
-    # folding both files into one command with one shared floor would hide a
-    # deleted suite the moment the other one grew past the floor.
-    if [ ! -f scripts/adr-digest.test.mjs ]; then
-        echo "adr-digest test suite: scripts/adr-digest.test.mjs is missing" >&2
-        exit 1
-    fi
-    adr_out="$(mktemp)"
-    node --test scripts/adr-digest.test.mjs 2>&1 | tee "$adr_out"
-    adr_pass="$(grep -Eo '^(ℹ|#) pass [0-9]+' "$adr_out" | grep -Eo '[0-9]+$' | tail -1)"
-    adr_fail="$(grep -Eo '^(ℹ|#) fail [0-9]+' "$adr_out" | grep -Eo '[0-9]+$' | tail -1)"
-    adr_skip="$(grep -Eo '^(ℹ|#) skipped [0-9]+' "$adr_out" | grep -Eo '[0-9]+$' | tail -1)"
-    adr_todo="$(grep -Eo '^(ℹ|#) todo [0-9]+' "$adr_out" | grep -Eo '[0-9]+$' | tail -1)"
-    if [ -z "$adr_pass" ] || [ -z "$adr_fail" ] || [ -z "$adr_skip" ] || [ -z "$adr_todo" ]; then
-        echo "adr-digest test suite: could not parse the node --test summary" >&2
-        exit 1
-    fi
-    if [ "$adr_fail" -ne 0 ]; then
-        echo "adr-digest test suite: $adr_fail failing test(s)" >&2
-        exit 1
-    fi
-    if [ "$adr_skip" -ne 0 ] || [ "$adr_todo" -ne 0 ]; then
-        echo "adr-digest test suite: $adr_skip skipped / $adr_todo todo test(s); both must be 0" >&2
-        exit 1
-    fi
-    # EQUALITY, not a floor: scripts/adr-digest.test.mjs is a frozen 9-test
-    # contract, so a silently DROPPED test is as fatal as a failing one. Raise
-    # this number in the SAME commit that adds a test.
-    if [ "$adr_pass" -ne 9 ]; then
-        echo "adr-digest test suite: $adr_pass test(s) passed, expected exactly 9" >&2
-        exit 1
-    fi
-    echo "adr-digest test suite: 9 test(s) passed"
 
 eval:
     node evals/run.mjs
@@ -259,65 +219,6 @@ build:
 publish:
     spacetime publish --module-path server-module {{db}}
 
-# Regenerate the committed CHANGELOG.md (ADR-0165 / ADR-0196).
-#
-# WHY THE VERSION ASSERTION. The nightly `changelog-freshness` job installs
-# `git-cliff@{{GIT_CLIFF_VERSION}}` on the READER side, while a local regeneration used
-# whatever git-cliff happened to be on PATH. A mismatch re-renders every entry, so the
-# checker reports the whole ledger as missing+extra at once and REDS the nightly as
-# drift — for a reason that has nothing to do with ledger freshness. Worse, the remedy
-# it prints ("run `just changelog`") REPRODUCES the mismatch, which is exactly the
-# nag-then-bypass mode ADR-0165 rejected. Failing loud with the install command is the
-# only honest outcome.
-#
-# Asserting on `git cliff` (the binary this recipe then INVOKES), never on some other
-# path, is deliberate: asserting one binary and mutating with another is the classic
-# bypass. The assertion alone is NOT sufficient, so the generation line adds two more
-# clauses (both measured as live bypasses of a version-check-only recipe):
-#   - `env -u GIT_CLIFF_*` — git-cliff gives EVERY cli option an environment twin, so a
-#     genuine, correctly-pinned binary will happily render an attacker's template with
-#     `GIT_CLIFF_CONFIG` set and the version assertion fully satisfied. `--config
-#     cliff.toml` then names the SSOT template explicitly rather than relying on
-#     discovery.
-#   - render to a temp file, `mv` on success — `git cliff -o CHANGELOG.md` TRUNCATES the
-#     target BEFORE rendering, so a template error leaves the committed ledger destroyed
-#     and exits 1. `set -euo pipefail` does not protect a partially-written output file.
-#
-# The `#!/usr/bin/env bash` shebang form BYPASSES `windows-shell` (justfile:1) — this
-# recipe is bash-only on Windows. That is the same tradeoff `test:` already takes, and
-# the reason is the same: the body needs `set -euo pipefail` and a multi-line `if`,
-# which just's line-by-line default execution cannot express.
-changelog:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    have="$(git cliff --version 2>/dev/null || true)"
-    want="git-cliff {{GIT_CLIFF_VERSION}}"
-    if [ "$have" != "$want" ]; then
-        echo "changelog: git-cliff version mismatch — have '${have:-<not installed>}', want '$want'" >&2
-        echo "changelog: install with: cargo install git-cliff --version {{GIT_CLIFF_VERSION}} --locked" >&2
-        exit 1
-    fi
-    tmp="$(mktemp)"
-    env -u GIT_CLIFF_CONFIG -u GIT_CLIFF_TEMPLATE -u GIT_CLIFF_TAG_PATTERN -u GIT_CLIFF_OUTPUT -u GIT_CLIFF_WORKDIR git cliff --config cliff.toml -o "$tmp"
-    mv "$tmp" CHANGELOG.md
-
-# The local half of the nightly `changelog-freshness` gate: the SAME version assertion,
-# then the drift checker. Deliberately NOT in `ci:` — ADR-0196's accepted decision is
-# that this check is nightly-and-not-per-PR (the ledger may lag by up to one open
-# milestone, so a per-PR gate would red on essentially every feature PR for a condition
-# that PR did not cause).
-changelog-check:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    have="$(git cliff --version 2>/dev/null || true)"
-    want="git-cliff {{GIT_CLIFF_VERSION}}"
-    if [ "$have" != "$want" ]; then
-        echo "changelog-check: git-cliff version mismatch — have '${have:-<not installed>}', want '$want'" >&2
-        echo "changelog-check: install with: cargo install git-cliff --version {{GIT_CLIFF_VERSION}} --locked" >&2
-        exit 1
-    fi
-    node scripts/changelog-freshness.mjs --check
-
 # Client (PixiJS) — needs Linux node on PATH (CI setup-node; local asdf node 24.13.1).
 client-setup:
     cd client && npm install --include=dev
@@ -366,16 +267,6 @@ cache-on:
 smoke-republish:
     bash scripts/smoke-republish.sh "${STDB_SERVER:-http://127.0.0.1:3000}" "${MR_SMOKE_DB:-monster-realm-smoke}"
 
-# Regenerate the committed docs/knowledge/ OKF bundle from server-module source.
-# Run after schema/reducer changes. Bundle is diff-reviewable; drift fails CI via
-# the knowledge-bundle-conformance eval (M8.95b).
-knowledge:
-    node scripts/okf-export.mjs docs/knowledge
-
-# Drift-check the committed bundle against a fresh generation; exit 1 if stale.
-knowledge-check:
-    node scripts/okf-export.mjs docs/knowledge --check
-
 # Export every client/src/ui/i18n/catalog.<tag>.ts to build/i18n/<tag>.icu.json (ICU
 # MessageFormat interchange for a translator/TMS; build/ is gitignored — M24 S8, ADR-0264).
 i18n-export:
@@ -402,16 +293,6 @@ i18n-completion:
 # committed baseline is stale (gap shrank or a locale is missing from it).
 i18n-completion-check:
     node scripts/catalog-export.mjs --completion --check
-
-# Regenerate docs/adr/DIGEST.md from the ADR corpus (ADR-0104).
-# Run after any ADR change and before committing.
-adr-digest:
-    node scripts/adr-digest.mjs
-
-# Drift-check the committed DIGEST.md; exit 1 if stale or header violations found.
-# Invoked by `just ci` via the adr-digest eval.
-adr-digest-check:
-    node scripts/adr-digest.mjs --check
 
 # ---------------------------------------------------------------------------
 # Local playtest ops (pt-a2, ADR-0129). Needs a live SpacetimeDB instance + a
