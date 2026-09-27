@@ -1,4 +1,4 @@
-//! Convergence check for the `netcode-convergence` eval (M8.8d / M14.5f): feeds
+//! Convergence check for the `netcode-convergence` eval: feeds
 //! the lossy/reordering `Link` into the authoritative `ServerWorld` and reports
 //! (as JSON) that the authoritative final state is delivery-order-INVARIANT under
 //! the seq-canonical apply (convergence — ADR-0013), that reorder + loss actually
@@ -150,7 +150,7 @@ fn main() {
     }
 
     // =========================================================================
-    // Warp-scenario convergence under link (M14.5f / 12.5f-1):
+    // Warp-scenario convergence under link:
     // SeqCanonical is delivery-order-invariant even when the warp step is
     // reordered. Non-vacuity: at least one seed must produce a reorder
     // (jitter=40 guarantees this across 8 seeds).

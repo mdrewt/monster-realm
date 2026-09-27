@@ -254,7 +254,7 @@ pub const READ_TIMEOUT_MS: u64 = 5;
 /// incrementing `drain_cap_hits` (a receive-lag signal, not an error).
 pub const DRAIN_FRAME_CAP: usize = 4096;
 
-/// Prometheus family: movement-tick latency histogram (OBS-24).
+/// Prometheus family: movement-tick latency histogram.
 pub const TXN_ELAPSED_BUCKET_FAMILY: &str = "spacetime_txn_elapsed_time_sec_bucket";
 
 /// Prometheus family: per-reducer transaction counter (accept/reject truth, S1).
@@ -298,7 +298,7 @@ pub const SCENARIO_RESERVED_ERR: &str =
 // ===========================================================================
 
 /// The load scenario. Only `movement` exists in m20d; `chat-flood` is rejected
-/// at parse time (OBS-28/M19) rather than modelled here.
+/// at parse time rather than modelled here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scenario {
     /// Bots walk row 1 of zone 0 and stream `enqueue_move` intents.
@@ -439,7 +439,7 @@ fn parse_scenario(s: &str) -> Result<Scenario, String> {
 }
 
 /// Process exit code for a top-level error message: 2 for the reserved-scenario
-/// error (OBS-28), 1 otherwise.
+/// error, 1 otherwise.
 #[must_use]
 pub fn exit_code_for_error(msg: &str) -> i32 {
     if msg == SCENARIO_RESERVED_ERR {
@@ -1260,7 +1260,7 @@ pub struct BreakingPoint {
     pub reason: String,
 }
 
-/// OBS-27: the FIRST level that crosses, in ramp order. Invalid levels are
+/// The FIRST level that crosses, in ramp order. Invalid levels are
 /// skipped entirely and can never be the breaking point. When both signals fire
 /// at the same level the p95 reason wins (it is the SLO of record). The breach
 /// comparator is [`p95_breaches_budget`] — inclusive at the budget (AM9).
@@ -2096,8 +2096,7 @@ pub fn client_msg_call_reducer(reducer: &str, args: &str, request_id: u32) -> St
 }
 
 // ===========================================================================
-// §9 SHELL (the only IO; NOT gated by the test module — the implementer may
-// adjust these signatures freely as long as the pure core above is untouched)
+// §9 SHELL (the only IO; NOT gated by the test module)
 // ===========================================================================
 
 /// Cross-thread counters (no mpsc — YAGNI).
@@ -2624,7 +2623,7 @@ fn run(args: &[String]) -> Result<i32, String> {
 }
 
 fn main() {
-    // Thin wrapper: argv in, exit code out (no-logic-in-wrapper, ADR-0051).
+    // Thin wrapper: argv in, exit code out (no-logic-in-wrapper).
     let args: Vec<String> = std::env::args().skip(1).collect();
     match run(&args) {
         Ok(code) => std::process::exit(code),
@@ -2636,7 +2635,7 @@ fn main() {
 }
 
 // ===========================================================================
-// §10 TESTS — tester-owned (T1–T18). The implementer NEVER edits this module.
+// §10 TESTS.
 //
 // Every test is pure: no socket, no clock, no OS entropy, no new dependency.
 // "Property" tests are deterministic seeded loops over `game_core::tick_seed`.
@@ -2782,7 +2781,7 @@ mod tests {
     // T1 — parse_args: happy path and EVERY bound.
     // =======================================================================
 
-    /// T1: only `--run-id` is required; every other flag has the documented
+    /// only `--run-id` is required; every other flag has the documented
     /// default. Kills a parser that silently defaults `--run-id` too.
     #[test]
     fn t01_parse_args_defaults_are_exact() {
@@ -2801,7 +2800,7 @@ mod tests {
         assert_eq!(cfg.report_path, None);
     }
 
-    /// T1: every flag is read into the field it names (kills a parser that
+    /// every flag is read into the field it names (kills a parser that
     /// crosses two numeric flags, e.g. step into start).
     #[test]
     fn t01_parse_args_reads_every_flag_into_its_own_field() {
@@ -2846,7 +2845,7 @@ mod tests {
         assert_eq!(cfg.report_path.as_deref(), Some("/tmp/mr-load.json"));
     }
 
-    /// T1: `--run-id` is REQUIRED. Kills a parser that invents a default label
+    /// `--run-id` is REQUIRED. Kills a parser that invents a default label
     /// (which would silently un-pair every G11 A/B run).
     #[test]
     fn t01_run_id_is_required() {
@@ -2862,13 +2861,13 @@ mod tests {
         );
     }
 
-    /// T1: an empty `--run-id` is not a label.
+    /// an empty `--run-id` is not a label.
     #[test]
     fn t01_run_id_must_be_non_empty() {
         assert!(parse_args(&argv(&["--run-id", ""])).is_err());
     }
 
-    /// T1: `--clients-start` boundary — 0 rejected, 1 accepted.
+    /// `--clients-start` boundary — 0 rejected, 1 accepted.
     #[test]
     fn t01_clients_start_lower_bound() {
         assert!(parse_args(&args_with("--clients-start", "0")).is_err());
@@ -2884,14 +2883,14 @@ mod tests {
         assert_eq!(cfg.clients_start, 1);
     }
 
-    /// T1: `--clients-step` boundary — 0 rejected (an infinite ramp), 1 accepted.
+    /// `--clients-step` boundary — 0 rejected (an infinite ramp), 1 accepted.
     #[test]
     fn t01_clients_step_lower_bound() {
         assert!(parse_args(&args_with("--clients-step", "0")).is_err());
         assert!(parse_args(&args_with("--clients-step", "1")).is_ok());
     }
 
-    /// T1: `--clients-max` must be ≥ start; equal is legal and is exactly how
+    /// `--clients-max` must be ≥ start; equal is legal and is exactly how
     /// G11 runs a fixed-concurrency A/B.
     #[test]
     fn t01_clients_max_must_not_be_below_start() {
@@ -2916,7 +2915,7 @@ mod tests {
         assert_eq!(cfg.clients_start, cfg.clients_max);
     }
 
-    /// T1: the hard client cap. 500 accepted, 501 rejected — kills a `>=` flip
+    /// the hard client cap. 500 accepted, 501 rejected — kills a `>=` flip
     /// on the cap and any parser that ignores MAX_CLIENTS entirely.
     #[test]
     fn t01_clients_max_cap_is_exactly_max_clients() {
@@ -2933,7 +2932,7 @@ mod tests {
         );
     }
 
-    /// T1 + AM6: `--hold-scrapes` ≥ 4 (1 warm-up discard + ≥3 usable readings).
+    /// `--hold-scrapes` ≥ 4 (1 warm-up discard + ≥3 usable readings).
     /// 3 MUST be rejected — that is the value a naive "≥3 readings" reading of
     /// the growth rule would allow, and it leaves only 2 usable readings.
     #[test]
@@ -2947,7 +2946,7 @@ mod tests {
         assert_eq!(cfg.hold_scrapes, 4);
     }
 
-    /// T1: `--scrape-interval-ms` ≥ 100.
+    /// `--scrape-interval-ms` ≥ 100.
     #[test]
     fn t01_scrape_interval_floor() {
         assert!(parse_args(&args_with("--scrape-interval-ms", "99")).is_err());
@@ -2955,7 +2954,7 @@ mod tests {
         assert_eq!(cfg.scrape_interval_ms, MIN_SCRAPE_INTERVAL_MS);
     }
 
-    /// T1: `--move-rate` bounds, both ends.
+    /// `--move-rate` bounds, both ends.
     #[test]
     fn t01_move_rate_bounds() {
         assert!(parse_args(&args_with("--move-rate", "0")).is_err());
@@ -2964,7 +2963,7 @@ mod tests {
         assert!(parse_args(&args_with("--move-rate", "101")).is_err());
     }
 
-    /// T1: an unknown flag is a loud error, never ignored.
+    /// an unknown flag is a loud error, never ignored.
     #[test]
     fn t01_unknown_flag_is_rejected() {
         let err = parse_args(&argv(&["--run-id", "T", "--turbo", "1"]))
@@ -2975,7 +2974,7 @@ mod tests {
         );
     }
 
-    /// T1 + AM25: `--transport` DOES NOT EXIST. WS is the only viable transport
+    /// `--transport` DOES NOT EXIST. WS is the only viable transport
     /// (HTTP calls are swept by `on_disconnect`), so the flag must be rejected
     /// as unknown — not accepted-and-ignored, and not silently defaulted.
     #[test]
@@ -2990,7 +2989,7 @@ mod tests {
         );
     }
 
-    /// T1 + AM17/AM18: neither `--queue-metric` nor `--label` exists.
+    /// neither `--queue-metric` nor `--label` exists.
     #[test]
     fn t01_queue_metric_and_label_flags_do_not_exist() {
         assert!(
@@ -3009,14 +3008,14 @@ mod tests {
         );
     }
 
-    /// T1: a flag whose value is missing is an error, not a silent default.
+    /// a flag whose value is missing is an error, not a silent default.
     #[test]
     fn t01_missing_flag_value_is_rejected() {
         assert!(parse_args(&argv(&["--run-id"])).is_err());
         assert!(parse_args(&argv(&["--run-id", "T", "--clients-max"])).is_err());
     }
 
-    /// T1: a non-numeric value for a numeric flag is an error.
+    /// a non-numeric value for a numeric flag is an error.
     #[test]
     fn t01_non_numeric_value_is_rejected() {
         assert!(parse_args(&args_with("--clients-max", "many")).is_err());
@@ -3024,19 +3023,19 @@ mod tests {
         assert!(parse_args(&args_with("--hold-scrapes", "-4")).is_err());
     }
 
-    /// T1: a bare positional argument is not a flag.
+    /// a bare positional argument is not a flag.
     #[test]
     fn t01_positional_argument_is_rejected() {
         assert!(parse_args(&argv(&["--run-id", "T", "extra"])).is_err());
     }
 
-    /// T1: `--server` must be non-empty (the host is derived from it).
+    /// `--server` must be non-empty (the host is derived from it).
     #[test]
     fn t01_empty_server_is_rejected() {
         assert!(parse_args(&args_with("--server", "")).is_err());
     }
 
-    /// T1: `server_host` strips the scheme, rejects TLS and non-HTTP schemes
+    /// `server_host` strips the scheme, rejects TLS and non-HTTP schemes
     /// (this driver has no TLS — silently connecting in the clear would be worse).
     #[test]
     fn t01_server_host_extraction_and_scheme_guard() {
@@ -3060,7 +3059,7 @@ mod tests {
         assert!(server_host("http://").is_err(), "an empty host is an error");
     }
 
-    /// T1 + AM1: pacing is a pure function of `--move-rate`, clock-free.
+    /// pacing is a pure function of `--move-rate`, clock-free.
     /// 5/sec ⇒ one intent per STEP_MS minus the drain allowance.
     #[test]
     fn t01_pacing_sleep_is_a_pure_function_of_move_rate() {
@@ -3075,10 +3074,10 @@ mod tests {
     }
 
     // =======================================================================
-    // T2 — the reserved chat-flood scenario (OBS-28 / M19).
+    // T2 — the reserved chat-flood scenario.
     // =======================================================================
 
-    /// T2: `--scenario chat-flood` is rejected AT PARSE with the exact reserved
+    /// `--scenario chat-flood` is rejected AT PARSE with the exact reserved
     /// message. Pinned by equality, not `contains`, so the message cannot drift
     /// into something that no longer names its criterion.
     #[test]
@@ -3088,7 +3087,7 @@ mod tests {
         assert_eq!(err, SCENARIO_RESERVED_ERR);
     }
 
-    /// T2: the reserved message names both the criterion and the milestone, so
+    /// the reserved message names both the criterion and the milestone, so
     /// an operator learns WHY without reading the source.
     #[test]
     fn t02_reserved_error_names_obs28_and_m19() {
@@ -3097,7 +3096,7 @@ mod tests {
         assert!(SCENARIO_RESERVED_ERR.contains("chat-flood"));
     }
 
-    /// T2: the reserved scenario exits 2 — distinct from a generic usage error,
+    /// the reserved scenario exits 2 — distinct from a generic usage error,
     /// so a harness can tell "not implemented yet" from "you typed it wrong".
     #[test]
     fn t02_chat_flood_maps_to_exit_code_two() {
@@ -3106,7 +3105,7 @@ mod tests {
         assert_eq!(exit_code_for_error("--run-id is required"), 1);
     }
 
-    /// T2: `movement` is accepted; an unknown scenario is a plain usage error
+    /// `movement` is accepted; an unknown scenario is a plain usage error
     /// (exit 1), NOT the reserved one.
     #[test]
     fn t02_movement_accepted_unknown_scenario_is_a_plain_error() {
@@ -3129,7 +3128,7 @@ mod tests {
     // T3 — Prometheus exposition parse + SUBSET label matching + label pins.
     // =======================================================================
 
-    /// T3: comments and blank lines are skipped, not errors.
+    /// comments and blank lines are skipped, not errors.
     #[test]
     fn t03_parse_line_skips_comments_and_blanks() {
         assert_eq!(
@@ -3144,7 +3143,7 @@ mod tests {
         assert_eq!(parse_line("   "), Ok(None));
     }
 
-    /// T3: a label-less series parses.
+    /// a label-less series parses.
     #[test]
     fn t03_parse_line_without_labels() {
         let s = parse_line("spacetime_worker_wasm_memory_bytes 1048576")
@@ -3155,7 +3154,7 @@ mod tests {
         assert!(close(s.value, 1_048_576.0));
     }
 
-    /// T3: labels parse in text order, with the value after the closing brace.
+    /// labels parse in text order, with the value after the closing brace.
     #[test]
     fn t03_parse_line_with_labels() {
         let s = parse_line(
@@ -3173,7 +3172,7 @@ mod tests {
         assert!(close(s.value, 42.0));
     }
 
-    /// T3: exponent notation and an optional trailing timestamp — both appear in
+    /// exponent notation and an optional trailing timestamp — both appear in
     /// real exposition. Kills a parser that treats the timestamp as the value.
     #[test]
     fn t03_parse_line_handles_exponents_and_trailing_timestamp() {
@@ -3190,7 +3189,7 @@ mod tests {
         );
     }
 
-    /// T3: malformed lines fail LOUD. A silent skip would turn a broken scrape
+    /// malformed lines fail LOUD. A silent skip would turn a broken scrape
     /// into a fake "0" and then into a fake breaking point.
     #[test]
     fn t03_parse_line_fails_loud_on_malformed_input() {
@@ -3203,7 +3202,7 @@ mod tests {
         assert!(parse_line("{a=\"b\"} 1").is_err(), "no family name");
     }
 
-    /// T3: the three legal label escapes round-trip; anything else fails loud
+    /// the three legal label escapes round-trip; anything else fails loud
     /// (memory: fail loud on parse ambiguity, never guess).
     #[test]
     fn t03_label_unescape_handles_the_three_legal_escapes() {
@@ -3221,7 +3220,7 @@ mod tests {
         );
     }
 
-    /// T3: a label value containing an escaped quote and a comma must not split
+    /// a label value containing an escaped quote and a comma must not split
     /// the label list early.
     #[test]
     fn t03_parse_line_label_value_may_contain_escaped_quotes_and_commas() {
@@ -3237,7 +3236,7 @@ mod tests {
         assert_eq!(label_value(&s, "k"), Some("v"));
     }
 
-    /// T3: matching is SUBSET-based. Exact-label-set equality is the classic
+    /// matching is SUBSET-based. Exact-label-set equality is the classic
     /// vacuous-green shape here — real exposition carries extra labels
     /// (`db`, `txn_type`, `le`) that we do not always constrain.
     #[test]
@@ -3270,7 +3269,7 @@ mod tests {
         );
     }
 
-    /// T3: selection filters on family name AND labels.
+    /// selection filters on family name AND labels.
     #[test]
     fn t03_select_subset_filters_on_name_and_labels() {
         let samples = vec![
@@ -3284,7 +3283,7 @@ mod tests {
         assert!(select_subset(&samples, "zzz", &[]).is_empty());
     }
 
-    /// T3 + AM26: an ABSENT family (or an over-pinned match) is a LOUD error,
+    /// an ABSENT family (or an over-pinned match) is a LOUD error,
     /// never a silent 0. A zero would read as "no queue growth" / "no load".
     #[test]
     fn t03_counter_sum_fails_loud_when_nothing_matches() {
@@ -3300,7 +3299,7 @@ mod tests {
         assert!(gauge_sum(&samples, "missing_family", &[]).is_err());
     }
 
-    /// T3: multiple matching series are summed, so silent aggregation is at
+    /// multiple matching series are summed, so silent aggregation is at
     /// least arithmetically honest.
     #[test]
     fn t03_counter_sum_adds_every_matching_series() {
@@ -3315,7 +3314,7 @@ mod tests {
         ));
     }
 
-    /// T3 + AM27 TEETH: the live host exposes an `txn_type="Update"` row
+    /// TEETH: the live host exposes an `txn_type="Update"` row
     /// ALONGSIDE `txn_type="Reducer"` for every reducer. A match that forgets to
     /// pin `txn_type` double-counts every accept/reject delta and halves the
     /// apparent breaking point. This fixture returns 10, never 17.
@@ -3351,7 +3350,7 @@ mod tests {
         );
     }
 
-    /// T3 + AM26 TEETH: two databases on one host. Pinning the resolved identity
+    /// TEETH: two databases on one host. Pinning the resolved identity
     /// must exclude the other database's series entirely.
     #[test]
     fn t03_identity_pinning_excludes_other_databases() {
@@ -3385,7 +3384,7 @@ mod tests {
         );
     }
 
-    /// T3 + AM26: the live LABEL-NAME ASYMMETRY. txn families use `db=`; the
+    /// the live LABEL-NAME ASYMMETRY. txn families use `db=`; the
     /// queue gauges use `database_identity=`. Swapping them yields zero matches
     /// and (thanks to the fail-loud rule) an aborted run rather than a lie.
     #[test]
@@ -3411,7 +3410,7 @@ mod tests {
         assert_eq!(TXN_TYPE_REDUCER, "Reducer");
     }
 
-    /// T3: the queue gauge families are the two OBS-26/27 names, in order.
+    /// the queue gauge families are the two OBS-26/27 names, in order.
     #[test]
     fn t03_queue_families_are_the_two_obs26_gauges() {
         assert_eq!(
@@ -3424,7 +3423,7 @@ mod tests {
         assert_eq!(SUBSCRIBE_QUERIES, ["SELECT * FROM character"]);
     }
 
-    /// T3: whole-body parse keeps every series and propagates a bad line.
+    /// whole-body parse keeps every series and propagates a bad line.
     #[test]
     fn t03_parse_exposition_round_trip_and_failure() {
         let text = "# HELP x help\n# TYPE x gauge\nx{a=\"1\"} 1\nx{a=\"2\"} 2\n";
@@ -3436,7 +3435,7 @@ mod tests {
         );
     }
 
-    /// T3 + AM26: name→identity resolution, `0x` stripped for label matching.
+    /// name→identity resolution, `0x` stripped for label matching.
     #[test]
     fn t03_database_identity_resolution_strips_0x() {
         let body = "{\"database_identity\":{\"__identity__\":\"0xc200abcdef\"},\"owner_identity\":{\"__identity__\":\"0xdead\"}}";
@@ -3469,7 +3468,7 @@ mod tests {
         out
     }
 
-    /// T4: the bound set comes from the `le` labels in the text — including the
+    /// the bound set comes from the `le` labels in the text — including the
     /// live host's NON-default bounds and `+Inf`. Kills any hard-coded bound
     /// array (the prometheus-crate DEFAULT_BUCKETS guess was wrong for this
     /// family, so a hard-coded set would silently mis-bucket every p95).
@@ -3500,7 +3499,7 @@ mod tests {
         assert!(close(s.counts[13], 100.0));
     }
 
-    /// T4: bounds come back ASCENDING even when the text order is shuffled —
+    /// bounds come back ASCENDING even when the text order is shuffled —
     /// Prometheus does not promise bucket-line ordering.
     #[test]
     fn t04_bucket_bounds_are_sorted_ascending_regardless_of_text_order() {
@@ -3516,7 +3515,7 @@ mod tests {
         assert!(close(s.counts[2], 30.0));
     }
 
-    /// T4: two series sharing an `le` set are summed bucket-wise.
+    /// two series sharing an `le` set are summed bucket-wise.
     #[test]
     fn t04_matching_series_are_summed_bucket_wise() {
         let mut text = hist_text("d", "r", "Reducer", &["0.1", "+Inf"], &[1, 2]);
@@ -3530,7 +3529,7 @@ mod tests {
         assert!(close(s.counts[1], 22.0));
     }
 
-    /// T4 + AM14 TEETH: summing series whose `le` sets DIFFER is a silent lie
+    /// TEETH: summing series whose `le` sets DIFFER is a silent lie
     /// (the sum would describe a histogram that never existed). Fail loud.
     #[test]
     fn t04_mismatched_le_sets_fail_loud() {
@@ -3545,7 +3544,7 @@ mod tests {
         );
     }
 
-    /// T4 + AM26: zero matching bucket series is fatal, not an empty histogram.
+    /// zero matching bucket series is fatal, not an empty histogram.
     #[test]
     fn t04_absent_histogram_family_fails_loud() {
         let samples = parse_exposition("other_family 1\n").expect("valid exposition");
@@ -3559,7 +3558,7 @@ mod tests {
     //      boundary, and the AM6 warm-up discard inside the window.
     // =======================================================================
 
-    /// T5 + AM10: the REAL live bucket bounds, with a delta whose p95 lands in
+    /// the REAL live bucket bounds, with a delta whose p95 lands in
     /// the 400 ms-wide `(0.1, 0.5]` bucket that straddles STEP_MS.
     ///
     /// rank = 0.95·100 = 95; cum(0.1) = 90, cum(0.5) = 100
@@ -3588,7 +3587,7 @@ mod tests {
         );
     }
 
-    /// T5 + AM10: the resolution indicator for that same fixture is the FULL
+    /// the resolution indicator for that same fixture is the FULL
     /// 400 ms bucket width — the honest statement of how coarse this p95 is.
     #[test]
     fn t05_p95_bucket_width_exposes_the_400ms_live_bucket() {
@@ -3602,7 +3601,7 @@ mod tests {
         assert!(close(w, 0.4), "expected the (0.1, 0.5] width 0.4, got {w}");
     }
 
-    /// T5: evenly spaced bounds with a HAND-COMPUTED expected value.
+    /// evenly spaced bounds with a HAND-COMPUTED expected value.
     /// rank = 0.95·20 = 19; cum(1) = 10, cum(2) = 20
     /// ⇒ 1 + (2−1)·(19−10)/10 = **1.9**.
     /// Kills a midpoint estimator (1.5) and a "return the upper bound" (2.0).
@@ -3617,7 +3616,7 @@ mod tests {
         ));
     }
 
-    /// T5: when the p95 falls in the FIRST bucket the lower edge is 0, not
+    /// when the p95 falls in the FIRST bucket the lower edge is 0, not
     /// `bounds[-1]`. rank = 19 of 20 in `(0, 1]` ⇒ 0 + 1·19/20 = **0.95**.
     /// Kills an off-by-one that indexes `bounds[i-1]` at i == 0.
     #[test]
@@ -3631,7 +3630,7 @@ mod tests {
         ));
     }
 
-    /// T5: more than 5 % of observations above the top finite bound ⇒ AboveTop,
+    /// more than 5 % of observations above the top finite bound ⇒ AboveTop,
     /// carrying that bound. It is NEVER reported as the p95 value itself.
     #[test]
     fn t05_p95_above_top_is_never_reported_as_the_top_bound() {
@@ -3652,7 +3651,7 @@ mod tests {
         );
     }
 
-    /// T5: AboveTop is a breach only when the top finite bound is already at or
+    /// AboveTop is a breach only when the top finite bound is already at or
     /// over the budget; below it, the reading is INDETERMINATE — never silently
     /// healthy.
     #[test]
@@ -3666,7 +3665,7 @@ mod tests {
         );
     }
 
-    /// T5: an all-zero delta means nothing was observed in the window.
+    /// an all-zero delta means nothing was observed in the window.
     #[test]
     fn t05_p95_too_few_on_an_empty_window() {
         let delta = snap(&[1.0, 2.0, INF], &[0.0, 0.0, 0.0]);
@@ -3676,7 +3675,7 @@ mod tests {
         assert_eq!(p95_bucket_width_s(&delta), None);
     }
 
-    /// T5: a NEGATIVE component means the cumulative counter went backwards —
+    /// a NEGATIVE component means the cumulative counter went backwards —
     /// the host restarted mid-level. Reset, never a (nonsense) percentile.
     #[test]
     fn t05_p95_reset_on_a_decreasing_counter() {
@@ -3726,7 +3725,7 @@ mod tests {
         );
     }
 
-    /// T5 BOUNDARY: `rank == counts[i]` exactly must resolve INSIDE that finite
+    /// BOUNDARY: `rank == counts[i]` exactly must resolve INSIDE that finite
     /// bucket. total = 20 ⇒ rank = 19, and counts[1] = 19, so the documented
     /// `counts[i] >= rank` picks i = 1 and interpolates to the bucket's upper
     /// edge: 1.0 + 1.0 · (19 − 10)/(19 − 10) = **2.0**.
@@ -3745,7 +3744,7 @@ mod tests {
         assert!(close(extract_p95_value(p), 2.0));
     }
 
-    /// T5 + AM9 BOUNDARY: the breach comparator is INCLUSIVE. p95 exactly at
+    /// BOUNDARY: the breach comparator is INCLUSIVE. p95 exactly at
     /// STEP_MS is a BREACH, because OBS-24 is satisfied only by staying UNDER
     /// the budget. Kills a `>` comparator.
     #[test]
@@ -3766,7 +3765,7 @@ mod tests {
         );
     }
 
-    /// T5: a healthy p95 well under the budget is not a breach, and
+    /// a healthy p95 well under the budget is not a breach, and
     /// TooFew/Reset are indeterminate (they make the LEVEL invalid rather than
     /// quietly passing as healthy).
     #[test]
@@ -3776,7 +3775,7 @@ mod tests {
         assert_eq!(p95_breaches_budget(P95::Reset), Breach::Indeterminate);
     }
 
-    /// T5 + AM6/AM8 TEETH: the level p95 is ONE delta over the USABLE window —
+    /// TEETH: the level p95 is ONE delta over the USABLE window —
     /// last usable minus FIRST USABLE, with the warm-up reading discarded.
     ///
     /// Correct (c − a): counts [0,100,100] ⇒ 1 + 1·(95−0)/100 = **1.95**.
@@ -3804,7 +3803,7 @@ mod tests {
         );
     }
 
-    /// T5: fewer than two USABLE readings cannot make a delta.
+    /// fewer than two USABLE readings cannot make a delta.
     #[test]
     fn t05_p95_window_needs_two_usable_readings() {
         let one = vec![snap(&[1.0, INF], &[1.0, 1.0])];
@@ -3830,7 +3829,7 @@ mod tests {
         assert_eq!(p95_windowed(&[]).expect("no le conflict"), P95::TooFew);
     }
 
-    /// T5 + AM14: a bound set that changes mid-level (a re-published module)
+    /// a bound set that changes mid-level (a re-published module)
     /// must fail loud rather than subtract mismatched buckets.
     #[test]
     fn t05_window_delta_fails_loud_on_changed_bounds() {
@@ -3843,7 +3842,7 @@ mod tests {
         assert!(p95_windowed(&raw).is_err());
     }
 
-    /// T5: `Value` reports its number and its state name.
+    /// `Value` reports its number and its state name.
     #[test]
     fn t05_value_state_reporting() {
         assert_eq!(p95_state_name(P95::Value(0.25)), "value");
@@ -3867,7 +3866,7 @@ mod tests {
         );
     }
 
-    /// T6: a flat queue — even a flat queue at a high plateau — is not growth
+    /// a flat queue — even a flat queue at a high plateau — is not growth
     /// (AM7: the server keeps up at that concurrency).
     #[test]
     fn t06_flat_series_is_not_growth() {
@@ -3875,21 +3874,21 @@ mod tests {
         assert!(!is_monotonic_growth(&[900.0, 900.0, 900.0]));
     }
 
-    /// T6: strictly increasing with a real gain IS growth.
+    /// strictly increasing with a real gain IS growth.
     #[test]
     fn t06_strictly_increasing_series_is_growth() {
         assert!(is_monotonic_growth(&[1.0, 2.0, 3.0]));
         assert!(is_monotonic_growth(&[0.0, 10.0, 40.0, 90.0]));
     }
 
-    /// T6: a single flat pair anywhere breaks strictness.
+    /// a single flat pair anywhere breaks strictness.
     #[test]
     fn t06_one_flat_pair_breaks_strictness() {
         assert!(!is_monotonic_growth(&[1.0, 2.0, 2.0, 3.0]));
         assert!(!is_monotonic_growth(&[3.0, 2.0, 1.0]));
     }
 
-    /// T6: fewer than three readings cannot establish a trend.
+    /// fewer than three readings cannot establish a trend.
     #[test]
     fn t06_fewer_than_three_readings_is_not_growth() {
         assert!(!is_monotonic_growth(&[]));
@@ -3897,7 +3896,7 @@ mod tests {
         assert!(!is_monotonic_growth(&[1.0, 99.0]));
     }
 
-    /// T6: increasing but by less than one whole queued item is float noise on
+    /// increasing but by less than one whole queued item is float noise on
     /// an integer-valued gauge, not growth.
     #[test]
     fn t06_sub_unit_drift_is_not_growth() {
@@ -3911,7 +3910,7 @@ mod tests {
         );
     }
 
-    /// T6 + AM6: the window function drops exactly WARMUP_SCRAPES readings from
+    /// the window function drops exactly WARMUP_SCRAPES readings from
     /// the FRONT, uniformly, for any series type.
     #[test]
     fn t06_usable_window_drops_exactly_the_warmup_readings() {
@@ -3944,7 +3943,7 @@ mod tests {
         );
     }
 
-    /// T6 + AM6 TEETH (the other direction): a series whose only "growth" is the
+    /// TEETH (the other direction): a series whose only "growth" is the
     /// discarded warm-up reading must NOT count. Raw `[1, 2, 3]` looks like
     /// growth; the usable window is only `[2, 3]` — two readings, no verdict.
     /// Kills an implementation that forgets the discard in `level_growth`.
@@ -3960,7 +3959,7 @@ mod tests {
         );
     }
 
-    /// T6: a queue that spikes on connect and then sits flat is a server keeping
+    /// a queue that spikes on connect and then sits flat is a server keeping
     /// up — the most common false positive this rule must refuse.
     #[test]
     fn t06_spike_then_plateau_is_not_growth() {
@@ -3968,7 +3967,7 @@ mod tests {
         assert!(!level_growth(&[0.0, 5.0, 4.0, 6.0, 5.0]));
     }
 
-    /// T6: median over the usable window (the AM7 plateau statistic).
+    /// median over the usable window (the AM7 plateau statistic).
     #[test]
     fn t06_median_is_order_independent() {
         assert_eq!(median(&[3.0, 1.0, 2.0]), Some(2.0));
@@ -3978,7 +3977,7 @@ mod tests {
     }
 
     // =======================================================================
-    // T7 — the breaking-point state machine (OBS-27).
+    // T7 — the breaking-point state machine.
     // =======================================================================
 
     /// A healthy, valid verdict at `n`.
@@ -4012,7 +4011,7 @@ mod tests {
         }
     }
 
-    /// T7: the FIRST crossing is the answer, and it is that level's exact
+    /// the FIRST crossing is the answer, and it is that level's exact
     /// concurrency — not the previous level, not the next one.
     #[test]
     fn t07_first_crossing_reports_exactly_that_level() {
@@ -4027,7 +4026,7 @@ mod tests {
         assert_eq!(bp.reason, P95_BREACH_REASON);
     }
 
-    /// T7: no crossing ⇒ None (the `not_reached` outcome, a legitimate result
+    /// no crossing ⇒ None (the `not_reached` outcome, a legitimate result
     /// on a dev box that must never be massaged into a number).
     #[test]
     fn t07_no_crossing_is_none() {
@@ -4036,7 +4035,7 @@ mod tests {
         assert_eq!(breaking_point(&[]), None);
     }
 
-    /// T7: a queue-growth crossing names the offending family.
+    /// a queue-growth crossing names the offending family.
     #[test]
     fn t07_queue_growth_crossing_names_the_family() {
         let verdicts = vec![
@@ -4051,7 +4050,7 @@ mod tests {
         );
     }
 
-    /// T7: an EARLIER p95 breach wins over a LATER queue breach — "first
+    /// an EARLIER p95 breach wins over a LATER queue breach — "first
     /// crosses" is about ramp order, not signal preference.
     #[test]
     fn t07_earlier_p95_breach_beats_a_later_queue_breach() {
@@ -4065,7 +4064,7 @@ mod tests {
         assert_eq!(bp.reason, P95_BREACH_REASON);
     }
 
-    /// T7: an EARLIER queue breach wins over a LATER p95 breach, symmetrically.
+    /// an EARLIER queue breach wins over a LATER p95 breach, symmetrically.
     /// Kills an implementation that scans for p95 breaches first and only then
     /// looks at queues.
     #[test]
@@ -4083,8 +4082,8 @@ mod tests {
         );
     }
 
-    /// T7: both signals at the SAME level ⇒ the p95 reason is reported (it is
-    /// the SLO of record, OBS-24).
+    /// both signals at the SAME level ⇒ the p95 reason is reported (it is
+    /// the SLO of record).
     #[test]
     fn t07_p95_reason_wins_when_both_fire_at_one_level() {
         let both = LevelVerdict {
@@ -4097,7 +4096,7 @@ mod tests {
         assert_eq!(bp.reason, P95_BREACH_REASON);
     }
 
-    /// T7 TEETH: an INVALID level can never be the breaking point, however
+    /// TEETH: an INVALID level can never be the breaking point, however
     /// alarming its numbers look. The run continues to the next valid level.
     #[test]
     fn t07_invalid_level_is_never_the_breaking_point() {
@@ -4116,7 +4115,7 @@ mod tests {
         );
     }
 
-    /// T7 TEETH: if the ONLY breaching level is invalid, the honest answer is
+    /// TEETH: if the ONLY breaching level is invalid, the honest answer is
     /// None — never "the number we happened to see".
     #[test]
     fn t07_only_invalid_breaches_yield_no_breaking_point() {
@@ -4132,7 +4131,7 @@ mod tests {
         );
     }
 
-    /// T7 + AM9: a p95 sitting EXACTLY on STEP_MS crosses. This is the same
+    /// a p95 sitting EXACTLY on STEP_MS crosses. This is the same
     /// inclusive rule as T5, exercised through the state machine.
     #[test]
     fn t07_p95_exactly_at_the_budget_crosses() {
@@ -4142,7 +4141,7 @@ mod tests {
         assert_eq!(bp.reason, P95_BREACH_REASON);
     }
 
-    /// T7: an `AboveTop` whose top bound is already over the budget crosses; a
+    /// an `AboveTop` whose top bound is already over the budget crosses; a
     /// `TooFew`/`Reset` outcome never does (those levels are invalid anyway).
     #[test]
     fn t07_above_top_over_budget_crosses() {
@@ -4176,7 +4175,7 @@ mod tests {
         );
     }
 
-    /// T7 + AM7: two rising levels are not enough, and a non-consecutive rise
+    /// two rising levels are not enough, and a non-consecutive rise
     /// does not count.
     #[test]
     fn t07_cross_level_growth_needs_three_consecutive_levels() {
@@ -4268,7 +4267,7 @@ mod tests {
         }
     }
 
-    /// T8: the healthy baseline is valid, unremarkable, and under budget.
+    /// the healthy baseline is valid, unremarkable, and under budget.
     #[test]
     fn t08_healthy_level_is_valid_with_no_notes() {
         let v = evaluate_level(&base_sample(10)).expect("consistent bounds");
@@ -4322,7 +4321,7 @@ mod tests {
         assert!(!v.notes.contains(&REJECTION_STORM_NOTE.to_string()));
     }
 
-    /// T8 + AM5: NOTHING reached the server — a driver stall or a connection
+    /// NOTHING reached the server — a driver stall or a connection
     /// collapse. Invalid, and therefore never a breaking point.
     #[test]
     fn t08_zero_offered_load_is_invalid_no_load_reached() {
@@ -4336,7 +4335,7 @@ mod tests {
         assert_eq!(v.invalid_reason.as_deref(), Some("no_load_reached"));
     }
 
-    /// T8 + AM5: the join wave came up short — driver-side auth/name/validation
+    /// the join wave came up short — driver-side auth/name/validation
     /// drift. A LOUD TOOL ERROR, never a server verdict.
     #[test]
     fn t08_join_shortfall_is_invalid_join_failed() {
@@ -4349,7 +4348,7 @@ mod tests {
         assert_eq!(v.invalid_reason.as_deref(), Some("join_failed"));
     }
 
-    /// T8 BOUNDARY: exactly enough joins is enough. Kills a `<=` flip that would
+    /// BOUNDARY: exactly enough joins is enough. Kills a `<=` flip that would
     /// invalidate every well-behaved run.
     #[test]
     fn t08_join_count_exactly_equal_to_concurrency_is_valid() {
@@ -4369,7 +4368,7 @@ mod tests {
         );
     }
 
-    /// T8 + AM5: a decreasing cumulative counter means the host restarted.
+    /// a decreasing cumulative counter means the host restarted.
     #[test]
     fn t08_counter_decrease_is_invalid_counter_reset() {
         let s = LevelSample {
@@ -4381,7 +4380,7 @@ mod tests {
         assert_eq!(v.invalid_reason.as_deref(), Some("counter_reset"));
     }
 
-    /// T8: a histogram window that goes backwards is the same restart, seen
+    /// a histogram window that goes backwards is the same restart, seen
     /// through the p95 path.
     #[test]
     fn t08_histogram_reset_is_invalid_counter_reset() {
@@ -4399,7 +4398,7 @@ mod tests {
         assert_eq!(v.p95, P95::Reset);
     }
 
-    /// T8: no usable p95 window ⇒ invalid, never "healthy by default".
+    /// no usable p95 window ⇒ invalid, never "healthy by default".
     #[test]
     fn t08_too_few_p95_samples_is_invalid() {
         let s = LevelSample {
@@ -4411,7 +4410,7 @@ mod tests {
         assert_eq!(v.invalid_reason.as_deref(), Some("insufficient_samples"));
     }
 
-    /// T8: an `AboveTop` under the budget is INDETERMINATE — the level is
+    /// an `AboveTop` under the budget is INDETERMINATE — the level is
     /// invalid rather than silently reported as healthy or as a breach.
     #[test]
     fn t08_indeterminate_above_top_is_invalid() {
@@ -4429,7 +4428,7 @@ mod tests {
         assert_eq!(v.invalid_reason.as_deref(), Some("p95_indeterminate"));
     }
 
-    /// T8: precedence — a host restart explains everything else, so it is
+    /// precedence — a host restart explains everything else, so it is
     /// reported instead of the join shortfall it caused.
     #[test]
     fn t08_counter_reset_takes_precedence_over_join_failed() {
@@ -4444,7 +4443,7 @@ mod tests {
         assert_eq!(v.invalid_reason.as_deref(), Some("counter_reset"));
     }
 
-    /// T8 + AM6/AM7: within-level growth is computed from the RAW gauge series
+    /// within-level growth is computed from the RAW gauge series
     /// with the warm-up reading discarded. The first family's raw series here is
     /// `[9, 1, 5, 20]`: raw it is not monotonic, but the usable `[1, 5, 20]` is.
     #[test]
@@ -4464,7 +4463,7 @@ mod tests {
         );
     }
 
-    /// T8 + AM7: the plateau statistic is the median of the USABLE window, per
+    /// the plateau statistic is the median of the USABLE window, per
     /// family, in input order. `[9, 1, 5, 20]` → median of `[1, 5, 20]` = 5.
     #[test]
     fn t08_plateau_is_the_median_of_the_usable_window() {
@@ -4488,7 +4487,7 @@ mod tests {
         ));
     }
 
-    /// T8: the AM10 resolution indicator rides along on every valid level.
+    /// the AM10 resolution indicator rides along on every valid level.
     #[test]
     fn t08_verdict_carries_the_p95_bucket_width() {
         let v = evaluate_level(&base_sample(10)).expect("consistent bounds");
@@ -4498,7 +4497,7 @@ mod tests {
         ));
     }
 
-    /// T8 TEETH: an `AboveTop` whose top finite bound is at or OVER the budget
+    /// TEETH: an `AboveTop` whose top finite bound is at or OVER the budget
     /// is a real, decidable measurement — the level stays VALID so it can be
     /// reported as the breaking point.
     ///
@@ -4567,7 +4566,7 @@ mod tests {
         assert_eq!(v.invalid_reason.as_deref(), Some("no_load_reached"));
     }
 
-    /// T8 + AM6 TEETH: growth that exists only because the discarded warm-up
+    /// TEETH: growth that exists only because the discarded warm-up
     /// reading was counted must NOT be reported. Raw `[1, 2, 3]` looks like
     /// divergence; the usable window is `[2, 3]` — too few readings to judge.
     ///
@@ -4612,7 +4611,7 @@ mod tests {
         );
     }
 
-    /// T8 + AM14: an `le` set that changes mid-level is a TOOL error, surfaced
+    /// an `le` set that changes mid-level is a TOOL error, surfaced
     /// as `Err` rather than folded into a level verdict.
     #[test]
     fn t08_changed_bounds_mid_level_is_an_error_not_a_verdict() {
@@ -4698,7 +4697,7 @@ mod tests {
         }
     }
 
-    /// T9: the top-level key ORDER is fixed. A stable order is what makes two
+    /// the top-level key ORDER is fixed. A stable order is what makes two
     /// runs diffable and the G11 A/B comparable.
     #[test]
     fn t09_top_level_key_order_is_exact() {
@@ -4706,7 +4705,7 @@ mod tests {
         assert_eq!(object_keys(&report, 0), TOP_KEYS.to_vec());
     }
 
-    /// T9: the per-level key order is fixed too.
+    /// the per-level key order is fixed too.
     #[test]
     fn t09_level_key_order_is_exact() {
         let report = render_report(&run_fixture("T-9", vec![base_sample(5)]));
@@ -4716,7 +4715,7 @@ mod tests {
         assert_eq!(object_keys(&report, at), LEVEL_KEYS.to_vec());
     }
 
-    /// T9: the fixed header values, including the `"transport":"ws"` literal
+    /// the fixed header values, including the `"transport":"ws"` literal
     /// (AM25 — there is no other transport to report).
     #[test]
     fn t09_fixed_header_values() {
@@ -4754,7 +4753,7 @@ mod tests {
         );
     }
 
-    /// T9: run_id escaping — quote, backslash, and control characters. The
+    /// run_id escaping — quote, backslash, and control characters. The
     /// run_id is operator-supplied free text and is the ONLY unconstrained
     /// string in the report.
     #[test]
@@ -4776,7 +4775,7 @@ mod tests {
         );
     }
 
-    /// T9: `json_escape` unit vectors.
+    /// `json_escape` unit vectors.
     #[test]
     fn t09_json_escape_vectors() {
         assert_eq!(json_escape("plain"), "plain");
@@ -4790,7 +4789,7 @@ mod tests {
         assert_eq!(json_escape("Poké"), "Poké", "non-ASCII passes through");
     }
 
-    /// T9: non-finite floats render as `null`, never as the invalid JSON token
+    /// non-finite floats render as `null`, never as the invalid JSON token
     /// `inf` or `NaN` (a `+Inf` bucket width is a real possibility).
     #[test]
     fn t09_json_number_renders_non_finite_as_null() {
@@ -4802,7 +4801,7 @@ mod tests {
         assert_eq!(json_number(f64::NAN), "null");
     }
 
-    /// T9: with no crossing, `breaking_point` is literal `null` and
+    /// with no crossing, `breaking_point` is literal `null` and
     /// `not_reached` is `true` — the legitimate dev-box outcome, reported as
     /// such rather than massaged into a number.
     #[test]
@@ -4812,7 +4811,7 @@ mod tests {
         assert!(report.contains("\"not_reached\":true"));
     }
 
-    /// T9: with a crossing, the object form carries the concurrency and reason,
+    /// with a crossing, the object form carries the concurrency and reason,
     /// and `not_reached` flips. The renderer derives this from the SAME state
     /// machine the verdicts came from, so the two can never disagree.
     #[test]
@@ -4835,7 +4834,7 @@ mod tests {
         assert!(report.contains("\"not_reached\":false"));
     }
 
-    /// T9: level payload values — the raw queue series, the counts, and the
+    /// level payload values — the raw queue series, the counts, and the
     /// validity fields all reach the report.
     #[test]
     fn t09_level_payload_carries_the_raw_series_and_counters() {
@@ -4856,7 +4855,7 @@ mod tests {
         assert!(report.contains("\"queue_growth\":[]"));
     }
 
-    /// T9: an invalid level renders its reason as a STRING, not `null`.
+    /// an invalid level renders its reason as a STRING, not `null`.
     #[test]
     fn t09_invalid_reason_renders_as_a_string() {
         let broken = LevelSample {
@@ -4868,14 +4867,14 @@ mod tests {
         assert!(report.contains("\"invalid_reason\":\"join_failed\""));
     }
 
-    /// T9: run-level notes are emitted (the AM4 co-location caveat is one).
+    /// run-level notes are emitted (the AM4 co-location caveat is one).
     #[test]
     fn t09_run_notes_are_emitted() {
         let report = render_report(&run_fixture("T-9", vec![base_sample(5)]));
         assert!(report.contains(&format!("\"notes\":[\"{CO_LOCATION_NOTE}\"]")));
     }
 
-    /// T9: every level appears, in ramp order.
+    /// every level appears, in ramp order.
     #[test]
     fn t09_every_level_is_reported_in_order() {
         let report = render_report(&run_fixture(
@@ -4892,7 +4891,7 @@ mod tests {
     // T10 — the budget constant IS game_core::STEP_MS.
     // =======================================================================
 
-    /// T10: the driver's budget is the imported `STEP_MS` (ADR-0003 SSOT), not
+    /// the driver's budget is the imported `STEP_MS` (ADR-0003 SSOT), not
     /// a re-spelled literal that could silently drift from the tick cadence.
     #[test]
     fn t10_budget_is_game_core_step_ms() {
@@ -4904,7 +4903,7 @@ mod tests {
         assert!(close(BUDGET_S, game_core::STEP_MS as f64 / 1000.0));
     }
 
-    /// T10: the budget is what the comparator actually uses — a constant nobody
+    /// the budget is what the comparator actually uses — a constant nobody
     /// reads would be a decoration, not an SSOT.
     #[test]
     fn t10_the_comparator_uses_the_step_ms_budget() {
@@ -4918,7 +4917,7 @@ mod tests {
     // T11 — ramp planning (seeded deterministic property loop, 256 cases).
     // =======================================================================
 
-    /// T11: the documented default ramp and the G11 single-level shape.
+    /// the documented default ramp and the G11 single-level shape.
     #[test]
     fn t11_ramp_levels_known_vectors() {
         assert_eq!(
@@ -4939,7 +4938,7 @@ mod tests {
         assert_eq!(ramp_levels(1, 1, 3), vec![1, 2, 3]);
     }
 
-    /// T11: 256 deterministic seeded cases. Every invariant is asserted in a
+    /// 256 deterministic seeded cases. Every invariant is asserted in a
     /// block body so a failure names the case.
     #[test]
     fn t11_ramp_levels_seeded_property_loop() {
@@ -4982,7 +4981,7 @@ mod tests {
         }
     }
 
-    /// T11: the planner is referentially deterministic.
+    /// the planner is referentially deterministic.
     #[test]
     fn t11_ramp_levels_is_deterministic() {
         assert_eq!(ramp_levels(3, 7, 40), ramp_levels(3, 7, 40));
@@ -4992,7 +4991,7 @@ mod tests {
     // T12 — the bot model: names, seqs, and the East/West walk.
     // =======================================================================
 
-    /// T12 + AM15: generated names stay far inside
+    /// generated names stay far inside
     /// `server-module/src/guards.rs::validate_name` — alphanumeric + space only,
     /// NFC-stable ASCII, trimmed, and ≤ 12 chars over the whole client range.
     /// (MAX_NAME_LEN there is 24; the charset allowlist is letters/numbers/space.)
@@ -5013,14 +5012,14 @@ mod tests {
         }
     }
 
-    /// T12: names are distinct per client (each bot is its own player).
+    /// names are distinct per client (each bot is its own player).
     #[test]
     fn t12_bot_names_are_distinct() {
         let set: std::collections::BTreeSet<String> = (0..1000u32).map(bot_name).collect();
         assert_eq!(set.len(), 1000, "bot names collide across clients");
     }
 
-    /// T12: the exact name shape, pinned so the T17 envelope fixture and the
+    /// the exact name shape, pinned so the T17 envelope fixture and the
     /// live-verified wire string cannot drift apart.
     #[test]
     fn t12_bot_name_shape_is_pinned() {
@@ -5029,7 +5028,7 @@ mod tests {
         assert_eq!(bot_name(499), "LoadBot 499");
     }
 
-    /// T12: `seq` starts at 1 and is strictly increasing — the server rejects
+    /// `seq` starts at 1 and is strictly increasing — the server rejects
     /// `seq <= last_input_seq`, so a 0-based or repeating seq would turn every
     /// intent into a "stale seq" rejection and fake a saturated server.
     #[test]
@@ -5046,7 +5045,7 @@ mod tests {
         }
     }
 
-    /// T12: the walk alphabet is East/West ONLY. A North or South intent would
+    /// the walk alphabet is East/West ONLY. A North or South intent would
     /// step the bot off row 1 and onto tall grass, where a wild encounter
     /// battle-locks it forever and silently kills the offered load.
     #[test]
@@ -5065,7 +5064,7 @@ mod tests {
         }
     }
 
-    /// T12: the walk OSCILLATES — within any window of 32 consecutive intents a
+    /// the walk OSCILLATES — within any window of 32 consecutive intents a
     /// client emits both directions. Kills a one-way walker that pins itself
     /// against the wall and stops generating position updates (which would
     /// silently zero the subscription fan-out this test exists to create).
@@ -5091,7 +5090,7 @@ mod tests {
         }
     }
 
-    /// T12: the walk is a pure function of (client, seq, seed) — a run replays
+    /// the walk is a pure function of (client, seq, seed) — a run replays
     /// identically, and two clients are not forced into lockstep.
     #[test]
     fn t12_walk_is_deterministic_per_client_and_seed() {
@@ -5127,7 +5126,7 @@ mod tests {
         }
     }
 
-    /// T13: ≥200 generated intents per client, fed through the REAL rule on the
+    /// ≥200 generated intents per client, fed through the REAL rule on the
     /// REAL map, never land on tall grass and never leave row 1.
     ///
     /// Kills: any walk that emits North/South (row 2 of zone 0 is `#.~~....~#`,
@@ -5170,7 +5169,7 @@ mod tests {
         }
     }
 
-    /// T13 PROOF-OF-TEETH: the oracle CAN fail. Two steps off the generated
+    /// PROOF-OF-TEETH: the oracle CAN fail. Two steps off the generated
     /// alphabet — South then East — reach a grass tile on the real map, so the
     /// assertion above is not vacuous.
     #[test]
@@ -5192,7 +5191,7 @@ mod tests {
         );
     }
 
-    /// T13: row 1 of the real map is entirely grass-free and walkable from x=1
+    /// row 1 of the real map is entirely grass-free and walkable from x=1
     /// to x=8, with walls at both ends. This is the single map fact the bot
     /// model depends on; if content drifts, this fails before the walk test.
     #[test]
@@ -5244,7 +5243,7 @@ mod tests {
         f
     }
 
-    /// T14: RFC 4648 base64 vectors.
+    /// RFC 4648 base64 vectors.
     #[test]
     fn t14_b64_encode_known_vectors() {
         assert_eq!(b64_encode(b""), "");
@@ -5258,7 +5257,7 @@ mod tests {
         assert_eq!(b64_encode(&[0xFF, 0xFF, 0xFF]), "////");
     }
 
-    /// T14: the `Sec-WebSocket-Key` is 16 seeded bytes ⇒ 24 base64 chars ending
+    /// the `Sec-WebSocket-Key` is 16 seeded bytes ⇒ 24 base64 chars ending
     /// `==`, deterministic per seed, and not a constant across seeds.
     #[test]
     fn t14_ws_key_shape_and_seeding() {
@@ -5279,7 +5278,7 @@ mod tests {
         );
     }
 
-    /// T14: masks are seeded and vary per frame — a constant mask (or an
+    /// masks are seeded and vary per frame — a constant mask (or an
     /// all-zero one) would leave the payload in plaintext on the wire.
     #[test]
     fn t14_masks_are_seeded_and_vary_per_frame() {
@@ -5293,7 +5292,7 @@ mod tests {
         );
     }
 
-    /// T14: masking is an involution — the same XOR restores the bytes. This is
+    /// masking is an involution — the same XOR restores the bytes. This is
     /// exactly how the reader would unmask, and it pins the 4-byte cycle.
     #[test]
     fn t14_masking_twice_is_the_identity() {
@@ -5305,7 +5304,7 @@ mod tests {
         assert_eq!(buf, original, "unmasking must restore the payload exactly");
     }
 
-    /// T14: the 7-bit length form with an EMPTY payload — the smallest legal
+    /// the 7-bit length form with an EMPTY payload — the smallest legal
     /// client frame is exactly 6 bytes.
     #[test]
     fn t14_text_frame_zero_length_uses_the_7bit_form() {
@@ -5313,7 +5312,7 @@ mod tests {
         assert_eq!(f, vec![0x81, 0x80, 0x01, 0x02, 0x03, 0x04]);
     }
 
-    /// T14: 125 bytes is the LAST 7-bit length. Kills an off-by-one that
+    /// 125 bytes is the LAST 7-bit length. Kills an off-by-one that
     /// switches to the 16-bit form one byte early.
     #[test]
     fn t14_text_frame_125_bytes_is_the_last_7bit_length() {
@@ -5325,7 +5324,7 @@ mod tests {
         assert_eq!(unmask_payload(&f, 6, M), payload.as_bytes());
     }
 
-    /// T14: 126 bytes is the FIRST 16-bit length (`0x7E` + two big-endian bytes).
+    /// 126 bytes is the FIRST 16-bit length (`0x7E` + two big-endian bytes).
     #[test]
     fn t14_text_frame_126_bytes_switches_to_the_16bit_form() {
         let payload = "a".repeat(126);
@@ -5335,7 +5334,7 @@ mod tests {
         assert_eq!(unmask_payload(&f, 8, M), payload.as_bytes());
     }
 
-    /// T14: 65535 bytes is the LAST 16-bit length.
+    /// 65535 bytes is the LAST 16-bit length.
     #[test]
     fn t14_text_frame_65535_bytes_is_the_last_16bit_length() {
         let payload = "a".repeat(65535);
@@ -5344,7 +5343,7 @@ mod tests {
         assert_eq!(f.len(), 2 + 2 + 4 + 65535);
     }
 
-    /// T14: 65536 bytes is the FIRST 64-bit length (`0x7F` + eight big-endian
+    /// 65536 bytes is the FIRST 64-bit length (`0x7F` + eight big-endian
     /// bytes). Kills a 16-bit truncation that would silently corrupt the stream.
     #[test]
     fn t14_text_frame_65536_bytes_switches_to_the_64bit_form() {
@@ -5369,7 +5368,7 @@ mod tests {
         assert_eq!(unmask_payload(&f, 14, M), payload.as_bytes());
     }
 
-    /// T14: every client→server frame is MASKED and the payload is not sent in
+    /// every client→server frame is MASKED and the payload is not sent in
     /// the clear. A server closes the connection on an unmasked client frame.
     #[test]
     fn t14_client_frames_are_masked_not_plaintext() {
@@ -5385,7 +5384,7 @@ mod tests {
         assert_eq!(unmask_payload(&f, 6, M), payload.as_bytes());
     }
 
-    /// T14: pong echoes the ping payload; close is a bare masked control frame.
+    /// pong echoes the ping payload; close is a bare masked control frame.
     #[test]
     fn t14_pong_and_close_frames() {
         let pong = encode_pong(&[0xDE, 0xAD], M);
@@ -5396,7 +5395,7 @@ mod tests {
         assert_eq!(close, vec![0x88, 0x80, 0x01, 0x02, 0x03, 0x04]);
     }
 
-    /// T14: a complete 7-bit header parses, reporting its own length so the
+    /// a complete 7-bit header parses, reporting its own length so the
     /// caller knows where the payload starts.
     #[test]
     fn t14_parse_header_7bit() {
@@ -5415,7 +5414,7 @@ mod tests {
         );
     }
 
-    /// T14: the 16-bit and 64-bit forms, and a non-FIN continuation.
+    /// the 16-bit and 64-bit forms, and a non-FIN continuation.
     #[test]
     fn t14_parse_header_extended_lengths() {
         let h = parse_frame_header(&[0x81, 0x7E, 0x01, 0x00])
@@ -5436,7 +5435,7 @@ mod tests {
         assert_eq!(h.opcode, 1);
     }
 
-    /// T14: truncated input is "need more bytes", NEVER an error and never a
+    /// truncated input is "need more bytes", NEVER an error and never a
     /// guess — a mis-parse here desynchronises the whole stream.
     #[test]
     fn t14_parse_header_needs_more_bytes() {
@@ -5459,7 +5458,7 @@ mod tests {
         );
     }
 
-    /// T14: a masked header reports the mask bytes in its length.
+    /// a masked header reports the mask bytes in its length.
     #[test]
     fn t14_parse_header_masked_includes_the_mask_bytes() {
         let h = parse_frame_header(&[0x81, 0x85, 0x01, 0x02, 0x03, 0x04])
@@ -5470,14 +5469,14 @@ mod tests {
         assert_eq!(h.header_len, 6, "2 header + 4 mask bytes");
     }
 
-    /// T14: a 64-bit length with the high bit set is illegal (RFC 6455 §5.2).
+    /// a 64-bit length with the high bit set is illegal (RFC 6455 §5.2).
     /// Fail loud rather than allocate a nonsense skip counter.
     #[test]
     fn t14_parse_header_rejects_illegal_64bit_length() {
         assert!(parse_frame_header(&[0x82, 0x7F, 0x80, 0, 0, 0, 0, 0, 0, 0]).is_err());
     }
 
-    /// T14 + AM2: a header SPLIT across two reads resumes on the next feed —
+    /// a header SPLIT across two reads resumes on the next feed —
     /// the buffer survives, nothing is dropped.
     #[test]
     fn t14_drain_resumes_a_header_split_across_feeds() {
@@ -5497,7 +5496,7 @@ mod tests {
         );
     }
 
-    /// T14 + AM2: the skip counter RESUMES across feeds — this is the whole
+    /// the skip counter RESUMES across feeds — this is the whole
     /// point of the streaming reader (no reassembly, no unbounded buffer).
     #[test]
     fn t14_drain_skip_counter_resumes_across_three_feeds() {
@@ -5521,7 +5520,7 @@ mod tests {
         );
     }
 
-    /// T14 + AM2: a control frame interleaved BETWEEN data fragments is
+    /// a control frame interleaved BETWEEN data fragments is
     /// surfaced for a pong while the data stream keeps being skipped. Kills a
     /// reader that treats every frame as data and silently stops answering
     /// pings (the server then closes the connection mid-level).
@@ -5545,7 +5544,7 @@ mod tests {
         assert!(st.buf.is_empty());
     }
 
-    /// T14 + AM2: a control frame split across feeds is NOT surfaced until it is
+    /// a control frame split across feeds is NOT surfaced until it is
     /// complete — answering a truncated ping would send garbage.
     #[test]
     fn t14_drain_waits_for_a_complete_control_frame() {
@@ -5560,7 +5559,7 @@ mod tests {
         assert_eq!(b.control, vec![ControlFrame::Ping(b"ABCD".to_vec())]);
     }
 
-    /// T14 + AM2: a close frame is surfaced and flagged.
+    /// a close frame is surfaced and flagged.
     #[test]
     fn t14_drain_surfaces_close() {
         let mut st = DrainState::default();
@@ -5569,7 +5568,7 @@ mod tests {
         assert!(out.closed, "the caller must stop using this socket");
     }
 
-    /// T14 + AM2: a zero-length data frame counts immediately (no payload to
+    /// a zero-length data frame counts immediately (no payload to
     /// wait for) — kills a machine that stalls on `skip_remaining == 0`.
     #[test]
     fn t14_drain_counts_a_zero_length_data_frame() {
@@ -5579,7 +5578,7 @@ mod tests {
         assert_eq!(st.skip_remaining, 0);
     }
 
-    /// T14 + AM2: many frames in ONE feed are all drained (the per-iteration
+    /// many frames in ONE feed are all drained (the per-iteration
     /// drain runs until the socket would block).
     #[test]
     fn t14_drain_handles_many_frames_in_one_feed() {
@@ -5593,7 +5592,7 @@ mod tests {
         assert!(st.buf.is_empty());
     }
 
-    /// T14 + AM2: protocol violations fail loud rather than desynchronise.
+    /// protocol violations fail loud rather than desynchronise.
     #[test]
     fn t14_drain_fails_loud_on_protocol_violations() {
         let mut st = DrainState::default();
@@ -5623,7 +5622,7 @@ mod tests {
         )
     }
 
-    /// T15: the request line names the live subscribe path.
+    /// the request line names the live subscribe path.
     #[test]
     fn t15_handshake_request_line() {
         let req = handshake_fixture();
@@ -5634,7 +5633,7 @@ mod tests {
         assert_eq!(ws_path("mr-scratch"), "/v1/database/mr-scratch/subscribe");
     }
 
-    /// T15: every header RFC 6455 and this host require.
+    /// every header RFC 6455 and this host require.
     #[test]
     fn t15_handshake_carries_every_required_header() {
         let req = handshake_fixture();
@@ -5680,7 +5679,7 @@ mod tests {
         assert!(!request_line.contains("token"), "no ?token= auth");
     }
 
-    /// T15: only a real `101` counts. `HTTP/1.1 1011` must NOT — that kills a
+    /// only a real `101` counts. `HTTP/1.1 1011` must NOT — that kills a
     /// `starts_with("HTTP/1.1 101")` check, which would accept a bogus status
     /// and then read garbage as frames.
     #[test]
@@ -5699,7 +5698,7 @@ mod tests {
         assert!(!handshake_is_101(""));
     }
 
-    /// T15: HTTP request builders — `Content-Length` is the BYTE length (kills
+    /// HTTP request builders — `Content-Length` is the BYTE length (kills
     /// a `chars().count()`), and no token means no Authorization header at all.
     #[test]
     fn t15_http_request_builders() {
@@ -5726,7 +5725,7 @@ mod tests {
         assert!(get.ends_with("\r\n\r\n"));
     }
 
-    /// T15: status extraction, including the live 530 reducer-error code.
+    /// status extraction, including the live 530 reducer-error code.
     #[test]
     fn t15_http_status_extraction() {
         assert_eq!(http_status("HTTP/1.1 200 OK\r\n\r\n"), Ok(200));
@@ -5753,7 +5752,7 @@ mod tests {
     // block the PR where a local `just ci` cannot see it.
     // =======================================================================
 
-    /// T16: the live `POST /v1/identity` response shape.
+    /// the live `POST /v1/identity` response shape.
     #[test]
     fn t16_extract_identity_and_token_happy_path() {
         let body = r#"{"identity":"c200deadbeef","token":"TOKEN-PLACEHOLDER-abc123"}"#;
@@ -5767,7 +5766,7 @@ mod tests {
         );
     }
 
-    /// T16: the NESTED `__identity__` form from `GET /v1/database/<name>` —
+    /// the NESTED `__identity__` form from `GET /v1/database/<name>` —
     /// extraction must reach into a nested object, not only the top level.
     #[test]
     fn t16_extract_nested_identity_field() {
@@ -5783,7 +5782,7 @@ mod tests {
         );
     }
 
-    /// T16 DECOY: the word `token` appears inside ANOTHER field's value. A
+    /// DECOY: the word `token` appears inside ANOTHER field's value. A
     /// naive substring search finds the decoy first and returns the wrong value
     /// (or garbage).
     #[test]
@@ -5795,7 +5794,7 @@ mod tests {
         );
     }
 
-    /// T16 DECOY, sharper: a KEY-SHAPED substring (quoted, colon-suffixed) sits
+    /// DECOY, sharper: a KEY-SHAPED substring (quoted, colon-suffixed) sits
     /// inside another field's value. Only a string-aware scanner survives this;
     /// a `find("\"token\":")` implementation extracts ` inside` or errors.
     #[test]
@@ -5808,7 +5807,7 @@ mod tests {
         );
     }
 
-    /// T16: the returned value is UNESCAPED.
+    /// the returned value is UNESCAPED.
     #[test]
     fn t16_value_escapes_are_decoded() {
         assert_eq!(
@@ -5826,7 +5825,7 @@ mod tests {
         );
     }
 
-    /// T16: failures are LOUD — a missing key, a non-string value, and a
+    /// failures are LOUD — a missing key, a non-string value, and a
     /// truncated document must never yield an empty string.
     #[test]
     fn t16_extraction_failures_are_loud() {
@@ -5847,7 +5846,7 @@ mod tests {
     // T17 — the client-message envelopes, byte-for-byte as live-verified.
     // =======================================================================
 
-    /// T17: the `Subscribe` envelope, exactly as accepted by the live host.
+    /// the `Subscribe` envelope, exactly as accepted by the live host.
     #[test]
     fn t17_subscribe_envelope_is_byte_exact() {
         assert_eq!(
@@ -5856,7 +5855,7 @@ mod tests {
         );
     }
 
-    /// T17: the `join_game` call, including the crucial detail that `args` is a
+    /// the `join_game` call, including the crucial detail that `args` is a
     /// JSON **string** containing the args array — not a raw array — and that
     /// `flags` is the number 0.
     #[test]
@@ -5868,7 +5867,7 @@ mod tests {
         );
     }
 
-    /// T17: the `enqueue_move` call with a `MoveInput` and a seq.
+    /// the `enqueue_move` call with a `MoveInput` and a seq.
     #[test]
     fn t17_enqueue_move_call_reducer_envelope_is_byte_exact() {
         let args = args_enqueue_move(MoveInput::Step(Direction::East), 7);
@@ -5879,7 +5878,7 @@ mod tests {
         );
     }
 
-    /// T17: the SATS-JSON encoding of every `MoveInput` — externally tagged,
+    /// the SATS-JSON encoding of every `MoveInput` — externally tagged,
     /// with `[]` for the unit payload. Decode-verified against the live module
     /// (the bot moved (1,1)→(2,1) under `movement_tick`).
     #[test]
@@ -5903,7 +5902,7 @@ mod tests {
         assert_eq!(sats_move_input(MoveInput::Jump), r#"{"Jump":[]}"#);
     }
 
-    /// T17: the direction names are exact and distinct — a swapped pair would
+    /// the direction names are exact and distinct — a swapped pair would
     /// send bots north into grass while every local test still passed.
     #[test]
     fn t17_direction_names_are_exact() {
@@ -5913,7 +5912,7 @@ mod tests {
         assert_eq!(sats_direction(Direction::West), "West");
     }
 
-    /// T17: a name needing escapes still produces a valid nested-string
+    /// a name needing escapes still produces a valid nested-string
     /// envelope (the driver's own names never do, but the builder must not be
     /// the place that breaks).
     #[test]
@@ -5925,7 +5924,7 @@ mod tests {
         );
     }
 
-    /// T17: the envelope a real client sends for its first two messages, in
+    /// the envelope a real client sends for its first two messages, in
     /// order, using the driver's own bot name — proving the pieces compose.
     #[test]
     fn t17_per_connection_message_sequence() {
@@ -5942,7 +5941,7 @@ mod tests {
     // T18 — determinism: identical inputs render byte-identical reports.
     // =======================================================================
 
-    /// T18: rendering the SAME run twice is byte-identical. Any set/map
+    /// rendering the SAME run twice is byte-identical. Any set/map
     /// iteration order leaking into the output would break this.
     #[test]
     fn t18_rendering_the_same_run_twice_is_byte_identical() {
@@ -5953,7 +5952,7 @@ mod tests {
         assert_eq!(render_report(&run), render_report(&run));
     }
 
-    /// T18: two INDEPENDENTLY built but equal runs render identically — this is
+    /// two INDEPENDENTLY built but equal runs render identically — this is
     /// what makes a G11 pairing-on / pairing-off A/B comparable at all.
     #[test]
     fn t18_independently_built_equal_runs_render_identically() {
@@ -5963,7 +5962,7 @@ mod tests {
         assert_eq!(render_report(&a), render_report(&b));
     }
 
-    /// T18: the verdict machine is referentially transparent too.
+    /// the verdict machine is referentially transparent too.
     #[test]
     fn t18_level_evaluation_is_deterministic() {
         let s = base_sample(25);
@@ -5973,7 +5972,7 @@ mod tests {
         );
     }
 
-    /// T18: a report with a breaking point is stable as well (the state machine
+    /// a report with a breaking point is stable as well (the state machine
     /// runs inside the renderer).
     #[test]
     fn t18_breaching_report_is_stable() {
@@ -6053,37 +6052,19 @@ mod tests {
 }
 
 // ===========================================================================
-// rb-71 -- docs/m8.5c-plan.md <-> AGENTS.md citation correspondence oracle.
+// docs/m8.5c-plan.md <-> AGENTS.md citation correspondence oracle.
 // ===========================================================================
 //
-// WHY THIS LIVES HERE (not a new eval, not a new bin, not the frozen `mod
-// tests` above): ADR-0224 bars a new `evals/*.eval.mjs` and bars growing an
-// existing one; a new `.mjs` test file is not auto-discovered by `just test`
-// (it enumerates exactly two files) and wiring one in needs `justfile`,
-// which sits outside this slice's `touches:` (a hidden-dependency STOP); a
-// new file under `sim-harness/src/bin/` becomes another cargo bin target;
-// and the `mod tests` module above this one is tester-frozen by its own
-// banner ("The implementer NEVER edits this module") -- so a SEPARATE
-// module, appended at EOF, changing nothing above it (`docs/adr/0232-*.md:51`
-// cites this file's `:76-89`; an EOF append shifts nothing).
-//
-// Disclosed residual (harness ledger R-rb71-TESTHOME): a docs-correspondence
-// test living in a load-driver binary is not this test's natural home; a
-// future slice that brings `justfile` into `touches:` should relocate it to
-// a `scripts/*.test.mjs` wired into `just test`.
-//
-// THE DEFECT THIS PROVES (measured, not the promoted-residual text -- see
-// `memory/projects/monster-realm-rb-71-plan.md` F1-F9 in the harness repo):
+// THE DEFECT THIS PROVES:
 // `docs/m8.5c-plan.md:85` cites `AGENTS.md:8` for AGENTS.md's `- **Done =**`
 // bullet. The citation was correct when written (commit 9c8521a); commit
-// 3c94216 (ADR-0197) inserted a bullet at AGENTS.md line 7, and the `- **Done
-// =**` bullet has sat at **line 9** ever since. `AGENTS.md:7` -- the text the
-// promoted residual claims is correct -- is WRONG: it is the ADR-0197
-// bullet, not `Done =`. Fixing the number is not enough on its own: Decision
-// 1 of the rb-71 plan requires the citation to carry the `**Done =**`
-// LANDMARK alongside the number, and a shipped tooth to RE-DERIVE the number
-// from that landmark at test time, so the citation can never again drift
-// silently -- it REDs instead.
+// 3c94216 inserted a bullet at AGENTS.md line 7, and the `- **Done
+// =**` bullet has sat at **line 9** ever since. `AGENTS.md:7`
+// is WRONG: it is the ADR-0197 bullet, not `Done =`. Fixing the number is not
+// enough on its own: Decision 1 of the rb-71 plan requires the citation to
+// carry the `**Done =**` LANDMARK alongside the number, and a shipped tooth
+// to RE-DERIVE the number from that landmark at test time, so the citation
+// can never again drift silently -- it REDs instead.
 //
 // HARD PINS (a mutation-proof gate depends on these literally):
 //   - `rb71_violations`'s local accumulator is named `found`, declared
@@ -6119,7 +6100,7 @@ mod rb71_doc_citation_tests {
     /// whose start position falls inside any of these ranges is excluded
     /// from the census below -- both render invisibly (or as unrelated
     /// example code) to a human reader, yet are plain bytes to a byte-level
-    /// scanner (rb-71 red-team C2/C3).
+    /// scanner.
     ///
     /// Honest limit, disclosed: a plain single-backtick INLINE code span
     /// that tightly wraps nothing but the citation (`` `AGENTS.md:9` ``) is
@@ -6250,7 +6231,7 @@ mod rb71_doc_citation_tests {
     /// text)` of the block running from that line's start up to (excluding)
     /// the next line starting with `- **` or `## ` (or EOF). Deliberately
     /// plural and byte-ranged rather than "the first match" -- a decoy
-    /// landmark planted elsewhere in the doc (rb-71 red-team C1) must be
+    /// landmark planted elsewhere in the doc must be
     /// COUNTED, not silently shadowed by `.position()` picking the first
     /// hit, and callers need byte ranges to test citation LOCALITY, not
     /// just block text.
@@ -6290,7 +6271,7 @@ mod rb71_doc_citation_tests {
     /// runs regardless of whether an earlier leg found a violation, and any
     /// violation found is APPENDED to `found` -- never returned early --
     /// so one RED lists every broken clause, and no leg is shadowed by an
-    /// earlier failure (the rb-67/rb-68 precedent).
+    /// earlier failure.
     fn rb71_violations(plan_md: &str, agents_md: &str) -> Vec<String> {
         let mut found: Vec<String> = Vec::new();
         // RB71-GUT-POINT
@@ -6350,7 +6331,7 @@ mod rb71_doc_citation_tests {
         // unique, the block it opens must name the `**Done =**` landmark,
         // AND that SAME block must be the one containing the single
         // accepted citation from leg B. A decoy landmark elsewhere in the
-        // doc (rb-71 red-team C1) trips the uniqueness arm below
+        // doc trips the uniqueness arm below
         // regardless of which copy happens to carry the citation or the
         // landmark; a citation present in the document but sitting outside
         // every block (C3) is rejected by the locality check even when it
@@ -6415,8 +6396,8 @@ mod rb71_doc_citation_tests {
         // `anchor_lines` above is derived by enumerating `agents_md.lines()`
         // itself, so every index it contains is, by construction, already
         // <= `agents_md.lines().count()`. A branch testing the opposite
-        // could never fire (rb-71 revision-round reviewer note); recorded
-        // here rather than shipped as unreachable code.
+        // could never fire; recorded here rather than shipped as unreachable
+        // code.
 
         found
     }
@@ -6513,13 +6494,6 @@ mod rb71_doc_citation_tests {
 
     /// docs/m8.5c-plan.md:85's `AGENTS.md:<n>` citation must resolve to the
     /// live `- **Done =**` bullet.
-    ///
-    /// RED now: the plan cites `AGENTS.md:8` (correct when m8.5c was
-    /// written); commit 3c94216 (ADR-0197) inserted a bullet at line 7 and
-    /// the `Done =` bullet has sat at line 9 ever since. Expect
-    /// `[cite/line-mismatch]` (and, until the landmark itself is added
-    /// alongside the number, `[anchor/doc-missing]` too -- this test is a
-    /// non-short-circuiting collector, so BOTH show up in one RED).
     #[test]
     fn rb71_m85c_cites_the_live_done_bullet_line() {
         let plan_md = std::fs::read_to_string(concat!(
@@ -6557,12 +6531,8 @@ mod rb71_doc_citation_tests {
     /// AGENTS.md's `just ci` line actually (mis)attributes coverage/
     /// mutation to `just ci` today.
     ///
-    /// RED now: AGENTS.md's `just ci` parenthetical is already accurate
-    /// (`(lint + typecheck + test + eval + security + client checks)` --
-    /// no coverage/mutation), but the plan's block still reads `FALSELY
-    /// claim` in the present/imperative tense, as if the correction were
-    /// still outstanding. Expect `[claim/stale-tense]`. A SEPARATE `#[test]`
-    /// from the one above so first-failure-wins cannot shadow either.
+    /// A SEPARATE `#[test]` from the one above so first-failure-wins cannot
+    /// shadow either.
     #[test]
     fn rb71_m85c_bullet_matches_the_live_ci_inventory() {
         let plan_md = std::fs::read_to_string(concat!(
@@ -6590,9 +6560,7 @@ mod rb71_doc_citation_tests {
 
     // -----------------------------------------------------------------
     // T3 -- synthetic control fixtures. Never reads the live tree, so this
-    // test is GREEN both before and after the citation fix (the rb-67
-    // `rb67p_adr0220_citation_oracle_control` precedent,
-    // server-module/src/privacy_tests.rs:10996-11208).
+    // test is GREEN both before and after the citation fix.
     // -----------------------------------------------------------------
 
     /// Roster floor: fixtures cannot be quietly deleted without this test
@@ -6728,7 +6696,7 @@ mod rb71_doc_citation_tests {
         }
 
         // 4. HARNESS REPOINT -- `../../AGENTS.md:9`, excluded by its
-        //    preceding `.` (rb-71 plan-review D2/D5).
+        //    preceding `.`.
         {
             let agents = rb71_synth_agents(Some(9), 10, clean_ci_scope);
             let plan = rb71_synth_plan(
@@ -7019,7 +6987,7 @@ mod rb71_doc_citation_tests {
     }
 }
 
-// rb-75 -- five measured `ADR next-free` non-monotone/rewrite anomalies in
+// Five measured `ADR next-free` non-monotone/rewrite anomalies in
 // ARCHITECTURE.md (R-18r-b-LOGORDER) must each carry a correct, correctly
 // placed `[rb-75: ...]` annotation explaining WHY the numeral sequence at
 // that site is not what a naive reader would expect. This module never
@@ -7114,7 +7082,7 @@ mod rb75_archlog_tests {
         /// The entry's trailing `ADR next-free` numeral: the LAST match in
         /// `text` of the literal `ADR next-free`, zero or more `*`s, `=` or
         /// `:`, whitespace, then exactly 4 digits not themselves followed by
-        /// a 5th digit (rb-75 plan note: three real entries carry the token
+        /// a 5th digit (three real entries carry the token
         /// TWICE -- a prose quote plus the real trailing note -- so "last"
         /// is load-bearing, not "first").
         numeral: Option<u32>,
@@ -7316,19 +7284,18 @@ mod rb75_archlog_tests {
     /// the whole-file roster this module's `[rb75/bracket-roster]` check
     /// counts, independent of which entry (if any) each one sits inside.
     ///
-    /// The token is matched with NO required leading byte (artifact
-    /// red-team HIGH finding: a leading-space requirement made a bracket
+    /// The token is matched with NO required leading byte (
+    /// a leading-space requirement made a bracket
     /// planted at column 0, or right after a tab, invisible to both this
     /// roster and the per-site scan -- a fabricated bracket measured
-    /// GREEN). And per RULING R-5 / artifact red-team MED finding, the
-    /// bracket's span is NOT "up to the first `]` after the token" --
-    /// that truncates on an embedded code span like `` `arr[0]` `` and
-    /// false-REDs `[rb75/bracket-placement]` on an otherwise-correct
-    /// bracket. Since R-5 already requires the closing `]` to be the LAST
-    /// byte of the line, the span is defined as token-start -> end of that
-    /// line; `close_pos` is that line's last byte position, WHATEVER byte
-    /// that is -- `rb75_bracket_placement_ok` below is what actually
-    /// checks it equals `]`.
+    /// GREEN). And per RULING R-5, the bracket's span is NOT "up to the
+    /// first `]` after the token" -- that truncates on an embedded code
+    /// span like `` `arr[0]` `` and false-REDs `[rb75/bracket-placement]`
+    /// on an otherwise-correct bracket. Since R-5 already requires the
+    /// closing `]` to be the LAST byte of the line, the span is defined as
+    /// token-start -> end of that line; `close_pos` is that line's last
+    /// byte position, WHATEVER byte that is -- `rb75_bracket_placement_ok`
+    /// below is what actually checks it equals `]`.
     fn rb75_all_brackets(lines: &Rb75Lines, hidden: &[(usize, usize)]) -> Vec<Rb75Bracket> {
         const TOKEN: &str = "[rb-75:";
         let doc = lines.doc;
@@ -7477,9 +7444,8 @@ mod rb75_archlog_tests {
     /// whose NEXT byte is not itself an ASCII digit (the same boundary
     /// technique `rb75_trailing_numeral` already uses). A plain
     /// `str::contains` lets `PR #168` be satisfied by a live `PR #1680`
-    /// substring match -- an artifact red-team HIGH finding -- so every
-    /// PR-token correspondence check below goes through this instead of
-    /// `.contains`.
+    /// substring match so every PR-token correspondence check below goes
+    /// through this instead of `.contains`.
     fn rb75_contains_token_boundary(haystack: &str, token: &str) -> bool {
         let bytes = haystack.as_bytes();
         let mut search_start = 0usize;
@@ -7592,7 +7558,7 @@ mod rb75_archlog_tests {
     /// infers at the match arms.
     #[derive(Clone, Copy)]
     enum Rb75SiteKind {
-        /// 11r-c: the header's combined-sequence position must lie strictly
+        /// The header's combined-sequence position must lie strictly
         /// between the two entries', and the site's own numeral must exceed
         /// the crossed section's.
         SectionCrossing {
@@ -7666,7 +7632,7 @@ mod rb75_archlog_tests {
     /// (synthetic fixtures drive this directly, with no filesystem access).
     /// Every leg below runs regardless of an earlier leg's outcome, and
     /// every violation found is APPENDED -- never returned early -- so one
-    /// RED lists every broken clause (the rb-67/rb-68/rb-71 precedent).
+    /// RED lists every broken clause.
     fn rb75_violations(doc: &str) -> Vec<String> {
         let mut found: Vec<String> = Vec::new();
 
@@ -7675,9 +7641,7 @@ mod rb75_archlog_tests {
         let (entries, headers) = rb75_parse_doc(&lines, &hidden);
         let all_brackets = rb75_all_brackets(&lines, &hidden);
 
-        // Whole-file roster (RULING adjudication /simplify: `bracket-foreign`
-        // was merged into per-site `bracket-missing` plus this ceiling-and-
-        // floor count).
+        // Whole-file roster ( this ceiling-and- floor count).
         if all_brackets.len() != 5 {
             found.push(format!("[rb75/bracket-roster] {} != 5", all_brackets.len()));
         }
@@ -7816,8 +7780,8 @@ mod rb75_archlog_tests {
                             // is both outside every hidden range and sits
                             // before the bracket -- a raw `.find` accepted
                             // the FIRST occurrence unconditionally, so
-                            // wrapping the clause in `<!-- -->` (artifact
-                            // red-team HIGH finding) stayed GREEN.
+                            // wrapping the clause in `<!-- -->`
+                            // stayed GREEN.
                             let mut claim_ok = false;
                             let mut search_start = 0usize;
                             while let Some(rel) = self_entry.text[search_start..].find(claim_text) {
@@ -7868,7 +7832,7 @@ mod rb75_archlog_tests {
         );
     }
 
-    /// Anti-lockstep anchor (rb-71 precedent): these thirteen numerals are
+    /// Anti-lockstep anchor: these thirteen numerals are
     /// typed ONCE by hand from the 2026-09-11 git-verified measurement in
     /// the rb-75 plan's adjudication section. They must NEVER be derived
     /// from the live document -- doing so would make this test incapable of
@@ -7958,8 +7922,8 @@ mod rb75_archlog_tests {
          was unchanged.]";
     /// Same content as `RB75_BRACKET_11RF`, plus an embedded inline code
     /// span containing a literal `]` (`` `arr[0]` ``) BEFORE the bracket's
-    /// real, end-of-line closing `]`. Positive control for the artifact
-    /// red-team MED finding: closing at the FIRST `]` after the token
+    /// real, end-of-line closing `]`. Positive control:
+    /// closing at the FIRST `]` after the token
     /// truncates here and false-REDs `[rb75/bracket-placement:11r-f]` on an
     /// otherwise-correct bracket.
     const RB75_BRACKET_11RF_CODESPAN: &str = " [rb-75: **11r-f** (= 0172) is this entry's \
