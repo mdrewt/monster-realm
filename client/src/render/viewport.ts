@@ -122,21 +122,3 @@ export function worldToScreen(
     y: (world.y - offset.y) * stageScale,
   };
 }
-
-/**
- * CSS px -> SOURCE px: the exact inverse of `worldToScreen`. Ships UNWIRED for a
- * future tap-to-move milestone (spec §uxd1 "Out of scope"). CAVEAT for that
- * caller: `screen` is relative to the CANVAS top-left, so a `PointerEvent`'s
- * `clientX/clientY` must have the canvas origin subtracted first — this function
- * does not do it.
- */
-export function screenToWorld(
-  screen: { x: number; y: number },
-  offset: { x: number; y: number },
-  stageScale: number,
-): { x: number; y: number } {
-  return {
-    x: screen.x / stageScale + offset.x,
-    y: screen.y / stageScale + offset.y,
-  };
-}

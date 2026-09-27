@@ -14,7 +14,6 @@
 
 import {
   INTERP_DELAY_STEPS,
-  INTERP_JITTER_ALPHA,
   INTERP_JITTER_COEFF,
   INTERP_MAX_DELAY_STEPS,
   INTERP_MIN_DELAY_STEPS,
@@ -84,65 +83,9 @@ export function interpolateReducedMotion(row: AuthoritativeTile): RenderPos {
 }
 
 // =============================================================================
-// ADR-0090 (M13.5e e-5): Adaptive interpolation — jitter estimator + functions
+// ADR-0090 (M13.5e e-5): Adaptive interpolation delay + history interpolation
 // Every part is commented with WHAT and WHY (Drew's rider, D-13.5-1).
 // =============================================================================
-
-/**
- * Per-character EWMA jitter estimator.
- *
- * WHAT: Tracks the exponentially-weighted moving average of absolute deviation
- * of the inter-arrival interval from the nominal server step (STEP_MS).
- *
- * WHY: Burst delivery (two server ticks arriving in one WebSocket flush) makes
- * both snapshots share the same `receivedAt`, collapsing the interpolation span
- * to zero → instant position pop. This estimator detects burst patterns so the
- * adaptive delay can widen the render window to bracket the pre-burst snapshot.
- *
- * DIVERGENCE: this class is the documentary mirror of the PRE-11r-f
- * rule and has no production caller — the shipped estimator (store.ts
- * `upsertCharacter`) additionally skips intervals > JITTER_IDLE_GAP_STEPS×stepMs
- * (idleness is not jitter). Unification/deletion is queued as D-B.
- */
-export class JitterEstimator {
-  /** Current EWMA estimate of |interval − stepMs| in milliseconds. */
-  #ewma: number;
-  readonly #alpha: number;
-
-  /**
-   * @param alpha - EWMA smoothing factor (0 < α ≤ 1). Smaller = slower reaction.
-   *   Default: INTERP_JITTER_ALPHA (0.125 ≈ 8-sample half-life).
-   *   WHY 0.125: ignores a single late packet; reacts to a sustained bursty segment.
-   */
-  constructor(alpha = INTERP_JITTER_ALPHA) {
-    this.#alpha = alpha;
-    // Init to 0: no history → assume smooth until observations arrive.
-    this.#ewma = 0;
-  }
-
-  /**
-   * Update the estimate with a new observed inter-arrival interval.
-   *
-   * WHY `intervalMs` not `arrivalTime`: pure (no Date/performance.now calls);
-   * the caller computes the delta, keeping this testable and clock-agnostic.
-   *
-   * @param intervalMs - Measured ms between this arrival and the previous one.
-   *   A burst arrival (two in one flush) presents as intervalMs ≈ 0.
-   * @param stepMs     - Nominal server step interval (the expected cadence).
-   */
-  update(intervalMs: number, stepMs: number): void {
-    // Deviation: how far this arrival was from the expected cadence.
-    // Burst (interval≈0) → deviation≈stepMs (high jitter signal).
-    // Steady (interval≈stepMs) → deviation≈0 (no jitter).
-    const deviation = Math.abs(intervalMs - stepMs);
-    this.#ewma = this.#alpha * deviation + (1 - this.#alpha) * this.#ewma;
-  }
-
-  /** Current EWMA jitter estimate in ms. Zero when smooth or no history yet. */
-  get jitterMs(): number {
-    return this.#ewma;
-  }
-}
 
 /**
  * Compute the adaptive interpolation delay (ms) from the current jitter estimate.

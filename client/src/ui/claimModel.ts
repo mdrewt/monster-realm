@@ -45,12 +45,6 @@ export function claimRejectDeletesCode(outcome: ClaimRejectOutcome): boolean {
   return outcome === 'delete-code-and-permit-join';
 }
 
-/** True iff this outcome lifts the join veto. Moves in LOCKSTEP with deletesCode: deleting without
- *  permitting leaves the tab vetoed with no code; permitting while retaining re-opens F2. */
-export function claimRejectPermitsJoin(outcome: ClaimRejectOutcome): boolean {
-  return outcome === 'delete-code-and-permit-join';
-}
-
 export type InvalidCodeSense = 'claim-already-succeeded' | 'code-unusable';
 
 /** The ONE client-side disambiguation of ERR_INVALID_CODE: if OUR OWN account row

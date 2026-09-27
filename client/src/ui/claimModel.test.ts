@@ -45,7 +45,6 @@ import {
   type ClaimModelState,
   type ClaimRejectOutcome,
   claimRejectDeletesCode,
-  claimRejectPermitsJoin,
   claimStep,
   classifyClaimReject,
   senseInvalidCode,
@@ -206,7 +205,7 @@ describe('classifyClaimReject (AUTH-54): the four-way taxonomy over the exact ac
     );
   });
 
-  it('★★ BITES: deletesCode / permitsJoin are TRUE for exactly one outcome (exhaustive over the taxonomy)', () => {
+  it('★★ BITES: deletesCode is TRUE for exactly one outcome (exhaustive over the taxonomy)', () => {
     // The taxonomy only matters through these two consequences, and they must move
     // together: a bucket that deletes the code without permitting join leaves the tab
     // vetoed with no code to complete; one that permits join while retaining the code
@@ -214,8 +213,6 @@ describe('classifyClaimReject (AUTH-54): the four-way taxonomy over the exact ac
     let deleting = 0;
     for (const outcome of CLAIM_REJECT_OUTCOMES) {
       const deletes = claimRejectDeletesCode(outcome);
-      const permits = claimRejectPermitsJoin(outcome);
-      expect(deletes, `${outcome}: delete and permit must agree`).toBe(permits);
       if (outcome === 'delete-code-and-permit-join') {
         expect(deletes, 'the one destructive bucket must actually delete').toBe(true);
         deleting += 1;
@@ -242,8 +239,9 @@ describe('classifyClaimReject (AUTH-54): the four-way taxonomy over the exact ac
         claimedFrom: undefined,
       });
       expect(step.next.outcome, message).toBe(expected);
+      // joinPermitted moves in LOCKSTEP with code deletion.
       expect(step.next.joinPermitted, `${message}: joinPermitted`).toBe(
-        claimRejectPermitsJoin(expected),
+        claimRejectDeletesCode(expected),
       );
       expect(step.next.codeRetained, `${message}: codeRetained`).toBe(
         !claimRejectDeletesCode(expected),

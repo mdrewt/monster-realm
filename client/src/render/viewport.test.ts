@@ -14,7 +14,6 @@
 //   appInitOptions(cssW, cssH, dpr, background)
 //     -> { width, height, background, antialias: false, autoDensity: true, resolution }
 //   worldToScreen(world: {x,y}, offset: {x,y}, stageScale) -> {x,y}   // SOURCE px -> CSS px
-//   screenToWorld(screen: {x,y}, offset: {x,y}, stageScale) -> {x,y}  // CSS px -> SOURCE px
 //
 // NOT tested here, deliberately (plan §3):
 //   - A8 (DOM overlay fixed positioning): uxd1 claims NO REGRESSION only; the
@@ -31,7 +30,7 @@ import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { FollowCamera } from './camera';
 import { MAX_VISIBLE_TILES, MIN_VISIBLE_TILES, TARGET_VISIBLE_TILES, TILE_PX } from './config';
-import { appInitOptions, screenToWorld, viewportScale, worldToScreen } from './viewport';
+import { appInitOptions, viewportScale, worldToScreen } from './viewport';
 
 // ---------------------------------------------------------------------------
 // Shared generators & helpers
@@ -621,61 +620,6 @@ describe('A11: sub-tile slide advances smoothly through worldToScreen', () => {
             expect(next).toBeGreaterThanOrEqual(prev);
             prev = next;
           }
-        },
-      ),
-    );
-  });
-});
-
-// ===========================================================================
-// screenToWorld — the inverse seam. Ships unwired per the slice brief
-// (spec:34, spec:55: "the screenToWorld seam ships for a future milestone to
-// consume, no listeners wired"), so its contract is proven here or nowhere.
-// ===========================================================================
-
-describe('screenToWorld: the inverse of worldToScreen', () => {
-  it('BITES: screenToWorld applies +offset (not −offset) — the CSS viewport center maps back to the map center', () => {
-    // A round-trip test ALONE cannot catch a consistently-mirrored pair: if BOTH
-    // functions flip the offset sign, `screenToWorld(worldToScreen(w))` still
-    // returns w. This absolute-direction case is what pins the sign.
-    //
-    // Reuses the A7b centered framing: 1920x1080 @dpr 1, stageScale 3, offset
-    // (-160, -68). CSS (960, 540) must map back to SOURCE (160, 112) — the
-    // center of a 10x7 map.
-    // Kills: `p.x / s - off.x` (returns 480) and `(p.x - off.x) / s` (returns
-    // 373.33) — both of which round-trip perfectly with a matching worldToScreen
-    // bug and would ship a future tap-to-move that targets the wrong tile.
-    const back = screenToWorld({ x: 960, y: 540 }, { x: -160, y: -68 }, 3);
-    expect(back.x).toBeCloseTo(160, 9);
-    expect(back.y).toBeCloseTo(112, 9);
-
-    // Kills: a screenToWorld that MULTIPLIES by stageScale instead of dividing
-    // (the CSS->SOURCE direction shrinks; 48 CSS px at stageScale 3 is 16 SOURCE
-    // px, i.e. half a tile — not 144).
-    expect(screenToWorld({ x: 48, y: 0 }, { x: 0, y: 0 }, 3).x).toBeCloseTo(16, 9);
-  });
-
-  it('BITES: property — screenToWorld ∘ worldToScreen round-trips within 1e-6 for bounded world/offset', () => {
-    // |world| and |offset| are BOTH bounded to 1e4: real offsets are at most
-    // mapPx (~640 SOURCE px today) and an unbounded offset generator pushes the
-    // accumulated round-trip error to ~1.8e-4 at |offset| = 1e12, past a
-    // toBeCloseTo(…, 6) budget — a false RED on a CORRECT implementation.
-    // Kills: an asymmetric pair (e.g. worldToScreen subtracts the offset BEFORE
-    // scaling while screenToWorld subtracts it AFTER); kills a dropped `+ off`
-    // in one direction only; kills a y-axis that copies the x formula's offset.
-    fc.assert(
-      fc.property(
-        fc.double({ min: -1e4, max: 1e4, noNaN: true }),
-        fc.double({ min: -1e4, max: 1e4, noNaN: true }),
-        fc.double({ min: -1e4, max: 1e4, noNaN: true }),
-        fc.double({ min: -1e4, max: 1e4, noNaN: true }),
-        fc.constantFrom(...REALISTIC_STAGE_SCALES),
-        (worldX, worldY, offX, offY, stageScale) => {
-          const offset = { x: offX, y: offY };
-          const screen = worldToScreen({ x: worldX, y: worldY }, offset, stageScale);
-          const back = screenToWorld(screen, offset, stageScale);
-          expect(back.x).toBeCloseTo(worldX, 6);
-          expect(back.y).toBeCloseTo(worldY, 6);
         },
       ),
     );

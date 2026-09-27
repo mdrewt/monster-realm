@@ -169,95 +169,14 @@ describe('interpolation D1: INTERP_DELAY_STEPS=1.0 produces monotone positions u
 // =============================================================================
 // M13.5e §5 e-5: Adaptive interpolation delay
 //
-// Three new exports are required from interpolation.ts:
-//   class JitterEstimator  — EWMA jitter estimator
+// Two exports from interpolation.ts:
 //   function adaptiveInterpDelayMs(jitterMs, stepMs) — returns adaptive delay
 //   function interpolateHistory(snapshots, renderTime) — interpolates over a
 //     history array (>2 snapshots) instead of just prev+latest pair
 //
 // =============================================================================
 
-import { adaptiveInterpDelayMs, interpolateHistory, JitterEstimator } from './interpolation';
-
-// ---------------------------------------------------------------------------
-// JitterEstimator: EWMA inter-arrival jitter measurement
-//
-// The estimator tracks the average deviation of actual inter-arrival intervals
-// from the expected step interval. Steady arrivals → jitterMs near 0.
-// Burst delivery (two snaps at same timestamp) → jitterMs grows significantly.
-//
-// Constructor: new JitterEstimator(alpha: number)
-//   alpha = EWMA smoothing factor (0 < alpha ≤ 1; lower = more smoothing)
-//
-// Method: update(intervalMs: number, stepMs: number): void
-//   intervalMs = actual ms between this arrival and previous arrival
-//   stepMs = expected server tick interval
-//
-// Property: jitterMs — current EWMA estimate of |deviation| from stepMs
-// ---------------------------------------------------------------------------
-describe('JitterEstimator e-5: EWMA jitter estimation', () => {
-  it('new estimator starts at jitterMs = 0', () => {
-    // Baseline: no arrivals observed → no jitter estimated.
-    // WRONG IMPL KILLED: an impl that initialises jitterMs to some nonzero sentinel.
-    const est = new JitterEstimator(0.125);
-    expect(est.jitterMs).toBe(0);
-  });
-
-  it('steady arrivals produce near-zero jitter estimate', () => {
-    // EARS: "steady arrivals → low jitter"
-    // Feed exactly stepMs-spaced arrivals — deviation is always 0 → EWMA stays 0.
-    // WRONG IMPL KILLED: an impl that accumulates total interval time as "jitter".
-    const est = new JitterEstimator(0.125);
-    const stepMs = 200;
-    est.update(200, stepMs); // deviation = |200-200| = 0
-    est.update(200, stepMs);
-    est.update(200, stepMs);
-    est.update(200, stepMs);
-    expect(est.jitterMs).toBeCloseTo(0, 1); // within 0.1ms of 0
-  });
-
-  it('single burst delivery (interval=0) produces detectable jitter', () => {
-    // A burst: second snapshot arrived 0ms after the first (same receivedAt).
-    // Deviation = |0 - 200| = 200ms. EWMA with alpha=0.5: after 2 updates:
-    //   update(200, 200) → ewma = 0.5*|0| + 0.5*0 = 0 (first: deviation=0 for first arrival baseline)
-    //   update(0, 200) → ewma = 0.5*200 + 0.5*0 = 100ms → jitterMs > 10
-    // WRONG IMPL KILLED: an impl that uses interval directly (not deviation from stepMs),
-    // which would give jitter=0 for steady arrivals but also 0 for the burst step.
-    const est = new JitterEstimator(0.5);
-    const stepMs = 200;
-    est.update(200, stepMs); // first arrival: baseline (deviation=0 or used to seed)
-    est.update(0, stepMs); // burst: arrived 0ms after previous → deviation = 200ms
-    expect(est.jitterMs).toBeGreaterThan(10); // must detect the burst
-  });
-
-  it('high alpha converges faster than low alpha', () => {
-    // Alpha controls EWMA smoothing. High alpha (0.9) reacts to new samples more
-    // aggressively than low alpha (0.1). After one burst sample both estimates
-    // increase, but high-alpha estimate is larger.
-    // WRONG IMPL KILLED: an impl that ignores alpha and uses a fixed smoothing factor.
-    const highAlpha = new JitterEstimator(0.9);
-    const lowAlpha = new JitterEstimator(0.1);
-    const stepMs = 200;
-    // Prime both with one normal arrival
-    highAlpha.update(200, stepMs);
-    lowAlpha.update(200, stepMs);
-    // Then one burst
-    highAlpha.update(0, stepMs);
-    lowAlpha.update(0, stepMs);
-    // High alpha should react more strongly (higher jitterMs estimate)
-    expect(highAlpha.jitterMs).toBeGreaterThan(lowAlpha.jitterMs);
-  });
-
-  it('jitterMs is always non-negative', () => {
-    // Jitter is an absolute deviation — it must never go negative.
-    // WRONG IMPL KILLED: an impl that computes signed deviation (can go negative).
-    const est = new JitterEstimator(0.5);
-    est.update(200, 200);
-    est.update(100, 200); // early arrival: interval < stepMs
-    est.update(300, 200); // late arrival: interval > stepMs
-    expect(est.jitterMs).toBeGreaterThanOrEqual(0);
-  });
-});
+import { adaptiveInterpDelayMs, interpolateHistory } from './interpolation';
 
 // ---------------------------------------------------------------------------
 // adaptiveInterpDelayMs: jitter-aware delay budget
@@ -506,23 +425,6 @@ describe('e-5 adaptive scheme: monotone positions for two-tick burst (GREEN afte
     for (let i = 1; i < positions.length; i++) {
       expect(positions[i]).toBeGreaterThanOrEqual((positions[i - 1] ?? 0) - 0.01);
     }
-  });
-
-  it('JitterEstimator + adaptiveInterpDelayMs integration: burst → delay increases', () => {
-    // Full pipeline test: feed a burst into JitterEstimator, then use its estimate
-    // to compute an adaptive delay that is larger than the base stepMs.
-    // WRONG IMPL KILLED: an impl where the estimator doesn't affect the delay.
-    const stepMs = 200;
-    const est = new JitterEstimator(0.5);
-
-    // Feed a normal arrival, then a burst
-    est.update(200, stepMs); // normal
-    est.update(0, stepMs); // burst: 0ms interval → high deviation
-
-    // The adaptive delay must be greater than the base when jitter is detected
-    const delay = adaptiveInterpDelayMs(est.jitterMs, stepMs);
-    expect(est.jitterMs).toBeGreaterThan(0); // estimator detected the jitter
-    expect(delay).toBeGreaterThan(stepMs); // delay adapted upward
   });
 });
 
