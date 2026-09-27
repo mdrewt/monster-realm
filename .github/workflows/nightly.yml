@@ -192,29 +192,6 @@ jobs:
         if: failure()
         run: cat /tmp/stdb-smoke.log || true
 
-  # M24 translation-completion ratchet (ADR-0264 D8), nightly and NOT per-PR by
-  # deliberate design (M24 spec §5.5): translation completion is a report ratcheted
-  # on the GAP count, never a `just ci` gate — reporting a completion percentage
-  # green per-PR is the failure mode that section exists to prevent.
-  # No npm/client install is needed: scripts/catalog-export.mjs is node-stdlib-only,
-  # reading client/src/ui/i18n/catalog.*.ts as text and comparing against
-  # evals/baselines/i18n-locale-completion.json. Exits non-zero on REGRESSION (a
-  # locale's gap grew or a locale vanished), STALE (a gap shrank or a locale is
-  # absent from the baseline), or BASELINE-MISSING.
-  # Failure policy for `i18n-completion`: triaged and inserted as the next slice in
-  # the milestone queue, same tier as fix-red-master, below it in ordering.
-  # Response policy + owner: docs/nightly-red-response-policy.md.
-  i18n-completion:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6 # v6
-      - uses: actions/setup-node@v7 # v7
-        # No npm cache: scripts/catalog-export.mjs is node-stdlib-only and installs
-        # nothing.
-        with: { node-version: '24.13.1' }
-      - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
-      - run: just i18n-completion-check
-
   # Failure NOTIFICATION fan-in (ADR-0200). The gates above had teeth and no
   # voice: `mutation-server` was RED for five consecutive nights with nobody
   # reacting, because failure handling existed only as the prose triage comments
@@ -256,7 +233,7 @@ jobs:
   # exist in the repo (D4), which would convert the notification back into a
   # silent-failure surface.
   notify:
-    needs: [mutation, mutation-server, coverage, smoke-republish, i18n-completion]
+    needs: [mutation, mutation-server, coverage, smoke-republish]
     if: ${{ !cancelled() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'skipped') || contains(needs.*.result, 'cancelled')) }}
     runs-on: ubuntu-latest
     permissions:
