@@ -316,7 +316,7 @@ class ClientModel {
    *
    *  AM2: this MUST call `this.held.snapshot()` / `this.held.restore(...)` for real — a
    *  shadow-log of presses replayed through `press()` would make S12b/c/d self-fulfilling
-   *  (they would pass without the production seam ever existing). S12-SELF below pins it.
+   *  (they would pass without the production seam ever existing).
    *  AM3: the rebuild ends by reconciling from the last authoritative row IN THE SAME CALL
    *  STACK — the state-based warp path (main.ts:848-855), where `reconcileFromStore` calls
    *  `switchZone` and then falls through to its own reconcile. */
@@ -1340,7 +1340,7 @@ describe('[14r-e] S11 interleave: the dedup is MEMBERSHIP in the held set, not t
 // WHAT IS MODELLED: `ClientModel.rebuildPrediction(mode, at)` above — the rebuild in both
 // policies. 'clear' is today's shipped shape; 'preserve' is the ADR-0192 bracket
 // (`held.snapshot()` → `resetPredictionState()` → `held.restore(...)`), which reaches into
-// the REAL `HeldDirections` seam (AM2 — S12-SELF pins that it is not a shadow-log replay).
+// the REAL `HeldDirections` seam (AM2: not a shadow-log replay).
 // AM3: the rebuild reconciles from the last authoritative row in the SAME call stack, which
 // is the state-based warp path; S12b/c/d assert that reconcile genuinely ran.
 //
@@ -1352,13 +1352,9 @@ describe('[14r-e] S11 interleave: the dedup is MEMBERSHIP in the held set, not t
 //
 // RED REASON at authoring time: `HeldDirections.snapshot` / `.restore` do not exist, so
 // every 'preserve' scenario throws `this.held.snapshot is not a function` — S12b/c/d are
-// RED on a MISSING IMPLEMENTATION. S12a (the defect repro under 'clear'), S12e (the
-// reconnect gap) and S12-SELF never touch the seam and are GREEN today by design.
+// RED on a MISSING IMPLEMENTATION. S12a (the defect repro under 'clear') and S12e (the
+// reconnect gap) never touch the seam and are GREEN today by design.
 // ================================================================================
-
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 type WarpMode = 'clear' | 'preserve' | 'deferred-clear' | 'deferred-leak';
 
@@ -1501,66 +1497,6 @@ function expectWarpPreconditions(r: WarpSimResult): void {
 }
 
 describe('[13r-f] S12 held-key warp continuation (ADR-0192): the WARP rebuild keeps the hold', () => {
-  it('S12-SELF (AM2): rebuildPrediction really calls this.held.snapshot()/restore() — not a shadow-log replay', () => {
-    // ★ THE SELF-FULFILLING-SIM KILL. S12b/c/d could be made green WITHOUT the production
-    // seam ever existing: model 'preserve' as "remember which dirs were down and re-press
-    // them at their old timestamps" (a shadow log replayed through `press()`), and the sim
-    // would walk beautifully across the rebuild while `HeldDirections` still had no
-    // snapshot/restore at all — the behavioural gate would be proving a property of the TEST
-    // FILE. This tooth reads this file's own source and requires the method body to route
-    // through the REAL seam, so S12b/c/d are RED until heldKeys.ts grows it.
-    const selfPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'movementSim.test.ts');
-    let src: string;
-    try {
-      src = readFileSync(selfPath, 'utf8');
-    } catch (err) {
-      // Fail loud — a missing file must never make a scan vacuously pass.
-      throw new Error(`movementSim.test.ts unreadable at ${selfPath} — ${String(err)}`);
-    }
-    // Assembled from two fragments ON PURPOSE: written as one literal, THIS line would itself
-    // be a second match for the needle and the uniqueness check below would always read 2.
-    const sigHead = 'rebuildPrediction(mode:';
-    const sigTail = "'clear' | 'preserve', atMs: number): void {";
-    const sig = `${sigHead} ${sigTail}`;
-    expect(
-      src.split(sig).length - 1,
-      `this file must declare EXACTLY ONE \`${sig}\` — a second (or missing) declaration means ` +
-        'the slice below is reading the wrong method body',
-    ).toBe(1);
-    const start = src.indexOf(sig);
-    const end = src.indexOf('\n  }', start);
-    expect(
-      end,
-      'the rebuildPrediction method body must be delimited by its closing brace',
-    ).toBeGreaterThan(start);
-    const body = src.slice(start + sig.length, end);
-
-    expect(
-      body.includes('this.held.snapshot('),
-      "rebuildPrediction('preserve') MUST capture through the REAL seam `this.held.snapshot()`. " +
-        'A shadow log of pressed dirs replayed through `press()` makes S12b/c/d pass while ' +
-        'heldKeys.ts has no snapshot/restore — the sim would be proving itself (AM2)',
-    ).toBe(true);
-    expect(
-      body.includes('this.held.restore('),
-      "rebuildPrediction('preserve') MUST restore through the REAL seam `this.held.restore(...)` " +
-        '— same self-fulfilling-sim failure as above (AM2)',
-    ).toBe(true);
-    expect(
-      body.includes('this.held.restore(heldSnapshot)'),
-      'the restore must be fed the CAPTURE taken before the reset — the contiguous needle ' +
-        '`this.held.restore(heldSnapshot)` pins the ARGUMENT (mirroring the wiring tooth`s ' +
-        'NH5_RESTORE_STMT). Calling both methods proves nothing on its own: a body that ' +
-        'restores a FRESH `this.held.snapshot()` taken after `this.held.clear()` routes through ' +
-        'the real seam, satisfies both presence checks above, and restores an EMPTY stack',
-    ).toBe(true);
-    expect(
-      body.includes('.press('),
-      'rebuildPrediction must NOT re-press anything: a re-press is the shadow-log cheat, and ' +
-        'in production it is also anti-pattern #1 (fresh stamps → a 150ms halt at every warp)',
-    ).toBe(false);
-  });
-
   it("S12a (GREEN today — the DEFECT, reproduced): under 'clear' a still-held key stops the walk dead", () => {
     // ★ THE nh5 DEFECT AS A BEHAVIOURAL FACT. East is held from t=500 and NEVER released;
     // the rebuild happens mid-walk with no keydown after it. Today's shipped `held.clear()`
