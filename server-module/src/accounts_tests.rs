@@ -21402,3 +21402,2243 @@ fn rb108_mod_census_blanking_never_merges_lines() {
          after_raw0 must be RETURNED."
     );
 }
+
+// ===========================================================================
+// debloat Phase 2 — THE ACCOUNTS NATIVE-HOST SUITE.
+//
+// Executes the SHIPPED reducers and helpers against real rows in the in-memory
+// host (`native_host_tests`), replacing the text pins that froze their bodies:
+// ST-accounts_tests#auth, ST-accounts_tests#cascade, EV-guest-claim-integrity
+// (#issuer-audience, #single-use, #reducer-surface native half,
+// #rekey-completeness), EV-account-privacy#tables-view,
+// ST-privacy_tests#export-owner-scope, ST-privacy_tests#export-admission and the
+// ADR-0268 unique-export-stamp condition.
+//
+// What is NOT here, and where it lives:
+// * The client-callable reducer surface — exact names and argument types, so
+//   `start_guest_claim(code: String)` keeps the claim secret client-minted and
+//   no reducer accepts an `Identity` — is the frozen roster
+//   evals/baselines/client-callable-reducers.json (client-surface-privacy
+//   clause D). Account columns (no email / subject) are frozen by the generated
+//   bindings (client-surface-privacy + bindings-drift).
+// * Rollback: this host models none (a reducer that errors after a write keeps
+//   the write). Every refusal below is asserted to happen BEFORE any write;
+//   transactional rollback is account-e2e's live flow.
+// * The battle anonymize step of the cascade (forced terminal, tombstoned
+//   party) is battle_tests.rs `rb129_*`; the deletion gate on every class-(iv)
+//   reducer is guards_tests.rs `rb128_*`.
+// ===========================================================================
+mod acct_nh {
+    use crate::accounts::{AccountDeletionReaperSchedule, GuestClaimReaperSchedule};
+    use crate::native_host_tests::{
+        fixture, Fixture, Handle, DEFAULT_DATABASE_IDENTITY, VIEW_MY_ACCOUNT,
+    };
+    use crate::playtest::PlaytestEvent;
+    use crate::privacy::ExportBundleReaperSchedule;
+    use crate::pvp::BattleChallengeReaperSchedule;
+    use crate::schema::{
+        Account, BattleAction, BattleChallenge, ChallengeStatus, Character, DeletionPolicy,
+        EvolutionRevealRow, ExportBundle, GuestClaim, HealCooldown, Inventory, Monster, MonsterPub,
+        PendingEvolutionNotice, Player, PlayerConversation, PlayerDialogueStateRow, PlayerQuestRow,
+        PlayerSession, PlayerWallet, Profile, TradeOffer, DATA_LIFECYCLE_MANIFEST,
+    };
+    use crate::trading::TradeOfferReaperSchedule;
+    use spacetimedb::sats::bsatn;
+    use spacetimedb::{ConnectionId, Identity, ReducerContext, ScheduleAt, Serialize, Timestamp};
+
+    // --- fixture vocabulary -------------------------------------------------
+
+    const T0: i64 = 1_700_000_000_000;
+
+    fn at(ms: i64) -> Timestamp {
+        Timestamp::from_micros_since_unix_epoch(ms * 1000)
+    }
+
+    /// Never `[0; 32]` (the dummy sender == WILD_IDENTITY) and never the module
+    /// identity `[0xDB; 32]`.
+    fn id(b: u8) -> Identity {
+        Identity::from_byte_array([b; 32])
+    }
+
+    fn scheduler() -> Identity {
+        Identity::from_byte_array(DEFAULT_DATABASE_IDENTITY)
+    }
+
+    /// A well-formed claim code: 64 lowercase hex characters.
+    fn code(c: char) -> String {
+        std::iter::repeat_n(c, crate::accounts::CLAIM_CODE_LEN).collect()
+    }
+
+    fn claims(iss: &str, aud_json: &str) -> String {
+        format!(r#"{{"iss":"{iss}","aud":{aud_json},"sub":"subject-{iss}"}}"#)
+    }
+
+    /// The token a legitimate player's connection carries.
+    fn good_jwt() -> String {
+        claims(
+            crate::accounts::ALLOWED_ISSUERS[0],
+            &format!("\"{}\"", crate::accounts::ALLOWED_AUDIENCE[0]),
+        )
+    }
+
+    fn conn_of(who: Identity) -> u128 {
+        0x5E55_0000 + u128::from(who.to_byte_array()[0])
+    }
+
+    /// Call as `who` over a client connection carrying `jwt` (`None` = anonymous).
+    fn as_conn<T>(
+        fx: &Fixture,
+        who: Identity,
+        jwt: Option<&str>,
+        ms: i64,
+        f: impl FnOnce(&ReducerContext) -> T,
+    ) -> T {
+        fx.run_as_conn_at(who, conn_of(who), jwt, at(ms), f)
+    }
+
+    fn signed_in<T>(
+        fx: &Fixture,
+        who: Identity,
+        ms: i64,
+        f: impl FnOnce(&ReducerContext) -> T,
+    ) -> T {
+        let jwt = good_jwt();
+        as_conn(fx, who, Some(&jwt), ms, f)
+    }
+
+    /// Canonical bytes of a row: every row type here compares by value this way
+    /// (BSATN is canonical), whether or not it derives `PartialEq`.
+    fn enc<T: Serialize>(row: &T) -> Vec<u8> {
+        bsatn::to_vec(row).expect("a row always BSATN-encodes")
+    }
+
+    fn encs<T: Serialize>(rows: &[T]) -> Vec<Vec<u8>> {
+        let mut out: Vec<Vec<u8>> = rows.iter().map(enc).collect();
+        out.sort();
+        out
+    }
+
+    fn fire_at(schedule: &ScheduleAt) -> Timestamp {
+        match schedule {
+            ScheduleAt::Time(t) => *t,
+            ScheduleAt::Interval(_) => panic!("expected a one-shot schedule, got an interval"),
+        }
+    }
+
+    // --- the world: every table the accounts paths touch ---------------------
+
+    struct W<'a> {
+        account: Handle<'a, Account>,
+        claim: Handle<'a, GuestClaim>,
+        claim_reaper: Handle<'a, GuestClaimReaperSchedule>,
+        del_reaper: Handle<'a, AccountDeletionReaperSchedule>,
+        player: Handle<'a, Player>,
+        session: Handle<'a, PlayerSession>,
+        monster: Handle<'a, Monster>,
+        monster_pub: Handle<'a, MonsterPub, u64>,
+        notice: Handle<'a, PendingEvolutionNotice>,
+        inventory: Handle<'a, Inventory>,
+        quest: Handle<'a, PlayerQuestRow>,
+        dialogue: Handle<'a, PlayerDialogueStateRow>,
+        conversation: Handle<'a, PlayerConversation>,
+        heal: Handle<'a, HealCooldown>,
+        wallet: Handle<'a, PlayerWallet>,
+        profile: Handle<'a, Profile>,
+        character: Handle<'a, Character, u64>,
+        trade: Handle<'a, TradeOffer>,
+        trade_reaper: Handle<'a, TradeOfferReaperSchedule, u64>,
+        challenge: Handle<'a, BattleChallenge>,
+        challenge_reaper: Handle<'a, BattleChallengeReaperSchedule, u64>,
+        action: Handle<'a, BattleAction, u64>,
+        playtest: Handle<'a, PlaytestEvent, u64>,
+        export: Handle<'a, ExportBundle>,
+        export_reaper: Handle<'a, ExportBundleReaperSchedule, u64>,
+    }
+
+    /// Registers every index the shipped accounts / claim / cascade / export
+    /// paths read or write through, opens writes on each table (post-state
+    /// assertions, not the write wall, are this suite's oracle) and opens full
+    /// scans ONLY where the shipped code scans (`playtest_event`,
+    /// `battle_action`, the `export_bundle` count, the export reaper singleton).
+    /// `battle` stays unregistered: its reads answer empty (see the rb129 note).
+    fn world(fx: &Fixture) -> W<'_> {
+        // Secondary indexes first (registration is per fixture, not per handle).
+        let _ = fx
+            .table_keyed::<GuestClaim, String>("guest_claim", "code", |r| r.code.clone())
+            .unique();
+        let _ = fx.table_keyed::<GuestClaimReaperSchedule, u64>(
+            "guest_claim_reaper_schedule",
+            "scheduled_id",
+            |r| r.scheduled_id,
+        );
+        let _ = fx.table_keyed::<AccountDeletionReaperSchedule, u64>(
+            "account_deletion_reaper_schedule",
+            "scheduled_id",
+            |r| r.scheduled_id,
+        );
+        let _ =
+            fx.table_keyed::<PlayerSession, ConnectionId>("player_session", "connection_id", |r| {
+                r.connection_id
+            });
+        let _ = fx.table_keyed::<Monster, u64>("monster", "monster_id", |r| r.monster_id);
+        let _ = fx.table::<MonsterPub>("monster_pub", "owner_identity", |r| r.owner_identity);
+        let _ = fx.table_keyed::<Inventory, u64>("inventory", "inv_id", |r| r.inv_id);
+        let _ = fx.table_keyed::<PlayerQuestRow, u64>("player_quest", "pq_id", |r| r.pq_id);
+        let _ = fx.table::<TradeOffer>("trade_offer", "counterparty", |r| r.counterparty);
+        let _ = fx.table_keyed::<TradeOffer, u64>("trade_offer", "trade_id", |r| r.trade_id);
+        let _ = fx.table_keyed::<TradeOfferReaperSchedule, u64>(
+            "trade_offer_reaper_schedule",
+            "scheduled_id",
+            |r| r.scheduled_id,
+        );
+        let _ = fx.table::<BattleChallenge>("battle_challenge", "target", |r| r.target);
+        let _ = fx.table_keyed::<BattleChallenge, u64>("battle_challenge", "challenge_id", |r| {
+            r.challenge_id
+        });
+        let _ = fx.table_keyed::<BattleChallengeReaperSchedule, u64>(
+            "battle_challenge_reaper_schedule",
+            "scheduled_id",
+            |r| r.scheduled_id,
+        );
+        let _ = fx.table_keyed::<ExportBundle, u64>("export_bundle", "chunk_id", |r| r.chunk_id);
+        let _ = fx.table_keyed::<ExportBundle, i64>("export_bundle", "created_at_ms", |r| {
+            r.created_at_ms
+        });
+        W {
+            account: fx
+                .table::<Account>("account", "identity", |r| r.identity)
+                .unique()
+                .writable(),
+            claim: fx
+                .table::<GuestClaim>("guest_claim", "guest_identity", |r| r.guest_identity)
+                .unique()
+                .writable(),
+            claim_reaper: fx
+                .table::<GuestClaimReaperSchedule>(
+                    "guest_claim_reaper_schedule",
+                    "guest_identity",
+                    |r| r.guest_identity,
+                )
+                .writable()
+                .auto_inc(|r| r.scheduled_id, |r, v| r.scheduled_id = v),
+            del_reaper: fx
+                .table::<AccountDeletionReaperSchedule>(
+                    "account_deletion_reaper_schedule",
+                    "account_identity",
+                    |r| r.account_identity,
+                )
+                .writable()
+                .auto_inc(|r| r.scheduled_id, |r, v| r.scheduled_id = v),
+            player: fx
+                .table::<Player>("player", "identity", |r| r.identity)
+                .writable(),
+            session: fx
+                .table::<PlayerSession>("player_session", "identity", |r| r.identity)
+                .writable(),
+            monster: fx
+                .table::<Monster>("monster", "owner_identity", |r| r.owner_identity)
+                .writable(),
+            monster_pub: fx
+                .table_keyed::<MonsterPub, u64>("monster_pub", "monster_id", |r| r.monster_id)
+                .writable(),
+            notice: fx
+                .table::<PendingEvolutionNotice>(
+                    "pending_evolution_notice",
+                    "owner_identity",
+                    |r| r.owner_identity,
+                )
+                .writable(),
+            inventory: fx
+                .table::<Inventory>("inventory", "owner_identity", |r| r.owner_identity)
+                .writable(),
+            quest: fx
+                .table::<PlayerQuestRow>("player_quest", "owner_identity", |r| r.owner_identity)
+                .writable(),
+            dialogue: fx
+                .table::<PlayerDialogueStateRow>("player_dialogue_state", "owner_identity", |r| {
+                    r.owner_identity
+                })
+                .writable(),
+            conversation: fx
+                .table::<PlayerConversation>("player_conversation", "owner_identity", |r| {
+                    r.owner_identity
+                })
+                .writable(),
+            heal: fx
+                .table::<HealCooldown>("heal_cooldown", "owner_identity", |r| r.owner_identity)
+                .writable(),
+            wallet: fx
+                .table::<PlayerWallet>("player_wallet", "owner_identity", |r| r.owner_identity)
+                .writable(),
+            profile: fx
+                .table::<Profile>("profile", "identity", |r| r.identity)
+                .writable(),
+            character: fx
+                .table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id)
+                .writable(),
+            trade: fx
+                .table::<TradeOffer>("trade_offer", "initiator", |r| r.initiator)
+                .writable(),
+            trade_reaper: fx
+                .table_keyed::<TradeOfferReaperSchedule, u64>(
+                    "trade_offer_reaper_schedule",
+                    "trade_id",
+                    |r| r.trade_id,
+                )
+                .writable(),
+            challenge: fx
+                .table::<BattleChallenge>("battle_challenge", "challenger", |r| r.challenger)
+                .writable(),
+            challenge_reaper: fx
+                .table_keyed::<BattleChallengeReaperSchedule, u64>(
+                    "battle_challenge_reaper_schedule",
+                    "challenge_id",
+                    |r| r.challenge_id,
+                )
+                .writable(),
+            action: fx
+                .table_keyed::<BattleAction, u64>("battle_action", "action_id", |r| r.action_id)
+                .writable()
+                .scannable(),
+            playtest: fx
+                .table_keyed::<PlaytestEvent, u64>("playtest_event", "event_id", |r| r.event_id)
+                .writable()
+                .scannable(),
+            export: fx
+                .table::<ExportBundle>("export_bundle", "owner_identity", |r| r.owner_identity)
+                .writable()
+                .scannable()
+                .auto_inc(|r| r.chunk_id, |r, v| r.chunk_id = v),
+            export_reaper: fx
+                .table_keyed::<ExportBundleReaperSchedule, u64>(
+                    "export_bundle_reaper_schedule",
+                    "id",
+                    |r| r.id,
+                )
+                .writable()
+                .scannable()
+                .auto_inc(|r| r.id, |r, v| r.id = v),
+        }
+    }
+
+    // --- rows ----------------------------------------------------------------
+
+    fn monster_row(monster_id: u64, owner: Identity) -> Monster {
+        Monster {
+            monster_id,
+            owner_identity: owner,
+            species_id: 1,
+            nickname: format!("mon-{monster_id}"),
+            level: 12,
+            xp: 900,
+            iv_hp: 11,
+            iv_attack: 12,
+            iv_defense: 13,
+            iv_speed: 14,
+            iv_sp_attack: 15,
+            iv_sp_defense: 16,
+            nature_kind: game_core::NatureKind::Hardy,
+            ev_hp: 1,
+            ev_attack: 2,
+            ev_defense: 3,
+            ev_speed: 4,
+            ev_sp_attack: 5,
+            ev_sp_defense: 6,
+            stat_hp: 40,
+            stat_attack: 41,
+            stat_defense: 42,
+            stat_speed: 43,
+            stat_sp_attack: 44,
+            stat_sp_defense: 45,
+            current_hp: 39,
+            party_slot: 0,
+            last_care_at_ms: 7,
+            essence_fire: 1,
+            essence_water: 0,
+            essence_plant: 0,
+            essence_electric: 0,
+            essence_earth: 0,
+            essence_wind: 0,
+            essence_light: 0,
+            essence_dark: 0,
+            trust_favorable_count: 3,
+            trust_unfavorable_count: 1,
+            trust_favorable_battle_day_epoch: 0,
+            quality_time_ticks_total: 5,
+            quality_time_accum_ms: 0,
+            quality_time_window_ms: 0,
+            quality_time_window_start_ms: 0,
+            last_essence_train_at_ms: 0,
+        }
+    }
+
+    fn player_row(who: Identity, entity_id: u64, name: &str) -> Player {
+        Player {
+            identity: who,
+            entity_id,
+            name: name.to_string(),
+            online: true,
+            last_input_seq: 0,
+        }
+    }
+
+    fn character_row(entity_id: u64) -> Character {
+        Character {
+            entity_id,
+            zone_id: 0,
+            tile_x: 1,
+            tile_y: 2,
+            facing: game_core::Direction::South,
+            action: game_core::ActionState::Idle,
+            move_started_at_ms: 0,
+            sprite_id: 0,
+            move_queue: Vec::new(),
+        }
+    }
+
+    fn trade_row(trade_id: u64, initiator: Identity, counterparty: Identity) -> TradeOffer {
+        TradeOffer {
+            trade_id,
+            initiator,
+            counterparty,
+            initiator_monster_ids: vec![],
+            initiator_items: vec![],
+            initiator_currency: 5,
+            counterparty_monster_ids: vec![],
+            counterparty_items: vec![],
+            counterparty_currency: 0,
+            initiator_cards: vec![],
+            counterparty_cards: vec![],
+            status: game_core::TradeStatus::Pending,
+            created_at_ms: 1,
+        }
+    }
+
+    fn challenge_row(
+        challenge_id: u64,
+        challenger: Identity,
+        target: Identity,
+        status: ChallengeStatus,
+    ) -> BattleChallenge {
+        BattleChallenge {
+            challenge_id,
+            challenger,
+            target,
+            challenger_party_ids: vec![],
+            status,
+            created_at_ms: 1,
+        }
+    }
+
+    fn export_row(chunk_id: u64, owner: Identity, stamp: i64) -> ExportBundle {
+        ExportBundle {
+            chunk_id,
+            owner_identity: owner,
+            request_id: stamp as u64,
+            table_name: "monster".to_string(),
+            chunk_index: 0,
+            total_chunks: 1,
+            payload_json: "{}".to_string(),
+            created_at_ms: stamp,
+        }
+    }
+
+    /// One row in each of the NINE re-key tables (monster + its projection,
+    /// notice, inventory, quest, dialogue, heal cooldown, wallet, profile).
+    /// `k` keeps auto-inc keys and values distinct per owner.
+    fn seed_rekey_rows(w: &W<'_>, who: Identity, k: u64) {
+        let m = monster_row(100 + k, who);
+        w.monster_pub.seed(&crate::marshal::pub_from_monster(&m, 0));
+        w.monster.seed(&m);
+        w.notice.seed(&PendingEvolutionNotice {
+            owner_identity: who,
+            entries: vec![EvolutionRevealRow {
+                monster_id: 100 + k,
+                from_species: 1,
+                to_species: 2,
+                evolved_at_ms: 3,
+            }],
+        });
+        w.inventory.seed(&Inventory {
+            inv_id: 200 + k,
+            owner_identity: who,
+            item_id: 4,
+            count: 5 + k as u32,
+        });
+        w.quest.seed(&PlayerQuestRow {
+            pq_id: 300 + k,
+            owner_identity: who,
+            quest_id: format!("q{k}"),
+            step_index: 1,
+        });
+        w.dialogue.seed(&PlayerDialogueStateRow {
+            owner_identity: who,
+            flags: vec![format!("flag{k}")],
+            done_quests: vec![],
+        });
+        w.heal.seed(&HealCooldown {
+            owner_identity: who,
+            last_heal_at_ms: 40 + k as i64,
+        });
+        w.wallet.seed(&PlayerWallet {
+            owner_identity: who,
+            balance: 1000 + k,
+        });
+        w.profile.seed(&Profile {
+            identity: who,
+            name: format!("p{k}"),
+            rating: 1500 + k as i32,
+            wins: 7,
+            losses: 2,
+        });
+    }
+
+    /// Every row that names `who` in an owner / participant column, per table,
+    /// as sorted canonical bytes — the unit a bystander must survive unchanged
+    /// and an erased identity must leave only in its Anonymize tables.
+    fn owned_by(w: &W<'_>, who: Identity) -> Vec<(&'static str, Vec<Vec<u8>>)> {
+        vec![
+            (
+                "account",
+                encs(
+                    &w.account
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "player",
+                encs(
+                    &w.player
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "profile",
+                encs(
+                    &w.profile
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "monster",
+                encs(
+                    &w.monster
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.owner_identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "monster_pub",
+                encs(
+                    &w.monster_pub
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.owner_identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "pending_evolution_notice",
+                encs(
+                    &w.notice
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.owner_identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "inventory",
+                encs(
+                    &w.inventory
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.owner_identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "player_quest",
+                encs(
+                    &w.quest
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.owner_identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "player_dialogue_state",
+                encs(
+                    &w.dialogue
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.owner_identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "player_conversation",
+                encs(
+                    &w.conversation
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.owner_identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "heal_cooldown",
+                encs(
+                    &w.heal
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.owner_identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "player_wallet",
+                encs(
+                    &w.wallet
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.owner_identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "playtest_event",
+                encs(
+                    &w.playtest
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "trade_offer",
+                encs(
+                    &w.trade
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.initiator == who || r.counterparty == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "battle_challenge",
+                encs(
+                    &w.challenge
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.challenger == who || r.target == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "battle_action",
+                encs(
+                    &w.action
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.player_identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "export_bundle",
+                encs(
+                    &w.export
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.owner_identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "player_session",
+                encs(
+                    &w.session
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+        ]
+    }
+
+    fn owned_tables(snapshot: &[(&'static str, Vec<Vec<u8>>)]) -> Vec<&'static str> {
+        snapshot
+            .iter()
+            .filter(|(_, rows)| !rows.is_empty())
+            .map(|(t, _)| *t)
+            .collect()
+    }
+
+    // --- #auth: provisioning on connect ---------------------------------------
+
+    /// `on_connect` (lib.rs) over REAL client connections. An anonymous
+    /// connection plays (Ok, no account row) and records its session; a token
+    /// from an unrecognised ISSUER falls back to anonymous (Ok, no row — the
+    /// host's own token path must never disconnect); an allowed issuer with an
+    /// unrecognised AUDIENCE is a confused-deputy token and is refused (Err, no
+    /// row); only both allowed provisions a fresh Active row. A reconnect only
+    /// touches `last_login_at_ms`; a TERMINAL account re-registers fresh. A
+    /// bystander's row is never touched.
+    ///
+    /// kills: issuer or audience check dropped / inverted / swapped in order;
+    /// the Err on a bad audience turned into Ok; provisioning on the anonymous
+    /// path; `touch_login` replaced by a fresh row (or the reverse); the
+    /// terminal branch carrying pre-deletion state forward; a session write
+    /// skipped for anonymous connections.
+    #[test]
+    fn acct_on_connect_provisions_only_an_allowed_issuer_and_audience() {
+        let fx = fixture();
+        let w = world(&fx);
+        let me = id(0x11);
+        let bystander = id(0x12);
+        let bystander_row = crate::accounts::new_account_row(bystander, "b".to_string(), 5);
+        w.account.seed(&bystander_row);
+        let iss = crate::accounts::ALLOWED_ISSUERS[0];
+        let aud = crate::accounts::ALLOWED_AUDIENCE[0];
+        let mine = |w: &W<'_>| {
+            w.account
+                .rows()
+                .into_iter()
+                .filter(|r| r.identity == me)
+                .collect::<Vec<_>>()
+        };
+
+        // Anonymous: plays, records its session, no account row.
+        let got = as_conn(&fx, me, None, T0, crate::on_connect);
+        assert_eq!(got, Ok(()), "an anonymous connection must be accepted");
+        assert!(
+            mine(&w).is_empty(),
+            "an anonymous connection must not provision"
+        );
+        let sessions = w.session.rows();
+        assert_eq!(
+            sessions.len(),
+            1,
+            "the anonymous connection's session is recorded"
+        );
+        assert_eq!(sessions[0].identity, me);
+        assert_eq!(sessions[0].connection_id.to_u128(), conn_of(me));
+
+        // Unrecognised issuer: fail SAFE to anonymous.
+        let foreign = claims("issuer.elsewhere.example", &format!("\"{aud}\""));
+        let got = as_conn(&fx, me, Some(&foreign), T0 + 1, crate::on_connect);
+        assert_eq!(
+            got,
+            Ok(()),
+            "a foreign issuer must fall back to anonymous, never disconnect"
+        );
+        assert!(
+            mine(&w).is_empty(),
+            "a foreign issuer must not provision an account"
+        );
+
+        // Allowed issuer, unrecognised audience: refused.
+        let deputy = claims(iss, "\"some-other-app\"");
+        let got = as_conn(&fx, me, Some(&deputy), T0 + 2, crate::on_connect);
+        assert_eq!(
+            got,
+            Err(crate::accounts::REJECT_UNRECOGNIZED_AUDIENCE.to_string()),
+            "an allowed issuer with a foreign audience must be refused"
+        );
+        assert!(
+            mine(&w).is_empty(),
+            "a refused token must not provision an account"
+        );
+
+        // Both allowed (audience as an array containing ours): provisioned fresh.
+        let ok = claims(iss, &format!("[\"x\",\"{aud}\"]"));
+        let got = as_conn(&fx, me, Some(&ok), T0 + 3, crate::on_connect);
+        assert_eq!(got, Ok(()));
+        let created = crate::accounts::new_account_row(me, iss.to_string(), T0 + 3);
+        assert_eq!(
+            encs(&mine(&w)),
+            encs(std::slice::from_ref(&created)),
+            "exactly one fresh Active row"
+        );
+
+        // Reconnect: last_login only.
+        let got = as_conn(&fx, me, Some(&ok), T0 + 100, crate::on_connect);
+        assert_eq!(got, Ok(()));
+        let touched = crate::accounts::touch_login(created.clone(), T0 + 100);
+        assert_eq!(
+            encs(&mine(&w)),
+            encs(std::slice::from_ref(&touched)),
+            "a reconnect touches last_login only"
+        );
+
+        // Terminal account: re-registers fresh (nothing carried forward).
+        let terminal = crate::accounts::terminal_account(
+            crate::accounts::anonymized_account(crate::accounts::requested_deletion(
+                crate::accounts::claimed_account(touched, id(0x13), T0 + 101),
+                T0 + 102,
+            )),
+            T0 + 103,
+        );
+        assert_eq!(w.account.remove(me), 1);
+        w.account.seed(&terminal);
+        let got = as_conn(&fx, me, Some(&ok), T0 + 200, crate::on_connect);
+        assert_eq!(got, Ok(()));
+        assert_eq!(
+            encs(&mine(&w)),
+            encs(&[crate::accounts::new_account_row(
+                me,
+                iss.to_string(),
+                T0 + 200
+            )]),
+            "a terminal account re-registers with every field at its fresh default"
+        );
+
+        assert_eq!(
+            encs(
+                &w.account
+                    .rows()
+                    .into_iter()
+                    .filter(|r| r.identity == bystander)
+                    .collect::<Vec<_>>()
+            ),
+            encs(&[bystander_row]),
+            "a bystander's account row is never touched"
+        );
+        assert_eq!(
+            w.session.rows().len(),
+            1,
+            "one connection id, one session row"
+        );
+    }
+
+    /// `on_disconnect` (lib.rs) over REAL connections: a disconnect deletes only
+    /// its OWN session row; while another of the identity's connections is
+    /// live it does nothing else; the LAST disconnect removes the presence rows
+    /// (player, its character, the conversation). A stranger is untouched.
+    ///
+    /// kills: the own-row delete dropped or keyed on the identity (a sibling
+    /// tab's row goes too); the live-session guard dropped (a second tab's
+    /// close wipes the first tab's presence) or inverted (presence never
+    /// cleaned); presence deletes keyed on the wrong identity.
+    #[test]
+    fn acct_on_disconnect_closes_its_own_session_and_waits_for_the_last() {
+        let fx = fixture();
+        let w = world(&fx);
+        let me = id(0x15);
+        let stranger = id(0x16);
+        let sibling_conn: u128 = 0x5E55_9999;
+        for (who, entity) in [(me, 5u64), (stranger, 6)] {
+            w.player.seed(&player_row(who, entity, "p"));
+            w.character.seed(&character_row(entity));
+            w.conversation.seed(&PlayerConversation {
+                owner_identity: who,
+                npc_entity_id: 1,
+                current_node_id: "n".to_string(),
+            });
+            w.session.seed(&PlayerSession {
+                connection_id: ConnectionId::from_u128(conn_of(who)),
+                identity: who,
+            });
+        }
+        w.session.seed(&PlayerSession {
+            connection_id: ConnectionId::from_u128(sibling_conn),
+            identity: me,
+        });
+        let stranger_before = owned_by(&w, stranger);
+        let conns = |w: &W<'_>| {
+            let mut c: Vec<u128> = w
+                .session
+                .rows()
+                .into_iter()
+                .filter(|r| r.identity == me)
+                .map(|r| r.connection_id.to_u128())
+                .collect();
+            c.sort_unstable();
+            c
+        };
+
+        as_conn(&fx, me, None, T0, crate::on_disconnect);
+        assert_eq!(
+            conns(&w),
+            vec![sibling_conn],
+            "only the closing connection's row goes"
+        );
+        assert_eq!(
+            owned_tables(&owned_by(&w, me)),
+            vec!["player", "player_conversation", "player_session"],
+            "a live sibling connection keeps every presence row"
+        );
+        assert!(w.character.rows().iter().any(|r| r.entity_id == 5));
+
+        fx.run_as_conn_at(me, sibling_conn, None, at(T0 + 1), crate::on_disconnect);
+        assert!(conns(&w).is_empty());
+        assert!(
+            owned_tables(&owned_by(&w, me)).is_empty(),
+            "the last disconnect removes the presence rows"
+        );
+        assert!(w.character.rows().iter().all(|r| r.entity_id != 5));
+        assert_eq!(
+            owned_by(&w, stranger),
+            stranger_before,
+            "a stranger is untouched"
+        );
+        assert!(w.character.rows().iter().any(|r| r.entity_id == 6));
+    }
+
+    // --- guest claim ----------------------------------------------------------
+
+    /// Seed a LIVE claim for `guest` (as `start_guest_claim` would write it at
+    /// `T0`) plus its armed reaper row.
+    fn seed_live_claim(w: &W<'_>, guest: Identity, c: &str, scheduled_id: u64) -> GuestClaim {
+        let row = crate::accounts::claim_row(guest, c.to_string(), "guest".to_string(), T0);
+        w.claim.seed(&row);
+        w.claim_reaper.seed(&GuestClaimReaperSchedule {
+            scheduled_id,
+            scheduled_at: ScheduleAt::Time(at(row.expires_at_ms)),
+            guest_identity: guest,
+        });
+        row
+    }
+
+    /// `start_guest_claim` binds a CLIENT-minted code to the anonymous caller:
+    /// one claim row (`claim_row` at the injected clock, name snapshotted from
+    /// the caller's `player` row) and exactly one reaper armed at the row's own
+    /// expiry. Starting again REPLACES both (still one of each). An account
+    /// holder, a malformed code and a caller with no player row are refused
+    /// before any write; another guest's claim is never touched.
+    ///
+    /// kills: the holder / charset / joined guards dropped; insert-before-delete
+    /// on replace (two claims or two reapers); the reaper armed at a second
+    /// clock read or not at all; a replace that disarms another guest's reaper.
+    #[test]
+    fn acct_start_guest_claim_binds_one_code_and_one_reaper() {
+        let fx = fixture();
+        let w = world(&fx);
+        let g = id(0x21);
+        let other = id(0x22);
+        let other_claim = seed_live_claim(&w, other, &code('e'), 900);
+        w.player.seed(&player_row(g, 1, "Guesty"));
+
+        assert_eq!(
+            fx.run_as_at(g, at(T0), |ctx| crate::accounts::start_guest_claim(
+                ctx,
+                "0123".to_string()
+            )),
+            Err("invalid claim code".to_string())
+        );
+        assert_eq!(
+            fx.run_as_at(id(0x23), at(T0), |ctx| crate::accounts::start_guest_claim(
+                ctx,
+                code('a')
+            )),
+            Err("not joined".to_string())
+        );
+        let holder = id(0x24);
+        w.account.seed(&crate::accounts::new_account_row(
+            holder,
+            "i".to_string(),
+            1,
+        ));
+        w.player.seed(&player_row(holder, 2, "Holder"));
+        assert_eq!(
+            fx.run_as_at(holder, at(T0), |ctx| crate::accounts::start_guest_claim(
+                ctx,
+                code('a')
+            )),
+            Err("already signed in".to_string())
+        );
+        assert_eq!(w.claim.rows().len(), 1, "a refused start writes no claim");
+        assert_eq!(
+            w.claim_reaper.rows().len(),
+            1,
+            "a refused start arms no reaper"
+        );
+
+        for (n, (c, ms)) in [(code('a'), T0), (code('b'), T0 + 500)]
+            .into_iter()
+            .enumerate()
+        {
+            let got = fx.run_as_at(g, at(ms), |ctx| {
+                crate::accounts::start_guest_claim(ctx, c.clone())
+            });
+            assert_eq!(got, Ok(()), "start #{n} must succeed");
+            let mine: Vec<GuestClaim> = w
+                .claim
+                .rows()
+                .into_iter()
+                .filter(|r| r.guest_identity == g)
+                .collect();
+            let want = crate::accounts::claim_row(g, c.clone(), "Guesty".to_string(), ms);
+            assert_eq!(
+                encs(&mine),
+                encs(std::slice::from_ref(&want)),
+                "start #{n}: exactly one claim, the latest"
+            );
+            let reapers: Vec<GuestClaimReaperSchedule> = w
+                .claim_reaper
+                .rows()
+                .into_iter()
+                .filter(|r| r.guest_identity == g)
+                .collect();
+            assert_eq!(reapers.len(), 1, "start #{n}: exactly one armed reaper");
+            assert_eq!(fire_at(&reapers[0].scheduled_at), at(want.expires_at_ms));
+        }
+        let others: Vec<GuestClaim> = w
+            .claim
+            .rows()
+            .into_iter()
+            .filter(|r| r.guest_identity == other)
+            .collect();
+        assert_eq!(
+            encs(&others),
+            encs(&[other_claim]),
+            "another guest's claim survives"
+        );
+        assert_eq!(
+            w.claim_reaper
+                .rows()
+                .into_iter()
+                .filter(|r| r.guest_identity == other)
+                .count(),
+            1,
+            "another guest's reaper survives"
+        );
+    }
+
+    /// Every CALLER-state guard of `complete_guest_claim` answers the same
+    /// reason for a live code, an unknown well-formed code and a malformed one
+    /// — so an unauthorised caller can never use the reducer as a claim-code
+    /// oracle — and none of them writes. Then the code-resolution guards, each
+    /// with the caller otherwise admissible: unknown / malformed code, expiry
+    /// (the claim row is LEFT for the reaper), own session, guest still online,
+    /// destination already has game data. Nothing moves in any of them.
+    ///
+    /// kills: any caller guard moved below code resolution (the live-code and
+    /// unknown-code answers diverge); a guard dropped (the next guard's reason
+    /// appears); expiry cleanup inside the reducer; the liveness / own-session /
+    /// has-data guards dropped (the claim would complete and rows would move).
+    #[test]
+    fn acct_complete_guest_claim_refuses_before_resolving_the_code() {
+        let fx = fixture();
+        let w = world(&fx);
+        let g = id(0x31);
+        let c = id(0x32);
+        let live = code('c');
+        let claim = seed_live_claim(&w, g, &live, 1);
+        w.monster.seed(&monster_row(77, g));
+        w.monster_pub
+            .seed(&crate::marshal::pub_from_monster(&monster_row(77, g), 0));
+        let before_g = owned_by(&w, g);
+        let active = crate::accounts::new_account_row(c, "i".to_string(), 1);
+        let pending = crate::accounts::requested_deletion(active.clone(), 2);
+        let terminal = crate::accounts::terminal_account(pending.clone(), 3);
+        let claimed = crate::accounts::claimed_account(active.clone(), id(0x33), 4);
+        let codes = [live.clone(), code('d'), "not-a-code".to_string()];
+
+        let states: [(&str, Option<Account>, bool, String); 5] = [
+            (
+                "no JWT",
+                Some(active.clone()),
+                false,
+                "sign in required".to_string(),
+            ),
+            ("no account", None, true, "no account".to_string()),
+            (
+                "terminal",
+                Some(terminal),
+                true,
+                crate::accounts::REJECT_ALREADY_DELETED.to_string(),
+            ),
+            (
+                "mid-grace",
+                Some(pending),
+                true,
+                "account pending deletion".to_string(),
+            ),
+            (
+                "already claimed",
+                Some(claimed),
+                true,
+                "account already claimed".to_string(),
+            ),
+        ];
+        for (label, row, jwt, reason) in states {
+            w.account.remove(c);
+            if let Some(row) = row {
+                w.account.seed(&row);
+            }
+            for k in &codes {
+                let token = good_jwt();
+                let got = as_conn(&fx, c, jwt.then_some(token.as_str()), T0 + 10, |ctx| {
+                    crate::accounts::complete_guest_claim(ctx, k.clone())
+                });
+                assert_eq!(
+                    got,
+                    Err(reason.clone()),
+                    "caller state `{label}` must answer `{reason}` for code {k:?} — the same \
+                     answer for a live and an unknown code, or the reducer is a code oracle"
+                );
+            }
+        }
+        w.account.remove(c);
+        w.account.seed(&active);
+
+        let resolve = |k: &str, ms: i64| {
+            signed_in(&fx, c, ms, |ctx| {
+                crate::accounts::complete_guest_claim(ctx, k.to_string())
+            })
+        };
+        let invalid = Err(crate::accounts::ERR_INVALID_CODE.to_string());
+        assert_eq!(resolve("not-a-code", T0 + 10), invalid);
+        assert_eq!(
+            resolve(&code('d'), T0 + 10),
+            invalid,
+            "an unknown code has the same answer"
+        );
+        assert_eq!(
+            resolve(&live, claim.expires_at_ms),
+            Err("code expired".to_string()),
+            "expiry is inclusive at expires_at_ms"
+        );
+        assert_eq!(
+            w.claim.rows().len(),
+            1,
+            "an expired claim is left for the reaper"
+        );
+
+        // Own session: the guest itself, signed in.
+        w.account
+            .seed(&crate::accounts::new_account_row(g, "i".to_string(), 1));
+        assert_eq!(
+            signed_in(
+                &fx,
+                g,
+                T0 + 10,
+                |ctx| crate::accounts::complete_guest_claim(ctx, live.clone())
+            ),
+            Err("cannot claim your own session".to_string())
+        );
+        assert_eq!(w.account.remove(g), 1);
+
+        // Guest still online.
+        w.player.seed(&player_row(g, 5, "guest"));
+        assert_eq!(
+            resolve(&live, T0 + 10),
+            Err("close your other tab, then retry".to_string())
+        );
+        assert_eq!(w.player.remove(g), 1);
+
+        // Destination already owns game data.
+        w.inventory.seed(&Inventory {
+            inv_id: 9,
+            owner_identity: c,
+            item_id: 1,
+            count: 1,
+        });
+        assert_eq!(
+            resolve(&live, T0 + 10),
+            Err("already has game data".to_string())
+        );
+        assert_eq!(w.inventory.remove(c), 1);
+
+        assert_eq!(owned_by(&w, g), before_g, "no refusal moved any guest row");
+        assert_eq!(
+            encs(&w.claim.rows()),
+            encs(&[claim]),
+            "no refusal consumed the claim"
+        );
+        assert_eq!(
+            w.claim_reaper.rows().len(),
+            1,
+            "no refusal disarmed the reaper"
+        );
+        assert_eq!(
+            owned_tables(&owned_by(&w, c)),
+            vec!["account"],
+            "the caller gained nothing"
+        );
+    }
+
+    /// The whole guest→account claim, through the shipped reducers: the guest
+    /// starts a claim, disconnects, and a signed-in fresh account completes it.
+    /// Every re-key table moves onto the claimer (moves leave NOTHING under the
+    /// guest; the two copy-forward re-keys leave the guest's wallet at zero and
+    /// its profile tombstoned), the guest's export chunks are purged, the code
+    /// and its reaper are consumed, provenance is stamped. A second account
+    /// replaying the SAME code gets the no-oracle invalid-code answer and gains
+    /// nothing; the claimer can never claim a second guest. A bystander's rows
+    /// never move.
+    ///
+    /// kills: single-use broken (claim row or reaper left behind, or a replay
+    /// that re-keys again); any `rekey_*` dropped from `rekey_all`; a
+    /// copy-forward re-key that does not zero the guest (currency / rating
+    /// minted per replay); the claim-time export purge dropped; provenance not
+    /// stamped (AUTH-14 one-claim-per-account then fails open).
+    #[test]
+    fn acct_guest_claim_round_trip_moves_every_row_and_spends_the_code() {
+        let fx = fixture();
+        let w = world(&fx);
+        let g = id(0x41);
+        let c = id(0x42);
+        let c2 = id(0x43);
+        let b = id(0x44);
+        let secret = code('7');
+
+        w.player.seed(&player_row(g, 1, "Guesty"));
+        assert_eq!(
+            fx.run_as_at(g, at(T0), |ctx| crate::accounts::start_guest_claim(
+                ctx,
+                secret.clone()
+            )),
+            Ok(())
+        );
+        assert_eq!(
+            w.player.remove(g),
+            1,
+            "the guest disconnects (presence row gone)"
+        );
+
+        seed_rekey_rows(&w, g, 1);
+        seed_rekey_rows(&w, b, 2);
+        w.export.seed(&export_row(1, g, T0 - 5));
+        w.export.seed(&export_row(2, b, T0 - 5));
+        let guest_before = owned_by(&w, g);
+        let bystander_before = owned_by(&w, b);
+        let row_of = |t: &str, snap: &[(&'static str, Vec<Vec<u8>>)]| {
+            snap.iter()
+                .find(|(n, _)| *n == t)
+                .map(|(_, r)| r.clone())
+                .unwrap()
+        };
+
+        let active = crate::accounts::new_account_row(c, "i".to_string(), 1);
+        w.account.seed(&active);
+        let done = T0 + 1_000;
+        assert_eq!(
+            signed_in(&fx, c, done, |ctx| crate::accounts::complete_guest_claim(
+                ctx,
+                secret.clone()
+            )),
+            Ok(())
+        );
+
+        // Moves: the guest keeps nothing; the claimer holds the same rows re-owned.
+        let m = monster_row(101, c);
+        assert_eq!(
+            row_of("monster", &owned_by(&w, c)),
+            encs(std::slice::from_ref(&m)),
+            "the guest's monster is re-owned, nothing else about it changed"
+        );
+        assert_eq!(
+            row_of("monster_pub", &owned_by(&w, c)),
+            encs(&[crate::marshal::pub_from_monster(&m, 0)]),
+            "the public projection follows its monster"
+        );
+        for t in [
+            "monster",
+            "monster_pub",
+            "pending_evolution_notice",
+            "inventory",
+            "player_quest",
+            "player_dialogue_state",
+            "heal_cooldown",
+            "export_bundle",
+        ] {
+            assert!(
+                row_of(t, &owned_by(&w, g)).is_empty(),
+                "`{t}`: no row may stay under the retired guest identity"
+            );
+            if t != "export_bundle" {
+                assert_eq!(
+                    row_of(t, &owned_by(&w, c)).len(),
+                    row_of(t, &guest_before).len(),
+                    "`{t}`: every guest row must arrive under the claimer"
+                );
+            }
+        }
+        // Copy-forward re-keys: the guest row is RETAINED but emptied.
+        let wallet = |who: Identity| {
+            w.wallet
+                .rows()
+                .into_iter()
+                .find(|r| r.owner_identity == who)
+                .map(|r| r.balance)
+        };
+        assert_eq!(
+            wallet(c),
+            Some(1001),
+            "the claimer is credited the guest's balance"
+        );
+        assert_eq!(
+            wallet(g),
+            Some(0),
+            "the guest's wallet is zeroed in place, never deleted"
+        );
+        let profile = |who: Identity| {
+            w.profile
+                .rows()
+                .into_iter()
+                .find(|r| r.identity == who)
+                .unwrap()
+        };
+        let (pc, pg) = (profile(c), profile(g));
+        assert_eq!(
+            (pc.rating, pc.wins, pc.losses),
+            (1501, 7, 2),
+            "stats carry to the claimer"
+        );
+        assert_eq!(
+            (pg.rating, pg.wins, pg.losses),
+            (0, 0, 0),
+            "the guest's profile is tombstoned"
+        );
+
+        // Single use.
+        assert!(w.claim.rows().is_empty(), "the claim row is consumed");
+        assert!(w.claim_reaper.rows().is_empty(), "its reaper is disarmed");
+        assert_eq!(
+            encs(
+                &w.account
+                    .rows()
+                    .into_iter()
+                    .filter(|r| r.identity == c)
+                    .collect::<Vec<_>>()
+            ),
+            encs(&[crate::accounts::claimed_account(active, g, done)]),
+            "provenance is stamped on the claimer's account"
+        );
+        let claimer_after = owned_by(&w, c);
+
+        w.account
+            .seed(&crate::accounts::new_account_row(c2, "i".to_string(), 1));
+        assert_eq!(
+            signed_in(&fx, c2, done + 1, |ctx| {
+                crate::accounts::complete_guest_claim(ctx, secret.clone())
+            }),
+            Err(crate::accounts::ERR_INVALID_CODE.to_string()),
+            "a spent code answers exactly like a code that never existed"
+        );
+        assert_eq!(
+            owned_tables(&owned_by(&w, c2)),
+            vec!["account"],
+            "the replayer gains nothing"
+        );
+        assert_eq!(owned_by(&w, c), claimer_after, "a replay moves nothing");
+
+        let g2 = id(0x45);
+        seed_live_claim(&w, g2, &code('8'), 50);
+        assert_eq!(
+            signed_in(&fx, c, done + 2, |ctx| {
+                crate::accounts::complete_guest_claim(ctx, code('8'))
+            }),
+            Err("account already claimed".to_string()),
+            "one claim per account, ever"
+        );
+        assert_eq!(
+            owned_by(&w, b),
+            bystander_before,
+            "a bystander's rows never move"
+        );
+    }
+
+    /// The re-key roster against the lifecycle manifest: every owner-keyed
+    /// (Erase / Anonymize) table is classified exactly once as either RE-KEYED
+    /// by `rekey_all` or deliberately left behind, so a new owner-keyed table
+    /// cannot ship without a claim-flow decision. (The manifest itself is tied
+    /// to the tables' real derive metadata, wrappers included, by
+    /// `m22s6_owner_keyed_tables_are_erase_or_anonymize`.) Then the exists-half:
+    /// a row in ANY re-keyed table makes `account_has_game_data` true, so a
+    /// claim can never overwrite a destination that already plays.
+    ///
+    /// kills: a `has_*` delegate dropped from `account_has_game_data`; a new
+    /// owner-keyed table added to the manifest without a re-key decision.
+    #[test]
+    fn acct_rekey_roster_is_total_and_game_data_sees_every_rekeyed_table() {
+        const REKEYED: [&str; 9] = [
+            "monster",
+            "monster_pub",
+            "pending_evolution_notice",
+            "inventory",
+            "player_quest",
+            "player_dialogue_state",
+            "heal_cooldown",
+            "player_wallet",
+            "profile",
+        ];
+        // Left under the guest on purpose: presence / session rows die with the
+        // connection (guard 9), live interactions block the claim (guard 10),
+        // telemetry and the export store are not game data, and the account is
+        // the claimer's own.
+        const NOT_REKEYED: [&str; 10] = [
+            "player",
+            "player_conversation",
+            "player_session",
+            "battle",
+            "battle_action",
+            "trade_offer",
+            "battle_challenge",
+            "playtest_event",
+            "export_bundle",
+            "account",
+        ];
+        let mut owner_keyed: Vec<&str> = DATA_LIFECYCLE_MANIFEST
+            .iter()
+            .filter(|e| matches!(e.policy, DeletionPolicy::Erase | DeletionPolicy::Anonymize))
+            .map(|e| e.table)
+            .collect();
+        owner_keyed.sort_unstable();
+        let mut classified: Vec<&str> = REKEYED.iter().chain(NOT_REKEYED.iter()).copied().collect();
+        classified.sort_unstable();
+        assert_eq!(
+            classified, owner_keyed,
+            "every Erase/Anonymize table needs exactly one claim-flow classification"
+        );
+
+        let fx = fixture();
+        let w = world(&fx);
+        let g = id(0x51);
+        let no_data = fx.run_as(g, |ctx| crate::accounts::account_has_game_data(ctx, g));
+        assert!(!no_data, "an identity with no rows has no game data");
+        seed_rekey_rows(&w, g, 3);
+        let wipe = |w: &W<'_>| {
+            w.monster.remove(g);
+            w.monster_pub.remove(103);
+            w.notice.remove(g);
+            w.inventory.remove(g);
+            w.quest.remove(g);
+            w.dialogue.remove(g);
+            w.heal.remove(g);
+            w.wallet.remove(g);
+            w.profile.remove(g);
+        };
+        wipe(&w);
+        assert!(owned_tables(&owned_by(&w, g)).is_empty());
+        let singles: [(&str, &dyn Fn()); 8] = [
+            ("monster", &|| w.monster.seed(&monster_row(103, g))),
+            ("pending_evolution_notice", &|| {
+                w.notice.seed(&PendingEvolutionNotice {
+                    owner_identity: g,
+                    entries: vec![],
+                })
+            }),
+            ("inventory", &|| {
+                w.inventory.seed(&Inventory {
+                    inv_id: 1,
+                    owner_identity: g,
+                    item_id: 1,
+                    count: 1,
+                })
+            }),
+            ("player_quest", &|| {
+                w.quest.seed(&PlayerQuestRow {
+                    pq_id: 1,
+                    owner_identity: g,
+                    quest_id: "q".to_string(),
+                    step_index: 0,
+                })
+            }),
+            ("player_dialogue_state", &|| {
+                w.dialogue.seed(&PlayerDialogueStateRow {
+                    owner_identity: g,
+                    flags: vec![],
+                    done_quests: vec![],
+                })
+            }),
+            ("heal_cooldown", &|| {
+                w.heal.seed(&HealCooldown {
+                    owner_identity: g,
+                    last_heal_at_ms: 1,
+                })
+            }),
+            ("player_wallet", &|| {
+                w.wallet.seed(&PlayerWallet {
+                    owner_identity: g,
+                    balance: 0,
+                })
+            }),
+            ("profile", &|| {
+                w.profile.seed(&Profile {
+                    identity: g,
+                    name: String::new(),
+                    rating: 0,
+                    wins: 0,
+                    losses: 0,
+                })
+            }),
+        ];
+        for (table, seed) in singles {
+            seed();
+            let has = fx.run_as(g, |ctx| crate::accounts::account_has_game_data(ctx, g));
+            assert!(has, "a lone `{table}` row must count as game data");
+            wipe(&w);
+        }
+    }
+
+    // --- deletion lifecycle ----------------------------------------------------
+
+    fn del_reapers_of(w: &W<'_>, who: Identity) -> Vec<AccountDeletionReaperSchedule> {
+        w.del_reaper
+            .rows()
+            .into_iter()
+            .filter(|r| r.account_identity == who)
+            .collect()
+    }
+
+    /// `delete_account` / `cancel_account_deletion` through a signed-in client:
+    /// delete stamps `PendingDeletion` at the injected clock and arms EXACTLY
+    /// one grace reaper at `deletion_fire_at_ms` of that same stamp; a second
+    /// delete re-stamps nothing and arms nothing; cancel restores `Active` and
+    /// disarms only the caller's reaper; a second cancel is a no-op. JWT-less
+    /// and account-less callers are refused before any write; a TERMINAL account
+    /// cannot be re-armed (delete is an Ok no-op) or resurrected (cancel refuses).
+    ///
+    /// kills: a second arm on a repeated delete; a re-stamp that restarts the
+    /// grace window; the fire instant from a second clock read; a cancel that
+    /// leaves the reaper armed (the account is erased anyway) or disarms a
+    /// stranger's; the terminal branches dropped.
+    #[test]
+    fn acct_delete_and_cancel_arm_and_disarm_exactly_once() {
+        let fx = fixture();
+        let w = world(&fx);
+        let me = id(0x61);
+        let other = id(0x62);
+        let other_row = crate::accounts::requested_deletion(
+            crate::accounts::new_account_row(other, "i".to_string(), 1),
+            T0 - 10,
+        );
+        w.account.seed(&other_row);
+        w.del_reaper.seed(&AccountDeletionReaperSchedule {
+            scheduled_id: 500,
+            scheduled_at: ScheduleAt::Time(at(crate::accounts::deletion_fire_at_ms(T0 - 10))),
+            account_identity: other,
+        });
+        let delete = |ms: i64| signed_in(&fx, me, ms, crate::accounts::delete_account);
+        let cancel = |ms: i64| signed_in(&fx, me, ms, crate::accounts::cancel_account_deletion);
+        let mine = |w: &W<'_>| {
+            w.account
+                .rows()
+                .into_iter()
+                .filter(|r| r.identity == me)
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(delete(T0), Err("no account".to_string()));
+        assert_eq!(cancel(T0), Err("no account".to_string()));
+        let active = crate::accounts::new_account_row(me, "i".to_string(), 1);
+        w.account.seed(&active);
+        type Reducer = fn(&ReducerContext) -> Result<(), String>;
+        let guarded: [Reducer; 2] = [
+            crate::accounts::delete_account,
+            crate::accounts::cancel_account_deletion,
+        ];
+        for f in guarded {
+            assert_eq!(
+                as_conn(&fx, me, None, T0, f),
+                Err("sign in required".to_string())
+            );
+        }
+        assert!(
+            del_reapers_of(&w, me).is_empty(),
+            "no refusal arms a reaper"
+        );
+
+        assert_eq!(delete(T0), Ok(()));
+        let pending = crate::accounts::requested_deletion(active.clone(), T0);
+        assert_eq!(encs(&mine(&w)), encs(std::slice::from_ref(&pending)));
+        let armed = del_reapers_of(&w, me);
+        assert_eq!(armed.len(), 1, "delete arms exactly one grace reaper");
+        assert_eq!(
+            fire_at(&armed[0].scheduled_at),
+            at(crate::accounts::deletion_fire_at_ms(T0)),
+            "the reaper fires at the grace end of the SAME stamp the row carries"
+        );
+
+        assert_eq!(delete(T0 + 5), Ok(()));
+        assert_eq!(
+            encs(&mine(&w)),
+            encs(&[pending]),
+            "a repeated delete never re-stamps"
+        );
+        assert_eq!(
+            del_reapers_of(&w, me).len(),
+            1,
+            "a repeated delete never re-arms"
+        );
+
+        assert_eq!(cancel(T0 + 10), Ok(()));
+        assert_eq!(
+            encs(&mine(&w)),
+            encs(std::slice::from_ref(&active)),
+            "cancel restores Active"
+        );
+        assert!(
+            del_reapers_of(&w, me).is_empty(),
+            "cancel disarms the caller's reaper"
+        );
+        assert_eq!(cancel(T0 + 11), Ok(()), "a second cancel is a no-op");
+        assert_eq!(encs(&mine(&w)), encs(std::slice::from_ref(&active)));
+
+        let terminal = crate::accounts::terminal_account(
+            crate::accounts::requested_deletion(active, T0 + 20),
+            T0 + 30,
+        );
+        assert_eq!(w.account.remove(me), 1);
+        w.account.seed(&terminal);
+        assert_eq!(
+            delete(T0 + 40),
+            Ok(()),
+            "delete on an erased account is an Ok no-op"
+        );
+        assert!(
+            del_reapers_of(&w, me).is_empty(),
+            "an erased account is never re-armed"
+        );
+        assert_eq!(
+            cancel(T0 + 41),
+            Err(crate::accounts::REJECT_ALREADY_DELETED.to_string()),
+            "a completed erasure is not reversible"
+        );
+        assert_eq!(encs(&mine(&w)), encs(&[terminal]));
+
+        assert_eq!(
+            del_reapers_of(&w, other).len(),
+            1,
+            "a stranger's reaper survives"
+        );
+        assert_eq!(
+            encs(
+                &w.account
+                    .rows()
+                    .into_iter()
+                    .filter(|r| r.identity == other)
+                    .collect::<Vec<_>>()
+            ),
+            encs(&[other_row]),
+            "a stranger's account survives"
+        );
+    }
+
+    /// Seed one row for `who` in every Erase table, plus its Anonymize rows
+    /// (player + character join, profile) — the M22 §4.4 cascade population.
+    /// `k` keeps keys distinct; `peer` is the other party of the two-party rows.
+    fn seed_cascade_population(w: &W<'_>, who: Identity, peer: Identity, k: u64) {
+        seed_rekey_rows(w, who, k);
+        w.player
+            .seed(&player_row(who, 600 + k, &format!("name{k}")));
+        w.character.seed(&character_row(600 + k));
+        w.conversation.seed(&PlayerConversation {
+            owner_identity: who,
+            npc_entity_id: 3,
+            current_node_id: "n".to_string(),
+        });
+        w.playtest.seed(&PlaytestEvent {
+            event_id: 700 + k,
+            identity: who,
+            kind: 1,
+            created_at_ms: 1,
+            battle_id: 0,
+            species_id: 1,
+            hp_permille: 500,
+            bait_item_id: 0,
+            success: true,
+        });
+        w.action.seed(&BattleAction {
+            action_id: 800 + k,
+            battle_id: 99,
+            player_identity: who,
+            action: game_core::PvpAction::Attack { skill_id: 3 },
+            turn_number: 1,
+            submitted_at_ms: 1,
+        });
+        // An offer the subject made (with its armed reaper) and a challenge in
+        // each role, one of them no longer pending.
+        w.trade.seed(&trade_row(900 + k, who, peer));
+        w.trade_reaper.seed(&TradeOfferReaperSchedule {
+            scheduled_id: 900 + k,
+            scheduled_at: ScheduleAt::Time(at(T0)),
+            trade_id: 900 + k,
+        });
+        w.challenge.seed(&challenge_row(
+            1000 + k,
+            who,
+            peer,
+            ChallengeStatus::Pending,
+        ));
+        w.challenge_reaper.seed(&BattleChallengeReaperSchedule {
+            scheduled_id: 1000 + k,
+            scheduled_at: ScheduleAt::Time(at(T0)),
+            challenge_id: 1000 + k,
+        });
+        w.challenge.seed(&challenge_row(
+            1100 + k,
+            peer,
+            who,
+            ChallengeStatus::Accepted,
+        ));
+        w.export.seed(&export_row(1200 + k, who, T0 - 7));
+        w.session.seed(&PlayerSession {
+            connection_id: ConnectionId::from_u128(1300 + u128::from(k)),
+            identity: who,
+        });
+    }
+
+    /// `account_deletion_reaper`, the M22 §4.4 cascade, over a subject holding a
+    /// row in EVERY Erase table and a bystander holding the same population
+    /// (plus a trade and challenges that do not involve the subject). A
+    /// non-scheduler caller is refused with nothing touched; a tick before the
+    /// grace end erases nothing and re-arms from the row's own stamp; the due
+    /// tick leaves the subject ONLY its Anonymize rows — player and profile
+    /// display names tombstoned, the account anonymized and stamped terminal —
+    /// erases every Erase row, the character via the player join, and every
+    /// reaper row keyed on an erased trade / challenge. The bystander's rows are
+    /// byte-identical throughout.
+    ///
+    /// kills: any erase delegate dropped from the cascade; an erase keyed on the
+    /// wrong identity (the bystander loses rows); the terminal stamp written
+    /// before / without the erasure; the not-yet-due branch erasing or failing
+    /// to re-arm; the scheduler guard dropped; a disarm that leaves a reaper
+    /// firing on a deleted trade / challenge.
+    #[test]
+    fn acct_deletion_reaper_erases_every_owned_row_and_nothing_else() {
+        let fx = fixture();
+        let w = world(&fx);
+        let v = id(0x71);
+        let b = id(0x72);
+        let x = id(0x73);
+        let requested = T0;
+        let pending = crate::accounts::requested_deletion(
+            crate::accounts::new_account_row(v, "iss".to_string(), 1),
+            requested,
+        );
+        w.account.seed(&pending);
+        w.account
+            .seed(&crate::accounts::new_account_row(b, "iss".to_string(), 1));
+        seed_cascade_population(&w, v, b, 1);
+        seed_cascade_population(&w, b, x, 2);
+        let victim_before = owned_by(&w, v);
+        let bystander_now = |w: &W<'_>| -> Vec<(&'static str, Vec<Vec<u8>>)> {
+            owned_by(w, b)
+                .into_iter()
+                .map(|(t, rows)| {
+                    let own = match t {
+                        "trade_offer" => encs(
+                            &w.trade
+                                .rows()
+                                .into_iter()
+                                .filter(|r| r.initiator == b)
+                                .collect::<Vec<_>>(),
+                        ),
+                        "battle_challenge" => encs(
+                            &w.challenge
+                                .rows()
+                                .into_iter()
+                                .filter(|r| {
+                                    (r.challenger == b || r.target == b)
+                                        && r.challenger != v
+                                        && r.target != v
+                                })
+                                .collect::<Vec<_>>(),
+                        ),
+                        _ => rows,
+                    };
+                    (t, own)
+                })
+                .collect()
+        };
+        let bystander_before = bystander_now(&w);
+        let sched = || AccountDeletionReaperSchedule {
+            scheduled_id: 1,
+            scheduled_at: ScheduleAt::Time(at(crate::accounts::deletion_fire_at_ms(requested))),
+            account_identity: v,
+        };
+        let grace_end = crate::accounts::deletion_fire_at_ms(requested);
+
+        // Non-scheduler: refused, nothing touched.
+        let got = fx.run_as_at(v, at(grace_end), |ctx| {
+            crate::accounts::account_deletion_reaper(ctx, sched())
+        });
+        assert_eq!(
+            got,
+            Err("account_deletion_reaper is scheduler-only".to_string())
+        );
+        assert_eq!(
+            owned_by(&w, v),
+            victim_before,
+            "a refused tick touches nothing"
+        );
+
+        // Not yet due: nothing erased, re-armed from the row's own stamp.
+        let got = fx.run_as_at(scheduler(), at(grace_end - 1), |ctx| {
+            crate::accounts::account_deletion_reaper(ctx, sched())
+        });
+        assert_eq!(got, Ok(()));
+        assert_eq!(
+            owned_by(&w, v),
+            victim_before,
+            "an early tick erases nothing"
+        );
+        let rearmed = del_reapers_of(&w, v);
+        assert_eq!(rearmed.len(), 1, "an early tick re-arms exactly once");
+        assert_eq!(fire_at(&rearmed[0].scheduled_at), at(grace_end));
+        w.del_reaper.remove(v);
+
+        // Due: the cascade.
+        let got = fx.run_as_at(scheduler(), at(grace_end), |ctx| {
+            crate::accounts::account_deletion_reaper(ctx, sched())
+        });
+        assert_eq!(got, Ok(()));
+        let after = owned_by(&w, v);
+        assert_eq!(
+            owned_tables(&after),
+            vec!["account", "player", "profile"],
+            "only the Anonymize rows may still name the erased identity"
+        );
+        let one = |t: &str| after.iter().find(|(n, _)| *n == t).unwrap().1.clone();
+        assert_eq!(
+            one("account"),
+            encs(&[crate::accounts::terminal_account(
+                crate::accounts::anonymized_account(pending),
+                grace_end
+            )])
+        );
+        let p = w
+            .player
+            .rows()
+            .into_iter()
+            .find(|r| r.identity == v)
+            .unwrap();
+        assert_eq!(
+            p.name,
+            game_core::TOMBSTONE_DISPLAY_NAME,
+            "the display name is tombstoned"
+        );
+        let pr = w
+            .profile
+            .rows()
+            .into_iter()
+            .find(|r| r.identity == v)
+            .unwrap();
+        assert_eq!(pr.name, game_core::TOMBSTONE_DISPLAY_NAME);
+        assert!(
+            w.character.rows().iter().all(|r| r.entity_id != 601),
+            "the character reachable through the player join is erased"
+        );
+        assert!(w.trade_reaper.rows().iter().all(|r| r.trade_id != 901));
+        assert!(w
+            .challenge_reaper
+            .rows()
+            .iter()
+            .all(|r| r.challenge_id != 1001));
+        assert!(del_reapers_of(&w, v).is_empty(), "the cascade arms nothing");
+
+        assert_eq!(
+            bystander_now(&w),
+            bystander_before,
+            "the bystander's rows are untouched"
+        );
+        assert!(w.character.rows().iter().any(|r| r.entity_id == 602));
+        assert!(w.trade_reaper.rows().iter().any(|r| r.trade_id == 902));
+        assert!(w
+            .challenge_reaper
+            .rows()
+            .iter()
+            .any(|r| r.challenge_id == 1002));
+    }
+
+    /// `guest_claim_reaper`: scheduler-only; a tick before expiry leaves the
+    /// claim (staleness re-check), the due tick deletes exactly that guest's
+    /// claim, and a claim already consumed is an Ok no-op.
+    ///
+    /// kills: the scheduler guard dropped; the staleness re-check dropped (a
+    /// fresh replacement claim reaped after clock skew); a reap keyed on
+    /// anything but the scheduled guest.
+    #[test]
+    fn acct_guest_claim_reaper_reaps_only_the_expired_scheduled_claim() {
+        let fx = fixture();
+        let w = world(&fx);
+        let g = id(0x81);
+        let other = id(0x82);
+        let claim = seed_live_claim(&w, g, &code('1'), 1);
+        let other_claim = seed_live_claim(&w, other, &code('2'), 2);
+        let sched = |guest: Identity| GuestClaimReaperSchedule {
+            scheduled_id: 1,
+            scheduled_at: ScheduleAt::Time(at(claim.expires_at_ms)),
+            guest_identity: guest,
+        };
+        let tick = |who: Identity, ms: i64, guest: Identity| {
+            fx.run_as_at(who, at(ms), |ctx| {
+                crate::accounts::guest_claim_reaper(ctx, sched(guest))
+            })
+        };
+        assert_eq!(
+            tick(g, claim.expires_at_ms, g),
+            Err("guest_claim_reaper is scheduler-only".to_string())
+        );
+        assert_eq!(tick(scheduler(), claim.expires_at_ms - 1, g), Ok(()));
+        assert_eq!(
+            w.claim.rows().len(),
+            2,
+            "a claim is never reaped before it expires"
+        );
+        assert_eq!(tick(scheduler(), claim.expires_at_ms, g), Ok(()));
+        assert_eq!(
+            encs(&w.claim.rows()),
+            encs(&[other_claim]),
+            "only the scheduled guest's claim goes"
+        );
+        assert_eq!(
+            tick(scheduler(), claim.expires_at_ms + 1, g),
+            Ok(()),
+            "consumed: no-op"
+        );
+    }
+
+    /// EV-account-privacy#tables-view: the only client read path to `account`
+    /// is the `my_account` view, run here through the runtime's own view entry
+    /// point: each caller sees exactly its own row, a stranger sees none.
+    /// (`account` / `guest_claim` absence from the client surface is the
+    /// client-surface-privacy allowlist.)
+    ///
+    /// kills: a view body keyed on anything but `ctx.sender()`; a decoy lookup
+    /// that returns another identity's row.
+    #[test]
+    fn acct_my_account_view_returns_only_the_callers_row() {
+        let fx = fixture();
+        let w = world(&fx);
+        let a = crate::accounts::new_account_row(id(0x91), "ia".to_string(), 1);
+        let b = crate::accounts::claimed_account(
+            crate::accounts::new_account_row(id(0x92), "ib".to_string(), 2),
+            id(0x93),
+            3,
+        );
+        w.account.seed(&a);
+        w.account.seed(&b);
+        let seen = |who: Identity| encs(&fx.call_view::<Account>(VIEW_MY_ACCOUNT, who));
+        assert_eq!(seen(id(0x91)), encs(&[a]));
+        assert_eq!(seen(id(0x92)), encs(&[b]));
+        assert!(
+            seen(id(0x94)).is_empty(),
+            "a caller with no account sees nothing"
+        );
+    }
+
+    // --- data export (ADR-0268; ST-privacy_tests#export-owner-scope / #export-admission)
+
+    fn exportable_tables() -> Vec<&'static str> {
+        let mut t: Vec<&str> = DATA_LIFECYCLE_MANIFEST
+            .iter()
+            .filter(|e| e.exportable)
+            .map(|e| e.table)
+            .collect();
+        t.sort_unstable();
+        t
+    }
+
+    fn chunks_of(w: &W<'_>, who: Identity) -> Vec<ExportBundle> {
+        let mut c: Vec<ExportBundle> = w
+            .export
+            .rows()
+            .into_iter()
+            .filter(|r| r.owner_identity == who)
+            .collect();
+        c.sort_by_key(|r| r.chunk_index);
+        c
+    }
+
+    fn export_as(fx: &Fixture, who: Identity, ms: i64) -> Result<(), String> {
+        fx.run_as_at(who, at(ms), crate::privacy::request_data_export)
+    }
+
+    /// Seed an export subject: a player row plus rows in several exportable
+    /// tables, every string carrying `tag` so a foreign row is visible in a
+    /// payload even where no identity column is exported.
+    fn seed_export_subject(w: &W<'_>, who: Identity, k: u64, tag: &str) {
+        w.player.seed(&player_row(who, 1400 + k, tag));
+        let mut m = monster_row(1500 + k, who);
+        m.nickname = tag.to_string();
+        w.monster_pub.seed(&crate::marshal::pub_from_monster(&m, 0));
+        w.monster.seed(&m);
+        w.quest.seed(&PlayerQuestRow {
+            pq_id: 1600 + k,
+            owner_identity: who,
+            quest_id: tag.to_string(),
+            step_index: 0,
+        });
+        w.playtest.seed(&PlaytestEvent {
+            event_id: 1700 + k,
+            identity: who,
+            kind: 1,
+            created_at_ms: 1,
+            battle_id: 0,
+            species_id: 1,
+            hp_permille: 1,
+            bait_item_id: 0,
+            success: false,
+        });
+    }
+
+    /// Two subjects export in the SAME millisecond through the shipped reducer.
+    /// Each bundle is owner-scoped (every chunk owned by the caller, one chunk
+    /// per exportable table, contiguous `chunk_index` with the request-wide
+    /// `total_chunks`, and no payload naming the other subject or carrying its
+    /// tagged rows); each carries ONE creation stamp that no other live bundle
+    /// shares (the clock, then the first free millisecond: ADR-0268), with
+    /// `request_id` mirroring it. One reaper singleton is armed. A repeat inside
+    /// the cooldown is refused with nothing written; after it, the caller's old
+    /// bundle is purged and replaced while the other bundle is untouched. A
+    /// caller with no subject rows and a mid-grace account are refused.
+    ///
+    /// kills: a shared stamp for two live requests (the reaper's per-stamp
+    /// delete unit would span bundles); chunks stamped from anything but the
+    /// minted stamp; an exporter that reads beyond the caller's rows; the
+    /// purge-before-write or cooldown dropped; the purge keyed on anything but
+    /// the caller.
+    #[test]
+    fn acct_export_is_owner_scoped_and_stamps_each_live_bundle_uniquely() {
+        let fx = fixture();
+        let w = world(&fx);
+        let a = id(0xA1);
+        let b = id(0xA2);
+        seed_export_subject(&w, a, 1, "TAG-ALPHA");
+        seed_export_subject(&w, b, 2, "TAG-BRAVO");
+
+        assert_eq!(export_as(&fx, a, T0), Ok(()));
+        assert_eq!(
+            export_as(&fx, b, T0),
+            Ok(()),
+            "a same-millisecond second subject is served"
+        );
+
+        let tables = exportable_tables();
+        for (who, other, stamp, tag) in [(a, b, T0, "TAG-BRAVO"), (b, a, T0 + 1, "TAG-ALPHA")] {
+            let chunks = chunks_of(&w, who);
+            assert_eq!(
+                chunks.len(),
+                tables.len(),
+                "one chunk per exportable table (small data)"
+            );
+            let mut names: Vec<&str> = chunks.iter().map(|c| c.table_name.as_str()).collect();
+            names.sort_unstable();
+            assert_eq!(names, tables, "every exportable table, exactly once");
+            for (i, c) in chunks.iter().enumerate() {
+                assert_eq!(c.chunk_index, i as u32, "chunk_index is contiguous from 0");
+                assert_eq!(c.total_chunks, chunks.len() as u32);
+                assert_eq!(
+                    c.created_at_ms, stamp,
+                    "every chunk carries the request's ONE stamp"
+                );
+                assert_eq!(c.request_id, stamp as u64, "request_id mirrors the stamp");
+                assert!(
+                    !c.payload_json.contains(&other.to_string()) && !c.payload_json.contains(tag),
+                    "a `{}` chunk leaks the other subject's rows: {}",
+                    c.table_name,
+                    c.payload_json
+                );
+            }
+        }
+        assert_eq!(
+            w.export_reaper.rows().len(),
+            1,
+            "the TTL reaper is a singleton"
+        );
+
+        let b_before = encs(&chunks_of(&w, b));
+        let a_before = encs(&chunks_of(&w, a));
+        assert_eq!(
+            export_as(&fx, a, T0 + 30_000),
+            Err("export_reject_cooldown".to_string())
+        );
+        assert_eq!(
+            encs(&chunks_of(&w, a)),
+            a_before,
+            "a refused repeat writes nothing"
+        );
+        assert_eq!(export_as(&fx, a, T0 + 60_000), Ok(()));
+        let fresh = chunks_of(&w, a);
+        assert_eq!(
+            fresh.len(),
+            tables.len(),
+            "the old bundle is purged, not appended to"
+        );
+        assert!(fresh.iter().all(|c| c.created_at_ms == T0 + 60_000));
+        assert_eq!(
+            encs(&chunks_of(&w, b)),
+            b_before,
+            "another subject's bundle is untouched"
+        );
+        assert_eq!(w.export_reaper.rows().len(), 1, "still one reaper");
+
+        assert_eq!(
+            export_as(&fx, id(0xA3), T0),
+            Err("export_reject_no_subject".to_string())
+        );
+        w.account.seed(&crate::accounts::requested_deletion(
+            crate::accounts::new_account_row(b, "i".to_string(), 1),
+            T0,
+        ));
+        assert_eq!(
+            export_as(&fx, b, T0 + 120_000),
+            Err("export_reject_pending_deletion".to_string())
+        );
+        assert_eq!(encs(&chunks_of(&w, b)), b_before);
+    }
+
+    /// ADR-0268's contention arm through the shipped reducer: with every
+    /// millisecond of the probe window already carrying a live bundle, a request
+    /// is refused — it never falls back to sharing a stamp — and writes nothing.
+    /// The first millisecond past the window is free, so the SAME request one
+    /// window later is served there.
+    ///
+    /// kills: a fallback onto an occupied stamp; a window wider or narrower
+    /// than the one the reaper's bundle cap is sized for.
+    #[test]
+    fn acct_export_refuses_a_full_stamp_window_and_writes_nothing() {
+        let fx = fixture();
+        let w = world(&fx);
+        let a = id(0xB1);
+        seed_export_subject(&w, a, 1, "TAG-A");
+        let window = crate::privacy::EXPORT_REAP_MAX_STAMPS_PER_TICK as i64;
+        for k in 0..window {
+            w.export
+                .seed(&export_row(5000 + k as u64, id(0xB2), T0 + k));
+        }
+        let before = encs(&w.export.rows());
+        assert_eq!(
+            export_as(&fx, a, T0),
+            Err("export_reject_stamp_contention".to_string())
+        );
+        assert_eq!(
+            encs(&w.export.rows()),
+            before,
+            "a contended request writes nothing"
+        );
+        assert_eq!(
+            export_as(&fx, a, T0 - window),
+            Ok(()),
+            "a free window is served"
+        );
+        assert!(chunks_of(&w, a)
+            .iter()
+            .all(|c| c.created_at_ms == T0 - window));
+    }
+
+    /// The TTL reaper deletes WHOLE bundles only. Two bundles minted in the same
+    /// millisecond sit one stamp apart; the tick at the first bundle's TTL
+    /// removes every chunk of it and none of the second, whose own TTL tick
+    /// then removes it. A non-scheduler tick is refused and deletes nothing.
+    ///
+    /// kills: a reap unit wider than one stamp (a partial or foreign bundle
+    /// deleted), a TTL comparison off by one, the scheduler guard dropped.
+    #[test]
+    fn acct_export_reaper_deletes_whole_bundles_only() {
+        let fx = fixture();
+        let w = world(&fx);
+        let a = id(0xC1);
+        let b = id(0xC2);
+        seed_export_subject(&w, a, 1, "TAG-A");
+        seed_export_subject(&w, b, 2, "TAG-B");
+        assert_eq!(export_as(&fx, a, T0), Ok(()));
+        assert_eq!(export_as(&fx, b, T0), Ok(()));
+        let ttl = crate::privacy::EXPORT_BUNDLE_TTL_MS;
+        let tick = |who: Identity, ms: i64| {
+            fx.run_as_at(who, at(ms), |ctx| {
+                crate::privacy::export_bundle_reaper(
+                    ctx,
+                    ExportBundleReaperSchedule {
+                        id: 1,
+                        scheduled_at: ScheduleAt::Time(at(ms)),
+                    },
+                )
+            })
+        };
+        let n = exportable_tables().len();
+        assert_eq!(
+            tick(a, T0 + ttl),
+            Err("export_reaper_scheduler_only".to_string())
+        );
+        assert_eq!(
+            w.export.rows().len(),
+            2 * n,
+            "a refused tick deletes nothing"
+        );
+        assert_eq!(tick(scheduler(), T0 + ttl - 1), Ok(()));
+        assert_eq!(
+            w.export.rows().len(),
+            2 * n,
+            "nothing is reaped before its TTL"
+        );
+        assert_eq!(tick(scheduler(), T0 + ttl), Ok(()));
+        assert!(chunks_of(&w, a).is_empty(), "the expired bundle goes whole");
+        assert_eq!(
+            chunks_of(&w, b).len(),
+            n,
+            "the unexpired bundle stays whole"
+        );
+        assert_eq!(tick(scheduler(), T0 + 1 + ttl), Ok(()));
+        assert!(w.export.rows().is_empty());
+    }
+
+    /// Admission control through the shipped reducer, at the exact edge. The
+    /// global live-row cap is tiered by caller: an account holder gets the whole
+    /// cap, a wallet-holding anonymous caller half, a join-only newcomer a
+    /// quarter. With the store `newcomer_cap - min_bundle` rows full a newcomer
+    /// is still served; one row fuller the newcomer is refused with nothing
+    /// written, while a caller holding a wallet is served.
+    ///
+    /// kills: the tier order inverted or collapsed; the cap compared with `<`
+    /// instead of `<=`; admission checked after the write.
+    #[test]
+    fn acct_export_admission_sheds_newcomers_first_at_the_exact_edge() {
+        let cap = crate::privacy::EXPORT_REAP_MAX_READ_PER_TICK as u64
+            * (crate::privacy::EXPORT_BUNDLE_TTL_MS as u64
+                / crate::privacy::EXPORT_REAP_INTERVAL.as_millis() as u64);
+        let newcomer_cap = cap / 4;
+        let min_bundle = exportable_tables().len() as u64;
+        for (extra, newcomer_served) in [(0u64, true), (1, false)] {
+            let fx = fixture();
+            let w = world(&fx);
+            let filler = newcomer_cap - min_bundle + extra;
+            for k in 0..filler {
+                w.export.seed(&export_row(10_000 + k, id(0xD9), 1));
+            }
+            let newcomer = id(0xD1);
+            seed_export_subject(&w, newcomer, 1, "TAG-N");
+            let got = export_as(&fx, newcomer, T0);
+            if newcomer_served {
+                assert_eq!(got, Ok(()), "{filler} live rows: a newcomer still fits");
+            } else {
+                assert_eq!(got, Err("export_reject_admission".to_string()));
+                assert!(
+                    chunks_of(&w, newcomer).is_empty(),
+                    "a refused request writes nothing"
+                );
+                let earner = id(0xD2);
+                seed_export_subject(&w, earner, 2, "TAG-E");
+                w.wallet.seed(&PlayerWallet {
+                    owner_identity: earner,
+                    balance: 1,
+                });
+                assert_eq!(
+                    export_as(&fx, earner, T0),
+                    Ok(()),
+                    "a wallet holder is admitted"
+                );
+            }
+        }
+    }
+}

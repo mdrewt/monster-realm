@@ -717,8 +717,10 @@ impl Fixture {
 //   once per process through the public `rt::register_reducer` and published
 //   into `REDUCERS` by calling `__describe_module__`. The closure's panics are
 //   caught inside the trampoline and re-raised in the caller's Rust frame, so
-//   assertions (and `#[should_panic]`) behave normally. The connection id is
-//   always `None`, so the context is internal and never reads a JWT.
+//   assertions (and `#[should_panic]`) behave normally. Under `run_as(_at)` the
+//   connection id is `None`, so the context is internal and never reads a JWT;
+//   `run_as_conn_at` opens a client connection and serves its JWT (see the
+//   connection banner below).
 // * A CONTROLLABLE CLOCK. `Fixture::ctx_at` (the dummy context with its public
 //   `timestamp` set) and `run_as_at`.
 // * A MODULE IDENTITY. The `identity` syscall answers the fixture's database
@@ -767,6 +769,12 @@ struct TableModel {
 struct Model {
     tables: HashMap<u32, TableModel>,
     database_identity: [u8; 32],
+    /// The connection `run_as_conn_at` opened (LE bytes), and the JWT claims
+    /// payload `get_jwt` answers for it (`None` = a JWT-less connection), read
+    /// out through [`JWT_SOURCE`] from `jwt_cursor` on.
+    jwt_conn: [u8; 16],
+    jwt: Option<Vec<u8>>,
+    jwt_cursor: usize,
 }
 
 impl Default for Model {
@@ -774,6 +782,9 @@ impl Default for Model {
         Model {
             tables: HashMap::new(),
             database_identity: DEFAULT_DATABASE_IDENTITY,
+            jwt_conn: [0; 16],
+            jwt: None,
+            jwt_cursor: 0,
         }
     }
 }
@@ -901,6 +912,43 @@ impl Fixture {
         at: Timestamp,
         f: impl FnOnce(&ReducerContext) -> T,
     ) -> T {
+        self.run_as_on(sender, 0, at, f)
+    }
+
+    /// [`Fixture::run_as_at`] over a CLIENT connection: `conn` (non-zero) becomes
+    /// `ctx.connection_id()`, and the runtime resolves `ctx.sender_auth()` through
+    /// the `get_jwt` syscall, which answers `jwt` — the JSON claims payload the
+    /// SDK hands a module (`{"iss":..,"aud":..,"sub":..}`), or `None` for a
+    /// JWT-less (anonymous) connection. See the connection banner at EOF.
+    pub(crate) fn run_as_conn_at<T>(
+        &self,
+        sender: Identity,
+        conn: u128,
+        jwt: Option<&str>,
+        at: Timestamp,
+        f: impl FnOnce(&ReducerContext) -> T,
+    ) -> T {
+        assert_ne!(
+            conn, 0,
+            "native_host_tests: a client connection id is never zero (zero means no connection)"
+        );
+        {
+            let mut h = host();
+            h.model.jwt_conn = conn.to_le_bytes();
+            h.model.jwt = jwt.map(|claims| claims.as_bytes().to_vec());
+            h.model.jwt_cursor = 0;
+        }
+        self.run_as_on(sender, conn, at, f)
+    }
+
+    /// The shared core: `conn == 0` is the internal (no-connection) context.
+    fn run_as_on<T>(
+        &self,
+        sender: Identity,
+        conn: u128,
+        at: Timestamp,
+        f: impl FnOnce(&ReducerContext) -> T,
+    ) -> T {
         ensure_run_as_registered();
         let micros = u64::try_from(at.to_micros_since_unix_epoch())
             .expect("native_host_tests: run_as_at needs a timestamp at or after the Unix epoch");
@@ -920,6 +968,11 @@ impl Fixture {
                     ctx.timestamp, at,
                     "native_host_tests: run_as timestamp did not land"
                 );
+                assert_eq!(
+                    ctx.connection_id().map(|c| c.to_u128()),
+                    (conn != 0).then_some(conn),
+                    "native_host_tests: run_as connection id did not land"
+                );
                 f(ctx)
             })));
         };
@@ -932,6 +985,10 @@ impl Fixture {
         RUN_AS_BODY.with(|slot| *slot.borrow_mut() = Some(erased));
         let s = sender.to_byte_array();
         let word = |i: usize| u64::from_ne_bytes(s[i * 8..i * 8 + 8].try_into().unwrap());
+        // The runtime rebuilds the id from its two words as native-endian u64s
+        // read back as a LITTLE-ENDIAN byte array (`rt.rs:1076`).
+        let c = conn.to_le_bytes();
+        let conn_word = |i: usize| u64::from_ne_bytes(c[i * 8..i * 8 + 8].try_into().unwrap());
         // SAFETY: the shipped entry point; reducer 0 is the trampoline (the only
         // registered reducer), args are the INVALID (empty) source, and the error
         // sink is one `bytes_sink_write` below accepts.
@@ -942,8 +999,8 @@ impl Fixture {
                 word(1),
                 word(2),
                 word(3),
-                0,
-                0,
+                conn_word(0),
+                conn_word(1),
                 micros,
                 0,
                 ERROR_SINK,
@@ -1031,6 +1088,9 @@ unsafe extern "C" {
     /// `#[spacetimedb::view(accessor = my_wallet, public)]` in schema.rs.
     #[link_name = "__preinit__20_register_describer_my_wallet"]
     fn register_view_my_wallet();
+    /// `#[spacetimedb::view(accessor = my_account, public)]` in schema.rs.
+    #[link_name = "__preinit__20_register_describer_my_account"]
+    fn register_view_my_account();
     /// spacetimedb 2.8.1 `rt.rs:1267` (`#[unsafe(no_mangle)]`).
     fn __call_view__(
         id: usize,
@@ -1044,10 +1104,14 @@ unsafe extern "C" {
 }
 
 /// Registered in this order, so a view's `VIEWS` id is its index here.
-const VIEW_DESCRIBERS: [unsafe extern "C" fn(); 1] = [register_view_my_wallet];
+const VIEW_DESCRIBERS: [unsafe extern "C" fn(); 2] =
+    [register_view_my_wallet, register_view_my_account];
 
 /// `VIEWS` id of `my_wallet` (its index in [`VIEW_DESCRIBERS`]).
 pub(crate) const VIEW_MY_WALLET: usize = 0;
+
+/// `VIEWS` id of `my_account` (its index in [`VIEW_DESCRIBERS`]).
+pub(crate) const VIEW_MY_ACCOUNT: usize = 1;
 
 const VIEW_SINK: u32 = 0x71E5;
 
@@ -1292,25 +1356,127 @@ unsafe extern "C" fn bytes_sink_write(
     }
 }
 
-// Linked because the shipped entry points reference them; never reached, since
-// `run_as` passes empty args and no connection id (so no JWT lookup).
+// ---------------------------------------------------------------------------
+// THE CONNECTION + JWT MODEL (debloat Phase 2, ST-accounts_tests#auth).
+//
+// `run_as_conn_at` hands `__call_reducer__` a NON-ZERO connection id, so the
+// runtime builds the context through `AuthCtx::from_connection_id` exactly as a
+// client call does (`lib.rs:1864`): the first `has_jwt()` / `jwt()` asks the
+// `get_jwt` syscall for that connection, and a valid bytes source is then read
+// through `bytes_source_remaining_length` + `bytes_source_read`
+// (`rt.rs:1312`, `rt.rs:1323`). This host serves ONE source, [`JWT_SOURCE`],
+// holding the claims payload the test chose; `None` answers the INVALID source,
+// which the runtime reads as "no JWT" (the anonymous player). Reducer ARGS stay
+// the INVALID source (`run_as` passes none), so no other source is ever read.
+// ---------------------------------------------------------------------------
+
+/// The one bytes source this host hands out: the current connection's JWT.
+const JWT_SOURCE: u32 = 0x0A57;
+
 #[no_mangle]
 unsafe extern "C" fn bytes_source_read(
-    _source: u32,
-    _buffer_ptr: *mut u8,
-    _len_ptr: *mut usize,
+    source: u32,
+    buffer_ptr: *mut u8,
+    len_ptr: *mut usize,
 ) -> i16 {
-    unmodelled("bytes_source_read")
+    if source != JWT_SOURCE {
+        unmodelled("bytes_source_read of a source this host never handed out")
+    }
+    let mut h = host();
+    let model = &mut h.model;
+    let Some(payload) = model.jwt.as_ref() else {
+        unmodelled("bytes_source_read of a JWT source with no payload")
+    };
+    let rest = &payload[model.jwt_cursor..];
+    // SAFETY: `len_ptr` is the caller's spare-capacity length and `buffer_ptr`
+    // points at that many writable bytes (`read_bytes_source_into`).
+    let room = unsafe { len_ptr.read() };
+    let n = room.min(rest.len());
+    unsafe {
+        std::ptr::copy_nonoverlapping(rest.as_ptr(), buffer_ptr, n);
+        len_ptr.write(n);
+    }
+    model.jwt_cursor += n;
+    if model.jwt_cursor == payload.len() {
+        -1 // exhausted
+    } else {
+        0
+    }
 }
 
 #[no_mangle]
-unsafe extern "C" fn bytes_source_remaining_length(_source: u32, _out: *mut u32) -> i16 {
-    unmodelled("bytes_source_remaining_length")
+unsafe extern "C" fn bytes_source_remaining_length(source: u32, out: *mut u32) -> i16 {
+    if source != JWT_SOURCE {
+        unmodelled("bytes_source_remaining_length of a source this host never handed out")
+    }
+    let h = host();
+    let Some(payload) = h.model.jwt.as_ref() else {
+        unmodelled("bytes_source_remaining_length of a JWT source with no payload")
+    };
+    let rest = u32::try_from(payload.len() - h.model.jwt_cursor)
+        .expect("native_host_tests: a JWT payload fits a u32 length");
+    // SAFETY: `out` points at the bindings' `u32` out-param.
+    unsafe { out.write(rest) };
+    0
 }
 
 #[no_mangle]
-unsafe extern "C" fn get_jwt(_connection_id_ptr: *const u8, _bytes_source_id: *mut u32) -> u16 {
-    unmodelled("get_jwt")
+unsafe extern "C" fn get_jwt(connection_id_ptr: *const u8, bytes_source_id: *mut u32) -> u16 {
+    // SAFETY: the runtime passes a 16-byte little-endian `ConnectionId`.
+    let conn = unsafe { std::slice::from_raw_parts(connection_id_ptr, 16) };
+    let mut h = host();
+    if conn != h.model.jwt_conn {
+        unmodelled("get_jwt for a connection `run_as_conn_at` never opened")
+    }
+    h.model.jwt_cursor = 0;
+    let source = if h.model.jwt.is_some() { JWT_SOURCE } else { 0 };
+    // SAFETY: `bytes_source_id` points at the bindings' `BytesSource` (`u32`) out-param.
+    unsafe { bytes_source_id.write(source) };
+    0
+}
+
+/// ST-accounts_tests#auth demonstration: a connection-bearing context carries
+/// the connection id, reads back EXACTLY the claims the test served (issuer,
+/// audience, subject — through the SDK's own parser), and a `None` payload is
+/// the JWT-less connection. The internal `run_as` context has no connection.
+#[test]
+fn nh_run_as_conn_serves_the_connection_and_its_jwt() {
+    let fx = fixture();
+    let me = Identity::from_byte_array([7u8; 32]);
+    let at = Timestamp::from_micros_since_unix_epoch(1_700_000_000_000_000);
+    let claims = r#"{"iss":"issuer.example","aud":["a","b"],"sub":"s-1"}"#;
+    let (conn, has, iss, aud, sub) = fx.run_as_conn_at(me, 0xC0FFEE, Some(claims), at, |ctx| {
+        let jwt = ctx
+            .sender_auth()
+            .jwt()
+            .expect("the served JWT must be visible");
+        (
+            ctx.connection_id().map(|c| c.to_u128()),
+            ctx.sender_auth().has_jwt(),
+            jwt.issuer().to_string(),
+            jwt.audience().to_vec(),
+            jwt.subject().to_string(),
+        )
+    });
+    assert_eq!(conn, Some(0xC0FFEE));
+    assert!(has, "a served payload is a JWT-bearing connection");
+    assert_eq!(iss, "issuer.example");
+    assert_eq!(aud, vec!["a".to_string(), "b".to_string()]);
+    assert_eq!(sub, "s-1");
+
+    let anon = fx.run_as_conn_at(me, 0xC0FFEF, None, at, |ctx| {
+        (ctx.connection_id().is_some(), ctx.sender_auth().has_jwt())
+    });
+    assert_eq!(
+        anon,
+        (true, false),
+        "a None payload is a JWT-less connection"
+    );
+    assert_eq!(
+        fx.run_as(me, |ctx| (ctx.connection_id(), ctx.sender_auth().has_jwt())),
+        (None, false),
+        "run_as stays the internal, connection-less context"
+    );
 }
 
 /// ST-native_host_tests demonstration: `run_as_at` lands the chosen sender and
