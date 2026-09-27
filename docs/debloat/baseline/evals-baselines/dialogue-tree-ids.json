@@ -1,0 +1,4 @@
+{
+  "_comment": "Released stable STRING dialogue TREE ids — APPEND-ONLY (ADR-0006, 11r-i/T3). append-only-string-ids eval fails if any id here disappears from game-core/content/dialogue_trees/*.ron (Npc.dialogue_tree_id keys on these). TREE ids only — node ids are tree-scoped, reused across trees (both shipped trees define a node id \"greeting\"), and are dialogue-client-integrity's job. Derived by reading the RON by hand (000-core.ron depth-1 `id:` = \"elder_oak_talk\", \"shopkeeper_greeting\"), then cross-checked against parseStringIds.",
+  "dialogue_trees": ["elder_oak_talk", "shopkeeper_greeting"]
+}

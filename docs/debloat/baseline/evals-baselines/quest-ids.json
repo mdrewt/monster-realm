@@ -1,0 +1,4 @@
+{
+  "_comment": "Released stable STRING quest ids — APPEND-ONLY (ADR-0006, 11r-i/T3). append-only-string-ids eval fails if any id here disappears from game-core/content/quests/*.ron (PlayerQuestRow.quest_id keys on these). Add new ids; never rename. Derived by reading the RON by hand (000-core.ron top-level `id:` = \"quest_001\" / Find the Elder — the nested step trigger Talk(npc_id: \"elder_oak\") is NOT a quest id), then cross-checked against parseStringIds.",
+  "quests": ["quest_001"]
+}

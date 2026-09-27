@@ -1,0 +1,79 @@
+Listing tests:
+  [default] › a11y.spec.ts:223:5 › rb-19 — axe-core over the real client › the connected world chrome is free of WCAG 2.x A/AA violations
+  [default] › a11y.spec.ts:230:5 › rb-19 — axe-core over the real client › the help overlay is free of WCAG 2.x A/AA violations while open
+  [default] › a11y.spec.ts:240:5 › rb-19 — axe-core over the real client › the menu overlay is free of WCAG 2.x A/AA violations while open
+  [default] › dialogue.spec.ts:310:5 › M13.5c — dialogue lifecycle through the conversation subscription › setup: A walks the grass-free path (1,1)→(5,4) with no battle
+  [default] › dialogue.spec.ts:331:5 › M13.5c — dialogue lifecycle through the conversation subscription › 13.5c-5: KeyT talk opens the overlay with the entry-node text; B stays dark
+  [default] › dialogue.spec.ts:357:5 › M13.5c — dialogue lifecycle through the conversation subscription › 13.5c-5: Escape dismiss hides the overlay; re-talk re-opens it
+  [default] › dialogue.spec.ts:385:5 › M13.5c — dialogue lifecycle through the conversation subscription › 13.5c-5: advancing via the real choice applies its effect and ends the dialogue
+  [default] › dialogue.spec.ts:460:5 › M13.5c — dialogue lifecycle through the conversation subscription › 13.5c-5 isolation: B never rendered a dialogue overlay at any point
+  [default] › golden.spec.ts:115:5 › M5a — two-window POC golden flows › both clients see each other (distinct identities)
+  [default] › golden.spec.ts:125:5 › M5a — two-window POC golden flows › A→B movement syncs and prediction converges (predicted == authoritative)
+  [default] › golden.spec.ts:184:5 › M5a — two-window POC golden flows › B→A movement syncs (symmetric)
+  [default] › golden.spec.ts:210:5 › M5a — two-window POC golden flows › wall bump leaves predicted == authoritative (the canonical no-desync net)
+  [default] › monster-privacy.spec.ts:307:5 › 13r-e — monster_pub privacy: rosters + the battle overlay (ADR-0194) › EARS 13r-e-1: each client receives its OWN monster rows and NONE of the other player`s
+  [default] › monster-privacy.spec.ts:350:5 › 13r-e — monster_pub privacy: rosters + the battle overlay (ADR-0194) › EARS 13r-e-2: the PvP battle overlay renders FULLY while each client holds zero other-player monster rows
+  [default] › monster-privacy.spec.ts:514:5 › 13r-e — monster_pub privacy: the trade window + live ownership transfer (ADR-0194) › EARS 13r-e-2 + 13r-e-3: the trade window renders both parties` cards, and the transfer migrates the row live with NO reconnect
+  [default] › movement-input.spec.ts:326:5 › 14r-e — keyboard-driven movement input (ADR-0187) › A GREEN GUARD: a single-code 90ms tap moves EXACTLY one tile (kills committedActive/HOLD_COMMIT_MS reverts at runtime)
+  [default] › movement-input.spec.ts:415:5 › 14r-e — keyboard-driven movement input (ADR-0187) › B RED PROOF: a dual-code overlap tap (ArrowRight+KeyD / ArrowLeft+KeyA) moves EXACTLY one tile — EARS-1
+  [default] › movement-input.spec.ts:493:5 › 14r-e — keyboard-driven movement input (ADR-0187) › C GREEN GUARD: a held key FREEZES under the box overlay and RESUMES when it closes (kills the whole-gate `|| true` fold)
+  [default] › movement-input.spec.ts:599:5 › 14r-e — keyboard-driven movement input (ADR-0187) › D: a sustained 1s hold stays inside the send budget and is NEVER rejected (kills the narrow `&& true ||` outstandingSteps mutant)
+  [default] › my-battle-privacy.spec.ts:278:5 › 15r-sec-a — battle privacy: a non-participant receives nothing, and the participant keeps its row (ADR-0198) › EARS 15r-sec-a-2 + -4: B never receives A`s battle, while A holds it and keeps it across a turn advance
+  [default] › pvp-full.spec.ts:319:5 › m17.5f — PvP full flow e2e (17.5f-1) › __mrPvp hook is available on window with all required methods (17.5f-1 hook)
+  [default] › pvp-full.spec.ts:375:5 › m17.5f — PvP full flow e2e (17.5f-1) › PvP full flow: challenge → accept → turn exchange → B-disconnect → A wins; zero-sum profile assertion (17.5f-1)
+  [default] › pvp-side-b.spec.ts:276:5 › 11r-b — PvP side-B battle overlay (production path, zero DEV-hook use) › side B (the accepter) gets a real battle overlay with its OWN cards/skills, and its own submitted action resolves the turn
+  [default] › pvp.spec.ts:73:5 › m16b — PvP challenge overlay UI wiring › PvP overlay DOM elements exist
+  [default] › pvp.spec.ts:85:5 › m16b — PvP challenge overlay UI wiring › PvP overlay is initially hidden
+  [default] › pvp.spec.ts:92:5 › m16b — PvP challenge overlay UI wiring › KeyP toggles the PvP overlay
+  [default] › pvp.spec.ts:106:5 › m16b — PvP challenge overlay UI wiring › Escape closes the PvP overlay
+  [default] › pvp.spec.ts:117:5 › m16b — PvP challenge overlay UI wiring › KeyP does not open PvP overlay when box overlay is visible
+  [default] › pvp.spec.ts:145:5 › m16b — PvP challenge overlay UI wiring › KeyB does not open box overlay when PvP overlay is visible
+  [default] › pvp.spec.ts:170:5 › m16b — PvP challenge overlay UI wiring › KeyP does not open PvP overlay when trade overlay is visible
+  [default] › pvp.spec.ts:189:5 › m16b — PvP challenge overlay UI wiring › PvP overlay shows "PvP Challenge" heading when opened
+  [default] › ranked-forfeit.spec.ts:265:5 › m17c — ranked PvP forfeit e2e (RL-18) › ranked forfeit flow: challenge → accept → B-disconnect → A wins; zero-sum profile assertion (RL-18)
+  [default] › recruit.spec.ts:491:5 › M13.5h — wild recruit flow (gameplay-driven) › R1: recruit-action visible + bait-selector has no bait options in fresh inventory
+  [default] › recruit.spec.ts:565:5 › M13.5h — wild recruit flow (gameplay-driven) › R2: successful recruit increments ownMonsters by 1 with partySlot 255
+  [default] › recruit.spec.ts:915:5 › M13.5h — wild recruit flow (gameplay-driven) › R3: winning battle shows Victory! and spacetime sql confirms SideAWins
+  [default] › recruit.spec.ts:1008:10 › M13.5h — wild recruit flow (gameplay-driven) › R4: bait selector lists only items with recruit_bonus > 0 (blocked: __game() test-hook not exposed; owned by a client/src slice)
+  [default] › rename.spec.ts:198:5 › pt-c1b — client profile-rename UI e2e (PTC1B-9) › PTC1B-9: rename via overlay -> player.name updated in DB (server-truth SQL)
+  [default] › shop-npc.spec.ts:242:5 › uxd2 — shop via NPC: context-sensitive interact (AC-12) › setup: walk (1,1) -> warp -> zone 1 -> (6,2), grass-free and battle-free
+  [default] › shop-npc.spec.ts:281:5 › uxd2 — shop via NPC: context-sensitive interact (AC-12) › AC-12 negative: at Manhattan 3 the prompt is hidden and KeyT opens nothing
+  [default] › shop-npc.spec.ts:332:5 › uxd2 — shop via NPC: context-sensitive interact (AC-12) › AC-12 positive: at Manhattan 2 the prompt reads "Shop" and names the T key
+  [default] › shop-npc.spec.ts:368:5 › uxd2 — shop via NPC: context-sensitive interact (AC-12) › AC-1/2: KeyT opens the greeting "Hello, customer!" and suppresses the prompt (AC-6)
+  [default] › shop-npc.spec.ts:412:5 › uxd2 — shop via NPC: context-sensitive interact (AC-12) › AC-2: the Shop action closes the dialogue and opens the shop overlay (deferred, never stacked)
+  [default] › trade-full.spec.ts:166:5 › m16.5d — trade full flow e2e › __mrTrade hook is available on window (m16.5d-1)
+  [default] › trade-full.spec.ts:206:5 › m16.5d — trade full flow e2e › full trade flow: propose → respond → confirm; conservation + offer row deleted (m16.5d-2/3/4)
+  [default] › trade-interlock.spec.ts:363:5 › m17.5f — battle↔trade interlock e2e (17.5f-2) › battle↔trade interlock: A in wild battle, B proposeTrade rejected; positive control pre-battle succeeds (17.5f-2)
+  [default] › trade-propose.spec.ts:167:5 › pt-c2 — trade-PROPOSE overlay e2e (PTC2-16) › PTC2-16: KeyO→select→check monster→submit → respond+confirm → specific monsterId transfers (identity) + offer row deleted
+  [default] › trade-zz-negative.spec.ts:791:3 › 14r-b — trading reducer negative paths, three identities, server truth › 1a: propose listing a phantom item on the initiator leg is rejected — guard trading.rs:330
+  [default] › trade-zz-negative.spec.ts:845:3 › 14r-b — trading reducer negative paths, three identities, server truth › 1b: propose listing a phantom item on the counterparty leg is rejected — guard trading.rs:355
+  [default] › trade-zz-negative.spec.ts:879:3 › 14r-b — trading reducer negative paths, three identities, server truth › 3a: propose listing currency the initiator does not have is rejected — guard trading.rs:287
+  [default] › trade-zz-negative.spec.ts:918:3 › 14r-b — trading reducer negative paths, three identities, server truth › 3b: propose listing currency the counterparty does not have is rejected — guard trading.rs:304
+  [default] › trade-zz-negative.spec.ts:953:3 › 14r-b — trading reducer negative paths, three identities, server truth › 4: respondTrade with accepted=false deletes the offer row and disarms its reaper — guards trading.rs:439 and trading.rs:442
+  [default] › trade-zz-negative.spec.ts:1001:3 › 14r-b — trading reducer negative paths, three identities, server truth › 5a: a non-party cancel_trade is rejected and the offer survives — guard trading.rs:747
+  [default] › trade-zz-negative.spec.ts:1038:3 › 14r-b — trading reducer negative paths, three identities, server truth › 5b: the counterparty may cancel and the offer row is gone — guard trading.rs:747
+  [default] › trade-zz-negative.spec.ts:1061:3 › 14r-b — trading reducer negative paths, three identities, server truth › 5c: the initiator may cancel and the offer row is gone — guard trading.rs:747
+  [default] › trade-zz-negative.spec.ts:1092:3 › 14r-b — trading reducer negative paths, three identities, server truth › 6a: a non-counterparty responding to a ConfirmedByCounterparty offer gets the ROLE error, not the status — guard trading.rs:433
+  [default] › trade-zz-negative.spec.ts:1150:3 › 14r-b — trading reducer negative paths, three identities, server truth › 6b: the counterparty confirming a Pending offer gets the ROLE error, not the status — guard trading.rs:472
+  [default] › trade.spec.ts:77:5 › M15c — trade overlay UI wiring › trade overlay DOM elements exist
+  [default] › trade.spec.ts:89:5 › M15c — trade overlay UI wiring › trade overlay is initially hidden
+  [default] › trade.spec.ts:97:5 › M15c — trade overlay UI wiring › KeyU opens trade overlay with "No active trade"
+  [default] › trade.spec.ts:115:5 › M15c — trade overlay UI wiring › Escape closes the trade overlay
+  [default] › trade.spec.ts:130:5 › M15c — trade overlay UI wiring › KeyU does not open trade overlay when box overlay is visible
+  [default] › trade.spec.ts:164:5 › M15c — trade overlay UI wiring › trade overlay shows empty sides when no active trade
+  [default] › trade.spec.ts:199:5 › M15c — trade overlay UI wiring › trade open: G/Q/H keys do not open overlays (16.5c-1)
+  [default] › wallet-balance.spec.ts:868:5 › 11r-e (ADR-0169) — the shop overlay shows YOUR gold, and only yours › setup: A walks (1,1) → (5,4), grass-free and battle-free
+  [default] › wallet-balance.spec.ts:911:5 › 11r-e (ADR-0169) — the shop overlay shows YOUR gold, and only yours › precondition (a): A starts quest_001 via the elder_oak dialogue choice
+  [default] › wallet-balance.spec.ts:972:5 › 11r-e (ADR-0169) — the shop overlay shows YOUR gold, and only yours › precondition (b): a second talk completes quest_001 ⇒ server-side balance 50
+  [default] › wallet-balance.spec.ts:1025:5 › 11r-e (ADR-0169) — the shop overlay shows YOUR gold, and only yours › 11r-e-6/9: A opens the shop and #shop-balance reads exactly "Gold: 50" (first paint AND settled)
+  [default] › wallet-balance.spec.ts:1128:5 › 11r-e (ADR-0169) — the shop overlay shows YOUR gold, and only yours › 11r-e-8/9: B (no wallet row) opens the same shop and sees NO balance at all
+  [default] › wallet-balance.spec.ts:1224:5 › 11r-e (ADR-0169) — the shop overlay shows YOUR gold, and only yours › 11r-e-7: after further batches re-render the OPEN overlay, A still reads "Gold: 50"
+  [default] › zoneSync.spec.ts:165:5 › M12.5c — zone-sync robustness › 12.5c-1/5: state-based reconcile corrects rawMap zone mismatch on batch
+  [default] › zoneSync.spec.ts:252:5 › M12.5c — zone-sync robustness › 12.5c-2: zone switch does not clear idle remote characters from store
+  [default] › zoneSync.spec.ts:335:5 › M12.5c — zone-sync robustness › 12.5c-3: zone switch to valid zone leaves consistent state (parse-before-mutate)
+  [default] › zoneSync.spec.ts:415:5 › M12.5c — zone-sync robustness › 12.5c-1 idempotent: same-zone reconcile does not reset prediction state
+  [reduced-motion] › reduced-motion.spec.ts:60:1 › the reduced-motion project config reaches Chromium, and the @media guard is evaluated
+  [reduced-motion] › reduced-motion.spec.ts:142:1 › with the preference off, the same rule animates (the guard is conditional, not blanket)
+  [reduced-motion] › reduced-motion.spec.ts:395:1 › RENDERER ARM (E1, KNOWN DEFECT — guarded): under the reduced-motion project, the own character NEVER renders a fractional sub-tile position
+  [reduced-motion] › reduced-motion.spec.ts:509:1 › RENDERER ARM mirror image: with the OS preference OFF, the own character DOES render fractional sub-tile motion (proves the pair is not vacuously all-snapped)
+Total: 77 tests in 21 files

@@ -84,3 +84,6 @@ Thumbs.db
 ops/auth/app/
 ops/auth/data/
 ops/auth/secrets/
+
+# ── CodeGraph index (local code-intelligence cache) ───
+.codegraph/

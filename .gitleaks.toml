@@ -20,5 +20,6 @@ useDefault = true
 # entropy trips generic-api-key; it is a public spec fixture, never a secret.
 
 [allowlist]
-description = "Deliberate fake-secret markers used by no-leak gating tests (INTERNAL_SECRET_ prefix convention); RFC 6455 example nonce"
+description = "Deliberate fake-secret markers used by no-leak gating tests (INTERNAL_SECRET_ prefix convention); RFC 6455 example nonce; generated test-name rosters under docs/debloat/baseline/rosters/ (they mirror test titles from tracked source, which gitleaks scans directly — high-entropy titles like 'key-repeat > W-NH1-NOVACUITY' trip generic-api-key)"
 regexes = ['''INTERNAL_SECRET_[A-Za-z0-9_]+''', '''dGhlIHNhbXBsZSBub25jZQ==''']
+paths = ['''docs/debloat/baseline/rosters/.*''']
