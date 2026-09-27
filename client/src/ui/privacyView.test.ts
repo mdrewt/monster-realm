@@ -285,8 +285,7 @@ function btn(id: string): HTMLButtonElement {
   const node = el(id);
   expect(
     node.tagName,
-    `#${id} must be a NATIVE <button>: evals/keyboard-operable-rows.eval.mjs only accepts a ` +
-      'native click receiver, and a div-with-a-listener is unreachable by keyboard',
+    `#${id} must be a NATIVE <button>: a div-with-a-listener is unreachable by keyboard`,
   ).toBe('BUTTON');
   return node as HTMLButtonElement;
 }
@@ -727,12 +726,11 @@ describe('PrivacyView (rb-52, PRV1-3/PRV1-4): the constructed DOM shell', () => 
   // -------------------------------------------------------------------------
 
   it('RB52V-STATUS-TICKS: two different injected remaining times paint two different status lines', () => {
-    // WRONG IMPL KILLED (1) ★: an AUTHORED duration anywhere on the path ("in 7 days").
-    // `evals/deletion-grace-wasm-ssot.eval.mjs` G5 catches only NUMERIC duplicates of the
-    // window, so a PROSE one ships silently and desyncs the moment an operator retunes the real
-    // constant. Two different injected windows producing two different painted sentences is the
-    // positive tooth that closes it, and it is asserted on the DOM rather than on the model so
-    // a shell that paints a hard-coded string of its own is caught too.
+    // WRONG IMPL KILLED (1) ★: an AUTHORED duration anywhere on the path ("in 7 days"). No
+    // numeric-duplicate guard sees a PROSE duration, and it desyncs the moment an operator
+    // retunes the real constant. Two different injected windows producing two different painted
+    // sentences is the positive tooth that closes it, and it is asserted on the DOM rather than
+    // on the model so a shell that paints a hard-coded string of its own is caught too.
     // WRONG IMPL KILLED (2): a status element written once at construction and never
     // re-rendered — the second render below would leave the first sentence on screen.
     view.show();

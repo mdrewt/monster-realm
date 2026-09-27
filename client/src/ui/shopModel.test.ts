@@ -643,9 +643,7 @@ function makeStoreWallet(balance: bigint, ownerIdentity = 'own-player'): StoreWa
 
 describe('buildShopViewModel [ux2-M1]: 4-argument call (the existing main.ts shape) → balance unknown', () => {
   it('[ux2-M1] BITES: exactly FOUR arguments → balance.kind === "unknown" (no wallet ⇒ dark)', () => {
-    // §T5 / anti-pattern 8: main.ts is FORBIDDEN in this slice and has TWO call sites
-    // (:701-708 KeyG and :1265-1279 the batch listener). Both stay 4-arg, so the 5th
-    // parameter must be optional AND the no-wallet case must degrade to `unknown`.
+    // The 5th (wallet) parameter is optional; a missing wallet must degrade to `unknown`.
     // Kills: (a) a required 5th parameter (this call would be a compile error and the
     //            impl would read `undefined.balance` at runtime);
     //        (b) `balance ?? 0n` zero-conflation — it would report kind:'known' here,
@@ -675,8 +673,8 @@ describe('buildShopViewModel [ux2-M1]: 4-argument call (the existing main.ts sha
 
   it('[ux2-M1] BITES: an explicitly-undefined 5th argument behaves exactly like omitting it', () => {
     // Kills: an impl that distinguishes "argument absent" from "argument undefined"
-    // (e.g. via `arguments.length`), which would diverge once ux2b wires
-    // `store.ownWallet(identity)` — that expression legitimately returns undefined.
+    // (e.g. via `arguments.length`): main.ts passes `store.ownWallet(identity)`, which
+    // legitimately returns undefined.
     const shops = [makeShop(1)];
     const omitted = buildShopViewModel(shops, [], new Map(), []) as ShopViewModel;
     const explicit = buildShopViewModel(shops, [], new Map(), [], undefined) as ShopViewModel;

@@ -309,9 +309,9 @@ describe('ShopView [ux2-V-b]: the no-shop path still updates #shop-balance (writ
 
 describe('ShopView [ux2-V-c]: an unknown balance renders hidden with empty text', () => {
   it('[ux2-V-c] BITES: render with balance.kind "unknown" → hidden=true and textContent ""', () => {
-    // §"Accepted residual risk" (b): until ux2b wires main.ts the 5th argument is never
-    // passed, so `unknown` is the state this slice actually ships. It must render as
-    // NOTHING — hidden, empty — rather than a misleading permanent 'Gold: —' or 'Gold: 0'.
+    // `unknown` ships whenever `store.ownWallet` returns undefined (no wallet row yet). It must
+    // render as NOTHING — hidden, empty — rather than a misleading permanent 'Gold: —' or
+    // 'Gold: 0'.
     // Kills: a shell that renders a placeholder string for the unknown arm, and one that
     // only ever sets hidden=false.
     const overlay = mountShopOverlay();

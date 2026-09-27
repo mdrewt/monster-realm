@@ -362,12 +362,10 @@ describe('overlayRegistry — canOpen decision table', () => {
         denies += 1;
       }
     }
-    // ANTI-VACUITY + exactness: 13 blockers x 16 other targets = 208 cells, of which exactly
-    // the 6 battle-target/battle-force-hidable pairs allow. M21b-2 (G19) moved this from
-    // 11x14=154: `claimView` is a 12th GUARD_ONLY blocker and a 16th target, and it is NOT a
-    // BATTLE_FORCE_HIDE member — so `canOpen('battleView', ['claimView'])` DENIES, and the
-    // allow count stays 5 while the deny count grows 149 -> 175. That asymmetry is the point:
-    // a battle must not be able to blow away a half-entered single-use claim code.
+    // ANTI-VACUITY + exactness: 13 GUARD_ONLY blockers x 16 other targets = 208 cells; exactly
+    // the 6 battle-target/BATTLE_FORCE_HIDE pairs allow (202 deny). `claimView` is GUARD_ONLY but
+    // NOT force-hidable, so `canOpen('battleView', ['claimView'])` DENIES: a battle must not be
+    // able to blow away a half-entered single-use claim code.
     expect(denies + allows, 'ANTI-VACUITY: all 13x16 GUARD_ONLY cells must be exercised').toBe(208);
     expect(allows, 'exactly the 6 A1 battle-target cells may allow').toBe(6);
     expect(denies, 'the other 202 cells must deny').toBe(202);

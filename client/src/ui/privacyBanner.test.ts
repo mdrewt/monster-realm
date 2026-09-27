@@ -904,10 +904,10 @@ describe('rb-52 privacy view model: PRV1-4 the distinct terminal notice', () => 
 describe('rb-52 privacy view model: status line, labels and enabled state', () => {
   it('★ RB52C-STATUS-FORMATTED BITES: two different injected remaining times render two DIFFERENT status lines, both from privacyBannerLabel', () => {
     // WRONG IMPL KILLED (1) ★ THE ONE THE PLAN NAMES: an AUTHORED duration in the surface's
-    // copy — "Your account will be deleted in 7 days". It is invisible to
-    // `evals/deletion-grace-wasm-ssot.eval.mjs` G5, which catches only NUMERIC duplicates, and
-    // it desyncs silently the moment an operator retunes the real constant. Two different
-    // injected windows producing two different sentences is the positive tooth that closes it.
+    // copy — "Your account will be deleted in 7 days". No numeric-duplicate guard sees a PROSE
+    // duration, and it desyncs silently the moment an operator retunes the real constant. Two
+    // different injected windows producing two different sentences is the positive tooth that
+    // closes it.
     // WRONG IMPL KILLED (2): a SECOND copy source for the grace phase — a sentence composed
     // inside `buildPrivacyViewModel` instead of delegating to `privacyBannerLabel`. The two
     // would then drift, and the HUD banner and the modal would disagree about the same
