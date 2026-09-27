@@ -52,8 +52,8 @@ mod native_host_tests;
 mod privacy_enforcement_tests;
 
 #[cfg(test)]
-#[path = "rb73_session_tests.rs"]
-mod rb73_session_tests;
+#[path = "lifecycle_tests.rs"]
+mod lifecycle_tests;
 
 // --- Crate-wide constants ---------------------------------------------------
 pub(crate) const ZONE_0: u32 = 0;

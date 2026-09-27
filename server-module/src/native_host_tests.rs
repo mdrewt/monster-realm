@@ -683,7 +683,7 @@ impl Fixture {
 // * OPT-IN WRITES AND SCANS. `Handle::writable()` lets the generated insert /
 //   update / delete_all_by_eq / clear reach THAT table; `Handle::scannable()`
 //   lets `.iter()` / `.count()` reach it. A table nobody opted in keeps the old
-//   wall — the same abort several suites (rb73_session_tests) use as their kill
+//   wall — the same abort several suites (lifecycle_tests) use as their kill
 //   mechanism. `Handle::unique()` makes this handle's index a unique constraint
 //   (insert/update collisions return UNIQUE_ALREADY_EXISTS); `Handle::auto_inc`
 //   models ONE u64 sequence column (0 is the trigger, as in

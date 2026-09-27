@@ -1,8 +1,8 @@
-//! `rb73_session_tests` — disconnect side effects are gated on
-//! the LAST live connection.
+//! Connection lifecycle: disconnect side effects are gated on the LAST live
+//! connection.
 //!
-//! Declared from `lib.rs` as `#[cfg(test)] #[path = "rb73_session_tests.rs"]
-//! mod rb73_session_tests;`, so `crate::` resolves to the module crate root.
+//! Declared from `lib.rs` as `#[cfg(test)] #[path = "lifecycle_tests.rs"]
+//! mod lifecycle_tests;`, so `crate::` resolves to the module crate root.
 //!
 //! EXECUTED against the in-memory host in `native_host_tests.rs`: the decision
 //! predicate `has_live_session` runs against seeded rows (the oracle is its
