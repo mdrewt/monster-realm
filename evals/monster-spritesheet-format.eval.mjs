@@ -22,18 +22,48 @@ import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { deflateSync, inflateSync } from 'node:zlib';
+import { topLevelEntries } from './append-only-ids.eval.mjs';
 
 const ASSET_DIR = 'client/public/assets';
 const DIRECTIONS = ['down', 'up', 'right', 'left'];
 const POSES = ['idle', 'walk0', 'walk1'];
 const SHEET_W = 96;
 const SHEET_H = 128;
-const NEW_SHEET_PNGS = [
-  'monster-cragling.png',
-  'monster-shadelet.png',
-  'monster-stoneward.png',
-  'monster-umbrafang.png',
-];
+
+// Roster coverage: every species in game-core/content/species must ship its
+// sheet set — monster-<slug>.{png,json} plus the monster-<slug>-normal.{png,json}
+// normal map — where <slug> is the lower-cased species name. Deviations are
+// explicit so a new species forces a reviewed decision instead of silently
+// shipping without art.
+const SLUG_OVERRIDES = { 1: 'emberkit' }; // Flameling kept the first shipped sheet name
+const NO_SHEET_YET = new Set([30, 31]); // item-evolution forms: no art authored yet
+const NO_NORMAL_MAP = new Set([7, 8, 9, 10]); // wave-1 sheets shipped without normal maps
+
+export function missingSpriteFiles(species, files) {
+  const missing = [];
+  for (const { id, name } of species) {
+    if (NO_SHEET_YET.has(id)) continue;
+    const slug = SLUG_OVERRIDES[id] ?? name.toLowerCase();
+    const want = [`monster-${slug}.png`, `monster-${slug}.json`];
+    if (!NO_NORMAL_MAP.has(id))
+      want.push(`monster-${slug}-normal.png`, `monster-${slug}-normal.json`);
+    for (const w of want) if (!files.has(w)) missing.push(`species ${id} (${name}): ${w}`);
+  }
+  return missing;
+}
+
+function rosterSpecies() {
+  const dir = 'game-core/content/species';
+  return readdirSync(dir)
+    .filter((f) => f.endsWith('.ron'))
+    .sort()
+    .flatMap((f) =>
+      topLevelEntries(readFileSync(path.join(dir, f), 'utf8')).map((e) => ({
+        id: Number(e.get('id')?.v),
+        name: String(e.get('name')?.v),
+      })),
+    );
+}
 
 /** The 12 required frame keys, in row-major (direction, pose) order. */
 export function requiredFrameKeys() {
@@ -396,13 +426,20 @@ export default async function () {
     hashes[image] = sha256File(pngPath);
   }
 
-  // …but wave-1's four sheets are additionally required to EXIST. Presence cannot
-  // come from the glob (an empty directory would glob to nothing and pass).
-  for (const png of NEW_SHEET_PNGS) {
-    if (!existsSync(path.join(ASSET_DIR, png))) {
-      failures.push(`missing required wave-1 spritesheet png ${png}`);
-    }
+  // Presence cannot come from the glob (an empty directory globs to nothing), so
+  // it is driven by the species roster.
+  const species = rosterSpecies();
+  if (species.length === 0) failures.push('species roster is empty');
+  if (
+    missingSpriteFiles(
+      [{ id: 99, name: 'Probe' }],
+      new Set(['monster-probe.png', 'monster-probe.json']),
+    ).length !== 2
+  ) {
+    failures.push('roster tooth: a missing normal-map pair was not reported');
   }
+  for (const m of missingSpriteFiles(species, new Set(readdirSync(ASSET_DIR))))
+    failures.push(`missing sprite asset ${m}`);
   for (const group of duplicateHashGroups(hashes)) {
     failures.push(`identical sprite bytes (placeholder copy?): ${group.join(' == ')}`);
   }
