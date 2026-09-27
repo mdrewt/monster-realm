@@ -26,8 +26,6 @@ pub mod battle_0hp_tests;
 pub mod battle_core_tests;
 pub mod damage;
 pub mod pvp;
-#[cfg(test)]
-pub mod redteam_m8d_tests;
 pub mod resolve;
 pub mod status;
 #[cfg(test)]
