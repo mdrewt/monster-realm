@@ -243,6 +243,11 @@ export const ACCESSOR_BYPASS_ALLOWLIST = [
   // gate — rb22p_writes_only_export_bundle pins privacy.rs's whole write set
   // to export_bundle, so a wallet WRITE here reds that test, not this eval.
   'privacy.rs',
+  // debloat Phase 2 (EV-trade-conservation): the trade native-host suite seeds
+  // wallet rows into the in-memory host to execute confirm_trade's currency legs.
+  // Test-only (declared under the test cfg in trading.rs); it never reaches the
+  // published wasm, so it cannot be a runtime wallet surface.
+  'trading_tests.rs',
 ];
 
 // ---------------------------------------------------------------------------
