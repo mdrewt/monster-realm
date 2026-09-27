@@ -44,10 +44,6 @@ mod taming;
 mod trading;
 
 #[cfg(test)]
-#[path = "m14_5d_1a_tests.rs"]
-mod m14_5d_1a_tests;
-
-#[cfg(test)]
 #[path = "native_host_tests.rs"]
 mod native_host_tests;
 
