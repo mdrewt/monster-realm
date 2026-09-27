@@ -9957,3 +9957,1503 @@ fn rb81_battle_reducer_roster_is_closed() {
          the stripped numbers TOGETHER."
     );
 }
+
+// ===========================================================================
+// Native-host behavioural suite (debloat Phase 2: EV-battle-reducer-security,
+// EV-battle-lifecycle-gc, EV-ranking-pve-exclusion, EV-wild-individuality-privacy,
+// ST-battle_tests#reducer-guards, ST-battle_tests#writeback-economy).
+//
+// Every reducer runs through `Fixture::run_as(_at)` with a real sender against its
+// tables' real indexes. HOST LIMIT: no transaction rollback, so a rejection is
+// asserted as refusal BEFORE any write (the whole battle store byte-identical);
+// rollback semantics stay with the two-identity e2e specs (my-battle-privacy,
+// monster-privacy). Wins are driven by calling `write_back_battle_results`
+// directly: a turn's damage is `ctx.random()`-driven, so the reducer tests assert
+// guards and state CHANGES only, never a damage number.
+// ===========================================================================
+
+use crate::native_host_tests::{fixture, Fixture, Handle};
+use crate::schema::{
+    Battle, BattleWild, Inventory, Monster, MonsterPub, Player, PlayerWallet, SkillRow, SpeciesRow,
+};
+use game_core::BattleOutcome;
+use spacetimedb::{Identity, Timestamp};
+
+const BN_T0: i64 = 1_750_000_000_000;
+const BN_DAY: i64 = 86_400_000;
+const BN_BATTLE: u64 = 900;
+
+fn bn_a() -> Identity {
+    Identity::from_byte_array([0xA1; 32])
+}
+fn bn_b() -> Identity {
+    Identity::from_byte_array([0xB2; 32])
+}
+fn bn_c() -> Identity {
+    Identity::from_byte_array([0xC3; 32])
+}
+fn bn_at(ms: i64) -> Timestamp {
+    Timestamp::from_micros_since_unix_epoch(ms * 1000)
+}
+
+/// A private monster row (species 1, level 7) whose GENES are distinct per id.
+fn bn_monster(monster_id: u64, owner: Identity, party_slot: u8) -> Monster {
+    let g = (monster_id % 29) as u8 + 1;
+    let e = u16::from(g);
+    Monster {
+        monster_id,
+        owner_identity: owner,
+        species_id: 1,
+        nickname: format!("m{monster_id}"),
+        level: 7,
+        xp: 0,
+        iv_hp: g,
+        iv_attack: g + 1,
+        iv_defense: g + 2,
+        iv_speed: g + 3,
+        iv_sp_attack: g + 4,
+        iv_sp_defense: g + 5,
+        nature_kind: game_core::NatureKind::Hardy,
+        ev_hp: e,
+        ev_attack: e + 1,
+        ev_defense: e + 2,
+        ev_speed: e + 3,
+        ev_sp_attack: e + 4,
+        ev_sp_defense: e + 5,
+        stat_hp: 40,
+        stat_attack: 20,
+        stat_defense: 20,
+        stat_speed: 20,
+        stat_sp_attack: 20,
+        stat_sp_defense: 20,
+        current_hp: 40,
+        party_slot,
+        last_care_at_ms: 0,
+        essence_fire: 0,
+        essence_water: 0,
+        essence_plant: 0,
+        essence_electric: 0,
+        essence_earth: 0,
+        essence_wind: 0,
+        essence_light: 0,
+        essence_dark: 0,
+        trust_favorable_count: 0,
+        trust_unfavorable_count: 0,
+        trust_favorable_battle_day_epoch: 0,
+        quality_time_ticks_total: 0,
+        quality_time_accum_ms: 0,
+        quality_time_window_ms: 0,
+        quality_time_window_start_ms: 0,
+        last_essence_train_at_ms: 0,
+    }
+}
+
+/// A battle-side monster: species `species_id`, level 7, `hp` of 200 max, skill 1.
+fn bn_mon(species_id: u32, hp: u16) -> game_core::BattleMonster {
+    game_core::BattleMonster {
+        species_id,
+        affinity: game_core::Affinity::Fire,
+        level: 7,
+        current_hp: hp,
+        max_hp: 200,
+        stats: game_core::StatBlock {
+            hp: 200,
+            attack: 20,
+            defense: 20,
+            speed: 20,
+            sp_attack: 20,
+            sp_defense: 20,
+        },
+        known_skill_ids: vec![1],
+        status: None,
+    }
+}
+
+/// A battle with one side-A team member per `party` id (HP 150 each) and a single
+/// species-2 opponent at full HP; `battle_id` = [`BN_BATTLE`] unless overridden.
+fn bn_battle(
+    player: Identity,
+    opponent: Identity,
+    party: &[u64],
+    opponent_ids: &[u64],
+    outcome: BattleOutcome,
+) -> Battle {
+    Battle {
+        battle_id: BN_BATTLE,
+        player_identity: player,
+        opponent_identity: opponent,
+        state: game_core::BattleState {
+            side_a: game_core::BattleSide {
+                active: 0,
+                team: party.iter().map(|_| bn_mon(1, 150)).collect(),
+            },
+            side_b: game_core::BattleSide {
+                active: 0,
+                team: vec![bn_mon(2, 200)],
+            },
+            outcome,
+            turn_number: 1,
+            weather: None,
+        },
+        party_monster_ids: party.to_vec(),
+        opponent_monster_ids: opponent_ids.to_vec(),
+        created_at_ms: 0,
+    }
+}
+
+/// Every table the battle reducers and `write_back_battle_results` touch, all
+/// writable (a write reached on a refusal path shows in [`BnWorld::snapshot`]).
+struct BnWorld<'a> {
+    battles: Handle<'a, Battle, u64>,
+    wild: Handle<'a, BattleWild, u64>,
+    monsters: Handle<'a, Monster, u64>,
+    pubs: Handle<'a, MonsterPub, u64>,
+    stacks: Handle<'a, Inventory>,
+    wallets: Handle<'a, PlayerWallet>,
+    players: Handle<'a, Player>,
+}
+
+fn bn_world(fx: &Fixture) -> BnWorld<'_> {
+    let battles = fx
+        .table_keyed::<Battle, u64>("battle", "battle_id", |r| r.battle_id)
+        .writable()
+        .unique()
+        .auto_inc(|r| r.battle_id, |r, id| r.battle_id = id);
+    let _ = fx.table::<Battle>("battle", "player_identity", |r| r.player_identity);
+    let _ = fx.table::<Battle>("battle", "opponent_identity", |r| r.opponent_identity);
+    let wild = fx
+        .table_keyed::<BattleWild, u64>("battle_wild", "battle_id", |r| r.battle_id)
+        .writable()
+        .unique();
+    let monsters = fx
+        .table_keyed::<Monster, u64>("monster", "monster_id", |r| r.monster_id)
+        .writable()
+        .unique();
+    let _ = fx.table::<Monster>("monster", "owner_identity", |r| r.owner_identity);
+    let pubs = fx
+        .table_keyed::<MonsterPub, u64>("monster_pub", "monster_id", |r| r.monster_id)
+        .writable()
+        .unique();
+    let _ = fx.table::<MonsterPub>("monster_pub", "owner_identity", |r| r.owner_identity);
+    let stacks = fx
+        .table::<Inventory>("inventory", "owner_identity", |r| r.owner_identity)
+        .writable()
+        .auto_inc(|r| r.inv_id, |r, id| r.inv_id = id);
+    let _ = fx
+        .table_keyed::<Inventory, u64>("inventory", "inv_id", |r| r.inv_id)
+        .unique();
+    let wallets = fx
+        .table::<PlayerWallet>("player_wallet", "owner_identity", |r| r.owner_identity)
+        .writable()
+        .unique();
+    let species = fx.table_keyed::<SpeciesRow, u32>("species_row", "id", |r| r.id);
+    for (id, affinity) in [
+        (1, game_core::Affinity::Fire),
+        (2, game_core::Affinity::Water),
+    ] {
+        species.seed(&SpeciesRow {
+            id,
+            name: format!("sp{id}"),
+            base_hp: 50,
+            base_attack: 50,
+            base_defense: 50,
+            base_speed: 50,
+            base_sp_attack: 50,
+            base_sp_defense: 50,
+            affinity,
+            learnable_skill_ids: vec![1],
+            ability: None,
+            tier: 0,
+        });
+    }
+    fx.table_keyed::<SkillRow, u32>("skill_row", "id", |r| r.id)
+        .scannable()
+        .seed(&SkillRow {
+            id: 1,
+            name: "Ember".to_string(),
+            affinity: game_core::Affinity::Fire,
+            power: 40,
+            accuracy: 100,
+            pp: 25,
+        });
+    let _ = fx
+        .table_keyed::<crate::schema::TypeRelationRow, u64>("type_relation_row", "id", |r| r.id)
+        .scannable();
+    let _ = fx
+        .table_keyed::<crate::playtest::PlaytestEvent, u64>("playtest_event", "event_id", |r| {
+            r.event_id
+        })
+        .writable()
+        .unique()
+        .auto_inc(|r| r.event_id, |r, id| r.event_id = id);
+    BnWorld {
+        battles,
+        wild,
+        monsters,
+        pubs,
+        stacks,
+        wallets,
+        players: fx.table::<Player>("player", "identity", |r| r.identity),
+    }
+}
+
+impl BnWorld<'_> {
+    /// A monster row plus its projection (tier 2, so a fabricated tier is visible).
+    fn monster(&self, id: u64, owner: Identity, party_slot: u8) {
+        let m = bn_monster(id, owner, party_slot);
+        self.pubs.seed(&crate::marshal::pub_from_monster(&m, 2));
+        self.monsters.seed(&m);
+    }
+    fn stack(&self, owner: Identity, item_id: u32, count: u32) {
+        self.stacks.seed(&Inventory {
+            inv_id: 1000 + u64::from(item_id) + u64::from(owner.to_byte_array()[0]) * 100,
+            owner_identity: owner,
+            item_id,
+            count,
+        });
+    }
+    fn wild_row(&self, battle_id: u64) {
+        self.wild.seed(&BattleWild {
+            battle_id,
+            wild_species_id: 2,
+            wild_level: 7,
+            individuality_seed: 0xC0FFEE,
+        });
+    }
+    fn battle(&self, id: u64) -> Option<Battle> {
+        self.battles.rows().into_iter().find(|b| b.battle_id == id)
+    }
+    fn mon(&self, id: u64) -> Monster {
+        self.monsters
+            .rows()
+            .into_iter()
+            .find(|m| m.monster_id == id)
+            .expect("monster row")
+    }
+    fn count(&self, owner: Identity, item_id: u32) -> u32 {
+        self.stacks
+            .rows()
+            .iter()
+            .filter(|r| r.owner_identity == owner && r.item_id == item_id)
+            .map(|r| r.count)
+            .sum()
+    }
+    fn balance(&self, owner: Identity) -> u64 {
+        self.wallets
+            .rows()
+            .iter()
+            .filter(|r| r.owner_identity == owner)
+            .map(|r| r.balance)
+            .sum()
+    }
+    /// The whole battle-relevant store as bytes: a refusal must leave it identical.
+    fn snapshot(&self) -> Vec<Vec<u8>> {
+        use spacetimedb::sats::bsatn::to_vec;
+        vec![
+            to_vec(&self.battles.rows()).unwrap(),
+            to_vec(&self.wild.rows()).unwrap(),
+            to_vec(&self.monsters.rows()).unwrap(),
+            to_vec(&self.pubs.rows()).unwrap(),
+            to_vec(&self.stacks.rows()).unwrap(),
+            to_vec(&self.wallets.rows()).unwrap(),
+        ]
+    }
+    /// EV-monster-dual-write oracle: the projection set equals the private set and
+    /// every projection is exactly `pub_from_monster(private, its tier)`.
+    fn assert_mirrored(&self, label: &str) {
+        bn_assert_mirrored(label, &self.monsters.rows(), &self.pubs.rows());
+    }
+}
+
+/// Shared dual-write oracle (also used by the monster_mgmt roster's spirit): same id
+/// set, and each `monster_pub` row is the full-row projection of its private row.
+pub(crate) fn bn_assert_mirrored(label: &str, monsters: &[Monster], pubs: &[MonsterPub]) {
+    let mut ids: Vec<u64> = monsters.iter().map(|m| m.monster_id).collect();
+    let mut pub_ids: Vec<u64> = pubs.iter().map(|p| p.monster_id).collect();
+    ids.sort_unstable();
+    pub_ids.sort_unstable();
+    assert_eq!(
+        ids, pub_ids,
+        "{label}: monster and monster_pub must hold the same id set"
+    );
+    for m in monsters {
+        let p = pubs
+            .iter()
+            .find(|p| p.monster_id == m.monster_id)
+            .expect("paired projection");
+        assert_eq!(
+            bn_bytes(p),
+            bn_bytes(&crate::marshal::pub_from_monster(m, p.tier)),
+            "{label}: monster_pub {} diverged from its private row",
+            m.monster_id
+        );
+    }
+}
+
+/// BSATN bytes: row types carry no `PartialEq`/`Debug`; canonical bytes ARE equality.
+fn bn_bytes<T: spacetimedb::Serialize>(row: &T) -> Vec<u8> {
+    spacetimedb::sats::bsatn::to_vec(row).expect("rows encode")
+}
+
+type BnCall = fn(&spacetimedb::ReducerContext) -> Result<(), String>;
+
+/// The four in-battle PvE action reducers against [`BN_BATTLE`].
+fn bn_actions() -> Vec<(&'static str, BnCall)> {
+    vec![
+        ("submit_attack", |ctx| {
+            super::submit_attack(ctx, BN_BATTLE, 1)
+        }),
+        ("swap_active", |ctx| super::swap_active(ctx, BN_BATTLE, 1)),
+        ("flee", |ctx| super::flee(ctx, BN_BATTLE)),
+        ("use_battle_item", |ctx| {
+            super::use_battle_item(ctx, BN_BATTLE, 3)
+        }),
+    ]
+}
+
+/// A wild battle for A with party [11, 12], active poisoned, an Antidote (item 3) held.
+fn bn_wild_setup(w: &BnWorld<'_>, outcome: BattleOutcome) {
+    w.monster(11, bn_a(), 0);
+    w.monster(12, bn_a(), 1);
+    let mut b = bn_battle(bn_a(), crate::WILD_IDENTITY, &[11, 12], &[], outcome);
+    b.state.side_a.team[0].status = Some(game_core::StatusEffect::Poison);
+    w.battles.seed(&b);
+    w.wild_row(BN_BATTLE);
+    w.stack(bn_a(), 3, 2);
+}
+
+/// EV-battle-reducer-security (ownership) + ST-battle_tests#reducer-guards: a STRANGER
+/// gets the exact owner reject from every action reducer with the store untouched;
+/// the OWNER's call runs and visibly changes the battle.
+/// kills: each reducer -> Ok(()), the Ongoing comparators flipped (owner refused).
+#[test]
+fn bn_battle_actions_refuse_a_stranger_and_admit_the_owner() {
+    for (label, call) in bn_actions() {
+        let fx = fixture();
+        let w = bn_world(&fx);
+        bn_wild_setup(&w, BattleOutcome::Ongoing);
+        let before = w.snapshot();
+        let got = fx.run_as_at(bn_b(), bn_at(BN_T0), call);
+        assert_eq!(got, Err("not owner".to_string()), "{label}: stranger");
+        assert_eq!(w.snapshot(), before, "{label}: refused before any write");
+
+        let state_before = w.battle(BN_BATTLE).unwrap().state;
+        let got = fx.run_as_at(bn_a(), bn_at(BN_T0), call);
+        assert_eq!(
+            got,
+            Ok(()),
+            "{label}: owner; asked {:?}",
+            fx.requested_indexes()
+        );
+        let after = w.battle(BN_BATTLE).expect("battle row kept");
+        assert_ne!(
+            after.state, state_before,
+            "{label}: the owner's call changed nothing"
+        );
+        match label {
+            "flee" => {
+                assert_eq!(after.state.outcome, BattleOutcome::Fled);
+                assert!(w.wild.rows().is_empty(), "flee: battle_wild row deleted");
+            }
+            "swap_active" => assert_eq!(after.state.side_a.active, 1),
+            "use_battle_item" => {
+                assert_eq!(after.state.side_a.team[0].status, None);
+                assert_eq!(w.count(bn_a(), 3), 1, "exactly one Antidote consumed");
+            }
+            _ => assert!(after.state.turn_number > state_before.turn_number),
+        }
+        w.assert_mirrored(label);
+    }
+}
+
+/// EV-battle-reducer-security (Ongoing gate): every action reducer refuses a terminal
+/// battle with no XP, currency, item or row change.
+#[test]
+fn bn_battle_actions_refuse_a_terminal_battle() {
+    for outcome in [
+        BattleOutcome::Fled,
+        BattleOutcome::SideAWins,
+        BattleOutcome::SideBWins,
+    ] {
+        for (label, call) in bn_actions() {
+            let fx = fixture();
+            let w = bn_world(&fx);
+            bn_wild_setup(&w, outcome);
+            let before = w.snapshot();
+            let got = fx.run_as_at(bn_a(), bn_at(BN_T0), call);
+            assert_eq!(
+                got,
+                Err("battle is not ongoing".to_string()),
+                "{label} on {outcome:?}"
+            );
+            assert_eq!(w.snapshot(), before, "{label} on {outcome:?}: untouched");
+        }
+    }
+}
+
+/// EV-ranking-pve-exclusion: the four PvE reducers refuse a RANKED PvP battle (two
+/// distinct real players) with the row unchanged, whoever of the two calls (side B
+/// is not the row's owner). Control: a practice self-battle is not ranked and runs.
+#[test]
+fn bn_pve_actions_refuse_a_ranked_pvp_battle() {
+    for (label, call) in bn_actions() {
+        let fx = fixture();
+        let w = bn_world(&fx);
+        w.monster(11, bn_a(), 0);
+        w.monster(12, bn_a(), 1);
+        w.monster(21, bn_b(), 0);
+        let mut b = bn_battle(bn_a(), bn_b(), &[11, 12], &[21], BattleOutcome::Ongoing);
+        b.state.side_a.team[0].status = Some(game_core::StatusEffect::Poison);
+        w.battles.seed(&b);
+        w.stack(bn_a(), 3, 2);
+        let before = w.snapshot();
+        assert_eq!(
+            fx.run_as_at(bn_a(), bn_at(BN_T0), call),
+            Err("not available in PvP battles".to_string()),
+            "{label}: side A of a ranked battle"
+        );
+        assert_eq!(
+            fx.run_as_at(bn_b(), bn_at(BN_T0), call),
+            Err("not owner".to_string()),
+            "{label}: side B of a ranked battle"
+        );
+        assert_eq!(w.snapshot(), before, "{label}: ranked battle untouched");
+
+        // Practice control: the same shape with A on both sides.
+        drop(fx);
+        let fx = fixture();
+        let w = bn_world(&fx);
+        w.monster(11, bn_a(), 0);
+        w.monster(12, bn_a(), 1);
+        w.monster(13, bn_a(), 2);
+        let mut b = bn_battle(bn_a(), bn_a(), &[11, 12], &[13], BattleOutcome::Ongoing);
+        b.state.side_a.team[0].status = Some(game_core::StatusEffect::Poison);
+        w.battles.seed(&b);
+        w.stack(bn_a(), 3, 2);
+        assert_eq!(
+            fx.run_as_at(bn_a(), bn_at(BN_T0), call),
+            Ok(()),
+            "{label}: a practice battle is not ranked"
+        );
+    }
+}
+
+/// ST-battle_tests#reducer-guards (fainted rules): submit_attack refuses a fainted
+/// active and an unknown skill; swap_active refuses a fainted target, an
+/// out-of-range index and the current active; flee deliberately has no fainted
+/// guard. Status bookkeeping: a sleeping opponent's counter advances on the row.
+#[test]
+fn bn_fainted_and_move_legality_guards() {
+    let seed = |w: &BnWorld<'_>, active_hp: u16, target_hp: u16| {
+        w.monster(11, bn_a(), 0);
+        w.monster(12, bn_a(), 1);
+        let mut b = bn_battle(
+            bn_a(),
+            crate::WILD_IDENTITY,
+            &[11, 12],
+            &[],
+            BattleOutcome::Ongoing,
+        );
+        b.state.side_a.team[0].current_hp = active_hp;
+        b.state.side_a.team[1].current_hp = target_hp;
+        b.state.side_b.team[0].status = Some(game_core::StatusEffect::Sleep { turns_remaining: 3 });
+        w.battles.seed(&b);
+        w.wild_row(BN_BATTLE);
+    };
+    type Case = (&'static str, u16, u16, BnCall, Result<(), String>);
+    let cases: Vec<Case> = vec![
+        (
+            "attack with a fainted active",
+            0,
+            150,
+            |ctx| super::submit_attack(ctx, BN_BATTLE, 1),
+            Err("your active monster has fainted — swap to another monster or flee".to_string()),
+        ),
+        (
+            "attack with an unknown skill",
+            150,
+            150,
+            |ctx| super::submit_attack(ctx, BN_BATTLE, 99),
+            Err("skill 99 not in active monster's moveset".to_string()),
+        ),
+        (
+            "swap to a fainted monster",
+            150,
+            0,
+            |ctx| super::swap_active(ctx, BN_BATTLE, 1),
+            Err("monster at index 1 is fainted".to_string()),
+        ),
+        (
+            "swap out of range",
+            150,
+            150,
+            |ctx| super::swap_active(ctx, BN_BATTLE, 2),
+            Err("team_index 2 out of bounds".to_string()),
+        ),
+        (
+            "swap to the active",
+            150,
+            150,
+            |ctx| super::swap_active(ctx, BN_BATTLE, 0),
+            Err("already the active monster".to_string()),
+        ),
+    ];
+    for (label, active_hp, target_hp, call, want) in cases {
+        let fx = fixture();
+        let w = bn_world(&fx);
+        seed(&w, active_hp, target_hp);
+        let before = w.snapshot();
+        assert_eq!(fx.run_as_at(bn_a(), bn_at(BN_T0), call), want, "{label}");
+        assert_eq!(w.snapshot(), before, "{label}: refused before any write");
+    }
+    // flee with a fainted active is allowed (the escape hatch).
+    {
+        let fx = fixture();
+        let w = bn_world(&fx);
+        seed(&w, 0, 150);
+        assert_eq!(
+            fx.run_as_at(bn_a(), bn_at(BN_T0), |ctx| super::flee(ctx, BN_BATTLE)),
+            Ok(())
+        );
+        assert_eq!(
+            w.battle(BN_BATTLE).unwrap().state.outcome,
+            BattleOutcome::Fled
+        );
+    }
+    // A legal attack and a legal swap write the advanced status store back while Ongoing.
+    for (label, call) in [
+        (
+            "attack",
+            (|ctx| super::submit_attack(ctx, BN_BATTLE, 1)) as BnCall,
+        ),
+        ("swap", |ctx| super::swap_active(ctx, BN_BATTLE, 1)),
+    ] {
+        let fx = fixture();
+        let w = bn_world(&fx);
+        seed(&w, 150, 150);
+        assert_eq!(fx.run_as_at(bn_a(), bn_at(BN_T0), call), Ok(()), "{label}");
+        let b = w.battle(BN_BATTLE).unwrap();
+        assert_eq!(b.state.outcome, BattleOutcome::Ongoing, "{label}");
+        assert_ne!(
+            b.state.side_b.team[0].status,
+            Some(game_core::StatusEffect::Sleep { turns_remaining: 3 }),
+            "{label}: the turn's status bookkeeping must land on the row"
+        );
+    }
+}
+
+/// ST-battle_tests#reducer-guards (cure item): a non-cure item, an unknown item, a
+/// cure that does not match the status, and a cure item not held are all refused
+/// with nothing consumed; the matching held cure consumes exactly one and clears it.
+#[test]
+fn bn_use_battle_item_consumes_only_a_matching_held_cure() {
+    type Case = (&'static str, u32, bool, u32, Result<(), String>);
+    let cases: Vec<Case> = vec![
+        (
+            "not a cure",
+            1,
+            true,
+            2,
+            Err("item 1 is not a cure item".to_string()),
+        ),
+        (
+            "unknown item",
+            999,
+            true,
+            2,
+            Err("item 999 not found".to_string()),
+        ),
+        (
+            "status not matched",
+            3,
+            false,
+            2,
+            Err("active monster does not have status cured by item 3".to_string()),
+        ),
+        (
+            "not held",
+            3,
+            true,
+            0,
+            Err("item is in an active trade".to_string()),
+        ),
+    ];
+    for (label, item, poisoned, held, want) in cases {
+        let fx = fixture();
+        let w = bn_world(&fx);
+        bn_wild_setup(&w, BattleOutcome::Ongoing);
+        // A decoy stack of another item: a wrong-row count lookup would read it.
+        w.stack(bn_a(), 1, 5);
+        if held != 2 {
+            w.stacks.remove(bn_a());
+            w.stack(bn_a(), 1, 5);
+        }
+        if !poisoned {
+            let mut b = w.battle(BN_BATTLE).unwrap();
+            w.battles.remove(BN_BATTLE);
+            b.state.side_a.team[0].status = Some(game_core::StatusEffect::Burn);
+            w.battles.seed(&b);
+        }
+        let before = w.snapshot();
+        assert_eq!(
+            fx.run_as_at(bn_a(), bn_at(BN_T0), |ctx| {
+                super::use_battle_item(ctx, BN_BATTLE, item)
+            }),
+            want,
+            "{label}"
+        );
+        assert_eq!(w.snapshot(), before, "{label}: nothing consumed");
+    }
+}
+
+/// EV-battle-reducer-security (provenance + ownership): start_battle refuses a
+/// third-party opponent (ADR-0048), a foreign side-A monster, a side-B monster the
+/// named opponent does not own, a boxed monster, duplicates across the two lists and
+/// an empty party — each before any write. Controls: a self battle and a WILD battle
+/// insert exactly one Ongoing row naming the caller and the opponent as given.
+#[test]
+fn bn_start_battle_enforces_provenance_and_ownership() {
+    let fx = fixture();
+    let w = bn_world(&fx);
+    w.monster(11, bn_a(), 0);
+    w.monster(12, bn_a(), 1);
+    w.monster(13, bn_a(), crate::PARTY_SLOT_NONE);
+    w.monster(21, bn_b(), 0);
+    w.monster(50, crate::WILD_IDENTITY, 0);
+    let me = bn_a();
+    type Case = (&'static str, Identity, Vec<u64>, Vec<u64>, &'static str);
+    let cases: Vec<Case> = vec![
+        (
+            "third-party opponent",
+            bn_b(),
+            vec![11],
+            vec![21],
+            "opponent must be self or server-authored (PvP unsupported; ADR-0048)",
+        ),
+        (
+            "dup in party",
+            me,
+            vec![11, 11],
+            vec![12],
+            "duplicate monster_id 11 in party_monster_ids",
+        ),
+        (
+            "dup across sides",
+            me,
+            vec![11],
+            vec![11],
+            "duplicate monster_id 11 in opponent_monster_ids",
+        ),
+        (
+            "foreign party monster",
+            me,
+            vec![21],
+            vec![12],
+            "monster 21 not owned by caller",
+        ),
+        (
+            "opponent monster not the opponent's",
+            me,
+            vec![11],
+            vec![21],
+            "monster 21 not owned by opponent",
+        ),
+        (
+            "wild opponent with the caller's monster",
+            crate::WILD_IDENTITY,
+            vec![11],
+            vec![12],
+            "monster 12 not owned by opponent",
+        ),
+    ];
+    for (label, opp, party, opps, want) in cases {
+        let before = w.snapshot();
+        let got = fx.run_as_at(me, bn_at(BN_T0), |ctx| {
+            super::start_battle(ctx, opp, party.clone(), opps.clone())
+        });
+        assert_eq!(got, Err(want.to_string()), "{label}");
+        assert_eq!(w.snapshot(), before, "{label}: refused before any write");
+    }
+    let before = w.snapshot();
+    let got = fx.run_as_at(me, bn_at(BN_T0), |ctx| {
+        super::start_battle(ctx, me, vec![13], vec![12])
+    });
+    assert!(got.is_err(), "boxed monster must be refused: {got:?}");
+    assert!(
+        fx.run_as_at(me, bn_at(BN_T0), |ctx| super::start_battle(
+            ctx,
+            me,
+            vec![],
+            vec![12]
+        ))
+        .is_err(),
+        "empty party"
+    );
+    assert_eq!(w.snapshot(), before, "boxed/empty refused before any write");
+
+    // Controls.
+    assert_eq!(
+        fx.run_as_at(me, bn_at(BN_T0), |ctx| {
+            super::start_battle(ctx, me, vec![11], vec![12])
+        }),
+        Ok(())
+    );
+    let rows = w.battles.rows();
+    assert_eq!(rows.len(), 1, "exactly one battle row");
+    let b = &rows[0];
+    assert_eq!(
+        (b.player_identity, b.opponent_identity, b.state.outcome),
+        (me, me, BattleOutcome::Ongoing)
+    );
+    assert_eq!(
+        (
+            b.party_monster_ids.clone(),
+            b.opponent_monster_ids.clone(),
+            b.created_at_ms
+        ),
+        (vec![11], vec![12], BN_T0)
+    );
+    assert_eq!(
+        fx.run_as_at(me, bn_at(BN_T0), |ctx| {
+            super::start_battle(ctx, me, vec![11], vec![12])
+        }),
+        Err("already in an ongoing battle".to_string()),
+        "a second concurrent battle"
+    );
+    drop(fx);
+    let fx = fixture();
+    let w = bn_world(&fx);
+    w.monster(11, bn_a(), 0);
+    w.monster(50, crate::WILD_IDENTITY, 0);
+    assert_eq!(
+        fx.run_as_at(me, bn_at(BN_T0), |ctx| {
+            super::start_battle(ctx, crate::WILD_IDENTITY, vec![11], vec![50])
+        }),
+        Ok(())
+    );
+    let rows = w.battles.rows();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        (rows[0].player_identity, rows[0].opponent_identity),
+        (me, crate::WILD_IDENTITY)
+    );
+}
+
+/// EV-battle-reducer-security C1/C2 (ADR-0122 both-role guard): a player seated as
+/// SIDE B of an ongoing PvP battle cannot open or act outside it — start_battle,
+/// begin_encounter, heal_party, care, train and evolve all refuse, before any write.
+/// Control: once that battle is terminal, start_battle and begin_encounter run.
+#[test]
+fn bn_side_b_of_an_ongoing_pvp_battle_is_blocked_everywhere() {
+    use crate::schema::{Character, HealLocationRow};
+    fn setup(fx: &Fixture, outcome: BattleOutcome) -> BnWorld<'_> {
+        let w = bn_world(fx);
+        w.monster(11, bn_a(), 0);
+        w.monster(12, bn_a(), 1);
+        w.monster(31, bn_c(), 0);
+        let mut b = bn_battle(bn_c(), bn_a(), &[31], &[11], outcome);
+        b.battle_id = 700;
+        w.battles.seed(&b);
+        w.players.seed(&Player {
+            identity: bn_a(),
+            entity_id: 5,
+            name: String::new(),
+            online: true,
+            last_input_seq: 0,
+        });
+        fx.table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id)
+            .seed(&Character {
+                entity_id: 5,
+                zone_id: 0,
+                tile_x: 0,
+                tile_y: 0,
+                facing: game_core::Direction::South,
+                action: game_core::ActionState::Idle,
+                move_started_at_ms: 0,
+                sprite_id: 0,
+                move_queue: vec![],
+            });
+        fx.table_keyed::<HealLocationRow, u32>("heal_location_row", "location_id", |r| {
+            r.location_id
+        })
+        .seed(&HealLocationRow {
+            location_id: 999,
+            zone_id: 0,
+            tile_x: 0,
+            tile_y: 0,
+            cost_item_id: None,
+            cost_qty: 0,
+            cooldown_ms: 0,
+            cost_currency: 0,
+        });
+        w
+    }
+    let cases: Vec<(&str, BnCall, &str)> = vec![
+        (
+            "start_battle",
+            |ctx| super::start_battle(ctx, ctx.sender(), vec![11], vec![12]),
+            "already in an ongoing battle",
+        ),
+        (
+            "begin_encounter",
+            |ctx| super::begin_encounter(ctx, ctx.sender(), vec![11], 2, 5, 7).map(|_| ()),
+            "already in an ongoing battle",
+        ),
+        (
+            "heal_party",
+            |ctx| crate::raising::heal_party(ctx, 999),
+            "cannot heal during an ongoing battle",
+        ),
+        (
+            "care",
+            |ctx| crate::raising::care(ctx, 12),
+            "cannot care during an ongoing battle",
+        ),
+        (
+            "train",
+            |ctx| crate::raising::train(ctx, 12, 2),
+            "cannot train during an ongoing battle",
+        ),
+        (
+            "evolve",
+            |ctx| crate::evolution::evolve(ctx, 11, 2),
+            "monster is in an ongoing battle",
+        ),
+    ];
+    for (label, call, want) in &cases {
+        let fx = fixture();
+        let w = setup(&fx, BattleOutcome::Ongoing);
+        let before = w.snapshot();
+        assert_eq!(
+            fx.run_as_at(bn_a(), bn_at(BN_T0), call),
+            Err(want.to_string()),
+            "{label}; asked {:?}",
+            fx.requested_indexes()
+        );
+        assert_eq!(w.snapshot(), before, "{label}: refused before any write");
+    }
+    for (label, call, _) in cases.iter().take(2) {
+        let fx = fixture();
+        let w = setup(&fx, BattleOutcome::SideAWins);
+        let got = fx.run_as_at(bn_a(), bn_at(BN_T0), call);
+        assert_eq!(got, Ok(()), "{label}: a finished PvP battle does not block");
+        assert_eq!(w.battles.rows().len(), 2, "{label}: one new battle row");
+    }
+}
+
+/// EV-wild-individuality-privacy (behavioural side) + EV-battle-reducer-security C4:
+/// begin_encounter returns the INSERTED battle's id, writes a battle row naming the
+/// player and the WILD sentinel, and keeps the individuality seed only in the
+/// private battle_wild row keyed by that id; ending the battle (flee) deletes the
+/// battle_wild row so no seed outlives its encounter. Refusals before any write:
+/// a foreign monster, duplicates, an already-battling player.
+#[test]
+fn bn_begin_encounter_keeps_the_seed_private_and_short_lived() {
+    let fx = fixture();
+    let w = bn_world(&fx);
+    w.monster(11, bn_a(), 0);
+    w.monster(12, bn_a(), 1);
+    w.monster(21, bn_b(), 0);
+    // C opens an encounter first, so A's battle id is 2, never a constant 0 or 1.
+    w.monster(31, bn_c(), 0);
+    assert_eq!(
+        fx.run_as_at(bn_c(), bn_at(BN_T0), |ctx| {
+            super::begin_encounter(ctx, bn_c(), vec![31], 2, 5, 1)
+        }),
+        Ok(1)
+    );
+    w.wild.remove(1);
+    let before = w.snapshot();
+    for (label, party, want) in [
+        ("foreign", vec![21], "monster 21 not owned by player"),
+        (
+            "dup",
+            vec![11, 11],
+            "duplicate monster_id 11 in party_monster_ids",
+        ),
+    ] {
+        let got = fx.run_as_at(bn_a(), bn_at(BN_T0), |ctx| {
+            super::begin_encounter(ctx, bn_a(), party.clone(), 2, 5, 0xBEEF)
+        });
+        assert_eq!(got, Err(want.to_string()), "{label}");
+        assert_eq!(w.snapshot(), before, "{label}: refused before any write");
+    }
+    let id = fx
+        .run_as_at(bn_a(), bn_at(BN_T0), |ctx| {
+            super::begin_encounter(ctx, bn_a(), vec![11, 12], 2, 5, 0xBEEF)
+        })
+        .expect("encounter opens");
+    assert_eq!(id, 2, "the returned id is the INSERTED row's auto-inc id");
+    let b = w.battle(id).expect("battle row under the returned id");
+    assert_eq!(
+        (b.player_identity, b.opponent_identity, b.state.outcome),
+        (bn_a(), crate::WILD_IDENTITY, BattleOutcome::Ongoing)
+    );
+    assert_eq!(b.party_monster_ids, vec![11, 12]);
+    assert_eq!(
+        bn_bytes(&w.wild.rows()),
+        bn_bytes(&vec![BattleWild {
+            battle_id: id,
+            wild_species_id: 2,
+            wild_level: 5,
+            individuality_seed: 0xBEEF,
+        }]),
+        "the seed lives only in battle_wild, keyed by the battle id"
+    );
+    assert_eq!(
+        fx.run_as_at(bn_a(), bn_at(BN_T0), |ctx| {
+            super::begin_encounter(ctx, bn_a(), vec![11], 2, 5, 1).map(|_| ())
+        }),
+        Err("already in an ongoing battle".to_string())
+    );
+    assert_eq!(
+        fx.run_as_at(bn_a(), bn_at(BN_T0), |ctx| super::flee(ctx, id)),
+        Ok(())
+    );
+    assert!(
+        w.wild.rows().is_empty(),
+        "the seed does not outlive the encounter"
+    );
+}
+
+/// EV-battle-lifecycle-gc (its new_home): finishing a battle GCs the player's OLDER
+/// terminal battles, keeping exactly one terminal row — the latest — while another
+/// player's terminal row and the player's own ongoing row are untouched; on a PvP
+/// write-back the OPPONENT's old terminal rows (as opponent) are GC'd too.
+#[test]
+fn bn_write_back_gcs_old_terminal_battles() {
+    let fx = fixture();
+    let w = bn_world(&fx);
+    w.monster(11, bn_a(), 0);
+    for (id, player, opp, outcome) in [
+        (1, bn_a(), crate::WILD_IDENTITY, BattleOutcome::Fled),
+        (2, bn_a(), crate::WILD_IDENTITY, BattleOutcome::SideBWins),
+        (3, bn_c(), crate::WILD_IDENTITY, BattleOutcome::Fled),
+        (4, bn_c(), bn_b(), BattleOutcome::SideAWins),
+        (5, bn_c(), bn_b(), BattleOutcome::Ongoing),
+    ] {
+        let mut b = bn_battle(player, opp, &[], &[], outcome);
+        b.battle_id = id;
+        w.battles.seed(&b);
+    }
+    w.battles.seed(&bn_battle(
+        bn_a(),
+        crate::WILD_IDENTITY,
+        &[11],
+        &[],
+        BattleOutcome::Ongoing,
+    ));
+    w.wild_row(BN_BATTLE);
+    assert_eq!(
+        fx.run_as_at(bn_a(), bn_at(BN_T0), |ctx| super::flee(ctx, BN_BATTLE)),
+        Ok(())
+    );
+    let mut ids: Vec<u64> = w.battles.rows().iter().map(|b| b.battle_id).collect();
+    ids.sort_unstable();
+    assert_eq!(
+        ids,
+        vec![3, 4, 5, BN_BATTLE],
+        "A's two older terminal rows are GC'd; C's rows and the latest stay"
+    );
+    assert_eq!(
+        w.battle(BN_BATTLE).unwrap().state.outcome,
+        BattleOutcome::Fled
+    );
+
+    // PvP write-back: B's old terminal row (B as opponent) goes, B's ongoing stays.
+    drop(fx);
+    let fx = fixture();
+    let w = bn_world(&fx);
+    w.monster(11, bn_a(), 0);
+    w.monster(21, bn_b(), 0);
+    for (id, player, opp, outcome) in [
+        (4, bn_c(), bn_b(), BattleOutcome::SideAWins),
+        (5, bn_c(), bn_b(), BattleOutcome::Ongoing),
+        (6, bn_b(), bn_c(), BattleOutcome::Fled),
+    ] {
+        let mut b = bn_battle(player, opp, &[], &[], outcome);
+        b.battle_id = id;
+        w.battles.seed(&b);
+    }
+    // The DB row is still Ongoing while write-back runs (settle commits after it).
+    w.battles.seed(&bn_battle(
+        bn_a(),
+        bn_b(),
+        &[11],
+        &[21],
+        BattleOutcome::Ongoing,
+    ));
+    let fin = bn_battle(bn_a(), bn_b(), &[11], &[21], BattleOutcome::SideBWins);
+    let ctx = fx.ctx_at(bn_at(BN_T0));
+    assert_eq!(super::write_back_battle_results(&ctx, &fin), Ok(()));
+    let mut ids: Vec<u64> = w.battles.rows().iter().map(|b| b.battle_id).collect();
+    ids.sort_unstable();
+    assert_eq!(
+        ids,
+        vec![5, 6, BN_BATTLE],
+        "only B's terminal row AS OPPONENT is GC'd (the opponent_identity sweep)"
+    );
+}
+
+/// ST-battle_tests#writeback-economy (wild win): currency = loser BST / 10, essence of
+/// the DEFEATED species' affinity, XP from the SSOT formula, QT accrual, and trust
+/// once per UTC day (strictly-greater day cap); every write mirrored to monster_pub.
+#[test]
+fn bn_wild_win_grants_rewards_with_a_daily_trust_cap() {
+    let fx = fixture();
+    let w = bn_world(&fx);
+    w.monster(11, bn_a(), 0);
+    w.monster(12, bn_a(), 1);
+    let mut win = bn_battle(
+        bn_a(),
+        crate::WILD_IDENTITY,
+        &[11, 12],
+        &[],
+        BattleOutcome::SideAWins,
+    );
+    win.state.side_a.team[1].current_hp = 0; // a fainted member earns nothing
+    let bst: u16 = 300;
+    let base_xp = game_core::battle_xp_reward(
+        game_core::Level::new(7).unwrap(),
+        bst,
+        game_core::Level::new(7).unwrap(),
+    );
+    let (xp1, lvl1, _) = game_core::apply_xp_gain(game_core::Xp::new(0), base_xp);
+    let day0 = super::day_epoch_utc(BN_T0);
+
+    let ctx = fx.ctx_at(bn_at(BN_T0));
+    assert_eq!(super::write_back_battle_results(&ctx, &win), Ok(()));
+    let m = w.mon(11);
+    assert_eq!(w.balance(bn_a()), game_core::battle_currency_reward(bst));
+    assert_eq!(
+        (m.essence_water, m.essence_fire),
+        (game_core::currency::essence_battle_reward(bst), 0),
+        "essence goes to the defeated species' affinity (Water), not the winner's"
+    );
+    assert_eq!((m.xp, m.level), (xp1.value(), lvl1.as_u8()));
+    assert_eq!(
+        (m.trust_favorable_count, m.trust_favorable_battle_day_epoch),
+        (1, day0)
+    );
+    assert_eq!(
+        m.quality_time_window_start_ms, BN_T0,
+        "QT accrued on a wild win"
+    );
+    let fainted = w.mon(12);
+    assert_eq!(
+        (
+            fainted.xp,
+            fainted.essence_water,
+            fainted.trust_favorable_count
+        ),
+        (0, 0, 0),
+        "a fainted member earns nothing"
+    );
+    assert_eq!(
+        fainted.trust_unfavorable_count, 1,
+        "…and takes the faint penalty"
+    );
+    w.assert_mirrored("wild win");
+
+    // Same UTC day: no second trust increment.
+    let ctx = fx.ctx_at(bn_at(BN_T0 + 1000));
+    assert_eq!(super::write_back_battle_results(&ctx, &win), Ok(()));
+    assert_eq!(w.mon(11).trust_favorable_count, 1, "same day: capped");
+    // Next UTC day: exactly one more.
+    let ctx = fx.ctx_at(bn_at(BN_T0 + BN_DAY));
+    assert_eq!(super::write_back_battle_results(&ctx, &win), Ok(()));
+    assert_eq!(
+        (
+            w.mon(11).trust_favorable_count,
+            w.mon(11).trust_favorable_battle_day_epoch
+        ),
+        (2, day0 + 1)
+    );
+    w.assert_mirrored("wild win, day 2");
+}
+
+/// EV-practice-xp + ST-battle_tests#writeback-economy + EV-battle-reducer-security
+/// (side_b never mutated). USER RULING 2026-09-27 (BUG-practice-xp-doc-predicate-drift):
+/// the 1/10 practice multiplier applies IFF `player_identity == opponent_identity`
+/// (a self-practice battle against the player's OWN monsters); a PvP win against a
+/// different real player earns FULL base XP, exactly like a wild win. A PvP or
+/// practice win pays currency but no wild-only reward (essence, trust, QT), and
+/// leaves every side-B row byte-identical.
+#[test]
+fn bn_xp_is_one_tenth_iff_player_is_the_opponent() {
+    let bst: u16 = 300;
+    let lvl = game_core::Level::new(7).unwrap();
+    let base = game_core::battle_xp_reward(lvl, bst, lvl);
+    assert!(
+        base.value() >= 10,
+        "the fixture must make 1/10 distinguishable"
+    );
+    for (label, opponent, want_xp) in [
+        ("wild", crate::WILD_IDENTITY, base.value()),
+        ("pvp vs another player", bn_b(), base.value()),
+        ("self practice", bn_a(), base.value() / 10),
+    ] {
+        let fx = fixture();
+        let w = bn_world(&fx);
+        w.monster(11, bn_a(), 0);
+        w.monster(21, opponent, 1);
+        let opp_ids: &[u64] = if opponent == crate::WILD_IDENTITY {
+            &[]
+        } else {
+            &[21]
+        };
+        let mut win = bn_battle(bn_a(), opponent, &[11], opp_ids, BattleOutcome::SideAWins);
+        win.state.side_a.team[0].current_hp = 25;
+        let side_b = |w: &BnWorld<'_>| {
+            bn_bytes(&(
+                w.monsters.rows().into_iter().find(|m| m.monster_id == 21),
+                w.pubs.rows().into_iter().find(|m| m.monster_id == 21),
+            ))
+        };
+        let side_b_before = side_b(&w);
+        let ctx = fx.ctx_at(bn_at(BN_T0));
+        assert_eq!(
+            super::write_back_battle_results(&ctx, &win),
+            Ok(()),
+            "{label}"
+        );
+        let m = w.mon(11);
+        let (xp, level, _) =
+            game_core::apply_xp_gain(game_core::Xp::new(0), game_core::Xp::new(want_xp));
+        assert_eq!((m.xp, m.level), (xp.value(), level.as_u8()), "{label}: XP");
+        assert_eq!(m.current_hp, 25, "{label}: HP written back");
+        assert_eq!(
+            w.balance(bn_a()),
+            game_core::battle_currency_reward(bst),
+            "{label}: currency"
+        );
+        if opponent != crate::WILD_IDENTITY {
+            assert_eq!(
+                (
+                    m.essence_water,
+                    m.trust_favorable_count,
+                    m.quality_time_window_start_ms
+                ),
+                (0, 0, 0),
+                "{label}: no wild-only reward"
+            );
+        }
+        if opponent == bn_b() {
+            assert_eq!(side_b(&w), side_b_before, "{label}: side B untouched");
+        }
+        w.assert_mirrored(label);
+    }
+}
+
+/// ST-battle_tests#writeback-economy (faint penalty): wild-only and saturating — a
+/// fainted member at u32::MAX stays there (no overflow panic that would soft-lock the
+/// battle Ongoing); a PvP loss applies no penalty.
+#[test]
+fn bn_faint_penalty_is_wild_only_and_saturating() {
+    for (label, opponent, start, want) in [
+        ("wild", crate::WILD_IDENTITY, 5u32, 6u32),
+        ("wild at max", crate::WILD_IDENTITY, u32::MAX, u32::MAX),
+        ("pvp", bn_b(), 5, 5),
+    ] {
+        let fx = fixture();
+        let w = bn_world(&fx);
+        let mut m = bn_monster(11, bn_a(), 0);
+        m.trust_unfavorable_count = start;
+        w.pubs.seed(&crate::marshal::pub_from_monster(&m, 2));
+        w.monsters.seed(&m);
+        w.monster(12, bn_a(), 1);
+        let mut loss = bn_battle(bn_a(), opponent, &[11, 12], &[], BattleOutcome::SideBWins);
+        loss.state.side_a.team[0].current_hp = 0;
+        let ctx = fx.ctx_at(bn_at(BN_T0));
+        assert_eq!(
+            super::write_back_battle_results(&ctx, &loss),
+            Ok(()),
+            "{label}"
+        );
+        assert_eq!(w.mon(11).trust_unfavorable_count, want, "{label}");
+        assert_eq!(
+            w.mon(12).trust_unfavorable_count,
+            0,
+            "{label}: the conscious member is not penalised"
+        );
+        assert_eq!(
+            w.mon(11).current_hp,
+            0,
+            "{label}: the faint is written back"
+        );
+        w.assert_mirrored(label);
+    }
+}
+
+/// ST-battle_tests#writeback-economy (log-and-continue + settle-on-error): a missing
+/// loser species or an unparseable loser level ends the credit pass with Ok and HP
+/// still written; an unparseable WINNER level still pays currency; a missing
+/// projection is a loud Err — and a reducer that meets it still commits the battle's
+/// terminal outcome (the write-back error is logged, not propagated).
+#[test]
+fn bn_write_back_log_and_continue_paths() {
+    // Missing loser species (id 77) -> Ok, HP written, no currency or XP.
+    let fx = fixture();
+    let w = bn_world(&fx);
+    w.monster(11, bn_a(), 0);
+    let mut win = bn_battle(
+        bn_a(),
+        crate::WILD_IDENTITY,
+        &[11],
+        &[],
+        BattleOutcome::SideAWins,
+    );
+    win.state.side_b.team[0].species_id = 77;
+    win.state.side_a.team[0].current_hp = 28;
+    let ctx = fx.ctx_at(bn_at(BN_T0));
+    assert_eq!(super::write_back_battle_results(&ctx, &win), Ok(()));
+    assert_eq!((w.mon(11).current_hp, w.mon(11).xp), (28, 0));
+    assert_eq!(w.balance(bn_a()), 0);
+
+    // Unparseable loser level -> Ok after the currency credit, no XP.
+    drop(fx);
+    let fx = fixture();
+    let w = bn_world(&fx);
+    w.monster(11, bn_a(), 0);
+    let mut win = bn_battle(
+        bn_a(),
+        crate::WILD_IDENTITY,
+        &[11],
+        &[],
+        BattleOutcome::SideAWins,
+    );
+    win.state.side_b.team[0].level = 0;
+    let ctx = fx.ctx_at(bn_at(BN_T0));
+    assert_eq!(super::write_back_battle_results(&ctx, &win), Ok(()));
+    assert_eq!(w.mon(11).xp, 0);
+    assert_eq!(w.balance(bn_a()), 30);
+
+    // Unparseable winner level -> currency and essence still paid, XP skipped.
+    drop(fx);
+    let fx = fixture();
+    let w = bn_world(&fx);
+    w.monster(11, bn_a(), 0);
+    let mut win = bn_battle(
+        bn_a(),
+        crate::WILD_IDENTITY,
+        &[11],
+        &[],
+        BattleOutcome::SideAWins,
+    );
+    win.state.side_a.team[0].level = 0;
+    let ctx = fx.ctx_at(bn_at(BN_T0));
+    assert_eq!(super::write_back_battle_results(&ctx, &win), Ok(()));
+    assert_eq!(
+        (w.balance(bn_a()), w.mon(11).xp, w.mon(11).essence_water),
+        (30, 0, 10)
+    );
+    w.assert_mirrored("winner level unparseable");
+
+    // Missing projection -> loud Err; flee still commits Fled.
+    drop(fx);
+    let fx = fixture();
+    let w = bn_world(&fx);
+    w.monsters.seed(&bn_monster(11, bn_a(), 0));
+    w.battles.seed(&bn_battle(
+        bn_a(),
+        crate::WILD_IDENTITY,
+        &[11],
+        &[],
+        BattleOutcome::Ongoing,
+    ));
+    let fin = bn_battle(
+        bn_a(),
+        crate::WILD_IDENTITY,
+        &[11],
+        &[],
+        BattleOutcome::Fled,
+    );
+    let ctx = fx.ctx_at(bn_at(BN_T0));
+    assert_eq!(
+        super::write_back_battle_results(&ctx, &fin),
+        Err("monster_pub row missing for monster 11".to_string())
+    );
+    assert_eq!(
+        fx.run_as_at(bn_a(), bn_at(BN_T0), |ctx| super::flee(ctx, BN_BATTLE)),
+        Ok(()),
+        "settle-on-error: the reducer still succeeds"
+    );
+    assert_eq!(
+        w.battle(BN_BATTLE).unwrap().state.outcome,
+        BattleOutcome::Fled,
+        "…and commits the terminal outcome"
+    );
+}
+
+/// write_back_party_hp refuses a party monster whose owner changed mid-battle (a
+/// trade landed): Err, and that monster's HP is not written.
+#[test]
+fn bn_write_back_refuses_an_ownership_change() {
+    let fx = fixture();
+    let w = bn_world(&fx);
+    w.monster(11, bn_b(), 0);
+    let mut fin = bn_battle(
+        bn_a(),
+        crate::WILD_IDENTITY,
+        &[11],
+        &[],
+        BattleOutcome::Fled,
+    );
+    fin.state.side_a.team[0].current_hp = 3;
+    let before = w.snapshot();
+    let ctx = fx.ctx_at(bn_at(BN_T0));
+    assert_eq!(
+        super::write_back_party_hp(&ctx, &fin),
+        Err(
+            "write_back_party_hp: ownership changed mid-battle for monster 11 — aborted"
+                .to_string()
+        )
+    );
+    assert_eq!(w.snapshot(), before);
+    // The owner's own row IS written.
+    drop(fx);
+    let fx = fixture();
+    let w = bn_world(&fx);
+    w.monster(11, bn_a(), 0);
+    let ctx = fx.ctx_at(bn_at(BN_T0));
+    assert_eq!(super::write_back_party_hp(&ctx, &fin), Ok(()));
+    assert_eq!(w.mon(11).current_hp, 3);
+    w.assert_mirrored("hp write-back");
+}
+
+/// ST-battle_tests#reducer-guards (disconnect clause): resolving a disconnect deletes
+/// ONLY the caller's ongoing WILD battle and its battle_wild row, writing HP back;
+/// the caller's PvP battle, a terminal row and another player's wild battle stay.
+#[test]
+fn bn_disconnect_resolves_only_the_callers_ongoing_wild_battle() {
+    let fx = fixture();
+    let w = bn_world(&fx);
+    w.monster(11, bn_a(), 0);
+    let mut mine = bn_battle(
+        bn_a(),
+        crate::WILD_IDENTITY,
+        &[11],
+        &[],
+        BattleOutcome::Ongoing,
+    );
+    mine.state.side_a.team[0].current_hp = 17;
+    w.battles.seed(&mine);
+    w.wild_row(BN_BATTLE);
+    for (id, player, opp, outcome) in [
+        (1, bn_a(), bn_b(), BattleOutcome::Ongoing),
+        (2, bn_c(), crate::WILD_IDENTITY, BattleOutcome::Ongoing),
+        (3, bn_b(), bn_a(), BattleOutcome::Ongoing),
+    ] {
+        let mut b = bn_battle(player, opp, &[], &[], outcome);
+        b.battle_id = id;
+        w.battles.seed(&b);
+    }
+    w.wild_row(2);
+    let ctx = fx.ctx_at(bn_at(BN_T0));
+    super::resolve_wild_battle_on_disconnect(&ctx, bn_a());
+    let mut ids: Vec<u64> = w.battles.rows().iter().map(|b| b.battle_id).collect();
+    ids.sort_unstable();
+    assert_eq!(
+        ids,
+        vec![1, 2, 3],
+        "only the caller's ongoing wild battle goes"
+    );
+    assert_eq!(
+        w.wild
+            .rows()
+            .iter()
+            .map(|r| r.battle_id)
+            .collect::<Vec<_>>(),
+        vec![2]
+    );
+    assert_eq!(
+        w.mon(11).current_hp,
+        17,
+        "HP written back before the delete"
+    );
+    w.assert_mirrored("disconnect");
+}
+
+/// ST-battle_tests#writeback-economy (verifier clause): anonymize_battles replaces the
+/// erased identity in BOTH roles of every battle naming it, and touches no other row.
+#[test]
+fn bn_anonymize_battles_scrubs_both_roles() {
+    let fx = fixture();
+    let w = bn_world(&fx);
+    let _ = fx
+        .table_keyed::<crate::pvp::PvpDeadlineSchedule, u64>(
+            "pvp_deadline_schedule",
+            "scheduled_id",
+            |r| r.scheduled_id,
+        )
+        .writable()
+        .scannable();
+    for (id, player, opp) in [
+        (1, bn_a(), crate::WILD_IDENTITY),
+        (2, bn_b(), bn_a()),
+        (3, bn_b(), bn_c()),
+    ] {
+        let mut b = bn_battle(player, opp, &[], &[], BattleOutcome::Fled);
+        b.battle_id = id;
+        w.battles.seed(&b);
+    }
+    let bystander = w.battle(3).unwrap();
+    let ctx = fx.ctx_at(bn_at(BN_T0));
+    super::anonymize_battles(&ctx, bn_a());
+    let rows = w.battles.rows();
+    assert_eq!(rows.len(), 3);
+    for b in &rows {
+        assert!(
+            b.player_identity != bn_a() && b.opponent_identity != bn_a(),
+            "battle {} still names the erased identity",
+            b.battle_id
+        );
+    }
+    assert_eq!(w.battle(2).unwrap().player_identity, bn_b());
+    assert_eq!(w.battle(1).unwrap().opponent_identity, crate::WILD_IDENTITY);
+    assert_eq!(
+        spacetimedb::sats::bsatn::to_vec(&w.battle(3).unwrap()).unwrap(),
+        spacetimedb::sats::bsatn::to_vec(&bystander).unwrap()
+    );
+}
+
+/// Dev-only `start_wild_battle` (compiled only with `--features dev_reducers`, so the
+/// default suite never builds it): the zone argument must equal the caller's
+/// character zone; a matching zone proceeds to the encounter-table lookup.
+#[cfg(feature = "dev_reducers")]
+#[test]
+fn bn_start_wild_battle_checks_the_zone_argument() {
+    use crate::schema::Character;
+    let fx = fixture();
+    let w = bn_world(&fx);
+    w.monster(11, bn_a(), 0);
+    w.players.seed(&Player {
+        identity: bn_a(),
+        entity_id: 5,
+        name: String::new(),
+        online: true,
+        last_input_seq: 0,
+    });
+    fx.table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id)
+        .seed(&Character {
+            entity_id: 5,
+            zone_id: 0,
+            tile_x: 0,
+            tile_y: 0,
+            facing: game_core::Direction::South,
+            action: game_core::ActionState::Idle,
+            move_started_at_ms: 0,
+            sprite_id: 0,
+            move_queue: vec![],
+        });
+    let before = w.snapshot();
+    assert_eq!(
+        fx.run_as_at(bn_a(), bn_at(BN_T0), |ctx| super::start_wild_battle(ctx, 3)),
+        Err("zone mismatch: arg 3 != character zone 0".to_string())
+    );
+    assert_eq!(
+        fx.run_as_at(bn_a(), bn_at(BN_T0), |ctx| super::start_wild_battle(ctx, 0)),
+        Err("no encounter table for zone 0".to_string())
+    );
+    assert_eq!(w.snapshot(), before);
+}
