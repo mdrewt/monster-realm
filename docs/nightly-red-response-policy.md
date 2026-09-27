@@ -21,7 +21,6 @@ jobs the workflow declares — no more, no fewer.
 | `mutation-server` | Queue a fix slice as the next slice. Per-file diff the survivor list against the previous baseline BEFORE touching the cap; a survivor increase inside old code is a test regression, not a re-baseline. | operator (Drew) | ADR-0118 §4 re-baseline procedure, and ADR-0183 for the lockstep cap-and-ceiling rule |
 | `coverage` | Queue a fix slice as the next slice. Restore coverage with tests, never by lowering the gate. | build-loop supervisor | ADR-0050 — the threshold and its provenance |
 | `smoke-republish` | Insert as the NEXT slice in the milestone queue, same tier as fix-red-master, below it in ordering. The supervisor picks it up as a priority target on the next supervision tick. | build-loop supervisor | ADR-0079 — the failure policy this row mirrors |
-| `a11y-e2e` | Queue a fix slice as the next slice. Restore the deleted or renamed a11y eval or spec — the gate exists because neither `just eval` nor `just client-test` can see that deletion. Raise the floor ONLY in the commit that deliberately removes a11y tests, and say which; never to make a red go away. | build-loop supervisor | ADR-0050 — the nightly-gate policy this job joins; ADR-0205 — the overlay a11y contract it ratchets |
 | `notify` | Highest-priority queue insertion, and re-read the recent nights by hand: while this job is broken, every other job's red is silent. | operator (Drew) | ADR-0200 — the notifier design and its zero-guard |
 
 ## Escalation ladder
