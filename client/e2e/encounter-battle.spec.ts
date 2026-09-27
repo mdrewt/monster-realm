@@ -18,10 +18,13 @@ import { t, tf } from '../src/ui/i18n/resolver';
 // the world RESUMES after the terminal frame is dismissed. Those three are this file's tests.
 //
 // SEEDING (owner SQL, the recruit.spec R3 / wallet-balance.spec precedent — the dev reducers are
-// not page-callable). The starter is raised to level 10 with xp = 11^3 - 1, so ANY win levels it
-// to 11 (battle_xp_reward is >= 1, xp.rs) — a VISIBLE XP grant in the box. Its defense columns are
+// not page-callable). The starter is raised to level 7 with xp = 8^3 - 1, so ANY win levels it
+// to 8 (battle_xp_reward is >= 1, xp.rs) — a VISIBLE XP grant in the box. The seed level MUST stay
+// inside zone 0's encounter bands (Lv3-7 / Lv4-8, content/encounters/000-core.ron):
+// game-core roll_encounter only draws entries whose band contains the PARTY level, so a Lv9+
+// party meets nothing in zone 0 (measured: a Lv10 seed walked 120 grass steps without a roll). Its defense columns are
 // raised so a zone-0 wild (Lv3-8) cannot KO it; attack is left natural, so a kill normally takes
-// several hits and E1 sees an intermediate HP frame. Level 11 stays far below every evolution gate
+// several hits and E1 sees an intermediate HP frame. Level 8 stays far below every evolution gate
 // out of species 1 (min_level 20 / essence gates), so no evolution can fire here.
 //
 // Water wilds (Tidalin) resist Fire and are fled, exactly as recruit.spec does — bounded.
@@ -30,8 +33,8 @@ import { t, tf } from '../src/ui/i18n/resolver';
 // CLEANUP. One browser/context/identity; afterAll closes the browser (on_disconnect deletes the
 // player row before golden.spec's presenceCount === 2).
 
-const SEED_LEVEL = 10;
-const SEED_XP = 11 * 11 * 11 - 1; // one short of level 11 (xp_for_level = level^3)
+const SEED_LEVEL = 7;
+const SEED_XP = 8 * 8 * 8 - 1; // one short of level 8 (xp_for_level = level^3)
 const SEED_DEFENSE = 250;
 /** Shuttle steps per hunt; only the East step onto (2,2) rolls. 120 steps ~ 60 grass entries,
  *  P(no encounter) = 0.8^60 ~ 1.5e-6 (recruit.spec MAX_WALK_STEPS arithmetic). */
@@ -271,7 +274,7 @@ test.describe
         .toBeLessThan(oppBefore.cur);
     });
 
-    test('E2: fighting on to a win shows Victory!, grants XP (visible Lv11 in the box) and currency (server wallet)', async () => {
+    test('E2: fighting on to a win shows Victory!, grants XP (visible level-up in the box) and currency (server wallet)', async () => {
       test.setTimeout(90_000);
       for (let i = 0; i < MAX_ATTACKS; i++) {
         if ((await snap(page)).ongoingBattle === null) break;
@@ -298,7 +301,7 @@ test.describe
       );
       expect(Number(wallet?.balance), 'the win must credit currency').toBeGreaterThan(0);
 
-      // Visible XP: the box card now reads Lv11. Escape first dismisses the terminal frame.
+      // Visible XP: the box card now reads Lv8. Escape first dismisses the terminal frame.
       await page.keyboard.press('Escape');
       await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
       await page.keyboard.press('KeyB');
