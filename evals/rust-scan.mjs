@@ -18,24 +18,16 @@
 //
 // CONTRACT — `stripRustSource` is LENGTH- and OFFSET-PRESERVING. It BLANKS
 // literal payloads to spaces while keeping both quote characters and every
-// newline. Callers therefore rely on being able to read the RAW source at
-// offsets found in the STRIPPED text.
-// Any "cleanup" that DELETES instead of blanking silently misaligns every one
-// of those call sites. `assertStripperSound` mechanically enforces the property.
+// newline, so callers can read the RAW source at offsets found in the STRIPPED
+// text. Any "cleanup" that DELETES instead of blanking misaligns those callers.
 //
-// DO NOT USE THIS ON TYPESCRIPT. Blanking payloads destroys the SQL subscription
-// literals that the client-side privacy evals needle — and, worse, it makes a
-// BAN on a string such as `FROM player_wallet` pass vacuously. TypeScript scans
-// use `stripTsComments` (evals/conversation-privacy.eval.mjs), which preserves
-// literal text verbatim.
+// DO NOT USE THIS ON TYPESCRIPT: blanking payloads destroys string literals a TS
+// scan would need.
 //
-// `independentAnchorCount` is deliberately naive and quote-BLIND, and is kept
-// private here on purpose: it is the desync detector for the real stripper, and
-// a shared implementation could not detect its own desync.
-//
-// Exports exactly what the surviving importers use (battle-schema-snapshot,
-// conversation-privacy, inventory-privacy): `stripRustSource` and
-// `assertStripperSound`. This file is NOT named
+// Exports exactly what its one surviving importer uses
+// (battle-schema-snapshot.eval.mjs): `stripRustSource`. The desync self-check
+// (`assertStripperSound`) died with conversation-privacy / inventory-privacy, its
+// last callers (debloat Phase 2 straggler sweep). This file is NOT named
 // `*.eval.mjs` on purpose: evals/run.mjs discovers `evals/*.eval.mjs` and would
 // otherwise import it and call a non-existent default export.
 //
@@ -45,25 +37,10 @@
 // A bare double quote as data, so no scanner in this repo mistakes this file's
 // own text for an unbalanced literal.
 const DQ = String.fromCharCode(0x22);
-// Block-comment delimiters as data (never written contiguously in a comment).
-const SLASH_STAR = String.fromCharCode(0x2f, 0x2a);
-const STAR_SLASH = String.fromCharCode(0x2a, 0x2f);
 
 // ---------------------------------------------------------------------------
 // Small shared helpers.
 // ---------------------------------------------------------------------------
-
-/**
- * Count non-overlapping occurrences of a literal needle.
- * @param {string} hay Text to search.
- * @param {string} needle Literal needle.
- * @returns {number} Occurrence count.
- */
-function countOccurrences(hay, needle) {
-  let n = 0;
-  for (let at = hay.indexOf(needle); at !== -1; at = hay.indexOf(needle, at + needle.length)) n++;
-  return n;
-}
 
 /**
  * Is `ch` a Rust identifier character? (`undefined` — off the end of the
@@ -256,111 +233,4 @@ export function stripRustSource(src) {
   }
 
   return out.join('');
-}
-
-// ---------------------------------------------------------------------------
-// The desync self-check. This is the ONLY clause that can see a stripper
-// desync, because a desync is invisible to the clauses it blinds: it GREENS
-// every ban clause and reds only presence clauses.
-// ---------------------------------------------------------------------------
-
-const STRIP_ANCHORS = ['pub struct', '#[spacetimedb::'];
-
-/**
- * Count structural anchors in RAW text WITHOUT any quote tracking — the
- * independence that makes this a desync detector. Deliberately over-strips:
- * lines that open a comment, that carry a quote, or that carry a backtick are
- * skipped entirely, and each line is truncated at its first slash-slash. Every
- * one of those exclusions can only LOWER this count, and the comparison is
- * `stripped >= independent`, so over-stripping can never false-RED.
- * @param {string} raw Raw source text.
- * @param {string} anchor Literal anchor.
- * @returns {number} Independently-derived anchor count.
- */
-function independentAnchorCount(raw, anchor) {
-  let n = 0;
-  // Block-comment state. Without it a commented-out declaration —
-  //   /*
-  //   pub struct OldThing { pub identity: Identity }
-  //   */
-  // — is counted here (the inner line starts with neither `//` nor `*`) but is
-  // correctly blanked by the stripper, so `got < want` and BOTH new evals go RED
-  // claiming a stripper DESYNC that did not happen. Green today only because no
-  // non-test source contains a block comment; an ordinary migration edit trips
-  // it. Naive on purpose: this counter must stay INDEPENDENT of the real
-  // stripper (a shared implementation could not detect that stripper's desync),
-  // so it deliberately does not lex strings.
-  let inBlock = false;
-  for (const line of raw.split('\n')) {
-    const trimmed = line.trim();
-    if (inBlock) {
-      const close = line.indexOf(STAR_SLASH);
-      if (close === -1) continue;
-      inBlock = false;
-      n += countOccurrences(line.slice(close + 2), anchor);
-      continue;
-    }
-    if (trimmed.startsWith('//') || trimmed.startsWith(SLASH_STAR)) {
-      if (trimmed.startsWith(SLASH_STAR) && line.indexOf(STAR_SLASH) === -1) inBlock = true;
-      continue;
-    }
-    if (trimmed.startsWith('*') || trimmed.startsWith('!')) continue;
-    if (line.indexOf(DQ) !== -1 || line.indexOf('`') !== -1) continue;
-    const open = line.indexOf(SLASH_STAR);
-    if (open !== -1 && line.indexOf(STAR_SLASH, open) === -1) {
-      inBlock = true;
-      n += countOccurrences(line.slice(0, open), anchor);
-      continue;
-    }
-    const cut = line.indexOf('//');
-    n += countOccurrences(cut === -1 ? line : line.slice(0, cut), anchor);
-  }
-  return n;
-}
-
-/**
- * Prove the stripper did not desync on this source.
- * @param {string} src Raw source text.
- * @param {string} label Human label for the failure message (a path).
- * @param {(s: string) => string} stripFn Injected stripper (defaults to the real
- *   one; the teeth inject deliberately broken ones so this check is provably
- *   not always-green).
- * @returns {string|null} Error string, or null on pass.
- */
-export function assertStripperSound(src, label = 'source', stripFn = stripRustSource) {
-  const stripped = stripFn(src);
-
-  if (stripped.length !== src.length) {
-    return (
-      `[STRIP/length] the stripper changed the length of ${label} ` +
-      `(${src.length} -> ${stripped.length}) — every offset downstream, and every ` +
-      'parser that consumes the stripped text, is now misaligned with the raw source'
-    );
-  }
-
-  if (stripFn(stripped) !== stripped) {
-    return (
-      `[STRIP/idempotent] stripping ${label} twice differs from stripping it once — ` +
-      'the lexer is leaving a quote or comment delimiter in a state that re-triggers ' +
-      'on a second pass, which is the signature of unbalanced quote pairing'
-    );
-  }
-
-  for (const anchor of STRIP_ANCHORS) {
-    const got = countOccurrences(stripped, anchor);
-    const want = independentAnchorCount(src, anchor);
-    if (got < want) {
-      return (
-        `[STRIP/anchors] ${label}: the stripped source contains ${got} occurrence(s) of ` +
-        `\`${anchor}\` but a quote-blind line scan of the RAW source finds ${want} — the ` +
-        'stripper has blanked real code. This is a DESYNC: a raw string form it does not ' +
-        'recognise (a zero-hash `r"..."` whose trailing backslash is wrongly eaten as an ' +
-        'escape, an n-hash `r##"..."##`, or a byte raw `br##"..."##`) inverted quote ' +
-        'polarity for the rest of the file. A desync GREENS every ban clause in this ' +
-        'eval, so it is caught HERE or not at all'
-      );
-    }
-  }
-
-  return null;
 }
