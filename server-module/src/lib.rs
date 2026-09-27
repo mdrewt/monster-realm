@@ -53,6 +53,10 @@ mod m14_5d_1a_tests;
 mod native_host_tests;
 
 #[cfg(test)]
+#[path = "privacy_enforcement_tests.rs"]
+mod privacy_enforcement_tests;
+
+#[cfg(test)]
 #[path = "rb73_session_tests.rs"]
 mod rb73_session_tests;
 
@@ -349,15 +353,3 @@ pub fn on_disconnect(ctx: &ReducerContext) {
         ctx.db.player().identity().delete(me);
     }
 }
-
-// rb-74 gating oracle for the dated citation retarget. APPENDED AT EOF on
-// purpose: inserting it beside the three test modules near the top shifts every
-// later line by +4 and breaks a sibling ADR's executed line pins, which are
-// outside this slice's touch-set. Appending here shifts nothing.
-#[cfg(test)]
-#[path = "rb74_citation_tests.rs"]
-mod rb74_citation_tests;
-
-#[cfg(test)]
-#[path = "privacy_enforcement_tests.rs"]
-mod privacy_enforcement_tests;
