@@ -1516,3 +1516,424 @@ fn rb80_grant_bait_is_refused_only_while_the_caller_is_deletion_gated() {
          own."
     );
 }
+
+// ===========================================================================
+// Native-host behavioural suite (debloat Phase 2: EV-recruit-reducer-security,
+// ST-taming_tests).
+//
+// The SHIPPED `attempt_recruit` runs through `Fixture::run_as_at` with a real
+// sender. DETERMINISM: the bait's `recruit_bonus` is 1000, so
+// `recruit_chance` clamps to 1000 per-mille and the recruit succeeds whatever
+// `ctx.random()` draws. HOST LIMIT: no rollback, so every rejection is refusal
+// BEFORE any write — including before the roll (no playtest_event row). The
+// failed-roll branch (resolve_recruit_failure) is covered by game-core.
+// ===========================================================================
+mod nh {
+    use crate::marshal::pub_from_monster;
+    use crate::native_host_tests::{fixture, Fixture, Handle};
+    use crate::playtest::PlaytestEvent;
+    use crate::schema::{
+        Battle, BattleWild, Inventory, ItemRow, Monster, MonsterPub, SpeciesRow, TradeOffer,
+    };
+    use crate::taming::attempt_recruit;
+    use crate::PARTY_SLOT_NONE;
+    use game_core::{Affinity, BattleOutcome, TradeItem, TradeStatus};
+    use spacetimedb::sats::bsatn::to_vec;
+    use spacetimedb::{Identity, Timestamp};
+
+    const T0: i64 = 1_750_000_000_000;
+    const BATTLE: u64 = 7;
+    const BAIT: u32 = 9;
+    const NOT_BAIT: u32 = 8;
+    const WILD_SPECIES: u32 = 5;
+
+    fn a() -> Identity {
+        Identity::from_byte_array([0xA1; 32])
+    }
+    fn b() -> Identity {
+        Identity::from_byte_array([0xB2; 32])
+    }
+    fn at(ms: i64) -> Timestamp {
+        Timestamp::from_micros_since_unix_epoch(ms * 1000)
+    }
+
+    fn item(id: u32, recruit_bonus: u16) -> ItemRow {
+        ItemRow {
+            id,
+            name: format!("i{id}"),
+            description: String::new(),
+            recruit_bonus,
+            train_stat: None,
+            train_amount: 0,
+            sell_price: 0,
+            cure_status: None,
+        }
+    }
+
+    fn party_monster(owner: Identity) -> Monster {
+        Monster {
+            monster_id: 11,
+            owner_identity: owner,
+            species_id: 1,
+            nickname: "m11".to_string(),
+            level: 7,
+            xp: 120,
+            iv_hp: 10,
+            iv_attack: 11,
+            iv_defense: 12,
+            iv_speed: 13,
+            iv_sp_attack: 14,
+            iv_sp_defense: 15,
+            nature_kind: game_core::NatureKind::Hardy,
+            ev_hp: 4,
+            ev_attack: 5,
+            ev_defense: 6,
+            ev_speed: 7,
+            ev_sp_attack: 8,
+            ev_sp_defense: 9,
+            stat_hp: 40,
+            stat_attack: 20,
+            stat_defense: 20,
+            stat_speed: 20,
+            stat_sp_attack: 20,
+            stat_sp_defense: 20,
+            current_hp: 33,
+            party_slot: 0,
+            last_care_at_ms: 0,
+            essence_fire: 0,
+            essence_water: 0,
+            essence_plant: 0,
+            essence_electric: 0,
+            essence_earth: 0,
+            essence_wind: 0,
+            essence_light: 0,
+            essence_dark: 0,
+            trust_favorable_count: 0,
+            trust_unfavorable_count: 0,
+            trust_favorable_battle_day_epoch: 0,
+            quality_time_ticks_total: 0,
+            quality_time_accum_ms: 0,
+            quality_time_window_ms: 0,
+            quality_time_window_start_ms: 0,
+            last_essence_train_at_ms: 0,
+        }
+    }
+
+    fn bm(species_id: u32, current_hp: u16) -> game_core::BattleMonster {
+        game_core::BattleMonster {
+            species_id,
+            affinity: Affinity::Fire,
+            level: 7,
+            current_hp,
+            max_hp: 30,
+            stats: game_core::StatBlock {
+                hp: 30,
+                attack: 20,
+                defense: 20,
+                speed: 20,
+                sp_attack: 20,
+                sp_defense: 20,
+            },
+            known_skill_ids: vec![1],
+            status: None,
+        }
+    }
+
+    /// A's wild battle: A's monster 11 on side A at 12 HP vs a full-HP wild.
+    fn wild_battle(outcome: BattleOutcome) -> Battle {
+        Battle {
+            battle_id: BATTLE,
+            player_identity: a(),
+            opponent_identity: crate::WILD_IDENTITY,
+            state: game_core::BattleState {
+                side_a: game_core::BattleSide {
+                    active: 0,
+                    team: vec![bm(1, 12)],
+                },
+                side_b: game_core::BattleSide {
+                    active: 0,
+                    team: vec![bm(WILD_SPECIES, 30)],
+                },
+                outcome,
+                turn_number: 1,
+                weather: None,
+            },
+            party_monster_ids: vec![11],
+            opponent_monster_ids: vec![],
+            created_at_ms: 0,
+        }
+    }
+
+    struct World<'a> {
+        battles: Handle<'a, Battle, u64>,
+        wilds: Handle<'a, BattleWild, u64>,
+        monsters: Handle<'a, Monster, u64>,
+        pubs: Handle<'a, MonsterPub, u64>,
+        stacks: Handle<'a, Inventory>,
+        offers: Handle<'a, TradeOffer>,
+        events: Handle<'a, PlaytestEvent, u64>,
+    }
+
+    /// A ready-to-succeed recruit: battle + battle_wild + bait stack of 2.
+    fn world(fx: &Fixture) -> World<'_> {
+        let items = fx.table_keyed::<ItemRow, u32>("item_row", "id", |r| r.id);
+        items.seed(&item(BAIT, 1000));
+        items.seed(&item(NOT_BAIT, 0));
+        let species = fx.table_keyed::<SpeciesRow, u32>("species_row", "id", |r| r.id);
+        species.seed(&SpeciesRow {
+            id: WILD_SPECIES,
+            name: "wild".to_string(),
+            base_hp: 40,
+            base_attack: 41,
+            base_defense: 42,
+            base_speed: 43,
+            base_sp_attack: 44,
+            base_sp_defense: 45,
+            affinity: Affinity::Water,
+            learnable_skill_ids: vec![1],
+            ability: None,
+            tier: 2,
+        });
+        let _ = fx
+            .table_keyed::<Inventory, u64>("inventory", "inv_id", |r| r.inv_id)
+            .writable()
+            .unique()
+            .auto_inc(|r| r.inv_id, |r, id| r.inv_id = id);
+        let _ = fx.table::<TradeOffer>("trade_offer", "counterparty", |r| r.counterparty);
+        let w = World {
+            battles: fx
+                .table_keyed::<Battle, u64>("battle", "battle_id", |r| r.battle_id)
+                .writable()
+                .unique(),
+            wilds: fx
+                .table_keyed::<BattleWild, u64>("battle_wild", "battle_id", |r| r.battle_id)
+                .writable()
+                .unique(),
+            monsters: fx
+                .table_keyed::<Monster, u64>("monster", "monster_id", |r| r.monster_id)
+                .writable()
+                .unique()
+                .auto_inc(|r| r.monster_id, |r, id| r.monster_id = id),
+            pubs: fx
+                .table_keyed::<MonsterPub, u64>("monster_pub", "monster_id", |r| r.monster_id)
+                .writable()
+                .unique(),
+            stacks: fx.table::<Inventory>("inventory", "owner_identity", |r| r.owner_identity),
+            offers: fx.table::<TradeOffer>("trade_offer", "initiator", |r| r.initiator),
+            events: fx
+                .table_keyed::<PlaytestEvent, u64>("playtest_event", "event_id", |r| r.event_id)
+                .writable()
+                .unique()
+                .auto_inc(|r| r.event_id, |r, id| r.event_id = id),
+        };
+        w.battles.seed(&wild_battle(BattleOutcome::Ongoing));
+        w.wilds.seed(&BattleWild {
+            battle_id: BATTLE,
+            wild_species_id: WILD_SPECIES,
+            wild_level: 4,
+            individuality_seed: 0xBEEF,
+        });
+        let m = party_monster(a());
+        w.pubs.seed(&pub_from_monster(&m, 0));
+        w.monsters.seed(&m);
+        w.stack(a(), BAIT, 2);
+        w
+    }
+
+    impl World<'_> {
+        fn stack(&self, owner: Identity, item_id: u32, count: u32) {
+            self.stacks.seed(&Inventory {
+                inv_id: 1000 + u64::from(owner.to_byte_array()[0]) * 100 + u64::from(item_id),
+                owner_identity: owner,
+                item_id,
+                count,
+            });
+        }
+        fn count(&self, owner: Identity, item_id: u32) -> u32 {
+            self.stacks
+                .rows()
+                .iter()
+                .filter(|r| r.owner_identity == owner && r.item_id == item_id)
+                .map(|r| r.count)
+                .sum()
+        }
+        fn snapshot(&self) -> Vec<Vec<u8>> {
+            vec![
+                to_vec(&self.battles.rows()).unwrap(),
+                to_vec(&self.wilds.rows()).unwrap(),
+                to_vec(&self.monsters.rows()).unwrap(),
+                to_vec(&self.pubs.rows()).unwrap(),
+                to_vec(&self.stacks.rows()).unwrap(),
+                to_vec(&self.events.rows()).unwrap(),
+            ]
+        }
+    }
+
+    /// Success: the bait is spent, the roll is recorded once, the recruit lands
+    /// in A's BOX with a fresh-tier public row, the battle ends SideAWins with its
+    /// battle_wild row GC'd, the party HP is written back, and NO XP is granted.
+    #[test]
+    fn nh_recruit_success_spends_bait_boxes_the_wild_and_grants_no_xp() {
+        let fx = fixture();
+        let w = world(&fx);
+        let got = fx.run_as_at(a(), at(T0), |ctx| attempt_recruit(ctx, BATTLE, Some(BAIT)));
+        assert_eq!(got, Ok(()), "indexes asked: {:?}", fx.requested_indexes());
+
+        assert_eq!(w.count(a(), BAIT), 1, "exactly one bait spent");
+        let events = w.events.rows();
+        assert_eq!(events.len(), 1, "the attempt is recorded exactly once");
+        assert_eq!(
+            (
+                events[0].identity,
+                events[0].bait_item_id,
+                events[0].success
+            ),
+            (a(), BAIT, true)
+        );
+
+        let recruits: Vec<Monster> = w
+            .monsters
+            .rows()
+            .into_iter()
+            .filter(|m| m.monster_id != 11)
+            .collect();
+        assert_eq!(recruits.len(), 1, "exactly one monster created");
+        let r = &recruits[0];
+        assert_eq!(
+            (r.owner_identity, r.species_id, r.level, r.party_slot),
+            (a(), WILD_SPECIES, 4, PARTY_SLOT_NONE),
+            "the caller owns the recruit, at the wild's level, in the box"
+        );
+        let p = w
+            .pubs
+            .rows()
+            .into_iter()
+            .find(|p| p.monster_id == r.monster_id)
+            .expect("monster_pub row for the recruit");
+        assert_eq!(
+            to_vec(&p).unwrap(),
+            to_vec(&pub_from_monster(r, 2)).unwrap()
+        );
+
+        assert!(w.wilds.rows().is_empty(), "battle_wild GC'd");
+        assert_eq!(w.battles.rows()[0].state.outcome, BattleOutcome::SideAWins);
+        let lead = w
+            .monsters
+            .rows()
+            .into_iter()
+            .find(|m| m.monster_id == 11)
+            .unwrap();
+        assert_eq!(lead.current_hp, 12, "party HP written back from the battle");
+        assert_eq!((lead.xp, lead.level), (120, 7), "no XP on recruit");
+    }
+
+    /// Refusals before the roll: non-owner, finished battle, non-wild battle,
+    /// unknown item, non-bait item, no bait owned, bait fully escrowed — each
+    /// leaves the store (including the playtest log) byte-identical.
+    #[test]
+    fn nh_recruit_refusals_happen_before_the_roll() {
+        type Setup = fn(&World<'_>);
+        let cases: [(&str, Identity, Option<u32>, Setup, &str); 7] = [
+            ("non-owner", b(), Some(BAIT), |_| {}, "not owner"),
+            (
+                "battle finished",
+                a(),
+                Some(BAIT),
+                |w| {
+                    w.battles.remove(BATTLE);
+                    w.battles.seed(&wild_battle(BattleOutcome::SideBWins));
+                },
+                "battle is not ongoing",
+            ),
+            (
+                "not a wild battle",
+                a(),
+                None,
+                |w| {
+                    w.wilds.remove(BATTLE);
+                },
+                "not a wild battle",
+            ),
+            ("unknown item", a(), Some(77), |_| {}, "unknown item"),
+            (
+                "not bait",
+                a(),
+                Some(NOT_BAIT),
+                |w| w.stack(a(), NOT_BAIT, 3),
+                "item is not bait",
+            ),
+            (
+                "no bait owned",
+                a(),
+                Some(BAIT),
+                |w| {
+                    w.stacks.remove(a());
+                    w.stack(b(), BAIT, 5);
+                },
+                "item is in an active trade",
+            ),
+            (
+                "bait escrowed",
+                a(),
+                Some(BAIT),
+                |w| {
+                    let mut o = TradeOffer {
+                        trade_id: 1,
+                        initiator: a(),
+                        counterparty: b(),
+                        initiator_monster_ids: vec![],
+                        initiator_items: vec![],
+                        initiator_currency: 0,
+                        counterparty_monster_ids: vec![],
+                        counterparty_items: vec![],
+                        counterparty_currency: 0,
+                        initiator_cards: vec![],
+                        counterparty_cards: vec![],
+                        status: TradeStatus::Pending,
+                        created_at_ms: T0,
+                    };
+                    o.initiator_items = vec![TradeItem {
+                        item_id: BAIT,
+                        qty: 2,
+                    }];
+                    w.offers.seed(&o);
+                },
+                "item is in an active trade",
+            ),
+        ];
+        for (label, caller, bait, setup, want) in cases {
+            let fx = fixture();
+            let w = world(&fx);
+            setup(&w);
+            let before = w.snapshot();
+            let got = fx.run_as_at(caller, at(T0), |ctx| attempt_recruit(ctx, BATTLE, bait));
+            assert_eq!(got, Err(want.to_string()), "{label}");
+            assert_eq!(
+                w.snapshot(),
+                before,
+                "{label}: nothing written, no roll recorded"
+            );
+        }
+    }
+
+    /// grant_bait (DEV) credits ONLY the caller, capped at 99 per call, and
+    /// refuses a non-bait item.
+    #[cfg(feature = "dev_reducers")]
+    #[test]
+    fn nh_grant_bait_is_self_scoped_and_capped() {
+        let fx = fixture();
+        let w = world(&fx);
+        w.stack(b(), BAIT, 1);
+        assert_eq!(
+            fx.run_as(a(), |ctx| crate::taming::grant_bait(ctx, BAIT, 150)),
+            Ok(())
+        );
+        assert_eq!((w.count(a(), BAIT), w.count(b(), BAIT)), (2 + 99, 1));
+        let before = w.snapshot();
+        assert_eq!(
+            fx.run_as(a(), |ctx| crate::taming::grant_bait(ctx, NOT_BAIT, 1)),
+            Err("not a bait item".to_string())
+        );
+        assert_eq!(w.snapshot(), before);
+    }
+}

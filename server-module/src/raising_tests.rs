@@ -4609,3 +4609,896 @@ fn rb122_target_fixtures_exist_and_carry_retune_notes() {
         );
     }
 }
+
+// ===========================================================================
+// Native-host behavioural suite (debloat Phase 2: EV-raising-reducer-security#guards,
+// EV-evolution-reducer-security (essence_train / consume arms), EV-no-idle-accrual,
+// ST-raising_tests).
+//
+// The SHIPPED reducers run through `Fixture::run_as(_at)` with a real sender and
+// clock. HOST LIMIT: no transaction rollback, so every rejection is asserted as
+// refusal BEFORE any write (the store byte-identical).
+//
+// Not asserted, on purpose:
+// * heal_party's `require_owner(ctx, "heal_party", me)` — vacuous by construction
+//   (BUG-heal-party-tautological-require-owner); what the reducer really guards is
+//   the sender-scoped lookup + spend, which is what these tests pin.
+// * heal_party's currency-cost branch — live code, but unreachable with shipped
+//   content (the only heal location costs 0 currency in the RON cache); residual.
+// ===========================================================================
+mod nh {
+    use crate::marshal::pub_from_monster;
+    use crate::movement::{movement_tick, MovementTickSchedule};
+    use crate::native_host_tests::{fixture, Fixture, Handle, DEFAULT_DATABASE_IDENTITY};
+    use crate::raising::{
+        accrue_quality_time, care, consume_crystalized_essence, essence_train, evaluate_train,
+        heal_party, train, CARE_COOLDOWN_MS, ESSENCE_SOFT_CAP, ESSENCE_TRAIN_COOLDOWN_MS,
+        QT_IDLE_GAP_MS, QT_TICK_MS,
+    };
+    use crate::schema::{
+        Battle, Character, HealCooldown, HealLocationRow, Inventory, ItemRow, Monster, MonsterPub,
+        Player, SpeciesRow, TradeOffer,
+    };
+    use crate::PARTY_SLOT_NONE;
+    use game_core::{
+        ActionState, Affinity, BattleOutcome, Direction, StatKind, TradeItem, TradeStatus,
+    };
+    use spacetimedb::sats::bsatn::to_vec;
+    use spacetimedb::{Identity, ReducerContext, ScheduleAt, Timestamp};
+
+    const T0: i64 = 1_750_000_000_000;
+    /// Content item ids (game-core/content/items): 1 bait, 2 Attack food,
+    /// 4 crystalized Water essence (+100).
+    const BAIT: u32 = 1;
+    const FOOD: u32 = 2;
+    const NOT_FOOD: u32 = 3;
+    const WATER_ESSENCE: u32 = 4;
+
+    fn a() -> Identity {
+        Identity::from_byte_array([0xA1; 32])
+    }
+    fn b() -> Identity {
+        Identity::from_byte_array([0xB2; 32])
+    }
+    fn c() -> Identity {
+        Identity::from_byte_array([0xC3; 32])
+    }
+    fn at(ms: i64) -> Timestamp {
+        Timestamp::from_micros_since_unix_epoch(ms * 1000)
+    }
+
+    fn monster(monster_id: u64, owner: Identity, party_slot: u8) -> Monster {
+        Monster {
+            monster_id,
+            owner_identity: owner,
+            species_id: 1,
+            nickname: format!("m{monster_id}"),
+            level: 7,
+            xp: 120,
+            iv_hp: 10,
+            iv_attack: 11,
+            iv_defense: 12,
+            iv_speed: 13,
+            iv_sp_attack: 14,
+            iv_sp_defense: 15,
+            nature_kind: game_core::NatureKind::Hardy,
+            ev_hp: 4,
+            ev_attack: 5,
+            ev_defense: 6,
+            ev_speed: 7,
+            ev_sp_attack: 8,
+            ev_sp_defense: 9,
+            stat_hp: 40,
+            stat_attack: 20,
+            stat_defense: 20,
+            stat_speed: 20,
+            stat_sp_attack: 20,
+            stat_sp_defense: 20,
+            current_hp: 5,
+            party_slot,
+            last_care_at_ms: 0,
+            essence_fire: 10,
+            essence_water: 3,
+            essence_plant: 0,
+            essence_electric: 1,
+            essence_earth: 0,
+            essence_wind: 0,
+            essence_light: 2,
+            essence_dark: 0,
+            trust_favorable_count: 9,
+            trust_unfavorable_count: 1,
+            trust_favorable_battle_day_epoch: 3,
+            quality_time_ticks_total: 44,
+            quality_time_accum_ms: 0,
+            quality_time_window_ms: 0,
+            quality_time_window_start_ms: 0,
+            last_essence_train_at_ms: 0,
+        }
+    }
+
+    fn item(id: u32, train_stat: Option<StatKind>) -> ItemRow {
+        ItemRow {
+            id,
+            name: format!("i{id}"),
+            description: String::new(),
+            recruit_bonus: 0,
+            train_stat,
+            train_amount: 10,
+            sell_price: 0,
+            cure_status: None,
+        }
+    }
+
+    fn species1() -> SpeciesRow {
+        SpeciesRow {
+            id: 1,
+            name: "s1".to_string(),
+            base_hp: 30,
+            base_attack: 31,
+            base_defense: 32,
+            base_speed: 33,
+            base_sp_attack: 34,
+            base_sp_defense: 35,
+            affinity: Affinity::Fire,
+            learnable_skill_ids: vec![1],
+            ability: None,
+            tier: 0,
+        }
+    }
+
+    fn battle(player: Identity, opponent: Identity) -> Battle {
+        let lead = game_core::BattleMonster {
+            species_id: 1,
+            affinity: Affinity::Fire,
+            level: 7,
+            current_hp: 30,
+            max_hp: 30,
+            stats: game_core::StatBlock {
+                hp: 30,
+                attack: 20,
+                defense: 20,
+                speed: 20,
+                sp_attack: 20,
+                sp_defense: 20,
+            },
+            known_skill_ids: vec![1],
+            status: None,
+        };
+        Battle {
+            battle_id: 1,
+            player_identity: player,
+            opponent_identity: opponent,
+            state: game_core::BattleState {
+                side_a: game_core::BattleSide {
+                    active: 0,
+                    team: vec![lead.clone()],
+                },
+                side_b: game_core::BattleSide {
+                    active: 0,
+                    team: vec![lead],
+                },
+                outcome: BattleOutcome::Ongoing,
+                turn_number: 1,
+                weather: None,
+            },
+            party_monster_ids: vec![],
+            opponent_monster_ids: vec![],
+            created_at_ms: 0,
+        }
+    }
+
+    fn offer(initiator: Identity, counterparty: Identity) -> TradeOffer {
+        TradeOffer {
+            trade_id: 1,
+            initiator,
+            counterparty,
+            initiator_monster_ids: vec![],
+            initiator_items: vec![],
+            initiator_currency: 0,
+            counterparty_monster_ids: vec![],
+            counterparty_items: vec![],
+            counterparty_currency: 0,
+            initiator_cards: vec![],
+            counterparty_cards: vec![],
+            status: TradeStatus::Pending,
+            created_at_ms: T0,
+        }
+    }
+
+    struct World<'a> {
+        monsters: Handle<'a, Monster, u64>,
+        pubs: Handle<'a, MonsterPub, u64>,
+        stacks: Handle<'a, Inventory>,
+        items: Handle<'a, ItemRow, u32>,
+        battles: Handle<'a, Battle>,
+        offers: Handle<'a, TradeOffer>,
+        players: Handle<'a, Player>,
+        chars: Handle<'a, Character, u64>,
+        locs: Handle<'a, HealLocationRow, u32>,
+        cooldowns: Handle<'a, HealCooldown>,
+    }
+
+    /// Every table the growth reducers + heal_party touch. `writable = false`
+    /// walls the monster rows: a write reached there aborts the test process.
+    fn world(fx: &Fixture, writable: bool) -> World<'_> {
+        let monsters = fx.table_keyed::<Monster, u64>("monster", "monster_id", |r| r.monster_id);
+        let pubs = fx.table_keyed::<MonsterPub, u64>("monster_pub", "monster_id", |r| r.monster_id);
+        let (monsters, pubs) = if writable {
+            (monsters.writable().unique(), pubs.writable().unique())
+        } else {
+            (monsters, pubs)
+        };
+        let _ = fx.table::<Monster>("monster", "owner_identity", |r| r.owner_identity);
+        let _ = fx
+            .table_keyed::<Inventory, u64>("inventory", "inv_id", |r| r.inv_id)
+            .writable()
+            .unique();
+        let _ = fx.table::<Battle>("battle", "opponent_identity", |r| r.opponent_identity);
+        let _ = fx.table::<TradeOffer>("trade_offer", "counterparty", |r| r.counterparty);
+        let species = fx.table_keyed::<SpeciesRow, u32>("species_row", "id", |r| r.id);
+        species.seed(&species1());
+        World {
+            monsters,
+            pubs,
+            stacks: fx.table::<Inventory>("inventory", "owner_identity", |r| r.owner_identity),
+            items: fx.table_keyed::<ItemRow, u32>("item_row", "id", |r| r.id),
+            battles: fx.table::<Battle>("battle", "player_identity", |r| r.player_identity),
+            offers: fx.table::<TradeOffer>("trade_offer", "initiator", |r| r.initiator),
+            players: fx.table::<Player>("player", "identity", |r| r.identity),
+            chars: fx
+                .table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id)
+                .writable()
+                .unique(),
+            locs: fx.table_keyed::<HealLocationRow, u32>("heal_location_row", "location_id", |r| {
+                r.location_id
+            }),
+            cooldowns: fx
+                .table::<HealCooldown>("heal_cooldown", "owner_identity", |r| r.owner_identity)
+                .writable()
+                .unique(),
+        }
+    }
+
+    impl World<'_> {
+        fn seed_monster(&self, m: &Monster) {
+            self.pubs.seed(&pub_from_monster(m, 1));
+            self.monsters.seed(m);
+        }
+        fn monster(&self, id: u64) -> Monster {
+            self.monsters
+                .rows()
+                .into_iter()
+                .find(|m| m.monster_id == id)
+                .expect("monster row")
+        }
+        fn assert_pub_consistent(&self, id: u64) {
+            let p = self
+                .pubs
+                .rows()
+                .into_iter()
+                .find(|m| m.monster_id == id)
+                .expect("monster_pub row");
+            assert_eq!(
+                to_vec(&p).unwrap(),
+                to_vec(&pub_from_monster(&self.monster(id), p.tier)).unwrap(),
+                "monster_pub must equal pub_from_monster(monster) for {id}"
+            );
+        }
+        /// Seeded stack ids start at 1000 so a host auto-inc never collides.
+        fn stack(&self, owner: Identity, item_id: u32, count: u32) {
+            self.stacks.seed(&Inventory {
+                inv_id: 1000 + u64::from(owner.to_byte_array()[0]) * 100 + u64::from(item_id),
+                owner_identity: owner,
+                item_id,
+                count,
+            });
+        }
+        fn count(&self, owner: Identity, item_id: u32) -> u32 {
+            self.stacks
+                .rows()
+                .iter()
+                .filter(|r| r.owner_identity == owner && r.item_id == item_id)
+                .map(|r| r.count)
+                .sum()
+        }
+        fn join(&self, who: Identity, entity_id: u64, zone_id: u32) {
+            self.players.seed(&Player {
+                identity: who,
+                entity_id,
+                name: String::new(),
+                online: true,
+                last_input_seq: 0,
+            });
+            self.chars.seed(&Character {
+                entity_id,
+                zone_id,
+                tile_x: 1,
+                tile_y: 1,
+                facing: Direction::South,
+                action: ActionState::Idle,
+                move_started_at_ms: 0,
+                sprite_id: 0,
+                move_queue: vec![],
+            });
+        }
+        fn snapshot(&self) -> Vec<Vec<u8>> {
+            vec![
+                to_vec(&self.monsters.rows()).unwrap(),
+                to_vec(&self.pubs.rows()).unwrap(),
+                to_vec(&self.stacks.rows()).unwrap(),
+                to_vec(&self.cooldowns.rows()).unwrap(),
+            ]
+        }
+    }
+
+    type Call = fn(&ReducerContext) -> Result<(), String>;
+
+    fn call_care(ctx: &ReducerContext) -> Result<(), String> {
+        care(ctx, 11)
+    }
+    fn call_train(ctx: &ReducerContext) -> Result<(), String> {
+        train(ctx, 11, FOOD)
+    }
+    fn call_essence(ctx: &ReducerContext) -> Result<(), String> {
+        essence_train(ctx, 11, Affinity::Water)
+    }
+    fn call_consume(ctx: &ReducerContext) -> Result<(), String> {
+        consume_crystalized_essence(ctx, 11, WATER_ESSENCE)
+    }
+
+    /// A world where every growth reducer would SUCCEED for A on monster 11.
+    fn growth_world(fx: &Fixture) -> World<'_> {
+        let w = world(fx, true);
+        w.seed_monster(&monster(11, a(), 0));
+        w.items.seed(&item(FOOD, Some(StatKind::Attack)));
+        w.items.seed(&item(NOT_FOOD, None));
+        w.stack(a(), FOOD, 3);
+        w.stack(a(), WATER_ESSENCE, 2);
+        w
+    }
+
+    /// Ownership, both-role battle and monster-escrow refusals for all four
+    /// growth reducers — each refused with the store byte-identical — plus the
+    /// same world's success control (so a guard that refused EVERYTHING fails).
+    #[test]
+    fn nh_growth_reducers_refuse_before_any_write() {
+        let reducers: [(&str, Call, &str); 4] = [
+            ("care", call_care, "cannot care during an ongoing battle"),
+            ("train", call_train, "cannot train during an ongoing battle"),
+            (
+                "essence_train",
+                call_essence,
+                "cannot essence-train during an ongoing battle",
+            ),
+            (
+                "consume_crystalized_essence",
+                call_consume,
+                "cannot consume essence during an ongoing battle",
+            ),
+        ];
+        type Setup = fn(&World<'_>);
+        for (name, call, battle_msg) in reducers {
+            let cases: [(&str, Identity, Setup, &str); 5] = [
+                ("non-owner", b(), |_| {}, "not owner"),
+                (
+                    "unknown monster",
+                    a(),
+                    |w| {
+                        w.monsters.remove(11);
+                        w.pubs.remove(11);
+                    },
+                    "monster not found",
+                ),
+                (
+                    "in battle as player",
+                    a(),
+                    |w| w.battles.seed(&battle(a(), crate::WILD_IDENTITY)),
+                    "",
+                ),
+                (
+                    "in battle as PvP side B",
+                    a(),
+                    |w| w.battles.seed(&battle(b(), a())),
+                    "",
+                ),
+                (
+                    "monster escrowed",
+                    a(),
+                    |w| {
+                        let mut o = offer(b(), a());
+                        o.counterparty_monster_ids = vec![11];
+                        w.offers.seed(&o);
+                    },
+                    "monster is in an active trade",
+                ),
+            ];
+            for (label, caller, setup, want) in cases {
+                let fx = fixture();
+                let w = growth_world(&fx);
+                setup(&w);
+                let want = if want.is_empty() { battle_msg } else { want };
+                let before = w.snapshot();
+                let got = fx.run_as_at(caller, at(T0), call);
+                assert_eq!(got, Err(want.to_string()), "{name} / {label}");
+                assert_eq!(w.snapshot(), before, "{name} / {label}: nothing written");
+            }
+            let fx = fixture();
+            let w = growth_world(&fx);
+            w.battles.seed(&{
+                let mut done = battle(b(), a());
+                done.state.outcome = BattleOutcome::SideAWins;
+                done
+            });
+            assert_eq!(
+                fx.run_as_at(a(), at(T0), call),
+                Ok(()),
+                "{name}: control (completed battle only) must succeed"
+            );
+            w.assert_pub_consistent(11);
+        }
+    }
+
+    /// care: the server-clock cooldown refuses one ms early (nothing written)
+    /// and admits exactly at CARE_COOLDOWN_MS; success stamps the clock, adds one
+    /// saturating Trust credit and dual-writes.
+    #[test]
+    fn nh_care_cooldown_boundary_and_success() {
+        let fx = fixture();
+        let w = world(&fx, true);
+        let mut m = monster(11, a(), 0);
+        m.last_care_at_ms = T0;
+        w.seed_monster(&m);
+        let before = w.snapshot();
+        assert_eq!(
+            fx.run_as_at(a(), at(T0 + CARE_COOLDOWN_MS - 1), |ctx| care(ctx, 11)),
+            Err("care cooldown not yet elapsed".to_string())
+        );
+        assert_eq!(w.snapshot(), before);
+
+        let now = T0 + CARE_COOLDOWN_MS;
+        assert_eq!(fx.run_as_at(a(), at(now), |ctx| care(ctx, 11)), Ok(()));
+        let after = w.monster(11);
+        assert_eq!(
+            (after.last_care_at_ms, after.trust_favorable_count),
+            (now, 10)
+        );
+        assert_eq!(after.current_hp, 5, "care is not a heal");
+        w.assert_pub_consistent(11);
+
+        drop(fx);
+        let fx = fixture();
+        let w = world(&fx, true);
+        let mut m = monster(11, a(), 0);
+        m.trust_favorable_count = u32::MAX;
+        w.seed_monster(&m);
+        assert_eq!(fx.run_as_at(a(), at(T0), |ctx| care(ctx, 11)), Ok(()));
+        assert_eq!(w.monster(11).trust_favorable_count, u32::MAX, "saturating");
+    }
+
+    /// train: exactly one food leaves the CALLER's stack (a stranger's identical
+    /// stack is untouched), EVs + stats take the focus_train result, current_hp
+    /// is unchanged, and monster_pub follows.
+    #[test]
+    fn nh_train_spends_exactly_one_own_food() {
+        let fx = fixture();
+        let w = growth_world(&fx);
+        w.stack(b(), FOOD, 5);
+        let m = w.monster(11);
+        let s = species1();
+        let expected = evaluate_train(
+            &game_core::StatBlock {
+                hp: s.base_hp,
+                attack: s.base_attack,
+                defense: s.base_defense,
+                speed: s.base_speed,
+                sp_attack: s.base_sp_attack,
+                sp_defense: s.base_sp_defense,
+            },
+            &game_core::IVs::new(10, 11, 12, 13, 14, 15).unwrap(),
+            &game_core::EVs::new(4, 5, 6, 7, 8, 9).unwrap(),
+            &game_core::Nature::new(m.nature_kind),
+            game_core::Level::new(7).unwrap(),
+            Some(StatKind::Attack),
+            10,
+        )
+        .unwrap();
+
+        assert_eq!(
+            fx.run_as_at(a(), at(T0), |ctx| train(ctx, 11, FOOD)),
+            Ok(())
+        );
+        assert_eq!((w.count(a(), FOOD), w.count(b(), FOOD)), (2, 5));
+        let after = w.monster(11);
+        assert_eq!(after.ev_attack, expected.evs.get(StatKind::Attack));
+        assert!(after.ev_attack > 5, "the food granted EVs");
+        assert_eq!(after.stat_attack, expected.derived_stats.attack);
+        assert_eq!(after.stat_hp, expected.derived_stats.hp);
+        assert_eq!(after.current_hp, 5, "training is not a heal");
+        w.assert_pub_consistent(11);
+    }
+
+    /// train refusals keep the food: a non-food item, a food stack fully
+    /// reserved by an active offer, and a caller who owns none (only a stranger
+    /// does) — each refused before any write.
+    #[test]
+    fn nh_train_refusals_never_burn_food() {
+        type Setup = fn(&World<'_>);
+        let cases: [(&str, u32, Setup, &str); 3] = [
+            (
+                "not a food",
+                NOT_FOOD,
+                |w| w.stack(a(), NOT_FOOD, 2),
+                "item is not a training food",
+            ),
+            (
+                "food escrowed",
+                FOOD,
+                |w| {
+                    let mut o = offer(a(), b());
+                    o.initiator_items = vec![TradeItem {
+                        item_id: FOOD,
+                        qty: 3,
+                    }];
+                    w.offers.seed(&o);
+                },
+                "item is in an active trade",
+            ),
+            (
+                "only a stranger owns the food",
+                FOOD,
+                |w| {
+                    w.stacks.remove(a());
+                    w.stack(b(), FOOD, 5);
+                },
+                "item is in an active trade",
+            ),
+        ];
+        for (label, food, setup, want) in cases {
+            let fx = fixture();
+            let w = growth_world(&fx);
+            setup(&w);
+            let before = w.snapshot();
+            let got = fx.run_as_at(a(), at(T0), |ctx| train(ctx, 11, food));
+            assert_eq!(got, Err(want.to_string()), "{label}");
+            assert_eq!(
+                w.snapshot(),
+                before,
+                "{label}: nothing written, nothing burned"
+            );
+        }
+    }
+
+    /// essence_train: one ms early refuses; exactly at the 5 h cooldown +5 lands
+    /// on the chosen pool ONLY; a pool near the soft cap clamps, never rejects.
+    #[test]
+    fn nh_essence_train_cooldown_pool_and_clamp() {
+        let fx = fixture();
+        let w = world(&fx, true);
+        let mut m = monster(11, a(), 0);
+        m.last_essence_train_at_ms = T0;
+        w.seed_monster(&m);
+        let before = w.snapshot();
+        let early = T0 + ESSENCE_TRAIN_COOLDOWN_MS - 1;
+        assert_eq!(
+            fx.run_as_at(a(), at(early), |ctx| essence_train(
+                ctx,
+                11,
+                Affinity::Water
+            )),
+            Err("essence training cooldown not yet elapsed".to_string())
+        );
+        assert_eq!(w.snapshot(), before);
+        let now = T0 + ESSENCE_TRAIN_COOLDOWN_MS;
+        assert_eq!(
+            fx.run_as_at(a(), at(now), |ctx| essence_train(ctx, 11, Affinity::Water)),
+            Ok(())
+        );
+        let after = w.monster(11);
+        assert_eq!(
+            after.essence_water,
+            3 + crate::raising::ESSENCE_TRAIN_AMOUNT
+        );
+        assert_eq!(
+            (
+                after.essence_fire,
+                after.essence_electric,
+                after.essence_light
+            ),
+            (10, 1, 2),
+            "only the chosen pool moves"
+        );
+        assert_eq!(after.last_essence_train_at_ms, now);
+        w.assert_pub_consistent(11);
+
+        drop(fx);
+        let fx = fixture();
+        let w = world(&fx, true);
+        let mut m = monster(11, a(), 0);
+        m.essence_water = ESSENCE_SOFT_CAP - 2;
+        w.seed_monster(&m);
+        assert_eq!(
+            fx.run_as_at(a(), at(T0), |ctx| essence_train(ctx, 11, Affinity::Water)),
+            Ok(())
+        );
+        assert_eq!(w.monster(11).essence_water, ESSENCE_SOFT_CAP);
+    }
+
+    /// consume_crystalized_essence: success burns exactly one item and grants the
+    /// ITEM's affinity/amount; it shares essence_train's clock (a train one ms
+    /// before the cooldown is refused); a non-essence item is refused unburnt.
+    #[test]
+    fn nh_consume_crystalized_essence_grants_item_and_shares_the_clock() {
+        let fx = fixture();
+        let w = growth_world(&fx);
+        assert_eq!(
+            fx.run_as_at(a(), at(T0), |ctx| consume_crystalized_essence(
+                ctx,
+                11,
+                WATER_ESSENCE
+            )),
+            Ok(())
+        );
+        assert_eq!(w.count(a(), WATER_ESSENCE), 1);
+        let after = w.monster(11);
+        assert_eq!(
+            (after.essence_water, after.last_essence_train_at_ms),
+            (103, T0)
+        );
+        w.assert_pub_consistent(11);
+        let before = w.snapshot();
+        let early = T0 + ESSENCE_TRAIN_COOLDOWN_MS - 1;
+        assert_eq!(
+            fx.run_as_at(a(), at(early), |ctx| essence_train(ctx, 11, Affinity::Fire)),
+            Err("essence training cooldown not yet elapsed".to_string()),
+            "one shared clock"
+        );
+        assert_eq!(w.snapshot(), before);
+
+        drop(fx);
+        let fx = fixture();
+        let w = growth_world(&fx);
+        w.stack(a(), BAIT, 2);
+        let before = w.snapshot();
+        assert_eq!(
+            fx.run_as_at(a(), at(T0), |ctx| consume_crystalized_essence(
+                ctx, 11, BAIT
+            )),
+            Err("item is not crystalized essence".to_string())
+        );
+        assert_eq!(w.snapshot(), before, "a wrong item is never burnt");
+    }
+
+    /// Heal location 1 (zone 0) re-seeded with an ITEM cost so the spend is
+    /// observable; the RON cache still prices it at 0 currency.
+    fn heal_world(fx: &Fixture) -> World<'_> {
+        let w = world(fx, true);
+        w.locs.seed(&HealLocationRow {
+            location_id: 1,
+            zone_id: 0,
+            tile_x: 8,
+            tile_y: 3,
+            cost_item_id: Some(NOT_FOOD),
+            cost_qty: 1,
+            cooldown_ms: 30_000,
+            cost_currency: 0,
+        });
+        w.join(a(), 1, 0);
+        w.join(b(), 2, 0);
+        w.seed_monster(&monster(11, a(), 0));
+        w.seed_monster(&monster(12, a(), PARTY_SLOT_NONE));
+        w.seed_monster(&monster(21, b(), 0));
+        w.stack(a(), NOT_FOOD, 2);
+        w.stack(b(), NOT_FOOD, 2);
+        w
+    }
+
+    /// Success heals ONLY the caller's party (boxed and stranger monsters keep
+    /// their HP), spends the cost from the caller's own stack, dual-writes, and
+    /// upserts the caller's cooldown row.
+    #[test]
+    fn nh_heal_party_heals_only_the_callers_party() {
+        let fx = fixture();
+        let w = heal_world(&fx);
+        assert_eq!(fx.run_as_at(a(), at(T0), |ctx| heal_party(ctx, 1)), Ok(()));
+        assert_eq!(
+            w.monster(11).current_hp,
+            40,
+            "party monster healed to stat_hp"
+        );
+        assert_eq!(w.monster(12).current_hp, 5, "boxed monster untouched");
+        assert_eq!(w.monster(21).current_hp, 5, "stranger's party untouched");
+        w.assert_pub_consistent(11);
+        assert_eq!((w.count(a(), NOT_FOOD), w.count(b(), NOT_FOOD)), (1, 2));
+        let cd: Vec<(Identity, i64)> = w
+            .cooldowns
+            .rows()
+            .iter()
+            .map(|r| (r.owner_identity, r.last_heal_at_ms))
+            .collect();
+        assert_eq!(cd, vec![(a(), T0)]);
+
+        assert_eq!(
+            fx.run_as_at(a(), at(T0 + 30_000), |ctx| heal_party(ctx, 1)),
+            Ok(()),
+            "exactly at cooldown_ms the heal is admitted"
+        );
+        assert_eq!(w.cooldowns.rows().len(), 1, "upsert, not a second row");
+        assert_eq!(w.cooldowns.rows()[0].last_heal_at_ms, T0 + 30_000);
+    }
+
+    /// heal_party refusals, each before any write: unjoined caller, wrong zone,
+    /// in battle (PvP side B), one ms inside the location cooldown, and a caller
+    /// without the cost item (a stranger's stack is never spent).
+    #[test]
+    fn nh_heal_party_refusals_write_nothing() {
+        type Setup = fn(&World<'_>);
+        let cases: [(&str, Identity, i64, Setup, &str); 5] = [
+            ("unjoined", c(), T0, |_| {}, "not joined"),
+            (
+                "wrong zone",
+                a(),
+                T0,
+                |w| {
+                    w.chars.remove(1);
+                    w.join_char_only(1, 5);
+                },
+                "not in heal location zone",
+            ),
+            (
+                "in battle as PvP side B",
+                a(),
+                T0,
+                |w| w.battles.seed(&battle(b(), a())),
+                "cannot heal during an ongoing battle",
+            ),
+            (
+                "inside cooldown",
+                a(),
+                T0 + 29_999,
+                |w| {
+                    w.cooldowns.seed(&HealCooldown {
+                        owner_identity: a(),
+                        last_heal_at_ms: T0,
+                    })
+                },
+                "heal cooldown not yet elapsed",
+            ),
+            (
+                "no cost item",
+                a(),
+                T0,
+                |w| {
+                    w.stacks.remove(a());
+                },
+                "item not in inventory",
+            ),
+        ];
+        for (label, caller, now, setup, want) in cases {
+            let fx = fixture();
+            let w = heal_world(&fx);
+            setup(&w);
+            let before = w.snapshot();
+            let got = fx.run_as_at(caller, at(now), |ctx| heal_party(ctx, 1));
+            assert_eq!(got, Err(want.to_string()), "{label}");
+            assert_eq!(w.snapshot(), before, "{label}: nothing written");
+        }
+    }
+
+    impl World<'_> {
+        fn join_char_only(&self, entity_id: u64, zone_id: u32) {
+            self.chars.seed(&Character {
+                entity_id,
+                zone_id,
+                tile_x: 1,
+                tile_y: 1,
+                facing: Direction::South,
+                action: ActionState::Idle,
+                move_started_at_ms: 0,
+                sprite_id: 0,
+                move_queue: vec![],
+            });
+        }
+    }
+
+    /// EV-no-idle-accrual (M9: growth comes from ACTIVE play only), on the
+    /// shipped ctx shell: an intent 60 s after the last one mints a Quality-Time
+    /// tick; an intent after an idle gap longer than QT_IDLE_GAP_MS credits
+    /// NOTHING (re-anchor only) and leaves monster_pub alone.
+    #[test]
+    fn nh_quality_time_accrues_only_under_active_play() {
+        let fx = fixture();
+        let w = world(&fx, true);
+        let mut m = monster(11, a(), 0);
+        m.quality_time_window_start_ms = T0;
+        w.seed_monster(&m);
+
+        let t1 = T0 + QT_TICK_MS;
+        assert!(
+            accrue_quality_time(&fx.ctx_at(at(t1)), 11),
+            "active gap ticks"
+        );
+        assert_eq!(w.monster(11).quality_time_ticks_total, 45);
+        w.assert_pub_consistent(11);
+
+        let pubs_before = to_vec(&w.pubs.rows()).unwrap();
+        let t2 = t1 + QT_IDLE_GAP_MS + 1;
+        assert!(
+            !accrue_quality_time(&fx.ctx_at(at(t2)), 11),
+            "idle gap never ticks"
+        );
+        let after = w.monster(11);
+        assert_eq!(after.quality_time_ticks_total, 45, "no idle credit");
+        assert_eq!(
+            after.quality_time_window_ms, 60_000,
+            "window unchanged by idle time"
+        );
+        assert_eq!(after.quality_time_window_start_ms, t2, "re-anchored");
+        assert_eq!(to_vec(&w.pubs.rows()).unwrap(), pubs_before);
+    }
+
+    /// EV-no-idle-accrual time-skip: with the monster rows WRITE-WALLED (any
+    /// growth write aborts the process), the scheduled movement_tick runs as the
+    /// module identity every hour for 48 simulated hours over a party whose
+    /// owner sends no intent — it does its own work (normalises the character
+    /// to Idle) and every monster / monster_pub row stays byte-identical. A
+    /// non-scheduler caller is refused. Queue-draining moves reach the grass /
+    /// encounter path, which the movement suite owns.
+    #[test]
+    fn nh_movement_tick_time_skip_never_grows_monsters() {
+        let fx = fixture();
+        let w = world(&fx, false);
+        let _ = fx.table_keyed::<Character, u32>("character", "zone_id", |r| r.zone_id);
+        w.join(a(), 1, 0);
+        w.chars.remove(1);
+        w.chars.seed(&Character {
+            entity_id: 1,
+            zone_id: 0,
+            tile_x: 1,
+            tile_y: 1,
+            facing: Direction::South,
+            action: ActionState::Walking,
+            move_started_at_ms: 0,
+            sprite_id: 0,
+            move_queue: vec![],
+        });
+        let mut m = monster(11, a(), 0);
+        m.quality_time_window_start_ms = T0;
+        w.seed_monster(&m);
+        w.seed_monster(&monster(12, a(), 1));
+        let growth_before = (
+            to_vec(&w.monsters.rows()).unwrap(),
+            to_vec(&w.pubs.rows()).unwrap(),
+        );
+        let sched = || MovementTickSchedule {
+            id: 1,
+            zone_id: 0,
+            scheduled_at: ScheduleAt::Time(at(T0)),
+        };
+        assert_eq!(
+            fx.run_as_at(a(), at(T0), |ctx| movement_tick(ctx, sched())),
+            Err("movement_tick is scheduler-only".to_string())
+        );
+        let module = Identity::from_byte_array(DEFAULT_DATABASE_IDENTITY);
+        for hour in 1..=48 {
+            let now = T0 + hour * 3_600_000;
+            assert_eq!(
+                fx.run_as_at(module, at(now), |ctx| movement_tick(ctx, sched())),
+                Ok(()),
+                "hour {hour}"
+            );
+        }
+        assert_eq!(
+            w.chars.rows()[0].action,
+            ActionState::Idle,
+            "the tick ran its body (normalised the idle character)"
+        );
+        assert_eq!(
+            (
+                to_vec(&w.monsters.rows()).unwrap(),
+                to_vec(&w.pubs.rows()).unwrap()
+            ),
+            growth_before,
+            "48 h of scheduler ticks with no intent must not move any growth field"
+        );
+    }
+}
