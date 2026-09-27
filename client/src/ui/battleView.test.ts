@@ -1457,9 +1457,8 @@ describe('BattleView ux1-2: "Press Esc to continue" hint on battle-result overla
 //   "No healthy party monster in this battle to swap in. When this battle ends, press
 //    Esc, then B for Party & Box."
 // Every clause is a measured constraint, not a preference:
-//   - `B` is DEAD while the battle overlay is open (`main.ts:551-577` gates KeyB on
-//     `shouldToggleBox(battleView?.visible ?? false)`; `inputGuards.ts:6-8` is
-//     `return !battleVisible`), and a terminal battle row is not GC'd on resolution
+//   - `B` is DEAD while the battle overlay is open (main.ts gates KeyB on
+//     `overlayVerdict('boxView')`, which the visible battle overlay blocks), and a terminal battle row is not GC'd on resolution
 //     (`battle.rs:1013-1022` deletes only PRIOR terminals) while `decideBattleOverlay`
 //     keeps returning `show` for a non-dismissed terminal (`battleModel.ts:379-386`)
 //     ⇒ the overlay STAYS UP after victory/defeat/flee and B stays dead until Esc.
@@ -1476,7 +1475,7 @@ describe('BattleView ux1-2: "Press Esc to continue" hint on battle-result overla
 // The unscoped first sentence ("No healthy party monster to swap in.") is FALSIFIABLE
 // MID-BATTLE BY A PLAYER FOLLOWING THE COPY'S OWN INSTRUCTIONS:
 //   Esc on an ONGOING battle is a bare `battleView.hide()` (main.ts, the dismiss
-//   branch) ⇒ `shouldToggleBox` now returns true ⇒ KeyB opens the box ⇒
+//   branch) ⇒ `overlayVerdict('boxView')` no longer blocks ⇒ KeyB opens the box ⇒
 //   `set_party_slot` has NO in-battle guard (server-module/src/monster_mgmt.rs) so
 //   `To Party` is ACCEPTED ⇒ that row-write is the very batch that re-shows the battle
 //   overlay ⇒ but `sideA.team` is a BATTLE-ROW SNAPSHOT, so `canSwap` stays false and
@@ -1885,8 +1884,8 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
       timingIndex,
       'ux4-2 (H1d): the hint MUST carry a timing qualifier ("When this battle ends" / "after ' +
         'this battle"). Without it the copy promises an action that cannot be taken yet: KeyB is ' +
-        'gated on `shouldToggleBox(battleView?.visible ?? false)` (main.ts:551-577) and ' +
-        'inputGuards.ts:6-8 is `return !battleVisible`, so B is dead for the WHOLE battle',
+        "gated on `overlayVerdict('boxView')`, which the visible battle overlay blocks, so B " +
+        'is dead for the WHOLE battle',
     ).toBeGreaterThanOrEqual(0);
     expect(
       keyIndex,

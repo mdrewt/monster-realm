@@ -5,7 +5,7 @@
 // stays ungated — the threshold gates CONTINUATION only (the two main.ts re-issue
 // emitters), never the immediate step.
 //
-// Extracted (like inputGuards.ts) so the held-key fallback + re-issue dedup are
+// Extracted so the held-key fallback + re-issue dedup are
 // unit-testable — main.ts is the thin e2e-only wiring. No DOM, no clock: both times
 // (press stamp and decision instant) are injected parameters.
 import type { WasmDirection } from '../convert/convert';

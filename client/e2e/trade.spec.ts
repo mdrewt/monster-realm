@@ -114,7 +114,7 @@ test.describe
     // ---------------------------------------------------------------------------
     // Mutual exclusivity: when box overlay is open, KeyU must NOT open trade.
     // Verifies the 8-view guard in the main.ts KeyU handler.
-    // The box overlay opens with KeyB when no battle is active (shouldToggleBox).
+    // The box overlay opens with KeyB when no battle is active (overlayVerdict('boxView')).
     // ---------------------------------------------------------------------------
     test('KeyU does not open trade overlay when box overlay is visible', async () => {
       // Ensure trade overlay starts hidden.
