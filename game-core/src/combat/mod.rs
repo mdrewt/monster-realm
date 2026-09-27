@@ -22,16 +22,12 @@ pub mod ability_tests;
 pub mod ai;
 #[cfg(test)]
 pub mod battle_0hp_tests;
+#[cfg(test)]
+pub mod battle_core_tests;
 pub mod damage;
-#[cfg(test)]
-pub mod m7b_gating_tests;
-#[cfg(test)]
-pub mod m7b_redteam_tests;
 pub mod pvp;
 #[cfg(test)]
 pub mod redteam_m8d_tests;
-#[cfg(test)]
-pub mod redteam_new_findings;
 pub mod resolve;
 pub mod status;
 #[cfg(test)]
