@@ -1,4 +1,4 @@
-//! `playtest` domain-submodule tests — pt-b2 (ADR-0131).
+//! `playtest` domain-submodule tests — pt-b2.
 //!
 //! Declared from `server-module/src/playtest.rs` as:
 //!   `#[cfg(test)] #[path = "playtest_tests.rs"] mod playtest_tests;`
@@ -11,10 +11,10 @@
 use spacetimedb::Identity;
 
 // ===========================================================================
-// ── hp_permille pure-seam tests (compile-fail RED until playtest.rs exists)
+// ── hp_permille pure-seam tests
 // ===========================================================================
 
-/// PT-B2 — hp_permille: max==0 returns 0 (no division by zero).
+/// hp_permille: max==0 returns 0 (no division by zero).
 ///
 /// Kills: impl that does `current * 1000 / max` without guarding max==0 (panic
 /// or nonsense result on zero denominator).
@@ -33,7 +33,7 @@ fn hp_permille_max_zero_returns_zero() {
     );
 }
 
-/// PT-B2 — hp_permille: current==max returns exactly 1000 (full HP).
+/// hp_permille: current==max returns exactly 1000 (full HP).
 ///
 /// Kills: off-by-one where `current * 1000 / max` returns 999 due to integer
 /// floor truncation when current==max (a correct impl returns min(1000, floor)).
@@ -52,7 +52,7 @@ fn hp_permille_full_hp_returns_1000() {
     );
 }
 
-/// PT-B2 — hp_permille: half HP returns approximately 500 (integer floor).
+/// hp_permille: half HP returns approximately 500 (integer floor).
 ///
 /// Kills: impl that rounds instead of floors, or that uses floating-point
 /// division and reintroduces rounding errors.
@@ -79,7 +79,7 @@ fn hp_permille_half_hp_returns_500_floor() {
     );
 }
 
-/// PT-B2 — hp_permille: current > max is clamped to 1000.
+/// hp_permille: current > max is clamped to 1000.
 ///
 /// Kills: impl that returns >1000 for an overheal scenario (e.g. a temporary HP
 /// buff). The contract specifies `min(1000, current*1000/max)`.
@@ -99,7 +99,7 @@ fn hp_permille_over_max_is_clamped_to_1000() {
     );
 }
 
-/// PT-B2 — hp_permille: current==0 returns 0 (fainted monster).
+/// hp_permille: current==0 returns 0 (fainted monster).
 ///
 /// Kills: impl that returns 1 or some non-zero floor due to a rounding bug.
 #[test]
@@ -116,7 +116,7 @@ fn hp_permille_zero_current_returns_zero() {
     );
 }
 
-/// PT-B2 — hp_permille: all outputs are ≤ 1000 (property exhaustive over
+/// hp_permille: all outputs are ≤ 1000 (property exhaustive over
 /// small values). Tests the full domain for small u16 values to prove the
 /// clamp is universally applied.
 ///
@@ -154,10 +154,10 @@ fn hp_permille_result_always_leq_1000() {
 }
 
 // ===========================================================================
-// ── PlaytestKind::code() pinned literal test (compile-fail RED)
+// ── PlaytestKind::code() pinned literal test
 // ===========================================================================
 
-/// PT-B2 — PlaytestKind::RecruitAttempt.code() must return the pinned literal 1.
+/// PlaytestKind::RecruitAttempt.code() must return the pinned literal 1.
 ///
 /// Kills:
 ///   - impl that uses `self as u16` (would return 0 for the first variant,
@@ -180,10 +180,10 @@ fn playtest_kind_recruit_attempt_code_is_1() {
 }
 
 // ===========================================================================
-// ── plan_reap pure-seam tests (compile-fail RED)
+// ── plan_reap pure-seam tests
 // ===========================================================================
 
-/// PT-B2 plan_reap (a): all-fresh rows, count ≤ cap → returns [].
+/// plan_reap (a): all-fresh rows, count ≤ cap → returns [].
 ///
 /// Kills: impl that always deletes something regardless of TTL or cap.
 #[test]
@@ -202,7 +202,7 @@ fn plan_reap_all_fresh_under_cap_returns_empty() {
     );
 }
 
-/// PT-B2 plan_reap (b): count > cap, none expired → returns OLDEST (count-cap) ids.
+/// plan_reap (b): count > cap, none expired → returns OLDEST (count-cap) ids.
 ///
 /// This is the primary cap-eviction tooth. The spec says: from the fresh
 /// (non-expired) rows, return the oldest `(fresh_count - cap)` ids. Input is
@@ -238,7 +238,7 @@ fn plan_reap_over_cap_no_expired_returns_oldest() {
     );
 }
 
-/// PT-B2 plan_reap (c): some expired rows → ALL expired ids are returned.
+/// plan_reap (c): some expired rows → ALL expired ids are returned.
 ///
 /// Kills: impl that ignores TTL expiry and only applies cap eviction.
 #[test]
@@ -265,7 +265,7 @@ fn plan_reap_expired_rows_all_returned() {
     );
 }
 
-/// PT-B2 plan_reap (d): expired rows + over-cap fresh rows → union of both.
+/// plan_reap (d): expired rows + over-cap fresh rows → union of both.
 ///
 /// Kills: impl that only handles one condition (expired OR cap) but not both
 /// simultaneously in the same call.
@@ -297,7 +297,7 @@ fn plan_reap_expired_plus_over_cap_returns_union() {
     );
 }
 
-/// PT-B2 plan_reap (e): result truncated to `batch` when delete-set > batch.
+/// plan_reap (e): result truncated to `batch` when delete-set > batch.
 ///
 /// Kills: impl that ignores the batch limit (returns all matching ids regardless
 /// of how many that is, making a single tick unboundedly expensive).
@@ -337,7 +337,7 @@ fn plan_reap_truncated_to_batch() {
     );
 }
 
-/// PT-B2 plan_reap (f): TTL boundary exactness.
+/// plan_reap (f): TTL boundary exactness.
 ///
 /// - A row at `created = now - ttl` IS deleted (>= means "at least TTL old").
 /// - A row at `created = now - ttl + 1` is NOT deleted (one ms newer than cutoff).
@@ -376,10 +376,10 @@ fn plan_reap_ttl_boundary_exactness() {
 }
 
 // ===========================================================================
-// ── plan_reaper_arm pure-seam tests (compile-fail RED)
+// ── plan_reaper_arm pure-seam tests
 // ===========================================================================
 
-/// PT-B2 plan_reaper_arm: empty existing_ids → insert one, delete nothing.
+/// plan_reaper_arm: empty existing_ids → insert one, delete nothing.
 ///
 /// Kills: impl that does nothing on empty (singleton invariant not enforced on
 /// arm — the reaper would never be scheduled).
@@ -399,7 +399,7 @@ fn plan_reaper_arm_empty_inserts_one() {
     );
 }
 
-/// PT-B2 plan_reaper_arm: single existing id → no insert, no delete.
+/// plan_reaper_arm: single existing id → no insert, no delete.
 ///
 /// Kills: impl that always inserts (would create duplicates) or always deletes
 /// (would remove the only singleton, breaking the schedule entirely).
@@ -419,7 +419,7 @@ fn plan_reaper_arm_single_existing_no_change() {
     );
 }
 
-/// PT-B2 plan_reaper_arm: multiple existing ids → no insert, delete all but first.
+/// plan_reaper_arm: multiple existing ids → no insert, delete all but first.
 ///
 /// Kills: impl that keeps the last instead of the first (wrong dedup direction),
 /// or that deletes all (would destroy the singleton), or that does nothing (would
@@ -444,10 +444,10 @@ fn plan_reaper_arm_multiple_keeps_first_deletes_rest() {
 }
 
 // ===========================================================================
-// ── build_playtest_event pure-seam tests (compile-fail RED)
+// ── build_playtest_event pure-seam tests
 // ===========================================================================
 
-/// PT-B2 build_playtest_event: bait_item_id=None maps to 0 in the row.
+/// build_playtest_event: bait_item_id=None maps to 0 in the row.
 ///
 /// Kills: impl that stores None as Some(0) or that leaves the field undefined.
 #[test]
@@ -462,7 +462,7 @@ fn build_playtest_event_none_bait_maps_to_zero() {
     );
 }
 
-/// PT-B2 build_playtest_event: bait_item_id=Some(3) maps to 3 in the row.
+/// build_playtest_event: bait_item_id=Some(3) maps to 3 in the row.
 ///
 /// Kills: impl that ignores the Some value and always stores 0 or a wrong id.
 #[test]
@@ -477,7 +477,7 @@ fn build_playtest_event_some_bait_maps_to_value() {
     );
 }
 
-/// PT-B2 build_playtest_event: event_id must be 0 (auto_inc placeholder).
+/// build_playtest_event: event_id must be 0 (auto_inc placeholder).
 ///
 /// Kills: impl that sets event_id to a non-zero value (the auto_inc column
 /// must be 0 on insert so SpacetimeDB fills it in).
@@ -493,7 +493,7 @@ fn build_playtest_event_id_is_zero_placeholder() {
     );
 }
 
-/// PT-B2 build_playtest_event: all other fields pass through unchanged.
+/// build_playtest_event: all other fields pass through unchanged.
 ///
 /// Kills:
 ///   - impl that swaps kind and hp_permille

@@ -1,30 +1,12 @@
-//! `content_tests` — M12.5b gating tests for the `sync_content_inner` seam.
+//! `content_tests` — gating tests for the `sync_content_inner` seam.
 //!
 //! Declared from `content.rs` as:
 //!   `#[cfg(test)] #[path = "content_tests.rs"] mod content_tests;`
 //! so `super` resolves to the `content` module.
 //!
-//! RED state: these tests are red before the M12.5b implementation because:
-//!   - 12.5b-2 seam: `sync_content_inner` currently returns `()`, not
-//!     `Result<(), String>`. These tests call it expecting a Result.
-//!   - 12.5b-3 re-derive: no `sync_content_inner_for_monsters` (or equivalent
-//!     re-derive seam) exists yet. (The `compute_evolves_to`/`evolves_to` model
-//!     was deleted at EG1/ADR-0174 D2 and the column removed by Migration B —
-//!     EG5-6/ADR-0177 D2.)
-//!
-//! EARS criteria covered:
-//!   - 12.5b-2: `sync_content_inner` returns Result; a validation failure at ANY
-//!     registry means no DB writes occur (txn atomic / load-all before write-all).
-//!   - 12.5b-3: after `sync_content_inner` with a stale version, monster rows
-//!     get updated stats (re-derived from new base stats).
-//!
 //! Pattern: these tests call the pure-seam helpers exposed by the implementation
 //! and verify concrete state changes. No SpacetimeDB live context is used.
 
-// EG1 mechanical migration (ADR-0174): `compute_evolves_to`, `EvolutionCondition`
-// and `EvolutionTrigger` were deleted with the essence-graph redesign, so the
-// imports (and the tests whose sole subject they were) are gone — see the
-// deletion notes inline below.
 use crate::schema::{Monster, SpeciesRow};
 use game_core::NatureKind;
 use spacetimedb::Identity;
@@ -89,7 +71,6 @@ fn make_stale_monster(monster_id: u64, owner: Identity, species_id: u32) -> Mons
         current_hp: 50,
         party_slot: 0,
         last_care_at_ms: 0,
-        // EG1 Migration A columns at creation defaults (compiler-forced append).
         essence_fire: 0,
         essence_water: 0,
         essence_plant: 0,
@@ -110,12 +91,7 @@ fn make_stale_monster(monster_id: u64, owner: Identity, species_id: u32) -> Mons
 }
 
 // ---------------------------------------------------------------------------
-// 12.5b-2: sync_content_inner returns Result<(), String>
-//
-// These tests call `super::sync_content_inner_result` — the new name expected
-// once the signature changes to `Result<(), String>`. The implementer may
-// choose to rename the function or add a thin wrapper; the test targets the
-// new signature.
+// sync_content_inner returns Result<(), String>
 //
 // The key behavioral test: if a validation step fails (simulated by passing
 // invalid content through a seam), NO earlier-registry rows must have been
@@ -128,42 +104,23 @@ fn make_stale_monster(monster_id: u64, owner: Identity, species_id: u32) -> Mons
 // by the load-all-before-write-all structure, which the structural test in
 // content.rs::tests already covers (no bare `return;` inside the fn body).
 //
-// The seam test here calls `sync_content_inner` with a valid context and
-// verifies it returns Ok (compilation proof: the return type IS Result).
-// RED state: `sync_content_inner` currently returns `()`, so calling `.is_ok()`
-// on its return value is a TYPE ERROR → compile-RED.
 // ---------------------------------------------------------------------------
 
-/// 12.5b-2: calling sync_content_inner must produce a Result<(), String> return value.
-/// This test FAILS TO COMPILE until sync_content_inner's return type is changed to
-/// Result<(), String>.
+/// Calling sync_content_inner must produce a Result<(), String> return value.
 ///
-/// KILLS: a unit-return (()) implementation — `.is_ok()` on `()` is a compile error,
-/// keeping this test RED until the signature is actually changed.
+/// KILLS: a unit-return (()) implementation — `.is_ok()` on `()` is a compile error.
 ///
 /// NOTE: because the real sync_content_inner requires a live SpacetimeDB ReducerContext
 /// (which is not constructible in unit tests), this test validates the signature via
 /// the structural source-scan in content.rs::tests and via a call to a seam helper
-/// `sync_content_inner_recheck` that is expected to exist after the M12.5b implementation.
-/// If that seam does not yet exist, this module will fail to compile (RED for the right
-/// reason: missing impl).
-///
-/// The seam signature expected by the implementer:
-///   pub(crate) fn sync_content_inner_recheck(
-///       species: &[game_core::Species],
-///       evolutions: &[game_core::SpeciesEvolutions],
-///   ) -> Result<(), String>
-///
-/// This is the pure validation sub-step that the implementer must extract from the
-/// load-phase of sync_content_inner so it can be unit-tested without a DB context.
+/// `sync_content_inner_recheck`.
 #[test]
 fn sync_content_inner_recheck_returns_result_on_valid_input() {
     // Load real content (same as the existing content_parses_and_validates test).
-    // EG1 mechanical migration: load_evolutions -> load_evolution_paths.
     let species = game_core::load_species().expect("species must parse for this test");
     let paths = game_core::load_evolution_paths().expect("evolution paths must parse");
 
-    // Call the pure validation seam. RED until `sync_content_inner_recheck` exists.
+    // Call the pure validation seam.
     // The seam takes loaded registries and returns Result<(), String> for the
     // validation phase — no DB writes occur.
     let result = super::sync_content_inner_recheck(&species, &paths);
@@ -178,14 +135,13 @@ fn sync_content_inner_recheck_returns_result_on_valid_input() {
     );
 }
 
-/// 12.5b-2 proof-of-teeth: the recheck seam must return Err when given an empty
+/// the recheck seam must return Err when given an empty
 /// species slice (a degenerate content state that must be rejected before any DB write).
 ///
 /// KILLS: a recheck seam that always returns Ok regardless of input (would allow an
 /// empty content registry to wipe the live DB's species table with no rows).
 #[test]
 fn sync_content_inner_recheck_rejects_empty_species() {
-    // EG1 mechanical migration: load_evolutions -> load_evolution_paths.
     let paths = game_core::load_evolution_paths().expect("evolution paths must parse");
 
     // Empty species slice: this is a degenerate content state.
@@ -201,9 +157,7 @@ fn sync_content_inner_recheck_rejects_empty_species() {
 }
 
 // ---------------------------------------------------------------------------
-// 12.5b-3: monster re-derive pass (historical: originally also refreshed the
-// `evolves_to` hint — that model was deleted at EG1/ADR-0174 D2 and the column
-// removed by Migration B, EG5-6/ADR-0177 D2)
+// Monster re-derive pass
 //
 // Criterion: after sync_content_inner with a stale version, monster rows get
 // updated stat_hp (re-derived from new base stats).
@@ -219,7 +173,7 @@ fn sync_content_inner_recheck_rejects_empty_species() {
 // This seam updates monster.stat_hp (and other stats) in place.
 // ---------------------------------------------------------------------------
 
-/// 12.5b-3: after recompute_monster_derived_fields with new species (higher base_hp),
+/// After recompute_monster_derived_fields with new species (higher base_hp),
 /// the monster's stat_hp must be updated.
 ///
 /// Fixture: species 1 OLD base_hp=45 → monster has stale stat_hp=51.
@@ -242,8 +196,7 @@ fn recompute_monster_derived_fields_updates_stat_hp() {
     // NEW species: same id, but base_hp bumped to 100.
     let new_species = make_species_row(1, 100, 49);
 
-    // Call the re-derive seam. RED until implementer adds recompute_monster_derived_fields.
-    // EG1 mechanical migration: the evolutions parameter is gone (ADR-0174 D2).
+    // Call the re-derive seam.
     super::recompute_monster_derived_fields(&mut monster, &new_species);
 
     // stat_hp must be recomputed from new base_hp=100 at level=20, IVs=15, EVs=0, Hardy.
@@ -259,7 +212,7 @@ fn recompute_monster_derived_fields_updates_stat_hp() {
     );
 }
 
-/// 12.5b-3: after recompute_monster_derived_fields, current_hp is clamped to new stat_hp
+/// After recompute_monster_derived_fields, current_hp is clamped to new stat_hp
 /// if it was larger (prevents current_hp > max_hp invariant violation).
 ///
 /// Fixture: monster at current_hp=51, new stat_hp after recompute = 40
@@ -303,7 +256,6 @@ fn recompute_monster_derived_fields_clamps_current_hp() {
         current_hp: 35, // at full HP
         party_slot: 0,
         last_care_at_ms: 0,
-        // EG1 Migration A columns at creation defaults (compiler-forced append).
         essence_fire: 0,
         essence_water: 0,
         essence_plant: 0,
@@ -327,7 +279,6 @@ fn recompute_monster_derived_fields_clamps_current_hp() {
     // HP = floor((2*10 + 0) * 5 / 100) + 5 + 10 = floor(100/100) + 15 = 1 + 15 = 16.
     let new_species = make_species_row(1, 10, 10);
 
-    // EG1 mechanical migration: the evolutions parameter is gone (ADR-0174 D2).
     super::recompute_monster_derived_fields(&mut monster, &new_species);
 
     assert!(
@@ -340,34 +291,17 @@ fn recompute_monster_derived_fields_clamps_current_hp() {
     );
 }
 
-// (EG1/ADR-0174 D2 deleted the evolves_to recompute tests with their subject;
-// Migration B — EG5-6/ADR-0177 D2 — then removed the frozen column itself, and
-// the ineligible-stays-None fence went with it.)
-
 // ===========================================================================
-// M13.5c gating tests — content lifecycle completion.
+// content lifecycle completion.
 //
-// EARS 13.5c-2: WHEN a zone is removed from the zone RON, sync_content must
+// WHEN a zone is removed from the zone RON, sync_content must
 //   delete its zone_def row AND no movement_tick_schedule row for that zone
 //   remains after the sync.
-// EARS 13.5c-4: the zero-owner-identity Err path in `sync_content` (lib.rs)
+// the zero-owner-identity Err path in `sync_content` (lib.rs)
 //   must prescribe the ONLY working remedy (`spacetime publish --delete-data`)
 //   and must NOT keep the impossible "re-publish to register" prescription
 //   (init only runs at DB creation; a plain re-publish never re-registers).
 //
-// RED state (2026-07-05):
-//   - `super::stale_zone_def_ids` and `crate::plan_schedule_reconcile` do not
-//     exist → this module fails to COMPILE (valid RED per the m7b convention:
-//     compile-fail on a missing seam is red-for-the-right-reason).
-//   - The two source-guards below are assertion-RED once the seams compile:
-//     lib.rs still says "re-publish to register", and sync_content_inner
-//     neither calls stale_zone_def_ids nor deletes zone_def rows.
-//
-// NOTE on the spec's type name: the plan says `loaded: &[Zone]`, but game-core
-// has no `Zone` struct — the type `game_core::load_zones()` returns is
-// `game_core::ZoneDef` (id/name/width/height). These tests target ZoneDef so
-// the seam plugs into sync_content_inner's real load path without an adapter
-// (correction strengthens the bite; a phantom-`Zone` seam could never be wired).
 // ===========================================================================
 
 /// Minimal loaded-zone fixture (shape of what `load_zones()` yields).
@@ -380,7 +314,7 @@ fn m13_5c_zone(id: u32) -> game_core::ZoneDef {
     }
 }
 
-/// 13.5c-2: a zone_id present in the DB (`existing`) but absent from the
+/// A zone_id present in the DB (`existing`) but absent from the
 /// loaded RON must be reported stale.
 ///
 /// KILLS: the current implementation shape (upsert-only seeding loop) — with
@@ -403,7 +337,7 @@ fn m13_5c_stale_zone_def_ids_detects_removed_zone() {
     );
 }
 
-/// 13.5c-2: identical sets (regardless of order) → nothing is stale.
+/// Identical sets (regardless of order) → nothing is stale.
 ///
 /// KILLS: an order-sensitive diff (e.g. positional zip of the two lists) —
 /// `loaded` is deliberately shuffled relative to `existing`, so a positional
@@ -423,7 +357,7 @@ fn m13_5c_stale_zone_def_ids_identical_sets_yield_empty() {
     );
 }
 
-/// 13.5c-2: output is sorted ascending (deterministic reducer behavior —
+/// Output is sorted ascending (deterministic reducer behavior —
 /// HashSet iteration order must not leak into the delete sequence).
 ///
 /// KILLS: an impl that collects the set difference straight out of a
@@ -446,7 +380,7 @@ fn m13_5c_stale_zone_def_ids_output_sorted_ascending() {
 }
 
 // ---------------------------------------------------------------------------
-// 13.5c-2: plan_schedule_reconcile — pure extraction of ensure_zone_schedules'
+// plan_schedule_reconcile — pure extraction of ensure_zone_schedules'
 // diff logic (lib.rs) so "no schedule row remains for a removed zone" is an
 // honest behavioral test, not a structural one.
 //
@@ -456,9 +390,9 @@ fn m13_5c_stale_zone_def_ids_output_sorted_ascending() {
 // (schedule row ids to remove, zone ids to add).
 // ---------------------------------------------------------------------------
 
-/// 13.5c-2 composed EARS scenario: zone 2's zone_def was removed → its
-/// schedule row (id=11) must be planned for removal, and applying the plan
-/// leaves NO schedule row pointing at zone 2.
+/// zone 2's zone_def was removed → its schedule row (id=11) must be
+/// planned for removal, and applying the plan leaves NO schedule row
+/// pointing at zone 2.
 ///
 /// KILLS: an insert-only reconcile (to_remove always empty) — row (11, 2)
 /// then survives the sync and fires `map_for` errors every tick forever.
@@ -482,7 +416,7 @@ fn m13_5c_plan_schedule_reconcile_removes_row_for_deleted_zone() {
         "no zone is missing a schedule row here; got to_add={to_add:?}"
     );
 
-    // Derive the EARS postcondition: after applying the plan, no schedule
+    // Derive the postcondition: after applying the plan, no schedule
     // row for zone 2 remains.
     let surviving: Vec<&(u64, u32)> = scheduled
         .iter()
@@ -495,7 +429,7 @@ fn m13_5c_plan_schedule_reconcile_removes_row_for_deleted_zone() {
     );
 }
 
-/// 13.5c-2: a zone present in zone_ids but with no schedule row must be
+/// A zone present in zone_ids but with no schedule row must be
 /// planned for addition.
 ///
 /// KILLS: a remove-only (or vacuous empty-plan) reconcile — a newly added
@@ -519,7 +453,7 @@ fn m13_5c_plan_schedule_reconcile_adds_unscheduled_zone() {
     );
 }
 
-/// 13.5c-2 idempotence: steady state (every zone scheduled exactly once,
+/// idempotence: steady state (every zone scheduled exactly once,
 /// no orphans) → both plan halves empty.
 ///
 /// KILLS: a churn reconcile (delete-all + reinsert-all every sync) — that
@@ -541,10 +475,9 @@ fn m13_5c_plan_schedule_reconcile_steady_state_is_empty() {
 }
 
 // ---------------------------------------------------------------------------
-// M13.5c T4 — `plan_npc_sync` planner tests (EARS 13.5c-1, tester RED phase).
+// `plan_npc_sync` planner tests.
 //
-// EXPECTED CONTRACT (compile-RED today: E0432 on the import below until
-// content.rs supplies the planner — the repo's accepted red convention):
+// EXPECTED CONTRACT:
 //
 //   pub(crate) enum NpcSyncAction {
 //       Insert { npc: Npc, character: Character },
@@ -558,25 +491,21 @@ fn m13_5c_plan_schedule_reconcile_steady_state_is_empty() {
 //       defs: &[game_core::NpcDef],
 //   ) -> NpcSyncPlan
 //
-// Semantics bound by docs/specs/m13.5c-plan.md §T4 + the binding review folds:
 //   - deterministic: actions sorted by npc_id;
-//   - actions carry COMPLETE replacement Npc/Character row values (fold n1 —
-//     the shell is a pure apply fold, no patch interpretation);
+//   - actions carry COMPLETE replacement Npc/Character row values;
 //   - Update preserves entity_id (NEVER delete+reinsert: auto_inc would
 //     orphan player_conversation.npc_entity_id + break client identity);
 //   - zone SAME -> tile/facing/action/queue/move_started_at_ms preserved
 //     verbatim; zone CHANGED -> respawn at def spawn, facing South, Idle,
 //     cleared queue, move_started_at_ms 0; character sprite_id = def always;
 //   - half-orphan (Npc, None) -> Repair = delete orphan npc row + fresh
-//     insert (fold M1+RT-6); never a bare Insert (unique npc_id panic),
+//     insert; never a bare Insert (unique npc_id panic),
 //     never silently skipped;
 //   - identical existing<->defs -> EMPTY plan (idempotence). Live wander
 //     state (tile/facing/queue/timestamps) is NOT a diff: sync_content runs
 //     on every content-version bump and NPCs wander constantly, so diffing
 //     live state would churn every sync.
 //
-// Correction log: every expected value below derives from spec section T4 and
-// its review folds; none were fitted to an implementation.
 // ---------------------------------------------------------------------------
 
 use crate::content::{plan_npc_sync, NpcSyncAction, NpcSyncPlan};
@@ -650,8 +579,7 @@ fn m13_5c_action_npc_id(a: &NpcSyncAction) -> &str {
     }
 }
 
-/// TRIVIAL apply fold (review fold n3: this must never grow logic). It only
-/// mirrors the DB constraints the shell hits:
+/// TRIVIAL apply fold. It only mirrors the DB constraints the shell hits:
 ///   - insert mints entity_ids sequentially (auto_inc mirror; 1,2,... on an
 ///     empty world) and PANICS on a duplicate npc_id (`#[unique]` mirror —
 ///     this is the teeth that kills a bare-Insert "repair");
@@ -719,7 +647,7 @@ fn m13_5c_apply_npc_plan(
     existing
 }
 
-/// EARS 13.5c-1 (core): sync twice with changed RON — first plan seeds, the
+/// sync twice with changed RON — first plan seeds, the
 /// re-plan upserts changed defs, removes dropped ones, inserts new ones, all
 /// in deterministic npc_id order, with complete replacement rows.
 ///
@@ -877,9 +805,9 @@ fn m13_5c_plan_npc_sync_twice_with_changed_ron_upserts_and_removes() {
     assert_eq!((alpha_npc.home_x, alpha_npc.home_y), (30, 31));
 }
 
-/// EARS 13.5c-1 (zone-change edge): def.zone_id != existing npc.zone_id ->
-/// the Update's replacement character RESPAWNS at the new def's spawn tile
-/// in the new zone with reset live state.
+/// def.zone_id != existing npc.zone_id -> the Update's replacement character
+/// RESPAWNS at the new def's spawn tile in the new zone with reset live
+/// state.
 ///
 /// KILLS: a preserve-everything Update on zone change — the character would
 /// keep tile (20,21) from the OLD zone's map (out-of-map/stranded in the new
@@ -928,13 +856,13 @@ fn m13_5c_plan_npc_sync_zone_change_respawns_at_def_spawn() {
     }
 }
 
-/// EARS 13.5c-1 ("preserving live tile position"): def changed but zone SAME
+/// def changed but zone SAME
 /// -> tile/facing/action/queue/move_started_at_ms preserved verbatim.
 ///
-/// Review fold n2 (documented, by design): the new home (90,91) radius 1
-/// leaves the live tile (20,21) OUTSIDE the wander radius — convergence from
-/// an out-of-radius start is the wander drive's (npc_decide) concern, not
-/// sync's; the planner must still preserve the live tile.
+/// the new home (90,91) radius 1 leaves the live tile (20,21) OUTSIDE the
+/// wander radius — convergence from an out-of-radius start is the wander
+/// drive's (npc_decide) concern, not sync's; the planner must still preserve
+/// the live tile.
 ///
 /// KILLS: a blanket respawn-on-any-def-change planner — every content tweak
 /// (a dialogue typo fix) would teleport every live NPC back to spawn
@@ -984,7 +912,7 @@ fn m13_5c_plan_npc_sync_same_zone_preserves_live_tile() {
     }
 }
 
-/// EARS 13.5c-1 (idempotence): identical existing<->defs -> EMPTY plan, even
+/// identical existing<->defs -> EMPTY plan, even
 /// when the character has wandered off spawn (live state is not a diff).
 ///
 /// KILLS: a churn planner that diffs live character state (tile/facing/
@@ -1019,10 +947,9 @@ fn m13_5c_plan_npc_sync_identical_state_yields_empty_plan() {
     );
 }
 
-/// EARS 13.5c-1 + review fold M1/RT-6 (half-orphan repair): existing
-/// [(npc X, None)] with X still in defs must plan removal of the orphan npc
-/// row PLUS a fresh insert (Repair, or Remove+Insert semantics) — never a
-/// bare Insert, never a silent skip.
+/// existing [(npc X, None)] with X still in defs must plan removal of the
+/// orphan npc row PLUS a fresh insert (Repair, or Remove+Insert semantics)
+/// — never a bare Insert, never a silent skip.
 ///
 /// KILLS (bare Insert): inserting X while the orphan npc row survives —
 /// production's `#[unique]` npc_id index panics; the fold mirrors that
@@ -1079,15 +1006,15 @@ fn m13_5c_plan_npc_sync_half_orphan_repairs_not_bare_insert() {
     assert_eq!(ch.action, ActionState::Idle);
 }
 
-/// EARS 13.5c-1 (exhaustive set property): over ALL 8^3 = 512 per-npc
-/// scenario combinations (absent / new / dropped / unchanged / changed-same-
-/// zone / changed-zone / orphan+def / orphan-no-def x 3 npc_ids), folding
-/// the plan over `existing` yields EXACTLY the def npc_id set, each exactly
-/// once, every survivor fully paired, and the plan npc_id-sorted.
+/// over ALL 8^3 = 512 per-npc scenario combinations (absent / new / dropped
+/// / unchanged / changed-same- zone / changed-zone / orphan+def /
+/// orphan-no-def x 3 npc_ids), folding the plan over `existing` yields
+/// EXACTLY the def npc_id set, each exactly once, every survivor fully
+/// paired, and the plan npc_id-sorted.
 /// Deterministic exhaustive enumeration — no RNG, no new deps (proptest is
 /// already a dev-dep but adds nothing over full enumeration here).
 ///
-/// NOTE on depth (Finding 7): this 512-grid checks the SET-MEMBERSHIP
+/// NOTE on depth: this 512-grid checks the SET-MEMBERSHIP
 /// invariant (exactly the def npc_id set survives) and entity_id agreement
 /// (pair ids match post-fold). It does NOT re-verify original-value
 /// preservation (tile/facing/queue, zone-change reset, Repair fresh-spawn) —
@@ -1200,33 +1127,27 @@ fn m13_5c_plan_npc_sync_exhaustive_apply_yields_exact_def_set() {
 }
 
 // ---------------------------------------------------------------------------
-// Single-field plan_npc_sync mutation-killing tests (M13.5r)
+// Single-field plan_npc_sync mutation-killing tests
 //
 // The exhaustive test above (m13_5c_plan_npc_sync_exhaustive_apply_yields_exact_def_set)
 // changes MULTIPLE fields simultaneously (home_x += 5 AND sprite_id = 9), so the
-// `||→&&` mutants in content.rs:491–496 survive: `(false && true) || true = true`
+// `||→&&` mutants survive: `(false && true) || true = true`
 // still reaches the Update branch.
 //
 // These tests change EXACTLY ONE FIELD at a time, so a single `||→&&` mutant
 // can flip the entire condition to false and suppress the Update.
 //
-// Mutants killed:
-//   content.rs:492 (|| → && between zone_id and home_x)
-//   content.rs:493 (|| → && between home_x and home_y)
-//   content.rs:494 (|| → && between home_y and wander_radius)
-//   content.rs:495 (|| → && between wander_radius and dialogue_tree_id)
-//   content.rs:496 (|| → && in character_stale zone_id/sprite_id check)
 // ---------------------------------------------------------------------------
 
 /// plan_npc_sync detects a SINGLE home_x change and emits an Update.
 ///
-/// Operator-precedence kill: the mutant at content.rs:492 changes the first `||`
+/// Operator-precedence kill: the changes the first `||`
 /// to `&&`, making: `(zone_id!=def.zone_id && home_x!=def.home_x) || home_y!=...`.
 /// With zone SAME (a=false) and ONLY home_x changed (b=true):
 ///   mutant → (false && true) || false || false || false = false → no Update (WRONG)
 ///   original → false || true || false || false || false = true → Update (correct)
 ///
-/// KILLS: mutant content.rs:492 (|| → && between zone_id and home_x terms).
+/// KILLS: (|| → && between zone_id and home_x terms).
 #[test]
 fn plan_npc_sync_detects_only_home_x_change() {
     let def_old = m13_5c_npc_def(1, "alpha", 1, (10, 11));
@@ -1254,13 +1175,13 @@ fn plan_npc_sync_detects_only_home_x_change() {
 
 /// plan_npc_sync detects a SINGLE home_y change and emits an Update.
 ///
-/// Mutant at content.rs:493 changes `|| home_y!=` to `&& home_y!=`, making:
+/// Mutant changes `|| home_y!=` to `&& home_y!=`, making:
 ///   `zone!=... || (home_x!=... && home_y!=...) || wander!=... || dialogue!=...`
 /// With zone SAME, home_x SAME, ONLY home_y changed:
 ///   mutant → false || (false && true) || false || false = false → no Update (WRONG)
 ///   original → false || false || true || false || false = true → Update (correct)
 ///
-/// KILLS: mutant content.rs:493 (|| → && between home_x and home_y terms).
+/// KILLS: (|| → && between home_x and home_y terms).
 #[test]
 fn plan_npc_sync_detects_only_home_y_change() {
     let def_old = m13_5c_npc_def(1, "alpha", 1, (10, 11));
@@ -1288,13 +1209,13 @@ fn plan_npc_sync_detects_only_home_y_change() {
 
 /// plan_npc_sync detects a SINGLE wander_radius change and emits an Update.
 ///
-/// Mutant at content.rs:494 changes `|| wander_radius!=` to `&& wander_radius!=`, making:
+/// Mutant changes `|| wander_radius!=` to `&& wander_radius!=`, making:
 ///   `zone!=... || home_x!=... || (home_y!=... && wander_radius!=...) || dialogue!=...`
 /// With zone/home_x/home_y SAME, ONLY wander_radius changed:
 ///   mutant → false || false || (false && true) || false = false → no Update (WRONG)
 ///   original → false || false || false || true || false = true → Update (correct)
 ///
-/// KILLS: mutant content.rs:494 (|| → && between home_y and wander_radius terms).
+/// KILLS: (|| → && between home_y and wander_radius terms).
 #[test]
 fn plan_npc_sync_detects_only_wander_radius_change() {
     let def_old = m13_5c_npc_def(1, "alpha", 1, (10, 11));
@@ -1322,13 +1243,13 @@ fn plan_npc_sync_detects_only_wander_radius_change() {
 
 /// plan_npc_sync detects a SINGLE dialogue_tree_id change and emits an Update.
 ///
-/// Mutant at content.rs:495 changes `|| dialogue_tree_id!=` to `&& dialogue_tree_id!=`, making:
+/// Mutant changes `|| dialogue_tree_id!=` to `&& dialogue_tree_id!=`, making:
 ///   `zone!=... || home_x!=... || home_y!=... || (wander_radius!=... && dialogue_tree_id!=...)`
 /// With zone/home_x/home_y/wander_radius SAME, ONLY dialogue_tree_id changed:
 ///   mutant → false || false || false || (false && true) = false → no Update (WRONG)
 ///   original → false || false || false || false || true = true → Update (correct)
 ///
-/// KILLS: mutant content.rs:495 (|| → && between wander_radius and dialogue_tree_id terms).
+/// KILLS: (|| → && between wander_radius and dialogue_tree_id terms).
 #[test]
 fn plan_npc_sync_detects_only_dialogue_tree_id_change() {
     let def_old = m13_5c_npc_def(1, "alpha", 1, (10, 11));
@@ -1355,19 +1276,8 @@ fn plan_npc_sync_detects_only_dialogue_tree_id_change() {
 }
 
 // ---------------------------------------------------------------------------
-// ptc5e e-2 — stale_heal_location_ids pure-seam unit tests + source-scan
+// stale_heal_location_ids pure-seam unit tests + source-scan
 //
-// RED state:
-//   - `super::stale_heal_location_ids` does not yet exist in content.rs
-//     → compile-RED (E0425) on the three unit tests below.
-//   - `seed_heal_locations_from` does not yet call `stale_heal_location_ids`
-//     or `.delete(` → source-scan assertion-RED on the wiring guard.
-//
-// EARS criteria covered (ptc5e §e-2):
-//   removed id detected — existing=[1,2,3], loaded=[1,3] → stale=[2].
-//   identical sets shuffled → empty (kills positional/zip diff).
-//   output sorted ascending — kills HashSet-iteration nondeterminism.
-//   source-scan wiring — seed_heal_locations_from calls the seam AND deletes.
 // ---------------------------------------------------------------------------
 
 /// Heal location fixture — all mandatory fields filled; matches HealLocationDef
@@ -1385,7 +1295,7 @@ fn ptc5e_heal_def(id: u32) -> game_core::HealLocationDef {
     }
 }
 
-/// ptc5e e-2-1: removed id is detected.
+/// removed id is detected.
 /// existing=[1,2,3], loaded=[def(1),def(3)] → stale=[2].
 ///
 /// KILLS: an upsert-only impl (no set-difference seam) — it would never return
@@ -1407,7 +1317,7 @@ fn ptc5e_stale_heal_location_ids_detects_removed_id() {
     );
 }
 
-/// ptc5e e-2-2: identical sets (shuffled) → empty.
+/// identical sets (shuffled) → empty.
 ///
 /// KILLS: a positional/zip diff — `loaded` is deliberately shuffled relative to
 /// `existing`, so a positional comparison would report phantom staleness and
@@ -1427,7 +1337,7 @@ fn ptc5e_stale_heal_location_ids_identical_sets_yield_empty() {
     );
 }
 
-/// ptc5e e-2-3: output sorted ascending.
+/// output sorted ascending.
 /// existing=[9,2,7,5], loaded=[def(7)] → stale=[2,5,9].
 ///
 /// KILLS: a HashSet-backed set-difference with nondeterministic iteration order —
@@ -1451,14 +1361,14 @@ fn ptc5e_stale_heal_location_ids_output_sorted_ascending() {
 
 /// plan_npc_sync detects a SINGLE sprite_id change (no npc field change) and emits an Update.
 ///
-/// Mutant at content.rs:496 changes `|| ch.sprite_id!=` to `&& ch.sprite_id!=` in:
+/// Mutant changes `|| ch.sprite_id!=` to `&& ch.sprite_id!=` in:
 ///   `let character_stale = ch.zone_id != def.zone_id || ch.sprite_id != def.sprite_id;`
 /// With zone SAME (ch.zone_id == def.zone_id → false), ONLY sprite_id changed:
 ///   mutant → false && true = false → character_stale = false
 ///   If npc_row_stale is also false (no npc fields changed) → no Update (WRONG)
 ///   original → false || true = true → character_stale = true → Update (correct)
 ///
-/// KILLS: mutant content.rs:496 (|| → && in character_stale zone_id/sprite_id check).
+/// KILLS: (|| → && in character_stale zone_id/sprite_id check).
 #[test]
 fn plan_npc_sync_detects_only_sprite_id_change() {
     let def_old = m13_5c_npc_def(1, "alpha", 1, (10, 11));
@@ -1485,28 +1395,12 @@ fn plan_npc_sync_detects_only_sprite_id_change() {
 }
 
 // ---------------------------------------------------------------------------
-// uxd2 (ADR-0161) — the `interaction` column: def -> row threading, the
+// The `interaction` column: def -> row threading, the
 // staleness OR-chain, and the validator wiring in sync_content_inner.
 //
-// RED until I1/I2 land: `game_core::NpcInteraction` and the `Npc.interaction` /
-// `NpcDef.interaction` fields do not exist yet, so this section is compile-RED
-// (E0433/E0063) — the accepted red convention for this file (see the M13.5c
-// header above).
-//
-// Contract under test (plan of record `docs/specs/uxd2-plan.md` §I2):
-//   schema.rs   `Npc` += `pub interaction: NpcInteraction` (appended last)
-//   content.rs  `npc_row_from_def` threads `def.interaction`
-//   content.rs  `npc_row_stale` += `|| npc.interaction != def.interaction`
-//   content.rs  `sync_content_inner` calls `validate_npc_interactions(...)`
-//               in the VALIDATE block, BEFORE any write.
-//
-// Fixtures below are LOCAL (`uxd2_*`): `m13_5c_npc_def` / `m13_5c_pair_from_def`
-// belong to the M13.5c section and will be given SOME interaction value as a
-// mechanical compile fix — these tests must not inherit whatever that is. Every
-// uxd2 fixture states its interaction explicitly.
 // ---------------------------------------------------------------------------
 
-/// uxd2 def fixture — every field explicit, interaction included.
+/// every field explicit, interaction included.
 fn uxd2_npc_def(id: u32, npc_id: &str, interaction: game_core::NpcInteraction) -> NpcDef {
     NpcDef {
         id,
@@ -1523,7 +1417,7 @@ fn uxd2_npc_def(id: u32, npc_id: &str, interaction: game_core::NpcInteraction) -
     }
 }
 
-/// uxd2 live-pair fixture: the (Npc, Character) rows a correct seed derives
+/// the (Npc, Character) rows a correct seed derives
 /// from `def` — interaction included, so a "live pair identical to the def"
 /// really is identical on every def-derived column.
 fn uxd2_pair_from_def(def: &NpcDef, entity_id: u64) -> (Npc, Character) {
@@ -1552,13 +1446,11 @@ fn uxd2_pair_from_def(def: &NpcDef, entity_id: u64) -> (Npc, Character) {
     )
 }
 
-/// uxd2 AC-14: `npc_row_from_def` copies `def.interaction` onto the row.
+/// `npc_row_from_def` copies `def.interaction` onto the row.
 ///
-/// KILLS: an `npc_row_from_def` that hard-codes `NpcInteraction::Dialogue` (the
-/// path of least resistance when fixing the E0063 the new column causes) — the
-/// public `npc` table would then carry Dialogue for every NPC no matter what
-/// the RON says, the client would derive no Shop affordance, and AC-2/AC-12
-/// would fail with the whole Rust suite green.
+/// KILLS: an `npc_row_from_def` that hard-codes `NpcInteraction::Dialogue`
+/// — the public `npc` table would then carry Dialogue for every NPC no matter
+/// what the RON says, the client would derive no Shop affordance.
 #[test]
 fn npc_row_from_def_copies_interaction() {
     let def = uxd2_npc_def(2, "shopkeeper", game_core::NpcInteraction::Shop(1));
@@ -1582,25 +1474,24 @@ fn npc_row_from_def_copies_interaction() {
     );
 }
 
-/// uxd2 AC-15: `plan_npc_sync` emits an Update when ONLY `interaction` differs,
+/// `plan_npc_sync` emits an Update when ONLY `interaction` differs,
 /// and that Update carries the NEW interaction.
 ///
-/// This is the ADR-0054 silent-skip class: `npc_row_stale` is a hand-maintained
-/// OR-chain, so a def-derived column that never joins the chain re-syncs
-/// exactly never. Every other def-derived field already has this tooth
+/// `npc_row_stale` is a hand-maintained OR-chain, so a def-derived column that
+/// never joins the chain re-syncs exactly never. Every other def-derived field
+/// already has this tooth
 /// (home_x/home_y/wander_radius/dialogue_tree_id/sprite_id above).
 ///
-/// KILLS (needle 1 — plan.len()/variant): an `npc_row_stale` that omits
-/// `|| npc.interaction != def.interaction`. A live world seeded before uxd2
-/// (or before a shopkeeper's shop id changed) keeps the stale interaction
-/// forever: sync bumps CONTENT_VERSION, plans nothing, and the shopkeeper stays
-/// mute — the exact defect a `just smoke-republish` would surface only in prod.
+/// KILLS: an `npc_row_stale` that omits `|| npc.interaction !=
+/// def.interaction`. A live world keeps the stale interaction forever: sync
+/// bumps CONTENT_VERSION, plans nothing, and the shopkeeper stays mute — the
+/// exact defect a `just smoke-republish` would surface only in prod.
 /// ALSO KILLS: the `||`->`&&` mutant on the newly added chain term (only ONE
 /// field changes here, so the conjunction collapses to false and suppresses the
 /// Update).
-/// KILLS (needle 2 — the carried value): an Update whose npc row is rebuilt
-/// from the LIVE row instead of `npc_row_from_def(def, ..)` — it would be
-/// planned but write back the old Dialogue value.
+/// KILLS: an Update whose npc row is rebuilt from the LIVE row instead of
+/// `npc_row_from_def(def, ..)` — it would be planned but write back the old
+/// Dialogue value.
 #[test]
 fn plan_npc_sync_detects_only_interaction_change() {
     let def_old = uxd2_npc_def(2, "shopkeeper", game_core::NpcInteraction::Dialogue);
@@ -1645,8 +1536,7 @@ fn plan_npc_sync_detects_only_interaction_change() {
     }
 }
 
-/// uxd2 AC-15 (idempotence arm): a pair matching its def on a NON-default
-/// interaction plans NOTHING.
+/// a pair matching its def on a NON-default interaction plans NOTHING.
 ///
 /// The sibling `m13_5c_plan_npc_sync_identical_state_yields_empty_plan` covers
 /// def-identical worlds, but only with whatever interaction the shared M13.5c
@@ -1672,12 +1562,12 @@ fn plan_npc_sync_ignores_identical_shop_interaction() {
     );
 }
 
-/// rb-54 tooth A — a SHORT `StatusKind` roster must be REJECTED.
+/// a SHORT `StatusKind` roster must be REJECTED.
 ///
-/// This is the whole point of the slice: the roster is hand-maintained, so the
-/// gate has to notice when a variant was added to the enum but not to the
-/// roster. Passing the first 4 of the 5 shipped entries simulates exactly that
-/// drift (5 declared variants, 4 rostered).
+/// the roster is hand-maintained, so the gate has to notice when a variant was
+/// added to the enum but not to the roster. Passing the first 4 of the 5
+/// shipped entries simulates exactly that drift (5 declared variants, 4
+/// rostered).
 ///
 /// KILLS: a `check_roster_is_total` that only ever returns `Ok(())` (a stub, or
 /// one that compares the roster against itself, or one that `zip`s the two
@@ -1720,7 +1610,7 @@ fn rb54_short_status_roster_is_rejected() {
     );
 }
 
-/// rb-54 tooth B — a SHORT `Affinity` roster must be REJECTED, and the message
+/// a SHORT `Affinity` roster must be REJECTED, and the message
 /// must attribute the failure to Affinity.
 ///
 /// KILLS: a `check_roster_is_total` that is hard-wired to StatusKind (reflects
@@ -1758,7 +1648,7 @@ fn rb54_short_affinity_roster_is_rejected() {
     );
 }
 
-/// rb-54 tooth C — POSITIVE CONTROL: the SHIPPED rosters are total, so the
+/// POSITIVE CONTROL: the SHIPPED rosters are total, so the
 /// production entry point must return `Ok(())` today.
 ///
 /// KILLS: an always-Err validator (which would satisfy teeth A, B and E1 while
@@ -1784,7 +1674,7 @@ fn rb54_shipped_rosters_are_total() {
     );
 }
 
-/// rb-54 tooth D — the reflection ORACLE returns the DECLARED variant names.
+/// the reflection ORACLE returns the DECLARED variant names.
 ///
 /// The expected names are written as LITERALS, not derived from the same
 /// roster the gate is supposed to police. A test that compared reflection to
@@ -1840,7 +1730,7 @@ fn rb54_reflection_returns_declared_variant_names() {
     );
 }
 
-/// rb-54 tooth E1 — a roster with a REPEATED entry must be REJECTED.
+/// a roster with a REPEATED entry must be REJECTED.
 ///
 /// The fixture has exactly 5 entries, so the length clause is satisfied: ONLY a
 /// pairwise-distinctness clause can catch it.
@@ -1875,7 +1765,7 @@ fn rb54_duplicate_roster_entry_is_rejected() {
     );
 }
 
-/// rb-54 tooth E2 — the reflection oracle's Err branch is REACHABLE.
+/// the reflection oracle's Err branch is REACHABLE.
 ///
 /// `u32` reflects to `AlgebraicType::U32`, which is not a named-variant sum, so
 /// the one Err branch of `reflected_variant_names` must fire.
@@ -1884,10 +1774,6 @@ fn rb54_duplicate_roster_entry_is_rejected() {
 /// sum and would PANIC a reducer instead of returning Err, or one that returns
 /// `Ok(vec![])` for a non-sum — which tooth D's non-empty clause only covers
 /// for the two real enums).
-///
-/// If `u32` turns out not to implement `spacetimedb::SpacetimeType` in this SDK
-/// version, substitute another primitive that does (`bool` or `String`) and say
-/// which in the handoff — the clause is "a non-sum type", not "u32".
 #[test]
 fn rb54_reflection_rejects_a_non_sum_type() {
     let outcome = super::reflected_variant_names::<u32>("u32");
@@ -1900,40 +1786,15 @@ fn rb54_reflection_rejects_a_non_sum_type() {
     );
 }
 
-// ===========================================================================
-// rb-54 CLOSURE TEETH — added after the artifact red-team MEASURED three
-// CI-clean bypasses that every tooth above survives.
-//
-// Root cause: of the three new functions, only `validate_enum_rosters` had its
-// body pinned, and it is the trivial one. The two that carry the actual logic
-// were guarded solely by behavioural teeth whose fixtures all evaluate the
-// CURRENT 5-and-8 shape, so an oracle that returns the right answer by the
-// wrong provenance is invisible to them.
-//
-// The measured bypasses, each verified green on all ten teeth above AND with a
-// real sixth StatusKind variant present in game-core:
-//   X1  `reflected_variant_names` branches on `enum_name` and reflects
-//       StatusEffect for the StatusKind roster. StatusKind and StatusEffect
-//       reflect to byte-identical name lists, so no fixture comparing names can
-//       see it, and the roster gate is dead.
-//   X2  the same substitution planted one frame further down, in the
-//       `TypespaceBuilder::add` impl, keyed on `TypeId`. That impl had no
-//       pin and no test of any kind.
-//   X3  `check_roster_is_total` compares the roster against a hardcoded per-enum
-//       count instead of against the reflected length.
-// ===========================================================================
-
-/// rb-54 closure tooth J — the oracle is driven by its TYPE PARAMETER, not by
+/// the oracle is driven by its TYPE PARAMETER, not by
 /// its diagnostic label.
 ///
 /// `enum_name` is documented as diagnostic only, so reflecting `Affinity` while
 /// labelling the call `StatusKind` must still return the eight Affinity names.
 /// An oracle that branches on the label returns the five status names here.
 ///
-/// KILLS bypass X1 behaviourally — which matters because no name-comparing
-/// fixture can: StatusKind and StatusEffect reflect to identical lists, so the
-/// substitution is invisible to tooth D. Deliberately mismatching the label is
-/// what makes the two implementations diverge.
+/// Deliberately mismatching the label is what makes the two implementations
+/// diverge.
 #[test]
 fn rb54_oracle_is_driven_by_the_type_not_the_label() {
     let names = super::reflected_variant_names::<game_core::Affinity>("StatusKind")
@@ -1962,26 +1823,15 @@ fn rb54_oracle_is_driven_by_the_type_not_the_label() {
 }
 
 // ===========================================================================
-// Native-host content sync (debloat Phase 2).
+// Native-host content sync.
 //
-// Replaces three eval families that pinned `sync_content_inner` / `init` /
-// `sync_content` source text:
-//   * EV-bsatn-compat-smoke#additive-content-coupling — every Option content
-//     column lands its RON value (content.rs builds npc rows with `..npc`
-//     spreads, so the compiler does not force a new field through);
-//   * EV-dev-reducer-gating#content-version-wired — the version stamp and the
-//     equal-version skip;
-//   * EV-migration-smoke-test / EV-zone-warp-server-runtime#runtime-guards (W5)
-//     — a republish (init, then sync_content, then sync_content again) keeps
-//     exactly one movement tick schedule per zone and never re-mints ids.
 // The shipped code runs against the SHIPPED RON through the native host; the
 // expected values are read from the same game-core loaders it reads.
 //
-// Not drivable here: "invalid zone maps are rejected before any write" (W4 /
-// migration-smoke-test). Content is compiled-in RON with no injection seam, so
+// Not drivable here: "invalid zone maps are rejected before any write".
+// Content is compiled-in RON with no injection seam, so
 // no invalid map can reach sync_content_inner; the rejection predicate itself is
-// game-core's validate_zone_maps (unit-tested there). Recorded as a ledger
-// residual.
+// game-core's validate_zone_maps (unit-tested there).
 // ===========================================================================
 mod nh_sync {
     use crate::accounts::AccountDeletionReaperSchedule;

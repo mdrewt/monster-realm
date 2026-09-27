@@ -1,4 +1,4 @@
-//! `npc_tests` — M12b gating unit tests for pure seams in npc.rs.
+//! `npc_tests` — unit tests for pure seams in npc.rs.
 //!
 //! Tests `dialogue_state_from_db`, `dialogue_state_flags_to_vec`, and
 //! `dialogue_state_done_to_vec` (the DB<->game_core marshal roundtrip helpers
@@ -7,7 +7,7 @@
 //! determinism boundary (called from the M12b `npc_tick` reducer).
 //!
 //! Reducer-level behaviour (the talk / advance_dialogue zone + range checks, the
-//! rb-80 deletion gate, quest-completion rewards) runs on the native host
+//! deletion gate, quest-completion rewards) runs on the native host
 //! (`crate::native_host_tests`).
 
 use super::*;
@@ -15,24 +15,6 @@ use super::*;
 // ---------------------------------------------------------------------------
 // A. Dialogue state marshal roundtrip tests
 //
-// Functions under test (will live in server-module/src/npc.rs):
-//
-//   pub(crate) fn dialogue_state_from_db(
-//       flags_vec: Vec<String>,
-//       done_quests_vec: Vec<String>,
-//       active_quest_ids: Vec<String>,
-//   ) -> game_core::PlayerDialogueState
-//
-//   pub(crate) fn dialogue_state_flags_to_vec(
-//       state: &game_core::PlayerDialogueState,
-//   ) -> Vec<String>
-//
-//   pub(crate) fn dialogue_state_done_to_vec(
-//       state: &game_core::PlayerDialogueState,
-//   ) -> Vec<String>
-//
-// None of these exist yet — the tests compile only after the implementer
-// creates npc.rs and declares the #[path] module link from a domain file.
 // ---------------------------------------------------------------------------
 
 /// M12b: flags roundtrip through from_db → flags_to_vec yields sorted BTreeSet order.
@@ -139,7 +121,7 @@ fn dialogue_state_done_to_vec_round_trips() {
 // B. npc_decide determinism (game-core boundary)
 //
 // These tests call game_core::npc_decide directly — the function exists and is
-// pub-re-exported from game_core. They gate the M12b server-side assumption
+// pub-re-exported from game_core. They gate the server-side assumption
 // that the function is deterministic (used in npc_tick to advance NPC wander
 // every tick without storing the direction).
 // ---------------------------------------------------------------------------
@@ -152,7 +134,7 @@ fn dialogue_state_done_to_vec_round_trips() {
 /// The server calls npc_decide once per tick per NPC; different calls with the
 /// same inputs must agree (no drift between replicas).
 ///
-/// ADR-0159 D2: `npc_decide` gained `facing: Direction` and `map: &TileMap`
+/// `npc_decide` gained `facing: Direction` and `map: &TileMap`
 /// params (collision-/radius-aware wander); this call site is updated
 /// positionally (facing=North, map=the real zone_0() grid) — the assertion
 /// itself (determinism) is unaffected by the migration.
@@ -182,17 +164,12 @@ fn npc_decide_same_inputs_same_direction() {
     assert_eq!(a, b, "npc_decide must be deterministic");
 }
 
-/// M12b: an NPC with wander_radius=0 and current == home must never move.
+/// an NPC with wander_radius=0 and current == home must never move.
 ///
 /// kills: an impl that ignores wander_radius=0 and always picks a random
 /// direction (the NPC would wander off its spawn tile with no way to recall it).
 /// The correct implementation special-cases `wander_radius == 0` at the top of
-/// `npc_decide` (game-core/src/npc/rules.rs) to always return None — this is
-/// confirmed implemented and this test is GREEN.
-///
-/// ADR-0159 D2: unaffected by the migration (the radius==0 pinned-stay special
-/// case is checked before any facing/map consultation); call site updated
-/// positionally.
+/// `npc_decide` (game-core/src/npc/rules.rs) to always return None.
 #[test]
 fn npc_decide_radius_zero_never_moves() {
     let map = game_core::zone_0();
@@ -371,8 +348,7 @@ fn start_quest_effect_does_not_reopen_done_quest() {
 }
 
 // ===========================================================================
-// rb-41 — R-rb-25-X9 (ADR-0222 known-limit 2, closed by the ADR-0224 native
-// host migration): the REKEY exists-predicate for the NPC pair, exercised
+// the REKEY exists-predicate for the NPC pair, exercised
 // against REAL rows instead of against its own source text.
 //
 // `npc::has_quest_or_dialogue_state` is the only two-armed predicate of the
@@ -383,7 +359,7 @@ fn start_quest_effect_does_not_reopen_done_quest() {
 // exactly one of them.
 // ===========================================================================
 
-/// EARS R-rb-25-X9 (quest arm): `npc::has_quest_or_dialogue_state` must answer
+/// (quest arm): `npc::has_quest_or_dialogue_state` must answer
 /// from the CURRENT rows of `player_quest`, for the ASKED owner — false with no
 /// row, false while only a stranger owns one, true once the owner owns one,
 /// false again once the owner's row is gone (while the stranger's row
@@ -490,7 +466,7 @@ fn rb41_quest_state_tracks_real_quest_rows() {
     );
 }
 
-/// EARS R-rb-25-X9 (dialogue arm): `npc::has_quest_or_dialogue_state` must
+/// (dialogue arm): `npc::has_quest_or_dialogue_state` must
 /// answer from the CURRENT rows of `player_dialogue_state`, for the ASKED
 /// owner — false with no row, false while only a stranger owns one, true once
 /// the owner owns one, false again once the owner's row is gone (while the
@@ -764,10 +740,10 @@ fn rb80_assert_refused_only_while_gated(
     );
 }
 
-/// **E1 (behaviour)** — `talk` refuses a deletion-gated caller, ADMITS everybody
+/// `talk` refuses a deletion-gated caller, ADMITS everybody
 /// else, and answers from the CALLER's own row.
 ///
-/// Five account states under the rb-41 native host with a mid-grace STRANGER row
+/// Five account states with a mid-grace STRANGER row
 /// present throughout. The three admitted states are the positive control and
 /// they are what make the two refused states mean anything.
 ///
@@ -778,9 +754,6 @@ fn rb80_assert_refused_only_while_gated(
 /// lookup, the dialogue-tree read, the auto-effects and the quest trigger. Every
 /// write syscall ABORTS the process, which is why this test asserts refusals and
 /// admissions and nothing deeper.
-///
-/// RED AT HEAD on the `PendingDeletion` state: with no gate the reducer returns
-/// the ordinary next-guard error there.
 ///
 /// kills: M2 (the dropped `talk` gate) · M5 (a discarded verdict) · M8 (an
 /// unreachable placement) · M11 (a constant reject in `guards` — the three
@@ -801,7 +774,7 @@ fn rb80_talk_is_refused_only_while_the_caller_is_deletion_gated() {
     rb80_assert_refused_only_while_gated("talk", &fx, &acct, me, &call, "character not found");
 }
 
-/// **E1 (behaviour)** — `advance_dialogue` refuses a deletion-gated caller,
+/// `advance_dialogue` refuses a deletion-gated caller,
 /// ADMITS everybody else, and answers from the CALLER's own row.
 ///
 /// The same five-state progression, with the caller's `player_conversation` row
@@ -810,8 +783,6 @@ fn rb80_talk_is_refused_only_while_the_caller_is_deletion_gated() {
 /// in both directions. A SEPARATE `#[test]` from `talk` on purpose — the two
 /// reducers carry separate call sites, so one dropped gate must fail with a
 /// message naming which.
-///
-/// RED AT HEAD on the `PendingDeletion` state.
 ///
 /// kills: M3 (the dropped `advance_dialogue` gate) · M5 · M8 · M11 · M12 · a
 /// row-EXISTS-keyed fake · a TABLE-WIDE or any-row-pending fake · a latched
@@ -836,7 +807,7 @@ fn rb80_advance_dialogue_is_refused_only_while_the_caller_is_deletion_gated() {
     );
 }
 
-/// **20r-c (a)** — THE EARS PROOF, executed against the REAL process static and
+/// THE EARS PROOF, executed against the REAL process static and
 /// the REAL window constant.
 ///
 /// PROVES: a second `check` at the SAME instant returns `None` (the emission is
@@ -850,12 +821,6 @@ fn rb80_advance_dialogue_is_refused_only_while_the_caller_is_deletion_gated() {
 /// takes the emit branch) and a limiter constructed FRESH at each use (a
 /// fn-local `const` is a new value at every mention — the reason the sibling is
 /// a `static`).
-///
-/// RED when written (20r-c, at acc8acf): COMPILE-RED, E0425 twice — neither
-/// `QUEST_DEFS_LOAD_ERR_LIMITER` nor `QUEST_DEFS_LOAD_ERR_WINDOW_MS` existed in
-/// `npc.rs`, so the WHOLE lib-test binary failed to build and (b)..(i) could not
-/// report at all. The RED proof was therefore staged: (b)..(i) assertion-RED
-/// first, then this test COMPILE-RED.
 ///
 /// SOLE CONSUMER of `QUEST_DEFS_LOAD_ERR_LIMITER` in this binary — see the
 /// section header for why a second one would be a real defect that `nextest`
@@ -1034,12 +999,12 @@ fn nh_quest_complete_grants_exactly_the_content_currency_reward() {
 }
 
 // ===========================================================================
-// Native-host behaviour (debloat Phase 2: ST-npc_tests). Replaces the talk /
-// advance_dialogue operator-mutant text pins (`*_uses_ne_not_eq`,
-// `*_uses_subtraction_not_addition`, `*_uses_gt_not_lt`, ...): the SHIPPED
-// reducers run with a real sender against a zone + Manhattan-range matrix. The
-// NPC's dialogue tree id matches no shipped tree, so an ADMITTED call stops at
-// `dialogue tree not found` — past both checks, before any write.
+// Native-host behaviour. Replaces the talk / advance_dialogue operator-mutant
+// text pins (`*_uses_ne_not_eq`, `*_uses_subtraction_not_addition`,
+// `*_uses_gt_not_lt`, ...): the SHIPPED reducers run with a real sender
+// against a zone + Manhattan-range matrix. The NPC's dialogue tree id matches
+// no shipped tree, so an ADMITTED call stops at `dialogue tree not found` —
+// past both checks, before any write.
 // ===========================================================================
 mod nh_range {
     use crate::native_host_tests::{fixture, Fixture, Handle};
@@ -1139,7 +1104,7 @@ mod nh_range {
     }
 
     /// `advance_dialogue` re-checks zone and range against the NPC's CURRENT
-    /// tile (RT-ADV-01): in range it proceeds (and keeps the conversation);
+    /// tile: in range it proceeds (and keeps the conversation);
     /// out of range or zone it refuses with its own error AND dismisses the
     /// caller's conversation row.
     #[test]
@@ -1181,11 +1146,10 @@ mod nh_range {
 }
 
 // ===========================================================================
-// Native-host dialogue security (debloat Phase 2: EV-npc-dialogue-quest-security
-// C1/C8/C9, EV-conversation-privacy#table-view-scope). Replaces function-body
-// needles (`apply_choice(`, `player_conversation()`, `owner_identity().find(`)
-// with the observable refusals, and the view-scope pin with the SHIPPED
-// `my_conversation` view served through the runtime's own view entry point.
+// Native-host dialogue security. Replaces function-body needles
+// (`apply_choice(`, `player_conversation()`, `owner_identity().find(`) with the
+// observable refusals, and the view-scope pin with the SHIPPED `my_conversation`
+// view served through the runtime's own view entry point.
 // ===========================================================================
 mod nh_dialogue_security {
     use crate::native_host_tests::{fixture, Fixture, Handle, VIEW_MY_CONVERSATION};

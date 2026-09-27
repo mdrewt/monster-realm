@@ -1,4 +1,4 @@
-//! `observability` domain-submodule tests (m20a, ADR-0180 D6) — the pure
+//! `observability` domain-submodule tests — the pure
 //! `build_log_line` / heartbeat envelope, the reserved-key guard on the raw
 //! extra-fields fragment, and the D6 cross-language golden fixture.
 //!
@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 // ===========================================================================
-// Behavioral half — the pure `build_log_line` envelope (ADR-0180 D6/D15).
+// Behavioral half — the pure `build_log_line` envelope.
 //
 // Emission contract, fixed deterministic order:
 //   {"evt":"<esc>",<extra_fields_json>,"cause":"<esc>",
@@ -21,7 +21,7 @@ use std::time::Duration;
 // `extra_fields_json` must not leave a dangling comma.
 // ===========================================================================
 
-/// The heartbeat envelope, byte for byte (OBS-1/OBS-4).
+/// The heartbeat envelope, byte for byte.
 ///
 /// Kills: an impl that emits the breadcrumb keys unconditionally (as `null`,
 /// or as empty strings), and one that reorders `evt` after the extra fragment.
@@ -168,7 +168,7 @@ fn build_log_line_escapes_every_breadcrumb_string() {
     );
 }
 
-/// `heartbeat_fields` renders exactly one unquoted numeric field (OBS-4).
+/// `heartbeat_fields` renders exactly one unquoted numeric field.
 ///
 /// Kills: an impl that quotes the version (breaks numeric comparison in the
 /// mismatch panel) or that adds a synthesized id alongside it.
@@ -260,7 +260,7 @@ fn legitimate_extra_fragment_does_not_panic() {
 }
 
 // ===========================================================================
-// m20e (T5) — D6 GOLDEN MIRROR. `ops/observability/relay/fixtures/breadcrumb-golden.json`
+// D6 GOLDEN MIRROR. `ops/observability/relay/fixtures/breadcrumb-golden.json`
 // is read by BOTH this file and `ops/observability/relay/parse.test.mjs`, and
 // the two consumers read DIFFERENT LAYERS of it (AM4). This side asserts only
 // `build_log_line(...) == expected_module_json`, byte for byte; it never looks

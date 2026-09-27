@@ -13,10 +13,6 @@
 //!     in-memory host (`native_host_tests.rs`) — provisioning on connect, the
 //!     guest-claim round trip, delete / cancel, the deletion cascade, the claim
 //!     reaper, the `my_account` view and data export.
-//!
-//! SCAN HYGIENE: cross-file eval scanners read every server-module source file
-//! (without stripping string literals), so scanner needles are assembled with
-//! `concat!` where a test must spell one.
 
 #![cfg(test)]
 
@@ -50,7 +46,7 @@ fn base_account(b: u8) -> Account {
     }
 }
 
-/// AUTH-2 (pure): `issuer_allowed` is an EXACT-match allowlist — no prefix,
+/// `issuer_allowed` is an EXACT-match allowlist — no prefix,
 /// suffix, or case tolerance. A multi-tenant issuer that merely starts/ends with
 /// an allowed value must NOT pass (that is the confused-deputy vector D1 guards).
 ///
@@ -85,7 +81,7 @@ fn auth2_issuer_allowed_is_exact_match() {
     );
 }
 
-/// AUTH-3 (pure): `audience_allowed` accepts iff at least one `aud` entry is
+/// `audience_allowed` accepts iff at least one `aud` entry is
 /// allowlisted; an EMPTY `aud` vec rejects (the token was minted for no audience
 /// at all); matching is exact/case-sensitive; a multi-`aud` token passes on any
 /// single hit.
@@ -120,7 +116,7 @@ fn auth3_audience_allowed_semantics() {
     );
 }
 
-/// AUTH-4 (pure): a freshly provisioned account is `Active`, unclaimed,
+/// a freshly provisioned account is `Active`, unclaimed,
 /// undeletion-flagged, and `created_at_ms == last_login_at_ms == now`.
 ///
 /// Kills: seeding `PendingDeletion`, pre-populating `claimed_from`, or letting
@@ -148,7 +144,7 @@ fn auth4_new_account_row_is_fresh_active() {
     assert_eq!(row.last_login_at_ms, 42, "AUTH-4: last_login_at_ms == now.");
 }
 
-/// AUTH-5 (pure): `touch_login` stamps ONLY `last_login_at_ms`; the other seven
+/// `touch_login` stamps ONLY `last_login_at_ms`; the other seven
 /// fields are byte-equal to the input.
 ///
 /// Kills (proof-of-teeth): also stamping `created_at_ms = now`, or resetting
@@ -188,22 +184,17 @@ fn auth5_touch_login_updates_only_last_login() {
     );
 }
 
-/// AUTH-5 (pure): `touch_login` on a NON-Active account stamps ONLY
+/// `touch_login` on a NON-Active account stamps ONLY
 /// `last_login_at_ms` and leaves every lifecycle + claim field byte-identical.
 ///
 /// `provision_or_touch_account` calls `touch_login` on every existing row that
-/// does NOT carry the M22 terminal marker — m22-s3b's PRV1-8(b) reset arm
-/// (ADR-0228 D4) intercepts the marked ones ahead of this branch and rebuilds
-/// them from `new_account_row`, and `m22s3b_touch_login_scope_excludes_terminal`
-/// is what pins that narrowing — including a `PendingDeletion` account that has
-/// already claimed a guest — but
-/// `auth5_touch_login_updates_only_last_login` only exercises the
-/// fresh-Active fixture. A regression that clobbered `status` /
+/// does NOT carry the M22 terminal marker a `PendingDeletion` account that has
+/// already claimed a guest A regression that clobbered `status` /
 /// `deletion_requested_at_ms` / `claimed_from` / `claimed_at_ms` on the
 /// reconnect path would silently resurrect a deletion-pending account (or wipe
-/// its claim provenance) and still pass every current test. The precondition
-/// `account_state_is_legal` check pins that the fixture is a real legal
-/// PendingDeletion+claimed state, not an accidentally-illegal straw man.
+/// its claim provenance). The precondition `account_state_is_legal` check pins
+/// that the fixture is a real legal PendingDeletion+claimed state, not an
+/// accidentally-illegal straw man.
 ///
 /// Kills: a `touch_login` regression that resets `status` to Active, drops the
 ///        deletion timestamp, or clears either half of the claim provenance pair
@@ -268,7 +259,7 @@ fn auth5_touch_login_preserves_non_active_lifecycle_and_claim_fields() {
     );
 }
 
-/// AUTH-8 (pure): `is_valid_claim_code` accepts EXACTLY 64 lowercase-hex chars.
+/// `is_valid_claim_code` accepts EXACTLY 64 lowercase-hex chars.
 ///
 /// Kills (proof-of-teeth): swapping the explicit `b'0'..=b'9' | b'a'..=b'f'`
 /// match for `is_ascii_hexdigit()` (accepts uppercase); a `>=`/`<=` length
@@ -328,7 +319,7 @@ fn auth8_is_valid_claim_code_charset_and_length() {
     );
 }
 
-/// AUTH-9 (pure): `claim_row` binds the fields as passed and derives
+/// `claim_row` binds the fields as passed and derives
 /// `expires_at_ms == created_at_ms + CLAIM_TTL_MS`.
 ///
 /// Kills: an off-by-TTL expiry, or swapping `created`/`expires`.
@@ -366,7 +357,7 @@ fn auth9_claim_expires_at_saturates() {
     );
 }
 
-/// AUTH-16 / AUTH-27 (pure): `claim_is_expired` is boundary-INCLUSIVE
+/// AUTH-16 / `claim_is_expired` is boundary-INCLUSIVE
 /// (`now >= expires`).
 ///
 /// Kills: a strict `>` that would leave a code usable for one extra instant at
@@ -387,7 +378,7 @@ fn auth16_claim_is_expired_boundary_inclusive() {
     );
 }
 
-/// AUTH-21 (pure): `claimed_account` stamps provenance (`claimed_from`,
+/// `claimed_account` stamps provenance (`claimed_from`,
 /// `claimed_at_ms`) once and changes nothing else.
 ///
 /// Kills: a mutant that also flips `status`, or overwrites `identity`.
@@ -425,7 +416,7 @@ fn auth21_claimed_account_stamps_provenance_only() {
     );
 }
 
-/// AUTH-28 (pure): `needs_deletion_write` and `requested_deletion`. The second
+/// `needs_deletion_write` and `requested_deletion`. The second
 /// `delete_account` call (already `PendingDeletion`) writes nothing.
 ///
 /// Kills (proof-of-teeth): `needs_deletion_write` returning `true`
@@ -475,7 +466,7 @@ fn auth28_deletion_write_gate_and_transition() {
     );
 }
 
-/// AUTH-29 (pure): `cancelled_deletion` returns a `PendingDeletion` account to
+/// `cancelled_deletion` returns a `PendingDeletion` account to
 /// `Active`, clears the flag, and PRESERVES spent-claim provenance (a cancel must
 /// never resurrect a claim).
 ///
@@ -520,7 +511,7 @@ fn auth29_cancelled_deletion_preserves_claim_provenance() {
     );
 }
 
-/// AUTH-38 (pure): `needs_cancel_write` — a cancel on an already-`Active`
+/// `needs_cancel_write` — a cancel on an already-`Active`
 /// account writes nothing (idempotent no-op, symmetric with AUTH-28).
 #[test]
 fn auth38_cancel_write_gate() {
@@ -535,17 +526,16 @@ fn auth38_cancel_write_gate() {
 }
 
 // ===========================================================================
-// ACCOUNT LEGAL-STATE INVARIANT (ADR-0195 D1/D3) — `Account` permits illegal
+// ACCOUNT LEGAL-STATE INVARIANT — `Account` permits illegal
 // states by construction: `status: AccountStatus` plus an INDEPENDENT
 // `deletion_requested_at_ms: Option<i64>`, and a half-settable
 // `claimed_from`/`claimed_at_ms` pair. Folding those into the enum would change
-// live column TYPES (non-additive under ADR-0006/ADR-0173 D5), so the invariant
-// is expressed as ONE pure predicate that every Account-returning constructor
-// `debug_assert!`s, plus an exact struct-shape tripwire that forces M22 to
-// re-derive the predicate consciously when the shape moves.
+// live column TYPES, so the invariant is expressed as ONE pure predicate that
+// every Account-returning constructor `debug_assert!`s, plus an exact
+// struct-shape tripwire.
 //
-// PROFILE INDEPENDENCE: the `debug_assert!`s compile out of release wasm
-// (ADR-0049 policy), so the two tests below — a direct table-driven test of the
+// PROFILE INDEPENDENCE: the `debug_assert!`s compile out of release wasm,
+// so the two tests below — a direct table-driven test of the
 // predicate and the shape tripwire — are the teeth that exist in EVERY profile.
 // ===========================================================================
 
@@ -730,49 +720,19 @@ fn auth_constructors_return_legal_states() {
 }
 
 // ===========================================================================
-// M22-S2 — DATA-LIFECYCLE MANIFEST / export_bundle SHAPE / TERMINAL COLUMN.
+// DATA-LIFECYCLE MANIFEST / export_bundle SHAPE / TERMINAL COLUMN.
 //
-// Spec: M22-privacy-compliance.spec.md §3 (the exhaustive 38-table deletion
-// partition), §4.1 (`Account.terminal_at_ms`), §5 (export scope + the
-// `export_bundle` chunk contract). Ledger gates X1..X8.
-//
-// WHY THIS SECTION ADDS SIXTEEN MORE `include_str!` CONSTS: the five at :260-264
-// were sized for the M21a surface. Measured on the fork tree
-// (00de7055aba717a3d7fe20efaaeed9330e5df50c), {accounts, lib, schema,
-// monster_mgmt, ranking}.rs declare 31 of the 38 live tables — a totality census
-// built on that set is GREEN while seven tables (mr_heartbeat_schedule,
-// playtest_event, playtest_reaper_schedule, movement_tick_schedule,
-// trade_offer_reaper_schedule, pvp_deadline_schedule,
-// battle_challenge_reaper_schedule) carry no deletion policy at all. The census
-// below therefore scans the crate root plus EVERY `mod` the crate declares, and
-// pins that list against the live `mod` declarations in both directions.
-//
-// SCAN HYGIENE — this file's header rules apply verbatim to everything below:
-//   * the table-attribute macro is NEVER written contiguously (assembled with
-//     `concat!`), so an eval that concatenates `server-module/src` and
-//     comment-strips WITHOUT blanking string literals cannot mistake this test
-//     file for a table declaration;
-//   * the wallet table name is split the same way — the file header declares
-//     that this file carries no contiguous wallet token, and although
-//     currency-integrity's ACCESSOR_BYPASS bans only the wallet ACCESSOR call
-//     and the wallet struct literal, the declared convention is honoured;
-//   * no block-comment delimiter of any kind appears in this section.
 // ===========================================================================
 
 use crate::schema::{DataLifecycleEntry, DeletionPolicy, DATA_LIFECYCLE_MANIFEST};
 
 // ---------------------------------------------------------------------------
-// T2 / X4 — THE SPEC §3 PARTITION, PINNED BY VALUE.
+// THE SPEC §3 PARTITION, PINNED BY VALUE.
 // ---------------------------------------------------------------------------
 
-/// T2 / X4: the four spec §3 name-sets, transcribed from the spec text (NOT
+/// the four spec §3 name-sets, transcribed from the spec text (NOT
 /// derived from the census) and pinned by SET EQUALITY per policy, plus all five
 /// `ViaJoin` PAYLOADS pinned by exact parent value.
-///
-/// The four sets START from spec §3's own recount — "38 = 12 ERASE +
-/// 4 ANONYMIZE, 5 JOIN-ONLY, 17 NOT-OWNED" — and the live tree is now 43
-/// entries (15 ERASE, 4 ANONYMIZE, 5 JOIN-ONLY, 19 NOT-OWNED), because M22, rb-48,
-/// rb-73 and 20r-d add five tables the §3 recount predates.
 ///
 /// The `Erase` list carries one table beyond the spec's twelve: `export_bundle`.
 /// A snapshot of personal data is itself personal data, so the export bundle is
@@ -782,33 +742,31 @@ use crate::schema::{DataLifecycleEntry, DeletionPolicy, DATA_LIFECYCLE_MANIFEST}
 /// The `NotOwned` list carries two beyond the spec's seventeen, and they are
 /// NotOwned for different reasons.
 ///
-/// `account_deletion_reaper_schedule` (rb-24) is scheduler bookkeeping, not
+/// `account_deletion_reaper_schedule` is scheduler bookkeeping, not
 /// player data: the row holds only an auto-inc id, the fire instant the RUNTIME
 /// reads, and the account identity — and it is the row whose own reducer runs
 /// the cascade, so cascading over it would be a table deleting the schedule that
 /// is mid-flight. Its two real lifecycles are both explicit and both elsewhere:
-/// the runtime deletes the fired one-shot row (ADR-0126 D6), and
-/// `cancel_account_deletion` disarms a pending one (PRV1-3, ADR-0126 D4, pinned
-/// by `rb24_cancel_disarms_the_reaper`). `guest_claim_reaper_schedule` carries
-/// the same policy for the same class of reason.
+/// the runtime deletes the fired one-shot row, and
+/// `cancel_account_deletion` disarms a pending one.
+/// `guest_claim_reaper_schedule` carries the same policy for the same class of
+/// reason.
 ///
-/// `export_bundle_reaper_schedule` (rb-48, ADR-0238) is NotOwned more strongly
+/// `export_bundle_reaper_schedule` is NotOwned more strongly
 /// still: it is a GLOBAL interval singleton with NO Identity column at any
-/// depth, so there is no per-player key a cascade step could scope itself with,
-/// and `m22s6_table_row_registry_matches_manifest`'s identity-bearing count
-/// stays at 21 across this slice precisely because of that. One row exists for
-/// the whole database, `ensure_export_bundle_reaper` keeps it at one, and it
-/// carries the reaper's cadence and nothing else. Its exportable flag is false
-/// for the same reason: a subject's export must not contain the module's own
-/// scheduler state.
+/// depth, so there is no per-player key a cascade step could scope itself with.
+/// One row exists for the whole database, `ensure_export_bundle_reaper` keeps it
+/// at one, and it carries the reaper's cadence and nothing else. Its exportable
+/// flag is false for the same reason: a subject's export must not contain the
+/// module's own scheduler state.
 ///
 /// The five parents are pinned BY VALUE, not merely proven live: each was
 /// verified against the real join column in source before being written here —
 /// `character.entity_id` -> `player.entity_id` (schema.rs), `battle_wild.
 /// battle_id` -> `battle.battle_id`, `pvp_deadline_schedule.battle_id` ->
-/// `battle` (pvp.rs:130-141), `battle_challenge_reaper_schedule.challenge_id` ->
-/// `battle_challenge` (pvp.rs:169-178), `trade_offer_reaper_schedule.trade_id`
-/// -> `trade_offer` (trading.rs:113-122).
+/// `battle`, `battle_challenge_reaper_schedule.challenge_id` ->
+/// `battle_challenge`, `trade_offer_reaper_schedule.trade_id`
+/// -> `trade_offer`.
 ///
 /// Kills: a quiet re-classification (moving `battle` from ANONYMIZE to ERASE
 ///        destroys settled ranked history that a surviving opponent's
@@ -842,10 +800,9 @@ fn data_lifecycle_partition_matches_spec_section3() {
     join_only.sort_unstable();
     not_owned.sort_unstable();
 
-    // Spec §3 ERASE (12) + this slice's own `export_bundle` (spec §5 / plan D2)
-    // + rb-73's `player_session` (ADR-0245 D1: per-connection presence bookkeeping)
-    // + 20r-d's `pending_evolution_notice` (ADR-0254 D2: the transient post-evolve
-    // reveal queue, erased with the monsters it is derived bookkeeping about).
+    // Spec §3 ERASE (12) + this slice's own `export_bundle`
+    // + rb-73's `player_session`
+    // + 20r-d's `pending_evolution_notice`.
     let expected_erase = [
         "battle_action",
         "battle_challenge",
@@ -941,7 +898,7 @@ fn data_lifecycle_partition_matches_spec_section3() {
     );
 }
 
-/// T3 / X5 (second half): every `ViaJoin` parent is a table the manifest itself
+/// every `ViaJoin` parent is a table the manifest itself
 /// classifies, and that parent's own policy is NOT `ViaJoin`.
 ///
 /// A dangling parent is a cascade step that sweeps nothing. A CHAINED parent
@@ -1002,11 +959,10 @@ fn data_lifecycle_via_join_parents_live_and_unchained() {
 // T4 / X6 — EXPORT SCOPE, AS A POSITIVE BIJECTION.
 // ---------------------------------------------------------------------------
 
-/// T4 / X6: the `exportable == true` set equals EXACTLY the seventeen tables
+/// the `exportable == true` set equals EXACTLY the seventeen tables
 /// spec §5 admits — set equality, BOTH directions.
 ///
-/// POSITIVE, NOT NEGATIVE, and all three plan lenses converged on why: a
-/// negative-only spot check ("battle_wild is false, guest_claim is false") is
+/// a negative-only spot check ("battle_wild is false, guest_claim is false") is
 /// satisfied by an ALL-FALSE manifest, which ships a dead export feature — spec
 /// §5's walk filters on `exportable: true`, so an all-false manifest produces an
 /// empty bundle for every subject-access request while every gate stays green.
@@ -1019,7 +975,7 @@ fn data_lifecycle_via_join_parents_live_and_unchained() {
 /// `guest_claim` (a live secret code) and `export_bundle` itself (the export's
 /// own output — including it makes the walk self-feeding).
 ///
-/// Kills: the measured all-false cheat; flipping `battle_wild` to true (leaks
+/// Kills: flipping `battle_wild` to true (leaks
 ///        the seed a literal "dump every matched row" export would carry);
 ///        flipping `export_bundle` to true; adding a NOT-OWNED registry table to
 ///        the export (global game content is not the requester's personal data).
@@ -1079,21 +1035,16 @@ fn data_lifecycle_export_scope_structurally_narrower() {
 // T8 / X8 — THE LEGAL-STATE PREDICATE, EXTENDED FOR `terminal_at_ms`.
 // ---------------------------------------------------------------------------
 
-/// T8 / X8: `terminal_at_ms.is_some()` implies `PendingDeletion` AND a deletion
+/// `terminal_at_ms.is_some()` implies `PendingDeletion` AND a deletion
 /// request stamp — a terminal marker with no request behind it is illegal.
 ///
 /// Spec §4.1 defines the terminal predicate as
 /// `status == PendingDeletion && terminal_at_ms.is_some()`, and §4.4 step 5 sets
 /// the marker ONLY after steps 1-4 complete, i.e. only inside a live deletion.
-/// The existing invariant (ADR-0195 D3) ties `status` to
+/// The existing invariant ties `status` to
 /// `deletion_requested_at_ms`; without a matching clause for the new column,
 /// `Active` + `terminal_at_ms: Some(..)` — an account that was erased and then
 /// resurrected — reads as a perfectly legal state.
-///
-/// The `Active` row below is the one that BITES: under the pre-M22 predicate
-/// (Active implies no request stamp) it is LEGAL, so only the new clause can
-/// reject it. The `PendingDeletion` row is already illegal under the old clause
-/// and is here to pin that the extension did not weaken what was enforced.
 ///
 /// Kills: shipping `terminal_at_ms` with no legality rule at all — the
 ///        illegal-states-representable smell the struct-shape tripwire's own
@@ -1120,28 +1071,8 @@ fn account_legal_state_rejects_terminal_without_request() {
     }
 }
 
-/// T8 / X8: `account_state_is_legal` classifies an `Active` account carrying a
+/// `account_state_is_legal` classifies an `Active` account carrying a
 /// terminal marker as ILLEGAL.
-///
-/// SCOPE — THIS IS A PARTIAL TOOTH, AND WHAT COMPLETES IT IS NAMED. What follows
-/// is pinned here: the PURE PREDICATE rejects the shape. That a reducer path
-/// refuses to PRODUCE the shape is pinned ELSEWHERE, and as of m22-s3 it IS
-/// pinned: `m22s3_terminal_guards_precede_state_writes` proves
-/// `cancel_account_deletion` carries the PRV1-4 terminal guard ahead of both the
-/// AUTH-38 gate and the `cancelled_deletion` write (and `delete_account` the
-/// matching Ok-shaped guard ahead of AUTH-28), and
-/// `m22s3_cancelled_deletion_rejects_terminal_input` proves the constructor
-/// itself refuses a terminal input. ADR-0225 records the decision.
-///
-/// THE ONE HALF STILL OPEN, stated plainly: the constructor-level refusal is a
-/// `debug_assert!`, which the shipped wasm compiles out (the workspace
-/// `Cargo.toml` `[profile.release]` section sets `overflow-checks` and nothing
-/// else — the profile fact the ACCOUNT LEGAL-STATE INVARIANT banner in this file
-/// already records). In a release build the reducer guard is therefore the ONLY
-/// thing standing between a late cancel and this illegal state. Whether that
-/// refusal should be promoted to an `Err` in every profile is re-pointed to S3b
-/// in ADR-0225; it is not urgent, because nothing in the tree writes `Some` to
-/// `terminal_at_ms` until the S3b cascade lands.
 ///
 /// Spec §4.1's terminal predicate is `status == PendingDeletion &&
 /// terminal_at_ms.is_some()`, so Active + a marker is a resurrected tombstone:
@@ -1161,15 +1092,6 @@ fn account_legal_state_rejects_terminal_without_request() {
 ///        Some(terminal), which the first row here catches);
 ///        a terminal clause deleted outright;
 ///        a predicate that answers the same thing for every input.
-///
-/// Does NOT kill: `cancel_account_deletion` reactivating a terminal account —
-///        but that is now covered, by `m22s3_terminal_guards_precede_state_writes`
-///        (the guard is present, first, at depth zero, and ahead of both the
-///        AUTH-38 gate and the write) and by
-///        `m22s3_cancelled_deletion_rejects_terminal_input` (the constructor
-///        refuses the input). What remains uncovered anywhere is the RELEASE
-///        profile, where the constructor `debug_assert!` is compiled out and the
-///        reducer guard stands alone — re-pointed to S3b in ADR-0225.
 #[test]
 fn account_legal_state_rejects_terminal_while_active() {
     let cases: [(&str, Option<i64>); 2] = [
@@ -1194,11 +1116,10 @@ fn account_legal_state_rejects_terminal_while_active() {
     }
 }
 
-/// T8 / X8: the ONE legal terminal shape — `PendingDeletion` + a request stamp +
+/// the ONE legal terminal shape — `PendingDeletion` + a request stamp +
 /// a terminal marker — is ACCEPTED, and the all-`None` fresh shape stays legal.
 ///
-/// This is the anti-over-strictness half, and a reviewer found the cheat it
-/// kills: a clause spelled `account.terminal_at_ms.is_none()` (or any
+/// clause spelled `account.terminal_at_ms.is_none()` (or any
 /// always-reject-`Some` variant) passes BOTH negative tests above and breaks
 /// S3's reaper on its very first write — the constructor `debug_assert!` that
 /// stamps the marker would fire in every debug build, and the predicate would
@@ -1238,81 +1159,27 @@ fn account_legal_state_accepts_legal_terminal_shape() {
 }
 
 // ===========================================================================
-// rb-22 (ADR-0220) — PRE-CLAIM `export_bundle` ORPHAN, PURGED AT CLAIM TIME.
 //
-// EO-1 / EO-2 / EO-3 / EO-6. This is the arm that COMPILES ON THE PRE-FIX TREE:
-// it reads only `ACCOUNTS_RS` / `LIB_RS` (already `include_str!`-ed above) plus a
-// RUNTIME `std::fs` read of `src/privacy.rs` (the pvp_tests.rs:734 / ranking.rs
-// precedent — an `include_str!` of a file that does not exist yet is a COMPILE
-// error, which would make the proof-of-teeth RED indistinguishable from a broken
-// build). Nothing here references `M22_PRIVACY_RS`: that census constant is the
-// implementer's own mechanically-forced edit (F2), and a gating test that
-// depended on it could not be run before the fix.
-//
-// SCAN HYGIENE (this file's header rule, and the rb-22 plan's F4/F5): every
-// needle below is assembled from `concat!` fragments, so this file never carries
-// a contiguous write-verb chain, table or reducer attribute, outer cfg-test
-// attribute, or `mod privacy_tests;`-shaped declaration that a whole-tree scanner
-// (a dozen evals concatenate EVERY `.rs` file under `server-module/src`,
-// `_tests.rs` files included) could count as a real one. This section also
-// contains no block comment, no raw string, no backslash-escaped quote
-// character, and no char literal holding a quote character.
 // ===========================================================================
 
-/// A literal double quote, built from its byte (0x22) so this section carries
-/// neither a backslash-escaped quote — which unbalances a naive quote-pairing
-/// stripper in an eval that concatenates this file — nor a quote inside a char
-/// literal, which blinds a naive char-literal-unaware scanner. Memory card:
-/// server-module source-scan gotchas — use 0x22 constants.
+/// A literal double quote.
 fn rb22_dq() -> char {
     char::from(34u8)
 }
 
 // ===========================================================================
-// rb-24 (M22 S3, first arm) — THE DELETION REAPER SCHEDULE: ARMED ON REQUEST,
+// THE DELETION REAPER SCHEDULE: ARMED ON REQUEST,
 // DISARMED ON CANCEL.
 //
-// EARS criteria (`specs/monster-realm-v2/M22-privacy-compliance.spec.md` §7.4):
-//   PRV1-1  WHEN `delete_account` is called by an authenticated identity with
-//           `account.status == Active` THE SYSTEM SHALL transition `status` to
-//           `PendingDeletion`, set `deletion_requested_at_ms`, and insert
-//           EXACTLY ONE `AccountDeletionReaperSchedule` row for that identity.
-//   PRV1-3  WHEN `cancel_account_deletion` is called by an identity in
-//           `PendingDeletion` whose `terminal_at_ms` is `None` THE SYSTEM SHALL
-//           ... delete that identity pending `AccountDeletionReaperSchedule`
-//           row.
-//   E1      the new scheduled reducer rejects every non-scheduler caller (spec
-//           §4.4: `Scheduler-only guard, identical in shape to accounts.rs`).
-//   S3-boundary  this slice ships the ARM/DISARM wiring plus a DELIBERATELY
-//           EMPTY reaper body. The cascade itself (PRV1-6a..PRV1-6e), the
-//           reaper-side recheck (PRV1-5) and the late-cancel terminal error
-//           (PRV1-4) are LATER arms of S3 and are NOT gated here.
-//
-// SCAN HYGIENE — the file header rule, restated because this section adds a
-// second scheduled table and a second reaper to a file a dozen evals
-// concatenate wholesale (every `.rs` under `server-module/src`, `_tests.rs`
-// siblings included). Every needle below is assembled from `concat!` fragments,
-// so this file never carries a contiguous table attribute, reducer attribute,
-// accessor call, write-verb chain or reaper call site that such a scanner could
-// count as a real one. This section contains no block comment, no raw string,
-// no backslash-escaped quote character, no char literal holding a quote, and no
-// bare double-quote character inside any comment.
-//
-// WHY THE FROZEN-BODY PINS ARE EXACT EQUALITY and not containment: the rb-22
-// red-team measured four clippy-clean shapes that satisfy every containment
-// clause over a correct-looking body — an `if false` wrapper, a shadowed
-// binding, a shadowed loop variable, and an appended aliased foreign write.
-// Equality kills that whole family in one assertion, and the same four shapes
-// apply verbatim to a collect-then-delete disarm helper.
 // ===========================================================================
 
 use game_core::{is_deletion_due, DELETION_GRACE_MS_DEFAULT};
 
 // ---------------------------------------------------------------------------
-// rb-24 / PRV1-1 — THE FIRE INSTANT, AS A PURE SEAM.
+// THE FIRE INSTANT, AS A PURE SEAM.
 // ---------------------------------------------------------------------------
 
-/// PRV1-1 (spec §4.3 boundary): `deletion_fire_at_ms(t)` is the exact instant at
+/// `deletion_fire_at_ms(t)` is the exact instant at
 /// which `game_core::is_deletion_due` flips true for a request stamped at `t`.
 ///
 /// The two halves are what make this a boundary and not a smoke test: DUE at
@@ -1358,7 +1225,7 @@ fn rb24_deletion_fire_at_ms_boundary() {
     }
 }
 
-/// PRV1-1 (saturation bound): `deletion_fire_at_ms` clamps at `i64::MAX` rather
+/// `deletion_fire_at_ms` clamps at `i64::MAX` rather
 /// than overflowing, and the KNOWN divergence that clamping produces is
 /// documented BY ASSERTION rather than in prose.
 ///
@@ -1366,15 +1233,13 @@ fn rb24_deletion_fire_at_ms_boundary() {
 /// release profile sets `overflow-checks = true`, so a wrapping add would be a
 /// panic that aborts the whole `delete_account` transaction in production.
 ///
-/// THE THIRD ASSERTION DOCUMENTS A BOUND, IT DOES NOT ASSERT DESIRED SEMANTICS.
 /// At a saturating request stamp the fire instant clamps to `i64::MAX`, and the
 /// elapsed window from the request to that clamped instant is then SHORTER than
 /// the grace window — so the account reads as NOT due at its own fire time and
 /// the one-shot reaper no-ops forever. That is a real edge of the design, it is
 /// unreachable with any wall clock (the stamp is milliseconds since the Unix
-/// epoch), and it is recorded here so the next reader finds it as a measured
-/// fact rather than rediscovering it. It must not be read as a requirement that
-/// a saturating request never completes.
+/// epoch), It must not be read as a requirement that a saturating request never
+/// completes.
 ///
 /// Kills: a plain `+` (release-profile overflow panic inside a reducer);
 ///        a `checked_add(..).unwrap_or(0)` fallback, which would make a
@@ -1406,7 +1271,7 @@ fn rb24_deletion_fire_at_ms_saturates() {
     );
 }
 
-/// PRV1-1 (parity property): across a spread of non-saturating request stamps,
+/// across a spread of non-saturating request stamps,
 /// `deletion_fire_at_ms` and `game_core::is_deletion_due` agree exactly — due at
 /// the fire instant, not due one millisecond earlier.
 ///
@@ -1458,18 +1323,17 @@ fn rb24_deletion_fire_at_ms_parity_with_is_deletion_due() {
 /// The same account, plus a LEGAL claim-provenance pair and off-baseline
 /// `auth_issuer` / `last_login_at_ms`.
 ///
-/// FIXTURE MONOCULTURE IS A MEASURED HOLE: every m22s3 truth-table row spreads
 /// `base_account(n)`, so all four of `claimed_from`, `claimed_at_ms`,
 /// `auth_issuer` and `last_login_at_ms` carry the same value on every row — and
 /// a predicate that ALSO reads one of them answers identically everywhere and is
-/// invisible. Three such wrong implementations were measured green. Each table
-/// below therefore carries one TWIN of an expected-false row and one TWIN of an
-/// expected-true row built through this helper: the false twin kills a disjunct
-/// that ORs claim provenance IN, the true twin kills a conjunct that ANDs it
-/// OUT. One twin alone closes only one of the two polarities.
+/// invisible. Each table below therefore carries one TWIN of an expected-false
+/// row and one TWIN of an expected-true row built through this helper: the false
+/// twin kills a disjunct that ORs claim provenance IN, the true twin kills a
+/// conjunct that ANDs it OUT. One twin alone closes only one of the two
+/// polarities.
 ///
 /// Legality is preserved by construction — the claim pair is set on BOTH halves
-/// (AUTH-21) and no lifecycle field moves — so a twin is exactly its base row
+/// and no lifecycle field moves — so a twin is exactly its base row
 /// plus fields the predicate under test must not be reading.
 fn m22s3_claim_variant(account: Account) -> Account {
     Account {
@@ -1482,21 +1346,19 @@ fn m22s3_claim_variant(account: Account) -> Account {
 }
 
 // ---------------------------------------------------------------------------
-// m22-s3 / PRV1-4 — THE TERMINAL-MARKER PREDICATE.
+// THE TERMINAL-MARKER PREDICATE.
 // ---------------------------------------------------------------------------
 
-/// PRV1-4 (pure, table-driven): `account_has_terminal_marker` answers
-/// `terminal_at_ms.is_some()` and NOTHING else.
+/// `account_has_terminal_marker` answers `terminal_at_ms.is_some()` and NOTHING
+/// else.
 ///
-/// NAMING DIVERGENCE FROM THE SPEC, RECORDED RATHER THAN PAPERED OVER: spec §4.1
-/// defines `terminal` as the CONJUNCTION (status `PendingDeletion` AND a request
-/// stamp AND a marker). This predicate is deliberately the MARKER HALF alone, and
+/// This predicate is deliberately the MARKER HALF alone, and
 /// the fourth row is why. On the illegal `Active` + marker shape — a resurrected
 /// tombstone, which `account_state_is_legal` rejects and which nothing in this
 /// slice can write — the conjunction answers `false` and would wave the row
 /// through both guards; the marker half answers `true` and refuses it. That is
 /// FAIL-CLOSED, and it is the only behaviour difference between the two
-/// spellings. ADR-0225 records the divergence.
+/// spellings.
 ///
 /// The legality column is not decoration: it pins that row 4 really is the
 /// ILLEGAL shape the fail-closed argument is about, so this test cannot quietly
@@ -1510,9 +1372,7 @@ fn m22s3_claim_variant(account: Account) -> Account {
 ///        flips to true and row 3 is unchanged, so a one-row test would miss it);
 ///        a predicate that also reads claim provenance, `auth_issuer` or
 ///        `last_login_at_ms` — rows 5 and 6 are the claim-variant twins of rows
-///        1 and 3 and must answer exactly what their twins answer (measured
-///        hole: every other row spreads the same `base_account`, so such a
-///        predicate is invisible without them).
+///        1 and 3 and must answer exactly what their twins answer.
 #[test]
 fn m22s3_account_has_terminal_marker_truth_table() {
     let cases: [(&str, Account, bool, bool); 6] = [
@@ -1593,17 +1453,16 @@ fn m22s3_account_has_terminal_marker_truth_table() {
 }
 
 // ---------------------------------------------------------------------------
-// m22-s3 / PRV1-5 — THE REAPER-SIDE RECHECK PREDICATE.
+// THE REAPER-SIDE RECHECK PREDICATE.
 // ---------------------------------------------------------------------------
 
-/// PRV1-5 (pure, exhaustive table): `reaper_should_run_cascade` is true for
-/// EXACTLY ONE of the twelve `(status, terminal marker, request stamp)`
-/// combinations — `PendingDeletion`, no marker, and a request past its grace
-/// window — and false for the other eleven.
+/// `reaper_should_run_cascade` is true for EXACTLY ONE of the twelve `(status,
+/// terminal marker, request stamp)` combinations — `PendingDeletion`, no marker,
+/// and a request past its grace window — and false for the other eleven.
 ///
-/// The three conjuncts are decoupled on purpose (plan reviewer M2): this
+/// The three conjuncts are decoupled on purpose: this
 /// predicate is defined DIRECTLY, not as `should_reject_for_deletion` plus
-/// extras, so a future S5 widening of the gate predicate cannot silently widen
+/// extras, so a future widening of the gate predicate cannot silently widen
 /// what the reaper is willing to erase.
 ///
 /// WHY EVERY ILLEGAL COMBINATION IS IN THE TABLE: this predicate reads a LIVE
@@ -1745,8 +1604,8 @@ fn m22s3_reaper_should_run_cascade_truth_table() {
     }
 }
 
-/// PRV1-5 (pure, boundary + saturation): the grace window is boundary-INCLUSIVE,
-/// a future-dated request is never due, and the arithmetic SATURATES.
+/// the grace window is boundary-INCLUSIVE, a future-dated request is never due,
+/// and the arithmetic SATURATES.
 ///
 /// SATURATION IS A PRODUCTION CRASH PROPERTY, not a curiosity: the workspace sets
 /// `[profile.release] overflow-checks = true`, so a wrapping subtraction inside
@@ -1818,29 +1677,28 @@ fn m22s3_reaper_should_run_cascade_grace_boundary() {
 }
 
 // ---------------------------------------------------------------------------
-// m22-s3 / PRV1-7 — THE SHARED DELETION-GATE PREDICATE.
+// THE SHARED DELETION-GATE PREDICATE.
 // ---------------------------------------------------------------------------
 
-/// PRV1-7 (pure, table-driven): `should_reject_for_deletion` is the DISJUNCTION
+/// `should_reject_for_deletion` is the DISJUNCTION
 /// `status == PendingDeletion || account_has_terminal_marker(&account)`.
 ///
-/// LOCATION IS PART OF THE CONTRACT (ADR-0225): this predicate lives in
-/// `accounts.rs` and takes `&Account`. Spec §7.3 reads as if it belonged in
-/// game-core; it cannot, because it is the SSOT that `is_pending_deletion`
-/// delegates to, and S5 guards.rs must call it rather than re-derive it.
+/// LOCATION IS PART OF THE CONTRACT: this predicate lives in
+/// `accounts.rs` and takes `&Account`. the SSOT that `is_pending_deletion`
+/// delegates to.
 ///
 /// THE DISJUNCTION MATTERS BOTH WAYS. Row 4 is the illegal Active-plus-marker
 /// shape: the status half alone answers false and would let an erased account
 /// keep playing, so the marker half is what makes the gate fail-closed. Row 2 is
 /// the ordinary grace-window account: the marker half alone answers false and
-/// the entire M21 pending-deletion gate would evaporate, so the status half
+/// the entire pending-deletion gate would evaporate, so the status half
 /// carries the behaviour every existing pin depends on. Neither half is
 /// redundant; a mutant that keeps only one is caught by exactly one row.
 ///
 /// This is also the delegation proof for `is_pending_deletion`, which becomes
 /// `.is_some_and(|a| should_reject_for_deletion(&a))`: on every LEGAL state a
 /// terminal marker implies PendingDeletion, so behaviour is unchanged, and the
-/// AUTH-13 guard of `complete_guest_claim` becomes terminal-aware for free.
+/// guard of `complete_guest_claim` becomes terminal-aware for free.
 ///
 /// Kills: collapsing the disjunction to either conjunct alone (one row each);
 ///        either constant mutant; a third disjunct added without re-deriving the
@@ -1930,28 +1788,20 @@ fn m22s3_should_reject_for_deletion_truth_table() {
 }
 
 // ---------------------------------------------------------------------------
-// m22-s3 / PRV1-4 residual — THE CONSTRUCTOR-LEVEL HALF OF THE TERMINAL GUARD.
+// THE CONSTRUCTOR-LEVEL HALF OF THE TERMINAL GUARD.
 // ---------------------------------------------------------------------------
 
-/// PRV1-4 (constructor postcondition): `cancelled_deletion` REFUSES a terminal
-/// input — the ADR-0195 D3 legality `debug_assert!` fires rather than returning
-/// a resurrected tombstone.
+/// `cancelled_deletion` REFUSES a terminal input.
 ///
-/// This is the second half of the residual R-m22-s2-S3-CANCEL-TERMINAL. The W1
-/// guard in `cancel_account_deletion` is the first half and is what actually
-/// protects production; this test pins the constructor-level backstop that
-/// documents WHY the guard has to exist. The input row is LEGAL by construction
-/// (`PendingDeletion` + request stamp + marker, spec §4.1) and the OUTPUT is not:
+/// The input row is LEGAL by construction (`PendingDeletion` + request stamp +
+/// marker, spec §4.1) and the OUTPUT is not:
 /// `cancelled_deletion` clears the status and the stamp but cannot clear the
 /// marker, so it would hand back `Active` + marker — the exact illegal shape
 /// `account_state_is_legal` forbids and the exact row the fail-closed marker
 /// predicate exists to refuse.
 ///
 /// PROFILE DEPENDENCE, STATED RATHER THAN IMPLIED: `debug_assert!` compiles out
-/// of a release build (ADR-0049), so this tooth exists in the test profile only.
-/// That is precisely the gap the W1 source guard covers, and the Err-promotion
-/// question for release builds is re-pointed to S3b in ADR-0225 — nothing in
-/// this slice writes `terminal_at_ms`, so no release-build path can reach here.
+/// of a release build, so this tooth exists in the test profile only.
 ///
 /// Kills: deleting the legality `debug_assert!` from `cancelled_deletion`; a
 ///        `cancelled_deletion` widened to also clear `terminal_at_ms`, which
@@ -1995,17 +1845,16 @@ fn m22s3b_mid_grace(b: u8, requested: i64) -> Account {
 }
 
 // ---------------------------------------------------------------------------
-// m22-s3b / PRV1-6c + PRV1-6e — THE TWO ACCOUNT CONSTRUCTORS (pure).
+// THE TWO ACCOUNT CONSTRUCTORS (pure).
 // ---------------------------------------------------------------------------
 
-/// PRV1-6c (pure): `anonymized_account` overwrites `auth_issuer` with the
+/// `anonymized_account` overwrites `auth_issuer` with the
 /// game-core tombstone sentinel and changes NOTHING else.
 ///
 /// Spec §3 is explicit that the sentinel is a String, never a widening to
 /// `Option<String>`, and that `identity` / `created_at_ms` / `claimed_from` /
-/// `claimed_at_ms` are RETAINED (AUTH-29's invariant: a cancel-provenance chain
-/// must never read as un-claimed). So this constructor is a one-field rewrite
-/// and every other field is asserted individually — a whole-struct compare would
+/// `claimed_at_ms` are RETAINED. So this constructor is a one-field rewrite and
+/// every other field is asserted individually — a whole-struct compare would
 /// name only the first divergence.
 ///
 /// THE SENTINEL IS READ FROM game-core, NEVER RE-TYPED. `game_core::
@@ -2016,8 +1865,8 @@ fn m22s3b_mid_grace(b: u8, requested: i64) -> Account {
 ///        the manifest basis explicitly rejects — the field must stay
 ///        distinguishable from an unset one); one that also stamps
 ///        `terminal_at_ms` (which would make the 6e step unobservable and put
-///        the terminal write outside the one place ADR-0228 D5's legality
-///        theorem covers); one that clears the claim provenance (AUTH-29); one
+///        the terminal write outside);
+///        one that clears the claim provenance; one
 ///        that resets `status` (the recheck has already established
 ///        PendingDeletion and the legality theorem depends on it); an identity
 ///        function (the sentinel assertion fires).
@@ -2125,12 +1974,12 @@ fn m22s3b_anonymized_account_truth() {
     );
 }
 
-/// PRV1-6e (pure): `terminal_account` stamps `terminal_at_ms = Some(now)` and
+/// `terminal_account` stamps `terminal_at_ms = Some(now)` and
 /// changes NOTHING else.
 ///
 /// The marker is the whole M22 terminal state: spec §4.1 defines terminal as
-/// `status == PendingDeletion && terminal_at_ms.is_some()`, every guard shipped
-/// in m22-s3 keys on it, and this constructor is the only writer.
+/// `status == PendingDeletion && terminal_at_ms.is_some()`,
+/// and this constructor is the only writer.
 ///
 /// Kills: a constructor that also flips `status` (which would make the terminal
 ///        predicate unrepresentable and fire the legality debug_assert); one
@@ -2232,27 +2081,26 @@ fn m22s3b_terminal_account_truth() {
 }
 
 // ---------------------------------------------------------------------------
-// m22-s3b / PRV1-5 — THE RE-ARM DECISION, AS A PURE SEAM.
+// THE RE-ARM DECISION, AS A PURE SEAM.
 // ---------------------------------------------------------------------------
 
-/// PRV1-5 (pure, table-driven): `reaper_rearm_at_ms` returns `Some(requested)`
+/// `reaper_rearm_at_ms` returns `Some(requested)`
 /// for EXACTLY the not-yet-due mid-grace row, and `None` for everything else.
 ///
-/// DEFINED DIRECTLY, NEVER AS `!reaper_should_run_cascade` (ADR-0228 D3). That
+/// DEFINED DIRECTLY, NEVER AS `!reaper_should_run_cascade`. That
 /// negation is ALSO true for an `Active` row and for an already-terminal row, so
 /// a re-arm keyed on it would re-arm a cancelled account forever and would
 /// re-arm an ERASED one — a permanent scheduler loop over a row the cascade has
 /// already finished with. Rows 1-6 and 10-12 are what make that distinction
 /// observable.
 ///
-/// THE `None` REQUEST ROW IS THE B3 ROW AND IS NOT DECORATION. `PendingDeletion`
-/// with no request stamp is an ILLEGAL intermediate (`account_state_is_legal`
-/// forbids it) that a bug elsewhere could still produce. The sanctioned
-/// implementation resolves the stamp FIRST — `let requested =
-/// account.deletion_requested_at_ms?;` — and therefore answers `None`: no
-/// re-arm, fail-closed. Every `.unwrap_or(..)` spelling is either a disguised
-/// `now`-relative re-arm or an epoch-past hot loop, and both pass a table that
-/// omits this row.
+/// `PendingDeletion` with no request stamp is an ILLEGAL intermediate
+/// (`account_state_is_legal` forbids it) that a bug elsewhere could still
+/// produce. The sanctioned implementation resolves the stamp FIRST — `let
+/// requested = account.deletion_requested_at_ms?;` — and therefore answers
+/// `None`: no re-arm, fail-closed. Every `.unwrap_or(..)` spelling is either a
+/// disguised `now`-relative re-arm or an epoch-past hot loop, and both pass a
+/// table that omits this row.
 ///
 /// THE VALUE IS THE ROW'S OWN REQUEST STAMP, never `now`. `arm_deletion_reaper`
 /// derives the fire instant through `deletion_fire_at_ms`, so returning `now`
@@ -2283,12 +2131,6 @@ fn m22s3b_reaper_rearm_at_ms_truth_table() {
     };
 
     // (label, row, expected re-arm instant, expected legality)
-    //
-    // SIXTEEN rows as of r2: the reviewer asked for the FUTURE-STAMP row (a
-    // request dated after `now`, which host clock skew across a restart can
-    // genuinely produce). It is the one shape where the two ways of writing the
-    // due-ness test disagree, so it belongs in the table rather than only in the
-    // loop-freedom property below.
     let cases: [(&str, Account, Option<i64>, bool); 16] = [
         (
             "Active / no marker / no request — an ordinary live account",
@@ -2448,13 +2290,11 @@ fn m22s3b_reaper_rearm_at_ms_truth_table() {
     }
 
     // --- LOOP-FREEDOM, over wall-clock-representable stamps ------------------
-    // ADR-0228 D3: not-due IFF `deletion_fire_at_ms(requested) > now`, so every
+    // not-due IFF `deletion_fire_at_ms(requested) > now`, so every
     // re-arm this seam authorises schedules STRICTLY LATER than the fire that
     // produced it. That is what makes the one-shot chain terminate instead of
     // spinning. The saturation band (`requested > i64::MAX - GRACE`) clamps the
-    // fire instant to i64::MAX — a permanent no-op, documented in ADR-0221 Known
-    // limits and NOT asserted here as a universal theorem, which is why the
-    // spread below is bounded to representable wall-clock stamps.
+    // fire instant to i64::MAX — a permanent no-op.
     let clocks: [i64; 4] = [0, 1_700_000_000_000, 1_900_000_000_000, 2_500_000_000_000];
     for now in clocks {
         for delta in [0i64, 1, 1_000, DELETION_GRACE_MS_DEFAULT - 1] {
@@ -2484,10 +2324,9 @@ fn m22s3b_reaper_rearm_at_ms_truth_table() {
     }
 }
 
-/// ADR-0221 R2 / ADR-0228 D3(b) (pure): `plan_deletion_rearms` emits ONE
-/// `(identity, fire instant)` pair per mid-grace row that has NO schedule row
-/// yet, skipping Active rows, terminal rows, stamp-less rows and rows already
-/// armed — in input order, deterministically.
+/// `plan_deletion_rearms` emits ONE `(identity, fire instant)` pair per mid-grace
+/// row that has NO schedule row yet, skipping Active rows, terminal rows,
+/// stamp-less rows and rows already armed — in input order, deterministically.
 ///
 /// WHY THE SWEEP EXISTS AT ALL: the pre-S3b reaper dropped the fired one-shot
 /// row on every not-yet-due fire, so the live tree can hold accounts sitting
@@ -2505,15 +2344,13 @@ fn m22s3b_reaper_rearm_at_ms_truth_table() {
 /// cascade per row.
 ///
 /// THE EMITTED INSTANT IS THE ROW'S RAW `deletion_requested_at_ms`, never `now`
-/// and never a pre-shifted fire time. ADR-0228 D3 puts the grace arithmetic in
-/// exactly ONE place — `arm_deletion_reaper`, whose frozen body applies
-/// `deletion_fire_at_ms` itself — and the sweep's call site is pinned as
+/// and never a pre-shifted fire time. — `arm_deletion_reaper`, whose frozen body
+/// applies `deletion_fire_at_ms` itself — and the sweep's call site is pinned as
 /// `arm_deletion_reaper(ctx, identity, requested_at_ms)`. A plan that shifted the
 /// stamp here would therefore have it shifted AGAIN downstream, giving the whole
 /// overdue population `requested + 2 x GRACE`: a silent double grace window that
 /// both pins would have forced while each read correctly alone. A past-due
-/// instant is LEGAL (a `ScheduleAt::Time` in the past fires immediately, which is
-/// exactly what the overdue R2 population needs), so there is nothing to clamp.
+/// instant is LEGAL, so there is nothing to clamp.
 ///
 /// Kills: a sweep that arms Active rows (row A), terminal rows (row T), rows
 ///        with no request stamp (row S) or rows that already have a schedule
@@ -2585,18 +2422,14 @@ fn m22s3b_plan_deletion_rearms_idempotent() {
 
     // --- THE PAIR IS (identity, RAW request stamp) --------------------------
     //
-    // CORRECTED IN r2, and the correction is a real contract defect the first
-    // draft would have shipped. `arm_deletion_reaper` derives the fire instant
-    // ITSELF — its frozen body (`rb24_arm_deletion_reaper_body_frozen`) is
-    // `deletion_fire_at_ms(requested_at_ms).saturating_mul(1_000)` — and
-    // `[rb24/arm-shape-ensure_deletion_reapers_armed]` pins the sweep's call as
-    // `arm_deletion_reaper(ctx, identity, requested_at_ms)`. So a plan that
+    // `arm_deletion_reaper` derives the fire instant
+    // ITSELF — its frozen body is
+    // `deletion_fire_at_ms(requested_at_ms).saturating_mul(1_000)`. So a plan that
     // emitted `deletion_fire_at_ms(requested)` would be handing an ALREADY-SHIFTED
-    // instant to a helper that shifts it again: `requested + 2 x GRACE` for the
-    // whole ADR-0221 R2 population, a silent DOUBLE grace window, and the two
-    // pins would have forced it while each read correctly on its own.
+    // instant to a helper that shifts it again: `requested + 2 x GRACE`, a silent
+    // DOUBLE grace window.
     //
-    // ADR-0228 D3's rule is that ONE place computes the fire instant, and that
+    // ONE place computes the fire instant, and that
     // place is `arm_deletion_reaper`. Every producer therefore hands it the raw
     // stamp: `reaper_rearm_at_ms` returns `Some(requested)`, and this seam emits
     // the row's own `deletion_requested_at_ms` unchanged.
@@ -2640,7 +2473,7 @@ fn m22s3b_plan_deletion_rearms_idempotent() {
          publish frequency."
     );
 
-    // --- MEMBERSHIP IS A SET TEST, NOT A POSITIONAL ONE (reviewer minor, r2) -
+    // --- MEMBERSHIP IS A SET TEST, NOT A POSITIONAL ONE -
     //
     // The already-armed list comes from a DB read of the schedule table, which
     // can legitimately hold more than one row for an identity (the PRV1-3 disarm
@@ -2661,7 +2494,7 @@ fn m22s3b_plan_deletion_rearms_idempotent() {
          re-arms an already-armed account here."
     );
 
-    // --- AN EMPTY WORLD IS A NO-OP, NOT A PANIC (reviewer minor, r2) --------
+    // --- AN EMPTY WORLD IS A NO-OP, NOT A PANIC --------
     let no_rows: [Account; 0] = [];
     let empty_plan = plan_deletion_rearms(&no_rows, &armed);
     assert!(
@@ -2697,7 +2530,7 @@ fn m22s3b_plan_deletion_rearms_idempotent() {
     );
 }
 
-/// PRV1-8(b) (pure): the reset carries NO pre-deletion value forward.
+/// the reset carries NO pre-deletion value forward.
 ///
 /// The structural test above pins that the arm rebuilds through
 /// `new_account_row`; this one pins what that buys. `new_account_row` takes no
@@ -2711,10 +2544,8 @@ fn m22s3b_plan_deletion_rearms_idempotent() {
 /// every §4.7 guard (a trap state, which is precisely what the terminal
 /// marker's own justification says it must not be); a surviving
 /// `deletion_requested_at_ms` would re-arm a cascade over the new incarnation; a
-/// surviving `claimed_from` would keep AUTH-14's one-claim-per-account spent
-/// (ADR-0228 D4 accepts the OPPOSITE — the claim slot is restored per
-/// incarnation — so a carried-forward claim is a silent deviation from the
-/// ruling); a surviving `created_at_ms` would misdate the new account.
+/// surviving `claimed_from` would keep AUTH-14's one-claim-per-account spent;
+/// a surviving `created_at_ms` would misdate the new account.
 ///
 /// Kills: a reset written as a struct-update spread over the terminal row (every
 ///        un-named field survives); a `new_account_row` that seeds any field
@@ -2816,50 +2647,8 @@ fn m22s3b_touch_login_scope_excludes_terminal() {
 }
 
 // ===========================================================================
-// M22-S6 — DELETION COMPLETENESS FROM DERIVE METADATA (PRV1-15, PRV1-16).
+// DELETION COMPLETENESS FROM DERIVE METADATA.
 //
-// Spec: M22-privacy-compliance.spec.md §3/§4.4, REDIRECTED per ADR-0224 (no new
-// bespoke eval scanner scripts). Design record: ADR-0229. Ledger gates X1-X5.
-// Plan: memory/projects/monster-realm-m22-s6-plan.md (harness repo).
-//
-// WHAT THIS SECTION DOES NOT RE-DO. `data_lifecycle_manifest_totality_bidirectional`
-// (:3524) already proves every LIVE TABLE has a manifest entry; T1/X4 below proves
-// something narrower and different — that the entry's row TYPE actually carries (or
-// doesn't carry) an `Identity` column, which the totality test cannot see at all.
-// `m22s3b_cascade_covers_manifest` (:9493) already proves every classified table maps
-// to a reaper-reachable helper NAME; T2/X5 below proves the SAME correspondence plus
-// two things that test does not: that the mapped declaration is unique (no decoy
-// second declaration steering a first-hit anchor) and that the far end of the chain
-// actually PERFORMS a mutating call on that table's own accessor, in the same
-// statement as the accessor occurrence (the `erase_monsters`-serves-two-tables
-// bypass this ADR names explicitly).
-//
-// WHY DERIVE METADATA, NOT A SOURCE SCAN (ADR-0224/ADR-0229). `#[spacetimedb::table]`
-// derives `SpacetimeType`; calling `<T as SpacetimeType>::make_type` against a
-// throwaway `TypespaceBuilder` returns the row's real `AlgebraicType::Product` — the
-// same shape the host itself sees. No comment stripper, no string-literal parser, no
-// regex: the failure class ADR-0224 retires (a stray block-comment opener, or an
-// unpaired quote, blanking a later table out of a whole-tree scan) is structurally
-// absent from T1.
-//
-// NO BLOCK-COMMENT OPENER AND NO GLOB MAY APPEAR ANYWHERE IN THIS SECTION, in prose
-// or in code. Several shipped evals concatenate every server-module source file —
-// INCLUDING this test file — and strip comments with a naive scanner; a two-character
-// sequence written here as an illustration once blanked `write_back_battle_results`
-// out of a LATER file entirely, red-ing `practice-xp` and `recruit-reducer-security`
-// with a message about a function this slice never touched. It is invisible to
-// `cargo nextest` and only reproduces under the full `just ci`. Describe such
-// sequences in words.
-//
-// SCAN HYGIENE (T2 only; T1 does no text scanning at all): this section's own needle
-// helpers are `m22s6_`-prefixed and split mid-token via `concat!`, per this file's
-// header rule, so this file never carries a contiguous scanner needle. Only
-// `player_wallet` and `account_deletion_reaper_schedule` are split — mirroring
-// EXACTLY what the neighbouring m22s3b tests above already do with those two names;
-// every other accessor name in this section (`guest_claim`, `monster_pub`,
-// `battle_challenge_reaper_schedule`, `trade_offer_reaper_schedule`, ...) is a bare
-// literal, matching `data_lifecycle_partition_matches_spec_section3` and
-// `m22s3b_cascade_covers_manifest` exactly.
 // ===========================================================================
 
 use spacetimedb::sats::AlgebraicType;
@@ -2879,13 +2668,12 @@ use spacetimedb::SpacetimeType;
 /// never interns, a genuinely self-referential column type (a struct that embeds
 /// itself, directly or through a cycle) would make `make_type` recurse without
 /// bound at DERIVE time already — before `m22s6_identity_bearing` ever runs — and
-/// the plan's red-team measured, in a scratch crate, that this is a real stack
-/// overflow that `SIGABRT`s the whole `cargo nextest` process rather than failing
-/// one test. No live table in this crate has such a type today (every nested
-/// `#[derive(SpacetimeType)]` struct here is a strict DAG), so the cap below is
-/// forward defence, not a live requirement — but it is what turns a future
-/// self-referential column into a named, loud test failure instead of a crashed
-/// test runner that reports nothing at all.
+/// a real stack overflow that `SIGABRT`s the whole `cargo nextest` process rather
+/// than failing one test. No live table in this crate has such a type today
+/// (every nested `#[derive(SpacetimeType)]` struct here is a strict DAG), so the
+/// cap below is forward defence, not a live requirement — but it is what turns a
+/// future self-referential column into a named, loud test failure instead of a
+/// crashed test runner that reports nothing at all.
 struct M22s6InlineTypespace;
 impl spacetimedb::sats::typespace::TypespaceBuilder for M22s6InlineTypespace {
     fn add(
@@ -2901,11 +2689,8 @@ impl spacetimedb::sats::typespace::TypespaceBuilder for M22s6InlineTypespace {
 /// True if `ty` carries an `Identity` column at ANY depth — not just as a bare
 /// leaf field.
 ///
-/// `AlgebraicType::is_identity()` is a SHALLOW shape check
-/// (`ProductType::is_identity()` requires the type to be EXACTLY one field named
-/// `__identity__` typed `U256` — verified against the vendored spacetimedb-sats
-/// 2.8.1 source this session). The plan's red-team measured that this shallow
-/// check is blind to three completely natural column shapes: `Option<Identity>`
+/// `AlgebraicType::is_identity()` is a SHALLOW shape check.
+/// to three completely natural column shapes: `Option<Identity>`
 /// lowers to a `Sum` (the `some`/`none` tags, `some` holding the identity
 /// product), `Vec<Identity>` lowers to an `Array`, and any
 /// `#[derive(SpacetimeType)]` newtype wrapping an `Identity` lowers to a
@@ -2914,15 +2699,14 @@ impl spacetimedb::sats::typespace::TypespaceBuilder for M22s6InlineTypespace {
 /// distinguish a REAL identity newtype from an arbitrary same-shaped struct).
 /// `Option<Identity>` in particular is a completely ordinary column spelling
 /// ("assigned_to", "banned_by", "co_owner"), so a shallow check would let a new
-/// owner-keyed table be classified `NotOwned` with NO exception-list edit at all
-/// — silently reopening the exact hole ADR-0229 exists to close. This walk
-/// therefore recurses through `Sum` variants, `Array` element types and nested
-/// `Product` fields, testing `is_identity()` at every level before descending
-/// further.
+/// owner-keyed table be classified `NotOwned` with NO exception-list edit at all.
+/// This walk therefore recurses through `Sum` variants, `Array` element types
+/// and nested `Product` fields, testing `is_identity()` at every level before
+/// descending further.
 ///
 /// `depth` is a CALLER-SUPPLIED counter (start at 0), asserted against a small
 /// cap and panicking BY NAME if exceeded — see `M22s6InlineTypespace`'s doc for
-/// why an unbounded recursion here is not merely slow but a measured SIGABRT
+/// why an unbounded recursion here is not merely slow but SIGABRT
 /// hazard (the inline builder never interns, so a self-referential column has no
 /// `Ref` to stop the walk).
 fn m22s6_identity_bearing(ty: &AlgebraicType, depth: usize) -> bool {
@@ -3183,11 +2967,11 @@ fn m22s6_identity_column_count(accessor: &str, ty: &AlgebraicType) -> usize {
 // T1 / X4 — THE REGISTRY CANNOT DRIFT FROM THE MANIFEST.
 // ---------------------------------------------------------------------------
 
-/// X4 (PRV1-15 totality): the S6 row-type registry and `DATA_LIFECYCLE_MANIFEST`
+/// the S6 row-type registry and `DATA_LIFECYCLE_MANIFEST`
 /// name the SAME set of tables, with no duplicates on either side, the census
 /// pinned at 41, and a non-vacuity floor on how many of the 41 are identity-bearing.
 ///
-/// This is DISTINCT from `data_lifecycle_manifest_totality_bidirectional` (:3524),
+/// This is DISTINCT from `data_lifecycle_manifest_totality_bidirectional`,
 /// which proves every LIVE TABLE has a manifest entry by scanning table-attribute
 /// SOURCE TEXT. That totality test cannot see whether a classified table's row
 /// STRUCT actually carries an Identity column — it has no row type in scope at all.
@@ -3286,7 +3070,7 @@ fn m22s6_table_row_registry_matches_manifest() {
 // T1 / X1 — R1: OWNER-KEYED (ERASE/ANONYMIZE) => AT LEAST ONE IDENTITY COLUMN.
 // ---------------------------------------------------------------------------
 
-/// X1 (PRV1-15 / R1): every `DATA_LIFECYCLE_MANIFEST` entry classified `Erase` or
+/// every `DATA_LIFECYCLE_MANIFEST` entry classified `Erase` or
 /// `Anonymize` proves, from its row struct's OWN SpacetimeDB derive metadata, that
 /// it declares at least one direct `Identity` column at any depth.
 ///
@@ -3295,9 +3079,9 @@ fn m22s6_table_row_registry_matches_manifest() {
 /// about whether the new variant is owner-keyed, rather than a silent fall-through.
 ///
 /// Kills: `schema.rs` reclassifying an owner-keyed table (say `monster`) to
-///        `NotOwned` — R1's population count catches the reclassification directly
-///        (M1, the plan's registered mutation), and even before that, a table with
-///        a real owner column classified `NotOwned` is exactly the hole PRV1-15's
+///        `NotOwned` — R1's population count catches the reclassification directly,
+///        and even before that, a table with
+///        a real owner column classified `NotOwned` is exactly the hole
 ///        "with a direct Identity column" clause exists to close (R3 below closes
 ///        it from the OTHER direction: an owner-keyed table hiding inside
 ///        `NotOwned`);
@@ -3306,8 +3090,7 @@ fn m22s6_table_row_registry_matches_manifest() {
 ///        erasure with no owner key cannot be swept by ANY per-owner cascade step —
 ///        its rows would survive every account deletion silently, forever);
 ///        a population count that silently grows or shrinks without a matching
-///        reclassification (the exact-17 pin below, mirroring the file's own `==`
-///        tightening precedent on `m22s3b_cascade_covers_manifest`).
+///        reclassification (the exact-17 pin below).
 #[test]
 fn m22s6_owner_keyed_tables_are_erase_or_anonymize() {
     let registry = m22s6_table_row_types();
@@ -3362,11 +3145,11 @@ fn m22s6_owner_keyed_tables_are_erase_or_anonymize() {
 // T1 / X2 — R2: VIAJOIN => EXACTLY ZERO IDENTITY COLUMNS, NO EXCEPTIONS.
 // ---------------------------------------------------------------------------
 
-/// X2 (PRV1-15 / R2): every `DATA_LIFECYCLE_MANIFEST` entry classified
+/// every `DATA_LIFECYCLE_MANIFEST` entry classified
 /// `ViaJoin(parent)` proves, from the real derive metadata, that its row struct
 /// declares EXACTLY ZERO `Identity` columns at any depth — the `DeletionPolicy::
 /// ViaJoin` doc comment ("No Identity column; swept transitively via the named
-/// parent table", schema.rs :960) stated as a checked fact, with NO exception list.
+/// parent table") stated as a checked fact, with NO exception list.
 ///
 /// No exception list is deliberate, unlike R3: a `ViaJoin` table is invisible to
 /// the per-owner cascade BY DESIGN (it is swept only through its parent's step), so
@@ -3374,8 +3157,8 @@ fn m22s6_owner_keyed_tables_are_erase_or_anonymize() {
 /// misclassification (reclassify Erase/Anonymize) or a genuine, silent per-owner
 /// leak across every account deletion.
 ///
-/// Kills: `schema.rs` adding an `Option<Identity>` field to a `ViaJoin` table (the
-///        plan's registered mutation M2, on `Character`) — the SHALLOW
+/// Kills: `schema.rs` adding an `Option<Identity>` field to a `ViaJoin` table
+///        — the SHALLOW
 ///        `is_identity()` check would not see it (`Option<Identity>` lowers to a
 ///        `Sum`), so only the deep walk in `m22s6_identity_bearing` catches it;
 ///        a `ViaJoin` table whose row struct is edited to wrap its parent's key in
@@ -3435,16 +3218,15 @@ fn m22s6_via_join_tables_carry_no_identity_column() {
 // T1 / X3 — R3: NOTOWNED => ZERO IDENTITY COLUMNS, EXCEPT A FROZEN FOUR.
 // ---------------------------------------------------------------------------
 
-/// X3 (PRV1-15 / R3): every `DATA_LIFECYCLE_MANIFEST` entry classified `NotOwned`
+/// every `DATA_LIFECYCLE_MANIFEST` entry classified `NotOwned`
 /// proves it declares zero direct `Identity` columns at any depth, EXCEPT a
 /// census-pinned four-table exception set (`config`, `guest_claim`,
 /// `guest_claim_reaper_schedule`, `account_deletion_reaper_schedule`) — each of
 /// which already carries a deliberate `basis`. A FIFTH identity-bearing `NotOwned`
-/// table fails this test outright and forces a human classification decision,
-/// exactly as PRV1-15 / R3 demands.
+/// table fails this test outright and forces a human classification decision.
 ///
-/// The frozen set is ITSELF a residual, named rather than papered over (ADR-0229's
-/// own "Residual" section): it is a declared fact living in this test file, so one
+/// The frozen set is ITSELF a residual, named rather than papered over:
+/// it is a declared fact living in this test file, so one
 /// self-consistent commit CAN add a genuinely owner-keyed `NotOwned` table by
 /// registering its row type, appending its accessor to the frozen array below, and
 /// bumping BOTH the exception census and the `NotOwned` population count. That is
@@ -3454,8 +3236,8 @@ fn m22s6_via_join_tables_carry_no_identity_column() {
 ///
 /// Kills: a new owner-keyed table added to `NotOwned` by accident (a `NotOwned`
 ///        table whose column set the author never checked against a
-///        classification) — this is the single largest deletion-completeness hole
-///        measured in the plan's red-team: it satisfies manifest totality (it has
+///        classification) — this is the single largest deletion-completeness hole:
+///        it satisfies manifest totality (it has
 ///        an entry) and the basis floor (prose is prose), and is then SKIPPED
 ///        OUTRIGHT by `m22s3b_cascade_covers_manifest`'s `needs_cascade = false`
 ///        arm, so its rows silently survive every account deletion forever;
@@ -3604,10 +3386,10 @@ fn m22s9_top_level_column_names(accessor: &str, ty: &AlgebraicType) -> Vec<Strin
 }
 
 // ---------------------------------------------------------------------------
-// m22s9-T1 — THE THREE CROSS-SLICE FUNCTION CONTRACTS, AT THE TYPE LEVEL.
+// THE THREE CROSS-SLICE FUNCTION CONTRACTS, AT THE TYPE LEVEL.
 // ---------------------------------------------------------------------------
 
-/// m22s9-T1: the three functions that carry a contract ACROSS slice boundaries
+/// the three functions that carry a contract ACROSS slice boundaries
 /// still have the exact signatures their far-side callers assume, proven by
 /// coercing each to an explicit `fn` pointer type.
 ///
@@ -3619,13 +3401,13 @@ fn m22s9_top_level_column_names(accessor: &str, ty: &AlgebraicType) -> Vec<Strin
 /// contract written out in full rather than inferred from a call site.
 ///
 /// THE THREE CONTRACTS:
-///   - `crate::resolve_all_live_interactions` — S3b extracted the four resolver
-///     calls out of `on_disconnect` so the deletion cascade's §4.4 step 1 and
-///     the disconnect hook share ONE dispatch list (ADR-0228 D2). Both callers
+///   - `crate::resolve_all_live_interactions`
+///     the deletion cascade's §4.4 step 1 and
+///     the disconnect hook share ONE dispatch list. Both callers
 ///     pass `(ctx, identity)`; the shape is what makes the sharing possible.
-///   - `super::should_reject_for_deletion` — the §4.7 gate S1 owns and the S5
+///   - `super::should_reject_for_deletion` — the §4.7 gate
 ///     gameplay fan-out delegates to through a `guards.rs` wrapper that must
-///     never re-derive it (ADR-0225). `&Account -> bool` is that contract.
+///     never re-derive it. `&Account -> bool` is that contract.
 ///   - `crate::erase_character_rows` — §4.4 step 6d, the character erase that
 ///     must run BEFORE the player display-name tombstone. Same `(ctx, identity)`
 ///     shape as the disconnect bundle because the cascade calls both.
@@ -3635,7 +3417,7 @@ fn m22s9_top_level_column_names(accessor: &str, ty: &AlgebraicType) -> Vec<Strin
 /// fixture and on a PendingDeletion fixture, so a gate rewritten to return a
 /// constant fails here even though its signature is untouched. The two
 /// ctx-bound pointers cannot be called (no `ReducerContext` is constructible
-/// off-instance, ADR-0225 D5) — materializing them is the whole point, and it
+/// off-instance) — materializing them is the whole point, and it
 /// is what drags the host-syscall link-time references in that the abort stubs
 /// at the end of this section satisfy.
 ///
@@ -3696,15 +3478,15 @@ fn m22s9_cross_slice_contract_signatures() {
 }
 
 // ---------------------------------------------------------------------------
-// m22s9-T2 — THE `export_bundle` ROW SHAPE, AT THE TYPE LEVEL.
+// THE `export_bundle` ROW SHAPE, AT THE TYPE LEVEL.
 // ---------------------------------------------------------------------------
 
-/// m22s9-T2: `ExportBundle` is EXACTLY the eight-column S2/S4/S8 chunk
+/// `ExportBundle` is EXACTLY the eight-column chunk
 /// contract, proven by constructing one and destructuring it exhaustively with
 /// NO rest pattern, then coercing every field to its expected type.
 ///
-/// This is a COMPILE-LEVEL twin of `export_bundle_struct_shape_and_privacy`
-/// (:4100), not a duplicate of it, and the two fail on disjoint mutations. The
+/// This is a COMPILE-LEVEL twin of `export_bundle_struct_shape_and_privacy`,
+/// not a duplicate of it, and the two fail on disjoint mutations. The
 /// text pin reads schema.rs and would still pass if a column's type were
 /// swapped for an alias that spells the same characters; this one would not.
 /// This one would still pass if the table attribute gained `public`; that one
@@ -3712,13 +3494,12 @@ fn m22s9_cross_slice_contract_signatures() {
 /// exhaustive) and a text diff there.
 ///
 /// The declaration-ORDER clause is derived, not transcribed twice: the eight
-/// names come out of the row type's own derive metadata (the same typespace
-/// walk the S6 tests use), so this test compares the compiler's view of the
-/// struct with the host's view of the row. T3 then builds the binding's
-/// camelCase field list from THAT list rather than from anything hand-written.
+/// names come out of the row type's own derive metadata,
+/// so this test compares the compiler's view of the
+/// struct with the host's view of the row.
 ///
-/// Kills: appending a ninth column to `ExportBundle` without re-deriving the S4
-///        writer and the S8 assembler (the destructure stops compiling);
+/// Kills: appending a ninth column to `ExportBundle`
+///        (the destructure stops compiling);
 ///        deleting a column (same);
 ///        widening `chunk_index` / `total_chunks` from `u32`, or narrowing
 ///        `created_at_ms` from `i64` — the per-field coercions reject it, and
@@ -3832,34 +3613,10 @@ fn m22s9_export_bundle_struct_shape_tripwire() {
     let _: &i64 = &created_at_ms;
 }
 
-/// The event name, split mid-token so this file never carries the contiguous
-/// evt literal a future evt census (or a Loki label audit) would count.
+/// The event name.
 fn rb40_evt() -> String {
     concat!("guest_claim_export", "_purge").to_string()
 }
-
-// ===========================================================================
-// rb-40 (ADR-0235) — BEHAVIOURAL ARM. Applied WITH the fix, never before it.
-//
-// These two tests CALL `purge_fields`, so on the pre-fix tree they are a
-// BUILD error rather than a by-name RED — and a build error takes all 785 tests
-// with it, which is indistinguishable from a broken tree and proves nothing
-// about this criterion (the rb-22 EO-6 precedent; plan revision 6). The RED arm
-// lands first and is captured by name; this block lands in the same commit as
-// the implementation.
-//
-// WHY THEY EXIST AT ALL. Every other rb-40 clause is a SOURCE SCAN, and a source
-// scan can only ever say that the right TEXT is in the right place. These two
-// say what the line actually CONTAINS: the pure fragment builder is the seam
-// that makes the emission testable by value in a crate where no ReducerContext
-// can be constructed off-instance (ADR-0225 D5). They own the kills no scan
-// reaches — a builder that renders the count into the wrong shape, quotes it,
-// omits a zero, truncates a large one, or renders the identity through Debug
-// instead of Display.
-//
-// Helpers reused from the RED arm above: `rb40_evt()`, `rb22_dq()` (:4746) and
-// the `ident(u8)` fixture (:724).
-// ===========================================================================
 
 /// X1 (behavioural): `purge_fields` renders EXACTLY the sanctioned
 /// two-key fragment — the guest identity QUOTED, the chunk count BARE.
@@ -3968,14 +3725,8 @@ fn rb40_claim_purge_fields_is_exact() {
     );
 }
 
-/// X1 (behavioural, composition): the fragment composes into a well-formed
-/// evt-first envelope through the blessed builder, with no dangling comma and
-/// exactly three top-level keys.
-///
-/// Mirrors `observability_tests.rs:224` (`heartbeat_fields_composes_into_the_envelope`)
-/// — the same proof for the other pure fragment builder in this crate. It is the
-/// only test in the slice that exercises the REAL composition the reducer
-/// performs, rather than the fragment in isolation.
+/// the fragment composes into a well-formed evt-first envelope through the blessed
+/// builder, with no dangling comma and exactly three top-level keys.
 ///
 /// Kills: a fragment that starts with a comma (the builder already emits one, so
 ///        the line would carry `,,` and no JSON parser downstream recovers);
@@ -4053,70 +3804,10 @@ fn rb40_claim_purge_line_composes_into_the_envelope() {
     );
 }
 
-// ===========================================================================
-// rb-65 (ADR-0243) — THE DELETION CASCADE IS OBSERVABLE. RED ARM.
-//
-// EARS X1 (spec M-residual-backlog.spec.md#rb-65, promoted residual
-// R-rb-40-CASCADE): WHEN `account_deletion_reaper` completes the twelve
-// delegated erase/anonymize/purge steps, the live-interaction resolver and the
-// PRV1-6e terminal stamp, THE SYSTEM SHALL emit exactly one cascade-wide
-// erasure line — the reducer's TERMINAL statement, at brace depth 0,
-// unconditionally — carrying the erased identity and the purged `export_bundle`
-// count, and SHALL NOT carry the pre-tombstone `name`, the `auth_issuer`, or any
-// other player-authored field (PRV1-17/20). The event NAME is not spelled
-// contiguously anywhere in this file: `rb65_evt()` below assembles it, for the
-// reason the hygiene paragraph gives.
-//
-// EVERYTHING IN THIS SECTION IS A SOURCE SCAN and therefore COMPILES ON THE
-// PRE-FIX TREE: nothing here CALLS a function this slice has yet to add,
-// because a call to a missing fn is a BUILD error, which would take every test
-// in the crate with it and make the proof-of-teeth RED indistinguishable from a
-// broken build (the rb-22 EO-6 / rb-40 precedent). The two behavioural tests
-// that CALL `cascade_fields` land in the same commit as the implementation.
-//
-// SCAN HYGIENE (this file's header rule, restated because this section adds a
-// second backslash-bearing fragment pin, a second evt token and — in round 2 —
-// the bare-identifier and alias spellings of the emission point, to a file a
-// dozen evals concatenate wholesale, `_tests.rs` included). The QUALIFIED call
-// needle is NOT new: this section reuses `rb40_nd_mr_log()`, which is the point
-// of the file-wide 1 -> 2 census widening rather than a second spelling of the
-// same thing. Every needle below is assembled from `concat!` fragments or from
-// the `rb22_dq()` / `rb40_bs()` byte helpers, so this file never carries a
-// contiguous emission call site, evt token, escaped-quote pair, block comment,
-// raw string, or quote inside a char literal.
-// ===========================================================================
-
-/// The cascade event name, split mid-token so this file never carries the
-/// contiguous evt literal a future evt census (or a Loki label audit) would
-/// count as a real one.
+/// The cascade event name.
 fn rb65_evt() -> String {
     concat!("account_deletion", "_cascade").to_string()
 }
-
-// ===========================================================================
-// rb-65 (ADR-0243) — BEHAVIOURAL ARM. Applied WITH the fix, never before it.
-//
-// These two tests CALL `cascade_fields`, so on the pre-fix tree they are a BUILD
-// error rather than a by-name RED — and a build error takes every test in the
-// crate with it, which is indistinguishable from a broken tree and proves
-// nothing about this criterion (the rb-22 EO-6 / rb-40 precedent). The RED arm
-// above lands first and is captured by name; this block lands in the same commit
-// as the implementation.
-//
-// WHY THEY EXIST AT ALL. Every other rb-65 clause is a SOURCE SCAN, and a source
-// scan can only ever say that the right TEXT is in the right place. These two
-// say what the line actually CONTAINS: the pure fragment builder is the seam
-// that makes the emission testable by value in a crate where the deletion reaper
-// itself cannot be executed off-instance (`native_host_tests.rs` leaves
-// `datastore_update` / `_insert` / `_delete` UNMODELLED, so neither reducer in
-// this slice is natively runnable — an honest limit recorded in ADR-0243, not a
-// gap this arm closes). They own the kills no scan reaches: a builder that
-// renders the count into the wrong shape, quotes it, omits a zero, truncates a
-// large one, or renders the identity through Debug instead of Display.
-//
-// Helpers reused from the RED arm above: `rb65_evt()`, `rb22_dq()` (:4770) and
-// the `ident(u8)` fixture (:730).
-// ===========================================================================
 
 /// X1 (behavioural): `cascade_fields` renders EXACTLY the sanctioned two-key
 /// fragment — the erased identity QUOTED, the purged bundle count BARE.
@@ -4234,14 +3925,8 @@ fn rb65_cascade_fields_is_exact() {
     );
 }
 
-/// X1 (behavioural, composition): the cascade fragment composes into a
-/// well-formed evt-first envelope through the blessed builder, with no dangling
-/// comma and exactly three top-level keys.
-///
-/// Mirrors `rb40_claim_purge_line_composes_into_the_envelope` and
-/// `observability_tests.rs:224` — the same proof for the crate's other pure
-/// fragment builders. It is the only test in this slice that exercises the REAL
-/// composition the reducer performs, rather than the fragment in isolation.
+/// the cascade fragment composes into a well-formed evt-first envelope through
+/// the blessed builder, with no dangling comma and exactly three top-level keys.
 ///
 /// Kills: a fragment that starts with a comma (the builder already emits one, so
 ///        the line would carry `,,` and no JSON parser downstream recovers);
@@ -4249,7 +3934,7 @@ fn rb65_cascade_fields_is_exact() {
 ///        counts four instead of three, and last-key-wins would then let the
 ///        smuggled value forge the event type);
 ///        an envelope whose evt is not first (the relay reconstruction and the
-///        Loki label set both key on that position being stable, ADR-0180);
+///        Loki label set both key on that position being stable);
 ///        an empty fragment, which would leave the envelope with one key and the
 ///        cascade unobserved.
 #[test]
@@ -4319,19 +4004,17 @@ fn rb65_cascade_line_composes_into_the_envelope() {
 }
 
 // ---------------------------------------------------------------------------
-// rb-72 / ADR-0232 D2 correction — resolve_all_live_interactions is presence-
-// row-safe, both by execution (Leg A) and by a depth-1 source scan of its
-// four callees (Leg B).
+// resolve_all_live_interactions is presence- row-safe, both by execution (Leg
+// A) and by a depth-1 source scan of its four callees (Leg B).
 // ---------------------------------------------------------------------------
 
-/// rb-72 (ADR-0232 D2 correction): `resolve_all_live_interactions` (lib.rs) —
-/// the four-call trade/PvP/wild-battle/challenge dispatcher shared by
-/// `on_disconnect` and the deletion cascade — deletes NEITHER the `player` NOR
-/// the `character` presence row for the identity it resolves; `on_disconnect`'s
-/// own body does, after the dispatcher returns. Executed against the in-memory
-/// host with a seeded player + character row; S4 proves the read channel can
-/// observe an absence. The dispatcher's non-empty branches (live trades,
-/// challenges, battles) are executed by the accounts cascade test
+/// `resolve_all_live_interactions` (lib.rs) — the four-call
+/// trade/PvP/wild-battle/challenge dispatcher shared by `on_disconnect` and the
+/// deletion cascade — deletes NEITHER the `player` NOR the `character` presence
+/// row for the identity it resolves; `on_disconnect`'s own body does, after the
+/// dispatcher returns. Executed against the in-memory host with a seeded player +
+/// character row; The dispatcher's non-empty branches (live trades, challenges,
+/// battles) are executed by the accounts cascade test
 /// (`acct_nh::acct_deletion_reaper_erases_every_owned_row_and_nothing_else`,
 /// whose subject keeps its player row) and battle_tests.rs `rb129_*`.
 #[test]
@@ -4434,12 +4117,11 @@ fn rb72_resolve_all_live_interactions_leaves_presence_rows() {
     );
 }
 
-/// **ADR-0252 D1 (pure planner)** — `plan_declines_at_cancel` returns, in INPUT
-/// ORDER, the ids of exactly the offers the rb-47 SSOT refuses for the row it is
-/// handed.
+/// `plan_declines_at_cancel` returns, in INPUT ORDER, the ids of exactly the
+/// offers refuses for the row it is handed.
 ///
 /// The planner is the only place the sweep's decision is observable: the cancel
-/// reducer cannot be executed to its write under the rb-41 native host (every
+/// reducer cannot be executed to its write (every
 /// write syscall aborts the process), so the behavioural half of this criterion
 /// lives here and the wiring half lives in the source pins beside it.
 ///
@@ -4489,9 +4171,6 @@ fn rb72_resolve_all_live_interactions_leaves_presence_rows() {
 ///     `cancelled_deletion(row)` return none. That pair is why the sweep must be
 ///     sequenced BEFORE the status write, and it is the behavioural twin of
 ///     `[rb83/sweep-before-write]` one test above.
-///
-/// RED AT HEAD BY NON-COMPILATION: `accounts::plan_declines_at_cancel` does not
-/// exist yet, and that compile failure is the red state for this whole slice.
 #[test]
 fn rb83_plan_declines_at_cancel_truth_table() {
     let req: i64 = 1_700_000_000_000;
@@ -4654,15 +4333,10 @@ fn rb83_plan_declines_at_cancel_truth_table() {
 }
 
 // ===========================================================================
-// debloat Phase 2 — THE ACCOUNTS NATIVE-HOST SUITE.
+// THE ACCOUNTS NATIVE-HOST SUITE.
 //
 // Executes the SHIPPED reducers and helpers against real rows in the in-memory
-// host (`native_host_tests`), replacing the text pins that froze their bodies:
-// ST-accounts_tests#auth, ST-accounts_tests#cascade, EV-guest-claim-integrity
-// (#issuer-audience, #single-use, #reducer-surface native half,
-// #rekey-completeness), EV-account-privacy#tables-view,
-// ST-privacy_tests#export-owner-scope, ST-privacy_tests#export-admission and the
-// ADR-0268 unique-export-stamp condition.
+// host (`native_host_tests`).
 //
 // What is NOT here, and where it lives:
 // * The client-callable reducer surface — exact names and argument types, so
@@ -4811,7 +4485,7 @@ mod acct_nh {
     /// assertions, not the write wall, are this suite's oracle) and opens full
     /// scans ONLY where the shipped code scans (`playtest_event`,
     /// `battle_action`, the `export_bundle` count, the export reaper singleton).
-    /// `battle` stays unregistered: its reads answer empty (see the rb129 note).
+    /// `battle` stays unregistered: its reads answer empty.
     fn world(fx: &Fixture) -> W<'_> {
         // Secondary indexes first (registration is per fixture, not per handle).
         let _ = fx
@@ -6346,7 +6020,7 @@ mod acct_nh {
     }
 
     /// Seed one row for `who` in every Erase table, plus its Anonymize rows
-    /// (player + character join, profile) — the M22 §4.4 cascade population.
+    /// (player + character join, profile) — the cascade population.
     /// `k` keeps keys distinct; `peer` is the other party of the two-party rows.
     fn seed_cascade_population(w: &W<'_>, who: Identity, peer: Identity, k: u64) {
         seed_rekey_rows(w, who, k);
@@ -6409,7 +6083,7 @@ mod acct_nh {
         });
     }
 
-    /// `account_deletion_reaper`, the M22 §4.4 cascade, over a subject holding a
+    /// `account_deletion_reaper` over a subject holding a
     /// row in EVERY Erase table and a bystander holding the same population
     /// (plus a trade and challenges that do not involve the subject). A
     /// non-scheduler caller is refused with nothing touched; a tick before the
@@ -6709,7 +6383,7 @@ mod acct_nh {
         );
     }
 
-    // --- data export (ADR-0268; ST-privacy_tests#export-owner-scope / #export-admission)
+    // --- data export (ST-privacy_tests#export-owner-scope / #export-admission)
 
     fn exportable_tables() -> Vec<&'static str> {
         let mut t: Vec<&str> = DATA_LIFECYCLE_MANIFEST
@@ -6769,7 +6443,7 @@ mod acct_nh {
     /// per exportable table, contiguous `chunk_index` with the request-wide
     /// `total_chunks`, and no payload naming the other subject or carrying its
     /// tagged rows); each carries ONE creation stamp that no other live bundle
-    /// shares (the clock, then the first free millisecond: ADR-0268), with
+    /// shares (the clock, then the first free millisecond), with
     /// `request_id` mirroring it. One reaper singleton is armed. A repeat inside
     /// the cooldown is refused with nothing written; after it, the caller's old
     /// bundle is purged and replaced while the other bundle is untouched. A
@@ -6870,9 +6544,9 @@ mod acct_nh {
         assert_eq!(encs(&chunks_of(&w, b)), b_before);
     }
 
-    /// ADR-0268's contention arm through the shipped reducer: with every
-    /// millisecond of the probe window already carrying a live bundle, a request
-    /// is refused — it never falls back to sharing a stamp — and writes nothing.
+    /// with every millisecond of the probe window already carrying a live
+    /// bundle, a request is refused — it never falls back to sharing a stamp —
+    /// and writes nothing.
     /// The first millisecond past the window is free, so the SAME request one
     /// window later is served there.
     ///

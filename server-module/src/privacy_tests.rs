@@ -1,7 +1,7 @@
 //! `privacy_tests` — behavioural tests for `privacy.rs`: the data-export
 //! serializer and manifest totality (M22-S4), the export-bundle reap planners
-//! and their tick records (rb-48/85/86/87/109/111), export admission tiers
-//! (rb-107/132), and the observation-line envelopes (rb-65).
+//! and their tick records, export admission tiers,
+//! and the observation-line envelopes.
 //!
 //! Declared from `privacy.rs` as a cfg-test-gated `#[path]` module, so `super`
 //! resolves to `privacy`. The reducer-level export owner scope, admission and
@@ -190,25 +190,24 @@ fn rb22p_dq() -> char {
 }
 
 // ===========================================================================
-// m22-s4 — EXPORT GATING TESTS (PRV1-11 / PRV1-12 / PRV1-13 + the S4 security
-// amendments). APPEND-ONLY BLOCK: everything above this banner is the rb-22
-// suite as later revised by other slices (rb-40, rb-48 and rb-64 among them);
+// EXPORT GATING TESTS (PRV1-11 / PRV1-12 / PRV1-13 + the S4 security
+// amendments).
 // every symbol below carries the `m22s4_` / `M22S4_` prefix so it can never
 // collide with an `rb22p_` helper.
 //
-// WHAT THIS GATES (spec M22 section 5; ADR-0226):
+// WHAT THIS GATES (spec M22 section 5):
 //   PRV1-11  one chunk per exportable:true table, own rows only, per-column JSON.
 //   PRV1-12  no exportable:false table is ever named by the export machinery.
 //   PRV1-13  sub-chunking at game_core::EXPORT_CHUNK_ROWS, request-wide
 //            chunk_index and total_chunks.
 //   plus the S4 guards (subject existence, deletion gate, cooldown), the battle
 //   redaction, and the owner-scoped view that is the entire client read path.
-//   PRV1-14 (the TTL reaper) LANDED in rb-48 (ADR-0238) and is gated by the
+//   PRV1-14 (the TTL reaper) LANDED in rb-48 and is gated by the
 //   rb48_ block at the end of this file: a global hourly interval singleton, a
 //   scheduler-only reducer, and the pure plan_export_reap seam that carries the
 //   whole behavioural proof.
 //
-// THE SPLIT (ADR-0225 D5): a ReducerContext was not constructible off-instance when
+// THE SPLIT: a ReducerContext was not constructible off-instance when
 // this was written (rb-41's native_host_tests changed that; the scans stand as written),
 // so every PURE seam below is EXECUTED and every ctx-bound shell property is a
 // SOURCE-STRUCTURE pin over PRIVACY_RS through this module's existing
@@ -2092,7 +2091,7 @@ fn m22s4_exporter_totality_negative_fixtures() {
          data-lifecycle classification never reviewed."
     );
 
-    // --- negative 3: an exporter for a NON-exportable table (PRV1-12) -------
+    // --- negative 3: an exporter for a NON-exportable table -------
     let exporters_false_table: [(&str, super::ExportRows); 2] =
         [("alpha", reader), ("gamma", reader)];
     assert!(
@@ -3268,7 +3267,7 @@ fn m22s4_cooldown_polarity_differs_from_is_deletion_due() {
 //
 // `plan_export_reap(rows, now_ms, ttl_ms, batch)` collects the ids whose age is
 // AT LEAST ttl_ms under saturating arithmetic, sorts them ascending and
-// truncates to batch. It sorts INTERNALLY (ADR-0238 D3 amendment): the shell has
+// truncates to batch. It sorts INTERNALLY: the shell has
 // no sort statement, so removing a shell sort cannot silently starve old chunks
 // past their expiry, and the batch cap's oldest-first fairness property is a
 // property of the seam rather than of an unpinned caller.
@@ -3541,14 +3540,7 @@ fn rb48_ttl_is_exactly_seven_days_in_milliseconds() {
 }
 
 // ===========================================================================
-// rb-65 (ADR-0243) — BEHAVIOURAL ARM. Applied WITH the fix, never before it.
-//
-// These two tests CALL `export_fields`, so on the pre-fix tree they are a BUILD
-// error rather than a by-name RED — and a build error takes every test in the
-// crate with it, which is indistinguishable from a broken tree and proves
-// nothing about this criterion (the rb-22 EO-6 / rb-40 precedent). The RED arm
-// above lands first and is captured by name; this block lands in the same commit
-// as the implementation.
+// BEHAVIOURAL ARM.
 //
 // WHY THEY EXIST AT ALL. Every other rb-65p clause is a SOURCE SCAN, and a
 // source scan can only ever say that the right TEXT is in the right place. These
@@ -3562,7 +3554,7 @@ fn rb48_ttl_is_exactly_seven_days_in_milliseconds() {
 //
 // `request_data_export` itself is not natively executable (`native_host_tests.rs`
 // models no INSERT, and the reducer reaches the row-count syscall), so there is
-// no behavioural proof of the emission — an honest limit (ADR-0243), not a gap.
+// no behavioural proof of the emission — an honest limit, not a gap.
 // ===========================================================================
 
 /// A deterministic fixture identity. This module owns no `use super::*`, so the
@@ -3593,7 +3585,7 @@ fn rb65p_ident(b: u8) -> spacetimedb::Identity {
 ///        loses precision above 2^53), and which no panel or alert can compare
 ///        numerically;
 ///        a `purged as u32` narrowing through `json_u32_into`, which renders
-///        4_294_967_296 as 0 on the HOST. Scoped honestly (ADR-0243 D3): on
+///        4_294_967_296 as 0 on the HOST. Scoped honestly: on
 ///        wasm32 `usize` IS `u32`, so this input is unreachable in the shipped
 ///        module and the clause pins the ENCODER CONTRACT — the count rendered
 ///        at the width the purge helper returns, with no cast between them —
@@ -3716,7 +3708,7 @@ fn rb65p_export_fields_is_exact() {
 ///        instead of four, and last-key-wins would let the smuggled value forge
 ///        the event type);
 ///        an envelope whose evt is not first (the relay reconstruction and the
-///        Loki label set both key on that position being stable, ADR-0180);
+///        Loki label set both key on that position being stable);
 ///        an empty fragment, which would leave the envelope with one key and the
 ///        re-export purge unobserved.
 #[test]
@@ -3877,14 +3869,14 @@ const RB85_EXTREMES: [(i64, i64, i64, bool); 7] = [
 // against the shipped seam, and a body equality pin.
 // ===========================================================================
 
-/// T1 (plan §12 roster; ledger X1): `export_reap_cutoff_ms` is exactly the
-/// SATURATING subtraction of the ttl from the clock, checked by value.
+/// T1: `export_reap_cutoff_ms` is exactly the SATURATING subtraction of the ttl
+/// from the clock, checked by value.
 ///
-/// The wall-clock row is the red-team's addition (plan §11 F1): every other row
+/// The wall-clock row is the red-team's addition: every other row
 /// is an extreme or a toy, and a cutoff keyed on a realistic live band would
 /// pass a table made only of extremes while returning `now` in production.
 ///
-/// Kills (plan §6): M4 `saturating_add` for `saturating_sub` — row `(0, TTL)`
+/// Kills: M4 `saturating_add` for `saturating_sub` — row `(0, TTL)`
 /// separates them by sign; M5 a plain `-`, which PANICS on row
 /// `(i64::MIN, TTL)` because overflow checks are on in the dev and release
 /// profiles alike, and a panic inside a scheduled reducer aborts its whole
@@ -3947,9 +3939,8 @@ fn rb85_export_reap_cutoff_is_saturating_ttl_subtraction() {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(48))]
 
-    /// T2 (plan §12 roster; ledger X1): the btree range `..=cutoff` selects
-    /// EXACTLY the seam's expired set on the reachable domain, and is a
-    /// SUPERSET of it everywhere else.
+    /// T2: the btree range `..=cutoff` selects EXACTLY the seam's expired set on
+    /// the reachable domain, and is a SUPERSET of it everywhere else.
     ///
     /// This is the load-bearing property of the whole slice. The range is an
     /// OPTIMISATION over `plan_export_reap`, never a second retention policy:
@@ -3976,7 +3967,7 @@ proptest! {
     /// retention constant) and the reachable clock range beside the full i64
     /// range, so every case exercises a live branch.
     ///
-    /// Kills (plan §2/§6): any under-reading cutoff, including M2 `..cutoff`
+    /// Kills: any under-reading cutoff, including M2 `..cutoff`
     /// and the ttl-scaled and ttl-transposed families, by the boundary clause;
     /// a cutoff that disagrees with the seam at saturation, by the extremes;
     /// M-RT1's band-keyed cutoff on the sampled cases that land inside the
@@ -3988,7 +3979,7 @@ proptest! {
     /// fns. It does NOT prove the helper passes the cutoff to the range (T6),
     /// that the range is inclusive in the SOURCE (T6), or that a row the range
     /// yields is actually deleted — the execution proof over a real datastore
-    /// is the rb109_ block at the end of this file (ledger X9, closed).
+    /// is the rb109_ block at the end of this file.
     #[test]
     fn rb85_cutoff_range_matches_the_seam_expired_set(
         now in 0i64..=(1i64 << 53),
@@ -4062,9 +4053,9 @@ proptest! {
 // by one four-token fn that had no test at all.
 // ===========================================================================
 
-/// T10 (plan §13 RT-F5, round-3 RT-A1; ledger X1): `marshal::now_ms` converts the
-/// injected MICROSECOND timestamp to MILLISECONDS and clamps at zero, by value —
-/// and its BODY is frozen, because a value table alone cannot say so.
+/// T10: `marshal::now_ms` converts the injected MICROSECOND timestamp to
+/// MILLISECONDS and clamps at zero, by value — and its BODY is frozen, because a
+/// value table alone cannot say so.
 ///
 /// WHY THIS IS rb-85's BUSINESS. Every other pin in this slice is RELATIVE: the
 /// cutoff is `now - ttl`, the seam compares `now - created` against the ttl, and
@@ -4311,7 +4302,7 @@ fn rb86_groups(table: &[(u64, i64, u8)]) -> Vec<((i64, u8), usize)> {
 // source text: T6 and T7 own the source and say so.
 // ===========================================================================
 
-/// T1 (plan §9.4; ledger X1, X7, X8): the bundle-selection seam, by value.
+/// T1: the bundle-selection seam, by value.
 ///
 /// Row order is deliberate — first-failure-wins, so the rows a registered mutant
 /// is designated to die on come first and are not shadowed by a neighbour that
@@ -4507,9 +4498,9 @@ fn rb86_reap_bundle_plan_value_table() {
     );
 }
 
-/// T2 (plan §9.4; ledger X1, X7, X8): the seam's structural post-conditions over
-/// ONE pinned, ragged fixture where window order, id order and stamp order are
-/// three different orders and one stamp carries two rows.
+/// T2: the seam's structural post-conditions over ONE pinned, ragged fixture
+/// where window order, id order and stamp order are three different orders and
+/// one stamp carries two rows.
 ///
 /// The VACUITY clause runs first and the exact value last, deliberately: every
 /// structural clause between them — distinct, ascending, subset, bounded,
@@ -4604,8 +4595,7 @@ fn rb86_reap_bundle_plan_is_distinct_and_oldest_first() {
 // T3 — ONE TICK OVER A SIMULATED TABLE. The oracle is the post-tick table.
 // ===========================================================================
 
-/// T3 (plan §9.4; ledger X1, X7, X8): a tick leaves every bundle whole under an
-/// oversized population.
+/// T3: a tick leaves every bundle whole under an oversized population.
 ///
 /// WHAT THIS PROVES AND WHAT IT DOES NOT, stated rather than implied. The model
 /// here is the DESIGN: window, plan, delete-every-row-carrying-a-planned-stamp.
@@ -4900,7 +4890,7 @@ fn rb86_bundle_reap_is_all_or_nothing_under_an_oversized_population() {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
-    /// T4 (plan §9.4; ledger X1): the plan is exactly the distinct creation
+    /// T4: the plan is exactly the distinct creation
     /// stamps of the rows the SHIPPED expiry seam marks expired, oldest first,
     /// truncated to the write budget.
     ///
@@ -4921,7 +4911,7 @@ proptest! {
     /// HONEST LIMIT: this is an arithmetic relationship between two pure fns. It
     /// does not prove the helper hands the seam its window (T7, and the revised
     /// helper body pin), nor that the datastore deletes what the plan names —
-    /// the execution proof over seeded rows is the rb109_ block (ledger X9, closed).
+    /// the execution proof over seeded rows is the rb109_ block.
     #[test]
     fn rb86_reap_bundle_plan_agrees_with_the_shipped_expiry_seam(
         stamps in proptest::collection::vec(
@@ -5011,9 +5001,9 @@ proptest! {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(48))]
 
-    /// T5 (plan §9.4; ledger X1, X7, X8): over random ragged populations, one
-    /// tick leaves every bundle whole, makes progress, touches nothing fresh,
-    /// and does not depend on the order the window arrived in.
+    /// T5: over random ragged populations, one tick leaves every bundle whole,
+    /// makes progress, touches nothing fresh, and does not depend on the order
+    /// the window arrived in.
     ///
     /// The stamp domain is bounded well inside the reachable clock band so the
     /// model's cutoff comparison and `plan_export_reap`'s saturating age test
@@ -5185,7 +5175,7 @@ proptest! {
 /// at all.
 ///
 /// Arguments in RECORD order, `(read, due, planned, reaped)` — the data-flow
-/// order rb-115 (ADR-0269) inserted `due` into. `rb109_tick` returns the same
+/// order rb-115 inserted `due` into. `rb109_tick` returns the same
 /// four counts APPEND-ONLY instead, `(read, planned, reaped, due)`, because its
 /// callers read the first three by position; the two orders differ on purpose.
 fn rb87_tick(read: usize, due: usize, planned: usize, reaped: usize) -> super::ExportReapTick {
@@ -5199,7 +5189,7 @@ fn rb87_tick(read: usize, due: usize, planned: usize, reaped: usize) -> super::E
 
 /// X1 (behavioural, the payload): `reap_fields` renders EXACTLY the sanctioned
 /// keys with BARE counts, in the order read, due, planned, reaped. The NAME keeps
-/// its rb-87 `three` (the ADR-0238 amendment cites it); since rb-115 (ADR-0269)
+/// its rb-87 `three` (the ADR-0238 amendment cites it); since rb-115
 /// it pins FOUR counts.
 ///
 /// The counts are PAIRWISE DISTINCT on the three middle rows (the quiet-hour zero
@@ -5320,7 +5310,7 @@ fn rb87_reap_fields_renders_three_bare_counts() {
 ///        the evt renamed, which retires every operator query keyed on it;
 ///        a key beyond the four counts, or a quoted count, by byte equality
 ///        against a line this test builds key by key (four count keys since
-///        rb-115 inserted `due`, ADR-0269).
+///        rb-115 inserted `due`).
 #[test]
 fn rb87_reap_line_is_the_exact_json_envelope() {
     let q = rb22p_dq();
@@ -5364,7 +5354,7 @@ fn rb107_nd_tier_fn() -> String {
 /// needle, so the (absent) visibility keyword is not part of it and is pinned
 /// separately by the twenty-four-byte window.
 ///
-/// RE-FROZEN BY rb-132 (ADR-0275): two plain bools, account FIRST. Still
+/// RE-FROZEN BY rb-132: two plain bools, account FIRST. Still
 /// context-free, which is the purity property this pin exists for, and the
 /// parameter order is now part of the frozen text as well.
 fn rb107_tier_sig_pin() -> String {
@@ -5378,7 +5368,7 @@ fn rb107_tier_sig_pin() -> String {
 /// THE FROZEN SQUASHED BODY of the tier seam. Names all THREE ceilings, so a
 /// tier collapse that returns one of them from two arms cannot satisfy it.
 ///
-/// RE-FROZEN BY rb-132 (ADR-0275): the account arm is tested first and ignores
+/// RE-FROZEN BY rb-132: the account arm is tested first and ignores
 /// the wallet bit; the wallet bit only splits the callers without an account.
 /// The newcomer name is assembled so that no literal in this file opens with
 /// that constant's full prefix — the rb-110 live-roster rule, which would
@@ -5850,7 +5840,7 @@ fn rb107_admission_is_exact_at_both_caps_and_saturates() {
 }
 
 /// X1 (ledger anchor; register rows M7, M8, M28): the cap a caller gets is
-/// TIERED on whether they hold an account row — and, since rb-132 (ADR-0275),
+/// TIERED on whether they hold an account row — and, since rb-132,
 /// on whether a caller without one holds a wallet row — and the seam that
 /// decides it is declared once, private, with a frozen signature and a frozen
 /// body.
@@ -5999,7 +5989,7 @@ fn rb107_cap_selection_is_tiered_by_account() {
 
     // --- [rb107/tier-ssot]: the QUESTION the tier asks ------------------------
     //
-    // The seam above maps two bools onto three ceilings (rb-132). What the
+    // The seam above maps two bools onto three ceilings. What the
     // ACCOUNT bool means lives in another module, and nothing in this crate
     // pinned it before rb-107 (the wallet bool's twin clause is rb-132's): patching
     // `is_account_holder` to `true` deletes the anonymous tier for every caller
@@ -6152,7 +6142,7 @@ fn rb107_cap_selection_is_tiered_by_account() {
 // (paren-bearing and paren-less alike).
 //
 // THE HOST LOCK IS NOT REENTRANT. A `ctx.db` range iterator that is still alive
-// holds no lock between syscalls, but the design rule (ADR-0222 amendment, D9)
+// holds no lock between syscalls, but the design rule
 // is that no method that reads or moves the STORE — seed, remove, rows — may be
 // called while one is in scope: the iterator was handed its rows when it opened.
 // `open_iters` reads the iterator COUNT, not the store, and is the one fixture
@@ -6213,7 +6203,7 @@ use crate::schema::export_bundle;
 /// Returns the tick record as a bare tuple, so the private record type is never
 /// named here: `(read, planned, reaped, due)` — the rows the bounded window
 /// decoded, the creation stamps the bundle seam planned, the datastore's own count
-/// of the rows the point deletes removed, and (since rb-115, ADR-0269) the
+/// of the rows the point deletes removed, and (since rb-115) the
 /// distinct expired stamps the window held BEFORE the stamp cap. The third can
 /// EXCEED the first: a stamp selected from inside the window carries its tail
 /// beyond the window's edge.
@@ -6972,7 +6962,7 @@ fn rb109_stamp_cap_binds_when_the_window_holds_more_than_sixteen_stamps() {
     );
 }
 
-/// THE HOST MODEL'S OWN CONTROL (ADR-0222 amendment): the modelled range scan
+/// THE HOST MODEL'S OWN CONTROL: the modelled range scan
 /// honours every bound kind on each side, orders by DECODED value across
 /// negative keys, and keeps equal keys in seed order.
 ///
@@ -7162,7 +7152,7 @@ fn rb109_host_range_model_honours_every_bound_kind_negative_keys_and_ties() {
     );
 }
 
-/// THE ITERATOR LIFECYCLE (ADR-0222 amendment, D9): two host iterators can be
+/// THE ITERATOR LIFECYCLE: two host iterators can be
 /// live at once without aliasing, an abandoned one is CLOSED rather than
 /// leaked, and a row larger than the pooled buffer is read back whole.
 ///
@@ -7419,7 +7409,7 @@ fn rb111_expected_free(occupied: &[i64], now: i64, width: i64) -> Option<i64> {
     None
 }
 
-/// T1 (ledger X1), THE VALUE ORACLE: the creation-stamp mint returns the FIRST
+/// T1, THE VALUE ORACLE: the creation-stamp mint returns the FIRST
 /// FREE millisecond at or after the injected clock, and refuses when the whole
 /// probe window is occupied — EXECUTED against the native host over real rows.
 ///
@@ -7634,7 +7624,7 @@ fn rb111_mint_returns_the_first_free_stamp_at_or_after_the_clock() {
     );
 }
 
-/// T2 (ledger X1), THE RESIDUAL'S OWN SENTENCE: a burst of requests at ONE
+/// T2, THE RESIDUAL'S OWN SENTENCE: a burst of requests at ONE
 /// millisecond takes W DISTINCT creation stamps, and the next one is refused
 /// until the clock moves.
 ///
@@ -7750,7 +7740,7 @@ fn rb111_a_same_millisecond_burst_takes_distinct_stamps_until_the_window_is_full
     );
 }
 
-/// T3 (ledger X1), THE CRITERION END TO END: eighteen bundles committed through
+/// T3, THE CRITERION END TO END: eighteen bundles committed through
 /// the mint at one clock, then ONE reaper tick — sixteen WHOLE BUNDLES leave,
 /// not one delete unit.
 ///
@@ -7972,7 +7962,7 @@ fn rb111_one_tick_reaps_sixteen_whole_bundles_from_a_same_millisecond_burst() {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(48))]
 
-    /// T4 (ledger X1), THE RULE rather than a list of cases: over random
+    /// T4, THE RULE rather than a list of cases: over random
     /// occupancy the minted stamp is the MINIMUM FREE millisecond at or after
     /// the clock, and the mint refuses exactly when the whole window is taken.
     ///
@@ -8182,7 +8172,7 @@ fn rb115_tick_over(
     (tick, survivors)
 }
 
-/// T1 (ledger X1), THE VALUE ORACLE: the pure count returns the number of
+/// T1, THE VALUE ORACLE: the pure count returns the number of
 /// DISTINCT expired creation stamps in the window, with NO cap — past the stamp
 /// cap, past the read cap, at both i64 extremes and at a TTL the module does
 /// not ship.
@@ -8382,7 +8372,7 @@ fn rb115_count_is_the_distinct_expired_stamps_before_the_cap() {
     );
 }
 
-/// T2 (ledger X1), THE EARS PROOF, EXECUTED: one tick through the SHIPPED
+/// T2, THE EARS PROOF, EXECUTED: one tick through the SHIPPED
 /// helper in the native host reports `due` beside `planned`, and `due` is a
 /// number no function of the three old counts can recover.
 ///
@@ -8590,7 +8580,7 @@ fn rb132_tier_rows() -> &'static [(&'static str, bool, bool, u64)] {
     ]
 }
 
-/// T0 (ledger X1), THE VALUE ORACLE: the newcomer ceiling is exactly half the
+/// T0, THE VALUE ORACLE: the newcomer ceiling is exactly half the
 /// anonymous one, the three ceilings are strictly ordered, and the tier seam
 /// maps all FOUR inputs onto them, each checked against the named constant AND
 /// the literal.

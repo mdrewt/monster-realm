@@ -1,16 +1,5 @@
-//! m14.5d-1a gating tests — source-guard suite for the `cure_status` column on
-//! `item_row` (EA-1 through EA-3, EA-5).
-//!
-//! EARS criteria covered:
-//!   EA-1  StatusKind in game-core/src/combat/ability.rs has the
-//!         `#[cfg_attr(feature = "spacetimedb", derive(spacetimedb::SpacetimeType))]`
-//!         attribute.  RED: attribute absent today.
-//!   EA-2  ItemRow in server-module/src/schema.rs has a `cure_status` field typed
-//!         `Option<StatusKind>` as its last field.  RED: field absent today.
-//!   EA-3  `sync_content_inner` in server-module/src/content.rs assigns
-//!         `cure_status` from `item.cure_status`.  RED: absent today.
-//!   EA-5  evals/baselines/table-schemas.json item_row entry contains a
-//!         `cure_status` key.  RED: key absent today.
+//! source-guard suite for the `cure_status` column on
+//! `item_row`.
 //!
 //! Source-guard pattern: read the file as &str via include_str!, strip comments,
 //! search for a needle assembled at runtime via concat!() so the needle string
@@ -30,7 +19,7 @@ const SCHEMA_RS: &str = include_str!("schema.rs");
 /// The production content.rs source (server-module) — EA-3.
 const CONTENT_RS: &str = include_str!("content.rs");
 
-/// The eval baseline JSON — EA-5.
+/// The eval baseline JSON.
 const TABLE_SCHEMAS_JSON: &str = include_str!("../../evals/baselines/table-schemas.json");
 
 /// The lib.rs source — EA-6.
@@ -71,11 +60,7 @@ fn strip_rust_comments(src: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// EA-1: StatusKind derives SpacetimeType via cfg_attr
-//
-// RED state today: `StatusKind` in ability.rs only has
-//   #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-// The cfg_attr for SpacetimeType is absent.
+// StatusKind derives SpacetimeType via cfg_attr
 //
 // What a wrong impl this kills: any impl that derives SpacetimeType
 // unconditionally (wrong — breaks non-spacetimedb builds) or omits the
@@ -118,10 +103,7 @@ fn ears_d1a_1_status_kind_derives_spacetime_type() {
 }
 
 // ---------------------------------------------------------------------------
-// EA-2: ItemRow has a `cure_status: Option<StatusKind>` field
-//
-// RED state today: ItemRow (schema.rs) ends at `sell_price: u64` and has no
-// `cure_status` field.
+// ItemRow has a `cure_status: Option<StatusKind>` field
 //
 // What a wrong impl this kills: an impl that names the field differently
 // (e.g. `status_cure` or `cures`), uses the wrong type (plain StatusKind
@@ -185,11 +167,7 @@ fn ears_d1a_2_item_row_has_cure_status_field() {
 }
 
 // ---------------------------------------------------------------------------
-// EA-3: sync_content_inner seeds `cure_status` from `item.cure_status`
-//
-// RED state today: the ItemRow construction block in content.rs does not
-// include a `cure_status` field — the column would be left at its Default
-// (None for all items, even Antidote).
+// sync_content_inner seeds `cure_status` from `item.cure_status`.
 //
 // What a wrong impl this kills: an impl that adds the ItemRow field but
 // forgets to wire the seeding path (every row would have cure_status=None
@@ -250,10 +228,7 @@ fn ears_d1a_3_sync_content_seeds_cure_status() {
 }
 
 // ---------------------------------------------------------------------------
-// EA-5: evals/baselines/table-schemas.json item_row entry has `cure_status`
-//
-// RED state today: the item_row entry in table-schemas.json ends at
-// `"sell_price": "u64"` with no `cure_status` key.
+// evals/baselines/table-schemas.json item_row entry has `cure_status`
 //
 // What a wrong impl this kills: an impl that updates the schema without
 // updating the eval baseline (or that uses a wrong type string like
@@ -301,14 +276,10 @@ fn ears_d1a_5_baseline_has_cure_status_column() {
 }
 
 // ---------------------------------------------------------------------------
-// EA-6: CONTENT_VERSION in lib.rs is at least 12
-//
-// RED state (before this slice): CONTENT_VERSION was 11.  Without bumping to 12,
-// `sync_content_inner` detects version == DB version and returns early, never
-// running the item_row upsert loop — cure_status stays None for all deployed DBs.
+// CONTENT_VERSION in lib.rs is at least 12
 //
 // What a wrong impl this kills: any impl that adds the column but forgets to
-// bump CONTENT_VERSION (the silent-skip trap documented in ADR-0054).
+// bump CONTENT_VERSION.
 // ---------------------------------------------------------------------------
 
 #[test]

@@ -1,4 +1,4 @@
-//! `marshal` domain-submodule tests (M8.9c — test relocation, ADR-0056).
+//! `marshal` domain-submodule tests (M8.9c — test relocation).
 //!
 //! Extracted verbatim from the former inline `#[cfg(test)] mod tests` in
 //! `marshal.rs`; every assertion, fixture, and helper is unchanged. Declared
@@ -60,7 +60,7 @@ fn test_species() -> game_core::Species {
         affinity: Affinity::Fire,
         learnable_skill_ids: vec![1, 2],
         ability: None,
-        // EG1-3: evolution-graph tier. 0 = a base, wild-catchable form.
+        // evolution-graph tier. 0 = a base, wild-catchable form.
         tier: 0,
     }
 }
@@ -95,8 +95,7 @@ fn monster_from_instance_flattens_correctly() {
 
 /// pub_from_monster produces a projection with NO hidden fields.
 ///
-/// EG1-8: the signature is `pub_from_monster(&Monster, tier: u8)`. (`bond`/
-/// `evolves_to` were removed from both sides by Migration B — EG5-6/ADR-0177 D2.)
+/// The signature is `pub_from_monster(&Monster, tier: u8)`.
 #[test]
 fn pub_from_monster_omits_hidden_fields() {
     let sp = test_species();
@@ -121,15 +120,14 @@ fn pub_from_monster_omits_hidden_fields() {
     assert_eq!(p.stat_sp_defense, m.stat_sp_defense);
     assert_eq!(p.party_slot, m.party_slot);
     // The MonsterPub struct has no IV/EV/nature fields — this is a compile-time
-    // guarantee; the privacy eval enforces it at the source level.
+    // guarantee.
 }
 
 // =========================================================================
-// M7b gating tests — server-module helper seams
+// server-module helper seams
 //
 // These tests gate the three pure helper functions that the battle reducers
-// will depend on. They are RED until the implementer adds these helpers to
-// server-module/src/lib.rs.
+// will depend on.
 //
 // The helpers being gated:
 //   1. battle_monster_from_row(monster, skills) -> BattleMonster
@@ -180,7 +178,6 @@ fn m7b_test_monster_row() -> Monster {
         current_hp: 90, // damaged — not at max
         party_slot: 0,
         last_care_at_ms: 0,
-        // --- EG1 Migration A: the 16 appended Monster columns (ADR-0174 D1) ------
         essence_fire: 0,
         essence_water: 0,
         essence_plant: 0,
@@ -381,7 +378,6 @@ fn m7b_write_back_hp_writes_fainted_state() {
         status: None,
     };
 
-    // write_back_hp does not exist yet — this test is RED.
     write_back_hp(&mut monster, &bm);
 
     assert_eq!(
@@ -504,13 +500,8 @@ fn m7b_loser_base_stat_total_max_stats_no_overflow() {
 }
 
 // =========================================================================
-// M8.5b gating tests — battle_monster_from_row trust boundary (defense==0)
+// battle_monster_from_row trust boundary (defense==0)
 //
-// These tests gate the signature change for `battle_monster_from_row`:
-// it must become `-> Result<BattleMonster, String>` and reject rows
-// where `monster.stat_defense == 0`.
-//
-// All tests in this block are compile-RED until the signature changes.
 // =========================================================================
 
 // -------------------------------------------------------------------------
@@ -526,9 +517,6 @@ fn m7b_loser_base_stat_total_max_stats_no_overflow() {
 ///
 /// PROOF-OF-TEETH: the positive sibling below ensures the implementer can't
 /// trivially make this pass by returning Err for ALL inputs.
-///
-/// RED state: compile-RED because `battle_monster_from_row` currently returns
-/// `BattleMonster` (not `Result`), so `.is_err()` does not compile.
 #[test]
 fn battle_monster_from_row_rejects_zero_defense() {
     let mut monster = m7b_test_monster_row();
@@ -552,8 +540,6 @@ fn battle_monster_from_row_rejects_zero_defense() {
 /// Kills: a vacuous always-Err impl. Without this test, an implementer could
 /// make the reject test pass by unconditionally returning Err("nope"), which
 /// would break all callers. This test ensures the happy path still works.
-///
-/// RED state: compile-RED (same signature change required).
 #[test]
 fn battle_monster_from_row_accepts_nonzero_defense() {
     let monster = m7b_test_monster_row(); // stat_defense = 45 (non-zero)
@@ -575,16 +561,14 @@ fn battle_monster_from_row_accepts_nonzero_defense() {
 }
 
 // =========================================================================
-// M8b gating tests — encounter_rows_from_table marshaling seam
+// encounter_rows_from_table marshaling seam
 //
 // These tests gate the pure function `encounter_rows_from_table` that the
-// implementer will add to server-module/src/lib.rs. The function does NOT
-// exist yet — this entire block is RED (crate won't compile until added).
+// implementer will add to server-module/src/lib.rs.
 //
-// Mirror: monster_from_instance_flattens_correctly (lib.rs ~1359).
+// Mirror: monster_from_instance_flattens_correctly.
 // Flatten-at-boundary: Level -> u8 (same pattern as Millis -> i64).
 //
-// Symbols referenced (not yet defined — intentionally RED):
 //   encounter_rows_from_table(&game_core::EncounterTable) -> EncounterRow
 //   struct EncounterRow { zone_id: u32, encounter_rate: u16, entries: Vec<EncounterEntryRow> }
 //   struct EncounterEntryRow { species_id: u32, weight: u16, min_level: u8, max_level: u8 }
@@ -639,7 +623,6 @@ fn m8b_test_encounter_table() -> game_core::EncounterTable {
 fn encounter_rows_from_table_flattens_correctly() {
     let table = m8b_test_encounter_table();
 
-    // encounter_rows_from_table does not exist yet — this test is RED.
     let row: EncounterRow = encounter_rows_from_table(&table);
 
     // Top-level fields
@@ -800,24 +783,13 @@ fn encounter_rows_from_table_empty_entries() {
 }
 
 // =========================================================================
-// --- M8c gating tests ---
 //
-// Gate the PURE wild-monster build helper the implementer will add:
+// Gate the PURE wild-monster build helper:
 //   fn wild_battle_monster(species: &SpeciesRow, skill_ids: &[u32],
 //                          level: u8, seed: u32) -> Result<BattleMonster, String>
 // (full-HP, EVs-zero, IVs/nature from game_core::roll_individuality(seed),
 //  derived via game_core::derive_stats, Level::new(level)?).
 //
-// The helper does NOT exist yet → this block is RED (won't compile until it
-// is added). Mirrors the M7b `battle_monster_from_row` tests above.
-//
-// ASSUMPTION (documented per the handoff): the pure signature is
-//   wild_battle_monster(&SpeciesRow, &[u32], u8, u32) -> Result<BattleMonster, String>
-// where `skill_ids` is the set of skill ids the server has loaded; the helper
-// intersects them with the species' learnable_skill_ids for known_skill_ids
-// (same contract as battle_monster_from_row's skill handling). If the
-// implementer picks a slightly different PURE signature it must keep: no ctx,
-// deterministic in seed, full-HP, EVs-zero, Err (not panic) on bad level.
 // =========================================================================
 
 fn m8c_test_species_row() -> SpeciesRow {
@@ -959,7 +931,7 @@ fn wild_battle_monster_stats_match_roll_individuality_then_derive_stats() {
 }
 
 // =========================================================================
-// M12.5e-4 unit test: battle_monster_from_row must build known_skill_ids
+// battle_monster_from_row must build known_skill_ids
 // in canonical content order (species.learnable_skill_ids order), NOT in
 // DB scan order (skills.iter() order).
 //
@@ -967,20 +939,9 @@ fn wild_battle_monster_stats_match_roll_individuality_then_derive_stats() {
 // content order (species.learnable_skill_ids order), mirroring
 // wild_battle_monster.
 //
-// RED state: the current implementation does:
-//   known_skill_ids: skills.iter().map(|s| s.id).collect()
-// which returns IDs in whatever order the skills slice was passed in (DB
-// scan order), NOT the canonical species.learnable_skill_ids order.
-//
-// When species.learnable_skill_ids = [3, 1, 2] and the skills slice is
-// provided in scan order [2, 1, 3], the current code returns [2, 1, 3]
-// but the spec requires [3, 1, 2] (canonical order).
-//
-// This assertion is RED today: assert_eq!(bm.known_skill_ids, vec![3, 1, 2])
-// will fail because the current impl returns vec![2, 1, 3].
 // =========================================================================
 
-/// 12.5e-4 unit: owned battle monster known_skill_ids must follow
+/// owned battle monster known_skill_ids must follow
 /// species.learnable_skill_ids canonical order, not DB scan order.
 ///
 /// KILLS: an impl that does `skills.iter().map(|s| s.id).collect()` —
@@ -1050,10 +1011,10 @@ fn owned_battle_monster_known_skills_respect_canonical_order() {
 
 // =========================================================================
 // M10.5a gating tests — wild_battle_monster empty-known-skills guard
-// (defense-in-depth, ADR-0049, 10.5a-2)
+// (defense-in-depth)
 // =========================================================================
 
-/// M10.5a-2 (WHEN): wild_battle_monster must return Err when
+/// wild_battle_monster must return Err when
 /// learnable_skill_ids ∩ skill_ids = ∅ (the intersection is empty).
 ///
 /// Fixture: SpeciesRow id=98 "EmptyMover" has learnable_skill_ids = [1, 2].
@@ -1066,8 +1027,7 @@ fn owned_battle_monster_known_skills_respect_canonical_order() {
 /// then FAILS, turning this test RED — proving the guard has bite.
 ///
 /// Kills: any wild_battle_monster that builds and returns BattleMonster even
-/// when the learnable × provided intersection is empty (the current behaviour,
-/// which would reach pick_best_skill's .expect and panic at runtime).
+/// when the learnable × provided intersection is empty.
 #[test]
 fn m10_5a_wild_battle_monster_rejects_empty_known_skills() {
     // Species with learnable_skill_ids [1, 2] — the "EmptyMover" fixture.
@@ -1104,8 +1064,8 @@ fn m10_5a_wild_battle_monster_rejects_empty_known_skills() {
 }
 
 // =========================================================================
-// 13.5f-5 gating tests — skill_defs_from_rows and type_chart_from_rows
-// seed-time range checks (ADR-0049 symmetry with monster_to_instance).
+// skill_defs_from_rows and type_chart_from_rows
+// seed-time range checks.
 // =========================================================================
 
 // -------------------------------------------------------------------------
@@ -1292,8 +1252,8 @@ fn f5_type_chart_from_rows_accepts_zero_effectiveness() {
     );
 }
 
-/// M10.5a-2-pos (no over-rejection): wild_battle_monster must return Ok when
-/// the intersection is non-empty (at least one learnable skill is provided).
+/// wild_battle_monster must return Ok when the intersection is non-empty (at
+/// least one learnable skill is provided).
 ///
 /// Uses m8c_test_species_row() (learnable=[1,2,3]) with skill_ids=[1] —
 /// intersection=[1] (non-empty). Must succeed to prevent a vacuous always-Err
@@ -1328,10 +1288,10 @@ fn m10_5a_wild_battle_monster_accepts_nonempty_known_skills() {
 }
 
 // M10.5a gating tests — battle_monster_from_row empty-known-skills guard
-// (defense-in-depth, ADR-0049, H-1 from review). Mirrors the wild_battle_monster
+// (defense-in-depth, H-1 from review). Mirrors the wild_battle_monster
 // guard above but for owned-monster path.
 
-/// M10.5a-3 TEETH: battle_monster_from_row must return Err when the
+/// battle_monster_from_row must return Err when the
 /// learnable_skill_ids ∩ loaded_skills intersection is empty.
 ///
 /// Kills: an impl that returns Ok with known_skill_ids: [] (which causes
@@ -1367,7 +1327,7 @@ fn m10_5a_battle_monster_from_row_rejects_empty_known_skills() {
     );
 }
 
-/// M10.5a-3-pos: a valid monster+species+skills triple must still return Ok.
+/// a valid monster+species+skills triple must still return Ok.
 ///
 /// Kills: a vacuous always-Err impl.
 #[test]
@@ -1385,29 +1345,24 @@ fn m10_5a_battle_monster_from_row_accepts_nonempty_known_skills() {
 }
 
 // =========================================================================
-// M13.5c gating tests (EARS 13.5c-3) — write_back_hp clamps to the ROW's
-// stat_hp.
+// write_back_hp clamps to the ROW's stat_hp.
 //
 // Scenario: a mid-battle content nerf (sync_content re-derive) lowered the
 // Monster row's stat_hp while the in-flight BattleMonster still carries the
 // OLD (higher) max_hp/current_hp. Writing bm.current_hp back unclamped
 // produces current_hp > stat_hp — an illegal row the battle engine and the
-// recompute clamp invariant (12.5b-3) both forbid.
+// recompute clamp invariant both forbid.
 //
 // Clamp target is the ROW's stat_hp, NOT bm.max_hp (bm.max_hp is the stale
 // pre-nerf value). Note the write-back ordering caveat: correctness of the
 // clamp depends on write-back running BEFORE the XP/level-up re-derive
 // (battle.rs), which recomputes from the SSOT afterwards.
 //
-// RED state: marshal.rs:331-333 currently does an unclamped
-// `monster.current_hp = bm.current_hp;` → the first test fails (200 != 120).
 // =========================================================================
 
-/// EARS 13.5c-3: write_back_hp must clamp bm.current_hp to the row's stat_hp.
+/// write_back_hp must clamp bm.current_hp to the row's stat_hp.
 ///
-/// KILLS: the current unclamped write (`monster.current_hp = bm.current_hp;`)
-/// — it lands current_hp=200 on a stat_hp=120 row (illegal state).
-/// ALSO KILLS: an impl that clamps to `bm.max_hp` instead of the ROW's
+/// an impl that clamps to `bm.max_hp` instead of the ROW's
 /// stat_hp — bm.max_hp is deliberately set to the stale 200 here, so a
 /// bm.max_hp clamp still writes 200 and this assertion fires.
 #[test]
@@ -1448,7 +1403,7 @@ fn m13_5c_write_back_hp_clamps_to_row_stat_hp() {
     );
 }
 
-/// EARS 13.5c-3 equality edge: bm.current_hp == row stat_hp passes through
+/// bm.current_hp == row stat_hp passes through
 /// unchanged (clamp is inclusive: min(current_hp, stat_hp)).
 ///
 /// KILLS: an off-by-one clamp (e.g. `min(bm.current_hp, stat_hp - 1)` or a
@@ -1487,15 +1442,7 @@ fn m13_5c_write_back_hp_equality_edge_passes_through() {
 }
 
 // =========================================================================
-// EG1 gating tests — Migration A marshaling (spec EG1-1/EG1-2/EG1-3/EG1-5/
-// EG1-7/EG1-8; ADR-0174 D1/D3/D4/D7).
-//
-// Everything below is COMPILE-RED until the implementer lands:
-//   * schema.rs: Monster +16 / MonsterPub +12 / SpeciesRow.tier /
-//     EssenceRequirementRow / EvolutionPathRow (ADR-0174 D1),
-//   * marshal.rs: pub_from_monster(&Monster, tier: u8), the essence/trust/
-//     quality-time legs of monster_from_instance + monster_to_instance,
-//     species_from_row's tier, and the new evolution_path_from_row.
+// Migration A marshaling.
 //
 // Field-by-field with DISTINCTIVE values throughout: a transposed column or a
 // hardcoded constant must not be able to survive.
@@ -1555,10 +1502,10 @@ fn eg1_distinctive_monster_row() -> Monster {
 }
 
 // -------------------------------------------------------------------------
-// EG1-7 / EG1-1: monster_from_instance flattens the new instance fields
+// monster_from_instance flattens the new instance fields
 // -------------------------------------------------------------------------
 
-/// EG1-1/EG1-7: the 8 essence pools and the three history stats flatten from the
+/// The 8 essence pools and the three history stats flatten from the
 /// `MonsterInstance` into their named columns, in `Affinity::ALL` order.
 ///
 /// Kills: an impl that leaves the new columns at 0 on creation (essence/trust/
@@ -1600,7 +1547,7 @@ fn eg1_monster_from_instance_flattens_new_fields() {
     );
 }
 
-/// EG1-1: the SERVER-ONLY columns — the ones with no `MonsterInstance` counterpart
+/// The SERVER-ONLY columns — the ones with no `MonsterInstance` counterpart
 /// — start at 0 for a freshly created monster (epoch anchors / empty accumulators).
 ///
 /// Kills: an impl that copies an unrelated field into them (e.g. seeding
@@ -1636,10 +1583,10 @@ fn eg1_monster_from_instance_defaults_server_only_columns_to_zero() {
 }
 
 // -------------------------------------------------------------------------
-// EG1-7: monster_to_instance rebuilds the new fields (the inverse leg)
+// monster_to_instance rebuilds the new fields (the inverse leg)
 // -------------------------------------------------------------------------
 
-/// EG1-7: the 8 named essence columns rebuild `instance.essence` INDEXED BY
+/// The 8 named essence columns rebuild `instance.essence` INDEXED BY
 /// `Affinity::index()` — column `essence_fire` lands at `Affinity::Fire`'s index,
 /// `essence_dark` at `Affinity::Dark`'s, and so on.
 ///
@@ -1756,11 +1703,11 @@ fn eg1_monster_essence_round_trip_is_lossless() {
 }
 
 // -------------------------------------------------------------------------
-// EG1-8 / EG1-2: pub_from_monster(m, tier) — the projection now DERIVES three
+// pub_from_monster(m, tier) — the projection now DERIVES three
 // public tiers and takes `tier` from its caller.
 // -------------------------------------------------------------------------
 
-/// EG1-8: `tier` comes from the ARGUMENT, never from a default or from the row.
+/// `tier` comes from the ARGUMENT, never from a default or from the row.
 ///
 /// Kills: an impl that hardcodes `tier: 0` (or any constant) and ignores the new
 /// parameter — two calls with different tiers must produce different projections.
@@ -1786,7 +1733,7 @@ fn eg1_pub_from_monster_uses_passed_tier_not_default() {
     );
 }
 
-/// EG1-2/EG1-6 (ADR-0174 D4): `MonsterPub.trust_tier` is DERIVED from the row's
+/// `MonsterPub.trust_tier` is DERIVED from the row's
 /// two lifetime counters via `game_core::trust_tier_of` — never stored, never a
 /// caller argument.
 ///
@@ -1830,7 +1777,7 @@ fn eg1_pub_from_monster_computes_trust_tier() {
     );
 }
 
-/// EG1-2/EG1-6 (ADR-0174 D6): `MonsterPub.quality_time_tier` is derived from
+/// `MonsterPub.quality_time_tier` is derived from
 /// `quality_time_ticks_total` via `game_core::quality_time_tier_of`.
 ///
 /// 150 ticks is the INCLUSIVE lower bound of tier 3; 149 is still tier 2.
@@ -1858,7 +1805,7 @@ fn eg1_pub_from_monster_computes_quality_time_tier() {
     );
 }
 
-/// EG1-2/EG1-6 (ADR-0174 D3): `MonsterPub.nutrition_pct` is the EV pool as a
+/// `MonsterPub.nutrition_pct` is the EV pool as a
 /// percentage of the 510 budget, computed over the SIX ev_* columns.
 ///
 /// 252 + 3 = 255 EVs = exactly half the 510 budget → 50.
@@ -1894,7 +1841,7 @@ fn eg1_pub_from_monster_computes_nutrition_pct() {
         "an empty EV pool is 0% nutrition; kills a constant-50 impl"
     );
 
-    // Agreement with the game-core SSOT formula (ADR-0174 D3, A12: the total-based
+    // Agreement with the game-core SSOT formula (A12: the total-based
     // helper is `pub` precisely so this cross-crate caller shares ONE formula).
     let total: u16 = half.ev_hp
         + half.ev_attack
@@ -1909,7 +1856,7 @@ fn eg1_pub_from_monster_computes_nutrition_pct() {
     );
 }
 
-/// EG1-2: all 8 public essence columns are copied VERBATIM from the private row
+/// All 8 public essence columns are copied VERBATIM from the private row
 /// (they are public by design — the client's requirements panel reads them).
 ///
 /// Kills: a projection that zeroes or transposes essence on the way out — every
@@ -1969,10 +1916,10 @@ fn eg1_pub_from_monster_copies_all_eight_essence_columns() {
 }
 
 // -------------------------------------------------------------------------
-// EG1-3: species_from_row carries the new tier column
+// species_from_row carries the new tier column
 // -------------------------------------------------------------------------
 
-/// EG1-3: `SpeciesRow.tier` marshals into `game_core::Species.tier`.
+/// `SpeciesRow.tier` marshals into `game_core::Species.tier`.
 ///
 /// Kills: an impl that leaves `tier: 0` on the domain struct (which would make
 /// every tier-monotonicity check pass vacuously against real content).
@@ -1998,13 +1945,13 @@ fn eg1_species_from_row_carries_tier() {
 }
 
 // -------------------------------------------------------------------------
-// EG1-4/EG1-5: evolution_path_from_row — the DB row -> pure content struct leg
+// evolution_path_from_row — the DB row -> pure content struct leg
 // -------------------------------------------------------------------------
 
 /// A fully populated `EvolutionPathRow` with distinctive values in every field.
 fn eg1_evolution_path_row() -> crate::schema::EvolutionPathRow {
     crate::schema::EvolutionPathRow {
-        path_id: 9_001, // DB-internal only — NEVER durable identity (EG1-12)
+        path_id: 9_001, // DB-internal only — NEVER durable identity
         edge_id: 77,
         from_species: 3,
         to_species: 9,
@@ -2025,12 +1972,11 @@ fn eg1_evolution_path_row() -> crate::schema::EvolutionPathRow {
     }
 }
 
-/// EG1-4/EG1-5: every field of the DB row lands on the matching field of the pure
-/// `game_core::EvolutionPath`, with `min_level` parsed into the `Level` newtype
-/// (ADR-0174 D4).
+/// Every field of the DB row lands on the matching field of the pure
+/// `game_core::EvolutionPath`, with `min_level` parsed into the `Level` newtype.
 ///
 /// Kills: a from/to species swap (3 vs 9 are distinct), a dropped `edge_id` (the
-/// DURABLE identity, EG1-12 — a 0 here would silently orphan the edge), essence
+/// DURABLE identity — a 0 here would silently orphan the edge), essence
 /// entries re-ordered or collapsed, and any of the three Option gates being
 /// hardcoded to None (which would make every gate permissive).
 #[test]
@@ -2095,9 +2041,9 @@ fn eg1_evolution_path_from_row_round_trips() {
     );
 }
 
-/// EG1-5 / ADR-0174 D4 (parse-don't-validate): `min_level` is the `Level` newtype,
-/// so a row carrying an out-of-range `min_level: u8` is a loud `Err`, never a panic
-/// and never a silently clamped gate.
+/// `min_level` is the `Level` newtype, so a row carrying an out-of-range
+/// `min_level: u8` is a loud `Err`, never a panic and never a silently clamped
+/// gate.
 ///
 /// Kills: `Level::new(row.min_level).unwrap()` (panics inside a reducer — a WASM
 /// trap, not a rejection) and `unwrap_or(Level::new(1))` (silently turns a corrupt
@@ -2136,7 +2082,7 @@ fn eg1_evolution_path_from_row_rejects_level_zero() {
 }
 
 /// An empty `essence` list marshals to an empty `Vec`, and all three history gates
-/// may legitimately be `None` (a plain level-gated edge, e.g. EG3-5's 20 -> 22).
+/// may legitimately be `None` (a plain level-gated edge).
 ///
 /// Kills: an impl that rejects empty essence, or that substitutes a placeholder
 /// requirement when the list is empty.

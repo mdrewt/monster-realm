@@ -1,5 +1,5 @@
 //! `economy_tests` — behavioural tests for the server-module economy submodule
-//! (server-module/src/economy.rs, ADR-0081/0082).
+//! (server-module/src/economy.rs).
 //!
 //! Declared from `economy.rs` as:
 //!   `#[cfg(test)] #[path = "economy_tests.rs"] mod economy_tests;`
@@ -14,7 +14,7 @@ use super::*;
 use game_core::currency::MAX_BALANCE;
 
 // ===========================================================================
-// M21a AUTH-24 / AUTH-23 (ADR-0179 D6): guest->account wallet re-key credits the
+// M21a AUTH-24 / AUTH-23: guest->account wallet re-key credits the
 // balance forward via grant_currency, then zeroes the guest row IN PLACE — never
 // deletes. Pure seam here; the ctx-bound credit-forward is executed by
 // nh_rekey_wallet_credits_forward_and_erase_wallet_deletes_only_the_owner.
@@ -23,8 +23,8 @@ use game_core::currency::MAX_BALANCE;
 // `PlayerWallet { .. }` literal here is legitimate (unlike accounts_tests.rs).
 // ===========================================================================
 
-/// AUTH-24 (pure): `zeroed_wallet` sets `balance == 0` and PRESERVES the PK owner
-/// (the guest row survives with a zero balance — never a delete, AUTH-23).
+/// `zeroed_wallet` sets `balance == 0` and PRESERVES the PK owner
+/// (the guest row survives with a zero balance — never a delete).
 ///
 /// Kills: a mutant that also rewrites `owner_identity`, or that returns the row
 /// unchanged (balance not zeroed — the source could re-donate its balance to a
@@ -48,18 +48,15 @@ fn auth24_zeroed_wallet_zeroes_balance_preserves_owner() {
 }
 
 // ===========================================================================
-// rb-41 — R-rb-25-X9 (ADR-0222 known-limit 2, closed by the ADR-0224 native
-// host migration): the REKEY exists-predicate for the wallet table, exercised
+// the REKEY exists-predicate for the wallet table, exercised
 // against REAL rows instead of against its own source text.
 //
-// ADR-0222's guest-claim-integrity gate could only READ this predicate's
-// source, so a HOLLOWED body — one that still performs the table read but
-// returns a value decoupled from it — passed every check. The test below runs
-// the shipped predicate against the in-memory host (native_host_tests) and
-// pins its answer to the rows that actually exist, which no source scan can do.
+// The test below runs the shipped predicate against the in-memory host
+// (native_host_tests) and pins its answer to the rows that actually exist,
+// which no source scan can do.
 // ===========================================================================
 
-/// EARS R-rb-25-X9: `economy::wallet_exists` must answer from the CURRENT rows
+/// `economy::wallet_exists` must answer from the CURRENT rows
 /// of the wallet table, for the ASKED owner — false with no row, false while
 /// only a stranger owns one, true once the owner owns one, false again once the
 /// owner's row is gone (while the stranger's row survives). The paired
@@ -67,7 +64,7 @@ fn auth24_zeroed_wallet_zeroes_balance_preserves_owner() {
 /// the six-way `||` chain that decides whether a guest holds game data.
 ///
 /// kills:
-///   - the ADR-0222 known-limit hollow, `{ let _ = <the wallet read>; false }`:
+///   - `{ let _ = <the wallet read>; false }`:
 ///     the owner-row assertion goes red while every source scan stays green.
 ///   - the inverted hollow, `{ let _ = <the wallet read>; true }`: the
 ///     empty-table assertion goes red.
@@ -158,24 +155,16 @@ fn rb41_wallet_exists_tracks_real_wallet_rows() {
 }
 
 // ===========================================================================
-// rb-46 (residual R-m22-s5-X12, ADR-0236 D2/D4) — the caller-only deletion gate
-// on the shop.
+// the caller-only deletion gate on the shop.
 //
-// EARS criterion covered here:
-//
-//   R-m22-s5-X12 (shop half)  WHILE the caller's account is inside the para-4.7
-//   deletion gate, WHEN the caller invokes `buy` or `sell`, the server module
-//   SHALL refuse the call before any wallet or inventory write, with the single
-//   static reason.
-//
-// WHY THE SHOP IS IN SCOPE AT ALL: M22 para 4.7 selects gate targets
+// WHY THE SHOP IS IN SCOPE AT ALL: selects gate targets
 // mechanically from the tables they move, and `player_wallet` + `inventory` are
-// both ERASE-policy tables (spec section 3 / `DATA_LIFECYCLE_MANIFEST`). A
-// mid-grace account trading currency for items — or items for currency — is
-// opening exactly the kind of new commitment the grace window exists to stop,
-// and every unit of it lands in a table the cascade is about to erase.
+// both ERASE-policy tables. A mid-grace account trading currency for items — or
+// items for currency — is opening exactly the kind of new commitment the grace
+// window exists to stop, and every unit of it lands in a table the cascade is
+// about to erase.
 //
-// The SHIPPED reducers run under the rb-41 native host (`native_host_tests`)
+// The SHIPPED reducers run (`native_host_tests`)
 // against real `account` and `player` rows, through a five-state progression
 // with a mid-grace STRANGER row present throughout: POLARITY (the gate refuses
 // the two deleting states), REACHABILITY (it ADMITS the other three) and
@@ -219,10 +208,10 @@ fn rb46_seed_deleting_stranger(
     ));
 }
 
-/// **R-m22-s5-X12 (behaviour)** — `buy` refuses a deletion-gated caller, ADMITS
-/// everybody else, and answers from the CALLER's row.
+/// `buy` refuses a deletion-gated caller, ADMITS everybody else, and answers from
+/// the CALLER's row.
 ///
-/// The shipped reducer runs under the rb-41 native host through five account
+/// The shipped reducer runs through five account
 /// states, with the exact verdict pinned in each: no row, `Active`,
 /// `PendingDeletion`, `PendingDeletion` + the terminal marker, and row removed.
 /// The three admitted states are the positive control, and they are what make the
@@ -232,13 +221,13 @@ fn rb46_seed_deleting_stranger(
 ///
 /// WHY THE ADMITTED STATES ERR, and why that is the honest claim. `Fixture::table`
 /// keys rows by `Identity` bytes, so the `u32`-keyed shop stock index can never be
-/// seeded; an unregistered index yields no rows in this host
-/// (`native_host_tests.rs:311-319`), so the stock lookup finds nothing and the
-/// reducer stops there — one guard past the gate, and well before any wallet
-/// write. Every write syscall ABORTS the process (uncatchable, so
-/// `#[should_panic]` is not available here). The RED this test proves is
-/// therefore: a deletion-gated caller is ADMITTED past the joined check, past the
-/// ownership guard and into content lookup — not that currency changed hands.
+/// seeded; an unregistered index yields no rows in this host,
+/// so the stock lookup finds nothing and the reducer stops there — one guard past
+/// the gate, and well before any wallet write. Every write syscall ABORTS the
+/// process (uncatchable, so `#[should_panic]` is not available here). The RED this
+/// test proves is therefore: a deletion-gated caller is ADMITTED past the joined
+/// check, past the ownership guard and into content lookup — not that currency
+/// changed hands.
 /// Ordering relative to the spend is owned by `rb46_buy_carries_the_deletion_gate`.
 ///
 /// The ordinary error is pinned EXACTLY rather than as any-error: without that, a
@@ -252,15 +241,12 @@ fn rb46_seed_deleting_stranger(
 /// rather than upserting, so each state removes the previous row and asserts that
 /// exactly one row went.
 ///
-/// RED AT HEAD: at HEAD `buy` carries no deletion gate, so the `PendingDeletion`
-/// state returns the ordinary next-guard error and the third assertion fails.
-///
 /// kills:
-///   - M2, the dropped `buy` gate (and any later deletion of it).
-///   - M5, the discarded verdict `let _ = ..` at the `buy` call site: the two
+///   - the dropped `buy` gate (and any later deletion of it).
+///   - the discarded verdict `let _ = ..` at the `buy` call site: the two
 ///     refused states go red exactly as a dropped gate does.
-///   - M8, an `if false` wrapper or any other unreachable placement.
-///   - M14, a constant reject: the three admitted states fail.
+///   - an `if false` wrapper or any other unreachable placement.
+///   - a constant reject: the three admitted states fail.
 ///   - INVERTED POLARITY, invisible to every source pin in this slice: the
 ///     `Active` and no-row states would return the deletion reject instead, which
 ///     is a total shop outage for every honest player.
@@ -383,8 +369,8 @@ fn rb46_buy_is_refused_only_while_the_caller_is_deletion_gated() {
     );
 }
 
-/// **R-m22-s5-X12 (behaviour)** — `sell` refuses a deletion-gated caller, ADMITS
-/// everybody else, and answers from the CALLER's row.
+/// `sell` refuses a deletion-gated caller, ADMITS everybody else, and answers from
+/// the CALLER's row.
 ///
 /// The same five-state progression the `buy` test above runs — mid-grace stranger
 /// included — applied to `sell`, whose ordinary next-guard error is the
@@ -394,16 +380,13 @@ fn rb46_buy_is_refused_only_while_the_caller_is_deletion_gated() {
 /// two reducers carry separate call sites, so one dropped gate must fail with a
 /// message naming which.
 ///
-/// RED AT HEAD: at HEAD `sell` carries no deletion gate, so the `PendingDeletion`
-/// state returns the ordinary next-guard error and the third assertion fails.
-///
-/// kills: M3 (the dropped `sell` gate) · a discarded verdict at the `sell` call
+/// kills: (the dropped `sell` gate) · a discarded verdict at the `sell` call
 /// site · an unreachable placement · a constant reject (the three admitted states)
 /// · inverted polarity (the `Active` and no-row states) · a row-exists-keyed fake
 /// (the `Active` state) · A TABLE-WIDE SCAN OR ANY-ROW-PENDING FAKE (the three
 /// admitted states, while the stranger is mid-grace) · a latched answer (the
 /// removed-row state). It ALSO kills a gate wired into `buy` only: without this
-/// test, half the shop would be gated and the census would be the only witness.
+/// test, half the shop would be gated.
 #[test]
 fn rb46_sell_is_refused_only_while_the_caller_is_deletion_gated() {
     let fx = crate::native_host_tests::fixture();
@@ -513,20 +496,17 @@ fn rb46_sell_is_refused_only_while_the_caller_is_deletion_gated() {
     );
 }
 
-// === rb-81 (R-rb-47-ROSTER-PVP) — ADR-0251 ================================
-// `economy.rs`'s REDUCER ROSTER IS CLOSED. EARS E1: WHEN a reducer file other than
+// `economy.rs`'s REDUCER ROSTER IS CLOSED. WHEN a reducer file other than
 // trading.rs gains a new bare reducer attribute THE SYSTEM SHALL fail a
-// closed-roster test NAMING THE FILE. Clause order per ADR-0251 D3.
+// closed-roster test NAMING THE FILE.
 // ==========================================================================
 
-/// **ST-native_host_tests demonstration** — `buy`'s SUCCESS path, executed.
+/// `buy`'s SUCCESS path, executed.
 ///
-/// Before the host extension every `buy` test stopped at the stock lookup (no
-/// `u32`-keyed index could be seeded) and every write aborted the process, so
-/// the spend-then-grant sequence had no executed oracle at all. Here the caller
-/// is set with `run_as` (not the all-zero dummy), the wallet is writable, and the
-/// inventory is registered under BOTH its owner index (the reducer's read) and
-/// its primary key (the update's lookup) with the auto-inc id modelled.
+/// the caller is set with `run_as` (not the all-zero dummy), the wallet is
+/// writable, and the inventory is registered under BOTH its owner index (the
+/// reducer's read) and its primary key (the update's lookup) with the auto-inc id
+/// modelled.
 ///
 /// Post-state is pinned in full: the caller pays exactly `price * qty`, a
 /// STRANGER's wallet is untouched (the debit keys on `ctx.sender()`), the first
@@ -626,13 +606,11 @@ fn nh_buy_success_spends_wallet_and_grants_one_stack() {
 }
 
 // ===========================================================================
-// Native-host behavioural suite (debloat Phase 2: EV-currency-integrity#arithmetic,
-// EV-shop-reducer-security, EV-wallet-privacy, ST-economy_tests#wallet).
+// Native-host behavioural suite.
 //
 // Every helper/reducer runs against real rows through the native host. HOST LIMIT:
 // no transaction rollback, so each refusal is asserted as refusal BEFORE any write
-// (wallets + stacks byte-identical). `buy`/`sell` never take a client price: the
-// generated reducer signature is pinned by client-surface-privacy clause (D).
+// (wallets + stacks byte-identical). `buy`/`sell` never take a client price.
 // ===========================================================================
 
 use crate::native_host_tests::{fixture as ec_fixture, Fixture as EcFixture, Handle as EcHandle};
@@ -1101,10 +1079,9 @@ fn nh_my_wallet_view_returns_only_the_senders_row() {
     );
 }
 
-/// AUTH-23/24 + PRV1-6b as behaviour: `rekey_wallet` credits the whole guest balance
-/// forward onto the destination (adding to any existing balance) and ZEROES the guest row
-/// in place — never deletes it; a missing guest is a no-op. `erase_wallet` deletes exactly
-/// the owner's row.
+/// `rekey_wallet` credits the whole guest balance forward onto the destination (adding to
+/// any existing balance) and ZEROES the guest row in place — never deletes it; a missing
+/// guest is a no-op. `erase_wallet` deletes exactly the owner's row.
 /// kills: rekey_wallet -> (), zero-before-read, delete instead of zero, erase_wallet -> ().
 #[test]
 fn nh_rekey_wallet_credits_forward_and_erase_wallet_deletes_only_the_owner() {

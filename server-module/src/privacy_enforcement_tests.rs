@@ -1,8 +1,8 @@
-//! rb-45 — the [DEL-06] crate-wide deletion-gate census (ADR-0258).
+//! The [DEL-06] crate-wide deletion-gate census.
 //!
-//! EARS under gate. (rb-45) WHEN a reducer writes any manifest-classified table
+//! EARS under gate. WHEN a reducer writes any manifest-classified table
 //! without the gate call or `STATE_TRANSITION_OWNERS` membership THE SYSTEM
-//! SHALL fail CI. (rb-49, [DEL-06]) WHEN a reducer writes any manifest-classified
+//! SHALL fail CI. WHEN a reducer writes any manifest-classified
 //! table outside `STATE_TRANSITION_OWNERS` THE SYSTEM SHALL require a preceding
 //! deletion-guard call — a `require_*` wrapper over the rejection predicate,
 //! spelled as ADR-0248 D1 pins it — mechanically enforced.
@@ -27,7 +27,7 @@
 use std::collections::BTreeSet;
 
 // ---------------------------------------------------------------------------
-// The census engine (implementation half — frozen API, bodies land in T3)
+// The census engine (implementation half)
 // ---------------------------------------------------------------------------
 
 mod census {
@@ -49,7 +49,7 @@ mod census {
     // --- Vocabulary ---------------------------------------------------------
     // Every name below is compared against an AST ident or path segment. The
     // engine never searches source text: a shape the parser cannot classify is
-    // a hard error, never an approximation (ADR-0258 D1).
+    // a hard error, never an approximation.
 
     const ROOT: &str = "crate";
     const GUARD_MODULE: &str = "guards";
@@ -1260,18 +1260,13 @@ mod census {
 }
 
 // ---------------------------------------------------------------------------
-// Roster 1 — the declared exemptions (ADR-0258 D6)
+// Roster 1 — the declared exemptions
 //
 // Every reducer the census reports as UNGATED must appear here with a basis, and
 // every row here must still be ungated: the comparison is exact in BOTH
 // directions, never a count and never a floor. Paying the debt down is a
 // conscious edit of this roster, and so is widening it.
 //
-// rb-128 (ADR-0273) paid class (iv) down in full: its thirteen KNOWN-GAP rows
-// now open with the caller-only deletion gate and moved to EXPECTED_GATED
-// below (25 rows became 12; the gated set grew from 14 to 27). The partition of
-// the 54-reducer corpus is 3 owner + 3 lifecycle + 8 scheduled + 27 gated + 1
-// no-writes + 12 rostered.
 // ---------------------------------------------------------------------------
 
 const DELIBERATE_EXEMPTIONS: &[(&str, &str)] = &[
@@ -1284,7 +1279,7 @@ const DELIBERATE_EXEMPTIONS: &[(&str, &str)] = &[
     // by the cascade at terminal time. The post-terminal case -- a battle still
     // Ongoing when step 6c reaches it -- is closed mechanically:
     // battle::anonymize_battles forces every still-Ongoing row terminal against
-    // the erased side (a wild row is auto-fled) before tombstoning it (ADR-0274),
+    // the erased side (a wild row is auto-fled) before tombstoning it,
     // so no erased identity is left a live battle to settle.
     (
         "submit_attack",
@@ -1350,10 +1345,9 @@ const DELIBERATE_EXEMPTIONS: &[(&str, &str)] = &[
         "sync_content",
         "operator-only behind the module-owner identity guard; no player caller exists",
     ),
-    // (iv) — drained by rb-128 (ADR-0273). Its thirteen KNOWN-GAP rows are gated
-    // and listed in EXPECTED_GATED; the class stays EMPTY. A reducer that creates
-    // or mutates the caller's assets without a gate fails this census until a
-    // deliberate roster row WITH A BASIS is added -- never a silent new row.
+    // (iv) the class stays EMPTY. A reducer that creates or mutates the caller's
+    // assets without a gate fails this census until a deliberate roster row WITH
+    // A BASIS is added -- never a silent new row.
     //
     // (v) acts ONLY on rows the caller already owns, minting nothing new. Open BY
     // DECISION (ADR-0254 keeps the evolution banner dismissable during grace),
@@ -1367,7 +1361,7 @@ const DELIBERATE_EXEMPTIONS: &[(&str, &str)] = &[
 ];
 
 // ---------------------------------------------------------------------------
-// Roster 2 — the structural facts of the REAL crate (ADR-0258 D2, D5)
+// Roster 2 — the structural facts of the REAL crate
 //
 // The corpus is lib.rs plus every bare `mod x;` it declares, in declaration
 // order; the two structural exemption sets are pinned EXACTLY so a new free ride
@@ -1448,12 +1442,12 @@ const EXPECTED_GATED: &[&str] = &[
 /// Reducers that reach no classified write at all.
 const EXPECTED_NO_WRITES: &[&str] = &["start_guest_claim"];
 
-/// Vacuity floor for the manifest-derived classified set (24 tables at rb-45):
+/// Vacuity floor for the manifest-derived classified set (24 tables):
 /// the set itself is derived in the test from `DATA_LIFECYCLE_MANIFEST`, so this
 /// only refuses a manifest that shrank to nothing.
 const CLASSIFIED_TABLE_FLOOR: usize = 24;
 
-/// Reducer floor for the real corpus (54 at rb-45), so the per-reducer verdict
+/// Reducer floor for the real corpus (54), so the per-reducer verdict
 /// pin cannot be satisfied by an engine that finds almost none of them.
 const REDUCER_FLOOR: usize = 54;
 

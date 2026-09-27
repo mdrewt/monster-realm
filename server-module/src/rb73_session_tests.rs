@@ -1,4 +1,4 @@
-//! `rb73_session_tests` — rb-73 / ADR-0245: disconnect side effects are gated on
+//! `rb73_session_tests` — disconnect side effects are gated on
 //! the LAST live connection.
 //!
 //! Declared from `lib.rs` as `#[cfg(test)] #[path = "rb73_session_tests.rs"]
@@ -36,25 +36,21 @@ const CONN_ALREADY_OPEN: u128 = 0x5e55_0004;
 
 // ===========================================================================
 // EXECUTED — the decision predicate. Oracle = the RETURN VALUE of
-// `crate::has_live_session`, never its source text (ADR-0245 D5).
+// `crate::has_live_session`, never its source text.
 // ===========================================================================
 
-/// ADR-0245 D5: one `player_session` row for identity A makes
+/// One `player_session` row for identity A makes
 /// `has_live_session(ctx, A)` report `true`.
 ///
 /// This is the direction the whole fix hangs on: if the predicate cannot see a
 /// live sibling session, `on_disconnect` never skips and the token-leak
 /// amplifier stays open. Kills mutant M4, "always `false`" (the fix no-ops).
 ///
-/// Structure, mirroring the rb-72 precedent (accounts_tests.rs:20127): S0 seed,
-/// S1 a vacuity PRE-assert that the seeded row really is visible through
-/// `ctx.db` on the SAME index the predicate reads (a mis-spelled registration
-/// otherwise makes every assertion below vacuously about an empty table), S2
-/// the call, S3 the `Handle::remove` falsifiability control, which proves the
-/// read channel is capable of reporting an absence at all.
-///
-/// RED on the current tree: a compile error — neither `crate::schema::PlayerSession`
-/// nor `crate::has_live_session` exists yet.
+/// Structure: S0 seed, S1 a vacuity PRE-assert that the seeded row really is visible
+/// through `ctx.db` on the SAME index the predicate reads (a mis-spelled
+/// registration otherwise makes every assertion below vacuously about an empty
+/// table), S2 the call, S3 the `Handle::remove` falsifiability control, which proves
+/// the read channel is capable of reporting an absence at all.
 #[test]
 fn rb73_sessions_live_row_for_the_sender_is_seen() {
     let fx = crate::native_host_tests::fixture();
@@ -109,7 +105,7 @@ fn rb73_sessions_live_row_for_the_sender_is_seen() {
     );
 }
 
-/// ADR-0245 D5: with no `player_session` row at all,
+/// With no `player_session` row at all,
 /// `has_live_session(ctx, A)` reports `false`.
 ///
 /// Kills mutant M5, "always `true`" — the AVAILABILITY mutant, under which no
@@ -123,9 +119,6 @@ fn rb73_sessions_live_row_for_the_sender_is_seen() {
 /// and the `Handle::remove` control together establish that this fixture's read
 /// channel works before the oracle asks it a question whose expected answer is
 /// the empty one.
-///
-/// RED on the current tree: a compile error — neither `crate::schema::PlayerSession`
-/// nor `crate::has_live_session` exists yet.
 #[test]
 fn rb73_sessions_no_rows_means_no_session() {
     let fx = crate::native_host_tests::fixture();
@@ -176,13 +169,13 @@ fn rb73_sessions_no_rows_means_no_session() {
     );
 }
 
-/// ADR-0245 D5: rows belonging to a DIFFERENT identity are not mine.
+/// Rows belonging to a DIFFERENT identity are not mine.
 ///
 /// Kills mutant M6, a predicate that reads the wrong index or scans the whole
 /// table — "is anyone at all connected" instead of "am I". Under M6 one
 /// unrelated player's open socket would suppress every other player's
 /// disconnect cleanup. (A literal `.iter()` mutant additionally walks into the
-/// unmodelled `datastore_table_scan_bsatn` wall, native_host_tests.rs:351-354,
+/// unmodelled `datastore_table_scan_bsatn` wall,
 /// and aborts the process — a different failure mode, equally red.)
 ///
 /// The assertion pair is DISCRIMINATING and taken in ONE state: asking for the
@@ -190,9 +183,6 @@ fn rb73_sessions_no_rows_means_no_session() {
 /// `false` here would also be satisfied by an always-false predicate (already
 /// killed above, but a test that only passes because a sibling test fails is
 /// not a tooth); the pair cannot be satisfied by any constant.
-///
-/// RED on the current tree: a compile error — neither `crate::schema::PlayerSession`
-/// nor `crate::has_live_session` exists yet.
 #[test]
 fn rb73_sessions_stranger_rows_are_not_mine() {
     let fx = crate::native_host_tests::fixture();
@@ -271,7 +261,7 @@ fn rb73_sessions_stranger_rows_are_not_mine() {
 ///
 /// THE SUBJECT MUST BE `ctx.sender()`. Under `ReducerContext::__dummy()` that is
 /// `Identity::from_byte_array([0u8; 32])`, which is also `crate::WILD_IDENTITY`
-/// (lib.rs:89) — normally a value to avoid in a fixture. Here it is mandatory
+/// — normally a value to avoid in a fixture. Here it is mandatory
 /// and not a smell: both hooks read `ctx.sender()` themselves, that field is
 /// private and not settable, so any other identity would seed rows the reducer
 /// under test never looks at and the test would pass for the wrong reason. No
@@ -284,19 +274,14 @@ fn rb73_sessions_stranger_rows_are_not_mine() {
 /// before ANY write. Only `player`, `character` and `player_session` are
 /// registered: `player_conversation` deliberately is not.
 ///
-/// THE RED, IN TWO STAGES. On the current tree the whole file fails to compile
-/// (`crate::schema::PlayerSession` and `crate::has_live_session` do not exist).
 /// Once the table and the helper exist but the guard does not — which is
-/// exactly mutant M1, "guard deleted", and the shape of the shipped code today
-/// — the reducer walks on to the `player_conversation` owner-keyed removal at
-/// lib.rs:274, a unique-column delete that bottoms out in
-/// `datastore_delete_by_index_scan_point_bsatn`.
+/// exactly mutant M1, "guard deleted" — the reducer walks on to the
+/// `player_conversation` owner-keyed removal, a unique-column delete that
+/// bottoms out in `datastore_delete_by_index_scan_point_bsatn`.
 /// That syscall is `unmodelled()`: it panics inside an `extern "C"` frame,
 /// which cannot unwind, so the whole test PROCESS aborts and nextest reports a
 /// signal rather than a failed assertion. The kill is real; the mechanism is
-/// the abort, not a red POST assertion — saying so plainly is the rb-72 lesson
-/// (rb72 in accounts_tests.rs), whose first draft got this exact sentence
-/// wrong.
+/// the abort, not a red POST assertion.
 ///
 /// LIMIT: this test cannot tell "skipped because a sibling session is live"
 /// from "always skips" (a bare `return;` passes it). The fires-when-it-should
@@ -444,9 +429,6 @@ fn rb73_exec_on_disconnect_skips_while_another_session_is_live() {
 /// written under some third identity would be invisible to them — but not to
 /// the abort above, which is why the two clauses are complementary rather than
 /// redundant.
-///
-/// RED on the current tree: a compile error — `crate::schema::PlayerSession`
-/// does not exist (and `on_connect` has no `open_player_session` call).
 #[test]
 fn rb73_exec_on_connect_none_branch_writes_nothing() {
     let fx = crate::native_host_tests::fixture();

@@ -1,31 +1,16 @@
-//! `evolution_tests` — EG1 gating tests for the rewritten `evolve` reducer
-//! (spec EG1-9/EG1-11 + EG2-1's reducer shape; ADR-0174).
+//! `evolution_tests`.
 //!
 //! Declared from `evolution.rs` as:
 //!   `#[cfg(test)] #[path = "evolution_tests.rs"] mod evolution_tests;`
 //! so `super` resolves to the `evolution` module.
 //!
-//! WHAT CHANGED IN EG1 (this file was rewritten, not patched):
-//!   - The ENTIRE fuse matrix is DELETED (`test_fuse_*`, `fuse_seam`,
-//!     `make_fusion_recipe_row`, the fuse parity/seam helpers) — fusion is
-//!     removed as a feature (EG1-9), not repurposed.
-//!   - Every `compute_evolves_to` test is DELETED — the helper and its whole
-//!     trigger content model (`EvolutionCondition`/`EvolutionTrigger`) no longer
-//!     exist.
-//!   - `evolve` is now `evolve(ctx, monster_id: u64, to_species: u32)`: one
-//!     targeted `evolution_path` row, gated by the SHARED `game_core::
-//!     path_satisfied` predicate, `MonsterPub.tier` from a FRESH target-species
-//!     lookup, essence zeroed, Trust/Quality-Time preserved.
-//!
-//! Pattern (unchanged, ADR-0056): SpacetimeDB's `ReducerContext` is not a unit
+//! Pattern: SpacetimeDB's `ReducerContext` is not a unit
 //! test harness, so these tests drive `evolve_seam` — the seam mirroring the
 //! reducer against an in-memory `TestEvolutionDb` — while calling the REAL
 //! production helpers it can (`crate::guards::*`, `crate::marshal::*`,
 //! `game_core::path_satisfied`, `game_core::unmet_requirement`). The REAL
-//! reducer is driven by the native-host `nh` suite at the end of this file
-//! (debloat Phase 2, which also deleted this file's source-text scans).
+//! reducer is driven by the native-host `nh` suite at the end of this file.
 //!
-//! WHAT EG2 ADDS (ADR-0175 D3, spec EG2-1/9/11/12/13):
 //!   - `apply_evolution_seam` — the transform-and-write half of `evolve_seam`,
 //!     factored out exactly the way production factors `apply_evolution` out of
 //!     `evolve()`, so BOTH seam paths apply an evolution through one code path.
@@ -37,7 +22,6 @@
 //!     `crate::evolution::MAX_EVOLUTION_CHAIN_STEPS`, so the seam can never
 //!     drift from the reducer's own termination bound.
 //!
-//! WHAT 20r-d ADDS (ADR-0254, spec §20r-d B1 — the post-evolve notification):
 //!   - `TestEvolutionDb` grows a `notices` list and an injected `now_ms`, and
 //!     `apply_evolution_seam` pushes one reveal entry per applied edge — so
 //!     "one entry per evolution, in chain order, keyed by the MONSTER's owner,
@@ -49,8 +33,8 @@
 //!     that consumes it.
 //!   - The pure `crate::evolution::ack_prefix` is executed directly (reject 0,
 //!     reject count > len, drain the exact prefix), and the REAL
-//!     `ack_evolution_notices` reducer is executed against the rb-41 native
-//!     host for its three REFUSAL paths (the admitted path runs in `nh`).
+//!     `ack_evolution_notices` reducer is executed
+//!     for its three REFUSAL paths (the admitted path runs in `nh`).
 //!
 //! Each test carries a `// kills:` note stating which wrong implementation it
 //! catches.
@@ -146,7 +130,6 @@ fn make_monster_row(monster_id: u64, owner: Identity) -> Monster {
         current_hp: 50,
         party_slot: 0,
         last_care_at_ms: 0,
-        // --- EG1 Migration A: the 16 appended columns (ADR-0174 D1) ----------
         essence_fire: 0,
         essence_water: 0,
         essence_plant: 0,
@@ -226,8 +209,8 @@ fn make_evolution_path_row(path_id: u64, edge_id: u32, from: u32, to: u32) -> Ev
 
 /// An `evolution_path` row gated ONLY on `min_level`.
 ///
-/// The chain fixtures (EG2-13) need gates that SURVIVE an evolution: all 8
-/// essence pools zero on every step (ADR-0174 D2), so an essence-gated second
+/// The chain fixtures need gates that SURVIVE an evolution: all 8
+/// essence pools zero on every step, so an essence-gated second
 /// step could never fire, while level / Trust / Quality-Time are lifetime state
 /// and persist.
 fn make_level_only_path_row(
@@ -273,7 +256,7 @@ fn copy_path_row(p: &EvolutionPathRow) -> EvolutionPathRow {
 }
 
 /// An `evolution_path` row gated on `min_level` AND a Trust tier — Trust is
-/// lifetime history (EG2-1) and survives an evolution, so it is a legitimate
+/// lifetime history and survives an evolution, so it is a legitimate
 /// mid-chain gate and proves the chain re-checks against surviving state.
 fn make_level_and_trust_path_row(
     path_id: u64,
@@ -339,7 +322,7 @@ fn make_side_a_battle(battle_id: u64, owner: Identity, party_monster_ids: Vec<u6
 
 /// SIDE B: someone ELSE is `player_identity`, `owner` is `opponent_identity`, and
 /// the monster sits in `opponent_monster_ids` — the PvP shape that a
-/// player-identity-only guard misses (ADR-0122).
+/// player-identity-only guard misses.
 fn make_side_b_battle(
     battle_id: u64,
     challenger: Identity,
@@ -389,7 +372,7 @@ fn seed_evolvable_world(db: &mut TestEvolutionDb, monster_id: u64, owner: Identi
 }
 
 // ===========================================================================
-// EG2-1 guard suite — every rejection is MESSAGE-PINNED, so an always-Err stub
+// guard suite — every rejection is MESSAGE-PINNED, so an always-Err stub
 // cannot satisfy the suite (each test names a DIFFERENT substring, and the
 // success tests below require Ok).
 // ===========================================================================
@@ -461,12 +444,12 @@ fn evolve_rejects_when_owner_in_ongoing_battle_side_a() {
 }
 
 /// SIDE B: the owner is `opponent_identity` of an `Ongoing` PvP battle and the
-/// monster sits in `opponent_monster_ids` -> still rejected (ADR-0122).
+/// monster sits in `opponent_monster_ids` -> still rejected.
 ///
 /// PROOF-OF-TEETH: the monster appears in NO `party_monster_ids` and the owner is
 /// NOT any battle's `player_identity`, so a guard that filters only
 /// `player_identity` (dropping the `.chain(opponent_identity)` leg) returns Ok
-/// here and this test fires. That is the exact both-role gap ADR-0122 closed.
+/// here and this test fires.
 ///
 /// kills: a single-role battle guard on the evolve path.
 #[test]
@@ -485,7 +468,7 @@ fn evolve_rejects_when_owner_in_ongoing_battle_side_b() {
     );
 }
 
-/// NO FALSE POSITIVE (m17.5a, re-pinned for EG1): a COMPLETED side-B PvP battle
+/// NO FALSE POSITIVE: a COMPLETED side-B PvP battle
 /// must NOT block an evolution — only `Ongoing` battles matter.
 ///
 /// PROOF-OF-TEETH for the opposite failure mode: an over-broad guard that rejects
@@ -519,7 +502,7 @@ fn evolve_allows_when_side_b_pvp_battle_is_completed() {
 }
 
 /// The monster is escrowed in an ACTIVE trade offer -> "monster is in an active
-/// trade" (TR-2, ADR-0106).
+/// trade".
 ///
 /// kills: a missing `reject_if_monster_in_trade` call — an escrowed monster could
 ///        be transformed mid-trade, so the counterparty would receive a different
@@ -539,11 +522,9 @@ fn evolve_rejects_when_monster_in_trade_escrow() {
     );
 }
 
-/// EG2-1: an EMPTY `evolution_path` table -> "no such evolution".
+/// An EMPTY `evolution_path` table -> "no such evolution".
 ///
-/// This is the normal, expected state for the whole EG1 -> EG3 window (evolution
-/// is intentionally dark until content lands, ADR-0174 Consequences), so it must
-/// be a clean rejection, never an error or a panic.
+/// must be a clean rejection, never an error or a panic.
 ///
 /// kills: an impl that treats "no row" as "no gate" and evolves anyway; an impl
 ///        that panics on the empty lookup.
@@ -553,7 +534,7 @@ fn evolve_rejects_no_such_evolution_path() {
     let mut db = TestEvolutionDb::new();
     db.insert_species(source_species_row());
     db.insert_species(target_species_row());
-    // NO evolution_path rows seeded — the pre-EG3 state.
+    // NO evolution_path rows seeded.
     let m = make_qualified_monster_row(1, owner);
     db.insert_monster(m.clone());
     db.insert_monster_pub(make_monster_pub(&m, 0));
@@ -571,9 +552,9 @@ fn evolve_rejects_no_such_evolution_path() {
     );
 }
 
-/// EG2-1 (client-supplied `to_species` cannot cross-apply): a path exists for
-/// (from=5 -> to=2), but the caller's monster is species 1. The lookup is keyed
-/// on BOTH endpoints, so this is the same "no such evolution" rejection.
+/// a path exists for (from=5 -> to=2), but the caller's monster is species 1.
+/// The lookup is keyed on BOTH endpoints, so this is the same "no such
+/// evolution" rejection.
 ///
 /// PROOF-OF-TEETH: an impl that looks the row up by `to_species` alone (or that
 /// filters the btree index on `from_species` but then forgets to compare
@@ -613,7 +594,7 @@ fn evolve_rejects_wrong_from_species() {
     );
 }
 
-/// EG2-1: when the matched row's gates are not satisfied, the rejection NAMES the
+/// When the matched row's gates are not satisfied, the rejection NAMES the
 /// specific failing requirement (not a generic "not eligible").
 ///
 /// Fixture: an otherwise-qualified monster one level BELOW `min_level` 20.
@@ -656,7 +637,7 @@ fn evolve_rejects_names_the_failing_requirement() {
 /// A missing TARGET species row is a loud rejection, not a panic and not an
 /// orphaned row pointing at a species that does not exist.
 ///
-/// kills: `.unwrap()` on the fresh target-species lookup (EG1-8's tier source).
+/// kills: `.unwrap()` on the fresh target-species lookup.
 #[test]
 fn evolve_rejects_when_target_species_row_missing() {
     let owner = owner_id();
@@ -677,10 +658,10 @@ fn evolve_rejects_when_target_species_row_missing() {
 }
 
 // ===========================================================================
-// EG2-1 success path — transform, essence reset, dual-write, fresh tier
+// success path — transform, essence reset, dual-write, fresh tier
 // ===========================================================================
 
-/// EG2-1 happy path: species changes on BOTH rows, all 8 essence pools zero on
+/// species changes on BOTH rows, all 8 essence pools zero on
 /// BOTH rows, stats are re-derived from the TARGET species, and `current_hp` is
 /// clamped to the new (lower) maximum.
 ///
@@ -781,7 +762,7 @@ fn evolve_success_dual_writes_and_zeroes_essence() {
     );
 }
 
-/// EG1-8/EG2-1: `MonsterPub.tier` comes from a FRESH lookup of the TARGET species
+/// `MonsterPub.tier` comes from a FRESH lookup of the TARGET species
 /// row — never copied forward from the monster's existing public row.
 ///
 /// Fixture: the pre-evolution `monster_pub` carries a deliberately stale
@@ -792,7 +773,7 @@ fn evolve_success_dual_writes_and_zeroes_essence() {
 /// fresh `species_row(to_species).tier` read produces 1.
 ///
 /// kills: copy-forward tier at the one call site that must NOT copy forward;
-///        `unwrap_or(0)` tier fabrication (A3).
+///        `unwrap_or(0)` tier fabrication.
 #[test]
 fn evolve_success_sets_pub_tier_from_fresh_target_species_lookup() {
     let owner = owner_id();
@@ -817,7 +798,7 @@ fn evolve_success_sets_pub_tier_from_fresh_target_species_lookup() {
     );
 }
 
-/// EG2-1: Trust and Quality-Time are LIFETIME history — they survive an
+/// Trust and Quality-Time are LIFETIME history — they survive an
 /// evolution untouched, as do the server-only Quality-Time bookkeeping columns.
 ///
 /// PROOF-OF-TEETH: an implementation that rebuilds the row through
@@ -888,7 +869,7 @@ fn evolve_preserves_trust_and_quality_time_columns() {
 }
 
 // ===========================================================================
-// EG2-11/12/13 — `check_and_evolve` / `apply_evolution` behaviour.
+// `check_and_evolve` / `apply_evolution` behaviour.
 //
 // These drive `check_and_evolve_seam` / `apply_evolution_seam` (bottom of this
 // file), which mirror the production helpers step for step against
@@ -896,16 +877,15 @@ fn evolve_preserves_trust_and_quality_time_columns() {
 // and the REAL marshaling helpers. The seam returns the number of chain steps it
 // applied — production returns `()`, but the step count is the only way a test
 // can distinguish "cascaded once" from "cascaded three times" from "spun to the
-// cap", which is exactly what EG2-13 legislates.
+// cap".
 // ===========================================================================
 
-/// EG2-11: ZERO eligible paths -> a silent no-op. This is the normal state for
-/// the whole EG1 -> EG3 window (no `evolution_path` content exists yet), so it
+/// ZERO eligible paths -> a silent no-op.
 /// must never error, panic, or touch the row.
 ///
 /// kills: an impl that treats an empty candidate set as "evolve along whatever
 ///        row it can find"; an impl that writes the monster row back unchanged
-///        anyway (public-row churn on the movement hot path, ADR-0175 D1); an
+///        anyway (public-row churn on the movement hot path); an
 ///        impl that returns/propagates an error from a no-op check.
 #[test]
 fn check_and_evolve_zero_eligible_is_noop() {
@@ -940,14 +920,14 @@ fn check_and_evolve_zero_eligible_is_noop() {
     );
 }
 
-/// EG2-11: EXACTLY ONE eligible path -> applied immediately, same transaction,
+/// EXACTLY ONE eligible path -> applied immediately, same transaction,
 /// no player action. The full transform contract rides along: species on both
 /// rows, all 8 essence pools zeroed, Trust/Quality-Time preserved, and
 /// `MonsterPub.tier` from the TARGET species row.
 ///
 /// kills: an impl that only computes eligibility and leaves the write to some
-///        later player-invoked `evolve()` (EG2-1 says the single-path case never
-///        reaches that reducer); an impl that applies the transform without the
+///        later player-invoked `evolve()`;
+///        an impl that applies the transform without the
 ///        dual-write; an impl that copies the tier forward from the stale public
 ///        row instead of the fresh target species.
 #[test]
@@ -1002,12 +982,11 @@ fn check_and_evolve_exactly_one_applies_same_transaction() {
     );
 }
 
-/// EG2-11 (server-side dual of EG2-2): TWO simultaneously eligible paths -> a
-/// no-op. The choice belongs to the player (EG4-2), and the server SHALL NOT
-/// pick a first-match winner — the Tamagotchi/Wurmple "silent race" anti-pattern.
+/// TWO simultaneously eligible paths -> a no-op. The choice belongs to the
+/// player, and the server SHALL NOT pick a first-match winner — the
+/// Tamagotchi/Wurmple "silent race" anti-pattern.
 ///
-/// The pure half of this invariant is pinned in game-core at
-/// `game-core/src/evolution/m10a_gating_tests.rs:880`
+/// The pure half of this invariant is pinned in game-core
 /// (`eligible_evolution_paths_returns_every_satisfied_path` — two paths from
 /// species 1 return `vec![0, 1]`, BOTH indices). This test pins the SERVER's
 /// reaction to that set: a length-2 result must stop, not index into it.
@@ -1046,7 +1025,7 @@ fn check_and_evolve_two_eligible_is_noop() {
     );
 }
 
-/// EG2-11: candidate rows that are NOT satisfied do not count toward the
+/// Candidate rows that are NOT satisfied do not count toward the
 /// 0/1/2+ decision — only the ELIGIBLE set does, and the applied edge is the one
 /// the eligible INDEX addresses.
 ///
@@ -1090,7 +1069,7 @@ fn check_and_evolve_ignores_unsatisfied_paths() {
     );
 }
 
-/// EG2-12 Guard warning: `check_and_evolve`/`apply_evolution` are NEVER
+/// `check_and_evolve`/`apply_evolution` are NEVER
 /// battle-guarded. At the `write_back_battle_results` call site the battle row is
 /// still `Ongoing` (battle.rs's own documented ordering invariant), so the
 /// "standard" guard would self-reject every auto-evolution from the one call
@@ -1126,7 +1105,7 @@ fn check_and_evolve_applies_during_an_ongoing_battle() {
     );
 }
 
-/// EG2-11: a missing monster row is a silent no-op — `check_and_evolve` returns
+/// A missing monster row is a silent no-op — `check_and_evolve` returns
 /// `()` and never errors outward (its callers are reducer tails that must not
 /// fail a legitimate care/train/battle write-back because a row vanished).
 ///
@@ -1149,7 +1128,7 @@ fn check_and_evolve_missing_monster_is_silent_noop() {
     );
 }
 
-/// EG2-13 (chain, positive): three consecutive single-eligible steps resolve to
+/// three consecutive single-eligible steps resolve to
 /// the FINAL species in ONE call, with no player action.
 ///
 /// World: 1 (tier 0) -> 2 (tier 1) -> 3 (tier 2) -> 4 (tier 3). Step 1 carries
@@ -1230,9 +1209,8 @@ fn eg2_13_chain_three_single_eligible_steps_resolves_in_one_call() {
     );
 }
 
-/// EG2-13 (chain, stop condition): a chain stops the moment a step has 2+
-/// eligible paths, leaving the monster at that intermediate species for the
-/// player to choose from (EG4-8's badge is computed from exactly this state).
+/// a chain stops the moment a step has 2+ eligible paths, leaving the monster at
+/// that intermediate species for the player to choose from.
 ///
 /// kills: a chain that keeps cascading past a branch point by taking the first
 ///        eligible path (the player never gets the choice — and the monster ends
@@ -1268,8 +1246,8 @@ fn eg2_13_chain_stops_at_two_eligible() {
     );
 }
 
-/// EG2-13 (termination, proof-of-teeth): the chain carries an EXPLICIT hard
-/// iteration cap, so R5/R11-invalid content cannot spin it forever.
+/// the chain carries an EXPLICIT hard iteration cap, so R5/R11-invalid content
+/// cannot spin it forever.
 ///
 /// Fixture: deliberately R5-INVALID content seeded straight into the test DB —
 /// 1 -> 2 AND 2 -> 1, both level-gated only, both ALWAYS satisfied. The content
@@ -1284,7 +1262,7 @@ fn eg2_13_chain_stops_at_two_eligible() {
 ///        or blow the WASM stack instead of failing); an off-by-one cap that
 ///        runs one extra step; a cap set to a different value than
 ///        `MAX_EVOLUTION_CHAIN_STEPS` (the count assertion pins it at 7 = R11's
-///        tier cap 5 + 2, ADR-0175 D3).
+///        tier cap 5 + 2).
 #[test]
 fn eg2_13_iteration_cap_terminates_on_degenerate_cycle() {
     let owner = owner_id();
@@ -1325,7 +1303,7 @@ fn eg2_13_iteration_cap_terminates_on_degenerate_cycle() {
     );
 }
 
-/// EG2-11/EG2-1: `apply_evolution` zeroes ALL EIGHT essence pools and preserves
+/// `apply_evolution` zeroes ALL EIGHT essence pools and preserves
 /// every Trust / Quality-Time / bookkeeping column, called DIRECTLY (not through
 /// `evolve()`'s guard prologue).
 ///
@@ -1426,7 +1404,7 @@ fn apply_evolution_zeroes_all_eight_pools_and_preserves_trust_and_quality_time()
     );
 }
 
-/// EG2-11/EG1-8: `apply_evolution` sets `MonsterPub.tier` from a FRESH lookup of
+/// `apply_evolution` sets `MonsterPub.tier` from a FRESH lookup of
 /// the path's `to_species` row — not from the (stale) public row, not from the
 /// path, not a default.
 ///
@@ -1438,7 +1416,7 @@ fn apply_evolution_zeroes_all_eight_pools_and_preserves_trust_and_quality_time()
 /// `species_row(path.to_species).tier` read produces 2.
 ///
 /// kills: tier copy-forward / fabrication at the one call site that must read
-///        fresh (A3, ADR-0174 D7).
+///        fresh.
 #[test]
 fn apply_evolution_sets_pub_tier_from_fresh_target_species_lookup() {
     let owner = owner_id();
@@ -1465,7 +1443,7 @@ fn apply_evolution_sets_pub_tier_from_fresh_target_species_lookup() {
 }
 
 // ===========================================================================
-// EG2-1 message layer — NOTE ON OWNERSHIP.
+// NOTE ON OWNERSHIP.
 //
 // `unmet_requirement` lives in GAME-CORE (`game_core::unmet_requirement`), NOT
 // in `evolution.rs`: it is a pure function of (instance, path), and keeping it
@@ -1504,7 +1482,7 @@ pub(crate) fn evolve_seam(
         return Err("not owner".to_string());
     }
 
-    // Both-role battle guard (ADR-0122): chain the opponent_identity iterator so a
+    // Both-role battle guard: chain the opponent_identity iterator so a
     // monster whose owner sits on side B of an ongoing PvP battle is caught.
     crate::guards::reject_if_in_battle(
         db.get_battles()
@@ -1513,7 +1491,7 @@ pub(crate) fn evolve_seam(
         monster_id,
     )?;
 
-    // Trade escrow guard (TR-2, ADR-0106) — both roles, same chain shape.
+    // Trade escrow guard — both roles, same chain shape.
     crate::guards::reject_if_monster_in_trade(
         db.get_trade_offers()
             .filter(|t| t.initiator == sender)
@@ -1521,7 +1499,7 @@ pub(crate) fn evolve_seam(
         monster_id,
     )?;
 
-    // EG2-1: ONE targeted row, keyed on BOTH endpoints (production reads the
+    // ONE targeted row, keyed on BOTH endpoints (production reads the
     // from_species btree index and compares to_species).
     let Some(path_row) = db
         .find_evolution_path(m.species_id, to_species)
@@ -1536,7 +1514,7 @@ pub(crate) fn evolve_seam(
 
     let instance = crate::marshal::monster_to_instance(&m)?;
 
-    // The SHARED gate predicate (EG1-11) makes the decision; game-core's
+    // The SHARED gate predicate makes the decision; game-core's
     // describer only turns a failure into a sentence. Both are pure and live in
     // game-core, so `evolution.rs` never touches a gate field.
     if !game_core::path_satisfied(&instance, &path) {
@@ -1544,19 +1522,19 @@ pub(crate) fn evolve_seam(
             .unwrap_or_else(|| "evolution requirements not met".to_string()));
     }
 
-    // EG2-11: the transform-and-write is DELEGATED — the disambiguation path and
+    // The transform-and-write is DELEGATED — the disambiguation path and
     // the auto-evolution path apply an evolution through exactly one helper.
     apply_evolution_seam(db, monster_id, &path_row)
 }
 
 /// Pure `apply_evolution` seam: mirrors
-/// `apply_evolution(ctx, monster_id, path: &EvolutionPathRow)` (EG2-11) against a
+/// `apply_evolution(ctx, monster_id, path: &EvolutionPathRow)` against a
 /// `TestEvolutionDb`.
 ///
-/// Deliberately guard-free (EG2-12 Guard warning) and deliberately re-reading the
+/// Deliberately guard-free and deliberately re-reading the
 /// monster row itself: production takes only `(ctx, monster_id, path)`, so a
 /// caller can never hand it a stale in-memory copy — which is what makes the
-/// chain (EG2-13) safe to run step after step.
+/// chain safe to run step after step.
 pub(crate) fn apply_evolution_seam(
     db: &mut TestEvolutionDb,
     monster_id: u64,
@@ -1567,7 +1545,7 @@ pub(crate) fn apply_evolution_seam(
     };
     let instance = crate::marshal::monster_to_instance(&m)?;
 
-    // FRESH target-species lookup — the tier source (EG1-8) and the transform's
+    // FRESH target-species lookup — the tier source and the transform's
     // base stats both come from it.
     let Some(to_species_row) = db.get_species(path.to_species).cloned() else {
         return Err(format!("target species {} not found", path.to_species));
@@ -1575,7 +1553,7 @@ pub(crate) fn apply_evolution_seam(
     let target = crate::marshal::species_from_row(&to_species_row)?;
 
     // Pure transform: carries individuality, re-derives stats, clamps HP, and
-    // zeroes all 8 essence pools (ADR-0174 D2).
+    // zeroes all 8 essence pools.
     let transformed = game_core::evolve(&instance, &target);
 
     m.species_id = transformed.species_id;
@@ -1598,7 +1576,7 @@ pub(crate) fn apply_evolution_seam(
     m.essence_dark = transformed.essence[Affinity::Dark.index()];
     // Trust and Quality-Time are lifetime history — untouched on purpose.
 
-    // 20r-d (ADR-0254 D4): bind the owner and the transaction stamp BEFORE the
+    // Bind the owner and the transaction stamp BEFORE the
     // write-back moves `m` — production binds `owner` immediately after its own
     // `find` for exactly this reason.
     let owner = m.owner_identity;
@@ -1609,7 +1587,7 @@ pub(crate) fn apply_evolution_seam(
     db.update_monster(m);
     db.update_monster_pub(pub_row);
 
-    // 20r-d (ADR-0254 D4): ONE reveal entry per applied edge, AFTER the
+    // ONE reveal entry per applied edge, AFTER the
     // dual-write and inside the same helper (= the same transaction in
     // production). The species come from the IMMUTABLE `path` argument, never
     // from the monster row — the row has already been transformed above, so
@@ -1632,19 +1610,18 @@ pub(crate) fn apply_evolution_seam(
 }
 
 /// Pure `check_and_evolve` seam: mirrors `check_and_evolve(ctx, monster_id)`
-/// (EG2-11/EG2-13) against a `TestEvolutionDb`.
+/// against a `TestEvolutionDb`.
 ///
 /// Production returns `()`. This seam returns the number of chain steps applied
 /// — the ONLY observable that distinguishes "cascaded once" from "cascaded three
-/// times" from "spun to the cap", which is precisely what EG2-13 legislates. The
-/// cap itself is the PRODUCTION constant, so the seam cannot encode a bound the
-/// reducer does not have.
+/// times" from "spun to the cap". The cap itself is the PRODUCTION constant, so
+/// the seam cannot encode a bound the reducer does not have.
 ///
 /// Mirrors production step for step: fresh find (missing -> silent stop), the
 /// `from_species`-filtered DB rows converted through the REAL
 /// `marshal::evolution_path_from_row`, the REAL
 /// `game_core::eligible_evolution_paths`, 0 or 2+ -> stop, exactly 1 -> apply,
-/// then loop against the NEW species. NO battle/trade/ownership guard (EG2-12).
+/// then loop against the NEW species. NO battle/trade/ownership guard.
 pub(crate) fn check_and_evolve_seam(db: &mut TestEvolutionDb, monster_id: u64) -> usize {
     let cap = usize::try_from(crate::evolution::MAX_EVOLUTION_CHAIN_STEPS)
         .expect("the chain cap must fit a usize");
@@ -1670,8 +1647,8 @@ pub(crate) fn check_and_evolve_seam(db: &mut TestEvolutionDb, monster_id: u64) -
             return steps;
         };
 
-        // THE decision: the shared full-set query (EG2-11), never a hand-rolled
-        // first-match. 0 -> chain ends; 2+ -> the player owns the choice (EG2-2).
+        // THE decision: the shared full-set query, never a hand-rolled
+        // first-match. 0 -> chain ends; 2+ -> the player owns the choice.
         let eligible = game_core::eligible_evolution_paths(&instance, &candidate_paths);
         if eligible.len() != 1 {
             return steps;
@@ -1682,8 +1659,8 @@ pub(crate) fn check_and_evolve_seam(db: &mut TestEvolutionDb, monster_id: u64) -
         steps += 1;
     }
 
-    // Cap reached: production ALSO emits a distinct log::error! here (ADR-0175
-    // D3) — an R5/R11 invariant violation shipped in content.
+    // Cap reached: production ALSO emits a distinct log::error! here
+    // — an R5/R11 invariant violation shipped in content.
     steps
 }
 
@@ -1702,7 +1679,7 @@ pub struct TestEvolutionDb {
     pub evolution_paths: Vec<EvolutionPathRow>,
     pub battles: Vec<Battle>,
     pub trade_offers: Vec<TradeOffer>,
-    /// 20r-d (ADR-0254 D4): the `pending_evolution_notice` table, one row per
+    /// The `pending_evolution_notice` table, one row per
     /// owner. A `Vec` and not a `HashMap<Identity, _>` ON PURPOSE — the row is
     /// found by an `owner_identity` comparison, which needs only the `PartialEq`
     /// this file already relies on (`m.owner_identity != sender` in
@@ -1710,7 +1687,7 @@ pub struct TestEvolutionDb {
     /// nothing to do with the behaviour under test. At most one row per owner is
     /// an INVARIANT of `push_notice` below, exactly as the PK is in production.
     pub notices: Vec<crate::schema::PendingEvolutionNotice>,
-    /// 20r-d: the injected transaction clock. Production stamps every entry with
+    /// The injected transaction clock. Production stamps every entry with
     /// `crate::marshal::now_ms(ctx)`, which is constant within one reducer call —
     /// so ONE value per seam run is the faithful model, and it is what makes
     /// "the stamp is the transaction clock, not a per-step wall-clock read"
@@ -1735,7 +1712,7 @@ impl TestEvolutionDb {
         }
     }
 
-    /// 20r-d (ADR-0254 D4): append ONE reveal entry to `owner`'s notice row,
+    /// Append ONE reveal entry to `owner`'s notice row,
     /// creating the row when the owner holds none. Mirrors production's
     /// find-then-push-or-insert upsert; never replaces an existing entry list
     /// (a replace is the "second evolution loses the first" bug).
@@ -1750,8 +1727,8 @@ impl TestEvolutionDb {
         });
     }
 
-    /// 20r-d: `owner`'s pending reveal entries, in Vec order (= display order,
-    /// EG2-13). An owner with no row reads as an EMPTY list, never a panic — the
+    /// `owner`'s pending reveal entries, in Vec order (= display order).
+    /// An owner with no row reads as an EMPTY list, never a panic — the
     /// distinction the tests below rely on when they assert that a notice is
     /// keyed by the MONSTER's owner and by nobody else.
     pub fn notices_for(&self, owner: Identity) -> Vec<crate::schema::EvolutionRevealRow> {
@@ -1834,7 +1811,7 @@ impl TestEvolutionDb {
             .find(|p| p.from_species == from && p.to_species == to)
     }
 
-    /// The FULL-SET lookup (EG2-11): every outgoing edge of `from`, in insertion
+    /// The FULL-SET lookup: every outgoing edge of `from`, in insertion
     /// order. Mirrors the production `evolution_path().from_species().filter(..)`
     /// btree read that `check_and_evolve` collects into a Vec.
     ///
@@ -1859,12 +1836,7 @@ impl TestEvolutionDb {
 }
 
 // ===========================================================================
-// 20r-d (ADR-0254) — POST-EVOLVE NOTIFICATION. EARS B1, server half.
-//
-// EARS criterion covered (spec M-postgate-twentieth-review-residuals §20r-d B1):
-//   WHEN a monster evolves (player-invoked OR auto), an evolution reveal record
-//   SHALL be written to the owner's pending-notification queue in the SAME
-//   transaction, and the owner SHALL be able to acknowledge a prefix of it.
+// POST-EVOLVE NOTIFICATION.
 //
 // WITNESSES: the SEAM observes "one entry per applied edge, in chain order,
 // stamped with the transaction clock, filed under the MONSTER's owner"; the
@@ -1892,8 +1864,7 @@ fn s20rd_reveal(
 }
 
 /// The `(from_species, to_species)` pairs of `owner`'s notice entries, in Vec
-/// order — the shape the chain test reasons about (Vec order IS display order,
-/// EG2-13).
+/// order — the shape the chain test reasons about (Vec order IS display order).
 fn s20rd_pairs(db: &TestEvolutionDb, owner: Identity) -> Vec<(u32, u32)> {
     db.notices_for(owner)
         .iter()
@@ -1902,7 +1873,7 @@ fn s20rd_pairs(db: &TestEvolutionDb, owner: Identity) -> Vec<(u32, u32)> {
 }
 
 // ---------------------------------------------------------------------------
-// T1 — EXECUTED: the pure prefix-drain core.
+// the pure prefix-drain core.
 //
 // THE THREE REJECTION MESSAGES ARE PINNED WHOLE, NOT BY SUBSTRING.
 //
@@ -1913,7 +1884,7 @@ fn s20rd_pairs(db: &TestEvolutionDb, owner: Identity) -> Vec<(u32, u32)> {
 // leaves the rest of the sentence free to drift, and the moment it does the
 // client's transcription stops matching: both benign races start surfacing as
 // errors, and no test in either half notices. The client fixtures in
-// `client/src/ui/evolutionNotice.test.ts` (EN-BENIGN-1) are TRANSCRIPTIONS of
+// `client/src/ui/evolutionNotice.test.ts` are TRANSCRIPTIONS of
 // exactly these five literals.
 //
 // THE THREE `exceeds` LITERALS CARRY DIFFERENT NUMBERS ON PURPOSE: an
@@ -1934,7 +1905,7 @@ const S20RD_ERR_4_OF_3: &str = "ack count 4 exceeds 3 pending evolution notices"
 const S20RD_ERR_1_OF_0: &str = "ack count 1 exceeds 0 pending evolution notices";
 const S20RD_ERR_3_OF_2: &str = "ack count 3 exceeds 2 pending evolution notices";
 
-/// 20r-d (ADR-0254 D5): the REAL `crate::evolution::ack_prefix` truth table.
+/// The REAL `crate::evolution::ack_prefix` truth table.
 ///
 /// NO MIRROR: this executes the shipped production function. A seam copy could
 /// drift from it silently, and the arithmetic IS the criterion ("acknowledge a
@@ -1944,7 +1915,7 @@ const S20RD_ERR_3_OF_2: &str = "ack count 3 exceeds 2 pending evolution notices"
 ///  - `count == 0` accepted as a no-op success: the client's benign-rejection
 ///    filter would then never see the bug that produced a zero count, and a
 ///    zero-count ack is always a client defect worth surfacing;
-///  - `count > len` CLAMPED instead of rejected (the ADR's named anti-pattern):
+///  - `count > len` CLAMPED instead of rejected:
 ///    a stale banner in a second tab would drain entries that tab never showed;
 ///  - `drain(..1)` / `remove(0)` ignoring `count` entirely — the `count == len`
 ///    and `count < len` arms both catch it;
@@ -2051,19 +2022,18 @@ fn s20rd_ack_prefix_truth_table() {
 }
 
 // ---------------------------------------------------------------------------
-// T2 — BEHAVIOURAL: the seam.
+// the seam.
 //
 // ⚠ HONESTY, STATED ONCE FOR THE THREE `s20rd_seam_*` TESTS BELOW. The seam is a
 // MIRROR of production, not production. `apply_evolution_seam` carries its own
-// copy of the notice push (added by this slice, a few hundred lines above), so a
-// production `apply_evolution` that writes NO notice at all leaves all three
-// tests GREEN. What they prove is the SHAPE of the write — one entry per applied
-// edge, in chain order, pre/post species off the immutable `path`, one shared
-// transaction stamp, filed under the MONSTER's owner and nobody else's — which
-// is precisely what no source scan can see and what the wasm-only production
-// path cannot be executed for in `cargo test`.
+// copy of the notice push, so a production `apply_evolution` that writes NO
+// notice at all leaves all three tests GREEN. What they prove is the SHAPE of
+// the write — one entry per applied edge, in chain order, pre/post species off
+// the immutable `path`, one shared transaction stamp, filed under the MONSTER's
+// owner and nobody else's — which is precisely what no source scan can see and
+// what the wasm-only production path cannot be executed for in `cargo test`.
 //
-// THE WRITE SITE ITSELF IS PROVEN ELSEWHERE, and that split is load-bearing:
+// THE WRITE SITE ITSELF IS PROVEN ELSEWHERE:
 //   * `s20rd_apply_evolution_writes_the_notice_after_the_dual_write` pins that
 //     production's `apply_evolution` performs the push at all, after the
 //     dual-write, from the `path` argument, under the monster row's owner;
@@ -2074,7 +2044,7 @@ fn s20rd_ack_prefix_truth_table() {
 // Read the three together; none of them substitutes for another.
 // ---------------------------------------------------------------------------
 
-/// 20r-d (ADR-0254 D4): a player-invoked evolution appends EXACTLY ONE reveal
+/// A player-invoked evolution appends EXACTLY ONE reveal
 /// entry, carrying the pre/post species from the authored edge, the monster id,
 /// and the transaction clock — filed under the MONSTER's owner.
 ///
@@ -2117,9 +2087,9 @@ fn s20rd_seam_player_evolve_writes_one_notice() {
     );
 }
 
-/// 20r-d (ADR-0254 D4 + EG2-13): a 3-step auto-evolution chain appends THREE
-/// entries whose (from, to) pairs are the three applied edges IN ORDER, all
-/// stamped with the SAME transaction clock, all filed under the monster's owner.
+/// A 3-step auto-evolution chain appends THREE entries whose (from, to) pairs
+/// are the three applied edges IN ORDER, all stamped with the SAME transaction
+/// clock, all filed under the monster's owner.
 ///
 /// THE AUTO PATH IS THE SENDER-INDEPENDENCE WITNESS: `check_and_evolve_seam`
 /// takes no caller at all, exactly as production's `check_and_evolve(ctx,
@@ -2130,7 +2100,7 @@ fn s20rd_seam_player_evolve_writes_one_notice() {
 ///
 /// kills: a chain that writes one entry for the whole cascade (the player would
 ///        be told about the first step and never the other two); entries in
-///        reverse order (Vec order IS display order, EG2-13); a per-step clock
+///        reverse order (Vec order IS display order); a per-step clock
 ///        read (the three stamps would differ); the sender-keyed owner.
 #[test]
 fn s20rd_seam_auto_evolve_chain_writes_entries_in_order() {
@@ -2204,7 +2174,7 @@ fn s20rd_seam_auto_evolve_chain_writes_entries_in_order() {
     );
 }
 
-/// 20r-d (ADR-0254 D4): a SECOND evolution APPENDS to the owner's existing row —
+/// A SECOND evolution APPENDS to the owner's existing row —
 /// it never replaces the entry list and never opens a second row.
 ///
 /// kills: an upsert that writes `entries: vec![entry]` on the update arm (the
@@ -2255,17 +2225,17 @@ fn s20rd_seam_second_evolution_appends_not_replaces() {
 }
 
 // ---------------------------------------------------------------------------
-// T2 — EXECUTED: the ack reducer's three refusal paths (rb-41 native host).
+// the ack reducer's three refusal paths.
 //
 // The dummy sender is the ALL-ZERO identity (native_host_tests.rs module doc),
 // so "the caller's row" is seeded under `[0u8; 32]` and "somebody else's row"
 // under `[1u8; 32]`. Every WRITE syscall aborts the PROCESS, so only paths that
-// return `Err` BEFORE the `.update(` are executable here — which is exactly the
-// set of refusals D5 legislates. `database_identity()` is unstubbed in this host
+// return `Err` BEFORE the `.update(` are executable here.
+// `database_identity()` is unstubbed in this host
 // and is never reached by this reducer.
 // ---------------------------------------------------------------------------
 
-/// 20r-d (ADR-0254 D5): `ack_evolution_notices` refuses when the CALLER holds no
+/// `ack_evolution_notices` refuses when the CALLER holds no
 /// row, even while another player's queue is non-empty.
 ///
 /// kills: an ack that acts on the first row of the table instead of the sender's
@@ -2312,7 +2282,7 @@ fn s20rd_ack_rejects_when_no_row_for_sender() {
     );
 }
 
-/// 20r-d (ADR-0254 D5): a ZERO count is refused even though the caller's row
+/// A ZERO count is refused even though the caller's row
 /// exists and is non-empty.
 ///
 /// kills: `count == 0` treated as a no-op success (a client bug that sends zero
@@ -2350,7 +2320,7 @@ fn s20rd_ack_rejects_zero_count() {
     );
 }
 
-/// 20r-d (ADR-0254 D5): a count ABOVE the caller's queue length is refused
+/// A count ABOVE the caller's queue length is refused
 /// rather than clamped.
 ///
 /// PROOF-OF-TEETH: the caller's queue holds exactly two entries and the count is
@@ -2394,25 +2364,22 @@ fn s20rd_ack_rejects_count_above_len() {
     );
 }
 
-/// 20r-d (ADR-0254 D5): `has_evolution_notices` answers ROW-EXISTS, per ASKED
+/// `has_evolution_notices` answers ROW-EXISTS, per ASKED
 /// owner, from LIVE rows — and the guest-claim predicate consumes it.
 ///
 /// WHY THIS ONE IS EXECUTABLE WHERE ITS TWO SIBLINGS ARE NOT: it is READ-ONLY,
-/// so it never reaches the unmodelled write syscalls that abort the rb-41 native
-/// host. That makes it the only lifecycle helper whose BEHAVIOUR can be proven
+/// so it never reaches the unmodelled write syscalls that abort.
+/// That makes it the only lifecycle helper whose BEHAVIOUR can be proven
 /// in `cargo test`, and the only one where a hollowed body ("perform the read,
-/// then return a constant") is invisible to every source scan — the exact
-/// ADR-0222 known-limit rb-41 exists to close.
+/// then return a constant") is invisible to every source scan.
 ///
 /// THE EMPTY-ENTRIES ROW IS THE WHOLE POINT. An ack NEVER deletes the row (an
-/// empty `Vec` persists, like `player_wallet` — ADR-0254 D4), so "row present,
+/// empty `Vec` persists, like `player_wallet`), so "row present,
 /// entries empty" is the NORMAL state of every player who has dismissed their
 /// last reveal. If this predicate answered `!entries.is_empty()` it would drop
 /// that player out of `account_has_game_data`, and `complete_guest_claim`'s
 /// guard 11 would then admit a claim whose rekey inserts INTO an occupied
-/// primary key — a wasm trap on a path the player cannot retry. That is what
-/// makes the no-merge rekey sound, and it is why D5 says ROW-EXISTS in as many
-/// words.
+/// primary key — a wasm trap on a path the player cannot retry.
 ///
 /// THE ASKED OWNER IS `[1u8; 32]`, NEVER THE DUMMY SENDER. The native host's
 /// `ctx.sender()` is the all-zero identity, so a body keyed on the SENDER rather
@@ -2421,7 +2388,7 @@ fn s20rd_ack_rejects_count_above_len() {
 /// this for somebody who is not the caller).
 ///
 /// kills:
-///  - the ADR-0222 known-limit hollow, `{ let _ = <the read>; false }`: the
+///  - `{ let _ = <the read>; false }`: the
 ///    owner-row assertion goes red while every source scan stays green;
 ///  - the inverted hollow, `{ let _ = <the read>; true }`: the empty-table and
 ///    stranger-only assertions go red;
@@ -2539,15 +2506,14 @@ fn s20rd_has_evolution_notices_is_row_exists() {
 }
 
 // ===========================================================================
-// Native-host behavioural suite (debloat Phase 2: EV-evolution-reducer-security,
-// ST-evolution_tests#evolve-reducer-guards, ST-evolution_tests#view-scope-erase).
+// Native-host behavioural suite.
 //
 // Every case runs the SHIPPED reducer / helper through `Fixture::run_as(_at)`
 // against the tables it reads through their real indexes (the seam suite above
 // runs a hand mirror). HOST LIMIT: no transaction rollback, so a rejection is
 // asserted as refusal BEFORE any write (the whole store byte-identical). The
 // owner-scoped `my_pending_evolution_notices` view is a private fn in schema.rs
-// and cannot be called from here (residual; Phase-3 candidate: pub(crate)).
+// and cannot be called from here.
 // ===========================================================================
 mod nh {
     use crate::evolution::{

@@ -1,26 +1,17 @@
-//! `monster_mgmt_tests` — rb-41 gating test for the REKEY exists-predicate
-//! `monster_mgmt::has_monsters`, authored from the EARS criterion R-rb-25-X9
-//! (the ADR-0222 known-limit 2 residual, closed by the ADR-0224 migration to a
-//! native host).
+//! `monster_mgmt_tests` the REKEY exists-predicate
+//! `monster_mgmt::has_monsters`.
 //!
 //! Declared from `monster_mgmt.rs` as a cfg(test)
-//! `#[path = "monster_mgmt_tests.rs"] mod monster_mgmt_tests;` (the attribute is
-//! not spelled here on purpose — see native_host_tests.rs on the
-//! monster-privacy `[SCOPE]` raw-text branch)
+//! `#[path = "monster_mgmt_tests.rs"] mod monster_mgmt_tests;`
 //! so `super` resolves to the `monster_mgmt` module (this file uses absolute
 //! `crate::` paths throughout, so nothing here depends on that resolution).
 //!
-//! WHY IT EXISTS. ADR-0222's guest-claim-integrity gate could only READ the
-//! predicate's source, so a HOLLOWED body — one that still performs the table
-//! read but returns a value decoupled from it — passed every check. The test
-//! below runs the shipped predicate against the in-memory host
-//! (`native_host_tests`, ADR-0224) and pins its answer to the rows that
-//! actually exist, which no source scan can do. Rows are seeded and removed
-//! through the fixture handle, never through a database write path; every
-//! monster write in this file is a SHIPPED function's own (via the host's opt-in
-//! write path), and seeded projections are built by the shipped
-//! `marshal::pub_from_monster`. The `dw_` roster at the end is the
-//! EV-monster-dual-write replacement.
+//! The test below runs the shipped predicate against the in-memory host
+//! (`native_host_tests`) and pins its answer to the rows that actually exist,
+//! which no source scan can do. Rows are seeded and removed through the fixture
+//! handle, never through a database write path; every monster write in this file
+//! is a SHIPPED function's own (via the host's opt-in write path), and seeded
+//! projections are built by the shipped `marshal::pub_from_monster`.
 
 use crate::native_host_tests::fixture;
 use crate::schema::Monster;
@@ -81,7 +72,7 @@ fn rb41_owned_monster(owner: Identity, monster_id: u64) -> Monster {
     }
 }
 
-/// EARS R-rb-25-X9: `monster_mgmt::has_monsters` must answer from the CURRENT
+/// `monster_mgmt::has_monsters` must answer from the CURRENT
 /// rows of the private monster table, for the ASKED owner — false with no row,
 /// false while only a stranger owns one, true once the owner owns one, false
 /// again once the owner's row is gone (while the stranger's row survives). The
@@ -91,7 +82,7 @@ fn rb41_owned_monster(owner: Identity, monster_id: u64) -> Monster {
 /// has ever pressed play.
 ///
 /// kills:
-///   - the ADR-0222 known-limit hollow, `{ let _ = <the monster read>; false }`:
+///   - `{ let _ = <the monster read>; false }`:
 ///     the owner-row assertion goes red while every source scan stays green.
 ///   - the inverted hollow, `{ let _ = <the monster read>; true }`: the
 ///     empty-table assertion goes red.
@@ -239,14 +230,13 @@ fn nh_set_nickname_refuses_a_stranger_and_admits_the_owner() {
 }
 
 // ===========================================================================
-// EV-monster-dual-write — the hand-enumerated site roster (debloat Phase 2).
+// the hand-enumerated site roster.
 //
 // Every production function that writes the private `monster` table also writes
 // its `monster_pub` projection. The roster below was enumerated from production
 // source (whitespace-insensitive scan of every `.monster()` / `.monster_pub()`
-// insert/update/delete outside *_tests.rs): 20 sites in 19 functions. Per the
-// trade-escrow precedent (47a75b0, Phase 2 ruling: hand-enumerated rosters, not a
-// text census) each site is DRIVEN here — or in the suite named beside it — and
+// insert/update/delete outside *_tests.rs): 20 sites in 19 functions.
+// each site is DRIVEN here — or in the suite named beside it — and
 // the store is checked with one oracle: the projection id set equals the private
 // id set, and each projection is exactly `pub_from_monster(private, its tier)`.
 // Each test also proves the site actually wrote (a no-op keeps any mirror green).
@@ -262,8 +252,6 @@ fn nh_set_nickname_refuses_a_stranger_and_admits_the_owner() {
 //   pvp.rs write_back_party_hp_pvp_side_b (via forfeit_on_disconnect) -> dw_pvp_side_b_site
 //   content.rs sync_content_inner (re-derive pass)                   -> dw_sync_content_site
 //
-// FUTURE mutators are not covered by a list; the Phase 3 simplification pass is
-// to evaluate a production single-writer helper (the fn-hunt condition).
 // ===========================================================================
 
 use crate::native_host_tests::{Fixture, Handle};

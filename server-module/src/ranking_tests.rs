@@ -1,4 +1,4 @@
-//! `ranking` domain-submodule tests — m17a (ADR-0119) + m17.5d (ADR-0125) + the
+//! `ranking` domain-submodule tests — m17a + m17.5d + the
 //! M21/M22 profile re-key and tombstone seams.
 //!
 //! Declared from `server-module/src/ranking.rs` as:
@@ -17,7 +17,7 @@ use spacetimedb::Identity;
 // ---------------------------------------------------------------------------
 // RL-4 seed constant pin
 //
-// game_core::INITIAL_RATING is the SSOT for the starting rating (ADR-0119 D1).
+// game_core::INITIAL_RATING is the SSOT for the starting rating.
 // get_or_init_profile must use this constant, not the literal 1000 (which is
 // enforced by the pvp_tests.rs (e-iii) SSOT scan on the stripped source).
 //
@@ -60,7 +60,7 @@ fn make_profile(id_byte: u8, name: &str, rating: i32, wins: u32, losses: u32) ->
     }
 }
 
-/// EARS 17.5d-1: When a live player name is present (`Some`), `refresh_profile_name`
+/// When a live player name is present (`Some`), `refresh_profile_name`
 /// must replace the profile's name and leave all other fields unchanged.
 ///
 /// Kills:
@@ -97,9 +97,9 @@ fn d1_refresh_replaces_name_when_live_present() {
     );
 }
 
-/// EARS 17.5d-1: When the live player row is absent (`None`), `refresh_profile_name`
+/// When the live player row is absent (`None`), `refresh_profile_name`
 /// must return the profile completely unchanged — preserving the last-known name
-/// even during a disconnect-forfeit race (ADR-0125 D1).
+/// even during a disconnect-forfeit race.
 ///
 /// Kills:
 ///   - refresh uses `unwrap_or_default()` on `None`, clobbering the name with ""
@@ -136,11 +136,10 @@ fn d1_refresh_keeps_name_when_absent() {
     );
 }
 
-/// EARS 17.5d-1: Idempotency — refreshing with the same name is a no-op.
+/// Idempotency — refreshing with the same name is a no-op.
 ///
 /// Guards against an inequality-gated refactor that special-cases same-name
 /// Some and accidentally changes other fields or returns a different struct.
-/// (No distinct mutant column claimed; see ADR-0125 reviewer N-2.)
 #[test]
 fn d1_refresh_idempotent_same_name() {
     let original = make_profile(3, "SameName", 1000, 0, 0);
@@ -157,12 +156,12 @@ fn d1_refresh_idempotent_same_name() {
     assert_eq!(result.losses, 0, "idempotent: losses unchanged.");
 }
 
-/// EARS 17.5d-2: A renamed player who wins a rated game must have the NEW name
+/// A renamed player who wins a rated game must have the NEW name
 /// persisted in the winner update row.
 ///
 /// Composes `refresh_profile_name` through the apply_pvp_rating-shaped spread
 /// construction — exactly `Profile { rating: new_r, wins: refreshed.wins.saturating_add(1),
-/// ..refreshed }` — to prove the spread propagates the refreshed name (reviewer W-5).
+/// ..refreshed }` — to prove the spread propagates the refreshed name.
 ///
 /// Kills:
 ///   - name dropped by the `..winner` spread (spread uses stale pre-refresh copy)
@@ -205,11 +204,11 @@ fn d2_rename_then_rated_surfaces_new_name_winner_side() {
     );
 }
 
-/// EARS 17.5d-2: A renamed player who LOSES a rated game must have the NEW name
+/// A renamed player who LOSES a rated game must have the NEW name
 /// persisted in the loser update row.
 ///
 /// Mirrors d2_rename_then_rated_surfaces_new_name_winner_side for the loser path
-/// (red-team F2 closure at the executed level: both roles must surface the new name).
+/// (both roles must surface the new name).
 ///
 /// Kills:
 ///   - name dropped by the `..loser` spread (spread uses stale pre-refresh copy)
@@ -253,7 +252,7 @@ fn d2_rename_then_rated_surfaces_new_name_loser_side() {
 }
 
 // ===========================================================================
-// M21a AUTH-25 (ADR-0179 D6): guest->account profile re-key. Stats are copied
+// M21a AUTH-25: guest->account profile re-key. Stats are copied
 // FORWARD onto the destination row, then the guest's own row is ZEROED and its
 // name tombstoned in place (never deleted). The zero step is load-bearing, not
 // cosmetic — it is the CRITICAL unbounded ranked-stat duplication path.
@@ -262,7 +261,7 @@ fn d2_rename_then_rated_surfaces_new_name_loser_side() {
 //   tombstoned_profile / profile_with_carried_stats / PROFILE_TOMBSTONE_NAME.
 // ===========================================================================
 
-/// AUTH-25 (pure) — THE SINGLE MOST IMPORTANT TOOTH IN M21a: `tombstoned_profile`
+/// THE SINGLE MOST IMPORTANT TOOTH: `tombstoned_profile`
 /// zeroes rating/wins/losses AND overwrites the name with the tombstone constant,
 /// preserving the guest identity (the row is RETAINED, never deleted).
 ///
@@ -292,7 +291,7 @@ fn auth25_tombstoned_profile_zeroes_all_stats_and_tombstones_name() {
     );
 }
 
-/// AUTH-25 (pure): `profile_with_carried_stats` copies the three stats onto the
+/// `profile_with_carried_stats` copies the three stats onto the
 /// DESTINATION row while preserving the destination's OWN identity and name.
 ///
 /// Kills (proof-of-teeth): a mutant that copies the guest's `name` onto the
@@ -346,17 +345,16 @@ fn auth25_tombstone_name_is_bounded_and_untypable() {
 }
 
 // ===========================================================================
-// RB7 — slice rb-7 (M22 §3 vs. M21 AUTH-25 / ADR-0179 D6): single-sourcing
-// the deletion-tombstone display name in game-core, and pinning the M21
-// guest-claim sentinel (`PROFILE_TOMBSTONE_NAME`, declared above) as
-// module-private so S3 cannot reach for it by mistake.
+// single-sourcing the deletion-tombstone display name in game-core, and
+// pinning the M21 guest-claim sentinel (`PROFILE_TOMBSTONE_NAME`, declared
+// above) as module-private so S3 cannot reach for it by mistake.
 //
 // B1/B2 are EXECUTED pins over the live `game_core::TOMBSTONE_DISPLAY_NAME`
 // constant (mirroring the AUTH-25 `auth25_tombstone_name_is_bounded_and_
 // untypable` pin above, for the DISTINCT M22 deletion sentinel).
 // ===========================================================================
 
-/// RB7-B1 (M22 §3): the game-core deletion tombstone `TOMBSTONE_DISPLAY_NAME`
+/// the game-core deletion tombstone `TOMBSTONE_DISPLAY_NAME`
 /// is non-blank, fits the display-name cap, and is deliberately UN-TYPABLE —
 /// `guards::validate_name` rejects it — mirroring the AUTH-25
 /// `auth25_tombstone_name_is_bounded_and_untypable` pin above for the
@@ -394,24 +392,24 @@ fn rb7_deletion_tombstone_is_bounded_and_untypable() {
     );
 }
 
-/// RB7-B2 (M22 §3 vs. M21 AUTH-25): the M22 deletion tombstone
-/// (`game_core::TOMBSTONE_DISPLAY_NAME`, read via the FLAT crate-root path —
-/// this assertion doubles as the cross-crate flat-reachability pin, which is
-/// why it must not be the deep `game_core::accounts::deletion::...` path)
-/// must be distinct from the M21 guest-claim tombstone
-/// (`super::PROFILE_TOMBSTONE_NAME`), on LIVE symbols on both sides.
+/// the M22 deletion tombstone (`game_core::TOMBSTONE_DISPLAY_NAME`, read via
+/// the FLAT crate-root path — this assertion doubles as the cross-crate
+/// flat-reachability pin, which is why it must not be the deep
+/// `game_core::accounts::deletion::...` path) must be distinct from the M21
+/// guest-claim tombstone (`super::PROFILE_TOMBSTONE_NAME`), on LIVE symbols
+/// on both sides.
 ///
 /// A bare `assert_ne!` alone is not enough: `"(Claimed guest)"`
 /// (case-folded) and `"(claimed  guest)"` (internal-whitespace-squashed)
 /// are both `!=` the original value yet reproduce exactly the "a deleted
 /// account reads as an unclaimed guest" confusion this criterion exists to
-/// prevent (measured red-team finding #12). So this test ALSO asserts
-/// distinctness survives case-folding AND whitespace-squashing together.
+/// prevent. So this test ALSO asserts distinctness survives case-folding AND
+/// whitespace-squashing together.
 ///
 /// kills: TOMBSTONE_DISPLAY_NAME accidentally set to the live
 /// PROFILE_TOMBSTONE_NAME value (direct collision, caught by the bare
 /// assert_ne!); a near-miss value that only differs by case or by internal
-/// whitespace from PROFILE_TOMBSTONE_NAME (finding #12 — a deleted account
+/// whitespace from PROFILE_TOMBSTONE_NAME (a deleted account
 /// would still read as an unclaimed guest to any case-insensitive or
 /// whitespace-normalizing leaderboard consumer, caught only by the
 /// fold-then-compare assertion).
@@ -443,7 +441,7 @@ fn rb7_deletion_tombstone_is_distinct_from_guest_claim() {
 }
 
 // ===========================================================================
-// m22-s3b (ADR-0228) — THE DISPLAY-NAME ANONYMIZE STEP, AND THE §4.7 GATE ON
+// THE DISPLAY-NAME ANONYMIZE STEP, AND THE §4.7 GATE ON
 // THE ONE REDUCER THAT COULD UNDO IT.
 //
 // EARS criteria:
@@ -455,7 +453,7 @@ fn rb7_deletion_tombstone_is_distinct_from_guest_claim() {
 //            without which a still-connected terminal session un-tombstones its
 //            own display name one call after the cascade, hollowing PRV1-6c.
 //
-// WHY THIS MODULE OWNS THE STEP (ADR-0228 D1): `player` has no single owning
+// WHY THIS MODULE OWNS THE STEP: `player` has no single owning
 // module — accounts.rs's own header says so — and `ranking.rs` already owns the
 // display-name write path (`set_profile_name` writes `player.name`; the ADR-0125
 // passive mirror carries it onto `profile.name`). Putting the anonymize anywhere
@@ -465,12 +463,12 @@ fn rb7_deletion_tombstone_is_distinct_from_guest_claim() {
 // `PROFILE_TOMBSTONE_NAME` means `an unclaimed guest whose ranked stats were
 // carried forward`, and `tombstoned_profile` also ZEROES rating/wins/losses,
 // which is meaningless for a deletion. Both are module-private precisely so S3
-// could not reach for them by mistake (rb-7, ADR-0211); this section asserts the
+// could not reach for them by mistake; this section asserts the
 // two values stay distinct rather than trusting the visibility alone.
 
 // ===========================================================================
 
-/// **PRV1-6c (pure)** — `player_with_deleted_name` and `profile_with_deleted_name`
+/// `player_with_deleted_name` and `profile_with_deleted_name`
 /// overwrite ONLY `name`, with the game-core deletion tombstone.
 ///
 /// TWO SEAMS RATHER THAN ONE, because the two rows are different types with
@@ -610,18 +608,15 @@ fn m22s3b_deleted_name_rows() {
 }
 
 // ===========================================================================
-// rb-41 — R-rb-25-X9 (ADR-0222 known-limit 2, closed by the ADR-0224 native
-// host migration): the REKEY exists-predicate for `profile`, exercised against
+// the REKEY exists-predicate for `profile`, exercised against
 // REAL rows instead of against its own source text.
 //
-// ADR-0222's guest-claim-integrity gate could only READ this predicate's
-// source, so a HOLLOWED body — one that still performs the table read but
-// returns a value decoupled from it — passed every check. The test below runs
-// the shipped predicate against the in-memory host (native_host_tests) and
-// pins its answer to the rows that actually exist, which no source scan can do.
+// The test below runs the shipped predicate against the in-memory host
+// (native_host_tests) and pins its answer to the rows that actually exist,
+// which no source scan can do.
 // ===========================================================================
 
-/// EARS R-rb-25-X9: `ranking::profile_exists` must answer from the CURRENT rows
+/// `ranking::profile_exists` must answer from the CURRENT rows
 /// of `profile`, for the ASKED identity — false with no row, false while only a
 /// stranger owns one, true once the identity owns one, false again once that
 /// row is gone (while the stranger's row survives). The paired
@@ -629,7 +624,7 @@ fn m22s3b_deleted_name_rows() {
 /// the six-way `||` chain that decides whether a guest holds game data.
 ///
 /// kills:
-///   - the ADR-0222 known-limit hollow, `{ let _ = <the profile read>; false }`:
+///   - `{ let _ = <the profile read>; false }`:
 ///     the own-row assertion goes red while every source scan stays green.
 ///   - the inverted hollow, `{ let _ = <the profile read>; true }`: the
 ///     empty-table assertion goes red.
@@ -798,10 +793,10 @@ impl RkWorld<'_> {
     }
 }
 
-/// EV-ranking-security#rating-integrity: `set_profile_name` refuses an unjoined or a
-/// deletion-gated caller and an invalid name without writing; on success it writes ONLY
-/// the caller's `player.name` (validated/normalised) — the caller's profile row (rating,
-/// W/L, leaderboard name) and every other row stay byte-identical.
+/// `set_profile_name` refuses an unjoined or a deletion-gated caller and an invalid name
+/// without writing; on success it writes ONLY the caller's `player.name`
+/// (validated/normalised) — the caller's profile row (rating, W/L, leaderboard name) and
+/// every other row stay byte-identical.
 /// kills: set_profile_name -> Ok(()), validation skipped, deletion gate removed, a
 /// profile write added, the wrong player row updated.
 #[test]
@@ -854,7 +849,7 @@ fn nh_set_profile_name_writes_only_the_callers_player_name() {
     );
     assert_eq!(w.profile(rk_b()), Some(("Bob".to_string(), 999, 1, 2)));
 
-    // Deletion-gated caller (m22-s3b): refused before any write.
+    // Deletion-gated caller: refused before any write.
     drop(fx);
     let fx = rk_fixture();
     let w = rk_world(&fx);

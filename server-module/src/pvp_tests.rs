@@ -1,16 +1,16 @@
-//! `pvp` server-module tests — M16a PvP spine (ADR-0109), the challenge TTL reaper
-//! (ADR-0126), settlement/rating (ADR-0119) and the ranked account gate (ADR-0189).
+//! `pvp` server-module tests — PvP spine, the challenge TTL reaper,
+//! settlement/rating and the ranked account gate.
 //!
-//! The pure ranked-gate predicates are tested directly (EA-RA-01/06a/06b); every
+//! The pure ranked-gate predicates are tested directly; every
 //! reducer, reaper and settlement path runs SHIPPED under the in-memory native
 //! host (`native_host_tests`) in the suite at the bottom of this file.
 //! battle_action and the schedule tables being private is the generated-bindings
 //! surface (evals/client-surface-privacy.eval.mjs).
 
 // ---------------------------------------------------------------------------
-// EA-RA-01: the full 8-row truth table of `ranked_account_gate`.
+// the full 8-row truth table of `ranked_account_gate`.
 //
-// Signature (ADR-0189 D5):
+// Signature:
 //   fn ranked_account_gate(enforced: bool, caller_has_account: bool,
 //                          opponent_has_account: bool) -> Result<(), &'static str>
 //
@@ -36,10 +36,10 @@ fn ea_ra_01_ranked_account_gate_truth_table() {
     // (enforced, caller_has_account, opponent_has_account, expected, why)
     let rows: [RaRow; 8] = [
         // --- enforcement INERT: the gate is transparent in all four shapes.
-        // ADR-0189 D6 honest wording: inert means enforcement OFF
-        // (availability-biased), NOT fail-closed. No account can exist while
-        // ALLOWED_ISSUERS is the .invalid placeholder, so bricking PvP for
-        // every identity in every environment would protect nobody.
+        // inert means enforcement OFF (availability-biased), NOT
+        // fail-closed. No account can exist while ALLOWED_ISSUERS is the
+        // .invalid placeholder, so bricking PvP for every identity in every
+        // environment would protect nobody.
         (
             false,
             false,
@@ -117,7 +117,7 @@ fn ea_ra_01_ranked_account_gate_truth_table() {
 }
 
 // ---------------------------------------------------------------------------
-// EA-RA-06 (a): the inert-until-activation CANARY.
+// the inert-until-activation CANARY.
 //
 // `ALLOWED_ISSUERS` is the fail-closed RFC-2606 `.invalid` placeholder under
 // ADR-0182 D18's hard sequencing gate, and the only path that creates an
@@ -161,7 +161,7 @@ fn ea_ra_06a_ranked_enforcement_inert_until_activation_canary() {
 }
 
 // ---------------------------------------------------------------------------
-// EA-RA-06 (b): the `issuers_configured` matrix (ADR-0189 D6).
+// the `issuers_configured` matrix.
 //
 // ANY-semantics with EXACT equality against the committed placeholder:
 //   [placeholder]            -> false  (today's tree: inert)
@@ -394,7 +394,7 @@ struct PvWorld<'a> {
 /// `content = true` seeds species 1 (one learnable skill 1) for the accept path. The
 /// settle tests leave it unseeded: a SideAWins write-back then stops at the missing
 /// loser species (log-and-continue) before any XP/currency, so they exercise the
-/// rating funnel without pinning the deferred side-B reward asymmetry (ADR-0109 D10).
+/// rating funnel without pinning the deferred side-B reward asymmetry.
 fn pv_world(fx: &PvFixture, content: bool) -> PvWorld<'_> {
     use crate::schema::{SkillRow, SpeciesRow};
     let battles = fx
@@ -831,11 +831,11 @@ fn nh_challenge_pvp_refuses_every_guard_before_writing() {
     );
 }
 
-/// EV-pvp-challenge-reaper (arming) + ADR-0189 wiring: a valid challenge inserts exactly
-/// one Pending row stamped with the (ms-floored) transaction clock and arms exactly one
-/// reaper at created_at_ms + CHALLENGE_TTL_MS, computed from the FLOORED ms. With no
-/// accounts on either side the outcome follows the ranked gate predicate exactly (inert
-/// today: `ranked_enforcement_active()` is false while the issuer is the placeholder).
+/// a valid challenge inserts exactly one Pending row stamped with the (ms-floored)
+/// transaction clock and arms exactly one reaper at created_at_ms + CHALLENGE_TTL_MS,
+/// computed from the FLOORED ms. With no accounts on either side the outcome follows the
+/// ranked gate predicate exactly (inert today: `ranked_enforcement_active()` is false
+/// while the issuer is the placeholder).
 /// kills: schedule_challenge_reaper -> (), raw-micros deadline, insert fields swapped.
 #[test]
 fn nh_challenge_pvp_inserts_pending_and_arms_the_ttl_reaper() {
@@ -1541,7 +1541,7 @@ fn nh_disconnect_and_erase_remove_exactly_the_owners_pvp_rows() {
 /// ST-pvp_tests#reducer-guards (submit_pvp_action): a stranger, a wild battle, a finished
 /// battle, an unknown skill, an out-of-range / fainted / already-active swap and a second
 /// pick for the same turn are refused before any write; an Attack from a fainted active
-/// is refused while a Swap out of it is admitted (the only exit, ADR-0166 D2). One valid
+/// is refused while a Swap out of it is admitted (the only exit). One valid
 /// pick inserts exactly one action for the current turn and resolves nothing.
 /// kills: participant check removed, WILD check removed, double-submit guard removed,
 /// fainted-active guard moved onto Swap.

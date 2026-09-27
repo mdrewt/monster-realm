@@ -1,4 +1,4 @@
-//! `guards` domain-submodule tests (M8.9c — test relocation, ADR-0056).
+//! `guards` domain-submodule tests (M8.9c — test relocation).
 //!
 //! Extracted verbatim from the former inline `#[cfg(test)] mod tests` in
 //! `guards.rs`; every assertion, fixture, and helper is unchanged. Declared
@@ -58,7 +58,7 @@ fn party_slot_sentinel_outside_valid_range() {
     }
 }
 
-/// §3-criterion-2: check_party_size(0) must be Err — an empty party is
+/// check_party_size(0) must be Err — an empty party is
 /// invalid; start_battle with zero monsters must be rejected.
 /// Kills: an impl that uses `n > MAX_PARTY_SIZE` only (misses the lower
 /// bound; `1..=MAX_PARTY_SIZE` is the valid range).
@@ -70,7 +70,7 @@ fn party_size_cap_rejects_empty() {
     );
 }
 
-/// §3-criterion-2: check_party_size(1) must be Ok — minimum valid party.
+/// check_party_size(1) must be Ok — minimum valid party.
 /// Kills: an impl that rejects any n < 2 (fencepost).
 #[test]
 fn party_size_cap_accepts_minimum() {
@@ -80,7 +80,7 @@ fn party_size_cap_accepts_minimum() {
     );
 }
 
-/// §3-criterion-2: check_party_size(MAX_PARTY_SIZE) must be Ok — the
+/// check_party_size(MAX_PARTY_SIZE) must be Ok — the
 /// maximum is inclusive.
 /// Kills: an impl that uses `>= MAX_PARTY_SIZE` instead of `> MAX_PARTY_SIZE`
 /// (off-by-one that rejects a full but legal party of 6).
@@ -92,7 +92,7 @@ fn party_size_cap_accepts_max() {
     );
 }
 
-/// §3-criterion-2: check_party_size(MAX_PARTY_SIZE + 1) must be Err —
+/// check_party_size(MAX_PARTY_SIZE + 1) must be Err —
 /// one over the cap is rejected.
 /// Kills: a clamp-not-reject impl that silently truncates to 6 and returns Ok.
 #[test]
@@ -103,7 +103,7 @@ fn party_size_cap_rejects_oversized() {
     );
 }
 
-/// §3-criterion-2: check_party_size(100) must be Err — far over the cap.
+/// check_party_size(100) must be Err — far over the cap.
 /// Kills: an impl that only rejects n exactly equal to MAX_PARTY_SIZE+1
 /// rather than all n > MAX_PARTY_SIZE.
 #[test]
@@ -114,7 +114,7 @@ fn party_size_cap_rejects_large() {
     );
 }
 
-/// §3-criterion-3: equal lengths must be Ok — the normal post-battle path.
+/// equal lengths must be Ok — the normal post-battle path.
 /// Kills: an impl that always returns Err.
 #[test]
 fn team_coupling_accepts_equal_lengths() {
@@ -124,7 +124,7 @@ fn team_coupling_accepts_equal_lengths() {
     );
 }
 
-/// §3-criterion-3: (1, 1) must be Ok — minimal valid single-monster battle.
+/// (1, 1) must be Ok — minimal valid single-monster battle.
 /// Kills: a "both >= 3" mutation that only accepts larger counts, and an
 /// impl that has an off-by-one requiring lengths > 1.
 #[test]
@@ -135,7 +135,7 @@ fn team_coupling_accepts_minimal_valid() {
     );
 }
 
-/// §3-criterion-3: (6, 6) must be Ok — full party, all coupled.
+/// (6, 6) must be Ok — full party, all coupled.
 /// Kills: an impl that only accepts small counts.
 #[test]
 fn team_coupling_accepts_max_party_equal() {
@@ -145,7 +145,7 @@ fn team_coupling_accepts_max_party_equal() {
     );
 }
 
-/// §3-criterion-3: team_len > ids_len must be Err — the team has MORE
+/// team_len > ids_len must be Err — the team has MORE
 /// monsters than recorded ids, so indexed access would panic.
 /// Kills: an impl that only checks the other direction, or uses unchecked
 ///        indexing (team[i] where i >= ids.len() would panic).
@@ -157,7 +157,7 @@ fn team_coupling_rejects_length_mismatch_team_longer() {
     );
 }
 
-/// §3-criterion-3: team_len < ids_len must be Err — the ids list has MORE
+/// team_len < ids_len must be Err — the ids list has MORE
 /// entries than actual team members, indicating a consistency bug.
 /// Kills: an impl that silently ignores trailing ids (wrong; an invariant
 ///        violation must surface as an Err, not a silent truncation).
@@ -169,7 +169,7 @@ fn team_coupling_rejects_length_mismatch_ids_longer() {
     );
 }
 
-/// §3-criterion-2 (boxed): slot 0 is a valid party position; must be Ok.
+/// slot 0 is a valid party position; must be Ok.
 /// Kills: an impl that rejects slot 0 (confuses the first slot with empty).
 #[test]
 fn check_monster_in_party_accepts_first_slot() {
@@ -179,7 +179,7 @@ fn check_monster_in_party_accepts_first_slot() {
     );
 }
 
-/// §3-criterion-2 (boxed): the last valid party slot (MAX_PARTY_SIZE - 1)
+/// the last valid party slot (MAX_PARTY_SIZE - 1)
 /// must be Ok.
 /// Kills: an impl that rejects any slot >= MAX_PARTY_SIZE - 1.
 #[test]
@@ -190,7 +190,7 @@ fn check_monster_in_party_accepts_last_valid_slot() {
     );
 }
 
-/// §3-criterion-2 (boxed): PARTY_SLOT_NONE (255) signals a boxed monster
+/// PARTY_SLOT_NONE (255) signals a boxed monster
 /// and must be Err — start_battle must reject boxed monsters.
 /// Kills: an impl that accepts all u8 values including the sentinel; an
 ///        impl that only rejects values > MAX_PARTY_SIZE (missing the exact
@@ -204,7 +204,7 @@ fn check_monster_in_party_rejects_party_slot_none() {
 }
 
 // ---------------------------------------------------------------------------
-// M10b Slice 2 — `reject_if_in_battle` guard (3 unit tests)
+// `reject_if_in_battle` guard
 //
 // The function under test (must be added to guards.rs):
 //   pub(crate) fn reject_if_in_battle(
@@ -212,12 +212,9 @@ fn check_monster_in_party_rejects_party_slot_none() {
 //       monster_id: u64,
 //   ) -> Result<(), String>
 //
-// Spec (M10 §3): WHEN `evolve` or `fuse` is called for a monster that is part
+// WHEN `evolve` or `fuse` is called for a monster that is part
 // of an ongoing battle THE SYSTEM SHALL reject with Err("monster is in an
 // ongoing battle"). A completed battle (outcome != Ongoing) must NOT block.
-//
-// RED state: compile-RED until `reject_if_in_battle` is added to guards.rs and
-// re-exported through `use super::*;`. That is intentional — tests ARE the contract.
 //
 // PROOF-OF-TEETH per test:
 //   - test_reject_if_in_battle_accepts_when_no_battle: kills "always Err" impl.
@@ -272,7 +269,7 @@ fn make_test_battle(battle_id: u64, outcome: BattleOutcome, party_monster_ids: V
     }
 }
 
-/// Slice 2 test 1: monster not in any battle → Ok (the guard must not reject).
+/// monster not in any battle → Ok (the guard must not reject).
 /// PROOF-OF-TEETH: kills an impl that always returns Err (vacuous always-reject).
 /// Without a correct happy-path test, an implementer could satisfy
 /// `test_reject_if_in_battle_rejects_when_in_ongoing` with `return Err(...)` unconditionally.
@@ -293,10 +290,9 @@ fn test_reject_if_in_battle_accepts_when_no_battle() {
     );
 }
 
-/// Slice 2 test 2: monster is in a battle with outcome=Ongoing → Err containing
+/// monster is in a battle with outcome=Ongoing → Err containing
 /// "monster is in an ongoing battle".
-/// PROOF-OF-TEETH: kills an impl that returns Ok unconditionally (missing the guard);
-/// this is the core correctness requirement from M10 spec §3.
+/// PROOF-OF-TEETH: kills an impl that returns Ok unconditionally (missing the guard).
 #[test]
 fn test_reject_if_in_battle_rejects_when_in_ongoing() {
     let monster_id = 42u64;
@@ -324,7 +320,7 @@ fn test_reject_if_in_battle_rejects_when_in_ongoing() {
     );
 }
 
-/// Slice 2 test 3: monster is in a battle with outcome=SideAWins (battle is over) → Ok.
+/// monster is in a battle with outcome=SideAWins (battle is over) → Ok.
 /// PROOF-OF-TEETH: kills an impl that rejects any monster present in ANY battle row,
 /// without checking whether the battle is still ongoing. A completed battle must
 /// never block evolution.
@@ -351,10 +347,9 @@ fn test_reject_if_in_battle_accepts_when_battle_won() {
 }
 
 /// validate_name accepts a string of exactly MAX_NAME_LEN characters.
-/// Mutant guards.rs:42 replaces `>` with `>=` in `name.chars().count() > MAX_NAME_LEN`,
+/// `>` with `>=` in `name.chars().count() > MAX_NAME_LEN`,
 /// which would incorrectly reject a name of exactly MAX_NAME_LEN length.
 /// The spec: names UP TO MAX_NAME_LEN characters are valid (> is the correct operator).
-/// KILLS: guards.rs:42:29 (> → >= in the name-length guard).
 #[test]
 fn validate_name_accepts_exactly_max_name_len_chars() {
     // MAX_NAME_LEN = 24. A 24-char name is within the limit (> not >=).
@@ -378,21 +373,19 @@ fn validate_name_accepts_exactly_max_name_len_chars() {
 }
 
 // ===========================================================================
-// m17a (ADR-0119): is_ranked_pvp unit tests (RL-6, D4)
+// is_ranked_pvp unit tests
 //
 // `is_ranked_pvp(&Battle) -> bool` is defined as:
 //   player_identity != opponent_identity && opponent_identity != WILD_IDENTITY
 //
 // Home: guards.rs (the battle-authz guard family SSOT — require_owner,
-// require_pvp_participant live here; ADR-0119 D4).
+// require_pvp_participant live here).
 //
 // Three cases:
 //   1. Distinct players, non-wild opponent → true  (ranked PvP battle)
 //   2. Self-battle (player == opponent)    → false (practice/friendly battle)
 //   3. Wild battle (opponent == WILD)      → false (PvE wild encounter)
 //
-// ALL THREE tests are COMPILE-RED until `is_ranked_pvp` is added to guards.rs
-// and becomes visible via `use super::*;` at the top of this file.
 // ===========================================================================
 
 /// Build a minimal Battle fixture for is_ranked_pvp tests.
@@ -409,14 +402,13 @@ fn make_pvp_test_battle(
     b
 }
 
-/// m17a-RL-6 / D4: distinct non-wild players → is_ranked_pvp returns true.
+/// distinct non-wild players → is_ranked_pvp returns true.
 ///
 /// This is the core ranked-PvP classification: two different real players.
 ///
 /// Kills: an impl that always returns false (missing the feature), or one that
 /// uses `==` instead of `!=` (inverts both conditions), or one that only checks
 /// one of the two conditions.
-/// COMPILE-RED: is_ranked_pvp does not yet exist in guards.rs.
 #[test]
 fn m17a_is_ranked_pvp_distinct_players_non_wild_is_true() {
     let player = spacetimedb::Identity::from_byte_array([1u8; 32]);
@@ -436,14 +428,13 @@ fn m17a_is_ranked_pvp_distinct_players_non_wild_is_true() {
     );
 }
 
-/// m17a-RL-6 / D4: self-battle (player == opponent) → is_ranked_pvp returns false.
+/// self-battle (player == opponent) → is_ranked_pvp returns false.
 ///
 /// Practice / sandbox battles use the caller's own identity as opponent.
-/// They must never rate — RL-6 "friendly battles shall never rate".
+/// They must never rate.
 ///
 /// Kills: an impl that returns true for self-battles (would charge ratings for
 /// practice grinding), or one that only checks the wild condition.
-/// COMPILE-RED: is_ranked_pvp does not yet exist in guards.rs.
 #[test]
 fn m17a_is_ranked_pvp_self_battle_is_false() {
     let player = spacetimedb::Identity::from_byte_array([3u8; 32]);
@@ -460,14 +451,13 @@ fn m17a_is_ranked_pvp_self_battle_is_false() {
     );
 }
 
-/// m17a-RL-6 / D4: wild battle (opponent == WILD_IDENTITY) → is_ranked_pvp returns false.
+/// wild battle (opponent == WILD_IDENTITY) → is_ranked_pvp returns false.
 ///
-/// Wild encounters use the zero-byte sentinel as opponent_identity (ADR-0045).
-/// They must never rate — RL-6 "friendly battles shall never rate".
+/// Wild encounters use the zero-byte sentinel as opponent_identity.
+/// They must never rate.
 ///
 /// Kills: an impl that returns true for wild battles (would charge ratings for
 /// every wild encounter), or one that only checks player != opponent.
-/// COMPILE-RED: is_ranked_pvp does not yet exist in guards.rs.
 #[test]
 fn m17a_is_ranked_pvp_wild_battle_is_false() {
     let player = spacetimedb::Identity::from_byte_array([4u8; 32]);
@@ -486,10 +476,10 @@ fn m17a_is_ranked_pvp_wild_battle_is_false() {
 }
 
 // ===========================================================================
-// m17.5a (ADR-0122): is_in_ongoing_battle_either_role unit tests
+// is_in_ongoing_battle_either_role unit tests
 //
 // `is_in_ongoing_battle_either_role(as_player, as_opponent) -> bool` is the
-// PURE CORE of the both-role ongoing-battle guard (ADR-0122 D1).  The thin
+// PURE CORE of the both-role ongoing-battle guard.  The thin
 // ctx wrapper `is_in_ongoing_battle(ctx, identity)` delegates to this core
 // and is pinned by source-scan only (no branch logic to mutate).
 //
@@ -499,29 +489,25 @@ fn m17a_is_ranked_pvp_wild_battle_is_false() {
 //       as_opponent: impl Iterator<Item = impl std::borrow::Borrow<crate::schema::Battle>>,
 //   ) -> bool
 //
-// TDD marker: all seven tests below were authored COMPILE-RED before
-// `is_in_ongoing_battle_either_role` existed in guards.rs (m17a precedent,
-// guards_tests.rs:394 block); implementation has since landed and all are green.
-//
-// Fixture discipline (plan-review N-1 / red-team F6, BINDING):
+// Fixture discipline:
 //   `make_test_battle`'s hardcoded `opponent_identity = [0u8;32]` IS WILD_IDENTITY.
 //   The opponent-arm tests (`either_role_opponent_ongoing_true` and
 //   `either_role_opponent_wild_sentinel_false`) therefore MUST NOT reuse that
 //   helper unmodified for the battle carrying the non-WILD opponent: they call
-//   `make_pvp_test_battle` (already defined above at line ~401) with explicit
+//   `make_pvp_test_battle` with explicit
 //   non-WILD identities.  Both opponent-arm tests also pass an EMPTY player-arm
 //   iterator so the opponent arm is the ONLY possible signal source — a broken
 //   opponent arm cannot be masked by a player-arm hit.
 //
-// Mutation bite mapping (for ADR-0118 §4):
+// Mutation bite mapping:
 //   - Deleting the opponent arm from the core  →  flips `either_role_opponent_ongoing_true`
 //     and `laundering_two_ongoing_rows` RED (unit gate bites).
 //   - Deleting the `!= WILD_IDENTITY` clause   →  flips
 //     `either_role_opponent_wild_sentinel_false` RED.
-//   - Removing the call from any reducer       →  flips its eval criterion RED.
+//   - Removing the call from any reducer.
 // ===========================================================================
 
-/// m17.5a-1: empty / empty → false.
+/// Empty / empty → false.
 /// Kills: an always-true implementation.
 #[test]
 fn either_role_no_battle_false() {
@@ -536,7 +522,7 @@ fn either_role_no_battle_false() {
     );
 }
 
-/// m17.5a-2: player arm has one Ongoing battle → true.
+/// Player arm has one Ongoing battle → true.
 /// The opponent arm is empty so only the player arm can produce the result.
 /// Kills: an impl that drops the player arm (returns false unconditionally or
 /// only checks the opponent arm).
@@ -554,11 +540,11 @@ fn either_role_player_ongoing_true() {
     );
 }
 
-/// m17.5a-3: EMPTY player arm + opponent arm has Ongoing with non-WILD opponent → true.
+/// EMPTY player arm + opponent arm has Ongoing with non-WILD opponent → true.
 /// This is the core bite: the opponent arm is the ONLY possible source of the result.
 /// A broken opponent arm (arm dropped) cannot be masked by the player arm (empty here).
 /// Non-WILD opponent: player=[1;32], opponent=[2;32].
-/// Kills: an impl that drops the opponent arm entirely (the central gap this slice closes).
+/// Kills: an impl that drops the opponent arm entirely.
 #[test]
 fn either_role_opponent_ongoing_true() {
     // Fixture: real side-A identity [1;32], real side-B identity [2;32] (non-WILD).
@@ -583,7 +569,7 @@ fn either_role_opponent_ongoing_true() {
     );
 }
 
-/// m17.5a-4: EMPTY player arm + opponent arm row has opponent_identity == WILD_IDENTITY → false.
+/// EMPTY player arm + opponent arm row has opponent_identity == WILD_IDENTITY → false.
 /// The WILD_IDENTITY refinement MUST be preserved: a wild/practice battle's sentinel
 /// opponent must NOT match a caller who merely happens to be querying the opponent arm.
 /// Note: the wild battle's REAL side-A owner is still caught by the player arm (separate arm),
@@ -615,7 +601,7 @@ fn either_role_opponent_wild_sentinel_false() {
     );
 }
 
-/// m17.5a-5: both arms non-Ongoing → false.
+/// Both arms non-Ongoing → false.
 /// Battle exists in both arms but it is completed (SideAWins) — must not block.
 /// Kills: an impl that checks row presence without checking the outcome (would return true).
 #[test]
@@ -637,13 +623,11 @@ fn either_role_won_battle_false() {
     );
 }
 
-/// m17.5a-6: caller is BOTH player_identity AND opponent_identity of one Ongoing
+/// Caller is BOTH player_identity AND opponent_identity of one Ongoing
 /// self/practice battle (same row in both iterators) → true.
 ///
 /// Documentation fixture: BOTH arms fire here because caller != WILD_IDENTITY.
-/// This is the practice/self-battle shape (ADR-0045 self-battle sentinel is the
-/// caller's own identity, NOT WILD_IDENTITY — so the opponent arm's
-/// `!= WILD_IDENTITY` check passes and the opponent arm contributes too).
+/// This is the practice/self-battle shape.
 /// No unique mutant claim: row 2 (`either_role_player_ongoing_true`) already kills
 /// the dropped-player-arm mutant; this test documents the short-circuit behavior.
 #[test]
@@ -668,7 +652,7 @@ fn either_role_practice_self_both_arms() {
     );
 }
 
-/// m17.5a-7: laundering exploit closed — two scenarios:
+/// Laundering exploit closed — two scenarios:
 ///
 /// SCENARIO A (two_row_both_arms): caller is side-A of an Ongoing wild battle
 /// (player arm) AND side-B (opponent, non-WILD) of a distinct Ongoing PvP battle
@@ -681,7 +665,7 @@ fn either_role_practice_self_both_arms() {
 /// open a second battle because the player-only guard misses them.  The opponent
 /// arm alone is sufficient to block this.
 ///
-/// Kills: the whole ADR-0122 gap (an impl that only checks the player arm would
+/// Kills: (an impl that only checks the player arm would
 /// return false for scenario B, failing this test).
 #[test]
 fn laundering_two_ongoing_rows() {
@@ -732,29 +716,23 @@ fn laundering_two_ongoing_rows() {
 // ---------------------------------------------------------------------------
 // Comment- AND string-stripping helper — a LOCAL copy on purpose.
 //
-// Byte-identical to the copy in `movement_tests.rs` (the sibling test modules
-// `pvp_tests.rs:64`, `trading_tests.rs:457`, `taming_tests.rs:42` and
-// `economy_tests.rs:936` each keep their own comment-only variants). A shared
-// `scan_helpers` module would need a `lib.rs` edit, and `lib.rs` is explicitly
-// OUTSIDE this slice's touch set — the same call ADR-0166 recorded as residual
-// R5. Duplicated deliberately, not by accident.
+// Byte-identical to the copy in `movement_tests.rs`.
 //
 // Removed bytes are replaced with spaces so byte offsets are preserved (the
 // squash step drops them again anyway).
 //
 // STRING LITERALS ARE BLANKED TOO, for the reason documented at length in
-// `movement_tests.rs`: a red-team satisfied a whole file of needles with a dead
-// `let _decoy = r#"<needle text>"#;`. Here it matters for the opposite polarity —
-// this file's fence asserts an ABSENCE (`authorize_move` contains no battle
-// guard), so blanking literals removes false ALARMS (a log message naming the
-// predicate) while leaving every executable call visible. The two files must
-// agree on what "the source says" or one could be green while the other is red
-// about the same bytes.
+// `movement_tests.rs`. Here it matters for the opposite polarity — this file's
+// fence asserts an ABSENCE (`authorize_move` contains no battle guard), so
+// blanking literals removes false ALARMS (a log message naming the predicate)
+// while leaving every executable call visible. The two files must agree on what
+// "the source says" or one could be green while the other is red about the same
+// bytes.
 //
 // Handled in one sequential pass: block comments, line comments, `"…"` (with
 // `\` escapes), `b"…"`, raw strings `r"…"` / `r#"…"#` / `r##"…"##` and their `br`
-// forms, and char / byte-char literals (consumed ATOMICALLY — `guards.rs:58` has
-// a real one, `c == ' '`, and a char literal holding a double quote would
+// forms, and char / byte-char literals (consumed ATOMICALLY
+// a char literal holding a double quote would
 // otherwise open a phantom string and blank the rest of the file, which is also
 // why `DQUOTE` below is a number). `assert_stripper_preconditions` fails loudly
 // on the two constructs this does NOT handle.
@@ -763,60 +741,13 @@ fn laundering_two_ongoing_rows() {
 /// The ASCII double-quote byte, spelled as a NUMBER on purpose.
 ///
 /// Writing the obvious byte-char literal would put a bare, unpaired double-quote
-/// CHARACTER into this file's source. The evals concatenate every `.rs` file in
-/// this crate and run `stripRustStrings` over the result — a stripper with no
-/// char-literal lexer — so that quote reads as opening a string literal and
-/// inverts string/code polarity for everything after it. This file sorts before
-/// `lib.rs`, and the measured cost of the obvious spelling was exactly that:
-/// `pub fn init(` was blanked and the zone-warp eval's W5 check failed with
-/// "init not found". Every double-quote in this file is now part of a balanced
-/// Rust string literal; keep it that way.
+/// CHARACTER into this file's source. Every double-quote in this file is now
+/// part of a balanced Rust string literal; keep it that way.
 const DQUOTE: u8 = 0x22;
 
 // ===========================================================================
-// 11r-g (ADR-0170 D5) — `json_escape` at the `log_reject` choke point
+// `json_escape` at the `log_reject` choke point
 //
-// EARS criteria covered by this section:
-//
-//   G-1  `json_escape(s)` SHALL escape the two JSON structural characters —
-//        backslash and double quote — in ONE forward pass over `s.chars()`, so
-//        that a backslash immediately followed by a double quote is escaped
-//        exactly once each (sequential `str::replace` passes double-escape the
-//        backslashes an earlier pass inserted).
-//   G-2  `json_escape` SHALL escape every character below 0x20 (the three short
-//        forms for 0x0A/0x0D/0x09, every other one as a four-digit lowercase
-//        backslash-u escape) and SHALL pass 0x20, 0x7F and every non-ASCII
-//        scalar value through unchanged.
-//   G-3  (properties) the output SHALL contain no raw character below 0x20 for
-//        ANY input, and input containing no backslash, no double quote and no
-//        control character SHALL round-trip byte-identical.
-//   G-4  `log_reject` SHALL pass BOTH `reducer` and `reason` through
-//        `json_escape` before interpolating them into its hand-built JSON
-//        (~127 call sites exist; several forward a `&str` parameter, so
-//        "the reducer name is always a literal" is an unenforced convention).
-//   G-5  the three production files this slice touches SHALL contain no
-//        char-literal double quote and SHALL keep their block-comment markers
-//        balanced — the repo's source-scan substrate (eval W-pre plus every
-//        per-file stripper helper in this crate) mis-lexes otherwise, and the
-//        blast radius is a FALSE RED in an unrelated file's gate.
-//
-// RED STATE.
-//   * G-1, G-2, G-3 are COMPILE-RED: `json_escape` does not exist in
-//     `guards.rs`, so `use super::*;` cannot resolve it and the crate does not
-//     build. This is the established house precedent for a new pure seam
-//     (`content_cache_tests.rs:14-25`, the M10b block above).
-//   * G-4 is ASSERTION-RED once the symbol exists: `log_reject`'s body at HEAD
-//     interpolates `reducer` and `reason` raw.
-//   * G-5 is a GREEN-AT-HEAD fence. It is deliberately a SEPARATE `#[test]`
-//     from every red one (the split reason `movement_tests.rs:917-921` records:
-//     folded into a failing test it could never be observed passing).
-//
-// SCAN SUBSTRATE RULES honoured by everything below (violating them breaks
-// OTHER slices' gates, not this one): every needle naming a production symbol
-// is assembled from fragments, no raw double-quote CHARACTER literal is written
-// anywhere in this file, and no block-comment opener/closer is ever spelled
-// contiguously — the two markers used by the G-5 scan are built from parts,
-// exactly like `assert_stripper_preconditions`'s own `close_marker` above.
 // ===========================================================================
 
 use proptest::prelude::*;
@@ -864,7 +795,7 @@ fn assert_escapes(label: &str, input: &str, expected: &str) {
     );
 }
 
-/// **G-1** — backslash and double quote are escaped, in ONE forward pass.
+/// backslash and double quote are escaped, in ONE forward pass.
 ///
 /// The rows and the wrong implementations they kill:
 ///   * `empty` / `plain` — kills an impl that mangles or truncates ordinary text
@@ -877,7 +808,7 @@ fn assert_escapes(label: &str, input: &str, expected: &str) {
 ///     `s.replace(quote, ..).replace(backslash, ..)` impl outright: its second
 ///     pass doubles the backslash its first pass just inserted, leaving a RAW
 ///     quote that terminates the JSON string early.
-///   * `bs_then_dq` — THE ADJACENCY ATTACK named in ADR-0170 D5. Input is a
+///   * `bs_then_dq` — Input is a
 ///     backslash immediately followed by a quote; the only correct output is
 ///     three backslashes then a quote. A quote-first sequential impl emits FOUR
 ///     backslashes then a quote (it re-escapes its own insertions), so a table
@@ -885,8 +816,6 @@ fn assert_escapes(label: &str, input: &str, expected: &str) {
 ///   * `dq_then_bs`, `bs_bs`, `embedded`, `sentence` — the same adjacency
 ///     property in the other order, doubled, and in the middle of real text;
 ///     they kill an impl that special-cases only the first or last character.
-///
-/// COMPILE-RED: `json_escape` does not exist in `guards.rs` yet.
 #[test]
 fn json_escape_escapes_backslash_and_quote_in_one_pass() {
     let b = backslash();
@@ -915,15 +844,15 @@ fn json_escape_escapes_backslash_and_quote_in_one_pass() {
     assert_escapes("sentence", &sentence, &sentence_out);
 }
 
-/// **G-2** — the control-character boundary, and everything that must NOT change.
+/// the control-character boundary, and everything that must NOT change.
 ///
 /// The rows and the wrong implementations they kill:
 ///   * 0x00, 0x08, 0x0B, 0x0C, 0x1F become six-character lowercase escapes.
 ///     These kill (a) an impl that emits only the three short forms and passes
 ///     every other control character through RAW — a raw NUL or VT inside a JSON
 ///     string is a hard parse error; (b) an impl that adds the JSON backspace
-///     (0x08) and form-feed (0x0C) short forms, which ADR-0170 D5 deliberately
-///     does NOT sanction — the contract is exactly three short forms and a
+///     (0x08) and form-feed (0x0C) short forms
+///     the contract is exactly three short forms and a
 ///     four-digit escape for everything else; (c) an impl that emits UPPERCASE
 ///     hex or fewer than four digits, both of which are invalid or ambiguous
 ///     JSON escapes.
@@ -937,10 +866,8 @@ fn json_escape_escapes_backslash_and_quote_in_one_pass() {
 ///     DEL *is* an ASCII control character but is NOT below 0x20, and it is
 ///     legal raw JSON. The two non-ASCII rows kill an over-eager impl that
 ///     escapes all non-ASCII — Rust `char` iteration cannot produce a lone
-///     surrogate, so pass-through is valid JSON by construction (ADR-0170 D5),
+///     surrogate, so pass-through is valid JSON by construction,
 ///     and re-encoding would also mangle the astral-plane row.
-///
-/// COMPILE-RED: `json_escape` does not exist in `guards.rs` yet.
 #[test]
 fn json_escape_control_char_boundary_table() {
     let cases = [
@@ -984,7 +911,7 @@ fn arb_plain_string() -> impl Strategy<Value = String> {
 }
 
 proptest! {
-    /// **G-3(a)** — for ANY input, the output contains no raw character below 0x20.
+    /// for ANY input, the output contains no raw character below 0x20.
     ///
     /// The whole-of-domain version of the G-2 table: the table names the eight
     /// interesting control bytes, this covers all thirty-two in every position
@@ -992,12 +919,10 @@ proptest! {
     /// shown a test for and passes the rest through raw, and an impl whose
     /// control-character arm is unreachable because an earlier arm matched first.
     /// A raw control byte inside a JSON string is a hard parse error, so the log
-    /// line is dropped — exactly the observability hole ADR-0170 D5 closes.
+    /// line is dropped.
     ///
     /// No hand-rolled JSON unescaper oracle: this is a one-directional structural
     /// property, so there is no second implementation to get wrong.
-    ///
-    /// COMPILE-RED: `json_escape` does not exist in `guards.rs` yet.
     #[test]
     fn json_escape_output_has_no_raw_control_chars(s in arb_any_string()) {
         let out = json_escape(&s);
@@ -1014,7 +939,7 @@ proptest! {
         );
     }
 
-    /// **G-3(b)** — text with no backslash, no double quote and no control
+    /// text with no backslash, no double quote and no control
     /// character round-trips byte-identical.
     ///
     /// Kills an over-eager impl: one that escapes the JSON-optional forward
@@ -1023,8 +948,6 @@ proptest! {
     /// G-3(a): together they pin "escape precisely the characters that need
     /// escaping, and nothing else". Without this half, `json_escape` could
     /// satisfy G-3(a) by escaping every character in the input.
-    ///
-    /// COMPILE-RED: `json_escape` does not exist in `guards.rs` yet.
     #[test]
     fn json_escape_is_identity_on_plain_text(s in arb_plain_string()) {
         let out = json_escape(&s);
@@ -1042,8 +965,7 @@ proptest! {
 }
 
 // ===========================================================================
-// m22-s5 (PRV1-9 / PRV1-10, spec para 4.7, ADR-0225) — the gameplay deletion
-// gate: BEHAVIOURAL half.
+// the gameplay deletion gate: BEHAVIOURAL half.
 //
 // These two tests EXECUTE the pure decision seam rather than reading the
 // source, so they close the residue every scan in the sibling block records:
@@ -1051,25 +973,18 @@ proptest! {
 // these prove the thing being delegated to actually decides the right way and
 // says something a client can act on.
 //
-// COMPILE-RED at HEAD: neither the reason constant nor the pure gate exists in
-// `guards.rs`, so `use super::*;` cannot resolve them and the crate does not
-// build. That is the established house precedent for a new pure seam
-// (`content_cache_tests.rs:14-25`, and the 11r-g `json_escape` block above).
-// Apply this block ONLY after the scan block, and expect the whole crate's
-// test build to fail until the implementation lands.
 // ===========================================================================
 
-/// **PRV1-9 (truth table)** — the pure gate is a total, two-row decision.
+/// the pure gate is a total, two-row decision.
 ///
-/// `deletion_gate` mirrors `pvp.rs`'s `ranked_account_gate` (pvp.rs:104): a
+/// `deletion_gate` mirrors `pvp.rs`'s `ranked_account_gate`: a
 /// ctx-free, I/O-free predicate-to-`Result` adapter, which is what makes it
-/// exhaustively testable in-crate when reducer bodies are not (ADR-0156 P7).
+/// exhaustively testable in-crate when reducer bodies are not.
 ///
 /// WHAT EACH ROW KILLS:
 ///   * `false` -> `Ok` — kills the inverted branch (`if !rejected`), which
 ///     would refuse EVERY caller of all three gated reducers: a total outage
-///     of trading and PvP challenges, shipped green by every source scan in
-///     the sibling block because the delegation text is unchanged.
+///     of trading and PvP challenges.
 ///   * `true` -> `Err` — kills the always-`Ok` stub, the shape a hollowed
 ///     implementation naturally lands on. Matched against the CONSTANT rather
 ///     than a re-typed literal: a test that re-types the reason cannot see a
@@ -1099,15 +1014,14 @@ fn m22s5_deletion_gate_truth_table() {
 }
 
 // rb76-compile-red-begin
-/// **ADR-0246 D2 (behaviour)** — the subject gate answers from the NAMED
-/// SUBJECT: it refuses the two deletion-gated states, ADMITS the three others,
-/// and consults neither `ctx.sender()` nor the table at large.
+/// the subject gate answers from the NAMED SUBJECT: it refuses the two
+/// deletion-gated states, ADMITS the three others, and consults neither
+/// `ctx.sender()` nor the table at large.
 ///
-/// The shipped wrapper runs under the rb-41 native host (`native_host_tests`,
-/// ADR-0222 amendment) against real `account` rows through seven calls — five
-/// subject states plus two sender-vs-subject controls — with the
-/// exact verdict pinned in each. The three admitted states are the positive
-/// control, and they are what make the two refused states mean anything.
+/// The shipped wrapper runs against real `account` rows through seven calls —
+/// five subject states plus two sender-vs-subject controls — with the exact
+/// verdict pinned in each. The three admitted states are the positive control,
+/// and they are what make the two refused states mean anything.
 ///
 /// SCOPE NOTE: today this matrix overlaps the `begin_encounter` matrix in
 /// `battle_tests.rs` almost entirely, because that reducer helper is the seam's
@@ -1115,9 +1029,6 @@ fn m22s5_deletion_gate_truth_table() {
 /// table, independent of any consumer — so that if a second consumer is ever
 /// sanctioned (and the census widened deliberately) the seam still has a
 /// consumer-free witness. Do not re-widen the battle-side test to carry this.
-///
-/// TWO CONTROLS CARRY THE WHOLE POINT OF THIS SLICE, and neither exists in the
-/// rb-46 matrix this test is modelled on:
 ///
 ///   * A STRANGER'S MID-GRACE ROW IS SEEDED FIRST AND NEVER REMOVED. Without it
 ///     the table only ever holds the subject's row, so a TABLE-keyed gate —
@@ -1140,8 +1051,8 @@ fn m22s5_deletion_gate_truth_table() {
 /// Rows are built with the shipped pure constructors only, so this test can
 /// never assemble a state the module itself cannot; `terminal_account`
 /// debug-asserts legality, which is why the illegal active-plus-marker shape is
-/// not reachable here and is left to `accounts_tests`' truth table (ADR-0236
-/// D5). `seed` PUSHES rather than upserting, so each state removes the previous
+/// not reachable here and is left to `accounts_tests`' truth table.
+/// `seed` PUSHES rather than upserting, so each state removes the previous
 /// row and asserts that exactly one row went — and because `remove` is
 /// `Identity`-keyed, neither the stranger's row nor the sender's affects that
 /// count.
@@ -1149,11 +1060,6 @@ fn m22s5_deletion_gate_truth_table() {
 /// WHY THIS IS SAFE TO EXECUTE AT ALL: the wrapper is READ-ONLY. Every write
 /// syscall aborts the process under this host (uncatchable, so `#[should_panic]`
 /// cannot be used), and this seam performs a single indexed point read.
-///
-/// COMPILE-RED AT HEAD: `crate::guards::require_subject_not_deleting` does not
-/// exist, so the crate's test build fails to resolve it. Excise this test
-/// between its two marker comments to observe the assertion-RED of the five
-/// tests that do compile.
 ///
 /// kills:
 ///   - the dropped gate and any later deletion of it;
@@ -1381,7 +1287,7 @@ fn rb128_no_row_oracle(_refused: bool) {}
 /// The five-state executed matrix, driven once per class-(iv) reducer so a
 /// single dropped gate fails with a message naming which one.
 ///
-/// States, in the rb-80 order: no account row, `Active`, `PendingDeletion`,
+/// States: no account row, `Active`, `PendingDeletion`,
 /// `PendingDeletion` plus the terminal marker, row removed. A mid-grace
 /// STRANGER is seeded once before state 1 and never removed. Rows are built
 /// with the shipped pure constructors only, so this can never assemble a state
@@ -1516,22 +1422,19 @@ fn rb128_assert_refused_only_while_gated(
     after(false);
 }
 
-/// **E1 (behaviour)** — `join_game` refuses a deletion-gated caller, admits
+/// `join_game` refuses a deletion-gated caller, admits
 /// everybody else, and answers from the CALLER's own row.
 ///
-/// Positive control: `already joined` (movement.rs:52-56). The caller's `player`
+/// Positive control: `already joined`. The caller's `player`
 /// row is seeded FIRST on purpose: without it every admitted state runs past the
 /// joined check into the `character` insert, and every write syscall ABORTS the
 /// test process — a crash, not an assertion. The name argument must pass
 /// `validate_name`, which sits above the joined check.
 ///
-/// RED AT HEAD on state 3: with no gate the reducer answers `already joined` to a
-/// mid-grace caller too.
-///
-/// kills: a dropped or discarded gate, and the ADR-0273 D10 rejected placement
-/// BELOW the joined check (state 3 answers `already joined` either way) · M9
-/// inverted polarity (states 1, 2 and 5) · a table-keyed fake (the admitted
-/// states, while the stranger is mid-grace) · a latched answer (state 5).
+/// kills: a dropped or discarded gate, and BELOW the joined check (state 3
+/// answers `already joined` either way) · M9 inverted polarity (states 1, 2 and 5)
+/// · a table-keyed fake (the admitted states, while the stranger is mid-grace) ·
+/// a latched answer (state 5).
 #[test]
 fn rb128_join_game_refuses_only_a_deletion_gated_caller() {
     let fx = crate::native_host_tests::fixture();
@@ -1553,15 +1456,13 @@ fn rb128_join_game_refuses_only_a_deletion_gated_caller() {
     );
 }
 
-/// **E1 (behaviour)** — `enqueue_move` refuses a deletion-gated caller and
+/// `enqueue_move` refuses a deletion-gated caller and
 /// admits everybody else.
 ///
-/// Positive control: `not joined`, from `authorize_move` (guards.rs:234-238). No
+/// Positive control: `not joined`, from `authorize_move`. No
 /// `player` row is seeded, so the player index is unregistered and reads nothing;
-/// the ADR-0168 D2 battle lock above it reads two unregistered battle indexes and
-/// answers false. Nothing is written in any state.
-///
-/// RED AT HEAD on state 3: with no gate the reducer answers `not joined`.
+/// reads two unregistered battle indexes and answers false. Nothing is written in
+/// any state.
 ///
 /// kills: M4 (the gate placed below `authorize_move` — state 3 answers
 /// `not joined`) · a dropped or discarded gate · M9 · a table-keyed fake · a
@@ -1589,15 +1490,13 @@ fn rb128_enqueue_move_refuses_only_a_deletion_gated_caller() {
     );
 }
 
-/// **E1 (behaviour)** — `set_move` refuses a deletion-gated caller and admits
+/// `set_move` refuses a deletion-gated caller and admits
 /// everybody else.
 ///
 /// Positive control: `not joined`, from `authorize_move`, exactly as for
 /// `enqueue_move` (the battle lock above it answers false on this host). A
 /// SEPARATE test from `enqueue_move`'s so one dropped gate fails with a message
 /// naming which reducer lost it.
-///
-/// RED AT HEAD on state 3.
 ///
 /// kills: a dropped, discarded or below-`authorize_move` gate on `set_move`
 /// only · M9 · a table-keyed fake · a latched answer.
@@ -1621,14 +1520,11 @@ fn rb128_set_move_refuses_only_a_deletion_gated_caller() {
     );
 }
 
-/// **E1 (behaviour)** — `clear_queue` refuses a deletion-gated caller and admits
+/// `clear_queue` refuses a deletion-gated caller and admits
 /// everybody else.
 ///
 /// Positive control: `not joined`, from `authorize_move` — `clear_queue` carries
-/// no battle lock (ADR-0168 D3, which ADR-0273 D6 keeps; the deletion gate is
-/// orthogonal to it).
-///
-/// RED AT HEAD on state 3.
+/// no battle lock.
 ///
 /// kills: a dropped, discarded or below-`authorize_move` gate on `clear_queue` ·
 /// M9 · a table-keyed fake · a latched answer.
@@ -1652,15 +1548,12 @@ fn rb128_clear_queue_refuses_only_a_deletion_gated_caller() {
     );
 }
 
-/// **E1 (behaviour)** — `evolve` refuses a deletion-gated caller and admits
+/// `evolve` refuses a deletion-gated caller and admits
 /// everybody else.
 ///
-/// Positive control: `monster not found` (evolution.rs:57-59). The `u64`-keyed
+/// Positive control: `monster not found`. The `u64`-keyed
 /// `monster` index is unregistered, so the lookup yields nothing and no
-/// `Monster` seed is needed — the ADR-0250 D7 proof-vehicle gap closes because
-/// the gate now sits ABOVE that lookup (ADR-0273 D5).
-///
-/// RED AT HEAD on state 3.
+/// `Monster` seed is needed.
 ///
 /// kills: a dropped or discarded gate, or one placed below the monster lookup
 /// (state 3 answers `monster not found`) · M14 (the stamp-aware sibling wrapper
@@ -1688,13 +1581,11 @@ fn rb128_evolve_refuses_only_a_deletion_gated_caller() {
     );
 }
 
-/// **E1 (behaviour)** — `care` refuses a deletion-gated caller and admits
+/// `care` refuses a deletion-gated caller and admits
 /// everybody else.
 ///
-/// Positive control: `monster not found` (raising.rs:76-78), for the same
+/// Positive control: `monster not found`, for the same
 /// unregistered-index reason as `evolve`.
-///
-/// RED AT HEAD on state 3.
 ///
 /// kills: M1 (the dropped `care` gate) · a discarded or below-lookup gate · M9 ·
 /// a table-keyed fake · a latched answer.
@@ -1718,13 +1609,11 @@ fn rb128_care_refuses_only_a_deletion_gated_caller() {
     );
 }
 
-/// **E1 (behaviour)** — `train` refuses a deletion-gated caller and admits
+/// `train` refuses a deletion-gated caller and admits
 /// everybody else.
 ///
-/// Positive control: `monster not found` (raising.rs:150-152), reached before
+/// Positive control: `monster not found`, reached before
 /// the food-item escrow read, the item lookup and the `consume_one` burn.
-///
-/// RED AT HEAD on state 3.
 ///
 /// kills: a dropped, discarded or below-lookup gate on `train` (including the
 /// M11 alias call, if its verdict is discarded) · M9 · a table-keyed fake · a
@@ -1749,12 +1638,10 @@ fn rb128_train_refuses_only_a_deletion_gated_caller() {
     );
 }
 
-/// **E1 (behaviour)** — `essence_train` refuses a deletion-gated caller and
+/// `essence_train` refuses a deletion-gated caller and
 /// admits everybody else.
 ///
-/// Positive control: `monster not found` (raising.rs:632-634).
-///
-/// RED AT HEAD on state 3.
+/// Positive control: `monster not found`.
 ///
 /// kills: a dropped, discarded or below-lookup gate on `essence_train` · M9 · a
 /// table-keyed fake · a latched answer.
@@ -1778,13 +1665,11 @@ fn rb128_essence_train_refuses_only_a_deletion_gated_caller() {
     );
 }
 
-/// **E1 (behaviour)** — `consume_crystalized_essence` refuses a deletion-gated
+/// `consume_crystalized_essence` refuses a deletion-gated
 /// caller and admits everybody else.
 ///
-/// Positive control: `monster not found` (raising.rs:679-681), reached before the
+/// Positive control: `monster not found`, reached before the
 /// item escrow read, the content-registry lookup and the `consume_one` burn.
-///
-/// RED AT HEAD on state 3.
 ///
 /// kills: a dropped, discarded or below-lookup gate on
 /// `consume_crystalized_essence` · M9 · a table-keyed fake · a latched answer.
@@ -1808,15 +1693,13 @@ fn rb128_consume_crystalized_essence_refuses_only_a_deletion_gated_caller() {
     );
 }
 
-/// **E1 (behaviour)** — `attempt_recruit` refuses a deletion-gated caller and
+/// `attempt_recruit` refuses a deletion-gated caller and
 /// admits everybody else.
 ///
-/// Positive control: `battle not found` (taming.rs:49-56). The `u64`-keyed
+/// Positive control: `battle not found`. The `u64`-keyed
 /// `battle` index is unregistered, so the lookup yields nothing — well before the
 /// bait `consume_one` and the success-path `monster` insert that make this
-/// reducer class (iv) rather than class (i) (ADR-0258 D6, ADR-0273 D4).
-///
-/// RED AT HEAD on state 3.
+/// reducer class (iv) rather than class (i).
 ///
 /// kills: a dropped, discarded or below-lookup gate on `attempt_recruit` · M9 · a
 /// table-keyed fake · a latched answer.
@@ -1840,13 +1723,11 @@ fn rb128_attempt_recruit_refuses_only_a_deletion_gated_caller() {
     );
 }
 
-/// **E1 (behaviour)** — `set_nickname` refuses a deletion-gated caller and
+/// `set_nickname` refuses a deletion-gated caller and
 /// admits everybody else.
 ///
-/// Positive control: `monster not found` (monster_mgmt.rs:23-27). The nickname
+/// Positive control: `monster not found`. The nickname
 /// argument is never reached in any state.
-///
-/// RED AT HEAD on state 3.
 ///
 /// kills: M2 (a `let _ =` discard of the `set_nickname` gate — state 3 answers
 /// `monster not found`) · a dropped or below-lookup gate · M9 · a table-keyed
@@ -1871,12 +1752,10 @@ fn rb128_set_nickname_refuses_only_a_deletion_gated_caller() {
     );
 }
 
-/// **E1 (behaviour)** — `set_party_slot` refuses a deletion-gated caller and
+/// `set_party_slot` refuses a deletion-gated caller and
 /// admits everybody else.
 ///
-/// Positive control: `monster not found` (monster_mgmt.rs:61-65).
-///
-/// RED AT HEAD on state 3.
+/// Positive control: `monster not found`.
 ///
 /// kills: a dropped, discarded or below-lookup gate on `set_party_slot` · M6b (a
 /// fixed-sender `return Ok(())` above the gate — on this host the sender IS the
@@ -1903,7 +1782,7 @@ fn rb128_set_party_slot_refuses_only_a_deletion_gated_caller() {
     );
 }
 
-/// **E1 (behaviour)** — `dismiss_dialogue` refuses a deletion-gated caller
+/// `dismiss_dialogue` refuses a deletion-gated caller
 /// BEFORE its delete, admits everybody else, and never touches a stranger's
 /// conversation row.
 ///
@@ -1917,11 +1796,8 @@ fn rb128_set_party_slot_refuses_only_a_deletion_gated_caller() {
 /// be 1 in every state. The oracle then restores exactly one caller row for the
 /// next state.
 ///
-/// Rows carry zero or empty payloads on purpose (`rb80_seed_conversation` is the
-/// precedent): the reducer reads no column but the key.
-///
-/// RED AT HEAD on state 3: with no gate the reducer deletes the row and answers
-/// `Ok` to a mid-grace caller.
+/// Rows carry zero or empty payloads on purpose:
+/// the reducer reads no column but the key.
 ///
 /// kills: a dropped or discarded gate · M5 (delete THEN gate — the return values
 /// all match, the row oracle does not: on this host nothing rolls the delete

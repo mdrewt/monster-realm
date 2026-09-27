@@ -1,11 +1,11 @@
 //! `movement` server-module tests: the process-static encounter-failure
-//! `RateLimiter` (11r-g, ADR-0170 D4), and a native-host suite (`mod nh`)
+//! `RateLimiter`, and a native-host suite (`mod nh`)
 //! driving the shipped `enqueue_move` / `set_move` / `clear_queue` /
 //! `movement_tick` reducers for the ADR-0168 intake and drain battle locks and
 //! the TR-6 trade-escrow growth skip.
 
 // ===========================================================================
-// 11r-g (ADR-0170 D4) — rate-limited, JSON-escaped wild-encounter failure logs
+// rate-limited, JSON-escaped wild-encounter failure logs
 //
 // EARS criteria covered below:
 //
@@ -24,25 +24,12 @@
 //        feature exists to surface.
 //   M-6  `movement_tick` SHALL pass every interpolated error reason through
 //        `json_escape`, including the two pre-existing `movement_tick_error`
-//        sites (ADR-0170 D4 last bullet).
+//        sites.
 //   M-7  The two swallow sites in the grass-encounter block SHALL become logged
 //        no-ops, each gated by its OWN process-static limiter — a spammy
 //        bad-content zone must not mask `begin_encounter` failures (one of
 //        `begin_encounter`'s Err paths, "party has no conscious monster", is
 //        ROUTINE gameplay and can burst).
-//
-// RED STATE.
-//   * M-1..M-5 are COMPILE-RED: `RateLimiter` does not exist in `movement.rs`,
-//     so `use super::RateLimiter;` cannot resolve and the crate does not build
-//     (the house precedent for a new seam — `content_cache_tests.rs:14-25`).
-//   * M-6 / M-7 and the RateLimiter source-scan are ASSERTION-RED once the type
-//     exists: HEAD has zero limiter statics, zero `json_escape` calls and two
-//     (not four) `log::error!` sites inside `movement_tick`, and it still spells
-//     both swallow sites as `let _ = begin_encounter(..)` and a bare
-//     `let Ok(table) = .. else` binding.
-//   * `movement_tick_grass_block_never_aborts_the_tick` is a GREEN-AT-HEAD
-//     fence, a separate `#[test]` for the reason recorded at line ~917: behind a
-//     failing assertion it could never be observed passing.
 //
 // Same source-scan doctrine as the sections above (no reducer-executing
 // harness, ADR-0156 P7), with one addition: the two new `evt` names live inside
@@ -56,8 +43,8 @@
 
 use super::RateLimiter;
 
-/// The window every `RateLimiter` unit test below uses. Production picks 5000 ms
-/// (ADR-0170 D4); the tests pass it explicitly so they pin the SEMANTICS of the
+/// The window every `RateLimiter` unit test below uses. Production picks 5000 ms;
+/// the tests pass it explicitly so they pin the SEMANTICS of the
 /// parameter rather than a constant that a later tuning slice may legitimately
 /// change.
 const TEST_WINDOW_MS: i64 = 5_000;
@@ -71,8 +58,6 @@ const TEST_WINDOW_MS: i64 = 5_000;
 /// precisely the swallowing this feature exists to end. Also kills an impl whose
 /// first emit reports a non-zero suppressed count (a fabricated backlog in the
 /// first log line an operator ever sees).
-///
-/// COMPILE-RED: `RateLimiter` does not exist in `movement.rs` yet.
 #[test]
 fn rate_limiter_first_check_emits_zero_suppressed() {
     let limiter = RateLimiter::new();
@@ -103,8 +88,6 @@ fn rate_limiter_first_check_emits_zero_suppressed() {
 /// silently drop the read-decide-write-back atomicity the single lock provides.
 ///
 /// The probe static is function-local, so it shares no state with any other test.
-///
-/// COMPILE-RED: `RateLimiter` does not exist in `movement.rs` yet.
 #[test]
 fn rate_limiter_new_is_const_and_the_type_is_sync() {
     static PROBE: RateLimiter = RateLimiter::new();
@@ -137,8 +120,6 @@ fn rate_limiter_new_is_const_and_the_type_is_sync() {
 /// instead of 1, so every subsequent log line over-reports a monotonically
 /// growing backlog; (d) an off-by-one in the counter (Some(2) or Some(4) at the
 /// first emit).
-///
-/// COMPILE-RED: `RateLimiter` does not exist in `movement.rs` yet.
 #[test]
 fn rate_limiter_suppresses_in_window_then_reports_the_exact_count() {
     let limiter = RateLimiter::new();
@@ -206,8 +187,6 @@ fn rate_limiter_suppresses_in_window_then_reports_the_exact_count() {
 /// limiter B return None (the assertion fires); an `elapsed >= window - 1` or a
 /// `>` flipped the other way makes limiter A emit. This is the single most
 /// mutable line in the whole struct, and both directions are covered.
-///
-/// COMPILE-RED: `RateLimiter` does not exist in `movement.rs` yet.
 #[test]
 fn rate_limiter_window_boundary_is_inclusive() {
     let just_inside = RateLimiter::new();
@@ -267,8 +246,6 @@ fn rate_limiter_window_boundary_is_inclusive() {
 /// catches up, so a real content fault is silently swallowed for as long as the
 /// jump; (b) an impl that emits on backwards but does NOT re-anchor, which leaves
 /// the window computed against a future instant.
-///
-/// COMPILE-RED: `RateLimiter` does not exist in `movement.rs` yet.
 #[test]
 fn rate_limiter_clock_backwards_emits_and_reanchors() {
     let limiter = RateLimiter::new();
@@ -333,8 +310,6 @@ fn rate_limiter_clock_backwards_emits_and_reanchors() {
 /// other rows cover the backwards branch at the extremes and the `MIN + window`
 /// boundary, all of which a mutant that "fixes" only one subtraction would still
 /// blow up on.
-///
-/// COMPILE-RED: `RateLimiter` does not exist in `movement.rs` yet.
 #[test]
 fn rate_limiter_extreme_clock_operands_never_panic() {
     // Row 1 — an emit at 0, then the clock jumps to i64::MIN (backwards).
@@ -653,7 +628,7 @@ mod nh {
     /// ADR-0168 D2 intake lock, both roles: while the caller is in an Ongoing
     /// battle as side A (PvE or PvP) OR as the PvP side-B opponent,
     /// `enqueue_move` and `set_move` refuse before any write (no seq ack, no
-    /// queued intent). `clear_queue` is deliberately NOT guarded (ADR-0168 D3)
+    /// queued intent). `clear_queue` is deliberately NOT guarded
     /// and still cancels. Positive control: once the battle is decided the very
     /// same call is admitted and queues the intent.
     ///
@@ -792,7 +767,7 @@ mod nh {
         }
     }
 
-    /// TR-6 / ADR-0106: the `enqueue_move` growth tail credits Quality Time to
+    /// The `enqueue_move` growth tail credits Quality Time to
     /// every party monster EXCEPT one escrowed in an active trade offer, in
     /// either trade role, and never rejects the move. Positive control: the
     /// identical non-escrowed party member ticks in the same call.

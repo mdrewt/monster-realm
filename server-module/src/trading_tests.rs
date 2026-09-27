@@ -1,4 +1,4 @@
-// Trading spine tests (M15a, ADR-0106).
+// Trading spine tests.
 //
 // Two layers: the pure game-core rules and guard functions (validate_proposal,
 // build_swap_plan, the escrow guards), and — at the end of the file — the
@@ -14,7 +14,7 @@ use game_core::{
 // TradeStatus
 // ---------------------------------------------------------------------------
 
-/// rb-83 (ADR-0252 D4): because BOTH variants are active, the `is_active()` filter in
+/// Because BOTH variants are active, the `is_active()` filter in
 /// `open_offers_addressed_to` is forward-defensive against a future terminal variant, not live
 /// protection — the day a third variant lands, this assertion is where that claim is re-examined.
 #[test]
@@ -384,7 +384,7 @@ fn escrowed_currency_amount_sums_active_offers() {
 }
 
 // ---------------------------------------------------------------------------
-// escrowed_item_qty counterparty branch — proof-of-teeth (tester SIGNIFICANT-4)
+// escrowed_item_qty counterparty branch — proof-of-teeth
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -431,22 +431,15 @@ fn escrowed_item_qty_uses_counterparty_items_when_owner_is_counterparty() {
     );
 }
 
-/// **E4-A** (ADR-0166 D3) — the pure trade-side size predicate, by value.
+/// the pure trade-side size predicate, by value.
 ///
-/// Contract pinned by this test — the implementer must add to `trading.rs`:
-/// ```ignore
-/// const MAX_TRADE_MONSTERS_PER_SIDE: usize = 64;
-/// const MAX_TRADE_ITEMS_PER_SIDE: usize = 64;
-/// fn check_trade_side_size(n_monsters: usize, n_items: usize) -> Result<(), String>;
-/// ```
-/// File-local (`guards.rs` is outside 11r-a's touch set — ADR-0166 residual R5),
-/// pure, and `ReducerContext`-free so it can be tested exactly like this.
+/// File-local, pure, and `ReducerContext`-free so it can be tested exactly like this.
 ///
 /// The boundary pairs `(64, 0) Ok` / `(65, 0) Err` and `(0, 64) Ok` /
 /// `(0, 65) Err` pin the cap VALUES (an off-by-one in either direction fails).
 /// They do **not**, on their own, pin that the two limits are checked
-/// INDEPENDENTLY — an earlier draft of this docstring claimed they did and was
-/// **wrong**: a single `n_monsters + n_items > 64` sum check passes all four,
+/// INDEPENDENTLY:
+/// a single `n_monsters + n_items > 64` sum check passes all four,
 /// then rejects a perfectly legal `(64, 64)` trade. `(64, 64) Ok` is the
 /// assertion that actually kills it, and it is why that case is here.
 ///
@@ -458,22 +451,16 @@ fn escrowed_item_qty_uses_counterparty_items_when_owner_is_counterparty() {
 /// the magnitudes it was added to bound.
 ///
 /// **`(0, 0)` must be `Ok`, and that case is the load-bearing one.** The nearest
-/// in-repo template is `guards::check_party_size` (`guards.rs:105-108`), which
+/// in-repo template is `guards::check_party_size`, which
 /// rejects `n == 0` — copy-pasting it here would reject EVERY legal one-sided
 /// trade (offer monsters, ask currency), i.e. break a shipped feature while
 /// "adding a security guard". Emptiness is not this function's concern: it is
 /// `validate_proposal`'s CROSS-SIDE `EmptyOffer` rule
-/// (`game-core/src/trading/rules.rs:53-61`) and must not be restated here.
+/// and must not be restated here.
 /// Why 64 and not `MAX_PARTY_SIZE`: `propose_trade` never checks `party_slot`,
-/// and `client/src/ui/tradeProposeModel.ts:91-96` offers ALL owned monsters, so
+/// and `client/src/ui/tradeProposeModel.ts` offers ALL owned monsters, so
 /// boxed monsters are tradeable today — a cap of 6 would reject legitimate
 /// existing UI flows. These are DoS bounds, not game rules.
-///
-/// **RED state at HEAD: this test does not COMPILE** — `check_trade_side_size`
-/// does not exist in `trading.rs`, so the whole `server-module` test target
-/// fails with `E0425: cannot find function ... in module `super``. That is the
-/// correct red for a TDD gate on a not-yet-written pure function, and is the
-/// house pattern (a passing-by-stub alternative would have no teeth).
 ///
 /// Kills: no cap at all (compile error → E0425); a `check_party_size` copy-paste
 /// (`(0,0)` returns Err); an off-by-one on either cap (`(64,·)` or `(·,64)`
@@ -623,7 +610,7 @@ fn rb47_offer(
     }
 }
 
-/// **E1 (pure decision)** — the stamp-aware refusal is the terminal marker OR
+/// the stamp-aware refusal is the terminal marker OR
 /// (the para-4.7 gate AND an offer that does not predate the request).
 ///
 /// Five account shapes crossed with six stamps, including two NEGATIVE ones and
@@ -640,7 +627,7 @@ fn rb47_offer(
 ///     a PREDATING commitment stays completable, and it is the single row that
 ///     separates this slice from the blanket gate the brief forbids.
 ///   * PendingDeletion at exactly the request stamp: true. The boundary is
-///     INCLUSIVE (ADR-0237 D1): both stamps come from the same ms-floored
+///     INCLUSIVE: both stamps come from the same ms-floored
 ///     transaction clock, so `propose immediately after requesting` is
 ///     reachable, and an equal stamp does not predate. This row alone kills the
 ///     strict-greater-than flip.
@@ -652,8 +639,6 @@ fn rb47_offer(
 ///     the shipped wasm can hold them, and every marker call site in
 ///     `accounts.rs` is fail-closed on them deliberately. The negative stamps
 ///     are what kill `unwrap_or(0)` on the second shape.
-///
-/// COMPILE-RED AT HEAD: `accounts::opened_commitment_is_refused` does not exist.
 #[test]
 fn rb47_opened_commitment_is_refused_truth_table() {
     let req = RB47_REQUESTED_AT_MS;
@@ -748,10 +733,10 @@ fn rb47_opened_commitment_is_refused_truth_table() {
     }
 }
 
-/// **E1 (ctx predicate, behaviour)** — the stamp-aware predicate answers from
-/// the row of the identity it was PASSED, live, at every offset.
+/// the stamp-aware predicate answers from the row of the identity it was PASSED,
+/// live, at every offset.
 ///
-/// The shipped predicate runs under the rb-41 native host through five caller
+/// The shipped predicate runs through five caller
 /// states crossed with three offsets around the request stamp, with a mid-grace
 /// STRANGER row present throughout. The stranger is what makes the admitted
 /// states mean anything: without it, a TABLE-keyed answer (refuse if anybody is
@@ -767,8 +752,6 @@ fn rb47_opened_commitment_is_refused_truth_table() {
 /// still); a row-EXISTS-keyed answer (the Active state); a memoised or latched
 /// answer (the removed-row state); a `ctx.sender()`-keyed answer (the stranger
 /// calls); the polarity inversion; the boundary flip (the equal-stamp offset).
-///
-/// COMPILE-RED AT HEAD: `accounts::refuses_commitment_opened_at` does not exist.
 #[test]
 fn rb47_ctx_predicate_answers_from_the_callers_row() {
     let fx = crate::native_host_tests::fixture();
@@ -908,7 +891,7 @@ fn rb47_ctx_predicate_answers_from_the_callers_row() {
     );
 }
 
-/// **E1 (wrapper behaviour)** — the wrapper refuses ONLY offers created at or
+/// the wrapper refuses ONLY offers created at or
 /// after the caller's own deletion request.
 ///
 /// The behavioural centrepiece. Five caller states crossed with three offsets
@@ -924,9 +907,6 @@ fn rb47_ctx_predicate_answers_from_the_callers_row() {
 /// boundary flip (the equal offset); a dropped terminal clause (the terminal
 /// state's earliest offset); a table-keyed answer (the admitted states, while the
 /// stranger is mid-grace); a latched answer (the removed-row state).
-///
-/// COMPILE-RED AT HEAD: `guards::require_commitment_predates_deletion` does not
-/// exist.
 #[test]
 fn rb47_guards_wrapper_refuses_only_offers_created_after_the_request() {
     let fx = crate::native_host_tests::fixture();
@@ -1046,15 +1026,10 @@ fn rb47_guards_wrapper_refuses_only_offers_created_after_the_request() {
     }
 }
 
-/// **E1 (reducer behaviour, refused direction)** — the shipped `respond_trade`
-/// refuses an accepting response to an offer created at or after the caller's
-/// deletion request.
+/// the shipped `respond_trade` refuses an accepting response to an offer created
+/// at or after the caller's deletion request.
 ///
-/// The shipped reducer is EXECUTED under the rb-41 native host over a
-/// `u64`-keyed `trade_offer` table (the `table_keyed` widening this slice added:
-/// before it, every reducer whose first statement is a point read on a
-/// non-`Identity` key stopped at not-found in every state, which made a
-/// behavioural test of it vacuous).
+/// The shipped reducer is EXECUTED over a `u64`-keyed `trade_offer` table.
 ///
 /// ONE-SIDED BY CONSTRUCTION, and this is the honest limit: every write syscall
 /// ABORTS the process uncatchably, so the ADMITTED direction — the predating
@@ -1177,9 +1152,8 @@ fn rb47_respond_trade_refuses_a_post_request_accept() {
     );
 }
 
-/// **ADR-0252 D2 (read function, EXECUTED)** — `open_offers_addressed_to` reads
-/// the COUNTERPARTY column of `trade_offer` and nothing else, and projects
-/// exactly `(trade_id, created_at_ms)`.
+/// `open_offers_addressed_to` reads the COUNTERPARTY column of `trade_offer` and
+/// nothing else, and projects exactly `(trade_id, created_at_ms)`.
 ///
 /// THE FIXTURE IS THE ARGUMENT. Four rows are seeded and only two may come back:
 ///
@@ -1218,9 +1192,6 @@ fn rb47_respond_trade_refuses_a_post_request_accept() {
 /// smoke test: a writer that ignores its argument and sweeps the caller's column
 /// itself (M14) takes the process down here, and the re-read afterwards proves
 /// execution continued AND that nothing was deleted.
-///
-/// RED AT HEAD BY NON-COMPILATION: neither `trading::open_offers_addressed_to`
-/// nor `trading::decline_offers` exists yet.
 #[test]
 fn rb83_open_offers_addressed_to_reads_only_the_counterparty_column() {
     let fx = crate::native_host_tests::fixture();
@@ -1236,7 +1207,7 @@ fn rb83_open_offers_addressed_to_reads_only_the_counterparty_column() {
 
     // Addressed to somebody else entirely.
     offers.seed(&rb47_offer(21, stranger, TradeStatus::Pending, req));
-    // The caller is the INITIATOR here, never the counterparty (ADR-0252 D4).
+    // The caller is the INITIATOR here, never the counterparty.
     offers.seed(&crate::schema::TradeOffer {
         initiator: me,
         ..rb47_offer(5, stranger, TradeStatus::Pending, req + 2)
@@ -1727,10 +1698,10 @@ fn nh_past_guard(label: &str, refusal: &str, got: Result<(), String>) -> Result<
     got
 }
 
-/// EV-trade-reducer-security (reaper arm) + TR-19: a valid proposal inserts exactly
-/// one Pending offer stamped with the transaction clock, carrying display cards built
-/// from the LIVE rows (no genes — `MonsterCard` has no such fields), arms exactly one
-/// reaper at created + TTL, and moves no asset (escrow is guard-in-place).
+/// a valid proposal inserts exactly one Pending offer stamped with the transaction clock,
+/// carrying display cards built from the LIVE rows (no genes — `MonsterCard` has no such
+/// fields), arms exactly one reaper at created + TTL, and moves no asset (escrow is
+/// guard-in-place).
 /// kills: propose_trade -> Ok(()), schedule_trade_reaper -> (), build_cards -> Ok(vec![]).
 #[test]
 fn nh_trade_propose_inserts_offer_with_live_cards_and_arms_reaper() {
@@ -2779,16 +2750,15 @@ fn nh_escrow_seed(fx: &Fixture, w: &NhWorld<'_>) {
     }
 }
 
-/// EV-trade-escrow-guards (monster half), hand-enumerated per the Phase 2 ruling: every
-/// call site of `reject_if_monster_in_trade` — 11 functions, 12 sites. For each, the
-/// subject monster escrowed in an active offer (on the initiator side, then on the
-/// counterparty side, exercising both index chains) is refused with the exact escrow
-/// error on a WRITE-WALLED store (a write before the guard would panic, so this is
-/// refusal-before-write). Control: the same offer escrowing a DIFFERENT monster lets
-/// the call run to completion (Ok) on a writable store — `evolve` alone stops at
-/// the evolution-edge lookup just past its guard (no graph seeded). Completeness against
-/// FUTURE reducers is the syn census in privacy_enforcement_tests, not this list.
-/// `fuse` is gone from production (the retired eval still listed it).
+/// hand-enumerated: every call site of `reject_if_monster_in_trade` — 11 functions, 12
+/// sites. For each, the subject monster escrowed in an active offer (on the initiator
+/// side, then on the counterparty side, exercising both index chains) is refused with
+/// the exact escrow error on a WRITE-WALLED store (a write before the guard would panic,
+/// so this is refusal-before-write). Control: the same offer escrowing a DIFFERENT
+/// monster lets the call run to completion (Ok) on a writable store — `evolve` alone
+/// stops at the evolution-edge lookup just past its guard (no graph seeded).
+/// Completeness against FUTURE reducers is the syn census in privacy_enforcement_tests,
+/// not this list.
 #[test]
 fn nh_escrowed_monster_is_refused_by_every_guarded_reducer() {
     type Call = fn(&ReducerContext) -> Result<(), String>;
