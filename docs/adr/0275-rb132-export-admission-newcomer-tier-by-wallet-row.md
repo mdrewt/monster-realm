@@ -62,9 +62,12 @@ have only joined, and the account holders' half is exactly as unreachable as bef
 **D2 — The wallet row is the signal, read through the economy SSOT, eagerly.** A `player_wallet`
 row exists iff currency was ever credited to the identity: `grant_currency`'s insert-if-absent arm
 (`economy.rs:29-45`) is its only creator, reached by a battle win (`battle.rs:1275`), a quest
-reward (`npc.rs:250`), a sale (`economy.rs:273`) or a trade (`trading.rs:786`); `join_game`
-(`movement.rs:49-120`) writes character, player, a starter monster and its public row — no
-wallet. The question is asked through `crate::economy::wallet_exists(ctx, me)` (`economy.rs:324`,
+reward (`npc.rs:250`), a sale (`economy.rs:273`), a trade (`trading.rs:786`) or the guest-claim
+re-key (`economy.rs:311`, whose destination is an account holder); `join_game` (`movement.rs:49-125`)
+writes character, player, a starter monster and its public row — no wallet. That premise is now
+PINNED (`[rb132/join-no-wallet]`, below): the verifier's own mutant — a one-line starter grant in
+`join_game` — survived every other clause, clippy and eleven currency/wallet evals while silently
+restoring rb-107 behaviour for every join-only identity. The question is asked through `crate::economy::wallet_exists(ctx, me)` (`economy.rs:324`,
 `pub(crate)`, one unique-index point read), the crate's existing SSOT for exactly this fact, which
 `accounts::account_has_game_data` already consumes across modules; it executes in the native test
 host (`economy_tests.rs` rb41), and calling it adds no `ctx.db.` text to privacy.rs, so the X9
@@ -162,7 +165,7 @@ The comment is stale, economy.rs is outside `touches:`, and the handoff carries 
 
 ## Proof of teeth (ADR-0224: ordinary Rust tests, no eval)
 
-Four new tests in `server-module/src/privacy_tests.rs`, prefixed `rb132_`, twenty clause labels, and
+Four new tests in `server-module/src/privacy_tests.rs`, prefixed `rb132_`, twenty-one clause labels, and
 the rb-107 pins re-frozen as attributions (never relaxations): the tier signature and body pins now
 spell the two-bool seam and its three arms; the frozen pre-gate statement (N1) now includes the
 wrapped `let cap` with both SSOT asks in order, trailing comma included; the `[rb107/tier-value]`
@@ -178,7 +181,11 @@ over bool × bool; `m22s4 [X9/dispatch-args]` becomes an EQUALITY at eight conte
   fixture, prefix-freedom against the three sibling heads), the full derived declaration pinned, a
   24-byte window free of `pub`/`#[`, and `#!` banned file-wide (`[rb132/no-inner-attr]`: rb48's
   `#[cfg` census is blind to a fn-body `#![cfg(not(test))]` twin, measured).
-- **`rb132_reducer_asks_the_wallet_ssot_exactly_once`** — the economy SSOT body pinned by equality
+- **`rb132_reducer_asks_the_wallet_ssot_exactly_once`** — `[rb132/join-no-wallet]`: `movement.rs`
+  (read-only, `include_str!`) names neither `economy` nor `grant_currency` as a whole identifier on the
+  comment- and string-stripped view, and `join_game`'s brace-balanced body names neither, so a
+  starter grant that hands every join-only identity a wallet row is a test-visible change to the
+  tier's premise; the economy SSOT body pinned by equality
   (rb41 owns the present-not-positive VALUE; this clause's own contribution is `fnwallet_exists(`
   exactly once, which kills a cfg twin); the wallet ask as a word-bounded identifier exactly once on
   the stripped UNSQUASHED source and as `crate::economy::wallet_exists(ctx,me)` exactly once file-wide
