@@ -11,7 +11,13 @@
       "scheduled_id",
       "scheduled_at",
       "guest_identity"
-    ]
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [
+      "guest_identity"
+    ],
+    "scheduled": "guest_claim_reaper"
   },
   "movement_tick_schedule": {
     "pk": "id",
@@ -25,7 +31,11 @@
       "id",
       "zone_id",
       "scheduled_at"
-    ]
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [],
+    "scheduled": "movement_tick"
   },
   "mr_heartbeat_schedule": {
     "pk": "id",
@@ -37,7 +47,11 @@
     "order": [
       "id",
       "scheduled_at"
-    ]
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [],
+    "scheduled": "mr_heartbeat"
   },
   "playtest_event": {
     "pk": "event_id",
@@ -63,7 +77,11 @@
       "hp_permille",
       "bait_item_id",
       "success"
-    ]
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [],
+    "scheduled": null
   },
   "playtest_reaper_schedule": {
     "pk": "id",
@@ -75,7 +93,11 @@
     "order": [
       "id",
       "scheduled_at"
-    ]
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [],
+    "scheduled": "playtest_reaper"
   },
   "pvp_deadline_schedule": {
     "pk": "scheduled_id",
@@ -91,7 +113,11 @@
       "scheduled_at",
       "battle_id",
       "turn_number"
-    ]
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [],
+    "scheduled": "pvp_deadline_reaper"
   },
   "battle_challenge_reaper_schedule": {
     "pk": "scheduled_id",
@@ -105,7 +131,13 @@
       "scheduled_id",
       "scheduled_at",
       "challenge_id"
-    ]
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [
+      "challenge_id"
+    ],
+    "scheduled": "battle_challenge_reaper"
   },
   "character": {
     "pk": "entity_id",
@@ -131,7 +163,13 @@
       "move_started_at_ms",
       "sprite_id",
       "move_queue"
-    ]
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [
+      "zone_id"
+    ],
+    "scheduled": null
   },
   "player": {
     "pk": "identity",
@@ -149,7 +187,13 @@
       "name",
       "online",
       "last_input_seq"
-    ]
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [
+      "entity_id"
+    ],
+    "scheduled": null
   },
   "config": {
     "pk": "id",
@@ -163,7 +207,13 @@
       "id",
       "content_version",
       "owner_identity"
-    ]
+    ],
+    "defaults": [
+      "owner_identity"
+    ],
+    "unique": [],
+    "indexes": [],
+    "scheduled": null
   },
   "zone_def": {
     "pk": "zone_id",
@@ -179,7 +229,11 @@
       "name",
       "width",
       "height"
-    ]
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [],
+    "scheduled": null
   },
   "species_row": {
     "pk": "id",
@@ -211,7 +265,13 @@
       "learnable_skill_ids",
       "ability",
       "tier"
-    ]
+    ],
+    "defaults": [
+      "tier"
+    ],
+    "unique": [],
+    "indexes": [],
+    "scheduled": null
   },
   "skill_row": {
     "pk": "id",
@@ -231,7 +291,11 @@
       "power",
       "accuracy",
       "pp"
-    ]
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [],
+    "scheduled": null
   },
   "type_relation_row": {
     "pk": "id",
@@ -247,7 +311,11 @@
       "attacker",
       "defender",
       "effectiveness"
-    ]
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [],
+    "scheduled": null
   },
   "item_row": {
     "pk": "id",
@@ -271,7 +339,11 @@
       "train_amount",
       "sell_price",
       "cure_status"
-    ]
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [],
+    "scheduled": null
   },
   "shop_row": {
     "pk": "shop_id",
@@ -283,7 +355,11 @@
     "order": [
       "shop_id",
       "name"
-    ]
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [],
+    "scheduled": null
   },
   "shop_item_row": {
     "pk": "shop_item_id",
@@ -299,7 +375,13 @@
       "shop_id",
       "item_id",
       "buy_price"
-    ]
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [
+      "shop_id"
+    ],
+    "scheduled": null
   },
   "encounter": {
     "pk": "zone_id",
@@ -313,7 +395,11 @@
       "zone_id",
       "encounter_rate",
       "entries"
-    ]
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [],
+    "scheduled": null
   },
   "monster": {
     "pk": "monster_id",
@@ -409,7 +495,30 @@
       "quality_time_window_ms",
       "quality_time_window_start_ms",
       "last_essence_train_at_ms"
-    ]
+    ],
+    "defaults": [
+      "essence_fire",
+      "essence_water",
+      "essence_plant",
+      "essence_electric",
+      "essence_earth",
+      "essence_wind",
+      "essence_light",
+      "essence_dark",
+      "trust_favorable_count",
+      "trust_unfavorable_count",
+      "trust_favorable_battle_day_epoch",
+      "quality_time_ticks_total",
+      "quality_time_accum_ms",
+      "quality_time_window_ms",
+      "quality_time_window_start_ms",
+      "last_essence_train_at_ms"
+    ],
+    "unique": [],
+    "indexes": [
+      "owner_identity"
+    ],
+    "scheduled": null
   },
   "monster_pub": {
     "pk": "monster_id",
@@ -469,7 +578,26 @@
       "trust_tier",
       "quality_time_tier",
       "nutrition_pct"
-    ]
+    ],
+    "defaults": [
+      "tier",
+      "essence_fire",
+      "essence_water",
+      "essence_plant",
+      "essence_electric",
+      "essence_earth",
+      "essence_wind",
+      "essence_light",
+      "essence_dark",
+      "trust_tier",
+      "quality_time_tier",
+      "nutrition_pct"
+    ],
+    "unique": [],
+    "indexes": [
+      "owner_identity"
+    ],
+    "scheduled": null
   },
   "battle": {
     "pk": "battle_id",
@@ -491,7 +619,14 @@
       "party_monster_ids",
       "opponent_monster_ids",
       "created_at_ms"
-    ]
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [
+      "player_identity",
+      "opponent_identity"
+    ],
+    "scheduled": null
   },
   "battle_wild": {
     "pk": "battle_id",
@@ -507,7 +642,11 @@
       "wild_species_id",
       "wild_level",
       "individuality_seed"
-    ]
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [],
+    "scheduled": null
   },
   "inventory": {
     "pk": "inv_id",
@@ -523,7 +662,13 @@
       "owner_identity",
       "item_id",
       "count"
-    ]
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [
+      "owner_identity"
+    ],
+    "scheduled": null
   },
   "evolution_path": {
     "pk": "path_id",
@@ -549,7 +694,13 @@
       "min_trust_tier",
       "min_quality_time_tier",
       "min_nutrition_pct"
-    ]
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [
+      "from_species"
+    ],
+    "scheduled": null
   },
   "npc": {
     "pk": "entity_id",
@@ -573,7 +724,15 @@
       "wander_radius",
       "dialogue_tree_id",
       "interaction"
-    ]
+    ],
+    "defaults": [],
+    "unique": [
+      "npc_id"
+    ],
+    "indexes": [
+      "zone_id"
+    ],
+    "scheduled": null
   },
   "player_dialogue_state": {
     "pk": "owner_identity",
@@ -587,7 +746,11 @@
       "owner_identity",
       "flags",
       "done_quests"
-    ]
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [],
+    "scheduled": null
   },
   "player_quest": {
     "pk": "pq_id",
@@ -603,7 +766,13 @@
       "owner_identity",
       "quest_id",
       "step_index"
-    ]
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [
+      "owner_identity"
+    ],
+    "scheduled": null
   },
   "player_conversation": {
     "pk": "owner_identity",
@@ -617,7 +786,11 @@
       "owner_identity",
       "npc_entity_id",
       "current_node_id"
-    ]
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [],
+    "scheduled": null
   },
   "heal_location_row": {
     "pk": "location_id",
@@ -641,7 +814,15 @@
       "cost_qty",
       "cooldown_ms",
       "cost_currency"
-    ]
+    ],
+    "defaults": [
+      "cost_currency"
+    ],
+    "unique": [],
+    "indexes": [
+      "zone_id"
+    ],
+    "scheduled": null
   },
   "heal_cooldown": {
     "pk": "owner_identity",
@@ -653,7 +834,11 @@
     "order": [
       "owner_identity",
       "last_heal_at_ms"
-    ]
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [],
+    "scheduled": null
   },
   "trade_offer": {
     "pk": "trade_id",
@@ -687,7 +872,14 @@
       "counterparty_cards",
       "status",
       "created_at_ms"
-    ]
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [
+      "initiator",
+      "counterparty"
+    ],
+    "scheduled": null
   },
   "player_wallet": {
     "pk": "owner_identity",
@@ -699,7 +891,11 @@
     "order": [
       "owner_identity",
       "balance"
-    ]
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [],
+    "scheduled": null
   },
   "account": {
     "pk": "identity",
@@ -725,7 +921,13 @@
       "claimed_from",
       "claimed_at_ms",
       "terminal_at_ms"
-    ]
+    ],
+    "defaults": [
+      "terminal_at_ms"
+    ],
+    "unique": [],
+    "indexes": [],
+    "scheduled": null
   },
   "guest_claim": {
     "pk": "guest_identity",
@@ -743,7 +945,13 @@
       "guest_name",
       "created_at_ms",
       "expires_at_ms"
-    ]
+    ],
+    "defaults": [],
+    "unique": [
+      "code"
+    ],
+    "indexes": [],
+    "scheduled": null
   },
   "profile": {
     "pk": "identity",
@@ -761,7 +969,11 @@
       "rating",
       "wins",
       "losses"
-    ]
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [],
+    "scheduled": null
   },
   "battle_challenge": {
     "pk": "challenge_id",
@@ -781,7 +993,14 @@
       "challenger_party_ids",
       "status",
       "created_at_ms"
-    ]
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [
+      "challenger",
+      "target"
+    ],
+    "scheduled": null
   },
   "battle_action": {
     "pk": "action_id",
@@ -801,7 +1020,13 @@
       "action",
       "turn_number",
       "submitted_at_ms"
-    ]
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [
+      "battle_id"
+    ],
+    "scheduled": null
   },
   "trade_offer_reaper_schedule": {
     "pk": "scheduled_id",
@@ -815,7 +1040,13 @@
       "scheduled_id",
       "scheduled_at",
       "trade_id"
-    ]
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [
+      "trade_id"
+    ],
+    "scheduled": "trade_offer_reaper"
   },
   "export_bundle": {
     "pk": "chunk_id",
@@ -839,7 +1070,14 @@
       "total_chunks",
       "payload_json",
       "created_at_ms"
-    ]
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [
+      "owner_identity",
+      "created_at_ms"
+    ],
+    "scheduled": null
   },
   "account_deletion_reaper_schedule": {
     "pk": "scheduled_id",
@@ -853,7 +1091,13 @@
       "scheduled_id",
       "scheduled_at",
       "account_identity"
-    ]
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [
+      "account_identity"
+    ],
+    "scheduled": "account_deletion_reaper"
   },
   "export_bundle_reaper_schedule": {
     "pk": "id",
@@ -865,7 +1109,11 @@
     "order": [
       "id",
       "scheduled_at"
-    ]
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [],
+    "scheduled": "export_bundle_reaper"
   },
   "player_session": {
     "pk": "connection_id",
@@ -877,7 +1125,13 @@
     "order": [
       "connection_id",
       "identity"
-    ]
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [
+      "identity"
+    ],
+    "scheduled": null
   },
   "pending_evolution_notice": {
     "pk": "owner_identity",
@@ -889,6 +1143,10 @@
     "order": [
       "owner_identity",
       "entries"
-    ]
+    ],
+    "defaults": [],
+    "unique": [],
+    "indexes": [],
+    "scheduled": null
   }
 }
