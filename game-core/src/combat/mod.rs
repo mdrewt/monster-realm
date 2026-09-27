@@ -22,30 +22,18 @@ pub mod ai;
 pub mod battle_0hp_tests;
 pub mod damage;
 #[cfg(test)]
-pub mod m14_5b_tests;
-#[cfg(test)]
 pub mod m14_5c_tests;
 #[cfg(test)]
 pub mod m14_5h_tests;
-#[cfg(test)]
-pub mod m14a_tests;
-#[cfg(test)]
-pub mod m14b_tests;
 #[cfg(test)]
 pub mod m14c_tests;
 #[cfg(test)]
 pub mod m14d_tests;
 #[cfg(test)]
-pub mod m14e_tests;
-#[cfg(test)]
 pub mod m7b_gating_tests;
 #[cfg(test)]
 pub mod m7b_redteam_tests;
 pub mod pvp;
-#[cfg(test)]
-pub mod redteam_m14_5a_tests;
-#[cfg(test)]
-pub mod redteam_m14a_tests;
 #[cfg(test)]
 pub mod redteam_m14c_tests;
 #[cfg(test)]
@@ -53,13 +41,13 @@ pub mod redteam_m14d_tests;
 #[cfg(test)]
 pub mod redteam_m14d_weather_desync;
 #[cfg(test)]
-pub mod redteam_m14e_tests;
-#[cfg(test)]
 pub mod redteam_m8d_tests;
 #[cfg(test)]
 pub mod redteam_new_findings;
 pub mod resolve;
 pub mod status;
+#[cfg(test)]
+pub mod status_tests;
 pub mod type_chart;
 pub mod types;
 pub mod weather;
