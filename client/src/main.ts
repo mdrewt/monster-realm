@@ -76,8 +76,7 @@ import type { BattleView } from './ui/battleView';
 import { buildBoxViewModel, buildPartyViewModel, nextFreePartySlot } from './ui/boxModel';
 import type { BoxView } from './ui/boxView';
 // F9 bug-bundle observability — session event ring + error ring +
-// pure bundle assembler + error overlay. main.ts emits only the 6 CORE constructors;
-// the 8 parked constructors stay exported in eventRing.ts for pt-b1b.
+// pure bundle assembler + error overlay.
 import {
   bugBundleFilename,
   buildBugBundle,

@@ -153,7 +153,7 @@ describe('bugBundle T-BUNDLE-2: serializeBugBundle is bigint-total', () => {
   it('T-BUNDLE-2-EVENT-BIGINT: a bigint smuggled into an event field also serializes safely', () => {
     // WRONG IMPL KILLED: a replacer applied only to store, not recursively to events.
     const evilEvent = {
-      kind: 'boxOpen',
+      kind: 'disconnect',
       tSeq: 1,
       tMs: 5n as unknown as number,
     } as unknown as PlaytestEvent;

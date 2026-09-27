@@ -14,7 +14,7 @@ export const EVENT_RING_CAP = 256;
 
 export type IdentityHex = string;
 
-/** Discriminated union of the 14 playtest-event payloads (kind + minimal fields, no PII). */
+/** Discriminated union of the 6 playtest-event payloads (kind + minimal fields, no PII). */
 export type PlaytestEventPayload =
   | { readonly kind: 'connect'; readonly identity: IdentityHex }
   | { readonly kind: 'disconnect' }
@@ -26,14 +26,6 @@ export type PlaytestEventPayload =
       readonly outcome: string;
       readonly turnCount: number;
     }
-  | { readonly kind: 'preRecruitHp'; readonly battleId: string; readonly hpPermille: number }
-  | { readonly kind: 'recruitAttempt'; readonly battleId: string; readonly baitItemId: number }
-  | { readonly kind: 'recruitResult'; readonly battleId: string; readonly success: boolean }
-  | { readonly kind: 'boxOpen' }
-  | { readonly kind: 'monsterRelease'; readonly speciesId: number }
-  | { readonly kind: 'reCatch'; readonly speciesId: number }
-  | { readonly kind: 'tradePropose'; readonly tradeId: string }
-  | { readonly kind: 'tradeConfirm'; readonly tradeId: string }
   | { readonly kind: 'rankedMatch'; readonly battleId: string; readonly ratingDelta: number };
 
 /** A stamped event: the payload plus the ring-added envelope (tSeq monotonic, tMs from clock). */
@@ -42,13 +34,7 @@ export type PlaytestEvent = PlaytestEventPayload & {
   readonly tMs: number;
 };
 
-function clamp(v: number, lo: number, hi: number): number {
-  if (v < lo) return lo;
-  if (v > hi) return hi;
-  return v;
-}
-
-// --- 6 core constructors (emitted by main.ts at pt-b1) ---------------------
+// --- constructors (emitted by main.ts) --------------------------------------
 
 export function makeConnect(identity: IdentityHex): PlaytestEventPayload {
   return { kind: 'connect', identity };
@@ -76,46 +62,6 @@ export function makeBattleEnd(
 
 export function makeRankedMatch(battleId: string, ratingDelta: number): PlaytestEventPayload {
   return { kind: 'rankedMatch', battleId, ratingDelta };
-}
-
-// --- 8 parked constructors (exported + tested; emitted later by pt-b1b) -----
-
-/** permille = clamp(round(cur/max*1000), 0, 1000); max<=0 => 0 (div-safe, never NaN/Infinity). */
-export function makePreRecruitHp(
-  battleId: string,
-  currentHp: number,
-  maxHp: number,
-): PlaytestEventPayload {
-  const hpPermille = maxHp <= 0 ? 0 : clamp(Math.round((currentHp / maxHp) * 1000), 0, 1000);
-  return { kind: 'preRecruitHp', battleId, hpPermille };
-}
-
-export function makeRecruitAttempt(battleId: string, baitItemId: number): PlaytestEventPayload {
-  return { kind: 'recruitAttempt', battleId, baitItemId };
-}
-
-export function makeRecruitResult(battleId: string, success: boolean): PlaytestEventPayload {
-  return { kind: 'recruitResult', battleId, success };
-}
-
-export function makeBoxOpen(): PlaytestEventPayload {
-  return { kind: 'boxOpen' };
-}
-
-export function makeMonsterRelease(speciesId: number): PlaytestEventPayload {
-  return { kind: 'monsterRelease', speciesId };
-}
-
-export function makeReCatch(speciesId: number): PlaytestEventPayload {
-  return { kind: 'reCatch', speciesId };
-}
-
-export function makeTradePropose(tradeId: string): PlaytestEventPayload {
-  return { kind: 'tradePropose', tradeId };
-}
-
-export function makeTradeConfirm(tradeId: string): PlaytestEventPayload {
-  return { kind: 'tradeConfirm', tradeId };
 }
 
 // The PvP-vs-wild classifier is defined ONCE, canonically, in battleModel.ts
