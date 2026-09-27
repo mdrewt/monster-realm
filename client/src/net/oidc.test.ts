@@ -95,12 +95,14 @@
 // NO scheme literal anywhere either — every URL below is assembled from parts, the same
 // move `accounts.rs:40-48` makes for the same class of scanner.
 
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import * as fc from 'fast-check';
-import { describe, expect, it } from 'vitest';
-import type { RenewalOutcome } from './credentialDecision';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { claimCode } from './claimCode';
+import {
+  AUTH_SERVICE_TRANSIENT_THRESHOLD,
+  decideConnectCredential,
+  type RenewalOutcome,
+} from './credentialDecision';
 import {
   classifySignInReason,
   createOidcClient,
@@ -1501,164 +1503,242 @@ describe('oidcFlowStorageKey: mr.oidcFlow.v1|<uri>|<db>, disjoint from the authT
 });
 
 // ===========================================================================
-// G30 (half) — SOURCE SCAN of oidc.ts.
-//
-// Same split of duties, and the same NAMED RESIDUAL, as claimCode.test.ts's scan:
-// a substring scan cannot see bracket/string-splitting evasion
-// (`globalThis['session' + 'Storage']`). What it guarantees is that the shipped
-// source does not NAME the banned surfaces; the injected-host behaviour above is
-// what makes an evasion pointless, and review is where a deliberate one is caught.
+// G30 (runtime) — replaces the former source scan (ledger CT-src-net-oidc#g30-source-scan).
+// Every ambient surface oidc.ts could reach (storage, cookie, location, history, fetch,
+// crypto) is replaced by a recording trap while the full flow runs through an injected host:
+// sign-in, return leg, exchange, silent refresh, and every export with NO host. Any trap hit
+// means the PKCE verifier / refresh token could outlive the tab or bypass the injected host.
 // ===========================================================================
 
-const OIDC_TS_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), 'oidc.ts');
+const AMBIENT_SURFACES = [
+  'localStorage',
+  'sessionStorage',
+  'indexedDB',
+  'document',
+  'window',
+  'location',
+  'history',
+  'fetch',
+  'crypto',
+];
 
-function readSourceOrThrow(filePath: string): string {
-  try {
-    return readFileSync(filePath, 'utf8');
-  } catch (err) {
-    throw new Error(`could not read ${filePath} — ${String(err)}`);
+function trapAmbient(): string[] {
+  const hits: string[] = [];
+  for (const name of AMBIENT_SURFACES) {
+    // `typeof` must match the real surface: callers guard with typeof === 'object' before a
+    // property read, so an all-function trap would be skipped silently (measured).
+    const target = name === 'fetch' ? () => null : {};
+    const trap = new Proxy(target, {
+      get: (_t, k) => {
+        hits.push(`${name}.${String(k)}`);
+        return () => null; // callable, so a fallback runs to completion and is recorded
+      },
+      set: (_t, k) => {
+        hits.push(`${name}.${String(k)}=`);
+        return true;
+      },
+      has: (_t, k) => {
+        hits.push(`${String(k)} in ${name}`);
+        return false;
+      },
+      apply: () => {
+        hits.push(`${name}()`);
+        return null;
+      },
+    });
+    vi.stubGlobal(name, trap);
   }
+  return hits;
 }
 
-function countOccurrences(src: string, needle: string): number {
-  return src.split(needle).length - 1;
-}
+describe('G30 (runtime): oidc reaches every ambient surface ONLY through the injected host', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
 
-/** Copied in behaviour from connection.test.ts:95-122 so the two scans cannot drift. */
-function stripComments(src: string): string {
-  let withoutBlocks = '';
-  let i = 0;
-  for (;;) {
-    const start = src.indexOf('/*', i);
-    if (start === -1) {
-      withoutBlocks += src.slice(i);
-      break;
+  it('★★ BITES: sign-in, return leg, exchange and refresh touch zero ambient surfaces', async () => {
+    const rig = makeRig();
+    const hits = trapAmbient();
+    const { outcome } = await completeSignIn(rig);
+    expect(outcome).toEqual({ kind: 'ok', token: ID_TOKEN_1 });
+    rig.setTokenResponse(OK_REFRESH);
+    expect(await createOidcClient(rig.host, CONFIG).renewOrExchange()).toEqual({
+      kind: 'ok',
+      token: ID_TOKEN_2,
+    });
+    expect(
+      rig.storage.keys().length,
+      'the injected storage must hold the flow state',
+    ).toBeGreaterThan(0);
+    expect(hits, 'ambient surface reached — a credential could outlive the tab').toEqual([]);
+  });
+
+  it('★★ BITES: with NO usable host every export degrades without an ambient fallback', async () => {
+    const hits = trapAmbient();
+    // Partial hosts reach DEEPER into each flow than an absent one: no crypto (discovery and
+    // storage work, the mint cannot), and no storage (fetch/crypto work, persistence cannot).
+    const noCrypto = makeRig({ omitCrypto: true }).host;
+    const noStorage = { ...makeRig().host, sessionStorage: undefined };
+    for (const host of [undefined, {}, noCrypto, noStorage]) {
+      const client = createOidcClient(host, CONFIG);
+      expect(client.consumeReturnLeg()).toBe(false);
+      expect((await client.beginSignIn()).kind).not.toBe('ready');
+      expect((await client.renewOrExchange()).kind).not.toBe('ok');
     }
-    withoutBlocks += src.slice(i, start);
-    const end = src.indexOf('*/', start + 2);
-    if (end === -1) break;
-    i = end + 2;
-  }
-  return withoutBlocks
-    .split('\n')
-    .map((line) => {
-      const j = line.indexOf('//');
-      return j === -1 ? line : line.slice(0, j);
-    })
-    .join('\n');
-}
+    expect(hits).toEqual([]);
+  });
 
-function moduleEdgeLines(stripped: string): string[] {
-  return stripped
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(
-      (line) =>
-        line.startsWith('import') || line.startsWith('export {') || line.startsWith('export *'),
+  it('★ CALIBRATION: the trap records a bare ambient reach (the test is not vacuous)', () => {
+    const hits = trapAmbient();
+    (globalThis as unknown as { localStorage: Storage }).localStorage.setItem('k', 'v');
+    expect(hits).toEqual(['localStorage.setItem']);
+  });
+});
+
+// ===========================================================================
+// AUTH-57 sentinel oracle (debloat Phase 2, EV-client-no-pii-logs condition).
+//
+// Real sentinel credentials are pushed through every credential path of the three
+// credential modules — oidc (exchange, refresh, definitive rejection, network failure),
+// credentialDecision (every outcome it maps) and claimCode (mint / read / clear) — while
+// every log-shaped sink these modules could reach is spied: all console methods and the
+// ambient `reportError`. The oracle is the sinks' recorded ARGUMENTS and every value a
+// module hands back that is not the sanctioned credential itself: no sentinel may appear
+// in either. (The `opts.on*` callbacks and main.ts's telemetry / reportError call sites
+// live in connection.ts / main.ts, which this node suite cannot import: residual for the
+// OIDC e2e spec the ledger row names.)
+// ===========================================================================
+
+describe('AUTH-57 sentinel: no credential value reaches a log sink or a failure value', () => {
+  const SENTINEL_ID = 'sentinel-id-token-q7';
+  const SENTINEL_ACCESS = 'sentinel-access-token-q7';
+  const SENTINEL_REFRESH = 'sentinel-refresh-token-q7';
+  const SENTINEL_DETAIL = 'sentinel-provider-detail-q7';
+
+  function render(value: unknown): string {
+    if (value instanceof Error) return `${value.message} ${value.stack ?? ''}`;
+    try {
+      return typeof value === 'string' ? value : (JSON.stringify(value) ?? String(value));
+    } catch {
+      return String(value);
+    }
+  }
+
+  function spySinks(): () => string[] {
+    const methods = ['log', 'info', 'warn', 'error', 'debug', 'trace'] as const;
+    const spies = methods.map((m) => vi.spyOn(console, m).mockImplementation(() => undefined));
+    const reportError = vi.fn();
+    vi.stubGlobal('reportError', reportError);
+    return () =>
+      [...spies.map((s) => s.mock.calls), reportError.mock.calls].flatMap((calls) =>
+        calls.flatMap((args) => args.map(render)),
+      );
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('★★ BITES: exchange, refresh, rejection and outage paths leak no sentinel', async () => {
+    const recorded = spySinks();
+    const secrets = [SENTINEL_ID, SENTINEL_ACCESS, SENTINEL_REFRESH, SENTINEL_DETAIL];
+    const handedBack: unknown[] = [];
+
+    // 1. Successful exchange carrying sentinel tokens. The id token is the ONE sanctioned
+    //    output (it is the credential), so it is checked separately.
+    const rig = makeRig({
+      tokenResponse: {
+        ok: true,
+        status: 200,
+        body: {
+          id_token: SENTINEL_ID,
+          access_token: SENTINEL_ACCESS,
+          refresh_token: SENTINEL_REFRESH,
+          token_type: 'Bearer',
+        },
+      },
+    });
+    const { outcome } = await completeSignIn(rig);
+    expect(outcome).toEqual({ kind: 'ok', token: SENTINEL_ID });
+    expect(decideConnectCredential(outcome, false, 0, undefined)).toEqual({
+      kind: 'account',
+      token: SENTINEL_ID,
+    });
+
+    // 2. A definitive refresh rejection whose provider text quotes the stored refresh token.
+    rig.setTokenResponse({
+      ok: false,
+      status: 400,
+      body: { error: 'invalid_grant', error_description: `${SENTINEL_REFRESH} ${SENTINEL_DETAIL}` },
+    });
+    const refreshed = await createOidcClient(rig.host, CONFIG).renewOrExchange();
+    handedBack.push(refreshed, decideConnectCredential(refreshed, true, 0, undefined));
+
+    // 3. A definitive EXCHANGE rejection quoting the provider detail.
+    const rejected = makeRig({
+      tokenResponse: {
+        ok: false,
+        status: 400,
+        body: { error: 'access_denied', error_description: `${SENTINEL_DETAIL} ${SENTINEL_ID}` },
+      },
+    });
+    const failed = (await completeSignIn(rejected)).outcome;
+    expect(failed.kind).toBe('exchange-failed');
+    handedBack.push(failed, decideConnectCredential(failed, false, 0, undefined));
+
+    // 4. A network failure whose error message carries the detail (a proxy echoing the body).
+    const outage = makeRig();
+    const outageClient = createOidcClient(outage.host, CONFIG);
+    const begun = await outageClient.beginSignIn();
+    const state = queryParam((begun as { authorizationUrl: string }).authorizationUrl, 'state');
+    outage.setSearch(`?code=${AUTH_CODE}&state=${state}`);
+    outageClient.consumeReturnLeg();
+    (outage.host as { fetch: unknown }).fetch = async () => {
+      throw new TypeError(`Failed to fetch ${SENTINEL_DETAIL}`);
+    };
+    const down = await outageClient.renewOrExchange();
+    expect(down).toEqual({ kind: 'transient-error' });
+    handedBack.push(
+      down,
+      decideConnectCredential(down, false, AUTH_SERVICE_TRANSIENT_THRESHOLD, undefined),
+      decideConnectCredential(down, true, AUTH_SERVICE_TRANSIENT_THRESHOLD, undefined),
     );
-}
 
-function sessionStorageReachesOnlyThroughHost(stripped: string): {
-  ok: boolean;
-  offending: string;
-} {
-  for (const line of stripped.split('\n')) {
-    if (line.indexOf('sessionStorage') === -1) continue;
-    if (line.indexOf('host') === -1) return { ok: false, offending: line.trim() };
-  }
-  return { ok: true, offending: '' };
-}
-
-describe('G30 (oidc.ts source scan): every ambient surface arrives through the injected host', () => {
-  it('★ CALIBRATION: the stripper is not vacuous, and oidc.ts carries no scheme literal', () => {
-    // Plan ADDENDUM §C, last bullet. (1) proves the stripper strips and keeps; (2) closes
-    // `stripComments`'s quote-blindness — it truncates each line at the first two-slash
-    // token, so a live line carrying a URL would hide everything after it from every ban
-    // below. Every URL oidc.ts needs comes from the discovery document or from
-    // `OidcConfig`, so zero scheme literals is achievable AND is the design.
-    const fixture = [
-      'const live = 1;',
-      '// globalThis.fetch(x)',
-      '/* localStorage.setItem() */ const also = 2;',
-    ].join('\n');
-    const strippedFixture = stripComments(fixture);
-    expect(countOccurrences(strippedFixture, 'globalThis')).toBe(0);
-    expect(countOccurrences(strippedFixture, 'localStorage')).toBe(0);
-    expect(countOccurrences(strippedFixture, 'const live = 1;')).toBe(1);
-    expect(countOccurrences(strippedFixture, 'const also = 2;')).toBe(1);
-
-    expect(
-      countOccurrences(readSourceOrThrow(OIDC_TS_PATH), ':' + '//'),
-      'oidc.ts must contain no scheme literal: the line-comment stripper truncates at the ' +
-        'first two-slash token, so a URL on a live line hides whatever follows it from ' +
-        'every ban in this block. Take every endpoint from discovery or from OidcConfig',
-    ).toBe(0);
-  });
-
-  it('★★ BITES: zero localStorage / indexedDB / document.cookie / globalThis / window in the comment-stripped source', () => {
-    // WRONG IMPL KILLED (a): `globalThis.fetch(...)` when `host.fetch` is missing — every
-    //   totality test above still passes (node HAS fetch) while the injected-host
-    //   discipline silently stops applying, and the eval that scans for network calls in
-    //   oidc.ts stops seeing them.
-    // WRONG IMPL KILLED (b): `localStorage` for the refresh token — AUTH-58 violated, and
-    //   an origin-shared refresh token re-opens the cross-tab identity hazard ADR-0150 D3
-    //   closes.
-    // WRONG IMPL KILLED (c): `window.history.replaceState(...)` — the scrub would silently
-    //   no-op under vitest and the AUTH-41 ordering test would be judging nothing.
-    const stripped = stripComments(readSourceOrThrow(OIDC_TS_PATH));
-
-    expect(
-      countOccurrences(stripped, 'sessionStorage'),
-      'anti-vacuity: the scanned source must actually reference sessionStorage',
-    ).toBeGreaterThanOrEqual(1);
-    expect(
-      countOccurrences(stripped, 'export'),
-      'anti-vacuity: it must export something',
-    ).toBeGreaterThanOrEqual(3);
-
-    for (const banned of ['localStorage', 'indexedDB', 'document.cookie', 'globalThis', 'window']) {
+    for (const value of handedBack) {
+      const text = render(value);
+      for (const s of secrets) {
+        expect(text.indexOf(s), `a failure value carries ${s}: ${text}`).toBe(-1);
+      }
+      const reason = (value as { reason?: unknown }).reason;
+      if (reason !== undefined) expect(SIGN_IN_REASONS).toContain(reason);
+    }
+    const logs = recorded();
+    for (const s of [...secrets, AUTH_CODE]) {
       expect(
-        countOccurrences(stripped, banned),
-        `oidc.ts must never name "${banned}" — storage, location, history, crypto and fetch ` +
-          'are ALL injected through OidcHost (ADR-0182 D12 / G30)',
-      ).toBe(0);
+        logs.filter((line) => line.indexOf(s) >= 0),
+        `${s} reached a log sink`,
+      ).toEqual([]);
     }
   });
 
-  it('★★ BITES: every `sessionStorage` occurrence is host-scoped (kills a bare implicit-global access)', () => {
-    const verdict = sessionStorageReachesOnlyThroughHost(
-      stripComments(readSourceOrThrow(OIDC_TS_PATH)),
+  it('★★ BITES: the claim secret never reaches a log sink through mint / read / clear', () => {
+    const recorded = spySinks();
+    const rig = makeRig();
+    const minted = claimCode.mint(rig.host, URI, DB);
+    expect(typeof minted, 'the fixture must mint a real code or the oracle is vacuous').toBe(
+      'string',
     );
-    expect(
-      verdict.ok,
-      `every line naming sessionStorage must also name the injected host. Offending: ${JSON.stringify(verdict.offending)}`,
-    ).toBe(true);
-  });
-
-  it('★★ BITES: the ONLY module edge is a TYPE import from ./credentialDecision; no `import *`', () => {
-    // Plan ADDENDUM §C, F19. oidc.ts is where the network, the crypto and the tab's
-    // storage meet; a runtime import here is a runtime dependency for every one of them.
-    // The type import of `RenewalOutcome` is free at runtime and is the ONLY edge the
-    // design needs (credentialDecision.ts owns its own input alphabet — ADR-0182 D13).
-    //
-    // WRONG IMPL KILLED: `import { createAuthTokenGate } from './authToken'` (two storage
-    // seams with different fail directions fused into one), or a runtime import of the
-    // generated SDK bindings (which would make oidc.ts un-importable under vitest and
-    // delete this whole file's ability to test anything).
-    const stripped = stripComments(readSourceOrThrow(OIDC_TS_PATH));
-    expect(countOccurrences(stripped, 'import *'), 'no namespace imports').toBe(0);
-    expect(countOccurrences(stripped, 'require('), 'no CommonJS require').toBe(0);
-
-    const edges = moduleEdgeLines(stripped);
-    for (const line of edges) {
-      expect(
-        line.startsWith('import type') || line.startsWith('export type'),
-        `oidc.ts may carry TYPE-ONLY module edges. Offending line: ${JSON.stringify(line)}`,
-      ).toBe(true);
-      expect(
-        line.indexOf('./credentialDecision') >= 0,
-        `oidc.ts may only import from './credentialDecision'. Offending line: ${JSON.stringify(line)}`,
-      ).toBe(true);
-    }
+    expect(minted).toHaveLength(64);
+    expect(claimCode.read(rig.host, URI, DB)).toBe(minted);
+    expect(claimCode.hasUnconsumed(rig.host, URI, DB)).toBe(true);
+    claimCode.clear(rig.host, URI, DB);
+    expect(claimCode.read(rig.host, URI, DB)).toBeUndefined();
+    // A host whose storage throws must fail closed, still silently.
+    expect(claimCode.mint({ ...rig.host, sessionStorage: new ThrowingSetStorage() }, URI, DB)).toBe(
+      undefined,
+    );
+    expect(recorded().filter((line) => line.indexOf(minted as string) >= 0)).toEqual([]);
+    expect(recorded(), 'claimCode logs nothing at all').toEqual([]);
   });
 });

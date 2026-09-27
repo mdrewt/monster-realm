@@ -1,727 +1,26 @@
-//! `accounts_tests` — gating tests for M21a (ADR-0179, AUTH-1..38 in-scope).
+//! `accounts_tests` — the accounts / guest-claim / deletion-lifecycle tests.
 //!
 //! Declared from `accounts.rs` as `#[path = "accounts_tests.rs"] mod accounts_tests;`
-//! so `super::` resolves to the `accounts` module: the pure decision seams,
-//! constants, and the `use crate::schema::{Account, AccountStatus, GuestClaim}`
-//! aliases are all reachable via `use super::*` (same pattern as economy_tests).
+//! so `super::` resolves to the `accounts` module (pure decision seams,
+//! constants, the schema aliases) via `use super::*`.
 //!
-//! When this file was written there was no known way to construct a `ReducerContext`
-//! in this crate, so the split is:
-//!   - every behavioural criterion that lands on a pure seam is an EXECUTED test;
-//!   - every ctx-bound shell property is a SOURCE SCAN over the frozen production
-//!     files (`accounts.rs`/`lib.rs`/`schema.rs`/the rekey helpers) via `include_str!`.
+//! Two layers:
+//!   - pure-seam tests at top level: the account state machine, claim / expiry /
+//!     deletion-grace arithmetic, the lifecycle manifest's partition and its tie
+//!     to the tables' real derive metadata (`m22s6_*`), and the observation-line
+//!     field fragments;
+//!   - `acct_nh`: the shipped reducers and helpers EXECUTED against the
+//!     in-memory host (`native_host_tests.rs`) — provisioning on connect, the
+//!     guest-claim round trip, delete / cancel, the deletion cascade, the claim
+//!     reaper, the `my_account` view and data export.
 //!
-//! Since rb-41 that premise is FALSE: `ReducerContext::__dummy()` plus the in-memory
-//! host in `native_host_tests.rs` run ctx-bound helpers against real rows (the
-//! `rb41_*` tests in the predicate-owning `*_tests.rs` files are the pattern). The
-//! scans below still hold; new ctx-bound behaviour should prefer a real test.
-//!
-//! SCAN HYGIENE (memory card): cross-file eval scanners concatenate every
-//! `server-module/src/**` file and do NOT strip string literals. Therefore this
-//! file NEVER writes a contiguous scanner needle (a table attribute macro, a
-//! reducer attribute macro, the monster dual-write chain, a wallet accessor, a
-//! profile insert, etc.) — every such needle is assembled at runtime via
-//! `concat!` / `[..].concat()`. This file contains NO wallet token at all
-//! (currency-integrity ACCESSOR_BYPASS scans every file except
-//! economy.rs/schema.rs/economy_tests.rs) — wallet pure tests live in
-//! economy_tests.rs, not here.
-//!
-//! The three-stage strip pipeline (`strip_rust_strings` -> `strip_rust_comments`
-//! -> `squash_ws`) is copied from ranking_tests.rs so that string/comment content
-//! in the SCANNED production file cannot create false needle matches. A second
-//! pipeline (`stripped_keep_strings`) preserves string CONTENT (comments removed,
-//! string-context-aware so a URL's `//` is not mistaken for a line comment) for
-//! the reject-MESSAGE contract scans.
-//!
-//! NOTE FOR THE M21c G6 (REKEY_COMPLETENESS) AUTHOR — the four new-table
-//! `Identity` columns need these manifest policies (M21a ships no G6 eval/const,
-//! CUT per /simplify #7):
-//!   - `account.identity`                          -> EXEMPT (destination key; a claim never re-keys an account row)
-//!   - `account.claimed_from`                      -> EXEMPT (audit provenance; must survive by design, AUTH-21)
-//!   - `guest_claim.guest_identity`                -> BLOCKED (consumed+deleted by consume_claim_and_disarm, AUTH-34)
-//!   - `guest_claim_reaper_schedule.guest_identity` -> BLOCKED (same transaction disarm, AUTH-34)
+//! SCAN HYGIENE: cross-file eval scanners read every server-module source file
+//! (without stripping string literals), so scanner needles are assembled with
+//! `concat!` where a test must spell one.
 
 #![cfg(test)]
 
 use super::*;
-
-// ===========================================================================
-// Scan machinery (local copies — per-module convention, do NOT import from
-// sibling _tests.rs). strings -> comments -> squash_ws.
-// ===========================================================================
-
-/// Blank the CONTENT (and delimiters) of `"..."` / `r"..."` / `r#"..."#` string
-/// literals with spaces. Must run BEFORE `strip_rust_comments`. (Copy of the
-/// ranking_tests.rs helper; char/byte literals such as `b'0'` are intentionally
-/// not handled — accounts.rs' only relevant literals are byte-range matches that
-/// contain no scanner needles.)
-fn strip_rust_strings(src: &str) -> String {
-    let bytes = src.as_bytes();
-    let len = bytes.len();
-    let mut out = Vec::with_capacity(len);
-    let mut i = 0;
-    while i < len {
-        if bytes[i] == b'r' {
-            let mut hashes: usize = 0;
-            let mut j = i + 1;
-            while j < len && bytes[j] == b'#' && hashes < 6 {
-                hashes += 1;
-                j += 1;
-            }
-            if j < len && bytes[j] == b'"' {
-                out.push(b' ');
-                out.resize(out.len() + hashes, b' ');
-                out.push(b' ');
-                j += 1;
-                loop {
-                    if j >= len {
-                        break;
-                    }
-                    if bytes[j] == b'"' {
-                        let mut k = j + 1;
-                        let mut closing: usize = 0;
-                        while k < len && bytes[k] == b'#' && closing < hashes {
-                            closing += 1;
-                            k += 1;
-                        }
-                        if closing == hashes {
-                            out.push(b' ');
-                            out.resize(out.len() + hashes, b' ');
-                            j = k;
-                            break;
-                        }
-                    }
-                    out.push(b' ');
-                    j += 1;
-                }
-                i = j;
-                continue;
-            }
-        }
-        if bytes[i] == b'"' {
-            out.push(b' ');
-            i += 1;
-            loop {
-                if i >= len {
-                    break;
-                }
-                if bytes[i] == b'\\' && i + 1 < len {
-                    out.push(b' ');
-                    out.push(b' ');
-                    i += 2;
-                } else if bytes[i] == b'"' {
-                    out.push(b' ');
-                    i += 1;
-                    break;
-                } else {
-                    out.push(b' ');
-                    i += 1;
-                }
-            }
-            continue;
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8(out).expect("string-stripped source must be valid UTF-8")
-}
-
-/// Blank `/* ... */` and `// ...` comments with spaces. Run AFTER
-/// `strip_rust_strings`.
-fn strip_rust_comments(src: &str) -> String {
-    let bytes = src.as_bytes();
-    let len = bytes.len();
-    let mut out = vec![b' '; len];
-    let mut i = 0;
-    while i < len {
-        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-            i += 2;
-            while i + 1 < len {
-                if bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                    i += 2;
-                    break;
-                }
-                i += 1;
-            }
-        } else if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
-            while i < len && bytes[i] != b'\n' {
-                i += 1;
-            }
-        } else {
-            out[i] = bytes[i];
-            i += 1;
-        }
-    }
-    String::from_utf8(out).expect("comment-stripped source must be valid UTF-8")
-}
-
-/// Remove all whitespace (rustfmt-proof needle matching).
-fn squash_ws(src: &str) -> String {
-    src.chars().filter(|c| !c.is_whitespace()).collect()
-}
-
-/// Full structural pipeline: strings blanked -> comments blanked -> whitespace
-/// squashed. Use for identifier / ordering / count / write-token scans.
-fn stripped_for_scan(src: &str) -> String {
-    squash_ws(&strip_rust_comments(&strip_rust_strings(src)))
-}
-
-/// Remove comments but PRESERVE string-literal content, tracking string context
-/// so a `//` inside a string (the ALLOWED_ISSUERS URL) is not treated as a line
-/// comment. Followed by `squash_ws`, this yields a view in which reject-MESSAGE
-/// text survives so the message contracts (AUTH-15/16/18/20 etc.) are scannable.
-fn strip_comments_keep_strings(src: &str) -> String {
-    let bytes = src.as_bytes();
-    let len = bytes.len();
-    let mut out = Vec::with_capacity(len);
-    let mut i = 0;
-    while i < len {
-        if bytes[i] == b'"' {
-            out.push(bytes[i]);
-            i += 1;
-            while i < len {
-                if bytes[i] == b'\\' && i + 1 < len {
-                    out.push(bytes[i]);
-                    out.push(bytes[i + 1]);
-                    i += 2;
-                } else if bytes[i] == b'"' {
-                    out.push(bytes[i]);
-                    i += 1;
-                    break;
-                } else {
-                    out.push(bytes[i]);
-                    i += 1;
-                }
-            }
-            continue;
-        }
-        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-            i += 2;
-            while i + 1 < len && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
-                i += 1;
-            }
-            i += 2;
-            continue;
-        }
-        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
-            while i < len && bytes[i] != b'\n' {
-                i += 1;
-            }
-            continue;
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8(out).expect("comment-stripped (strings kept) source must be valid UTF-8")
-}
-
-/// Whitespace-squashed view with string content preserved (for message scans).
-fn stripped_keep_strings(src: &str) -> String {
-    squash_ws(&strip_comments_keep_strings(src))
-}
-
-/// Extract the brace-bounded body of a fn from an ALREADY-squashed source. Depth
-/// counter over `{`/`}`. `fn_needle` is the squashed signature prefix, e.g.
-/// `fnstart_guest_claim(`.
-fn extract_squashed_fn_body<'a>(squashed: &'a str, fn_needle: &str) -> Option<&'a str> {
-    let fn_start = squashed.find(fn_needle)?;
-    let after = &squashed[fn_start..];
-    let brace_rel = after.find('{')?;
-    let body_start = fn_start + brace_rel + 1;
-    let bytes = squashed.as_bytes();
-    let mut depth: usize = 1;
-    let mut i = body_start;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(&squashed[body_start..i]);
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    None
-}
-
-/// Extract the squashed signature slice (fn_needle .. first `{`).
-fn extract_squashed_fn_sig<'a>(squashed: &'a str, fn_needle: &str) -> Option<&'a str> {
-    let fn_start = squashed.find(fn_needle)?;
-    let after = &squashed[fn_start..];
-    let brace_rel = after.find('{')?;
-    Some(&squashed[fn_start..fn_start + brace_rel])
-}
-
-/// First-occurrence byte index of `needle` in `hay`, or panic with context.
-fn idx(hay: &str, needle: &str) -> usize {
-    hay.find(needle)
-        .unwrap_or_else(|| panic!("scan needle not found (expected present): {needle:?}"))
-}
-
-// Sources under test (frozen production; scans are RED under the documented
-// proof-of-teeth mutations, GREEN against the correct impl).
-const ACCOUNTS_RS: &str = include_str!("accounts.rs");
-const LIB_RS: &str = include_str!("lib.rs");
-const SCHEMA_RS: &str = include_str!("schema.rs");
-const MONSTER_MGMT_RS: &str = include_str!("monster_mgmt.rs");
-const RANKING_RS: &str = include_str!("ranking.rs");
-
-// Squashed fn-needle fragments, split mid-token so this file never self-matches
-// if it is itself ever concatenated into a scan.
-fn nd_complete() -> String {
-    concat!("fncomplete_guest", "_claim(").to_string()
-}
-fn nd_start() -> String {
-    concat!("fnstart_guest", "_claim(").to_string()
-}
-fn nd_provision() -> String {
-    concat!("fnprovision_or_touch", "_account(").to_string()
-}
-fn nd_reaper() -> String {
-    concat!("fnguest_claim", "_reaper(").to_string()
-}
-
-/// The exact set of tables `accounts.rs` may WRITE (D0 write-isolation).
-///
-/// FOUR as of rb-24 (M22 S3, spec para 4.4): the deletion reaper OWN schedule
-/// table is colocated in this module under the ADR-0056 exception, exactly as
-/// `guest_claim_reaper_schedule` is, so `arm_deletion_reaper` and
-/// `disarm_deletion_reaper` write it directly rather than through an owning
-/// module. Widening an allowlist can only ever LOOSEN a gate, so the widening is
-/// paid for twice: `rb24_owned_write_set_covers_the_deletion_schedule` proves
-/// the new entry is EXERCISED by a real write in accounts.rs, and
-/// `rb24_schedule_table_sole_writers` proves every such write lives inside one
-/// of the two reviewed helper bodies. The JS twin of this list —
-/// `OWNED_TABLES` in `evals/guest-claim-integrity.eval.mjs` — must be widened in
-/// the SAME commit or its [W/write-target] clause reds on the sanctioned arm.
-fn allowed_write_tables() -> [String; 4] {
-    [
-        "account".to_string(),
-        concat!("guest", "_claim").to_string(),
-        concat!("guest_claim_reaper", "_schedule").to_string(),
-        concat!("account_deletion_reaper", "_schedule").to_string(),
-    ]
-}
-
-// ===========================================================================
-// G2 SOURCE-DERIVED REDUCER ENUMERATION (ADR-0195 D6) — the Rust port of
-// `evals/guest-claim-integrity.eval.mjs`'s `parseReducers`,
-// `parseScheduledTargets`, `isWireSafeType` and `checkNoClientIdentity`.
-//
-// WHY A PORT AND NOT A NEEDLE LIST: the shipped G2 mirror iterated FIVE
-// hardcoded reducer needles, so an ADDED reducer was invisible to it — which is
-// precisely the shape of both PROVEN account-takeover bypasses:
-//   E1  a struct-wrapped Identity (`ClaimTarget { guest_identity: Identity }`)
-//       passed as a reducer argument. It declares no `: Identity` parameter, so
-//       a substring ban is green on it.
-//   E2  a wire-safe `String` parameter plus an `Identity::from_hex` call in the
-//       body. A parameter-type analysis alone never sees it.
-// Both compile and pass `clippy --all-targets -D warnings`. The defense is
-// therefore a POSITIVE wire-safe-scalar allowlist plus an Identity-constructor
-// ban plus an EXACT name-set pin — never "the type text contains Identity".
-//
-// EVERYTHING BELOW RUNS OVER `stripped_for_scan` OUTPUT: strings blanked ->
-// comments blanked -> ALL whitespace squashed. So the `spacetimedb::reducer`
-// attribute reads as one contiguous token and a parameter reads `name:&Type`.
-// The one place this matters structurally is the `fn` token walk: whitespace
-// squashing fuses `pub fn` into `pubfn`, so a naive word-boundary test would
-// reject every `pub` reducer in the tree (see `is_fn_token_at`).
-// ===========================================================================
-
-/// Is `b` a Rust identifier byte? (Word-boundary tests over squashed source.)
-fn is_word_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
-}
-
-/// Is `c` a Rust identifier char?
-fn is_word_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '_'
-}
-
-/// Does a standalone `fn` TOKEN start at byte `k` of an already-squashed source?
-///
-/// Two conditions, and the first is not decoration:
-///   - a word char must FOLLOW `fn` (the function's name). This is what rejects
-///     the fn-POINTER type form `handler:fn(u8)->u8`, whose `fn` is followed by
-///     `(`;
-///   - the preceding byte must not be a word char — EXCEPT for the `pub`
-///     visibility keyword, which whitespace squashing has fused onto the front
-///     (`pub fn` -> `pubfn`). Missing that exception would make this enumerator
-///     see zero reducers in the live tree and report "clean" about nothing.
-fn is_fn_token_at(squashed: &str, k: usize) -> bool {
-    let bytes = squashed.as_bytes();
-    if k + 2 >= bytes.len() || !is_word_byte(bytes[k + 2]) {
-        return false;
-    }
-    if k == 0 || !is_word_byte(bytes[k - 1]) {
-        return true;
-    }
-    let before = &squashed[..k];
-    before.ends_with("pub") && (before.len() == 3 || !is_word_byte(bytes[before.len() - 4]))
-}
-
-/// Every `spacetimedb::reducer`-attributed fn in an already-squashed source, as
-/// `(fn name, [(param name, param type)])`.
-///
-/// PARAMS ONLY: the walk stops at the balanced close of the parameter list, so a
-/// return type is out of scope — return values are not client input, which is
-/// exactly the scope the JS twin uses.
-///
-/// TOLERANT walk-forward to the next `fn` token: stacked attributes between the
-/// reducer attribute and the fn are LEGAL and precedented (`trading.rs` stacks
-/// `#[allow(clippy::too_many_arguments)]` on a reducer), so requiring "nothing
-/// but optional `pub`" would false-RED on arrival. Parity with `parseReducers`.
-///
-/// FAIL-LOUD, never `continue` (ADR-0195 D7): an attribute with no following
-/// `fn`, or an unbalanced parameter list, PANICS. Refusing to classify is the
-/// safe direction — an unparsed reducer is an UNGATED reducer.
-fn parse_reducers(squashed: &str) -> Vec<(String, Vec<(String, String)>)> {
-    const ATTR: &str = concat!("#[spacetimedb::", "reducer");
-    let bytes = squashed.as_bytes();
-    let mut out: Vec<(String, Vec<(String, String)>)> = Vec::new();
-    let mut pos = 0usize;
-    while let Some(rel) = squashed[pos..].find(ATTR) {
-        let at = pos + rel;
-        pos = at + ATTR.len();
-        // Parity with parseReducers' `]`/`(` guard: accept ONLY the bare
-        // `spacetimedb::reducer` attribute and its parenthesised
-        // `spacetimedb::reducer(..)` form, never a longer identifier that merely
-        // STARTS with `reducer`.
-        let after = bytes.get(pos).copied();
-        if after != Some(b']') && after != Some(b'(') {
-            continue;
-        }
-
-        let mut fn_at: Option<usize> = None;
-        let mut k = pos;
-        while k + 1 < bytes.len() {
-            if bytes[k] == b'f' && bytes[k + 1] == b'n' && is_fn_token_at(squashed, k) {
-                fn_at = Some(k);
-                break;
-            }
-            k += 1;
-        }
-        let fn_at = fn_at.unwrap_or_else(|| {
-            panic!(
-                "G2 PARSE FAIL: the reducer attribute at byte {at} of the squashed \
-                 source is not followed by any `fn` token. Refusing to classify is \
-                 the fail-loud direction: an unparsed reducer is an UNGATED reducer."
-            )
-        });
-
-        let name_start = fn_at + 2;
-        let mut name_end = name_start;
-        while name_end < bytes.len() && is_word_byte(bytes[name_end]) {
-            name_end += 1;
-        }
-        let name = squashed[name_start..name_end].to_string();
-        assert!(
-            !name.is_empty(),
-            "G2 PARSE FAIL: a reducer's `fn` token at byte {fn_at} is followed by no \
-             name — an unparsed reducer is an UNGATED reducer."
-        );
-
-        let open = squashed[name_end..]
-            .find('(')
-            .map(|r| name_end + r)
-            .unwrap_or_else(|| {
-                panic!(
-                    "G2 PARSE FAIL: reducer `{name}` has no parameter list at all — \
-                     refusing to classify it as parameterless."
-                )
-            });
-        let mut depth: usize = 0;
-        let mut close: Option<usize> = None;
-        for (off, ch) in squashed[open..].char_indices() {
-            if ch == '(' {
-                depth += 1;
-            } else if ch == ')' {
-                depth -= 1;
-                if depth == 0 {
-                    close = Some(open + off);
-                    break;
-                }
-            }
-        }
-        let close = close.unwrap_or_else(|| {
-            panic!(
-                "G2 PARSE FAIL: reducer `{name}`'s parameter list has UNBALANCED \
-                 parens — the scan cannot say what it takes from the wire, so it \
-                 must not say `clean` either."
-            )
-        });
-
-        let mut params: Vec<(String, String)> = Vec::new();
-        for seg in split_param_list(&squashed[open + 1..close]) {
-            params.push(split_param_name_and_type(&seg));
-        }
-        out.push((name, params));
-    }
-    out
-}
-
-/// Split a squashed parameter list at DEPTH-0 commas.
-///
-/// An EMPTY trailing segment is skipped: rustfmt writes a trailing comma into
-/// every wrapped signature, and `guest_claim_reaper`'s signature is wrapped in
-/// the live tree today — without the skip its parameter list parses as
-/// `[ctx, args, <empty>]` and the empty segment is classified as a non-scalar
-/// parameter, false-REDing the gate on arrival.
-///
-/// Angle depth is tracked alongside paren/bracket depth (a `-` before `>` is the
-/// `->` arrow, not a close) so a generic parameter type is never split at a
-/// comma INSIDE its type arguments. Braces are deliberately NOT tracked: a Rust
-/// parameter type cannot contain one, and this file's scan hygiene forbids
-/// spelling a brace char literal.
-fn split_param_list(inner: &str) -> Vec<String> {
-    let bytes = inner.as_bytes();
-    let mut out: Vec<String> = Vec::new();
-    let mut depth: i32 = 0;
-    let mut angle: i32 = 0;
-    let mut last = 0usize;
-    let mut i = 0usize;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'(' | b'[' => depth += 1,
-            b')' | b']' => depth -= 1,
-            b'<' => angle += 1,
-            b'>' => {
-                if i == 0 || bytes[i - 1] != b'-' {
-                    angle = (angle - 1).max(0);
-                }
-            }
-            b',' if depth == 0 && angle == 0 => {
-                out.push(inner[last..i].to_string());
-                last = i + 1;
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    out.push(inner[last..].to_string());
-    out.retain(|seg| !seg.is_empty());
-    out
-}
-
-/// Split one squashed parameter segment into `(name, type)` at the FIRST
-/// depth-0 colon that is not part of a `::` path separator. A segment with no
-/// such colon yields `(text, text)` — JS parity, and it keeps an unparseable
-/// segment VISIBLE to the wire-safe allowlist instead of dropping it.
-fn split_param_name_and_type(seg: &str) -> (String, String) {
-    let bytes = seg.as_bytes();
-    let mut depth: i32 = 0;
-    let mut angle: i32 = 0;
-    let mut i = 0usize;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'(' | b'[' => depth += 1,
-            b')' | b']' => depth -= 1,
-            b'<' => angle += 1,
-            b'>' => {
-                if i == 0 || bytes[i - 1] != b'-' {
-                    angle = (angle - 1).max(0);
-                }
-            }
-            b':' if depth == 0 && angle == 0 => {
-                if i + 1 < bytes.len() && bytes[i + 1] == b':' {
-                    i += 2;
-                    continue;
-                }
-                return (seg[..i].to_string(), seg[i + 1..].to_string());
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    (seg.to_string(), seg.to_string())
-}
-
-/// Is this parameter type a wire-safe scalar, recursing through `Option<..>` and
-/// `Vec<..>`?
-///
-/// A POSITIVE allowlist is the whole point (ADR-0195 D6): "the type text
-/// contains Identity" misses E1's `ClaimTarget` and any type ALIAS
-/// (`type Ident = Identity;` -> `guest: Ident`) by construction, while the
-/// allowlist rejects every composite with one rule.
-fn is_wire_safe_type(ty: &str) -> bool {
-    const WIRE_SCALARS: [&str; 14] = [
-        "String", "bool", "u8", "u16", "u32", "u64", "u128", "i8", "i16", "i32", "i64", "i128",
-        "f32", "f64",
-    ];
-    let t: String = ty.chars().filter(|c| !c.is_whitespace()).collect();
-    if WIRE_SCALARS.contains(&t.as_str()) {
-        return true;
-    }
-    for wrapper in ["Option<", "Vec<"] {
-        if t.starts_with(wrapper) && t.ends_with('>') {
-            return is_wire_safe_type(&t[wrapper.len()..t.len() - 1]);
-        }
-    }
-    false
-}
-
-/// Every `scheduled(<reducer>)` table declared in an already-squashed source,
-/// mapped to the struct name that follows it: `(reducer name, struct name)`.
-///
-/// Only a SAME-FILE scheduled table can justify a struct-typed reducer argument
-/// — its `Identity` fields are written by the scheduler, not by a client.
-fn parse_scheduled_targets(squashed: &str) -> Vec<(String, String)> {
-    const ATTR: &str = concat!("#[spacetimedb::", "table(");
-    const SCHED: &str = concat!("sched", "uled(");
-    const STRUCT: &str = concat!("pub", "struct");
-    let mut out: Vec<(String, String)> = Vec::new();
-    let mut pos = 0usize;
-    while let Some(rel) = squashed[pos..].find(ATTR) {
-        let at = pos + rel;
-        pos = at + ATTR.len();
-        // The `(` of `table(` is the last byte of ATTR.
-        let open = at + ATTR.len() - 1;
-        let mut depth: usize = 0;
-        let mut close: Option<usize> = None;
-        for (off, ch) in squashed[open..].char_indices() {
-            if ch == '(' {
-                depth += 1;
-            } else if ch == ')' {
-                depth -= 1;
-                if depth == 0 {
-                    close = Some(open + off);
-                    break;
-                }
-            }
-        }
-        let Some(close) = close else { continue };
-        let attr_args = &squashed[open + 1..close];
-        let Some(sched_rel) = attr_args.find(SCHED) else {
-            continue;
-        };
-        let reducer: String = attr_args[sched_rel + SCHED.len()..]
-            .chars()
-            .take_while(|c| is_word_char(*c))
-            .collect();
-        if reducer.is_empty() {
-            continue;
-        }
-        let Some(struct_rel) = squashed[close..].find(STRUCT) else {
-            continue;
-        };
-        let s = close + struct_rel + STRUCT.len();
-        let struct_name: String = squashed[s..]
-            .chars()
-            .take_while(|c| is_word_char(*c))
-            .collect();
-        out.push((reducer, struct_name));
-    }
-    out
-}
-
-/// The scheduler guard, pinned as a REJECTING EARLY RETURN rather than as a bare
-/// comparison, in squashed form.
-///
-/// The eval's adversarial pass found the carve-out was satisfied by
-/// `let scheduler_only = ctx.sender() != ctx.database_identity(); let _ = scheduler_only;`
-/// — which contains the comparison, compiles, is clippy-clean, and rejects
-/// NOBODY, so any client can invoke the scheduled reducer with a hand-built row
-/// naming any victim identity. `{return` rather than `{returnErr(` so a future
-/// refactor to the equally valid silent-ignore `return Ok(());` form does not
-/// false-RED.
-///
-/// SDK 2.x spelling (ADR-0197): `sender` is a METHOD (`ctx.sender()`), and the
-/// module identity is `ctx.database_identity()` — `ctx.identity()` is deprecated.
-/// Both halves are pinned: a body that compares `ctx.sender()` against anything
-/// else is not the scheduler-only guard.
-fn scheduler_guard_needle() -> String {
-    concat!("ifctx.sender()!=", "ctx.database_identity(){", "return").to_string()
-}
-
-/// The Identity CONSTRUCTORS banned outright in `accounts.rs` (E2 defense).
-/// Nothing in this module legitimately CONSTRUCTS an Identity: every identity it
-/// handles arrives from `ctx.sender()` or from a row it read.
-fn identity_ctor_needles() -> [String; 4] {
-    [
-        concat!("Identity::", "from_hex(").to_string(),
-        concat!("Identity::", "from_byte_array(").to_string(),
-        concat!("Identity::", "from_be_byte_array(").to_string(),
-        concat!("Identity::", "from_str(").to_string(),
-    ]
-}
-
-/// The FULL G2 param rule over an already-squashed source: `Err(reason)` naming
-/// the first violation, `Ok(())` when every enumerated reducer's every parameter
-/// is either the ctx handle, a wire-safe scalar, or the guarded scheduled
-/// struct.
-///
-/// Returning a value instead of asserting inline is what lets the machinery
-/// self-teeth drive this checker over synthetic fixtures — an always-red checker
-/// is indistinguishable from a working one until a GOOD fixture proves
-/// otherwise.
-fn g2_client_identity_violation(squashed: &str) -> Result<(), String> {
-    let reducers = parse_reducers(squashed);
-    let scheduled = parse_scheduled_targets(squashed);
-
-    // Non-vacuity — the Rust twin of the eval's [R/name-set] empty guard. With
-    // zero reducers parsed, every clause below passes on an empty source, so
-    // this is a hard failure rather than a skip.
-    if reducers.is_empty() {
-        return Err(
-            "[R/name-set] no reducer declaration was parsed out of the scanned source — the \
-             scan reached the wrong file, the attribute spelling changed, or the stripper \
-             blanked the declarations. Every clause below would pass VACUOUSLY"
-                .to_string(),
-        );
-    }
-
-    for (name, params) in &reducers {
-        for (k, (p_name, p_type)) in params.iter().enumerate() {
-            // (a) The ctx handle. Mirrors the eval's [R/param-types] exemption
-            // exactly: position 0 AND a type ending in `ReducerContext`, so a
-            // context smuggled into a later position is still classified.
-            if k == 0 && p_type.ends_with("ReducerContext") {
-                continue;
-            }
-            // (b) A wire-safe scalar.
-            if is_wire_safe_type(p_type) {
-                continue;
-            }
-            // (c) The scheduled-struct carve-out — same-file `scheduled(..)`
-            // target, param type EQUAL to the scheduled struct, AND a rejecting
-            // scheduler guard in the body. Narrow enough that E1's `ClaimTarget`
-            // is still rejected.
-            let sched_struct = scheduled
-                .iter()
-                .find(|(r, _)| r == name)
-                .map(|(_, s)| s.as_str());
-            if sched_struct == Some(p_type.as_str()) {
-                let needle = format!("fn{name}(");
-                let body = extract_squashed_fn_body(squashed, &needle).unwrap_or("");
-                if body.contains(&scheduler_guard_needle()) {
-                    continue;
-                }
-                return Err(format!(
-                    "[R/param-types] reducer `{name}` takes the scheduled struct `{p_type}` \
-                     but its body does not contain the rejecting scheduler guard `{}` — \
-                     without it ANY client can invoke the scheduled reducer directly and \
-                     hand it a hand-built row, which is precisely the \
-                     client-supplied-Identity hole the carve-out assumes is closed",
-                    scheduler_guard_needle()
-                ));
-            }
-            return Err(format!(
-                "[R/param-types] reducer `{name}` declares the parameter `{p_name}:{p_type}`, \
-                 which is not a wire-safe scalar (String / bool / u8..u128 / i8..i128 / f32 / \
-                 f64, or Option<..>/Vec<..> of those). A red-team PROVED this exact shape: a \
-                 `SpacetimeType` struct with one Identity field, taken as a reducer argument \
-                 and re-keyed onto ctx.sender() — it declares no `: Identity` parameter, \
-                 compiles, passes clippy -D warnings, and is a code-less transfer of ANY \
-                 identity's game data. The ONLY sanctioned composite argument is the \
-                 same-file scheduled struct whose reducer body carries the scheduler guard"
-            ));
-        }
-    }
-    Ok(())
-}
 
 // ===========================================================================
 // PURE-UNIT TESTS over the functional core (no ReducerContext required).
@@ -1235,1320 +534,6 @@ fn auth38_cancel_write_gate() {
     );
 }
 
-/// AUTH-15/35 (pure): the two indistinguishable-code paths share ONE reject
-/// reason constant, so a caller cannot tell "never existed" from "already
-/// consumed" (no code-existence oracle, D3).
-#[test]
-fn auth15_shared_reject_reason_constant() {
-    assert_eq!(
-        ERR_INVALID_CODE, "invalid or already-used code",
-        "AUTH-15/35: the shared reject reason is the spec contract string."
-    );
-}
-
-// ===========================================================================
-// SOURCE-SCAN TESTS (ctx-bound shell properties). GREEN against the frozen
-// production; each has a documented proof-of-teeth mutation that flips it RED.
-// ===========================================================================
-
-/// AUTH-1 / G3 (ANON_PASSTHROUGH): in `on_connect` (lib.rs) the `has_jwt()` test
-/// precedes both the anonymous early return and the provisioning delegation, and
-/// the body carries no `Err(` — an anonymous connection can never reach an `Err`
-/// path (returning `Err` disconnects the client). Since rb-73 (ADR-0245 D2) the
-/// infallible `open_player_session(ctx)` call sits between the hoisted JWT read
-/// and the early return; `rb73_wiring_on_connect_body_is_frozen` and
-/// `rb73_wiring_open_session_body_is_frozen_and_single_purpose` freeze that
-/// whole shape, this test pins the relative order and the `Err(` ban.
-///
-/// Kills (proof-of-teeth): move `provision_or_touch_account(ctx)` above the
-/// `has_jwt()` return — then an unrecognized-audience `Err` becomes reachable for
-/// what is, in practice, the host's own anonymous token, disconnecting players.
-#[test]
-fn auth1_on_connect_has_jwt_gate_is_first_and_no_err_before() {
-    let squashed = stripped_for_scan(LIB_RS);
-    let needle = concat!("fnon", "_connect(");
-    let body = extract_squashed_fn_body(&squashed, needle)
-        .expect("AUTH-1: fn on_connect not found in lib.rs");
-
-    let has_jwt = "has_jwt(";
-    let provision = concat!("provision_or_touch", "_account(");
-    assert!(
-        body.contains(has_jwt),
-        "AUTH-1: on_connect must gate on has_jwt()."
-    );
-    assert!(
-        body.contains(concat!("returnOk", "(())")),
-        "AUTH-1: on_connect must early-return Ok(()) for the JWT-less case."
-    );
-    assert!(
-        body.contains(provision),
-        "AUTH-1: on_connect must delegate to provision_or_touch_account."
-    );
-    assert!(
-        idx(body, has_jwt) < idx(body, provision),
-        "AUTH-1: the has_jwt() gate MUST precede the provisioning delegation \
-         (proof-of-teeth: moving provisioning first exposes an Err to anonymous clients)."
-    );
-    assert!(
-        idx(body, has_jwt) < idx(body, concat!("returnOk", "(())")),
-        "AUTH-1: has_jwt() is the first statement, before the early Ok(())."
-    );
-    assert!(
-        !body.contains("Err("),
-        "AUTH-1: on_connect's own body must contain NO Err( literal — an anonymous \
-         connection must never be disconnected (D4)."
-    );
-}
-
-/// AUTH-2/AUTH-3 / G3 (ISSUER_AND_AUDIENCE, D1 asymmetric): `provision_or_touch_account`
-/// checks BOTH `iss` and `aud`. The unrecognized-ISSUER branch reaches a rate-limited
-/// `return Ok` (fail-safe to anonymous — the host's own token path). The
-/// unrecognized-AUDIENCE branch reaches a `return Err` (disconnect — a same-issuer
-/// confused-deputy token). Both checks precede any account insert.
-///
-/// Kills (proof-of-teeth): delete the audience block (issuer-only check) — the
-/// `audience_allowed(` needle disappears; a cross-app token would then provision.
-/// Also kills making the issuer branch `return Err` (would disconnect everyone).
-#[test]
-fn auth2_3_provision_checks_issuer_then_audience_asymmetric() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let body = extract_squashed_fn_body(&squashed, &nd_provision())
-        .expect("AUTH-2/3: fn provision_or_touch_account not found in accounts.rs");
-
-    // All four decision tokens present.
-    for (needle, what) in [
-        (".issuer(", "reads the iss claim"),
-        (".audience(", "reads the aud claim"),
-        ("issuer_allowed(", "checks iss against ALLOWED_ISSUERS"),
-        ("audience_allowed(", "checks aud against ALLOWED_AUDIENCE"),
-    ] {
-        assert!(
-            body.contains(needle),
-            "AUTH-2/3: provision_or_touch_account must contain `{needle}` ({what}). \
-             An issuer-only check (missing audience_allowed) is the BAD fixture D1 forbids."
-        );
-    }
-
-    let i_issuer = idx(body, "issuer_allowed(");
-    let i_aud = idx(body, "audience_allowed(");
-    assert!(
-        i_issuer < i_aud,
-        "AUTH-2/3: the issuer check must precede the audience check."
-    );
-
-    // Issuer-unrecognized branch: a rate-limited Ok BEFORE the audience check.
-    let issuer_branch = &body[i_issuer..i_aud];
-    assert!(
-        issuer_branch.contains(".check("),
-        "AUTH-2: the unrecognized-issuer branch logs via a rate-LIMITER (.check(...)) — \
-         it is the modal path (host anonymous token) and must not flood."
-    );
-    assert!(
-        issuer_branch.contains(concat!("returnOk", "(())")),
-        "AUTH-2: the unrecognized-issuer branch must return Ok(()) (fail-safe to \
-         anonymous, NEVER disconnect)."
-    );
-
-    // Audience-unrecognized branch: a disconnecting Err AFTER the audience check.
-    let after_aud = &body[i_aud..];
-    assert!(
-        after_aud.contains(concat!("returnErr", "(")),
-        "AUTH-3: the unrecognized-audience branch must return Err (disconnect a \
-         same-issuer cross-app confused-deputy token)."
-    );
-
-    // Both checks precede the account insert.
-    let insert_needle = concat!("account()", ".insert(");
-    let i_insert = idx(body, insert_needle);
-    assert!(
-        i_aud < i_insert,
-        "AUTH-2/3: issuer AND audience must both be validated before any account insert."
-    );
-}
-
-/// AUTH-6 / D9: no email / email_hash / raw JWT `sub` is ever stored. The
-/// `Account` struct field list (schema.rs) carries no `email`/`subject` token,
-/// and accounts.rs never calls `.subject(` or `raw_payload(`.
-///
-/// Kills: adding an `email_hash: String` column, or reading `claims.subject()`
-/// into a stored field.
-#[test]
-fn auth6_no_email_or_subject_stored() {
-    // Account struct field list (comment-stripped, strings kept, squashed).
-    let schema = stripped_keep_strings(SCHEMA_RS);
-    let acct_marker = concat!("struct", "Account{");
-    let acct_start = schema
-        .find(acct_marker)
-        .expect("AUTH-6: struct Account not found in schema.rs");
-    let after = &schema[acct_start..];
-    let open = after
-        .find('{')
-        .expect("AUTH-6: Account body brace not found");
-    let field_bytes = after.as_bytes();
-    let mut depth = 0usize;
-    let mut end = open;
-    for (i, &b) in field_bytes.iter().enumerate().skip(open) {
-        match b {
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    end = i;
-                    break;
-                }
-            }
-            _ => {}
-        }
-    }
-    let fields = &after[open..=end];
-    assert!(
-        !fields.contains("email"),
-        "AUTH-6/D9: the Account struct must carry no `email`/`email_hash` field. Body: {fields:?}"
-    );
-    assert!(
-        !fields.contains("subject"),
-        "AUTH-6/D9: the Account struct must carry no `auth_subject`/subject field. Body: {fields:?}"
-    );
-
-    // accounts.rs never touches the raw sub claim.
-    let acc = stripped_for_scan(ACCOUNTS_RS);
-    assert!(
-        !acc.contains(concat!(".sub", "ject(")),
-        "AUTH-6/D9: accounts.rs must not read claims.subject() (the raw JWT sub)."
-    );
-    assert!(
-        !acc.contains(concat!("raw", "_payload(")),
-        "AUTH-6/D9: accounts.rs must not read the raw JWT payload."
-    );
-}
-
-/// AUTH-36 / G12 (NO_PII_IN_REJECT_LOGS): every `log_reject(` argument list in
-/// accounts.rs uses a static reason — never `format!`, never a raw JWT claim
-/// identifier (`issuer`/`subject`/`audience`/`claims`).
-///
-/// Kills (proof-of-teeth): change a reason to `format!("issuer {} rejected", issuer)`
-/// — the `format!` token and the lowercase `issuer` identifier both surface in the
-/// argument span.
-#[test]
-fn auth36_reject_logs_carry_no_pii() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let spans = log_reject_arg_spans(&squashed);
-    assert!(
-        !spans.is_empty(),
-        "AUTH-36: expected at least one log_reject( call in accounts.rs."
-    );
-    for span in &spans {
-        assert!(
-            !span.contains(concat!("format", "!")),
-            "AUTH-36: a log_reject reason must be a static literal, never format!(...). \
-             Offending arg span: {span:?}"
-        );
-        for claim in ["issuer", "subject", "audience", "claims"] {
-            assert!(
-                !span.contains(claim),
-                "AUTH-36: no raw JWT claim identifier (`{claim}`) may appear inside a \
-                 log_reject argument. Offending arg span: {span:?}"
-            );
-        }
-    }
-}
-
-/// Extract each `log_reject(` call's argument text (between its outer parens)
-/// from an already-squashed source.
-fn log_reject_arg_spans(squashed: &str) -> Vec<String> {
-    let marker = concat!("log", "_reject(");
-    let bytes = squashed.as_bytes();
-    let mut spans = Vec::new();
-    let mut start = 0;
-    while let Some(rel) = squashed[start..].find(marker) {
-        let open = start + rel + marker.len() - 1; // index of '('
-        let mut depth = 0i32;
-        let mut end = open;
-        let mut i = open;
-        while i < bytes.len() {
-            match bytes[i] {
-                b'(' => depth += 1,
-                b')' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        end = i;
-                        break;
-                    }
-                }
-                _ => {}
-            }
-            i += 1;
-        }
-        spans.push(squashed[open + 1..end].to_string());
-        start = end + 1;
-    }
-    spans
-}
-
-/// AUTH-7/8/9 (scan): `start_guest_claim` gates on `is_account_holder` (the
-/// account-row predicate, D4 — NOT has_jwt), validates the code, snapshots the
-/// name server-side from `player.name`, and takes NO client `name` argument.
-///
-/// (Per /simplify: NO guard-ordering pin here — there is no code-resolution
-/// oracle in start_guest_claim, so ordering has no security rationale.)
-///
-/// Kills: dropping the account-holder gate (AUTH-7); dropping code validation
-/// (AUTH-8); accepting a client-supplied `name` instead of `player.name` (AUTH-9).
-#[test]
-fn auth7_8_9_start_guest_claim_gates_and_name_source() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let body = extract_squashed_fn_body(&squashed, &nd_start())
-        .expect("AUTH-7/8/9: fn start_guest_claim not found in accounts.rs");
-
-    assert!(
-        body.contains(concat!("is_account", "_holder(")),
-        "AUTH-7: start_guest_claim must reject an account holder via is_account_holder(."
-    );
-    assert!(
-        body.contains(concat!("is_valid_claim", "_code(")),
-        "AUTH-8: start_guest_claim must validate the code via is_valid_claim_code(."
-    );
-    assert!(
-        body.contains("player.name"),
-        "AUTH-9: the guest_name is snapshotted from player.name server-side."
-    );
-
-    // The signature takes exactly (ctx, code: String) — no client name argument.
-    let sig = extract_squashed_fn_sig(&squashed, &nd_start())
-        .expect("AUTH-9: start_guest_claim signature not found");
-    assert!(
-        sig.contains("code:String"),
-        "AUTH-9: start_guest_claim(ctx, code: String) — the code is the only argument."
-    );
-    assert!(
-        !sig.contains("name:"),
-        "AUTH-9: start_guest_claim must NOT take a `name:` argument (server-populated only). \
-         Signature: {sig:?}"
-    );
-}
-
-/// AUTH-10 (scan): `start_guest_claim` consumes+disarms any prior claim BEFORE
-/// inserting the new `guest_claim` row (the PK is `guest_identity`, so
-/// insert-before-delete would PK-collide), and arms the reaper AFTER the insert.
-///
-/// Kills (proof-of-teeth): move `consume_claim_and_disarm` after the insert
-/// (unique-constraint abort / orphaned schedule row).
-#[test]
-fn auth10_start_guest_claim_replaces_before_insert() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let body = extract_squashed_fn_body(&squashed, &nd_start())
-        .expect("AUTH-10: fn start_guest_claim not found");
-
-    let consume = concat!("consume_claim_and", "_disarm(");
-    let insert = concat!("guest", "_claim().insert(");
-    let arm = concat!("arm_claim", "_reaper(");
-    let i_consume = idx(body, consume);
-    let i_insert = idx(body, insert);
-    let i_arm = idx(body, arm);
-    assert!(
-        i_consume < i_insert,
-        "AUTH-10: consume_claim_and_disarm MUST precede the guest_claim insert \
-         (insert-before-delete PK-collides on guest_identity)."
-    );
-    assert!(
-        i_arm > i_insert,
-        "AUTH-10: the reaper is armed AFTER the new claim row is inserted."
-    );
-}
-
-/// AUTH-11 / G4 (NO_SERVER_RNG): the accounts code path never calls
-/// `ctx.rng(`/`ctx.random(` — the claim secret is client-minted (D3).
-#[test]
-fn auth11_no_server_rng_in_accounts() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    assert!(
-        !squashed.contains(concat!("ctx.", "rng(")),
-        "AUTH-11: accounts.rs must not call ctx.rng()."
-    );
-    assert!(
-        !squashed.contains(concat!("ctx.", "random(")),
-        "AUTH-11: accounts.rs must not call ctx.random()."
-    );
-}
-
-/// AUTH-12/13/14 (scan, PARTITION check per /simplify): in `complete_guest_claim`
-/// every caller-state guard (has_jwt, account lookup, pending-deletion,
-/// already-claimed) runs strictly BEFORE any code resolution (validate code,
-/// resolve the claim row). This closes the claim-code oracle: an unauthorized
-/// caller can never probe code validity.
-///
-/// Kills (proof-of-teeth): move `guest_claim().code().find(` above the account /
-/// pending / claimed guards — the partition boundary is violated.
-#[test]
-fn auth12_13_14_caller_state_guards_precede_code_resolution() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let body = extract_squashed_fn_body(&squashed, &nd_complete())
-        .expect("AUTH-12/13/14: fn complete_guest_claim not found");
-
-    // m22-s3b (ADR-0228 D6): AUTH-13's Guard 3 SPLITS into a terminal half and a
-    // mid-grace half so a completed erasure gets the DISTINCT
-    // REJECT_ALREADY_DELETED reason. BOTH halves are caller-state checks and both
-    // belong in this partition — adding the terminal needle here is what keeps
-    // the split from quietly landing on the code-resolution side of the boundary,
-    // where it would become a claim-code oracle for an already-erased account.
-    // The mid-grace needle STAYS: the split must not replace one guard with the
-    // other.
-    let caller_state = [
-        ("has_jwt(", "AUTH-12 JWT pre-filter"),
-        (
-            concat!("account()", ".identity().find("),
-            "AUTH-12 account-holder",
-        ),
-        (
-            concat!("account_has_terminal", "_marker(&account)"),
-            "AUTH-13a already-deleted (m22-s3b, ADR-0228 D6)",
-        ),
-        (
-            concat!("is_pending", "_deletion("),
-            "AUTH-13b pending-deletion",
-        ),
-        ("claimed_from", "AUTH-14 one-claim-per-account"),
-    ];
-    let code_resolution = [
-        (
-            concat!("is_valid_claim", "_code("),
-            "AUTH-15a code well-formed",
-        ),
-        (
-            concat!("guest", "_claim().code().find("),
-            "AUTH-15b/35 claim lookup",
-        ),
-    ];
-
-    let mut max_caller = 0usize;
-    for (needle, what) in caller_state {
-        assert!(
-            body.contains(needle),
-            "AUTH-12/13/14: caller-state guard `{needle}` ({what}) must be present."
-        );
-        max_caller = max_caller.max(idx(body, needle));
-    }
-    let mut min_code = usize::MAX;
-    for (needle, what) in code_resolution {
-        assert!(
-            body.contains(needle),
-            "AUTH-15: code-resolution needle `{needle}` ({what}) must be present."
-        );
-        min_code = min_code.min(idx(body, needle));
-    }
-    assert!(
-        max_caller < min_code,
-        "AUTH-12/13/14 PARTITION: every caller-state guard (max index {max_caller}) must \
-         precede all code resolution (min index {min_code}) — otherwise the reducer is a \
-         claim-code oracle for an unauthorized caller."
-    );
-}
-
-/// AUTH-15/35 (scan): the malformed-code guard AND the never-existed/consumed
-/// guard both reject with the SAME `ERR_INVALID_CODE` constant — exactly two
-/// references inside `complete_guest_claim` (no code-existence oracle).
-///
-/// Kills: giving guard 6 a distinct message (count drops to 1 — a caller could
-/// distinguish "well-formed but unknown" from "malformed").
-#[test]
-fn auth15_two_shared_err_invalid_code_refs() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let body = extract_squashed_fn_body(&squashed, &nd_complete())
-        .expect("AUTH-15: fn complete_guest_claim not found");
-    let count = body.matches("ERR_INVALID_CODE").count();
-    assert_eq!(
-        count, 2,
-        "AUTH-15/35: complete_guest_claim must reference ERR_INVALID_CODE exactly twice \
-         (malformed + never-existed/consumed, one indistinguishable reason). Found {count}."
-    );
-}
-
-/// AUTH-16 (amended) + AUTH-26 (scan): the ENTIRE reject region of
-/// `complete_guest_claim` — every guard from 1 through 11, INCLUDING the expiry
-/// branch — performs ZERO row writes and never consumes the claim. A reducer
-/// `Err` rolls back its own writes, so any "cleanup" here is a no-op at best and
-/// a burned code at worst; expired-claim cleanup is the reaper's job alone.
-///
-/// The reject region is the body up to the success entry point `rekey_all(`.
-///
-/// Kills (proof-of-teeth): add `consume_claim_and_disarm(` to the expiry (or any)
-/// reject branch — a rejected/expired claim would silently burn the code.
-#[test]
-fn auth16_26_reject_region_is_side_effect_free() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let body = extract_squashed_fn_body(&squashed, &nd_complete())
-        .expect("AUTH-16/26: fn complete_guest_claim not found");
-    let rekey = concat!("rekey", "_all(");
-    let reject_region = &body[..idx(body, rekey)];
-
-    for (verb, what) in [
-        (concat!(".ins", "ert("), "insert"),
-        (concat!(".upd", "ate("), "update"),
-        (concat!(".del", "ete("), "delete"),
-    ] {
-        assert!(
-            !reject_region.contains(verb),
-            "AUTH-26: the reject region (guards 1..11, incl. expiry) must contain no \
-             `{what}` write — every Err path is non-mutating."
-        );
-    }
-    assert!(
-        !reject_region.contains(concat!("consume_claim_and", "_disarm(")),
-        "AUTH-16/26: no reject branch may consume the claim (the expiry path leaves the \
-         row intact; the reaper owns expired cleanup)."
-    );
-    assert!(
-        !reject_region.contains(concat!("delete", "_claim(")),
-        "AUTH-16/26: no reject branch may delete the claim row directly either."
-    );
-}
-
-/// AUTH-17/18/19/20 (scan): the remaining `complete_guest_claim` guards.
-/// AUTH-17: reject when the resolved guest identity equals the caller.
-/// AUTH-18: the guest's `player` presence row must be absent (the liveness oracle).
-/// AUTH-19: neither identity may be mid-battle — the SSOT predicate `is_in_ongoing_battle` is called TWICE (guest + caller) and accounts.rs never touches the battle table itself (D0/G5).
-/// AUTH-20: the destination-owns-no-game-data guard is the LAST guard before the re-key.
-///
-/// Kills: dropping any of these guards; re-deriving battle liveness instead of
-/// reusing the SSOT (would drop one of the two calls or add a battle accessor).
-#[test]
-fn auth17_18_19_20_completion_guards_present() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let body = extract_squashed_fn_body(&squashed, &nd_complete())
-        .expect("AUTH-17..20: fn complete_guest_claim not found");
-
-    // AUTH-17. Order-agnostic: `guest == me` and `me == guest` are behaviorally
-    // identical (Identity: Eq); pinning one operand order would false-RED on an
-    // innocent refactor without adding teeth (/simplify finding, 2026-08-08).
-    assert!(
-        body.contains("guest==me") || body.contains("me==guest"),
-        "AUTH-17: complete_guest_claim must reject when guest == me (own-session claim)."
-    );
-    // AUTH-18.
-    assert!(
-        body.contains(concat!("player()", ".identity().find(")),
-        "AUTH-18: complete_guest_claim must read the guest's player presence row."
-    );
-    // AUTH-19.
-    let battle_pred = concat!("is_in_ongoing", "_battle(");
-    let battle_count = body.matches(battle_pred).count();
-    assert_eq!(
-        battle_count, 2,
-        "AUTH-19: is_in_ongoing_battle must be called TWICE (guest + caller). Found {battle_count}."
-    );
-    // AUTH-20: last guard before the re-key.
-    let has_data = concat!("account_has_game", "_data(");
-    let rekey = concat!("rekey", "_all(");
-    assert!(
-        body.contains(has_data),
-        "AUTH-20: the destination-owns-no-game-data guard must be present."
-    );
-    assert!(
-        idx(body, has_data) < idx(body, rekey),
-        "AUTH-20: account_has_game_data must gate BEFORE rekey_all (fail-closed)."
-    );
-}
-
-/// AUTH-19 / G5: accounts.rs never touches the `battle` table directly — battle
-/// liveness is delegated to the reused SSOT predicate.
-#[test]
-fn auth19_g5_no_direct_battle_access() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    assert!(
-        !squashed.contains(concat!("ctx.db.", "battle(")),
-        "AUTH-19/G5: accounts.rs must not access ctx.db.battle() (reuse is_in_ongoing_battle)."
-    );
-}
-
-/// AUTH-34 (scan, single-use): on the SUCCESS path (from `rekey_all(` to the
-/// final `Ok(())`) the claim is consumed+disarmed BEFORE the account provenance
-/// update and before returning Ok — and `consume_claim_and_disarm` appears
-/// EXACTLY ONCE in the whole reducer (success only; the expiry path does NOT
-/// consume, per the AUTH-16 amendment).
-///
-/// Kills (proof-of-teeth): move the consume into the expiry branch only (success
-/// region loses the consume — a completed claim stays replayable for the TTL);
-/// or add a second consume in a reject branch (count != 1).
-#[test]
-fn auth34_success_consumes_before_ok_exactly_once() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let body = extract_squashed_fn_body(&squashed, &nd_complete())
-        .expect("AUTH-34: fn complete_guest_claim not found");
-
-    let consume = concat!("consume_claim_and", "_disarm(");
-    let total = body.matches(consume).count();
-    assert_eq!(
-        total, 1,
-        "AUTH-34: exactly ONE consume_claim_and_disarm in complete_guest_claim (success only). \
-         Found {total}."
-    );
-
-    let rekey = concat!("rekey", "_all(");
-    let success_region = &body[idx(body, rekey)..];
-    assert!(
-        success_region.contains(consume),
-        "AUTH-34: the success region must consume the claim."
-    );
-    let i_consume = idx(success_region, consume);
-    let acct_update = concat!("account()", ".identity().update(");
-    assert!(
-        i_consume < idx(success_region, acct_update),
-        "AUTH-34: consume must precede the account provenance update."
-    );
-    // The final Ok(()) is the last such token in the body.
-    let last_ok = body
-        .rfind(concat!("Ok", "(())"))
-        .expect("AUTH-34: complete_guest_claim must end in Ok(())");
-    assert!(
-        idx(body, rekey) + i_consume < last_ok,
-        "AUTH-34: consume must occur before the reducer returns Ok(())."
-    );
-}
-
-/// AUTH-15/16/17/18/20 + start/reaper (scan): the exact reject MESSAGE strings
-/// the spec mandates are present in accounts.rs source (comment-stripped, string
-/// content preserved). These are the caller-facing contract strings.
-///
-/// Kills: silently changing a mandated reject message (a UX/contract regression).
-#[test]
-fn reject_message_contracts_present() {
-    let kept = stripped_keep_strings(ACCOUNTS_RS);
-    // Needles are the squashed message content, assembled to avoid self-match.
-    let messages = [
-        (
-            concat!("invalidoralready", "-usedcode"),
-            "AUTH-15/35 invalid-or-already-used",
-        ),
-        (concat!("code", "expired"), "AUTH-16 code expired"),
-        (
-            concat!("cannotclaimyour", "ownsession"),
-            "AUTH-17 own-session",
-        ),
-        (
-            concat!("closeyourothertab", ",thenretry"),
-            "AUTH-18 stale-tab",
-        ),
-        (
-            concat!("alreadyhas", "gamedata"),
-            "AUTH-20 destination has data",
-        ),
-        (concat!("already", "signedin"), "AUTH-7 account holder"),
-        (
-            concat!("invalid", "claimcode"),
-            "AUTH-8 malformed code (start)",
-        ),
-        (
-            concat!("guest_claim_reaperis", "scheduler-only"),
-            "AUTH-27 scheduler-only",
-        ),
-    ];
-    for (needle, what) in messages {
-        assert!(
-            kept.contains(needle),
-            "reject-message contract ({what}): accounts.rs must contain the mandated reject \
-             message (squashed needle {needle:?})."
-        );
-    }
-}
-
-/// AUTH-21 (scan): `rekey_all` re-keys every REKEY-policy table via its delegated
-/// owning-module helper, in D6-manifest order, and the fallible monster re-key
-/// propagates with `?` (a broken dual-write rolls the whole claim back).
-///
-/// Kills: dropping a table from the manifest; reordering the monster re-key to be
-/// non-fallible (dropping the `?`).
-#[test]
-fn auth21_rekey_all_delegates_every_table_in_order() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let body = extract_squashed_fn_body(&squashed, concat!("fnrekey", "_all("))
-        .expect("AUTH-21: fn rekey_all not found");
-
-    let ordered = [
-        concat!("rekey", "_monsters("),
-        // 20r-d (ADR-0254 D6): the post-evolve notice queue re-keys immediately
-        // after the monsters it is derived bookkeeping about.
-        concat!("rekey", "_evolution_notices("),
-        concat!("rekey", "_inventory("),
-        concat!("rekey", "_npc_state("),
-        concat!("rekey", "_heal_cooldown("),
-        concat!("rekey", "_wallet("),
-        concat!("rekey", "_profile("),
-    ];
-    let mut prev = 0usize;
-    for needle in ordered {
-        assert!(
-            body.contains(needle),
-            "AUTH-21: rekey_all must call {needle}."
-        );
-        let at = idx(body, needle);
-        assert!(
-            at >= prev,
-            "AUTH-21: rekey_all must invoke helpers in D6-manifest order; {needle} out of order."
-        );
-        prev = at;
-    }
-    // The monster re-key is the fail-loud fallible one.
-    assert!(
-        body.contains(concat!("rekey_monsters(ctx,from,to)", "?")),
-        "AUTH-21/22: rekey_all must propagate rekey_monsters' Result with `?` (fail-loud)."
-    );
-}
-
-/// AUTH-22 (scan): `rekey_monsters` (monster_mgmt.rs) re-keys the `monster` row
-/// AND its `monster_pub` twin in ONE function body, deriving the pub row via
-/// `pub_from_monster(` (never a literal tier), and fails LOUD (`else { return Err`)
-/// when the pub twin is missing. Rust-side mirror of monster-dual-write.eval.mjs.
-///
-/// Kills (proof-of-teeth): drop the monster_pub mirror, or drop `pub_from_monster`
-/// and hand-patch `owner_identity` (fabricated / stale tier).
-#[test]
-fn auth22_rekey_monsters_dual_write_fail_loud() {
-    let squashed = stripped_for_scan(MONSTER_MGMT_RS);
-    let body = extract_squashed_fn_body(&squashed, concat!("fnrekey", "_monsters("))
-        .expect("AUTH-22: fn rekey_monsters not found in monster_mgmt.rs");
-
-    for (needle, what) in [
-        (
-            concat!("monster()", ".monster_id().update("),
-            "private monster re-key",
-        ),
-        (
-            concat!("monster", "_pub().monster_id().update("),
-            "public twin re-key",
-        ),
-        (
-            concat!("pub_from", "_monster("),
-            "derived pub row (never a literal tier)",
-        ),
-        (
-            concat!("else{return", "Err"),
-            "fail-loud on a missing pub twin",
-        ),
-    ] {
-        assert!(
-            body.contains(needle),
-            "AUTH-22: rekey_monsters body must contain `{needle}` ({what})."
-        );
-    }
-}
-
-/// AUTH-23 (scan): `rekey_profile` (ranking.rs) NEVER deletes a `profile` row —
-/// it copies stats forward and zeroes/tombstones in place.
-///
-/// Kills: replacing the in-place zero with a delete of the guest's profile row.
-#[test]
-fn auth23_rekey_profile_never_deletes() {
-    let squashed = stripped_for_scan(RANKING_RS);
-    let body = extract_squashed_fn_body(&squashed, concat!("fnrekey", "_profile("))
-        .expect("AUTH-23: fn rekey_profile not found in ranking.rs");
-    assert!(
-        !body.contains(concat!(".del", "ete(")),
-        "AUTH-23: rekey_profile must contain NO delete — profile rows are never deleted \
-         (copy-forward + in-place zero/tombstone)."
-    );
-}
-
-/// AUTH-27 (scan): `guest_claim_reaper` is scheduler-only, re-checks staleness,
-/// deletes exactly the PK row named by `args` via `delete_claim`, and does NOT
-/// self-disarm (the runtime deletes the fired one-shot schedule row).
-///
-/// NOTE (divergence from the draft's literal `.delete(args.guest_identity)`): the
-/// production reaper deletes through the `delete_claim(ctx, args.guest_identity)`
-/// helper, which internally is the guest_identity-PK delete. The scan pins the
-/// helper call (the keyed delete), matching the frozen impl.
-///
-/// Kills (proof-of-teeth): add a self-disarm (races the runtime delete); remove
-/// the staleness re-check (reaps a fresh replacement claim); replace the keyed
-/// delete with an unfiltered iterate-and-delete.
-#[test]
-fn auth27_reaper_scheduler_only_keyed_delete_no_self_disarm() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let body = extract_squashed_fn_body(&squashed, &nd_reaper())
-        .expect("AUTH-27: fn guest_claim_reaper not found");
-
-    assert!(
-        body.contains(concat!("ctx.sender()!=ctx.", "database_identity()")),
-        "AUTH-27: the reaper must guard scheduler-only \
-         (ctx.sender() != ctx.database_identity())."
-    );
-    // rb-24 hardening (kept ALONGSIDE the bare-comparison clause above so a
-    // failure still distinguishes no-comparison-at-all from present-but-inert):
-    // the guard must OPEN the body in its rejecting form. The bare needle stops
-    // at the fused return token and is a forgeable PREFIX — a helper call whose
-    // name merely starts with those six letters contains it, compiles, and
-    // rejects nobody (measured, rb-24 red-team F1).
-    {
-        let guard = scheduler_guard_needle();
-        let rejecting = format!("{guard}Err(");
-        assert!(
-            body.starts_with(rejecting.as_str()),
-            "AUTH-27: guest_claim_reaper must OPEN with the rejecting scheduler guard — the \
-             comparison being merely PRESENT somewhere in the body admits an inert form that \
-             rejects nobody."
-        );
-    }
-    assert!(
-        body.contains(concat!("claim_is", "_expired(")),
-        "AUTH-27: the reaper must re-check staleness (never reap a fresh replacement claim)."
-    );
-    assert!(
-        body.contains(concat!("delete_claim(ctx,args.", "guest_identity)")),
-        "AUTH-27: the reaper must delete exactly the PK row named by args via delete_claim."
-    );
-    assert!(
-        !body.contains(concat!("disarm_claim", "_reaper(")),
-        "AUTH-27/C3: the reaper must NOT self-disarm (the runtime deletes the fired schedule row)."
-    );
-    assert!(
-        !body.contains(concat!("consume_claim_and", "_disarm(")),
-        "AUTH-27/C3: the reaper must use delete_claim (row only), never consume_claim_and_disarm."
-    );
-    assert!(
-        !body.contains(concat!("guest_claim_reaper", "_schedule(")),
-        "AUTH-27/C3: the reaper body must not write the schedule table."
-    );
-}
-
-/// AUTH-37 (scan): `delete_account` rejects a caller with no JWT, then binds the
-/// account row, then gates the write with `needs_deletion_write` (idempotent).
-///
-/// Kills: dropping the JWT gate (an anonymous caller could flag deletion);
-/// dropping the idempotency gate (a second call re-stamps the timestamp).
-#[test]
-fn auth37_delete_account_jwt_then_account_then_gate() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let body = extract_squashed_fn_body(&squashed, concat!("fndelete", "_account("))
-        .expect("AUTH-37: fn delete_account not found");
-    let has_jwt = "has_jwt(";
-    let find = concat!("account()", ".identity().find(");
-    let gate = concat!("needs_deletion", "_write(");
-    assert!(
-        body.contains(has_jwt),
-        "AUTH-37: delete_account must gate on has_jwt()."
-    );
-    assert!(
-        body.contains(find),
-        "AUTH-37: delete_account must bind the account row."
-    );
-    assert!(
-        body.contains(gate),
-        "AUTH-37/28: delete_account must gate the write (idempotent)."
-    );
-    assert!(
-        idx(body, has_jwt) < idx(body, find) && idx(body, find) < idx(body, gate),
-        "AUTH-37: order must be has_jwt -> account lookup -> needs_deletion_write."
-    );
-}
-
-/// AUTH-38 (scan): `cancel_account_deletion` gates on has_jwt, binds the account,
-/// then gates the write with `needs_cancel_write` (idempotent no-op on Active).
-#[test]
-fn auth38_cancel_account_deletion_shape() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let body = extract_squashed_fn_body(&squashed, concat!("fncancel_account", "_deletion("))
-        .expect("AUTH-38: fn cancel_account_deletion not found");
-    let has_jwt = "has_jwt(";
-    let find = concat!("account()", ".identity().find(");
-    let gate = concat!("needs_cancel", "_write(");
-    assert!(
-        body.contains(has_jwt),
-        "AUTH-38: cancel must gate on has_jwt()."
-    );
-    assert!(
-        body.contains(find),
-        "AUTH-38: cancel must bind the account row."
-    );
-    assert!(
-        body.contains(gate),
-        "AUTH-38: cancel must gate the write via needs_cancel_write."
-    );
-    assert!(
-        idx(body, has_jwt) < idx(body, find) && idx(body, find) < idx(body, gate),
-        "AUTH-38: order must be has_jwt -> account lookup -> needs_cancel_write."
-    );
-}
-
-/// G2 (NO_CLIENT_IDENTITY): every parameter of every reducer ENUMERATED FROM
-/// SOURCE in accounts.rs is either the `ctx` handle, a wire-safe scalar, or the
-/// same-file scheduled struct WITH its rejecting scheduler guard. The subject
-/// identity is `ctx.sender()` and nothing else (ADR-0179 G2 / AUTH-6).
-///
-/// This replaces a five-needle hardcoded loop with the full defense set its JS
-/// twin (`guest-claim-integrity.eval.mjs::checkNoClientIdentity`) carries —
-/// ADR-0195 D6. The needle loop was blind to an ADDED reducer, and its
-/// `:Identity` substring ban was blind to BOTH proven takeover shapes.
-///
-/// Kills:
-///   - adding a `guest: Identity` (or `Option<Identity>`, or `Vec<Identity>`)
-///     parameter to ANY reducer, including one this file never heard of;
-///   - E1, the struct-wrapped Identity (`target: ClaimTarget`) — no `: Identity`
-///     parameter appears anywhere, so a substring ban is green on it;
-///   - a type ALIAS (`guest: Ident`), invisible to any Identity-spelling ban;
-///   - neutering the scheduler guard on `guest_claim_reaper` to the
-///     `let scheduler_only = ...; let _ = ...;` form, which keeps the comparison,
-///     compiles, passes clippy — and rejects nobody;
-///   - a scan that reached the wrong file / a stripper that blanked the
-///     declarations: zero parsed reducers is a hard failure, not a pass.
-#[test]
-fn g2_no_reducer_takes_identity_parameter() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    if let Err(reason) = g2_client_identity_violation(&squashed) {
-        panic!("G2 (NO_CLIENT_IDENTITY) FAIL over accounts.rs: {reason}");
-    }
-}
-
-/// G2 ([R/name-set]): the reducer surface of accounts.rs is EXACTLY the six
-/// sanctioned names — pinned by sorted SET EQUALITY, never by a count and never
-/// by containment.
-///
-/// SIX as of rb-24 (M22 S3): `account_deletion_reaper` is added, and it is the
-/// conscious re-review this pin exists to force. It takes only the ctx handle
-/// and the SAME-FILE scheduled struct, it derives no identity from client text,
-/// and its body opens with the rejecting scheduler guard — the three questions
-/// ADR-0179 G2 asks of a new entry point, each pinned by its own rb24_ test. The
-/// JS ledger needs NO edit for this name: `REDUCER_SANCTIONS` in
-/// `evals/guest-claim-integrity.eval.mjs` already lists it with
-/// `status: 'PLANNED'` and `PLANNED_PIN` already contains it, which is exactly
-/// the permitted-when-present notion that file was restructured to provide.
-///
-/// Every reducer in this module is a client-reachable entry point into the
-/// re-key machinery, so ADDING one is a security-relevant event that must be
-/// re-reviewed right here; a MISSING name means a client entry point silently
-/// disappeared. The maintenance tax (one conscious line per new reducer) is the
-/// intended cost.
-///
-/// Kills: both proven takeover bypasses, which are ADDITIVE reducers — a `>= 6`
-///        count check and an "each expected name is present" check are green on
-///        both; a rotted enumerator that parses zero reducers (the empty set is
-///        itself a set mismatch).
-#[test]
-fn g2_reducer_name_set_is_pinned() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let mut found: Vec<String> = parse_reducers(&squashed)
-        .into_iter()
-        .map(|(name, _)| name)
-        .collect();
-    found.sort();
-    let expected: Vec<String> = vec![
-        concat!("account_deletion", "_reaper").to_string(),
-        concat!("cancel_account", "_deletion").to_string(),
-        concat!("complete_guest", "_claim").to_string(),
-        concat!("delete", "_account").to_string(),
-        concat!("guest_claim", "_reaper").to_string(),
-        concat!("start_guest", "_claim").to_string(),
-    ];
-    assert_eq!(
-        found, expected,
-        "G2 [R/name-set]: the enumerated reducer surface of accounts.rs changed. \
-         Set equality, not a count and not containment: the two PROVEN takeover \
-         bypasses are ADDITIVE reducers. If this addition/removal is intended, \
-         re-review the new entry point against ADR-0179 G2 (does it take only \
-         wire-safe scalars? does it derive identity from ctx.sender() alone?) and \
-         then update this pin CONSCIOUSLY."
-    );
-}
-
-/// G2 ([R/identity-ctor], E2 defense): accounts.rs never CONSTRUCTS an Identity.
-///
-/// Every identity this module handles comes from `ctx.sender()` or from a row it
-/// read. `Identity::from_hex` is `pub` in spacetimedb-lib, which is what makes
-/// E2 a two-line unauthenticated account-takeover reducer: a wire-safe `String`
-/// parameter plus an `Identity::from_hex` call on it in the body. The parameter
-/// analysis above never sees it, because the parameter is perfectly wire-safe.
-///
-/// Kills: E2 in every spelling of the constructor.
-#[test]
-fn g2_no_identity_constructor() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    for ctor in identity_ctor_needles() {
-        assert!(
-            !squashed.contains(ctor.as_str()),
-            "G2 [R/identity-ctor]: accounts.rs calls `{ctor}` — nothing in this module \
-             legitimately constructs an Identity. A red-team PROVED the constructor is \
-             the whole attack: a reducer taking a wire-safe `String` hex code, turning \
-             it into an Identity and re-keying that identity's monsters, inventory, \
-             wallet, NPC state and profile onto ctx.sender(). Derive identity from \
-             ctx.sender() or from a row you read, never from client text."
-        );
-    }
-}
-
-/// G5 (MODULE_WRITE_ISOLATION, D0): every row-write verb in accounts.rs is
-/// chained off one of the four tables this module OWNS (`account`,
-/// `guest_claim`, `guest_claim_reaper_schedule`,
-/// `account_deletion_reaper_schedule`). A write to any pre-existing table must
-/// be delegated to that table's owning module.
-///
-/// The verdict lives entirely in `g5_write_isolation_violation`, which is where
-/// the three clauses (non-vacuity, attribution, owned target) and their tags are
-/// documented. Attribution is a BACKWARD RECEIVER-CHAIN walk (ADR-0234, rb-39):
-/// a write is attributed to the handle root its own chain bottoms out in, or it
-/// is REFUSED — it is never credited to whichever accessor happened to be
-/// spelled earlier in the file, and never dropped.
-///
-/// Kills (proof-of-teeth): add a direct `monster` (or any other pre-existing
-/// table) write chain in accounts.rs instead of delegating — the extracted
-/// accessor is outside the owned set; detach a write from its chain by aliasing
-/// the database handle, binding a column handle in an earlier statement,
-/// laundering the chain through an argument-taking combinator segment, or
-/// spelling the verb UFCS — the write becomes unattributable and this gate reds
-/// under `[W/attribution]` rather than reading as clean (the rb-39 region's
-/// attribution rows).
-#[test]
-fn g5_writes_only_owned_tables() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    if let Err(reason) = g5_write_isolation_violation(&squashed) {
-        panic!("G5 (MODULE_WRITE_ISOLATION) FAIL over accounts.rs: {reason}");
-    }
-}
-
-/// Why a row-write verb could not be attributed to a table (ADR-0234).
-///
-/// Every variant is a REFUSAL, never a finding about the target: the scan knows
-/// a write happened and knows it cannot say which table it touches. Callers must
-/// treat all three as gate failures — an unattributed write is an UNGATED write.
-#[derive(Debug, PartialEq, Eq)]
-enum WriteAttrFault {
-    /// The receiver chain does not bottom out in a word-bounded `ctx.db.` root:
-    /// an aliased handle, a handle bound in an earlier statement, a bare
-    /// identifier receiver, a decoy binding whose name merely ENDS in `ctx`, or
-    /// a segment that TAKES ARGUMENTS — a combinator can return any handle at
-    /// all, so nothing to its left is evidence about the table reached.
-    UnrootedChain,
-    /// A chain segment has an EMPTY name — the byte before its `(` is not an
-    /// identifier byte (a turbofish, an index expression). A PARENTHESISED
-    /// receiver lands on `UnrootedChain` instead: its parens are NOT empty, so
-    /// the zero-argument segment rule refuses it one step earlier.
-    EmptyAccessor,
-    /// The verb is spelled UFCS (`<Type>::<verb>(receiver, ..)`), so the receiver
-    /// is an ARGUMENT and there is no chain to walk at all.
-    UfcsSpelling,
-}
-
-/// THE WRITE-ATTRIBUTION CONTRACT (ADR-0234, rb-39) — one entry per row-write
-/// verb in an already-squashed source, in SOURCE ORDER.
-///
-/// The rule in one sentence: a write verb is attributed to `<name>` only when
-/// walking BACK over its OWN receiver chain — segment by segment, each segment a
-/// completed call — reaches a word-bounded `ctx.db.<name>(` root; every other
-/// shape is an `Err(WriteAttrFault)`, never a guess and never a silent drop.
-///
-/// Because the verdict reads only the verb's own receiver it is
-/// order-independent. That is the whole point: the pre-rb-39 body took the
-/// nearest EARLIER handle prefix, so a foreign write was credited to whatever
-/// the previous statement merely READ, and a write with no prefix before it
-/// vanished from the census entirely. A statement-boundary rule closes the
-/// anchorless-drop hole (it can push a marker) but still misattributes whenever
-/// no `;` sits between the read and the foreign write — the same-statement,
-/// argument-list and closure shapes.
-///
-/// HONEST LIMITS, stated once and deliberately not re-audited (ADR-0224). The
-/// SSOT is ADR-0234's "Honest limits" section; this list mirrors it:
-///   - a turbofish — or any other non-identifier byte — immediately before a
-///     segment's `(` yields `EmptyAccessor`. A PARENTHESISED receiver
-///     (`(ctx.db.account()).identity().<verb>(x)`) is refused too, as an
-///     `UnrootedChain` under the zero-argument rule below. Both are LOUD, and
-///     the fix is to spell the chain plainly rather than to widen the rule;
-///   - a `Vec`/`HashMap` write in the scanned file is an `UnrootedChain`
-///     false-RED whose sanctioned fix is `.push(` (the m22-s4 convention) —
-///     never a weakening of the rule;
-///   - every receiver segment between the root and the verb must be a
-///     ZERO-ARGUMENT call — a table handle, or a column/index handle obtained
-///     from one. All 13 shipped `accounts.rs` writes are `accessor()`, then
-///     optionally `column()`, then the verb, so a combinator segment is REFUSED
-///     rather than credited to the rooted accessor spelled to its left; a
-///     same-file helper that RETURNS a handle is refused for the same reason —
-///     an ergonomics cost on a hypothetical refactor, paid in the loud
-///     direction;
-///   - the verb vocabulary is `insert`, `try_insert`, `update` and `delete`, in
-///     both the chained and the UFCS spelling. The `insert_or_update` /
-///     `try_insert_or_update` upserts exist only behind the crate's `unstable`
-///     feature, which this workspace does not enable; renaming a trait method
-///     at import (`use Trait::method as ..`) does not compile on the pinned
-///     stable 1.96 toolchain; and the keyed column methods are INHERENT, not
-///     trait methods, so no import can rename them either;
-///   - a `macro_rules!` DEFINED in the scanned file is scanned like any other
-///     text and its write IS attributed. Only a macro defined in a sibling file
-///     and merely INVOKED here carries no verb text at the call site;
-///   - a PER-TABLE handle passed by value to a function in ANOTHER file carries
-///     no verb text at its call site, so both Rust predicates are green on it:
-///     `g5_alias_violation` bans only the raw handle escaping, never a derived
-///     per-table one. That shape IS caught in CI today, by the JS twin's
-///     `[W/split-binding]` clause; review covers the rest of what a per-file
-///     scan cannot see.
-fn write_target_accessors(squashed: &str) -> Vec<Result<String, WriteAttrFault>> {
-    // The four row-write verbs in their chained spelling. The fallible
-    // `try_insert` is the sibling the infallible spelling wraps; the two needles
-    // are DISJOINT substrings (the short verb's needle opens with the `.` that
-    // the fallible spelling replaces with `_`), so no occurrence can match twice
-    // and the array order is immaterial.
-    let dotted = [
-        concat!(".ins", "ert("),
-        concat!(".try_ins", "ert("),
-        concat!(".upd", "ate("),
-        concat!(".del", "ete("),
-    ];
-    // The same four verbs spelled UFCS: the receiver arrives as an ARGUMENT, so
-    // there is no chain to walk and every hit is a refusal.
-    let ufcs = [
-        concat!("::ins", "ert("),
-        concat!("::try_ins", "ert("),
-        concat!("::upd", "ate("),
-        concat!("::del", "ete("),
-    ];
-    let bytes = squashed.as_bytes();
-    let mut acc: Vec<Result<String, WriteAttrFault>> = Vec::new();
-    let mut at = 0usize;
-    while at < bytes.len() {
-        if let Some(verb) = ufcs.iter().find(|v| bytes[at..].starts_with(v.as_bytes())) {
-            acc.push(Err(WriteAttrFault::UfcsSpelling));
-            at += verb.len();
-        } else if let Some(verb) = dotted
-            .iter()
-            .find(|v| bytes[at..].starts_with(v.as_bytes()))
-        {
-            acc.push(rooted_chain_accessor(squashed, at));
-            at += verb.len();
-        } else {
-            at += 1;
-        }
-    }
-    acc
-}
-
-/// The backward half of the contract above: walk the receiver chain of the write
-/// verb whose `.` sits at byte `verb_dot` and name the table it is rooted in.
-///
-/// Every index step is bounds-guarded and returns `UnrootedChain` on exhaustion:
-/// a scanner that panics on a hostile shape is a scanner that cannot be run.
-fn rooted_chain_accessor(squashed: &str, verb_dot: usize) -> Result<String, WriteAttrFault> {
-    let root = concat!("ctx", ".db.").as_bytes();
-    let bytes = squashed.as_bytes();
-    let mut hop = verb_dot;
-    loop {
-        // Each segment of a receiver chain is a COMPLETED call, so the byte
-        // before this hop's `.` must be the `)` that closed it. A bare
-        // identifier receiver (`col.<verb>(`, `ids.<verb>(`) roots nothing.
-        if hop == 0 || bytes[hop - 1] != b')' {
-            return Err(WriteAttrFault::UnrootedChain);
-        }
-        // Depth-scan back to the `(` that `)` closed. Strings and comments are
-        // already blanked, so parens are the only nesting left to balance.
-        let mut depth = 0usize;
-        let mut i = hop - 1;
-        let open = loop {
-            match bytes[i] {
-                b')' => depth += 1,
-                b'(' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        break i;
-                    }
-                }
-                _ => {}
-            }
-            if i == 0 {
-                // Unbalanced: the chain runs off the front of the source.
-                return Err(WriteAttrFault::UnrootedChain);
-            }
-            i -= 1;
-        };
-        // Every receiver segment must be a ZERO-ARGUMENT call — a table handle,
-        // or a column/index handle obtained from one. MEASURED laundering shape:
-        // `ctx.db.account().identity().find(x).map(|_| ctx.db.<foreign>())
-        // .unwrap()` then the verb — an argument-taking segment can return ANY
-        // handle, so the rooted accessor spelled to its left is not evidence
-        // about the table the verb reaches.
-        if open + 2 != hop {
-            return Err(WriteAttrFault::UnrootedChain);
-        }
-        // The name this segment calls.
-        let mut start = open;
-        while start > 0 && is_word_byte(bytes[start - 1]) {
-            start -= 1;
-        }
-        if start == open {
-            return Err(WriteAttrFault::EmptyAccessor);
-        }
-        // Rooted? The prefix must be the handle AND a whole token: `my_ctx.db.`
-        // is a DIFFERENT binding, so the byte before the prefix must not be a
-        // word byte.
-        if start >= root.len()
-            && &bytes[start - root.len()..start] == root
-            && (start == root.len() || !is_word_byte(bytes[start - root.len() - 1]))
-        {
-            return Ok(squashed[start..open].to_string());
-        }
-        // Not rooted yet: peel one more segment (`<root>.a().b().<verb>(`).
-        if start > 0 && bytes[start - 1] == b'.' {
-            hop = start - 1;
-            continue;
-        }
-        return Err(WriteAttrFault::UnrootedChain);
-    }
-}
-
-/// G5's MODULE_WRITE_ISOLATION verdict over an already-squashed source.
-///
-/// Three clauses, in this order, each answering a different question and each
-/// carrying its own tag so the reader can tell them apart:
-///   - `[W/non-vacuity]`: NOT ONE write was attributed. Every clause below would
-///     then pass over an empty set, so a scan that reached the wrong file — or a
-///     stripper that blanked it — would read as `clean`.
-///   - `[W/attribution]`: a write verb could not be tied to a table AT ALL. The
-///     target is UNKNOWN, not known-and-forbidden; refusing to classify is the
-///     safe direction, because an unattributed write is an UNGATED write.
-///   - `[W/target]`: an attributed write names a table this module does not own.
-fn g5_write_isolation_violation(squashed: &str) -> Result<(), String> {
-    let targets = write_target_accessors(squashed);
-    let allowed = allowed_write_tables();
-    let root = concat!("ctx", ".db.");
-
-    if !targets.iter().any(|t| t.is_ok()) {
-        return Err(format!(
-            "G5 [W/non-vacuity]: not one ATTRIBUTED write verb was found in the scanned source \
-             (extracted: {targets:?}). This module exists to write the tables it owns, so with no \
-             attributed write the attribution and target clauses below iterate an empty set and \
-             this gate would say `clean` about nothing."
-        ));
-    }
-
-    for t in &targets {
-        if let Err(fault) = t {
-            return Err(format!(
-                "G5 [W/attribution]: a write verb is NOT rooted in a `{root}<table>()` receiver \
-                 chain of its own (fault: {fault:?}; extracted: {targets:?}). The MEASURED shapes \
-                 are an aliased database handle, a column handle bound in an earlier statement, a \
-                 bare identifier receiver, a chain laundered through an argument-taking \
-                 combinator segment, and the UFCS verb spelling — each detaches the write \
-                 from the only evidence about which table it touches, and each was silently \
-                 credited to a neighbouring accessor (or dropped outright) before rb-39. Chain \
-                 every write directly off `{root}` in the statement that performs it; use `.push(` \
-                 for non-table containers."
-            ));
-        }
-    }
-
-    for name in targets.iter().flatten() {
-        if !allowed.iter().any(|a| a == name) {
-            return Err(format!(
-                "G5 [W/target]: the scanned source writes table `{name}`, which is NOT one of the \
-                 owned tables {allowed:?}. Every write to a pre-existing table must be delegated \
-                 to that table's owning module (D0)."
-            ));
-        }
-    }
-
-    Ok(())
-}
-
-/// The clause that keeps the receiver-chain walk MEANINGFUL on a real file: the
-/// scanned source must bind no alias of the database handle and must take every
-/// reducer context under the literal name `ctx`.
-///
-/// Kept OUT of `g5_write_isolation_violation` on purpose (first-failure-wins
-/// shadowing): a predicate that folds this in can be hollowed on one side while
-/// the other side's tests stay green.
-///
-/// Four clauses, in this order:
-///   - `[alias/db-binding]`: every occurrence of the handle that is not part of
-///     a longer identifier must be followed IMMEDIATELY by `.` — the eval twin's
-///     `hasEscapedDbHandle` direction. Stated that way rather than as a pair of
-///     `=`/`=&` literals, so a handle escaping into a tuple or an argument list
-///     is caught by the same clause.
-///   - `[alias/non-vacuity]`: a file with no reducer-context parameter would
-///     make the naming clause below iterate an empty set.
-///   - `[alias/ctx-name]`: every reducer context is named `ctx` EXACTLY.
-///     Deliberately STRICTER than the JS twin, which also accepts `_ctx`: the
-///     walk's anchor is the literal `ctx` handle, so every write in a `_ctx`
-///     file would be unattributable — a false-RED that reads like a real defect.
-///   - `[alias/ctx-local]`: the eval twin's `CTX_ALIAS_FORMS`. Rebinding the
-///     context itself renames the handle one level up.
-fn g5_alias_violation(squashed: &str) -> Result<(), String> {
-    let bytes = squashed.as_bytes();
-
-    let handle = concat!("ctx", ".db");
-    let mut scan = 0usize;
-    while let Some(rel) = squashed[scan..].find(handle) {
-        let at = scan + rel;
-        scan = at + handle.len();
-        if at > 0 && is_word_byte(bytes[at - 1]) {
-            // A DIFFERENT binding whose name merely ends in the handle spelling.
-            continue;
-        }
-        if bytes.get(scan) != Some(&b'.') {
-            let shown: String = squashed[at..].chars().take(handle.len() + 2).collect();
-            return Err(format!(
-                "G5 [alias/db-binding]: the database handle ESCAPES its chain at `{shown}` — it \
-                 is bound, moved or captured rather than immediately dotted into an accessor. \
-                 Write attribution walks back to the literal `{handle}` handle, so an escaped \
-                 handle does not merely rename a variable: it detaches every write made through \
-                 it from the only evidence about which table that write touches."
-            ));
-        }
-    }
-
-    let ctx_param = concat!(":&Reducer", "Context");
-    if !squashed.contains(ctx_param) {
-        return Err(format!(
-            "G5 [alias/non-vacuity]: the scanned source declares no `{ctx_param}` parameter at \
-             all, so the naming clause would iterate an empty set and pass over nothing. A file \
-             without a reducer context is not the file this gate means to check."
-        ));
-    }
-
-    let mut scan = 0usize;
-    while let Some(rel) = squashed[scan..].find(ctx_param) {
-        let at = scan + rel;
-        scan = at + ctx_param.len();
-        let mut s = at;
-        while s > 0 && is_word_byte(bytes[s - 1]) {
-            s -= 1;
-        }
-        let name = &squashed[s..at];
-        if name != "ctx" {
-            return Err(format!(
-                "G5 [alias/ctx-name]: the scanned source takes the reducer context under the name \
-                 `{name}`; it must be `ctx`. This is stricter than the JS twin on purpose — the \
-                 attribution walk anchors on the literal `{handle}` handle, so under any other \
-                 name (`_ctx` included) EVERY write in the file becomes unattributable, and the \
-                 gate reds for a reason that has nothing to do with the defect it exists to find."
-            ));
-        }
-    }
-
-    for form in [
-        concat!("=", "ctx", ";"),
-        concat!("=", "ctx", ","),
-        concat!("=&", "ctx", ";"),
-        concat!("=&", "ctx", ","),
-        concat!("=", "ctx", ".clone()"),
-    ] {
-        if squashed.contains(form) {
-            return Err(format!(
-                "G5 [alias/ctx-local]: the scanned source rebinds the reducer context itself \
-                 (`{form}`). Renaming the context renames the handle one level up, which reopens \
-                 the attribution hole without ever spelling a handle binding."
-            ));
-        }
-    }
-
-    Ok(())
-}
-
-/// G5 (D0): accounts.rs contains NO wallet accessor token at all — even a READ of
-/// the wallet is banned outside economy.rs (currency-integrity ACCESSOR_BYPASS),
-/// so `economy::wallet_exists` is the delegated seam.
-#[test]
-fn g5_no_wallet_accessor_in_accounts() {
-    let kept = strip_comments_keep_strings(ACCOUNTS_RS);
-    let token = ["player", "_wallet"].concat();
-    assert!(
-        !kept.contains(token.as_str()),
-        "G5/D0: accounts.rs must not reference the wallet table directly (delegate to economy)."
-    );
-}
-
 // ===========================================================================
 // ACCOUNT LEGAL-STATE INVARIANT (ADR-0195 D1/D3) — `Account` permits illegal
 // states by construction: `status: AccountStatus` plus an INDEPENDENT
@@ -2744,689 +729,6 @@ fn auth_constructors_return_legal_states() {
     );
 }
 
-/// W3-4 (scan): the `Account` field list and the `AccountStatus` variant list are
-/// pinned by EXACT EQUALITY against the current shape.
-///
-/// EXACT EQUALITY, never `.contains`: an APPENDED field survives every
-/// containment check while silently widening the state space the invariant
-/// reasons about. A reorder must red too: BSATN layout is order-sensitive.
-///
-/// M22-S2 RE-DERIVATION (spec §4.1). The shape move this tripwire was written to
-/// intercept has happened: `Account` gains `terminal_at_ms: Option<i64>`,
-/// appended LAST and carrying `#[default(None)]` so the column is additive under
-/// ADR-0006. The pin below was re-derived FROM THE SPEC, not rubber-stamped to
-/// match the code, and the re-derivation the tripwire's contract demands was
-/// carried out rather than deferred: `account_state_is_legal` gained the clause
-/// `terminal_at_ms.is_some()` implies (`PendingDeletion` AND
-/// `deletion_requested_at_ms.is_some()`), driven by
-/// `account_legal_state_rejects_terminal_without_request`,
-/// `account_legal_state_rejects_terminal_while_active` and
-/// `account_legal_state_accepts_legal_terminal_shape` at the end of this file.
-/// The attribute is part of the pinned text on purpose — `#[default(None)]` is
-/// what makes the column an automigration-safe append rather than a republish.
-///
-/// The extraction mirrors `auth6_no_email_or_subject_stored`'s (comments
-/// stripped, string content preserved, whitespace squashed, brace-walked from
-/// the struct marker), so a doc-comment edit on the struct — which ADR-0195 D5
-/// explicitly expects, and which M22-S2 makes to `auth_issuer` — does NOT trip
-/// this pin. Only the declaration text does.
-///
-/// Kills: appending a further field to `Account`, or adding a `Deleted,` variant
-///        to `AccountStatus`, without re-deriving the legality predicate and the
-///        five constructor postconditions; a containment-based pin (green on
-///        both); appending `terminal_at_ms` WITHOUT `#[default(None)]`, or
-///        inserting it mid-struct (either is a non-additive migration);
-///        a containment pin that would also be green on both of those.
-#[test]
-fn schema_account_struct_shape_tripwire() {
-    let schema = stripped_keep_strings(SCHEMA_RS);
-
-    let account_marker = concat!("struct", "Account{");
-    let fields = extract_squashed_fn_body(&schema, account_marker).unwrap_or_else(|| {
-        panic!(
-            "W3-4: the Account struct declaration was not found in schema.rs (marker \
-             {account_marker:?} over the comment-stripped, whitespace-squashed source). \
-             The tripwire cannot pin a shape it cannot read — this is a hard failure, \
-             not a skip."
-        )
-    });
-    let expected_fields = concat!(
-        "#[primary",
-        "_key]",
-        "pubidentity:Identity,",
-        "pubauth_issuer:String,",
-        "pubcreated_at_ms:i64,",
-        "publast_login_at_ms:i64,",
-        "pubstatus:AccountStatus,",
-        "pubdeletion_requested_at_ms:Opt",
-        "ion<i64>,",
-        "pubclaimed_from:Opt",
-        "ion<Identity>,",
-        "pubclaimed_at_ms:Opt",
-        "ion<i64>,",
-        "#[def",
-        "ault(None)]",
-        "pubterminal_at_ms:Opt",
-        "ion<i64>,",
-    );
-    assert_eq!(
-        fields, expected_fields,
-        "W3-4: Account's shape changed — re-derive account_state_is_legal + the \
-         constructor debug_asserts (ADR-0195), then update this pin consciously. \
-         A new field can widen the illegal-state space the predicate is blind to \
-         (that is exactly how `deletion_requested_at_ms` came to float free of \
-         `status`), and a field REORDER changes the BSATN layout of a live table."
-    );
-
-    let status_marker = concat!("enum", "AccountStatus{");
-    let variants = extract_squashed_fn_body(&schema, status_marker).unwrap_or_else(|| {
-        panic!(
-            "W3-4: the AccountStatus enum declaration was not found in schema.rs \
-             (marker {status_marker:?}). The tripwire cannot pin a variant list it \
-             cannot read."
-        )
-    });
-    assert_eq!(
-        variants, "Active,PendingDeletion,",
-        "W3-4: AccountStatus's variant list changed — re-derive account_state_is_legal \
-         + the constructor debug_asserts (ADR-0195), then update this pin consciously. \
-         Every new variant needs its own answer to `which timestamp fields must be set \
-         in this state?`, and the predicate's match arms are where that answer lives."
-    );
-}
-
-// ===========================================================================
-// MACHINERY SELF-TEETH — prove the heavy extractors BITE. If these fail, the
-// scans above cannot be trusted regardless of their results.
-// ===========================================================================
-
-/// Proves the string/comment strip pipeline blanks a needle hidden in a string
-/// literal (the F1 evasion) and detects a genuine occurrence.
-#[test]
-fn machinery_strip_pipeline_teeth() {
-    let needle = concat!("audience", "_allowed(");
-    // GOOD: real call survives.
-    let good = "fn f(){ if !audience_allowed(a, B) { return; } }";
-    assert!(
-        stripped_for_scan(good).contains(needle),
-        "machinery: a genuine audience_allowed( call must survive stripping."
-    );
-    // EVASION: same text only inside a dead string literal must be blanked.
-    let evasion = format!("fn f(){{ let _ = \"{}\"; return; }}", needle);
-    assert!(
-        !stripped_for_scan(&evasion).contains(needle),
-        "machinery (F1): a needle inside a string literal must be blanked by strip_rust_strings."
-    );
-    // A URL's `//` must NOT be swallowed as a comment in the strings-kept view.
-    let url = "const X: &str = \"https://example.invalid/\"; fn g(){}";
-    assert!(
-        stripped_keep_strings(url).contains(concat!("https:", "//example.invalid/")),
-        "machinery: strip_comments_keep_strings must preserve a URL's // (not a comment)."
-    );
-}
-
-/// Proves the partition extractor bites: a fixture that resolves the code BEFORE
-/// the caller-state guards must FAIL the max-caller < min-code assertion, while a
-/// correctly-ordered fixture passes.
-#[test]
-fn machinery_partition_teeth() {
-    let has_jwt = "has_jwt(";
-    let acct = concat!("account()", ".identity().find(");
-    let code_find = concat!("guest", "_claim().code().find(");
-
-    // GOOD: caller-state precedes code resolution.
-    let good = format!(
-        "fn f(){{ if !ctx.sender_auth().{has_jwt}) {{}} let a = ctx.db.{acct}me); \
-         let c = ctx.db.{code_find}x); }}"
-    );
-    let gs = stripped_for_scan(&good);
-    let gb = extract_squashed_fn_body(&gs, "fnf(").unwrap();
-    assert!(
-        idx(gb, acct) < idx(gb, code_find),
-        "machinery: GOOD partition fixture should place the account lookup before code find."
-    );
-
-    // BAD: code resolution first — the partition boundary is inverted.
-    let bad = format!(
-        "fn f(){{ let c = ctx.db.{code_find}x); if !ctx.sender_auth().{has_jwt}) {{}} \
-         let a = ctx.db.{acct}me); }}"
-    );
-    let bs = stripped_for_scan(&bad);
-    let bb = extract_squashed_fn_body(&bs, "fnf(").unwrap();
-    assert!(
-        idx(bb, code_find) < idx(bb, acct),
-        "machinery: the BAD fixture (code find first) must invert the partition — proving the \
-         auth12_13_14 assertion would fire on this shape."
-    );
-}
-
-/// Proves the G5 accessor extractor flags a forbidden-table write and accepts an
-/// owned-table write.
-#[test]
-fn machinery_g5_accessor_teeth() {
-    // BAD: a monster write — the whole chain assembled from parts so this file
-    // never carries the contiguous dangerous needle.
-    let chain = concat!("ctx.db.", "monster()", ".monster_id()", ".update(");
-    let bad = format!("fn f(){{ {chain} m); }}");
-    let bad_targets = write_target_accessors(&stripped_for_scan(&bad));
-    assert!(
-        bad_targets.contains(&Ok(concat!("mon", "ster").to_string())),
-        "machinery: the G5 extractor must surface a forbidden `monster` write accessor as an \
-         ATTRIBUTED target — a rooted foreign write is known-and-forbidden, not unattributable. \
-         Got {bad_targets:?}"
-    );
-
-    // GOOD: an account write is in the owned set.
-    let good_chain = concat!("ctx.db.", "account()", ".ins", "ert(");
-    let good = format!("fn f(){{ {good_chain} row); }}");
-    let good_targets = write_target_accessors(&stripped_for_scan(&good));
-    assert!(
-        good_targets
-            .iter()
-            .all(|t| matches!(t, Ok(name) if allowed_write_tables().iter().any(|a| a == name))),
-        "machinery: an account write must be ATTRIBUTED and inside the owned-table allowlist. \
-         Got {good_targets:?}"
-    );
-}
-
-/// Proves the G12 log_reject argument extractor bites: a `format!`-with-`issuer`
-/// reason is flagged; a static-const reason is clean.
-#[test]
-fn machinery_g12_log_reject_teeth() {
-    // BAD: a formatted reason echoing the raw issuer claim.
-    let bad = format!(
-        "fn f(){{ {}(\"r\", s, &{}(\"issuer {{}} bad\", issuer)); }}",
-        concat!("log", "_reject"),
-        concat!("form", "at!")
-    );
-    let bad_spans = log_reject_arg_spans(&stripped_for_scan(&bad));
-    assert_eq!(
-        bad_spans.len(),
-        1,
-        "machinery: one log_reject span expected in the BAD fixture."
-    );
-    assert!(
-        bad_spans[0].contains("issuer") && bad_spans[0].contains(concat!("form", "at!")),
-        "machinery: the G12 extractor must surface `issuer` and `format!` in the BAD span."
-    );
-
-    // GOOD: a static const reason — no claim identifier, no format!.
-    let good = format!(
-        "fn f(){{ {}(\"r\", s, REASON_CONST); }}",
-        concat!("log", "_reject")
-    );
-    let good_spans = log_reject_arg_spans(&stripped_for_scan(&good));
-    assert_eq!(
-        good_spans.len(),
-        1,
-        "machinery: one log_reject span expected in the GOOD fixture."
-    );
-    for claim in ["issuer", "subject", "audience", "claims"] {
-        assert!(
-            !good_spans[0].contains(claim),
-            "machinery: a static-const reason must carry no claim identifier ({claim})."
-        );
-    }
-    assert!(
-        !good_spans[0].contains(concat!("form", "at!")),
-        "machinery: a static-const reason must carry no format!."
-    );
-}
-
-// ---------------------------------------------------------------------------
-// G2 ENUMERATOR SELF-TEETH (ADR-0195 D6) — every fixture below is a SQUASHED
-// synthetic source, fragment-assembled with `concat!` so this test file can
-// never self-match when an eval concatenates the whole `server-module` src tree
-// and comment-strips WITHOUT blanking string literals.
-//
-// Both polarities are covered on purpose: BAD fixtures prove the checker bites,
-// GOOD fixtures prove it is not simply always-red (an always-red checker is
-// indistinguishable from a working one until a GOOD fixture says otherwise).
-// ---------------------------------------------------------------------------
-
-/// The squashed reducer attribute, fragment-assembled once for every fixture.
-fn fx_reducer_attr() -> &'static str {
-    concat!("#[spacetimedb::", "reducer]")
-}
-
-/// Proves the source-derived enumerator sees BOTH reducers in a two-reducer
-/// source and that the E1 struct-wrapped-Identity shape is FLAGGED while a
-/// scalar-only reducer PASSES.
-///
-/// kills: the hardcoded five-needle loop this replaced (it cannot see an ADDED
-///        reducer at all); a `contains(":Identity")` substring ban — the fixture
-///        asserts that needle is absent from the E1 text, so the old check was
-///        provably green on a code-less account-takeover reducer.
-#[test]
-fn machinery_g2_enumerator_and_e1_teeth() {
-    let attr = fx_reducer_attr();
-    let e1 = concat!(
-        "pub",
-        "fn",
-        "complete_claim_for(ctx:&ReducerContext,target:ClaimTarget)",
-        "->Result<(),String>{rekey(ctx,target.guest_identity,ctx.sender())}"
-    );
-    let clean = concat!(
-        "pub",
-        "fn",
-        "set_nickname(ctx:&ReducerContext,nickname:String,slot:u8)",
-        "->Result<(),String>{Ok(())}"
-    );
-
-    let both = [attr, e1, attr, clean].concat();
-    let reducers = parse_reducers(&both);
-    assert_eq!(
-        reducers.len(),
-        2,
-        "machinery: BOTH attributed fns must be enumerated from source — an \
-         enumerator that finds one is the hardcoded-list failure mode with extra \
-         steps. Parsed: {reducers:?}"
-    );
-    assert_eq!(
-        reducers[0].0, "complete_claim_for",
-        "machinery: the walk-forward must land on the fn the attribute decorates."
-    );
-    assert_eq!(
-        reducers[1].0, "set_nickname",
-        "machinery: the second attribute must be found after the first fn's body."
-    );
-    assert_eq!(
-        reducers[0].1,
-        vec![
-            ("ctx".to_string(), "&ReducerContext".to_string()),
-            ("target".to_string(), "ClaimTarget".to_string()),
-        ],
-        "machinery: the parameter list must split at the depth-0 comma and at the \
-         first non-`::` colon."
-    );
-
-    // The whole point of the positive allowlist: the OLD substring ban is
-    // provably blind to this fixture.
-    assert!(
-        !both.contains(concat!(":Ident", "ity")),
-        "machinery: the E1 fixture must contain NO `: Identity` parameter text — that \
-         absence is exactly why a substring ban was green on a proven takeover."
-    );
-
-    let reason = g2_client_identity_violation(&both).expect_err(
-        "machinery: a reducer taking a `SpacetimeType` struct with an Identity field \
-         must be FLAGGED — it is a code-less transfer of any identity's game data.",
-    );
-    assert!(
-        reason.contains("complete_claim_for") && reason.contains("ClaimTarget"),
-        "machinery: the violation must NAME the reducer and the offending type. Got: \
-         {reason:?}"
-    );
-
-    // GOOD: the scalar-only reducer alone must PASS.
-    let good = [attr, clean].concat();
-    if let Err(reason) = g2_client_identity_violation(&good) {
-        panic!("machinery: a ctx + String + u8 reducer must PASS, got: {reason}");
-    }
-}
-
-/// Proves the wire-safe allowlist accepts exactly the scalar surface (recursing
-/// through `Option<..>` / `Vec<..>`) and rejects every composite.
-///
-/// kills: an allowlist widened to "anything that is not spelled Identity" — the
-///        alias `Ident` and the struct `ClaimTarget` are both caught here by the
-///        POSITIVE rule and by nothing else.
-#[test]
-fn machinery_g2_wire_safe_allowlist_teeth() {
-    for good in [
-        "String",
-        "bool",
-        "u8",
-        "u128",
-        "i64",
-        "f32",
-        "Option<i64>",
-        "Vec<String>",
-        "Option<Vec<u32>>",
-    ] {
-        assert!(
-            is_wire_safe_type(good),
-            "machinery: `{good}` is a wire-safe scalar (or a wrapper of one) and must \
-             be accepted — a false RED here blocks legitimate reducers."
-        );
-    }
-    for bad in [
-        "Identity",
-        "Option<Identity>",
-        "Vec<Identity>",
-        "ClaimTarget",
-        "Ident",
-        "&ReducerContext",
-        "Option<ClaimTarget>",
-    ] {
-        assert!(
-            !is_wire_safe_type(bad),
-            "machinery: `{bad}` is NOT a wire-safe scalar — a composite argument is one \
-             whose fields the server cannot vouch for, and the positive allowlist is \
-             the only rule that catches a type ALIAS."
-        );
-    }
-}
-
-/// Proves the two client-supplied-Identity parameter shapes a substring ban
-/// misses are both FLAGGED end-to-end through the checker.
-///
-/// kills: `guest: Option<Identity>` (the old `:Identity` needle never matched
-///        `:Option<Identity>` — the fixture asserts that absence);
-///        `guest: Ident`, a type alias that spells nothing at all.
-#[test]
-fn machinery_g2_identity_param_shapes_are_flagged() {
-    let attr = fx_reducer_attr();
-
-    let optioned = [
-        attr,
-        concat!(
-            "pub",
-            "fn",
-            "adopt(ctx:&ReducerContext,guest:Opt",
-            "ion<Identity>)->Result<(),String>{Ok(())}"
-        ),
-    ]
-    .concat();
-    assert!(
-        !optioned.contains(concat!(":Ident", "ity")),
-        "machinery: `:Option<Identity>` contains no `:Identity` substring — that is why \
-         the substring ban had to go."
-    );
-    let reason = g2_client_identity_violation(&optioned)
-        .expect_err("machinery: an `Option<Identity>` parameter must be FLAGGED.");
-    assert!(
-        reason.contains("adopt"),
-        "machinery: the violation must name the reducer. Got: {reason:?}"
-    );
-
-    let aliased = [
-        attr,
-        concat!(
-            "pub",
-            "fn",
-            "adopt(ctx:&ReducerContext,guest:Ident)->Result<(),String>{Ok(())}"
-        ),
-    ]
-    .concat();
-    assert!(
-        !aliased.contains(concat!(":Ident", "ity")),
-        "machinery: a `type Ident = Identity;` alias spells no Identity anywhere."
-    );
-    let reason = g2_client_identity_violation(&aliased).expect_err(
-        "machinery: a type-alias identity parameter must be FLAGGED by the positive \
-         wire-safe allowlist.",
-    );
-    assert!(
-        reason.contains("adopt") && reason.contains("Ident"),
-        "machinery: the violation must name the reducer and the alias. Got: {reason:?}"
-    );
-}
-
-/// Proves an EMPTY enumeration is a hard failure, never a vacuous pass (the Rust
-/// twin of the eval's `[R/name-set]` non-vacuity guard).
-///
-/// kills: commenting out every reducer attribute (or pointing the scan at the
-///        wrong file, or a stripper that blanks the declarations) and reading the
-///        resulting silence as "no reducer takes an Identity".
-#[test]
-fn machinery_g2_empty_enumeration_fails_loud() {
-    let reason = g2_client_identity_violation("")
-        .expect_err("machinery: an EMPTY source must FAIL — every clause is vacuous on it.");
-    assert!(
-        reason.contains("[R/name-set]"),
-        "machinery: the empty set must be reported as a name-set failure. Got: {reason:?}"
-    );
-
-    // The realistic spelling of the same hole: the attributes are all commented
-    // out, so the stripped source carries none of them.
-    let commented_out = format!(
-        "//{}\npub fn f(ctx: &ReducerContext) {{}}",
-        fx_reducer_attr()
-    );
-    let squashed = stripped_for_scan(&commented_out);
-    assert!(
-        parse_reducers(&squashed).is_empty(),
-        "machinery: the fixture must strip to zero reducers for this case to be the \
-         empty-set case at all."
-    );
-    let reason = g2_client_identity_violation(&squashed)
-        .expect_err("machinery: an all-commented-out reducer surface must FAIL LOUD.");
-    assert!(reason.contains("[R/name-set]"), "machinery: got {reason:?}");
-}
-
-/// GOOD fixtures — the three legal shapes that must NOT red.
-///
-/// kills: a strict "nothing but optional `pub` between the attribute and the fn"
-///        walk (`trading.rs` already stacks `#[allow(clippy::too_many_arguments)]`
-///        on a reducer, so that rule false-REDs on arrival);
-///        a comma split that classifies rustfmt's trailing empty segment as a
-///        non-scalar parameter (the live `guest_claim_reaper` signature is
-///        wrapped and carries that comma today);
-///        a paren-walk that runs past the parameter list into the return type
-///        and flags `-> Result<Identity, String>` (return values are not client
-///        input — JS parity).
-#[test]
-fn machinery_g2_good_fixtures_pass() {
-    let attr = fx_reducer_attr();
-
-    let stacked = [
-        attr,
-        "#[allow(clippy::too_many_arguments)]",
-        concat!(
-            "pub",
-            "fn",
-            "noisy(ctx:&ReducerContext,a:u8,b:u8,c:u8)->Result<(),String>{Ok(())}"
-        ),
-    ]
-    .concat();
-    let parsed = parse_reducers(&stacked);
-    assert_eq!(
-        parsed.len(),
-        1,
-        "machinery: a stacked attribute must not hide the reducer. Parsed: {parsed:?}"
-    );
-    assert_eq!(parsed[0].0, "noisy", "machinery: wrong fn name parsed.");
-    assert_eq!(
-        parsed[0].1.len(),
-        4,
-        "machinery: ctx + three scalars = four parameters. Parsed: {:?}",
-        parsed[0].1
-    );
-    if let Err(reason) = g2_client_identity_violation(&stacked) {
-        panic!("machinery: the stacked-attribute reducer must PASS, got: {reason}");
-    }
-
-    let trailing = [
-        attr,
-        concat!(
-            "pub",
-            "fn",
-            "wrapped(ctx:&ReducerContext,code:String,slot:u8,)->Result<(),String>{Ok(())}"
-        ),
-    ]
-    .concat();
-    let parsed = parse_reducers(&trailing);
-    assert_eq!(
-        parsed[0].1.len(),
-        3,
-        "machinery: rustfmt's trailing comma leaves an EMPTY segment that must be \
-         skipped, not classified as a non-scalar parameter. Parsed: {:?}",
-        parsed[0].1
-    );
-    if let Err(reason) = g2_client_identity_violation(&trailing) {
-        panic!("machinery: the trailing-comma signature must PASS, got: {reason}");
-    }
-
-    let returning = [
-        attr,
-        concat!(
-            "pub",
-            "fn",
-            "mint(ctx:&ReducerContext,seed:String)->Result<Identity,String>{Ok(ctx.sender())}"
-        ),
-    ]
-    .concat();
-    let parsed = parse_reducers(&returning);
-    assert_eq!(
-        parsed[0].1.len(),
-        2,
-        "machinery: the paren-walk must stop at the balanced close of the PARAMETER \
-         list. Parsed: {:?}",
-        parsed[0].1
-    );
-    assert!(
-        !parsed[0].1.iter().any(|(_, t)| t.contains("Result")),
-        "machinery: no return-type text may leak into the parameter list. Parsed: {:?}",
-        parsed[0].1
-    );
-    if let Err(reason) = g2_client_identity_violation(&returning) {
-        panic!(
-            "machinery: an Identity in the RETURN type is out of scope (params only, \
-                JS parity), got: {reason}"
-        );
-    }
-}
-
-/// Proves the scheduled-struct carve-out is gated on the REJECTING guard, not on
-/// the mere presence of the comparison.
-///
-/// kills: neutering `guest_claim_reaper`'s guard to
-///        `let scheduler_only = ctx.sender() != ctx.database_identity(); let _ = scheduler_only;`
-///        — it keeps the comparison, compiles, passes clippy, and rejects NOBODY,
-///        so any client can invoke the scheduled reducer with a hand-built row
-///        naming any victim identity;
-///        a carve-out widened to "any struct argument" (the GOOD half proves the
-///        legitimate shape still passes, so the fix for the BAD half cannot be
-///        `always red`).
-#[test]
-fn machinery_g2_scheduler_carveout_teeth() {
-    let table_attr = concat!(
-        "#[spacetimedb::",
-        "table(",
-        "accessor=x_schedule,",
-        "sched",
-        "uled(",
-        "reap_x))]"
-    );
-    let struct_decl = concat!("pub", "struct", "XSchedule{pubid:u64,}");
-    let attr = fx_reducer_attr();
-    let sig = concat!(
-        "pub",
-        "fn",
-        "reap_x(ctx:&ReducerContext,args:XSchedule)->Result<(),String>{"
-    );
-    let rejecting_guard = concat!(
-        "ifctx.sender()!=",
-        "ctx.database_identity(){",
-        "returnErr(e);}"
-    );
-    let neutered_guard =
-        "letscheduler_only=ctx.sender()!=ctx.database_identity();let_=scheduler_only;";
-    let tail = "delete_x(ctx,args.id);}";
-
-    assert_eq!(
-        parse_scheduled_targets(&[table_attr, struct_decl].concat()),
-        vec![("reap_x".to_string(), "XSchedule".to_string())],
-        "machinery: the scheduled table must map to the struct that follows it — \
-         without that mapping the carve-out below can never apply and the gate is \
-         merely always-red."
-    );
-
-    let bad = [table_attr, struct_decl, attr, sig, neutered_guard, tail].concat();
-    let reason = g2_client_identity_violation(&bad).expect_err(
-        "machinery: the scheduled struct argument must be REJECTED when the body \
-         carries no rejecting early return.",
-    );
-    assert!(
-        reason.contains("reap_x") && reason.contains("scheduler guard"),
-        "machinery: the violation must name the reducer and the missing guard. Got: \
-         {reason:?}"
-    );
-
-    let good = [table_attr, struct_decl, attr, sig, rejecting_guard, tail].concat();
-    if let Err(reason) = g2_client_identity_violation(&good) {
-        panic!(
-            "machinery: the legitimate scheduled reducer (same-file scheduled table, \
-             param type EQUAL to the scheduled struct, rejecting guard present) must \
-             PASS, got: {reason}"
-        );
-    }
-}
-
-/// Proves the enumerator PANICS instead of `continue`-ing when an attribute is
-/// not followed by any `fn` (ADR-0195 D7 fail-loud).
-///
-/// kills: a `continue` that silently drops an attribute the parser did not
-///        understand — an unparsed reducer is an UNGATED reducer, and the
-///        remaining clauses would report `clean` about a surface they never saw.
-#[test]
-#[should_panic(expected = "G2 PARSE FAIL")]
-fn machinery_g2_attribute_without_fn_panics() {
-    let orphan = [
-        fx_reducer_attr(),
-        concat!("pub", "structNotAFunction{puba:u8,}"),
-    ]
-    .concat();
-    let _ = parse_reducers(&orphan);
-}
-
-/// Proves an unbalanced parameter list PANICS rather than parsing as
-/// `no parameters` (which would be a silent pass for every clause).
-#[test]
-#[should_panic(expected = "UNBALANCED")]
-fn machinery_g2_unbalanced_param_list_panics() {
-    let truncated = [
-        fx_reducer_attr(),
-        concat!("pub", "fn", "half(ctx:&ReducerContext,code:String"),
-    ]
-    .concat();
-    let _ = parse_reducers(&truncated);
-}
-
-/// Proves the `]`/`(` attribute-disambiguation guard in `parse_reducers`
-/// discriminates: a longer identifier that merely STARTS with `reducer`
-/// (`spacetimedb::reducer_helper`) attached to a `pub fn` is NOT enumerated,
-/// while a real `spacetimedb::reducer` fn in the SAME fixture IS. The fixture
-/// carries both so it proves the guard discriminates, not that it drops
-/// everything.
-///
-/// kills: dropping the `after != Some(b']') && after != Some(b'(')` check, which
-///        would treat every `reducer`-prefixed attribute (a `reducer_helper`
-///        derive/macro, say) as a reducer — enumerating a fn that is NOT a
-///        client entry point, poisoning both the exact name-set pin and the
-///        wire-safe param scan with a phantom reducer.
-#[test]
-fn machinery_g2_attr_disambiguation_guard_teeth() {
-    let helper_attr = concat!("#[spacetimedb::", "reducer_helper]");
-    let helper_fn = concat!(
-        "pub",
-        "fn",
-        "not_a_reducer(ctx:&ReducerContext)->Result<(),String>{Ok(())}"
-    );
-    let real_attr = fx_reducer_attr();
-    let real_fn = concat!(
-        "pub",
-        "fn",
-        "real_one(ctx:&ReducerContext,code:String)->Result<(),String>{Ok(())}"
-    );
-
-    let fixture = [helper_attr, helper_fn, real_attr, real_fn].concat();
-    let names: Vec<String> = parse_reducers(&fixture)
-        .into_iter()
-        .map(|(n, _)| n)
-        .collect();
-    assert_eq!(
-        names,
-        vec!["real_one".to_string()],
-        "machinery: the `]`/`(` guard must enumerate ONLY the real \
-         `spacetimedb::reducer` fn. A longer identifier that merely starts with \
-         `reducer` (`spacetimedb::reducer_helper`) is NOT a client-callable \
-         reducer and must not be classified as one — otherwise a phantom fn \
-         poisons the name-set pin and the param scan. Enumerated: {names:?}"
-    );
-}
-
 // ===========================================================================
 // M22-S2 — DATA-LIFECYCLE MANIFEST / export_bundle SHAPE / TERMINAL COLUMN.
 //
@@ -3458,672 +760,6 @@ fn machinery_g2_attr_disambiguation_guard_teeth() {
 // ===========================================================================
 
 use crate::schema::{DataLifecycleEntry, DeletionPolicy, DATA_LIFECYCLE_MANIFEST};
-
-// --- Additional frozen sources under scan (crate root + every lib.rs `mod`) ---
-const M22_BATTLE_RS: &str = include_str!("battle.rs");
-const M22_CONTENT_RS: &str = include_str!("content.rs");
-const M22_CONTENT_CACHE_RS: &str = include_str!("content_cache.rs");
-const M22_ECONOMY_RS: &str = include_str!("economy.rs");
-const M22_EVOLUTION_RS: &str = include_str!("evolution.rs");
-const M22_GUARDS_RS: &str = include_str!("guards.rs");
-const M22_INVENTORY_RS: &str = include_str!("inventory.rs");
-const M22_MARSHAL_RS: &str = include_str!("marshal.rs");
-const M22_MOVEMENT_RS: &str = include_str!("movement.rs");
-const M22_NPC_RS: &str = include_str!("npc.rs");
-const M22_OBSERVABILITY_RS: &str = include_str!("observability.rs");
-const M22_PLAYTEST_RS: &str = include_str!("playtest.rs");
-const M22_PRIVACY_RS: &str = include_str!("privacy.rs");
-const M22_PVP_RS: &str = include_str!("pvp.rs");
-const M22_RAISING_RS: &str = include_str!("raising.rs");
-const M22_TAMING_RS: &str = include_str!("taming.rs");
-const M22_TRADING_RS: &str = include_str!("trading.rs");
-
-/// The JS re-key manifest, read as TEXT (never imported): T9 proves the two
-/// manifests cannot drift apart on a table rename or split.
-const M22_REKEY_EVAL_MJS: &str = include_str!("../../evals/guest-claim-integrity.eval.mjs");
-
-// ---------------------------------------------------------------------------
-// M22 scan machinery. Every helper is `m22_`-prefixed so it can never collide
-// with a same-named helper elsewhere in this 3000-line file.
-// ---------------------------------------------------------------------------
-
-/// The squashed table-attribute prefix, split so this file never carries the
-/// contiguous scanner needle (file header rule).
-fn m22_nd_table_attr() -> String {
-    concat!("#[spacetimedb::", "table", "(").to_string()
-}
-
-/// The squashed first attribute argument every live table declaration must
-/// carry (`parseTableSchemas` and `[G6/parse]` both require it FIRST).
-fn m22_nd_accessor() -> String {
-    concat!("access", "or=").to_string()
-}
-
-/// Non-overlapping occurrences of `needle` in `hay`.
-fn m22_count_occurrences(hay: &str, needle: &str) -> usize {
-    if needle.is_empty() {
-        return 0;
-    }
-    let mut n = 0usize;
-    let mut start = 0usize;
-    while let Some(rel) = hay[start..].find(needle) {
-        n += 1;
-        start += rel + needle.len();
-    }
-    n
-}
-
-/// Every non-test Rust source in the crate that CAN declare a table: the crate
-/// root plus each `mod` lib.rs declares. A table can only exist in a compiled
-/// module, and every compiled module is reachable from this list — which
-/// `data_lifecycle_manifest_totality_bidirectional` re-proves against the live
-/// `mod` declarations in both directions rather than asserting it in prose.
-fn m22_scanned_sources() -> Vec<(&'static str, &'static str)> {
-    vec![
-        ("lib.rs", LIB_RS),
-        ("accounts.rs", ACCOUNTS_RS),
-        ("battle.rs", M22_BATTLE_RS),
-        ("content.rs", M22_CONTENT_RS),
-        ("content_cache.rs", M22_CONTENT_CACHE_RS),
-        ("economy.rs", M22_ECONOMY_RS),
-        ("evolution.rs", M22_EVOLUTION_RS),
-        ("guards.rs", M22_GUARDS_RS),
-        ("inventory.rs", M22_INVENTORY_RS),
-        ("marshal.rs", M22_MARSHAL_RS),
-        ("monster_mgmt.rs", MONSTER_MGMT_RS),
-        ("movement.rs", M22_MOVEMENT_RS),
-        ("npc.rs", M22_NPC_RS),
-        ("observability.rs", M22_OBSERVABILITY_RS),
-        ("playtest.rs", M22_PLAYTEST_RS),
-        ("privacy.rs", M22_PRIVACY_RS),
-        ("pvp.rs", M22_PVP_RS),
-        ("raising.rs", M22_RAISING_RS),
-        ("ranking.rs", RANKING_RS),
-        ("schema.rs", SCHEMA_RS),
-        ("taming.rs", M22_TAMING_RS),
-        ("trading.rs", M22_TRADING_RS),
-    ]
-}
-
-/// Every table-attribute accessor name declared in one source, read from the
-/// string-blanked, comment-blanked, whitespace-squashed view (so a table name
-/// quoted inside a doc comment or a string literal can never inject a phantom
-/// entry into the census).
-///
-/// FAIL LOUD, never skip: an attribute whose FIRST argument is not `accessor =`
-/// is exactly the spelling `parseTableSchemas` cannot read, which hides that
-/// table from `[G6/parse]`, from the schema baseline AND from this census at
-/// once. Refusing to classify is the safe direction.
-fn m22_table_accessors(path: &str, src: &str) -> Vec<String> {
-    let squashed = stripped_for_scan(src);
-    let attr = m22_nd_table_attr();
-    let accessor = m22_nd_accessor();
-    let mut out: Vec<String> = Vec::new();
-    let mut start = 0usize;
-    while let Some(rel) = squashed[start..].find(attr.as_str()) {
-        let at = start + rel + attr.len();
-        let rest = &squashed[at..];
-        let tail = match rest.strip_prefix(accessor.as_str()) {
-            Some(tail) => tail,
-            None => {
-                let preview: String = rest.chars().take(60).collect();
-                panic!(
-                    "T1 fail-loud: a table attribute in {path} does not open with the \
-                     accessor argument. parseTableSchemas requires `accessor =` to be the \
-                     FIRST attribute argument; a declaration it cannot read hides that \
-                     table from the re-key manifest, from the schema baseline and from \
-                     this deletion-policy census simultaneously. Attribute text: {preview:?}"
-                )
-            }
-        };
-        let mut name = String::new();
-        for c in tail.chars() {
-            if !is_word_char(c) {
-                break;
-            }
-            name.push(c);
-        }
-        assert!(
-            !name.is_empty(),
-            "T1 fail-loud: a table attribute in {path} declares an EMPTY accessor name."
-        );
-        out.push(name);
-        start = at;
-    }
-    out
-}
-
-/// Every file-declaring `mod` item anywhere in the scanned sources, minus the
-/// declarations whose OWN contiguous attribute run carries exactly
-/// `#[cfg(test)]` (rb-85 residual R-rb-85-MODCENSUS, ADR-0266).
-///
-/// A name suffix is never evidence: a `tests`-named module with no cfg gate
-/// is production and stays in the census, while a `#[cfg(test)]`-gated helper
-/// with any name is dropped. Every OTHER cfg form (`cfg(any(test, ..))`,
-/// `cfg(all(test))`, `cfg_attr(test, ..)`, `cfg(not(test))`) counts as
-/// production — the census fails toward coverage. Line-oriented over
-/// `m22_blank_for_mod_scan`: a commented-out `mod` and a `mod` spelled inside
-/// a string literal are both invisible, `pub mod` / `pub(crate) mod` are both
-/// seen, and inline `mod x { .. }` blocks declare no FILE and are ignored (no
-/// trailing `;`).
-fn m22_declared_mod_names() -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for (_, src) in m22_scanned_sources() {
-        out.extend(m22_declared_mod_names_in(src));
-    }
-    out.sort();
-    out.dedup();
-    out
-}
-
-/// Blank every `//` line comment, `/* */` block comment (NESTING-aware), string
-/// literal (`"…"` with `\` escapes, `r"…"`, `r#"…"#` with ANY number of hashes) and char
-/// literal (`'x'`, `'\n'`, `'"'`) to spaces in ONE pass, keeping every `\n`
-/// byte exactly where it was — inside block comments and multi-line strings
-/// too. Lifetimes (`'a`) are left alone: a `'` opens a char literal only when
-/// the next byte is `\` or the byte two ahead is another `'`.
-///
-/// Invariant, by construction: `out` starts as a byte copy of `src` and the only
-/// mutation is `blank_span`, which writes a space over every byte in a span
-/// EXCEPT `\n`. So the output has the same byte length and the same newline
-/// positions as the input, and line `k` of the output is line `k` of the input
-/// with its comment / literal bytes spaced out. No comment or string can ever
-/// merge two lines and drag an attribute onto a `mod` it does not own — the
-/// strings-then-comments pipeline used by the other scans CAN (a stray `"` in a
-/// `//` comment opens a string that swallows the newlines up to the next `"`),
-/// which is why the mod census does not share it (rb-85 residual
-/// R-rb-85-MODCENSUS, ADR-0266).
-fn m22_blank_for_mod_scan(src: &str) -> String {
-    /// Space out `out[from..to]`, leaving every `\n` untouched.
-    fn blank_span(out: &mut [u8], from: usize, to: usize) {
-        for slot in &mut out[from..to] {
-            if *slot != b'\n' {
-                *slot = b' ';
-            }
-        }
-    }
-    /// If a raw string opens at byte `i` (`r"` or `r#"` with ANY number of hashes
-    /// — Rust allows up to 255), the number of hashes it carries.
-    fn raw_string_hashes(bytes: &[u8], i: usize) -> Option<usize> {
-        if bytes[i] != b'r' {
-            return None;
-        }
-        let mut hashes: usize = 0;
-        let mut k = i + 1;
-        while k < bytes.len() && bytes[k] == b'#' {
-            hashes += 1;
-            k += 1;
-        }
-        (k < bytes.len() && bytes[k] == b'"').then_some(hashes)
-    }
-    let bytes = src.as_bytes();
-    let len = bytes.len();
-    let mut out = bytes.to_vec();
-    let mut i = 0;
-    while i < len {
-        let b = bytes[i];
-        let next = if i + 1 < len { bytes[i + 1] } else { 0 };
-        if b == b'/' && next == b'/' {
-            // Line comment: up to but not including the newline.
-            let mut j = i;
-            while j < len && bytes[j] != b'\n' {
-                j += 1;
-            }
-            blank_span(&mut out, i, j);
-            i = j;
-        } else if b == b'/' && next == b'*' {
-            // Block comment with nesting: `/*` inside it increments the depth.
-            let mut depth: usize = 0;
-            let mut j = i;
-            while j < len {
-                if j + 1 < len && bytes[j] == b'/' && bytes[j + 1] == b'*' {
-                    depth += 1;
-                    j += 2;
-                } else if j + 1 < len && bytes[j] == b'*' && bytes[j + 1] == b'/' {
-                    depth -= 1;
-                    j += 2;
-                    if depth == 0 {
-                        break;
-                    }
-                } else {
-                    j += 1;
-                }
-            }
-            blank_span(&mut out, i, j);
-            i = j;
-        } else if let Some(hashes) = raw_string_hashes(bytes, i) {
-            // Raw string `r"…"` / `r#"…"#` (any hash count): the closing `"` must
-            // be followed by exactly as many `#` as the opener carried.
-            let mut j = i + 1 + hashes + 1; // past `r`, the hashes, and `"`
-            while j < len {
-                if bytes[j] == b'"' {
-                    let mut k = j + 1;
-                    let mut closing: usize = 0;
-                    while k < len && bytes[k] == b'#' && closing < hashes {
-                        closing += 1;
-                        k += 1;
-                    }
-                    if closing == hashes {
-                        j = k;
-                        break;
-                    }
-                }
-                j += 1;
-            }
-            let j = j.min(len);
-            blank_span(&mut out, i, j);
-            i = j;
-        } else if b == b'"' {
-            // Plain string: `\` escapes the next byte; newlines inside are kept.
-            let mut j = i + 1;
-            while j < len {
-                if bytes[j] == b'\\' {
-                    j += 2;
-                } else if bytes[j] == b'"' {
-                    j += 1;
-                    break;
-                } else {
-                    j += 1;
-                }
-            }
-            let j = j.min(len);
-            blank_span(&mut out, i, j);
-            i = j;
-        } else if b == b'\'' && next == b'\\' {
-            // Escaped char literal (`'\n'`, `'\''`, `'\u{..}'`): blank through
-            // the closing `'`.
-            let mut j = i + 3;
-            while j < len && bytes[j] != b'\'' {
-                j += 1;
-            }
-            let j = (j + 1).min(len);
-            blank_span(&mut out, i, j);
-            i = j;
-        } else if b == b'\'' && i + 2 < len && bytes[i + 2] == b'\'' {
-            // One-byte char literal such as `'x'` or `'"'`.
-            blank_span(&mut out, i, i + 3);
-            i += 3;
-        } else {
-            // Ordinary source byte (including a lifetime's `'`): kept as is.
-            i += 1;
-        }
-    }
-    String::from_utf8(out).expect("mod-scan-blanked source must be valid UTF-8")
-}
-
-/// The per-source half of `m22_declared_mod_names`: every file-declaring `mod`
-/// item in ONE source, in declaration order (no sort / dedup here), minus the
-/// ones exempted by their own attribute run. Pure over its input so the rule
-/// can be pinned against a synthetic source.
-///
-/// Exemption rule: walk upward from the `mod` line, skipping blank lines and
-/// collecting whitespace-squashed `#[..]` lines, and STOP at the first line
-/// that is neither (so an attribute above a `use` or `fn` belongs to that item,
-/// not to the mod). Exempt iff one collected attribute is exactly
-/// `#[cfg(test)]`; a name suffix is never evidence and every other cfg form
-/// counts as production (fail toward coverage). A raw-identifier module
-/// (`r#name`) is reported by its BARE name, which is also its file stem. A
-/// same-line attribute run (`#[cfg(test)] mod x;`, or several attributes on
-/// one line) and a genuinely multi-line `#[cfg(` / `test` / `)]` are
-/// rustfmt-impossible in this crate and count as production; two `mod` items
-/// on one physical line are not parsed at all, and `cargo fmt --check` (a
-/// `just lint` gate) keeps that layout from shipping. Runs over
-/// `m22_blank_for_mod_scan`, which keeps every newline, so no comment or string
-/// literal can merge lines and glue an attribute onto a later mod (rb-85
-/// residual R-rb-85-MODCENSUS, ADR-0266).
-fn m22_declared_mod_names_in(src: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let clean = m22_blank_for_mod_scan(src);
-    let lines: Vec<&str> = clean.lines().collect();
-    for (i, line) in lines.iter().enumerate() {
-        let mut text = line.trim();
-        if let Some(rest) = text.strip_prefix("pub(crate)") {
-            text = rest.trim_start();
-        } else if let Some(rest) = text.strip_prefix("pub ") {
-            text = rest.trim_start();
-        }
-        let rest = match text.strip_prefix("mod ") {
-            Some(rest) => rest.trim(),
-            None => continue,
-        };
-        let name = match rest.strip_suffix(';') {
-            Some(name) => name.trim(),
-            None => continue,
-        };
-        let name = name.strip_prefix("r#").unwrap_or(name);
-        if name.is_empty() || !name.chars().all(is_word_char) {
-            continue;
-        }
-        let mut attrs: Vec<String> = Vec::new();
-        let mut j = i;
-        while j > 0 {
-            j -= 1;
-            let above = lines[j];
-            if above.trim().is_empty() {
-                continue;
-            }
-            if above.trim_start().starts_with("#[") {
-                attrs.push(squash_ws(above));
-                continue;
-            }
-            break;
-        }
-        let exempt = attrs.iter().any(|a| a == "#[cfg(test)]");
-        if exempt {
-            continue;
-        }
-        out.push(name.to_string());
-    }
-    out
-}
-
-/// Delete every `/` and every whitespace character from RAW source. This is the
-/// only view in which a doc phrase that rustfmt wrapped across two `///` lines
-/// reads as ONE token, which is what makes a stale-comment ban unfoolable by a
-/// re-wrap.
-fn m22_squashed_no_slashes(src: &str) -> String {
-    let mut out = String::with_capacity(src.len());
-    for c in src.chars() {
-        if c.is_whitespace() || c == '/' {
-            continue;
-        }
-        out.push(c);
-    }
-    out
-}
-
-/// The contiguous run of `///` doc lines immediately preceding the line that
-/// declares `field_decl`, joined with single spaces.
-///
-/// LOCALIZED ON PURPOSE (red-team finding): a whole-file `contains` check for
-/// the tombstone sentinel is satisfied by that sentinel appearing ANYWHERE in
-/// schema.rs — in the new manifest's `basis` prose, say — while the field's own
-/// comment stays stale-but-reworded. The caller separately proves `field_decl`
-/// occurs exactly once, so "the block before it" is unambiguous.
-fn m22_doc_block_before(src: &str, field_decl: &str) -> String {
-    let at = src.find(field_decl).unwrap_or_else(|| {
-        panic!(
-            "T6 fail-loud: the declaration {field_decl:?} was not found in schema.rs, so \
-             the localized doc-comment scan has no scope and would pass vacuously."
-        )
-    });
-    let line_start = match src[..at].rfind('\n') {
-        Some(i) => i + 1,
-        None => 0,
-    };
-    let mut block: Vec<&str> = Vec::new();
-    for line in src[..line_start].lines().rev() {
-        let text = line.trim();
-        if !text.starts_with("///") {
-            break;
-        }
-        block.push(text);
-    }
-    block.reverse();
-    block.join(" ")
-}
-
-/// Blank every `//`-to-end-of-line comment in a JS source.
-///
-/// Deliberately naive about strings: it is applied ONLY so the brace walk and
-/// the key scan below cannot be derailed by comment prose. Verified against the
-/// live manifest block, whose value strings contain no line-comment delimiter —
-/// but whose COMMENT prose does contain apostrophes, and one apostrophe inside a
-/// comment silently swallowed the `battle_challenge.target` key when this scan
-/// was first drafted without the strip.
-fn m22_strip_js_line_comments(src: &str) -> String {
-    let bytes = src.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
-    let mut in_comment = false;
-    let mut i = 0usize;
-    while i < bytes.len() {
-        if bytes[i] == b'\n' {
-            in_comment = false;
-            out.push(b'\n');
-            i += 1;
-            continue;
-        }
-        if !in_comment && bytes[i] == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
-            in_comment = true;
-            i += 2;
-            continue;
-        }
-        if !in_comment {
-            out.push(bytes[i]);
-        }
-        i += 1;
-    }
-    String::from_utf8(out).expect("comment-stripped JS source must be valid UTF-8")
-}
-
-/// Is `s` shaped like a `table.column` manifest key?
-fn m22_is_table_column_key(s: &str) -> bool {
-    let mut dots = 0usize;
-    for c in s.chars() {
-        if c == '.' {
-            dots += 1;
-            continue;
-        }
-        if !is_word_char(c) {
-            return false;
-        }
-    }
-    if dots != 1 {
-        return false;
-    }
-    match s.split_once('.') {
-        Some((table, column)) => !table.is_empty() && !column.is_empty(),
-        None => false,
-    }
-}
-
-/// Every `'table.column':` key inside the JS `REKEY_MANIFEST` object literal.
-///
-/// The block is delimited by a brace walk from the sole
-/// `REKEY_MANIFEST = freezeManifest({` anchor; a key is a single-quoted span
-/// immediately followed by `:` that is shaped like a column key, so the object
-/// VALUES — which are also single-quoted, and one of which is double-quoted and
-/// contains two apostrophes — cannot be mistaken for keys.
-fn m22_rekey_manifest_keys() -> Vec<String> {
-    let src = m22_strip_js_line_comments(M22_REKEY_EVAL_MJS);
-    let anchor = concat!("REKEY_MAN", "IFEST = freezeManifest({");
-    let at = src.find(anchor).unwrap_or_else(|| {
-        panic!(
-            "T9 fail-loud: the anchor {anchor:?} was not found in \
-             evals/guest-claim-integrity.eval.mjs. The JS manifest moved or was renamed; \
-             the cross-manifest consistency proof has no input and must NOT pass vacuously."
-        )
-    });
-    let open = at + anchor.len() - 1;
-    let bytes = src.as_bytes();
-    assert_eq!(
-        bytes[open], b'{',
-        "T9 fail-loud: the anchor did not land on the object literal's opening brace."
-    );
-    let mut depth = 0usize;
-    let mut end = open;
-    let mut i = open;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    end = i;
-                    break;
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    assert!(
-        end > open,
-        "T9 fail-loud: the REKEY_MANIFEST object literal is not brace-balanced from its \
-         anchor, so the key scan would read an arbitrary suffix of the file."
-    );
-
-    let block = &src[open..end];
-    let block_bytes = block.as_bytes();
-    let mut keys: Vec<String> = Vec::new();
-    let mut k = 0usize;
-    while k < block_bytes.len() {
-        if block_bytes[k] != b'\'' {
-            k += 1;
-            continue;
-        }
-        let mut j = k + 1;
-        while j < block_bytes.len() && block_bytes[j] != b'\'' {
-            j += 1;
-        }
-        if j >= block_bytes.len() {
-            break;
-        }
-        let span = &block[k + 1..j];
-        let after = if j + 1 < block_bytes.len() {
-            block_bytes[j + 1]
-        } else {
-            b' '
-        };
-        if after == b':' && m22_is_table_column_key(span) {
-            keys.push(span.to_string());
-        }
-        k = j + 1;
-    }
-    keys
-}
-
-// ---------------------------------------------------------------------------
-// T1 / X3 — MANIFEST TOTALITY, BIDIRECTIONAL.
-// ---------------------------------------------------------------------------
-
-/// T1 / X3: the set of live table-attribute accessor names across EVERY
-/// non-test module of the crate equals the set of
-/// `DATA_LIFECYCLE_MANIFEST` table keys, each exactly once on BOTH sides — and
-/// the scanned file list is itself pinned to the crate's live `mod`
-/// declarations in both directions, so the new-file blind spot is closed rather
-/// than merely documented.
-///
-/// Spec §3 calls the classification an "exhaustive partition over all 38
-/// tables". Exhaustive is a set-equality claim, and a set-equality claim needs
-/// both directions: a forward-only check (every manifest key is a live table) is
-/// green on a manifest that classifies three tables, and a reverse-only check
-/// (every live table has an entry) is green on a manifest full of phantom rows
-/// for tables that no longer exist.
-///
-/// Kills: dropping one entry (a live table with no policy — spec §4.4 walks the
-///        manifest, not the schema, so an unlisted table is simply never
-///        cascaded);
-///        a phantom entry for a table that does not exist;
-///        the SAME table listed twice on either side (a second entry with a
-///        different policy is how a re-classification hides — the dup walk over
-///        both sorted lists runs BEFORE the set compare so it cannot be
-///        satisfied by coincidence);
-///        deleting a table AND its entry in one diff to dodge classification
-///        (the >= 41 census floor and the >= 41 manifest floor);
-///        adding a `mod` to the crate and leaving it out of this scan;
-///        the pre-existing five-file `include_str!` set, which sees 31 of 38.
-#[test]
-fn data_lifecycle_manifest_totality_bidirectional() {
-    let manifest: &[DataLifecycleEntry] = DATA_LIFECYCLE_MANIFEST;
-    let sources = m22_scanned_sources();
-
-    let mut census: Vec<String> = Vec::new();
-    for (path, src) in &sources {
-        for name in m22_table_accessors(path, src) {
-            census.push(name);
-        }
-    }
-    assert!(
-        census.len() >= 41,
-        "T1 non-vacuity: only {} table declarations were found across the {} scanned \
-         modules; the live tree carries 41 — the 40 that rb-24's \
-         account_deletion_reaper_schedule completed, plus rb-48's \
-         export_bundle_reaper_schedule in privacy.rs (ADR-0238). A census that shrank \
-         is a census that stopped looking, and every set comparison below would then be \
-         comparing two small sets. RATCHETED with the tree per the ADR-0006 additive \
-         rule: a floor left behind while the schema grows loosens by standing still.",
-        census.len(),
-        sources.len()
-    );
-    census.sort();
-
-    let mut declared: Vec<String> = Vec::new();
-    for entry in manifest {
-        declared.push(entry.table.to_string());
-    }
-    assert!(
-        declared.len() >= 41,
-        "T1 ratchet: DATA_LIFECYCLE_MANIFEST has {} entries; the tree's 40 live tables \
-         plus rb-48's `export_bundle_reaper_schedule` (ADR-0238) is 41. Set equality \
-         alone is satisfied by deleting a table AND its entry in one diff, which is \
-         exactly how a table dodges classification; this floor is the ADR-0006 additive \
-         ratchet against that.",
-        declared.len()
-    );
-    declared.sort();
-
-    for pair in census.windows(2) {
-        assert_ne!(
-            pair[0], pair[1],
-            "T1: the accessor `{}` is DECLARED by two live table attributes. The census \
-             cannot be compared as a SET until the declarations are unique.",
-            pair[0]
-        );
-    }
-    for pair in declared.windows(2) {
-        assert_ne!(
-            pair[0], pair[1],
-            "T1: the table `{}` has TWO DATA_LIFECYCLE_MANIFEST entries. A duplicate entry \
-             is how a quiet re-classification hides: the stale row keeps every set-equality \
-             check green while the cascade reads whichever row it finds first.",
-            pair[0]
-        );
-    }
-
-    assert_eq!(
-        census, declared,
-        "T1 / spec §3: the live table census and DATA_LIFECYCLE_MANIFEST's table keys are \
-         not the same set. Every live table needs an explicit deletion policy (spec §3 is \
-         an EXHAUSTIVE partition, and §4.4's cascade walks the manifest rather than the \
-         schema), and every manifest entry must name a table that still exists. Add the \
-         missing entry — or delete the stale one — in the SAME commit as the schema change."
-    );
-
-    // --- mod census: the scanned list IS the crate's module list ------------
-    let mods = m22_declared_mod_names();
-    assert!(
-        mods.len() >= 20,
-        "T1 extraction rot: only {} `mod` declarations were parsed out of the crate; lib.rs \
-         alone declares 20. A mod census that cannot read the module list cannot close the \
-         new-file blind spot it exists to close.",
-        mods.len()
-    );
-    for name in &mods {
-        let file = format!("{name}.rs");
-        let scanned = sources.iter().any(|(path, _)| *path == file);
-        assert!(
-            scanned,
-            "T1 (mod census): the crate declares `mod {name};` but `{file}` is NOT scanned \
-             by `m22_scanned_sources`, so every table it declares is invisible to this \
-             totality proof and would carry no deletion policy. Add the module to the scan \
-             list AND give each of its tables a DATA_LIFECYCLE_MANIFEST entry."
-        );
-    }
-    for (path, _) in &sources {
-        if *path == "lib.rs" {
-            continue;
-        }
-        let stem = path.trim_end_matches(".rs");
-        let is_live_mod = mods.iter().any(|name| name == stem);
-        assert!(
-            is_live_mod,
-            "T1 (mod census, reverse): `{path}` is scanned but no `mod {stem};` declares it \
-             anywhere in the crate. Either the module was removed (drop it from the scan \
-             list) or the scan list has drifted away from the crate it claims to cover."
-        );
-    }
-}
 
 // ---------------------------------------------------------------------------
 // T2 / X4 — THE SPEC §3 PARTITION, PINNED BY VALUE.
@@ -4305,92 +941,6 @@ fn data_lifecycle_partition_matches_spec_section3() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// T3 / X5 — BASIS PROSE, THE `config` SINGLETON PIN, AND SLASH HYGIENE.
-// ---------------------------------------------------------------------------
-
-/// T3 / X5: every `basis` is real prose (floor length), `config`'s basis
-/// contains the word `singleton`, and NO manifest string literal contains a `/`.
-///
-/// THE SLASH BAN IS NOT COSMETIC — IT IS MEASURED. `battle-schema-snapshot`
-/// parses RAW Rust with a string-UNAWARE comment stripper, in both its live
-/// drift check AND its `--write` regenerator. One block-comment opener inside
-/// one `basis` string literal therefore deletes every subsequent table from the
-/// committed baseline, self-consistently: the regenerated baseline and the live
-/// parse agree, both are missing the tail of the schema, and the drift gate
-/// reports PASS over a truncated world. Banning `/` outright in manifest strings
-/// is exact (no legal basis prose needs one) and closes the whole family —
-/// opener, closer and the line-comment form — in one clause.
-///
-/// The floor length is the anti-placeholder clause: spec §3 makes the reason
-/// MANDATORY, and a basis of `""` (or `"n a"`) turns the registry back into the
-/// silent omission it exists to abolish.
-///
-/// Kills: blanking one basis to the empty string, or to a two-word placeholder;
-///        rewording `config`'s basis so it no longer says `singleton` (spec §3
-///        requires that word to stay grep-checkable, so a future promotion of
-///        `config.owner_identity` to an indexed column re-triggers a human
-///        decision instead of silently passing);
-///        putting a comment delimiter in any manifest string (the measured
-///        baseline-blinding above).
-#[test]
-fn data_lifecycle_basis_nonempty_config_singleton() {
-    let manifest: &[DataLifecycleEntry] = DATA_LIFECYCLE_MANIFEST;
-    let mut config_seen = false;
-
-    for entry in manifest {
-        let table = entry.table;
-        let basis = entry.basis;
-        assert!(
-            basis.len() >= 20,
-            "T3: the `{table}` entry's basis is {} byte(s) long; at least 20 is required. \
-             Spec §3 makes the reason MANDATORY — an empty or placeholder basis is the \
-             silent omission the explicit registry exists to abolish, and it is what the \
-             next reader consults before deciding whether a cascade may touch the table.",
-            basis.len()
-        );
-        assert!(
-            !basis.contains('/'),
-            "T3: the `{table}` entry's basis contains a slash. NO manifest string may. \
-             battle-schema-snapshot parses RAW source with a string-UNAWARE comment \
-             stripper in BOTH its drift check and its regenerator, so a comment delimiter \
-             inside one basis literal silently deletes every LATER table from the committed \
-             baseline — self-consistently, so the drift gate stays green over a truncated \
-             schema. Reword without the slash."
-        );
-        assert!(
-            !table.contains('/'),
-            "T3: the table key `{table}` contains a slash — see the basis clause above; the \
-             same baseline-blinding applies to every string literal in this manifest."
-        );
-        if let DeletionPolicy::ViaJoin(parent) = entry.policy {
-            assert!(
-                !parent.contains('/'),
-                "T3: the `{table}` entry's ViaJoin parent `{parent}` contains a slash — see \
-                 the basis clause above."
-            );
-        }
-        if table == "config" {
-            config_seen = true;
-            assert!(
-                basis.contains("singleton"),
-                "T3 / spec §3: `config`'s basis must contain the word `singleton`. Its \
-                 owner_identity is a zeroed singleton DEFAULT, not a per-row key, so the \
-                 naive `has an Identity column implies per-player` heuristic wrongly \
-                 nominates it and a cascade that acts on it deletes global game config. \
-                 Spec §3 requires the word to stay grep-checkable so a future promotion of \
-                 that column to an indexed role re-triggers a human decision. Got: {basis:?}"
-            );
-        }
-    }
-
-    assert!(
-        config_seen,
-        "T3 non-vacuity: DATA_LIFECYCLE_MANIFEST has no `config` entry at all, so the \
-         singleton clause above never ran. Fail loud rather than pass on an absent row."
-    );
-}
-
 /// T3 / X5 (second half): every `ViaJoin` parent is a table the manifest itself
 /// classifies, and that parent's own policy is NOT `ViaJoin`.
 ///
@@ -4523,259 +1073,6 @@ fn data_lifecycle_export_scope_structurally_narrower() {
              secret, and export_bundle is the export's own output."
         );
     }
-}
-
-// ---------------------------------------------------------------------------
-// T9 / X3 — CROSS-MANIFEST CONSISTENCY.
-// ---------------------------------------------------------------------------
-
-/// T9 / X3: every key of the JS `REKEY_MANIFEST` names a table that
-/// `DATA_LIFECYCLE_MANIFEST` also classifies.
-///
-/// The slice deliberately shipped TWO manifests (the Rust deletion/export
-/// classification in schema.rs, the JS re-key policy in the eval) because, at
-/// the time, object-valued JS entries were measured red-on-arrival against
-/// `[G6/consumed]`, which inferred REKEY from `typeof policy === 'string'`.
-/// rb-2 replaced that inference with an explicit `policy` discriminator
-/// (ADR-0208 D1); the split survives because the two classify different things
-/// in different languages, and that deviation is only safe if the two cannot
-/// drift apart. This is the clause that makes it so: both are independently
-/// tied to the same live Rust sources, and a table renamed or split on one side
-/// must surface on the other.
-///
-/// The extraction FAILS LOUD below twenty keys. A scan that silently returns
-/// nothing is indistinguishable from a scan that found no violation, and this
-/// one reads a foreign-language file whose formatting nothing in the Rust
-/// toolchain gates.
-///
-/// Kills: renaming a table in schema.rs and leaving the JS key behind (or vice
-///        versa); splitting a table and updating only one manifest; an
-///        extraction that quietly degrades to zero keys and reports success.
-#[test]
-fn data_lifecycle_cross_manifest_consistency() {
-    let manifest: &[DataLifecycleEntry] = DATA_LIFECYCLE_MANIFEST;
-    let keys = m22_rekey_manifest_keys();
-
-    assert!(
-        keys.len() >= 20,
-        "T9 extraction rot: only {} `table.column` key(s) were read out of the JS \
-         REKEY_MANIFEST; the live tree carries 24 and rb-24 adds \
-         account_deletion_reaper_schedule.account_identity for 25 (a new Identity COLUMN \
-         mechanically forces a manifest entry — [G6/declared] re-derives the column set \
-         from live source every run). An extractor that quietly stopped finding keys \
-         reports `consistent` about a manifest it never read. Keys seen: {keys:?}",
-        keys.len()
-    );
-    assert!(
-        keys.iter().any(|key| key == "account.identity"),
-        "T9 extraction anchor: the stable key `account.identity` is not among the extracted \
-         keys, so the scan is reading something other than the manifest."
-    );
-
-    for key in &keys {
-        let table = match key.split_once('.') {
-            Some((table, _)) => table,
-            None => panic!("T9: extracted key {key:?} is not `table.column` shaped."),
-        };
-        let classified = manifest.iter().any(|entry| entry.table == table);
-        assert!(
-            classified,
-            "T9: the JS REKEY_MANIFEST policies `{key}`, but DATA_LIFECYCLE_MANIFEST has no \
-             entry for the table `{table}`. The two manifests have drifted: the M22 cascade \
-             reads the Rust one and would skip this table entirely, while the claim re-key \
-             path still believes it exists. Update BOTH in the same commit."
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
-// T7 / X2 — THE `export_bundle` TABLE: SHAPE AND PRIVACY.
-// ---------------------------------------------------------------------------
-
-/// T7 / X2: `export_bundle` is declared PRIVATE with exactly the eight columns
-/// of the S2/S4/S8 chunk contract, in order, with the exact types.
-///
-/// Pinned by EXACT EQUALITY over the comment-stripped, string-preserving,
-/// whitespace-squashed declaration — the same mechanics as
-/// `schema_account_struct_shape_tripwire`, for the same reason: BSATN layout is
-/// order-sensitive, and a containment check is green on an appended field, a
-/// reordered pair and a widened type alike.
-///
-/// The privacy half is pinned three ways, because `public` on a VIEW attribute
-/// is inert while `public` on a TABLE is the entire security boundary: the table
-/// attribute's ONLY argument must be `accessor = export_bundle`, that attribute
-/// must occur exactly once, and no `accessor = export_bundle,` spelling — which
-/// is what ANY additional attribute argument would produce — may appear anywhere
-/// in schema.rs.
-///
-/// The derive-before-attribute order is pinned too, and is not style:
-/// `parseTableSchemas` matches the table attribute immediately followed by
-/// `pub struct`, so a derive placed AFTER that attribute makes the whole
-/// declaration unreadable to `[G6/parse]`, to the schema baseline and to T1's
-/// census.
-///
-/// Kills: adding `public` to the attribute (the bundle is one player's entire
-///        personal-data dump — a public table hands it to every client);
-///        renaming or reordering any column (S4's TTL reaper and S8's client
-///        assembler both consume these names in this order);
-///        widening `chunk_index`/`total_chunks`, or dropping the `#[auto_inc]`
-///        on the synthetic primary key;
-///        dropping the btree index on `owner_identity` (the owner-scoped view
-///        and the cascade both filter on it);
-///        dropping the btree index on `created_at_ms` (rb-85: the reaper's bounded range read);
-///        declaring the derive after the table attribute;
-///        declaring a second `export_bundle` table.
-#[test]
-fn export_bundle_struct_shape_and_privacy() {
-    let schema = stripped_keep_strings(SCHEMA_RS);
-
-    let expected_head = concat!(
-        "#[derive(Clone)]",
-        "#[spacetimedb::",
-        "table",
-        "(",
-        "access",
-        "or=export_bundle)]",
-        "pub",
-        "structExportBundle{",
-    );
-    assert_eq!(
-        m22_count_occurrences(&schema, expected_head),
-        1,
-        "T7 / X2: schema.rs must declare `export_bundle` exactly once, as `#[derive(Clone)]` \
-         followed by a table attribute whose ONLY argument is `accessor = export_bundle`, \
-         followed by `pub struct ExportBundle`. Anything else is one of: a `public` table \
-         (the bundle is one player's whole personal-data dump), an attribute-argument order \
-         parseTableSchemas cannot read, a derive placed after the attribute (same effect), \
-         or a second declaration."
-    );
-
-    let attr_prefix = concat!(
-        "#[spacetimedb::",
-        "table",
-        "(",
-        "access",
-        "or=export_bundle"
-    );
-    assert_eq!(
-        m22_count_occurrences(&schema, attr_prefix),
-        1,
-        "T7 / X2: exactly one table attribute in schema.rs may name the `export_bundle` \
-         accessor."
-    );
-    assert_eq!(
-        m22_count_occurrences(&schema, concat!("access", "or=export_bundle,")),
-        0,
-        "T7 / X2: the `export_bundle` table attribute carries an EXTRA argument. `public` is \
-         the dangerous one — unlike the `public` on a view attribute (inert, ADR-0194/0198), \
-         `public` on a TABLE is the whole security boundary. Spec §5's sanctioned idiom is \
-         the private table plus an owner-scoped view BODY."
-    );
-
-    let marker = concat!("struct", "ExportBundle{");
-    let fields = extract_squashed_fn_body(&schema, marker).unwrap_or_else(|| {
-        panic!(
-            "T7 / X2: the ExportBundle struct declaration was not found in schema.rs (marker \
-             {marker:?} over the comment-stripped, whitespace-squashed source). The shape \
-             pin cannot check a declaration it cannot read — hard failure, never a skip."
-        )
-    });
-    let expected_fields = concat!(
-        "#[primary",
-        "_key]",
-        "#[auto",
-        "_inc]",
-        "pubchunk_id:u64,",
-        "#[index(btree)]",
-        "pubowner_identity:Identity,",
-        "pubrequest_id:u64,",
-        "pubtable_name:String,",
-        "pubchunk_index:u32,",
-        "pubtotal_chunks:u32,",
-        "pubpayload_json:String,",
-        "#[index(btree)]",
-        "pubcreated_at_ms:i64,",
-    );
-    assert_eq!(
-        fields, expected_fields,
-        "T7 / X2 / spec §5: `export_bundle`'s column list is not the S2/S4/S8 chunk \
-         contract. It must be exactly, in order: chunk_id (u64, primary key, auto_inc — \
-         views strip primary keys, and a primary-key column may carry no default), \
-         owner_identity (Identity, btree), request_id (u64), table_name (String), \
-         chunk_index (u32), total_chunks (u32), payload_json (String), created_at_ms (i64 — \
-         server-stamped at insert; the S4 TTL reaper re-derives staleness from it, so no \
-         caller can supply it). S4's reaper and S8's client assembler both read these names \
-         in this order; a rename or a reorder breaks them silently, and a reorder also \
-         changes the BSATN layout of a live table."
-    );
-}
-
-// ---------------------------------------------------------------------------
-// T6 / X7 — THE `auth_issuer` DOC COMMENT.
-// ---------------------------------------------------------------------------
-
-/// T6 / X7: `Account.auth_issuer` no longer claims it is never updated, and its
-/// OWN doc-comment block names the one sanctioned exception.
-///
-/// Spec §3 is explicit: the M22 cascade overwrites `auth_issuer` with the
-/// `TOMBSTONE_AUTH_ISSUER` sentinel (a String, not null — widening the column to
-/// `Option<String>` would be exactly the non-additive, semantics-changing edit
-/// §4.1 declines to make), and "S2 must update that comment, because leaving it
-/// stale would make the next reader believe the field is immutable".
-///
-/// TWO CLAUSES, AND THE SECOND IS LOCALIZED. The whole-file clause bans the
-/// stale phrase in a slash-free, whitespace-free view, so it cannot be dodged by
-/// a rustfmt re-wrap that moves the line break. The second clause reads ONLY the
-/// contiguous `///` block immediately above `pub auth_issuer: String,` — a
-/// wide-window `contains` is satisfied by the sentinel appearing anywhere else
-/// in schema.rs (the manifest's own `basis` prose will mention it) while the
-/// field's comment stays stale-but-reworded, which is a red-team finding, not a
-/// hypothetical.
-///
-/// Kills: leaving the comment untouched; rewording it without naming the
-///        exception; naming `TOMBSTONE_AUTH_ISSUER` somewhere else in the file
-///        and calling it done.
-#[test]
-fn auth_issuer_doc_comment_states_deletion_exception() {
-    let flat = m22_squashed_no_slashes(SCHEMA_RS);
-    let stale = concat!("Neverupdated", "afterinsert");
-    assert!(
-        !flat.contains(stale),
-        "T6 / X7 / spec §3: schema.rs still claims `auth_issuer` is never updated after \
-         insert. M22 makes the deletion cascade the ONE sanctioned exception — it writes \
-         game_core::TOMBSTONE_AUTH_ISSUER over that column — so the comment is now false. \
-         The needle is matched with all whitespace AND all slashes removed, so re-wrapping \
-         the doc comment across different lines does not dodge it."
-    );
-
-    let decl = "pub auth_issuer: String,";
-    assert_eq!(
-        m22_count_occurrences(SCHEMA_RS, decl),
-        1,
-        "T6 fail-loud: {decl:?} must occur exactly once in schema.rs for `the doc block \
-         immediately above it` to be an unambiguous localization."
-    );
-
-    let block = m22_doc_block_before(SCHEMA_RS, decl);
-    assert!(
-        !block.is_empty(),
-        "T6 fail-loud: `{decl}` carries NO doc-comment block at all. A field whose \
-         mutability rule just changed and whose comment was deleted is worse than a stale \
-         comment, not better."
-    );
-    assert!(
-        block.contains("TOMBSTONE_AUTH_ISSUER"),
-        "T6 / X7: the doc-comment block on `auth_issuer` does not name \
-         `TOMBSTONE_AUTH_ISSUER`. This clause is LOCALIZED to the field's own block on \
-         purpose: a whole-file check is satisfied by the sentinel appearing in the \
-         manifest's basis prose while this comment stays stale. Block read: {block:?}"
-    );
-    assert!(
-        block.to_lowercase().contains("deletion"),
-        "T6 / X7: the doc-comment block on `auth_issuer` names the sentinel but never says \
-         WHEN it is written. State the exception: the M22 account-deletion cascade is the \
-         only writer. Block read: {block:?}"
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -4971,646 +1268,6 @@ fn rb22_dq() -> char {
     char::from(34u8)
 }
 
-/// The squashed call needle for the delegated purge, split mid-token so this
-/// file never carries the contiguous call site a future call-site census would
-/// count.
-fn rb22_nd_purge_call() -> String {
-    concat!("crate::privacy::", "purge_export", "_bundles(").to_string()
-}
-
-/// The squashed `fn` needle for the helper itself.
-fn rb22_nd_purge_fn() -> String {
-    concat!("fnpurge_export", "_bundles(").to_string()
-}
-
-/// THE FROZEN BODY PIN (red-team counter-tooth: the exact-equality backstop).
-///
-/// WIDENED BY rb-40 (ADR-0235): the sanctioned body now binds
-/// `let purged = ids.len();` before the move-loop and yields `purged` as its
-/// tail expression, because the claim-time observation publishes that count.
-///
-/// Derived by running the real three-stage pipeline over the sanctioned source
-/// by hand: `strip_rust_strings` (no strings here) -> `strip_rust_comments` ->
-/// `squash_ws`, which removes ALL whitespace including newlines. `privacy_tests`
-/// carries a POSITIVE CONTROL that re-derives this exact string from source text
-/// through the live pipeline, so this literal can never become unsatisfiable.
-///
-/// Containment pins alone were MEASURED insufficient (red-team `/tmp/rb22-attack`):
-/// `if false ...` around a correct body, a shadowed `let ids = Vec::new();`, a
-/// shadowed in-loop `let id: u64 = 0;` and an appended aliased foreign write all
-/// satisfy every needle-based clause and are clippy-clean. Equality kills the
-/// whole family in one assertion.
-fn rb22_frozen_purge_body() -> String {
-    [
-        "letids:Vec<u64>=",
-        concat!("ctx", ".db."),
-        concat!("export", "_bundle()"),
-        ".owner_identity().filter(owner).map(|c|c.chunk_id).collect();",
-        "letpurged=ids.len();",
-        "foridinids{",
-        concat!("ctx", ".db."),
-        concat!("export", "_bundle()"),
-        concat!(".chunk_id().del", "ete(id);"),
-        "}",
-        "purged",
-    ]
-    .concat()
-}
-
-/// The squashed signature slice `extract_squashed_fn_sig` returns.
-///
-/// NOTE (measured against the real helper, accounts_tests.rs:245-250): the slice
-/// starts at the `fn_needle`, so it does NOT include the visibility keyword.
-/// `pub(crate)` is therefore pinned SEPARATELY, as a prefix containment check.
-/// The trailing `-> usize` is rb-40 (ADR-0235): the helper reports how many
-/// chunks it deleted, and `complete_guest_claim` publishes that count.
-fn rb22_frozen_purge_sig() -> String {
-    concat!(
-        "fnpurge_export",
-        "_bundles(ctx:&ReducerContext,owner:Identity)->usize"
-    )
-    .to_string()
-}
-
-/// The sanctioned sibling-test declaration in `privacy.rs`, in the
-/// comment-stripped / strings-kept / whitespace-squashed view.
-///
-/// It is load-bearing beyond tidiness: an INNER `#![cfg(test)]` does NOT contain
-/// the OUTER attribute substring that `monster-privacy.eval.mjs`'s `[SCOPE]`
-/// clause (:2759-2815) searches for, so that clause justifies excluding
-/// `privacy_tests.rs` from its scan surface ONLY through this PARENT
-/// declaration. Without it, `privacy_tests.rs` is an unjustified exclusion (eval
-/// RED) and — worse for this slice — the whole GREEN-arm test module is never
-/// compiled, silently emptying the gate.
-fn rb22_nd_test_mod_decl() -> String {
-    let dq = rb22_dq();
-    format!(
-        "{}{dq}privacy_tests.rs{dq}{}",
-        concat!("#[cfg", "(test)]", "#[pa", "th="),
-        concat!("]", "modprivacy_tests;")
-    )
-}
-
-/// RAW-text view for the module-header doc-truth scan: whitespace, `/` and `!`
-/// deleted, so a doc phrase rustfmt wrapped across two `//!` lines still reads as
-/// ONE token. Mirrors `m22_squashed_no_slashes` (:3263), which exists for exactly
-/// this reason — a comment cannot be scanned in any COMMENT-STRIPPED view.
-fn rb22_header_squash(src: &str) -> String {
-    src.chars()
-        .filter(|c| !c.is_whitespace() && *c != '/' && *c != '!')
-        .collect()
-}
-
-/// EO-1 (call site): `complete_guest_claim` delegates the guest's `export_bundle`
-/// purge EXACTLY ONCE, as a bare top-level statement, on the straight-line
-/// success path between `rekey_all` and `consume_claim_and_disarm`, with the
-/// RETIRED GUEST identity as the argument.
-///
-/// Nine clauses, each with its own pinned message (coarse mutants only ever prove
-/// the first assertion — every later clause needs a surgical mutant pinned by
-/// FAILURE MESSAGE):
-///   count / bound-statement-form / four ordering anchors / reachability /
-///   guest-shadow / brace depth.
-///
-/// Kills: dropping the call; a second unreviewed call; the call re-argued to `me`
-///        (which purges the CLAIMER's chunks and leaves the guest's behind);
-///        wrapping it in `if ... ` or in a never-invoked closure (both keep every
-///        containment clause green); an early `return` inserted above it; and the
-///        MEASURED `let guest = me;` shadow, which re-points a textually perfect
-///        call at the wrong identity.
-#[test]
-fn rb22_claim_purges_guest_export_bundles_call_site() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let body = extract_squashed_fn_body(&squashed, &nd_complete())
-        .expect("rb-22 [call/scope]: fn complete_guest_claim not found in accounts.rs");
-    let call = rb22_nd_purge_call();
-
-    // --- (1) exactly once, in this reducer -----------------------------------
-    let n = m22_count_occurrences(body, &call);
-    assert_eq!(
-        n, 1,
-        "rb-22 [call/count]: complete_guest_claim must call `{call}` EXACTLY once; found {n}. \
-         ZERO means a guest's pre-claim export_bundle chunks stay owned by the RETIRED guest \
-         identity forever: the S3 deletion cascade keys on a live account's own identity and \
-         structurally cannot reach them, and S4's 7-day TTL reaper is a second, independent \
-         expiry rather than a reachability guarantee. MORE THAN ONE is a second, unreviewed \
-         purge site."
-    );
-
-    // --- (2) a bare BOUND STATEMENT with the GUEST argument ------------------
-    // `;letpurged=<call>ctx,guest);` in squashed text pins four things at once:
-    // the BINDING (rb-40 / ADR-0235 — the helper now returns the number of
-    // chunks it deleted, and the claim-time observation publishes that count, so
-    // an unbound call leaves the emitted line with no data dependency on the
-    // purge at all), the argument (not `me`), statement position (not an operand
-    // of a closure or an iterator adaptor), and the preceding statement
-    // terminator. The eval's [S/depth0] clause documents the two MEASURED
-    // depth-0 shapes this kills: `let _p = || purge(...)` and
-    // `std::iter::empty().for_each(|_| purge(...))`.
-    let statement = format!(";letpurged={call}ctx,guest);");
-    assert!(
-        body.contains(statement.as_str()),
-        "rb-22 [call/statement]: the purge call in complete_guest_claim is not the bare bound \
-         statement `{statement}`. Either its result is not BOUND (rb-40: the emitted \
-         observation would then carry no count derived from this purge), or its argument is not \
-         the retired GUEST identity (purging the claimer's own chunks instead — a no-op that \
-         leaves the orphan), or the call is an OPERAND of something else: a closure binding or \
-         an iterator adaptor is brace-depth 0, satisfies every containment and ordering clause \
-         here, and never runs."
-    );
-
-    // --- (3) ordering on the success path ------------------------------------
-    let rekey = concat!("rekey", "_all(ctx,guest,me)?;");
-    let consume = concat!("consume_claim_and", "_disarm(ctx,guest);");
-    let update = concat!("account()", ".identity().update(claimed_account(");
-    let at_rekey = idx(body, rekey);
-    let at_purge = idx(body, &call);
-    let at_consume = idx(body, consume);
-    let at_update = idx(body, update);
-    let at_ok = body
-        .rfind(concat!("Ok", "(())"))
-        .expect("rb-22 [call/order-ok]: complete_guest_claim must end in Ok(())");
-    assert!(
-        at_rekey < at_purge,
-        "rb-22 [call/order-rekey]: the purge (offset {at_purge}) must run AFTER \
-         `rekey_all(ctx, guest, me)?;` (offset {at_rekey}). rekey_all is fallible and its `?` \
-         rolls the whole transaction back, so a purge sequenced before it can be undone by a \
-         later re-key failure while the caller is told the claim failed."
-    );
-    assert!(
-        at_purge < at_consume,
-        "rb-22 [call/order-consume]: the purge (offset {at_purge}) must run BEFORE \
-         consume_claim_and_disarm (offset {at_consume}). The consume+disarm is the last \
-         reference to the guest's claim row; sequencing the erase after it buys nothing and \
-         puts the slice's only new write outside the reviewed re-key/consume block."
-    );
-    assert!(
-        at_consume < at_update,
-        "rb-22 [call/order-update]: the AUTH-34 consume must still precede the account \
-         provenance update (consume at {at_consume}, update at {at_update}). rb-22 inserts one \
-         statement into this sequence and must not perturb the shipped ordering."
-    );
-    assert!(
-        at_update < at_ok,
-        "rb-22 [call/order-ok]: the provenance update (offset {at_update}) must precede the \
-         trailing Ok(()) (offset {at_ok})."
-    );
-
-    // --- (4) REACHABILITY, not just position ---------------------------------
-    // The eval's [S/reachable] (guest-claim-integrity.eval.mjs:1542-1555) bans the
-    // token `return` in this region because the success path is straight-line by
-    // design — every reject guard is guards 1..11, all of which precede rekey_all.
-    //
-    // TOKEN SEMANTICS, MEASURED: a word boundary is required on the LEFT ONLY.
-    // `squash_ws` fuses `return Err(..)` into `returnErr(` and `return Ok(())` into
-    // `returnOk(())`, so ALSO requiring a non-word byte on the right would blind
-    // this clause to precisely the early-exit shapes it exists to catch. The
-    // left-only rule still rejects an identifier such as `early_return`.
-    //
-    // WIDENED to `at_consume` (rb-22 artifact red-team, Finding 2): ending the
-    // scan at `at_purge` left the purge -> consume GAP unguarded on the Rust
-    // arm. An early `return` there (`if is_account_holder(ctx, me) { return
-    // Ok(()); }`) skips consume_claim_and_disarm (AUTH-34 single-use) and the
-    // AUTH-21 provenance stamp while the reducer returns Ok. This region now
-    // matches the eval's own [S/reachable] span (rekey_all -> consume).
-    let region = &body[at_rekey..at_consume];
-    let mut scan = 0usize;
-    while let Some(rel) = region[scan..].find("return") {
-        let at = scan + rel;
-        let is_token = at == 0 || !is_word_byte(region.as_bytes()[at - 1]);
-        assert!(
-            !is_token,
-            "rb-22 [call/reachable]: a `return` token sits between `rekey_all(ctx, guest, me)?;` \
-             and the purge call. After the re-key the success path is straight-line by design, \
-             so a return here either makes the purge dead code or adds an exit that skips it — \
-             while the count, statement, ordering and depth clauses above all stay GREEN, \
-             because every one of them reasons about POSITION and none about REACHABILITY. \
-             Region text: {region:?}"
-        );
-        scan = at + "return".len();
-    }
-
-    // --- (5) no `guest` shadow / rebind (MEASURED red-team finding) -----------
-    // `let guest = me;` inserted anywhere above the purge re-points a textually
-    // PERFECT call at the caller's own identity: the count, statement, argument,
-    // ordering, reachability and depth clauses are all satisfied, the code is
-    // clippy-clean, and the guest's chunks are never touched. The reducer binds
-    // `guest` exactly once, from `claim.guest_identity`.
-    let shadow = concat!("let", "guest");
-    let binds = m22_count_occurrences(body, shadow);
-    assert_eq!(
-        binds, 1,
-        "rb-22 [call/no-shadow]: complete_guest_claim binds `guest` {binds} time(s); exactly ONE \
-         binding is allowed (`let guest = claim.guest_identity;`). A shadow or rebind of `guest` \
-         is BANNED in this reducer: a second binding re-points the purge — and the AUTH-21 \
-         re-key and the AUTH-34 consume with it — at a different identity while every textual \
-         clause in this test stays green. Red-team MEASURED this exact shape as clippy-clean."
-    );
-
-    // --- (6) brace depth 0 (no conditional / no nested block) ----------------
-    let mut depth: i32 = 0;
-    for c in body[..at_purge].chars() {
-        if c == '{' {
-            depth += 1;
-        } else if c == '}' {
-            depth -= 1;
-        }
-    }
-    assert_eq!(
-        depth, 0,
-        "rb-22 [call/depth0]: the purge call sits at brace depth {depth} inside \
-         complete_guest_claim, not at the top level of the fn body. A conditional purge is a \
-         conditional erasure: a guard that is always FALSE at this point in the reducer keeps \
-         every count-, argument-, ordering- and region-based clause green while the chunks are \
-         never deleted."
-    );
-}
-
-/// EO-1 (uniqueness, whole file): `accounts.rs` names the delegated purge in
-/// EXACTLY TWO places — the claim-time purge and the cascade step.
-///
-/// RE-DERIVED 1 -> 2 BY m22-s3b, AND PAID FOR (ADR-0228 D7(b)). `export_bundle`
-/// is an ERASE-policy table (spec §3), and ADR-0228 D1 reuses the shipped
-/// `privacy::purge_export_bundles` for its cascade step rather than minting a
-/// second helper — so the deletion reaper is now a second, sanctioned caller
-/// beside `complete_guest_claim`'s rb-22 claim-time purge.
-///
-/// The compensation for the widening is `m22s3b_purge_named_twice_claim_and_cascade`
-/// below, which pins WHICH two bodies the two calls live in and asserts ZERO
-/// elsewhere in the file as arithmetic. Without it, a bare bump to 2 would let a
-/// second purge land anywhere — in `rekey_all`, say, where it is invisible to
-/// both ceremonies' reviewers — and still read as correct.
-#[test]
-fn rb22_purge_called_exactly_once_in_accounts_rs() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let call = rb22_nd_purge_call();
-    let n = m22_count_occurrences(&squashed, &call);
-    assert_eq!(
-        n, 2,
-        "rb-22 [call/whole-file]: accounts.rs must name `{call}` EXACTLY twice; found {n}. \
-         The two sanctioned sites are the rb-22 claim-time purge inside complete_guest_claim \
-         and the m22-s3b cascade step inside account_deletion_reaper. ZERO or ONE means one \
-         of them was deleted or moved into another module's helper (where neither ceremony's \
-         reviewers see it); THREE or more means a purge site exists that no scoped test in \
-         this file constrains."
-    );
-}
-
-/// EO-1 (wiring): `lib.rs` compiles the new module UNCONDITIONALLY.
-///
-/// `mod privacy;` must be declared exactly once and must carry NO cfg attribute
-/// and no path attribute. A cfg-test-gated declaration compiles the helper into
-/// the TEST binary only — every source scan in this slice stays green while the
-/// published wasm module contains no purge at all. A path attribute on the
-/// declaration re-points the module at a different file, so the file this slice's
-/// tests read is not the file the crate compiles.
-///
-/// The attribute look-back is bounded to the declaration's own ITEM SPAN (from
-/// the end of the previous item — the previous `;` or `}` — up to the
-/// declaration), so an unrelated cfg attribute elsewhere in lib.rs can neither
-/// vouch for nor incriminate this one.
-#[test]
-fn rb22_lib_wires_mod_privacy() {
-    let squashed = stripped_for_scan(LIB_RS);
-    let squashed_decl = concat!("mod", "privacy;");
-    let n = m22_count_occurrences(&squashed, squashed_decl);
-    assert_eq!(
-        n, 1,
-        "rb-22 [lib/decl-count]: lib.rs must declare `mod privacy;` exactly once; found {n} \
-         occurrence(s) of the squashed form `{squashed_decl}`. Without the declaration the new \
-         owning module is not part of the crate at all: privacy.rs is dead text on disk, the \
-         call in accounts.rs does not resolve, and the sibling privacy_tests module is never \
-         compiled."
-    );
-
-    let clean = strip_rust_comments(&strip_rust_strings(LIB_RS));
-    let decl = concat!("mod ", "privacy;");
-    let at = clean.find(decl).unwrap_or_else(|| {
-        panic!(
-            "rb-22 [lib/decl-missing]: the declaration `{decl}` was not found in the \
-             comment-stripped lib.rs, so the attribute look-back below has no scope and would \
-             pass VACUOUSLY."
-        )
-    });
-    let prev_end = clean[..at].rfind([';', '}']).map_or(0, |i| i + 1);
-    let span = &clean[prev_end..at];
-    assert!(
-        !span.contains(concat!("#[cfg", "(")),
-        "rb-22 [lib/cfg]: `mod privacy;` carries a cfg attribute in its item span ({span:?}). A \
-         cfg-test gate here compiles the purge helper into the TEST binary only: every source \
-         scan in this slice stays GREEN while the PUBLISHED module never deletes a single \
-         export_bundle row. The module must be unconditional."
-    );
-    assert!(
-        !span.contains(concat!("#[pa", "th")),
-        "rb-22 [lib/path]: `mod privacy;` carries a path attribute in its item span ({span:?}). \
-         A re-pointed module means the file this slice's scans read is NOT the file the crate \
-         compiles — the gate would then be measuring dead text on disk."
-    );
-}
-
-/// EO-2 (helper shape) + EO-6 (proof-of-teeth ordering): `src/privacy.rs` exists
-/// and defines `purge_export_bundles` with EXACTLY the sanctioned body.
-///
-/// RUNTIME READ, not `include_str!`, on purpose: an `include_str!` of a file that
-/// does not exist yet is a COMPILE error, and a build that does not compile
-/// cannot produce a named-test RED. This is the pvp_tests.rs:734 /
-/// observability_tests.rs:438 idiom (`env!("CARGO_MANIFEST_DIR")` + `std::fs`),
-/// and it is what makes the pre-fix RED capturable by name.
-///
-/// This test DUPLICATES the privacy-side equality pin deliberately: the two arms
-/// have different failure messages, so a mutation can be attributed to either,
-/// and this arm survives even if the sibling module is ever restructured.
-///
-/// Kills: the helper missing / declared twice; a renamed or re-typed signature;
-///        a `pub fn` (crate-external surface) or a private fn (unreachable from
-///        accounts.rs); ANY deviation of the body — dead branch, extra binding,
-///        shadowed `ids`, shadowed loop `id`, appended foreign write, a
-///        one-row-only delete, a full-table sweep; and a missing sibling-test
-///        declaration, which would silently delete the entire GREEN arm.
-#[test]
-fn rb22_privacy_module_exists_with_purge_body() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("src")
-        .join("privacy.rs");
-    let src = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        panic!(
-            "rb-22: server-module/src/privacy.rs must exist and define purge_export_bundles \
-             [privacy/missing-file] (read of {} failed: {e})",
-            path.display()
-        )
-    });
-
-    let squashed = stripped_for_scan(&src);
-    let fn_needle = rb22_nd_purge_fn();
-
-    let n = m22_count_occurrences(&squashed, &fn_needle);
-    assert_eq!(
-        n, 1,
-        "rb-22 [privacy/decl]: privacy.rs must define `{fn_needle}` exactly once; found {n}. \
-         Zero means the module is still a stub (or the helper was renamed) and the guest's \
-         pre-claim export chunks are never erased."
-    );
-
-    let sig = extract_squashed_fn_sig(&squashed, &fn_needle)
-        .expect("rb-22 [privacy/sig]: the helper signature has no opening brace");
-    assert_eq!(
-        sig,
-        rb22_frozen_purge_sig(),
-        "rb-22 [privacy/sig]: the helper signature is not the frozen one. It must take the \
-         reducer context under the name `ctx` and an OWNER-GENERIC `owner: Identity` (never a \
-         claim-specific `guest`), so the S3 account-deletion cascade can reuse the same helper \
-         verbatim when it lands."
-    );
-    assert!(
-        squashed.contains(concat!("pub(crate)fnpurge_export", "_bundles(")),
-        "rb-22 [privacy/vis]: the helper must be `pub(crate)`. A private fn is unreachable from \
-         accounts.rs (the call would not compile), and a bare `pub` widens the crate's external \
-         surface for no reason."
-    );
-
-    let body = extract_squashed_fn_body(&squashed, &fn_needle)
-        .expect("rb-22 [privacy/body-extract]: the helper body is not brace-balanced");
-    assert_eq!(
-        body,
-        rb22_frozen_purge_body(),
-        "rb-22 [privacy/body]: purge_export_bundles body must be exactly the flat \
-         filter-collect-delete sequence — no conditionals, no extra bindings, no extra \
-         statements (kills dead-branch, shadowed-ids, shadowed-id, aliased-write bypasses; \
-         red-team /tmp/rb22-attack)."
-    );
-
-    let kept = squash_ws(&strip_comments_keep_strings(&src));
-    let decl = rb22_nd_test_mod_decl();
-    assert!(
-        kept.contains(decl.as_str()),
-        "rb-22 [privacy/testmod]: privacy.rs must end with `{decl}` (the accounts.rs:608-610 \
-         form). It is load-bearing twice over: without it the sibling GREEN-arm test module is \
-         never compiled, so every rb22p_ test silently ceases to exist; and monster-privacy's \
-         SCOPE clause justifies excluding a `_tests.rs` file from its scan surface only via \
-         this PARENT declaration, because an inner `#![cfg(test)]` does not contain the \
-         substring the eval looks for."
-    );
-}
-
-/// EO-3 (doc truth, D0): the `accounts.rs` WRITE-ISOLATION header names the
-/// privacy delegate.
-///
-/// The shipped header states that EVERY write to a pre-existing table goes
-/// through a `rekey_*` helper in one of six named modules. rb-22 adds a seventh
-/// delegate that is not a re-key, so leaving that paragraph unedited makes the D0
-/// doc — the first thing the next reader of this module consults before adding a
-/// write — actively FALSE.
-///
-/// Scanned over RAW text with whitespace, `/` and `!` deleted, because the claim
-/// lives in a COMMENT and every comment-stripping view blanks it. Mirrors
-/// `m22_squashed_no_slashes` (:3263) so a rustfmt re-wrap across two `//!` lines
-/// cannot fool the scan. This is a doc-truth tooth and nothing more: it does not
-/// claim to be behavioural evidence.
-#[test]
-fn rb22_accounts_header_names_the_privacy_delegate() {
-    let marker = "\nuse ";
-    let end = ACCOUNTS_RS.find(marker).unwrap_or_else(|| {
-        panic!(
-            "rb-22 [header/scope]: no top-level `use` item was found in accounts.rs, so the \
-             module-header region is undefined and this scan would run over the whole file \
-             (where the delegate is legitimately named in code) and pass VACUOUSLY."
-        )
-    });
-    let header = rb22_header_squash(&ACCOUNTS_RS[..end]);
-    assert!(
-        !header.is_empty(),
-        "rb-22 [header/scope]: the module-header region of accounts.rs is empty."
-    );
-
-    for (needle, what) in [
-        (
-            "privacy",
-            "the owning module the export_bundle write is delegated to",
-        ),
-        (
-            concat!("purge_export", "_bundles"),
-            "the delegated helper complete_guest_claim now calls",
-        ),
-    ] {
-        assert!(
-            header.contains(needle),
-            "rb-22 [header/doc-truth]: the accounts.rs WRITE-ISOLATION header does not mention \
-             `{needle}` ({what}). The shipped paragraph claims every delegated write goes \
-             through a `rekey_` helper in one of six named modules; rb-22 adds a delegate that \
-             is neither a re-key nor in that list, so an unedited header states something that \
-             is no longer true about this module's write surface."
-        );
-    }
-}
-
-/// DIAGNOSTIC ONLY, never a gate: how many occurrences of `needle` in an
-/// ALREADY-SQUASHED source are bare identifier tokens — a non-word byte on BOTH
-/// sides. The census below asserts on the RAW occurrence count and reports this
-/// split only so a failure says WHY it fired (see the boundary note there).
-fn rb22_bare_token_occurrences(squashed: &str, needle: &str) -> usize {
-    if needle.is_empty() {
-        return 0;
-    }
-    let bytes = squashed.as_bytes();
-    let mut n = 0usize;
-    let mut start = 0usize;
-    while let Some(rel) = squashed[start..].find(needle) {
-        let at = start + rel;
-        let end = at + needle.len();
-        let left_free = at == 0 || !is_word_byte(bytes[at - 1]);
-        let right_free = end >= bytes.len() || !is_word_byte(bytes[end]);
-        if left_free && right_free {
-            n += 1;
-        }
-        start = end;
-    }
-    n
-}
-
-/// The sanctioned naming budget for one census file: how many times that file
-/// may NAME the delegated purge helper, and why that number and no other.
-fn rb22_purge_naming_budget(path: &str) -> (usize, &'static str) {
-    match path {
-        "accounts.rs" => (
-            2,
-            "the TWO sanctioned call sites: the rb-22 qualified call inside \
-             complete_guest_claim that the call-site test pins statement by statement, \
-             and the m22-s3b cascade step inside account_deletion_reaper (ADR-0228 D1 \
-             reuses the shipped helper for the export_bundle ERASE rather than minting a \
-             second one). The compensating pin \
-             m22s3b_purge_named_twice_claim_and_cascade fixes BOTH occurrences to those \
-             exact two bodies and asserts zero elsewhere as arithmetic, so this widening \
-             from 1 is net-neutral. The module-header mention is a COMMENT and is blanked \
-             from this view, so 2 means exactly two CODE namings. THREE means a further \
-             call — and one written UNQUALIFIED under a local import is INVISIBLE to the \
-             crate-path-prefixed needle the whole-file test uses. ONE means the cascade \
-             step was deleted; ZERO means the claim-time delegation went with it",
-        ),
-        "privacy.rs" => (
-            2,
-            "the helper's own declaration plus the ONE sanctioned m22-s4 call site inside \
-             request_data_export (purge-before-write, ADR-0226). The compensating pin \
-             m22s4_purge_named_twice_declaration_and_call in privacy_tests.rs pins BOTH \
-             occurrences to exactly those two shapes, so this widening from 1 is \
-             net-neutral. THREE means a wrapper or re-export that hands a different \
-             owner to a body the frozen-body pin still reports as correct. ONE means \
-             the export reducer's purge-before-write was deleted; ZERO means the \
-             declaration was renamed or deleted",
-        ),
-        _ => (
-            0,
-            "no module other than accounts.rs may name it at all. The helper is \
-             `pub(crate)`, so EVERY module in the crate is already a legal caller, and a \
-             caller here deletes export_bundle rows for whatever owner IT derives — \
-             outside the claim ceremony this slice reviewed, and invisible to every \
-             accounts.rs-scoped gate in it. An aliasing import counts as a naming: even \
-             `use ... as p;` must spell the original name once",
-        ),
-    }
-}
-
-/// EO-1 (crate-wide naming census) — reducer-security-auditor Nit 2: NO module
-/// other than `accounts.rs` may NAME the delegated purge helper.
-///
-/// `rb22_purge_called_exactly_once_in_accounts_rs` scans accounts.rs ONLY, and
-/// the helper is `pub(crate)` — which makes every module in the crate a legal
-/// caller. A THIRD module (economy.rs, say) that adds an aliasing import and
-/// calls the helper with a badly-derived owner keeps every shipped rb-22 gate
-/// GREEN while erasing export chunks no reviewer of the claim ceremony ever saw.
-/// This test is what turns "there is exactly one call site" from a convention
-/// into an enforced fact.
-///
-/// SURFACE: `m22_scanned_sources()` (:3146) — the crate root plus every `mod`
-/// lib.rs declares, `_tests.rs` siblings excluded by construction (test code is
-/// not compiled into the published wasm, so it cannot erase a live row).
-/// `data_lifecycle_manifest_totality_bidirectional` pins that list against the
-/// crate's live `mod` declarations in BOTH directions, which is what closes the
-/// "add a module and leave it out of the census" hole; the [census/coverage]
-/// clause here is the local backstop against a census that merely shrank.
-///
-/// NEEDLE: the BARE token — no paren, no `crate::privacy::` prefix. One needle
-/// therefore catches all three spellings at once: the qualified call, an
-/// unqualified call under a plain import, and an ALIASED import, because even
-/// `use ... as p;` must spell the original name once before renaming it.
-///
-/// WORD BOUNDARIES — DELIBERATELY NOT REQUIRED ON EITHER SIDE. Measured against
-/// this file's own `stripped_for_scan`, whose `squash_ws` deletes ALL
-/// whitespace:
-///   * RIGHT: an aliasing import squashes to `..._bundlesasp;` — the byte after
-///     the needle is `a`, a WORD byte. A right-hand `is_word_byte` test would
-///     score the alias as part of a longer identifier and DROP it: a silent
-///     GREEN on precisely the bypass this test exists to kill.
-///   * LEFT: the declaration squashes to `pub(crate)fnpurge...` — the byte
-///     before the needle is `n`, a WORD byte. A left-hand test would drop the
-///     declaration, and a third module's same-named twin declaration with it.
-///
-/// This is the same fusion hazard the [call/reachable] clause documents in the
-/// opposite direction (there `squash_ws` fuses `return Err(..)` into
-/// `returnErr(`, so a RIGHT boundary had to be dropped). The accepted cost is a
-/// FALSE RED on a longer identifier sharing the prefix (a `_v2` twin): that is
-/// the safe direction, and it is loud — the message names the file, the count
-/// and the bare-versus-fused split. Under-counting would be a silent green on an
-/// unreviewed second erasure path.
-///
-/// Kills: the W24 aliased third-module call (`use ... as p;` plus `p(ctx, x);`
-///        in economy.rs); a fully-qualified third-module call; an unqualified
-///        third-module call under a plain import; a same-named twin declared in
-///        another module; a SECOND naming inside privacy.rs itself; a second
-///        UNQUALIFIED call inside accounts.rs, which the crate-path-prefixed
-///        needle of the whole-file test cannot see; and deletion of the
-///        sanctioned call, which takes accounts.rs to 0.
-///
-/// Does NOT kill: a caller in a `_tests.rs` sibling (outside the published wasm
-///        by construction, and outside this census by construction); a
-///        consistently-renamed helper — the signature and frozen-body pins in
-///        `rb22_privacy_module_exists_with_purge_body` own that.
-#[test]
-fn rb22_purge_named_nowhere_else_in_crate() {
-    let needle = concat!("purge_export", "_bundles");
-    let sources = m22_scanned_sources();
-    let paths: Vec<&str> = sources.iter().map(|(p, _)| *p).collect();
-
-    // --- anti-vacuity: the scanned surface itself ----------------------------
-    let n_paths = paths.len();
-    assert!(
-        n_paths >= 20,
-        "rb-22 [census/coverage]: the crate-wide census lists only {n_paths} source(s) \
-         ({paths:?}); the live tree lists 22. A shrunken census is a census that stopped \
-         looking — every per-file count below would then be GREEN about files nobody scanned, \
-         and the module a bypass lands in is exactly the one an attacker would drop from this \
-         list."
-    );
-    for required in ["accounts.rs", "privacy.rs"] {
-        assert!(
-            paths.contains(&required),
-            "rb-22 [census/coverage]: the census does not include {required} ({paths:?}). Those \
-             two files are the only ones with a NON-ZERO naming budget: without them the loop \
-             below proves only that a set of modules that were never allowed to name the helper \
-             do not name it, and the sanctioned call site is unmeasured."
-        );
-    }
-
-    // --- one budget per compiled module --------------------------------------
-    for (path, src) in &sources {
-        let squashed = stripped_for_scan(src);
-        let n = m22_count_occurrences(&squashed, needle);
-        let bare = rb22_bare_token_occurrences(&squashed, needle);
-        let fused = n.saturating_sub(bare);
-        let (expected, why) = rb22_purge_naming_budget(path);
-        assert_eq!(
-            n, expected,
-            "rb-22 [census/site]: {path} names the bare purge token {n} time(s); exactly \
-             {expected} is allowed — {why}. Boundary diagnostic: {bare} of the {n} are bare \
-             identifier tokens and {fused} are fused into a longer run of identifier bytes. In \
-             the whitespace-squashed view that fused shape is EITHER an aliasing import (the \
-             `as p;` tail fuses onto the name) OR a longer identifier sharing the prefix, and \
-             this census counts BOTH on purpose: dropping the fused ones would blind it to the \
-             alias, which is the exact bypass it exists to catch."
-        );
-    }
-}
-
 // ===========================================================================
 // rb-24 (M22 S3, first arm) — THE DELETION REAPER SCHEDULE: ARMED ON REQUEST,
 // DISARMED ON CANCEL.
@@ -5650,594 +1307,6 @@ fn rb22_purge_named_nowhere_else_in_crate() {
 // ===========================================================================
 
 use game_core::{is_deletion_due, DELETION_GRACE_MS_DEFAULT};
-
-// ---------------------------------------------------------------------------
-// rb-24 needles. Split mid-token, per the file header rule.
-// ---------------------------------------------------------------------------
-
-/// The squashed table attribute the new schedule table must carry, verbatim.
-fn rb24_nd_table_attr() -> String {
-    [
-        concat!("#[spacetimedb::", "table", "("),
-        concat!("access", "or=account_deletion_reaper", "_schedule,"),
-        concat!("sched", "uled(account_deletion", "_reaper))]"),
-    ]
-    .concat()
-}
-
-/// The accessor-naming PREFIX of that attribute. ANY second declaration of the
-/// same accessor — with or without extra arguments such as `public` — contains
-/// it, which is what makes the uniqueness clause total rather than a pin on one
-/// spelling.
-fn rb24_nd_table_attr_prefix() -> String {
-    [
-        concat!("#[spacetimedb::", "table", "("),
-        concat!("access", "or=account_deletion_reaper", "_schedule"),
-    ]
-    .concat()
-}
-
-/// The squashed struct marker (`extract_squashed_fn_body` brace-walks from it).
-fn rb24_nd_struct_marker() -> String {
-    concat!("struct", "AccountDeletionReaperSchedule{").to_string()
-}
-
-/// The PREFIX-AGNOSTIC accessor method token: a leading `.` then the accessor
-/// name and its opening paren, with NO `ctx.db.` prefix. rb-24 red-team
-/// (artifact pass) MEASURED that `let d = &ctx.db;` then `d.<accessor>()`
-/// squashes without the `ctx.db.` prefix, so a prefixed needle misses an
-/// aliased write entirely. (Since rb-39 the shared `write_target_accessors`
-/// REFUSES such a write under `[W/attribution]` rather than misattributing it,
-/// but a refusal is not a census: this token still has to see the call in order
-/// to say WHERE it sits.) A
-/// leading-dot method token matches the accessor call through ANY receiver
-/// (`ctx.db.`, an aliased handle, a further-chained handle) while still not
-/// matching the `accessor = <name>,` attribute (comma, no leading dot) or the
-/// CamelCase struct type.
-fn rb24_nd_accessor_method() -> String {
-    concat!(".account_deletion_reaper", "_schedule(").to_string()
-}
-
-/// The accessor NAME, as `allowed_write_tables` and `write_target_accessors`
-/// spell it.
-fn rb24_nd_sched_accessor() -> String {
-    concat!("account_deletion_reaper", "_schedule").to_string()
-}
-
-fn rb24_nd_arm_decl() -> String {
-    concat!("fnarm_deletion", "_reaper(").to_string()
-}
-
-fn rb24_nd_disarm_decl() -> String {
-    concat!("fndisarm_deletion", "_reaper(").to_string()
-}
-
-fn rb24_nd_arm_call() -> String {
-    concat!("arm_deletion", "_reaper(").to_string()
-}
-
-fn rb24_nd_disarm_call() -> String {
-    concat!("disarm_deletion", "_reaper(").to_string()
-}
-
-fn rb24_nd_reaper_decl() -> String {
-    concat!("fnaccount_deletion", "_reaper(").to_string()
-}
-
-fn rb24_nd_delete_account_decl() -> String {
-    concat!("fndelete", "_account(").to_string()
-}
-
-fn rb24_nd_cancel_decl() -> String {
-    concat!("fncancel_account", "_deletion(").to_string()
-}
-
-// ---------------------------------------------------------------------------
-// rb-24 scan machinery.
-// ---------------------------------------------------------------------------
-
-/// Occurrences of the ARM call token in an already-squashed source, EXCLUDING
-/// the ones that are merely the tail of a DISARM mention.
-///
-/// Written as arithmetic rather than as a word-boundary test, and the reason is
-/// measured against this file own `squash_ws`:
-///   - the DISARM call token CONTAINS the ARM call token outright (the former is
-///     the latter with a three-letter prefix), so a plain count over-reports by
-///     one per disarm mention. A test that asserts `the arm token does not
-///     appear in the cancel reducer` is therefore UNSATISFIABLE as literally
-///     stated, because the sanctioned disarm call carries the arm token as a
-///     substring;
-///   - a LEFT word-boundary test does not fix it either: the squashed
-///     DECLARATION fuses the `fn` keyword onto the front of the name, so the
-///     byte to the left of the arm token there is a word byte and a
-///     left-boundary rule silently drops the declaration — and a same-named twin
-///     declared in another module with it. This is the same `squash_ws` fusion
-///     hazard the rb-22 census documents in the opposite direction.
-///
-/// Subtraction is exact: two matches of the arm needle can never overlap, and
-/// every disarm occurrence carries exactly one arm substring.
-fn rb24_net_arm_mentions(squashed: &str) -> usize {
-    let arm = m22_count_occurrences(squashed, &rb24_nd_arm_call());
-    let disarm = m22_count_occurrences(squashed, &rb24_nd_disarm_call());
-    assert!(
-        arm >= disarm,
-        "[rb24/net-count] the arm-mention arithmetic is broken: {arm} occurrence(s) of the arm \
-         token against {disarm} of the disarm token, yet every disarm occurrence must contain \
-         exactly one arm substring. The needle spelling changed and this counter can no longer \
-         be trusted, so it must not report a number."
-    );
-    arm - disarm
-}
-
-/// The `(start, end)` byte offsets of a fn body inside an ALREADY-SQUASHED
-/// source — the same brace walk `extract_squashed_fn_body` performs, returning
-/// the offsets it discards.
-///
-/// The sole-writer census has to ask WHERE each accessor call sits, which is a
-/// different question from the one `write_target_accessors` answers: that helper
-/// names the table a write is rooted in (or REFUSES it, rb-39/ADR-0234), and it
-/// sees only write verbs. This census must also see READS of the accessor, and
-/// it must report their position, so it walks the fn body spans itself.
-fn rb24_fn_body_span(squashed: &str, fn_needle: &str) -> (usize, usize) {
-    let fn_start = squashed.find(fn_needle).unwrap_or_else(|| {
-        panic!(
-            "[rb24/span] the fn needle {fn_needle:?} was not found in the squashed source, so \
-             every span-scoped clause that depends on it has NO scope and would pass \
-             vacuously. Fail loud rather than skip."
-        )
-    });
-    let brace_rel = squashed[fn_start..]
-        .find('{')
-        .unwrap_or_else(|| panic!("[rb24/span] {fn_needle:?} is followed by no opening brace."));
-    let body_start = fn_start + brace_rel + 1;
-    let bytes = squashed.as_bytes();
-    let mut depth: usize = 1;
-    let mut i = body_start;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return (body_start, i);
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    panic!("[rb24/span] the body of {fn_needle:?} is not brace-balanced.")
-}
-
-/// The balanced `(..)` span (delimiters excluded) opening at or after `from`.
-fn rb24_paren_span(squashed: &str, from: usize) -> (usize, usize) {
-    let rel = squashed[from..]
-        .find('(')
-        .unwrap_or_else(|| panic!("[rb24/paren] no opening paren at or after offset {from}."));
-    let open = from + rel;
-    let bytes = squashed.as_bytes();
-    let mut depth: usize = 0;
-    let mut i = open;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'(' => depth += 1,
-            b')' => {
-                depth -= 1;
-                if depth == 0 {
-                    return (open + 1, i);
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    panic!("[rb24/paren] the argument list opened at offset {open} is unbalanced.")
-}
-
-/// Brace depth of an already-squashed fn-body PREFIX.
-fn rb24_brace_depth(prefix: &str) -> i32 {
-    let mut depth: i32 = 0;
-    for c in prefix.chars() {
-        if c == '{' {
-            depth += 1;
-        } else if c == '}' {
-            depth -= 1;
-        }
-    }
-    depth
-}
-
-/// Does an already-squashed region contain a bare `return` TOKEN?
-///
-/// Word boundary on the LEFT ONLY, exactly as the rb-22 reachability clause
-/// documents: `squash_ws` fuses `return Err(..)` into `returnErr(` and
-/// `return Ok(())` into `returnOk(())`, so ALSO requiring a non-word byte on the
-/// right would blind this to precisely the early-exit shapes it exists to
-/// catch. The left-only rule still rejects an identifier such as `early_return`.
-fn rb24_has_return_token(region: &str) -> bool {
-    let bytes = region.as_bytes();
-    let mut scan = 0usize;
-    while let Some(rel) = region[scan..].find("return") {
-        let at = scan + rel;
-        if at == 0 || !is_word_byte(bytes[at - 1]) {
-            return true;
-        }
-        scan = at + "return".len();
-    }
-    false
-}
-
-/// THE FROZEN ARM BODY. Derived by hand through the live three-stage pipeline
-/// (`strip_rust_strings` -> `strip_rust_comments` -> `squash_ws`) over the
-/// sanctioned source, so a comment inside the helper is invisible here and a
-/// rustfmt re-wrap cannot move a byte of it. The trailing comma after the
-/// `saturating_mul` argument is rustfmt-forced (the call wraps at 100 columns)
-/// and is present in the shipped `arm_claim_reaper` twin.
-fn rb24_frozen_arm_body() -> String {
-    [
-        concat!("ctx", ".db."),
-        concat!("account_deletion_reaper", "_schedule()"),
-        concat!(".ins", "ert("),
-        "AccountDeletionReaperSchedule{",
-        "scheduled_id:0,",
-        "scheduled_at:ScheduleAt::Time(Timestamp::from_micros_since_unix_epoch(",
-        concat!(
-            "deletion_fire_at",
-            "_ms(requested_at_ms).saturating_mul(1_000),"
-        ),
-        ")),",
-        "account_identity:account,",
-        "});",
-    ]
-    .concat()
-}
-
-/// The frozen arm SIGNATURE slice `extract_squashed_fn_sig` returns (it starts
-/// at the fn needle, so the visibility keyword is deliberately outside it).
-fn rb24_frozen_arm_sig() -> String {
-    concat!(
-        "fnarm_deletion",
-        "_reaper(ctx:&ReducerContext,account:Identity,requested_at_ms:i64)"
-    )
-    .to_string()
-}
-
-/// THE FROZEN DISARM BODY — the two-phase collect-then-delete shape ADR-0126
-/// mandates and `disarm_claim_reaper` already implements. Deleting inside the
-/// filter iteration mutates the table being iterated; a filter on the wrong
-/// column, or a delete keyed on the wrong column, disarms either nothing or
-/// somebody else schedule row, and every containment clause stays green on all
-/// three.
-fn rb24_frozen_disarm_body() -> String {
-    [
-        "letids:Vec<u64>=",
-        concat!("ctx", ".db."),
-        concat!("account_deletion_reaper", "_schedule()"),
-        concat!(
-            ".account",
-            "_identity().filter(account).map(|s|s.scheduled_id).collect();"
-        ),
-        "foridinids{",
-        concat!("ctx", ".db."),
-        concat!("account_deletion_reaper", "_schedule()"),
-        concat!(".scheduled_id().del", "ete(id);"),
-        "}",
-    ]
-    .concat()
-}
-
-/// The frozen disarm SIGNATURE slice.
-fn rb24_frozen_disarm_sig() -> String {
-    concat!(
-        "fndisarm_deletion",
-        "_reaper(ctx:&ReducerContext,account:Identity)"
-    )
-    .to_string()
-}
-
-/// THE FROZEN REAPER BODY for m22-s3b (ADR-0228 D2/D3): the rejecting scheduler
-/// guard, the row lookup keyed on the SCHEDULER-supplied identity, ONE clock
-/// read, the PRV1-5 recheck WITH its not-yet-due re-arm branch, the spec para
-/// 4.4 cascade in manifest order, and the PRV1-6e terminal stamp LAST. Note that
-/// `stripped_for_scan` blanks string literals, so the reject reason reads as an
-/// empty argument here.
-///
-/// AUTHORED FROM THE PLAN, never by printing what an implementation produced.
-/// The order IS the spec para-4.4 step list: 6a `resolve_all_live_interactions`,
-/// 6b the eight delegated erases plus the export purge, then 6d
-/// `erase_character_rows` BEFORE 6c `anonymize_display_names`, then
-/// `battle::anonymize_battles`, then 6e the terminal stamp as the LAST write.
-///
-/// EVERY FRAGMENT IS TRANSCRIBED INDEPENDENTLY, at different split points from
-/// `m22s3_nd_reaper_recheck_guard()` and from every `m22s3b_nd_*` call needle,
-/// and that is a correction of a MEASURED hole rather than style. Building this
-/// literal FROM the needle helpers made the two artefacts one artefact: deleting
-/// the negation inside the helper moved the needle and the expected literal
-/// together, so the consumer test stayed green on an inverted recheck — a
-/// two-token cheat. Two independent spellings of the same plan statement cannot
-/// be edited in one place, and the consumer test asserts they still agree.
-///
-/// THE SUBJECT IS SPELLED OUT AT EVERY DELEGATED CALL (ADR-0228, RT-3): each of
-/// the fifteen calls passes `(ctx, args.account_identity)` directly, never a
-/// local binding, so a single re-pointed `let` cannot silently retarget the
-/// whole cascade at another identity while every call site still reads right.
-/// That is a rule about the ARGUMENT, and rb-65 does not touch it: the export
-/// purge's RESULT is now bound (`let export_chunks = ..`) because the cascade
-/// line publishes that count, but the subject it is called with is still spelled
-/// out in full, so `m22s3b_nd_subject` still counts fifteen.
-///
-/// WIDENED BY rb-65 (ADR-0243): the literal gains the `let export_chunks =`
-/// prefix on the purge fragment and two statements before `Ok(())` — the
-/// fragment-builder binding and the terminal `account_deletion_cascade`
-/// emission. `rb65_reaper_emits_one_cascade_observation` owns the attributable
-/// clauses (the equality below reports only that something moved), and it
-/// re-asserts the scheduler guard's presence and FIRST position independently of
-/// this literal: a re-freeze that quietly dropped the guard prefix would leave
-/// this pin green on a body any client could invoke with a hand-built schedule
-/// row (reducer-security-auditor C6).
-fn rb24_frozen_reaper_body() -> String {
-    [
-        scheduler_guard_needle(),
-        concat!("Err(.to", "_string());}").to_string(),
-        concat!(
-            "letSome(account)=ctx.db.acc",
-            "ount().identity().find(args.account",
-            "_identity)else{returnOk(());};"
-        )
-        .to_string(),
-        concat!("letn", "ow=now", "_ms(ctx);").to_string(),
-        concat!(
-            "if!re",
-            "aper_should_run_cas",
-            "cade(&account,now){iflet",
-            "Some(requested)=reaper_re",
-            "arm_at_ms(&account,now){arm_dele",
-            "tion_reaper(ctx,args.acc",
-            "ount_identity,requested);}return",
-            "Ok(());}"
-        )
-        .to_string(),
-        concat!(
-            "crate::resolve_all_live",
-            "_interactions(ctx,args.acc",
-            "ount_identity);"
-        )
-        .to_string(),
-        concat!(
-            "crate::monster_mgmt::era",
-            "se_monsters(ctx,args.acc",
-            "ount_identity);"
-        )
-        .to_string(),
-        concat!(
-            "crate::evolution::era",
-            "se_evolution_notices(ctx,args.acc",
-            "ount_identity);"
-        )
-        .to_string(),
-        concat!(
-            "crate::inventory::era",
-            "se_inventory(ctx,args.acc",
-            "ount_identity);"
-        )
-        .to_string(),
-        concat!(
-            "crate::npc::era",
-            "se_npc_state(ctx,args.acc",
-            "ount_identity);"
-        )
-        .to_string(),
-        concat!(
-            "crate::raising::era",
-            "se_heal_cooldown(ctx,args.acc",
-            "ount_identity);"
-        )
-        .to_string(),
-        concat!(
-            "crate::economy::era",
-            "se_wallet(ctx,args.acc",
-            "ount_identity);"
-        )
-        .to_string(),
-        concat!(
-            "crate::playtest::era",
-            "se_playtest_events(ctx,args.acc",
-            "ount_identity);"
-        )
-        .to_string(),
-        concat!(
-            "crate::trading::era",
-            "se_trade_offers(ctx,args.acc",
-            "ount_identity);"
-        )
-        .to_string(),
-        concat!(
-            "crate::pvp::era",
-            "se_pvp_rows(ctx,args.acc",
-            "ount_identity);"
-        )
-        .to_string(),
-        concat!(
-            "letexport_chunks=crate::privacy::purge_expo",
-            "rt_bundles(ctx,args.acc",
-            "ount_identity);"
-        )
-        .to_string(),
-        concat!(
-            "crate::era",
-            "se_character_rows(ctx,args.acc",
-            "ount_identity);"
-        )
-        .to_string(),
-        concat!(
-            "crate::era",
-            "se_player_sessions(ctx,args.acc",
-            "ount_identity);"
-        )
-        .to_string(),
-        concat!(
-            "crate::ranking::anonymize_disp",
-            "lay_names(ctx,args.acc",
-            "ount_identity);"
-        )
-        .to_string(),
-        concat!(
-            "crate::battle::anonymize",
-            "_battles(ctx,args.acc",
-            "ount_identity);"
-        )
-        .to_string(),
-        concat!(
-            "ctx.db.acc",
-            "ount().identity().upd",
-            "ate(terminal_acc",
-            "ount(anonymized_acc",
-            "ount(account),now));"
-        )
-        .to_string(),
-        concat!(
-            "letfields=cascade_fie",
-            "lds(args.acc",
-            "ount_identity,export_chunks);"
-        )
-        .to_string(),
-        concat!("crate::observabili", "ty::mr", "_log(,&fields);").to_string(),
-        "Ok(())".to_string(),
-    ]
-    .concat()
-}
-
-// ---------------------------------------------------------------------------
-// rb-24 / PRV1-1 — THE SCHEDULE TABLE.
-// ---------------------------------------------------------------------------
-
-/// PRV1-1 (spec §4.4): `account_deletion_reaper_schedule` is declared in
-/// `accounts.rs` exactly once, PRIVATE, with exactly the three ADR-0126 D6
-/// columns in order — and no fourth.
-///
-/// Pinned by EXACT EQUALITY over the string-blanked, comment-blanked,
-/// whitespace-squashed declaration, the same mechanics as
-/// `export_bundle_struct_shape_and_privacy` and for the same reasons: BSATN
-/// layout is order-sensitive, and a containment check is green on an appended
-/// field, a reordered pair and a widened type alike.
-///
-/// The MISSING FOURTH COLUMN is the security property, not tidiness. Spec §4.4
-/// makes the minimal field set explicit: `deliberately no timestamp field, so
-/// staleness can only derive from the live account row own
-/// `deletion_requested_at_ms` plus the injected clock, never from anything a
-/// caller could supply`. A `requested_at_ms: i64` column here would be a
-/// caller-supplied staleness input on a row a client can hand-build if the
-/// scheduler guard is ever weakened.
-///
-/// Kills: adding `public` to the attribute (a scheduled row naming an identity
-///        whose account is about to be erased is not client data);
-///        a SECOND attribute naming the same accessor with extra arguments,
-///        which an exact-text pin alone is blind to;
-///        adding, renaming, reordering or re-typing any column;
-///        dropping the `#[auto_inc]` on the synthetic primary key (every arm
-///        would then insert `scheduled_id: 0` and collide);
-///        dropping the btree index on `account_identity` (the disarm path
-///        filters on it — without the index the filter does not compile as a
-///        column accessor at all, and the sanctioned shape is what PRV1-3
-///        depends on).
-#[test]
-fn rb24_deletion_schedule_table_shape_and_privacy() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-
-    let attr = rb24_nd_table_attr();
-    assert_eq!(
-        m22_count_occurrences(&squashed, &attr),
-        1,
-        "[rb24/table-attr] accounts.rs must carry the table attribute `{attr}` EXACTLY once. \
-         ZERO means the scheduled table this slice exists to add is missing, mis-spelled, or \
-         declared in schema.rs instead of colocated with its reducer — and the \
-         `scheduled(..)` attribute resolves as a bare ident only in the file that declares the \
-         reducer (the ADR-0056 exception). MORE THAN ONE is a second declaration of the same \
-         schedule."
-    );
-
-    let prefix = rb24_nd_table_attr_prefix();
-    assert_eq!(
-        m22_count_occurrences(&squashed, &prefix),
-        1,
-        "[rb24/table-attr-unique] exactly one table attribute in accounts.rs may name the \
-         `{prefix}` accessor. This clause is separate from the exact-text one above on \
-         purpose: an exact pin proves the sanctioned declaration EXISTS and says nothing about \
-         a SECOND attribute naming the same accessor with a different argument list."
-    );
-
-    let at = idx(&squashed, &prefix);
-    let (arg_start, arg_end) = rb24_paren_span(&squashed, at);
-    let args = &squashed[arg_start..arg_end];
-    assert!(
-        !args.contains("public"),
-        "[rb24/table-private] the schedule table attribute carries a `public` argument \
-         (arguments read: {args:?}). Unlike the inert `public` on a VIEW attribute, `public` \
-         on a TABLE is the entire security boundary: this row names the identity of an account \
-         that has requested deletion, together with the wall-clock instant its data will be \
-         erased. Publishing that is a directory of pending deletions."
-    );
-
-    let marker = rb24_nd_struct_marker();
-    assert_eq!(
-        m22_count_occurrences(&squashed, &marker),
-        1,
-        "[rb24/table-struct-unique] the schedule struct must be declared exactly once in \
-         accounts.rs, so the brace walk below has an unambiguous target."
-    );
-    let fields = extract_squashed_fn_body(&squashed, &marker).unwrap_or_else(|| {
-        panic!(
-            "[rb24/table-struct-read] the schedule struct declaration was not found in \
-             accounts.rs (marker {marker:?} over the string-blanked, comment-blanked, \
-             whitespace-squashed source). The shape pin cannot check a declaration it cannot \
-             read — hard failure, never a skip."
-        )
-    });
-
-    let expected_fields = [
-        concat!("#[primary", "_key]"),
-        concat!("#[auto", "_inc]"),
-        "pubscheduled_id:u64,",
-        "pubscheduled_at:ScheduleAt,",
-        concat!("#[index(", "btree)]"),
-        "pubaccount_identity:Identity,",
-    ]
-    .concat();
-    assert_eq!(
-        fields, expected_fields,
-        "[rb24/table-columns] the schedule table column list is not the ADR-0126 D6 shape. It \
-         must be exactly, in order: scheduled_id (u64, primary key, auto_inc), scheduled_at \
-         (ScheduleAt — the column the runtime itself reads to fire the one-shot), \
-         account_identity (Identity, btree — the column the PRV1-3 disarm filters on). A \
-         reorder also changes the BSATN layout of a live table, and the `scheduled(..)` \
-         attribute is automigration-frozen, so a shape change here is a destructive republish \
-         rather than an additive migration."
-    );
-
-    let lower = fields.to_lowercase();
-    assert!(
-        !lower.contains("timestamp"),
-        "[rb24/table-no-timestamp] the schedule table declares a timestamp column. Spec §4.4 \
-         is explicit that the field set is minimal and deliberately carries NO timestamp, so \
-         staleness derives only from the live account row own deletion_requested_at_ms plus \
-         the injected clock. A stamp on the SCHEDULE row is an input a caller could supply if \
-         the scheduler guard is ever weakened, and it is a second source of truth for due-ness \
-         the moment it disagrees with the account row."
-    );
-    assert!(
-        !lower.contains("_at_ms"),
-        "[rb24/table-no-stamp-column] the schedule table declares an `_at_ms` column — see the \
-         timestamp clause above. The one legitimate time-carrying column here is \
-         `scheduled_at`, which the RUNTIME owns."
-    );
-    assert_eq!(
-        m22_count_occurrences(fields, "pub"),
-        3,
-        "[rb24/table-field-count] the schedule table must declare exactly three columns. This \
-         clause is a coarse restatement of the exact-equality pin above, and it exists so a \
-         failure message says WHICH kind of drift happened when both fire."
-    );
-}
 
 // ---------------------------------------------------------------------------
 // rb-24 / PRV1-1 — THE FIRE INSTANT, AS A PURE SEAM.
@@ -6386,1546 +1455,6 @@ fn rb24_deletion_fire_at_ms_parity_with_is_deletion_due() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// rb-24 / PRV1-1 — THE ARM, WIRED INTO `delete_account`.
-// ---------------------------------------------------------------------------
-
-/// PRV1-1 (spec §4.2): `delete_account` arms the deletion reaper as its LAST
-/// step, after the status write, from the SAME `now` the status write used.
-///
-/// Spec §4.2 places the schedule-insert last on purpose: a crash mid-reducer
-/// then leaves `PendingDeletion` with no schedule row, which is always safely
-/// re-driveable by a repeat `delete_account` (idempotent per AUTH-28) or by
-/// `cancel_account_deletion`. The reverse order leaves an armed reaper for an
-/// account that was never transitioned.
-///
-/// SEVEN CLAUSES, each separately tagged. Coarse mutants only ever prove the
-/// first assertion in a test — every later clause needs a surgical mutant that
-/// can be attributed by FAILURE MESSAGE:
-///   statement-form / net count / update shape / ordering / reachability /
-///   brace depth / the two binding-uniqueness rules.
-///
-/// THE `(account,now)` PIN IS THE LOAD-BEARING ONE. Passing the pure
-/// `requested_deletion` constructor a FRESH clock reading instead of the shared
-/// `now` binding compiles, is clippy-clean and reads correctly — but it is a
-/// SECOND clock read, so the instant stamped on the row and the instant the
-/// fire time is derived from are two different numbers. The grace window a
-/// player is actually granted then depends on how long the reducer spent
-/// between the two reads, and nothing anywhere else in the tree would notice.
-/// Pinning the argument list as `(account,now)` forces one binding, read once,
-/// shared by the row stamp and the schedule alike.
-///
-/// Kills: dropping the arm call; a second unreviewed arm; the arm sequenced
-///        BEFORE the status write; the arm re-argued from a fresh clock read or
-///        from a different identity; an early `return` inserted between the
-///        write and the arm; the arm wrapped in a conditional or a never-invoked
-///        closure (both keep every containment and ordering clause green); a
-///        `let now = ...` shadow that re-points the fire time; a `let me = ...`
-///        rebind that arms the reaper for somebody else.
-#[test]
-fn rb24_delete_account_arms_the_reaper_last() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let body = extract_squashed_fn_body(&squashed, &rb24_nd_delete_account_decl())
-        .expect("[rb24/arm-scope] fn delete_account was not found in accounts.rs");
-
-    let statement = format!(";{}ctx,me,now);", rb24_nd_arm_call());
-    assert_eq!(
-        m22_count_occurrences(body, &statement),
-        1,
-        "[rb24/arm-statement] delete_account must contain the bare statement `{statement}` \
-         exactly once. The leading and trailing semicolons pin STATEMENT POSITION, not merely \
-         presence: a call that is an OPERAND of something else — a closure binding, an \
-         iterator adaptor — sits at brace depth 0, satisfies every containment and ordering \
-         clause in this test, and never runs. The argument list pins that the reaper is armed \
-         for the CALLER identity from the SHARED `now` binding."
-    );
-    assert_eq!(
-        rb24_net_arm_mentions(body),
-        1,
-        "[rb24/arm-count] delete_account must name the arm helper exactly once. More than one \
-         is a second schedule row for the same request: PRV1-1 says EXACTLY ONE \
-         AccountDeletionReaperSchedule row, and a second row fires a second cascade that the \
-         PRV1-3 disarm — which deletes every matching row — would mask in testing but which \
-         doubles every side effect in production."
-    );
-
-    let update = concat!(".upd", "ate(requested_deletion(account,now))");
-    assert_eq!(
-        m22_count_occurrences(body, update),
-        1,
-        "[rb24/arm-update-shape] delete_account must stamp the account row exactly once, and \
-         with the SHARED `now` binding rather than a second clock reading. A per-call \
-         `now_ms(ctx)` inside the update compiles, is clippy-clean, and silently decouples the \
-         instant recorded on the row from the instant the reaper fire time is derived from, so \
-         the grace window a player actually receives depends on reducer timing."
-    );
-
-    let at_update = idx(body, update);
-    let at_stmt = idx(body, &statement);
-    assert!(
-        at_update < at_stmt,
-        "[rb24/arm-after-update] the arm call (offset {at_stmt}) must run AFTER the status \
-         write (offset {at_update}). Spec §4.2 places the schedule-insert last so a crash \
-         mid-reducer leaves PendingDeletion with no schedule row — always re-driveable. Armed \
-         first, the same crash leaves a live reaper aimed at an account that was never \
-         transitioned: the m22-s3 PRV1-5 recheck no-ops that fire rather than erasing a live \
-         account, but the one-shot row is consumed for nothing and the request is lost."
-    );
-
-    let region = &body[at_update..at_stmt];
-    assert!(
-        !rb24_has_return_token(region),
-        "[rb24/arm-reachable] a `return` token sits between the status write and the arm call. \
-         Every other clause in this test reasons about POSITION and none about REACHABILITY, \
-         so an early exit here leaves the account PendingDeletion with no reaper armed — a \
-         deletion request that is accepted, displayed to the player, and never carried out. \
-         Region text: {region:?}"
-    );
-
-    assert_eq!(
-        rb24_brace_depth(&body[..at_stmt]),
-        0,
-        "[rb24/arm-depth0] the arm call sits inside a nested block of delete_account rather \
-         than at the top level of the fn body. A conditional arm is a conditional deletion: a \
-         guard that is always false at this point keeps every count-, argument-, ordering- and \
-         region-based clause above green while no schedule row is ever inserted."
-    );
-
-    assert_eq!(
-        m22_count_occurrences(body, "letnow="),
-        1,
-        "[rb24/wire-no-shadow] delete_account must bind `now` exactly once. A second binding \
-         re-points the fire time at a different instant while the textually perfect arm \
-         statement above stays green — the measured shadow shape from the rb-22 red-team, \
-         applied to a clock instead of an identity."
-    );
-    assert_eq!(
-        m22_count_occurrences(body, concat!("letnow=now", "_ms(ctx);")),
-        1,
-        "[rb24/wire-now-source] the single `now` binding in delete_account must come from the \
-         module injected-clock seam. A literal, a cached static or a value derived from a row \
-         would make the grace window something other than wall-clock time since the request."
-    );
-    assert_eq!(
-        m22_count_occurrences(body, "letme="),
-        1,
-        "[rb24/wire-no-rebind] delete_account must bind `me` exactly once. A rebind re-points \
-         the armed schedule at an identity other than the caller, which is a scheduled \
-         irreversible erasure of somebody else account, and every textual clause above stays \
-         green."
-    );
-    assert_eq!(
-        m22_count_occurrences(body, "letme=ctx.sender();"),
-        1,
-        "[rb24/wire-me-source] the single `me` binding must be `ctx.sender()`. The subject \
-         identity of every reducer in this module is the sender and nothing else (ADR-0179 \
-         G2); an identity read from a row or a parameter is the client-supplied-Identity hole."
-    );
-}
-
-/// PRV1-1 (helper body): `arm_deletion_reaper` inserts exactly one schedule row,
-/// with the fire instant derived through `deletion_fire_at_ms`, and does nothing
-/// else.
-///
-/// EXACT EQUALITY over the squashed body, because containment was MEASURED
-/// insufficient for this exact shape family (rb-22 red-team): an `if false`
-/// wrapper around a correct body, a shadowed binding, and an appended foreign
-/// write all satisfy every needle-based clause and are clippy-clean.
-///
-/// The signature pin is separate and carries its own tag: it is what makes the
-/// body pin readable — `requested_at_ms` and `account` in the body mean nothing
-/// unless the parameters they name are the ones the call site passes.
-///
-/// Kills: an inline add of a hand-typed grace literal that bypasses the pure
-///        seam (a second copy of the window, free to drift from game-core, and
-///        an operator retune of the constant would then move only one of them);
-///        a fire time in milliseconds where the API wants microseconds (the
-///        `saturating_mul(1_000)` is part of the pin);
-///        a non-saturating multiply (release-profile overflow panic);
-///        `scheduled_at` built from a duration rather than an absolute instant;
-///        an extra statement, a dead branch, or a shadowed binding.
-#[test]
-fn rb24_arm_deletion_reaper_body_frozen() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let sig = extract_squashed_fn_sig(&squashed, &rb24_nd_arm_decl()).unwrap_or_else(|| {
-        panic!(
-            "[rb24/arm-sig-read] fn arm_deletion_reaper was not found in accounts.rs, or its \
-             signature reaches no opening brace. The frozen-body pin below would then have \
-             nothing to compare and must not report a pass."
-        )
-    });
-    assert_eq!(
-        sig,
-        rb24_frozen_arm_sig(),
-        "[rb24/arm-sig] the arm helper signature is not the frozen one. It must take the \
-         reducer context as `ctx`, the subject as `account: Identity`, and the request instant \
-         as `requested_at_ms: i64` — an OWNER-GENERIC identity parameter, never a \
-         claim-specific or caller-specific name, and an explicit instant rather than a clock \
-         it reads for itself, so the row stamp and the fire time cannot diverge."
-    );
-
-    let body = extract_squashed_fn_body(&squashed, &rb24_nd_arm_decl())
-        .expect("[rb24/arm-body-read] the arm helper body is not brace-balanced");
-    assert_eq!(
-        body,
-        rb24_frozen_arm_body(),
-        "[rb24/arm-body] arm_deletion_reaper must be exactly the single sanctioned insert: one \
-         schedule row, `scheduled_id: 0` for auto_inc, an ABSOLUTE fire instant built from \
-         deletion_fire_at_ms times 1000 with a SATURATING multiply, and the subject identity. \
-         Containment pins were measured insufficient against dead-branch, shadowed-binding and \
-         appended-foreign-write shapes, all clippy-clean; equality kills the family in one \
-         assertion. If the sanctioned body legitimately changes, re-derive this literal from \
-         the spec and update it consciously."
-    );
-}
-
-/// PRV1-1 / PRV1-5 (call-site census, crate-wide): the arm helper is DECLARED
-/// once and CALLED from exactly THREE reviewed sites, all inside `accounts.rs`.
-///
-/// RE-DERIVED 2 -> 4 BY m22-s3b, AND PAID FOR (ADR-0228 D7(f)). Until this slice
-/// there was one arm call, in `delete_account`. m22-s3b adds two more, each of
-/// which is a real obligation rather than a convenience:
-///   * the reaper's NOT-YET-DUE branch (ADR-0228 D3(a)). The runtime deletes the
-///     fired one-shot schedule row whatever the reducer does, so a not-yet-due
-///     fire that simply returns drops the reaper and leaves the account
-///     `PendingDeletion` with nothing armed — forever.
-///   * `ensure_deletion_reapers_armed` (ADR-0221 R2 / ADR-0228 D3(b)), the
-///     init/sync sweep for the population whose one-shot already fired under the
-///     pre-S3b code.
-///
-/// A BARE BUMPED NUMBER WOULD DELETE THE TOOTH, so the widening is compensated
-/// per SITE: exactly one arm call inside `delete_account`'s span, exactly one
-/// inside the reaper's span, exactly one inside the sweep's span, ZERO anywhere
-/// else in the file (asserted as arithmetic, not as a hopeful absence), and the
-/// ARGUMENT LIST pinned at each of the three. Without the argument pins a call
-/// relocated between the three spans still counts 4 while arming the wrong
-/// identity, or arming from a fresh clock read instead of the row's own request
-/// stamp — which extends the grace window on every fire (ADR-0228 D3: the fire
-/// instant is ALWAYS `deletion_fire_at_ms(requested)`, never `now + GRACE`).
-///
-/// SCOPE, STATED HONESTLY: the helper is module-private, so the compiler already
-/// refuses a call from another module. What this census adds on top is (a) a
-/// fourth, unreviewed call site INSIDE accounts.rs, and (b) a same-named twin
-/// declared in another module, which would make a future reader of a grep
-/// believe there is one arm helper when there are two.
-///
-/// SURFACE: `m22_scanned_sources()` — the crate root plus every `mod` lib.rs
-/// declares, with `_tests.rs` siblings excluded by construction (test code is
-/// not compiled into the published wasm, so it cannot arm a live reaper).
-/// `data_lifecycle_manifest_totality_bidirectional` pins that list against the
-/// crate live `mod` declarations in BOTH directions; the coverage clause here is
-/// the local backstop against a census that merely shrank.
-#[test]
-fn rb24_arm_called_exactly_once_in_crate() {
-    let sources = m22_scanned_sources();
-    let paths: Vec<&str> = sources.iter().map(|(p, _)| *p).collect();
-    let n_paths = paths.len();
-    assert!(
-        n_paths >= 20,
-        "[rb24/arm-census-coverage] the crate-wide census lists only {n_paths} source(s) \
-         ({paths:?}); the live tree lists 22. A shrunken census is a census that stopped \
-         looking, and the module a bypass lands in is exactly the one it would be dropped \
-         from."
-    );
-    assert!(
-        paths.contains(&"accounts.rs"),
-        "[rb24/arm-census-owner] the census does not include accounts.rs ({paths:?}), which is \
-         the ONE file with a non-zero budget. Without it the loop below proves only that a set \
-         of modules that were never allowed to name the helper do not name it, and the \
-         sanctioned call site is unmeasured."
-    );
-
-    let mut total = 0usize;
-    let mut decls = 0usize;
-    for (path, src) in &sources {
-        let squashed = stripped_for_scan(src);
-        let n = rb24_net_arm_mentions(&squashed);
-        decls += m22_count_occurrences(&squashed, &rb24_nd_arm_decl());
-        let expected = if *path == "accounts.rs" { 4 } else { 0 };
-        assert_eq!(
-            n, expected,
-            "[rb24/arm-census-site] {path} names the arm helper {n} time(s); exactly {expected} \
-             is allowed. For accounts.rs that budget is the declaration plus the THREE \
-             sanctioned call sites — delete_account (PRV1-1), the reaper not-yet-due re-arm \
-             (PRV1-5, ADR-0228 D3a) and ensure_deletion_reapers_armed (ADR-0221 R2). For every \
-             other module it is zero: an arm outside those three ceremonies schedules an \
-             irreversible cascade for whatever identity IT derives, outside everything this \
-             slice reviewed."
-        );
-        total += n;
-    }
-    assert_eq!(
-        total, 4,
-        "[rb24/arm-census-total] the crate must name the arm helper exactly four times in \
-         total (one declaration plus three reviewed call sites); found {total}."
-    );
-    assert_eq!(
-        decls, 1,
-        "[rb24/arm-decl-unique] the crate must DECLARE the arm helper exactly once; found \
-         {decls}. A same-named twin in a second module makes a grep for the arm site answer \
-         with a helper nothing in this slice constrains."
-    );
-
-    // --- per-SITE scoped pins: the compensation for the 2 -> 4 widening ------
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let arm_call = rb24_nd_arm_call();
-
-    let sites: [(&str, String, String, &str); 3] = [
-        (
-            "delete_account",
-            rb24_nd_delete_account_decl(),
-            format!("{arm_call}ctx,me,now);"),
-            "PRV1-1: the request path arms the reaper for the CALLER, from the SAME `now` \
-             binding the status write used. A fresh clock read here silently decouples the \
-             instant stamped on the row from the instant the fire time derives from, so the \
-             grace window a player actually receives depends on reducer timing.",
-        ),
-        (
-            "account_deletion_reaper",
-            rb24_nd_reaper_decl(),
-            format!("{arm_call}ctx,args.account_identity,requested);"),
-            "PRV1-5 / ADR-0228 D3a: the not-yet-due branch re-arms for the SCHEDULER-supplied \
-             identity, at the instant the pure `reaper_rearm_at_ms` seam returned — which is \
-             derived from the row's OWN `deletion_requested_at_ms`. `now + GRACE` here would \
-             extend the window by a full grace period on every fire, so a player who never \
-             cancels is never deleted.",
-        ),
-        (
-            "ensure_deletion_reapers_armed",
-            m22s3b_nd_ensure_decl(),
-            format!("{arm_call}ctx,identity,requested_at_ms);"),
-            "ADR-0221 R2 / ADR-0228 D3b: the init and sync sweep arms each row the pure \
-             `plan_deletion_rearms` seam emitted, using the pair that seam produced. Deriving \
-             the fire instant here instead would put the R2 population on a different clock \
-             from every other arm site.",
-        ),
-    ];
-
-    let mut scoped_total = 0usize;
-    for (what, decl, statement, why) in &sites {
-        let (start, end) = rb24_fn_body_span(&squashed, decl);
-        let span = &squashed[start..end];
-        let n = rb24_net_arm_mentions(span);
-        assert_eq!(
-            n, 1,
-            "[rb24/arm-call-in-{what}] {what} must name the arm helper EXACTLY once; found \
-             {n}. ZERO means this ceremony arms nothing — {why} MORE THAN ONE is a second \
-             schedule row for the same subject, which fires a second cascade that the PRV1-3 \
-             disarm (it deletes every matching row) would mask in testing and double every \
-             side effect in production."
-        );
-        assert_eq!(
-            m22_count_occurrences(span, statement),
-            1,
-            "[rb24/arm-shape-{what}] the arm call inside {what} must be the exact statement \
-             `{statement}`. {why} A site census alone says NOTHING about the argument list: a \
-             call relocated between the three sanctioned spans, or re-argued at a different \
-             identity or a different instant, keeps every count in this test at its expected \
-             value."
-        );
-        scoped_total += n;
-    }
-    assert_eq!(
-        scoped_total, 3,
-        "[rb24/arm-scoped-total] the three scoped spans account for {scoped_total} arm \
-         call(s); they must account for exactly 3."
-    );
-    let file_total = rb24_net_arm_mentions(&squashed);
-    assert_eq!(
-        file_total - decls - scoped_total,
-        0,
-        "[rb24/arm-zero-elsewhere] accounts.rs names the arm helper {file_total} time(s); the \
-         declaration accounts for {decls} and the three reviewed spans for {scoped_total}, \
-         leaving {} unaccounted. Those are arm sites OUTSIDE every ceremony this slice \
-         reviewed — the shape that matters is one dropped into a reject path or a shared \
-         helper, where it schedules an irreversible cascade for whatever identity is in \
-         scope. This clause is arithmetic rather than a hopeful absence check precisely so a \
-         new site cannot hide behind the per-span counts.",
-        file_total - decls - scoped_total
-    );
-}
-
-/// PRV1-3 (call-site uniqueness, crate-wide): the disarm helper is DECLARED
-/// once and CALLED once anywhere in the compiled crate, and that one call site
-/// is inside `cancel_account_deletion`.
-///
-/// The MIRROR of `rb24_arm_called_exactly_once_in_crate`, and it is not
-/// redundant with the arm census: rb-24 artifact red-team (Finding 2) MEASURED
-/// that `rb24_net_arm_mentions` (arm-minus-disarm arithmetic) nets to ZERO for
-/// an extra disarm call, because the disarm token CONTAINS the arm token — so a
-/// second, unreviewed `disarm_deletion_reaper(ctx, foreign)` in any other
-/// function (the PoC used complete_guest_claim, where the argument is a guest
-/// identity) leaves the arm census reading net == 2 and is invisible. The
-/// disarm deletes EVERY schedule row for the identity it is passed, so an
-/// unreviewed call is an unauthorized deletion-cancel primitive for a foreign
-/// account. This census counts the disarm CALL token DIRECTLY (nothing longer
-/// contains it but its own `fn` declaration, which is the decl budget), never
-/// via subtraction.
-#[test]
-fn rb24_disarm_called_exactly_once_in_crate() {
-    let sources = m22_scanned_sources();
-    let paths: Vec<&str> = sources.iter().map(|(p, _)| *p).collect();
-    let n_paths = paths.len();
-    assert!(
-        n_paths >= 20,
-        "[rb24/disarm-census-coverage] the crate-wide census lists only {n_paths} source(s) \
-         ({paths:?}); the live tree lists 22. A shrunken census is a census that stopped \
-         looking, and the module a bypass lands in is exactly the one it would be dropped from."
-    );
-    assert!(
-        paths.contains(&"accounts.rs"),
-        "[rb24/disarm-census-owner] the census does not include accounts.rs ({paths:?}), which \
-         is the ONE file with a non-zero budget."
-    );
-
-    let disarm_call = rb24_nd_disarm_call();
-    let mut total = 0usize;
-    let mut decls = 0usize;
-    for (path, src) in &sources {
-        let squashed = stripped_for_scan(src);
-        // The decl `fndisarm_deletion_reaper(` also contains the call token, so
-        // a direct count of the call token over the whole file = decl + calls.
-        let n = m22_count_occurrences(&squashed, &disarm_call);
-        decls += m22_count_occurrences(&squashed, &rb24_nd_disarm_decl());
-        let expected = if *path == "accounts.rs" { 2 } else { 0 };
-        assert_eq!(
-            n, expected,
-            "[rb24/disarm-census-site] {path} names the disarm helper {n} time(s); exactly \
-             {expected} is allowed. For accounts.rs that budget is the declaration plus the ONE \
-             sanctioned call site inside cancel_account_deletion. For every other module it is \
-             zero: a disarm outside the cancel ceremony deletes every pending-deletion schedule \
-             row for whatever identity IT derives — an unauthorized cancel for a foreign account, \
-             outside everything this slice reviewed."
-        );
-        total += n;
-    }
-    assert_eq!(
-        total, 2,
-        "[rb24/disarm-census-total] the crate must name the disarm helper exactly twice in \
-         total (one declaration, one call site); found {total}."
-    );
-    assert_eq!(
-        decls, 1,
-        "[rb24/disarm-decl-unique] the crate must DECLARE the disarm helper exactly once; found \
-         {decls}."
-    );
-
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let (start, end) = rb24_fn_body_span(&squashed, &rb24_nd_cancel_decl());
-    assert_eq!(
-        m22_count_occurrences(&squashed[start..end], &disarm_call),
-        1,
-        "[rb24/disarm-call-in-cancel] the single disarm call site must sit inside \
-         cancel_account_deletion's body span. A call relocated elsewhere keeps the crate-wide \
-         count at two while moving the disarm out of the reducer whose reviewers own it."
-    );
-}
-
-// ---------------------------------------------------------------------------
-// rb-24 / PRV1-3 — THE DISARM, WIRED INTO `cancel_account_deletion`.
-// ---------------------------------------------------------------------------
-
-/// PRV1-3 (spec §4.5): `cancel_account_deletion` disarms the pending deletion
-/// reaper, after the idempotency gate and after the status write.
-///
-/// Spec §4.5 names this the ADR-0126 D4 clause and warns that it is routinely
-/// conflated with D6 (the no-self-disarm rule for a FIRED one-shot). They are
-/// different: D6 says a reaper must not delete its own fired row; D4 says every
-/// OTHER mutation site must actively delete a schedule row that would otherwise
-/// fire stale. Without the disarm, a cancelled account is `Active` with an armed
-/// reaper still pointing at it. Since m22-s3 the reaper rechecks status, so that
-/// fire no-ops rather than cascading — which makes the disarm defense in depth
-/// and scheduler-slot hygiene rather than the only line, and PRV1-3 still names
-/// the delete as required. Two independent refusals is the design, not one.
-///
-/// THE ORDERING IS BEHAVIOURAL, NOT COSMETIC. Placed after the
-/// `needs_cancel_write` gate, the disarm is skipped on the idempotent no-op path
-/// (an already-Active account has nothing armed), so a second cancel does not
-/// sweep a row that a racing third-party request just armed. Placed after the
-/// status write, a rollback of the write also rolls back the disarm.
-///
-/// ONE OF THE TWO NEGATIVE CLAUSES IS ARITHMETIC, NOT A SUBSTRING TEST, and the
-/// reason is measured: the disarm call token CONTAINS the arm call token (it is
-/// the same name under a three-letter prefix), so a literal `the arm token does
-/// not appear in this body` assertion is unsatisfiable against the CORRECT
-/// implementation. See `rb24_net_arm_mentions`. The mirror-image clause — no
-/// disarm inside the request path — needs no such care, because the containment
-/// runs only one way.
-///
-/// Kills: dropping the disarm; a second unreviewed disarm; the disarm sequenced
-///        before the gate (sweeping a freshly armed row on an idempotent
-///        re-cancel) or before the status write; an early `return` between them;
-///        a conditional or closure-wrapped disarm; a `me` rebind that disarms
-///        somebody else schedule; the two polarities crossing — an arm inside
-///        cancel, or a disarm inside delete_account.
-#[test]
-fn rb24_cancel_disarms_the_reaper() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let body = extract_squashed_fn_body(&squashed, &rb24_nd_cancel_decl())
-        .expect("[rb24/disarm-scope] fn cancel_account_deletion was not found in accounts.rs");
-
-    let statement = format!(";{}ctx,me);", rb24_nd_disarm_call());
-    assert_eq!(
-        m22_count_occurrences(body, &statement),
-        1,
-        "[rb24/disarm-statement] cancel_account_deletion must contain the bare statement \
-         `{statement}` exactly once. The semicolons pin STATEMENT POSITION: a call that is an \
-         operand of a closure binding or an iterator adaptor sits at brace depth 0, satisfies \
-         every containment and ordering clause here, and never runs — so the cancelled account \
-         keeps its armed reaper."
-    );
-    assert_eq!(
-        m22_count_occurrences(body, &rb24_nd_disarm_call()),
-        1,
-        "[rb24/disarm-count] cancel_account_deletion must name the disarm helper exactly once."
-    );
-
-    let gate = concat!("needs_cancel", "_write(");
-    let update = concat!(".upd", "ate(cancelled_deletion(account))");
-    assert_eq!(
-        m22_count_occurrences(body, update),
-        1,
-        "[rb24/disarm-update-shape] cancel_account_deletion must reverse the status exactly \
-         once, through the pure `cancelled_deletion` constructor (which is where the AUTH-29 \
-         claim-provenance preservation lives), never through a hand-built row literal."
-    );
-
-    let at_gate = idx(body, gate);
-    let at_update = idx(body, update);
-    let at_stmt = idx(body, &statement);
-    assert!(
-        at_gate < at_stmt,
-        "[rb24/disarm-after-gate] the disarm (offset {at_stmt}) must run AFTER the \
-         needs_cancel_write idempotency gate (offset {at_gate}). Ahead of the gate it also runs \
-         on the already-Active no-op path, where there is nothing legitimately armed — so a \
-         repeat cancel becomes an unconditional schedule sweep for that identity."
-    );
-    assert!(
-        at_update < at_stmt,
-        "[rb24/disarm-after-update] the disarm (offset {at_stmt}) must run AFTER the status \
-         write (offset {at_update}), mirroring the arm-last rule on the request side: the write \
-         is the step that can fail, and the disarm must not outlive a rolled-back reversal."
-    );
-
-    let region = &body[at_update..at_stmt];
-    assert!(
-        !rb24_has_return_token(region),
-        "[rb24/disarm-reachable] a `return` token sits between the status write and the disarm. \
-         Every other clause here reasons about POSITION and none about REACHABILITY, so an \
-         early exit leaves an Active account with a live reaper still aimed at it. The m22-s3 \
-         PRV1-5 recheck no-ops that fire, so this is the second of two independent refusals \
-         rather than the last one — PRV1-3 still requires the delete. Region text: {region:?}"
-    );
-    assert_eq!(
-        rb24_brace_depth(&body[..at_stmt]),
-        0,
-        "[rb24/disarm-depth0] the disarm sits inside a nested block rather than at the top \
-         level of cancel_account_deletion. A conditional disarm is a conditional cancel: a \
-         guard that is always false here keeps every other clause green while the reaper stays \
-         armed."
-    );
-
-    assert_eq!(
-        m22_count_occurrences(body, "letme="),
-        1,
-        "[rb24/disarm-no-rebind] cancel_account_deletion must bind `me` exactly once. A rebind \
-         disarms a different identity schedule row: the caller stays armed and somebody else \
-         pending deletion is silently cancelled, while every textual clause above stays green."
-    );
-    assert_eq!(
-        m22_count_occurrences(body, "letme=ctx.sender();"),
-        1,
-        "[rb24/disarm-me-source] the single `me` binding must be `ctx.sender()`."
-    );
-
-    assert_eq!(
-        rb24_net_arm_mentions(body),
-        0,
-        "[rb24/cancel-never-arms] cancel_account_deletion names the ARM helper. The two \
-         polarities must never cross: arming inside the cancel path re-schedules the cascade \
-         the player just cancelled. Counted as arm-minus-disarm arithmetic on purpose — the \
-         disarm token literally contains the arm token, so a substring ban would be \
-         unsatisfiable against the correct implementation."
-    );
-
-    let delete_body = extract_squashed_fn_body(&squashed, &rb24_nd_delete_account_decl())
-        .expect("[rb24/disarm-scope-delete] fn delete_account was not found in accounts.rs");
-    assert_eq!(
-        m22_count_occurrences(delete_body, &rb24_nd_disarm_call()),
-        0,
-        "[rb24/delete-never-disarms] delete_account names the DISARM helper. A disarm on the \
-         request path deletes the row the same reducer just armed — a deletion request that \
-         reports success and schedules nothing."
-    );
-}
-
-/// PRV1-3 (helper body): `disarm_deletion_reaper` collects the matching schedule
-/// ids through the `account_identity` btree index and then deletes each by
-/// primary key, and does nothing else.
-///
-/// EXACT EQUALITY, and the two-phase COLLECT-THEN-DELETE shape is the point:
-/// deleting inside the filter iteration mutates the table being iterated. The
-/// shipped `disarm_claim_reaper` is the precedent this mirrors byte for byte.
-///
-/// Kills: filtering on the wrong column (a filter on `scheduled_id` type-checks
-///        against a u64 and disarms nothing);
-///        deleting by the wrong key (a delete keyed on the filtered column
-///        rather than the primary key);
-///        a single-row `.find(..)` in place of the filter, which leaves every
-///        second armed row behind if two ever coexist;
-///        an unfiltered full-table sweep, which disarms every OTHER pending
-///        account deletion in the database — the catastrophic direction, and one
-///        that no containment pin distinguishes from the correct body;
-///        a dead branch, an extra binding, a shadowed `ids`, a shadowed loop
-///        `id`, or an appended foreign write.
-#[test]
-fn rb24_disarm_deletion_reaper_body_frozen() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let sig = extract_squashed_fn_sig(&squashed, &rb24_nd_disarm_decl()).unwrap_or_else(|| {
-        panic!(
-            "[rb24/disarm-sig-read] fn disarm_deletion_reaper was not found in accounts.rs, or \
-             its signature reaches no opening brace. The frozen-body pin below would then have \
-             nothing to compare and must not report a pass."
-        )
-    });
-    assert_eq!(
-        sig,
-        rb24_frozen_disarm_sig(),
-        "[rb24/disarm-sig] the disarm helper signature is not the frozen one. It must take the \
-         reducer context as `ctx` and an OWNER-GENERIC `account: Identity`, so a later arm of \
-         S3 — or the cascade itself — can reuse it verbatim rather than growing a second, \
-         subtly different sweep."
-    );
-
-    let body = extract_squashed_fn_body(&squashed, &rb24_nd_disarm_decl())
-        .expect("[rb24/disarm-body-read] the disarm helper body is not brace-balanced");
-    assert_eq!(
-        body,
-        rb24_frozen_disarm_body(),
-        "[rb24/disarm-body] disarm_deletion_reaper must be exactly the two-phase \
-         collect-then-delete sequence: filter the account_identity btree index, collect the \
-         primary keys, then delete each by primary key. Deleting inside the filter iteration \
-         mutates the table being iterated; an unfiltered sweep disarms every other pending \
-         deletion in the database; and a filter on the wrong column disarms nothing at all — \
-         all three read identically to every containment pin."
-    );
-}
-
-// ---------------------------------------------------------------------------
-// rb-24 / E1 + S3-boundary — THE SCHEDULED REDUCER.
-// ---------------------------------------------------------------------------
-
-/// E1 (spec §4.4): the deletion reaper rejecting scheduler-only guard is its
-/// FIRST statement.
-///
-/// The needle is pinned as the shared guard IMMEDIATELY FOLLOWED BY `Err(`, not
-/// as the bare guard, and that is a red-team finding rather than
-/// belt-and-braces. `scheduler_guard_needle()` deliberately stops at the
-/// `return` token so a future refactor to the equally valid silent-ignore
-/// `return Ok(());` form does not false-RED elsewhere — which makes the bare
-/// needle a FORGEABLE PREFIX here. Because `squash_ws` fuses the token with
-/// whatever follows it, a body whose guard branch opens with a call to a helper
-/// whose NAME merely starts with the six letters of that token (`returned_...`,
-/// say) contains the whole needle, compiles, is clippy-clean, and rejects
-/// nobody. Requiring the body to START WITH guard-then-`Err(` closes it.
-///
-/// Why first: this reducer takes the scheduled struct as an argument, and the
-/// ONLY thing that makes a struct-typed reducer argument safe (the ADR-0195 D6
-/// carve-out that `g2_no_reducer_takes_identity_parameter` depends on) is that
-/// the body rejects every non-scheduler caller before reading a field of it.
-/// Without the guard, any client can invoke this reducer directly with a
-/// hand-built row naming any victim identity.
-///
-/// Kills: the neutered `let scheduler_only = ...; let _ = scheduler_only;` form,
-///        which keeps the comparison and rejects nobody;
-///        a guard that compares `ctx.sender()` against anything other than
-///        `ctx.database_identity()`;
-///        a guard demoted to a non-rejecting statement;
-///        a guard moved below any other statement.
-#[test]
-fn rb24_deletion_reaper_scheduler_guard_is_first_statement() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let body = extract_squashed_fn_body(&squashed, &rb24_nd_reaper_decl())
-        .expect("[rb24/reaper-scope] fn account_deletion_reaper was not found in accounts.rs");
-    assert!(
-        !body.is_empty(),
-        "[rb24/reaper-nonempty] the deletion reaper body is empty, so the guard clause below \
-         would be asserting a prefix of nothing."
-    );
-
-    let sig = extract_squashed_fn_sig(&squashed, &rb24_nd_reaper_decl())
-        .expect("[rb24/reaper-sig-read] the deletion reaper signature reaches no opening brace");
-    assert!(
-        sig.contains(concat!("AccountDeletion", "ReaperSchedule")),
-        "[rb24/reaper-arg-type] the deletion reaper must take the SAME-FILE scheduled struct as \
-         its argument type. That equality is the entire precondition of the ADR-0195 D6 \
-         carve-out that lets a reducer take a composite argument at all; any other composite \
-         type is a client-supplied payload. Signature read: {sig:?}"
-    );
-
-    let guard = scheduler_guard_needle();
-    let rejecting = format!("{guard}Err(");
-    assert!(
-        body.starts_with(rejecting.as_str()),
-        "[rb24/reaper-guard-first] the deletion reaper body must START with the rejecting \
-         scheduler guard, and the rejection must be the guard IMMEDIATELY following token. The \
-         shared guard needle deliberately stops at `return` so a silent-ignore refactor does \
-         not false-RED elsewhere, which makes it a forgeable PREFIX here: a body opening with \
-         the same condition and a helper call that returns nothing contains it, compiles, and \
-         rejects nobody — leaving any client free to invoke this reducer with a hand-built row \
-         naming any victim. Body read: {body:?}"
-    );
-    assert_eq!(
-        m22_count_occurrences(body, &guard),
-        1,
-        "[rb24/reaper-guard-unique] the deletion reaper must carry exactly one scheduler guard. \
-         A second one is either dead code or a decoy that steers a first-hit anchored scan."
-    );
-}
-
-// ---------------------------------------------------------------------------
-// m22-s3b call needles. AUTHORED FROM THE PLAN (ADR-0228 D1/D2), never derived
-// by printing what an implementation produced. Split mid-token, per the file
-// header rule, so this file never carries a contiguous cascade call site that a
-// whole-tree scanner could count as a real one.
-//
-// EVERY ONE OF THESE IS A SECOND, INDEPENDENT TRANSCRIPTION of a fragment of
-// `rb24_frozen_reaper_body()`, which is split at DIFFERENT points on purpose.
-// `rb24_deletion_reaper_body_is_pinned_cascade` asserts the two agree, so a
-// silent edit to one artefact cannot move the other with it.
-// ---------------------------------------------------------------------------
-
-/// The delegated-call SUBJECT, spelled at every cascade call site (ADR-0228,
-/// RT-3): the reducer context plus the identity the SCHEDULER supplied, passed
-/// directly rather than through a local binding.
-///
-/// ARGUMENT, NOT RESULT (rb-65, ADR-0243). The export purge's return value IS
-/// bound now (`let export_chunks = crate::privacy::purge_export_bundles(ctx,
-/// args.account_identity);`), because the cascade line publishes that count —
-/// but the needle matches the ARGUMENT list, which is unchanged, so the census
-/// below is still exactly fifteen. rb-65's own binding pin
-/// (`rb65_reaper_binds_the_purge_result`) spells the whole statement, prefix
-/// included, and `cascade_fields(args.account_identity, export_chunks)` does NOT
-/// contain this needle (no `(ctx,` prefix), so the new statement cannot inflate
-/// the count either.
-fn m22s3b_nd_subject() -> String {
-    concat!("(ctx,args.account", "_identity)").to_string()
-}
-
-fn m22s3b_nd_resolver_call() -> String {
-    concat!("crate::resolve_all_live", "_interactions(").to_string()
-}
-
-fn m22s3b_nd_erase_monsters() -> String {
-    concat!("crate::monster_mgmt::erase", "_monsters(").to_string()
-}
-
-fn m22s3b_nd_erase_inventory() -> String {
-    concat!("crate::inventory::erase", "_inventory(").to_string()
-}
-
-fn m22s3b_nd_erase_npc_state() -> String {
-    concat!("crate::npc::erase", "_npc_state(").to_string()
-}
-
-fn m22s3b_nd_erase_heal_cooldown() -> String {
-    concat!("crate::raising::erase", "_heal_cooldown(").to_string()
-}
-
-fn m22s3b_nd_erase_wallet() -> String {
-    concat!("crate::economy::erase", "_wallet(").to_string()
-}
-
-fn m22s3b_nd_erase_playtest_events() -> String {
-    concat!("crate::playtest::erase", "_playtest_events(").to_string()
-}
-
-fn m22s3b_nd_erase_trade_offers() -> String {
-    concat!("crate::trading::erase", "_trade_offers(").to_string()
-}
-
-fn m22s3b_nd_erase_pvp_rows() -> String {
-    concat!("crate::pvp::erase", "_pvp_rows(").to_string()
-}
-
-fn m22s3b_nd_purge_bundles() -> String {
-    concat!("crate::privacy::purge_export", "_bundles(").to_string()
-}
-
-fn m22s3b_nd_erase_character_rows() -> String {
-    concat!("crate::erase_character", "_rows(").to_string()
-}
-
-fn m22s3b_nd_erase_player_sessions() -> String {
-    concat!("crate::erase_player", "_sessions(").to_string()
-}
-
-fn m22s3b_nd_erase_evolution_notices() -> String {
-    concat!("crate::evolution::erase_evolution", "_notices(").to_string()
-}
-
-fn m22s3b_nd_anonymize_names() -> String {
-    concat!("crate::ranking::anonymize_display", "_names(").to_string()
-}
-
-fn m22s3b_nd_anonymize_battles() -> String {
-    concat!("crate::battle::anonymize", "_battles(").to_string()
-}
-
-/// The one sanctioned row write the reaper performs itself (6e). Every other
-/// step is delegated to the owning module (G5 MODULE_WRITE_ISOLATION).
-fn m22s3b_nd_account_update() -> String {
-    concat!("ctx.db.account().identity().upd", "ate(").to_string()
-}
-
-fn m22s3b_nd_terminal_ctor() -> String {
-    concat!("terminal_acc", "ount(").to_string()
-}
-
-fn m22s3b_nd_anonymized_ctor() -> String {
-    concat!("anonymized_acc", "ount(").to_string()
-}
-
-/// The pure re-arm seam, as the not-yet-due branch calls it.
-fn m22s3b_nd_rearm_seam() -> String {
-    concat!("reaper_rearm_at", "_ms(&account,now)").to_string()
-}
-
-/// The FIFTEEN delegated cascade calls, in the plan order (ADR-0228 D2, step
-/// 6e added by rb-73 / ADR-0245, the monster-adjacent evolution-notice erase
-/// added by 20r-d / ADR-0254 D6).
-/// Label first so a failure names the step rather than a needle.
-fn m22s3b_delegated_calls() -> Vec<(&'static str, String)> {
-    vec![
-        (
-            "6a resolve_all_live_interactions",
-            m22s3b_nd_resolver_call(),
-        ),
-        ("6b monster + monster_pub", m22s3b_nd_erase_monsters()),
-        (
-            "6b pending_evolution_notice",
-            m22s3b_nd_erase_evolution_notices(),
-        ),
-        ("6b inventory", m22s3b_nd_erase_inventory()),
-        (
-            "6b npc dialogue/quest/conversation",
-            m22s3b_nd_erase_npc_state(),
-        ),
-        ("6b heal_cooldown", m22s3b_nd_erase_heal_cooldown()),
-        ("6b wallet", m22s3b_nd_erase_wallet()),
-        ("6b playtest_event", m22s3b_nd_erase_playtest_events()),
-        (
-            "6b trade_offer + its schedule",
-            m22s3b_nd_erase_trade_offers(),
-        ),
-        (
-            "6b battle_challenge + battle_action",
-            m22s3b_nd_erase_pvp_rows(),
-        ),
-        ("6b export_bundle", m22s3b_nd_purge_bundles()),
-        ("6d character", m22s3b_nd_erase_character_rows()),
-        ("6e player_session", m22s3b_nd_erase_player_sessions()),
-        ("6c player + profile names", m22s3b_nd_anonymize_names()),
-        ("6c battle + its joins", m22s3b_nd_anonymize_battles()),
-    ]
-}
-
-/// S3B CASCADE (m22-s3b, PRV1-6a..6e + PRV1-5 re-arm): the deletion reaper body
-/// is EXACTLY the rejecting scheduler guard, the scheduler-keyed row lookup, ONE
-/// clock read, the recheck WITH its re-arm branch, the fifteen delegated
-/// cascade calls in spec para-4.4 order, the terminal stamp, and `Ok(())`.
-///
-/// WHAT CHANGED, AND WHY THE PIN SURVIVED IT AGAIN. rb-24 froze a bare no-op;
-/// m22-s3 replaced that with the PRV1-5 recheck skeleton; m22-s3b replaces that
-/// with the cascade. ADR-0221 R1 asked for retirement once the body grew and
-/// ADR-0228 D7(a) records the deliberate deviation for the third time: this is
-/// the widest and most dangerous body in the module, every statement in it is
-/// irreversible, and a containment pin cannot tell a complete cascade from one
-/// missing a step. Retiring it is how an unreviewed step lands.
-///
-/// CLAUSE ORDER IS LOAD-BEARING (red-team B1). Every needle clause runs BEFORE
-/// the equality and is AUTHORED FROM THE PLAN, never derived by printing what an
-/// implementation produced. Equality alone is forgeable in the one direction
-/// that matters: an arm that inverts the recheck, drops a delegated erase, or
-/// stamps the terminal marker before the cascade, and then regenerates the
-/// equality literal from its own output, is GREEN on equality alone.
-///
-/// COUNT BEFORE INDEX, EVERYWHERE (RT-18). Every ordering clause asserts the two
-/// needles occur EXACTLY ONCE before comparing their offsets: a first-hit index
-/// over a decoy second occurrence is a steerable anchor, and this body is long
-/// enough for a decoy to hide in.
-///
-/// The scan blanks string literals, so the reject reason reads as an empty
-/// argument — the reason TEXT is covered by `reject_message_contracts_present`,
-/// not here, and that split is deliberate: a message contract and a control-flow
-/// contract should not fail as one another.
-///
-/// Kills: an inverted recheck (the polarity needle counts zero); a not-due
-///        branch that returns without re-arming, which drops the reaper the
-///        runtime has already deleted and strands the account PendingDeletion
-///        forever; a re-arm hoisted OUT of the not-due branch, which re-arms an
-///        account the cascade is about to erase; a lookup keyed on the sender;
-///        a SECOND clock read, which lets the recheck and the re-arm fire time
-///        disagree; any delegated call dropped, reordered across the two pinned
-///        boundaries, or re-argued at a local binding instead of
-///        `args.account_identity`; `erase_character_rows` moved AFTER the player
-///        tombstone (the §4.4 character-before-player order); the terminal stamp
-///        written anywhere but last, or more than once; ANY direct row write in
-///        this body other than that one account update (every other step must be
-///        delegated to its owning module, G5).
-#[test]
-fn rb24_deletion_reaper_body_is_pinned_cascade() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let body = extract_squashed_fn_body(&squashed, &rb24_nd_reaper_decl())
-        .expect("[rb24/reaper-body-scope] fn account_deletion_reaper was not found");
-    let frozen = rb24_frozen_reaper_body();
-
-    // --- (0) TWO-TRANSCRIPTION INDEPENDENCE ---------------------------------
-    // Every plan needle used below must ALSO be a substring of the frozen
-    // literal, which is split at different points. If the two disagree, one of
-    // them was edited alone and the pin has silently stopped meaning what its
-    // messages claim.
-    let polarity = m22s3_nd_reaper_recheck_guard();
-    assert!(
-        frozen.contains(polarity.as_str()),
-        "[rb24/reaper-needle-independence] the recheck needle {polarity:?} and the \
-         frozen-body literal are two INDEPENDENT transcriptions of the same plan statement, \
-         and they disagree — so one of them was edited alone. They were once built from a \
-         single helper, and a two-token edit inside that helper then moved the needle and \
-         the expected literal together, leaving an inverted recheck green. This clause is \
-         what makes independence checkable instead of merely asserted in a comment."
-    );
-    for (label, needle) in m22s3b_delegated_calls() {
-        assert!(
-            frozen.contains(needle.as_str()),
-            "[rb24/reaper-needle-independence] the plan needle for step {label} ({needle:?}) \
-             is not a substring of the frozen body literal. The two are deliberately split \
-             at different points so neither can be edited into agreement with the other by \
-             accident; a mismatch means one artefact moved alone and every clause below is \
-             now asserting something other than the plan."
-        );
-    }
-
-    // rb-65 (ADR-0243) widened this literal by three fragments — the `let`
-    // prefix on the export purge, the fragment-builder binding and the terminal
-    // emission. Each is transcribed a SECOND time, at different split points, as
-    // an rb65 needle helper, and each of those helpers is what
-    // `rb65_reaper_emits_one_cascade_observation` asserts against the live body.
-    // Without these two clauses the widening would collapse the two artefacts
-    // back into one: an edit to a needle would move the expected literal with it
-    // and both tests would agree on a body nobody reviewed.
-    let purge_binding = rb65_nd_purge_binding();
-    assert!(
-        frozen.contains(purge_binding.as_str()),
-        "[rb24/reaper-needle-independence] the rb-65 bound-purge needle {purge_binding:?} is \
-         not a substring of the frozen body literal. The two are transcribed separately and \
-         split at different points, so a mismatch means one artefact was edited alone."
-    );
-    let emit_tail = rb65_frozen_emit_tail();
-    assert!(
-        frozen.ends_with(emit_tail.as_str()),
-        "[rb24/reaper-needle-independence] the frozen body literal does not END with the rb-65 \
-         emission tail {emit_tail:?}. Asserted as a SUFFIX rather than a substring on purpose: \
-         it is the same statement `rb65_reaper_emits_one_cascade_observation` requires of the \
-         live body, so a divergence here means the two transcriptions disagree — and a \
-         fragment appended after the emission INSIDE this literal would ratify a statement \
-         that runs once the host log line already claims the cascade completed."
-    );
-
-    // --- (1) SUBJECT: every delegated call names the scheduler's identity ----
-    let subject = m22s3b_nd_subject();
-    let n_subject = m22_count_occurrences(body, &subject);
-    assert_eq!(
-        n_subject, 15,
-        "[rb24/reaper-subject-census] the reaper body must pass {subject:?} to EXACTLY 15 \
-         delegated calls (the resolver, nine erases — the evolution-notice queue joined them \
-         in 20r-d — the export purge, the character join-sweep, the player_session erase, the \
-         display-name anonymize and the battle anonymize); found \
-         {n_subject}. Spelling the subject at every call site is what makes a re-pointed \
-         `let me = ...` unrepresentable: one local binding above the cascade would retarget \
-         fifteen irreversible steps at another account while every call site still reads \
-         correctly. FEWER means a step was dropped or re-argued at a binding; MORE means an \
-         unreviewed sixteenth delegated call."
-    );
-    let n_sender = m22_count_occurrences(body, "ctx.sender()");
-    assert_eq!(
-        n_sender, 1,
-        "[rb24/reaper-sender-census] the reaper body must name `ctx.sender()` EXACTLY once \
-         — inside the scheduler-only guard; found {n_sender}. This reducer is invoked by \
-         the SCHEDULER, so after the guard `ctx.sender()` IS the module identity: a second \
-         use anywhere below it derives the cascade subject from the module rather than from \
-         the schedule row, which erases nothing and stamps the wrong account terminal."
-    );
-
-    // The ROW LOOKUP subject, carried forward from the m22-s3 pin this test
-    // re-derives (r2). The 14-count census above proves every DELEGATED call
-    // names the scheduler-supplied identity; it says nothing about the lookup
-    // that decides WHICH ROW the cascade is about, because that call spells
-    // `find(args.account_identity)` with no `ctx,` prefix and therefore matches
-    // no delegated-subject needle. Keeping the m22-s3 needle in service — rather
-    // than dropping it when the subject clause was rewritten — is what stops the
-    // lookup silently re-keying on the sender, which after the scheduler guard
-    // is the MODULE identity: the recheck would then run against the wrong row,
-    // or against no row at all, and the equality literal would be regenerated
-    // around it.
-    let subject = m22s3_nd_reaper_row_lookup();
-    assert!(
-        frozen.contains(subject.as_str()),
-        "[rb24/reaper-needle-independence] the row-lookup needle {subject:?} is not a \
-         substring of the frozen body literal. The two are transcribed separately and split \
-         at different points, so a mismatch means one artefact was edited alone and the \
-         clause below is asserting something other than the plan."
-    );
-    assert_eq!(
-        m22_count_occurrences(body, &subject),
-        1,
-        "[rb24/reaper-recheck-subject] the reaper must look the account row up by the \
-         identity the SCHEDULER supplied, {subject:?}, EXACTLY once. Authored from the plan \
-         and asserted ahead of the equality: the scheduler guard has already proven the \
-         sender IS the module, so a lookup keyed on the sender reads the module identity — \
-         the recheck then runs against the wrong row, or against no row at all, and a \
-         regenerated equality literal would ratify it."
-    );
-
-    // --- (2) POLARITY + RE-ARM, both inside the not-due branch --------------
-    assert_eq!(
-        m22_count_occurrences(body, &polarity),
-        1,
-        "[rb24/reaper-recheck-polarity] the reaper body must carry the PRV1-5 recheck AND \
-         its re-arm branch {polarity:?} EXACTLY once. Authored from the plan and asserted \
-         ahead of the equality on purpose: an arm that drops the negation, or empties the \
-         re-arm branch, and then regenerates the equality literal from its own output is \
-         green on equality alone — and a recheck of the wrong polarity cascades on precisely \
-         the accounts that are Active, already terminal, or still inside their grace window."
-    );
-    let rearm_seam = m22s3b_nd_rearm_seam();
-    assert_eq!(
-        m22_count_occurrences(body, &rearm_seam),
-        1,
-        "[rb24/reaper-rearm-seam] the reaper must consult {rearm_seam:?} EXACTLY once. The \
-         re-arm decision is a PURE seam (ADR-0228 D3) precisely so its truth table is a \
-         behavioural test rather than a source scan; a second consultation, or an inline \
-         re-derivation in place of it, moves that decision back out of reach of \
-         `m22s3b_reaper_rearm_at_ms_truth_table`."
-    );
-    assert_eq!(
-        rb24_net_arm_mentions(body),
-        1,
-        "[rb24/reaper-arms-once] the reaper body must name the arm helper EXACTLY once — \
-         the one re-arm inside the not-yet-due branch. ZERO is the m22-s3 defect this slice \
-         exists to close: the runtime deletes the fired one-shot row regardless of outcome, \
-         so a not-yet-due fire that returns without re-arming drops the schedule and leaves \
-         the account PendingDeletion with nothing armed, forever. MORE THAN ONE arms a \
-         second cascade for the same request."
-    );
-
-    // --- (3) ORDERING, count before index (RT-18) ---------------------------
-    let resolver = m22s3b_nd_resolver_call();
-    let first_erase = m22s3b_nd_erase_monsters();
-    assert_eq!(
-        m22_count_occurrences(body, &resolver),
-        1,
-        "[rb24/reaper-resolver-once] the reaper must call the shared live-interaction \
-         resolver {resolver:?} EXACTLY once. ZERO leaves a deleted account's live trades, \
-         PvP battles, wild battle and outgoing challenges pointing at rows the next twelve \
-         statements erase — the soft-lock the spec para-4.4 step-1 note calls the single \
-         highest-value correction of the whole design."
-    );
-    assert_eq!(
-        m22_count_occurrences(body, &first_erase),
-        1,
-        "[rb24/reaper-first-erase-once] the reaper must call {first_erase:?} EXACTLY once. \
-         The ordering clause below anchors on it, so a decoy second occurrence would steer \
-         a first-hit index at a statement nobody reviewed."
-    );
-    let at_resolver = idx(body, &resolver);
-    let at_first_erase = idx(body, &first_erase);
-    assert!(
-        at_resolver < at_first_erase,
-        "[rb24/reaper-resolve-before-erase] PRV1-6a: the resolver (offset {at_resolver}) \
-         must run BEFORE the first erase (offset {at_first_erase}). Every force-resolve \
-         helper reads the rows the erases delete — a trade offer's monster ids, a battle's \
-         party — so resolving afterwards resolves against rows that are already gone and \
-         leaves the surviving counterparty in a battle or trade that can never settle."
-    );
-
-    let char_rows = m22s3b_nd_erase_character_rows();
-    let names = m22s3b_nd_anonymize_names();
-    assert_eq!(
-        m22_count_occurrences(body, &char_rows),
-        1,
-        "[rb24/reaper-character-once] the reaper must sweep the character join {char_rows:?} \
-         EXACTLY once; the ordering clause below anchors on it."
-    );
-    assert_eq!(
-        m22_count_occurrences(body, &names),
-        1,
-        "[rb24/reaper-names-once] the reaper must anonymize the display names {names:?} \
-         EXACTLY once; the ordering clause below anchors on it."
-    );
-    let at_char = idx(body, &char_rows);
-    let at_names = idx(body, &names);
-    assert!(
-        at_char < at_names,
-        "[rb24/reaper-character-before-player] PRV1-6d: the `character` join-sweep (offset \
-         {at_char}) must precede the `player` tombstone write (offset {at_names}). Spec \
-         para 3 pins that order explicitly: `player` survives as the anchor every join and \
-         live multi-user row points at, and `character` is reached ONLY through \
-         `player.entity_id` — anonymize the player first and the join key is still there, \
-         but the ordering the spec gate depends on is gone and the next reader cannot tell \
-         which of the two rows is the anchor."
-    );
-
-    // --- (4) THE TERMINAL STAMP IS THE LAST, AND THE ONLY, ROW WRITE --------
-    let update = m22s3b_nd_account_update();
-    assert_eq!(
-        m22_count_occurrences(body, &update),
-        1,
-        "[rb24/reaper-update-once] the reaper must write the account row EXACTLY once, \
-         through {update:?}. ZERO means PRV1-6e never stamps `terminal_at_ms` and the \
-         cascade repeats on every re-arm; MORE THAN ONE is a second, unreviewed account \
-         write, and a stamp written before the cascade completes is exactly what PRV1-6e \
-         forbids."
-    );
-    for (verb, what) in [
-        (concat!(".ins", "ert("), "insert"),
-        (concat!(".del", "ete("), "delete"),
-    ] {
-        assert_eq!(
-            m22_count_occurrences(body, verb),
-            0,
-            "[rb24/reaper-delegates-every-write] the reaper body performs a direct `{what}` \
-             row write. G5 MODULE_WRITE_ISOLATION closes accounts.rs at its four owned \
-             tables, so EVERY erase and anonymize step must go through a `pub(crate)` \
-             helper in the table's owning module (the `rekey_all` delegation precedent). A \
-             direct write here is a write nobody in the owning module reviewed, and it is \
-             invisible to that module's own shape pin."
-        );
-    }
-    let terminal_ctor = m22s3b_nd_terminal_ctor();
-    assert_eq!(
-        m22_count_occurrences(body, &terminal_ctor),
-        1,
-        "[rb24/reaper-terminal-once] {terminal_ctor:?} must appear EXACTLY once in the \
-         reaper body. This is the reachability half of ADR-0228 D5: the legality of the \
-         terminal write is a theorem that holds only because the recheck has already \
-         established PendingDeletion with a request stamp, and the debug_assert inside the \
-         constructor compiles out of release. A second stamp site is a second, unproven \
-         path to the one irreversible state in this module."
-    );
-    assert_eq!(
-        m22_count_occurrences(body, &m22s3b_nd_anonymized_ctor()),
-        1,
-        "[rb24/reaper-anonymize-once] the account row must be composed through \
-         `anonymized_account(` EXACTLY once. Stamping `terminal_at_ms` WITHOUT it leaves the \
-         live `auth_issuer` on a row the spec para 3 requires to carry the tombstone \
-         sentinel — a completed deletion that still records which OAuth provider the person \
-         signed in with."
-    );
-    let at_update = idx(body, &update);
-    let at_terminal = idx(body, &terminal_ctor);
-    assert!(
-        at_update < at_terminal,
-        "[rb24/reaper-terminal-inside-update] the terminal constructor (offset {at_terminal}) \
-         must sit INSIDE the one account update (offset {at_update}), not in a separate \
-         earlier statement. A `let row = terminal_account(..);` hoisted above the cascade \
-         computes the tombstone before the erases run and then writes it whatever happened \
-         in between — PRV1-6e requires the stamp only AFTER 6a-6d complete without error."
-    );
-    assert!(
-        at_names < at_update,
-        "[rb24/reaper-terminal-last] the account update (offset {at_update}) must be the \
-         LAST step, after every erase and anonymize (the display-name anonymize sits at \
-         offset {at_names}). PRV1-6e is explicit that `terminal_at_ms` is set only once \
-         steps 1-4 have completed; stamped earlier, a mid-cascade abort would leave a row \
-         that reads as fully deleted with its data still present."
-    );
-
-    // --- (5) EQUALITY, last -------------------------------------------------
-    assert_eq!(
-        body, frozen,
-        "[rb24/reaper-body] the deletion reaper body is not the m22-s3b frozen cascade \
-         (rejecting scheduler guard, scheduler-keyed row lookup, ONE clock read, the PRV1-5 \
-         recheck with its re-arm branch, the fifteen delegated calls in spec para-4.4 \
-         order, the terminal stamp, then Ok(())). Every statement in this body is \
-         irreversible, so this pin is EXACT rather than containment: a containment check \
-         cannot tell a complete cascade from one missing a step, and it is green on an \
-         appended foreign write, a dead-branch wrapper and a shadowed binding alike — all \
-         four measured, all clippy-clean. If the sanctioned body legitimately changes, \
-         re-derive this literal FROM ADR-0228 D2's step list, re-review the guard position \
-         and the re-arm obligation in the same change, and update it consciously."
-    );
-}
-
-// ---------------------------------------------------------------------------
-// rb-24 / D0 — WRITE ISOLATION FOR THE NEW TABLE.
-// ---------------------------------------------------------------------------
-
-/// PRV1-1 / PRV1-3 (D0 write isolation): the owned-write allowlist covers the
-/// new schedule table, and the widening is EXERCISED rather than decorative.
-///
-/// Widening an allowlist is the one edit that can only ever LOOSEN a gate, so it
-/// needs its own proof that the new entry corresponds to a real write. Without
-/// the second clause, adding the accessor name to `allowed_write_tables` and
-/// never writing the table at all is green — and so is deleting the arm and the
-/// disarm entirely.
-///
-/// The third clause is the direction `g5_writes_only_owned_tables` already
-/// covers, restated here so a failure of THIS test says which side moved.
-///
-/// Kills: a widened allowlist with no corresponding write (the decorative
-///        widening); a write chained off an accessor that is not in the
-///        allowlist at all.
-#[test]
-fn rb24_owned_write_set_covers_the_deletion_schedule() {
-    let accessor = rb24_nd_sched_accessor();
-    let allowed = allowed_write_tables();
-    assert!(
-        allowed.contains(&accessor),
-        "[rb24/owned-set] the owned-write allowlist does not contain `{accessor}` \
-         ({allowed:?}). The deletion reaper schedule is colocated in this module under the \
-         ADR-0056 exception exactly as the guest-claim schedule is, so accounts.rs writes it \
-         directly; without the entry, g5_writes_only_owned_tables reds on the sanctioned arm."
-    );
-
-    let targets = write_target_accessors(&stripped_for_scan(ACCOUNTS_RS));
-    assert!(
-        targets.contains(&Ok(accessor.clone())),
-        "[rb24/owned-set-nonvacuous] the allowlist names `{accessor}` but accounts.rs performs \
-         NO attributed write against that accessor (extracted write targets: {targets:?}). \
-         Widening an allowlist can only loosen a gate, so the widening must be paid for by a \
-         real write: zero writes here means the arm and the disarm are both gone and the \
-         allowlist entry is a permanently open slot."
-    );
-
-    for t in &targets {
-        match t {
-            Ok(name) => assert!(
-                allowed.iter().any(|a| a == name),
-                "[rb24/owned-set-closed] accounts.rs writes the table `{name}`, which is not in \
-                 the owned set {allowed:?}. Every write to a pre-existing table must be delegated \
-                 to that table owning module."
-            ),
-            Err(fault) => panic!(
-                "[rb24/owned-set-attribution] accounts.rs contains a write verb that cannot be \
-                 attributed to any table at all (fault: {fault:?}; extracted: {targets:?}). The \
-                 clause above asks whether the owned set COVERS the schedule write; it can only \
-                 mean that over a census in which every write is attributed. An unattributable \
-                 write is an UNGATED write — see g5_writes_only_owned_tables and ADR-0234."
-            ),
-        }
-    }
-}
-
-/// PRV1-1 / PRV1-3 (sole writers): every reach for the new schedule table in
-/// `accounts.rs` lies inside the arm helper or the disarm helper — nowhere else.
-///
-/// This is the census that makes the two frozen-body pins TOTAL. Those pins
-/// prove what the two helpers do; without this one they say nothing about a
-/// third site. A schedule insert added directly to a reducer body — or a delete
-/// added to the reaper, which would be the ADR-0126 D6 self-disarm violation
-/// that races the runtime own delete of the fired row — is invisible to both.
-///
-/// The span check is computed from a local brace walk rather than reusing
-/// `write_target_accessors`. Since rb-39 (ADR-0234) that helper no longer
-/// misattributes or drops anything — an unrooted write is a loud
-/// `[W/attribution]` refusal — but it still answers a DIFFERENT question: it
-/// names the table behind a WRITE verb, whereas this census must locate every
-/// reach for the accessor, reads included, and say which fn body it sits in.
-///
-/// RE-DERIVED 3 -> 4 BY m22-s3b, AND PAID FOR (r2). The ADR-0221 R2 sweep
-/// `ensure_deletion_reapers_armed` has to know which identities ALREADY carry a
-/// schedule row — otherwise it re-arms every mid-grace account on every publish
-/// — so it adds a FOURTH reach for this accessor. That reach is READ-ONLY: an
-/// `.iter()` feeding the pure `plan_deletion_rearms` seam, with the actual
-/// arming delegated to `arm_deletion_reaper`, whose body is separately frozen.
-///
-/// A bare bump to 4 would delete the tooth (any of the four sites could then
-/// move anywhere), so the widening is compensated per SITE: the sweep's span
-/// must hold EXACTLY ONE reach, that reach must be the `.iter()` READ, and the
-/// sweep's body must contain ZERO row-write verbs of its own. Together those
-/// say the new site can read the schedule table and cannot write it — which is
-/// what keeps the two frozen-body pins the only description of how a schedule
-/// row is ever created or removed.
-///
-/// Kills: a schedule write inlined into delete_account, cancel_account_deletion,
-///        complete_guest_claim or the reaper itself; a third WRITING helper; the
-///        reaper self-disarm (a fifth occurrence, outside all three spans); and
-///        a sweep that arms rows by inserting schedule rows DIRECTLY instead of
-///        delegating to the frozen arm helper — which would bypass the
-///        `deletion_fire_at_ms` derivation and the saturating ms-to-us multiply
-///        that pin exists to hold.
-#[test]
-fn rb24_schedule_table_sole_writers() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    // Prefix-AGNOSTIC method token (rb-24 artifact red-team, Finding 1): a
-    // `let d = &ctx.db; d.account_deletion_reaper_schedule()...` write reaches
-    // this table WITHOUT the `ctx.db.` prefix and is invisible to a prefixed
-    // needle, so the census counts the leading-dot accessor method through ANY
-    // receiver. That aliased write armed a FOREIGN identity and passed every
-    // other gate — this is the tooth that makes the frozen-body pins TOTAL.
-    let accessor_call = rb24_nd_accessor_method();
-
-    let total = m22_count_occurrences(&squashed, &accessor_call);
-    assert_eq!(
-        total, 4,
-        "[rb24/sole-writer-census] accounts.rs must reach the deletion schedule accessor \
-         EXACTLY four times: once for the arm insert, twice for the disarm (the \
-         account_identity filter and the primary-key delete), and once for the ADR-0221 R2 \
-         sweep's READ-ONLY iteration over the already-armed set. Found {total}. FEWER means a \
-         helper lost its reach — the arm or one half of the two-phase disarm, or the sweep's \
-         already-armed read, whose absence makes the sweep re-arm every mid-grace account on \
-         every publish. MORE means a site exists that none of the three span clauses below \
-         constrains — including one reached through an aliased db handle."
-    );
-
-    let (arm_start, arm_end) = rb24_fn_body_span(&squashed, &rb24_nd_arm_decl());
-    let (dis_start, dis_end) = rb24_fn_body_span(&squashed, &rb24_nd_disarm_decl());
-    let (ens_start, ens_end) = rb24_fn_body_span(&squashed, &m22s3b_nd_ensure_decl());
-    assert_eq!(
-        m22_count_occurrences(&squashed[arm_start..arm_end], &accessor_call),
-        1,
-        "[rb24/sole-writer-arm] the arm helper must reach the schedule accessor exactly once. \
-         The total-of-four clause alone does not pin the SPLIT: four occurrences all inside \
-         one helper satisfies it."
-    );
-    assert_eq!(
-        m22_count_occurrences(&squashed[dis_start..dis_end], &accessor_call),
-        2,
-        "[rb24/sole-writer-disarm] the disarm helper must reach the schedule accessor exactly \
-         twice — once to filter the index, once to delete by primary key. One occurrence means \
-         the two-phase shape collapsed into a delete inside the iteration."
-    );
-
-    // --- THE FOURTH SITE IS A READ, AND ONLY A READ (r2 compensation) -------
-    let ens_span = &squashed[ens_start..ens_end];
-    assert_eq!(
-        m22_count_occurrences(ens_span, &accessor_call),
-        1,
-        "[rb24/sole-writer-sweep] the ADR-0221 R2 sweep must reach the schedule accessor \
-         EXACTLY once — the already-armed read. ZERO means it cannot tell an armed row from \
-         an unarmed one, so every publish adds another schedule row for every mid-grace \
-         account and fires one full cascade per row. MORE THAN ONE is a second reach in a \
-         body that is supposed only to look."
-    );
-    let read_only_reach = [accessor_call.as_str(), ")", concat!(".it", "er()")].concat();
-    assert_eq!(
-        m22_count_occurrences(ens_span, &read_only_reach),
-        1,
-        "[rb24/sole-writer-sweep-is-a-read] the sweep's one reach must be the iteration \
-         `{read_only_reach}`. That spelling is what makes it a READ: it is the only shape \
-         that can produce the already-armed identity set the pure `plan_deletion_rearms` seam \
-         consumes, and it chains no write verb. A reach spelled any other way in this body is \
-         a reach whose purpose this census cannot vouch for."
-    );
-    for (verb, what) in [
-        (concat!(".ins", "ert("), "insert"),
-        (concat!(".upd", "ate("), "update"),
-        (concat!(".del", "ete("), "delete"),
-    ] {
-        assert_eq!(
-            m22_count_occurrences(ens_span, verb),
-            0,
-            "[rb24/sole-writer-sweep-no-write] the ADR-0221 R2 sweep performs a direct \
-             `{what}` row write. It must not: arming is DELEGATED to `arm_deletion_reaper`, \
-             whose body is frozen by `rb24_arm_deletion_reaper_body_frozen` precisely so the \
-             fire instant is derived through `deletion_fire_at_ms` and the ms-to-us multiply \
-             saturates. A schedule row inserted directly here bypasses both, and it does so \
-             for the whole overdue R2 population at once — the largest single batch of \
-             irreversible cascades this module can schedule."
-        );
-    }
-
-    let mut scan = 0usize;
-    let mut seen = 0usize;
-    while let Some(rel) = squashed[scan..].find(accessor_call.as_str()) {
-        let at = scan + rel;
-        let inside_arm = at >= arm_start && at < arm_end;
-        let inside_disarm = at >= dis_start && at < dis_end;
-        let inside_sweep = at >= ens_start && at < ens_end;
-        assert!(
-            inside_arm || inside_disarm || inside_sweep,
-            "[rb24/sole-writer-scope] accounts.rs reaches the deletion schedule accessor at \
-             squashed offset {at}, which lies OUTSIDE the arm helper body \
-             ({arm_start}..{arm_end}), the disarm helper body ({dis_start}..{dis_end}) and \
-             the R2 sweep body ({ens_start}..{ens_end}). Every touch of this table must go \
-             through one of those three reviewed bodies: an inline insert in a reducer \
-             bypasses the frozen fire-instant derivation, and an inline delete in the reaper \
-             is the ADR-0126 D6 self-disarm that races the runtime own delete of the fired \
-             one-shot row."
-        );
-        seen += 1;
-        scan = at + accessor_call.len();
-    }
-    assert_eq!(
-        seen, 4,
-        "[rb24/sole-writer-walk] the position walk visited {seen} occurrence(s) where the \
-         census counted 4. The two counts must agree or the scope clause above ran over a \
-         different set of sites than the census measured."
-    );
-}
-
-// ===========================================================================
-// M22-S3 (slice m22-s3, ADR-0225) — THE TERMINAL-MARKER PREDICATES, THE PRV1-4
-// GUARDS, AND THE PRV1-5 REAPER RECHECK.
-//
-// EARS criteria (`specs/monster-realm-v2/M22-privacy-compliance.spec.md` §7.4):
-//   PRV1-4  WHEN `cancel_account_deletion` is called for an account that
-//           already carries a terminal marker THE SYSTEM SHALL reject the call
-//           with a static reason and write nothing — a completed erasure is
-//           not reversible, and reversing it would resurrect a tombstone.
-//   PRV1-5  WHEN the deletion-grace reaper fires THE SYSTEM SHALL re-check the
-//           live row (status is `PendingDeletion`, no terminal marker yet, the
-//           request is past its grace window) and no-op unless all three hold.
-//   PRV1-7  `should_reject_for_deletion(&Account)` is the spec §4.7 named
-//           single entry point for the deletion gate. THIS SLICE SHIPS THE
-//           PREDICATE ONLY; the reducer-by-reducer ENFORCEMENT is S5/S6 and is
-//           deliberately not gated here (ADR-0225).
-//
-// SCOPE, STATED PLAINLY SO THESE TESTS ARE NOT MISREAD AS MORE THAN THEY ARE:
-// the spec §4.4 five-step cascade is NOT in this slice. G5 MODULE_WRITE_ISOLATION
-// closes the accounts.rs write set at four tables, so every erase step needs a
-// new `pub(crate)` helper in ten owning modules; that is S3b. What lands here is
-// the recheck SKELETON plus the two terminal guards that keep an already-erased
-// account from being resurrected or re-armed in the meantime.
-//
-// SCAN HYGIENE — the file header rule, restated because this section adds
-// needles for a file that a dozen unmigrated evals concatenate wholesale (every
-// `.rs` under `server-module/src`, `_tests.rs` siblings included). Every needle
-// below is assembled from `concat!` fragments, so this file never carries a
-// contiguous guard statement, accessor chain or call site that such a scanner
-// could count as a real one — a bare needle here would satisfy those scans
-// VACUOUSLY, which is the exact false-green this rule exists to prevent. This
-// section contains no block comment, no raw string, no apostrophe and no bare
-// double-quote character inside any comment.
-//
-// WHY ONE STRUCTURE TEST (T3) AND SEVEN PURE ONES: when this was written there was
-// no way to construct a `ReducerContext` in this crate (rb-41's native_host_tests
-// changed that), so a reducer BODY had no runtime harness at
-// all. Everything that can be a pure seam is one and is EXECUTED; the two guard
-// PLACEMENTS — which are ordering properties of a reducer body — are provable
-// only over the source. ADR-0225 records that justification once.
-// ===========================================================================
-
-// ---------------------------------------------------------------------------
-// m22-s3 needles. AUTHORED FROM THE PLAN, never derived by running the impl and
-// copying what it printed (red-team B1). Split mid-token, per the file rule.
-// ---------------------------------------------------------------------------
-
-/// The squashed terminal-marker predicate call as both guards spell it.
-fn m22s3_nd_marker_call() -> String {
-    concat!("account_has_terminal", "_marker(&account)").to_string()
-}
-
-/// PRV1-4 — the WHOLE cancel-side guard statement, squashed.
-///
-/// `stripped_for_scan` blanks string literals, so the reducer-name argument of
-/// `reject(..)` reads as EMPTY between the open paren and the comma — the same
-/// shape the frozen reaper body pins as `Err(.to_string())`. The needle is the
-/// whole statement rather than the condition alone: a condition that is present
-/// but whose branch does something other than reject is the measured
-/// present-but-inert family, and it satisfies every containment clause.
-fn m22s3_nd_cancel_terminal_guard() -> String {
-    [
-        "if".to_string(),
-        m22s3_nd_marker_call(),
-        concat!("{returnrej", "ect(,me,").to_string(),
-        concat!("REJECT_ALREADY", "_DELETED);}").to_string(),
-    ]
-    .concat()
-}
-
-/// PRV1-2 / W1b — the WHOLE delete-side guard statement, squashed. `Ok` shape,
-/// not `reject`: PRV1-2 says a delete on an account already heading for deletion
-/// returns `Ok(())` and writes nothing, and a terminal row is the extreme case
-/// of that state.
-fn m22s3_nd_delete_terminal_guard() -> String {
-    [
-        "if".to_string(),
-        m22s3_nd_marker_call(),
-        concat!("{returnOk", "(());}").to_string(),
-    ]
-    .concat()
-}
-
-/// PRV1-5 — the reaper-side recheck statement, squashed. The `!` is the whole
-/// point: this is the POLARITY needle (see
-/// `rb24_deletion_reaper_body_is_pinned_cascade`).
-///
-/// m22-s3b (ADR-0228 D3) EXTENDS it with the RE-ARM BRANCH. The runtime deletes
-/// the fired one-shot schedule row regardless of what this reducer does, so the
-/// old bare `return Ok(());` on a not-yet-due account dropped the reaper with
-/// nothing armed and the account stayed `PendingDeletion` forever. The re-arm is
-/// therefore part of the SAME plan statement as the recheck, and pinning them
-/// together is what stops the branch being re-emptied one edit later.
-///
-/// The clock is the HOISTED `now` binding, not a second `now_ms(ctx)` read: the
-/// recheck and the re-arm fire instant must be derived from ONE instant, or a
-/// row can read not-due against one clock and be re-armed against another.
-fn m22s3_nd_reaper_recheck_guard() -> String {
-    concat!(
-        "if!reaper_should_run",
-        "_cascade(&account,now){",
-        "ifletSome(requested)=reaper_rearm",
-        "_at_ms(&account,now){",
-        "arm_deletion",
-        "_reaper(ctx,args.account_identity,requested);}",
-        "returnOk(());}"
-    )
-    .to_string()
-}
-
-/// PRV1-5 — the SUBJECT needle: the reaper must look the row up by the identity
-/// the SCHEDULER handed it, never by anything else.
-fn m22s3_nd_reaper_row_lookup() -> String {
-    concat!(".find(args.account", "_identity)").to_string()
-}
-
-/// The ASCII double quote, built from its code point so this section never
-/// spells a backslash-escaped quote or a quote-bearing char literal (file
-/// header rule). Only the strings-KEPT needle below needs it.
-fn m22s3_dq() -> char {
-    char::from(0x22u8)
-}
-
-/// PRV1-4, strings-KEPT twin of `m22s3_nd_cancel_terminal_guard()`: the same
-/// statement with the reducer-name argument of `reject(..)` still readable.
-///
-/// `stripped_for_scan` BLANKS string literals, so the squashed-and-blanked
-/// needle matches whatever reducer tag the guard passes — a guard tagged
-/// `start_guest_claim` was MEASURED green against it, which merges two
-/// audit-log classes and misattributes every PRV1-4 reject in the reject log.
-/// Matching this needle in `stripped_keep_strings` output pins the tag AND its
-/// adjacency to the guard in one contiguous substring, with no brace walk over
-/// a string-bearing view.
-fn m22s3_nd_cancel_terminal_guard_tagged() -> String {
-    let q = m22s3_dq();
-    [
-        "if".to_string(),
-        m22s3_nd_marker_call(),
-        concat!("{returnrej", "ect(").to_string(),
-        format!("{q}{}{q}", concat!("cancel_account", "_deletion")),
-        concat!(",me,REJECT_ALREADY", "_DELETED);}").to_string(),
-    ]
-    .concat()
-}
-
-/// The squashed declaration needle for the deletion-gate SSOT wrapper.
-fn m22s3_nd_pending_decl() -> String {
-    concat!("fnis_pending", "_deletion(").to_string()
-}
-
-/// The squashed declaration needle for the reaper recheck predicate.
-fn m22s3_nd_cascade_decl() -> String {
-    concat!("fnreaper_should_run", "_cascade(").to_string()
-}
-
-/// The squashed delegation needle: `is_pending_deletion` must ASK the shared
-/// gate predicate, with no negation of its answer.
-fn m22s3_nd_pending_delegation() -> String {
-    concat!(".is_some_and(|a|should_reject", "_for_deletion(&a))").to_string()
-}
-
 /// The same account, plus a LEGAL claim-provenance pair and off-baseline
 /// `auth_issuer` / `last_login_at_ms`.
 ///
@@ -8059,404 +1588,6 @@ fn m22s3_account_has_terminal_marker_truth_table() {
              the illegal Active-plus-marker row it must still answer TRUE, because an \
              already-erased account must never be cancelled back to life or re-armed for a \
              second cascade just because its status column was corrupted."
-        );
-    }
-}
-
-/// PRV1-4 (pure, const value): `REJECT_ALREADY_DELETED` is a non-empty, STATIC,
-/// DISTINCT reject reason.
-///
-/// Distinctness is the security property, not tidiness. Every other reason in
-/// this module answers a question the caller is allowed to ask; this one answers
-/// `your account is already gone`, and a caller that cannot tell it apart from
-/// `no account` or `sign in required` cannot be told the truth by the UI at all.
-/// Sharing a string with another guard would also silently merge two audit-log
-/// classes into one.
-///
-/// The brace clause is the STATIC half: `reject` takes `&str` and logs it
-/// verbatim (G12 no-PII-in-logs), so a reason carrying a format placeholder is
-/// either a lie in the log or the first step toward interpolating account data
-/// into it.
-///
-/// Kills: an empty string (the caller sees a blank reject); a BLANK-ISH string —
-///        a single space, or padding around a one-character reason — which was
-///        measured green against non-empty plus distinct plus no-braces alone;
-///        a zero-width or bidi-override character that renders blank or
-///        reversed; a copy-paste of an existing reason; a `format!`-shaped
-///        template smuggled in as a const.
-#[test]
-fn m22s3_reject_already_deleted_is_distinct_and_static() {
-    assert!(
-        !REJECT_ALREADY_DELETED.is_empty(),
-        "[m22s3/reject-nonempty] REJECT_ALREADY_DELETED is empty. A reject whose reason is \
-         the empty string is indistinguishable from no reason at all, in the client error \
-         and in the reject log alike."
-    );
-
-    let trimmed = REJECT_ALREADY_DELETED.trim();
-    assert_eq!(
-        trimmed, REJECT_ALREADY_DELETED,
-        "[m22s3/reject-trim-stable] REJECT_ALREADY_DELETED carries leading or trailing \
-         whitespace. Non-emptiness alone was MEASURED insufficient: a single space passes it, \
-         renders as a blank error in the client and as a blank reason in the reject log, and \
-         is still distinct from every other reason so the distinctness clauses below stay \
-         green too."
-    );
-    assert!(
-        trimmed.len() >= 10,
-        "[m22s3/reject-substantive] REJECT_ALREADY_DELETED trims to {} byte(s), which is too \
-         short to be a sentence a player can act on. PRV1-4 requires a DISTINCT, non-generic \
-         error; a one- or two-character reason is technically distinct and practically a \
-         blank.",
-        trimmed.len()
-    );
-    assert!(
-        REJECT_ALREADY_DELETED
-            .chars()
-            .all(|c| c.is_ascii_graphic() || c == ' '),
-        "[m22s3/reject-printable] REJECT_ALREADY_DELETED contains a character that is not \
-         printable ASCII. A zero-width or bidi-override character renders blank or reversed \
-         wherever this reason is shown and logged, while passing every length and \
-         distinctness clause — the same property game-core pins on its tombstone sentinels."
-    );
-
-    for brace in ["{", "}"] {
-        assert!(
-            !REJECT_ALREADY_DELETED.contains(brace),
-            "[m22s3/reject-static] REJECT_ALREADY_DELETED contains {brace:?}. Reject reasons \
-             in this module are STATIC literals: `reject` hands the reason straight to \
-             `log_reject`, and a placeholder is the shape that grows into an interpolated \
-             account detail in a log line (ADR-0179 G12)."
-        );
-    }
-
-    // Every reject reason accounts.rs can hand a caller today. Consts where the
-    // name is in scope, literal text where the reason is an inline literal.
-    let others: [(&str, &str); 15] = [
-        ("AUTH-12/37/38 no-JWT", concat!("sign in ", "required")),
-        ("AUTH-12/37/38 no account row", concat!("no ", "account")),
-        (
-            "AUTH-7 already an account holder",
-            concat!("already ", "signed in"),
-        ),
-        (
-            "AUTH-8 malformed claim code",
-            concat!("invalid ", "claim code"),
-        ),
-        ("AUTH-9 no player row", concat!("not ", "joined")),
-        (
-            "AUTH-13 pending deletion",
-            concat!("account ", "pending deletion"),
-        ),
-        (
-            "AUTH-14 one claim per account",
-            concat!("account ", "already claimed"),
-        ),
-        ("AUTH-15/35 shared code reason", ERR_INVALID_CODE),
-        ("AUTH-16 expired code", concat!("code ", "expired")),
-        (
-            "AUTH-17 own-session claim",
-            concat!("cannot claim your ", "own session"),
-        ),
-        (
-            "AUTH-18 stale tab",
-            concat!("close your other tab, ", "then retry"),
-        ),
-        (
-            "AUTH-19 mid-battle",
-            concat!("already in an ", "ongoing battle"),
-        ),
-        (
-            "AUTH-20 destination has data",
-            concat!("already has ", "game data"),
-        ),
-        ("AUTH-36 unrecognized issuer", REJECT_UNRECOGNIZED_ISSUER),
-        (
-            "AUTH-36 unrecognized audience",
-            REJECT_UNRECOGNIZED_AUDIENCE,
-        ),
-    ];
-    for (what, other) in others {
-        assert_ne!(
-            REJECT_ALREADY_DELETED, other,
-            "[m22s3/reject-distinct] REJECT_ALREADY_DELETED is byte-identical to the \
-             {what} reason {other:?}. PRV1-4 is a distinct outcome — the account is gone, \
-             not absent, not unauthenticated, not mid-claim — and a caller that cannot \
-             distinguish the two cannot be shown a truthful message. Two guards sharing one \
-             literal also collapse two audit-log classes into one."
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
-// m22-s3 / PRV1-4 + W1b — THE GUARD PLACEMENTS (the ONE structure test).
-// ---------------------------------------------------------------------------
-
-/// PRV1-4 (cancel) and PRV1-2 (delete): each terminal guard exists EXACTLY ONCE,
-/// sits at the top level of the reducer it belongs to, and runs BEFORE that
-/// reducer reaches its idempotency gate or its state write.
-///
-/// WHY A SOURCE SCAN AT ALL: a reducer body cannot be executed from this crate
-/// (there is no way to build a `ReducerContext`), so a guard PLACEMENT has no
-/// runtime harness. ADR-0225 records that justification.
-///
-/// ORDER IS THE CLAUSE THAT MATTERS, and it is a red-team fix (plan R3): a guard
-/// placed AFTER `needs_cancel_write` still contains every needle and still reads
-/// as present, while the reducer has already decided to write. On the cancel
-/// side that write is `cancelled_deletion`, which flips a completed tombstone
-/// back to `Active` and clears the request stamp — the row is then an ordinary
-/// live account whose data was already erased.
-///
-/// ON THE DELETE SIDE THE ORDERING CLOSES A MEASURED LAUNDERING PATH: the
-/// illegal `Active` + marker row passes `needs_deletion_write(Active) == true`,
-/// gets re-written by `requested_deletion` into a LEGAL `PendingDeletion` +
-/// request + marker row, and ARMS A SECOND CASCADE against an account that has
-/// already been erased once. The guard returns `Ok(())` rather than rejecting so
-/// PRV1-2 keeps its letter (a delete on an account already heading for deletion
-/// is a silent no-op), and behaviour on every legal state is unchanged.
-///
-/// POSITION IS NOT ENOUGH ON ITS OWN, and that is a measured finding rather than
-/// a hunch. A guard can be textually perfect, first, and at depth zero and still
-/// be DEAD: `let account = Account { terminal_at_ms: None, ..account };` slipped
-/// in above it rebinds the subject, so the guard reads a row whose marker was
-/// just stripped and can never fire. The subject-binding census below is what
-/// closes it — each body binds `account` exactly once, through the `let ... else`
-/// lookup, and never rebinds it.
-///
-/// THE DELEGATION CLAUSE IS HERE AND NOT IN A PURE TEST because the thing that
-/// can go wrong is a NEGATION, not a value: `is_pending_deletion` inverted to
-/// `.is_some_and(|a| !should_reject_for_deletion(&a))` was measured green across
-/// the whole suite, and it turns the AUTH-13 guard of `complete_guest_claim`
-/// inside out — every account mid-deletion may claim, and every ordinary account
-/// may not. No ctx-bound test can execute it, so the polarity is pinned as text.
-///
-/// Kills: a guard moved below the idempotency gate or below the state write
-///        (both orderings); a second decoy copy of either guard that steers a
-///        first-hit anchored read; a guard nested inside a conditional block,
-///        which sits at brace depth greater than zero and never runs on the path
-///        that matters; a guard placed in the WRONG reducer (the whole-file
-///        count stays at one while the body-scoped lookup fails);
-///        a shadowed subject binding that makes either guard permanently dead;
-///        a PRV1-4 reject tagged with another reducer name (the blanked-string
-///        needle cannot see the tag; the strings-kept twin can);
-///        an inverted `is_pending_deletion` delegation;
-///        a `reaper_should_run_cascade` re-composed over the gameplay gate, or
-///        one that stops delegating the grace window to game-core.
-#[test]
-fn m22s3_terminal_guards_precede_state_writes() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-
-    // --- cancel_account_deletion (PRV1-4) -----------------------------------
-    //
-    // RE-DERIVED 1 -> 2 BY m22-s3b, AND PAID FOR PER SPAN. ADR-0228 D6 splits
-    // `complete_guest_claim`'s Guard 3 so a terminal-marker destination is
-    // refused with the SAME distinct REJECT_ALREADY_DELETED reason the cancel
-    // path uses. In the string-BLANKED view the reducer-name argument of
-    // `reject(..)` is empty, so the two guards squash to the SAME text and a
-    // whole-file count of 1 became mechanically unsatisfiable. The compensation
-    // is strictly stronger than the number it replaces: each of the two bodies is
-    // pinned to EXACTLY ONE occurrence, so a guard that moved from one reducer to
-    // the other — or a decoy third copy in a helper — reds where a bumped whole
-    // -file count would not. The audit TAG of each is pinned separately, on the
-    // strings-KEPT view, by the two `..._tagged` needles.
-    let cancel_guard = m22s3_nd_cancel_terminal_guard();
-    let n_cancel_guard = m22_count_occurrences(&squashed, &cancel_guard);
-    assert_eq!(
-        n_cancel_guard, 2,
-        "[m22s3/cancel-guard-unique] accounts.rs must carry the terminal-marker reject guard \
-         {cancel_guard:?} EXACTLY twice; found {n_cancel_guard}. The two sites are \
-         cancel_account_deletion (PRV1-4: a completed erasure is not reversible) and \
-         complete_guest_claim's Guard 3a (ADR-0228 D6: an already-deleted destination gets \
-         the distinct reason instead of the generic mid-grace one). They read IDENTICALLY \
-         here because this view blanks the reducer-name argument. FEWER means one of the two \
-         guards is missing, mis-spelled, or was written as a condition whose branch does \
-         something other than reject — and a cancel on a completed tombstone then flips it \
-         back to Active. MORE is a decoy that steers a first-hit anchored read at a copy \
-         nobody reviewed."
-    );
-
-    let (cancel_start, cancel_end) = rb24_fn_body_span(&squashed, &rb24_nd_cancel_decl());
-    let cancel_body = &squashed[cancel_start..cancel_end];
-    assert_eq!(
-        m22_count_occurrences(cancel_body, &cancel_guard),
-        1,
-        "[m22s3/cancel-guard-span] cancel_account_deletion must carry the terminal guard \
-         EXACTLY once. This per-span clause is the compensation for the whole-file count \
-         widening to 2: without it, BOTH occurrences could sit in complete_guest_claim while \
-         the cancel path — the one PRV1-4 actually names — has none, and the whole-file \
-         count would still read 2."
-    );
-    let (claim_guard_start, claim_guard_end) = rb24_fn_body_span(&squashed, &nd_complete());
-    assert_eq!(
-        m22_count_occurrences(&squashed[claim_guard_start..claim_guard_end], &cancel_guard),
-        1,
-        "[m22s3/claim-guard-span] complete_guest_claim must carry the terminal guard EXACTLY \
-         once (ADR-0228 D6 Guard 3a). The mirror of the clause above: with only the cancel \
-         span pinned, both occurrences could sit in cancel_account_deletion and the claim \
-         ceremony would still hand an already-erased account the generic mid-grace reason — \
-         which is the message split D6 exists to make."
-    );
-    let at_cancel_guard = cancel_body.find(cancel_guard.as_str()).unwrap_or_else(|| {
-        panic!(
-            "[m22s3/cancel-guard-scope] the one PRV1-4 guard in accounts.rs is NOT inside \
-                 cancel_account_deletion. A whole-file count of one is green on a guard that \
-                 landed in a helper, in another reducer, or in dead code, while the reducer \
-                 PRV1-4 names still cancels a completed deletion."
-        )
-    });
-
-    assert_eq!(
-        rb24_brace_depth(&cancel_body[..at_cancel_guard]),
-        0,
-        "[m22s3/cancel-guard-depth0] the PRV1-4 guard sits inside a nested block of \
-         cancel_account_deletion rather than at the top level of the body. A conditional \
-         guard is no guard: an enclosing condition that is false on the terminal path keeps \
-         every count- and ordering-based clause here green while the cancel proceeds."
-    );
-
-    let cancel_gate = concat!("needs_cancel", "_write(");
-    let cancel_write = concat!(".upd", "ate(cancelled", "_deletion");
-    let at_cancel_gate = idx(cancel_body, cancel_gate);
-    let at_cancel_write = idx(cancel_body, cancel_write);
-    assert!(
-        at_cancel_guard < at_cancel_gate,
-        "[m22s3/cancel-guard-before-gate] the PRV1-4 terminal guard (offset \
-         {at_cancel_guard}) must precede the AUTH-38 idempotency gate (offset \
-         {at_cancel_gate}). Behind the gate the reducer has already decided the row needs a \
-         write, and a terminal row IS PendingDeletion, so the gate says yes — the guard then \
-         has to undo a decision instead of preventing it. Guard-first is also what makes the \
-         reducer fail-closed on the illegal Active-plus-marker row, where the gate says no \
-         for the wrong reason."
-    );
-    assert!(
-        at_cancel_guard < at_cancel_write,
-        "[m22s3/cancel-guard-before-write] the PRV1-4 terminal guard (offset \
-         {at_cancel_guard}) must precede the `cancelled_deletion` state write (offset \
-         {at_cancel_write}). After the write the tombstone is already back to Active with its \
-         request stamp cleared: the account reads as an ordinary live account whose data was \
-         irreversibly erased, and no later statement can restore it."
-    );
-
-    let tagged = m22s3_nd_cancel_terminal_guard_tagged();
-    assert_eq!(
-        m22_count_occurrences(&stripped_keep_strings(ACCOUNTS_RS), &tagged),
-        1,
-        "[m22s3/cancel-guard-audit-tag] the PRV1-4 guard must reject under its OWN reducer \
-         tag, {tagged:?}. Every clause above reads the string-BLANKED view, in which the \
-         reducer-name argument of reject is empty — so a guard tagged with another reducer \
-         name satisfies all of them, and was measured green. The tag is what `log_reject` \
-         writes, so the wrong one silently files every late-cancel reject under a different \
-         audit-log class."
-    );
-
-    // --- delete_account (W1b, PRV1-2 letter) --------------------------------
-    let delete_guard = m22s3_nd_delete_terminal_guard();
-    assert_eq!(
-        m22_count_occurrences(&squashed, &delete_guard),
-        1,
-        "[m22s3/delete-guard-unique] accounts.rs must carry the W1b terminal guard \
-         {delete_guard:?} EXACTLY once. ZERO reopens the measured laundering path: the \
-         illegal Active-plus-marker row passes needs_deletion_write(Active), is re-written \
-         into a legal PendingDeletion-plus-marker row, and arms a SECOND cascade on an \
-         account that was already erased. MORE THAN ONE is a decoy copy."
-    );
-
-    let (delete_start, delete_end) = rb24_fn_body_span(&squashed, &rb24_nd_delete_account_decl());
-    let delete_body = &squashed[delete_start..delete_end];
-    let at_delete_guard = delete_body.find(delete_guard.as_str()).unwrap_or_else(|| {
-        panic!(
-            "[m22s3/delete-guard-scope] the one W1b guard in accounts.rs is NOT inside \
-                 delete_account. A whole-file count of one is green on a guard that landed \
-                 somewhere else entirely, while the laundering path through delete_account \
-                 stays open."
-        )
-    });
-
-    assert_eq!(
-        rb24_brace_depth(&delete_body[..at_delete_guard]),
-        0,
-        "[m22s3/delete-guard-depth0] the W1b terminal guard sits inside a nested block of \
-         delete_account rather than at the top level. An enclosing condition that is false \
-         on the terminal path keeps the count and ordering clauses green while the \
-         re-arm laundering path stays reachable."
-    );
-
-    let delete_gate = concat!("needs_deletion", "_write(");
-    let at_delete_gate = idx(delete_body, delete_gate);
-    assert!(
-        at_delete_guard < at_delete_gate,
-        "[m22s3/delete-guard-before-gate] the W1b terminal guard (offset {at_delete_guard}) \
-         must precede the AUTH-28 idempotency gate (offset {at_delete_gate}). That gate keys \
-         on STATUS ALONE: on the illegal Active-plus-marker row it returns true, the row is \
-         re-stamped into a legal PendingDeletion-plus-marker row, and arm_deletion_reaper \
-         schedules a second cascade over an account whose data is already gone. Behind the \
-         gate the guard cannot stop that; ahead of it, it never starts."
-    );
-
-    // --- the subject both guards read must be the row that was looked up ----
-    let lookup_bind = concat!("letSome(acc", "ount)=");
-    for (what, body) in [
-        ("cancel_account_deletion", cancel_body),
-        ("delete_account", delete_body),
-    ] {
-        for shadow in [concat!("letacc", "ount"), concat!("letmutacc", "ount")] {
-            assert_eq!(
-                m22_count_occurrences(body, shadow),
-                0,
-                "[m22s3/subject-no-shadow] {what} rebinds `account` ({shadow:?}). A rebind \
-                 above the terminal guard makes the guard PERMANENTLY DEAD while every \
-                 count, depth and ordering clause above stays green — the measured shape is \
-                 one line that spreads the row with the marker cleared, after which the \
-                 guard inspects a subject that no longer carries what it exists to detect."
-            );
-        }
-        assert_eq!(
-            m22_count_occurrences(body, lookup_bind),
-            1,
-            "[m22s3/subject-single-lookup] {what} must bind `account` EXACTLY once, through \
-             the row lookup. Zero means the guard reads something that is not the caller \
-             live row; more than one means a second binding shadows the first, which is the \
-             same dead-guard shape from the other direction."
-        );
-    }
-
-    // --- the deletion gate SSOT delegates, and does not invert the answer ---
-    let (pending_start, pending_end) = rb24_fn_body_span(&squashed, &m22s3_nd_pending_decl());
-    let delegation = m22s3_nd_pending_delegation();
-    assert_eq!(
-        m22_count_occurrences(&squashed[pending_start..pending_end], &delegation),
-        1,
-        "[m22s3/pending-delegation] is_pending_deletion must ask the shared gate predicate \
-         exactly as {delegation:?} — note the absence of a negation, which is the whole \
-         clause. Inverting it to the `!should_reject_for_deletion` form was MEASURED green \
-         across the entire suite while turning AUTH-13 inside out: `complete_guest_claim` \
-         would then admit every account mid-deletion and refuse every ordinary one. There is \
-         no ReducerContext in this crate, so this polarity has no runtime harness."
-    );
-
-    // --- the reaper recheck is defined directly, over the game-core SSOT ----
-    let (cascade_start, cascade_end) = rb24_fn_body_span(&squashed, &m22s3_nd_cascade_decl());
-    let cascade_body = &squashed[cascade_start..cascade_end];
-    for (needle, why) in [
-        (
-            concat!("==AccountStatus::", "PendingDeletion"),
-            "the status conjunct must be spelled DIRECTLY here, not borrowed from \
-             should_reject_for_deletion — a composition over the gameplay gate was measured \
-             green, and it hands a future S5 widening of that gate the power to widen what \
-             the reaper irreversibly erases",
-        ),
-        (
-            concat!("game_core::is_deletion", "_due("),
-            "the grace window has ONE SSOT in game-core (spec para 4.3) — a locally re-derived \
-             comparison against a hand-typed constant is a second copy of the window, free to \
-             drift, and an operator retune would then move only one of them",
-        ),
-    ] {
-        assert_eq!(
-            m22_count_occurrences(cascade_body, needle),
-            1,
-            "[m22s3/cascade-shape] reaper_should_run_cascade must contain {needle:?} exactly \
-             once: {why}."
         );
     }
 }
@@ -8844,381 +1975,6 @@ fn m22s3_cancelled_deletion_rejects_terminal_input() {
          that an already-illegal straw man is illegal."
     );
     let _ = cancelled_deletion(terminal);
-}
-
-// ===========================================================================
-// rb-34 (residual R-rb-7-X8-residual; ledger gate X2) — THE GUEST-CLAIM RE-KEY
-// DELEGATE IS REACHABLE FROM EXACTLY ONE accounts.rs CALL SITE.
-//
-// EARS criterion: WHILE the spec para 4.4 cascade (S3b) has not landed, the
-// ranking-side re-key delegate `rekey` + `_profile` SHALL be reachable from
-// EXACTLY ONE accounts.rs call site, that site SHALL lie inside the claim-flow
-// fan-out helper `rekey` + `_all`, AND the fan-out helper itself SHALL have
-// exactly one call site, inside the claim-completion reducer — so the deletion
-// cascade slot of the reaper, or any other site in this file, cannot reach the
-// guest-claim tombstone writer directly, by alias, OR by the one-hop-up route
-// through the fan-out helper, without a RED. (The reviewer lens measured the
-// one-hop-up route: ADR-0225 itself names the fan-out helper as the cascade's
-// delegation precedent, so a lazy cascade calling IT is the invited shape.)
-//
-// WHY THE DELEGATE AND NOT THE WRITER: the tombstone writer in ranking.rs and
-// the sentinel const it writes are BOTH module-private (rb-7, ADR-0211), so
-// this delegate is the ONLY crate-visible path from accounts.rs to a rename
-// that ALSO zeroes rating, wins and losses. Reached from the cascade slot it
-// renames a DELETED account to the sentinel that means an unclaimed guest whose
-// ranked stats were carried forward, and zeroes ladder columns the cascade was
-// supposed to erase outright: the wrong tombstone, on the wrong subject, in the
-// one flow that cannot be undone. M22 has its own deletion sentinel in
-// game-core, and the cascade must write that one.
-//
-// ORTHOGONAL TO THE FROZEN REAPER-BODY PIN, ON PURPOSE.
-// `rb24_deletion_reaper_body_is_pinned_cascade` was re-derived when the m22-s3b
-// cascade landed, exactly as its own failure message instructed — so the literal
-// it pins today is a DIFFERENT literal from the one this section was written
-// beside. This tooth is about the DELEGATE rather than the body text, so it
-// survived that re-derivation unchanged and is still standing over the shipped
-// cascade: the cascade must reach the deletion tombstone in game-core, never the
-// guest-claim sentinel this delegate writes.
-//
-// RATCHET CLASS, BORN GREEN BY DESIGN — the same class as
-// `g5_no_wallet_accessor_in_accounts` (:2211),
-// `auth19_g5_no_direct_battle_access` (:1729), `g5_writes_only_owned_tables`
-// (:2159) and the AUTH-23 never-deletes delegate scan (:1911). HEAD satisfies
-// it already; the bite is proven by MUTATION, not by a pre-fix RED.
-//
-// SCAN HYGIENE — the file header rule, restated because this section adds
-// needles for a token a crate-wide census may later count. Every needle is
-// assembled from `concat!` fragments and every prose mention is split the same
-// way, so this section carries no contiguous delegate token, no contiguous
-// qualified call site and no contiguous fn declaration for the dozen evals that
-// concatenate every .rs file under server-module/src, _tests.rs siblings
-// included. It contains no block comment, no raw string, no apostrophe, no bare
-// double-quote character inside a comment, and it never spells the guest-claim
-// sentinel VALUE — spelling that value a second time anywhere is what
-// `rb7_guest_claim_tombstone_*` in ranking_tests.rs exists to refuse.
-// ===========================================================================
-
-/// X2 (scan, whole file + body): accounts.rs NAMES the guest-claim re-key
-/// delegate exactly once, that one naming IS the crate-qualified direct call,
-/// and it sits inside the claim-flow fan-out helper.
-///
-/// FIVE CLAUSES, each with its own pinned message — a coarse mutant only ever
-/// proves the FIRST assertion, so every later clause needs a surgical mutant
-/// pinned by FAILURE MESSAGE:
-///   1. the BARE delegate token occurs exactly once in the string-blanked,
-///      comment-blanked, whitespace-squashed view of accounts.rs;
-///   2. the crate-qualified CALL occurs exactly once, which together with (1)
-///      makes that single naming the call and nothing else;
-///   3. the fan-out helper is DECLARED exactly once — the anti-decoy clause for
-///      the first-hit body extractor;
-///   4. the qualified call occurs exactly once INSIDE that declared body;
-///   5. the fan-out helper ITSELF is reached from exactly one call site, and
-///      that site lies inside the claim-completion reducer — the one-hop-up
-///      pin, without which a cascade could skip naming the delegate entirely
-///      and call the fan-out helper instead, re-keying the deleted account's
-///      rows onto a second identity and MATERIALISING a fresh profile row
-///      (stats copied forward) under the guest-claim sentinel.
-///
-/// ACCEPTED FALSE-RED COST (shared with the rb-22 census at the lines cited
-/// below): clause 1's bare token and clause 5's call token carry no right-hand
-/// word boundary, so a longer sibling identifier sharing the prefix — a batch
-/// variant of the delegate, say — counts too and REDs. That cost is the price
-/// of catching the aliasing import, and the remedy on a legitimate hit is the
-/// same conscious re-derivation every message below asks for.
-///
-/// CLAUSE 1 IS THE ALIAS CLAUSE AND IS DELIBERATELY BROADER THAN CLAUSE 2. Its
-/// needle is the bare token: no paren, no path prefix, and no word boundary on
-/// either side. One needle therefore catches every spelling at once — the
-/// qualified call, a call under a plain import, a call through a MODULE alias
-/// (`use crate::ranking as r;` and then a call qualified by `r`), an ALIASING
-/// import (which must spell the original name once before renaming it), and an
-/// fn-pointer or const binding of the path (which names it with no paren at
-/// all). Requiring a word boundary on the right would DROP the aliasing import,
-/// because `squash_ws` fuses the renaming tail onto the name — the measured
-/// hazard the rb-22 census records at :4961.
-///
-/// Kills: a second call site anywhere in accounts.rs, the MEASURED one being a
-///        lazy S3b cascade in the reaper cascade slot that hands the delegate
-///        the deleted account identity twice (clause 1, then clause 2);
-///        an aliasing import plus a call through the alias (clause 1 alone —
-///        clause 2 never sees it);
-///        a module-alias import plus a call qualified through that alias
-///        (clause 1 alone);
-///        an fn-pointer or const binding of the path (clause 1 alone);
-///        deletion of the sanctioned call, which takes clause 1 to zero;
-///        a decoy second declaration of the fan-out helper, which would steer
-///        the first-hit body extractor (clause 3);
-///        the call moved OUT of the fan-out helper while both whole-file counts
-///        stay at one (clause 4) — that is the deletion-cascade shape exactly;
-///        the call moved into a private wrapper the fan-out helper then calls
-///        (clause 4, deliberately — see below);
-///        the ONE-HOP-UP route — a cascade that never names the delegate and
-///        instead calls the fan-out helper with the deleted identity and a
-///        tombstone destination (clause 5) — the reviewer-measured shape that
-///        passed the first four clauses green.
-///
-/// Does NOT kill: a NEW wrapper in ranking.rs that reaches the private writer
-///        under a different name, nor a re-export of the delegate OR of the
-///        fan-out helper from a third module reached through that other path.
-///        Neither changes a byte of accounts.rs, so no clause here can see
-///        them; both need a crate-wide naming census in the shape of
-///        `rb22_purge_named_nowhere_else_in_crate`
-///        (:4993), and both are deferred to ledger rb-34 X5 / S3b rather than
-///        claimed here.
-///        A reentrant call to the claim-completion reducer itself would count
-///        under clause 5's reducer-name census below only if spelled; reached
-///        some other way it is runtime-guarded — guard 3 rejects a
-///        PendingDeletion caller — and is not claimed here.
-///        A call textually inside the fan-out helper but INERT (bound to a
-///        closure, say) is also outside this gate: NO textual gate owns
-///        inertness — the AUTH-21 manifest scan (:1835) is a containment scan
-///        that a closure-bound spelling still satisfies; that shape breaks the
-///        claim flow itself and is behavioural-test territory.
-///
-/// THE HELPER-HOP FALSE-RED IS INTENDED RATCHET BEHAVIOUR. Moving the call one
-/// level down, into a private helper that the fan-out helper calls, reds clause
-/// 4 (and the AUTH-21 manifest scan with it). That indirection is the hazard in
-/// miniature: it decouples the one call site from the claim ceremony that
-/// reviews it, and leaves the new wrapper one line away from the cascade slot,
-/// reachable from there without ever naming the delegate again.
-#[test]
-fn rb34_guest_claim_rekey_delegate_reachable_only_from_rekey_all() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let bare = concat!("rekey", "_profile");
-    let qualified = concat!("crate::ranking::", "rekey", "_profile(");
-    let fan_out = concat!("fnrekey", "_all(");
-
-    // --- (1) exactly ONE naming of the delegate, in any spelling -------------
-    let named = m22_count_occurrences(&squashed, bare);
-    assert_eq!(
-        named, 1,
-        "[rb34/delegate-naming] accounts.rs must name the guest-claim re-key delegate \
-         EXACTLY once; found {named}. That delegate is the only crate-visible path from \
-         this module to the module-private writer that renames a profile row to the \
-         guest-claim sentinel AND zeroes its ladder stats, so every naming of it is a \
-         reachability edge to the WRONG tombstone. The measured hazard is a lazy S3b \
-         cascade calling it in the deletion cascade slot of the reaper, which renders a \
-         DELETED account as a claimed guest with zeroed rating, wins and losses while the \
-         whole CI stays green. AN ALIASING IMPORT AND AN fn-POINTER BINDING TRIP THIS \
-         CLAUSE BY DESIGN: both must spell the name once, and neither carries the \
-         qualified call shape the next clause counts. ZERO means the claim flow lost its \
-         ranked re-key. A genuinely new legitimate call site is SUPPOSED to fire this pin: \
-         re-derive it consciously, re-review where the two identity arguments at the new \
-         site come from, and update the counts in the SAME change under ledger rb-34 X5 \
-         and the S3b cascade requirements."
-    );
-
-    // --- (2) that one naming IS the crate-qualified direct call --------------
-    let calls = m22_count_occurrences(&squashed, qualified);
-    assert_eq!(
-        calls, 1,
-        "[rb34/delegate-qualified-call] accounts.rs must carry the crate-qualified delegate \
-         call EXACTLY once; found {calls}. With the naming census above at one, this clause \
-         is what makes the single naming a CALL at the sanctioned path rather than an \
-         import, a re-export or a binding — and a second qualified call is a second, \
-         unreviewed reach for the guest-claim tombstone writer, from a flow no reviewer of \
-         the claim ceremony ever saw: a deleted account rendered as a claimed guest, with \
-         its ladder stats zeroed instead of erased. ZERO means the sanctioned call is no \
-         longer spelled at the crate-qualified path — an unqualified call under a plain \
-         import is the measured shape, and the naming census above is what still sees it. \
-         If a new call site is genuinely warranted, re-derive this pin and its counts \
-         consciously in the same change, under ledger rb-34 X5 and the S3b cascade \
-         requirements."
-    );
-
-    // --- (3) the fan-out helper is declared exactly once (anti-decoy) --------
-    let decls = m22_count_occurrences(&squashed, fan_out);
-    assert_eq!(
-        decls, 1,
-        "[rb34/fanout-decl-unique] accounts.rs must declare the claim-flow fan-out helper \
-         EXACTLY once; found {decls}. The body extractor below anchors on the FIRST hit, so \
-         a second declaration — an inner-module twin, say — silently re-points the call-site \
-         clause at a body nobody reviewed, while both counts above stay at one. Count, \
-         never index: a first-hit anchor is forgeable by a decoy. ZERO means the helper was \
-         renamed or deleted; re-derive this needle, the call-site clause below, and the \
-         AUTH-21 manifest scan's twin needle in the same conscious change."
-    );
-
-    // --- (4) and the one call lives INSIDE that declared body ----------------
-    let body = extract_squashed_fn_body(&squashed, fan_out)
-        .expect("[rb34/fanout-scope] the claim fan-out helper was not found in accounts.rs");
-    let inside = m22_count_occurrences(body, qualified);
-    assert_eq!(
-        inside, 1,
-        "[rb34/call-site-inside-fanout] the qualified delegate call must sit inside the \
-         claim-flow fan-out helper EXACTLY once; found {inside}. ZERO is the shape that \
-         matters: the one qualified call counted above then lives SOMEWHERE ELSE in \
-         accounts.rs — the deletion cascade slot of the grace reaper being the measured one \
-         — where it renames a DELETED account to the guest-claim sentinel and zeroes the \
-         ladder stats the cascade was supposed to erase outright. A hop through a private \
-         wrapper that the fan-out helper then calls reds here too, deliberately: the \
-         indirection decouples the one call site from the claim ceremony that reviews it, \
-         and leaves that wrapper one line away from the cascade slot. If S3b is landing a \
-         legitimately new site, re-derive this pin and its counts consciously in the same \
-         change, with a fresh review of where the identity arguments come from (ledger \
-         rb-34 X5)."
-    );
-
-    // --- (5) the fan-out helper itself: one call site, in the claim reducer --
-    // Reviewer-measured one-hop-up route: with only clauses 1-4, a cascade
-    // calling the fan-out helper (never naming the delegate) re-keys the
-    // deleted account's rows onto a second identity and MATERIALISES a fresh
-    // profile row under the guest-claim sentinel — stats copied forward by the
-    // delegate's own get-or-init — while every count above stays at one.
-    let fan_out_call = concat!("rekey", "_all(");
-    let claim_reducer_decl = concat!("fncomplete", "_guest", "_claim(");
-    let claim_reducer_name = concat!("complete", "_guest", "_claim(");
-    let fan_out_sites = m22_count_occurrences(&squashed, fan_out_call);
-    assert_eq!(
-        fan_out_sites, 2,
-        "[rb34/fanout-single-caller] the claim fan-out helper must appear at EXACTLY two \
-         sites in accounts.rs — its declaration and its one sanctioned call in the \
-         claim-completion reducer; found {fan_out_sites}. A THIRD site is the one-hop-up \
-         route to the guest-claim tombstone writer that never names the delegate: the \
-         measured shape is the deletion cascade calling the fan-out helper with the deleted \
-         identity and a tombstone destination, which re-keys every table onto the tombstone \
-         identity and inserts a fresh profile row carrying the deleted account's ladder \
-         stats under the guest-claim sentinel. ONE means the sanctioned claim-flow call was \
-         deleted; the claim ceremony lost its re-key. A genuinely new legitimate caller must \
-         re-derive this pin consciously (ledger rb-34 X5 / the S3b cascade requirements)."
-    );
-    let reducer_decls = m22_count_occurrences(&squashed, claim_reducer_decl);
-    assert_eq!(
-        reducer_decls, 1,
-        "[rb34/claim-reducer-decl-unique] accounts.rs must declare the claim-completion \
-         reducer EXACTLY once; found {reducer_decls}. The body extractor below anchors on \
-         the FIRST hit — a decoy twin re-points the caller-site clause at an unreviewed \
-         body. ZERO means the reducer was renamed; re-derive this needle in the same change."
-    );
-    let reducer_namings = m22_count_occurrences(&squashed, claim_reducer_name);
-    assert_eq!(
-        reducer_namings, 1,
-        "[rb34/claim-reducer-never-called-here] the claim-completion reducer's name must \
-         occur EXACTLY once in accounts.rs — its own declaration; found {reducer_namings}. \
-         A second spelling is an internal reentrant call, which would reach the delegate \
-         through the whole claim ceremony from a flow that was never reviewed for it. \
-         (Runtime guard 3 also rejects a PendingDeletion caller, but this pin fires at \
-         test time, not after a deploy.)"
-    );
-    let claim_body = extract_squashed_fn_body(&squashed, claim_reducer_decl).expect(
-        "[rb34/claim-reducer-scope] the claim-completion reducer was not found in accounts.rs",
-    );
-    let fan_out_in_claim = m22_count_occurrences(claim_body, fan_out_call);
-    assert_eq!(
-        fan_out_in_claim, 1,
-        "[rb34/fanout-call-inside-claim-reducer] the fan-out helper's one sanctioned call \
-         must sit inside the claim-completion reducer EXACTLY once; found \
-         {fan_out_in_claim}. ZERO with the site census above still at two means the call \
-         moved to another flow — the deletion cascade being the measured hazard — where it \
-         re-keys a deleted account's rows instead of a claimed guest's. Re-derive \
-         consciously (ledger rb-34 X5)."
-    );
-}
-
-// ===========================================================================
-// m22-s3b (ADR-0228) — THE SPEC PARA-4.4 CASCADE: DELEGATED ERASE/ANONYMIZE,
-// THE ONE-SHOT RE-ARM, AND PRV1-8(b) FRESH RE-REGISTRATION.
-//
-// EARS criteria (`specs/monster-realm-v2/M22-privacy-compliance.spec.md` §7.4):
-//   PRV1-6a  force-resolve every live interaction via
-//            `resolve_all_live_interactions` BEFORE any row is erased.
-//   PRV1-6b  delete every ERASE-policy row owned by the identity.
-//   PRV1-6c  overwrite every ANONYMIZE-policy row's identity/PII fields with
-//            the tombstone constants, leaving PK and mechanical fields intact.
-//   PRV1-6d  delete every JOIN_ONLY row reachable via its pinned parent join.
-//   PRV1-6e  stamp `terminal_at_ms` ONLY after 6a..6d complete, and never
-//            otherwise.
-//   PRV1-19  a practice battle (player_identity == opponent_identity) is
-//            visited and tombstoned EXACTLY ONCE, not twice.
-//   PRV1-8(b) a terminal identity re-registering is RESET to `new_account_row`
-//            defaults with NO pre-deletion value carried forward.
-//
-// SCOPE SPLIT, restated because it decides the shape of every test below: when
-// these were written there was no way to construct a `ReducerContext` in this crate
-// (rb-41's native_host_tests changed that), so every rule that
-// can be a pure seam IS one and is EXECUTED; the residue that exists only as
-// wiring inside a reducer body — placement, ordering, delegation — is pinned by
-// source scan. ADR-0228 records that justification once.
-//
-// SCAN HYGIENE — the file header rule, restated because this section adds
-// needles for a file a dozen unmigrated evals concatenate wholesale (every
-// `.rs` under `server-module/src`, `_tests.rs` siblings included). Every needle
-// below is assembled from `concat!` fragments, so this file never carries a
-// contiguous cascade call site, accessor chain or reducer declaration that such
-// a scanner could count as a real one. This section contains no block comment,
-// no raw string, no apostrophe and no bare double-quote character inside any
-// comment.
-// ===========================================================================
-
-/// The squashed declaration needle for the ADR-0221 R2 init/sync sweep.
-fn m22s3b_nd_ensure_decl() -> String {
-    concat!("fnensure_deletion_reapers", "_armed(").to_string()
-}
-
-/// The squashed call needle for that sweep, as `init` and `sync_content` spell
-/// it (the body lives in accounts.rs because the sole-writer teeth close the
-/// schedule table to every other module — ADR-0228 D3b).
-fn m22s3b_nd_ensure_call() -> String {
-    concat!("accounts::ensure_deletion_reapers", "_armed(").to_string()
-}
-
-/// PRV1-8(b) — the terminal-reset match arm of `provision_or_touch_account`,
-/// squashed. The MARKER HALF keys the guard, not spec para 4.1's conjunction:
-/// on the illegal Active-plus-marker shape a fresh reset is the fail-closed
-/// direction (ADR-0228 D4).
-fn m22s3b_nd_terminal_reset_arm() -> String {
-    concat!(
-        "Some(existing)ifaccount_has_terminal",
-        "_marker(&existing)=>{"
-    )
-    .to_string()
-}
-
-/// ADR-0228 D6 — the WHOLE Guard 3a statement of `complete_guest_claim`, with
-/// its reducer tag INTACT (the strings-KEPT view).
-///
-/// `stripped_for_scan` BLANKS string literals, so the blanked needle matches
-/// whatever reducer tag the guard passes — and since the cancel-side PRV1-4
-/// guard is byte-identical once blanked, the blanked view alone cannot tell the
-/// two apart at all. Matching this needle in `stripped_keep_strings` output pins
-/// the tag AND its adjacency to the guard in one contiguous substring.
-fn m22s3b_nd_claim_terminal_guard_tagged() -> String {
-    let q = m22s3_dq();
-    [
-        "if".to_string(),
-        m22s3_nd_marker_call(),
-        concat!("{returnrej", "ect(").to_string(),
-        format!("{q}{}{q}", concat!("complete_guest", "_claim")),
-        concat!(",me,REJECT_ALREADY", "_DELETED);}").to_string(),
-    ]
-    .concat()
-}
-
-/// The inner `(start, end)` byte span of the brace block that OPENS at or after
-/// `from` in an ALREADY-SQUASHED source. Fails LOUD: a span-scoped clause whose
-/// span could not be read must not report a pass.
-fn m22s3b_block_span(squashed: &str, from: usize) -> (usize, usize) {
-    let rel = squashed[from..].find('{').unwrap_or_else(|| {
-        panic!("[m22s3b/span] no opening brace at or after squashed offset {from}.")
-    });
-    let open = from + rel;
-    let bytes = squashed.as_bytes();
-    let mut depth: usize = 0;
-    let mut i = open;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return (open + 1, i);
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    panic!("[m22s3b/span] the block opened at squashed offset {open} is not brace-balanced.")
 }
 
 /// A LEGAL mid-grace account: `PendingDeletion` with a request stamp and no
@@ -9941,558 +2697,6 @@ fn m22s3b_plan_deletion_rearms_idempotent() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// m22-s3b / PRV1-6a — THE EXTRACTED RESOLVER (structure, lib.rs).
-// ---------------------------------------------------------------------------
-
-/// PRV1-6a (scan): `resolve_all_live_interactions` contains EXACTLY the four
-/// `on_disconnect` force-resolve calls, in the shipped order, and performs NO
-/// row write of its own.
-///
-/// SPEC §4.4 STEP 1 IS EMPHATIC ABOUT THE SOURCE OF THE LIST: the bundle is the
-/// codebase's OWN `on_disconnect` dispatch, verbatim and in its existing order —
-/// never a hazard list rebuilt from the table census, which silently drops
-/// `resolve_wild_battle_on_disconnect` because no scheduled reaper covers the
-/// wild battle row class. A deleted account's abandoned wild battle would then
-/// be soft-locked forever. The spec calls that the single highest-value
-/// correction its adversarial pass produced, so the four calls are pinned by
-/// name AND by order rather than by count.
-///
-/// THE NO-WRITE CLAUSE IS WHAT KEEPS THE EXTRACTION HONEST: the resolver is a
-/// pure dispatcher over four helpers that each own their own writes. A row write
-/// added here is a write in `lib.rs`, outside every owning module's shape pin
-/// and outside the cascade's own delegation doctrine.
-///
-/// Kills: a fifth call added to the bundle without review; any of the four
-///        dropped (the count clause); the wild-battle resolve reordered ahead of
-///        the PvP forfeit or the challenge cancel (the ordering clauses); an
-///        inlined write that bypasses the owning module.
-#[test]
-fn m22s3b_resolver_body_order() {
-    let squashed = stripped_for_scan(LIB_RS);
-    let body =
-        extract_squashed_fn_body(&squashed, &m22s3b_nd_resolver_decl()).unwrap_or_else(|| {
-            panic!(
-                "[m22s3b/resolver-scope] fn resolve_all_live_interactions was not found in \
-                 lib.rs. Spec §4.4 step 1 factors the four on_disconnect force-resolve calls \
-                 into ONE `pub(crate)` helper shared by both callers, so a future fifth \
-                 resolver is picked up by the disconnect hook AND by the deletion cascade \
-                 automatically. Fail LOUD rather than pass vacuously."
-            )
-        });
-
-    let ordered = [
-        (
-            concat!("trading::cancel_trades_on", "_disconnect("),
-            "TR-18: cancel every active trade offer, while the offer lookup can still \
-             resolve the player identity",
-        ),
-        (
-            concat!("pvp::forfeit_on", "_disconnect("),
-            "ADR-0109 D8: forfeit any ongoing PvP battle, while write_back identity lookups \
-             still resolve",
-        ),
-        (
-            concat!("battle::resolve_wild_battle_on", "_disconnect("),
-            "ADR-0138: auto-flee and GC the wild battle/battle_wild pair — NO scheduled \
-             reaper covers that row class, so dropping this call soft-locks the abandoned \
-             wild battle forever. This is the call a table-census-derived hazard list loses",
-        ),
-        (
-            concat!("pvp::cancel_challenges_on", "_disconnect("),
-            "ADR-0109 D9: cancel pending outgoing challenges",
-        ),
-    ];
-
-    let mut prev: Option<usize> = None;
-    for (needle, why) in ordered {
-        let n = m22_count_occurrences(body, needle);
-        assert_eq!(
-            n, 1,
-            "[m22s3b/resolver-call] resolve_all_live_interactions must call `{needle}` \
-             EXACTLY once ({why}); found {n}. ZERO drops one whole class of live interaction \
-             from BOTH the disconnect hook and the deletion cascade in one edit — which is \
-             precisely the leverage the shared extraction buys and precisely why it needs its \
-             own pin. MORE THAN ONE is a duplicated force-resolve whose second run acts on \
-             rows the first already removed."
-        );
-        let at = idx(body, needle);
-        if let Some(p) = prev {
-            assert!(
-                p < at,
-                "[m22s3b/resolver-order] `{needle}` (offset {at}) is out of the shipped \
-                 on_disconnect order (previous call at offset {p}). Spec §4.4 step 1 says the \
-                 bundle is that dispatch VERBATIM and in its existing order: the three battle \
-                 helpers touch disjoint row classes today, but the order is what a reviewer \
-                 diffs the extraction against, and re-ordering it is how a future fifth call \
-                 lands in the wrong place."
-            );
-        }
-        prev = Some(at);
-    }
-
-    for (verb, what) in [
-        (concat!(".ins", "ert("), "insert"),
-        (concat!(".upd", "ate("), "update"),
-        (concat!(".del", "ete("), "delete"),
-    ] {
-        assert_eq!(
-            m22_count_occurrences(body, verb),
-            0,
-            "[m22s3b/resolver-no-write] resolve_all_live_interactions performs a direct \
-             `{what}` row write. It is a DISPATCHER: each of the four helpers owns its own \
-             writes, inside the module whose tests pin their shape. A write added here lives \
-             in lib.rs, where no owning-module shape pin can see it, and it runs on EVERY \
-             disconnect as well as on every cascade."
-        );
-    }
-
-    // --- EXACT EQUALITY, LAST (added in r2) ---------------------------------
-    //
-    // Everything above is a count and an ordering, and a red-team measured that
-    // the whole set is satisfiable by a resolver that never resolves: wrap the
-    // four calls in `if false { .. }`, or open the body with an unconditional
-    // `return;`, or add a guard that skips them for the deletion caller — every
-    // needle is still present, every count is still 1, and every offset
-    // comparison still holds, while the bundle force-resolves nothing at all and
-    // the cascade proceeds to erase rows that live trades and battles still
-    // reference. Position clauses are structurally blind to reachability, so the
-    // finale is equality: the body IS the four dispatch statements and nothing
-    // else. That is also exactly what spec §4.4 step 1 asks for — the
-    // `on_disconnect` dispatch, VERBATIM — so the pin and the requirement are the
-    // same sentence.
-    //
-    // The literal is transcribed INDEPENDENTLY of the `ordered` needles above,
-    // split at different points, so a silent edit to one artefact cannot move the
-    // other with it; the containment clause below is what makes that independence
-    // checkable rather than merely asserted in a comment.
-    let expected = [
-        concat!("trading::cancel_trades_on", "_disconnect(ctx,identity);"),
-        concat!("pvp::forfeit_on", "_disconnect(ctx,identity);"),
-        concat!(
-            "battle::resolve_wild_battle_on",
-            "_disconnect(ctx,identity);"
-        ),
-        concat!("pvp::cancel_challenges_on", "_disconnect(ctx,identity);"),
-    ]
-    .concat();
-    for (needle, _why) in ordered {
-        assert!(
-            expected.contains(needle),
-            "[m22s3b/resolver-literal-independence] the plan needle `{needle}` is not a \
-             substring of the frozen resolver literal. The two are transcribed separately and \
-             split at different points on purpose, so a mismatch means one artefact was \
-             edited alone and the equality below is now asserting something other than the \
-             plan."
-        );
-    }
-    assert_eq!(
-        body, expected,
-        "[m22s3b/resolver-body-exact] the body of `resolve_all_live_interactions` is not \
-         EXACTLY the four `on_disconnect` dispatch statements. Spec §4.4 step 1 says the \
-         bundle is that dispatch VERBATIM and in its existing order, so equality here is the \
-         requirement rather than an extra constraint on it. Every other clause in this test \
-         reasons about POSITION or COUNT and is therefore blind to REACHABILITY: an \
-         `if false {{ .. }}` wrapper, an early `return;` above the calls, or a caller-keyed \
-         guard that skips them for the deletion path keeps all four needles present, all four \
-         counts at 1 and every offset comparison true — while the bundle resolves NOTHING and \
-         the cascade goes on to erase monsters, wallets and inventories that live trades and \
-         ongoing battles still reference. The subject is spelled `identity` at every call \
-         because that is this helper's parameter: a local rebinding above the calls would \
-         retarget all four at once. If the sanctioned body legitimately changes, re-derive \
-         this literal FROM the lib.rs `on_disconnect` dispatch in the same change."
-    );
-}
-
-/// The squashed declaration needle for the extracted resolver.
-fn m22s3b_nd_resolver_decl() -> String {
-    concat!("fnresolve_all_live", "_interactions(").to_string()
-}
-
-/// PRV1-6b/6c/6d (totality): EVERY table the shipped `DATA_LIFECYCLE_MANIFEST`
-/// classifies `Erase`, `Anonymize` or `ViaJoin` is reachable from the reaper
-/// body through a NAMED helper, and the table-to-helper map is exhaustive by
-/// construction.
-///
-/// THE MAP IS THE DRIFT SURFACE THIS TEST EXISTS TO CLOSE (ADR-0228, S6
-/// `[DEL-04]`). Under delegation the reaper body names HELPERS, not table
-/// identifiers, so the spec's original per-table presence check has nothing to
-/// match on. The map below restores it: the manifest is walked, every classified
-/// entry must appear in the map, and every mapped needle must appear in the
-/// reaper's own body. A new owner-keyed table therefore cannot be added without
-/// either being classified NotOwned (a conscious decision the basis prose must
-/// justify) or being wired into the cascade.
-///
-/// FAIL-LOUD, NEVER SKIP. The match on `DeletionPolicy` is exhaustive with no
-/// wildcard arm, so a new policy variant fails to COMPILE here rather than
-/// silently falling through; and a classified table missing from the map PANICS
-/// rather than being skipped. Refusing to classify is the safe direction — an
-/// unmapped table is an unerased table.
-///
-/// Kills: dropping any delegated call from the cascade (its mapped needle
-///        disappears); adding an owner-keyed table without wiring it (the map
-///        lookup panics); a new `DeletionPolicy` variant added without deciding
-///        what the cascade does with it (compile error).
-#[test]
-fn m22s3b_cascade_covers_manifest() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let body = extract_squashed_fn_body(&squashed, &rb24_nd_reaper_decl())
-        .expect("[m22s3b/coverage-scope] fn account_deletion_reaper was not found");
-
-    let erase_monsters = m22s3b_nd_erase_monsters();
-    let erase_inventory = m22s3b_nd_erase_inventory();
-    let erase_npc = m22s3b_nd_erase_npc_state();
-    let erase_heal = m22s3b_nd_erase_heal_cooldown();
-    let erase_wallet = m22s3b_nd_erase_wallet();
-    let erase_playtest = m22s3b_nd_erase_playtest_events();
-    let erase_trades = m22s3b_nd_erase_trade_offers();
-    let erase_pvp = m22s3b_nd_erase_pvp_rows();
-    let purge_bundles = m22s3b_nd_purge_bundles();
-    let erase_character = m22s3b_nd_erase_character_rows();
-    let erase_sessions = m22s3b_nd_erase_player_sessions();
-    let erase_notices = m22s3b_nd_erase_evolution_notices();
-    let anon_names = m22s3b_nd_anonymize_names();
-    let anon_battles = m22s3b_nd_anonymize_battles();
-    let anon_account = m22s3b_nd_anonymized_ctor();
-
-    // The hand-maintained table -> reaper-needle map. Every ERASE / ANONYMIZE /
-    // VIA-JOIN entry of the live manifest must appear here.
-    let map: Vec<(&str, &String)> = vec![
-        ("monster", &erase_monsters),
-        ("monster_pub", &erase_monsters),
-        ("pending_evolution_notice", &erase_notices),
-        ("inventory", &erase_inventory),
-        ("player_dialogue_state", &erase_npc),
-        ("player_quest", &erase_npc),
-        ("player_conversation", &erase_npc),
-        ("player_session", &erase_sessions),
-        ("heal_cooldown", &erase_heal),
-        (concat!("player", "_wallet"), &erase_wallet),
-        ("playtest_event", &erase_playtest),
-        ("trade_offer", &erase_trades),
-        ("battle_challenge", &erase_pvp),
-        ("battle_action", &erase_pvp),
-        ("export_bundle", &purge_bundles),
-        ("player", &anon_names),
-        ("profile", &anon_names),
-        ("account", &anon_account),
-        ("battle", &anon_battles),
-        ("character", &erase_character),
-        ("battle_wild", &anon_battles),
-        ("pvp_deadline_schedule", &anon_battles),
-        ("battle_challenge_reaper_schedule", &erase_pvp),
-        ("trade_offer_reaper_schedule", &erase_trades),
-    ];
-
-    let manifest: &[DataLifecycleEntry] = DATA_LIFECYCLE_MANIFEST;
-    let mut classified = 0usize;
-    for entry in manifest {
-        let table = entry.table;
-        // EXHAUSTIVE, no wildcard arm: a new policy variant must decide here
-        // what the cascade does with it, as a COMPILE error rather than a skip.
-        let needs_cascade = match entry.policy {
-            DeletionPolicy::Erase => true,
-            DeletionPolicy::Anonymize => true,
-            DeletionPolicy::ViaJoin(_) => true,
-            DeletionPolicy::NotOwned => false,
-        };
-        if !needs_cascade {
-            continue;
-        }
-        classified += 1;
-        let needle = map
-            .iter()
-            .find(|(t, _)| *t == table)
-            .map(|(_, n)| *n)
-            .unwrap_or_else(|| {
-                panic!(
-                    "[m22s3b/coverage-unmapped] DATA_LIFECYCLE_MANIFEST classifies the table \
-                     `{table}` for the cascade, but this test's table-to-helper map does not \
-                     name it. Under delegation the reaper body names HELPERS rather than \
-                     table identifiers, so this map is the only thing that ties the manifest \
-                     to the cascade — and it is a hand-maintained drift surface of the same \
-                     class as JOIN_ONLY_TABLES. Fail LOUD rather than skip: an unmapped \
-                     classified table is an unerased table. Either wire the table into the \
-                     cascade and add its entry here, or classify it NotOwned with a basis \
-                     that says why."
-                )
-            });
-        assert!(
-            body.contains(needle.as_str()),
-            "[m22s3b/coverage-missing] the manifest classifies `{table}` for the cascade, and \
-             this map routes it through the reaper call `{needle}` — which the reaper body \
-             does NOT contain. Spec §4.4 walks the MANIFEST rather than the schema, so a \
-             classified table whose helper is missing from the cascade is simply never \
-             erased: the rows survive the deletion silently, and nothing else in the tree \
-             looks wrong."
-        );
-    }
-
-    assert_eq!(
-        classified, 24,
-        "[m22s3b/coverage-census] {classified} manifest entries were classified for the \
-         cascade; EXACTLY 24 is the live partition (15 ERASE + 4 ANONYMIZE + 5 JOIN-ONLY). \
-         Tightened from a floor in r2 — a `>=` accepts growth silently, and growth is \
-         precisely the event that needs a human: a NEW owner-keyed table classified for the \
-         cascade must be routed through this test's hand-maintained table-to-helper map, \
-         which is a named drift surface of the same class as `JOIN_ONLY_TABLES` (spec §9 \
-         residual 3). FEWER means the walk stopped looking and every clause above is green \
-         about tables nobody checked; MORE means a table was classified without anyone \
-         deciding which helper erases it. Either way, re-derive this number together with the \
-         map and with `data_lifecycle_partition_matches_spec_section3`'s four name-sets, in \
-         the same conscious change."
-    );
-}
-
-/// ADR-0221 R2 / ADR-0228 D3(b) (wiring): the re-arm sweep is DECLARED in
-/// `accounts.rs` and CALLED from both lifecycle entry points.
-///
-/// BOTH CALLERS ARE LOAD-BEARING AND FOR DIFFERENT REASONS. `init` runs once, at
-/// database creation, and covers a fresh deployment; `sync_content` runs on
-/// every publish and is the ONLY thing that can ever reach the accounts already
-/// sitting `PendingDeletion` with a fired-and-dropped one-shot row on a live
-/// database. Wiring only `init` looks complete and reaches none of them.
-///
-/// THE BODY LIVES IN accounts.rs, NOT IN lib.rs: the rb-24 sole-writer teeth
-/// close `account_deletion_reaper_schedule` to the two reviewed helpers in that
-/// module, so a sweep written in lib.rs could not insert a schedule row without
-/// breaking the write isolation the whole delegation doctrine rests on.
-///
-/// Kills: a sweep declared but never called; a sweep called from `init` only
-///        (which reaches no existing overdue account); a sweep whose body was
-///        written in lib.rs, outside the module that owns the schedule table.
-#[test]
-fn m22s3b_ensure_rearm_wiring() {
-    let accounts = stripped_for_scan(ACCOUNTS_RS);
-    let decl = m22s3b_nd_ensure_decl();
-    assert_eq!(
-        m22_count_occurrences(&accounts, &decl),
-        1,
-        "[m22s3b/sweep-decl] accounts.rs must declare `{decl}` EXACTLY once. The body belongs \
-         HERE and nowhere else: `rb24_schedule_table_sole_writers` closes the deletion \
-         schedule table to the arm and disarm helpers in this module, so a sweep declared in \
-         another module cannot arm anything without breaking that census."
-    );
-
-    // --- THE SWEEP MUST ACTUALLY SWEEP (added in r2) ------------------------
-    //
-    // Declaration plus two call sites says the sweep EXISTS and RUNS. It says
-    // nothing about it doing anything, and a red-team measured the gap: an
-    // `ensure_deletion_reapers_armed` whose body is `let _ = ctx;` — or one that
-    // builds an empty account list and loops over it — is declared once, called
-    // from both lifecycle hooks, arms nothing, and is invisible to every clause
-    // in this test. It is also the WORST place for a silent no-op, because the
-    // ADR-0221 R2 population it exists to rescue is exactly the set no other code
-    // path will ever re-read: those accounts sit `PendingDeletion` with their
-    // one-shot already fired and dropped, and nothing else in the tree looks at
-    // them again.
-    //
-    // Three reads, each irreplaceable: the account table (the candidate rows),
-    // the schedule table (which of them are ALREADY armed — without it the sweep
-    // double-arms on every publish), and the pure `plan_deletion_rearms` seam
-    // that decides between them. The seam call is what keeps
-    // `m22s3b_plan_deletion_rearms_idempotent` load-bearing: an inline
-    // re-derivation of the same rule in the shell is untested by construction.
-    let sweep_body = extract_squashed_fn_body(&accounts, &decl).unwrap_or_else(|| {
-        panic!(
-            "[m22s3b/sweep-scope-body] the brace-bounded body of `{decl}` could not be sliced \
-             out of accounts.rs, so every shape clause below has no scope and would pass \
-             vacuously. Fail LOUD."
-        )
-    });
-    for (needle, what, why) in [
-        (
-            concat!("acc", "ount().iter()"),
-            "the candidate-row read",
-            "the sweep has to look at the account table to find rows sitting PendingDeletion \
-             with nothing armed. Without this read there are no candidates and the helper is \
-             a no-op that reads as a fix",
-        ),
-        (
-            concat!("account_deletion_reaper", "_schedule().iter()"),
-            "the already-armed read",
-            "without it the sweep cannot know which rows already carry a schedule, so it \
-             re-arms every mid-grace account on EVERY publish — one extra schedule row per \
-             deploy, each firing its own full cascade with two unindexed full-table sweeps \
-             (the §8.3 volume residual, multiplied by publish frequency)",
-        ),
-        (
-            concat!("plan_deletion", "_rearms(&"),
-            "the pure decision seam",
-            "the skip rules (Active, terminal, stamp-less, already-armed) are pinned \
-             behaviourally by `m22s3b_plan_deletion_rearms_idempotent`, and that test can \
-             only reach them through this seam. An inline re-derivation in the shell is \
-             untested by construction — and it is the shell, not the seam, that would then \
-             decide which accounts get an irreversible cascade scheduled",
-        ),
-    ] {
-        assert!(
-            sweep_body.contains(needle),
-            "[m22s3b/sweep-shape] `ensure_deletion_reapers_armed` must contain `{needle}` \
-             ({what}): {why}. Body read: {sweep_body:?}"
-        );
-    }
-
-    let lib = stripped_for_scan(LIB_RS);
-    let call = m22s3b_nd_ensure_call();
-    for (what, needle, why) in [
-        (
-            "init",
-            concat!("fni", "nit("),
-            "covers a freshly created database, beside ensure_playtest_reaper and \
-             ensure_mr_heartbeat",
-        ),
-        (
-            "sync_content",
-            concat!("fnsync", "_content("),
-            "is the ONLY entry point that can reach a LIVE database — `init` runs once, at \
-             creation, so on any deployed database it is the publish path or nothing",
-        ),
-    ] {
-        let body = extract_squashed_fn_body(&lib, needle).unwrap_or_else(|| {
-            panic!(
-                "[m22s3b/sweep-scope] fn {what} was not found in lib.rs, so the wiring clause \
-                 for it has no scope and would pass vacuously."
-            )
-        });
-        assert_eq!(
-            m22_count_occurrences(body, &call),
-            1,
-            "[m22s3b/sweep-wired-{what}] lib.rs `{what}` must call `{call}` EXACTLY once — it \
-             {why}. ZERO leaves the ADR-0221 R2 population (accounts whose one-shot fired \
-             under the pre-S3b reaper and was dropped without a re-arm) with nothing armed, \
-             forever: no code path anywhere else re-reads those rows."
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
-// m22-s3b / PRV1-8(b) — FRESH RE-REGISTRATION (issue #403, ADR-0228 D4).
-// ---------------------------------------------------------------------------
-
-/// PRV1-8(b) (scan): `provision_or_touch_account`'s `Some` branch opens with a
-/// terminal-marker match guard that rebuilds the row from `new_account_row`, and
-/// that arm precedes the ordinary `touch_login` arm.
-///
-/// THE MARKER HALF KEYS THE GUARD, not spec §4.1's conjunction (ADR-0228 D4). On
-/// the illegal `Active` + marker shape a fresh reset is the fail-closed
-/// direction: the erased account stays erased and nothing pre-deletion survives.
-/// The conjunction would answer false there and silently reactivate the row.
-///
-/// `update`, NOT `insert`: the row already exists, so an insert would collide on
-/// the identity primary key and abort the connect hook — which returns `Err` and
-/// therefore DISCONNECTS the client (the crate doc's rule that AUTH-1 exists
-/// for). The arm-span clause pins both the constructor and the write verb.
-///
-/// PLACEMENT: after the issuer and audience checks (the existing auth2_3 pins
-/// keep those first), and BEFORE the touch arm — a reset arm sequenced after
-/// `touch_login` never runs, because the earlier arm has already matched.
-///
-/// Kills: the whole arm missing (the count clause — and §4.6's verified
-///        reactivation hole is then open: the same person re-authenticating with
-///        the same OAuth account silently revives a terminal row with zero
-///        gating); an arm keyed on the §4.1 conjunction instead of the marker
-///        half; an arm that calls `touch_login` (carrying every pre-deletion
-///        field forward, which is exactly what Option B rules out); an arm that
-///        INSERTS rather than updates; an arm placed below the touch arm, where
-///        it is unreachable.
-#[test]
-fn m22s3b_provision_terminal_reset_defaults() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let body = extract_squashed_fn_body(&squashed, &nd_provision())
-        .expect("[m22s3b/reset-scope] fn provision_or_touch_account was not found");
-
-    let arm = m22s3b_nd_terminal_reset_arm();
-    let n_arm = m22_count_occurrences(body, &arm);
-    assert_eq!(
-        n_arm, 1,
-        "[m22s3b/reset-arm] provision_or_touch_account must carry the PRV1-8(b) terminal \
-         match-guard arm `{arm}` EXACTLY once; found {n_arm}. ZERO leaves the §4.6 \
-         reactivation hole open exactly as the spec measured it: `touch_login` neither reads \
-         nor gates on `status`, and `Identity = f(iss, sub)`, so the same real person \
-         re-authenticating with the same OAuth account hits the `Some` branch and silently \
-         reactivates a terminal row with zero rejection and zero gating. MORE THAN ONE is a \
-         decoy that steers the span read below at an arm nobody reviewed."
-    );
-
-    let at_arm = idx(body, &arm);
-    let (span_start, span_end) = m22s3b_block_span(body, at_arm);
-    let span = &body[span_start..span_end];
-    assert!(
-        span.contains(concat!("new_account", "_row(")),
-        "[m22s3b/reset-constructor] the terminal-reset arm must rebuild the row through \
-         `new_account_row(`. That constructor takes NO existing row, so it CANNOT carry a \
-         pre-deletion value forward — which is the whole content of PRV1-8(b). Any other \
-         spelling (a struct-update spread over the terminal row, a `touch_login` call) \
-         carries fields the operator's Option B ruling says must be gone. Arm span read: \
-         {span:?}"
-    );
-    assert!(
-        span.contains(concat!(".upd", "ate(")),
-        "[m22s3b/reset-update] the terminal-reset arm must UPDATE the existing row, never \
-         insert. The row is already there — its identity is the primary key — so an insert \
-         collides and returns `Err` from `provision_or_touch_account`, and an `Err` out of \
-         the client_connected hook DISCONNECTS the client (the crate doc rule AUTH-1 exists \
-         for). Arm span read: {span:?}"
-    );
-    assert!(
-        !span.contains(concat!("touch", "_login(")),
-        "[m22s3b/reset-not-touch] the terminal-reset arm calls `touch_login(`. That stamps \
-         ONLY `last_login_at_ms` and leaves `status`, the deletion stamps and the claim \
-         provenance exactly as the completed cascade left them — a terminal row that is now \
-         also freshly logged in. PRV1-8(b) requires every field at `new_account_row` \
-         defaults. Arm span read: {span:?}"
-    );
-
-    // --- THE ARM MUST NOT REACH ITS OWN MATCH BINDING (added in r2) ---------
-    //
-    // A red-team measured the cheat the three clauses above miss:
-    //   Some(existing) if account_has_terminal_marker(&existing) => {
-    //       ctx.db.account().identity().update(Account {
-    //           ..new_account_row(ctx.sender(), issuer.to_string(), now)
-    //       });                                   // ..or ..existing, the real one
-    //   }
-    // Spelled with `..existing` as the struct-update base and the fresh row's
-    // fields listed selectively, it calls `new_account_row(`, it calls
-    // `.update(`, it never calls `touch_login(` — every clause above is green —
-    // and every field the author did not think to name is carried straight
-    // through from the erased row. PRV1-8(b) says NO pre-deletion field value
-    // survives, so the honest rule is that the reset arm must not be able to SEE
-    // the old row at all: the binder is named in the match guard, which sits
-    // OUTSIDE this span, so a body that never mentions it cannot carry anything
-    // forward no matter what it is written with.
-    let binder = m22_count_occurrences(span, "existing");
-    assert_eq!(
-        binder, 0,
-        "[m22s3b/reset-no-spread] the terminal-reset arm names its match binding `existing` \
-         {binder} time(s) inside the arm body; it must name it ZERO times. The binder belongs \
-         to the GUARD (which is outside this span and is where the marker is tested); the \
-         BODY rebuilds the row from `new_account_row`, which takes no existing row at all. \
-         Any mention of the old row inside the arm is a route for a pre-deletion value to \
-         survive — `Account {{ ..existing }}` being the measured one, which carries every \
-         unnamed field forward while satisfying the constructor, update and no-touch_login \
-         clauses above. PRV1-8(b) is explicit: every field at `new_account_row` defaults, \
-         with `identity` and `auth_issuer` supplied by the LIVE connection. Arm span read: \
-         {span:?}"
-    );
-
-    let touch = concat!("touch", "_login(");
-    assert_eq!(
-        m22_count_occurrences(body, touch),
-        1,
-        "[m22s3b/reset-touch-once] provision_or_touch_account must call `touch_login(` \
-         EXACTLY once — the ordinary reconnect arm. The ordering clause below anchors on it, \
-         so a second call would steer a first-hit index."
-    );
-    assert!(
-        at_arm < idx(body, touch),
-        "[m22s3b/reset-arm-first] the terminal-reset arm must precede the `touch_login` arm. \
-         Rust match arms are tried IN ORDER, so a guarded arm placed after the catch-all \
-         `Some(existing)` arm can never match: the text would be present, every clause above \
-         would be green, and every terminal row would still be silently reactivated."
-    );
-}
-
 /// PRV1-8(b) (pure): the reset carries NO pre-deletion value forward.
 ///
 /// The structural test above pins that the arm rebuilds through
@@ -10608,401 +2812,6 @@ fn m22s3b_touch_login_scope_excludes_terminal() {
          point of Option B: the identity is treated like a fresh account, so it can play. A \
          reset that leaves either the status or the marker behind produces an account that \
          exists and can do nothing."
-    );
-}
-
-/// AUTH-13 / ADR-0228 D6 (scan): `complete_guest_claim` Guard 3 discriminates —
-/// the terminal-marker half runs FIRST and rejects with the DISTINCT
-/// `REJECT_ALREADY_DELETED` reason; the mid-grace half keeps the generic one.
-///
-/// WHY THE ORDER: a terminal row IS `PendingDeletion` (spec §4.1 defines
-/// terminal as the conjunction), so the generic mid-grace guard matches it too.
-/// Behind that guard, the discriminating one can never fire and every
-/// already-erased destination is told its account is merely pending deletion —
-/// which is false, and which invites the caller to cancel a deletion that has
-/// already completed.
-///
-/// WHY THE TAG IS PINNED SEPARATELY: `stripped_for_scan` blanks string literals,
-/// and the cancel-side PRV1-4 guard is byte-identical in that view. The
-/// strings-KEPT twin is the only pipeline that can tell the two apart, and the
-/// tag is what `log_reject` writes — the wrong one files every already-deleted
-/// claim reject under another reducer's audit-log class.
-///
-/// Kills: the split not made (the terminal needle counts zero and every erased
-///        account gets the generic reason); the two halves in the wrong order
-///        (the ordering clause); the terminal half rejecting with the generic
-///        reason or the mid-grace half with the distinct one (the tagged twin);
-///        the mid-grace half DELETED in the name of the split (its own count
-///        clause — the two guards answer different questions and both must run);
-///        either half moved past the code-resolution boundary, where the reducer
-///        becomes a claim-code oracle for an unauthorized caller.
-#[test]
-fn m22s3b_guard3_terminal_reason_distinct() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let body = extract_squashed_fn_body(&squashed, &nd_complete())
-        .expect("[m22s3b/guard3-scope] fn complete_guest_claim was not found");
-
-    // --- TWO INDEPENDENT TRANSCRIPTIONS OF THE MARKER CALL (added in r2) ----
-    //
-    // Every clause in this test reached the marker through ONE helper,
-    // `m22s3_nd_marker_call()`, which is ALSO what the two terminal-guard needles
-    // in `m22s3_terminal_guards_precede_state_writes` are built from. That makes
-    // the helper a single artefact three gates depend on: an edit inside it — a
-    // dropped `&`, a renamed binding, a switch from the marker half to spec
-    // §4.1's conjunction — moves every consumer with it, and all three stay
-    // green while asserting something nobody chose. That is the same
-    // one-artefact hole the frozen reaper body records at
-    // `[rb24/reaper-needle-independence]`, and it gets the same treatment: a
-    // SECOND spelling, split at different points, plus a clause that makes the
-    // agreement checkable instead of assumed.
-    let marker = m22s3_nd_marker_call();
-    let marker_twin = concat!("acc", "ount_has_term", "inal_marker(&acc", "ount)");
-    assert_eq!(
-        marker, marker_twin,
-        "[m22s3b/guard3-needle-independence] the shared marker needle and this test's own \
-         independent transcription disagree: `{marker}` versus `{marker_twin}`. They are \
-         split at different points on purpose, so a mismatch means the shared helper was \
-         edited alone — and that helper is consumed by BOTH terminal-guard pins as well as by \
-         every clause below, so an edit inside it silently re-points three gates at once. \
-         Re-derive both spellings from ADR-0228 D4/D6 in the same change: the guard reads the \
-         MARKER HALF of spec §4.1 (`terminal_at_ms.is_some()`) on the ALREADY-BOUND row, \
-         which is what makes it fail-closed on the illegal Active-plus-marker shape."
-    );
-    let pending = concat!("is_pending", "_deletion(");
-    let n_marker = m22_count_occurrences(body, marker_twin);
-    assert_eq!(
-        n_marker, 1,
-        "[m22s3b/guard3-marker-once] complete_guest_claim must consult `{marker}` EXACTLY \
-         once; found {n_marker}. ZERO means the AUTH-13 split was never made and an \
-         already-ERASED destination is told its account is merely `pending deletion` — a \
-         message that is false and that invites the caller to cancel a deletion which has \
-         already completed. The ordering clause below anchors on this needle."
-    );
-    let n_pending = m22_count_occurrences(body, pending);
-    assert_eq!(
-        n_pending, 1,
-        "[m22s3b/guard3-pending-kept] complete_guest_claim must STILL consult `{pending}` \
-         EXACTLY once; found {n_pending}. ADR-0228 D6 SPLITS Guard 3, it does not replace one \
-         half with the other: the marker half answers `already erased` and the mid-grace half \
-         answers `deletion in progress`, and dropping the second reopens AUTH-13 for every \
-         account inside its grace window."
-    );
-
-    let at_marker = idx(body, &marker);
-    let at_pending = idx(body, pending);
-    assert!(
-        at_marker < at_pending,
-        "[m22s3b/guard3-terminal-first] the terminal-marker half (offset {at_marker}) must \
-         run BEFORE the mid-grace half (offset {at_pending}). A terminal row IS \
-         `PendingDeletion` — spec §4.1 defines terminal as that conjunction — so the generic \
-         guard matches it too. Behind it, the discriminating guard is unreachable for every \
-         row it exists to discriminate, and the whole message split is dead text."
-    );
-
-    let tagged = m22s3b_nd_claim_terminal_guard_tagged();
-    assert_eq!(
-        m22_count_occurrences(&stripped_keep_strings(ACCOUNTS_RS), &tagged),
-        1,
-        "[m22s3b/guard3-audit-tag] the Guard 3a reject must carry its OWN reducer tag and the \
-         distinct reason, as `{tagged}`. Every other clause here reads the string-BLANKED \
-         view, in which the reducer-name argument of `reject` is empty AND the cancel-side \
-         PRV1-4 guard squashes to the identical text — so a guard tagged with another \
-         reducer name, or one that rejects with the generic mid-grace literal, satisfies all \
-         of them. The tag is what `log_reject` writes into the audit log."
-    );
-
-    // The split must stay on the caller-state side of the oracle boundary.
-    let min_code = [
-        idx(body, concat!("is_valid_claim", "_code(")),
-        idx(body, concat!("guest", "_claim().code().find(")),
-    ]
-    .into_iter()
-    .min()
-    .expect("[m22s3b/guard3-partition] the code-resolution anchors must exist");
-    assert!(
-        at_marker < min_code && at_pending < min_code,
-        "[m22s3b/guard3-partition] both halves of Guard 3 (offsets {at_marker} and \
-         {at_pending}) must precede all code resolution (first at offset {min_code}). The \
-         AUTH-12/13/14 partition is what stops this reducer being a claim-code oracle: an \
-         unauthorized caller must never learn whether a code is well-formed or live, and an \
-         ALREADY-DELETED caller is exactly such a caller."
-    );
-}
-
-// ---------------------------------------------------------------------------
-// m22-s3b — SHAPE PINS FOR THE THREE HELPERS WITH NO `_tests.rs` SIBLING.
-//
-// `monster_mgmt.rs`, `inventory.rs` and `lib.rs` have no sibling test module of
-// their own (ADR-0228, RT-4), so their delegated-helper shape pins live here
-// rather than in a new file this slice would have to create.
-// ---------------------------------------------------------------------------
-
-/// PRV1-6b (scan): `erase_monsters` deletes the private `monster` row AND its
-/// `monster_pub` twin, in ONE function body, both keyed on the owner index.
-///
-/// THE DUAL WRITE IS THE INVARIANT. `monster_pub` is the public projection of
-/// `monster` and the pair is written together everywhere else in the tree
-/// (`rekey_monsters` is the direct precedent, and `monster-dual-write.eval.mjs`
-/// is the crate-wide gate). Erasing only the private row leaves a PUBLIC row
-/// carrying the deleted player's species, level, nickname and derived stats,
-/// world-readable, forever — which is not a partial deletion, it is a deletion
-/// that leaves the visible half behind.
-///
-/// Kills: erasing only `monster`; erasing only `monster_pub`; splitting the two
-///        across separate functions, where the eval's same-body dual-write rule
-///        no longer sees them; a sweep keyed on something other than the owner
-///        parameter, which either deletes nothing or deletes everybody's rows.
-#[test]
-fn m22s3b_erase_monsters_shape() {
-    let squashed = stripped_for_scan(MONSTER_MGMT_RS);
-    let body = extract_squashed_fn_body(&squashed, concat!("fnerase", "_monsters("))
-        .unwrap_or_else(|| {
-            panic!(
-                "[m22s3b/monsters-scope] monster_mgmt.rs declares no `fn erase_monsters(`. \
-                 The cascade delegates the `monster` + `monster_pub` ERASE to this module \
-                 because G5 MODULE_WRITE_ISOLATION closes accounts.rs at its four owned \
-                 tables. Fail LOUD rather than pass vacuously."
-            )
-        });
-    assert!(
-        !body.is_empty(),
-        "[m22s3b/monsters-nonvacuous] the erase_monsters body is empty, so every clause below \
-         would be asserting properties of nothing."
-    );
-
-    for (needle, what) in [
-        (
-            concat!(".mon", "ster()"),
-            "the PRIVATE monster table — the row carrying the hidden genes",
-        ),
-        (
-            concat!(".mon", "ster_pub()"),
-            "the PUBLIC projection twin — world-readable, so leaving it behind leaves the \
-             VISIBLE half of the deleted player's collection in place",
-        ),
-    ] {
-        assert!(
-            body.contains(needle),
-            "[m22s3b/monsters-dual-write] erase_monsters must reach `{needle}` ({what}). The \
-             two tables are written as a PAIR everywhere else in this module, and both are \
-             classified ERASE by the manifest; erasing one of them is not a partial deletion \
-             but a deletion that leaves the client-visible copy intact."
-        );
-    }
-
-    let deletes = m22_count_occurrences(body, concat!(".del", "ete("));
-    assert_eq!(
-        deletes, 2,
-        "[m22s3b/monsters-deletes] erase_monsters performs {deletes} row delete(s); EXACTLY \
-         TWO are sanctioned — one per ERASE table, both keyed on the collected `monster_id`. \
-         FEWER means one of the pair is only read (the public projection then survives \
-         world-readable, or the private row with the hidden genes does). MORE is a third row \
-         removal in a helper whose entire remit is those two tables; it would also mean this \
-         body reaches a table no owning-module shape pin covers. Tightened from a floor in \
-         r2: `>= 2` accepted an unbounded number of extra deletes."
-    );
-    let iter_call = concat!(".it", "er()");
-    assert_eq!(
-        m22_count_occurrences(body, iter_call),
-        0,
-        "[m22s3b/monsters-no-scan] erase_monsters calls `{iter_call}`. `monster` carries a \
-         btree index on `owner_identity` and `monster_pub` mirrors it 1:1 by `monster_id`, so \
-         the owner's rows are reachable by INDEX and a full-table iteration is never needed. \
-         The measured cheat this closes: `ctx.db.monster().iter().filter(..)` alongside the \
-         owner filter satisfies every presence clause above while the sweep walks the whole \
-         table — and if that filter is ever wrong, absent, or refactored away, the same body \
-         deletes every player's collection in the database. An indexed route makes the \
-         catastrophic shape unrepresentable rather than merely unlikely."
-    );
-    let owner_scoped = m22_count_occurrences(body, concat!("owner_identity().fil", "ter(owner)"));
-    assert!(
-        owner_scoped >= 1,
-        "[m22s3b/monsters-owner-scoped] erase_monsters never filters the owner btree index \
-         with the `owner` PARAMETER (found {owner_scoped}). ONE is enough and is the expected \
-         shape — `monster_pub` mirrors `monster` 1:1 by `monster_id`, so the sanctioned body \
-         collects the owner's monster ids ONCE and deletes both tables by that primary key, \
-         which is why this clause is a FLOOR rather than a count. What it forbids is a sweep \
-         keyed on anything else: either a no-op, or an UNFILTERED full-table delete that \
-         erases every player's collection in the database — the catastrophic direction, and \
-         one that reads identically to the correct body under a presence-only check."
-    );
-}
-
-/// PRV1-6b (scan): `erase_inventory` sweeps the caller's `inventory` rows
-/// through the owner btree index.
-///
-/// Kills: a helper that reads but never deletes; an unfiltered full-table sweep
-///        (every player's items); a sweep keyed on an identity other than the
-///        `owner` parameter.
-#[test]
-fn m22s3b_erase_inventory_shape() {
-    let squashed = stripped_for_scan(M22_INVENTORY_RS);
-    let body = extract_squashed_fn_body(&squashed, concat!("fnerase", "_inventory("))
-        .unwrap_or_else(|| {
-            panic!(
-                "[m22s3b/inventory-scope] inventory.rs declares no `fn erase_inventory(`. The \
-                 cascade delegates the `inventory` ERASE to its owning module (G5). Fail LOUD."
-            )
-        });
-    assert!(
-        body.contains(concat!(".inven", "tory()")),
-        "[m22s3b/inventory-accessor] erase_inventory must reach the inventory table accessor. \
-         Body read: {body:?}"
-    );
-    assert!(
-        body.contains(concat!("owner_identity().fil", "ter(owner)")),
-        "[m22s3b/inventory-owner-scoped] erase_inventory must filter the owner btree index \
-         with the `owner` PARAMETER. An unfiltered sweep deletes every player's item stacks; \
-         a sweep keyed on any other identity deletes the wrong player's. Body read: {body:?}"
-    );
-    assert!(
-        body.contains(concat!(".del", "ete(")),
-        "[m22s3b/inventory-deletes] erase_inventory must actually delete rows — a helper that \
-         collects ids and never deletes satisfies both clauses above. Body read: {body:?}"
-    );
-    let iter_call = concat!(".it", "er()");
-    assert_eq!(
-        m22_count_occurrences(body, iter_call),
-        0,
-        "[m22s3b/inventory-no-scan] erase_inventory calls `{iter_call}`. `inventory` carries a \
-         btree index on `owner_identity`, so the owner's stacks are reachable by INDEX and a \
-         full-table iteration is never needed. The measured cheat this closes (added in r2): \
-         a body that keeps the owner filter for show and does the real work over \
-         `ctx.db.inventory().iter()` satisfies the accessor, owner-filter and delete clauses \
-         above while walking every player's rows — and one wrong or missing predicate in that \
-         scan deletes the whole table. `inventory` is PUBLIC and world-readable, so the blast \
-         radius of that mistake is every player's item counts at once."
-    );
-}
-
-/// PRV1-6d (scan): `erase_character_rows` reaches the `character` row through
-/// the owning `player` row's `entity_id` join, and does NOT delete the `player`
-/// row itself.
-///
-/// `character` is JOIN-ONLY: it carries no `Identity` column at all, so the only
-/// route to it is `player.entity_id` (the manifest pins that parent by value).
-/// And `player` is ANONYMIZE, not ERASE — spec §3 is explicit that the presence
-/// row must SURVIVE as the anchor `character` and every still-live multi-user
-/// row point at. A helper that deletes both would remove the anchor the §4.4
-/// ordering exists to protect.
-///
-/// Kills: a sweep that deletes `player` (which spec §3 forbids outright and
-///        which would strand every row pointing at it); a helper that never
-///        reads `player` at all, which cannot find the join key and therefore
-///        deletes nothing.
-#[test]
-fn m22s3b_erase_character_rows_shape() {
-    let squashed = stripped_for_scan(LIB_RS);
-    let body = extract_squashed_fn_body(&squashed, concat!("fnerase_character", "_rows("))
-        .unwrap_or_else(|| {
-            panic!(
-                "[m22s3b/character-scope] lib.rs declares no `fn erase_character_rows(`. \
-                 `character` has no Identity column, so the JOIN-ONLY sweep needs the \
-                 `player.entity_id` lookup and lives beside the other lib.rs helpers that \
-                 already do it. Fail LOUD."
-            )
-        });
-
-    assert!(
-        body.contains(concat!("player().identity().fi", "nd(owner)")),
-        "[m22s3b/character-join] erase_character_rows must read the OWNING player row by \
-         identity to obtain the join key. `character` carries no Identity column at all — \
-         that is what JOIN-ONLY means — so without this read there is nothing to key the \
-         delete on. Body read: {body:?}"
-    );
-    assert!(
-        body.contains(concat!("character().entity_id().del", "ete(")),
-        "[m22s3b/character-delete] erase_character_rows must delete the character row by its \
-         `entity_id` primary key. Body read: {body:?}"
-    );
-    assert_eq!(
-        m22_count_occurrences(body, concat!("player().identity().del", "ete(")),
-        0,
-        "[m22s3b/character-player-survives] erase_character_rows deletes the `player` row. \
-         Spec §3 classifies `player` ANONYMIZE, never ERASE: the presence row MUST survive as \
-         the anchor that `character` and every still-live multi-user row point at, and the \
-         §4.4 character-before-player ordering exists precisely because the two are handled \
-         differently. Deleting it here strands every one of those references and makes the \
-         ordering pin meaningless. Body read: {body:?}"
-    );
-    let iter_call = concat!(".it", "er()");
-    assert_eq!(
-        m22_count_occurrences(body, iter_call),
-        0,
-        "[m22s3b/character-no-scan] erase_character_rows calls `{iter_call}`. Both tables on \
-         this path are reached by KEY: `player` by its `identity` primary key, and `character` \
-         by the `entity_id` primary key that read yields. There is at most ONE character row \
-         per player, so a full-table iteration is never needed — and it is the shape that \
-         makes the catastrophic mistake possible, because `character` carries NO identity \
-         column at all (that is what JOIN-ONLY means), so an iteration here has nothing to \
-         scope itself with and a missing predicate deletes every character row in the world. \
-         Added in r2: the join-read and delete clauses above are both satisfied by a body that \
-         also scans."
-    );
-}
-
-/// EO-1 / PRV1-6b (compensating scoped pin for the 1 -> 2 purge widening,
-/// ADR-0228 D7(b)): the two `purge_export_bundles` call sites in `accounts.rs`
-/// are EXACTLY the claim-time purge and the cascade step — and nothing else.
-///
-/// `rb22_purge_called_exactly_once_in_accounts_rs` now allows two namings; on
-/// its own that is a strictly looser gate than the one it replaces, because a
-/// second call dropped into `rekey_all` — where neither the claim ceremony's
-/// reviewers nor the cascade's ever look — reads exactly the same to a whole-file
-/// count. This test is the payment: each body is pinned to EXACTLY ONE call and
-/// the remainder is asserted to be ZERO as arithmetic, so a third site cannot
-/// hide behind the per-body counts and a MOVED site cannot hide behind the total.
-///
-/// Kills: a purge relocated out of either ceremony; a third call site anywhere
-///        in the file; both calls collapsing into one body.
-#[test]
-fn m22s3b_purge_named_twice_claim_and_cascade() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let call = rb22_nd_purge_call();
-
-    let total = m22_count_occurrences(&squashed, &call);
-    assert_eq!(
-        total, 2,
-        "[m22s3b/purge-total] accounts.rs must name `{call}` EXACTLY twice; found {total}. \
-         The per-body clauses below are meaningless if the total has moved."
-    );
-
-    let mut scoped = 0usize;
-    for (what, decl, why) in [
-        (
-            "complete_guest_claim",
-            nd_complete(),
-            "rb-22 / ADR-0220: the guest identity retires at the claim, so its pre-claim \
-             export chunks would orphan — the cascade keys on a LIVE account's own identity \
-             and structurally cannot reach them",
-        ),
-        (
-            "account_deletion_reaper",
-            rb24_nd_reaper_decl(),
-            "PRV1-6b / ADR-0228 D1: `export_bundle` is an ERASE-policy table and an export \
-             snapshot is itself personal data, so the cascade sweeps it through the SAME \
-             owner-generic helper rather than minting a second one",
-        ),
-    ] {
-        let (start, end) = rb24_fn_body_span(&squashed, &decl);
-        let n = m22_count_occurrences(&squashed[start..end], &call);
-        assert_eq!(
-            n, 1,
-            "[m22s3b/purge-in-{what}] {what} must call the delegated purge EXACTLY once; \
-             found {n}. {why}. ZERO means this ceremony's chunks are never erased while the \
-             whole-file count still reads 2 — the exact shape a bumped number cannot see."
-        );
-        scoped += n;
-    }
-    assert_eq!(
-        total - scoped,
-        0,
-        "[m22s3b/purge-zero-elsewhere] accounts.rs names the purge {total} time(s) and the \
-         two reviewed bodies account for {scoped}, leaving {} elsewhere. A purge outside both \
-         ceremonies deletes export_bundle rows for whatever owner IT derives, from a flow \
-         neither set of reviewers ever saw — `rekey_all` being the measured hiding place, \
-         since ADR-0228 itself names that helper as the cascade's delegation precedent.",
-        total - scoped
     );
 }
 
@@ -11420,8 +3229,7 @@ fn m22s6_table_row_registry_matches_manifest() {
         assert_ne!(
             pair[0], pair[1],
             "[m22s6/manifest-dup] DATA_LIFECYCLE_MANIFEST names `{}` TWICE. This is a manifest- \
-             side defect (also caught by `data_lifecycle_manifest_totality_bidirectional`), but \
-             it would break the set-equality clause below before this test could say anything \
+             side defect, and it would break the set-equality clause below before this test could say anything \
              useful about identity coverage.",
             pair[0]
         );
@@ -11703,8 +3511,8 @@ fn m22s6_not_owned_identity_exceptions_are_frozen() {
              carries {n} Identity column(s) at some depth, and `{table}` is NOT one of the four \
              frozen exceptions (config, guest_claim, guest_claim_reaper_schedule, \
              account_deletion_reaper_schedule). A NotOwned table with a real owner key is \
-             skipped OUTRIGHT by the cascade walk (`m22s3b_cascade_covers_manifest`'s \
-             `needs_cascade = false` arm), so its rows survive every account deletion silently \
+             never erased by the deletion cascade (a NotOwned table has no erase step), \
+             so its rows survive every account deletion silently \
              — this is the single largest deletion-completeness hole PRV1-15's 'with a direct \
              Identity column' clause exists to close. Either reclassify `{table}` \
              Erase/Anonymize/ViaJoin, or — if it is genuinely a deliberate exception like the \
@@ -11755,711 +3563,6 @@ fn m22s6_not_owned_identity_exceptions_are_frozen() {
 }
 
 // ---------------------------------------------------------------------------
-// T2 / X5 — THE MANIFEST REACHES THE FAR END OF THE DELEGATED CASCADE.
-// ---------------------------------------------------------------------------
-
-/// One row of the T2/X5 cascade-chain map: which entry helper (module source +
-/// declaration needle) reaches `table` from the pinned reaper body, and — for the
-/// three tables reachable only through a second hop (ADR-0228) — the sub-helper's
-/// own module/declaration/call-needle.
-struct M22s6ChainEntry {
-    table: &'static str,
-    /// `true` ONLY for `account`: no separate helper exists for it (the cascade
-    /// tombstones `auth_issuer` directly inside `account_deletion_reaper`'s own
-    /// body, via `anonymized_account` + the sanctioned `ctx.db.account()...
-    /// update(...)`), so the reaper body itself IS the terminal body and the
-    /// entry-declaration / reaper-call-needle / declaration-uniqueness clauses
-    /// below are skipped for exactly this one row — the plan's own carve-out.
-    inline_in_reaper: bool,
-    entry_module_src: &'static str,
-    entry_module_label: &'static str,
-    /// Squashed declaration needle, e.g. `"fnerase_monsters("`. Empty for the
-    /// `inline_in_reaper` row (unused).
-    entry_decl: String,
-    /// The needle naming this helper INSIDE the pinned reaper body — reused
-    /// directly from the `m22s3b_nd_*` fns above rather than re-transcribed, so
-    /// there is no second spelling of the same call site to drift out of sync.
-    /// Empty for the `inline_in_reaper` row (unused).
-    entry_call_in_reaper: String,
-    via: Option<M22s6ViaHop>,
-}
-
-/// The optional second hop: a sub-helper the entry helper delegates to, which is
-/// where `table`'s OWN accessor is actually touched (`trade_offer_reaper_schedule`
-/// via `disarm_trade_reaper`, `battle_challenge_reaper_schedule` via
-/// `disarm_challenge_reaper`, `pvp_deadline_schedule` via `disarm_pvp_deadlines`).
-struct M22s6ViaHop {
-    module_src: &'static str,
-    module_label: &'static str,
-    decl: String,
-    /// The needle naming this sub-helper INSIDE the entry helper's own body.
-    call_in_entry_body: String,
-}
-
-fn m22s6_nd_erase_monsters_decl() -> String {
-    concat!("fnerase", "_monsters(").to_string()
-}
-fn m22s6_nd_erase_npc_state_decl() -> String {
-    concat!("fnerase_npc", "_state(").to_string()
-}
-fn m22s6_nd_erase_trade_offers_decl() -> String {
-    concat!("fnerase_trade", "_offers(").to_string()
-}
-fn m22s6_nd_erase_pvp_rows_decl() -> String {
-    concat!("fnerase_pvp", "_rows(").to_string()
-}
-fn m22s6_nd_anonymize_display_names_decl() -> String {
-    concat!("fnanonymize_display", "_names(").to_string()
-}
-fn m22s6_nd_anonymize_battles_decl() -> String {
-    concat!("fnanonymize", "_battles(").to_string()
-}
-
-/// The manifest-driven chain map itself: one row per classified table (24),
-/// AUTHORED FROM THE PLAN (ADR-0228's own delegation map), never derived by
-/// printing what an implementation produced.
-fn m22s6_cascade_chain() -> Vec<M22s6ChainEntry> {
-    vec![
-        M22s6ChainEntry {
-            table: "monster",
-            inline_in_reaper: false,
-            entry_module_src: MONSTER_MGMT_RS,
-            entry_module_label: "monster_mgmt.rs",
-            entry_decl: m22s6_nd_erase_monsters_decl(),
-            entry_call_in_reaper: m22s3b_nd_erase_monsters(),
-            via: None,
-        },
-        M22s6ChainEntry {
-            table: "monster_pub",
-            inline_in_reaper: false,
-            entry_module_src: MONSTER_MGMT_RS,
-            entry_module_label: "monster_mgmt.rs",
-            entry_decl: m22s6_nd_erase_monsters_decl(),
-            entry_call_in_reaper: m22s3b_nd_erase_monsters(),
-            via: None,
-        },
-        M22s6ChainEntry {
-            table: "pending_evolution_notice",
-            inline_in_reaper: false,
-            entry_module_src: M22_EVOLUTION_RS,
-            entry_module_label: "evolution.rs",
-            entry_decl: concat!("fnerase_evolution", "_notices(").to_string(),
-            entry_call_in_reaper: m22s3b_nd_erase_evolution_notices(),
-            via: None,
-        },
-        M22s6ChainEntry {
-            table: "inventory",
-            inline_in_reaper: false,
-            entry_module_src: M22_INVENTORY_RS,
-            entry_module_label: "inventory.rs",
-            entry_decl: concat!("fnerase", "_inventory(").to_string(),
-            entry_call_in_reaper: m22s3b_nd_erase_inventory(),
-            via: None,
-        },
-        M22s6ChainEntry {
-            table: "player_dialogue_state",
-            inline_in_reaper: false,
-            entry_module_src: M22_NPC_RS,
-            entry_module_label: "npc.rs",
-            entry_decl: m22s6_nd_erase_npc_state_decl(),
-            entry_call_in_reaper: m22s3b_nd_erase_npc_state(),
-            via: None,
-        },
-        M22s6ChainEntry {
-            table: "player_quest",
-            inline_in_reaper: false,
-            entry_module_src: M22_NPC_RS,
-            entry_module_label: "npc.rs",
-            entry_decl: m22s6_nd_erase_npc_state_decl(),
-            entry_call_in_reaper: m22s3b_nd_erase_npc_state(),
-            via: None,
-        },
-        M22s6ChainEntry {
-            table: "player_conversation",
-            inline_in_reaper: false,
-            entry_module_src: M22_NPC_RS,
-            entry_module_label: "npc.rs",
-            entry_decl: m22s6_nd_erase_npc_state_decl(),
-            entry_call_in_reaper: m22s3b_nd_erase_npc_state(),
-            via: None,
-        },
-        M22s6ChainEntry {
-            table: "heal_cooldown",
-            inline_in_reaper: false,
-            entry_module_src: M22_RAISING_RS,
-            entry_module_label: "raising.rs",
-            entry_decl: concat!("fnerase_heal", "_cooldown(").to_string(),
-            entry_call_in_reaper: m22s3b_nd_erase_heal_cooldown(),
-            via: None,
-        },
-        M22s6ChainEntry {
-            table: concat!("player", "_wallet"),
-            inline_in_reaper: false,
-            entry_module_src: M22_ECONOMY_RS,
-            entry_module_label: "economy.rs",
-            entry_decl: concat!("fnerase", "_wallet(").to_string(),
-            entry_call_in_reaper: m22s3b_nd_erase_wallet(),
-            via: None,
-        },
-        M22s6ChainEntry {
-            table: "playtest_event",
-            inline_in_reaper: false,
-            entry_module_src: M22_PLAYTEST_RS,
-            entry_module_label: "playtest.rs",
-            entry_decl: concat!("fnerase_playtest", "_events(").to_string(),
-            entry_call_in_reaper: m22s3b_nd_erase_playtest_events(),
-            via: None,
-        },
-        M22s6ChainEntry {
-            table: "trade_offer",
-            inline_in_reaper: false,
-            entry_module_src: M22_TRADING_RS,
-            entry_module_label: "trading.rs",
-            entry_decl: m22s6_nd_erase_trade_offers_decl(),
-            entry_call_in_reaper: m22s3b_nd_erase_trade_offers(),
-            via: None,
-        },
-        M22s6ChainEntry {
-            table: "trade_offer_reaper_schedule",
-            inline_in_reaper: false,
-            entry_module_src: M22_TRADING_RS,
-            entry_module_label: "trading.rs",
-            entry_decl: m22s6_nd_erase_trade_offers_decl(),
-            entry_call_in_reaper: m22s3b_nd_erase_trade_offers(),
-            via: Some(M22s6ViaHop {
-                module_src: M22_TRADING_RS,
-                module_label: "trading.rs",
-                decl: concat!("fndisarm_trade", "_reaper(").to_string(),
-                call_in_entry_body: concat!("disarm_trade", "_reaper(").to_string(),
-            }),
-        },
-        M22s6ChainEntry {
-            table: "battle_challenge",
-            inline_in_reaper: false,
-            entry_module_src: M22_PVP_RS,
-            entry_module_label: "pvp.rs",
-            entry_decl: m22s6_nd_erase_pvp_rows_decl(),
-            entry_call_in_reaper: m22s3b_nd_erase_pvp_rows(),
-            via: None,
-        },
-        M22s6ChainEntry {
-            table: "battle_action",
-            inline_in_reaper: false,
-            entry_module_src: M22_PVP_RS,
-            entry_module_label: "pvp.rs",
-            entry_decl: m22s6_nd_erase_pvp_rows_decl(),
-            entry_call_in_reaper: m22s3b_nd_erase_pvp_rows(),
-            via: None,
-        },
-        M22s6ChainEntry {
-            table: "battle_challenge_reaper_schedule",
-            inline_in_reaper: false,
-            entry_module_src: M22_PVP_RS,
-            entry_module_label: "pvp.rs",
-            entry_decl: m22s6_nd_erase_pvp_rows_decl(),
-            entry_call_in_reaper: m22s3b_nd_erase_pvp_rows(),
-            via: Some(M22s6ViaHop {
-                module_src: M22_PVP_RS,
-                module_label: "pvp.rs",
-                decl: concat!("fndisarm_challenge", "_reaper(").to_string(),
-                call_in_entry_body: concat!("disarm_challenge", "_reaper(").to_string(),
-            }),
-        },
-        M22s6ChainEntry {
-            table: "export_bundle",
-            inline_in_reaper: false,
-            entry_module_src: M22_PRIVACY_RS,
-            entry_module_label: "privacy.rs",
-            entry_decl: concat!("fnpurge_export", "_bundles(").to_string(),
-            entry_call_in_reaper: m22s3b_nd_purge_bundles(),
-            via: None,
-        },
-        M22s6ChainEntry {
-            table: "character",
-            inline_in_reaper: false,
-            entry_module_src: LIB_RS,
-            entry_module_label: "lib.rs",
-            entry_decl: concat!("fnerase_character", "_rows(").to_string(),
-            entry_call_in_reaper: m22s3b_nd_erase_character_rows(),
-            via: None,
-        },
-        M22s6ChainEntry {
-            table: "player_session",
-            inline_in_reaper: false,
-            entry_module_src: LIB_RS,
-            entry_module_label: "lib.rs",
-            entry_decl: concat!("fnerase_player", "_sessions(").to_string(),
-            entry_call_in_reaper: m22s3b_nd_erase_player_sessions(),
-            via: None,
-        },
-        M22s6ChainEntry {
-            table: "player",
-            inline_in_reaper: false,
-            entry_module_src: RANKING_RS,
-            entry_module_label: "ranking.rs",
-            entry_decl: m22s6_nd_anonymize_display_names_decl(),
-            entry_call_in_reaper: m22s3b_nd_anonymize_names(),
-            via: None,
-        },
-        M22s6ChainEntry {
-            table: "profile",
-            inline_in_reaper: false,
-            entry_module_src: RANKING_RS,
-            entry_module_label: "ranking.rs",
-            entry_decl: m22s6_nd_anonymize_display_names_decl(),
-            entry_call_in_reaper: m22s3b_nd_anonymize_names(),
-            via: None,
-        },
-        M22s6ChainEntry {
-            table: "battle",
-            inline_in_reaper: false,
-            entry_module_src: M22_BATTLE_RS,
-            entry_module_label: "battle.rs",
-            entry_decl: m22s6_nd_anonymize_battles_decl(),
-            entry_call_in_reaper: m22s3b_nd_anonymize_battles(),
-            via: None,
-        },
-        M22s6ChainEntry {
-            table: "battle_wild",
-            inline_in_reaper: false,
-            entry_module_src: M22_BATTLE_RS,
-            entry_module_label: "battle.rs",
-            entry_decl: m22s6_nd_anonymize_battles_decl(),
-            entry_call_in_reaper: m22s3b_nd_anonymize_battles(),
-            via: None,
-        },
-        M22s6ChainEntry {
-            table: "pvp_deadline_schedule",
-            inline_in_reaper: false,
-            entry_module_src: M22_BATTLE_RS,
-            entry_module_label: "battle.rs",
-            entry_decl: m22s6_nd_anonymize_battles_decl(),
-            entry_call_in_reaper: m22s3b_nd_anonymize_battles(),
-            via: Some(M22s6ViaHop {
-                module_src: M22_PVP_RS,
-                module_label: "pvp.rs",
-                decl: concat!("fndisarm_pvp", "_deadlines(").to_string(),
-                call_in_entry_body: concat!("crate::pvp::disarm_pvp", "_deadlines(").to_string(),
-            }),
-        },
-        M22s6ChainEntry {
-            table: "account",
-            inline_in_reaper: true,
-            entry_module_src: ACCOUNTS_RS,
-            entry_module_label: "accounts.rs",
-            entry_decl: String::new(),
-            entry_call_in_reaper: String::new(),
-            via: None,
-        },
-    ]
-}
-
-/// Statement-scoped terminal-body check, T2/X5's core primitive: true if `body`
-/// (an ALREADY-SQUASHED fn body) contains at least one occurrence of
-/// `accessor_call` (`.{table}(`) immediately followed, before the next `;` OR
-/// `{` (whichever comes first), by a mutating call (`.delete(` or `.update(`)
-/// whose ARGUMENT is keyed rather than a bare numeric literal (see
-/// `m22s6_mutation_is_keyed` — a `.delete(0)` against an `#[auto_inc]` key is a
-/// permanent no-op that was MEASURED green against the whole suite).
-///
-/// A body-wide "contains the accessor AND contains a mutation" conjunction is a
-/// MEASURED bypass (the plan's red-team, mutant M4 below): `erase_monsters` is
-/// the entry helper for BOTH `monster` and `monster_pub`, so replacing
-/// `ctx.db.monster_pub().monster_id().delete(id);` with a `.find(id)` read keeps
-/// the `monster_pub` ACCESSOR present in the body and borrows the `.delete(` from
-/// the sibling `monster` line two statements above — a body-wide conjunction is
-/// green on that swap while every `monster_pub` row of every deleted account
-/// survives forever. Scoping to the SAME statement (this accessor occurrence's
-/// own span, up to the next `;`) closes it: under the swap, `monster_pub`'s only
-/// occurrence's span holds `.find(` and never `.delete(`/`.update(`.
-///
-/// STOPPING AT `{` TOO (not just `;`) is a second, independently-measured
-/// correction over the naive "next `;`" rule: `anonymize_display_names` opens
-/// with `for p in ctx.db.player().identity().find(owner).into_iter() { ... }` —
-/// a `for`-loop HEADER carries no `;` of its own before its `{`, so a scan that
-/// only stops at `;` would walk straight through the (empty, on a mutant that
-/// deleted the loop body's `.update(...)`) braces and keep going into the NEXT
-/// statement, crediting `player` with the UNRELATED `profile` update two
-/// statements later — a false pass on a real deletion. Stopping at whichever of
-/// `;`/`{` comes first treats the loop header's own iterator expression as its
-/// own scope, so a body-wide read there is correctly NOT credited with a
-/// mutation two statements away; the real mutating statement inside the loop
-/// body is then found and scored on its OWN merits by a later occurrence of the
-/// same accessor token.
-/// The argument span of a `(`-opened call, up to its MATCHING `)` (depth-aware,
-/// so a nested constructor call in an `.update(..)` argument is returned whole).
-/// Returns `None` if the parentheses are unbalanced — a fail-loud signal that the
-/// squashed text is not what this scan assumes.
-fn m22s6_call_argument(after_open_paren: &str) -> Option<&str> {
-    let bytes = after_open_paren.as_bytes();
-    let mut depth = 0usize;
-    for (i, b) in bytes.iter().enumerate() {
-        match b {
-            b'(' => depth += 1,
-            b')' => {
-                if depth == 0 {
-                    return Some(&after_open_paren[..i]);
-                }
-                depth -= 1;
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-/// True if `span` contains a mutating call whose ARGUMENT is keyed on something
-/// rather than on a bare numeric literal.
-///
-/// THIS CLAUSE EXISTS BECAUSE THE PRESENCE-ONLY FORM WAS MEASURED GREEN ON A
-/// PERMANENT NO-OP (the artifact red-team, mutant M5 below). `disarm_trade_reaper`
-/// sweeps `trade_offer_reaper_schedule` with `.scheduled_id().delete(sid)`; the
-/// column is `#[auto_inc]` and starts at 1, so rewriting that to `.delete(0)`
-/// deletes NOTHING, ever, for any account — while the accessor is still present,
-/// the `.delete(` token is still present, and it is still in the same statement.
-/// The whole crate's suite was measured GREEN on that diff (767/767), because
-/// every check reachable from `cargo nextest` is a static scan and none of them
-/// looked at the ARGUMENT. Requiring the argument to name something — any
-/// identifier, field or call, as opposed to a constant the auto-inc sequence can
-/// never issue — is what turns the presence check back into a claim about rows.
-///
-/// This is deliberately a WEAK, general clause rather than a per-body pin on the
-/// exact loop variable: the residual it leaves (`.delete(some_other_bound_id)`)
-/// is recorded in ADR-0229 rather than chased with a second hand-maintained map.
-fn m22s6_mutation_is_keyed(span: &str) -> bool {
-    for verb in [".delete(", ".update("] {
-        let mut start = 0usize;
-        while let Some(rel) = span[start..].find(verb) {
-            let at = start + rel + verb.len();
-            let Some(arg) = m22s6_call_argument(&span[at..]) else {
-                panic!(
-                    "[m22s6/unbalanced-mutation-arg] a `{verb}` call in the squashed span                      {span:?} has unbalanced parentheses, so its argument cannot be read. The                      scan would otherwise silently score this occurrence as unkeyed. Fail loud:                      the squashed source is not the shape this check assumes."
-                )
-            };
-            if arg.chars().any(|c| c.is_alphabetic() || c == '_') {
-                return true;
-            }
-            start = at;
-        }
-    }
-    false
-}
-
-fn m22s6_accessor_mutated_in_statement(body: &str, accessor_call: &str) -> bool {
-    let mut start = 0usize;
-    while let Some(rel) = body[start..].find(accessor_call) {
-        let at = start + rel;
-        let rest = &body[at..];
-        let semi = rest.find(';');
-        let brace = rest.find('{');
-        let end_rel = match (semi, brace) {
-            (Some(s), Some(b)) => s.min(b),
-            (Some(s), None) => s,
-            (None, Some(b)) => b,
-            (None, None) => rest.len(),
-        };
-        let span = &rest[..end_rel];
-        if m22s6_mutation_is_keyed(span) {
-            return true;
-        }
-        start = at + accessor_call.len();
-    }
-    false
-}
-
-/// X5 (PRV1-16): every `DATA_LIFECYCLE_MANIFEST` entry classified `Erase`,
-/// `Anonymize` or `ViaJoin` proves an end-to-end chain from the pinned reaper
-/// body, through its entry helper, through at most one declared `via` sub-helper,
-/// to a body that names that table's own accessor AND performs a mutating call —
-/// in the SAME statement (see `m22s6_accessor_mutated_in_statement`).
-///
-/// WHAT THIS PROVES, EXACTLY: that a keyed mutating call on the table is REACHED
-/// in the terminal body — not that every one of that table's rows is swept. The
-/// two are different claims and this test only makes the first. `anonymize_battles`
-/// (`battle.rs`) deliberately `continue`s past a battle whose outcome is still
-/// `Ongoing`, and that branch is genuinely reachable (a forfeit whose apply step
-/// errors is logged and swallowed), so a deleted identity can survive in the
-/// PUBLIC `battle` table with no retry — a residual m22-s3b named and accepted,
-/// which this test is structurally unable to see. Read a green result as "the
-/// cascade still writes this table", never as "this table is fully swept".
-///
-/// FOUR CLAUSES PER ROW, each independently load-bearing:
-///   1. the table appears in `m22s6_cascade_chain()` at all — an unmapped
-///      classified table PANICS rather than being skipped: an unmapped table is
-///      an unerased table (fail loud, per ADR-0229 / the same posture
-///      `m22s3b_cascade_covers_manifest` already takes one hop earlier);
-///   2. the entry helper's declaration occurs EXACTLY ONCE in its module — a
-///      first-hit `find()` over a decoy second declaration is a steerable anchor
-///      this repo has measured before (memory: "First-hit anchors are
-///      forgeable");
-///   3. the reaper's own pinned body contains the entry helper's call needle —
-///      chains this row to the ALREADY-EXACT-PINNED reaper body
-///      (`rb24_deletion_reaper_body_is_pinned_cascade`), so a call dropped from
-///      the cascade is caught here even if nothing else in this test file
-///      changed;
-///   4. the TERMINAL body (the entry helper's own body, or its `via` sub-helper's
-///      body when one is declared) names the table's accessor with a mutation in
-///      the same statement.
-///
-/// `account` is special-cased (see `M22s6ChainEntry::inline_in_reaper`): no
-/// separate helper exists, so clauses 2-3 are skipped and clause 4 runs directly
-/// against the reaper body.
-///
-/// Kills: an unmapped classified table (M3-adjacent: dropping a table's cascade
-///        wiring without also dropping its manifest entry) — this test panics
-///        rather than silently passing about a table nobody checked;
-///        `crate::inventory::erase_inventory(ctx, args.account_identity);` deleted
-///        from the reaper cascade body (the plan's mutant M3) — clause 3 fails:
-///        the entry helper's call needle is no longer in the pinned reaper body;
-///        `ctx.db.monster_pub().monster_id().delete(id);` replaced with
-///        `let _ = ctx.db.monster_pub().monster_id().find(id);` (the plan's
-///        mutant M4, the red-team's measured bypass of an unscoped accessor+
-///        mutation conjunction) — clause 4 fails FOR `monster_pub` specifically
-///        (its only accessor occurrence's statement-scoped span now holds
-///        `.find(` and neither `.delete(` nor `.update(`), even though `monster`
-///        two lines above still passes and a body-wide conjunction would have
-///        stayed green;
-///        a declared `via` hop the entry helper never actually calls (an
-///        orphaned schedule row every time the entry helper runs);
-///        a decoy second declaration of an entry helper or sub-helper anywhere
-///        in its module (clause 2/the via-decl-unique clause).
-#[test]
-fn m22s6_cascade_chain_reaches_every_classified_table() {
-    let chain = m22s6_cascade_chain();
-    let squashed_accounts = stripped_for_scan(ACCOUNTS_RS);
-    let reaper_body = extract_squashed_fn_body(&squashed_accounts, &rb24_nd_reaper_decl()).expect(
-        "[m22s6/reaper-scope] fn account_deletion_reaper was not found in accounts.rs, so \
-             the whole chain proof below has no reaper body to check against.",
-    );
-
-    let manifest: &[DataLifecycleEntry] = DATA_LIFECYCLE_MANIFEST;
-    let mut classified = 0usize;
-    for entry in manifest {
-        let table = entry.table;
-        let needs_chain = match entry.policy {
-            DeletionPolicy::Erase => true,
-            DeletionPolicy::Anonymize => true,
-            DeletionPolicy::ViaJoin(_) => true,
-            DeletionPolicy::NotOwned => false,
-        };
-        if !needs_chain {
-            continue;
-        }
-        classified += 1;
-
-        let chain_entry = chain.iter().find(|c| c.table == table).unwrap_or_else(|| {
-            panic!(
-                "[m22s6/chain-unmapped] DATA_LIFECYCLE_MANIFEST classifies `{table}` for the \
-                 cascade, but this test's cascade-chain map does not name it. Under delegation \
-                 the reaper body names HELPERS, not table identifiers, so an unmapped table has \
-                 no proof anywhere that it is ever erased. Fail LOUD rather than skip: an \
-                 unmapped classified table is an unerased table."
-            )
-        });
-
-        let accessor_call = format!(".{table}(");
-
-        if chain_entry.inline_in_reaper {
-            assert!(
-                m22s6_accessor_mutated_in_statement(reaper_body, &accessor_call),
-                "[m22s6/terminal-not-mutated] `{table}` has no separate entry helper — it is \
-                 handled inline in account_deletion_reaper's own body — but no occurrence of \
-                 `{accessor_call}` in the reaper body is followed, within the SAME statement, by \
-                 `.delete(` or `.update(`. The row this cascade step is supposed to tombstone is \
-                 never actually written."
-            );
-            continue;
-        }
-
-        let squashed_entry_mod = stripped_for_scan(chain_entry.entry_module_src);
-        let n_decl = m22_count_occurrences(&squashed_entry_mod, &chain_entry.entry_decl);
-        let decl = &chain_entry.entry_decl;
-        let module = chain_entry.entry_module_label;
-        assert_eq!(
-            n_decl, 1,
-            "[m22s6/entry-decl-unique] the entry helper for `{table}` ({decl:?}) must be \
-             declared EXACTLY once in {module}; found {n_decl}. A decoy second declaration is a \
-             steerable first-hit anchor for the body extraction below."
-        );
-
-        let call = &chain_entry.entry_call_in_reaper;
-        assert!(
-            reaper_body.contains(call.as_str()),
-            "[m22s6/entry-unreached] the manifest classifies `{table}` for the cascade via the \
-             entry helper {decl:?} in {module}, and this map routes it through the reaper call \
-             `{call}` — which `account_deletion_reaper`'s pinned body does NOT contain. A \
-             classified table whose entry helper the reaper never calls is simply never erased: \
-             its rows survive account deletion silently, and nothing else in the tree looks \
-             wrong."
-        );
-
-        let entry_body = extract_squashed_fn_body(&squashed_entry_mod, &chain_entry.entry_decl)
-            .unwrap_or_else(|| {
-                panic!(
-                    "[m22s6/entry-body-scope] the body of the entry helper for `{table}` \
-                     ({decl:?}) in {module} could not be brace-extracted, so the terminal-body \
-                     clause below would have no scope and would pass vacuously."
-                )
-            });
-
-        let (terminal_body, terminal_module_label): (String, &'static str) = match &chain_entry.via
-        {
-            None => (entry_body.to_string(), chain_entry.entry_module_label),
-            Some(via) => {
-                let via_call = &via.call_in_entry_body;
-                let via_decl = &via.decl;
-                let via_module = via.module_label;
-                assert!(
-                    entry_body.contains(via_call.as_str()),
-                    "[m22s6/via-unreached] `{table}` is routed via the sub-helper \
-                         {via_decl:?} in {via_module}, but the entry helper's own body does not \
-                         call it ({via_call:?}). A declared via-hop the entry helper never \
-                         reaches leaves the child schedule row orphaned every time the entry \
-                         helper runs."
-                );
-                let squashed_via_mod = stripped_for_scan(via.module_src);
-                let n_via_decl = m22_count_occurrences(&squashed_via_mod, &via.decl);
-                assert_eq!(
-                    n_via_decl, 1,
-                    "[m22s6/via-decl-unique] the sub-helper for `{table}` ({via_decl:?}) \
-                         must be declared EXACTLY once in {via_module}; found {n_via_decl}."
-                );
-                let via_body = extract_squashed_fn_body(&squashed_via_mod, &via.decl)
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "[m22s6/via-body-scope] the body of the sub-helper for `{table}` \
-                                 ({via_decl:?}) in {via_module} could not be brace-extracted."
-                        )
-                    });
-                (via_body.to_string(), via.module_label)
-            }
-        };
-
-        assert!(
-            m22s6_accessor_mutated_in_statement(&terminal_body, &accessor_call),
-            "[m22s6/terminal-not-mutated] `{table}`'s terminal body (in {terminal_module_label}) \
-             contains no occurrence of `{accessor_call}` immediately followed — within the SAME \
-             statement, i.e. before whichever of `;` or `{{` comes first — by a `.delete(` or \
-             `.update(` whose argument is keyed rather than a bare numeric literal. This is the \
-             red-team's measured bypass: `erase_monsters` is the entry helper for BOTH `monster` \
-             and `monster_pub`, so swapping `monster_pub`'s `.delete(id);` for a `.find(id)` \
-             read keeps the accessor present and borrows the sibling `monster` line's `.delete(` \
-             for a body-wide conjunction, while every `monster_pub` row of every deleted account \
-             survives forever. A missing mutation here means `{table}`'s rows are READ, never \
-             WRITTEN — the table is never actually swept."
-        );
-    }
-
-    let mut chain_tables: Vec<&str> = m22s6_cascade_chain().iter().map(|e| e.table).collect();
-    let chain_len = chain_tables.len();
-    assert_eq!(
-        chain_len, 24,
-        "[m22s6/chain-map-census] the cascade-chain map holds {chain_len} row(s); EXACTLY 24 is \
-         the live classified partition. The walk above only proves every CLASSIFIED table is \
-         mapped; it is blind in the other direction, so a stale row for a table that no longer \
-         exists — or a table demoted to NotOwned — would linger here forever, and a reviewer \
-         reading the map would believe a sweep is proven that nothing exercises."
-    );
-    chain_tables.sort_unstable();
-    for pair in chain_tables.windows(2) {
-        assert_ne!(
-            pair[0], pair[1],
-            "[m22s6/chain-map-duplicate] the table `{}` has TWO cascade-chain map rows. The \
-             lookup above takes the FIRST match, so a second row is dead weight that reads as \
-             coverage: a reviewer sees the table routed through a helper the test never \
-             actually checks it against.",
-            pair[0]
-        );
-    }
-
-    assert_eq!(
-        classified, 24,
-        "[m22s6/chain-census] {classified} manifest entries are classified for the cascade \
-         (Erase/Anonymize/ViaJoin); EXACTLY 24 is the live partition (15 ERASE + 4 ANONYMIZE + 5 \
-         JOIN-ONLY). A floor would let this grow silently past the cascade-chain map's coverage; \
-         an exact count forces a conscious map edit alongside any reclassification."
-    );
-}
-
-// ===========================================================================
-// M22-S9 — POST-INTEGRATION CROSS-SLICE CONTRACT PINS (PRV1 §7.3).
-//
-// Spec: M22-privacy-compliance.spec.md §7.3 (post-integration verification —
-// the milestone's real DoD). Design record: ADR-0232 (D1 injected clock, D4
-// manifest-transcription honesty, D8 what S9 does NOT re-prove). Plan:
-// memory/projects/monster-realm-m22-s9-plan.md (harness repo).
-//
-// WHAT THIS SECTION IS. S0-S8 each merged in isolation. Nothing in the tree
-// had ever asserted that the SEAMS BETWEEN them still line up: that lib.rs'
-// disconnect bundle still has the shape the S3b cascade calls it with, that the
-// S1 deletion gate still has the shape the S5 fan-out delegates to, that the
-// `export_bundle` row the S2 schema declares is still the eight-column shape S4
-// writes and S8 assembles, that the committed TypeScript bindings still expose
-// the M22 client surface the live e2e drives, and that the e2e's own
-// transcribed constants still equal the source they claim to mirror. Five
-// tests, one per named contract; four host-syscall abort stubs so the
-// ctx-bound fn pointers of T1 can be MATERIALIZED in a native test binary.
-//
-// WHAT IT IS NOT (ADR-0232 D8). These are type-system and cross-artifact pins.
-// The behavioural coverage that already exists is deliberately NOT duplicated:
-// cascade body order (the `m22s3b_` tests), derive-metadata completeness (the
-// `m22s6_` tests), the S5 delegation census (`guards_tests.rs`), the
-// `export_bundle` column TEXT pin
-// (`export_bundle_struct_shape_and_privacy`, :4100). T2 below pins the
-// same table through a completely different mechanism — an exhaustive
-// destructure with no rest pattern — because a text pin over schema.rs and a
-// compile-level pin fail on disjoint mutations: a text pin cannot see a type
-// alias swap, and a destructure cannot see an attribute change.
-//
-// TWO OF THE FIVE START RED ON PURPOSE (TDD). T4 and T5 read constants that
-// `evals/account-e2e.eval.mjs` does not carry yet; T4's failure message PRINTS
-// the derived transcription so the eval author transcribes a DERIVED value
-// rather than authoring a second source of truth. Neither test may be edited to
-// match whatever the eval ends up saying: the eval is the artifact under test.
-//
-// NO BLOCK-COMMENT OPENER AND NO GLOB SEQUENCE APPEARS ANYWHERE IN THIS
-// SECTION, in prose or in code — this file's header rule, restated because it
-// is load-bearing: several shipped evals concatenate every `server-module/src`
-// file (test files included) and strip comments with a naive scanner, so one
-// such two-character sequence written here once blanked an unrelated function
-// out of a LATER file entirely and red-ed two evals this slice never touched.
-// Line comments only. Every scanner needle this section carries is assembled
-// mid-token with `concat!`, and the two byte values a naive stripper mis-pairs
-// on (the double quote and the backslash) are written as numeric constants
-// rather than as char literals.
-// ===========================================================================
-
-/// Frozen sources this section scans. `deletion.rs` is game-core's pure
-/// deletion surface (the grace + chunk SSOTs the e2e patches in its tmpdir
-/// copy); the eval is the artifact T4/T5 hold to its own source of truth; the
-/// five `.ts` files are the COMMITTED bindings — `include_str!` compiling at
-/// all is the existence proof T3 needs, and a missing file is a build error
-/// rather than a test that quietly asserts nothing.
-const M22S9_DELETION_RS: &str = include_str!("../../game-core/src/accounts/deletion.rs");
-const M22S9_ACCOUNT_E2E_MJS: &str = include_str!("../../evals/account-e2e.eval.mjs");
-const M22S9_EXPORT_BUNDLE_TS: &str =
-    include_str!("../../client/src/module_bindings/my_export_bundle_table.ts");
-const M22S9_MY_ACCOUNT_TS: &str =
-    include_str!("../../client/src/module_bindings/my_account_table.ts");
-const M22S9_DELETE_ACCOUNT_TS: &str =
-    include_str!("../../client/src/module_bindings/delete_account_reducer.ts");
-const M22S9_CANCEL_DELETION_TS: &str =
-    include_str!("../../client/src/module_bindings/cancel_account_deletion_reducer.ts");
-const M22S9_REQUEST_EXPORT_TS: &str =
-    include_str!("../../client/src/module_bindings/request_data_export_reducer.ts");
-
-/// How many times a pinned identifier may appear in the eval AT ALL before this
-/// section refuses to reason about which occurrence is the declaration.
-///
-/// This is a sanity bound, NOT the pin: the pin is that exactly ONE occurrence
-/// is a DECLARATION (`export const <name> =`), which is what defeats the
-/// steered first-hit anchor this repo has measured before. The cap exists so a
-/// file that suddenly names a pinned constant twenty-five times gets a human
-/// reading rather than a silent parse. Raising it consciously is fine; deleting
-/// the sole-declaration clause is not.
-const M22S9_MARKER_CAP: usize = 24;
-
-// ---------------------------------------------------------------------------
 // S9 machinery. Every helper is `m22s9_`-prefixed so it can never collide with
 // a same-named helper elsewhere in this file.
 // ---------------------------------------------------------------------------
@@ -12498,530 +3601,6 @@ fn m22s9_top_level_column_names(accessor: &str, ty: &AlgebraicType) -> Vec<Strin
         out.push(name.to_string());
     }
     out
-}
-
-/// The NAMES of the identity-bearing top-level columns of one registered row
-/// type, sorted, deduplicated by construction (a Product cannot name a column
-/// twice).
-///
-/// Sibling of `m22s6_identity_column_count` (:10694): identical traversal,
-/// identical panic discipline, but it returns WHICH columns rather than HOW
-/// MANY. The e2e's post-cascade truth pass needs the names — a count cannot be
-/// turned into a SQL predicate, and guessing the name is measured-wrong
-/// (`player_wallet`'s owner column is not called `identity`, so a guess is a
-/// 400 from the SQL endpoint and a plausible-but-wrong guess is a silently
-/// empty pre-count).
-///
-/// SORTED, not declaration-ordered, on purpose: this list feeds a byte-compared
-/// transcription, and a column REORDER inside a row struct must not churn that
-/// constant. Field ORDER is pinned where it actually matters (BSATN layout) by
-/// `schema_account_struct_shape_tripwire` (:2465) and
-/// `export_bundle_struct_shape_and_privacy` (:4100).
-fn m22s9_identity_column_names(accessor: &str, ty: &AlgebraicType) -> Vec<String> {
-    let AlgebraicType::Product(p) = ty else {
-        panic!(
-            "[m22s9/registry-shape] the row type registered for `{accessor}` is not a Product at \
-             the top level ({ty:?}). See `m22s9_top_level_column_names` — a non-Product row type \
-             means the S6 registry names the wrong Rust type, and every identity-column list \
-             derived from it would be fiction."
-        )
-    };
-    let mut out: Vec<String> = Vec::new();
-    for e in p.elements.iter() {
-        if !m22s6_identity_bearing(&e.algebraic_type, 0) {
-            continue;
-        }
-        let Some(name) = e.name.as_ref() else {
-            panic!(
-                "[m22s9/unnamed-column] an IDENTITY-bearing top-level column of `{accessor}` \
-                 carries no name in its derive metadata. That is the one column class the e2e's \
-                 truth pass must be able to name in a SQL predicate; an unnamed one cannot be \
-                 queried, so this fails loud rather than transcribing a blank."
-            )
-        };
-        out.push(name.to_string());
-    }
-    out.sort();
-    out
-}
-
-/// `snake_case` -> `camelCase`, the transformation the SpacetimeDB TypeScript
-/// generator applies to every column name.
-///
-/// Derived, never hand-spelled: a hand-written camelCase list is a second
-/// transcription of the column set, and the whole point of T3 is that the
-/// binding's field names are checked against the LIVE row type rather than
-/// against a list somebody typed. The caller additionally proves the result
-/// carries no underscore, which is what kills the degenerate identity mutant —
-/// without that clause a `snake_to_camel` that returned its input would pass
-/// every containment check, because the generated binding carries the snake
-/// spelling too (inside `.name(...)`).
-fn m22s9_snake_to_camel(snake: &str) -> String {
-    let mut out = String::with_capacity(snake.len());
-    let mut upper_next = false;
-    for c in snake.chars() {
-        if c == '_' {
-            upper_next = true;
-            continue;
-        }
-        if upper_next {
-            out.push(c.to_ascii_uppercase());
-            upper_next = false;
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
-
-/// The full one-line declaration of the deletion grace SSOT, assembled
-/// mid-identifier so THIS file never carries the contiguous needle.
-///
-/// The FULL declaration, not the bare integer: `deletion.rs` mentions the raw
-/// literal in its own honesty note (:23), so a bare-literal needle is ambiguous
-/// in the file the e2e patcher rewrites — and an ambiguous needle is exactly
-/// what makes a patcher either throw on arrival or patch a comment.
-fn m22s9_nd_grace_decl() -> String {
-    concat!(
-        "pub const DELETION_GRACE",
-        "_MS_DEFAULT: i64 = 604",
-        "_800_000;"
-    )
-    .to_string()
-}
-
-/// The full one-line declaration of the export sub-chunk SSOT, same rules.
-fn m22s9_nd_chunk_decl() -> String {
-    concat!("pub const EXPORT_CHUNK", "_ROWS: u32 = 500;").to_string()
-}
-
-/// The squashed declaration needle for the S4 export reducer.
-fn m22s9_nd_request_export_decl() -> String {
-    concat!("fnrequest_data", "_export(").to_string()
-}
-
-/// The squashed call needle for the S1 deletion gate as the S4 export reducer
-/// spells it.
-fn m22s9_nd_pending_gate() -> String {
-    concat!("is_pending", "_deletion(").to_string()
-}
-
-/// The value of the SOLE `export const <name> = <literal>;` declaration in a
-/// JavaScript source, quote-agnostically.
-///
-/// QUOTE-AGNOSTIC because biome owns that character: it rewrites string
-/// delimiters at will and its choice is not a fact about the contract. It never
-/// rewrites string CONTENTS, which is why a single delimiter-joined literal is
-/// a stable cross-artifact carrier at all (ADR-0232 D4).
-///
-/// SOLE DECLARATION, not first hit. An `indexOf`-style anchor is steerable by a
-/// decoy: a second string mentioning the same identifier anywhere earlier in the
-/// file re-points the extraction, and the gate then compares against text the
-/// eval never uses. So every occurrence is walked, only those followed by `=`
-/// (and not `==`) at a word boundary count as declarations, exactly one is
-/// required, and its line must open with `export const` — a local shadow inside
-/// a function is not the exported contract.
-///
-/// EVERY AMBIGUITY IS AN `Err`, NEVER A GUESS: an escape sequence, a newline
-/// inside the literal, an unterminated literal, a backtick (a template literal
-/// can interpolate, so its text is not a constant), a `+` after the closing
-/// quote (a concatenated value is not a single literal and biome may re-split
-/// it at any line width). The caller decides how loudly to fail; T4 turns the
-/// `Err` into a panic that also prints the derived value it wanted to compare
-/// against.
-fn m22s9_sole_js_const_str(src: &str, name: &str) -> Result<String, String> {
-    const SINGLE_QUOTE: u8 = 39;
-    const DOUBLE_QUOTE: u8 = 34;
-    const BACKSLASH: u8 = 92;
-    const NEWLINE: u8 = 10;
-    const TAB: u8 = 9;
-
-    let bytes = src.as_bytes();
-    let mut occurrences = 0usize;
-    let mut decls: Vec<(usize, usize)> = Vec::new();
-    let mut start = 0usize;
-    while let Some(rel) = src[start..].find(name) {
-        let at = start + rel;
-        start = at + name.len();
-        occurrences += 1;
-        let after = at + name.len();
-        if at > 0 && is_word_byte(bytes[at - 1]) {
-            continue;
-        }
-        if after < bytes.len() && is_word_byte(bytes[after]) {
-            continue;
-        }
-        let mut k = after;
-        while k < bytes.len() && (bytes[k] == b' ' || bytes[k] == TAB) {
-            k += 1;
-        }
-        let next = bytes.get(k + 1).copied().unwrap_or_default();
-        if bytes.get(k) != Some(&b'=') || next == b'=' || next == b'>' {
-            continue;
-        }
-        decls.push((at, k + 1));
-    }
-
-    if occurrences == 0 {
-        return Err(format!(
-            "[m22s9/js-const-missing] `{name}` does not appear in evals/account-e2e.eval.mjs at \
-             all. The e2e must carry it as `export const {name} = <one quoted literal>;` — a \
-             value this test derives from committed source and byte-compares, so that the eval \
-             transcribes a derived fact instead of becoming a second source of truth for it."
-        ));
-    }
-    if occurrences > M22S9_MARKER_CAP {
-        return Err(format!(
-            "[m22s9/js-const-flood] `{name}` appears {occurrences} times in \
-             evals/account-e2e.eval.mjs; the sanity cap is {M22S9_MARKER_CAP}. The pin below is \
-             the SOLE-DECLARATION clause, not this count — but a file that names one pinned \
-             constant this often needs a human to say which occurrence is the contract before a \
-             parser guesses."
-        ));
-    }
-    if decls.len() != 1 {
-        let n = decls.len();
-        return Err(format!(
-            "[m22s9/js-const-not-sole] `{name}` has {n} declaration(s) (an occurrence followed by \
-             `=`) in evals/account-e2e.eval.mjs; exactly one is required. Zero means the eval \
-             mentions the name without declaring it; two or more means a first-hit anchor could \
-             be steered onto whichever the parser happened to reach first."
-        ));
-    }
-
-    let (marker_at, value_at) = decls[0];
-    let line_start = match src[..marker_at].rfind('\n') {
-        Some(i) => i + 1,
-        None => 0,
-    };
-    let prefix = src[line_start..marker_at].trim();
-    if prefix != "export const" {
-        return Err(format!(
-            "[m22s9/js-const-not-exported] the sole declaration of `{name}` is introduced by \
-             {prefix:?}, not by `export const`. The e2e's phase-0 teeth and this test both need \
-             the module-level EXPORTED binding; a local shadow inside a function is invisible to \
-             both."
-        ));
-    }
-
-    let mut k = value_at;
-    while k < bytes.len() && bytes[k].is_ascii_whitespace() {
-        k += 1;
-    }
-    let quote = bytes.get(k).copied().unwrap_or_default();
-    if quote != SINGLE_QUOTE && quote != DOUBLE_QUOTE {
-        return Err(format!(
-            "[m22s9/js-const-not-a-literal] `{name}` is assigned something whose first non-space \
-             byte is {quote} — neither a single nor a double quote (a zero means the declaration \
-             runs off the end of the file). A backtick opens a template literal, which can \
-             interpolate, and an expression is not a constant at all; either way the value is not \
-             a stable carrier and this refuses to guess at it. Write ONE quoted literal."
-        ));
-    }
-    k += 1;
-    let value_start = k;
-    while k < bytes.len() && bytes[k] != quote {
-        if bytes[k] == BACKSLASH {
-            return Err(format!(
-                "[m22s9/js-const-escape] the literal assigned to `{name}` contains an escape \
-                 sequence. Every value this section pins is plain printable text; an escape means \
-                 the bytes the eval compares at runtime are not the bytes written in the source, \
-                 so a byte-comparison here would be comparing the wrong thing."
-            ));
-        }
-        if bytes[k] == NEWLINE {
-            return Err(format!(
-                "[m22s9/js-const-multiline] the literal assigned to `{name}` is not terminated on \
-                 its own line. A value split across lines is not one literal, and biome may \
-                 re-split it differently on any future format run."
-            ));
-        }
-        k += 1;
-    }
-    if k >= bytes.len() {
-        return Err(format!(
-            "[m22s9/js-const-unterminated] the literal assigned to `{name}` never closes."
-        ));
-    }
-    let value = &src[value_start..k];
-    if value.is_empty() {
-        return Err(format!(
-            "[m22s9/js-const-empty] `{name}` is declared as the EMPTY string. Every consumer of \
-             it would then compare, split or search nothing at all and report success."
-        ));
-    }
-    let mut tail = k + 1;
-    while tail < bytes.len() && bytes[tail].is_ascii_whitespace() {
-        tail += 1;
-    }
-    if bytes.get(tail) == Some(&b'+') {
-        return Err(format!(
-            "[m22s9/js-const-concatenated] `{name}` is assigned a CONCATENATION of literals. Only \
-             the first piece is readable from source, so the value this test compares would not \
-             be the value the eval uses. Write it as one literal."
-        ));
-    }
-    Ok(value.to_string())
-}
-
-/// The value of the SOLE `const <name>: &str = "...";` declaration in a Rust
-/// source.
-///
-/// Runs over the comment-stripped, string-PRESERVING view WITHOUT the usual
-/// whitespace squash, because the thing being extracted is a caller-facing
-/// message whose spaces are part of the contract: the live e2e compares a
-/// reducer's `Err` payload for exact equality, so a squashed view would happily
-/// certify a message with the spaces removed.
-///
-/// Requires the `: &str =` shape and rejects any escape sequence, so the value
-/// read here is exactly the value the compiler stores.
-fn m22s9_sole_rust_const_str(src: &str, name: &str) -> String {
-    const DOUBLE_QUOTE: u8 = 34;
-    const BACKSLASH: u8 = 92;
-
-    let clean = strip_comments_keep_strings(src);
-    let bytes = clean.as_bytes();
-    let mut values: Vec<String> = Vec::new();
-    let mut start = 0usize;
-    while let Some(rel) = clean[start..].find(name) {
-        let at = start + rel;
-        start = at + name.len();
-        let after = at + name.len();
-        if at > 0 && is_word_byte(bytes[at - 1]) {
-            continue;
-        }
-        if after < bytes.len() && is_word_byte(bytes[after]) {
-            continue;
-        }
-        let mut k = after;
-        while k < bytes.len() && bytes[k].is_ascii_whitespace() {
-            k += 1;
-        }
-        if bytes.get(k) != Some(&b':') {
-            continue;
-        }
-        k += 1;
-        while k < bytes.len() && bytes[k].is_ascii_whitespace() {
-            k += 1;
-        }
-        if !clean[k..].starts_with("&str") {
-            continue;
-        }
-        k += 4;
-        while k < bytes.len() && bytes[k].is_ascii_whitespace() {
-            k += 1;
-        }
-        if bytes.get(k) != Some(&b'=') {
-            continue;
-        }
-        k += 1;
-        while k < bytes.len() && bytes[k].is_ascii_whitespace() {
-            k += 1;
-        }
-        assert!(
-            bytes.get(k) == Some(&DOUBLE_QUOTE),
-            "[m22s9/rust-const-shape] the `{name}` declaration is not assigned a plain string \
-             literal. This section pins the caller-facing message BY VALUE; a computed or \
-             macro-built value cannot be read from source, so it must not be silently skipped."
-        );
-        k += 1;
-        let value_start = k;
-        while k < bytes.len() && bytes[k] != DOUBLE_QUOTE {
-            assert!(
-                bytes[k] != BACKSLASH,
-                "[m22s9/rust-const-escape] the `{name}` literal contains an escape sequence, so \
-                 the bytes in the source are not the bytes the reducer returns. Extraction \
-                 refuses to guess."
-            );
-            k += 1;
-        }
-        assert!(
-            k < bytes.len(),
-            "[m22s9/rust-const-unterminated] the `{name}` literal never closes."
-        );
-        values.push(clean[value_start..k].to_string());
-    }
-    let n = values.len();
-    assert_eq!(
-        n, 1,
-        "[m22s9/rust-const-not-sole] found {n} `const {name}: &str = ...` declaration(s); exactly \
-         one is required. Zero means the constant was renamed or its shape changed and this pin \
-         is reading nothing; two means a decoy could steer which one a first-hit anchor picks."
-    );
-    values.remove(0)
-}
-
-/// The reject reason `request_data_export` returns for a caller inside the
-/// deletion grace window, read out of `privacy.rs` rather than transcribed.
-///
-/// The reducer builds that payload with `stringify!` over an IDENTIFIER, not
-/// from a string literal (privacy.rs :1481-1483), so there is no literal in the
-/// source to pin by value — the identifier's own text IS the wire value. This
-/// walks the squashed reducer body from the S1 deletion-gate call to the
-/// `stringify!` that follows it and returns that identifier, so a renamed
-/// reject identifier surfaces here as a changed VALUE (and reds the e2e
-/// constant that mirrors it) instead of passing unnoticed.
-///
-/// The gate call is required to occur EXACTLY ONCE in that body: two of them
-/// would make "the `stringify!` after it" ambiguous, and the whole point of
-/// reading the reject next to the gate is that it pins the deletion check's own
-/// reject rather than whichever reject happens to be spelled first.
-fn m22s9_export_pending_reject_value() -> String {
-    let squashed = stripped_for_scan(M22_PRIVACY_RS);
-    let decl = m22s9_nd_request_export_decl();
-    let n_decl = m22_count_occurrences(&squashed, &decl);
-    assert_eq!(
-        n_decl, 1,
-        "[m22s9/export-decl-unique] the S4 export reducer's declaration ({decl:?}) occurs \
-         {n_decl} time(s) in privacy.rs; exactly one is required before its body may be \
-         brace-extracted by a first-hit anchor."
-    );
-    let body = extract_squashed_fn_body(&squashed, &decl).unwrap_or_else(|| {
-        panic!(
-            "[m22s9/export-body-scope] the body of the S4 export reducer ({decl:?}) could not be \
-             brace-extracted from privacy.rs, so the reject-value read below would have no scope."
-        )
-    });
-
-    let gate = m22s9_nd_pending_gate();
-    let n_gate = m22_count_occurrences(body, &gate);
-    assert_eq!(
-        n_gate, 1,
-        "[m22s9/export-gate-census] the S4 export reducer's body calls the S1 deletion gate \
-         ({gate:?}) {n_gate} time(s); exactly one is required. Zero means PRV1-7's \
-         export-during-grace rejection is GONE (a subject inside the grace window could dump \
-         their data on the way out); more than one makes `the reject that follows the gate` \
-         ambiguous."
-    );
-
-    let at = idx(body, &gate);
-    let tail = &body[at..];
-    let marker = concat!("stringi", "fy!(");
-    let rel = tail.find(marker).unwrap_or_else(|| {
-        panic!(
-            "[m22s9/export-reject-shape] no {marker:?} follows the deletion gate in the S4 export \
-             reducer's body. The reject payload is built from an identifier, not a literal; if \
-             that changed, re-derive this extraction from the new shape rather than transcribing \
-             the value into the e2e by hand."
-        )
-    });
-    let after = &tail[rel + marker.len()..];
-    let value: String = after.chars().take_while(|c| is_word_char(*c)).collect();
-    assert!(
-        !value.is_empty(),
-        "[m22s9/export-reject-empty] the {marker:?} after the deletion gate wraps no identifier."
-    );
-    assert!(
-        after[value.len()..].starts_with(')'),
-        "[m22s9/export-reject-shape] the {marker:?} after the deletion gate does not wrap a single \
-         bare identifier (read {value:?}), so its expansion is not the wire value this pin claims."
-    );
-    value
-}
-
-/// The expected M22 lifecycle transcription, DERIVED — never transcribed — from
-/// `DATA_LIFECYCLE_MANIFEST` plus the S6 typespace walk.
-///
-/// FORMAT, one entry per manifest table, entries sorted by table name and
-/// joined with `|`; within an entry, four `:`-separated fields:
-///   `<table>:<policy>:<identity columns>:<exportable>`
-/// where `<policy>` is `Erase` / `Anonymize` / `ViaJoin(<parent>)` / `NotOwned`,
-/// `<identity columns>` is the sorted `+`-joined identity-bearing column list
-/// for the two owner-keyed policies and EMPTY for the other two (a ViaJoin row
-/// is swept through its parent and a NotOwned row is not swept at all, so
-/// neither has an owner column to name, and the S6 R2 test already proves
-/// ViaJoin rows carry no Identity column at all), and `<exportable>` is `1`/`0`
-/// from the manifest's third axis.
-///
-/// WHY DERIVED. The e2e needs the classification AND the owner-column names to
-/// run its post-cascade truth pass, and every other way of getting them was
-/// rejected with a measured reason (ADR-0232 D4): a second hand-written list in
-/// the eval is a second source of truth that drifts silently, and deriving the
-/// columns from the JS `REKEY_MANIFEST` yields ZERO columns for six of the
-/// seventeen owner-keyed tables (their rekey keys are `BLOCKED`-policy), which
-/// reads as `nothing to check` rather than as an error and is invisible to a
-/// vacuity list that only sees zero COUNTS.
-///
-/// The charset is deliberately narrow (see the caller's clause): no quote, no
-/// backslash, no whitespace anywhere in the produced string, so biome can
-/// neither re-delimit nor re-wrap the eval's copy of it.
-fn m22s9_derive_manifest_transcription() -> String {
-    let registry = m22s6_table_row_types();
-    let manifest: &[DataLifecycleEntry] = DATA_LIFECYCLE_MANIFEST;
-
-    let mut names: Vec<&str> = manifest.iter().map(|e| e.table).collect();
-    names.sort_unstable();
-    for pair in names.windows(2) {
-        assert_ne!(
-            pair[0], pair[1],
-            "[m22s9/transcription-dup] DATA_LIFECYCLE_MANIFEST names `{}` twice. The derivation \
-             below looks each table up by name, so a duplicate would transcribe one entry twice \
-             and leave the census at 41 while a real table went missing.",
-            pair[0]
-        );
-    }
-
-    let mut entries: Vec<String> = Vec::with_capacity(names.len());
-    for table in names {
-        let entry = manifest
-            .iter()
-            .find(|candidate| candidate.table == table)
-            .unwrap_or_else(|| {
-                panic!(
-                    "[m22s9/transcription-lookup] `{table}` was collected from \
-                     DATA_LIFECYCLE_MANIFEST and then could not be found in it."
-                )
-            });
-        let (policy, owner_keyed) = match entry.policy {
-            DeletionPolicy::Erase => ("Erase".to_string(), true),
-            DeletionPolicy::Anonymize => ("Anonymize".to_string(), true),
-            DeletionPolicy::ViaJoin(parent) => (format!("ViaJoin({parent})"), false),
-            DeletionPolicy::NotOwned => ("NotOwned".to_string(), false),
-        };
-        let columns = if owner_keyed {
-            let (_, ty) = registry
-                .iter()
-                .find(|(name, _)| *name == table)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "[m22s9/transcription-unregistered] `{table}` is classified {policy} but \
-                         has no entry in the S6 row-type registry, so its owner columns cannot be \
-                         derived — `m22s6_table_row_registry_matches_manifest` should have caught \
-                         this drift first."
-                    )
-                });
-            let cols = m22s9_identity_column_names(table, ty);
-            assert!(
-                !cols.is_empty(),
-                "[m22s9/zero-owner-cols] `{table}` is classified {policy} but its row type \
-                 carries ZERO identity-bearing columns, so the e2e's truth pass would have NO \
-                 predicate to scope its rows with. An empty column list is the dangerous \
-                 direction: the table is then silently unattempted, which is invisible to a \
-                 vacuity list that only sees zero row COUNTS. Reclassify the table or give it an \
-                 owner key — never transcribe an empty list."
-            );
-            cols.join("+")
-        } else {
-            String::new()
-        };
-        let exportable = if entry.exportable { "1" } else { "0" };
-        entries.push(format!("{table}:{policy}:{columns}:{exportable}"));
-    }
-
-    let census = entries.len();
-    assert_eq!(
-        census, 43,
-        "[m22s9/transcription-census] the derivation produced {census} entries; the live manifest \
-         carries exactly 43 (15 ERASE + 4 ANONYMIZE + 5 JOIN-ONLY + 19 NOT-OWNED, schema.rs \
-         :989-993) — 40 before rb-48, plus `export_bundle_reaper_schedule` (ADR-0238), which \
-         transcribes as `export_bundle_reaper_schedule:NotOwned::0`: NotOwned, no owner columns, \
-         not exportable; plus rb-73's `player_session` (ADR-0245), which transcribes as \
-         `player_session:Erase:identity:0`; plus 20r-d's `pending_evolution_notice` (ADR-0254), \
-         which transcribes as `pending_evolution_notice:Erase:owner_identity:0`. A transcription \
-         that silently shrank would let the \
-         e2e prove a cascade over fewer tables than the tree actually has."
-    );
-    entries.join("|")
 }
 
 // ---------------------------------------------------------------------------
@@ -13253,2228 +3832,10 @@ fn m22s9_export_bundle_struct_shape_tripwire() {
     let _: &i64 = &created_at_ms;
 }
 
-// ---------------------------------------------------------------------------
-// m22s9-T3 — THE COMMITTED BINDINGS EXPOSE THE M22 CLIENT SURFACE.
-// ---------------------------------------------------------------------------
-
-/// m22s9-T3: the committed TypeScript bindings carry the whole M22 surface the
-/// live e2e drives — the `my_export_bundle` and `my_account` view handles, and
-/// a reducer module for every client-callable §4.7 state-transition owner plus
-/// `request_data_export`.
-///
-/// EXISTENCE IS PROVEN BY COMPILATION. Each binding is `include_str!`-ed, so a
-/// missing or renamed file is a build error in this crate rather than a test
-/// that quietly asserts nothing about a file it could not read. That matters
-/// because the bindings are GENERATED and committed: a `spacetime generate` run
-/// that silently dropped a module would otherwise be invisible until the e2e
-/// failed to import it, in the one phase that does not run without a toolchain.
-///
-/// THE FILE LIST IS TIED TO `game_core::STATE_TRANSITION_OWNERS`, not merely
-/// parallel to it: the expected file names are BUILT from the const's own
-/// entries (`<owner>_reducer.ts`) and compared as a set against the names this
-/// test includes, so adding, removing or renaming an owner reds this test until
-/// the binding set is re-reviewed. That const is the §4.7 exemption list — an
-/// entry in it EXEMPTS a reducer from the deletion gate, which is exactly the
-/// kind of change that must not pass unnoticed.
-///
-/// ONE DECLARED ASYMMETRY, stated rather than papered over: the third owner,
-/// `account_deletion_reaper`, is a SCHEDULED reducer, and the generator emits no
-/// client binding for scheduled reducers (verified against the committed
-/// `module_bindings/index.ts`, which imports 39 reducer modules and none for
-/// either scheduled reaper). It is therefore excluded from the file set by name,
-/// with the name itself asserted to be a member of the const so the exclusion
-/// cannot outlive the entry it excludes. This test cannot prove the ABSENCE of a
-/// file — if a future generator starts emitting one, this test stays green and
-/// the omission is a review matter.
-///
-/// THE FIELD PARITY IS DERIVED END TO END: the eight snake_case column names
-/// come from T2's derive-metadata list, the camelCase spellings come from an
-/// in-test `snake_to_camel`, and each is required to appear in the binding
-/// alongside the generator's own `.name(<snake>)` alias. Nothing camelCase is
-/// hand-spelled anywhere, and the `no underscore survives` clause is what stops
-/// a degenerate `snake_to_camel` (one that returns its input) from passing
-/// vacuously — the binding carries the snake spelling too.
-///
-/// Kills: a `spacetime generate` run that dropped the `my_export_bundle` view,
-///        the `my_account` view, or any of the three reducer modules (build
-///        error);
-///        a renamed or retyped `export_bundle` column that the bindings were
-///        regenerated for but the Rust side was not — or the reverse, which is
-///        the direction that actually bites: the e2e reads `chunkIndex` /
-///        `totalChunks` / `tableName` off these rows to prove the S8 assembly
-///        contract, and a silent rename turns every one of those reads into
-///        `undefined`;
-///        adding a fourth `STATE_TRANSITION_OWNERS` entry (a new deletion-gate
-///        EXEMPTION) without deciding whether it needs a client binding;
-///        the `terminal_at_ms` column disappearing from the `my_account` view
-///        the e2e polls to detect a completed cascade;
-///        a hand-written placeholder standing in for a generated binding (the
-///        generated-header clause).
-#[test]
-fn m22s9_bindings_expose_m22_surface() {
-    let bindings: [(&str, &str); 5] = [
-        (
-            concat!("my_export_bundle", "_table.ts"),
-            M22S9_EXPORT_BUNDLE_TS,
-        ),
-        (concat!("my_account", "_table.ts"), M22S9_MY_ACCOUNT_TS),
-        (
-            concat!("delete", "_account_reducer.ts"),
-            M22S9_DELETE_ACCOUNT_TS,
-        ),
-        (
-            concat!("cancel_account", "_deletion_reducer.ts"),
-            M22S9_CANCEL_DELETION_TS,
-        ),
-        (
-            concat!("request_data", "_export_reducer.ts"),
-            M22S9_REQUEST_EXPORT_TS,
-        ),
-    ];
-    for (file, src) in bindings {
-        assert!(
-            src.contains("AUTOMATICALLY GENERATED"),
-            "[m22s9/binding-not-generated] `{file}` does not carry the SpacetimeDB generated-file \
-             header. A hand-written placeholder in the bindings directory satisfies every \
-             existence check while the real module surface it stands for may not exist at all; \
-             regenerate with the CLI instead."
-        );
-        assert!(
-            src.contains("export default"),
-            "[m22s9/binding-no-default-export] `{file}` has no default export, so nothing can \
-             import it as a schema — the e2e's driver would fail at module load, far from here."
-        );
-    }
-
-    // --- the reducer file set is DERIVED from the §4.7 exemption const -------
-    let owners: Vec<&str> = game_core::STATE_TRANSITION_OWNERS.to_vec();
-    let expected_owners = [
-        concat!("delete", "_account"),
-        concat!("cancel_account", "_deletion"),
-        concat!("account_deletion", "_reaper"),
-    ];
-    assert_eq!(
-        owners, expected_owners,
-        "[m22s9/owner-roster] game_core::STATE_TRANSITION_OWNERS is not the three §4.7 \
-         state-transition owners in their declared order. Every entry EXEMPTS a reducer from the \
-         deletion gate, so a change here is a security-relevant decision: re-review the new \
-         entry, decide whether it is client-callable (and therefore needs a committed binding), \
-         and update this pin consciously."
-    );
-
-    let scheduled_only = concat!("account_deletion", "_reaper");
-    assert!(
-        owners.contains(&scheduled_only),
-        "[m22s9/scheduled-exclusion-stale] `{scheduled_only}` is excluded from the expected \
-         binding set below because it is a SCHEDULED reducer with no generated client module — \
-         but it is no longer a state-transition owner at all, so the exclusion is stale and would \
-         silently hide a missing binding for whatever replaced it."
-    );
-
-    let mut expected_files: Vec<String> = owners
-        .iter()
-        .filter(|name| **name != scheduled_only)
-        .map(|name| format!("{name}_reducer.ts"))
-        .collect();
-    let export_reducer = concat!("request_data", "_export");
-    expected_files.push(format!("{export_reducer}_reducer.ts"));
-    expected_files.sort();
-
-    let mut included_files: Vec<String> = bindings
-        .iter()
-        .map(|&(file, _)| file.to_string())
-        .filter(|file| file.ends_with("_reducer.ts"))
-        .collect();
-    included_files.sort();
-
-    assert_eq!(
-        included_files, expected_files,
-        "[m22s9/reducer-binding-set] the reducer bindings this test pins are not the set derived \
-         from game_core::STATE_TRANSITION_OWNERS (minus the scheduled reaper) plus \
-         `request_data_export`. The expected side is BUILT from the const, so this fires the \
-         moment an owner is added, removed or renamed — which is the point: the live e2e drives \
-         exactly these entry points over the committed bindings."
-    );
-
-    // --- ExportBundle field parity, derived end to end ----------------------
-    let registry = m22s6_table_row_types();
-    let (_, bundle_ty) = registry
-        .iter()
-        .find(|(name, _)| *name == "export_bundle")
-        .unwrap_or_else(|| {
-            panic!(
-                "[m22s9/export-bundle-unregistered] the S6 row-type registry has no \
-                 `export_bundle` entry, so the binding's field list has nothing to be compared \
-                 against and this clause would pass vacuously."
-            )
-        });
-    let fields = m22s9_top_level_column_names("export_bundle", bundle_ty);
-    let n_fields = fields.len();
-    assert_eq!(
-        n_fields, 8,
-        "[m22s9/export-bundle-field-census] the derived `export_bundle` column list has \
-         {n_fields} entries; the S2/S4/S8 chunk contract has 8. A shrunken list would check \
-         fewer binding fields and report success."
-    );
-
-    let quote = rb22_dq();
-    for snake in &fields {
-        let camel = m22s9_snake_to_camel(snake);
-        assert!(
-            !camel.contains('_'),
-            "[m22s9/camel-underscore] snake_to_camel({snake:?}) produced {camel:?}, which still \
-             carries an underscore. The generated bindings never do; a transformation that \
-             returns its input would make every clause below pass vacuously, because the binding \
-             carries the snake spelling too (inside the generator's own `.name(..)` alias)."
-        );
-        if snake.contains('_') {
-            assert_ne!(
-                camel.as_str(),
-                snake.as_str(),
-                "[m22s9/camel-identity] snake_to_camel left the underscored column {snake:?} \
-                 unchanged."
-            );
-            let alias = format!(".name({quote}{snake}{quote})");
-            assert!(
-                M22S9_EXPORT_BUNDLE_TS.contains(alias.as_str()),
-                "[m22s9/binding-alias] the `my_export_bundle` binding does not map any field to \
-                 the wire column {snake:?} ({alias:?} is absent). Either the column was renamed \
-                 on the Rust side without regenerating the bindings, or the bindings were \
-                 regenerated against a different module — and the e2e's chunk-assembly reads \
-                 would silently see `undefined`."
-            );
-        }
-        let field = format!("{camel}:");
-        assert!(
-            M22S9_EXPORT_BUNDLE_TS.contains(field.as_str()),
-            "[m22s9/binding-field] the `my_export_bundle` binding declares no `{camel}` field, so \
-             the S8 client assembler and the S9 e2e cannot read the {snake:?} column of an export \
-             chunk at all."
-        );
-    }
-
-    // --- the my_account view still carries the terminal marker the e2e polls -
-    let (_, account_ty) = registry
-        .iter()
-        .find(|(name, _)| *name == "account")
-        .unwrap_or_else(|| {
-            panic!(
-                "[m22s9/account-unregistered] the S6 row-type registry has no `account` entry, so \
-                 the terminal-marker column name cannot be derived and the my_account view clause \
-                 below would have nothing to look for."
-            )
-        });
-    let account_columns = m22s9_top_level_column_names("account", account_ty);
-    let terminal: Vec<&String> = account_columns
-        .iter()
-        .filter(|name| name.starts_with("terminal"))
-        .collect();
-    let n_terminal = terminal.len();
-    assert_eq!(
-        n_terminal, 1,
-        "[m22s9/terminal-column] the `account` row type has {n_terminal} column(s) whose name \
-         starts with `terminal`; exactly one (the §4.1 completed-cascade marker) is expected. The \
-         name is derived rather than spelled here so a rename surfaces as a CHANGED value below \
-         instead of a stale literal that still matches nothing."
-    );
-    let terminal_camel = m22s9_snake_to_camel(terminal[0]);
-    let terminal_field = format!("{terminal_camel}:");
-    assert!(
-        M22S9_MY_ACCOUNT_TS.contains(terminal_field.as_str()),
-        "[m22s9/my-account-terminal] the `my_account` view binding declares no `{terminal_camel}` \
-         field. That column is how a client — and the S9 live driver — observes that a deletion \
-         cascade COMPLETED; without it the e2e's terminal poll can never succeed and would time \
-         out as a hang rather than fail as a contract break."
-    );
-}
-
-// ---------------------------------------------------------------------------
-// m22s9-T4 — THE E2E'S MANIFEST TRANSCRIPTION IS THE MANIFEST.
-// ---------------------------------------------------------------------------
-
-/// m22s9-T4: the classification string `evals/account-e2e.eval.mjs` drives its
-/// post-cascade truth pass from is BYTE-IDENTICAL to one derived here from
-/// `DATA_LIFECYCLE_MANIFEST` plus the S6 typespace walk.
-///
-/// THIS IS THE KEY CROSS-ARTIFACT TIE OF THE WHOLE SLICE (S0 -> S2 -> S6 ->
-/// e2e). The live phase asserts, table by table, that a deleted subject's rows
-/// were erased, anonymized, swept via a parent or left alone — and it can only
-/// do that against SOME statement of which table is which. If that statement is
-/// a second hand-written list, then the day somebody reclassifies a table in
-/// schema.rs the e2e keeps proving the OLD partition, in the one phase of the
-/// one gate that exists to catch exactly that. Deriving it here and comparing
-/// byte-for-byte makes the eval's copy a transcription of a derived fact rather
-/// than a source of truth of its own (ADR-0232 D4).
-///
-/// THE FAILURE MESSAGE PRINTS THE DERIVED VALUE, VERBATIM AND IN FULL. That is
-/// deliberate and it is the intended workflow: the canonical string is not
-/// something a human should compose. Run this test, copy the printed value into
-/// the eval's constant, and the two are tied by construction from then on. The
-/// same printing happens on a parse failure, so a missing declaration is
-/// self-servicing rather than a puzzle.
-///
-/// AMBIGUITY IS FATAL, NEVER GUESSED (see `m22s9_sole_js_const_str`): exactly
-/// one `export const` declaration, quote-agnostic (biome owns the delimiter),
-/// no escapes, no concatenation, no template literal. The charset clause below
-/// then pins that the derived value cannot contain a quote, a backslash or any
-/// whitespace at all — the property that makes it survive a biome format run
-/// unchanged.
-///
-/// Kills: an eval that carries a hand-written partition which has drifted from
-///        schema.rs (any reclassification, any added or removed table);
-///        an eval whose per-table OWNER COLUMN list was guessed rather than
-///        derived — the measured case is `player_wallet`, whose owner column is
-///        not named `identity`, so a guess is a 400 from the SQL endpoint and a
-///        plausible-but-wrong guess is a silently empty pre-count;
-///        an Erase/Anonymize entry with an EMPTY column list, which reads as
-///        `nothing to check` and is invisible to a vacuity list that only sees
-///        zero row counts (the [m22s9/zero-owner-cols] arm — this is the
-///        red-team's CRITICAL-1 kill);
-///        a decoy second mention of the constant steering a first-hit anchor
-///        onto text the eval never uses;
-///        a census that quietly shrank below the 43 live tables;
-///        an exportable flag flipped on one side only (the flag is the fourth
-///        field of every entry, so the export-scope axis is inside the compare).
-#[test]
-fn m22s9_e2e_manifest_transcription_matches_manifest() {
-    let derived = m22s9_derive_manifest_transcription();
-
-    for c in derived.chars() {
-        assert!(
-            c.is_ascii_alphanumeric() || matches!(c, '_' | ':' | '|' | '+' | '(' | ')'),
-            "[m22s9/transcription-charset] the derived transcription contains {c:?}, which is \
-             outside the pinned charset (ASCII alphanumerics plus underscore, colon, pipe, plus, \
-             and the two parentheses of a ViaJoin payload). The charset IS the stability \
-             property: with no quote, no backslash and no whitespace in the value, biome can \
-             neither re-delimit nor re-wrap the eval's copy of it, so a byte-comparison stays \
-             meaningful across format runs."
-        );
-    }
-
-    let parts: Vec<&str> = derived.split('|').collect();
-    let n_parts = parts.len();
-    assert_eq!(
-        n_parts, 43,
-        "[m22s9/transcription-parts] the derived transcription splits into {n_parts} entries; the \
-         live manifest carries exactly 43 (rb-48 / ADR-0238 adds \
-         `export_bundle_reaper_schedule`; rb-73 / ADR-0245 adds `player_session`; 20r-d / \
-         ADR-0254 adds `pending_evolution_notice`)."
-    );
-    for part in &parts {
-        let colons = part.matches(':').count();
-        assert_eq!(
-            colons, 3,
-            "[m22s9/transcription-shape] the entry {part:?} carries {colons} colon(s); every \
-             entry is exactly `<table>:<policy>:<columns>:<exportable>`. The eval's parser splits \
-             on this shape, so a malformed entry would either throw there or, worse, silently \
-             yield a table whose policy is the empty string."
-        );
-    }
-
-    let name = concat!("M22S9_MANIFEST", "_TRANSCRIPTION");
-    let extracted = match m22s9_sole_js_const_str(M22S9_ACCOUNT_E2E_MJS, name) {
-        Ok(value) => value,
-        Err(why) => panic!(
-            "{why}\n\nexpected transcription:\n{derived}\n\nDeclare it verbatim in \
-             evals/account-e2e.eval.mjs as one quoted literal: `export const {name} = <the line \
-             above>;`. Do NOT edit this test to match the eval — the derivation above IS the \
-             contract, and the eval is the artifact under test."
-        ),
-    };
-
-    assert_eq!(
-        extracted, derived,
-        "[m22s9/transcription-mismatch] the e2e's `{name}` is not the classification the live \
-         DATA_LIFECYCLE_MANIFEST plus the S6 typespace walk produce. The e2e's post-cascade truth \
-         pass would then be proving the OLD partition — asserting erasure of a table that is now \
-         anonymize-only, or skipping a table that is now owner-keyed — in the one gate that \
-         exists to catch exactly that drift. Replace the eval's constant with the derived value \
-         below; never adjust the derivation to match the eval.\n\nexpected transcription:\n\
-         {derived}"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// m22s9-T5 — THE E2E'S PATCH NEEDLES AND EXPECTED CONSTANTS ARE SOURCE TRUTH.
-// ---------------------------------------------------------------------------
-
-/// m22s9-T5: every constant the live phase compares against, and every needle it
-/// patches with, equals the committed source it claims to mirror.
-///
-/// THE PATCH NEEDLES (ADR-0232 D1). The live phase compresses two time-scale
-/// constants in its TMPDIR module copy — the 7-day deletion grace down to
-/// seconds so the real reaper fires inside a CI run, and the export sub-chunk
-/// size down so a multi-chunk split is provable without a bulk seed. Both
-/// patchers rewrite a needle, and a needle that no longer occurs in the shipped
-/// source is the failure mode that hurts: the patch silently no-ops, the run
-/// waits seven days, and it reads as a hang rather than as a broken gate. Two
-/// clauses close that: the FULL declaration line occurs EXACTLY ONCE in
-/// `game-core/src/accounts/deletion.rs` (the patch target — sole occurrence is
-/// what lets a patcher throw on ambiguity instead of rewriting a comment), and
-/// the eval's exported needle constants equal that same declaration text.
-///
-/// WHY THE FULL DECLARATION AND NOT THE BARE NUMBER: `deletion.rs` mentions the
-/// raw grace literal in its own honesty note, so a bare-integer needle matches
-/// twice in the file the patcher rewrites.
-///
-/// THE EXPECTED CONSTANTS. The live driver compares reducer `Err` payloads and
-/// tombstoned column values for EXACT equality. Each of those expectations is
-/// tied here to the one place the value is actually decided:
-///   - the late-cancel reject (PRV1-4) to `accounts.rs`' own reject constant,
-///     read with the spaces intact — a squashed view would certify a message
-///     whose spacing had changed, and the driver compares the real bytes;
-///   - the export-during-grace reject (PRV1-7) to the identifier `privacy.rs`
-///     hands to `stringify!`, which IS the wire value;
-///   - the three anonymization sentinels to `game_core`'s own constants, by
-///     direct reference rather than by transcription, with the identity
-///     rendered to lowercase hex here so the eval never hand-types 64
-///     characters that a SQL row must match.
-///
-/// Kills: retuning or renaming either patched constant in `deletion.rs` while
-///        the eval keeps patching the old text (the patch no-ops, the reaper
-///        never fires within the run, and the whole live phase degrades into a
-///        timeout);
-///        a SECOND declaration of either constant in `deletion.rs`, which makes
-///        the patcher's target ambiguous;
-///        an eval needle that drifted one character from the declaration it
-///        patches;
-///        changing the PRV1-4 reject message (or its spacing) on either side —
-///        the e2e asserts the exact string, so a drift turns a real regression
-///        into an assertion that can never pass, or hides one that can;
-///        renaming the export-during-grace reject identifier, which changes the
-///        wire value with no literal anywhere to notice;
-///        retuning a tombstone sentinel in game-core while the eval keeps
-///        asserting the old one (the cascade would write a value the truth pass
-///        never checks);
-///        an eval that hand-types the tombstone identity hex with a typo, or
-///        with the uppercase spelling SQL does not return.
-#[test]
-fn m22s9_e2e_patch_needles_and_constants() {
-    // --- (a) the patch needles are live and unambiguous in the patch target --
-    let grace_needle = m22s9_nd_grace_decl();
-    let n_grace = m22_count_occurrences(M22S9_DELETION_RS, &grace_needle);
-    assert_eq!(
-        n_grace, 1,
-        "[m22s9/grace-needle] the deletion-grace declaration ({grace_needle:?}) occurs {n_grace} \
-         time(s) in game-core/src/accounts/deletion.rs; exactly one is required. ZERO means the \
-         e2e's patcher has nothing to rewrite, so the live phase would publish an unpatched \
-         module and wait out a seven-day grace window — a hang, not a failure. MORE than one \
-         means the patch target is ambiguous."
-    );
-
-    let chunk_needle = m22s9_nd_chunk_decl();
-    let n_chunk = m22_count_occurrences(M22S9_DELETION_RS, &chunk_needle);
-    assert_eq!(
-        n_chunk, 1,
-        "[m22s9/chunk-needle] the export-chunk declaration ({chunk_needle:?}) occurs {n_chunk} \
-         time(s) in game-core/src/accounts/deletion.rs; exactly one is required. Without it the \
-         live phase cannot compress the sub-chunk size, so a multi-chunk export is unprovable \
-         without a bulk seed and the S8 assembly contract goes untested."
-    );
-
-    // --- (b) the eval's exported needles ARE those declarations --------------
-    let grace_const = concat!("GRACE", "_NEEDLE");
-    let eval_grace = match m22s9_sole_js_const_str(M22S9_ACCOUNT_E2E_MJS, grace_const) {
-        Ok(value) => value,
-        Err(why) => panic!("{why}"),
-    };
-    assert_eq!(
-        eval_grace, grace_needle,
-        "[m22s9/grace-needle-drift] the e2e's `{grace_const}` is not the deletion-grace \
-         declaration as committed. The patcher searches for this exact text in its tmpdir copy of \
-         the module, so one character of drift makes the patch throw (best case) or silently \
-         match nothing (the case that reads as a hang)."
-    );
-
-    let chunk_const = concat!("CHUNK", "_NEEDLE");
-    let eval_chunk = match m22s9_sole_js_const_str(M22S9_ACCOUNT_E2E_MJS, chunk_const) {
-        Ok(value) => value,
-        Err(why) => panic!("{why}"),
-    };
-    assert_eq!(
-        eval_chunk, chunk_needle,
-        "[m22s9/chunk-needle-drift] the e2e's `{chunk_const}` is not the export-chunk declaration \
-         as committed."
-    );
-
-    // --- (c) the expected reject messages equal their deciding source --------
-    let reject_already_deleted =
-        m22s9_sole_rust_const_str(ACCOUNTS_RS, concat!("REJECT_ALREADY", "_DELETED"));
-    let already_deleted_const = concat!("ERR_ALREADY", "_DELETED_E2E");
-    let eval_already_deleted =
-        match m22s9_sole_js_const_str(M22S9_ACCOUNT_E2E_MJS, already_deleted_const) {
-            Ok(value) => value,
-            Err(why) => panic!("{why}"),
-        };
-    assert_eq!(
-        eval_already_deleted, reject_already_deleted,
-        "[m22s9/reject-terminal-drift] the e2e's `{already_deleted_const}` is not the PRV1-4 \
-         terminal reject constant declared in accounts.rs. The live driver asserts the late-cancel \
-         `Err` payload for EXACT equality, so a drift on either side either hides a real \
-         regression or turns the assertion into one that can never pass."
-    );
-
-    let export_reject = m22s9_export_pending_reject_value();
-    let export_reject_const = concat!("ERR_EXPORT_PENDING", "_DELETION_E2E");
-    let eval_export_reject =
-        match m22s9_sole_js_const_str(M22S9_ACCOUNT_E2E_MJS, export_reject_const) {
-            Ok(value) => value,
-            Err(why) => panic!("{why}"),
-        };
-    assert_eq!(
-        eval_export_reject, export_reject,
-        "[m22s9/export-reject-drift] the e2e's `{export_reject_const}` is not the identifier \
-         privacy.rs hands to `stringify!` on the PRV1-7 export-during-grace path. That identifier \
-         IS the wire value, so renaming it changes what a client sees with no literal anywhere in \
-         the tree to notice — this pin is what notices."
-    );
-
-    // --- (c continued) the anonymization sentinels ---------------------------
-    let issuer_const = concat!("TOMBSTONE_AUTH", "_ISSUER_E2E");
-    let eval_issuer = match m22s9_sole_js_const_str(M22S9_ACCOUNT_E2E_MJS, issuer_const) {
-        Ok(value) => value,
-        Err(why) => panic!("{why}"),
-    };
-    assert_eq!(
-        eval_issuer,
-        game_core::TOMBSTONE_AUTH_ISSUER,
-        "[m22s9/tombstone-issuer-drift] the e2e's `{issuer_const}` is not \
-         game_core::TOMBSTONE_AUTH_ISSUER. The cascade writes that constant over the one PII \
-         column of a surviving `account` row, and the truth pass reads the column back — a drift \
-         means the pass asserts a value nothing ever writes."
-    );
-
-    let name_const = concat!("TOMBSTONE_DISPLAY", "_NAME_E2E");
-    let eval_name = match m22s9_sole_js_const_str(M22S9_ACCOUNT_E2E_MJS, name_const) {
-        Ok(value) => value,
-        Err(why) => panic!("{why}"),
-    };
-    assert_eq!(
-        eval_name,
-        game_core::TOMBSTONE_DISPLAY_NAME,
-        "[m22s9/tombstone-name-drift] the e2e's `{name_const}` is not \
-         game_core::TOMBSTONE_DISPLAY_NAME — the ONE deletion display-name sentinel, deliberately \
-         distinct from ranking.rs' guest-claim tombstone so a deleted account never reads as an \
-         unclaimed guest."
-    );
-
-    const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut expected_hex = String::with_capacity(66);
-    expected_hex.push('0');
-    expected_hex.push('x');
-    for byte in game_core::TOMBSTONE_IDENTITY_BYTES {
-        expected_hex.push(char::from(HEX_DIGITS[usize::from(byte >> 4)]));
-        expected_hex.push(char::from(HEX_DIGITS[usize::from(byte & 0x0F)]));
-    }
-    let hex_len = expected_hex.len();
-    assert_eq!(
-        hex_len, 66,
-        "[m22s9/tombstone-hex-length] the rendered tombstone identity is {hex_len} characters; a \
-         32-byte identity renders as `0x` plus 64 hex digits."
-    );
-    let hex_const = concat!("TOMBSTONE_IDENTITY", "_HEX_E2E");
-    let eval_hex = match m22s9_sole_js_const_str(M22S9_ACCOUNT_E2E_MJS, hex_const) {
-        Ok(value) => value,
-        Err(why) => panic!("{why}"),
-    };
-    assert_eq!(
-        eval_hex, expected_hex,
-        "[m22s9/tombstone-hex-drift] the e2e's `{hex_const}` is not the lowercase hex rendering of \
-         game_core::TOMBSTONE_IDENTITY_BYTES. The truth pass compares an anonymized battle's \
-         subject side against this literal as SQL returns it — 64 hand-typed characters in the \
-         wrong case, or with one digit wrong, is an assertion that can never pass and would be \
-         read as a broken cascade."
-    );
-}
-
-// === rb-39 — G5 write attribution: rooted receiver chain or loud refusal (ADR-0234) ===
-//
-// TDD RED PHASE. These thirteen tests were authored BEFORE the fix and are never
-// edited to fit it: the helper rewrite (`WriteAttrFault`, the backward
-// receiver-chain walk, `g5_write_isolation_violation`, `g5_alias_violation`) is a
-// DIFFERENT agent's work and no placeholder for it lives in this region. AS
-// DELIVERED the region was compile-RED — at that point the enum and the two
-// predicates did not exist and `write_target_accessors` returned `Vec<String>`.
-//
-// Compile-fail is NOT the evidence. The BEHAVIOURAL red was MEASURED before any
-// edit and is recorded verbatim in memory/projects/gates/rb-39.red-before.md (a
-// rustc --edition 2021 -O probe = byte-copy of the strip pipeline plus the
-// pre-rb-39 helper, fed six fixtures and the real accounts.rs):
-//   F1 alias-after-read (aliased handle, FOREIGN delete)  -> ["account"]  MISATTRIBUTED
-//   F2 anchorless write (no handle prefix anywhere)       -> []           DROPPED
-//   F3 cross-statement bound column handle                -> ["account"]  MISATTRIBUTED
-//   F4 same-statement foreign write (no `;` between)      -> ["account"]  MISATTRIBUTED
-//   F5 UFCS write spelling                                -> []           DROPPED
-//   F6 legitimate match-arm owned write                   -> ["account"]  correct, must STAY
-//   accounts.rs census -> 13 accessors, zero unattributable (the no-false-RED baseline)
-// Tests 1-5 pin F1-F5 (each is a misattribution or a silent drop TODAY). Tests
-// 6-8 pin three shapes no red-before fixture exercises, each measured against
-// the walk after the fact: a supported write verb missing from the needle list,
-// a receiver chain laundered through a combinator, and the word-boundary half of
-// the anchor that a red-team cheat drops. Test 9 is the no-false-RED control
-// (green before AND after); tests 10-13 pin the two new Result-returning
-// predicates. The second half of the evidence is the post-green mutation
-// bite-proof: restore the rfind body and tests 1-8 fail.
-//
-// SCAN HYGIENE (module banner): every write verb, foreign accessor, `ctx.db.`
-// prefix and reducer-context parameter spelling below is assembled from split
-// fragments via `concat!` / `[..].concat()`, exactly as
-// `machinery_g5_accessor_teeth` does — this file must never carry a contiguous
-// scanner needle, because cross-file evals concatenate every `src` file and
-// do NOT strip string literals.
-
-/// rb-39 fixture vocabulary: the reducer-context parameter spelling.
-fn rb39_ctx_param() -> &'static str {
-    concat!("ctx:&Reducer", "Context")
-}
-
-/// rb-39 fixture vocabulary: the rooted database-handle prefix.
-fn rb39_db_root() -> &'static str {
-    concat!("ctx", ".db.")
-}
-
-/// rb-39 fixture vocabulary: the three write verbs, split.
-fn rb39_insert_verb() -> &'static str {
-    concat!(".ins", "ert(")
-}
-
-fn rb39_update_verb() -> &'static str {
-    concat!(".upd", "ate(")
-}
-
-fn rb39_delete_verb() -> &'static str {
-    concat!(".del", "ete(")
-}
-
-/// The UFCS spelling of a write verb (`<Type>::<verb>(receiver, key)`).
-fn rb39_ufcs_delete_verb() -> &'static str {
-    concat!("::del", "ete(")
-}
-
-/// A table this module does NOT own — the G5 counter-example accessor.
-fn rb39_foreign_table() -> &'static str {
-    concat!("mon", "ster")
-}
-
-/// `<foreign>().<foreign>_id()<delete verb>` — the two-hop foreign write chain,
-/// assembled at runtime so the contiguous chain never appears in this source.
-fn rb39_foreign_write_chain() -> String {
-    [
-        rb39_foreign_table(),
-        "().",
-        rb39_foreign_table(),
-        "_id()",
-        rb39_delete_verb(),
-    ]
-    .concat()
-}
-
-/// Wrap a fixture body in the `fn f(<ctx param>){ .. }` shell.
-fn rb39_fn(body: &str) -> String {
-    ["fn f(", rb39_ctx_param(), "){", body, "}"].concat()
-}
-
-/// One legitimate owned write statement (chained, with a nested call argument) —
-/// the accounts.rs:570-573 shape.
-fn rb39_owned_account_write() -> String {
-    [
-        rb39_db_root(),
-        "account().identity()",
-        rb39_update_verb(),
-        "touch_login(existing, now));",
-    ]
-    .concat()
-}
-
-/// The MEASURED F1 shape: an owned READ, then a db handle bound by reference
-/// performing a FOREIGN delete off the alias. `owned_write` is prepended when the
-/// fixture must also satisfy a non-vacuity clause.
-fn rb39_alias_fixture(owned_write: &str) -> String {
-    let foreign = rb39_foreign_write_chain();
-    rb39_fn(
-        &[
-            owned_write,
-            rb39_db_root(),
-            "account().identity().find(me);",
-            "let db = &",
-            "ctx",
-            ".db;db.",
-            foreign.as_str(),
-            "m);",
-        ]
-        .concat(),
-    )
-}
-
-/// The MEASURED F5 shape: a write spelled through UFCS, whose receiver is passed
-/// as an ARGUMENT rather than chained. `owned_write` as above.
-fn rb39_ufcs_fixture(owned_write: &str) -> String {
-    rb39_fn(
-        &[
-            owned_write,
-            "UniqueColumn",
-            rb39_ufcs_delete_verb(),
-            "&",
-            rb39_db_root(),
-            rb39_foreign_table(),
-            "().",
-            rb39_foreign_table(),
-            "_id(), k);",
-        ]
-        .concat(),
-    )
-}
-
-/// Run the alias predicate over a fixture that MUST be rejected, returning the
-/// rejection reason. Panics (naming the row) when the fixture is ACCEPTED, so a
-/// hollowed predicate that always returns `Ok(())` cannot pass this test by
-/// leaving the reason unexamined.
-fn rb39_alias_reason(label: &str, fixture: &str) -> String {
-    match g5_alias_violation(&stripped_for_scan(fixture)) {
-        Ok(()) => panic!(
-            "rb-39 [alias/teeth]: the `{label}` fixture was ACCEPTED by g5_alias_violation. \
-             Every alias ban in this module is spelled against the literal `ctx` handle name, \
-             so a shape that binds or renames the handle reopens write attribution by \
-             renaming rather than by aliasing. Fixture: {fixture:?}"
-        ),
-        Err(reason) => reason,
-    }
-}
-
-/// rb-39 (1/13): an aliased db handle's FOREIGN write is REFUSED — never credited
-/// to the owned accessor that a previous statement merely READ.
-///
-/// This is the rb-22 red-team's measured bypass: `let db = &ctx.db;` after an
-/// owned read, then a foreign delete off `db`. The pre-rb-39 helper `rfind`s the
-/// nearest EARLIER handle prefix and reports `["account"]`
-/// (rb-39.red-before.md F1) — a foreign-table delete reading as an owned write,
-/// which is exactly the module-write-isolation hole G5 exists to close.
-///
-/// Kills: the shipped rfind-anchored body (it returns the OWNED accessor here);
-///        any walk that "falls back" to the nearest earlier handle prefix when
-///        the receiver chain is unrooted;
-///        a fix that DROPS the unattributable write instead of reporting it —
-///        the slice pattern pins the length at exactly one.
-#[test]
-fn rb39_alias_write_is_not_misattributed() {
-    let fixture = rb39_alias_fixture("");
-    let targets = write_target_accessors(&stripped_for_scan(&fixture));
-    assert!(
-        matches!(targets.as_slice(), [Err(WriteAttrFault::UnrootedChain)]),
-        "rb-39 [W/attribution]: a write whose receiver is an ALIASED handle must be exactly one \
-         Err(UnrootedChain) — not the accessor the previous statement read, and not an empty \
-         census. Refusing to classify is the safe direction: an unattributed write is an \
-         UNGATED write. Got {targets:?}"
-    );
-}
-
-/// rb-39 (2/13): a write with NO database-handle anchor anywhere in the source is
-/// reported, not dropped on the floor.
-///
-/// The shipped body has no else-branch for "no anchor found", so
-/// `ids.<verb>(0, x);` extracts to `[]` (rb-39.red-before.md F2) and the whole
-/// census says "clean" about a write it never saw.
-///
-/// HONEST LIMIT, stated once (plan §1a): a `Vec`/`HashMap` write in accounts.rs
-/// would therefore be a LOUD false-RED whose fix is `.push(` — the m22-s4
-/// convention — never a weakening of the rule.
-///
-/// Kills: the missing else-branch (today: an empty vector);
-///        a "skip verbs whose receiver is a bare identifier" shortcut, which is
-///        the same silent drop wearing a rule;
-///        a fix that reports the fault but ALSO keeps dropping (length is pinned).
-#[test]
-fn rb39_anchorless_write_is_not_dropped() {
-    let fixture = ["fn f(){ids", rb39_insert_verb(), "0, x);}"].concat();
-    let targets = write_target_accessors(&stripped_for_scan(&fixture));
-    assert!(
-        matches!(targets.as_slice(), [Err(WriteAttrFault::UnrootedChain)]),
-        "rb-39 [W/attribution]: a write verb with no rooted receiver chain must surface as \
-         exactly one Err(UnrootedChain). A dropped write is worse than a misattributed one: it \
-         is absent from the census entirely, so every downstream clause passes over a set that \
-         does not contain it. Got {targets:?}"
-    );
-}
-
-/// rb-39 (3/13): a write off a bound COLUMN handle from an earlier statement is
-/// refused, not credited to that statement's accessor.
-///
-/// `let col = ctx.db.account().identity(); col.<verb>(x);` — the shipped body
-/// reports `["account"]` (rb-39.red-before.md F3). The binding is one statement
-/// away from the write, so the accessor named in the source is not the accessor
-/// the verb actually runs against.
-///
-/// Kills: the rfind anchor (returns `account`);
-///        a same-statement rule implemented as "no `;` between the anchor and the
-///        verb" that is later relaxed;
-///        any walk that accepts a BARE IDENTIFIER receiver (the byte before the
-///        verb's `.` here is `l`, not `)`).
-#[test]
-fn rb39_cross_statement_handle_write_is_not_misattributed() {
-    let fixture = rb39_fn(
-        &[
-            "let col = ",
-            rb39_db_root(),
-            "account().identity();col",
-            rb39_delete_verb(),
-            "x);",
-        ]
-        .concat(),
-    );
-    let targets = write_target_accessors(&stripped_for_scan(&fixture));
-    assert!(
-        matches!(targets.as_slice(), [Err(WriteAttrFault::UnrootedChain)]),
-        "rb-39 [W/attribution]: a write performed on a column handle BOUND in an earlier \
-         statement must be exactly one Err(UnrootedChain). The accessor spelled at the binding \
-         is not evidence about the verb: the handle can be rebound, shadowed or replaced between \
-         the two statements. Got {targets:?}"
-    );
-}
-
-/// rb-39 (4/13): a FOREIGN write that shares a statement with an owned read is
-/// refused — the shape that discriminates the receiver-chain walk from every
-/// `;`-poison port of it.
-///
-/// `if ctx.db.account().identity().find(x).is_some() { db.<foreign>...<delete>(y); }`
-/// has NO `;` between the owned read and the foreign write, so the rb22p
-/// statement-boundary rule is GREEN on it while the shipped body reports
-/// `["account"]` (rb-39.red-before.md F4). Only a verdict computed from the
-/// verb's OWN receiver is order-independent.
-///
-/// Kills: porting rb22p's `;`-poison rule into this file (it accepts this
-///        fixture);
-///        the shipped rfind anchor (returns `account`);
-///        a walk that gives up at a `{` or `}` and falls back to the nearest
-///        earlier prefix.
-#[test]
-fn rb39_same_statement_foreign_write_is_not_misattributed() {
-    let foreign = rb39_foreign_write_chain();
-    let fixture = rb39_fn(
-        &[
-            "if ",
-            rb39_db_root(),
-            "account().identity().find(x).is_some(){db.",
-            foreign.as_str(),
-            "y);}",
-        ]
-        .concat(),
-    );
-    let targets = write_target_accessors(&stripped_for_scan(&fixture));
-    assert!(
-        matches!(targets.as_slice(), [Err(WriteAttrFault::UnrootedChain)]),
-        "rb-39 [W/attribution]: a foreign write sharing a STATEMENT with an owned read must be \
-         exactly one Err(UnrootedChain). This fixture carries no `;` between the read and the \
-         write, so a statement-boundary heuristic is green on it — the verdict must depend only \
-         on the verb's own receiver chain. Got {targets:?}"
-    );
-}
-
-/// rb-39 (5/13): the UFCS spelling of a write verb is unattributable BY
-/// CONSTRUCTION, and loudly so.
-///
-/// `UniqueColumn::<delete>(&ctx.db.<foreign>().<foreign>_id(), k);` passes the
-/// receiver as an ARGUMENT, so there is no receiver chain to walk. The shipped
-/// scan only looks for the `.`-spelled verbs and reports `[]`
-/// (rb-39.red-before.md F5): today a foreign delete written this way is invisible
-/// to G5.
-///
-/// Kills: dropping the UFCS verbs from the needle list (today: an empty census);
-///        a "fix" that reads the handle out of the ARGUMENT list and credits the
-///        write to it — that would report Ok(<foreign>) here, which the exact
-///        Err(UfcsSpelling) pin rejects just as hard as an empty vector;
-///        collapsing the three fault variants into one (the variant is pinned).
-#[test]
-fn rb39_ufcs_write_is_unattributable() {
-    let fixture = rb39_ufcs_fixture("");
-    let targets = write_target_accessors(&stripped_for_scan(&fixture));
-    assert!(
-        matches!(targets.as_slice(), [Err(WriteAttrFault::UfcsSpelling)]),
-        "rb-39 [W/attribution]: a UFCS-spelled write must surface as exactly one \
-         Err(UfcsSpelling). The receiver is an argument, so no chain roots it; classifying it \
-         from the argument text would credit a foreign write to the very accessor it deletes \
-         rows from. Got {targets:?}"
-    );
-}
-
-/// rb-39 (6/13): the FALLIBLE insert is a write verb — the census counts it, and
-/// the predicate refuses a foreign table written through it.
-///
-/// spacetimedb 2.8.1's `Table::try_insert` is the fallible sibling of the plain
-/// insert (which is literally `try_insert(..).unwrap_or_else(..)`), so it is a
-/// stable, supported way to put a row in a table. Its spelling contains no
-/// `.ins`+`ert(` substring, so a needle list built from the three short verbs
-/// produces NO census entry for it at all: today a foreign write spelled this way
-/// is the silent-drop class (F2/F5) under a third spelling, and the predicate
-/// reports clean over a table this module does not own.
-///
-/// Row 2 is the UFCS spelling of the same verb — unattributable by construction,
-/// exactly as `::del`+`ete(` is.
-///
-/// Kills: a verb needle list that stops at the three short spellings (today row 1
-///        extracts only the owned write and the predicate says clean);
-///        adding the method spelling but not the UFCS one (row 2);
-///        a scan that double-counts the fallible spelling by also matching the
-///        short verb inside it — the census is pinned exactly, in source order.
-#[test]
-fn rb39_try_insert_is_a_write_verb() {
-    let owned = rb39_owned_account_write();
-    let foreign = rb39_foreign_table();
-
-    // Row 1 — the method spelling, after a legitimate owned write.
-    let fixture = rb39_fn(
-        &[
-            owned.as_str(),
-            rb39_db_root(),
-            foreign,
-            "()",
-            concat!(".try_ins", "ert("),
-            "row);",
-        ]
-        .concat(),
-    );
-    let squashed = stripped_for_scan(&fixture);
-    let targets = write_target_accessors(&squashed);
-    assert_eq!(
-        targets,
-        vec![Ok("account".to_string()), Ok(foreign.to_string())],
-        "rb-39 [W/attribution]: the fallible insert must be counted as a write verb, in source \
-         order, alongside the owned write. A verb the census cannot see is a verb the gate \
-         cannot gate — and this one puts a row in exactly the same table as the spelling it \
-         wraps."
-    );
-    let reason = g5_write_isolation_violation(&squashed).expect_err(
-        "rb-39 [W/target]: a foreign table written through the fallible insert must be REFUSED. \
-         The infallible spelling is a thin wrapper over it, so accepting one and refusing the \
-         other gates nothing.",
-    );
-    assert!(
-        reason.contains("[W/target]") && reason.contains(foreign),
-        "rb-39 [W/target]: the refusal must carry the target tag AND name the foreign accessor. \
-         Got {reason:?}"
-    );
-
-    // Row 2 — the UFCS spelling of the same verb: the receiver is an argument.
-    let ufcs = rb39_fn(
-        &[
-            "Table",
-            concat!("::try_ins", "ert("),
-            "&",
-            rb39_db_root(),
-            foreign,
-            "(), row);",
-        ]
-        .concat(),
-    );
-    let targets = write_target_accessors(&stripped_for_scan(&ufcs));
-    assert!(
-        matches!(targets.as_slice(), [Err(WriteAttrFault::UfcsSpelling)]),
-        "rb-39 [W/attribution]: the UFCS spelling of the fallible insert must surface as exactly \
-         one Err(UfcsSpelling) — nothing roots a receiver that arrives as an argument. \
-         Got {targets:?}"
-    );
-}
-
-/// rb-39 (7/13): a receiver chain LAUNDERED through a combinator is
-/// unattributable — every segment between the root and the verb must be a
-/// ZERO-ARGUMENT call.
-///
-/// Measured against the walk: it credits the write to the first rooted segment it
-/// reaches without asking whether the intervening segments PRESERVE that handle.
-/// So `ctx.db.account().identity().find(x).map(|_| ctx.db.<foreign>()).unwrap()`
-/// followed by a write verb reads as an owned `account` write while the row is
-/// deleted from the foreign table — the misattribution class (F1/F3/F4) rebuilt
-/// out of ordinary chain syntax, with no alias binding and no renamed parameter
-/// for `g5_alias_violation` to catch.
-///
-/// The rule that closes it: a segment carrying ARGUMENTS can return anything, so
-/// it breaks the chain of custody. Every one of accounts.rs' 13 writes is
-/// `accessor()` then optionally `column()` then the verb — all zero-argument
-/// hops — so row 2 pins the accepting side and the rule costs the live code
-/// nothing.
-///
-/// Kills: the first-rooted-segment walk with no zero-argument check (today:
-///        `[Ok("account")]` for a foreign write);
-///        a walk that only inspects the segment ADJACENT to the verb (the
-///        laundering segment here is two hops back);
-///        "fixing" it by rejecting every multi-hop chain, which would red the
-///        shipped schedule delete (row 2).
-#[test]
-fn rb39_combinator_laundered_chain_is_unattributable() {
-    // Row 1 — the handle laundered through a closure inside a combinator.
-    let laundered = rb39_fn(
-        &[
-            rb39_db_root(),
-            "account().identity().find(x).map(|_| ",
-            rb39_db_root(),
-            rb39_foreign_table(),
-            "()).unwrap()",
-            rb39_delete_verb(),
-            "row);",
-        ]
-        .concat(),
-    );
-    let targets = write_target_accessors(&stripped_for_scan(&laundered));
-    assert!(
-        matches!(targets.as_slice(), [Err(WriteAttrFault::UnrootedChain)]),
-        "rb-39 [W/attribution]: a chain whose intervening segment TAKES ARGUMENTS must be \
-         exactly one Err(UnrootedChain). Such a segment can return any handle at all, so the \
-         rooted accessor spelled to its left is not evidence about the table the verb reaches. \
-         Got {targets:?}"
-    );
-
-    // Row 2 — the accepting side: the shipped zero-argument two-hop chain.
-    let zero_arg = rb39_fn(
-        &[
-            "for id in ids {",
-            rb39_db_root(),
-            "guest_claim_reaper",
-            "_schedule().scheduled_id()",
-            rb39_delete_verb(),
-            "id); }",
-        ]
-        .concat(),
-    );
-    let targets = write_target_accessors(&stripped_for_scan(&zero_arg));
-    assert_eq!(
-        targets,
-        vec![Ok(concat!("guest_claim_reaper", "_schedule").to_string())],
-        "rb-39 [W/no-false-RED]: the shipped two-hop chain is all zero-argument hops and must \
-         stay attributed to the schedule accessor. The zero-argument rule must reject \
-         LAUNDERING, not multi-hop chains — every write in accounts.rs is one."
-    );
-}
-
-/// rb-39 (8/13): a write chained off a DECOY-PREFIXED handle is unattributable —
-/// the walk's anchor is a word-bounded `ctx` handle, not merely the seven bytes
-/// that precede the accessor.
-///
-/// MEASURED red-team cheat (this test exists because of it): an implementation
-/// that keeps the seven-byte prefix comparison but DROPS the "byte before it is
-/// not a word byte" half reports the foreign accessor as an attributed write
-/// here, and every other test in this region stays green — to that walk, the
-/// fixture's chain looks rooted. `g5_alias_violation`'s ctx-name clause would
-/// reject the renamed parameter in the FULL gate, but that is a different
-/// function checking a different clause: the walk's own boundary defence must be
-/// pinned STANDALONE, or any caller reached without the alias predicate inherits
-/// the hole.
-///
-/// Kills: the boundary-less seven-byte anchor (it credits the foreign write to
-///        the accessor named in the decoy chain);
-///        the same cheat spelled as an `ends_with` over the span before the
-///        accessor.
-#[test]
-fn rb39_decoy_prefixed_handle_write_is_unattributable() {
-    let foreign = rb39_foreign_write_chain();
-    let fixture = [
-        "fn f(my_",
-        rb39_ctx_param(),
-        "){my_",
-        rb39_db_root(),
-        foreign.as_str(),
-        "x);}",
-    ]
-    .concat();
-    let targets = write_target_accessors(&stripped_for_scan(&fixture));
-    assert!(
-        matches!(targets.as_slice(), [Err(WriteAttrFault::UnrootedChain)]),
-        "rb-39 [W/attribution]: a write chained off a handle whose name merely ENDS in the \
-         context spelling must be exactly one Err(UnrootedChain). `my_ctx` is a DIFFERENT \
-         binding — crediting its foreign write to the accessor spelled in that chain reports an \
-         attributed, owned-looking write this module never made. Got {targets:?}"
-    );
-}
-
-/// rb-39 (9/13): the NO-FALSE-RED control — the four legitimate write shapes that
-/// accounts.rs actually ships stay attributed to their own accessor.
-///
-/// Green before AND after the fix by design: this is the test that stops the
-/// hardening from being paid for with a rule so strict that the sanctioned code
-/// reds. The four rows are the shipped shapes (accounts.rs :570-573 chained
-/// update with a nested call argument; the :563 match-arm form, whose statement
-/// ends in `,` not `;`; :612 single-hop insert; :485-488 two-hop delete inside a
-/// `for` loop).
-///
-/// Kills: a walk that requires the write verb to terminate a `;` statement (the
-///        match-arm row ends in `,`);
-///        a walk confused by the nested call argument in the update row;
-///        a walk hardcoded to a two-hop chain (the `guest_claim` insert is one
-///        hop) or to a one-hop chain (the schedule delete is two);
-///        an over-strict "must be the first statement in the body" rule (the
-///        `for`-loop row is nested).
-#[test]
-fn rb39_owned_inline_write_is_still_attributed() {
-    // Row 1 — chained update with a nested call argument.
-    let nested_arg = rb39_fn(rb39_owned_account_write().as_str());
-    let targets = write_target_accessors(&stripped_for_scan(&nested_arg));
-    assert_eq!(
-        targets,
-        vec![Ok("account".to_string())],
-        "rb-39 [W/no-false-RED]: the shipped chained update with a nested call argument must \
-         stay attributed to `account`."
-    );
-
-    // Row 2 — the match-arm form: the statement ends in `,`, not `;`.
-    let match_arm = rb39_fn(
-        &[
-            "match x { Some(e) => ",
-            rb39_db_root(),
-            "account().identity()",
-            rb39_update_verb(),
-            "touch_login(e, now)), None => {} }",
-        ]
-        .concat(),
-    );
-    let targets = write_target_accessors(&stripped_for_scan(&match_arm));
-    assert_eq!(
-        targets,
-        vec![Ok("account".to_string())],
-        "rb-39 [W/no-false-RED]: the shipped match-arm write (no trailing `;`) must stay \
-         attributed to `account` — a rule keyed on statement punctuation reds on the live code."
-    );
-
-    // Row 3 — the single-hop insert (no column segment between the accessor and
-    // the verb).
-    let single_hop = rb39_fn(
-        &[
-            rb39_db_root(),
-            "guest",
-            "_claim()",
-            rb39_insert_verb(),
-            "row);",
-        ]
-        .concat(),
-    );
-    let targets = write_target_accessors(&stripped_for_scan(&single_hop));
-    assert_eq!(
-        targets,
-        vec![Ok(concat!("guest", "_claim").to_string())],
-        "rb-39 [W/no-false-RED]: the shipped single-hop insert must stay attributed to the \
-         guest-claim accessor."
-    );
-
-    // Row 4 — the two-hop delete inside a `for` loop.
-    let in_loop = rb39_fn(
-        &[
-            "for id in ids {",
-            rb39_db_root(),
-            "guest_claim_reaper",
-            "_schedule().scheduled_id()",
-            rb39_delete_verb(),
-            "id); }",
-        ]
-        .concat(),
-    );
-    let targets = write_target_accessors(&stripped_for_scan(&in_loop));
-    assert_eq!(
-        targets,
-        vec![Ok(concat!("guest_claim_reaper", "_schedule").to_string())],
-        "rb-39 [W/no-false-RED]: the shipped for-loop schedule delete must stay attributed to \
-         the schedule accessor."
-    );
-}
-
-/// rb-39 (10/13): the G5 predicate FAILS LOUD on an unattributable write — it does
-/// not skip it, and it does not credit it elsewhere.
-///
-/// Both rows carry a legitimate owned write ALONGSIDE the offending one, so the
-/// non-vacuity clause is satisfied and only the attribution clause can fire: an
-/// Err tagged `[W/non-vacuity]` here would mean the predicate never inspected the
-/// second write at all.
-///
-/// Kills: a predicate that filters unattributable entries out before the
-///        allowlist check (the classic "unknown means fine" shape);
-///        a predicate hollowed to `Ok(())`;
-///        a predicate that reports the fault under the `[W/target]` tag, which
-///        would tell the reader a KNOWN foreign table was written when in truth
-///        nothing is known about the target at all.
-#[test]
-fn rb39_g5_predicate_fails_loud_on_unattributable() {
-    let owned = rb39_owned_account_write();
-
-    // Row 1 — the aliased-handle foreign delete.
-    let alias = rb39_alias_fixture(owned.as_str());
-    let reason = g5_write_isolation_violation(&stripped_for_scan(&alias)).expect_err(
-        "rb-39 [W/attribution]: a source containing an aliased-handle write must be REFUSED by \
-         g5_write_isolation_violation, even though it also contains a legitimate owned write.",
-    );
-    assert!(
-        reason.contains("[W/attribution]"),
-        "rb-39 [W/attribution]: the refusal must be reported under the attribution tag so the \
-         reader knows the target is UNKNOWN rather than known-and-forbidden. Got {reason:?}"
-    );
-
-    // Row 2 — the UFCS spelling.
-    let ufcs = rb39_ufcs_fixture(owned.as_str());
-    let reason = g5_write_isolation_violation(&stripped_for_scan(&ufcs)).expect_err(
-        "rb-39 [W/attribution]: a source containing a UFCS-spelled write must be REFUSED by \
-         g5_write_isolation_violation — it is a write this module cannot attribute.",
-    );
-    assert!(
-        reason.contains("[W/attribution]"),
-        "rb-39 [W/attribution]: the UFCS refusal must carry the attribution tag. Got {reason:?}"
-    );
-}
-
-/// rb-39 (11/13): the G5 predicate is NON-VACUOUS, accepts the owned shapes, and
-/// names the foreign table it rejects.
-///
-/// Three rows: an EMPTY source must fail loud (with zero writes every other
-/// clause passes over an empty set and the gate says "clean" about nothing); the
-/// three shipped owned write shapes together must be accepted; and a properly
-/// ROOTED write against a foreign accessor must be rejected under `[W/target]`,
-/// naming the accessor — it is accompanied by an owned write so non-vacuity
-/// cannot be what fires.
-///
-/// Kills: an always-red predicate (row 2 is the good fixture that proves the
-///        predicate can say yes);
-///        a predicate whose non-vacuity clause was dropped, so pointing the scan
-///        at the wrong file or a stripper that blanks the declarations reads as
-///        a pass (row 1);
-///        a predicate that drops the allowlist membership check (row 3);
-///        a rejection message that does not say WHICH table (row 3 pins the name).
-#[test]
-fn rb39_g5_predicate_is_non_vacuous_and_accepts_owned_shapes() {
-    // Row 1 — the empty source.
-    let reason = g5_write_isolation_violation("").expect_err(
-        "rb-39 [W/non-vacuity]: an EMPTY source must FAIL LOUD. With zero writes extracted every \
-         clause below passes over an empty set, so a scan that reached the wrong file, or a \
-         stripper that blanked the source, would read as `clean`.",
-    );
-    assert!(
-        reason.contains("[W/non-vacuity]"),
-        "rb-39 [W/non-vacuity]: the empty source must be reported as a non-vacuity failure, not \
-         as an attribution or target failure. Got {reason:?}"
-    );
-
-    // Row 2 — the three shipped owned write shapes, together.
-    let account_write = rb39_owned_account_write();
-    let owned = rb39_fn(
-        &[
-            account_write.as_str(),
-            rb39_db_root(),
-            "guest",
-            "_claim()",
-            rb39_insert_verb(),
-            "row);",
-            "for id in ids {",
-            rb39_db_root(),
-            "guest_claim_reaper",
-            "_schedule().scheduled_id()",
-            rb39_delete_verb(),
-            "id); }",
-        ]
-        .concat(),
-    );
-    let verdict = g5_write_isolation_violation(&stripped_for_scan(&owned));
-    assert!(
-        verdict.is_ok(),
-        "rb-39 [W/no-false-RED]: the three write shapes accounts.rs actually ships must be \
-         ACCEPTED. A predicate that reds here is not a hardened gate, it is a broken one — the \
-         response to a red on live code is to fix the chain spelling, never to weaken the rule, \
-         so this row must never be silenced. Got {verdict:?}"
-    );
-
-    // Row 3 — a rooted write against a table this module does not own.
-    let foreign = rb39_foreign_table();
-    let forbidden = rb39_fn(
-        &[
-            account_write.as_str(),
-            rb39_db_root(),
-            foreign,
-            "()",
-            ".",
-            foreign,
-            "_id()",
-            rb39_update_verb(),
-            "m);",
-        ]
-        .concat(),
-    );
-    let reason = g5_write_isolation_violation(&stripped_for_scan(&forbidden)).expect_err(
-        "rb-39 [W/target]: a rooted write against a table outside the owned allowlist must be \
-         REFUSED — that is the original D0 module-write-isolation clause, and the hardening must \
-         not lose it.",
-    );
-    assert!(
-        reason.contains("[W/target]") && reason.contains(foreign),
-        "rb-39 [W/target]: the refusal must carry the target tag AND name the forbidden \
-         accessor, so the reader can tell an unowned-table write from an unattributable one. \
-         Got {reason:?}"
-    );
-}
-
-/// rb-39 (12/13): accounts.rs itself binds NO alias of the database handle and
-/// names every reducer context `ctx`.
-///
-/// This is the clause that keeps the receiver-chain walk meaningful on the real
-/// file: the walk's anchor is the literal `ctx` handle prefix, so a handle bound
-/// to another name, or a context taken under another name, would make every write
-/// in the file unattributable — loudly, but only after the fact. The census is
-/// clean today (13 inline chains, rb-39.red-before.md), so this test is green on
-/// arrival and reds the moment an alias is introduced.
-///
-/// Kills: a by-reference or by-value database-handle binding added to
-///        accounts.rs;
-///        a reducer context renamed away from `ctx`;
-///        a local rebinding of the context itself (`let c = ctx;`).
-#[test]
-fn rb39_no_db_or_ctx_alias_in_accounts() {
-    let verdict = g5_alias_violation(&stripped_for_scan(ACCOUNTS_RS));
-    assert!(
-        verdict.is_ok(),
-        "rb-39 [alias]: accounts.rs must bind no alias of the database handle and must take \
-         every reducer context under the name `ctx`. Every write in the file is attributed by \
-         walking back to the literal `ctx` handle, so an alias does not merely rename a \
-         variable: it detaches the write from the only evidence about which table it touches. \
-         Got {verdict:?}"
-    );
-}
-
-/// rb-39 (13/13): the alias predicate BITES on each banned shape and accepts the
-/// clean one — seven rows.
-///
-/// Row 7 is the no-false-RED control and it is not decorative: `my_ctx.db;` is a
-/// DIFFERENT variable whose text ends in the handle spelling followed by `;`.
-/// Without the "previous byte is not a word byte" boundary test, that occurrence
-/// reds — so this row is what proves the boundary test is present and correct.
-///
-/// Kills: dropping the db-binding clause (rows 1-2);
-///        accepting `_ctx` as a context name (row 3) — the JS twin does, and the
-///        Rust walk cannot, because its anchor is the literal `ctx` handle, so a
-///        `_ctx`-rooted write would be a silent false-RED on real code;
-///        dropping the CTX_ALIAS_FORMS clause (row 4);
-///        dropping the non-vacuity guard, which makes the naming clause iterate
-///        an empty set on any file with no reducer context (row 5);
-///        a db-binding clause written as the two rb22p LITERAL forms (the handle
-///        preceded by `=&` or `=` and terminated by `;`) instead of "every
-///        occurrence not immediately followed by a dot" — the row 6 escape is
-///        COMMA-terminated, so the literal pair is green while the handle is
-///        loose (row 6);
-///        implementing the db-binding clause as a raw substring scan with no word
-///        boundary (row 7).
-#[test]
-fn rb39_machinery_alias_predicate_teeth() {
-    // Row 1 — the handle bound BY REFERENCE.
-    let by_ref = rb39_fn(&["let db = &", "ctx", ".db;"].concat());
-    let reason = rb39_alias_reason("db-ref", &by_ref);
-    assert!(
-        reason.contains("[alias/db-binding]"),
-        "rb-39 [alias/db-binding]: a by-reference handle binding must be reported under the \
-         db-binding tag. Got {reason:?}"
-    );
-
-    // Row 2 — the handle bound BY VALUE.
-    let by_move = rb39_fn(&["let db = ", "ctx", ".db;"].concat());
-    let reason = rb39_alias_reason("db-move", &by_move);
-    assert!(
-        reason.contains("[alias/db-binding]"),
-        "rb-39 [alias/db-binding]: a by-value handle binding must be reported under the \
-         db-binding tag — the same attribution defeat applies. Got {reason:?}"
-    );
-
-    // Row 3 — the underscore-prefixed context name (deliberately STRICTER than
-    // the JS twin, which accepts it).
-    let underscored = ["fn g(_", rb39_ctx_param(), "){}"].concat();
-    let reason = rb39_alias_reason("underscored-ctx", &underscored);
-    assert!(
-        reason.contains("[alias/ctx-name]") && reason.contains("_ctx"),
-        "rb-39 [alias/ctx-name]: a reducer context named `_ctx` must be REJECTED and the \
-         message must name it. The walk anchors on the literal `ctx` handle, so every write in \
-         a `_ctx` file would be classified unattributable — a false-RED that reads like a real \
-         defect. Got {reason:?}"
-    );
-
-    // Row 4 — the context itself rebound to a local.
-    let ctx_local = rb39_fn("let c = ctx;");
-    let reason = rb39_alias_reason("ctx-local", &ctx_local);
-    assert!(
-        reason.contains("[alias/ctx-local]"),
-        "rb-39 [alias/ctx-local]: rebinding the context to a local (one of the eval twin's \
-         CTX_ALIAS_FORMS) must be reported under the ctx-local tag. Got {reason:?}"
-    );
-
-    // Row 5 — no reducer context at all: the naming clause would iterate an
-    // empty set and pass vacuously.
-    let no_ctx = "fn f(){let x = 1;}";
-    let reason = rb39_alias_reason("non-vacuity", no_ctx);
-    assert!(
-        reason.contains("[alias/non-vacuity]"),
-        "rb-39 [alias/non-vacuity]: a source declaring no reducer-context parameter must FAIL \
-         LOUD rather than pass every naming clause over an empty set. Got {reason:?}"
-    );
-
-    // Row 6 — the handle ESCAPING INTO A TUPLE: comma-terminated, so neither
-    // rb22p literal form sees it.
-    let tuple_escape = rb39_fn(&["let p = (&", "ctx", ".db, 1);"].concat());
-    let reason = rb39_alias_reason("db-tuple", &tuple_escape);
-    assert!(
-        reason.contains("[alias/db-binding]"),
-        "rb-39 [alias/db-binding]: a database handle escaping into a TUPLE must be reported \
-         under the db-binding tag. The clause is `every occurrence not immediately followed by a \
-         dot`, not a pair of semicolon-terminated literals: this escape ends in a comma, so a \
-         literal-pair implementation reports clean while the handle is loose and every write \
-         made through it is attributable to nothing. Got {reason:?}"
-    );
-
-    // Row 7 — the CLEAN fixture, including the word-boundary control.
-    let clean = rb39_fn(
-        &[
-            "let h = my_",
-            "ctx",
-            ".db;my_",
-            rb39_db_root(),
-            "account().identity().find(x);",
-            rb39_db_root(),
-            "account().identity().find(y);",
-        ]
-        .concat(),
-    );
-    let verdict = g5_alias_violation(&stripped_for_scan(&clean));
-    assert!(
-        verdict.is_ok(),
-        "rb-39 [alias/no-false-RED]: a differently-named receiver whose text merely ENDS in the \
-         handle spelling is not this module's context handle and must be accepted. Without the \
-         `previous byte is not a word byte` boundary test, the occurrence inside `my_ctx.db;` \
-         reds — and a gate that reds on unrelated code is one that gets weakened. Got {verdict:?}"
-    );
-}
-
-// ===========================================================================
-// rb-40 (ADR-0235) — THE CLAIM-TIME `export_bundle` PURGE IS OBSERVABLE.
-//
-// EARS E1 (spec M-residual-backlog.spec.md#rb-40, promoted residual
-// R-rb-22-EO-9): WHEN a guest pre-claim `export_bundle` chunks are purged at
-// claim time (rb-22 / ADR-0220) THE SYSTEM SHALL be observable doing so.
-//
-// THE SHAPE THIS SECTION GATES (plan design B): `purge_export_bundles` returns
-// the number of chunks it deleted; `complete_guest_claim` BINDS that count and
-// emits EXACTLY ONE line through the blessed emission point
-// (`observability::mr_log`) as the TERMINAL statement before its trailing
-// `Ok(())`, carrying the retired guest hex and the count in a fragment built by
-// a PURE private helper.
-//
-// WHY TERMINAL AND NOT MID-REDUCER (plan revision 1, two independent review
-// lenses): a SpacetimeDB host log line is written as the reducer runs and
-// SURVIVES a later panic or `Err` rollback, while the purge deletes do not — so
-// a line emitted before the last fallible statement can record `purged N` for a
-// transaction that rolled back. The strongest available form of that property in
-// a source scan is `the squashed body ENDS with the emission plus the trailing
-// Ok`, which is what the [emit/terminal] clause asserts.
-//
-// THIS ARM COMPILES ON THE PRE-FIX TREE. Every clause below is a source scan
-// over `ACCOUNTS_RS` / `M22_PRIVACY_RS` (both already `include_str!`-ed above);
-// nothing here CALLS a function this slice has yet to add, because a call to a
-// missing fn is a BUILD error, which would take all 785 tests with it and make
-// the proof-of-teeth RED indistinguishable from a broken build (the rb-22 EO-6
-// precedent). The two behavioural tests that call `purge_fields` land in
-// the same commit as the fix.
-//
-// SCAN HYGIENE (this file header rule, restated because this section adds the
-// crate first purge-observation evt needle and the first backslash-bearing
-// fragment pin to a file a dozen evals concatenate wholesale, `_tests.rs`
-// included): every needle below is assembled from `concat!` fragments or from
-// the `rb22_dq()` / `rb40_bs()` byte helpers, so this file never carries a
-// contiguous emission call site, evt token, escaped-quote pair, block comment,
-// raw string, or quote inside a char literal.
-// ===========================================================================
-
-/// A literal backslash, built from its byte (0x5C) so this section carries no
-/// backslash adjacent to a double quote — that pair unbalances a naive
-/// quote-pairing string stripper in every eval that concatenates this file, and
-/// this file has never carried one.
-fn rb40_bs() -> char {
-    char::from(92u8)
-}
-
 /// The event name, split mid-token so this file never carries the contiguous
 /// evt literal a future evt census (or a Loki label audit) would count.
 fn rb40_evt() -> String {
     concat!("guest_claim_export", "_purge").to_string()
-}
-
-/// The squashed call form of the ONE blessed emission point (ADR-0180 D6),
-/// fully qualified. The exact-count-of-1 clauses key on this literal spelling,
-/// which is also what kills the alias cheat `use crate::observability::mr_log as
-/// note;` — G7's import ban covers only the external `log` crate, not a
-/// re-export of our own wrapper.
-fn rb40_nd_mr_log() -> String {
-    concat!("crate::observability::", "mr_", "log(").to_string()
-}
-
-/// The breadcrumb-carrying sibling of the emission point. Banned outright in
-/// accounts.rs (plan: a `cause` would duplicate the guest field and drag in the
-/// G9f/G9h trace-pair machinery for a single, causeless INFO line).
-fn rb40_nd_mr_log_breadcrumb() -> String {
-    concat!("mr_", "log_breadcrumb(").to_string()
-}
-
-/// The squashed `fn` needle for the pure fragment builder.
-fn rb40_nd_fields_fn() -> String {
-    concat!("fnpurge", "_fields(").to_string()
-}
-
-/// The squashed ARGUMENT the emission hands the fragment builder — both bound
-/// names, in order. Pinning the argument text is what makes a re-argued
-/// `purge_fields(me, purged)` (which would publish the CLAIMER hex for the
-/// GUEST purge) a visible failure rather than a green textual match.
-fn rb40_nd_fields_arg() -> String {
-    concat!("&purge", "_fields(guest,purged)").to_string()
-}
-
-/// The frozen squashed signature slice `extract_squashed_fn_sig` returns for the
-/// fragment builder. The slice starts at the `fn` needle, so the (absent)
-/// visibility keyword is not part of it and is pinned separately.
-fn rb40_frozen_fields_sig() -> String {
-    concat!("fnpurge", "_fields(guest:Identity,chunks:usize)->String").to_string()
-}
-
-/// THE TERMINAL-EMISSION PIN, in the strings-BLANKED squashed view.
-///
-/// `strip_rust_strings` blanks the delimiters too, so the evt literal vanishes
-/// entirely and the call reads `mr_log(,&...)`. That is deliberate and is the
-/// clause red-team finding 5 asks for: a `const EVT` or a `concat!` in the first
-/// argument position leaves identifier bytes where this pin requires the bare
-/// comma, so the indirection REDs here — and an indirected evt is one a grep for
-/// the event name in this module never finds.
-///
-/// The leading `;` pins statement position (an operand of a closure or an
-/// iterator adaptor is brace-depth 0 and satisfies every containment clause
-/// while never running); the trailing `Ok(())` pins that NOTHING runs after the
-/// emission.
-fn rb40_frozen_emit_tail() -> String {
-    let emit = rb40_nd_mr_log();
-    let arg = rb40_nd_fields_arg();
-    let ok = concat!("Ok", "(())");
-    format!(";{emit},{arg});{ok}")
-}
-
-/// The WHOLE emission statement in the strings-KEPT squashed view — the one view
-/// in which the evt literal survives at all.
-///
-/// WIDTH IS LOAD-BEARING (measured, rb-40): rustfmt's default `fn_call_width` is
-/// 60 and this call's argument list is 56 columns. FIVE more characters in the
-/// evt name or the builder name tips it over, rustfmt lays the call out
-/// vertically WITH A TRAILING COMMA, and both this pin and the terminal-tail pin
-/// stop matching a correct implementation. That is why the builder is
-/// `purge_fields` and not `claim_purge_fields`. If the call must grow, re-derive
-/// BOTH literals from the new layout — never relax them to tolerate the comma,
-/// which is rustfmt-controlled and would flip back on the next width change.
-fn rb40_kept_emit_call() -> String {
-    let dq = rb22_dq();
-    let emit = rb40_nd_mr_log();
-    let evt = rb40_evt();
-    let arg = rb40_nd_fields_arg();
-    format!("{emit}{dq}{evt}{dq},{arg});")
-}
-
-/// The fragment builder FORMAT STRING, as SOURCE text (escapes included), which
-/// is exactly what the strings-kept view preserves.
-///
-/// Derived by hand through the live pipeline: `strip_comments_keep_strings`
-/// copies a backslash and the byte after it verbatim, and `squash_ws` finds no
-/// whitespace inside this literal, so the source spelling IS the needle.
-fn rb40_fragment_literal() -> String {
-    let dq = rb22_dq();
-    let bs = rb40_bs();
-    format!("{bs}{dq}guest{bs}{dq}:{bs}{dq}{{guest}}{bs}{dq},{bs}{dq}chunks{bs}{dq}:{{chunks}}")
-}
-
-/// The four bare-`log` macro invocations the OBS-2 ratchet grandfathers
-/// elsewhere and forbids in NEW code. Split mid-token so this file never carries
-/// one contiguously: `observability_tests.rs` G7 walks the tree for exactly
-/// these needles, and although it excludes `_tests.rs` siblings, several evals
-/// that do NOT exclude them concatenate this file.
-fn rb40_bare_log_needles() -> [String; 4] {
-    [
-        concat!("lo", "g", "::info!").to_string(),
-        concat!("lo", "g", "::warn!").to_string(),
-        concat!("lo", "g", "::error!").to_string(),
-        concat!("lo", "g", "::log!").to_string(),
-    ]
-}
-
-/// The log crate's bare PATH token, assembled from its bytes so this file never
-/// carries it contiguously (a dozen evals concatenate this file, `_tests.rs`
-/// siblings included, and several of them scan for exactly this token).
-///
-/// Banned as a WHOLE TOKEN, which is strictly wider than the four macro
-/// spellings above: it also covers the `__private_api` module those macros
-/// expand into, the global-logger accessor, the `Log` trait's own method and the
-/// `Level` enum — plus whatever spelling nobody has thought of yet.
-/// `rb22p_scan_hygiene` (privacy_tests.rs:711) has banned this same token in
-/// privacy.rs since rb-22, which is precisely why privacy.rs was never
-/// vulnerable to the internals shape and accounts.rs was.
-fn rb40_nd_log_path() -> String {
-    concat!("lo", "g", "::").to_string()
-}
-
-/// E1 (emission): `complete_guest_claim` emits EXACTLY ONE observation of the
-/// claim-time purge, and it is the TERMINAL statement of the success path.
-///
-/// NINE clauses, each with its OWN pinned message. Coarse mutants only ever
-/// prove the FIRST assertion — `expect()` throws on first failure — so every
-/// later clause is written to be attributable by FAILURE MESSAGE under a
-/// surgical mutant of its own.
-///
-/// Kills (first killer of each, in clause order):
-///   (1) the emission dropped entirely — the pre-fix state, and the shape every
-///       other clause here is silent about;
-///   (2) the claim-time emission RELOCATED — into the m22-s3b cascade site, or
-///       into `rekey_all`, where neither ceremony's reviewers look. Since rb-65
-///       (ADR-0243) the cascade site legitimately carries an emission of its
-///       OWN, so the file-wide census is two rather than one; the per-body
-///       attribution and the `total - scoped == 0` arithmetic are what keep that
-///       widening from admitting a THIRD, unreviewed emission or two emissions
-///       in the same body;
-///   (3) the emission written through `mr_log_breadcrumb`, which adds a `cause`
-///       that duplicates the guest field and pulls the trace-pair machinery
-///       (G9f/G9h) into a causeless INFO line;
-///   (4) a cfg-test-gated emission statement: the published wasm then emits
-///       NOTHING while every source scan in this slice stays green;
-///   (5) the emission moved anywhere but last — before the purge (it would
-///       report a count that does not exist yet), before the provenance update,
-///       or inside a closure / an `if purged > 0` guard; the evt supplied
-///       through a `const` or a `concat!` instead of a bare literal; either
-///       fragment argument dropped or re-argued;
-///   (6) the four success-path statements reordered while each still occurs
-///       once;
-///   (7) the emission nested one brace deep (a conditional emission is a
-///       conditional audit record);
-///   (8) a `return Err(..)` or `return Ok(())` inserted between the purge and
-///       the trailing Ok, which makes the emission dead code or skips the
-///       provenance stamp while every POSITION-based clause above stays green;
-///   (9) a `let purged = 0;` rebind, which re-points a textually perfect
-///       emission at a constant while the purge still runs.
-#[test]
-fn rb40_claim_emits_one_purge_observation() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let body = extract_squashed_fn_body(&squashed, &nd_complete())
-        .expect("rb40 [emit/scope]: fn complete_guest_claim not found in accounts.rs");
-    let emit = rb40_nd_mr_log();
-
-    // --- (1) exactly one emission inside this reducer -----------------------
-    let n_body = m22_count_occurrences(body, &emit);
-    assert_eq!(
-        n_body, 1,
-        "rb40 [emit/count-in-fn]: complete_guest_claim must call `{emit}` EXACTLY once; found \
-         {n_body}. ZERO is the pre-fix state this slice exists to close: the claim-time purge \
-         of a retired guest export chunks (rb-22 / ADR-0220) leaves NO signal anywhere — the \
-         table is private, S4 is the only writer, and an erasure audit therefore cannot tell a \
-         purge that ran from one that never did. MORE THAN ONE is a second, unreviewed \
-         emission of the same event, which doubles every operator count of it."
-    );
-
-    // --- (2) exactly TWO emissions in the WHOLE file, ATTRIBUTED PER BODY ----
-    // WIDENED 1 -> 2 BY rb-65 (ADR-0243) AND PAID FOR. The cascade site
-    // (account_deletion_reaper) now emits its own `account_deletion_cascade`
-    // line, so a file-wide count of one is unsatisfiable — but a bare bump to
-    // two is a STRICT LOOSENING: BOTH emissions could then live in the cascade,
-    // or in `rekey_all` (the measured hiding place), while the claim-time
-    // observation this test exists for is gone. The compensation is the
-    // m22s3b_purge_named_twice_claim_and_cascade precedent (:10670): each body
-    // pinned to EXACTLY ONE emission, and the remainder asserted zero as
-    // arithmetic, so a third site cannot hide behind the per-body counts and a
-    // MOVED site cannot hide behind the total.
-    let n_file = m22_count_occurrences(&squashed, &emit);
-    assert_eq!(
-        n_file, 2,
-        "rb40 [emit/count-in-file]: accounts.rs must name `{emit}` EXACTLY twice; found \
-         {n_file}. The two sanctioned sites are the claim-time purge line inside \
-         complete_guest_claim (rb-40) and the cascade line inside account_deletion_reaper \
-         (rb-65). THREE is an emission no ceremony reviewer sees; ONE means one of the two was \
-         deleted while the other kept the count plausible. This census is also what kills the \
-         alias cheat `use crate::observability::mr_log as note;` — G7 bans only the external \
-         log-crate imports, never a re-export of our own wrapper — and \
-         rb65_reaper_emits_one_cascade_observation carries the explicit alias-token clause."
-    );
-    let cascade_body = extract_squashed_fn_body(&squashed, &rb24_nd_reaper_decl())
-        .expect("rb40 [emit/cascade-scope]: fn account_deletion_reaper not found in accounts.rs");
-    let n_cascade = m22_count_occurrences(cascade_body, &emit);
-    assert_eq!(
-        n_cascade, 1,
-        "rb40 [emit/count-in-cascade]: account_deletion_reaper must call `{emit}` EXACTLY \
-         once; found {n_cascade}. This clause is half the price of the file-wide widening \
-         above: without it, `two somewhere` is satisfied by two claim-time emissions and the \
-         cascade — fifteen irreversible steps — goes back to being silent."
-    );
-    let scoped = n_body + n_cascade;
-    assert_eq!(
-        n_file - scoped,
-        0,
-        "rb40 [emit/count-elsewhere]: accounts.rs names `{emit}` {n_file} time(s) and the two \
-         reviewed bodies account for {scoped}, leaving {} elsewhere. An emission outside both \
-         ceremonies publishes a privacy-audit record from a flow neither set of reviewers ever \
-         saw. Expressed as arithmetic on purpose: a MOVED site cannot hide behind the total.",
-        n_file - scoped
-    );
-
-    // --- (3) never the breadcrumb form --------------------------------------
-    let breadcrumb = rb40_nd_mr_log_breadcrumb();
-    let n_bc = m22_count_occurrences(&squashed, &breadcrumb);
-    assert_eq!(
-        n_bc, 0,
-        "rb40 [emit/no-breadcrumb]: accounts.rs names `{breadcrumb}` {n_bc} time(s); zero is \
-         allowed. The purge line has no CAUSE that is not already the guest field, so a \
-         breadcrumb would duplicate the subject into a second key and put this module on the \
-         m20e trace-pair surface (G9f/G9h scan call sites for paired enter/exit literals) for \
-         a single causeless INFO line. `mr_log` is the blessed no-breadcrumb form."
-    );
-
-    // --- (4) no cfg attribute on the emission ITEM SPAN ----------------------
-    // Mirrors rb22_lib_wires_mod_privacy: the look-back is bounded to the span
-    // from the previous statement terminator, so an unrelated cfg elsewhere in
-    // the reducer can neither vouch for nor incriminate this one.
-    let at_emit = body.find(emit.as_str()).unwrap_or_else(|| {
-        panic!(
-            "rb40 [emit/offset]: `{emit}` was not found in complete_guest_claim, so every \
-             offset-based clause below has no anchor and would pass VACUOUSLY."
-        )
-    });
-    let prev_end = body[..at_emit].rfind([';', '}']).map_or(0, |i| i + 1);
-    let span = &body[prev_end..at_emit];
-    assert!(
-        !span.contains(concat!("#[cfg", "(")),
-        "rb40 [emit/cfg]: the purge emission carries a cfg attribute in its item span \
-         ({span:?}). A cfg-test gate here compiles the emission into the TEST binary only: \
-         every source scan in this slice stays GREEN while the PUBLISHED wasm emits nothing at \
-         all, which is precisely the state this slice exists to leave behind."
-    );
-
-    // --- (5) THE EMISSION IS THE TERMINAL STATEMENT -------------------------
-    let tail = rb40_frozen_emit_tail();
-    let n_chars = body.chars().count();
-    let shown: String = body.chars().skip(n_chars.saturating_sub(240)).collect();
-    assert!(
-        body.ends_with(tail.as_str()),
-        "rb40 [emit/terminal]: the squashed body of complete_guest_claim must END with \
-         `{tail}`. A SpacetimeDB host log line is written as the reducer runs and SURVIVES a \
-         later panic or Err rollback, while the purge deletes do not — so an emission with any \
-         fallible statement after it can record `purged N` for a transaction that rolled back, \
-         which is worse than no signal (an erasure audit would read a deletion that never \
-         happened). This one clause also pins the statement form (a bare statement, not a \
-         closure operand), the BARE string-literal first argument (a `const` or a `concat!` \
-         leaves identifier bytes where the blanked literal must leave a bare comma), BOTH \
-         fragment arguments, and that nothing runs after the emission. Body tail read: {shown:?}"
-    );
-
-    // --- (6) ordering on the success path ------------------------------------
-    let purge = rb22_nd_purge_call();
-    let consume = concat!("consume_claim_and", "_disarm(");
-    let update = concat!("account()", ".identity().update(");
-    let at_purge = idx(body, &purge);
-    let at_consume = idx(body, consume);
-    let at_update = idx(body, update);
-    let at_ok = body
-        .rfind(concat!("Ok", "(())"))
-        .expect("rb40 [emit/order-ok]: complete_guest_claim must end in Ok(())");
-    assert!(
-        at_purge < at_consume,
-        "rb40 [emit/order-purge-consume]: the purge (offset {at_purge}) must still precede \
-         consume_claim_and_disarm (offset {at_consume}) — rb-40 binds the purge result and \
-         must not perturb the shipped rb-22 / AUTH-34 sequence."
-    );
-    assert!(
-        at_consume < at_update,
-        "rb40 [emit/order-consume-update]: the AUTH-34 consume (offset {at_consume}) must \
-         still precede the account provenance update (offset {at_update})."
-    );
-    assert!(
-        at_update < at_emit,
-        "rb40 [emit/order-update-emit]: the provenance update (offset {at_update}) must run \
-         BEFORE the emission (offset {at_emit}). The line is a best-effort host signal that \
-         survives a rollback; the update is the last statement that can still fail, so an \
-         emission above it can report a purge for a claim that did not complete."
-    );
-    assert!(
-        at_emit < at_ok,
-        "rb40 [emit/order-emit-ok]: the emission (offset {at_emit}) must precede the trailing \
-         Ok(()) (offset {at_ok})."
-    );
-
-    // --- (7) brace depth 0 (no conditional, no closure, no nested block) -----
-    let mut depth: i32 = 0;
-    for c in body[..at_emit].chars() {
-        if c == '{' {
-            depth += 1;
-        } else if c == '}' {
-            depth -= 1;
-        }
-    }
-    assert_eq!(
-        depth, 0,
-        "rb40 [emit/depth0]: the emission sits at brace depth {depth} inside \
-         complete_guest_claim, not at the top level of the fn body. A conditional emission is a \
-         conditional audit record: an `if purged > 0` guard keeps every count, ordering and \
-         containment clause green while the ZERO-chunk claim — the exact negative an erasure \
-         audit needs to distinguish `nothing to purge` from `the purge never ran` — is silent."
-    );
-
-    // --- (8) REACHABILITY from the purge binding to the trailing Ok ----------
-    // Same token semantics as rb-22 clause (4), MEASURED: a word boundary is
-    // required on the LEFT ONLY, because squash_ws fuses `return Err(..)` into
-    // `returnErr(` and `return Ok(())` into `returnOk(())`. Requiring a
-    // right-hand boundary too would blind this clause to exactly the early-exit
-    // shapes it exists to catch, while the left-only rule still rejects an
-    // identifier such as `early_return`.
-    let region = &body[at_purge..at_ok];
-    let mut scan = 0usize;
-    while let Some(rel) = region[scan..].find("return") {
-        let at = scan + rel;
-        let is_token = at == 0 || !is_word_byte(region.as_bytes()[at - 1]);
-        assert!(
-            !is_token,
-            "rb40 [emit/reachable]: a `return` token sits between the purge binding and the \
-             trailing Ok(()). After the re-key the success path is straight-line by design \
-             (every reject is one of guards 1..11, all of which precede rekey_all), so a return \
-             here either makes the emission dead code or adds an exit that skips it — while the \
-             count, cfg, terminal, ordering and depth clauses above all stay GREEN, because \
-             every one of them reasons about POSITION and none about REACHABILITY. This widens \
-             rb-22 clause (4), whose region ends at the consume. Region text: {region:?}"
-        );
-        scan = at + "return".len();
-    }
-
-    // --- (9) the count binding is never shadowed or rebound ------------------
-    let bind = concat!("let", "purged");
-    let binds = m22_count_occurrences(body, bind);
-    assert_eq!(
-        binds, 1,
-        "rb40 [emit/no-rebind]: complete_guest_claim binds `purged` {binds} time(s); exactly \
-         ONE is allowed — the delegated-purge binding that rb40_claim_binds_the_purge_result \
-         pins statement-by-statement. A second binding, `let purged = 0;` inserted anywhere \
-         above the emission, re-points a \
-         textually PERFECT emission at a constant: the count, statement-form, ordering, depth \
-         and reachability clauses are all satisfied, the code is clippy-clean, and the line \
-         then reports zero chunks for every claim. This is the rb-22 `let guest = me;` shadow \
-         finding applied to the value that makes this line observability rather than decoration."
-    );
-}
-
-/// E1 (data dependency): the emitted count IS the purge result.
-///
-/// The emission clauses above pin WHERE the line is written; this one pins that
-/// the number in it came from the purge at all. Without the binding the line
-/// says only `control reached here`, which the rb-22 static pins already say —
-/// design B rejected exactly that fallback (plan B-double-prime).
-///
-/// Kills: the purge call left as a bare statement with a hard-coded count
-///        (`purge_fields(guest, 0)`) — the whole-file purge census still
-///        reads 2 and every rb-22 clause stays green;
-///        the call re-argued to `me`, which purges the CLAIMER chunks and
-///        reports the guest as the subject;
-///        the binding moved out of the reducer into a helper, where neither the
-///        claim ceremony reviewers nor this test can see it.
-#[test]
-fn rb40_claim_binds_the_purge_result() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let body = extract_squashed_fn_body(&squashed, &nd_complete())
-        .expect("rb40 [bind/scope]: fn complete_guest_claim not found in accounts.rs");
-    let call = rb22_nd_purge_call();
-    let binding = [";letpurged=", call.as_str(), "ctx,guest);"].concat();
-    let n = m22_count_occurrences(body, &binding);
-    assert_eq!(
-        n, 1,
-        "rb40 [bind/statement]: complete_guest_claim must contain the bare statement \
-         `{binding}` EXACTLY once; found {n}. Three things are pinned at once and each is a \
-         distinct wrong implementation: the RESULT IS BOUND (an unbound call leaves the line \
-         with no data dependency on the purge, so it reports a constant and observes nothing); \
-         the ARGUMENT is the retired GUEST identity (re-argued to `me` it purges the claimer \
-         own chunks — a no-op that leaves the orphan while the line still names the guest); and \
-         the call is a bare STATEMENT at a statement boundary, not an operand of a closure or \
-         an iterator adaptor, both of which are brace-depth 0 and never run."
-    );
-}
-
-/// E1 (the payload): the evt token and the fragment literal are pinned by value,
-/// and the fragment smuggles no reserved envelope key and no PII.
-///
-/// Read over the strings-KEPT view — the ONLY view in which literal CONTENT
-/// survives at all (`stripped_for_scan` blanks it, which is why the terminal pin
-/// above reads `mr_log(,&...)`).
-///
-/// AM6 (observability.rs:82-87) makes a reserved key a debug-time panic, but the
-/// release wasm compiles that assert out, so the static ban is what holds in
-/// production: downstream JSON parsing is last-key-wins, and a smuggled `evt`
-/// would silently forge the event type of a privacy-audit line.
-///
-/// Kills: the evt renamed or misspelled (an operator alert keyed on the name
-///        goes silent, and nothing else in the tree reds);
-///        the evt spelled twice in the file (a second, unreviewed site);
-///        the fragment reshaped — an unquoted identity (which breaks JSON as
-///        soon as an identity is not hex), a quoted count (which breaks numeric
-///        comparison in every panel), a renamed key, a reordered pair;
-///        a fragment that smuggles `evt` / `cause` / `sched` / `phase`;
-///        a fragment that adds `name` / `auth_issuer` / `claimed_from` /
-///        `display`, i.e. the PRV1-17/20 player-authored and provider fields
-///        that must never reach a log line.
-#[test]
-fn rb40_evt_and_fragment_literals_are_pinned() {
-    let kept = stripped_keep_strings(ACCOUNTS_RS);
-
-    let call = rb40_kept_emit_call();
-    let n_call = m22_count_occurrences(&kept, &call);
-    assert_eq!(
-        n_call, 1,
-        "rb40 [evt/call]: accounts.rs must contain the emission `{call}` EXACTLY once; found \
-         {n_call}. This is the strings-KEPT twin of the terminal pin: it is the only view in \
-         which the evt literal exists at all, so it is the only clause that can tell the \
-         sanctioned event name from any other."
-    );
-
-    let evt = rb40_evt();
-    let n_evt = m22_count_occurrences(&kept, &evt);
-    assert_eq!(
-        n_evt, 1,
-        "rb40 [evt/unique]: the evt token `{evt}` occurs {n_evt} time(s) in accounts.rs; \
-         exactly ONE is allowed. Zero means the event was renamed and every operator alert, \
-         dashboard query and `just logs` grep keyed on it goes silent with no other gate \
-         reddening. Two means a second site emits the same event name from a flow this slice \
-         never reviewed."
-    );
-
-    let fragment = rb40_fragment_literal();
-    let n_fragment = m22_count_occurrences(&kept, &fragment);
-    assert_eq!(
-        n_fragment, 1,
-        "rb40 [evt/fragment]: accounts.rs must carry the fragment format string `{fragment}` \
-         EXACTLY once; found {n_fragment}. The shape is the contract: the guest identity is \
-         QUOTED (Identity Display is fixed-width lowercase hex — structurally quote-free, but \
-         a bare hex value is not valid JSON as a number), the chunk count is UNQUOTED (a \
-         quoted count cannot be compared numerically in a panel or an alert), the keys are \
-         `guest` and `chunks`, and they appear in that order."
-    );
-
-    let fields_scope = extract_squashed_fn_body(&kept, &rb40_nd_fields_fn());
-    let fields_body = fields_scope.unwrap_or_else(|| {
-        panic!(
-            "rb40 [evt/fields-scope]: fn purge_fields was not found in accounts.rs (or \
-             its body is not brace-balanced), so every ban below would run over an arbitrary \
-             span and pass VACUOUSLY."
-        )
-    });
-    assert_eq!(
-        m22_count_occurrences(fields_body, &fragment),
-        1,
-        "rb40 [evt/fragment-scope]: the fragment literal must live INSIDE purge_fields. \
-         A whole-file count is satisfied by the same text sitting in a doc example or a decoy \
-         helper while the builder itself renders something else."
-    );
-
-    for (needle, why) in [
-        (
-            "evt",
-            "the envelope OWN event key (AM6). The fragment is interpolated verbatim after \
-             it, and downstream JSON parsing is last-key-wins, so a second `evt` silently \
-             forges the event type of a privacy-audit line",
-        ),
-        (
-            "cause",
-            "a reserved breadcrumb key (AM6) — a duplicate would forge a trace-pair cause",
-        ),
-        (
-            "sched",
-            "a reserved breadcrumb key (AM6) — a duplicate would forge scheduled-work \
-             attribution",
-        ),
-        (
-            "phase",
-            "a reserved breadcrumb key (AM6) — a duplicate would forge an enter/exit trace \
-             pair that the m20e G9 scanners then pair against nothing",
-        ),
-        (
-            "name",
-            "a player-authored value (PRV1-17/20 by analogy): guest_name is snapshotted from \
-             player.name and is the one field in this ceremony a user controls, so it must \
-             never reach a log line",
-        ),
-        (
-            "auth_issuer",
-            "the OAuth provider the person signed in with (spec para 3 tombstone field) — \
-             identifying, and never needed to audit an erasure",
-        ),
-        (
-            "claimed_from",
-            "the AUTH-21 provenance column. It already persists the guest-to-claimer linkage \
-             in the row; repeating it in a log line spreads the linkage to a second, \
-             longer-lived store nobody erases",
-        ),
-        (
-            "display",
-            "a display-name field family (ranking / profile), all of them player-authored",
-        ),
-    ] {
-        assert!(
-            !fields_body.contains(needle),
-            "rb40 [evt/fragment-keys]: the purge_fields body names `{needle}` — {why}. \
-             The sanctioned fragment carries exactly two keys, `guest` (the SUBJECT of the \
-             erasure, which is what an audit is keyed on) and `chunks` (the count), and \
-             nothing else. Body read: {fields_body:?}"
-        );
-    }
-}
-
-/// X1 (purity, source scan): `purge_fields` is a PURE private fn — no
-/// context, no table read, no write, no emission of its own.
-///
-/// A SOURCE SCAN and therefore compile-safe, which is why it joins the RED arm
-/// rather than the two behavioural tests that CALL the helper: on the pre-fix
-/// tree it fails LOUD on the missing declaration instead of failing the build.
-///
-/// Kills: the helper missing entirely (the pre-fix state);
-///        a second, cfg-gated or overloaded declaration, which would make the
-///        body-scoped clauses read whichever one the extractor reaches first;
-///        a renamed or re-typed signature — in particular `chunks: u32`, which
-///        would truncate a large count, and `guest: &Identity`, which would
-///        break the Copy-based call site;
-///        a `pub` helper, which puts a log-fragment builder on the crate surface;
-///        a builder that takes the context and READS a row (the account name,
-///        the claim row) to enrich the line — the exact shape PRV1-17/20 forbid,
-///        and the one that would make this fn untestable off-instance;
-///        a builder that emits a line of its own;
-///        a builder that CONSTRUCTS an Identity rather than rendering the one it
-///        was handed.
-#[test]
-fn rb40_claim_purge_fields_is_pure() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let needle = rb40_nd_fields_fn();
-
-    let n = m22_count_occurrences(&squashed, &needle);
-    assert_eq!(
-        n, 1,
-        "rb40 [fields/decl]: accounts.rs must declare `{needle}` EXACTLY once; found {n}. ZERO \
-         is the pre-fix state: with no pure fragment builder there is nothing to test by VALUE, \
-         and the whole emission collapses to a static line that observes nothing (the \
-         B-double-prime fallback this slice rejected). TWO makes every body-scoped clause below \
-         read whichever declaration the extractor reaches first, leaving the other ungated."
-    );
-
-    let sig = extract_squashed_fn_sig(&squashed, &needle)
-        .expect("rb40 [fields/sig-read]: the fragment builder signature has no opening brace");
-    assert_eq!(
-        sig,
-        rb40_frozen_fields_sig(),
-        "rb40 [fields/sig]: the fragment builder signature is not the frozen one. It takes the \
-         subject BY VALUE as `guest: Identity` (Identity is Copy, and a reference would make \
-         the call site the only place a caller could get it wrong) and the count as \
-         `chunks: usize` — the exact type `purge_export_bundles` returns, so no cast can \
-         silently truncate it — and returns an owned `String` fragment."
-    );
-
-    for (vis, what) in [
-        (
-            concat!("pubfnpurge", "_fields("),
-            "bare `pub`, which puts a log-fragment builder on the crate external surface",
-        ),
-        (
-            concat!("pub(crate)fnpurge", "_fields("),
-            "`pub(crate)`, which invites a second module to render this module audit line",
-        ),
-    ] {
-        assert!(
-            !squashed.contains(vis),
-            "rb40 [fields/vis]: purge_fields is declared {what}. It must be PRIVATE: it \
-             exists to make ONE emission in this module testable by value, and every widening \
-             of its visibility is a widening of who can shape a privacy-audit record."
-        );
-    }
-
-    let body = extract_squashed_fn_body(&squashed, &needle)
-        .expect("rb40 [fields/body-read]: the fragment builder body is not brace-balanced");
-
-    for (banned, why) in [
-        (
-            "ctx",
-            "the reducer context. A fragment builder that takes or names the context can READ \
-             a row to enrich the line (the account name, the claim row), which is the PRV1-17 \
-             shape, and it makes the builder untestable off-instance — a ReducerContext is not \
-             constructible in this crate (ADR-0225 D5), so a ctx-bound builder would have NO \
-             behavioural test at all and this slice would ship source pins only",
-        ),
-        (
-            concat!(".db", "."),
-            "a database handle. Nothing in a pure string builder legitimately reads a table",
-        ),
-        (
-            concat!(".ins", "ert("),
-            "a row insert — G5/D0 write isolation, and a fragment builder writes nothing",
-        ),
-        (concat!(".upd", "ate("), "a row update — see the insert ban"),
-        (concat!(".del", "ete("), "a row delete — see the insert ban"),
-        (
-            concat!("lo", "g"),
-            "a logging segment. The builder RENDERS a fragment; the reducer that calls it owns \
-             the emission (the same doctrine privacy.rs scan hygiene states for its helper). A \
-             builder that emits its own line makes the exactly-once emission census a lie",
-        ),
-        (
-            "warn",
-            "a logging level segment — see the logging ban; this line is INFO by design",
-        ),
-        (
-            "reject",
-            "the reject-path vocabulary. This is a success-path record, not a rejection, and \
-             the AUTH-36 no-PII rules for reject logs are scoped to log_reject argument spans",
-        ),
-        (
-            concat!("Identity", "::"),
-            "an Identity constructor. The subject arrives as a parameter the caller derived \
-             from the claim row; constructing one here would let the builder name a victim",
-        ),
-    ] {
-        assert!(
-            !body.contains(banned),
-            "rb40 [fields/pure]: the purge_fields body contains `{banned}` — {why}. Body \
-             read: {body:?}"
-        );
-    }
-
-    // --- EQUALITY, last (rb-24 clause-order convention) ----------------------
-    // In the strings-BLANKED view the whole format string collapses to nothing,
-    // so the sanctioned body is exactly the macro call and its empty parens.
-    // Containment pins were MEASURED insufficient across this crate (rb-22
-    // red-team): a dead `if false` wrapper, a shadowed binding and an appended
-    // statement all satisfy every ban above and are clippy-clean.
-    assert_eq!(
-        body,
-        concat!("format", "!()"),
-        "rb40 [fields/body]: purge_fields must be EXACTLY one format-macro expression \
-         and nothing else. Every string literal is blanked in this view, so the sanctioned \
-         body reads as the bare macro call: any extra statement, binding, conditional or \
-         helper call survives the blanking and reds here. That is what makes `pure` a checked \
-         fact rather than a description — the two behavioural tests own the fragment VALUE."
-    );
-}
-
-/// X3 (OBS-2 ratchet, no-regression): rb-40 adds NO new reach into the log crate
-/// from accounts.rs or privacy.rs — not a macro, not its internals — and neither
-/// file imports it.
-///
-/// GREEN BEFORE THE FIX AS WELL AS AFTER — deliberately. This is a
-/// no-regression tooth, not a red-to-green one: the committed `.log-baseline`
-/// gives both files 0/0/0/0 today, and the whole point is that the shipped
-/// emission routes through the blessed `observability::mr_log` wrapper instead
-/// of reopening the ratchet. It belongs to the rb40 set because it is the fast
-/// local loop for the property X3 also checks against the baseline file itself.
-///
-/// THE BAN IS ON THE CRATE PATH TOKEN, NOT ON A LIST OF SPELLINGS (rb-40
-/// artifact red-team). A macro-name scan can only ever ban the names it
-/// enumerates, and those are not the only way to emit: the crate's
-/// `__private_api` module is `pub mod` (log 0.4.33, lib.rs:1626), so the
-/// function the four macros expand into is externally callable by anyone who
-/// spells the path. The four needles are KEPT because they attribute the common
-/// shape by name; the whole-token clause is what makes the tooth total.
-///
-/// Kills: the emission written as a bare INFO macro of the log crate at the
-///        claim site, which satisfies `be observable doing so` in the loosest
-///        reading while bypassing the ONE blessed emission point (ADR-0180 D6),
-///        skipping the AM6 reserved-key assert, and forcing a `.log-baseline`
-///        edit that the X3 ledger gate pins as byte-unchanged;
-///        the same call added to privacy.rs, where the module scan-hygiene
-///        contract bans the token outright (the reducer that calls a helper owns
-///        any logging);
-///        an ALIASING import of that crate followed by a bang-call through the
-///        alias, which hides the level token from a macro-name scan while
-///        emitting exactly the same unwrapped line;
-///        a DIRECT call into the macro-expansion internals — MEASURED by the
-///        rb-40 artifact red-team, planted after the purge binding in
-///        complete_guest_claim, as a second emission channel that spells none of
-///        the four macro names, needs no import, is clippy-clean under
-///        `-D warnings` and left the whole suite green at 793/793. It hands the
-///        global logger a caller-built `format_args!`, so it also skips
-///        `guards::json_escape` and the AM6 reserved-key assert entirely —
-///        strictly worse than the shape the four needles ban, and invisible to
-///        every one of them;
-///        any future spelling of the same idea: the global-logger accessor, the
-///        `Log` trait's own method, the `Level` enum.
-///
-/// SCOPE, STATED HONESTLY: this tooth covers the two files this slice touches.
-/// The crate-wide G7 ratchet (`observability_tests.rs` `needles()` :376-383 and
-/// its `observability-log-wrapper.eval.mjs` twin, which must stay byte-identical
-/// to it) counts the same four macro spellings, so the internals shape is
-/// invisible to it in the other twenty modules. Widening that scanner — and
-/// re-deriving the `.log-baseline` under a wider needle — is outside this
-/// slice's touches and is recorded as residual R-rb40-G7PRIVATEAPI.
-#[test]
-fn rb40_no_new_bare_log_in_accounts_or_privacy() {
-    let needles = rb40_bare_log_needles();
-
-    // --- non-vacuity: the needles must FIND a planted call -------------------
-    let probe = format!("fn f() {{ {}(); }}", needles[0]);
-    let probe_squashed = stripped_for_scan(&probe);
-    assert_eq!(
-        m22_count_occurrences(&probe_squashed, &needles[0]),
-        1,
-        "rb40 [obs2/vacuity]: the bare-log needle does not match a PLANTED call after \
-         stripping, so every zero-count assertion below would prove nothing. Stripped probe: \
-         {probe_squashed:?}"
-    );
-
-    // --- non-vacuity: the crate-path token must FIND a planted internals call
-    let log_path = rb40_nd_log_path();
-    let path_probe = format!("fn f() {{ {log_path}__private_api::log(); }}");
-    let path_probe_squashed = stripped_for_scan(&path_probe);
-    assert_eq!(
-        m22_count_occurrences(&path_probe_squashed, &log_path),
-        1,
-        "rb40 [obs2/vacuity-path]: the crate-path token does not match a PLANTED call into the \
-         macro-expansion internals after stripping, so the whole-token clause below would \
-         prove nothing about the ONE shape it exists to catch — the shape a red-team measured \
-         as gate-green and clippy-clean. Stripped probe: {path_probe_squashed:?}"
-    );
-
-    for (path, src) in [("accounts.rs", ACCOUNTS_RS), ("privacy.rs", M22_PRIVACY_RS)] {
-        let squashed = stripped_for_scan(src);
-        assert!(
-            src.len() > 200,
-            "rb40 [obs2/scope]: {path} is only {} bytes — too short to be the file this scan \
-             means to check, so every ban below would pass vacuously.",
-            src.len()
-        );
-        for needle in &needles {
-            let n = m22_count_occurrences(&squashed, needle);
-            assert_eq!(
-                n, 0,
-                "rb40 [obs2/bare-log]: {path} contains {n} bare `{needle}` invocation(s); zero \
-                 is allowed. Both files carry NO row in the committed .log-baseline, so any \
-                 count here is a NEW bare emission: it bypasses the one blessed emission point \
-                 (ADR-0180 D6), skips the AM6 reserved-key assert that stops a fragment forging \
-                 the event type, and forces an edit to a baseline the X3 ledger gate pins as \
-                 byte-unchanged. The scan runs over the whitespace-SQUASHED view, so the spaced \
-                 macro-path spelling is caught too."
-            );
-        }
-        let n_path = m22_count_occurrences(&squashed, &log_path);
-        assert_eq!(
-            n_path, 0,
-            "rb40 [obs2/private-api]: {path} names the crate path token `{log_path}` {n_path} \
-             time(s); zero is allowed, and the ban is on the TOKEN rather than on any list of \
-             macro names. The crate's `__private_api` module is `pub mod` (log 0.4.33, \
-             lib.rs:1626), so the function the four macros above expand into is externally \
-             callable: a red-team MEASURED that direct call, planted in complete_guest_claim, \
-             as a second emission channel that spells none of those four names, needs no \
-             import, is clippy-clean under `-D warnings` and left the whole suite green. It \
-             hands the global logger a caller-built `format_args!`, so it bypasses \
-             `guards::json_escape` AND the AM6 reserved-key assert — the two things that stop \
-             a fragment forging the event type of a privacy-audit line. The same reasoning \
-             covers the global-logger accessor, the `Log` trait's own method and the `Level` \
-             enum. Route every emission through `observability::mr_log`."
-        );
-        let clean = strip_rust_comments(&strip_rust_strings(src));
-        for import in [
-            concat!("use ", "lo", "g"),
-            concat!("use ::", "lo", "g"),
-            concat!("extern crate ", "lo", "g"),
-        ] {
-            assert!(
-                !clean.contains(import),
-                "rb40 [obs2/import]: {path} carries `{import}`. An import is how a bare \
-                 emission hides from a macro-name scan: alias the crate INFO macro under a \
-                 local name, then bang-call the alias — the unwrapped line is identical and \
-                 every needle above reads zero. Neither file needs that crate; the blessed \
-                 wrapper is reached fully qualified, with no import at all."
-            );
-        }
-    }
 }
 
 // ===========================================================================
@@ -15732,991 +4093,6 @@ fn rb65_evt() -> String {
     concat!("account_deletion", "_cascade").to_string()
 }
 
-/// The evt as it is spelled in the SOURCE of accounts.rs — the bare string
-/// literal INCLUDING its delimiters.
-///
-/// This is the needle of the one clause that reads RAW, whitespace-PRESERVING
-/// source. Every squashed view in this file deletes whitespace INSIDE string
-/// literals too, so a literal carrying one interior space between
-/// `account_deletion` and `_cascade` is byte-identical to the sanctioned one in
-/// the kept-strings view, and would ship a differently named event with every
-/// count clause green (MEASURED, rb-65 plan red-team finding 5).
-fn rb65_raw_evt_literal() -> String {
-    let dq = rb22_dq();
-    let evt = rb65_evt();
-    format!("{dq}{evt}{dq}")
-}
-
-/// The squashed `fn` needle for the cascade fragment builder.
-///
-/// NAME COLLISION AVOIDED BY DESIGN: `fncascade_fields(` does NOT contain
-/// `fnpurge_fields(`, so `rb40_claim_purge_fields_is_pure`'s exact-count-of-one
-/// declaration clause is untouched by this slice, and neither builder's
-/// body-scoped clauses can ever read the other's declaration.
-fn rb65_nd_cascade_fields_fn() -> String {
-    concat!("fncascade", "_fields(").to_string()
-}
-
-/// The frozen squashed signature slice `extract_squashed_fn_sig` returns for the
-/// cascade fragment builder. The slice starts at the `fn` needle, so the
-/// (absent) visibility keyword is not part of it and is pinned separately.
-fn rb65_frozen_cascade_sig() -> String {
-    concat!(
-        "fncascade",
-        "_fields(subject:Identity,export_chunks:usize)->String"
-    )
-    .to_string()
-}
-
-/// THE BOUND PURGE STATEMENT, squashed, `;`-prefixed.
-///
-/// The leading `;` is real and load-bearing: `crate::pvp::erase_pvp_rows(..);`
-/// precedes this statement in the spec para-4.4 cascade order, so the `;` pins
-/// STATEMENT POSITION — an operand of a closure or an iterator adaptor is brace
-/// depth 0 and satisfies every containment clause while never running.
-///
-/// Split at DIFFERENT points from the `rb24_frozen_reaper_body()` fragment that
-/// spells the same statement (the two-transcription rule this module states at
-/// :5751 and which `rb24_deletion_reaper_body_is_pinned_cascade` clause (0)
-/// checks rather than merely asserts in prose).
-fn rb65_nd_purge_binding() -> String {
-    concat!(
-        ";letexport_ch",
-        "unks=crate::privacy::purge_export",
-        "_bundles(ctx,args.account_ident",
-        "ity);"
-    )
-    .to_string()
-}
-
-/// THE FRAGMENT-BUILDER BINDING, squashed, `;`-prefixed (the PRV1-6e terminal
-/// account update precedes it).
-///
-/// The `let fields` local is NOT style. Inlining the builder into the emission
-/// gives the call an 81-column argument list, past rustfmt's default
-/// `fn_call_width` of 60: the formatter then lays the call out VERTICALLY with a
-/// trailing comma that no squashed statement pin can spell (the ADR-0235
-/// "implementation-time discovery" trap). Split at different points from the
-/// `rb24_frozen_reaper_body()` fragment for the same statement.
-fn rb65_nd_fields_binding() -> String {
-    concat!(
-        ";letfie",
-        "lds=cascade",
-        "_fields(args.account",
-        "_identity,export_chunks);"
-    )
-    .to_string()
-}
-
-/// THE TERMINAL-EMISSION PIN, in the strings-BLANKED squashed view, extended
-/// LEFTWARD through the `let fields` binding.
-///
-/// `strip_rust_strings` blanks the delimiters too, so the evt literal vanishes
-/// entirely and the call reads `mr_log(,&fields)`. That is deliberate: a
-/// `const EVT` or a `concat!` in the first argument position leaves identifier
-/// bytes where this pin requires a BARE comma, so the indirection REDs here —
-/// and an indirected evt is one that a grep for the event name in this module
-/// never finds.
-///
-/// THE LEFTWARD EXTENSION IS THE POINT (rb-65 plan reviewer B3 / red-team 6).
-/// A tail pinned only from the emission is green on
-/// `cascade_fields(args.account_identity, export_chunks.saturating_sub(1))` and
-/// on `cascade_fields(args.account_identity, 0)` — both measured clippy-clean,
-/// both publishing a count that is not the count the purge returned. Pinning the
-/// binding's ARGUMENT TEXT is the only clause in this slice that kills them.
-/// The trailing `Ok(())` pins that NOTHING runs after the emission.
-fn rb65_frozen_emit_tail() -> String {
-    let bind = rb65_nd_fields_binding();
-    let emit = rb40_nd_mr_log();
-    let ok = concat!("Ok", "(())");
-    format!("{bind}{emit},&fields);{ok}")
-}
-
-/// The WHOLE emission statement in the strings-KEPT squashed view — the one view
-/// in which the evt literal survives at all.
-///
-/// WIDTH IS LOAD-BEARING (measured against rustfmt 1.9.0's default
-/// `fn_call_width` of 60): this call's argument list is 35 columns. A longer evt
-/// name or builder name tips it over, rustfmt lays the call out vertically WITH
-/// A TRAILING COMMA, and both this pin and the terminal-tail pin stop matching a
-/// correct implementation. If the call must grow, re-derive BOTH literals from
-/// the new layout — never relax them to tolerate the comma, which is
-/// rustfmt-controlled and would flip back on the next width change.
-fn rb65_kept_emit_call() -> String {
-    let dq = rb22_dq();
-    let emit = rb40_nd_mr_log();
-    let evt = rb65_evt();
-    format!("{emit}{dq}{evt}{dq},&fields);")
-}
-
-/// The cascade fragment builder's FORMAT STRING, as SOURCE text (escapes
-/// included), which is exactly what the strings-kept view preserves.
-///
-/// Derived by hand through the live pipeline: `strip_comments_keep_strings`
-/// copies a backslash and the byte after it verbatim, and `squash_ws` finds no
-/// whitespace inside this literal, so the source spelling IS the needle.
-fn rb65_fragment_literal() -> String {
-    let dq = rb22_dq();
-    let bs = rb40_bs();
-    let subject = format!("{bs}{dq}subject{bs}{dq}:{bs}{dq}{{subject}}{bs}{dq}");
-    let count = format!("{bs}{dq}export_bundle{bs}{dq}:{{export_chunks}}");
-    format!("{subject},{count}")
-}
-
-/// The conditional-compilation ATTRIBUTE prefix, split so this file never
-/// carries a contiguous outer cfg-test attribute (several evals accept "an outer
-/// cfg-test attribute inside the file" as a scan-exclusion justification, and
-/// spelling one here would silently move this file onto that justification).
-fn rb65_nd_cfg_attr() -> String {
-    concat!("#[c", "fg").to_string()
-}
-
-/// The `cfg!(` MACRO form, split for the same reason. Banned outright: it is the
-/// same defeat in an expression position — a branch always taken on the host and
-/// never in the wasm — and it is invisible to the attribute count.
-fn rb65_nd_cfg_macro() -> String {
-    concat!("c", "fg!(").to_string()
-}
-
-/// The ONE sanctioned cfg attribute in accounts.rs, squashed: the cfg-test-gated
-/// `#[path]` parent declaration of THIS module. Assembled from fragments so the
-/// token sequence is never spelled contiguously here.
-fn rb65_accounts_trailer_pin() -> String {
-    [
-        concat!("#[c", "fg(test)]"),
-        concat!("#[pa", "th=]"),
-        concat!("mod", "accounts_tests;"),
-    ]
-    .concat()
-}
-
-/// X1 (emission): `account_deletion_reaper` emits EXACTLY ONE observation of the
-/// completed cascade, and it is the TERMINAL statement of the reducer.
-///
-/// EVERY CLAUSE HAS ITS OWN PINNED MESSAGE. Coarse mutants only ever prove the
-/// FIRST assertion — `expect()` throws on first failure — so every later clause
-/// is written to be attributable by FAILURE MESSAGE under a surgical mutant of
-/// its own. (No count is stated here on purpose: the Kills list below IS the
-/// inventory, and a numeral in this paragraph is one more thing to leave stale.)
-///
-/// THREE GROUPS ARE ROUND-2 ADDITIONS, and each closes a MEASURED CI-clean
-/// survivor of the round-1 set rather than restating one of its clauses: (3')
-/// the function-pointer emission channel, and (8b) / (8c) the two early-exit
-/// channels that make the whole cascade unreachable while every position-based
-/// clause here stays green. Three of the assertions inside those groups are
-/// deliberately SUBSUMED by their neighbours and say so in their own messages —
-/// they are attribution, not teeth (the m22s4_reducer_statement_order
-/// precedent).
-///
-/// Kills (first killer of each, in clause order):
-///   (0) a SECOND declaration of either reducer, which would steer both scoped
-///       body reads at whichever one the first-hit extractor finds;
-///   (0') the scheduler-only guard deleted or demoted from the first statement,
-///       which lets ANY client invoke this reducer with a hand-built schedule
-///       row naming any victim — this is the security payload the frozen-body
-///       re-freeze must not lose (auditor C6);
-///   (1) the emission dropped entirely — the pre-fix state, and the shape every
-///       other clause here is silent about;
-///   (2) the emission relocated out of the cascade into a third body, or a THIRD
-///       emission added anywhere: the file-wide count moves 1 -> 2 in this slice,
-///       and a bare bump is a strict loosening, so it is paid for per body;
-///   (2') an ALIASING import (`use crate::observability::mr_log as note;`)
-///       followed by a call through the alias, which is invisible to the
-///       fully-qualified needle;
-///   (3) the emission written through `mr_log_breadcrumb`, which adds a `cause`
-///       that duplicates the subject and pulls the m20e trace-pair machinery
-///       (G9f/G9h) into a causeless INFO line;
-///   (3') a FUNCTION-POINTER emission channel — MEASURED: a `fn(&str, &str)`
-///       binding of the blessed wrapper, planted in `rekey_all` and invoked
-///       through the local name. It spells no opening paren after the
-///       identifier and no `as`-renamed import, so (2), (2') and the alias ban
-///       are all green on it while a second, unreviewed event ships;
-///   (4) a conditional-compilation attribute anywhere in accounts.rs: the
-///       published wasm then emits NOTHING while `just lint` (a HOST build),
-///       every Rust test and every eval agree the code is present — CI never
-///       builds the server-module wasm, so no other gate can see the difference.
-///       The file-wide count of one also closes the PoC'd
-///       `#[cfg_attr(not(test), cfg(any()))]` shape, which a per-statement
-///       look-back reads as an unrelated attribute;
-///   (5) the emission moved anywhere but last; the evt supplied through a `const`
-///       or a `concat!`; the count argument re-derived
-///       (`export_chunks.saturating_sub(1)`, or the literal `0`) — both measured
-///       clippy-clean survivors of every other clause here;
-///   (6) the four cascade-tail statements reordered while each still occurs once;
-///   (7) the emission nested one brace deep (a conditional emission is a
-///       conditional audit record);
-///   (8) a `return` inserted between the purge binding and the trailing `Ok(())`,
-///       which makes the emission dead code or adds an exit that skips it while
-///       every POSITION-based clause above stays green;
-///   (8b) an early exit planted ABOVE the cascade — MEASURED as a file-scope
-///       `const OBSERVE: bool = false;` plus an `if !OBSERVE { .. }` return,
-///       with the frozen-body literal REGENERATED around it. Clause (8)'s
-///       region starts at the purge binding and cannot see it; the equality
-///       backstop moved with the code. The whole-body exit census is
-///       transcribed from ADR-0228 D2 rather than from that literal, so a
-///       regeneration cannot move it;
-///   (8c) a `?` early exit anywhere in the body — a second exit channel that
-///       spells no `return` token at all, so (8) and (8b) are both blind to it.
-///       Every delegated step is `-> ()` (ADR-0228 D1), so the sanctioned body
-///       carries zero and the ban can be total;
-///   (9) a `let export_chunks = 0;` (or `let fields = ..;`) rebind, which
-///       re-points a textually PERFECT emission at a constant while the purge
-///       still runs.
-#[test]
-fn rb65_reaper_emits_one_cascade_observation() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let reaper_decl = rb24_nd_reaper_decl();
-    let claim_decl = nd_complete();
-
-    // --- (0) DECLARATION UNIQUENESS, before any scoped read ------------------
-    for (what, decl) in [
-        ("account_deletion_reaper", reaper_decl.as_str()),
-        ("complete_guest_claim", claim_decl.as_str()),
-    ] {
-        let n = m22_count_occurrences(&squashed, decl);
-        assert_eq!(
-            n, 1,
-            "rb65 [emit/decl-unique]: accounts.rs must declare `{decl}` ({what}) EXACTLY once; \
-             found {n}. `extract_squashed_fn_body` binds the FIRST hit, so a SECOND definition of \
-             this name — a decoy planted above the real one — steals the scope of every body-read \
-             clause below and leaves the shipped reducer entirely ungated while this test still \
-             reports green over the decoy."
-        );
-    }
-
-    let body = extract_squashed_fn_body(&squashed, &reaper_decl)
-        .expect("rb65 [emit/scope]: fn account_deletion_reaper not found in accounts.rs");
-
-    // --- (0') THE SCHEDULER GUARD IS STILL THE FIRST STATEMENT ---------------
-    // rb-65 re-freezes `rb24_frozen_reaper_body`, and the guard is that
-    // literal's first fragment. An exact-equality pin that silently lost its
-    // prefix would be green on a body any client can invoke with a hand-built
-    // schedule row, so the guard is asserted HERE too, independently of the
-    // frozen literal (reducer-security-auditor C6).
-    let guard = scheduler_guard_needle();
-    let n_guard = m22_count_occurrences(body, &guard);
-    assert_eq!(
-        n_guard, 1,
-        "rb65 [emit/guard-once]: the deletion reaper must carry the rejecting scheduler guard \
-         `{guard}` EXACTLY once; found {n_guard}. ZERO means this scheduled reducer is directly \
-         invocable by any client, with a client-authored `AccountDeletionReaperSchedule` naming \
-         any victim — the ADR-0195 D6 struct-argument carve-out's entire precondition. TWO is \
-         either dead code or a decoy that steers a first-hit anchored scan."
-    );
-    assert!(
-        body.starts_with(guard.as_str()),
-        "rb65 [emit/guard-first]: the rejecting scheduler guard must be the reaper's FIRST \
-         statement. A guard placed after any other statement is a guard that runs after that \
-         statement has already run for an unauthenticated caller. This clause exists because \
-         rb-65 re-freezes the reaper's exact-equality body pin: a re-freeze that quietly dropped \
-         the guard prefix would leave that pin green on a body with no authorization at all."
-    );
-
-    // --- (1) exactly one emission inside this reducer ------------------------
-    let emit = rb40_nd_mr_log();
-    let n_body = m22_count_occurrences(body, &emit);
-    assert_eq!(
-        n_body, 1,
-        "rb65 [emit/count-in-fn]: account_deletion_reaper must call `{emit}` EXACTLY once; found \
-         {n_body}. ZERO is the pre-fix state this slice exists to close: fifteen irreversible \
-         erase/anonymize steps and the PRV1-6e terminal stamp run and leave NO signal anywhere, \
-         so an erasure audit cannot tell a cascade that ran from one that never fired — and the \
-         export purge's returned count (rb-40) is discarded on this path. MORE THAN ONE is a \
-         second, unreviewed emission of the same event, which doubles every operator count of it."
-    );
-
-    // --- (2) exactly TWO emissions in the WHOLE file, ATTRIBUTED PER BODY ----
-    // WIDENED 1 -> 2 by this slice. A bare bump is a strict LOOSENING: either
-    // emission could then move anywhere in the file. The compensation is the
-    // m22s3b 1->2 purge-widening precedent (:10670) — each body pinned to
-    // EXACTLY ONE emission, and the remainder asserted zero as arithmetic.
-    let n_file = m22_count_occurrences(&squashed, &emit);
-    assert_eq!(
-        n_file, 2,
-        "rb65 [emit/count-in-file]: accounts.rs must name `{emit}` EXACTLY twice; found \
-         {n_file}. The two sanctioned sites are the rb-40 claim-time purge line inside \
-         complete_guest_claim and the rb-65 cascade line inside account_deletion_reaper. A THIRD \
-         call is an emission no ceremony reviewer sees; ONE means one of the two was deleted \
-         while the other kept the file-wide count plausible."
-    );
-    let claim_body = extract_squashed_fn_body(&squashed, &claim_decl)
-        .expect("rb65 [emit/claim-scope]: fn complete_guest_claim not found in accounts.rs");
-    let n_claim = m22_count_occurrences(claim_body, &emit);
-    assert_eq!(
-        n_claim, 1,
-        "rb65 [emit/count-in-claim]: complete_guest_claim must still call `{emit}` EXACTLY once; \
-         found {n_claim}. This clause is what pays for the file-wide widening above: without it, \
-         `two somewhere` is satisfied by BOTH emissions living in the cascade (or in `rekey_all`, \
-         the measured hiding place) while the rb-40 claim-time observation is gone."
-    );
-    let scoped = n_body + n_claim;
-    assert_eq!(
-        n_file - scoped,
-        0,
-        "rb65 [emit/count-elsewhere]: accounts.rs names `{emit}` {n_file} time(s) and the two \
-         reviewed bodies account for {scoped}, leaving {} elsewhere. An emission outside both \
-         ceremonies publishes a privacy-audit record from a flow neither set of reviewers ever \
-         saw. Expressed as arithmetic on purpose: a MOVED site cannot hide behind the total, and \
-         a third site cannot hide behind the per-body counts.",
-        n_file - scoped
-    );
-
-    // --- (2') the alias channel ---------------------------------------------
-    let bare = concat!("mr_", "log(");
-    let n_bare = m22_count_occurrences(&squashed, bare);
-    assert_eq!(
-        n_bare, n_file,
-        "rb65 [emit/alias-unqualified]: accounts.rs spells the bare emission token `{bare}` \
-         {n_bare} time(s) but the FULLY QUALIFIED form `{emit}` only {n_file} time(s). The \
-         difference is a call reached through a local import — every count clause above keys on \
-         the qualified spelling, so an unqualified call is a third emission channel none of them \
-         can see."
-    );
-    let aliased = concat!("mr_", "logas");
-    assert_eq!(
-        m22_count_occurrences(&squashed, aliased),
-        0,
-        "rb65 [emit/alias-import]: accounts.rs carries `{aliased}` — an aliasing import of the \
-         blessed wrapper (`use crate::observability::mr_log as note;` squashes to exactly this). \
-         The rb-40 OBS-2 ratchet bans only the EXTERNAL log crate's imports, never a re-export of \
-         our own wrapper, so an alias emits an identical line through a name no census here counts."
-    );
-
-    // --- (3) never the breadcrumb form ---------------------------------------
-    let breadcrumb = rb40_nd_mr_log_breadcrumb();
-    let n_bc = m22_count_occurrences(&squashed, &breadcrumb);
-    assert_eq!(
-        n_bc, 0,
-        "rb65 [emit/no-breadcrumb]: accounts.rs names `{breadcrumb}` {n_bc} time(s); zero is \
-         allowed. The cascade line has no CAUSE that is not already the subject field, so a \
-         breadcrumb would duplicate the subject into a second key and put this module on the m20e \
-         trace-pair surface (G9f/G9h scan call sites for paired enter/exit literals) for a single \
-         causeless INFO line. `mr_log` is the blessed no-breadcrumb form."
-    );
-
-    // --- (3') THE BARE IDENTIFIER CENSUS (artifact red-team S4) --------------
-    // Every emission census above keys on a spelling that ends in an OPENING
-    // PAREN, and a function POINTER never has one. This clause counts the bare
-    // identifier instead and requires it to equal the qualified CALL count.
-    // It is placed after the breadcrumb clause because that clause has just
-    // proved the ONE other identifier containing this substring is absent, so
-    // the two numbers can be compared as equals rather than as a bound.
-    let ident_only = concat!("mr_", "log");
-    let n_ident = m22_count_occurrences(&squashed, ident_only);
-    assert_eq!(
-        n_ident, n_file,
-        "rb65 [emit/fn-pointer]: accounts.rs names the bare identifier `{ident_only}` {n_ident} \
-         time(s) but performs only {n_file} qualified CALL(s) of `{emit}`. The difference is an \
-         emission reached without ever spelling a call site: MEASURED as `let emit: fn(&str, \
-         &str) = crate::observability::mr_log;` bound inside `rekey_all` and invoked through the \
-         local name. It spells no opening paren after the identifier and no `as`-renamed import, \
-         so the file-wide count, the per-body attribution, the unqualified-call clause and the \
-         alias-import ban all stay GREEN while a second, unreviewed event is published from a \
-         helper neither ceremony's reviewers scope. The two counts are comparable as EQUALS \
-         because `{breadcrumb}` — the one other identifier carrying this substring — is asserted \
-         ZERO by the clause immediately above; if that ban is ever relaxed, this equality must be \
-         re-derived in the same change."
-    );
-
-    // --- (4) FILE-WIDE conditional-compilation census ------------------------
-    let cfg_attr = rb65_nd_cfg_attr();
-    let n_cfg = m22_count_occurrences(&squashed, &cfg_attr);
-    assert_eq!(
-        n_cfg, 1,
-        "rb65 [emit/cfg-count]: accounts.rs must carry EXACTLY ONE `{cfg_attr}` attribute; found \
-         {n_cfg}. A conditional-compilation attribute anywhere else in this module ships \
-         production code that a host build, `just lint`, every Rust test and every eval all agree \
-         is present — while the wasm the database actually runs has it compiled out. CI does not \
-         build the server-module wasm, so no gate other than this count can see the difference. \
-         A file-wide count of ONE also subsumes the `#[cfg_attr(not(test), cfg(any()))]` shape, \
-         which a per-statement look-back for `#[cfg(` reads as an unrelated attribute."
-    );
-    assert!(
-        squashed.contains(rb65_accounts_trailer_pin().as_str()),
-        "rb65 [emit/cfg-identity]: the single cfg attribute in accounts.rs must BE the \
-         cfg-test-gated `#[path]` declaration of this very module. Counting to one without saying \
-         WHICH one is satisfied by deleting that parent declaration (which silently deletes every \
-         test in this file) and adding a cfg twin somewhere in the shipped code."
-    );
-    let cfg_macro = rb65_nd_cfg_macro();
-    assert_eq!(
-        m22_count_occurrences(&squashed, &cfg_macro),
-        0,
-        "rb65 [emit/cfg-macro]: accounts.rs spells `{cfg_macro}`. The macro form is the same \
-         defeat in an EXPRESSION position — a branch always taken on the host and never in the \
-         wasm — and it is invisible to the attribute count above."
-    );
-
-    // --- (5) THE EMISSION IS THE TERMINAL STATEMENT --------------------------
-    let tail = rb65_frozen_emit_tail();
-    let n_chars = body.chars().count();
-    let shown: String = body.chars().skip(n_chars.saturating_sub(240)).collect();
-    assert!(
-        body.ends_with(tail.as_str()),
-        "rb65 [emit/terminal]: the squashed body of account_deletion_reaper must END with \
-         `{tail}`. A SpacetimeDB host log line is written as the reducer runs and SURVIVES a \
-         later panic or Err rollback, while the fifteen delegated calls and the terminal stamp \
-         do not — so an emission with any fallible statement after it can record a completed \
-         cascade for a transaction that rolled back, which is worse than no signal. This one \
-         clause also pins: the statement FORM (a bare statement, not a closure or iterator \
-         operand, both of which sit at brace depth 0 and never run); the BARE string-literal evt \
-         (a `const` or a `concat!` leaves identifier bytes where the blanked literal must leave a \
-         bare comma); the fragment builder's ARGUMENT TEXT, which is the only clause in this \
-         slice that kills `cascade_fields(args.account_identity, export_chunks.saturating_sub(1))` \
-         and `cascade_fields(args.account_identity, 0)` — both measured clippy-clean; and that \
-         NOTHING runs after the emission. Body tail read: {shown:?}"
-    );
-
-    // --- (6) ordering, COUNT BEFORE INDEX on every anchor --------------------
-    let purge_bind = rb65_nd_purge_binding();
-    let update = m22s3b_nd_account_update();
-    let fields_bind = rb65_nd_fields_binding();
-    for (what, needle) in [
-        ("the bound export purge", purge_bind.as_str()),
-        ("the PRV1-6e terminal account update", update.as_str()),
-        ("the fragment-builder binding", fields_bind.as_str()),
-    ] {
-        let n = m22_count_occurrences(body, needle);
-        assert_eq!(
-            n, 1,
-            "rb65 [emit/anchor-once]: {what} (`{needle}`) must occur EXACTLY once in the reaper \
-             body; found {n}. The ordering clauses below take FIRST-hit offsets, so a decoy \
-             second occurrence steers them at a statement nobody reviewed — and zero would make \
-             every one of them compare a missing position."
-        );
-    }
-    let at_purge = idx(body, &purge_bind);
-    let at_update = idx(body, &update);
-    let at_fields = idx(body, &fields_bind);
-    let at_emit = idx(body, &emit);
-    let at_ok = body
-        .rfind(concat!("Ok", "(())"))
-        .expect("rb65 [emit/order-ok]: account_deletion_reaper must end in Ok(())");
-    assert!(
-        at_purge < at_update,
-        "rb65 [emit/order-purge-update]: the bound export purge (offset {at_purge}) must precede \
-         the PRV1-6e terminal account update (offset {at_update}). Spec para 4.4 stamps \
-         `terminal_at_ms` only after every erase step has returned; a purge below the stamp \
-         leaves a row that reads as fully deleted with its export bundle still present."
-    );
-    assert!(
-        at_update < at_fields,
-        "rb65 [emit/order-update-fields]: the terminal account update (offset {at_update}) must \
-         run BEFORE the fragment is built (offset {at_fields}). The update is the last statement \
-         in this reducer that can still fail, and the line is a best-effort host signal that \
-         survives a rollback — so a fragment built (and a line emitted) above it can report a \
-         completed cascade for a transaction that never committed."
-    );
-    assert!(
-        at_fields < at_emit,
-        "rb65 [emit/order-fields-emit]: the fragment binding (offset {at_fields}) must precede \
-         the emission (offset {at_emit}); an emission above its own binding does not compile \
-         today, and this clause is what keeps that true if the binding is ever hoisted into a \
-         branch."
-    );
-    assert!(
-        at_emit < at_ok,
-        "rb65 [emit/order-emit-ok]: the emission (offset {at_emit}) must precede the trailing \
-         Ok(()) (offset {at_ok})."
-    );
-
-    // --- (7) brace depth 0 (no conditional, no closure, no nested block) -----
-    let depth = rb24_brace_depth(&body[..at_emit]);
-    assert_eq!(
-        depth, 0,
-        "rb65 [emit/depth0]: the emission sits at brace depth {depth} inside \
-         account_deletion_reaper, not at the top level of the fn body. A conditional emission is \
-         a conditional audit record: an `if export_chunks > 0` guard keeps every count, ordering \
-         and containment clause green while the ZERO-bundle cascade — the exact negative an \
-         erasure audit needs to distinguish `this account had nothing to purge` from `the cascade \
-         never ran` — is silent."
-    );
-
-    // --- (8) REACHABILITY from the purge binding to the trailing Ok ----------
-    // The region STARTS at the purge binding on purpose: this reducer
-    // legitimately carries two depth-0 `return Ok(());` exits ABOVE the cascade
-    // (the missing-row lookup and the not-yet-due re-arm branch). The PREFIX is
-    // pinned by the rb-24 frozen-body equality, which is why rb-65 re-freezes
-    // that literal instead of adding a tail-only pin here.
-    let region = &body[at_purge..at_ok];
-    assert!(
-        !rb24_has_return_token(region),
-        "rb65 [emit/reachable]: a `return` token sits between the bound export purge and the \
-         trailing Ok(()). Below the PRV1-5 recheck the cascade is straight-line by design — every \
-         no-op exit is above it — so a return here either makes the emission dead code or adds an \
-         exit that skips it, while the count, cfg, terminal, ordering and depth clauses above all \
-         stay GREEN because every one of them reasons about POSITION and none about REACHABILITY. \
-         Region text: {region:?}"
-    );
-
-    // --- (8b) THE WHOLE-BODY `return` CENSUS (artifact red-team S1) ----------
-    // MEASURED CI-CLEAN SURVIVOR of every clause above, the one immediately
-    // preceding this included: a file-scope `const OBSERVE: bool = false;` plus
-    // an `if !OBSERVE { return Ok(()); }` planted directly above the first
-    // delegated call, with `rb24_frozen_reaper_body` REGENERATED to carry the
-    // new fragment. The region clause above starts at the PURGE BINDING and
-    // cannot see an exit planted higher; clause (0') only re-asserts the guard;
-    // and the equality backstop moves with the code, which is precisely what
-    // the two-transcription rule warns about. The published reducer then no-ops
-    // every cascade — no erase, no terminal stamp, no line — while the suite
-    // and clippy stay green.
-    //
-    // THE FIX IS A CENSUS OF THE WHOLE BODY, transcribed from ADR-0228 D2's
-    // three sanctioned exits rather than derived from the frozen literal, so
-    // regenerating that literal cannot move it.
-    let body_bytes = body.as_bytes();
-    let mut returns = 0usize;
-    let mut first_return: Option<usize> = None;
-    let mut scan = 0usize;
-    while let Some(rel) = body[scan..].find("return") {
-        let at = scan + rel;
-        // Word boundary on the LEFT ONLY, exactly as rb24_has_return_token
-        // documents: squash_ws fuses `return Err(..)` into `returnErr(`, so a
-        // right-hand boundary would blind this to the very shape it counts.
-        if at == 0 || !is_word_byte(body_bytes[at - 1]) {
-            returns += 1;
-            if first_return.is_none() {
-                first_return = Some(at);
-            }
-        }
-        scan = at + "return".len();
-    }
-    assert_eq!(
-        returns, 3,
-        "rb65 [emit/return-census]: the deletion reaper body must carry EXACTLY three `return` \
-         tokens; found {returns}. ADR-0228 D2 sanctions three and only three exits, all of them \
-         ABOVE the cascade: the scheduler-guard reject, the missing-row no-op, and the \
-         not-yet-due re-arm. A FOURTH is an early exit that skips every erase step, the PRV1-6e \
-         terminal stamp and the observation line at once — MEASURED as a file-scope `const \
-         OBSERVE: bool = false;` plus an `if !OBSERVE {{ return Ok(()); }}` above the first \
-         delegated call, with the frozen-body literal regenerated around it. The reachability \
-         clause above starts at the purge binding and cannot see an exit planted higher, and the \
-         equality backstop moves with the code. This census is transcribed from the plan's exit \
-         list rather than from that literal, which is what makes it independent of a \
-         regeneration."
-    );
-    assert_eq!(
-        m22_count_occurrences(body, concat!("returnEr", "r(")),
-        1,
-        "rb65 [emit/return-err-shape]: exactly ONE of the reaper's three exits may be an `Err` — \
-         the scheduler-only reject, which is the entire precondition of the ADR-0195 D6 \
-         struct-argument carve-out. A second `Err` exit aborts a transaction that has already \
-         begun erasing rows, from a branch nobody reviewed; ZERO means the guard stopped \
-         rejecting while still spelling the comparison."
-    );
-    // MOSTLY SUBSUMED, and saying so is the point: given a total of three and
-    // exactly one `Err`, the other two exits are non-`Err` by arithmetic. What
-    // this clause adds is their exact SPELLING — a `return Ok(())` without its
-    // semicolon, or a turbofished `return Ok::<(), String>(())`, is the same
-    // Rust and a different byte sequence, and every squashed pin in this file
-    // is a byte sequence. Kept as ATTRIBUTION (the m22s4_reducer_statement_order
-    // precedent) so a reshuffled exit set reds with a number rather than with a
-    // 240-byte tail dump.
-    assert_eq!(
-        m22_count_occurrences(body, concat!("returnO", "k(());")),
-        2,
-        "rb65 [emit/return-ok-shape]: exactly TWO of the reaper's three exits may be a silent \
-         `Ok(())`, spelled exactly so — the missing-row no-op and the not-yet-due re-arm; found \
-         {}. Given the census and the `Err` clause above this is arithmetic rather than a new \
-         fact, and it is kept for ATTRIBUTION: what it adds on its own is the exact SPELLING of \
-         the two silent exits, because a semicolon-less `return Ok(())` or a turbofished \
-         `Ok::<(), String>` is the same Rust and a different byte sequence — and every squashed \
-         pin in this file, this one included, compares byte sequences.",
-        m22_count_occurrences(body, concat!("returnO", "k(());"))
-    );
-    // ATTRIBUTION, NOT AN INDEPENDENT TOOTH, and saying so is the point (the
-    // m22s4_reducer_statement_order precedent for a deliberately subsumed
-    // clause). Clause (0') already proves the body STARTS with the guard, and
-    // the guard needle ENDS in a `return` token — so the first exit's offset is
-    // a THEOREM of that clause rather than a new fact. It is asserted anyway
-    // because assertions are first-failure-wins: a body whose exits have been
-    // reshuffled reds HERE naming the offset, instead of reding on a 240-byte
-    // tail dump the reader has to diff by eye.
-    assert_eq!(
-        first_return,
-        Some(guard.len() - "return".len()),
-        "rb65 [emit/return-first]: the FIRST `return` token in the reaper body must be the \
-         scheduler guard's own, at offset {} — the guard needle ENDS in that token and clause (0') \
-         has already proved the body STARTS with the guard, so this clause is a restatement of \
-         those two facts kept for ATTRIBUTION. A first exit anywhere else is a statement that \
-         runs BEFORE the authorization check, on behalf of a caller the guard has not yet \
-         rejected.",
-        guard.len() - "return".len()
-    );
-
-    // --- (8c) NO `?` OPERATOR ANYWHERE IN THE REAPER BODY (red-team S2) -----
-    // A SECOND measured early-exit channel, and one that spells no `return`
-    // token at all, so both reachability clauses above are blind to it by
-    // construction. The ban is TOTAL rather than region-scoped because it can
-    // be: all fifteen delegated steps are `-> ()` by ADR-0228 D1 and both
-    // recheck seams are pure, so the sanctioned body carries ZERO `?` today.
-    let n_try = body.matches('?').count();
-    assert_eq!(
-        n_try, 0,
-        "rb65 [emit/no-try]: the deletion reaper body contains {n_try} `?` operator(s); ZERO is \
-         allowed. Every delegated cascade step returns `()` (ADR-0228 D1) and both recheck seams \
-         are pure, so a `?` here is necessarily NEW — and it is an early exit that spells no \
-         `return` token, which is why the two reachability clauses above cannot see it. MEASURED: \
-         `u32::try_from(export_chunks).map_err(|e| e.to_string())?;` planted between the purge \
-         binding and the character sweep is clippy-clean, keeps every count, ordering, depth and \
-         equality clause green, and aborts the cascade mid-way on any Err — leaving a partially \
-         erased account with no terminal stamp and no line. If a fallible step is ever \
-         legitimately added here, this clause must be re-derived consciously, in the same change \
-         as the ADR-0228 D1 amendment that permits it."
-    );
-
-    // --- (9) neither local is shadowed or rebound ----------------------------
-    for (what, bind, why) in [
-        (
-            "export_chunks",
-            concat!("letexport", "_chunks"),
-            "a second binding — `let export_chunks = 0;` inserted anywhere above the emission — \
-             re-points a textually PERFECT emission at a constant: the count, statement-form, \
-             ordering, depth and reachability clauses are all satisfied, the code is clippy-clean, \
-             and the line then reports zero purged bundles for every deletion",
-        ),
-        (
-            "fields",
-            concat!("letfie", "lds"),
-            "a second binding re-points the emission at a fragment built from other values \
-             entirely, which the strings-blanked terminal pin cannot see because it reads only \
-             the LAST binding's argument text",
-        ),
-    ] {
-        let n = m22_count_occurrences(body, bind);
-        assert_eq!(
-            n, 1,
-            "rb65 [emit/no-rebind]: account_deletion_reaper binds `{what}` {n} time(s); exactly \
-             ONE is allowed. {why}. This is the rb-22 `let guest = me;` shadow finding applied to \
-             the values that make this line observability rather than decoration."
-        );
-    }
-}
-
-/// X1 (data dependency): the number the cascade line carries IS the count
-/// `purge_export_bundles` returned, for the identity the SCHEDULER supplied.
-///
-/// The emission clauses above pin WHERE the line is written; this one pins that
-/// the count in it came from the purge at all. Before rb-65 the cascade
-/// DISCARDED that return value (privacy.rs's helper doc said so in as many
-/// words), so the site had no data dependency on the purge whatsoever.
-///
-/// Kills: the purge left as a bare statement with a hard-coded count, which
-///        leaves the whole-file purge census at 2 and every rb-22 / m22-s3b
-///        clause green;
-///        the call re-argued at a local binding instead of
-///        `args.account_identity` — one re-pointed `let` above the cascade would
-///        retarget the purge at another account while the call site still reads
-///        correctly (ADR-0228 RT-3, and the reason the subject is spelled out at
-///        all fifteen delegated call sites);
-///        the binding moved out of the reducer into a helper, where neither the
-///        cascade's reviewers nor this test can see it;
-///        the call demoted from a statement to an operand of a closure or an
-///        iterator adaptor, both of which sit at brace depth 0 and never run.
-#[test]
-fn rb65_reaper_binds_the_purge_result() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let body = extract_squashed_fn_body(&squashed, &rb24_nd_reaper_decl())
-        .expect("rb65 [bind/scope]: fn account_deletion_reaper not found in accounts.rs");
-    let binding = rb65_nd_purge_binding();
-    let n = m22_count_occurrences(body, &binding);
-    assert_eq!(
-        n, 1,
-        "rb65 [bind/statement]: account_deletion_reaper must contain the bare statement \
-         `{binding}` EXACTLY once; found {n}. Three things are pinned at once and each is a \
-         distinct wrong implementation: the RESULT IS BOUND (an unbound call leaves the line with \
-         no data dependency on the purge, so it reports a constant and observes nothing — the \
-         pre-fix state); the ARGUMENT is the SCHEDULER-supplied identity spelled out in full, not \
-         a local binding one edit could re-point at another account; and the call is a bare \
-         STATEMENT at a statement boundary, not an operand of a closure or an iterator adaptor."
-    );
-}
-
-/// X1 (the payload): the cascade evt token and the fragment literal are pinned by
-/// value, and the fragment smuggles no reserved envelope key and no PII.
-///
-/// Read over the strings-KEPT view — the ONLY view in which literal CONTENT
-/// survives at all (`stripped_for_scan` blanks it, which is why the terminal pin
-/// above reads `mr_log(,&fields)`) — PLUS one clause over RAW, whitespace-
-/// PRESERVING source, because every squashed view in this file deletes
-/// whitespace INSIDE string literals too.
-///
-/// AM6 (observability.rs:82-87) makes a reserved key a debug-time panic, but the
-/// release wasm compiles that assert out, so the static ban is what holds in
-/// production: downstream JSON parsing is last-key-wins, and a smuggled `evt`
-/// would silently forge the event type of a privacy-audit line.
-///
-/// Kills: the evt renamed or misspelled (an operator alert keyed on the name
-///        goes silent, and nothing else in the tree reds);
-///        the evt spelled twice (a second, unreviewed site);
-///        an INTERIOR-WHITESPACE evt — one space between `account_deletion` and
-///        `_cascade` inside the literal — which is byte-identical to the
-///        sanctioned spelling in every squashed view in this file, and therefore
-///        CI-clean without the raw-source clause;
-///        the fragment reshaped: an unquoted identity (invalid JSON as soon as
-///        the hex does not parse as a number), a QUOTED count (numerically
-///        uncomparable in every panel and alert), a renamed key, a reordered pair;
-///        a fragment that smuggles `evt` / `cause` / `sched` / `phase`;
-///        a fragment that adds `name` / `auth_issuer` / `claimed_from` /
-///        `display` — the PRV1-17/20 player-authored and provider fields, which
-///        this line must never carry precisely because it names an account that
-///        has just been erased.
-#[test]
-fn rb65_evt_and_fragment_literals_are_pinned() {
-    let kept = stripped_keep_strings(ACCOUNTS_RS);
-
-    let call = rb65_kept_emit_call();
-    let n_call = m22_count_occurrences(&kept, &call);
-    assert_eq!(
-        n_call, 1,
-        "rb65 [evt/call]: accounts.rs must contain the emission `{call}` EXACTLY once; found \
-         {n_call}. This is the strings-KEPT twin of the terminal pin: it is the only view in \
-         which the evt literal exists at all, so it is the only clause that can tell the \
-         sanctioned event name from any other."
-    );
-
-    let evt = rb65_evt();
-    let n_evt = m22_count_occurrences(&kept, &evt);
-    assert_eq!(
-        n_evt, 1,
-        "rb65 [evt/unique]: the evt token `{evt}` occurs {n_evt} time(s) in accounts.rs; exactly \
-         ONE is allowed. Zero means the event was renamed and every operator alert, dashboard \
-         query and `just logs` grep keyed on it goes silent with no other gate reddening. Two \
-         means a second site emits the same event name from a flow this slice never reviewed."
-    );
-
-    // --- the RAW-source, whitespace-PRESERVING clause ------------------------
-    let raw_evt = rb65_raw_evt_literal();
-    let n_raw = m22_count_occurrences(ACCOUNTS_RS, &raw_evt);
-    assert_eq!(
-        n_raw, 1,
-        "rb65 [evt/raw]: the quoted evt literal `{raw_evt}` must occur EXACTLY once in the RAW \
-         text of accounts.rs; found {n_raw}. Every other view in this file runs `squash_ws`, \
-         which deletes whitespace INSIDE string literals as well as between tokens — so a \
-         literal carrying an interior space between `account_deletion` and `_cascade` is \
-         byte-identical to the sanctioned one in the kept-strings view, and would ship a \
-         differently named event with every count clause above green (MEASURED). This clause \
-         reads the source before any stripping, so it is the only one that can see the \
-         difference. NOTE FOR A LEGITIMATE FAILURE: this count includes COMMENTS, so a doc \
-         comment that needs to name the event must spell it WITHOUT its quote delimiters."
-    );
-
-    let fragment = rb65_fragment_literal();
-    let n_fragment = m22_count_occurrences(&kept, &fragment);
-    assert_eq!(
-        n_fragment, 1,
-        "rb65 [evt/fragment]: accounts.rs must carry the fragment format string `{fragment}` \
-         EXACTLY once; found {n_fragment}. The shape is the contract: the erased identity is \
-         QUOTED (Identity Display is fixed-width lowercase hex — structurally quote-free, but a \
-         bare hex value is not valid JSON as a number), the bundle count is UNQUOTED (a quoted \
-         count cannot be compared numerically in a panel or an alert), the keys are `subject` and \
-         `export_bundle`, and they appear in that order. `subject` is deliberately NOT `account`: \
-         ADR-0243 D4 reserves the manifest helper nouns for the deferred per-step counts, and \
-         `account` is one of them (the 6e stamp)."
-    );
-
-    let fields_scope = extract_squashed_fn_body(&kept, &rb65_nd_cascade_fields_fn());
-    let fields_body = fields_scope.unwrap_or_else(|| {
-        panic!(
-            "rb65 [evt/fields-scope]: fn cascade_fields was not found in accounts.rs (or its \
-             body is not brace-balanced), so every ban below would run over an arbitrary span \
-             and pass VACUOUSLY."
-        )
-    });
-    assert_eq!(
-        m22_count_occurrences(fields_body, &fragment),
-        1,
-        "rb65 [evt/fragment-scope]: the fragment literal must live INSIDE cascade_fields. A \
-         whole-file count is satisfied by the same text sitting in a doc example or a decoy \
-         helper while the builder itself renders something else."
-    );
-
-    for (needle, why) in [
-        (
-            "evt",
-            "the envelope's OWN event key (AM6). The fragment is interpolated verbatim after it, \
-             and downstream JSON parsing is last-key-wins, so a second `evt` silently forges the \
-             event type of a privacy-audit line",
-        ),
-        (
-            "cause",
-            "a reserved breadcrumb key (AM6) — a duplicate would forge a trace-pair cause",
-        ),
-        (
-            "sched",
-            "a reserved breadcrumb key (AM6) — a duplicate would forge scheduled-work \
-             attribution, and this line IS emitted from a scheduled reducer",
-        ),
-        (
-            "phase",
-            "a reserved breadcrumb key (AM6) — a duplicate would forge an enter/exit trace pair \
-             that the m20e G9 scanners then pair against nothing",
-        ),
-        (
-            "name",
-            "a player-authored value (PRV1-17/20). The cascade anonymizes display names in step \
-             6c; carrying one INTO the line that records the erasure would copy the value into a \
-             second, longer-lived store the erasure does not reach",
-        ),
-        (
-            "auth_issuer",
-            "the OAuth provider the person signed in with — the ONE PII field step 6c tombstones \
-             on the account row itself. Logging it at the moment it is erased defeats the erasure",
-        ),
-        (
-            "claimed_from",
-            "the AUTH-21 provenance column. It persists the guest-to-claimer linkage on a row \
-             the cascade deliberately retains; repeating it in a log line spreads that linkage to \
-             a store nobody erases",
-        ),
-        (
-            "display",
-            "a display-name field family (ranking / profile), all of them player-authored",
-        ),
-    ] {
-        assert!(
-            !fields_body.contains(needle),
-            "rb65 [evt/fragment-keys]: the cascade_fields body names `{needle}` — {why}. The \
-             sanctioned fragment carries exactly two keys, `subject` (the SUBJECT of the erasure, \
-             which is what an audit is keyed on) and `export_bundle` (the one delegated step with \
-             a count today), and nothing else. Body read: {fields_body:?}"
-        );
-    }
-}
-
-/// X1 (purity, source scan): `cascade_fields` is a PURE private fn — no context,
-/// no table read, no write, no emission of its own.
-///
-/// A SOURCE SCAN and therefore compile-safe, which is why it joins the RED arm
-/// rather than the two behavioural tests that CALL the helper: on the pre-fix
-/// tree it fails LOUD on the missing declaration instead of failing the build.
-///
-/// Kills: the helper missing entirely (the pre-fix state);
-///        a second, cfg-gated or overloaded declaration, which would make the
-///        body-scoped clauses read whichever one the extractor reaches first;
-///        a renamed or re-typed signature — in particular `export_chunks: u32`,
-///        which truncates a large count, and `subject: &Identity`, which breaks
-///        the Copy-based call site. The PARAMETER-TYPE freeze is the clause that
-///        stops a `&str` / `String` parameter smuggling a reserved key or a
-///        player-authored value into the fragment (auditor C5) — the AM6
-///        `debug_assert` cannot, because release compiles it out;
-///        a `pub` helper, which puts a log-fragment builder on the crate surface;
-///        a builder that takes the context and READS a row (the account name, the
-///        claim row) to enrich the line — the exact shape PRV1-17/20 forbid, and
-///        the one that would make this fn untestable off-instance;
-///        a builder that emits a line of its own;
-///        a builder that CONSTRUCTS an Identity rather than rendering the one it
-///        was handed;
-///        an `if false` wrapper, a shadowed binding or an appended statement —
-///        all clippy-clean, all green against every ban above, all killed by the
-///        equality clause last.
-#[test]
-fn rb65_cascade_fields_is_pure() {
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let needle = rb65_nd_cascade_fields_fn();
-
-    let n = m22_count_occurrences(&squashed, &needle);
-    assert_eq!(
-        n, 1,
-        "rb65 [fields/decl]: accounts.rs must declare `{needle}` EXACTLY once; found {n}. ZERO is \
-         the pre-fix state: with no pure fragment builder there is nothing to test by VALUE, and \
-         the emission collapses to a static line that observes nothing. TWO makes every \
-         body-scoped clause below read whichever declaration the extractor reaches first, leaving \
-         the other ungated."
-    );
-
-    let sig = extract_squashed_fn_sig(&squashed, &needle)
-        .expect("rb65 [fields/sig-read]: the cascade fragment builder signature has no brace");
-    assert_eq!(
-        sig,
-        rb65_frozen_cascade_sig(),
-        "rb65 [fields/sig]: the cascade fragment builder signature is not the frozen one. It \
-         takes the erased subject BY VALUE as `subject: Identity` (Identity is Copy, and a \
-         reference would make the call site the only place a caller could get it wrong) and the \
-         count as `export_chunks: usize` — the exact type `purge_export_bundles` returns, so no \
-         cast can silently truncate it — and returns an owned `String` fragment. Freezing the \
-         PARAMETER TYPES is what stops a `&str` or `String` parameter from being added later and \
-         smuggling a reserved envelope key or a player-authored value into the fragment: AM6's \
-         reserved-key `debug_assert` compiles out of the release wasm, so the type list is the \
-         production-side guarantee."
-    );
-
-    for (vis, what) in [
-        (
-            concat!("pubfncascade", "_fields("),
-            "bare `pub`, which puts a log-fragment builder on the crate's external surface",
-        ),
-        (
-            concat!("pub(crate)fncascade", "_fields("),
-            "`pub(crate)`, which invites a second module to render this module's audit line",
-        ),
-    ] {
-        assert!(
-            !squashed.contains(vis),
-            "rb65 [fields/vis]: cascade_fields is declared {what}. It must be PRIVATE: it exists \
-             to make ONE emission in this module testable by value, and every widening of its \
-             visibility is a widening of who can shape a privacy-audit record."
-        );
-    }
-
-    let body = extract_squashed_fn_body(&squashed, &needle)
-        .expect("rb65 [fields/body-read]: the cascade fragment builder body is not brace-balanced");
-
-    for (banned, why) in [
-        (
-            "ctx",
-            "the reducer context. A fragment builder that takes or names the context can READ a \
-             row to enrich the line (the pre-tombstone auth_issuer, the display name), which is \
-             the PRV1-17 shape this line exists to avoid — and it makes the builder untestable \
-             off-instance, so this slice would ship source pins only",
-        ),
-        (
-            concat!(".db", "."),
-            "a database handle. Nothing in a pure string builder legitimately reads a table",
-        ),
-        (
-            concat!(".ins", "ert("),
-            "a row insert — G5/D0 write isolation, and a fragment builder writes nothing",
-        ),
-        (concat!(".upd", "ate("), "a row update — see the insert ban"),
-        (concat!(".del", "ete("), "a row delete — see the insert ban"),
-        (
-            concat!("lo", "g"),
-            "a logging segment. The builder RENDERS a fragment; the reducer that calls it owns \
-             the emission. A builder that emits its own line makes the exactly-once emission \
-             census a lie",
-        ),
-        (
-            concat!("Identity", "::"),
-            "an Identity constructor. The subject arrives as a parameter the reducer took from \
-             the SCHEDULER-supplied schedule row; constructing one here would let the builder \
-             name a victim the cascade never touched",
-        ),
-    ] {
-        assert!(
-            !body.contains(banned),
-            "rb65 [fields/pure]: the cascade_fields body contains `{banned}` — {why}. Body read: \
-             {body:?}"
-        );
-    }
-
-    // --- EQUALITY, last (rb-24 clause-order convention) ----------------------
-    // In the strings-BLANKED view the whole format string collapses to nothing,
-    // so the sanctioned body is exactly the macro call and its empty parens.
-    // Containment pins were MEASURED insufficient across this crate (rb-22
-    // red-team): a dead `if false` wrapper, a shadowed binding and an appended
-    // statement all satisfy every ban above and are clippy-clean.
-    assert_eq!(
-        body,
-        concat!("format", "!()"),
-        "rb65 [fields/body]: cascade_fields must be EXACTLY one format-macro expression and \
-         nothing else. Every string literal is blanked in this view, so the sanctioned body reads \
-         as the bare macro call: any extra statement, binding, conditional or helper call \
-         survives the blanking and reds here. That is what makes `pure` a checked fact rather \
-         than a description — the two behavioural tests own the fragment VALUE."
-    );
-}
-
 // ===========================================================================
 // rb-65 (ADR-0243) — BEHAVIOURAL ARM. Applied WITH the fix, never before it.
 //
@@ -16942,3456 +4318,22 @@ fn rb65_cascade_line_composes_into_the_envelope() {
     );
 }
 
-// ===========================================================================
-// rb-68: ADR-0230's PRV1-17 / PRV1-20 evidence chain must MATCH accounts.rs's
-// LIVE emission sites (residuals R-rb-40-ADR0230 and R-rb-65-ADR0230-PRV120).
-//
-// WHAT THESE THREE TESTS GATE, and why the shipped census does not gate it:
-// every other emission pin in this file reads the SOURCE. ADR-0230 is the
-// document that tells a reader what that source does, and until rb-68 NO test
-// compared the two -- so the ADR could (and did) deny that accounts.rs emits
-// anything of its own, deny that the deletion reaper emits anything, and rest
-// PRV1-20 on the absence of a line that has existed since rb-65. FOUR claims
-// in one evidence chain stopped being true across rb-40 (ADR-0235) and rb-65
-// (ADR-0243) while every gate in this tree stayed green.
-// `rb68p_adr_violations` is the seam: the emission facts are DERIVED from
-// accounts.rs at test time and the document is judged against them.
-//
-// WHERE THE FOUR RETRACTED SENTENCES APPEAR, and where they deliberately do
-// NOT. They are spelled in exactly two places: split across `concat!`
-// fragments inside `[emit/no-stale-claim]`, and INDEPENDENTLY re-spelled in
-// the control fixtures that prove that clause bites (a fixture built out of
-// the clause's own needle proves only that a string equals itself). They
-// appear in NO failure message and in no comment above -- a gate needle a
-// reader sees in a failure is a gate an editor satisfies by deleting exactly
-// the bytes it showed them, which is the opposite of reading the sentence and
-// correcting the claim.
-//
-// DO NOT COLLAPSE TEST 1 INTO A SECOND CENSUS. The file-wide call-site census
-// is already shipped twice over (`rb40_claim_emits_one_purge_observation` and
-// `rb65_reaper_emits_one_cascade_observation` pin it at exactly two, one per
-// reducer body, with the remainder asserted zero as arithmetic). A third copy
-// would add nothing. What test 1 adds is the RECONCILIATION: the file-wide
-// PREFIX-FREE count of the bare emission identifier must equal the SUM of the
-// per-site counts the document side consumes, so a THIRD emission site in a
-// THIRD function reds inside rb-68 itself rather than only in the two sibling
-// censuses -- and so no document clause below can ever be judged against a
-// fact list that has quietly stopped describing the file.
-//
-// HONEST LIMITS (accepted here, NOT closed by rb-68):
-//  1. POLARITY. Every clause below is a text scan. Prose that surrounds a
-//     CORRECT declaration span, a correct event literal and a correct file
-//     name can still say something false about them ("the reaper is silent",
-//     "nothing here reaches the host log"), and no scan reaches that. ADR-0230
-//     states the same limitation about its own G24 clauses. It stays a review
-//     responsibility. `[emit/no-stale-claim]` is a BLACKLIST of the four
-//     sentences this slice retracts -- it is not a semantic check and must not
-//     be read as one.
-//  2. HAND-WRAPPING is semi-load-bearing, and BOTH text scans bound it the
-//     same way. `[cite/no-line]` and `[emit/no-stale-claim]` each judge one
-//     rendered line and one ADJACENT PAIR of lines, over a whitespace-
-//     collapsed, backtick-stripped view. A citation or a retracted sentence
-//     spread across THREE lines, or across a blank line, is still invisible to
-//     both. Widening k was measured to add no false REDs at k=3 either, so a
-//     later slice can raise it; two is what this slice proves. The
-//     stale-claim scan additionally does not join line 9 to line 10, so a
-//     claim STRADDLING the end of the digest-owned header escapes -- the
-//     header block is nine single-field lines, none of which wraps.
-//  3. R-rb-67-CITESHAPE stays OPEN in privacy_tests.rs. The closures below
-//     (positional per-paragraph pairing plus the builder leg, the invisible-
-//     CLASS hidden-char rule, the carrier ban, the nearest-file decl binding,
-//     the two rosters, the window arms, the presence pins) are implemented in
-//     THIS module's collector only. rb-67's collector over ADR-0220 is
-//     unchanged and still carries the co-occurrence and named-blacklist
-//     shapes. Follow-up: R-rb-68-CITESHAPE-PORT.
-//  4. The prefix-free census is prefix-free on the RIGHT only: the byte after
-//     the identifier must not be a word byte (that is what excludes the
-//     breadcrumb sibling). A word byte BEFORE it -- a different identifier
-//     ENDING in the emission name -- inflates the file-wide count and so reds
-//     the reconciliation. It fails SAFE, but it is not modelled.
-//  5. ENTITY DECODING IS ONE PASS and numeric entities are refused a control
-//     codepoint (they decode to a space instead), so line numbers can never
-//     move under normalisation. A doubly-encoded entity survives one pass.
-//  6. `[cite/decl-real]` binds a declaration span to the NEAREST file token in
-//     its own paragraph. That makes the ONE-ITEM-PER-FILE sub-list shape the
-//     corrected prose uses unambiguous, and it means a paragraph that carries
-//     a declaration span must NOT name an unrelated `.rs` file closer to that
-//     span than the owning one. Naming this test module beside a declaration
-//     span reds `[cite/roster-coverage]` on purpose: this file is not in the
-//     source roster, so no clause could resolve the span against it.
-//     `[scope/paragraph]` reds a bullet that names a declaration WITHOUT
-//     naming its file. That is deliberate and it is not a false RED: it is the
-//     convention this ADR states about itself two paragraphs above the
-//     evidence chain, and without a file in the paragraph no clause here can
-//     resolve the span at all.
-//  7. `[scope/roster-floor]` is a BOUND and not the instrument that closes the
-//     deletion residual. MEASURED at the time of writing: the live section
-//     names 17 roster files and carries 48 declaration-shaped spans, against
-//     floors of 14 and 44. An earlier draft of this note claimed the span
-//     floor sat four below today's count and that the step-6a resolver trace
-//     was caught by the floor's arithmetic; the verifier measured BOTH claims
-//     false -- the floor then stood at 31, seventeen below, and deleting the
-//     whole step-6a trace (3,574 bytes, 25.4% of the section, which is round
-//     2's headline correction) left every clause green. The span floor is now
-//     44, which reds that deletion. The bound is still a bound: it cannot say
-//     WHICH block went, and `[scope/presence]` -- which pins the PRV1-20
-//     evidence block by name and by its derived builder set -- covers the two
-//     CRITERIA and the PRV1-20 content argument only. An excision small
-//     enough to stay above 44 spans and 14 files is review's job, not this
-//     gate's.
-//  7b. `[doc/no-hidden-char]` bans invisible CLASSES (Unicode `Cc`, `Zs`/`Zl`/
-//     `Zp` other than a plain space, the format and zero-width ranges), not a
-//     named list -- a named list of a dozen codepoints was MEASURED to miss
-//     nine of the twelve it was aimed at, and a printable ALLOW-list was
-//     measured to red 194 of this repo's 213 ADRs, so neither is available.
-//     The price is that a VISIBLE HOMOGLYPH is legal, and the verifier
-//     measured the consequence: a retracted claim restated with one Cyrillic
-//     `U+0435` inside the needle rides through `[emit/no-stale-claim]` while
-//     the byte-identical ASCII sentence reds. Folding confusables before the
-//     needle scan would close it; that is not in this slice, and it is
-//     tracked as `R-rb-68-HOMOGLYPH` rather than left implicit.
-//  8. `[cite/no-line]`'s COUNT/LOCATOR split is heuristic, and it is tuned
-//     from both directions at once (see `rb68p_digit_run_is_a_locator`). Two
-//     shapes are knowingly conceded to keep the honest set green: a ONE- OR
-//     TWO-DIGIT line number introduced by a prose word and followed by a word
-//     (`row 12 of ...` is an enumeration this document writes, and `line 42
-//     of ...` is not distinguishable from it), and a three-or-more-digit
-//     locator immediately followed by a plural noun (`— 300 lines` is a count;
-//     `— 300 lines below` would be read as one too). Abbreviations (`l`, `ln`,
-//     `ll`, `lineno`, `#`, `@`) and glued locators have no such concession.
-//  9. `[emit/pair]`'s builder leg binds a fragment builder to the reducer
-//     whose DECLARATION MARKER precedes it in the same paragraph. The PRV1-20
-//     content paragraph names both builders and NO reducer declaration, so
-//     exchanging them THERE is caught by `[scope/presence]` (both must be
-//     present) but not attributed -- the paragraph would have to name a
-//     reducer for the positional rule to have anything to bind to.
-// 10. `[doc/no-hidden-carrier]`'s tag test uses a roster of HTML element
-//     names. A generic type whose name collides with one of them, written in
-//     BARE PROSE rather than in a code span (`Vec<Data>`, `Option<Time>`),
-//     would read as a tag. Code spans are excluded first, and this ADR's
-//     stated convention puts every type in one.
-//
-// SCAN HYGIENE (this file's header rule, restated because this section adds a
-// third consumer of both evt tokens and of the emission call needle to a file
-// a dozen evals concatenate wholesale, `_tests.rs` included): every needle and
-// every FIXTURE string below is assembled from `concat!` fragments or from the
-// shipped `rb22_dq()` byte helper (no backslash is needed anywhere here, so
-// `rb40_bs()` is not among this section's callers), and every event literal
-// comes from the DERIVATION rather than from a spelling. This file therefore
-// still never carries a contiguous emission call site, evt token,
-// escaped-quote pair, block comment, raw string, or quote inside a char
-// literal. A fixture is the easiest place to lose that property, because a
-// fixture LOOKS like prose rather than like a needle.
-// ===========================================================================
-
-/// ADR-0230, read as TEXT. The `../../` reach out of `src/` is this tree's
-/// shipped idiom for reading a document (`M22_REKEY_EVAL_MJS` above does the
-/// same for an eval, `RB67_ADR_0220_MD` in privacy_tests.rs for an ADR): a
-/// document that is never read cannot be gated. NOTE that this makes the ADR a
-/// COMPILE INPUT of this crate -- editing it recompiles the test binary.
-const RB68_ADR_0230_MD: &str =
-    include_str!("../../docs/adr/0230-deletion-runbook-gates-with-declaration-shaped-cites.md");
-
-/// The heading ANCHOR of the section this slice gates -- the text after the
-/// `## ` marker and after any house-style number, and a PREFIX of it at that.
-/// ADR-0230's heading also carries a trailing clause about deferred mechanical
-/// enforcement which this slice deliberately leaves byte-identical, and pinning
-/// the whole line here would couple this gate to prose it does not own.
-fn rb68p_prv_heading() -> String {
-    concat!("PRV1-17", " and PRV1-20").to_string()
-}
-
-/// The one OTHER section an event literal may legally appear in.
-fn rb68p_conseq_heading() -> String {
-    concat!("Conse", "quences").to_string()
-}
-
-/// The two criterion names this section owns, for the DUPLICATE-heading test
-/// below. Derived from the anchor rather than re-spelled.
-fn rb68p_criteria() -> Vec<String> {
-    let anchor = rb68p_prv_heading();
-    anchor
-        .split(" and ")
-        .map(std::string::ToString::to_string)
-        .collect()
-}
-
-/// The ANCHOR TEXT of a level-two heading line: the `## ` marker, then an
-/// OPTIONAL `<digits>. ` house-style number, then the heading text. `None` for
-/// every line that is not a level-two heading.
-///
-/// The number is tolerated on purpose, and it is not a nicety. ADR-0230 carries
-/// a whole SECTION about renumbering its own `##` headings into a numbered
-/// house style (`## 9.`), so a later editor applying that style to this very
-/// heading is doing exactly what the document tells them to. MEASURED: before
-/// this, `## 10. PRV1-17 and PRV1-20 ...` did not merely red -- the live test
-/// PANICKED in its section lookup, which is a false RED on the document's own
-/// documented convention and the loudest possible way to earn a gate deletion.
-fn rb68p_heading_anchor(line: &str) -> Option<&str> {
-    let rest = line.strip_prefix("## ")?.trim_start();
-    let digits: usize = rest.chars().take_while(char::is_ascii_digit).count();
-    if digits > 0 {
-        if let Some(tail) = rest[digits..].strip_prefix('.') {
-            return Some(tail.trim_start());
-        }
-    }
-    Some(rest)
-}
-
-/// FLOORS for the live document: (distinct roster files the section must name,
-/// declaration-shaped code spans the section must carry).
-///
-/// DERIVED AND FROZEN. The file count is a FACT of the cascade (the eleven
-/// delegated helpers plus the accounts, guards and crate-root files), so
-/// fourteen is exact with one file of headroom.
-///
-/// The SPAN floor was raised from 24 to 31 on measured evidence. At 24 the
-/// headroom was eleven spans below the live count, and a red team removed the
-/// whole step-6a resolver trace (five spans), the reject-path and reaper
-/// bullets (five spans) and a combined 44% of the section without ever
-/// reaching it. Thirty-one sits four below today's thirty-five: it catches
-/// every one of those excisions and still absorbs an honest re-wording that
-/// merges a bullet or drops a duplicated marker. It is a BOUND, not a
-/// transcription -- and it is deliberately NOT the only instrument, because a
-/// floor cannot tell WHICH block was deleted. `[scope/presence]` pins the
-/// PRV1-20 evidence block by name, which is what actually closes the residual.
-const RB68_LIVE_FLOORS: (usize, usize) = (14, 44);
-
-/// FLOORS for the control fixtures. The fixture documents are small by design
-/// -- one paragraph per shape -- so the live floors would red every one of
-/// them and no fixture could ever isolate a single label. The floor CLAUSE is
-/// still proven, by two dedicated fixtures that vary only this parameter.
-const RB68_SMALL_FLOORS: (usize, usize) = (2, 2);
-
-/// One live emission site, DERIVED from accounts.rs -- never transcribed.
-#[derive(Debug)]
-struct Rb68Fact {
-    /// The file the declaration lives in, as the document spells it.
-    file: String,
-    /// The squashed `fn` needle of the enclosing reducer.
-    decl: String,
-    /// The reducer's bare name, for failure messages.
-    label: String,
-    /// The event literal, SLICED out of the strings-kept body.
-    evt: String,
-    /// The squashed `fn` needle of the fragment builder, derived from the
-    /// emission's second argument.
-    fields_fn: String,
-    /// Emissions counted inside this reducer's body.
-    in_body: usize,
-    /// Does the squashed body END with the shipped frozen emission tail?
-    terminal: bool,
-}
-
-/// Non-overlapping occurrences of `needle` in `hay` whose FOLLOWING byte is not
-/// an identifier byte.
-///
-/// This is what makes the reconciliation below a census of the emission
-/// identifier rather than of every identifier that starts with it: the
-/// breadcrumb sibling (`mr_log_breadcrumb`) contains the bare name as a strict
-/// prefix and would otherwise be counted as an emission. Banned outright
-/// elsewhere in this file, but a census must not depend on another clause
-/// holding.
-fn rb68p_prefix_free_count(hay: &str, needle: &str) -> usize {
-    if needle.is_empty() {
-        return 0;
-    }
-    let bytes = hay.as_bytes();
-    let mut n = 0usize;
-    let mut start = 0usize;
-    while let Some(rel) = hay[start..].find(needle) {
-        let after = start + rel + needle.len();
-        if !bytes.get(after).copied().is_some_and(is_word_byte) {
-            n += 1;
-        }
-        start = after;
-    }
-    n
-}
-
-/// Re-space a squashed `fn` needle into the form a DOCUMENT spells it in:
-/// `fnpurge_fields(` becomes `fn purge_fields(`.
-///
-/// Used only by the control fixtures, and used there so that every declaration
-/// span in a POSITIVE control is built from the same shipped needle the live
-/// derivation uses. A hand-typed span would make a green control prove nothing
-/// about the live source, and a typo in one would read exactly like a missing
-/// fix.
-fn rb68p_spaced_decl(needle: &str) -> String {
-    let bare = needle.strip_prefix("fn").unwrap_or(needle);
-    format!("fn {bare}")
-}
-
-/// The LIVE emission facts, derived ONCE from accounts.rs.
-///
-/// Every step is a derivation, and every step that could silently produce an
-/// empty or wrong fact panics with its own label instead:
-///   - the reducer's declaration must occur exactly once (a decoy declaration
-///     above the real one steers `extract_squashed_fn_body`'s first-hit read);
-///   - the event literal is SLICED out of the strings-KEPT body between the
-///     two quote bytes that follow the emission call. That slice is also the
-///     only proof in this slice that the first argument is a BARE literal: a
-///     `const EVT` or a `concat!` leaves identifier bytes where the slice
-///     requires a quote, and the derivation fails loudly rather than deriving
-///     a fact the document could then be judged against;
-///   - the fragment builder is derived from the emission's SECOND argument, in
-///     both live shapes (the claim path INLINES the builder call, the cascade
-///     path BINDS it to a local first);
-///   - terminality REUSES the shipped frozen tails. There is deliberately no
-///     third encoding of "the emission is the last statement" in this tree,
-///     and no statement-counting model: the reaper's `let ... else { return
-///     Ok(()); };` makes a `body_stmt_count - 2` reading under-specified.
-fn rb68p_live_emission_facts() -> &'static Vec<Rb68Fact> {
-    static FACTS: std::sync::OnceLock<Vec<Rb68Fact>> = std::sync::OnceLock::new();
-    FACTS.get_or_init(|| {
-        let squashed = stripped_for_scan(ACCOUNTS_RS);
-        let kept = stripped_keep_strings(ACCOUNTS_RS);
-        let emit = rb40_nd_mr_log();
-        let dq = rb22_dq();
-        let file = concat!("accounts", ".rs").to_string();
-        let mut out: Vec<Rb68Fact> = Vec::new();
-        for (decl, label, tail) in [
-            (
-                nd_complete(),
-                concat!("complete_guest", "_claim"),
-                rb40_frozen_emit_tail(),
-            ),
-            (
-                rb24_nd_reaper_decl(),
-                concat!("account_deletion", "_reaper"),
-                rb65_frozen_emit_tail(),
-            ),
-        ] {
-            let n_decl = m22_count_occurrences(&squashed, &decl);
-            assert_eq!(
-                n_decl, 1,
-                "rb68p [live/decl-unique]: accounts.rs must declare `{decl}` ({label}) EXACTLY \
-                 once; found {n_decl}. Every fact below is read out of the body that needle \
-                 selects, and `extract_squashed_fn_body` binds the FIRST hit -- so a second \
-                 definition steers the whole derivation at a decoy and the document would then \
-                 be judged against a reducer nobody ships."
-            );
-            let body = extract_squashed_fn_body(&squashed, &decl).unwrap_or_else(|| {
-                panic!(
-                    "rb68p [live/body]: no brace-balanced body for `{decl}` ({label}) in \
-                     accounts.rs. Without a body there is no emission to derive and every \
-                     document clause would be judged against nothing."
-                )
-            });
-            let kept_body = extract_squashed_fn_body(&kept, &decl).unwrap_or_else(|| {
-                panic!(
-                    "rb68p [live/kept-body]: no brace-balanced body for `{decl}` ({label}) in \
-                     the strings-KEPT view of accounts.rs. That view is the ONLY one in which \
-                     the event literal survives at all."
-                )
-            });
-            let at = kept_body.find(emit.as_str()).unwrap_or_else(|| {
-                panic!(
-                    "rb68p [live/emit-site]: {label} carries no `{emit}` call. ZERO emissions is \
-                     precisely the pre-rb-40 / pre-rb-65 state ADR-0230 still describes, so if \
-                     this fires the DOCUMENT may well be right and the SOURCE wrong -- check \
-                     rb40_claim_emits_one_purge_observation and \
-                     rb65_reaper_emits_one_cascade_observation before touching the ADR."
-                )
-            });
-            let after = &kept_body[at + emit.len()..];
-            let rest = after.strip_prefix(dq).unwrap_or_else(|| {
-                panic!(
-                    "rb68p [live/evt-bare]: {label}'s emission does not open its first argument \
-                     with a bare string literal. An indirected event name (a `const`, a \
-                     `concat!`, a formatted value) is one a reader grepping this module for the \
-                     event never finds, and there is no literal here to slice."
-                )
-            });
-            let end = rest.find(dq).unwrap_or_else(|| {
-                panic!("rb68p [live/evt-close]: {label}'s event literal is never closed.")
-            });
-            let evt = rest[..end].to_string();
-            assert!(
-                !evt.is_empty(),
-                "rb68p [live/evt-empty]: {label} emits an EMPTY event name. Every containment \
-                 and pairing clause below would then be satisfied by every byte of the document."
-            );
-            let arg = rest[end + 1..].strip_prefix(",&").unwrap_or_else(|| {
-                panic!(
-                    "rb68p [live/fields-arg]: {label}'s emission does not hand a borrowed field \
-                     fragment as its second argument. The fragment builder is derived from that \
-                     argument; without it there is no builder to name."
-                )
-            });
-            let ident_end = arg.find(|c: char| !is_word_char(c)).unwrap_or(arg.len());
-            let first = &arg[..ident_end];
-            let builder = if arg[ident_end..].starts_with('(') {
-                first.to_string()
-            } else {
-                let needle = format!("let{first}=");
-                let bind = body.find(needle.as_str()).unwrap_or_else(|| {
-                    panic!(
-                        "rb68p [live/fields-binding]: {label} hands `{first}` to its emission but \
-                         binds it nowhere in its own body. A fragment built outside the reducer \
-                         is one no purity test in this file covers."
-                    )
-                });
-                let rhs = &body[bind + needle.len()..];
-                let call_end = rhs.find('(').unwrap_or_else(|| {
-                    panic!("rb68p [live/fields-call]: `{first}` is not bound to a call in {label}.")
-                });
-                rhs[..call_end].to_string()
-            };
-            out.push(Rb68Fact {
-                file: file.clone(),
-                label: label.to_string(),
-                evt,
-                fields_fn: format!("fn{builder}("),
-                in_body: m22_count_occurrences(body, &emit),
-                terminal: body.ends_with(tail.as_str()),
-                decl,
-            });
-        }
-        out
-    })
-}
-
-/// Every production source this module can READ, squashed once. This is the
-/// SOURCE roster: it is what a declaration span is resolved AGAINST, so a
-/// declaration attributed to a file that is not here cannot be judged at all
-/// (which is exactly what `[cite/roster-coverage]` reports).
-fn rb68p_sources() -> &'static Vec<(String, String)> {
-    static SOURCES: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
-    SOURCES.get_or_init(|| {
-        [
-            (concat!("accounts", ".rs"), ACCOUNTS_RS),
-            (concat!("lib", ".rs"), LIB_RS),
-            (concat!("schema", ".rs"), SCHEMA_RS),
-            (concat!("monster_mgmt", ".rs"), MONSTER_MGMT_RS),
-            (concat!("ranking", ".rs"), RANKING_RS),
-            (concat!("battle", ".rs"), M22_BATTLE_RS),
-            (concat!("content", ".rs"), M22_CONTENT_RS),
-            (concat!("content_cache", ".rs"), M22_CONTENT_CACHE_RS),
-            (concat!("economy", ".rs"), M22_ECONOMY_RS),
-            (concat!("evolution", ".rs"), M22_EVOLUTION_RS),
-            (concat!("guards", ".rs"), M22_GUARDS_RS),
-            (concat!("inventory", ".rs"), M22_INVENTORY_RS),
-            (concat!("marshal", ".rs"), M22_MARSHAL_RS),
-            (concat!("movement", ".rs"), M22_MOVEMENT_RS),
-            (concat!("npc", ".rs"), M22_NPC_RS),
-            (concat!("observability", ".rs"), M22_OBSERVABILITY_RS),
-            (concat!("playtest", ".rs"), M22_PLAYTEST_RS),
-            (concat!("privacy", ".rs"), M22_PRIVACY_RS),
-            (concat!("pvp", ".rs"), M22_PVP_RS),
-            (concat!("raising", ".rs"), M22_RAISING_RS),
-            (concat!("taming", ".rs"), M22_TAMING_RS),
-            (concat!("trading", ".rs"), M22_TRADING_RS),
-        ]
-        .iter()
-        .map(|(name, src)| ((*name).to_string(), stripped_for_scan(src)))
-        .collect()
-    })
-}
-
-/// The SOURCE roster's file names, in the order `rb68p_sources` lists them.
-fn rb68p_roster() -> &'static Vec<String> {
-    static ROSTER: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
-    ROSTER.get_or_init(|| rb68p_sources().iter().map(|(n, _)| n.clone()).collect())
-}
-
-/// The squashed source of `name`, if this module can read it.
-fn rb68p_source_of<'a>(sources: &'a [(String, String)], name: &str) -> Option<&'a str> {
-    sources
-        .iter()
-        .find(|(n, _)| n.as_str() == name)
-        .map(|(_, s)| s.as_str())
-}
-
-/// Blank every HTML comment, KEEPING the newlines inside it.
-///
-/// MEASURED (rb-67 round 2, and re-measured for this collector): a comment
-/// placed INSIDE a file name renders in every markdown viewer as an ordinary
-/// file-and-line citation while splitting the citation needle in two, so the
-/// scan saw no file name at all. Blanking makes every clause judge the text a
-/// READER sees.
-///
-/// The newlines are kept on purpose: line numbers in messages, the paragraph
-/// splitter and the section ranges must all stay where they were. The cost is
-/// that a comment spanning a line break cannot be re-fused, which is why
-/// `[doc/html-in-section]` bans the construct inside the gated section rather
-/// than relying on this stripper alone.
-fn rb68p_strip_html_comments(md: &str) -> String {
-    let open = "<!--";
-    let close = "-->";
-    let mut out = String::with_capacity(md.len());
-    let mut rest = md;
-    loop {
-        let at = match rest.find(open) {
-            Some(at) => at,
-            None => {
-                out.push_str(rest);
-                return out;
-            }
-        };
-        out.push_str(&rest[..at]);
-        let tail = &rest[at + open.len()..];
-        match tail.find(close) {
-            Some(end) => {
-                for c in tail[..end].chars() {
-                    if c == '\n' {
-                        out.push('\n');
-                    }
-                }
-                rest = &tail[end + close.len()..];
-            }
-            None => {
-                for c in tail.chars() {
-                    if c == '\n' {
-                        out.push('\n');
-                    }
-                }
-                return out;
-            }
-        }
-    }
-}
-
-/// Decode the HTML entity spellings a citation, a hidden character or a
-/// retracted claim can hide behind, then drop markdown backslash escapes.
-///
-/// MEASURED: `accounts.rs&#58;773` and `accounts.rs:&#55;73` both render as an
-/// ordinary file-and-line citation and both walked past a scan that reads the
-/// source bytes; `mr\_log` renders as the identifier while splitting it.
-///
-/// A numeric entity is REFUSED a control codepoint -- it decodes to a space
-/// instead. That is not cosmetic: `&#10;` would otherwise ADD a line and every
-/// line number reported below, plus the HTML-comment line test and the section
-/// LINE range, would desynchronise from the file a reader edits. One pass, so
-/// a doubly-encoded entity survives; named in the honest limits above.
-fn rb68p_decode_entities(md: &str) -> String {
-    let named: [(&str, char); 8] = [
-        ("&colon;", ':'),
-        ("&lowbar;", '_'),
-        ("&num;", '#'),
-        ("&period;", '.'),
-        ("&lpar;", '('),
-        ("&rpar;", ')'),
-        ("&lt;", '<'),
-        ("&gt;", '>'),
-    ];
-    let mut out = String::with_capacity(md.len());
-    let bytes = md.as_bytes();
-    let mut i = 0usize;
-    'outer: while i < bytes.len() {
-        if bytes[i] == b'&' {
-            for (name, ch) in named {
-                if md[i..].starts_with(name) {
-                    out.push(ch);
-                    i += name.len();
-                    continue 'outer;
-                }
-            }
-            if md[i..].starts_with("&#") {
-                let body = &md[i + 2..];
-                let hex = body.starts_with('x') || body.starts_with('X');
-                let digits: String = body[usize::from(hex)..]
-                    .chars()
-                    .take_while(|c| c.is_ascii_hexdigit())
-                    .collect();
-                let consumed = 2 + usize::from(hex) + digits.len();
-                if !digits.is_empty() && md[i + consumed..].starts_with(';') {
-                    let radix = if hex { 16 } else { 10 };
-                    if let Ok(v) = u32::from_str_radix(&digits, radix) {
-                        let decoded = char::from_u32(v).unwrap_or(' ');
-                        out.push(if decoded.is_control() { ' ' } else { decoded });
-                        i += consumed + 1;
-                        continue 'outer;
-                    }
-                }
-            }
-        }
-        if bytes[i] == b'\\' {
-            let next = md[i + 1..].chars().next();
-            if let Some(c) = next {
-                out.push(c);
-                i += 1 + c.len_utf8();
-                continue 'outer;
-            }
-        }
-        let c = md[i..].chars().next().unwrap_or(' ');
-        out.push(c);
-        i += c.len_utf8();
-    }
-    out
-}
-
-/// The full normalisation every clause is judged over: HTML comments blanked
-/// (newlines kept), entities decoded, backslash escapes dropped. LINE NUMBERS
-/// AND LINE COUNTS ARE PRESERVED BY CONSTRUCTION -- that is why every clause
-/// below may report a line number a reader can open.
-fn rb68p_normalise(md: &str) -> String {
-    rb68p_decode_entities(&rb68p_strip_html_comments(md))
-}
-
-/// Drop emphasis markers OUTSIDE code spans. Used by the stale-claim scan
-/// ALONE: `contains **zero**` and `contains zero` are the same sentence to a
-/// reader, and MEASURED, the emphasis split walked past a literal blacklist.
-/// It is not applied to the span clauses, where `*` inside a span is code.
-///
-/// The in-span flag RESETS at every newline. An inline code span cannot cross a
-/// line break in CommonMark, so this costs nothing on well-formed text -- and
-/// it means one unpaired delimiter (in a fenced block elsewhere in the
-/// document, say) inverts the emphasis reading of ONE line rather than of every
-/// line after it. This scan runs over the whole document, so its blast radius
-/// under a broken delimiter has to be bounded here rather than by the
-/// section-scoped parity guard.
-fn rb68p_strip_emphasis(md: &str) -> String {
-    let mut out = String::with_capacity(md.len());
-    let mut in_span = false;
-    for c in md.chars() {
-        if c == '\n' {
-            in_span = false;
-            out.push(c);
-            continue;
-        }
-        if c == '`' {
-            in_span = !in_span;
-            out.push(c);
-            continue;
-        }
-        if !in_span && (c == '*' || c == '_') {
-            continue;
-        }
-        out.push(c);
-    }
-    out
-}
-
-/// Is `c` an INVISIBLE or FORMAT character -- one that occupies bytes in the
-/// file and renders as nothing, or as an ordinary space, to a reader? Returns
-/// the class name for the failure message.
-///
-/// THIS CLAUSE IS A BAN ON CLASSES, AND IT USED TO BE AN ALLOW-LIST OF
-/// PRINTABLES. The allow-list was a measured false RED and the single worst
-/// defect in this gate's first round: it permitted exactly the four non-ASCII
-/// characters ADR-0230 happened to use that day, and 194 of the 213 ADRs in
-/// this corpus use characters outside that set -- the right arrow alone appears
-/// 1,150 times. Any honest later edit adding an arrow, an ellipsis, a times
-/// sign, an accented name or a curly quote ANYWHERE in the document, including
-/// in the digest-owned header this slice does not even gate, would have reddened
-/// CI with a message about smuggling. A gate that reds on `x -> y` is a gate the
-/// next editor deletes, and they would be right to.
-///
-/// What is actually being defended against is a character a READER cannot see
-/// but a SCAN can: one that splits a needle, pads a claim, or parks a token out
-/// of sight. That is a closed set of Unicode classes, not an open set of
-/// printables:
-///   - `Cc` control characters other than the newline and the tab (a carriage
-///     return, and every C0/C1 code);
-///   - `Zs`/`Zl`/`Zp` separators other than the ordinary space (a no-break
-///     space, an en space, a narrow no-break space, a line separator);
-///   - `Cf` format characters (the word joiner, the zero-width space and
-///     joiners, the bidi overrides and isolates, the byte-order mark, the
-///     deprecated formatting codes, the tag characters);
-///   - the zero-width fillers and joiners that are not formally `Cf` but render
-///     as nothing anyway (the combining grapheme joiner, the Hangul fillers,
-///     the Khmer inherent vowels, the Mongolian vowel separator, the variation
-///     selectors, the blank braille pattern).
-///
-/// A NAMED blacklist of a dozen specific codepoints was MEASURED to miss nine
-/// of the twelve it was aimed at, which is why this is by class.
-fn rb68p_hidden_class(c: char) -> Option<&'static str> {
-    if c == '\n' || c == '\t' || c == ' ' {
-        return None;
-    }
-    if c.is_control() {
-        return Some("a control character");
-    }
-    if c.is_whitespace() {
-        // Everything left here is a separator: Zs, Zl or Zp. It renders as a
-        // space (or as a line break) and is not one.
-        return Some("a non-ASCII space or line separator");
-    }
-    let point = u32::from(c);
-    // Format and zero-width classes, as inclusive ranges.
-    let invisible: [(u32, u32); 22] = [
-        (0x0000_00AD, 0x0000_00AD), // soft hyphen
-        (0x0000_034F, 0x0000_034F), // combining grapheme joiner
-        (0x0000_0600, 0x0000_0605), // Arabic number signs
-        (0x0000_061C, 0x0000_061C), // Arabic letter mark
-        (0x0000_06DD, 0x0000_06DD),
-        (0x0000_070F, 0x0000_070F), // Syriac abbreviation mark
-        (0x0000_0890, 0x0000_0891),
-        (0x0000_08E2, 0x0000_08E2),
-        (0x0000_115F, 0x0000_1160), // Hangul choseong/jungseong fillers
-        (0x0000_17B4, 0x0000_17B5), // Khmer inherent vowels
-        (0x0000_180B, 0x0000_180F), // Mongolian selectors and vowel separator
-        (0x0000_200B, 0x0000_200F), // zero-width space, joiners, marks
-        (0x0000_202A, 0x0000_202E), // bidi embedding and override
-        (0x0000_2060, 0x0000_2064), // word joiner, invisible operators
-        (0x0000_2065, 0x0000_206F), // isolates and the deprecated formats
-        (0x0000_2800, 0x0000_2800), // blank braille pattern
-        (0x0000_3164, 0x0000_3164), // Hangul filler
-        (0x0000_FE00, 0x0000_FE0F), // variation selectors
-        (0x0000_FEFF, 0x0000_FEFF), // zero-width no-break space / BOM
-        (0x0000_FFA0, 0x0000_FFA0), // halfwidth Hangul filler
-        (0x0000_FFF9, 0x0000_FFFB), // interlinear annotation
-        (0x000E_0000, 0x000E_0FFF), // tags and the variation supplement
-    ];
-    if invisible
-        .iter()
-        .any(|(lo, hi)| point >= *lo && point <= *hi)
-    {
-        return Some("a zero-width or format character");
-    }
-    if (0x0001_D173..=0x0001_D17A).contains(&point) {
-        return Some("a musical formatting character");
-    }
-    None
-}
-
-/// Element names a raw HTML tag can carry in markdown. A tag is refused inside
-/// the gated section because four such carriers were MEASURED to park every
-/// gated token invisibly -- but the test has to be on a REAL element name.
-///
-/// MEASURED FALSE RED: the round-1 rule fired on any `<` followed by a letter
-/// and a later `>`, so `Vec<u64>` and `Option<Identity>` reddened -- in a
-/// section that discusses `Identity` and `usize` types, in a corpus where 62
-/// ADRs write generics. That defect and the allow-list above are the same
-/// mistake: a rule shaped by what the attack looks like rather than by what the
-/// honest text looks like.
-fn rb68p_is_html_element(name: &str) -> bool {
-    [
-        "a",
-        "abbr",
-        "address",
-        "area",
-        "article",
-        "aside",
-        "audio",
-        "b",
-        "base",
-        "bdi",
-        "bdo",
-        "big",
-        "blockquote",
-        "body",
-        "br",
-        "button",
-        "canvas",
-        "caption",
-        "center",
-        "cite",
-        "code",
-        "col",
-        "colgroup",
-        "data",
-        "datalist",
-        "dd",
-        "del",
-        "details",
-        "dfn",
-        "dialog",
-        "div",
-        "dl",
-        "dt",
-        "em",
-        "embed",
-        "fieldset",
-        "figcaption",
-        "figure",
-        "font",
-        "footer",
-        "form",
-        "h1",
-        "h2",
-        "h3",
-        "h4",
-        "h5",
-        "h6",
-        "head",
-        "header",
-        "hgroup",
-        "hr",
-        "html",
-        "i",
-        "iframe",
-        "img",
-        "input",
-        "ins",
-        "kbd",
-        "label",
-        "legend",
-        "li",
-        "link",
-        "main",
-        "map",
-        "mark",
-        "menu",
-        "meta",
-        "meter",
-        "nav",
-        "noscript",
-        "object",
-        "ol",
-        "optgroup",
-        "option",
-        "output",
-        "p",
-        "param",
-        "picture",
-        "pre",
-        "progress",
-        "q",
-        "rp",
-        "rt",
-        "ruby",
-        "s",
-        "samp",
-        "script",
-        "section",
-        "select",
-        "slot",
-        "small",
-        "source",
-        "span",
-        "strike",
-        "strong",
-        "style",
-        "sub",
-        "summary",
-        "sup",
-        "svg",
-        "table",
-        "tbody",
-        "td",
-        "template",
-        "textarea",
-        "tfoot",
-        "th",
-        "thead",
-        "time",
-        "title",
-        "tr",
-        "track",
-        "tt",
-        "u",
-        "ul",
-        "var",
-        "video",
-        "wbr",
-    ]
-    .contains(&name)
-}
-
-/// Blank the CONTENT of every inline code span on one line, keeping the
-/// delimiters and the byte length.
-///
-/// A markdown code span is the one place a document legitimately shows angle
-/// brackets, HTML and generics, and it is text a reader SEES. Every clause that
-/// hunts for a construct which renders as NOTHING has to look outside the spans
-/// or it judges the document's own examples.
-fn rb68p_blank_code_spans(line: &str) -> String {
-    let mut out = String::with_capacity(line.len());
-    for (idx, part) in line.split('`').enumerate() {
-        if idx > 0 {
-            out.push('`');
-        }
-        if idx % 2 == 1 {
-            for _ in part.chars() {
-                out.push(' ');
-            }
-        } else {
-            out.push_str(part);
-        }
-    }
-    out
-}
-
-/// Does this line carry a raw HTML TAG, outside its code spans?
-fn rb68p_has_html_tag(line: &str) -> bool {
-    let blanked = rb68p_blank_code_spans(line);
-    let bytes = blanked.as_bytes();
-    for (i, b) in bytes.iter().enumerate() {
-        if *b != b'<' {
-            continue;
-        }
-        let mut j = i + 1;
-        if bytes.get(j) == Some(&b'/') {
-            j += 1;
-        }
-        let name_start = j;
-        while j < bytes.len() && j - name_start < 12 && bytes[j].is_ascii_alphanumeric() {
-            j += 1;
-        }
-        if j == name_start {
-            continue;
-        }
-        let name = blanked[name_start..j].to_ascii_lowercase();
-        let closed = matches!(bytes.get(j), Some(b'>' | b' ' | b'/'));
-        if closed && rb68p_is_html_element(&name) && blanked[j..].contains('>') {
-            return true;
-        }
-    }
-    false
-}
-
-/// Every backticked code span in `md`, as (byte offset of the span text, span).
-/// Offsets are taken ONCE over the whole document, which is what makes a span
-/// attributable to a SECTION.
-fn rb68p_code_spans(md: &str) -> Vec<(usize, &str)> {
-    let mut out: Vec<(usize, &str)> = Vec::new();
-    let mut at = 0usize;
-    for (idx, span) in md.split('`').enumerate() {
-        if idx % 2 == 1 {
-            out.push((at, span));
-        }
-        at += span.len() + 1;
-    }
-    out
-}
-
-/// The byte range of the BODY of the section whose level-two heading ANCHOR
-/// starts with `heading` -- the lines AFTER that heading line, up to the next
-/// level-two heading, or the end of the document.
-///
-/// Matched on the ANCHOR and not on the raw line, so a house-style number
-/// (`## 10. PRV1-17 and PRV1-20 ...`) finds the same section. A level-THREE
-/// heading is not a terminator: `### ` does not carry the `## ` prefix, and
-/// this ADR uses sub-headings.
-fn rb68p_section_body_range(md: &str, heading: &str) -> Option<(usize, usize)> {
-    let mut at = 0usize;
-    let mut start: Option<usize> = None;
-    for line in md.split('\n') {
-        let line_start = at;
-        at += line.len() + 1;
-        let anchor = rb68p_heading_anchor(line);
-        match start {
-            None => {
-                if anchor.is_some_and(|a| a.starts_with(heading)) {
-                    start = Some(at.min(md.len()));
-                }
-            }
-            Some(s) => {
-                if anchor.is_some() {
-                    return Some((s, line_start.min(md.len())));
-                }
-            }
-        }
-    }
-    start.map(|s| (s, md.len()))
-}
-
-/// Is this code span shaped like a DECLARATION?
-///
-/// Shape, never proximity: the visibility keyword and the item keyword are
-/// what a reader resolves against the source, and they are what
-/// `[cite/decl-real]` then requires to occur there.
-fn rb68p_is_decl_shaped(span: &str) -> bool {
-    let s = span.trim();
-    for prefix in [
-        "pub(crate) fn ",
-        "pub fn ",
-        "fn ",
-        "pub(crate) const ",
-        "pub const ",
-        "const ",
-        "pub(crate) struct ",
-        "pub struct ",
-        "struct ",
-        "pub(crate) static ",
-        "pub static ",
-        "static ",
-    ] {
-        if let Some(rest) = s.strip_prefix(prefix) {
-            return rest
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
-        }
-    }
-    false
-}
-
-/// A paragraph, with the byte offset it starts at.
-struct Rb68Para {
-    start: usize,
-    text: String,
-}
-
-/// Split on blank lines AND on list-item starts AND on headings.
-///
-/// The list-aware split is a precondition of the nearest-file binding: with a
-/// blank-line-only splitter the whole eleven-helper census is ONE paragraph, a
-/// declaration span can be attributed to any file that census names, and a
-/// swapped attribution measured CLEAN. A whitespace-only line breaks a
-/// paragraph here too, which is why `[doc/no-blankish]` can be an isolated
-/// clause rather than a load-bearing one.
-fn rb68p_paragraphs(md: &str) -> Vec<Rb68Para> {
-    let mut out: Vec<Rb68Para> = Vec::new();
-    let mut cur: Vec<&str> = Vec::new();
-    let mut cur_start = 0usize;
-    let mut at = 0usize;
-    for line in md.split('\n') {
-        let line_start = at;
-        at += line.len() + 1;
-        if line.trim().is_empty() {
-            if !cur.is_empty() {
-                out.push(Rb68Para {
-                    start: cur_start,
-                    text: cur.join("\n"),
-                });
-                cur.clear();
-            }
-            continue;
-        }
-        let trimmed = line.trim_start();
-        let is_item = trimmed.starts_with("- ") || trimmed.starts_with("* ");
-        let is_head = line.starts_with('#');
-        if (is_item || is_head) && !cur.is_empty() {
-            out.push(Rb68Para {
-                start: cur_start,
-                text: cur.join("\n"),
-            });
-            cur.clear();
-        }
-        if cur.is_empty() {
-            cur_start = line_start;
-        }
-        cur.push(line);
-    }
-    if !cur.is_empty() {
-        out.push(Rb68Para {
-            start: cur_start,
-            text: cur.join("\n"),
-        });
-    }
-    out
-}
-
-/// Every `<word>.rs` token in `text`, as (byte offset, lowercased token).
-///
-/// ASCII-lowercased in place so the offsets stay usable for the nearest-file
-/// binding, and so a shouted `PRIVACY.RS:79-92` is judged as the citation it
-/// renders as.
-fn rb68p_rs_tokens(text: &str) -> Vec<(usize, String)> {
-    let low = text.to_ascii_lowercase();
-    let bytes = low.as_bytes();
-    let mut out: Vec<(usize, String)> = Vec::new();
-    let mut from = 0usize;
-    while let Some(rel) = low[from..].find(".rs") {
-        let at = from + rel;
-        let end = at + 3;
-        let bounded = !bytes.get(end).copied().is_some_and(is_word_byte);
-        let mut start = at;
-        while start > 0 && is_word_byte(bytes[start - 1]) {
-            start -= 1;
-        }
-        if bounded && start < at {
-            out.push((start, low[start..end].to_string()));
-        }
-        from = end;
-    }
-    out
-}
-
-/// One rendered line, normalised for the citation scan: backticks dropped
-/// (a backtick BETWEEN the path and its locator is the natural markdown
-/// spelling and is invisible to any scan that reads them as adjacent), every
-/// whitespace RUN collapsed to a single space, ASCII-lowercased.
-///
-/// Whitespace is COLLAPSED and not deleted, unlike every other scan in this
-/// file. That is the whole reason a COUNT can be told from a LOCATOR: `2
-/// emissions` and `:773` differ only in whether whitespace separates the digit
-/// run from what follows it.
-fn rb68p_scan_text(line: &str) -> String {
-    let mut out = String::with_capacity(line.len());
-    let mut pending_space = false;
-    for c in line.chars() {
-        if c == '`' {
-            continue;
-        }
-        if c.is_whitespace() {
-            pending_space = true;
-            continue;
-        }
-        if pending_space && !out.is_empty() {
-            out.push(' ');
-        }
-        pending_space = false;
-        out.push(c.to_ascii_lowercase());
-    }
-    out
-}
-
-/// Consume up to SIX consecutive non-alphanumeric characters, returning the
-/// remainder and whether any of them was whitespace.
-///
-/// Raised from three on measured evidence: at three, ANY gap of four or more
-/// punctuation characters lost the forward arm entirely, and ` — (` alone is
-/// four. Widening it is cheap because this skips only NON-ALPHANUMERICS -- it
-/// can never step over a word, so `accounts.rs (ADR-0235)` still stops dead on
-/// the `A` however large the budget is, and the honest parenthesised-provenance
-/// spelling stays green at any width.
-fn rb68p_skip_gap(s: &str) -> (&str, bool) {
-    let mut rest = s;
-    let mut ws = false;
-    for _ in 0..6 {
-        match rest.chars().next() {
-            Some(c) if !c.is_alphanumeric() => {
-                ws = ws || c.is_whitespace();
-                rest = &rest[c.len_utf8()..];
-            }
-            _ => break,
-        }
-    }
-    (rest, ws)
-}
-
-/// How a digit run was introduced. The three classes read the SAME digits
-/// differently, and that is the whole reason a count can be told from a
-/// citation without a list of nouns.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Rb68Intro {
-    /// An abbreviation: `l`, `ln`, `ll`, `lineno`, `#`, `@`. Nobody writes
-    /// `at l. 12 sites`; these introduce a line number and nothing else.
-    Abbrev,
-    /// A prose word: `line`, `lines`, `row`, `rows`, `no`, `nos`, `at`. These
-    /// introduce enumerations (`line 1 is the claim-time purge`, `row 12 of
-    /// the runbook table`, `at 12 sites`) as readily as citations.
-    Word,
-    /// Nothing but punctuation between the path and the digits.
-    Bare,
-}
-
-/// Read a digit run -- or a `NNN-MMM` range -- and decide whether it is a
-/// LOCATOR or a COUNT.
-///
-/// THE HONEST SET AND THE ATTACK SET PULL IN OPPOSITE DIRECTIONS, and this is
-/// the one function where they meet. Every rule below is pinned by fixtures on
-/// BOTH sides in `rb68p_adr0230_evidence_oracle_control`, and several of the
-/// pairs differ by a single character:
-///   GLUED       `accounts.rs:773`     vs `accounts.rs: 2 emissions`
-///   MAGNITUDE   `row 773 for`         vs `row 12 of the runbook table`
-///   RANGE       `lines 773-799`       vs `lines 1-2 of the census`
-///   UNIT NOUN   `accounts.rs — 773 for a reader` vs `accounts.rs — 300 lines`
-///   ABBREVIATED `accounts.rs, l. 79`  vs `accounts.rs at 12 sites`
-/// The decision, in order:
-///   1. no whitespace at all between the path/word and the digits -> LOCATOR;
-///   2. an ABBREVIATION introduced them -> LOCATOR;
-///   3. a `ff` suffix -> LOCATOR;
-///   4. a RANGE whose longer side is two or more digits -> LOCATOR (`1-2` is
-///      an enumeration of two items, `79-92` is a span of a file);
-///   5. a run of three or more digits -> LOCATOR, UNLESS the next word is a
-///      plural or unit noun (`300 lines`, `123 emissions`), because a count
-///      names WHAT it counts and a citation just keeps talking;
-///   6. anything else -> a COUNT.
-///
-/// Rule 5's noun test is a suffix test and not a dictionary: a count in this
-/// document is always followed by the thing being counted.
-fn rb68p_digit_run_is_a_locator(s: &str, gap_ws: bool, intro: Rb68Intro) -> Option<String> {
-    let run = |t: &str| -> (usize, usize) {
-        let mut n = 0usize;
-        let mut len = 0usize;
-        for c in t.chars() {
-            if !c.is_numeric() || n >= 5 {
-                break;
-            }
-            n += 1;
-            len += c.len_utf8();
-        }
-        (n, len)
-    };
-    let (digits, taken) = run(s);
-    if digits == 0 {
-        return None;
-    }
-    let mut rest = &s[taken..];
-    let mut widest = digits;
-    // A range is ONE locator, not two numbers: consume the second side so the
-    // magnitude test sees the whole citation.
-    if let Some(after_dash) = rest
-        .strip_prefix('-')
-        .or_else(|| rest.strip_prefix('\u{2013}'))
-        .or_else(|| rest.strip_prefix('\u{2014}'))
-    {
-        let (second, second_len) = run(after_dash);
-        if second > 0 {
-            widest = widest.max(second);
-            rest = &after_dash[second_len..];
-            if widest >= 2 {
-                return Some(s.chars().take(12).collect());
-            }
-        }
-    }
-    if !gap_ws || intro == Rb68Intro::Abbrev {
-        return Some(s.chars().take(12).collect());
-    }
-    if rest.starts_with("ff") {
-        return Some(s.chars().take(12).collect());
-    }
-    // The next WORD, if the run is followed by whitespace and one.
-    let next_word: String = rest
-        .trim_start()
-        .chars()
-        .take_while(|c| c.is_alphabetic())
-        .collect();
-    let followed_by_a_word = rest.starts_with(char::is_whitespace) && !next_word.is_empty();
-    let counted_noun = next_word.len() >= 4 && next_word.ends_with('s');
-    if widest >= 3 && !(followed_by_a_word && counted_noun) {
-        return Some(s.chars().take(12).collect());
-    }
-    // Everything left is a COUNT: one or two whitespace-separated digits with no
-    // range, or a longer run naming what it counts. `accounts.rs: 2.`, `— 2,
-    // and privacy.rs — 1`, `at 12 sites`, `(2)` on a wrapped line, `row 12 of`
-    // and `— 300 lines` all land here and all of them are honest prose in this
-    // document today.
-    None
-}
-
-/// The locator words, longest first so `lines` is never read as `line` plus a
-/// stray `s` and `lineno` is never read as `line` plus `no`. BOTH arms use
-/// this ONE list: in round 1 the backward arm carried a strictly narrower list
-/// than the forward arm, so every reversed `at` / `l` / `#` locator escaped
-/// both.
-fn rb68p_locator_words() -> [(&'static str, Rb68Intro); 13] {
-    [
-        ("lineno", Rb68Intro::Abbrev),
-        ("lines", Rb68Intro::Word),
-        ("line", Rb68Intro::Word),
-        ("ln", Rb68Intro::Abbrev),
-        ("ll", Rb68Intro::Abbrev),
-        ("rows", Rb68Intro::Word),
-        ("row", Rb68Intro::Word),
-        ("nos", Rb68Intro::Word),
-        ("no", Rb68Intro::Word),
-        ("at", Rb68Intro::Word),
-        ("l", Rb68Intro::Abbrev),
-        ("#", Rb68Intro::Abbrev),
-        ("@", Rb68Intro::Abbrev),
-    ]
-}
-
-/// FORWARD arm: `path` then a short gap, then an OPTIONAL locator word, then a
-/// short gap, then a digit run.
-fn rb68p_forward_locator(tail: &str) -> Option<String> {
-    let (after_gap, gap_ws) = rb68p_skip_gap(tail);
-    for (word, intro) in rb68p_locator_words() {
-        if let Some(rest) = after_gap.strip_prefix(word) {
-            let (rest, word_ws) = rb68p_skip_gap(rest);
-            if let Some(hit) = rb68p_digit_run_is_a_locator(rest, gap_ws || word_ws, intro) {
-                return Some(format!("{word}{hit}"));
-            }
-        }
-    }
-    rb68p_digit_run_is_a_locator(after_gap, gap_ws, Rb68Intro::Bare)
-}
-
-/// BACKWARD arm: a locator word followed by a digit run, ANYWHERE on a line
-/// that names a source file. `see L773 of accounts.rs` and `#773 in
-/// accounts.rs` put the number BEFORE the path, where no forward-looking
-/// window can ever see it.
-///
-/// Deliberately PATH-AGNOSTIC, and the caller reports it as such. Binding this
-/// arm to one path would be a lie on a line that names two.
-fn rb68p_backward_locator(t: &str) -> Option<String> {
-    for (word, intro) in rb68p_locator_words() {
-        let mut scan = 0usize;
-        while let Some(rel) = t[scan..].find(word) {
-            let hit = scan + rel;
-            let bounded = !t[..hit]
-                .chars()
-                .next_back()
-                .is_some_and(|c| c.is_alphanumeric() || c == '_');
-            let after = hit + word.len();
-            if bounded {
-                let (rest, ws) = rb68p_skip_gap(&t[after..]);
-                if let Some(found) = rb68p_digit_run_is_a_locator(rest, ws, intro) {
-                    return Some(format!("{word}{found}"));
-                }
-            }
-            scan = after;
-        }
-    }
-    None
-}
-
-/// Does this normalised scan text cite `path` by LINE NUMBER, reading FORWARD
-/// from the path? Returns the offending fragment.
-fn rb68p_locator_hit(t: &str, path: &str) -> Option<String> {
-    let mut from = 0usize;
-    while let Some(rel) = t[from..].find(path) {
-        let at = from + rel + path.len();
-        if let Some(hit) = rb68p_forward_locator(&t[at..]) {
-            return Some(hit);
-        }
-        from = at;
-    }
-    None
-}
-
-/// EVERY way ADR-0230's text can contradict, or under-describe, accounts.rs's
-/// live emission sites -- one LABELLED violation per defect, in one pass.
-///
-/// It deliberately does NOT short-circuit: a red capture must show every
-/// violated clause at once, or the first failure shadows the rest and a second
-/// defect ships behind the fix for the first. There are exactly THREE
-/// exceptions, and each of them FAILS LOUD rather than opening, IN THIS ORDER:
-///   `[live/vacuity]`   MEASURED: with an EMPTY fact list the entire oracle
-///                      reported CLEAN on a fully gutted document. Every
-///                      emission clause is quantified over the facts;
-///   `[scope/section]`  MEASURED: renaming the heading silenced six clauses at
-///                      once, and a stale citation plus a fabricated
-///                      declaration then rode in behind the rename. A SECOND
-///                      heading naming either criterion is refused here too:
-///                      inserting `## PRV1-20 evidence` mid-section truncated
-///                      the body and un-scoped everything below it, and a
-///                      fabricated declaration plus two banned citations then
-///                      rode in behind THAT;
-///   `[doc/parity]`     an odd backtick count swaps the code and prose halves
-///                      of the section, so every other span verdict would be
-///                      computed over the wrong text.
-///
-/// THE SECTION GUARD RUNS BEFORE THE PARITY GUARD, and parity, the fence ban
-/// and the whitespace-line ban are all SCOPED TO THE SECTION BODY. In round 1
-/// all three were whole-document, and a backtick fence anywhere in a 260-line
-/// ADR reddened this gate -- 63 of the 213 ADRs in this corpus carry one, and
-/// ADR-0230 has four sections this slice does not own. A code sample added to
-/// one of them is an honest edit. Scoping costs nothing, because the only
-/// consumer of a span OUTSIDE the section is the emphasis stripper, whose span
-/// tracking resets at every newline for exactly this reason, and the code-span
-/// extractor now reads the section BODY rather than the whole document.
-///
-/// `facts`, `sources`, `roster` and `floors` are PARAMETERS rather than
-/// globals so the control fixtures exercise THIS function against the exact
-/// live facts the shipped test uses -- a control over a private copy proves
-/// nothing about the shipped path.
-fn rb68p_adr_violations(
-    md: &str,
-    facts: &[Rb68Fact],
-    sources: &[(String, String)],
-    roster: &[String],
-    floors: (usize, usize),
-) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-
-    // Comment LINE numbers are taken from the RAW text. Blanking keeps every
-    // newline and entity decoding refuses to produce one, so these numbers are
-    // the same before and after normalisation -- which is why this clause
-    // compares LINE NUMBERS and never byte offsets. MEASURED: a raw comment
-    // OFFSET compared against a stripped section RANGE is off by the length of
-    // every comment above it.
-    let comment_lines: Vec<usize> = md
-        .split('\n')
-        .enumerate()
-        .filter(|(_, line)| line.contains("<!--"))
-        .map(|(i, _)| i + 1)
-        .collect();
-
-    let normalised = rb68p_normalise(md);
-    let md: &str = normalised.as_str();
-
-    let mut lines: Vec<(usize, &str)> = Vec::new();
-    {
-        let mut at = 0usize;
-        for line in md.split('\n') {
-            lines.push((at, line));
-            at += line.len() + 1;
-        }
-    }
-
-    // --- RETURN-ALONE GUARD 1: [live/vacuity] -------------------------------
-    if facts.is_empty() {
-        return vec![String::from(
-            "[live/vacuity]: the live emission fact list is EMPTY. Every emission clause below \
-             is quantified over those facts, so an empty list makes the pairing, the containment \
-             and the event-literal clauses all vacuously satisfied -- MEASURED: with no facts \
-             this oracle reported a fully gutted document CLEAN. Returned ALONE: a gate that \
-             cannot see the source it is comparing against has no verdict to give.",
-        )];
-    }
-
-    // --- RETURN-ALONE GUARD 2: [scope/section] ------------------------------
-    // THREE ways this section can stop being the section, all measured:
-    // renaming its heading (round 1 caught it), duplicating the heading (round
-    // 1 caught it), and TRUNCATING it with a new `## ` heading in the middle
-    // (round 1 did NOT). The third is the dangerous one: it is a plausible
-    // honest edit, it leaves the heading untouched, and everything below the
-    // insertion point silently leaves scope. It is caught by counting the
-    // headings that name EITHER gated criterion -- exactly one line may.
-    let heading = rb68p_prv_heading();
-    let criteria = rb68p_criteria();
-    let n_headings = lines
-        .iter()
-        .filter(|(_, line)| {
-            rb68p_heading_anchor(line).is_some()
-                && criteria.iter().any(|c| line.contains(c.as_str()))
-        })
-        .count();
-    let section = rb68p_section_body_range(md, &heading);
-    if n_headings != 1 || section.is_none() {
-        let names = criteria.join(" / ");
-        return vec![format!(
-            "[scope/section]: {n_headings} level-two heading(s) name {names}, and exactly ONE \
-             may -- the one opening `{heading}`. MEASURED, three shapes: renaming this heading \
-             silenced SIX clauses at once; duplicating it made the body range end at its own \
-             twin; and inserting a SECOND heading that names one of these criteria part-way \
-             down TRUNCATED the section, after which a fabricated declaration and two banned \
-             file-and-line citations all survived, because every span, citation, paragraph, \
-             floor and presence clause below is scoped to this section's body. A leading house-\
-             style number (`## 10. `) is tolerated -- this ADR documents that convention about \
-             itself -- but a second heading about the same criteria is not. Returned ALONE: \
-             with no section there is no text to judge. If the section is genuinely being \
-             split, split this needle in the SAME commit."
-        )];
-    }
-    let (sec_start, sec_end) = section.unwrap_or((0, 0));
-    let conseq = rb68p_section_body_range(md, &rb68p_conseq_heading());
-
-    let sec_body = &md[sec_start..sec_end];
-    let sec_low = sec_body.to_ascii_lowercase();
-    let in_section = |at: usize| at >= sec_start && at < sec_end;
-    let mut sec_lines: Vec<(usize, usize, &str)> = Vec::new();
-    for (idx, (ls, line)) in lines.iter().enumerate() {
-        if in_section(*ls) {
-            sec_lines.push((idx + 1, *ls, *line));
-        }
-    }
-
-    // --- [doc/no-fence], computed BEFORE the parity guard --------------------
-    // A fence is THREE backticks: it desynchronises the span split for the
-    // whole remainder of the section while often leaving the TOTAL count even,
-    // and it is the usual cause of a parity break. Reporting it beside the
-    // parity verdict is what makes the parity message actionable instead of
-    // mysterious. The tilde spelling is a fence to CommonMark too and carries
-    // no backtick at all, so parity never sees it.
-    let mut fences: Vec<String> = Vec::new();
-    for (no, _, line) in &sec_lines {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with(concat!("``", "`")) || trimmed.starts_with("~~~") {
-            fences.push(format!(
-                "[doc/no-fence]: line {no} opens or closes a FENCED code block INSIDE the gated \
-                 section. Every clause here reads INLINE code spans by splitting on the \
-                 backtick, so a fence swaps which side of that split is code and which is prose \
-                 for everything after it, and a declaration parked in a fence is judged as part \
-                 of whatever text happens to neighbour it. A tilde fence carries no backtick and \
-                 so is invisible to the parity clause entirely -- MEASURED as a place to park \
-                 retracted prose. Put the declaration in an INLINE code span. A fence in ANOTHER \
-                 section of this document is legal and is not this clause's business."
-            ));
-        }
-    }
-
-    // --- RETURN-ALONE GUARD 3: [doc/parity], SECTION-SCOPED -----------------
-    let total_ticks = sec_body.chars().filter(|c| *c == '`').count();
-    let odd_line = sec_lines
-        .iter()
-        .find(|(_, _, line)| line.chars().filter(|c| *c == '`').count() % 2 != 0)
-        .map(|(no, _, _)| *no);
-    if total_ticks % 2 != 0 || odd_line.is_some() {
-        let where_at = odd_line.map_or_else(|| String::from("(none)"), |n| n.to_string());
-        out = fences;
-        out.push(format!(
-            "[doc/parity]: the gated section carries {total_ticks} backticks and the first line \
-             in it with an ODD count is line {where_at}. Code spans are read by splitting on the \
-             backtick, so one unpaired delimiter swaps the code and prose halves of everything \
-             that follows it. PER LINE and not merely in total, because two unpaired delimiters \
-             on DIFFERENT lines restore the total while leaving every span between them \
-             inverted. Returned with the fence findings and NOTHING ELSE on purpose: every \
-             other span clause would be judging the wrong text."
-        ));
-        return out;
-    }
-    out.extend(fences);
-
-    // --- [doc/no-blankish], IN SECTION; [doc/no-hidden-char], WHOLE DOCUMENT -
-    for (no, _, line) in &sec_lines {
-        if !line.is_empty() && line.trim().is_empty() {
-            out.push(format!(
-                "[doc/no-blankish]: line {no} is not empty but holds only whitespace. It reads \
-                 as a paragraph break to a human and to markdown, and a splitter keyed on the \
-                 two-newline sequence FUSES the paragraphs across it -- which is how a \
-                 declaration span smuggles itself into a paragraph that never names its file, \
-                 and how a stale sentence acquires a neighbour that vouches for it."
-            ));
-        }
-    }
-    for (idx, (_, line)) in lines.iter().enumerate() {
-        let no = idx + 1;
-        for c in line.chars() {
-            if let Some(class) = rb68p_hidden_class(c) {
-                let point = u32::from(c);
-                out.push(format!(
-                    "[doc/no-hidden-char]: line {no} carries U+{point:04X}, {class}. It occupies \
-                     bytes in the file and renders as nothing (or as an ordinary space) to a \
-                     reader, so it can split a gated needle in two, pad a retracted claim past a \
-                     blacklist, or park a token where no reader will ever question it. This is a \
-                     ban on CLASSES -- control, separator, format, and the zero-width fillers \
-                     and variation selectors -- because a NAMED blacklist of a dozen codepoints \
-                     was MEASURED to miss nine of them. It is deliberately NOT an allow-list of \
-                     printables: that shape was measured to red on the arrows, ellipses, accents \
-                     and curly quotes that 194 of this corpus's 213 ADRs already use, which is a \
-                     false RED on honest prose and the fastest way to get a gate deleted. Every \
-                     VISIBLE character, ASCII or not, is welcome here."
-                ));
-                break;
-            }
-        }
-    }
-
-    // --- [doc/no-hidden-carrier] and [doc/html-in-section], IN SECTION -------
-    for (no, _, line) in &sec_lines {
-        let line: &str = line;
-        let no = *no;
-        let trimmed = line.trim_start();
-        let is_ref_def = trimmed.starts_with('[')
-            && trimmed.find("]:").is_some_and(|close| {
-                !trimmed[1..close].contains('[')
-                    && trimmed[close + 2..]
-                        .chars()
-                        .next()
-                        .is_some_and(char::is_whitespace)
-            });
-        if is_ref_def || rb68p_has_html_tag(line) {
-            out.push(format!(
-                "[doc/no-hidden-carrier]: line {no} carries a construct that renders as NOTHING \
-                 -- a markdown link-reference definition or a raw HTML tag. MEASURED: four such \
-                 carriers parked EVERY gated token (the file name, the emission point, both \
-                 declaration markers, both event literals and both fragment builders) \
-                 invisibly, so the visible bullet could be replaced by a flat denial while this \
-                 oracle read the tokens it wanted out of text no reader ever sees. Evidence a \
-                 reader cannot read is not evidence. The tag test looks OUTSIDE code spans and \
-                 requires a real HTML element name: in round 1 it read `Vec<u64>` and \
-                 `Option<Identity>` as tags, in a section about `Identity` and `usize` values, \
-                 and 62 ADRs in this corpus write generics."
-            ));
-        }
-    }
-    for no in &comment_lines {
-        let inside = lines
-            .get(no.saturating_sub(1))
-            .is_some_and(|(ls, _)| in_section(*ls));
-        if inside {
-            out.push(format!(
-                "[doc/html-in-section]: line {no} opens an HTML comment INSIDE the gated \
-                 section. Comments are blanked before every clause here, so a single-line one is \
-                 already defeated -- but the stripper keeps the newlines inside a comment (line \
-                 numbers, paragraph breaks and section ranges must stay honest), so a comment \
-                 SPANNING a line break cannot be re-fused and can still split a needle in two. \
-                 The construct is therefore refused inside this section outright. A comment \
-                 elsewhere in the document is legal and this ADR carries one."
-            ));
-        }
-    }
-
-    // --- [scope/roster-floor] -----------------------------------------------
-    // Spans are extracted from the SECTION BODY and shifted back into document
-    // coordinates, not filtered out of a whole-document split. That is what
-    // makes the parity guard above section-scoped without opening a hole: a
-    // fence in an earlier section can no longer invert which half of this
-    // section's backtick split is code.
-    let named_files = roster
-        .iter()
-        .filter(|name| sec_low.contains(name.as_str()))
-        .count();
-    let section_spans: Vec<(usize, &str)> = rb68p_code_spans(sec_body)
-        .into_iter()
-        .map(|(at, s)| (at + sec_start, s))
-        .collect();
-    let decl_spans = section_spans
-        .iter()
-        .filter(|(_, s)| rb68p_is_decl_shaped(s))
-        .count();
-    let (min_files, min_decls) = floors;
-    if named_files < min_files || decl_spans < min_decls {
-        out.push(format!(
-            "[scope/roster-floor]: the section names {named_files} roster file(s) (floor \
-             {min_files}) and carries {decl_spans} declaration-shaped code span(s) (floor \
-             {min_decls}). MEASURED: deleting 2,640 of this section's 5,213 bytes -- the whole \
-             emission bullet and the whole delegated-helper census -- left every REMAINING \
-             clause satisfied, because every one of them is quantified over the text that is \
-             still there. A gate with no floor cannot tell a corrected document from a deleted \
-             one. These are anti-gutting BOUNDS, and they are not the only instrument: a floor \
-             cannot say WHICH block went, so `[scope/presence]` below pins the named evidence \
-             blocks and this clause only stops the section being whittled down around them."
-        ));
-    }
-
-    // --- [scope/presence]: the named evidence blocks, not just a byte count --
-    // MEASURED, all four with every floor satisfied: deleting the step-6a
-    // resolver trace, deleting the reject-path and reaper bullets, deleting the
-    // ENTIRE PRV1-20 evidence paragraph -- which is the whole of residual
-    // R-rb-65-ADR0230-PRV120 -- and a combined 44% excision. A floor with
-    // headroom is the wrong instrument for that: it measures how MUCH is left,
-    // and the residual is about WHAT is left. This clause is DERIVED, not
-    // transcribed: the criterion name comes from the heading anchor and both
-    // builder needles come from the live emission facts, so it cannot drift
-    // from the source it is protecting.
-    let paragraphs = rb68p_paragraphs(md);
-    for criterion in &criteria {
-        let named = paragraphs
-            .iter()
-            .any(|p| in_section(p.start) && p.text.contains(criterion.as_str()));
-        if !named {
-            out.push(format!(
-                "[scope/presence]: no paragraph in the gated section so much as NAMES \
-                 {criterion}, and the section's own heading says it is about it. The evidence \
-                 for a criterion is not optional prose: deleting the paragraph that carries it \
-                 was MEASURED to leave every floor, span, citation and pairing clause here \
-                 satisfied, because all of them are quantified over the text that is still \
-                 there."
-            ));
-        }
-    }
-    // The PRV1-20 argument specifically: it is the one this ADR got WRONG (it
-    // rested on the absence of a line that has existed since rb-65), and the
-    // corrected form rests on both fragment builders being pure. A paragraph
-    // that names the criterion must therefore carry BOTH builder spans -- that
-    // is the argument, and an argument that loses its evidence is a claim.
-    let prv20 = criteria.last().cloned().unwrap_or_default();
-    let content_para = paragraphs.iter().any(|p| {
-        in_section(p.start)
-            && p.text.contains(prv20.as_str())
-            && facts.iter().all(|f| {
-                rb68p_code_spans(&p.text)
-                    .iter()
-                    .any(|(_, s)| squash_ws(s).contains(f.fields_fn.as_str()))
-            })
-    });
-    if !content_para {
-        let builders: Vec<String> = facts.iter().map(|f| f.fields_fn.clone()).collect();
-        let listed = builders.join("`, `");
-        out.push(format!(
-            "[scope/presence]: no paragraph in the gated section argues {prv20} FROM CONTENT -- \
-             none that names the criterion also carries every live fragment builder (`{listed}`, \
-             derived from accounts.rs during this run) in a code span. That combination IS the \
-             corrected argument: the criterion holds because the two functions that render the \
-             erasure-window log lines are pure and render only an identity and a count. The \
-             version this slice retracted argued it from ABSENCE instead, and it was wrong -- \
-             the line it said did not exist has existed since rb-65. Deleting this paragraph was \
-             MEASURED to leave every other clause green."
-        ));
-    }
-
-    // --- [cite/no-line], per line AND over a two-line window -----------------
-    let ban_roster: Vec<String> = {
-        let mut seen: Vec<String> = Vec::new();
-        for (_, tok) in rb68p_rs_tokens(&rb68p_scan_text(sec_body)) {
-            if !seen.contains(&tok) {
-                seen.push(tok);
-            }
-        }
-        seen
-    };
-    let cite_note = "ADR-0230 bans file-and-line citations in its own evidence chain: the number \
-                     drifts the moment anything is inserted above the target, and a drifted \
-                     citation points a reader at unrelated code while still looking precise -- \
-                     which is the residual that created this gate. Cite the DECLARATION inside a \
-                     code span instead. The test is on SHAPE and is TWO-SIDED: a locator glued or \
-                     nearly glued to the file name, or one of line / lines / row / rows / no / \
-                     nos / at / l / ln / ll / lineno / # / @ followed by a number anywhere on a \
-                     line that names a source file. A COUNT is not a locator and stays green: \
-                     `accounts.rs: 2 emissions`, `at 12 sites`, `row 12 of the runbook table`, \
-                     `lines 1-2 of the census`, `300 lines` and `(ADR-0235)` are all legal here, \
-                     and each of them is a fixture.";
-    // The scan text is what a READER sees on one rendered line: backticks
-    // dropped, whitespace runs collapsed, lowercased. The BAN ROSTER is built
-    // from that same view rather than from the raw section, so a file name
-    // split by its own markdown (`accounts`.rs`) is still one token.
-    let scan_lines: Vec<(usize, String)> = sec_lines
-        .iter()
-        .map(|(no, _, line)| (*no, rb68p_scan_text(line)))
-        .collect();
-    let mut line_red: Vec<bool> = vec![false; scan_lines.len()];
-    // FORWARD arm, per path: the number FOLLOWS the file name, so the message
-    // can name the file with confidence.
-    for (idx, (no, scan)) in scan_lines.iter().enumerate() {
-        for path in &ban_roster {
-            if let Some(hit) = rb68p_locator_hit(scan, path) {
-                line_red[idx] = true;
-                out.push(format!(
-                    "[cite/no-line]: line {no} cites `{path}` by LINE NUMBER (at `{hit}`). \
-                     {cite_note}"
-                ));
-                break;
-            }
-        }
-    }
-    // BACKWARD arm, ONCE per line and PATH-AGNOSTIC. `L773 of accounts.rs` and
-    // `#773 in accounts.rs` put the number BEFORE the path, where no
-    // forward-looking window can see it. Round 1 ran this arm inside the
-    // per-path loop and named whichever path it happened to be holding, which
-    // on a line naming two files named the wrong one -- so it now reports every
-    // file the line names and says the number precedes them.
-    for (idx, (no, scan)) in scan_lines.iter().enumerate() {
-        if line_red[idx] {
-            continue;
-        }
-        let named: Vec<&str> = ban_roster
-            .iter()
-            .filter(|p| scan.contains(p.as_str()))
-            .map(std::string::String::as_str)
-            .collect();
-        if named.is_empty() {
-            continue;
-        }
-        if let Some(hit) = rb68p_backward_locator(scan) {
-            line_red[idx] = true;
-            let listed = named.join("`, `");
-            out.push(format!(
-                "[cite/no-line]: line {no} carries a REVERSED line locator (at `{hit}`) on a line \
-                 that names `{listed}`. The number comes BEFORE the file name here, which is why \
-                 this arm is reported separately and why it does not bind the locator to one of \
-                 those files: on a line naming two, either binding would be a guess. {cite_note}"
-            ));
-        }
-    }
-    // The k=2 WINDOW: a citation split across a hard wrap belongs to neither
-    // line. MEASURED: it defeated the per-line form in 6 of 6 attempts.
-    for idx in 0..scan_lines.len().saturating_sub(1) {
-        let (a, first) = (&scan_lines[idx].0, &scan_lines[idx].1);
-        let (b, second) = (&scan_lines[idx + 1].0, &scan_lines[idx + 1].1);
-        if *b != *a + 1 || first.is_empty() || second.is_empty() {
-            continue;
-        }
-        if line_red[idx] || line_red[idx + 1] {
-            continue;
-        }
-        let joined = format!("{first} {second}");
-        let hit = ban_roster
-            .iter()
-            .find_map(|path| rb68p_locator_hit(&joined, path).map(|h| (path.clone(), h)))
-            .or_else(|| {
-                let names = ban_roster.iter().any(|p| joined.contains(p.as_str()));
-                rb68p_backward_locator(&joined)
-                    .filter(|_| names)
-                    .map(|h| (String::from("(reversed)"), h))
-            });
-        if let Some((path, hit)) = hit {
-            out.push(format!(
-                "[cite/no-line]: lines {a}-{b} cite `{path}` by LINE NUMBER ACROSS A HARD WRAP \
-                 (at `{hit}`), which neither line does on its own. MEASURED: a citation split by \
-                 the wrap defeated the per-line form in 6 of 6 attempts, and the wrap is the \
-                 shape an editor reaches for by accident rather than by design. Reported \
-                 separately from the per-line arms so the three are never confused. {cite_note}"
-            ));
-        }
-    }
-
-    // --- paragraph-scoped declaration clauses --------------------------------
-    for para in &paragraphs {
-        if !in_section(para.start) {
-            continue;
-        }
-        let decls: Vec<(usize, &str)> = rb68p_code_spans(&para.text)
-            .into_iter()
-            .filter(|(_, s)| rb68p_is_decl_shaped(s))
-            .collect();
-        if decls.is_empty() {
-            continue;
-        }
-        let tokens = rb68p_rs_tokens(&para.text);
-        let head: String = para.text.chars().take(90).collect();
-        if tokens.is_empty() {
-            out.push(format!(
-                "[scope/paragraph]: a paragraph carries a DECLARATION span but names no `.rs` \
-                 file at all, so a reader who lands on it cannot tell which module owns the \
-                 declaration -- and a later reader helpfully adding a file name may well add the \
-                 wrong one. Nothing below can resolve the span either: every declaration clause \
-                 binds a span to a file named in its OWN paragraph. Paragraph opens: `{head}`"
-            ));
-            continue;
-        }
-        for (off, span) in decls {
-            let nearest = tokens
-                .iter()
-                .min_by_key(|(at, _)| off.abs_diff(*at))
-                .map(|(_, name)| name.clone())
-                .unwrap_or_default();
-            let src = match rb68p_source_of(sources, &nearest) {
-                Some(src) => src,
-                None => {
-                    out.push(format!(
-                        "[cite/roster-coverage]: the declaration span `{span}` is bound to \
-                         `{nearest}`, which is not in the SOURCE roster this module can read, so \
-                         no clause here can check that the declaration exists there at all. Two \
-                         rosters are in play on purpose: the SOURCE roster resolves \
-                         declarations, and a separate CITATION-BAN roster (every `.rs` token in \
-                         the section) is what makes a file-and-line citation of ANY file red \
-                         while a bare mention of an unreadable one stays green. A declaration \
-                         span next to an unreadable file name is an unverifiable claim wearing \
-                         the shape of a verified one."
-                    ));
-                    continue;
-                }
-            };
-            let squashed = squash_ws(span);
-            let hits = m22_count_occurrences(src, &squashed);
-            if hits == 0 {
-                out.push(format!(
-                    "[cite/decl-real]: the code span `{span}` does not occur in `{nearest}`'s \
-                     CODE (comments and string literals are blanked before the comparison, so a \
-                     declaration quoted in a doc comment there does not count as one). It is a \
-                     FABRICATION -- a plausible-looking declaration no compiler ever saw. The \
-                     file is the NEAREST `.rs` token to this span in its own paragraph, not `any \
-                     file the paragraph names`: MEASURED, a swapped attribution between two \
-                     helpers whose files were BOTH named read CLEAN under the looser rule. A \
-                     renamed parameter, a widened visibility and a helper attributed to the \
-                     wrong module all land here."
-                ));
-            } else if hits != 1 {
-                out.push(format!(
-                    "[cite/decl-sole]: the code span `{span}` occurs {hits} times in \
-                     `{nearest}`, and a citation that resolves to more than one place resolves \
-                     to none of them. Loosening exactly-one to at-least-one is what reopens the \
-                     decoy-twin bypass this shape exists to close: a second declaration planted \
-                     above the real one steals every first-hit scan in this file. If the \
-                     marker is genuinely ambiguous, cite a LONGER prefix of the declaration."
-                ));
-            }
-        }
-    }
-
-    // --- [emit/pair], POSITIONAL, PER PARAGRAPH, AND A TRIPLE ----------------
-    // Round 1 asked whether SOME occurrence of the declaration marker was
-    // followed, anywhere in the section, by its own event. Three MEASURED
-    // bypasses of that shape, all of which ADD text rather than remove it:
-    //   - a contradicting bullet APPENDED after the true one passed, because
-    //     `paired` broke true on the first position that happened to work;
-    //   - the same bullet PREPENDED passed for the same reason;
-    //   - one span carrying both events passed as well.
-    // The fix is not any->all over the whole section (measured: that reds the
-    // LIVE document, because the reaper's marker legitimately recurs in a later
-    // bullet with no event span after it). It is any->all WITHIN A PARAGRAPH,
-    // and only where the paragraph actually pairs: every declaration marker
-    // that is followed by an event span IN ITS OWN PARAGRAPH must be followed
-    // by its OWN event first.
-    //
-    // AND IT IS A TRIPLE, not a pair. `Rb68Fact::fields_fn` was derived and
-    // then never read by this collector, so swapping the two fragment builders
-    // between the two paths passed -- and that swap falsifies the whole of the
-    // corrected PRV1-20 argument, which rests on the CASCADE line being built
-    // by the cascade builder. The first BUILDER-shaped span after a marker must
-    // be that reducer's own builder too.
-    for fact in facts {
-        let label = &fact.label;
-        let decl = &fact.decl;
-        let present = section_spans
-            .iter()
-            .any(|(_, s)| squash_ws(s).contains(decl.as_str()));
-        if !present {
-            out.push(format!(
-                "[emit/pair]: no code span in the gated section carries {label}'s declaration \
-                 marker `{decl}`, so the section does not name this emission site at all. \
-                 accounts.rs emits through this reducer TODAY -- the fact was derived from the \
-                 file during this run, not transcribed -- and a document that omits it tells a \
-                 reader the erasure path is silent when it is not."
-            ));
-        }
-    }
-    for para in &paragraphs {
-        if !in_section(para.start) {
-            continue;
-        }
-        let spans: Vec<(usize, &str)> = rb68p_code_spans(&para.text);
-        let head: String = para.text.chars().take(90).collect();
-        for (i, (_, marker)) in spans.iter().enumerate() {
-            let squashed_marker = squash_ws(marker);
-            for fact in facts {
-                if !squashed_marker.contains(fact.decl.as_str()) {
-                    continue;
-                }
-                let after = &spans[i + 1..];
-                let next_evt_span = after
-                    .iter()
-                    .find(|(_, s)| facts.iter().any(|f| s.contains(f.evt.as_str())));
-                let next_evt: Vec<&Rb68Fact> = next_evt_span.map_or_else(Vec::new, |(_, s)| {
-                    facts
-                        .iter()
-                        .filter(|f| s.contains(f.evt.as_str()))
-                        .collect()
-                });
-                if next_evt.len() > 1 {
-                    // ONE span naming BOTH events. MEASURED: it pairs with
-                    // whichever fact the scan happens to reach first, so it
-                    // satisfies a positional rule for free while telling the
-                    // reader nothing about which reducer emits which.
-                    out.push(format!(
-                        "[emit/pair]: the first event-bearing code span after {}'s declaration \
-                         marker `{}` names {} different events at once, so it pairs with all of \
-                         them and identifies none. An event span that follows a declaration is \
-                         the document's claim about what THAT reducer emits; a span naming both \
-                         is not a claim. Split them. Paragraph opens: `{head}`",
-                        fact.label,
-                        fact.decl,
-                        next_evt.len()
-                    ));
-                }
-                if let Some(other) = next_evt.first().filter(|_| next_evt.len() == 1) {
-                    if other.evt != fact.evt {
-                        out.push(format!(
-                            "[emit/pair]: in ONE paragraph of the gated section, the first \
-                             event-bearing code span after {}'s declaration marker `{}` is {}'s \
-                             event, not its own. POSITIONAL and not co-occurrence: a full \
-                             event-to-reducer PAYLOAD SWAP -- each reducer described under the \
-                             OTHER one's event literal -- was MEASURED CLEAN in all four \
-                             configurations of a co-occurrence rule, because both markers and \
-                             both literals were still present in the same paragraph. Scoped to \
-                             the paragraph and applied to EVERY marker in it, because a rule \
-                             that accepted any ONE working position let a contradicting bullet \
-                             be ADDED beside the true one and stay green. An operator reading \
-                             the swapped document greps the wrong event for the wrong erasure. \
-                             Paragraph opens: `{head}`",
-                            fact.label, fact.decl, other.label
-                        ));
-                    }
-                }
-                let next_builder_span = after.iter().find(|(_, s)| {
-                    facts
-                        .iter()
-                        .any(|f| squash_ws(s).contains(f.fields_fn.as_str()))
-                });
-                let next_builder: Vec<&Rb68Fact> =
-                    next_builder_span.map_or_else(Vec::new, |(_, s)| {
-                        let sq = squash_ws(s);
-                        facts
-                            .iter()
-                            .filter(|f| sq.contains(f.fields_fn.as_str()))
-                            .collect()
-                    });
-                if next_builder.len() > 1 {
-                    out.push(format!(
-                        "[emit/builder]: the first fragment-builder code span after {}'s \
-                         declaration marker `{}` names {} different builders at once, so it \
-                         attributes the purity argument to all of them and to none of them.",
-                        fact.label,
-                        fact.decl,
-                        next_builder.len()
-                    ));
-                }
-                if let Some(other) = next_builder.first().filter(|_| next_builder.len() == 1) {
-                    if other.fields_fn != fact.fields_fn {
-                        out.push(format!(
-                            "[emit/builder]: in ONE paragraph of the gated section, the first \
-                             fragment-builder code span after {}'s declaration marker `{}` is \
-                             `{}` -- {}'s builder, not its own `{}`. This is the THIRD leg of the \
-                             pairing and it was missing in round 1: the builder was derived from \
-                             the live emission's second argument and then never compared against \
-                             the document, so exchanging the two builders between the two paths \
-                             passed every clause. That exchange is not cosmetic. The corrected \
-                             PRV1-20 argument is that the ERASURE-WINDOW line is rendered by a \
-                             PURE function that emits only an identity and a count; naming the \
-                             other path's builder there attributes the purity proof to the wrong \
-                             function and leaves the criterion resting on nothing. Paragraph \
-                             opens: `{head}`",
-                            fact.label, fact.decl, other.fields_fn, other.label, fact.fields_fn
-                        ));
-                    }
-                }
-            }
-        }
-    }
-
-    // --- [emit/containment] ---------------------------------------------------
-    for fact in facts {
-        let evt = &fact.evt;
-        let mut from = 0usize;
-        while let Some(rel) = md[from..].find(evt.as_str()) {
-            let at = from + rel;
-            from = at + evt.len();
-            if in_section(at) {
-                continue;
-            }
-            if conseq.is_some_and(|(a, b)| at >= a && at < b) {
-                continue;
-            }
-            let line = lines
-                .iter()
-                .rposition(|(ls, _)| *ls <= at)
-                .map_or(0, |i| i + 1);
-            out.push(format!(
-                "[emit/containment]: the derived event literal for {} appears on line {line}, \
-                 outside both the gated section and the consequences section. An event name is \
-                 the string an operator greps and an alert matches, and a second, unreviewed \
-                 statement about it elsewhere in the document is a second place for it to go \
-                 stale -- with no clause here watching that place. The ceiling is on the EVENT \
-                 LITERAL alone: a ceiling on the emission point itself was measured to red an \
-                 honest consequences mention and was defeated by a backslash escape anyway.",
-                fact.label
-            ));
-        }
-    }
-
-    // --- [emit/no-stale-claim] ------------------------------------------------
-    // A BLACKLIST, and nothing more than one: it cannot read polarity and must
-    // never be presented as a semantic check. The four needles are the four
-    // sentences this slice RETRACTS. The failure message prints the LABEL and
-    // the LINE NUMBER and NOTHING ELSE -- a gate needle visible in its own
-    // failure message is a gate an editor satisfies by deleting exactly the
-    // bytes it printed, which is the opposite of reading the line and fixing
-    // the claim.
-    //
-    // Lines 1 to NINE are exempt, not one to ten. Round 1 exempted ten, and
-    // line ten of this document is the `**Decision:**` field -- the ONE line
-    // `adr-digest` republishes to readers, and so the most-read sentence in the
-    // file. MEASURED: rewriting it to carry a retracted claim survived. The
-    // exempt block is now exactly the digest-owned header ABOVE that line (the
-    // title through the subsystems field), which this slice leaves
-    // byte-identical by design.
-    //
-    // THE SCAN RUNS OVER A WHITESPACE-COLLAPSED, BACKTICK-STRIPPED k=2 WINDOW,
-    // and that is the whole point of this round's rewrite. As a per-line
-    // literal test, every one of these survived and every one is a routine
-    // edit: a HARD WRAP between the two halves of the sentence (four for four),
-    // a DOUBLE SPACE, a code span around one word, and -- worst -- an HTML
-    // comment between the words, where the stripper this collector runs first
-    // blanks the comment to nothing and LEAVES TWO SPACES BEHIND, so the
-    // normalisation step created the hole. Collapsing whitespace over the same
-    // two-line window the citation ban already uses closes all four at once.
-    let flattened = rb68p_strip_emphasis(md);
-    let needles = [
-        concat!("contains", " zero"),
-        concat!("emits no log", " line at all"),
-        concat!("holds by", " absence"),
-        concat!("the only logging transitively", " reachable"),
-    ];
-    let claim_lines: Vec<String> = flattened.split('\n').map(rb68p_scan_text).collect();
-    let stale_note = "restates a claim this ADR's evidence chain RETRACTED. Read the line against \
-                      accounts.rs and delete it -- do not reword it into an `an earlier draft \
-                      said ...` sentence, because a retraction that quotes the dead claim keeps \
-                      the dead claim in the document. The needle is deliberately NOT printed \
-                      here: a gate that shows an editor the exact bytes it objects to is a gate \
-                      they satisfy by deleting exactly those bytes.";
-    let mut claim_red: Vec<bool> = vec![false; claim_lines.len()];
-    for (idx, line) in claim_lines.iter().enumerate() {
-        let no = idx + 1;
-        if no <= 9 {
-            continue;
-        }
-        if needles.iter().any(|n| line.contains(n)) {
-            claim_red[idx] = true;
-            out.push(format!("[emit/no-stale-claim]: line {no} {stale_note}"));
-        }
-    }
-    for idx in 0..claim_lines.len().saturating_sub(1) {
-        let (a, b) = (idx + 1, idx + 2);
-        if a <= 9 || claim_red[idx] || claim_red[idx + 1] {
-            continue;
-        }
-        if claim_lines[idx].is_empty() || claim_lines[idx + 1].is_empty() {
-            continue;
-        }
-        let joined = format!("{} {}", claim_lines[idx], claim_lines[idx + 1]);
-        if needles.iter().any(|n| joined.contains(n)) {
-            out.push(format!(
-                "[emit/no-stale-claim]: lines {a}-{b} restate, ACROSS A HARD WRAP, a claim this \
-                 ADR's evidence chain RETRACTED -- neither line carries it alone. {stale_note}"
-            ));
-        }
-    }
-
-    out
-}
-
-/// The shipped judgement path, with the live facts, live sources and live
-/// roster every fixture below is judged through.
-fn rb68p_judge(md: &str, floors: (usize, usize)) -> Vec<String> {
-    rb68p_adr_violations(
-        md,
-        rb68p_live_emission_facts(),
-        rb68p_sources(),
-        rb68p_roster(),
-        floors,
-    )
-}
-
-/// rb-68 (residuals R-rb-40-ADR0230 / R-rb-65-ADR0230-PRV120): the emission
-/// facts ADR-0230 is judged against are DERIVED from accounts.rs, and their sum
-/// RECONCILES with the file-wide census.
-///
-/// THIS IS NOT A THIRD CENSUS. `rb40_claim_emits_one_purge_observation` and
-/// `rb65_reaper_emits_one_cascade_observation` already pin the call sites file
-/// wide, per body, and as arithmetic. What this test adds, and what neither of
-/// those makes, is the assertion that the DERIVATION feeding the document
-/// oracle still describes the whole file: the prefix-free count of the bare
-/// emission identifier over accounts.rs must equal the SUM of the per-site
-/// counts. A third emission site, in a third function, therefore reds HERE --
-/// inside the slice that owns the document correspondence -- rather than only
-/// in the two sibling censuses, and no document clause can ever be judged
-/// against a fact list that has quietly stopped covering the file.
-///
-/// Kills, in clause order: a decoy second declaration steering the body reads;
-/// an indirected event name (a `const` or a `concat!` in first-argument
-/// position, which a grep for the event never finds); a fragment builder that
-/// is not the one the emission actually hands over; an emission that is no
-/// longer the terminal statement of its reducer; a second emission inside one
-/// body; and a THIRD emission site anywhere else in the file, including one
-/// reached through an unqualified or aliased name.
-#[test]
-fn rb68p_emission_facts_reconcile_with_the_file_census() {
-    let facts = rb68p_live_emission_facts();
-    assert_eq!(
-        facts.len(),
-        2,
-        "rb68p [live/fact-count]: accounts.rs must yield EXACTLY two derived emission facts (the \
-         rb-40 claim-time purge line and the rb-65 cascade line); derived {}. Every clause in \
-         the document oracle is quantified over this list.",
-        facts.len()
-    );
-
-    // The derivation is checked against the SHIPPED needles rather than the
-    // other way round: these two constants are already gated by the rb-40 and
-    // rb-65 teeth, so a disagreement here means the SLICER is broken, not the
-    // source -- and a broken slicer yields facts a document could be judged
-    // green against while describing nothing.
-    let want_evt = [rb40_evt(), rb65_evt()];
-    let want_fields = [rb40_nd_fields_fn(), rb65_nd_cascade_fields_fn()];
-    for (i, fact) in facts.iter().enumerate() {
-        let label = &fact.label;
-        assert_eq!(
-            fact.evt, want_evt[i],
-            "rb68p [live/evt-derived]: the event literal SLICED out of {label}'s emission does \
-             not match the shipped evt pin. The slice is the SSOT for the document oracle; the \
-             shipped pin is what rb-40 and rb-65 gate. If they disagree, this test's slicer has \
-             stopped reading the call it thinks it is reading."
-        );
-        assert_eq!(
-            fact.fields_fn, want_fields[i],
-            "rb68p [live/fields-derived]: the fragment builder derived from {label}'s emission \
-             argument does not match the shipped builder needle. The two live shapes are an \
-             INLINE builder call and a builder BOUND to a local first; a third shape derives \
-             something else and every message pointing an editor at the builder would then name \
-             the wrong function."
-        );
-        assert_eq!(
-            fact.in_body, 1,
-            "rb68p [live/one-per-body]: {label} must carry EXACTLY one emission; found {}. Two \
-             in one body doubles every operator count of the event; zero is the pre-fix state \
-             ADR-0230 still describes.",
-            fact.in_body
-        );
-        assert!(
-            fact.terminal,
-            "rb68p [live/terminal]: {label}'s squashed body no longer ENDS with the shipped \
-             frozen emission tail. Terminality is asserted here by REUSING that literal and is \
-             deliberately not re-encoded: a host log line survives a later panic or Err rollback \
-             while the writes do not, so an emission with any fallible statement after it can \
-             record a cascade that rolled back. If this is red, fix the SOURCE -- and expect \
-             rb40_claim_emits_one_purge_observation or \
-             rb65_reaper_emits_one_cascade_observation to be red with it."
-        );
-    }
-
-    // --- THE RECONCILIATION -------------------------------------------------
-    let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let ident = concat!("mr_", "log");
-
-    // ISOLATING FIXTURE for the PREFIX-FREE half of the census, over a
-    // synthetic haystack rather than the live file: accounts.rs carries no
-    // breadcrumb sibling today, so nothing in this tree would notice the
-    // prefix-free test being replaced by a plain occurrence count -- and the
-    // whole point of the test is the day somebody adds one. Two call sites, one
-    // of them a strict prefix of the other, must count as ONE.
-    let sibling = rb40_nd_mr_log_breadcrumb();
-    let synthetic = format!("{sibling}a);{}b,&c);{sibling}d);", rb40_nd_mr_log());
-    let counted = rb68p_prefix_free_count(&synthetic, ident);
-    assert_eq!(
-        counted, 1,
-        "rb68p [live/prefix-free]: a haystack with two `{ident}_breadcrumb` call sites and ONE \
-         `{ident}` call site must count as exactly one emission; counted {counted}. The \
-         breadcrumb name contains the emission name as a STRICT PREFIX, so a plain occurrence \
-         count reads three and the reconciliation below would then demand three derived facts -- \
-         or, with the arithmetic the other way round, would silently accept a real third \
-         emission. The breadcrumb construct is banned elsewhere in this file, but a census must \
-         never depend on another clause holding."
-    );
-
-    let file_wide = rb68p_prefix_free_count(&squashed, ident);
-    let scoped: usize = facts.iter().map(|f| f.in_body).sum();
-    assert_eq!(
-        file_wide, scoped,
-        "rb68p [live/reconcile]: accounts.rs names the bare emission identifier `{ident}` \
-         {file_wide} time(s) (prefix-free: the byte after it is not an identifier byte, which is \
-         what excludes the breadcrumb sibling), but the two DERIVED sites account for only \
-         {scoped}. The difference is an emission this slice's document oracle cannot see, and it \
-         is invisible to a qualified-call census as well -- an unqualified call through a local \
-         import, an aliased re-export, or a call inside a third reducer entirely all land here. \
-         Counting the bare IDENTIFIER rather than the call form also covers a function-POINTER \
-         channel, which spells no opening paren at all. Either add the new site to the derivation \
-         and to ADR-0230's evidence chain in the same commit, or delete it."
-    );
-    assert_eq!(
-        file_wide, 2,
-        "rb68p [live/census]: accounts.rs must name `{ident}` EXACTLY twice; found {file_wide}. \
-         The reconciliation above only proves the derivation and the file AGREE -- if both moved \
-         together (both emissions deleted, or both relocated into one body), they would still \
-         agree. This clause is the absolute floor underneath it."
-    );
-}
-
-/// rb-68: ADR-0230's `## PRV1-17 and PRV1-20` section must describe the
-/// emission sites accounts.rs actually has.
-///
-/// THIS IS THE DOCUMENT SIDE OF A CORRESPONDENCE, not a third census. The
-/// source side is already pinned by rb-40 and rb-65; what was ungated until
-/// rb-68 is whether the ADR that explains that source still agrees with it --
-/// and it did not. Four claims in one evidence chain went stale across two
-/// slices while every gate in this tree stayed green.
-///
-/// DIRECTION OF FIX -- THE SOURCE IS THE SSOT. This test is never evidence
-/// that an emission is wrong; it is evidence that the prose describing it is.
-#[test]
-fn rb68p_adr0230_prv117_matches_the_live_emission_sites() {
-    let facts = rb68p_live_emission_facts();
-    assert_eq!(
-        facts.len(),
-        2,
-        "rb68p [live/vacuity-pre]: the derived fact list is not the expected pair, so the oracle \
-         below would be judging ADR-0230 against a source view that has stopped describing \
-         accounts.rs. Asserted BEFORE the call on purpose: an empty list was MEASURED to make \
-         the entire oracle report a gutted document CLEAN."
-    );
-
-    let bytes = RB68_ADR_0230_MD.len();
-    assert!(
-        bytes > 8000,
-        "rb68p [adr/vacuity]: ADR-0230 reads as only {bytes} bytes. It is a multi-section \
-         document; at this size the include path is wrong or the file was truncated, and every \
-         clause below would pass over almost nothing."
-    );
-
-    // The BYTE floor lives HERE and not in the collector. A floor meaningful
-    // against gutting the live section is far larger than any control fixture,
-    // so putting it inside the collector would red every fixture and make an
-    // isolating one impossible. The collector carries the roster and
-    // declaration-span floors instead, which scale with the parameters it is
-    // given.
-    // NOT `.expect(...)`, and computed BEFORE the collector runs but asserted
-    // AFTER it. A missing or renamed section is a VIOLATION the collector
-    // reports under `[scope/section]`, with all three measured shapes and the
-    // fix; a panic here shadowed that message and -- MEASURED -- fired on the
-    // ADR's own documented `## 10. ` renumbering convention, which is a false
-    // RED that presents to a reader as a crash.
-    let normalised = rb68p_normalise(RB68_ADR_0230_MD);
-    let section_bytes = rb68p_section_body_range(&normalised, &rb68p_prv_heading())
-        .map_or(0, |(start, end)| end - start);
-
-    let violations = rb68p_judge(RB68_ADR_0230_MD, RB68_LIVE_FLOORS);
-    let found = violations.len();
-    let listed = violations.join("\n  - ");
-    let (evt_one, evt_two) = (&facts[0].evt, &facts[1].evt);
-    let (decl_one, decl_two) = (&facts[0].decl, &facts[1].decl);
-    let (fields_one, fields_two) = (&facts[0].fields_fn, &facts[1].fields_fn);
-    assert!(
-        violations.is_empty(),
-        "rb68p [adr/live-emissions]: \
-         docs/adr/0230-deletion-runbook-gates-with-declaration-shaped-cites.md describes \
-         accounts.rs's logging in a way accounts.rs contradicts. {found} violation(s):\n  \
-         - {listed}\n\
-         WHERE TO EDIT: the `## PRV1-17 and PRV1-20` section body, and the `## Consequences` \
-         bullets that restate it. The heading line and the header block are deliberately NOT in \
-         scope.\n\
-         THE LIVE EMISSION SITES, derived from accounts.rs during THIS run: `{decl_one}` emits \
-         `{evt_one}` with fragments from `{fields_one}`, and `{decl_two}` emits `{evt_two}` with \
-         fragments from `{fields_two}` -- both as the terminal statement of their reducer, both \
-         through the one blessed emission point.\n\
-         DIRECTION OF FIX -- THE SOURCE IS THE SSOT: fix the DOCUMENT from the CODE, never the \
-         code from the document. Cite each declaration inside a code span, with the file named \
-         in bare prose in the SAME paragraph, and never as a file-and-line pair.\n\
-         IF YOU BELIEVE AN EMISSION ITSELF CHANGED: a real change reds \
-         rb68p_emission_facts_reconcile_with_the_file_census, \
-         rb40_claim_emits_one_purge_observation and rb65_reaper_emits_one_cascade_observation. \
-         If those are GREEN and only this test is red, the source is fine and the prose is not."
-    );
-
-    assert!(
-        section_bytes >= 3000,
-        "rb68p [adr/section-floor]: the gated section is only {section_bytes} bytes. Every clause \
-         in the oracle above is quantified over the text that IS there, so a section deleted down \
-         to a sentence satisfies all of them at once. Correct the evidence chain; do not delete \
-         it. Zero here means the section could not be found at all -- see `[scope/section]`."
-    );
-}
-
-// --- rb-68 control fixtures: the oracle above, judged over documents whose
-// --- verdict is known by construction --------------------------------------
-
-/// The gated section's heading LINE, as a fixture spells it.
-fn rb68p_fx_heading() -> String {
-    format!("## {} \u{2014} Met by verification", rb68p_prv_heading())
-}
-
-/// The same heading under this ADR's own documented `## N. ` house style. A
-/// POSITIVE control: renumbering the headings is a convention the document
-/// describes about itself, and MEASURED, it used to panic the section lookup.
-fn rb68p_fx_numbered_heading() -> String {
-    format!(
-        "## 10. {} \u{2014} Met by verification",
-        rb68p_prv_heading()
-    )
-}
-
-/// A context paragraph carrying every PERMITTED non-ASCII character and an
-/// HTML comment in a NON-gated section -- both positive controls, both in the
-/// document every other fixture is derived from, so neither can rot unnoticed.
-fn rb68p_fx_context() -> String {
-    String::from(
-        "The evidence below was read directly \u{2014} see \u{00A7}9 \u{2014} and covers the \
-         operator\u{2019}s own audit over steps 1\u{2013}13. \
-         <!-- a comment in a NON-gated section is legal and this ADR carries one -->",
-    )
-}
-
-/// The emission bullet, built ENTIRELY from the live facts: both declaration
-/// markers, both event literals, both fragment builders, in the POSITIONAL
-/// order `[emit/pair]` requires, in a paragraph that names the file.
-fn rb68p_fx_emission_para() -> String {
-    let facts = rb68p_live_emission_facts();
-    let q = rb22_dq();
-    let file = &facts[0].file;
-    let decl_one = format!("pub {}", rb68p_spaced_decl(&facts[0].decl));
-    let decl_two = format!("pub {}", rb68p_spaced_decl(&facts[1].decl));
-    let fields_one = rb68p_spaced_decl(&facts[0].fields_fn);
-    let fields_two = rb68p_spaced_decl(&facts[1].fields_fn);
-    let evt_one = &facts[0].evt;
-    let evt_two = &facts[1].evt;
-    format!(
-        "- server-module/src/{file} publishes exactly two observability lines of its own. The \
-         claim-time one, added by rb-40, is emitted from `{decl_one}` under `{q}{evt_one}{q}`, \
-         its field fragment built by the pure `{fields_one}`. The cascade one, added by rb-65, \
-         is emitted from `{decl_two}` under `{q}{evt_two}{q}`, its fragment built by the pure \
-         `{fields_two}`. Each is the terminal statement of its reducer."
-    )
-}
-
-/// A second file, so the nearest-file binding has something to be wrong about.
-fn rb68p_fx_privacy_para() -> String {
-    let decl = concat!("pub(crate) fn purge_export", "_bundles(");
-    let file = concat!("privacy", ".rs");
-    format!(
-        "- The delegated export purge lives in {file} as `{decl}`, and the cascade calls it once."
-    )
-}
-
-/// The PRV1-20 evidence block: the paragraph that names the criterion and
-/// carries BOTH live fragment builders, which is what `[scope/presence]`
-/// requires and what residual R-rb-65-ADR0230-PRV120 is about. Built from the
-/// DERIVED builder needles, so a fixture cannot vouch for a builder the source
-/// does not have.
-fn rb68p_fx_prv20_para() -> String {
-    let facts = rb68p_live_emission_facts();
-    let file = &facts[0].file;
-    let fields_one = rb68p_spaced_decl(&facts[0].fields_fn);
-    let fields_two = rb68p_spaced_decl(&facts[1].fields_fn);
-    let criteria = rb68p_criteria();
-    let (a, b) = (&criteria[0], &criteria[1]);
-    format!(
-        "- {b} holds by content rather than otherwise: `{fields_two}` and `{fields_one}` are both \
-         pure, both declared in {file}, and each renders only an identity and a count. {a} is met \
-         by the same reading of the same two functions."
-    )
-}
-
-/// The HONEST sentences `[cite/no-line]` must never red, carried by the
-/// document every other fixture derives from so a tightening of that clause
-/// cannot pass unnoticed: a colon-list count, a parenthesised count, a
-/// parenthesised ADR number, and an enumeration of the two lines.
-fn rb68p_fx_census_para() -> String {
-    let accounts = concat!("accounts", ".rs");
-    let battle = concat!("battle", ".rs");
-    format!(
-        "- The write-back resolver named in {battle} is the only step-6a hop that logs, and the \
-         file census reads {accounts}: 2 emissions, with {accounts} (2 sanctioned sites) and \
-         {accounts} (ADR-0235) as the provenance; of the two, line 1 is the claim-time purge."
-    )
-}
-
-/// MORE honest count-shaped sentences, every one of them MEASURED as a false
-/// RED of round 1's citation rule. They are in the base document -- not in a
-/// one-off fixture -- so that any later tightening of `[cite/no-line]` has to
-/// walk past all of them.
-///
-/// `at 12 sites` and `row 12 of` are the locator WORDS introducing a count;
-/// `— 300 lines` and `: 123 emissions` are three-digit counts, told from a
-/// three-digit line number only by the plural noun that follows them; `: 2.`
-/// ends a sentence; `— 2, and privacy.rs — 1` puts a bare one-digit count at a
-/// comma and at a full stop; `lines 1-2` is a RANGE that is an enumeration.
-fn rb68p_fx_counts_para() -> String {
-    let accounts = concat!("accounts", ".rs");
-    let privacy = concat!("privacy", ".rs");
-    format!(
-        "- Counted rather than located: {accounts} at 12 sites, {accounts} \u{2014} 300 lines, \
-         {accounts} \u{2014} 2, and {privacy} \u{2014} 1. The emission total for {accounts}: 2. \
-         A busier module would read {accounts}: 123 emissions."
-    )
-}
-
-/// The two locator WORDS a reader uses for an enumeration rather than a
-/// citation, plus a range that means `the first and the second`.
-fn rb68p_fx_enumeration_para() -> String {
-    let accounts = concat!("accounts", ".rs");
-    format!(
-        "- The runbook table records {accounts} in row 12 of the runbook table, and lines 1-2 of \
-         the census cover the two emissions between them."
-    )
-}
-
-fn rb68p_fx_conseq() -> String {
-    String::from(
-        "(+) The correspondence tooth is planted beside the accounts source, and both criteria \
-         stay met by verification.",
-    )
-}
-
-/// Assemble a fixture document: a non-gated context section, the gated section
-/// carrying `paras`, and a consequences section.
-fn rb68p_fx_doc(heading: &str, context: &str, paras: &[String], conseq: &str) -> String {
-    let mut doc = String::from("# ADR fixture - the deletion evidence chain\n\n");
-    doc.push_str("## Context and problem statement\n\n");
-    doc.push_str(context);
-    doc.push_str("\n\n");
-    doc.push_str(heading);
-    doc.push_str("\n\n");
-    for para in paras {
-        doc.push_str(para);
-        doc.push_str("\n\n");
-    }
-    doc.push_str("## Consequences\n\n");
-    doc.push_str(conseq);
-    doc.push('\n');
-    doc
-}
-
-fn rb68p_fx_paras() -> Vec<String> {
-    vec![
-        rb68p_fx_emission_para(),
-        rb68p_fx_privacy_para(),
-        rb68p_fx_prv20_para(),
-        rb68p_fx_census_para(),
-        rb68p_fx_counts_para(),
-        rb68p_fx_enumeration_para(),
-    ]
-}
-
-/// The document the oracle must ACCEPT.
-fn rb68p_fx_good() -> String {
-    rb68p_fx_doc(
-        &rb68p_fx_heading(),
-        &rb68p_fx_context(),
-        &rb68p_fx_paras(),
-        &rb68p_fx_conseq(),
-    )
-}
-
-/// The good document with one extra paragraph spliced into the GATED section.
-fn rb68p_fx_plus(para: &str) -> String {
-    let mut paras = rb68p_fx_paras();
-    paras.push(para.to_string());
-    rb68p_fx_doc(
-        &rb68p_fx_heading(),
-        &rb68p_fx_context(),
-        &paras,
-        &rb68p_fx_conseq(),
-    )
-}
-
-/// The good document with an extra paragraph spliced in FIRST rather than
-/// last. Position matters to `[emit/pair]`: a rule that accepted any one
-/// working position was defeated by a contradicting bullet on either side of
-/// the true one.
-fn rb68p_fx_prepend(para: &str) -> String {
-    let mut paras = vec![para.to_string()];
-    paras.extend(rb68p_fx_paras());
-    rb68p_fx_doc(
-        &rb68p_fx_heading(),
-        &rb68p_fx_context(),
-        &paras,
-        &rb68p_fx_conseq(),
-    )
-}
-
-/// The good document with its EMISSION paragraph replaced. Every other
-/// paragraph -- including the PRV1-20 evidence block `[scope/presence]`
-/// requires -- is untouched, so a fixture built this way can isolate one label.
-fn rb68p_fx_replacing_emission(para: String) -> String {
-    let mut paras = rb68p_fx_paras();
-    paras[0] = para;
-    rb68p_fx_doc(
-        &rb68p_fx_heading(),
-        &rb68p_fx_context(),
-        &paras,
-        &rb68p_fx_conseq(),
-    )
-}
-
-/// The good document with the citation phrase under test spliced in.
-fn rb68p_fx_with_cite(cite: &str) -> String {
-    rb68p_fx_plus(&format!(
-        "- The rejecting call is at {cite} for a reader who wants the exact site."
-    ))
-}
-
-/// The oracle must ACCEPT this document, and say why if it does not.
-///
-/// `#[track_caller]` so the panic names the FIXTURE's line rather than this
-/// helper's: with more than fifty fixtures in one test, a location that is
-/// always the same line is no location at all.
-#[track_caller]
-fn rb68p_expect_clean(tooth: &str, md: &str, floors: (usize, usize)) {
-    let found = rb68p_judge(md, floors);
-    let listed = found.join("\n  - ");
-    assert!(
-        found.is_empty(),
-        "rb68p [control/{tooth}]: this fixture is a POSITIVE control -- every declaration span in \
-         it is built from a shipped needle and judged against the LIVE source, so the oracle must \
-         accept it. It did not:\n  - {listed}\n\
-         An over-tight rule reads exactly like a missing fix and sends the next reader \
-         reverse-engineering the test instead of correcting the document."
-    );
-}
-
-/// The oracle must REJECT this document WITH the named label.
-#[track_caller]
-fn rb68p_expect_label(tooth: &str, md: &str, floors: (usize, usize), label: &str) {
-    let found = rb68p_judge(md, floors);
-    let listed = found.join("\n  - ");
-    assert!(
-        found.iter().any(|v| v.starts_with(label)),
-        "rb68p [control/{tooth}]: this fixture is a MEASURED bypass and must raise `{label}`. \
-         The oracle returned:\n  - {listed}\n\
-         A control that no longer bites means the ORACLE was loosened, not that the fixture is \
-         wrong. Restore the clause; never relax the fixture to match the code."
-    );
-}
-
-/// The oracle must reject this document with the named label AND NOTHING ELSE.
-///
-/// This is the shape that proves a clause is not SHADOWED. The round-2 red team
-/// on the sibling oracle neutralised each clause to `if false` in turn and found
-/// three that no fixture could tell apart from their neighbours, because every
-/// fixture that reached them also tripped something louder. A clause with only
-/// a co-firing fixture is a clause that can be deleted silently.
-#[track_caller]
-fn rb68p_expect_only_label(tooth: &str, md: &str, floors: (usize, usize), label: &str) {
-    let found = rb68p_judge(md, floors);
-    let listed = found.join("\n  - ");
-    let others = found.iter().filter(|v| !v.starts_with(label)).count();
-    assert!(
-        !found.is_empty() && others == 0,
-        "rb68p [control/{tooth}]: this fixture must raise `{label}` and NOTHING ELSE, so that \
-         clause is proven to bite on its own rather than behind a louder neighbour. The oracle \
-         returned {} violation(s), {others} of them under a different label:\n  - {listed}",
-        found.len()
-    );
-}
-
-/// The isolating shape above, with the FACT LIST under the fixture's control.
-#[track_caller]
-fn rb68p_expect_only_label_with_facts(
-    tooth: &str,
-    md: &str,
-    facts: &[Rb68Fact],
-    floors: (usize, usize),
-    label: &str,
-) {
-    let found = rb68p_adr_violations(md, facts, rb68p_sources(), rb68p_roster(), floors);
-    let listed = found.join("\n  - ");
-    let others = found.iter().filter(|v| !v.starts_with(label)).count();
-    assert!(
-        !found.is_empty() && others == 0,
-        "rb68p [control/{tooth}]: this fixture must raise `{label}` and NOTHING ELSE. The oracle \
-         returned:\n  - {listed}"
-    );
-}
-
-/// CONTROL for `rb68p_adr0230_prv117_matches_the_live_emission_sites` -- GREEN
-/// before AND after the ADR is corrected, because it never reads the ADR.
-///
-/// DISCLOSED: this test is green by construction and is NOT a red arm of the
-/// proof-of-teeth. What it proves is that the oracle the live test uses BITES,
-/// clause by clause, on shapes that were MEASURED as clean bypasses of an
-/// earlier design of it -- and that every clause has at least one fixture whose
-/// violation list is EXACTLY that clause.
-///
-/// Every fixture is routed through the SAME `rb68p_adr_violations`, with the
-/// SAME live facts, sources and roster the shipped test uses, so what is proven
-/// here is proven about the shipped path rather than about a private copy.
-#[test]
-fn rb68p_adr0230_evidence_oracle_control() {
-    let facts = rb68p_live_emission_facts();
-    let q = rb22_dq();
-    let small = RB68_SMALL_FLOORS;
-    let good = rb68p_fx_good();
-
-    // ================= POSITIVE CONTROLS =================
-    rb68p_expect_clean("good-document", &good, small);
-    // The comment-placement PAIR. Round 1 called `rb68p_expect_clean` on the
-    // SAME BYTES twice under two labels, and the second proved nothing. These
-    // two vary ONLY where the comment sits: outside the gated section it is
-    // legal (this ADR carries one), and the isolating in-section case lives
-    // under `[doc/html-in-section]` below.
-    rb68p_expect_clean(
-        "html-comment-at-the-end-of-a-non-gated-paragraph",
-        &rb68p_fx_doc(
-            &rb68p_fx_heading(),
-            &format!(
-                "<!-- an editorial note above the prose -->\n{}",
-                rb68p_fx_context()
-            ),
-            &rb68p_fx_paras(),
-            &rb68p_fx_conseq(),
-        ),
-        small,
-    );
-    // This ADR documents a numbered-heading house style for its OWN `##`
-    // headings. Applying it here is an honest edit, and it used to PANIC.
-    rb68p_expect_clean(
-        "house-style-numbered-heading",
-        &rb68p_fx_doc(
-            &rb68p_fx_numbered_heading(),
-            &rb68p_fx_context(),
-            &rb68p_fx_paras(),
-            &rb68p_fx_conseq(),
-        ),
-        small,
-    );
-    // A FENCED code block and a whitespace-only line in a section this slice
-    // does not own. 63 of the 213 ADRs in this corpus carry a fence; round 1
-    // read both clauses whole-document and reddened on them.
-    rb68p_expect_clean(
-        "fence-and-blank-line-outside-the-gated-section",
-        &rb68p_fx_doc(
-            &rb68p_fx_heading(),
-            &rb68p_fx_context(),
-            &rb68p_fx_paras(),
-            &format!(
-                "{}\n \n{}\nlet x = 1;\n{}",
-                rb68p_fx_conseq(),
-                concat!("``", "`rust"),
-                concat!("``", "`")
-            ),
-        ),
-        small,
-    );
-    // GENERIC TYPES in code spans and in bare prose. MEASURED false RED: the
-    // round-1 tag rule read `Vec<u64>` as a raw HTML carrier, in a section
-    // whose subject is what an `Identity` and a `usize` render as.
-    rb68p_expect_clean(
-        "generic-types-are-not-html-tags",
-        &rb68p_fx_plus(
-            "- The fragment carries an `Identity` and a `Vec<u64>` of chunk ids; spelled bare in \
-             prose that is Vec<u64> and Option<Identity>, and the reaper takes an \
-             `Option<Identity>` in accounts.rs.",
-        ),
-        small,
-    );
-    // ARROWS, ELLIPSES, ACCENTS and CURLY QUOTES. 194 of the 213 ADRs in this
-    // corpus use a character outside round 1's four-character allow-list; the
-    // right arrow alone appears 1,150 times.
-    rb68p_expect_clean(
-        "ordinary-non-ascii-punctuation",
-        &rb68p_fx_plus(
-            "- The cascade runs reaper \u{2192} helper \u{2192} table, with \u{2264} 12 hops, \
-             \u{2026} and the r\u{00E9}sum\u{00E9} of the trace is \u{201C}one line\u{201D} \
-             \u{2713} for accounts.rs.",
-        ),
-        small,
-    );
-    // NEAREST-file binding, isolated: the FIRST `.rs` token in this paragraph
-    // is the WRONG file and the nearest one is right. A `min_by_key` replaced
-    // by `tokens[0]` reds here and nowhere else in this suite.
-    rb68p_expect_clean(
-        "nearest-file-is-not-the-first-file",
-        &rb68p_fx_plus(&format!(
-            "- Called from accounts.rs, the delegated export purge is declared in privacy.rs as \
-             `{}`.",
-            concat!("pub(crate) fn purge_export", "_bundles(")
-        )),
-        small,
-    );
-    // A SHOUTED file name beside a declaration span. `rb68p_rs_tokens`
-    // lowercases, so the span resolves; without that it would bind to a file
-    // no roster contains and raise `[cite/roster-coverage]`.
-    rb68p_expect_clean(
-        "shouted-file-name-beside-a-declaration",
-        &rb68p_fx_plus(&format!(
-            "- The delegated export purge lives in PRIVACY.RS as `{}`.",
-            concat!("pub(crate) fn purge_export", "_bundles(")
-        )),
-        small,
-    );
-    // A parenthesised enumeration WRAPPED onto the next line: the k=2 window
-    // joins it to a line ending in a file name, and it is still a count.
-    rb68p_expect_clean(
-        "wrapped-parenthesised-enumeration",
-        &rb68p_fx_plus(
-            "- The claim path is described in accounts.rs\n  (2) and the cascade path follows it.",
-        ),
-        small,
-    );
-    rb68p_expect_clean(
-        "bare-identifier-span",
-        &rb68p_fx_plus("- The rejecting helper in accounts.rs is `reject()`, which forwards on."),
-        small,
-    );
-    rb68p_expect_clean(
-        "module-qualified-span",
-        &rb68p_fx_plus(&format!(
-            "- The purge in privacy.rs is reached as `{}`.",
-            concat!("crate::privacy::purge_export", "_bundles")
-        )),
-        small,
-    );
-    rb68p_expect_clean(
-        "honest-battle-mention",
-        &rb68p_fx_plus(
-            "- Several of those files log elsewhere, battle.rs among them, in unrelated reducers.",
-        ),
-        small,
-    );
-    rb68p_expect_clean(
-        "permitted-non-ascii",
-        &rb68p_fx_plus(
-            "- Read directly \u{2014} see \u{00A7}7.2 \u{2014} covering the operator\u{2019}s \
-             audit over steps 1\u{2013}13.",
-        ),
-        small,
-    );
-    rb68p_expect_clean(
-        "unreadable-file-named-without-a-declaration",
-        &rb68p_fx_plus(&format!(
-            "- The census that keeps it so lives in {}.",
-            concat!("accounts", "_tests.rs")
-        )),
-        small,
-    );
-    rb68p_expect_clean(
-        "honest-hard-wrap",
-        &rb68p_fx_plus(
-            "- The rejecting call site lives in accounts.rs\n  and forwards to the guards \
-             helper, which logs one line.",
-        ),
-        small,
-    );
-    rb68p_expect_clean(
-        "evt-in-the-consequences-section",
-        &rb68p_fx_doc(
-            &rb68p_fx_heading(),
-            &rb68p_fx_context(),
-            &rb68p_fx_paras(),
-            &format!(
-                "{} The `{q}{}{q}` line stays census-pinned by the rb-40 tooth.",
-                rb68p_fx_conseq(),
-                facts[0].evt
-            ),
-        ),
-        small,
-    );
-
-    // ================= [cite/no-line] =================
-    // THIRTY-FOUR spellings, tuned JOINTLY with the TWELVE honest count-shaped
-    // sentences the good document above carries: the two sets pull in opposite
-    // directions and a rule that satisfies only one of them is not a rule.
-    // Several pairs across the two sets differ by ONE character (`row 773` and
-    // `row 12`, `lines 773-799` and `lines 1-2`, `— 773 for` and `— 300
-    // lines`), which is why they are authored together and must be edited
-    // together. The natural markdown spelling puts a backtick BETWEEN the path
-    // and the locator; the full-width digits defeat an ASCII-only reading; the
-    // entity form defeats a scan of the source bytes; the capitals defeat a
-    // case-sensitive one; and the bracketed, braced, signed, tilded, slashed
-    // and em-dashed forms all defeat a literal `.rs:`.
-    //
-    // The last block is round 2's: ORDINARY ABBREVIATIONS for exactly the
-    // artefact this ADR bans. Round 1's word list carried `line`, `lines`,
-    // `row` and `no.` and nothing else, so `ln 773`, `ll. 773`, `lineno 773`,
-    // `rows 773-799` and `No 773` all walked straight through -- and the
-    // BACKWARD arm carried a narrower list still, so every reversed locator
-    // (`L773 of accounts.rs`, `#773 in accounts.rs`, `at 773 of accounts.rs`)
-    // escaped both arms at once.
-    for cite in [
-        concat!("accounts", ".rs:773").to_string(),
-        concat!("accounts", ".rs (L773)").to_string(),
-        concat!("accounts", ".rs, l. 79").to_string(),
-        concat!("accounts", ".rs (79-92)").to_string(),
-        concat!("accounts", ".rs, L79").to_string(),
-        concat!("accounts", ".rs +773").to_string(),
-        concat!("accounts", ".rs ~773").to_string(),
-        concat!("accounts", ".rs [773]").to_string(),
-        concat!("accounts", ".rs {773}").to_string(),
-        concat!("accounts", ".rs at 773").to_string(),
-        concat!("accounts", ".rs row 773").to_string(),
-        concat!("accounts", ".rs no. 373").to_string(),
-        concat!("accounts", ".rs 773ff").to_string(),
-        concat!("accounts", ".rs, lines 773-799").to_string(),
-        concat!("accounts", ".rs/773").to_string(),
-        concat!("accounts", ".rs#L79").to_string(),
-        concat!("accounts", ".rs@79").to_string(),
-        format!("`{}`:773", concat!("accounts", ".rs")),
-        concat!("accounts", ".rs \u{2014} 773").to_string(),
-        concat!("PRIVACY", ".RS:79-92").to_string(),
-        concat!("accounts", ".rs&#58;773").to_string(),
-        concat!("accounts", "_tests.rs:14609").to_string(),
-        // --- round 2: abbreviations, plurals, and the REVERSED arm ---
-        concat!("accounts", ".rs ln 773").to_string(),
-        concat!("accounts", ".rs ln. 773").to_string(),
-        concat!("accounts", ".rs Ln 773").to_string(),
-        concat!("accounts", ".rs rows 773-799").to_string(),
-        concat!("accounts", ".rs No 773").to_string(),
-        concat!("accounts", ".rs ll. 773").to_string(),
-        concat!("accounts", ".rs lineno 773").to_string(),
-        concat!("accounts", ".rs \u{2014} (773)").to_string(),
-        concat!("#773 in accounts", ".rs").to_string(),
-        concat!("L773 of accounts", ".rs").to_string(),
-        concat!("at 773 of accounts", ".rs").to_string(),
-        concat!("lines 773-799 of accounts", ".rs").to_string(),
-        // The file name SPLIT BY ITS OWN MARKDOWN. It renders as one path, and
-        // the citation scan re-fuses it by dropping backticks before reading.
-        // This is the fixture that isolates that drop: with backticks kept, the
-        // ban roster never contains this token and the line is never examined.
-        concat!("accounts", "`.rs`:773").to_string(),
-    ] {
-        rb68p_expect_only_label(&cite, &rb68p_fx_with_cite(&cite), small, "[cite/no-line]");
-    }
-    // FULL-WIDTH DIGITS. In round 1 this reddened the hidden-character clause
-    // as well, because that clause was an allow-list of ASCII printables. It is
-    // now a ban on INVISIBLE classes, and a full-width digit is perfectly
-    // visible -- so this fixture proves what it always should have: that the
-    // CITATION rule reads digits by Unicode numeric value and not by byte.
-    rb68p_expect_only_label(
-        "full-width-digits",
-        &rb68p_fx_with_cite(concat!("accounts", ".rs:\u{FF17}\u{FF17}\u{FF13}")),
-        small,
-        "[cite/no-line]",
-    );
-    // THE HARD-WRAPPED STRADDLE: neither line carries a citation on its own,
-    // and the per-line arm was MEASURED to miss this shape 6 times out of 6.
-    rb68p_expect_only_label(
-        "hard-wrapped-straddle",
-        &rb68p_fx_plus(
-            "- The rejecting call site lives in accounts.rs\n  (515-518) for a reader who wants \
-             the exact bytes.",
-        ),
-        small,
-        "[cite/no-line]",
-    );
-
-    // ================= declaration clauses =================
-    let fields_one = rb68p_spaced_decl(&facts[0].fields_fn);
-    // A FABRICATION in its own bullet rather than spliced over a live builder
-    // span: substituting one INSIDE the emission bullet also breaks that
-    // bullet's builder pairing, and a fixture that raises two labels proves
-    // neither of them bites alone.
-    rb68p_expect_only_label(
-        "fabricated-declaration",
-        &rb68p_fx_plus(&format!(
-            "- The claim path also runs `{}` in accounts.rs.",
-            concat!("fn totally_invented", "_helper(")
-        )),
-        small,
-        "[cite/decl-real]",
-    );
-    rb68p_expect_only_label(
-        "declaration-attributed-to-the-wrong-file",
-        &rb68p_fx_plus(&format!(
-            "- The delegated export purge lives in accounts.rs as `{}`, though the module that \
-             owns and declares it is privacy.rs.",
-            concat!("pub(crate) fn purge_export", "_bundles(")
-        )),
-        small,
-        "[cite/decl-real]",
-    );
-    rb68p_expect_only_label(
-        "declaration-marker-that-is-not-sole",
-        &rb68p_fx_plus(&format!(
-            "- The connect-path reject reasons live in accounts.rs as `{}`.",
-            concat!("const REJECT", "_UNRECOGNIZED")
-        )),
-        small,
-        "[cite/decl-sole]",
-    );
-    rb68p_expect_only_label(
-        "declaration-bound-to-an-unreadable-file",
-        &rb68p_fx_plus(&format!(
-            "- The census that pins it lives in {} and reads `{fields_one}` directly.",
-            concat!("accounts", "_tests.rs")
-        )),
-        small,
-        "[cite/roster-coverage]",
-    );
-    rb68p_expect_only_label(
-        "declaration-in-a-paragraph-naming-no-file",
-        &rb68p_fx_plus(&format!(
-            "- The write-back helper is `{}` and it is the only step-6a hop that logs.",
-            concat!("pub(crate) fn resolve_wild_battle_on", "_disconnect(")
-        )),
-        small,
-        "[scope/paragraph]",
-    );
-
-    // ================= [emit/pair], positional =================
-    let decl_one = format!("pub {}", rb68p_spaced_decl(&facts[0].decl));
-    let decl_two = format!("pub {}", rb68p_spaced_decl(&facts[1].decl));
-    let fields_two = rb68p_spaced_decl(&facts[1].fields_fn);
-    let file = &facts[0].file;
-    let (evt_one, evt_two) = (&facts[0].evt, &facts[1].evt);
-    // THE PAYLOAD SWAP: each reducer described under the OTHER one's event
-    // literal. Both markers and both literals are still present, still real,
-    // still sole and still in a paragraph that names the file -- which is why
-    // co-occurrence pairing measured CLEAN on it in all four configurations.
-    rb68p_expect_only_label(
-        "evt-to-reducer-payload-swap",
-        &rb68p_fx_replacing_emission(format!(
-            "- server-module/src/{file} publishes exactly two observability lines of its own. The \
-             claim-time one, added by rb-40, is emitted from `{decl_one}` under `{q}{evt_two}{q}`, \
-             its field fragment built by the pure `{fields_one}`. The cascade one, added by \
-             rb-65, is emitted from `{decl_two}` under `{q}{evt_one}{q}`, its fragment built by \
-             the pure `{fields_two}`. Each is the terminal statement of its reducer."
-        )),
-        small,
-        "[emit/pair]",
-    );
-    // THE ADDED CONTRADICTING BULLET. The true bullet is untouched; this one is
-    // APPENDED beside it and says the opposite. MEASURED CLEAN against round
-    // 1's rule, which asked only whether SOME position of each marker paired
-    // correctly and stopped at the first one that did. Pairing is now checked
-    // at EVERY marker, inside the paragraph that carries it.
-    rb68p_expect_only_label(
-        "contradicting-bullet-added-beside-the-true-one",
-        &rb68p_fx_plus(&format!(
-            "- Restated for operators in {file}: `{decl_one}` emits under `{q}{evt_two}{q}`, and \
-             `{decl_two}` emits under `{q}{evt_one}{q}`."
-        )),
-        small,
-        "[emit/pair]",
-    );
-    // The same bullet PREPENDED rather than appended: round 1's first-position
-    // rule was order-sensitive in the attacker's favour either way.
-    rb68p_expect_only_label(
-        "contradicting-bullet-prepended",
-        &rb68p_fx_prepend(&format!(
-            "- Restated for operators in {file}: `{decl_one}` emits under `{q}{evt_two}{q}`, and \
-             `{decl_two}` emits under `{q}{evt_one}{q}`."
-        )),
-        small,
-        "[emit/pair]",
-    );
-    // ONE SPAN CARRYING BOTH EVENTS -- also measured clean, because a span that
-    // contains the right event also contains the wrong one, and a positional
-    // rule that asks `which fact does this span mention` gets an answer for
-    // free from whichever fact it scans first. A span that pairs with every
-    // fact identifies none of them, and is now its own violation.
-    rb68p_expect_only_label(
-        "one-span-carrying-both-events",
-        &rb68p_fx_plus(&format!(
-            "- Operators grep {file}: after `{decl_one}` runs they match \
-             `{q}{evt_two}{q} or {q}{evt_one}{q}` in the host log."
-        )),
-        small,
-        "[emit/pair]",
-    );
-    // THE BUILDER SWAP: the two fragment builders exchanged between the two
-    // paths, and NOTHING else changed. Both spans are real, both are sole, both
-    // are in a paragraph that names their file, and both events still pair --
-    // which is why this passed every clause in round 1: `fields_fn` was derived
-    // from the live emission's second argument and then never read by the
-    // collector at all. The swap is not cosmetic: the corrected PRV1-20
-    // argument says the CASCADE line is rendered by the cascade builder, and
-    // this document says it is rendered by the claim-path one.
-    rb68p_expect_only_label(
-        "fragment-builder-swap-between-the-two-paths",
-        &rb68p_fx_replacing_emission(format!(
-            "- server-module/src/{file} publishes exactly two observability lines of its own. The \
-             claim-time one, added by rb-40, is emitted from `{decl_one}` under `{q}{evt_one}{q}`, \
-             its field fragment built by the pure `{fields_two}`. The cascade one, added by \
-             rb-65, is emitted from `{decl_two}` under `{q}{evt_two}{q}`, its fragment built by \
-             the pure `{fields_one}`. Each is the terminal statement of its reducer."
-        )),
-        small,
-        "[emit/builder]",
-    );
-    // THE EXISTENCE ARM, isolated: the claim-path marker is gone from the
-    // document entirely. Nothing else in the paragraph moves, so the pairing
-    // arm has nothing to say and this arm is proven on its own.
-    rb68p_expect_only_label(
-        "declaration-marker-absent-from-the-document",
-        &good.replacen(&format!("`{decl_one}`"), "the claim-time reducer", 1),
-        small,
-        "[emit/pair]",
-    );
-
-    // ================= [emit/containment] =================
-    rb68p_expect_only_label(
-        "evt-parked-in-an-unrelated-section",
-        &rb68p_fx_doc(
-            &rb68p_fx_heading(),
-            &format!(
-                "{} The event `{q}{}{q}` is also named out here.",
-                rb68p_fx_context(),
-                facts[0].evt
-            ),
-            &rb68p_fx_paras(),
-            &rb68p_fx_conseq(),
-        ),
-        small,
-        "[emit/containment]",
-    );
-
-    // ================= [emit/no-stale-claim] =================
-    // The four RETRACTED sentences, each in its own fixture, plus the emphasis
-    // and entity spellings of the first: `contains **zero**` renders as the
-    // same sentence and MEASURED past a literal blacklist.
-    for (tooth, claim) in [
-        (
-            "stale-zero-emissions",
-            "- The accounts module contains zero emissions of its own.",
-        ),
-        (
-            "stale-zero-emissions-emphasised",
-            "- The accounts module contains **zero** emissions of its own.",
-        ),
-        (
-            "stale-zero-emissions-entity-encoded",
-            "- The accounts module contains&#32;zero emissions of its own.",
-        ),
-        (
-            "stale-reaper-is-silent",
-            "- In the pre-rb-65 tree the reaper emits no log line at all.",
-        ),
-        (
-            "stale-prv120-by-absence",
-            "- PRV1-20 holds by absence in that older reading of the cascade.",
-        ),
-        (
-            "stale-step-6a-is-the-only-hop",
-            "- The only logging transitively reachable from the cascade is through step 6a.",
-        ),
-    ] {
-        rb68p_expect_only_label(tooth, &rb68p_fx_plus(claim), small, "[emit/no-stale-claim]");
-    }
-    // THE WHITESPACE FAMILY. Every one of these MEASURED CLEAN against round
-    // 1's per-line literal test, and every one is a routine edit rather than an
-    // attack: a hard wrap, a double space, a code span around one word. The
-    // needle scan now runs over a whitespace-COLLAPSED, backtick-stripped k=2
-    // window, which is the same window the citation ban already uses.
-    for (tooth, claim) in [
-        (
-            "stale-claim-split-by-a-hard-wrap",
-            "- The accounts module contains\n  zero emissions of its own.",
-        ),
-        (
-            "stale-claim-split-by-a-double-space",
-            "- The accounts module contains  zero emissions of its own.",
-        ),
-        (
-            "stale-claim-split-by-a-code-span",
-            "- The accounts module contains `zero` emissions of its own.",
-        ),
-        (
-            "stale-reaper-claim-split-by-a-hard-wrap",
-            "- In the pre-rb-65 tree the reaper emits no log\n  line at all.",
-        ),
-        (
-            "stale-prv120-claim-split-by-a-hard-wrap",
-            "- PRV1-20 holds by\n  absence in that older reading of the cascade.",
-        ),
-        (
-            "stale-step-6a-claim-split-by-a-hard-wrap",
-            "- The only logging transitively\n  reachable from the cascade is step 6a.",
-        ),
-    ] {
-        rb68p_expect_only_label(tooth, &rb68p_fx_plus(claim), small, "[emit/no-stale-claim]");
-    }
-    // AN HTML COMMENT BETWEEN THE TWO WORDS, in a section this slice does not
-    // gate. This one is the sharpest of the family, because the NORMALISATION
-    // STEP CREATES IT: the stripper blanks the comment to nothing and leaves
-    // the two spaces that surrounded it behind, so the document a reader sees
-    // says the retracted sentence and the text the scan saw did not. It is
-    // also the fixture that isolates the stripper itself -- as an identity
-    // function the comment survives, the needle stays split, and this fixture
-    // is the only one in the suite that goes green.
-    rb68p_expect_only_label(
-        "stale-claim-split-by-an-html-comment-outside-the-section",
-        &rb68p_fx_doc(
-            &rb68p_fx_heading(),
-            &rb68p_fx_context(),
-            &rb68p_fx_paras(),
-            &format!(
-                "{} The accounts module contains <!-- an editorial note --> zero emissions of \
-                 its own.",
-                rb68p_fx_conseq()
-            ),
-        ),
-        small,
-        "[emit/no-stale-claim]",
-    );
-    // THE EXEMPTION BOUNDARY, pinned from both sides. Lines 1 to 9 are the
-    // digest-owned header block this slice leaves byte-identical; line 10 is
-    // the `**Decision:**` field, which is the ONE line `adr-digest` republishes
-    // and therefore the most-read sentence in the document. Round 1 exempted
-    // ten lines and a retracted claim on line 10 MEASURED CLEAN.
-    let claim_at = |n: usize| {
-        let mut ctx = String::new();
-        for _ in 5..n {
-            ctx.push_str("An ordinary line of header prose.\n");
-        }
-        ctx.push_str("The accounts module contains zero surprises for an operator.\n");
-        ctx.push_str(&rb68p_fx_context());
-        rb68p_fx_doc(
-            &rb68p_fx_heading(),
-            &ctx,
-            &rb68p_fx_paras(),
-            &rb68p_fx_conseq(),
-        )
-    };
-    rb68p_expect_clean("retracted-wording-on-line-9-is-exempt", &claim_at(9), small);
-    rb68p_expect_only_label(
-        "retracted-wording-on-line-10-is-not-exempt",
-        &claim_at(10),
-        small,
-        "[emit/no-stale-claim]",
-    );
-
-    // ================= document hygiene =================
-    rb68p_expect_only_label(
-        "word-joiner-in-prose",
-        &good.replacen("read directly", "read di\u{2060}rectly", 1),
-        small,
-        "[doc/no-hidden-char]",
-    );
-    // The SAME invisible character inside the EVENT SPAN: it reds the
-    // allow-list AND breaks the pairing, because the token an operator greps
-    // is no longer the token the source emits. A NAMED blacklist of invisible
-    // characters was MEASURED to miss nine of twelve, this one among them.
-    let joiner_in_evt = {
-        let evt = &facts[0].evt;
-        let span = format!("{q}{evt}{q}");
-        let mangled = format!("{q}{}\u{2060}{}{q}", &evt[..1], &evt[1..]);
-        good.replacen(span.as_str(), mangled.as_str(), 1)
-    };
-    rb68p_expect_label(
-        "word-joiner-in-the-event-span",
-        &joiner_in_evt,
-        small,
-        "[doc/no-hidden-char]",
-    );
-    rb68p_expect_label(
-        "word-joiner-in-the-event-span",
-        &joiner_in_evt,
-        small,
-        "[emit/pair]",
-    );
-    rb68p_expect_only_label(
-        "carriage-return",
-        &good.replacen("read directly", "read\u{000D} directly", 1),
-        small,
-        "[doc/no-hidden-char]",
-    );
-    rb68p_expect_only_label(
-        "link-reference-definition-carrier",
-        &rb68p_fx_plus("[//]: # (a carrier that renders as nothing at all)"),
-        small,
-        "[doc/no-hidden-carrier]",
-    );
-    rb68p_expect_only_label(
-        "hidden-div-carrier",
-        &rb68p_fx_plus("- A note <div hidden>parked out of sight</div> for the record."),
-        small,
-        "[doc/no-hidden-carrier]",
-    );
-    rb68p_expect_only_label(
-        "html-comment-inside-the-gated-section",
-        &rb68p_fx_plus("- A note about the census. <!-- parked -->"),
-        small,
-        "[doc/html-in-section]",
-    );
-    rb68p_expect_only_label(
-        "whitespace-only-separator",
-        &good.replacen("\n\n- The delegated", "\n \n- The delegated", 1),
-        small,
-        "[doc/no-blankish]",
-    );
-    // A TILDE fence carries no backtick, so it reaches the fence clause without
-    // tripping the parity guard: this is the fence fixture that ISOLATES. It is
-    // INSIDE the gated section, because that is now the only place a fence is
-    // this clause's business -- the paired positive control above puts one in
-    // the consequences section and requires it to stay green.
-    rb68p_expect_only_label(
-        "tilde-fence-inside-the-gated-section",
-        &rb68p_fx_plus("~~~\nparked text\n~~~"),
-        small,
-        "[doc/no-fence]",
-    );
-    rb68p_expect_label(
-        "backtick-fence-inside-the-gated-section",
-        &rb68p_fx_plus(&format!(
-            "{}\nparked text\n{}",
-            concat!("``", "`"),
-            concat!("``", "`")
-        )),
-        small,
-        "[doc/no-fence]",
-    );
-
-    // ================= the three RETURN-ALONE guards =================
-    // ONE unpaired delimiter, inside the section.
-    rb68p_expect_only_label(
-        "odd-backtick-count",
-        &rb68p_fx_plus("- A stray ` delimiter in the evidence chain."),
-        small,
-        "[doc/parity]",
-    );
-    // TWO unpaired delimiters on DIFFERENT lines: the section total is EVEN
-    // again, every span between them is inverted, and only the per-line arm
-    // sees it. This is the fixture that isolates that arm.
-    rb68p_expect_only_label(
-        "two-unpaired-delimiters-on-different-lines",
-        &rb68p_fx_plus(
-            "- A stray ` delimiter here in the evidence chain,\n  and another ` one on the next \
-             line, restoring the total.",
-        ),
-        small,
-        "[doc/parity]",
-    );
-    rb68p_expect_only_label_with_facts(
-        "empty-derived-fact-list",
-        &good,
-        &[],
-        small,
-        "[live/vacuity]",
-    );
-    rb68p_expect_only_label(
-        "renamed-section-heading",
-        &rb68p_fx_doc(
-            "## Deletion evidence \u{2014} met by verification",
-            &rb68p_fx_context(),
-            &rb68p_fx_paras(),
-            &rb68p_fx_conseq(),
-        ),
-        small,
-        "[scope/section]",
-    );
-    // A DUPLICATED heading: the body range ends at its own twin, so the section
-    // is whatever sits between them. Isolating the `n_headings != 1` arm, which
-    // no fixture reached in round 1.
-    rb68p_expect_only_label(
-        "duplicated-section-heading",
-        &{
-            let mut paras = rb68p_fx_paras();
-            paras.push(rb68p_fx_heading());
-            rb68p_fx_doc(
-                &rb68p_fx_heading(),
-                &rb68p_fx_context(),
-                &paras,
-                &rb68p_fx_conseq(),
-            )
-        },
-        small,
-        "[scope/section]",
-    );
-    // THE TRUNCATION, and the whole reason this guard grew a third shape. A new
-    // level-two heading part-way down the section ends the body there; MEASURED
-    // against round 1, everything below it -- a fabricated declaration and two
-    // banned file-and-line citations -- then went unjudged. The heading names a
-    // gated criterion, which is exactly what makes it plausible AND what makes
-    // it detectable.
-    rb68p_expect_only_label(
-        "second-heading-truncating-the-section",
-        &{
-            let criteria = rb68p_criteria();
-            let mut paras = rb68p_fx_paras();
-            paras.insert(2, format!("## {} evidence", criteria[1]));
-            rb68p_fx_doc(
-                &rb68p_fx_heading(),
-                &rb68p_fx_context(),
-                &paras,
-                &rb68p_fx_conseq(),
-            )
-        },
-        small,
-        "[scope/section]",
-    );
-
-    // ================= [scope/presence] =================
-    // The PRV1-20 evidence block DELETED, with every floor still satisfied.
-    // This is residual R-rb-65-ADR0230-PRV120's own target: the paragraph that
-    // argues the criterion from the purity of both fragment builders.
-    rb68p_expect_only_label(
-        "prv1-20-evidence-block-deleted",
-        &{
-            let paras: Vec<String> = rb68p_fx_paras()
-                .into_iter()
-                .filter(|p| *p != rb68p_fx_prv20_para())
-                .collect();
-            rb68p_fx_doc(
-                &rb68p_fx_heading(),
-                &rb68p_fx_context(),
-                &paras,
-                &rb68p_fx_conseq(),
-            )
-        },
-        small,
-        "[scope/presence]",
-    );
-    // The block KEPT but stripped of one builder: the criterion is still named
-    // and still argued, but the argument no longer covers both erasure-window
-    // lines. A presence rule that only looked for the criterion NAME would miss
-    // this, which is why it requires the derived builder set too.
-    rb68p_expect_only_label(
-        "prv1-20-block-missing-one-fragment-builder",
-        &good.replacen(
-            &format!("`{}`", rb68p_spaced_decl(&facts[1].fields_fn)),
-            "the cascade fragment builder",
-            2,
-        ),
-        small,
-        "[scope/presence]",
-    );
-
-    // ================= [scope/roster-floor] =================
-    // ISOLATING by varying ONE parameter at a time. Round 1 raised BOTH floors
-    // in one fixture, so either half of the `||` could be deleted with every
-    // fixture still green. These two vary the file floor and the span floor
-    // separately, against the same document the oracle accepts above.
-    rb68p_expect_only_label(
-        "file-floor-raised-past-a-good-document",
-        &good,
-        (99, RB68_SMALL_FLOORS.1),
-        "[scope/roster-floor]",
-    );
-    rb68p_expect_only_label(
-        "span-floor-raised-past-a-good-document",
-        &good,
-        (RB68_SMALL_FLOORS.0, 99),
-        "[scope/roster-floor]",
-    );
-    // And the attack the floor exists for: the section gutted to a denial,
-    // judged at the LIVE floors.
-    rb68p_expect_label(
-        "gutted-section-at-the-live-floors",
-        &rb68p_fx_doc(
-            &rb68p_fx_heading(),
-            &rb68p_fx_context(),
-            &[String::from(
-                "- The accounts module publishes nothing worth naming here any more.",
-            )],
-            &rb68p_fx_conseq(),
-        ),
-        RB68_LIVE_FLOORS,
-        "[scope/roster-floor]",
-    );
-}
-
 // ---------------------------------------------------------------------------
 // rb-72 / ADR-0232 D2 correction — resolve_all_live_interactions is presence-
 // row-safe, both by execution (Leg A) and by a depth-1 source scan of its
 // four callees (Leg B).
 // ---------------------------------------------------------------------------
 
-/// rb-72 (ADR-0232 D2 correction): `resolve_all_live_interactions` (lib.rs,
-/// :246-251) — the four-call trade/PvP/wild-battle/challenge dispatcher
-/// shared by `on_disconnect` and the deletion cascade — deletes NEITHER the
-/// `player` NOR the `character` presence row for the identity it resolves.
-/// ADR-0232's D2 prose currently claims the opposite: that the disconnect
-/// flow's `client_disconnected` -> `resolve_all_live_interactions` "deletes
-/// their player/character presence rows". That is false: the dispatcher is
-/// EXACTLY the four resolver calls (its own doc comment says "Performs no row
-/// write itself; each callee owns its own tables' writes"), and it is
-/// `on_disconnect` itself (lib.rs, :265-279) that deletes the presence rows,
-/// strictly AFTER calling the dispatcher.
-///
-/// EXECUTED COUNTERPART OF `m22s3b_resolver_body_order` (above, :9742): that
-/// STATIC pin freezes the dispatcher's OWN squashed body in lib.rs to exactly
-/// the four calls and proves it performs no `.insert(`/`.update(`/`.delete(`
-/// verb ITSELF — a source-shape proof no execution can substitute for. What
-/// it structurally cannot see is a write smuggled into one of the four
-/// CALLEES' own bodies (trading::cancel_trades_on_disconnect,
-/// pvp::forfeit_on_disconnect, battle::resolve_wild_battle_on_disconnect,
-/// pvp::cancel_challenges_on_disconnect): every needle that test pins is
-/// still present, still ordered, still counted once, while a callee quietly
-/// deletes the presence rows underneath the dispatcher's clean shape. This
-/// test closes exactly that gap with two legs, both below in one `#[test]`.
-///
-/// LEG A (S0-S4) EXECUTES `resolve_all_live_interactions` for real against
-/// the in-memory host (`native_host_tests`), with a seeded `player` and
-/// `character` row for the subject identity, and asserts both rows are still
-/// readable through `ctx.db` afterwards — an EXECUTED behavioural pin no
-/// source scan can substitute for. It deliberately leaves `trade_offer` /
-/// `battle` / `battle_challenge` UNREGISTERED with this fixture, so the four
-/// callees' indexed `.filter()` scans read empty and every loop over their
-/// results is a no-op: reaching a write syscall on this host is
-/// `unmodelled()` (module doc) and ABORTS THE WHOLE TEST PROCESS rather than
-/// failing an assertion, so this leg can only ever execute the empty-table
-/// branch of all four callees.
-///
-/// LEG B is the DEPTH-1 STATIC counterpart that covers exactly the branch Leg
-/// A cannot execute. It scans the SHIPPED SOURCE of the four callees' own
-/// bodies (via the existing `M22_TRADING_RS` / `M22_PVP_RS` / `M22_BATTLE_RS`
-/// `include_str!` consts, and `extract_squashed_fn_body`) and asserts none of
-/// them names the `player` or `character` table accessor at all — reachable
-/// or not.
-///
-/// Kills: Leg A kills an unconditional `ctx.db.player().identity().delete(..)`
-/// (or the `character` equivalent) added directly to the DISPATCHER's own
-/// body — but NOT by reddening S3 POST. `player` and `character` ARE
-/// registered with this fixture, so such a delete reaches a real write
-/// syscall, which is `unmodelled()` and aborts the process before S3 ever
-/// runs (see THE HOST WALL below; measured as gate X5/M5). The kill is real,
-/// the mechanism is the abort, and an earlier draft of this very comment
-/// claimed "S3 POST goes red" — wrong, and worth naming in a test whose whole
-/// subject is a mis-stated mechanism. `m22s3b_resolver_body_order`'s no-write
-/// clause independently reds the same mutant from the source side. Leg B kills the
-/// red-team-measured bypass: a `player`/`character` delete added inside
-/// `pvp::cancel_challenges_on_disconnect`'s (or
-/// `trading::cancel_trades_on_disconnect`'s) `for` loop, guarded on the
-/// UNREGISTERED `battle_challenge`/`trade_offer` table so it never executes
-/// under Leg A. That mutant is invisible to Leg A (its branch never runs) and
-/// invisible to `m22s3b_resolver_body_order` (which reads only lib.rs), but
-/// the accessor token lands in the callee's own shipped source regardless of
-/// whether the branch ever executes, so Leg B's occurrence count goes from 0
-/// to 1 and reds.
-///
-/// THE HOST WALL (read before trusting a green Leg A on its own): the
-/// in-memory host's four write syscalls are all `unmodelled()` — a write
-/// reached through them PANICS INSIDE AN `extern "C"` FRAME, which cannot
-/// unwind, so it ABORTS THE WHOLE TEST PROCESS rather than failing an
-/// assertion (`#[should_panic]` cannot catch it; nextest reports a signal,
-/// not a failed test). A red-teamer who reaches a REAL delete through the
-/// dispatcher's own reachable body under this fixture's registered tables
-/// gets an aborted process, not a quietly-passing green — that IS a real
-/// failure of this test, but a DIFFERENT failure mode than the assertions
-/// below, and this comment says so rather than implying an `assert!` catches
-/// it.
-///
-/// Leg B carries two further clauses, both added after a red-team MEASURED a
-/// CI-clean bypass of the body scan alone:
-///   - B2, DECLARATION UNIQUENESS: each callee is declared exactly ONCE in its
-///     file. `include_str!` embeds the raw text of BOTH halves of a
-///     `#[cfg(test)]` / `#[cfg(not(test))]` twin, while the test binary
-///     compiles only the `cfg(test)` half — so a harmless twin placed FIRST
-///     satisfies `extract_squashed_fn_body`'s first-occurrence `find` while
-///     the shipped wasm runs a hostile one. Measured green against every
-///     other clause here before B2 existed.
-///   - B3, NO PRESENCE-DELETE SITE ANYWHERE IN THE THREE CALLEE-OWNING FILES:
-///     `trading.rs` / `pvp.rs` / `battle.rs` contain zero
-///     `player().identity().delete(` and zero `character().entity_id().delete(`
-///     at ANY depth. This is what closes the depth-2 helper bypass — a
-///     `pub(crate) fn` defined beside a callee, called from inside its loop,
-///     is invisible to the body scan but cannot hide from a whole-file ban on
-///     the delete SITE itself.
-///
-/// DISCLOSED LIMITS. Leg B's body scan is DEPTH-1: it reads the squashed body
-/// of the four callees THEMSELVES, not of any helper one of them calls. B3
-/// narrows that to a helper defined OUTSIDE `trading.rs`/`pvp.rs`/`battle.rs`
-/// (say in `guards.rs`) and called from a callee — still uncovered, carried as
-/// residual `R-rb-72-DEPTH2CROSSFILE`. Nor does any needle catch a UFCS or
-/// aliased spelling of the accessor (`Local::player(&ctx.db)`,
-/// `use crate::schema::player as p; ctx.db.p()`): B1's needles are the
-/// method-call shape, and B3's are the chained-delete shape, so an aliased
-/// delete inside one of the three files evades both — residual
-/// `R-rb-72-UFCSALIAS`. Leg A executes only the EMPTY-TABLE path through
-/// all four callees (`trade_offer` / `battle` / `battle_challenge` are never
-/// registered, by construction — see the host wall above); it says nothing
-/// about what those callees do to `player`/`character` on a non-empty
-/// branch, which is exactly the gap Leg B exists to close. Neither leg
-/// proves the CONVERSE — that `on_disconnect`'s OWN presence deletes still
-/// happen — which is a different criterion with its own coverage need, not
-/// this one.
+/// rb-72 (ADR-0232 D2 correction): `resolve_all_live_interactions` (lib.rs) —
+/// the four-call trade/PvP/wild-battle/challenge dispatcher shared by
+/// `on_disconnect` and the deletion cascade — deletes NEITHER the `player` NOR
+/// the `character` presence row for the identity it resolves; `on_disconnect`'s
+/// own body does, after the dispatcher returns. Executed against the in-memory
+/// host with a seeded player + character row; S4 proves the read channel can
+/// observe an absence. The dispatcher's non-empty branches (live trades,
+/// challenges, battles) are executed by the accounts cascade test
+/// (`acct_nh::acct_deletion_reaper_erases_every_owned_row_and_nothing_else`,
+/// whose subject keeps its player row) and battle_tests.rs `rb129_*`.
 #[test]
 fn rb72_resolve_all_live_interactions_leaves_presence_rows() {
     use crate::schema::{character, Character, Player};
@@ -20489,471 +4431,6 @@ fn rb72_resolve_all_live_interactions_leaves_presence_rows() {
     assert!(
         ctx.db.character().entity_id().find(ENTITY_ID).is_none(),
         "[rb72/control-absent-character] same falsifiability proof for the character read"
-    );
-
-    // --- Leg B: the four callees' SHIPPED SOURCE never names the player/character
-    // table accessor at all (depth-1 static counterpart to Leg A) -------------
-    //
-    // NEEDLE CHOICE: `.player()` / `.character()`, the exact squashed
-    // accessor CALL shape (`ctx.db.<table>()`), never a bare identifier —
-    // split with `concat!` per this file's scan-hygiene convention (header,
-    // :19-27). Measured against every legitimate token the four bodies
-    // actually carry: `battle().player_identity()`,
-    // `battle().opponent_identity()`, `battle_challenge()`, `trade_offer()`,
-    // `battle_wild()`, `player_conversation()`, and the `player`/`disconnected`
-    // PARAMETER NAMES themselves (`.filter(player)`) — none of those is
-    // followed by a bare `()` immediately after `player`/`character`, so none
-    // matches; the shape `ctx.db.player()` / `ctx.db.character()`
-    // (`erase_character_rows`, lib.rs:259-263, and `on_disconnect` itself
-    // both use it) matches exactly.
-    let player_needle = concat!(".play", "er()").to_string();
-    let character_needle = concat!(".chara", "cter()").to_string();
-
-    let callees: [(&str, &str, String); 4] = [
-        (
-            "trading::cancel_trades_on_disconnect",
-            M22_TRADING_RS,
-            concat!("fncancel_trades_on", "_disconnect(").to_string(),
-        ),
-        (
-            "pvp::forfeit_on_disconnect",
-            M22_PVP_RS,
-            concat!("fnforfeit_on", "_disconnect(").to_string(),
-        ),
-        (
-            "battle::resolve_wild_battle_on_disconnect",
-            M22_BATTLE_RS,
-            concat!("fnresolve_wild_battle_on", "_disconnect(").to_string(),
-        ),
-        (
-            "pvp::cancel_challenges_on_disconnect",
-            M22_PVP_RS,
-            concat!("fncancel_challenges_on", "_disconnect(").to_string(),
-        ),
-    ];
-
-    // B3: no presence-row DELETE SITE anywhere in the three callee-owning files,
-    // at any depth. Kills the depth-2 helper bypass a red-team measured green:
-    // a `pub(crate) fn` defined beside a callee and called from inside its loop
-    // is invisible to the per-body scan below, but its delete site is not.
-    let delete_sites = [
-        concat!("player().identity()", ".del", "ete("),
-        concat!("character().entity_id()", ".del", "ete("),
-    ];
-    for (file, source) in [
-        ("trading.rs", M22_TRADING_RS),
-        ("pvp.rs", M22_PVP_RS),
-        ("battle.rs", M22_BATTLE_RS),
-    ] {
-        let squashed = stripped_for_scan(source);
-        for site in delete_sites {
-            assert_eq!(
-                m22_count_occurrences(&squashed, site),
-                0,
-                "[rb72/no-presence-delete-site] `{file}` contains a `{site}` presence-row \
-                 delete site. The four resolve_all_live_interactions callees live in these \
-                 three files, so a delete reachable from any of them at ANY depth — including \
-                 from a helper defined beside a callee, which the per-body scan below cannot \
-                 see — lands here. Only `on_disconnect` and the deletion cascade delete \
-                 presence rows (ADR-0232 D2 correction)."
-            );
-        }
-    }
-
-    for (name, source, needle) in callees {
-        let squashed = stripped_for_scan(source);
-        // B2: declaration uniqueness. `include_str!` embeds BOTH halves of a
-        // `#[cfg(test)]`/`#[cfg(not(test))]` twin while the test binary compiles
-        // only one, so a harmless twin placed first satisfies the
-        // first-occurrence body extraction while the shipped wasm runs the other.
-        assert_eq!(
-            m22_count_occurrences(&squashed, &needle),
-            1,
-            "[rb72/callee-decl-sole] `{name}` is declared more than once (needle `{needle}`). \
-             A cfg-gated declaration twin lets the body scan below read the harmless half \
-             while the published module compiles the other one — measured CI-clean before \
-             this clause existed."
-        );
-        let body = extract_squashed_fn_body(&squashed, &needle).unwrap_or_else(|| {
-            panic!(
-                "[rb72/callee-scope] `{name}` was not found via the needle `{needle}` in its \
-                 own source file — fail loud rather than pass vacuously; a renamed callee must \
-                 be re-derived here, not silently skipped"
-            )
-        });
-        let player_hits = m22_count_occurrences(body, &player_needle);
-        assert_eq!(
-            player_hits, 0,
-            "[rb72/callee-no-player] `{name}`'s own body names the `player` table accessor \
-             {player_hits} time(s). resolve_all_live_interactions's four callees own their \
-             tables' writes and must never reach the player/character presence rows \
-             (ADR-0232 D2 correction) — this is the red-team-measured bypass: a delete added \
-             inside a callee's own guarded branch is invisible to Leg A (the branch never \
-             executes against this fixture's unregistered tables) and to \
-             m22s3b_resolver_body_order (which reads only lib.rs), but it still lands in the \
-             callee's own shipped source."
-        );
-        let character_hits = m22_count_occurrences(body, &character_needle);
-        assert_eq!(
-            character_hits, 0,
-            "[rb72/callee-no-character] `{name}`'s own body names the `character` table \
-             accessor {character_hits} time(s) — same bypass class as the player assertion \
-             above."
-        );
-    }
-}
-
-// ===========================================================================
-// rb-83 (ADR-0252, residual R-rb-47-CANCELLAUNDER) — CANCELLING A DELETION
-// DECLINES THE INCOMING OFFERS THE rb-47 STAMP GATE ALREADY REFUSED.
-//
-// EARS criterion (ADR-0252 D1/D3): WHEN `cancel_account_deletion` is called by
-// an identity the AUTH-38 gate admits to the write path THE SYSTEM SHALL,
-// BEFORE flipping the row to `Active`, decline (disarm + delete) every active
-// `trade_offer` naming that identity as COUNTERPARTY whose `created_at_ms` the
-// pre-cancel row refuses under `accounts::opened_commitment_is_refused`.
-//
-// TWO TESTS LIVE HERE:
-//   * the WIRING pin on `cancel_account_deletion` (the statement, its depth, its
-//     placement between the AUTH-38 gate and the status write, and the whole
-//     squashed prefix above it, frozen byte for byte);
-//   * the pure planner's truth table, which is the only place the boundary, the
-//     fail-closed arms, the input order and the laundering SEQUENCE are
-//     observable at all.
-//
-// SUBSTRATE FINDING, MEASURED BY THE rb-83 PLAN RED-TEAM (registered as
-// R-rb-83-SCANORDER). This file's own `stripped_for_scan` blanks STRING
-// literals BEFORE comments, so a bare double-quote character inside a slash-slash
-// comment opens a phantom string that swallows the real code after it — including
-// a same-name rebinding of `account` to the POST-cancel row placed above the
-// sweep, which would make the planner judge the wrong row while every positional
-// clause in this file still reads green. Every rb-83 positional clause therefore
-// reads a SAFE view built comments-first
-// (`strip_comments_keep_strings` then `strip_rust_strings` then `squash_ws`), and
-// the first clause is a POLARITY PRECONDITION that the cancel body reads
-// identically under both pipelines. The pre-existing rb-24 and m22-s3 clauses in
-// this file are NOT re-cut here; that is the registered residual.
-//
-// SCAN HYGIENE — the file header rule restated: every needle below is assembled
-// from `concat!` fragments, so this file carries no contiguous accessor call, no
-// contiguous write-verb chain and no contiguous cancel-time call site that a
-// whole-tree scanner could count as a real one. This section contains no block
-// comment, no raw string, and no bare double-quote character inside any comment.
-// ===========================================================================
-
-/// **ADR-0252 D3 (wiring)** — `cancel_account_deletion` declines the refused
-/// incoming offers as ONE depth-0 statement, after the AUTH-38 gate and before
-/// the status write, on a body whose whole prefix above that statement is frozen.
-///
-/// THE VIEW IS THE FIRST THING THIS TEST DECIDES. `[rb83/scan-polarity]` proves
-/// the cancel body reads the SAME under the safe comments-first pipeline and
-/// under this file's legacy strings-first `stripped_for_scan`. That equality is
-/// not decoration: the measured red-team payload is a pair of comments, the first
-/// ending in a bare double-quote and the second opening with one, with
-/// `let account = cancelled_deletion(account.clone());` between them. Under the
-/// legacy pipeline the quote pair reads as a string literal and the rebinding
-/// VANISHES from the scanned body, so the planner would be handed the post-cancel
-/// row — which admits every offer — while `[rb83/no-account-rebind]`,
-/// `[rb83/cancel-prefix-frozen]` and every rb-24 clause on this body stayed
-/// green. Under the safe view the comments are removed first and the rebinding is
-/// plainly there. Divergence between the two views IS the attack.
-///
-/// WHAT EACH LATER CLAUSE KILLS:
-///
-///   * `[rb83/sweep-statement]` — the whole statement, argument list included,
-///     exactly once, on the STRING-BLANKED view. Zero is the mutant this slice
-///     exists to kill (M1: the statement deleted, so a cancel launders the
-///     confederate's post-request offer straight back into a completable one).
-///     Counting on the STRING-BLANKED view also kills M13, a decoy literal
-///     carrying the statement text in place of the statement. It does NOT kill
-///     M11, a `#[cfg(test)]`-attributed statement — the needle still matches and
-///     the count still reads one; that mutant dies on the conditional-compilation
-///     census in `trading_tests.rs` and on the frozen prefix below, whose last
-///     byte would become a closing square bracket.
-///     The argument list is part of the needle because it is the whole
-///     behavioural claim: `&account` is the PRE-cancel row, `me` is the caller,
-///     and the inner call is the counterparty-column read.
-///   * `[rb83/sweep-depth0]` — every other clause here is POSITION-based and
-///     blind to reachability. A conditional sweep is a conditional decline: an
-///     always-false guard keeps the count, the ordering and the prefix intact
-///     while nothing is ever declined.
-///   * `[rb83/sweep-after-gate]` — M2: hoisted above the AUTH-38 gate the sweep
-///     also runs on the idempotent already-`Active` no-op path. It would delete
-///     nothing there today (an `Active` row admits every stamp, ADR-0252 D1), but
-///     the placement is what makes that a structural guarantee rather than a
-///     coincidence of the planner's polarity, and the second half of this clause
-///     pins the sweep below the gate's whole closing brace rather than merely
-///     below the gate CALL.
-///   * `[rb83/sweep-before-write]` — the sweep must judge the PRE-cancel row.
-///     Below the update, `account` has been moved into `cancelled_deletion` and
-///     every offer reads as admitted; the compiler refuses the borrow today, so
-///     this clause is what keeps the ordering pinned textually if the body is
-///     ever restructured around a clone.
-///   * `[rb83/no-account-rebind]` — M15, the payload above, in its plain form:
-///     any `let account` / `let mut account` inside this body re-points the row
-///     the planner judges while the statement text stays byte-identical.
-///   * `[rb83/no-clock-in-cancel]` — M8's accounts-side twin: a clock read in
-///     this body is the first move of any implementation that decides which
-///     offers to sweep from `now` rather than from the row's own request stamp.
-///   * `[rb83/no-return-between]` — M12: an early `return Ok(())` between the
-///     gate's closing brace and the sweep leaves the status write and the disarm
-///     unreached AND the sweep unrun, while every position-based clause here
-///     still passes.
-///   * `[rb83/cancel-prefix-frozen]` — the rb-79 shape, and the only clause that
-///     is blind to nothing above the statement: it closes the early-return class,
-///     a sender-keyed shadow (the native host's sender is the all-zero identity,
-///     so such a twin keeps every behavioural test in this slice green), a
-///     cfg-keyed constant consulted above the sweep, and a hoisted second sweep.
-///
-/// RE-DERIVATION CONTRACT: the statement and the frozen prefix come from
-/// ADR-0252 D3 and the reducer's specified guard order (JWT, lookup, PRV1-4
-/// terminal guard, AUTH-38 gate, sweep, status write, reaper disarm). If a
-/// legitimate refactor reds a clause, re-derive it from the ADR — never paste the
-/// current body in, which turns the strongest clause in this slice into a
-/// tautology.
-///
-/// RED AT HEAD BY ASSERTION: `[rb83/sweep-statement]` counts zero.
-#[test]
-fn rb83_cancel_declines_refused_offers_before_the_status_write() {
-    // The SAFE view: comments removed FIRST (string-aware, so a URL's
-    // slash-slash is not mistaken for a comment), then string payloads blanked,
-    // then all whitespace squashed.
-    let safe_view = squash_ws(&strip_rust_strings(&strip_comments_keep_strings(
-        ACCOUNTS_RS,
-    )));
-    // This file's pre-existing pipeline, kept ONLY to prove the two agree.
-    let legacy_view = stripped_for_scan(ACCOUNTS_RS);
-
-    let decl = rb24_nd_cancel_decl();
-    let body = extract_squashed_fn_body(&safe_view, &decl).unwrap_or_else(|| {
-        panic!(
-            "[rb83/scope] fn cancel_account_deletion was not found in accounts.rs over the \
-             comments-first safe view (marker {decl:?}), or its body is not brace-balanced. \
-             Every clause below would have no scope and would pass VACUOUSLY, so this is a \
-             hard failure rather than a skip."
-        )
-    });
-    let legacy_body = extract_squashed_fn_body(&legacy_view, &decl).unwrap_or_else(|| {
-        panic!(
-            "[rb83/scope] fn cancel_account_deletion was not found in accounts.rs over this \
-             file's legacy strings-first view (marker {decl:?}). A body that is readable under \
-             one pipeline and not the other is already the polarity divergence the clause \
-             below exists to detect — fail LOUD."
-        )
-    });
-
-    // --- [rb83/no-quote-char-literal] substrate: no quote-bearing char literal ---
-    // Neither strip pipeline knows char literals, so a single-quoted double
-    // quote opens a phantom string in BOTH views at once: framed by two of
-    // them, a hidden statement vanishes from every squashed clause below AND
-    // from the polarity comparison (the two views agree on the same blanked
-    // text). Measured by the artifact red-team on this exact body. Whole-file
-    // count on the RAW source, all three spellings, zero at HEAD.
-    for spelling in [
-        concat!("'", "\"", "'"),
-        concat!("'\\", "\"", "'"),
-        concat!("b'", "\"", "'"),
-    ] {
-        let n = ACCOUNTS_RS.matches(spelling).count();
-        assert_eq!(
-            n, 0,
-            "[rb83/no-quote-char-literal] accounts.rs carries {n} occurrence(s) of the char \
-             literal {spelling:?} and must carry ZERO. Every squashed clause in this file blanks \
-             strings by scanning for double-quote characters and has no char-literal branch, so \
-             a quote CHARACTER literal opens a phantom string that swallows real code until the \
-             next quote; two of them frame a statement that no view can see, including the \
-             polarity comparison right below (both pipelines are blind in the same way). The \
-             measured shape hides a same-name rebinding of `account` to the post-cancel row \
-             above the sweep. A legitimate quote character belongs in a string literal, never \
-             a char literal, in this file."
-        );
-    }
-
-    // --- [rb83/scan-polarity] the precondition every later clause rests on ---
-    assert_eq!(
-        body, legacy_body,
-        "[rb83/scan-polarity] the cancel body reads DIFFERENTLY under the two strip \
-         pipelines. The safe view removes comments first; this file's legacy \
-         `stripped_for_scan` blanks STRING literals first, so a bare double-quote character \
-         inside a slash-slash comment opens a phantom string that swallows every byte of real \
-         code until the next one. The MEASURED red-team payload is exactly that: a comment \
-         ending in a quote, a same-name rebinding of `account` to the post-cancel row, and a \
-         comment opening with a quote — which makes the planner judge a row that admits every \
-         offer while the legacy view reports a body with no rebinding in it at all. This \
-         clause is a PRECONDITION, not a behaviour: if it fires, do not relax it, find the \
-         quote. Safe view body: {body:?}. Legacy view body: {legacy_body:?}"
-    );
-
-    // --- [rb83/sweep-statement] the whole statement, exactly once -------------
-    // Assembled from fragments so this test file never carries a contiguous
-    // cancel-time call site a whole-tree scanner could count as a real one.
-    let sweep = [
-        concat!("crate::trading::decline_", "offers(ctx,"),
-        concat!("&plan_declines_", "at_cancel(&account,"),
-        concat!("&crate::trading::open_offers_", "addressed_to(ctx,me)),);"),
-    ]
-    .concat();
-    let n_sweep = m22_count_occurrences(body, sweep.as_str());
-    assert_eq!(
-        n_sweep, 1,
-        "[rb83/sweep-statement] cancel_account_deletion must carry the decline sweep EXACTLY \
-         once, as the whole statement `{sweep}` in the squashed, string-blanked view; found \
-         {n_sweep}. \
-         RED AT HEAD: zero — a cancel flips the row to Active and leaves every offer the rb-47 \
-         gate refused standing, so the confederate's post-request offer becomes acceptable the \
-         instant the caller is momentarily Active (residual R-rb-47-CANCELLAUNDER, Flow B). \
-         THE ARGUMENT LIST IS PART OF THE PIN: `&account` is the PRE-cancel row (judged after \
-         the flip every offer reads as admitted and the sweep is a no-op), `me` is the caller \
-         whose counterparty column is read, and the trailing comma is the one rustfmt inserts \
-         when it breaks the call vertically. \
-         The count runs on the STRING-BLANKED view, so a decoy literal carrying this text \
-         cannot satisfy it and a commented-out statement reads as absent. TWO is a second, \
-         unreviewed sweep. Body was: {body:?}"
-    );
-    let at_stmt = idx(body, sweep.as_str());
-
-    // --- [rb83/sweep-depth0] reachability -------------------------------------
-    assert_eq!(
-        rb24_brace_depth(&body[..at_stmt]),
-        0,
-        "[rb83/sweep-depth0] the decline sweep sits inside a nested block of \
-         cancel_account_deletion rather than at the top level of the fn body. Every other \
-         clause in this test reasons about POSITION and none about REACHABILITY: an \
-         always-false guard around this statement keeps the count, the ordering clauses and \
-         the frozen prefix exactly as they are while not one offer is ever declined. A \
-         conditional sweep is a conditional decline."
-    );
-
-    // --- [rb83/sweep-after-gate] behind the AUTH-38 idempotency gate ----------
-    let gate_call = concat!("needs_cancel", "_write(");
-    let at_gate = idx(body, gate_call);
-    assert!(
-        at_gate < at_stmt,
-        "[rb83/sweep-after-gate] the decline sweep (offset {at_stmt}) must run AFTER the \
-         AUTH-38 idempotency gate (offset {at_gate}). Ahead of the gate it also runs on the \
-         already-Active no-op path, where the caller has nothing the rb-47 gate ever refused. \
-         The placement is what makes the no-op path structurally sweep-free rather than \
-         sweep-free only because an Active row happens to admit every stamp (ADR-0252 D1) — \
-         two independent reasons is the design, not one."
-    );
-    // The gate BLOCK, transcribed independently of the frozen prefix below (a
-    // literal built from its own needle helper moves with it and proves nothing).
-    let gate_block = concat!("if!needs_cancel_wri", "te(account.status){returnOk(());}");
-    let n_gate_block = m22_count_occurrences(body, gate_block);
-    assert_eq!(
-        n_gate_block, 1,
-        "[rb83/sweep-after-gate] cancel_account_deletion must carry the AUTH-38 gate exactly \
-         once, as the whole block `{gate_block}`; found {n_gate_block}. The region clause below \
-         measures from this block's CLOSING BRACE, so a gate the pin cannot locate leaves the \
-         no-return region undefined and every reachability claim here vacuous."
-    );
-    let gate_close = idx(body, gate_block) + gate_block.len();
-    assert!(
-        gate_close <= at_stmt,
-        "[rb83/sweep-after-gate] the decline sweep (offset {at_stmt}) does not sit below the \
-         AUTH-38 gate's whole closing brace (which ends at offset {gate_close}). The clause \
-         above pins the sweep after the gate CALL, which is also satisfied by a sweep placed \
-         INSIDE the gate's early-return branch — where it runs only on the path that writes \
-         nothing."
-    );
-
-    // --- [rb83/sweep-before-write] the PRE-cancel row is what gets judged -----
-    let update = concat!(".upd", "ate(cancelled_deletion(account))");
-    let at_update = idx(body, update);
-    assert!(
-        at_stmt < at_update,
-        "[rb83/sweep-before-write] the decline sweep (offset {at_stmt}) must run BEFORE the \
-         status write (offset {at_update}). The planner judges the row it is handed: after the \
-         flip to Active with the request stamp cleared, `opened_commitment_is_refused` admits \
-         EVERY offer and the sweep declines nothing at all — a mutant that reads correct, \
-         compiles once a clone is introduced, and closes no residual. The compiler enforces \
-         this today (the row is moved into the constructor); this clause is what keeps the \
-         order pinned if the body is ever restructured around a clone."
-    );
-
-    // --- [rb83/no-account-rebind] the measured payload, in its plain form -----
-    for needle in ["letaccount", "letmutaccount"] {
-        let n = m22_count_occurrences(body, needle);
-        assert_eq!(
-            n, 0,
-            "[rb83/no-account-rebind] cancel_account_deletion rebinds the account row \
-             (`{needle}` occurs {n} time(s)). The sweep's whole correctness is WHICH row the \
-             planner is handed: a same-name rebinding to `cancelled_deletion(account.clone())` \
-             above the statement leaves the statement text byte-identical, compiles, is \
-             clippy-clean, and hands the planner a row that admits every offer. This is the \
-             red-team payload whose HIDDEN form the polarity clause at the top of this test \
-             owns; this clause owns the form that is not hidden at all."
-        );
-    }
-
-    // --- [rb83/no-clock-in-cancel] no second source of truth for the stamp ----
-    let clock = concat!("now", "_ms(");
-    let n_clock = m22_count_occurrences(body, clock);
-    assert_eq!(
-        n_clock, 0,
-        "[rb83/no-clock-in-cancel] cancel_account_deletion reads the transaction clock \
-         {n_clock} time(s) and must read it ZERO times. The sweep's only decision input is the \
-         pre-cancel row's own `deletion_requested_at_ms`, delegated through the rb-47 SSOT; a \
-         clock read in this body is the first move of every implementation that decides which \
-         offers to decline from `now` instead — which refuses offers that PREDATE the request \
-         (the PRV1-10 break) or none at all, depending on the comparison. The cancel path has \
-         never needed a clock: it clears the stamp rather than setting one."
-    );
-
-    // --- [rb83/no-return-between] reachability of the sweep itself ------------
-    let region = &body[gate_close..at_stmt];
-    assert!(
-        !rb24_has_return_token(region),
-        "[rb83/no-return-between] a `return` token sits between the AUTH-38 gate's closing \
-         brace and the decline sweep. Every other clause here reasons about POSITION and none \
-         about REACHABILITY, so an early `return Ok(());` there reports a successful cancel to \
-         the client while the sweep, the status write and the rb-24 reaper disarm all fail to \
-         run — the account stays PendingDeletion with its cascade still armed AND the \
-         laundering offer still standing. Region text: {region:?}"
-    );
-
-    // --- [rb83/cancel-prefix-frozen] the whole prefix, byte for byte ----------
-    // Derived by hand from ADR-0252 D3 and the reducer's specified guard order.
-    // String PAYLOADS and their delimiters are blanked by this file's stripper,
-    // so both reject reasons read as nothing at all between the commas.
-    let expected_prefix = [
-        "letme=ctx.sender();",
-        "if!ctx.sender_auth().has_jwt(){returnreject(,me,);}",
-        concat!(
-            "letSome(account)=",
-            "ctx",
-            ".db.acc",
-            "ount().identity().find(me)else{returnreject(,me,);};"
-        ),
-        concat!(
-            "ifaccount_has_terminal_",
-            "marker(&account){returnreject(,me,REJECT_ALREADY_DELETED);}"
-        ),
-        concat!(
-            "if!needs_cancel",
-            "_write(account.status){return",
-            "Ok(());}"
-        ),
-    ]
-    .concat();
-    let prefix = &body[..at_stmt];
-    assert_eq!(
-        prefix,
-        expected_prefix.as_str(),
-        "[rb83/cancel-prefix-frozen] everything ABOVE the decline sweep in \
-         cancel_account_deletion must be EXACTLY the specified guard prefix. \
-         Got: {prefix:?}. Expected: {expected_prefix:?}. \
-         This is the SOLE clause that is blind to nothing above the statement, and it closes a \
-         family every count-, depth- and ordering-based clause here admits: an early \
-         `return Ok(())` on any condition rustc cannot constant-fold; a SENDER-KEYED twin (the \
-         rb-41 native host's sender is the all-zero identity, so such a twin keeps every \
-         behavioural test in this slice green); a file-scope conditional constant consulted \
-         above the sweep; a hoisted SECOND sweep that runs on the pre-gate path; and a macro \
-         divert. It also pins that the PRV1-4 terminal guard still PRECEDES the AUTH-38 gate \
-         (m22-s3, ADR-0225), which is what keeps a terminal row off this write path entirely. \
-         RE-DERIVATION CONTRACT: this literal comes from ADR-0252 D3. If a legitimate refactor \
-         reds it, re-derive it from the ADR and re-argue the placement — NEVER paste the \
-         current body in, which turns the strongest clause in this slice into a tautology."
     );
 }
 
@@ -21177,228 +4654,2363 @@ fn rb83_plan_declines_at_cancel_truth_table() {
 }
 
 // ===========================================================================
-// rb-108 (R-rb-85-MODCENSUS, ADR-0266) — `m22_declared_mod_names_in` must
-// exempt a declared `mod` from the M22 census iff the contiguous attribute
-// run directly above it carries `#[cfg(test)]` EXACTLY, never by matching the
-// mod NAME's `tests` suffix. These three tests pin the RETURN VALUE of that
-// pure seam only; they do not touch the census's per-source or crate-wide
-// callers.
+// debloat Phase 2 — THE ACCOUNTS NATIVE-HOST SUITE.
+//
+// Executes the SHIPPED reducers and helpers against real rows in the in-memory
+// host (`native_host_tests`), replacing the text pins that froze their bodies:
+// ST-accounts_tests#auth, ST-accounts_tests#cascade, EV-guest-claim-integrity
+// (#issuer-audience, #single-use, #reducer-surface native half,
+// #rekey-completeness), EV-account-privacy#tables-view,
+// ST-privacy_tests#export-owner-scope, ST-privacy_tests#export-admission and the
+// ADR-0268 unique-export-stamp condition.
+//
+// What is NOT here, and where it lives:
+// * The client-callable reducer surface — exact names and argument types, so
+//   `start_guest_claim(code: String)` keeps the claim secret client-minted and
+//   no reducer accepts an `Identity` — is the frozen roster
+//   evals/baselines/client-callable-reducers.json (client-surface-privacy
+//   clause D). Account columns (no email / subject) are frozen by the generated
+//   bindings (client-surface-privacy + bindings-drift).
+// * Rollback: this host models none (a reducer that errors after a write keeps
+//   the write). Every refusal below is asserted to happen BEFORE any write;
+//   transactional rollback is account-e2e's live flow.
+// * The battle anonymize step of the cascade (forced terminal, tombstoned
+//   party) is battle_tests.rs `rb129_*`; the deletion gate on every class-(iv)
+//   reducer is guards_tests.rs `rb128_*`.
 // ===========================================================================
+mod acct_nh {
+    use crate::accounts::{AccountDeletionReaperSchedule, GuestClaimReaperSchedule};
+    use crate::native_host_tests::{
+        fixture, Fixture, Handle, DEFAULT_DATABASE_IDENTITY, VIEW_MY_ACCOUNT,
+    };
+    use crate::playtest::PlaytestEvent;
+    use crate::privacy::ExportBundleReaperSchedule;
+    use crate::pvp::BattleChallengeReaperSchedule;
+    use crate::schema::{
+        Account, BattleAction, BattleChallenge, ChallengeStatus, Character, DeletionPolicy,
+        EvolutionRevealRow, ExportBundle, GuestClaim, HealCooldown, Inventory, Monster, MonsterPub,
+        PendingEvolutionNotice, Player, PlayerConversation, PlayerDialogueStateRow, PlayerQuestRow,
+        PlayerSession, PlayerWallet, Profile, TradeOffer, DATA_LIFECYCLE_MANIFEST,
+    };
+    use crate::trading::TradeOfferReaperSchedule;
+    use spacetimedb::sats::bsatn;
+    use spacetimedb::{ConnectionId, Identity, ReducerContext, ScheduleAt, Serialize, Timestamp};
 
-/// [rb108/exempt-by-cfg] The exemption keys on the contiguous `#[cfg(test)]`
-/// attribute run directly above a `mod`, never on whether its NAME ends in
-/// `tests`. Criterion: rb-108 plan Rule + Edge classes.
-#[test]
-fn rb108_mod_census_exempts_by_cfg_test_not_by_name() {
-    let src = [
-        "#[path = \"reach_privacy_tests.rs\"]",
-        "pub(crate) mod reach_privacy_tests;",
-        "#[cfg(test)]",
-        "#[path = \"x_tests.rs\"]",
-        "mod x_tests;",
-        "#[cfg(test)]",
-        "#[path = \"economy_tests.rs\"]",
-        "#[allow(unused_imports)]",
-        "mod economy_tests;",
-        "#[cfg(test)]",
-        "#[path = \"bench_support.rs\"]",
-        "mod bench_support;",
-        "mod inventory;",
-        "pub mod exported;",
-        "mod guards; // trailing comment",
-        "#[cfg(test)]",
-        "",
-        "mod blank_gap_tests;",
-        "#[cfg(test)]",
-        "use foo;",
-        "mod bar;",
-        "// #[cfg(test)]",
-        "mod commented_gate_tests;",
-        "#[cfg( test )]",
-        "mod ws1_tests;",
-        "#[ cfg(test) ]",
-        "mod ws2_tests;",
-        "#[cfg(test)] // note",
-        "mod ws3_tests;",
-        "// mod ghost;",
-        "let s = \"mod phantom;\";",
-        "mod inline { }",
-        "pub(crate) mod r#raw_ident_tests;",
-    ]
-    .join("\n");
+    // --- fixture vocabulary -------------------------------------------------
 
-    let got = m22_declared_mod_names_in(&src);
-    assert_eq!(
-        got,
+    const T0: i64 = 1_700_000_000_000;
+
+    fn at(ms: i64) -> Timestamp {
+        Timestamp::from_micros_since_unix_epoch(ms * 1000)
+    }
+
+    /// Never `[0; 32]` (the dummy sender == WILD_IDENTITY) and never the module
+    /// identity `[0xDB; 32]`.
+    fn id(b: u8) -> Identity {
+        Identity::from_byte_array([b; 32])
+    }
+
+    fn scheduler() -> Identity {
+        Identity::from_byte_array(DEFAULT_DATABASE_IDENTITY)
+    }
+
+    /// A well-formed claim code: 64 lowercase hex characters.
+    fn code(c: char) -> String {
+        std::iter::repeat_n(c, crate::accounts::CLAIM_CODE_LEN).collect()
+    }
+
+    fn claims(iss: &str, aud_json: &str) -> String {
+        format!(r#"{{"iss":"{iss}","aud":{aud_json},"sub":"subject-{iss}"}}"#)
+    }
+
+    /// The token a legitimate player's connection carries.
+    fn good_jwt() -> String {
+        claims(
+            crate::accounts::ALLOWED_ISSUERS[0],
+            &format!("\"{}\"", crate::accounts::ALLOWED_AUDIENCE[0]),
+        )
+    }
+
+    fn conn_of(who: Identity) -> u128 {
+        0x5E55_0000 + u128::from(who.to_byte_array()[0])
+    }
+
+    /// Call as `who` over a client connection carrying `jwt` (`None` = anonymous).
+    fn as_conn<T>(
+        fx: &Fixture,
+        who: Identity,
+        jwt: Option<&str>,
+        ms: i64,
+        f: impl FnOnce(&ReducerContext) -> T,
+    ) -> T {
+        fx.run_as_conn_at(who, conn_of(who), jwt, at(ms), f)
+    }
+
+    fn signed_in<T>(
+        fx: &Fixture,
+        who: Identity,
+        ms: i64,
+        f: impl FnOnce(&ReducerContext) -> T,
+    ) -> T {
+        let jwt = good_jwt();
+        as_conn(fx, who, Some(&jwt), ms, f)
+    }
+
+    /// Canonical bytes of a row: every row type here compares by value this way
+    /// (BSATN is canonical), whether or not it derives `PartialEq`.
+    fn enc<T: Serialize>(row: &T) -> Vec<u8> {
+        bsatn::to_vec(row).expect("a row always BSATN-encodes")
+    }
+
+    fn encs<T: Serialize>(rows: &[T]) -> Vec<Vec<u8>> {
+        let mut out: Vec<Vec<u8>> = rows.iter().map(enc).collect();
+        out.sort();
+        out
+    }
+
+    fn fire_at(schedule: &ScheduleAt) -> Timestamp {
+        match schedule {
+            ScheduleAt::Time(t) => *t,
+            ScheduleAt::Interval(_) => panic!("expected a one-shot schedule, got an interval"),
+        }
+    }
+
+    // --- the world: every table the accounts paths touch ---------------------
+
+    struct W<'a> {
+        account: Handle<'a, Account>,
+        claim: Handle<'a, GuestClaim>,
+        claim_reaper: Handle<'a, GuestClaimReaperSchedule>,
+        del_reaper: Handle<'a, AccountDeletionReaperSchedule>,
+        player: Handle<'a, Player>,
+        session: Handle<'a, PlayerSession>,
+        monster: Handle<'a, Monster>,
+        monster_pub: Handle<'a, MonsterPub, u64>,
+        notice: Handle<'a, PendingEvolutionNotice>,
+        inventory: Handle<'a, Inventory>,
+        quest: Handle<'a, PlayerQuestRow>,
+        dialogue: Handle<'a, PlayerDialogueStateRow>,
+        conversation: Handle<'a, PlayerConversation>,
+        heal: Handle<'a, HealCooldown>,
+        wallet: Handle<'a, PlayerWallet>,
+        profile: Handle<'a, Profile>,
+        character: Handle<'a, Character, u64>,
+        trade: Handle<'a, TradeOffer>,
+        trade_reaper: Handle<'a, TradeOfferReaperSchedule, u64>,
+        challenge: Handle<'a, BattleChallenge>,
+        challenge_reaper: Handle<'a, BattleChallengeReaperSchedule, u64>,
+        action: Handle<'a, BattleAction, u64>,
+        playtest: Handle<'a, PlaytestEvent, u64>,
+        export: Handle<'a, ExportBundle>,
+        export_reaper: Handle<'a, ExportBundleReaperSchedule, u64>,
+        battle: Handle<'a, crate::schema::Battle>,
+    }
+
+    /// Registers every index the shipped accounts / claim / cascade / export
+    /// paths read or write through, opens writes on each table (post-state
+    /// assertions, not the write wall, are this suite's oracle) and opens full
+    /// scans ONLY where the shipped code scans (`playtest_event`,
+    /// `battle_action`, the `export_bundle` count, the export reaper singleton).
+    /// `battle` stays unregistered: its reads answer empty (see the rb129 note).
+    fn world(fx: &Fixture) -> W<'_> {
+        // Secondary indexes first (registration is per fixture, not per handle).
+        let _ = fx
+            .table_keyed::<GuestClaim, String>("guest_claim", "code", |r| r.code.clone())
+            .unique();
+        let _ = fx.table_keyed::<GuestClaimReaperSchedule, u64>(
+            "guest_claim_reaper_schedule",
+            "scheduled_id",
+            |r| r.scheduled_id,
+        );
+        let _ = fx.table_keyed::<AccountDeletionReaperSchedule, u64>(
+            "account_deletion_reaper_schedule",
+            "scheduled_id",
+            |r| r.scheduled_id,
+        );
+        let _ =
+            fx.table_keyed::<PlayerSession, ConnectionId>("player_session", "connection_id", |r| {
+                r.connection_id
+            });
+        let _ = fx.table_keyed::<Monster, u64>("monster", "monster_id", |r| r.monster_id);
+        let _ = fx.table::<MonsterPub>("monster_pub", "owner_identity", |r| r.owner_identity);
+        let _ = fx.table_keyed::<Inventory, u64>("inventory", "inv_id", |r| r.inv_id);
+        let _ = fx.table_keyed::<PlayerQuestRow, u64>("player_quest", "pq_id", |r| r.pq_id);
+        let _ = fx.table::<TradeOffer>("trade_offer", "counterparty", |r| r.counterparty);
+        let _ = fx.table_keyed::<TradeOffer, u64>("trade_offer", "trade_id", |r| r.trade_id);
+        let _ = fx.table_keyed::<TradeOfferReaperSchedule, u64>(
+            "trade_offer_reaper_schedule",
+            "scheduled_id",
+            |r| r.scheduled_id,
+        );
+        let _ = fx.table::<BattleChallenge>("battle_challenge", "target", |r| r.target);
+        let _ = fx.table_keyed::<BattleChallenge, u64>("battle_challenge", "challenge_id", |r| {
+            r.challenge_id
+        });
+        let _ = fx.table_keyed::<BattleChallengeReaperSchedule, u64>(
+            "battle_challenge_reaper_schedule",
+            "scheduled_id",
+            |r| r.scheduled_id,
+        );
+        let _ = fx.table_keyed::<ExportBundle, u64>("export_bundle", "chunk_id", |r| r.chunk_id);
+        let _ = fx
+            .table::<crate::schema::Battle>("battle", "opponent_identity", |r| r.opponent_identity);
+        let _ = fx.table_keyed::<ExportBundle, i64>("export_bundle", "created_at_ms", |r| {
+            r.created_at_ms
+        });
+        W {
+            account: fx
+                .table::<Account>("account", "identity", |r| r.identity)
+                .unique()
+                .writable()
+                .scannable(),
+            claim: fx
+                .table::<GuestClaim>("guest_claim", "guest_identity", |r| r.guest_identity)
+                .unique()
+                .writable(),
+            claim_reaper: fx
+                .table::<GuestClaimReaperSchedule>(
+                    "guest_claim_reaper_schedule",
+                    "guest_identity",
+                    |r| r.guest_identity,
+                )
+                .writable()
+                .auto_inc(|r| r.scheduled_id, |r, v| r.scheduled_id = v),
+            del_reaper: fx
+                .table::<AccountDeletionReaperSchedule>(
+                    "account_deletion_reaper_schedule",
+                    "account_identity",
+                    |r| r.account_identity,
+                )
+                .writable()
+                .scannable()
+                .auto_inc(|r| r.scheduled_id, |r, v| r.scheduled_id = v),
+            player: fx
+                .table::<Player>("player", "identity", |r| r.identity)
+                .writable(),
+            session: fx
+                .table::<PlayerSession>("player_session", "identity", |r| r.identity)
+                .writable(),
+            monster: fx
+                .table::<Monster>("monster", "owner_identity", |r| r.owner_identity)
+                .writable(),
+            monster_pub: fx
+                .table_keyed::<MonsterPub, u64>("monster_pub", "monster_id", |r| r.monster_id)
+                .writable(),
+            notice: fx
+                .table::<PendingEvolutionNotice>(
+                    "pending_evolution_notice",
+                    "owner_identity",
+                    |r| r.owner_identity,
+                )
+                .writable(),
+            inventory: fx
+                .table::<Inventory>("inventory", "owner_identity", |r| r.owner_identity)
+                .writable(),
+            quest: fx
+                .table::<PlayerQuestRow>("player_quest", "owner_identity", |r| r.owner_identity)
+                .writable(),
+            dialogue: fx
+                .table::<PlayerDialogueStateRow>("player_dialogue_state", "owner_identity", |r| {
+                    r.owner_identity
+                })
+                .writable(),
+            conversation: fx
+                .table::<PlayerConversation>("player_conversation", "owner_identity", |r| {
+                    r.owner_identity
+                })
+                .writable(),
+            heal: fx
+                .table::<HealCooldown>("heal_cooldown", "owner_identity", |r| r.owner_identity)
+                .writable(),
+            wallet: fx
+                .table::<PlayerWallet>("player_wallet", "owner_identity", |r| r.owner_identity)
+                .writable(),
+            profile: fx
+                .table::<Profile>("profile", "identity", |r| r.identity)
+                .writable(),
+            character: fx
+                .table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id)
+                .writable(),
+            trade: fx
+                .table::<TradeOffer>("trade_offer", "initiator", |r| r.initiator)
+                .writable(),
+            trade_reaper: fx
+                .table_keyed::<TradeOfferReaperSchedule, u64>(
+                    "trade_offer_reaper_schedule",
+                    "trade_id",
+                    |r| r.trade_id,
+                )
+                .writable(),
+            challenge: fx
+                .table::<BattleChallenge>("battle_challenge", "challenger", |r| r.challenger)
+                .writable(),
+            challenge_reaper: fx
+                .table_keyed::<BattleChallengeReaperSchedule, u64>(
+                    "battle_challenge_reaper_schedule",
+                    "challenge_id",
+                    |r| r.challenge_id,
+                )
+                .writable(),
+            action: fx
+                .table_keyed::<BattleAction, u64>("battle_action", "action_id", |r| r.action_id)
+                .writable()
+                .scannable(),
+            playtest: fx
+                .table_keyed::<PlaytestEvent, u64>("playtest_event", "event_id", |r| r.event_id)
+                .writable()
+                .scannable(),
+            export: fx
+                .table::<ExportBundle>("export_bundle", "owner_identity", |r| r.owner_identity)
+                .writable()
+                .scannable()
+                .auto_inc(|r| r.chunk_id, |r, v| r.chunk_id = v),
+            export_reaper: fx
+                .table_keyed::<ExportBundleReaperSchedule, u64>(
+                    "export_bundle_reaper_schedule",
+                    "id",
+                    |r| r.id,
+                )
+                .writable()
+                .scannable()
+                .auto_inc(|r| r.id, |r, v| r.id = v),
+            battle: fx
+                .table::<crate::schema::Battle>("battle", "player_identity", |r| r.player_identity)
+                .writable(),
+        }
+    }
+
+    // --- rows ----------------------------------------------------------------
+
+    fn monster_row(monster_id: u64, owner: Identity) -> Monster {
+        Monster {
+            monster_id,
+            owner_identity: owner,
+            species_id: 1,
+            nickname: format!("mon-{monster_id}"),
+            level: 12,
+            xp: 900,
+            iv_hp: 11,
+            iv_attack: 12,
+            iv_defense: 13,
+            iv_speed: 14,
+            iv_sp_attack: 15,
+            iv_sp_defense: 16,
+            nature_kind: game_core::NatureKind::Hardy,
+            ev_hp: 1,
+            ev_attack: 2,
+            ev_defense: 3,
+            ev_speed: 4,
+            ev_sp_attack: 5,
+            ev_sp_defense: 6,
+            stat_hp: 40,
+            stat_attack: 41,
+            stat_defense: 42,
+            stat_speed: 43,
+            stat_sp_attack: 44,
+            stat_sp_defense: 45,
+            current_hp: 39,
+            party_slot: 0,
+            last_care_at_ms: 7,
+            essence_fire: 1,
+            essence_water: 0,
+            essence_plant: 0,
+            essence_electric: 0,
+            essence_earth: 0,
+            essence_wind: 0,
+            essence_light: 0,
+            essence_dark: 0,
+            trust_favorable_count: 3,
+            trust_unfavorable_count: 1,
+            trust_favorable_battle_day_epoch: 0,
+            quality_time_ticks_total: 5,
+            quality_time_accum_ms: 0,
+            quality_time_window_ms: 0,
+            quality_time_window_start_ms: 0,
+            last_essence_train_at_ms: 0,
+        }
+    }
+
+    fn player_row(who: Identity, entity_id: u64, name: &str) -> Player {
+        Player {
+            identity: who,
+            entity_id,
+            name: name.to_string(),
+            online: true,
+            last_input_seq: 0,
+        }
+    }
+
+    fn character_row(entity_id: u64) -> Character {
+        Character {
+            entity_id,
+            zone_id: 0,
+            tile_x: 1,
+            tile_y: 2,
+            facing: game_core::Direction::South,
+            action: game_core::ActionState::Idle,
+            move_started_at_ms: 0,
+            sprite_id: 0,
+            move_queue: Vec::new(),
+        }
+    }
+
+    fn trade_row(trade_id: u64, initiator: Identity, counterparty: Identity) -> TradeOffer {
+        TradeOffer {
+            trade_id,
+            initiator,
+            counterparty,
+            initiator_monster_ids: vec![],
+            initiator_items: vec![],
+            initiator_currency: 5,
+            counterparty_monster_ids: vec![],
+            counterparty_items: vec![],
+            counterparty_currency: 0,
+            initiator_cards: vec![],
+            counterparty_cards: vec![],
+            status: game_core::TradeStatus::Pending,
+            created_at_ms: 1,
+        }
+    }
+
+    fn challenge_row(
+        challenge_id: u64,
+        challenger: Identity,
+        target: Identity,
+        status: ChallengeStatus,
+    ) -> BattleChallenge {
+        BattleChallenge {
+            challenge_id,
+            challenger,
+            target,
+            challenger_party_ids: vec![],
+            status,
+            created_at_ms: 1,
+        }
+    }
+
+    fn export_row(chunk_id: u64, owner: Identity, stamp: i64) -> ExportBundle {
+        ExportBundle {
+            chunk_id,
+            owner_identity: owner,
+            request_id: stamp as u64,
+            table_name: "monster".to_string(),
+            chunk_index: 0,
+            total_chunks: 1,
+            payload_json: "{}".to_string(),
+            created_at_ms: stamp,
+        }
+    }
+
+    /// An ONGOING PvP battle between `player` and `opponent`.
+    fn battle_row(player: Identity, opponent: Identity) -> crate::schema::Battle {
+        let lead = game_core::BattleMonster {
+            species_id: 1,
+            affinity: game_core::Affinity::Fire,
+            level: 7,
+            current_hp: 30,
+            max_hp: 30,
+            stats: game_core::StatBlock {
+                hp: 30,
+                attack: 20,
+                defense: 20,
+                speed: 20,
+                sp_attack: 20,
+                sp_defense: 20,
+            },
+            known_skill_ids: vec![1],
+            status: None,
+        };
+        crate::schema::Battle {
+            battle_id: 900,
+            player_identity: player,
+            opponent_identity: opponent,
+            state: game_core::BattleState {
+                side_a: game_core::BattleSide {
+                    active: 0,
+                    team: vec![lead.clone()],
+                },
+                side_b: game_core::BattleSide {
+                    active: 0,
+                    team: vec![lead],
+                },
+                outcome: game_core::BattleOutcome::Ongoing,
+                turn_number: 1,
+                weather: None,
+            },
+            party_monster_ids: vec![],
+            opponent_monster_ids: vec![],
+            created_at_ms: 1,
+        }
+    }
+
+    /// One row in each of the NINE re-key tables (monster + its projection,
+    /// notice, inventory, quest, dialogue, heal cooldown, wallet, profile).
+    /// `k` keeps auto-inc keys and values distinct per owner.
+    fn seed_rekey_rows(w: &W<'_>, who: Identity, k: u64) {
+        let m = monster_row(100 + k, who);
+        w.monster_pub.seed(&crate::marshal::pub_from_monster(&m, 0));
+        w.monster.seed(&m);
+        w.notice.seed(&PendingEvolutionNotice {
+            owner_identity: who,
+            entries: vec![EvolutionRevealRow {
+                monster_id: 100 + k,
+                from_species: 1,
+                to_species: 2,
+                evolved_at_ms: 3,
+            }],
+        });
+        w.inventory.seed(&Inventory {
+            inv_id: 200 + k,
+            owner_identity: who,
+            item_id: 4,
+            count: 5 + k as u32,
+        });
+        w.quest.seed(&PlayerQuestRow {
+            pq_id: 300 + k,
+            owner_identity: who,
+            quest_id: format!("q{k}"),
+            step_index: 1,
+        });
+        w.dialogue.seed(&PlayerDialogueStateRow {
+            owner_identity: who,
+            flags: vec![format!("flag{k}")],
+            done_quests: vec![],
+        });
+        w.heal.seed(&HealCooldown {
+            owner_identity: who,
+            last_heal_at_ms: 40 + k as i64,
+        });
+        w.wallet.seed(&PlayerWallet {
+            owner_identity: who,
+            balance: 1000 + k,
+        });
+        w.profile.seed(&Profile {
+            identity: who,
+            name: format!("p{k}"),
+            rating: 1500 + k as i32,
+            wins: 7,
+            losses: 2,
+        });
+    }
+
+    /// Every row that names `who` in an owner / participant column, per table,
+    /// as sorted canonical bytes — the unit a bystander must survive unchanged
+    /// and an erased identity must leave only in its Anonymize tables.
+    fn owned_by(w: &W<'_>, who: Identity) -> Vec<(&'static str, Vec<Vec<u8>>)> {
         vec![
-            "reach_privacy_tests".to_string(),
-            "inventory".to_string(),
-            "exported".to_string(),
-            "guards".to_string(),
-            "bar".to_string(),
-            "commented_gate_tests".to_string(),
-            "raw_ident_tests".to_string(),
-        ],
-        "[rb108/exempt-by-cfg] m22_declared_mod_names_in returned {got:?}; the \
-         exemption must key on the contiguous #[cfg(test)] attribute directly \
-         above a mod, never on whether its NAME ends in `tests`. \
-         reach_privacy_tests carries a #[path] cheat with NO cfg and must be \
-         RETURNED (the measured cheat); bench_support IS #[cfg(test)]-gated \
-         but its name lacks the `tests` suffix and must still be DROPPED (the \
-         second RED direction — the old suffix rule wrongly keeps it); \
-         commented_gate_tests sits under a commented-out `// #[cfg(test)]` \
-         and must be RETURNED; bar sits under `#[cfg(test)]` / `use foo;` \
-         (the attribute belongs to the `use`, not the mod) and must be \
-         RETURNED; the three whitespace variants of `#[cfg(test)]` (with \
-         inner spaces, outer spaces, and a trailing `// note`) must all still \
-         exempt their mods; `mod r#raw_ident_tests;` names the SAME file as \
-         its bare spelling (the `r#` prefix is a raw-identifier escape, not \
-         part of the file name), so it must be returned BARE as \
-         `raw_ident_tests`, never dropped for failing a naive word-char \
-         check on the leading `#`."
-    );
-}
+            (
+                "account",
+                encs(
+                    &w.account
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "player",
+                encs(
+                    &w.player
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "profile",
+                encs(
+                    &w.profile
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "monster",
+                encs(
+                    &w.monster
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.owner_identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "monster_pub",
+                encs(
+                    &w.monster_pub
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.owner_identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "pending_evolution_notice",
+                encs(
+                    &w.notice
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.owner_identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "inventory",
+                encs(
+                    &w.inventory
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.owner_identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "player_quest",
+                encs(
+                    &w.quest
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.owner_identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "player_dialogue_state",
+                encs(
+                    &w.dialogue
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.owner_identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "player_conversation",
+                encs(
+                    &w.conversation
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.owner_identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "heal_cooldown",
+                encs(
+                    &w.heal
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.owner_identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "player_wallet",
+                encs(
+                    &w.wallet
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.owner_identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "playtest_event",
+                encs(
+                    &w.playtest
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "trade_offer",
+                encs(
+                    &w.trade
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.initiator == who || r.counterparty == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "battle_challenge",
+                encs(
+                    &w.challenge
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.challenger == who || r.target == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "battle_action",
+                encs(
+                    &w.action
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.player_identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "export_bundle",
+                encs(
+                    &w.export
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.owner_identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+            (
+                "player_session",
+                encs(
+                    &w.session
+                        .rows()
+                        .into_iter()
+                        .filter(|r| r.identity == who)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
+        ]
+    }
 
-/// [rb108/other-cfg-forms] Every OTHER cfg form — `cfg(any(test,..))`,
-/// `cfg(all(test))`, `cfg_attr(test,..)`, `cfg(not(test))`, and a genuinely
-/// multi-line `#[cfg(\n test\n)]` — counts as PRODUCTION (mod returned); only
-/// the exact single-line `#[cfg(test)]` exempts. Criterion: rb-108 plan Rule
-/// ("Any other cfg form ... -> production") + Known limitation.
-#[test]
-fn rb108_mod_census_other_cfg_forms_count_as_production() {
-    let src = [
-        "#[cfg(any(test, feature = \"dev\"))]",
-        "mod any_tests;",
-        "#[cfg(all(test))]",
-        "mod all_tests;",
-        "#[cfg_attr(test, path = \"z.rs\")]",
-        "mod attr_tests;",
-        "#[cfg(not(test))]",
-        "mod not_tests;",
-        "#[cfg(",
-        "    test",
-        ")]",
-        "mod multiline_tests;",
-        "#[cfg(test)] #[allow(dead_code)]",
-        "mod paired_tests;",
-        "#[cfg(test)]",
-        "mod exact_tests;",
-    ]
-    .join("\n");
+    fn owned_tables(snapshot: &[(&'static str, Vec<Vec<u8>>)]) -> Vec<&'static str> {
+        snapshot
+            .iter()
+            .filter(|(_, rows)| !rows.is_empty())
+            .map(|(t, _)| *t)
+            .collect()
+    }
 
-    let got = m22_declared_mod_names_in(&src);
-    assert_eq!(
-        got,
-        vec![
-            "any_tests".to_string(),
-            "all_tests".to_string(),
-            "attr_tests".to_string(),
-            "not_tests".to_string(),
-            "multiline_tests".to_string(),
-            "paired_tests".to_string(),
-        ],
-        "[rb108/other-cfg-forms] m22_declared_mod_names_in returned {got:?}; \
-         only the EXACT squashed attribute `#[cfg(test)]` may exempt a mod — \
-         `cfg(any(test,..))`, `cfg(all(test))`, `cfg_attr(test,..)`, \
-         `cfg(not(test))` and a genuinely multi-line `#[cfg(` / `test` / `)]` \
-         are all OTHER cfg forms and must count as production (fail toward \
-         coverage, per the plan's Known limitation). paired_tests carries \
-         TWO attributes rustfmt-fused onto one line — its squashed line is \
-         `#[cfg(test)]#[allow(dead_code)]`, not EXACTLY `#[cfg(test)]`, so a \
-         `contains(\"cfg(test)\")` predicate would wrongly exempt it while the \
-         exact-match rule correctly counts it as production. exact_tests is \
-         the control and correctly absent from this list."
-    );
-}
+    // --- #auth: provisioning on connect ---------------------------------------
 
-/// [rb108/blanking-never-merges] `m22_blank_for_mod_scan` must never let a
-/// stray quote inside a `//` comment, a nested `/* */` block comment, a char
-/// literal, or a multi-line string swallow a NEWLINE and glue an unrelated
-/// `#[cfg(test)]` onto a later production `mod` (or hide a later mod's own
-/// declaration, or wrongly swallow a REAL `#[cfg(test)]` as string content).
-/// Criterion: rb-108 plan REV2 red-team #1/#2 + Rule ("NEWLINE PRESERVING
-/// blanker").
-#[test]
-fn rb108_mod_census_blanking_never_merges_lines() {
-    let src = [
-        "#[cfg(test)]",
-        "// stray: \"leftover",
-        "fn helper() {}",
-        "// note: done\" removing",
-        "mod prod_mod;",
-        "/* outer /* inner */",
-        "#[cfg(test)]",
-        "*/ mod prod2;",
-        "let c = '\"';",
-        "#[cfg(test)]",
-        "#[path = \"c_tests.rs\"]",
-        "mod c_tests;",
-        "let r = r#\"mod raw_phantom;\"#;",
-        "let m = \"line one",
-        "mod str_phantom;",
-        "end\";",
-        "mod after_string;",
-        "fn lt<'a>(s: &'a str) -> &'a str { s }",
-        "#[cfg(test)]",
-        "#[path = \"lt_tests.rs\"]",
-        "mod lt_tests;",
-        "mod after_lifetime;",
-        "let s = r#######\"a \" b\"#######;",
-        "mod after_raw7;",
-        "let z = r\"mod raw0_phantom; \\\";",
-        "mod after_raw0;",
-    ]
-    .join("\n");
+    /// `on_connect` (lib.rs) over REAL client connections. An anonymous
+    /// connection plays (Ok, no account row) and records its session; a token
+    /// from an unrecognised ISSUER falls back to anonymous (Ok, no row — the
+    /// host's own token path must never disconnect); an allowed issuer with an
+    /// unrecognised AUDIENCE is a confused-deputy token and is refused (Err, no
+    /// row); only both allowed provisions a fresh Active row. A reconnect only
+    /// touches `last_login_at_ms`; a TERMINAL account re-registers fresh. A
+    /// bystander's row is never touched.
+    ///
+    /// kills: issuer or audience check dropped / inverted / swapped in order;
+    /// the Err on a bad audience turned into Ok; provisioning on the anonymous
+    /// path; `touch_login` replaced by a fresh row (or the reverse); the
+    /// terminal branch carrying pre-deletion state forward; a session write
+    /// skipped for anonymous connections.
+    #[test]
+    fn acct_on_connect_provisions_only_an_allowed_issuer_and_audience() {
+        let fx = fixture();
+        let w = world(&fx);
+        let me = id(0x11);
+        let bystander = id(0x12);
+        let bystander_row = crate::accounts::new_account_row(bystander, "b".to_string(), 5);
+        w.account.seed(&bystander_row);
+        let iss = crate::accounts::ALLOWED_ISSUERS[0];
+        let aud = crate::accounts::ALLOWED_AUDIENCE[0];
+        let mine = |w: &W<'_>| {
+            w.account
+                .rows()
+                .into_iter()
+                .filter(|r| r.identity == me)
+                .collect::<Vec<_>>()
+        };
 
-    let got = m22_declared_mod_names_in(&src);
-    assert_eq!(
-        got,
-        vec![
-            "prod_mod".to_string(),
-            "prod2".to_string(),
-            "after_string".to_string(),
-            "after_lifetime".to_string(),
-            "after_raw7".to_string(),
-            "after_raw0".to_string(),
-        ],
-        "[rb108/blanking-never-merges] m22_declared_mod_names_in returned \
-         {got:?}. prod_mod: the `#[cfg(test)]` two lines up belongs to \
-         `fn helper() {{}}`, which stops the upward walk, so prod_mod must be \
-         RETURNED even though a stray `\"` in the comment above it could fool \
-         a strings-then-comments (not per-line, newline-eating) pipeline into \
-         gluing that attribute onto this mod instead. prod2: the OUTER close \
-         of the nested block comment shares its line with `mod prod2;` — a \
-         nesting-aware blanker keeps the whole span (including the `#[cfg(\
-         test)]` line inside it) a comment until that shared-line `*/`, \
-         leaving only ` mod prod2;` live, so prod2 must be RETURNED; a \
-         first-`*/`-closes stripper closes early after `inner */`, leaves the \
-         `#[cfg(test)]` line spuriously live, and leaves `*/ mod prod2;` as a \
-         line that does NOT start with `mod ` — hiding prod2 from the census \
-         entirely. c_tests: the char literal `'\"'` must never \
-         be misread as opening a real string, or the real `#[cfg(test)]` two \
-         lines below it would be swallowed as string content instead of read \
-         as its own attribute — c_tests must stay exempt (NOT returned). \
-         raw_phantom and str_phantom must both stay invisible (a raw string \
-         and a multi-line string literal), and after_string — the mod \
-         declared on its own line right after that multi-line string closes \
-         — must be RETURNED. lt: `fn lt<'a>(s: &'a str) -> &'a str {{ s }}` \
-         carries THREE lifetime quotes on one line, none of which may be \
-         misread as opening a char literal (which would swallow real code \
-         and corrupt the rest of the scan) — lt_tests stays exempt under its \
-         own `#[cfg(test)]`, and after_lifetime, declared right after it, \
-         must be RETURNED. after_raw7: a raw string may carry ANY number of \
-         `#` delimiters (Rust allows up to 255), not just a small fixed cap — \
-         `r#######\"a \" b\"#######;` embeds a bare `\"` that a hash-capped \
-         blanker would misread as the string's close, then mis-close AGAIN \
-         at the real terminator and blank everything after it to EOF, so a \
-         cap on the hash count silently hides every mod declared after the \
-         first over-cap raw string; after_raw7 must still be RETURNED. \
-         after_raw0: ZERO hashes is a hash count too — `r\"mod raw0_phantom; \
-         \\\";` is a valid zero-hash raw string whose body ends in a \
-         backslash; a blanker that only recognises `r#...` (never bare \
-         `r\"...\"`) would treat this as a PLAIN string, read the backslash \
-         as escaping the next `\"`, and keep scanning past the real close — \
-         swallowing `mod after_raw0;`. raw0_phantom must stay invisible and \
-         after_raw0 must be RETURNED."
-    );
+        // Anonymous: plays, records its session, no account row.
+        let got = as_conn(&fx, me, None, T0, crate::on_connect);
+        assert_eq!(got, Ok(()), "an anonymous connection must be accepted");
+        assert!(
+            mine(&w).is_empty(),
+            "an anonymous connection must not provision"
+        );
+        let sessions = w.session.rows();
+        assert_eq!(
+            sessions.len(),
+            1,
+            "the anonymous connection's session is recorded"
+        );
+        assert_eq!(sessions[0].identity, me);
+        assert_eq!(sessions[0].connection_id.to_u128(), conn_of(me));
+
+        // Unrecognised issuer: fail SAFE to anonymous.
+        let foreign = claims("issuer.elsewhere.example", &format!("\"{aud}\""));
+        let got = as_conn(&fx, me, Some(&foreign), T0 + 1, crate::on_connect);
+        assert_eq!(
+            got,
+            Ok(()),
+            "a foreign issuer must fall back to anonymous, never disconnect"
+        );
+        assert!(
+            mine(&w).is_empty(),
+            "a foreign issuer must not provision an account"
+        );
+
+        // Allowed issuer, unrecognised audience: refused.
+        let deputy = claims(iss, "\"some-other-app\"");
+        let got = as_conn(&fx, me, Some(&deputy), T0 + 2, crate::on_connect);
+        assert_eq!(
+            got,
+            Err(crate::accounts::REJECT_UNRECOGNIZED_AUDIENCE.to_string()),
+            "an allowed issuer with a foreign audience must be refused"
+        );
+        assert!(
+            mine(&w).is_empty(),
+            "a refused token must not provision an account"
+        );
+
+        // Both allowed (audience as an array containing ours): provisioned fresh.
+        let ok = claims(iss, &format!("[\"x\",\"{aud}\"]"));
+        let got = as_conn(&fx, me, Some(&ok), T0 + 3, crate::on_connect);
+        assert_eq!(got, Ok(()));
+        let created = crate::accounts::new_account_row(me, iss.to_string(), T0 + 3);
+        assert_eq!(
+            encs(&mine(&w)),
+            encs(std::slice::from_ref(&created)),
+            "exactly one fresh Active row"
+        );
+
+        // Reconnect: last_login only.
+        let got = as_conn(&fx, me, Some(&ok), T0 + 100, crate::on_connect);
+        assert_eq!(got, Ok(()));
+        let touched = crate::accounts::touch_login(created.clone(), T0 + 100);
+        assert_eq!(
+            encs(&mine(&w)),
+            encs(std::slice::from_ref(&touched)),
+            "a reconnect touches last_login only"
+        );
+
+        // Terminal account: re-registers fresh (nothing carried forward).
+        let terminal = crate::accounts::terminal_account(
+            crate::accounts::anonymized_account(crate::accounts::requested_deletion(
+                crate::accounts::claimed_account(touched, id(0x13), T0 + 101),
+                T0 + 102,
+            )),
+            T0 + 103,
+        );
+        assert_eq!(w.account.remove(me), 1);
+        w.account.seed(&terminal);
+        let got = as_conn(&fx, me, Some(&ok), T0 + 200, crate::on_connect);
+        assert_eq!(got, Ok(()));
+        assert_eq!(
+            encs(&mine(&w)),
+            encs(&[crate::accounts::new_account_row(
+                me,
+                iss.to_string(),
+                T0 + 200
+            )]),
+            "a terminal account re-registers with every field at its fresh default"
+        );
+
+        assert_eq!(
+            encs(
+                &w.account
+                    .rows()
+                    .into_iter()
+                    .filter(|r| r.identity == bystander)
+                    .collect::<Vec<_>>()
+            ),
+            encs(&[bystander_row]),
+            "a bystander's account row is never touched"
+        );
+        assert_eq!(
+            w.session.rows().len(),
+            1,
+            "one connection id, one session row"
+        );
+    }
+
+    /// `on_disconnect` (lib.rs) over REAL connections: a disconnect deletes only
+    /// its OWN session row; while another of the identity's connections is
+    /// live it does nothing else; the LAST disconnect removes the presence rows
+    /// (player, its character, the conversation). A stranger is untouched.
+    ///
+    /// kills: the own-row delete dropped or keyed on the identity (a sibling
+    /// tab's row goes too); the live-session guard dropped (a second tab's
+    /// close wipes the first tab's presence) or inverted (presence never
+    /// cleaned); presence deletes keyed on the wrong identity.
+    #[test]
+    fn acct_on_disconnect_closes_its_own_session_and_waits_for_the_last() {
+        let fx = fixture();
+        let w = world(&fx);
+        let me = id(0x15);
+        let stranger = id(0x16);
+        let sibling_conn: u128 = 0x5E55_9999;
+        for (who, entity) in [(me, 5u64), (stranger, 6)] {
+            w.player.seed(&player_row(who, entity, "p"));
+            w.character.seed(&character_row(entity));
+            w.conversation.seed(&PlayerConversation {
+                owner_identity: who,
+                npc_entity_id: 1,
+                current_node_id: "n".to_string(),
+            });
+            w.session.seed(&PlayerSession {
+                connection_id: ConnectionId::from_u128(conn_of(who)),
+                identity: who,
+            });
+        }
+        w.session.seed(&PlayerSession {
+            connection_id: ConnectionId::from_u128(sibling_conn),
+            identity: me,
+        });
+        let stranger_before = owned_by(&w, stranger);
+        let conns = |w: &W<'_>| {
+            let mut c: Vec<u128> = w
+                .session
+                .rows()
+                .into_iter()
+                .filter(|r| r.identity == me)
+                .map(|r| r.connection_id.to_u128())
+                .collect();
+            c.sort_unstable();
+            c
+        };
+
+        as_conn(&fx, me, None, T0, crate::on_disconnect);
+        assert_eq!(
+            conns(&w),
+            vec![sibling_conn],
+            "only the closing connection's row goes"
+        );
+        assert_eq!(
+            owned_tables(&owned_by(&w, me)),
+            vec!["player", "player_conversation", "player_session"],
+            "a live sibling connection keeps every presence row"
+        );
+        assert!(w.character.rows().iter().any(|r| r.entity_id == 5));
+
+        fx.run_as_conn_at(me, sibling_conn, None, at(T0 + 1), crate::on_disconnect);
+        assert!(conns(&w).is_empty());
+        assert!(
+            owned_tables(&owned_by(&w, me)).is_empty(),
+            "the last disconnect removes the presence rows"
+        );
+        assert!(w.character.rows().iter().all(|r| r.entity_id != 5));
+        assert_eq!(
+            owned_by(&w, stranger),
+            stranger_before,
+            "a stranger is untouched"
+        );
+        assert!(w.character.rows().iter().any(|r| r.entity_id == 6));
+    }
+
+    // --- guest claim ----------------------------------------------------------
+
+    /// Seed a LIVE claim for `guest` (as `start_guest_claim` would write it at
+    /// `T0`) plus its armed reaper row.
+    fn seed_live_claim(w: &W<'_>, guest: Identity, c: &str, scheduled_id: u64) -> GuestClaim {
+        let row = crate::accounts::claim_row(guest, c.to_string(), "guest".to_string(), T0);
+        w.claim.seed(&row);
+        w.claim_reaper.seed(&GuestClaimReaperSchedule {
+            scheduled_id,
+            scheduled_at: ScheduleAt::Time(at(row.expires_at_ms)),
+            guest_identity: guest,
+        });
+        row
+    }
+
+    /// `start_guest_claim` binds a CLIENT-minted code to the anonymous caller:
+    /// one claim row (`claim_row` at the injected clock, name snapshotted from
+    /// the caller's `player` row) and exactly one reaper armed at the row's own
+    /// expiry. Starting again REPLACES both (still one of each). An account
+    /// holder, a malformed code and a caller with no player row are refused
+    /// before any write; another guest's claim is never touched.
+    ///
+    /// kills: the holder / charset / joined guards dropped; insert-before-delete
+    /// on replace (two claims or two reapers); the reaper armed at a second
+    /// clock read or not at all; a replace that disarms another guest's reaper.
+    #[test]
+    fn acct_start_guest_claim_binds_one_code_and_one_reaper() {
+        let fx = fixture();
+        let w = world(&fx);
+        let g = id(0x21);
+        let other = id(0x22);
+        let other_claim = seed_live_claim(&w, other, &code('e'), 900);
+        w.player.seed(&player_row(g, 1, "Guesty"));
+
+        assert_eq!(
+            fx.run_as_at(g, at(T0), |ctx| crate::accounts::start_guest_claim(
+                ctx,
+                "0123".to_string()
+            )),
+            Err("invalid claim code".to_string())
+        );
+        assert_eq!(
+            fx.run_as_at(id(0x23), at(T0), |ctx| crate::accounts::start_guest_claim(
+                ctx,
+                code('a')
+            )),
+            Err("not joined".to_string())
+        );
+        let holder = id(0x24);
+        w.account.seed(&crate::accounts::new_account_row(
+            holder,
+            "i".to_string(),
+            1,
+        ));
+        w.player.seed(&player_row(holder, 2, "Holder"));
+        assert_eq!(
+            fx.run_as_at(holder, at(T0), |ctx| crate::accounts::start_guest_claim(
+                ctx,
+                code('a')
+            )),
+            Err("already signed in".to_string())
+        );
+        assert_eq!(w.claim.rows().len(), 1, "a refused start writes no claim");
+        assert_eq!(
+            w.claim_reaper.rows().len(),
+            1,
+            "a refused start arms no reaper"
+        );
+
+        for (n, (c, ms)) in [(code('a'), T0), (code('b'), T0 + 500)]
+            .into_iter()
+            .enumerate()
+        {
+            let got = fx.run_as_at(g, at(ms), |ctx| {
+                crate::accounts::start_guest_claim(ctx, c.clone())
+            });
+            assert_eq!(got, Ok(()), "start #{n} must succeed");
+            let mine: Vec<GuestClaim> = w
+                .claim
+                .rows()
+                .into_iter()
+                .filter(|r| r.guest_identity == g)
+                .collect();
+            let want = crate::accounts::claim_row(g, c.clone(), "Guesty".to_string(), ms);
+            assert_eq!(
+                encs(&mine),
+                encs(std::slice::from_ref(&want)),
+                "start #{n}: exactly one claim, the latest"
+            );
+            let reapers: Vec<GuestClaimReaperSchedule> = w
+                .claim_reaper
+                .rows()
+                .into_iter()
+                .filter(|r| r.guest_identity == g)
+                .collect();
+            assert_eq!(reapers.len(), 1, "start #{n}: exactly one armed reaper");
+            assert_eq!(fire_at(&reapers[0].scheduled_at), at(want.expires_at_ms));
+        }
+        let others: Vec<GuestClaim> = w
+            .claim
+            .rows()
+            .into_iter()
+            .filter(|r| r.guest_identity == other)
+            .collect();
+        assert_eq!(
+            encs(&others),
+            encs(&[other_claim]),
+            "another guest's claim survives"
+        );
+        assert_eq!(
+            w.claim_reaper
+                .rows()
+                .into_iter()
+                .filter(|r| r.guest_identity == other)
+                .count(),
+            1,
+            "another guest's reaper survives"
+        );
+    }
+
+    /// Every CALLER-state guard of `complete_guest_claim` answers the same
+    /// reason for a live code, an unknown well-formed code and a malformed one
+    /// — so an unauthorised caller can never use the reducer as a claim-code
+    /// oracle — and none of them writes. Then the code-resolution guards, each
+    /// with the caller otherwise admissible: unknown / malformed code, expiry
+    /// (the claim row is LEFT for the reaper), own session, guest still online,
+    /// destination already has game data. Nothing moves in any of them.
+    ///
+    /// kills: any caller guard moved below code resolution (the live-code and
+    /// unknown-code answers diverge); a guard dropped (the next guard's reason
+    /// appears); expiry cleanup inside the reducer; the liveness / own-session /
+    /// has-data guards dropped (the claim would complete and rows would move).
+    #[test]
+    fn acct_complete_guest_claim_refuses_before_resolving_the_code() {
+        let fx = fixture();
+        let w = world(&fx);
+        let g = id(0x31);
+        let c = id(0x32);
+        let live = code('c');
+        let claim = seed_live_claim(&w, g, &live, 1);
+        w.monster.seed(&monster_row(77, g));
+        w.monster_pub
+            .seed(&crate::marshal::pub_from_monster(&monster_row(77, g), 0));
+        let before_g = owned_by(&w, g);
+        let active = crate::accounts::new_account_row(c, "i".to_string(), 1);
+        let pending = crate::accounts::requested_deletion(active.clone(), 2);
+        let terminal = crate::accounts::terminal_account(pending.clone(), 3);
+        let claimed = crate::accounts::claimed_account(active.clone(), id(0x33), 4);
+        let codes = [live.clone(), code('d'), "not-a-code".to_string()];
+
+        let states: [(&str, Option<Account>, bool, String); 5] = [
+            (
+                "no JWT",
+                Some(active.clone()),
+                false,
+                "sign in required".to_string(),
+            ),
+            ("no account", None, true, "no account".to_string()),
+            (
+                "terminal",
+                Some(terminal),
+                true,
+                crate::accounts::REJECT_ALREADY_DELETED.to_string(),
+            ),
+            (
+                "mid-grace",
+                Some(pending),
+                true,
+                "account pending deletion".to_string(),
+            ),
+            (
+                "already claimed",
+                Some(claimed),
+                true,
+                "account already claimed".to_string(),
+            ),
+        ];
+        for (label, row, jwt, reason) in states {
+            w.account.remove(c);
+            if let Some(row) = row {
+                w.account.seed(&row);
+            }
+            for k in &codes {
+                let token = good_jwt();
+                let got = as_conn(&fx, c, jwt.then_some(token.as_str()), T0 + 10, |ctx| {
+                    crate::accounts::complete_guest_claim(ctx, k.clone())
+                });
+                assert_eq!(
+                    got,
+                    Err(reason.clone()),
+                    "caller state `{label}` must answer `{reason}` for code {k:?} — the same \
+                     answer for a live and an unknown code, or the reducer is a code oracle"
+                );
+            }
+        }
+        w.account.remove(c);
+        w.account.seed(&active);
+
+        let resolve = |k: &str, ms: i64| {
+            signed_in(&fx, c, ms, |ctx| {
+                crate::accounts::complete_guest_claim(ctx, k.to_string())
+            })
+        };
+        let invalid = Err(crate::accounts::ERR_INVALID_CODE.to_string());
+        assert_eq!(resolve("not-a-code", T0 + 10), invalid);
+        assert_eq!(
+            resolve(&code('d'), T0 + 10),
+            invalid,
+            "an unknown code has the same answer"
+        );
+        assert_eq!(
+            resolve(&live, claim.expires_at_ms),
+            Err("code expired".to_string()),
+            "expiry is inclusive at expires_at_ms"
+        );
+        assert_eq!(
+            w.claim.rows().len(),
+            1,
+            "an expired claim is left for the reaper"
+        );
+
+        // Own session: the guest itself, signed in.
+        w.account
+            .seed(&crate::accounts::new_account_row(g, "i".to_string(), 1));
+        assert_eq!(
+            signed_in(
+                &fx,
+                g,
+                T0 + 10,
+                |ctx| crate::accounts::complete_guest_claim(ctx, live.clone())
+            ),
+            Err("cannot claim your own session".to_string())
+        );
+        assert_eq!(w.account.remove(g), 1);
+
+        // Guest still online.
+        w.player.seed(&player_row(g, 5, "guest"));
+        assert_eq!(
+            resolve(&live, T0 + 10),
+            Err("close your other tab, then retry".to_string())
+        );
+        assert_eq!(w.player.remove(g), 1);
+
+        // Either party mid-battle (guard 10): a live PvP battle naming the GUEST
+        // as player, then one naming the CLAIMER as opponent.
+        for (player, opponent) in [(g, id(0x3A)), (id(0x3A), c)] {
+            w.battle.seed(&battle_row(player, opponent));
+            assert_eq!(
+                resolve(&live, T0 + 10),
+                Err("already in an ongoing battle".to_string()),
+                "a claim must wait while EITHER party is in an ongoing battle"
+            );
+            assert_eq!(w.battle.remove(player), 1);
+        }
+
+        // Destination already owns game data.
+        w.inventory.seed(&Inventory {
+            inv_id: 9,
+            owner_identity: c,
+            item_id: 1,
+            count: 1,
+        });
+        assert_eq!(
+            resolve(&live, T0 + 10),
+            Err("already has game data".to_string())
+        );
+        assert_eq!(w.inventory.remove(c), 1);
+
+        assert_eq!(owned_by(&w, g), before_g, "no refusal moved any guest row");
+        assert_eq!(
+            encs(&w.claim.rows()),
+            encs(&[claim]),
+            "no refusal consumed the claim"
+        );
+        assert_eq!(
+            w.claim_reaper.rows().len(),
+            1,
+            "no refusal disarmed the reaper"
+        );
+        assert_eq!(
+            owned_tables(&owned_by(&w, c)),
+            vec!["account"],
+            "the caller gained nothing"
+        );
+    }
+
+    /// The whole guest→account claim, through the shipped reducers: the guest
+    /// starts a claim, disconnects, and a signed-in fresh account completes it.
+    /// Every re-key table moves onto the claimer (moves leave NOTHING under the
+    /// guest; the two copy-forward re-keys leave the guest's wallet at zero and
+    /// its profile tombstoned), the guest's export chunks are purged, the code
+    /// and its reaper are consumed, provenance is stamped. A second account
+    /// replaying the SAME code gets the no-oracle invalid-code answer and gains
+    /// nothing; the claimer can never claim a second guest. A bystander's rows
+    /// never move.
+    ///
+    /// kills: single-use broken (claim row or reaper left behind, or a replay
+    /// that re-keys again); any `rekey_*` dropped from `rekey_all`; a
+    /// copy-forward re-key that does not zero the guest (currency / rating
+    /// minted per replay); the claim-time export purge dropped; provenance not
+    /// stamped (AUTH-14 one-claim-per-account then fails open).
+    #[test]
+    fn acct_guest_claim_round_trip_moves_every_row_and_spends_the_code() {
+        let fx = fixture();
+        let w = world(&fx);
+        let g = id(0x41);
+        let c = id(0x42);
+        let c2 = id(0x43);
+        let b = id(0x44);
+        let secret = code('7');
+
+        w.player.seed(&player_row(g, 1, "Guesty"));
+        assert_eq!(
+            fx.run_as_at(g, at(T0), |ctx| crate::accounts::start_guest_claim(
+                ctx,
+                secret.clone()
+            )),
+            Ok(())
+        );
+        assert_eq!(
+            w.player.remove(g),
+            1,
+            "the guest disconnects (presence row gone)"
+        );
+
+        seed_rekey_rows(&w, g, 1);
+        seed_rekey_rows(&w, b, 2);
+        w.export.seed(&export_row(1, g, T0 - 5));
+        w.export.seed(&export_row(2, b, T0 - 5));
+        let guest_before = owned_by(&w, g);
+        let bystander_before = owned_by(&w, b);
+        let row_of = |t: &str, snap: &[(&'static str, Vec<Vec<u8>>)]| {
+            snap.iter()
+                .find(|(n, _)| *n == t)
+                .map(|(_, r)| r.clone())
+                .unwrap()
+        };
+
+        let active = crate::accounts::new_account_row(c, "i".to_string(), 1);
+        w.account.seed(&active);
+        let done = T0 + 1_000;
+        assert_eq!(
+            signed_in(&fx, c, done, |ctx| crate::accounts::complete_guest_claim(
+                ctx,
+                secret.clone()
+            )),
+            Ok(())
+        );
+
+        // Moves: the guest keeps nothing; the claimer holds the same rows re-owned.
+        let m = monster_row(101, c);
+        assert_eq!(
+            row_of("monster", &owned_by(&w, c)),
+            encs(std::slice::from_ref(&m)),
+            "the guest's monster is re-owned, nothing else about it changed"
+        );
+        assert_eq!(
+            row_of("monster_pub", &owned_by(&w, c)),
+            encs(&[crate::marshal::pub_from_monster(&m, 0)]),
+            "the public projection follows its monster"
+        );
+        for t in [
+            "monster",
+            "monster_pub",
+            "pending_evolution_notice",
+            "inventory",
+            "player_quest",
+            "player_dialogue_state",
+            "heal_cooldown",
+            "export_bundle",
+        ] {
+            assert!(
+                row_of(t, &owned_by(&w, g)).is_empty(),
+                "`{t}`: no row may stay under the retired guest identity"
+            );
+            if t != "export_bundle" {
+                assert_eq!(
+                    row_of(t, &owned_by(&w, c)).len(),
+                    row_of(t, &guest_before).len(),
+                    "`{t}`: every guest row must arrive under the claimer"
+                );
+            }
+        }
+        // Copy-forward re-keys: the guest row is RETAINED but emptied.
+        let wallet = |who: Identity| {
+            w.wallet
+                .rows()
+                .into_iter()
+                .find(|r| r.owner_identity == who)
+                .map(|r| r.balance)
+        };
+        assert_eq!(
+            wallet(c),
+            Some(1001),
+            "the claimer is credited the guest's balance"
+        );
+        assert_eq!(
+            wallet(g),
+            Some(0),
+            "the guest's wallet is zeroed in place, never deleted"
+        );
+        let profile = |who: Identity| {
+            w.profile
+                .rows()
+                .into_iter()
+                .find(|r| r.identity == who)
+                .unwrap()
+        };
+        let (pc, pg) = (profile(c), profile(g));
+        assert_eq!(
+            (pc.rating, pc.wins, pc.losses),
+            (1501, 7, 2),
+            "stats carry to the claimer"
+        );
+        assert_eq!(
+            (pg.rating, pg.wins, pg.losses),
+            (0, 0, 0),
+            "the guest's profile is tombstoned"
+        );
+
+        // Single use.
+        assert!(w.claim.rows().is_empty(), "the claim row is consumed");
+        assert!(w.claim_reaper.rows().is_empty(), "its reaper is disarmed");
+        assert_eq!(
+            encs(
+                &w.account
+                    .rows()
+                    .into_iter()
+                    .filter(|r| r.identity == c)
+                    .collect::<Vec<_>>()
+            ),
+            encs(&[crate::accounts::claimed_account(active, g, done)]),
+            "provenance is stamped on the claimer's account"
+        );
+        let claimer_after = owned_by(&w, c);
+
+        w.account
+            .seed(&crate::accounts::new_account_row(c2, "i".to_string(), 1));
+        assert_eq!(
+            signed_in(&fx, c2, done + 1, |ctx| {
+                crate::accounts::complete_guest_claim(ctx, secret.clone())
+            }),
+            Err(crate::accounts::ERR_INVALID_CODE.to_string()),
+            "a spent code answers exactly like a code that never existed"
+        );
+        assert_eq!(
+            owned_tables(&owned_by(&w, c2)),
+            vec!["account"],
+            "the replayer gains nothing"
+        );
+        assert_eq!(owned_by(&w, c), claimer_after, "a replay moves nothing");
+
+        let g2 = id(0x45);
+        seed_live_claim(&w, g2, &code('8'), 50);
+        assert_eq!(
+            signed_in(&fx, c, done + 2, |ctx| {
+                crate::accounts::complete_guest_claim(ctx, code('8'))
+            }),
+            Err("account already claimed".to_string()),
+            "one claim per account, ever"
+        );
+        assert_eq!(
+            owned_by(&w, b),
+            bystander_before,
+            "a bystander's rows never move"
+        );
+    }
+
+    /// The re-key roster against the lifecycle manifest: every owner-keyed
+    /// (Erase / Anonymize) table is classified exactly once as either RE-KEYED
+    /// by `rekey_all` or deliberately left behind, so a new owner-keyed table
+    /// cannot ship without a claim-flow decision. (The manifest itself is tied
+    /// to the tables' real derive metadata, wrappers included, by
+    /// `m22s6_owner_keyed_tables_are_erase_or_anonymize`.) Then the exists-half:
+    /// a row in ANY re-keyed table makes `account_has_game_data` true, so a
+    /// claim can never overwrite a destination that already plays.
+    ///
+    /// kills: a `has_*` delegate dropped from `account_has_game_data`; a new
+    /// owner-keyed table added to the manifest without a re-key decision.
+    #[test]
+    fn acct_rekey_roster_is_total_and_game_data_sees_every_rekeyed_table() {
+        const REKEYED: [&str; 9] = [
+            "monster",
+            "monster_pub",
+            "pending_evolution_notice",
+            "inventory",
+            "player_quest",
+            "player_dialogue_state",
+            "heal_cooldown",
+            "player_wallet",
+            "profile",
+        ];
+        // Left under the guest on purpose: presence / session rows die with the
+        // connection (guard 9), live interactions block the claim (guard 10),
+        // telemetry and the export store are not game data, and the account is
+        // the claimer's own.
+        const NOT_REKEYED: [&str; 10] = [
+            "player",
+            "player_conversation",
+            "player_session",
+            "battle",
+            "battle_action",
+            "trade_offer",
+            "battle_challenge",
+            "playtest_event",
+            "export_bundle",
+            "account",
+        ];
+        let mut owner_keyed: Vec<&str> = DATA_LIFECYCLE_MANIFEST
+            .iter()
+            .filter(|e| matches!(e.policy, DeletionPolicy::Erase | DeletionPolicy::Anonymize))
+            .map(|e| e.table)
+            .collect();
+        owner_keyed.sort_unstable();
+        let mut classified: Vec<&str> = REKEYED.iter().chain(NOT_REKEYED.iter()).copied().collect();
+        classified.sort_unstable();
+        assert_eq!(
+            classified, owner_keyed,
+            "every Erase/Anonymize table needs exactly one claim-flow classification"
+        );
+
+        let fx = fixture();
+        let w = world(&fx);
+        let g = id(0x51);
+        let no_data = fx.run_as(g, |ctx| crate::accounts::account_has_game_data(ctx, g));
+        assert!(!no_data, "an identity with no rows has no game data");
+        seed_rekey_rows(&w, g, 3);
+        let wipe = |w: &W<'_>| {
+            w.monster.remove(g);
+            w.monster_pub.remove(103);
+            w.notice.remove(g);
+            w.inventory.remove(g);
+            w.quest.remove(g);
+            w.dialogue.remove(g);
+            w.heal.remove(g);
+            w.wallet.remove(g);
+            w.profile.remove(g);
+        };
+        wipe(&w);
+        assert!(owned_tables(&owned_by(&w, g)).is_empty());
+        let singles: [(&str, &dyn Fn()); 8] = [
+            ("monster", &|| w.monster.seed(&monster_row(103, g))),
+            ("pending_evolution_notice", &|| {
+                w.notice.seed(&PendingEvolutionNotice {
+                    owner_identity: g,
+                    entries: vec![],
+                })
+            }),
+            ("inventory", &|| {
+                w.inventory.seed(&Inventory {
+                    inv_id: 1,
+                    owner_identity: g,
+                    item_id: 1,
+                    count: 1,
+                })
+            }),
+            ("player_quest", &|| {
+                w.quest.seed(&PlayerQuestRow {
+                    pq_id: 1,
+                    owner_identity: g,
+                    quest_id: "q".to_string(),
+                    step_index: 0,
+                })
+            }),
+            ("player_dialogue_state", &|| {
+                w.dialogue.seed(&PlayerDialogueStateRow {
+                    owner_identity: g,
+                    flags: vec![],
+                    done_quests: vec![],
+                })
+            }),
+            ("heal_cooldown", &|| {
+                w.heal.seed(&HealCooldown {
+                    owner_identity: g,
+                    last_heal_at_ms: 1,
+                })
+            }),
+            ("player_wallet", &|| {
+                w.wallet.seed(&PlayerWallet {
+                    owner_identity: g,
+                    balance: 0,
+                })
+            }),
+            ("profile", &|| {
+                w.profile.seed(&Profile {
+                    identity: g,
+                    name: String::new(),
+                    rating: 0,
+                    wins: 0,
+                    losses: 0,
+                })
+            }),
+        ];
+        for (table, seed) in singles {
+            seed();
+            let has = fx.run_as(g, |ctx| crate::accounts::account_has_game_data(ctx, g));
+            assert!(has, "a lone `{table}` row must count as game data");
+            wipe(&w);
+        }
+    }
+
+    // --- deletion lifecycle ----------------------------------------------------
+
+    fn del_reapers_of(w: &W<'_>, who: Identity) -> Vec<AccountDeletionReaperSchedule> {
+        w.del_reaper
+            .rows()
+            .into_iter()
+            .filter(|r| r.account_identity == who)
+            .collect()
+    }
+
+    /// `delete_account` / `cancel_account_deletion` through a signed-in client:
+    /// delete stamps `PendingDeletion` at the injected clock and arms EXACTLY
+    /// one grace reaper at `deletion_fire_at_ms` of that same stamp; a second
+    /// delete re-stamps nothing and arms nothing; cancel restores `Active` and
+    /// disarms only the caller's reaper; a second cancel is a no-op. JWT-less
+    /// and account-less callers are refused before any write; a TERMINAL account
+    /// cannot be re-armed (delete is an Ok no-op) or resurrected (cancel refuses).
+    ///
+    /// kills: a second arm on a repeated delete; a re-stamp that restarts the
+    /// grace window; the fire instant from a second clock read; a cancel that
+    /// leaves the reaper armed (the account is erased anyway) or disarms a
+    /// stranger's; the terminal branches dropped.
+    #[test]
+    fn acct_delete_and_cancel_arm_and_disarm_exactly_once() {
+        let fx = fixture();
+        let w = world(&fx);
+        let me = id(0x61);
+        let other = id(0x62);
+        let other_row = crate::accounts::requested_deletion(
+            crate::accounts::new_account_row(other, "i".to_string(), 1),
+            T0 - 10,
+        );
+        w.account.seed(&other_row);
+        w.del_reaper.seed(&AccountDeletionReaperSchedule {
+            scheduled_id: 500,
+            scheduled_at: ScheduleAt::Time(at(crate::accounts::deletion_fire_at_ms(T0 - 10))),
+            account_identity: other,
+        });
+        let delete = |ms: i64| signed_in(&fx, me, ms, crate::accounts::delete_account);
+        let cancel = |ms: i64| signed_in(&fx, me, ms, crate::accounts::cancel_account_deletion);
+        let mine = |w: &W<'_>| {
+            w.account
+                .rows()
+                .into_iter()
+                .filter(|r| r.identity == me)
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(delete(T0), Err("no account".to_string()));
+        assert_eq!(cancel(T0), Err("no account".to_string()));
+        let active = crate::accounts::new_account_row(me, "i".to_string(), 1);
+        w.account.seed(&active);
+        type Reducer = fn(&ReducerContext) -> Result<(), String>;
+        let guarded: [Reducer; 2] = [
+            crate::accounts::delete_account,
+            crate::accounts::cancel_account_deletion,
+        ];
+        for f in guarded {
+            assert_eq!(
+                as_conn(&fx, me, None, T0, f),
+                Err("sign in required".to_string())
+            );
+        }
+        assert!(
+            del_reapers_of(&w, me).is_empty(),
+            "no refusal arms a reaper"
+        );
+
+        assert_eq!(delete(T0), Ok(()));
+        let pending = crate::accounts::requested_deletion(active.clone(), T0);
+        assert_eq!(encs(&mine(&w)), encs(std::slice::from_ref(&pending)));
+        let armed = del_reapers_of(&w, me);
+        assert_eq!(armed.len(), 1, "delete arms exactly one grace reaper");
+        assert_eq!(
+            fire_at(&armed[0].scheduled_at),
+            at(crate::accounts::deletion_fire_at_ms(T0)),
+            "the reaper fires at the grace end of the SAME stamp the row carries"
+        );
+
+        assert_eq!(delete(T0 + 5), Ok(()));
+        assert_eq!(
+            encs(&mine(&w)),
+            encs(&[pending]),
+            "a repeated delete never re-stamps"
+        );
+        assert_eq!(
+            del_reapers_of(&w, me).len(),
+            1,
+            "a repeated delete never re-arms"
+        );
+
+        assert_eq!(cancel(T0 + 10), Ok(()));
+        assert_eq!(
+            encs(&mine(&w)),
+            encs(std::slice::from_ref(&active)),
+            "cancel restores Active"
+        );
+        assert!(
+            del_reapers_of(&w, me).is_empty(),
+            "cancel disarms the caller's reaper"
+        );
+        assert_eq!(cancel(T0 + 11), Ok(()), "a second cancel is a no-op");
+        assert_eq!(encs(&mine(&w)), encs(std::slice::from_ref(&active)));
+
+        let terminal = crate::accounts::terminal_account(
+            crate::accounts::requested_deletion(active, T0 + 20),
+            T0 + 30,
+        );
+        assert_eq!(w.account.remove(me), 1);
+        w.account.seed(&terminal);
+        assert_eq!(
+            delete(T0 + 40),
+            Ok(()),
+            "delete on an erased account is an Ok no-op"
+        );
+        assert!(
+            del_reapers_of(&w, me).is_empty(),
+            "an erased account is never re-armed"
+        );
+        assert_eq!(
+            cancel(T0 + 41),
+            Err(crate::accounts::REJECT_ALREADY_DELETED.to_string()),
+            "a completed erasure is not reversible"
+        );
+        assert_eq!(encs(&mine(&w)), encs(&[terminal]));
+
+        assert_eq!(
+            del_reapers_of(&w, other).len(),
+            1,
+            "a stranger's reaper survives"
+        );
+        assert_eq!(
+            encs(
+                &w.account
+                    .rows()
+                    .into_iter()
+                    .filter(|r| r.identity == other)
+                    .collect::<Vec<_>>()
+            ),
+            encs(&[other_row]),
+            "a stranger's account survives"
+        );
+    }
+
+    /// Seed one row for `who` in every Erase table, plus its Anonymize rows
+    /// (player + character join, profile) — the M22 §4.4 cascade population.
+    /// `k` keeps keys distinct; `peer` is the other party of the two-party rows.
+    fn seed_cascade_population(w: &W<'_>, who: Identity, peer: Identity, k: u64) {
+        seed_rekey_rows(w, who, k);
+        w.player
+            .seed(&player_row(who, 600 + k, &format!("name{k}")));
+        w.character.seed(&character_row(600 + k));
+        w.conversation.seed(&PlayerConversation {
+            owner_identity: who,
+            npc_entity_id: 3,
+            current_node_id: "n".to_string(),
+        });
+        w.playtest.seed(&PlaytestEvent {
+            event_id: 700 + k,
+            identity: who,
+            kind: 1,
+            created_at_ms: 1,
+            battle_id: 0,
+            species_id: 1,
+            hp_permille: 500,
+            bait_item_id: 0,
+            success: true,
+        });
+        w.action.seed(&BattleAction {
+            action_id: 800 + k,
+            battle_id: 99,
+            player_identity: who,
+            action: game_core::PvpAction::Attack { skill_id: 3 },
+            turn_number: 1,
+            submitted_at_ms: 1,
+        });
+        // An offer the subject made (with its armed reaper) and a challenge in
+        // each role, one of them no longer pending.
+        w.trade.seed(&trade_row(900 + k, who, peer));
+        w.trade_reaper.seed(&TradeOfferReaperSchedule {
+            scheduled_id: 900 + k,
+            scheduled_at: ScheduleAt::Time(at(T0)),
+            trade_id: 900 + k,
+        });
+        w.challenge.seed(&challenge_row(
+            1000 + k,
+            who,
+            peer,
+            ChallengeStatus::Pending,
+        ));
+        w.challenge_reaper.seed(&BattleChallengeReaperSchedule {
+            scheduled_id: 1000 + k,
+            scheduled_at: ScheduleAt::Time(at(T0)),
+            challenge_id: 1000 + k,
+        });
+        w.challenge.seed(&challenge_row(
+            1100 + k,
+            peer,
+            who,
+            ChallengeStatus::Accepted,
+        ));
+        w.export.seed(&export_row(1200 + k, who, T0 - 7));
+        w.session.seed(&PlayerSession {
+            connection_id: ConnectionId::from_u128(1300 + u128::from(k)),
+            identity: who,
+        });
+    }
+
+    /// `account_deletion_reaper`, the M22 §4.4 cascade, over a subject holding a
+    /// row in EVERY Erase table and a bystander holding the same population
+    /// (plus a trade and challenges that do not involve the subject). A
+    /// non-scheduler caller is refused with nothing touched; a tick before the
+    /// grace end erases nothing and re-arms from the row's own stamp; the due
+    /// tick leaves the subject ONLY its Anonymize rows — player and profile
+    /// display names tombstoned, the account anonymized and stamped terminal —
+    /// erases every Erase row, the character via the player join, and every
+    /// reaper row keyed on an erased trade / challenge. The bystander's rows are
+    /// byte-identical throughout.
+    ///
+    /// kills: any erase delegate dropped from the cascade; an erase keyed on the
+    /// wrong identity (the bystander loses rows); the terminal stamp written
+    /// before / without the erasure; the not-yet-due branch erasing or failing
+    /// to re-arm; the scheduler guard dropped; a disarm that leaves a reaper
+    /// firing on a deleted trade / challenge.
+    #[test]
+    fn acct_deletion_reaper_erases_every_owned_row_and_nothing_else() {
+        let fx = fixture();
+        let w = world(&fx);
+        let v = id(0x71);
+        let b = id(0x72);
+        let x = id(0x73);
+        let requested = T0;
+        let pending = crate::accounts::requested_deletion(
+            crate::accounts::new_account_row(v, "iss".to_string(), 1),
+            requested,
+        );
+        w.account.seed(&pending);
+        w.account
+            .seed(&crate::accounts::new_account_row(b, "iss".to_string(), 1));
+        seed_cascade_population(&w, v, b, 1);
+        seed_cascade_population(&w, b, x, 2);
+        let victim_before = owned_by(&w, v);
+        let bystander_now = |w: &W<'_>| -> Vec<(&'static str, Vec<Vec<u8>>)> {
+            owned_by(w, b)
+                .into_iter()
+                .map(|(t, rows)| {
+                    let own = match t {
+                        "trade_offer" => encs(
+                            &w.trade
+                                .rows()
+                                .into_iter()
+                                .filter(|r| r.initiator == b)
+                                .collect::<Vec<_>>(),
+                        ),
+                        "battle_challenge" => encs(
+                            &w.challenge
+                                .rows()
+                                .into_iter()
+                                .filter(|r| {
+                                    (r.challenger == b || r.target == b)
+                                        && r.challenger != v
+                                        && r.target != v
+                                })
+                                .collect::<Vec<_>>(),
+                        ),
+                        _ => rows,
+                    };
+                    (t, own)
+                })
+                .collect()
+        };
+        let bystander_before = bystander_now(&w);
+        let sched = || AccountDeletionReaperSchedule {
+            scheduled_id: 1,
+            scheduled_at: ScheduleAt::Time(at(crate::accounts::deletion_fire_at_ms(requested))),
+            account_identity: v,
+        };
+        let grace_end = crate::accounts::deletion_fire_at_ms(requested);
+
+        // Non-scheduler: refused, nothing touched.
+        let got = fx.run_as_at(v, at(grace_end), |ctx| {
+            crate::accounts::account_deletion_reaper(ctx, sched())
+        });
+        assert_eq!(
+            got,
+            Err("account_deletion_reaper is scheduler-only".to_string())
+        );
+        assert_eq!(
+            owned_by(&w, v),
+            victim_before,
+            "a refused tick touches nothing"
+        );
+
+        // Not yet due: nothing erased, re-armed from the row's own stamp.
+        let got = fx.run_as_at(scheduler(), at(grace_end - 1), |ctx| {
+            crate::accounts::account_deletion_reaper(ctx, sched())
+        });
+        assert_eq!(got, Ok(()));
+        assert_eq!(
+            owned_by(&w, v),
+            victim_before,
+            "an early tick erases nothing"
+        );
+        let rearmed = del_reapers_of(&w, v);
+        assert_eq!(rearmed.len(), 1, "an early tick re-arms exactly once");
+        assert_eq!(fire_at(&rearmed[0].scheduled_at), at(grace_end));
+        w.del_reaper.remove(v);
+
+        // Due: the cascade.
+        let got = fx.run_as_at(scheduler(), at(grace_end), |ctx| {
+            crate::accounts::account_deletion_reaper(ctx, sched())
+        });
+        assert_eq!(got, Ok(()));
+        let after = owned_by(&w, v);
+        assert_eq!(
+            owned_tables(&after),
+            vec!["account", "player", "profile"],
+            "only the Anonymize rows may still name the erased identity"
+        );
+        let one = |t: &str| after.iter().find(|(n, _)| *n == t).unwrap().1.clone();
+        assert_eq!(
+            one("account"),
+            encs(&[crate::accounts::terminal_account(
+                crate::accounts::anonymized_account(pending),
+                grace_end
+            )])
+        );
+        let p = w
+            .player
+            .rows()
+            .into_iter()
+            .find(|r| r.identity == v)
+            .unwrap();
+        assert_eq!(
+            p.name,
+            game_core::TOMBSTONE_DISPLAY_NAME,
+            "the display name is tombstoned"
+        );
+        let pr = w
+            .profile
+            .rows()
+            .into_iter()
+            .find(|r| r.identity == v)
+            .unwrap();
+        assert_eq!(pr.name, game_core::TOMBSTONE_DISPLAY_NAME);
+        assert!(
+            w.character.rows().iter().all(|r| r.entity_id != 601),
+            "the character reachable through the player join is erased"
+        );
+        assert!(w.trade_reaper.rows().iter().all(|r| r.trade_id != 901));
+        assert!(w
+            .challenge_reaper
+            .rows()
+            .iter()
+            .all(|r| r.challenge_id != 1001));
+        assert!(del_reapers_of(&w, v).is_empty(), "the cascade arms nothing");
+
+        assert_eq!(
+            bystander_now(&w),
+            bystander_before,
+            "the bystander's rows are untouched"
+        );
+        assert!(w.character.rows().iter().any(|r| r.entity_id == 602));
+        assert!(w.trade_reaper.rows().iter().any(|r| r.trade_id == 902));
+        assert!(w
+            .challenge_reaper
+            .rows()
+            .iter()
+            .any(|r| r.challenge_id == 1002));
+    }
+
+    /// `ensure_deletion_reapers_armed` (the init / sync_content sweep): arms the
+    /// grace reaper for every mid-grace account that has none, at the grace end
+    /// of the row's own stamp — and ONLY for those: an already-armed, an Active
+    /// and a terminal account gain nothing. A second sweep adds nothing.
+    ///
+    /// kills: the sweep body dropped (an account whose one-shot fired before
+    /// the cascade existed, or that a crash left unarmed, is never erased); a
+    /// re-arm of an already-armed account; a fire instant not derived from the
+    /// row's own stamp.
+    #[test]
+    fn acct_ensure_deletion_reapers_armed_rearms_only_unarmed_mid_grace_accounts() {
+        let fx = fixture();
+        let w = world(&fx);
+        let (unarmed, armed, active, erased) = (id(0x7A), id(0x7B), id(0x7C), id(0x7D));
+        let new = |who| crate::accounts::new_account_row(who, "i".to_string(), 1);
+        w.account
+            .seed(&crate::accounts::requested_deletion(new(unarmed), T0));
+        w.account
+            .seed(&crate::accounts::requested_deletion(new(armed), T0 + 1));
+        w.account.seed(&new(active));
+        w.account.seed(&crate::accounts::terminal_account(
+            crate::accounts::requested_deletion(new(erased), T0 + 2),
+            T0 + 3,
+        ));
+        w.del_reaper.seed(&AccountDeletionReaperSchedule {
+            scheduled_id: 40,
+            scheduled_at: ScheduleAt::Time(at(crate::accounts::deletion_fire_at_ms(T0 + 1))),
+            account_identity: armed,
+        });
+        for sweep in 0..2 {
+            fx.run_as_at(
+                scheduler(),
+                at(T0 + 10),
+                crate::accounts::ensure_deletion_reapers_armed,
+            );
+            let rows = w.del_reaper.rows();
+            assert_eq!(
+                rows.len(),
+                2,
+                "sweep #{sweep}: exactly the missing reaper is added"
+            );
+            let mine = del_reapers_of(&w, unarmed);
+            assert_eq!(
+                mine.len(),
+                1,
+                "sweep #{sweep}: the unarmed account is armed once"
+            );
+            assert_eq!(
+                fire_at(&mine[0].scheduled_at),
+                at(crate::accounts::deletion_fire_at_ms(T0)),
+                "the fire instant is the grace end of the row's own stamp"
+            );
+            assert_eq!(
+                del_reapers_of(&w, armed).len(),
+                1,
+                "an armed account is not re-armed"
+            );
+        }
+    }
+
+    /// `guest_claim_reaper`: scheduler-only; a tick before expiry leaves the
+    /// claim (staleness re-check), the due tick deletes exactly that guest's
+    /// claim, and a claim already consumed is an Ok no-op.
+    ///
+    /// kills: the scheduler guard dropped; the staleness re-check dropped (a
+    /// fresh replacement claim reaped after clock skew); a reap keyed on
+    /// anything but the scheduled guest.
+    #[test]
+    fn acct_guest_claim_reaper_reaps_only_the_expired_scheduled_claim() {
+        let fx = fixture();
+        let w = world(&fx);
+        let g = id(0x81);
+        let other = id(0x82);
+        let claim = seed_live_claim(&w, g, &code('1'), 1);
+        let other_claim = seed_live_claim(&w, other, &code('2'), 2);
+        let sched = |guest: Identity| GuestClaimReaperSchedule {
+            scheduled_id: 1,
+            scheduled_at: ScheduleAt::Time(at(claim.expires_at_ms)),
+            guest_identity: guest,
+        };
+        let tick = |who: Identity, ms: i64, guest: Identity| {
+            fx.run_as_at(who, at(ms), |ctx| {
+                crate::accounts::guest_claim_reaper(ctx, sched(guest))
+            })
+        };
+        assert_eq!(
+            tick(g, claim.expires_at_ms, g),
+            Err("guest_claim_reaper is scheduler-only".to_string())
+        );
+        assert_eq!(tick(scheduler(), claim.expires_at_ms - 1, g), Ok(()));
+        assert_eq!(
+            w.claim.rows().len(),
+            2,
+            "a claim is never reaped before it expires"
+        );
+        assert_eq!(tick(scheduler(), claim.expires_at_ms, g), Ok(()));
+        assert_eq!(
+            encs(&w.claim.rows()),
+            encs(&[other_claim]),
+            "only the scheduled guest's claim goes"
+        );
+        assert_eq!(
+            tick(scheduler(), claim.expires_at_ms + 1, g),
+            Ok(()),
+            "consumed: no-op"
+        );
+    }
+
+    /// EV-account-privacy#tables-view: the only client read path to `account`
+    /// is the `my_account` view, run here through the runtime's own view entry
+    /// point: each caller sees exactly its own row, a stranger sees none.
+    /// (`account` / `guest_claim` absence from the client surface is the
+    /// client-surface-privacy allowlist.)
+    ///
+    /// kills: a view body keyed on anything but `ctx.sender()`; a decoy lookup
+    /// that returns another identity's row.
+    #[test]
+    fn acct_my_account_view_returns_only_the_callers_row() {
+        let fx = fixture();
+        let w = world(&fx);
+        let a = crate::accounts::new_account_row(id(0x91), "ia".to_string(), 1);
+        let b = crate::accounts::claimed_account(
+            crate::accounts::new_account_row(id(0x92), "ib".to_string(), 2),
+            id(0x93),
+            3,
+        );
+        w.account.seed(&a);
+        w.account.seed(&b);
+        let seen = |who: Identity| encs(&fx.call_view::<Account>(VIEW_MY_ACCOUNT, who));
+        assert_eq!(seen(id(0x91)), encs(&[a]));
+        assert_eq!(seen(id(0x92)), encs(&[b]));
+        assert!(
+            seen(id(0x94)).is_empty(),
+            "a caller with no account sees nothing"
+        );
+    }
+
+    // --- data export (ADR-0268; ST-privacy_tests#export-owner-scope / #export-admission)
+
+    fn exportable_tables() -> Vec<&'static str> {
+        let mut t: Vec<&str> = DATA_LIFECYCLE_MANIFEST
+            .iter()
+            .filter(|e| e.exportable)
+            .map(|e| e.table)
+            .collect();
+        t.sort_unstable();
+        t
+    }
+
+    fn chunks_of(w: &W<'_>, who: Identity) -> Vec<ExportBundle> {
+        let mut c: Vec<ExportBundle> = w
+            .export
+            .rows()
+            .into_iter()
+            .filter(|r| r.owner_identity == who)
+            .collect();
+        c.sort_by_key(|r| r.chunk_index);
+        c
+    }
+
+    fn export_as(fx: &Fixture, who: Identity, ms: i64) -> Result<(), String> {
+        fx.run_as_at(who, at(ms), crate::privacy::request_data_export)
+    }
+
+    /// Seed an export subject: a player row plus rows in several exportable
+    /// tables, every string carrying `tag` so a foreign row is visible in a
+    /// payload even where no identity column is exported.
+    fn seed_export_subject(w: &W<'_>, who: Identity, k: u64, tag: &str) {
+        w.player.seed(&player_row(who, 1400 + k, tag));
+        let mut m = monster_row(1500 + k, who);
+        m.nickname = tag.to_string();
+        w.monster_pub.seed(&crate::marshal::pub_from_monster(&m, 0));
+        w.monster.seed(&m);
+        w.quest.seed(&PlayerQuestRow {
+            pq_id: 1600 + k,
+            owner_identity: who,
+            quest_id: tag.to_string(),
+            step_index: 0,
+        });
+        w.playtest.seed(&PlaytestEvent {
+            event_id: 1700 + k,
+            identity: who,
+            kind: 1,
+            created_at_ms: 1,
+            battle_id: 0,
+            species_id: 1,
+            hp_permille: 1,
+            bait_item_id: 0,
+            success: false,
+        });
+    }
+
+    /// Two subjects export in the SAME millisecond through the shipped reducer.
+    /// Each bundle is owner-scoped (every chunk owned by the caller, one chunk
+    /// per exportable table, contiguous `chunk_index` with the request-wide
+    /// `total_chunks`, and no payload naming the other subject or carrying its
+    /// tagged rows); each carries ONE creation stamp that no other live bundle
+    /// shares (the clock, then the first free millisecond: ADR-0268), with
+    /// `request_id` mirroring it. One reaper singleton is armed. A repeat inside
+    /// the cooldown is refused with nothing written; after it, the caller's old
+    /// bundle is purged and replaced while the other bundle is untouched. A
+    /// caller with no subject rows and a mid-grace account are refused.
+    ///
+    /// kills: a shared stamp for two live requests (the reaper's per-stamp
+    /// delete unit would span bundles); chunks stamped from anything but the
+    /// minted stamp; an exporter that reads beyond the caller's rows; the
+    /// purge-before-write or cooldown dropped; the purge keyed on anything but
+    /// the caller.
+    #[test]
+    fn acct_export_is_owner_scoped_and_stamps_each_live_bundle_uniquely() {
+        let fx = fixture();
+        let w = world(&fx);
+        let a = id(0xA1);
+        let b = id(0xA2);
+        seed_export_subject(&w, a, 1, "TAG-ALPHA");
+        seed_export_subject(&w, b, 2, "TAG-BRAVO");
+
+        assert_eq!(export_as(&fx, a, T0), Ok(()));
+        assert_eq!(
+            export_as(&fx, b, T0),
+            Ok(()),
+            "a same-millisecond second subject is served"
+        );
+
+        let tables = exportable_tables();
+        for (who, other, stamp, tag) in [(a, b, T0, "TAG-BRAVO"), (b, a, T0 + 1, "TAG-ALPHA")] {
+            let chunks = chunks_of(&w, who);
+            assert_eq!(
+                chunks.len(),
+                tables.len(),
+                "one chunk per exportable table (small data)"
+            );
+            let mut names: Vec<&str> = chunks.iter().map(|c| c.table_name.as_str()).collect();
+            names.sort_unstable();
+            assert_eq!(names, tables, "every exportable table, exactly once");
+            for (i, c) in chunks.iter().enumerate() {
+                assert_eq!(c.chunk_index, i as u32, "chunk_index is contiguous from 0");
+                assert_eq!(c.total_chunks, chunks.len() as u32);
+                assert_eq!(
+                    c.created_at_ms, stamp,
+                    "every chunk carries the request's ONE stamp"
+                );
+                assert_eq!(c.request_id, stamp as u64, "request_id mirrors the stamp");
+                assert!(
+                    !c.payload_json.contains(&other.to_string()) && !c.payload_json.contains(tag),
+                    "a `{}` chunk leaks the other subject's rows: {}",
+                    c.table_name,
+                    c.payload_json
+                );
+            }
+        }
+        assert_eq!(
+            w.export_reaper.rows().len(),
+            1,
+            "the TTL reaper is a singleton"
+        );
+
+        let b_before = encs(&chunks_of(&w, b));
+        let a_before = encs(&chunks_of(&w, a));
+        assert_eq!(
+            export_as(&fx, a, T0 + 30_000),
+            Err("export_reject_cooldown".to_string())
+        );
+        assert_eq!(
+            encs(&chunks_of(&w, a)),
+            a_before,
+            "a refused repeat writes nothing"
+        );
+        assert_eq!(export_as(&fx, a, T0 + 60_000), Ok(()));
+        let fresh = chunks_of(&w, a);
+        assert_eq!(
+            fresh.len(),
+            tables.len(),
+            "the old bundle is purged, not appended to"
+        );
+        assert!(fresh.iter().all(|c| c.created_at_ms == T0 + 60_000));
+        assert_eq!(
+            encs(&chunks_of(&w, b)),
+            b_before,
+            "another subject's bundle is untouched"
+        );
+        assert_eq!(w.export_reaper.rows().len(), 1, "still one reaper");
+
+        assert_eq!(
+            export_as(&fx, id(0xA3), T0),
+            Err("export_reject_no_subject".to_string())
+        );
+        w.account.seed(&crate::accounts::requested_deletion(
+            crate::accounts::new_account_row(b, "i".to_string(), 1),
+            T0,
+        ));
+        assert_eq!(
+            export_as(&fx, b, T0 + 120_000),
+            Err("export_reject_pending_deletion".to_string())
+        );
+        assert_eq!(encs(&chunks_of(&w, b)), b_before);
+    }
+
+    /// ADR-0268's contention arm through the shipped reducer: with every
+    /// millisecond of the probe window already carrying a live bundle, a request
+    /// is refused — it never falls back to sharing a stamp — and writes nothing.
+    /// The first millisecond past the window is free, so the SAME request one
+    /// window later is served there.
+    ///
+    /// kills: a fallback onto an occupied stamp; a window wider or narrower
+    /// than the one the reaper's bundle cap is sized for.
+    #[test]
+    fn acct_export_refuses_a_full_stamp_window_and_writes_nothing() {
+        let fx = fixture();
+        let w = world(&fx);
+        let a = id(0xB1);
+        seed_export_subject(&w, a, 1, "TAG-A");
+        let window = crate::privacy::EXPORT_REAP_MAX_STAMPS_PER_TICK as i64;
+        for k in 0..window {
+            w.export
+                .seed(&export_row(5000 + k as u64, id(0xB2), T0 + k));
+        }
+        let before = encs(&w.export.rows());
+        assert_eq!(
+            export_as(&fx, a, T0),
+            Err("export_reject_stamp_contention".to_string())
+        );
+        assert_eq!(
+            encs(&w.export.rows()),
+            before,
+            "a contended request writes nothing"
+        );
+        assert_eq!(
+            export_as(&fx, a, T0 - window),
+            Ok(()),
+            "a free window is served"
+        );
+        assert!(chunks_of(&w, a)
+            .iter()
+            .all(|c| c.created_at_ms == T0 - window));
+    }
+
+    /// The TTL reaper deletes WHOLE bundles only. Two bundles minted in the same
+    /// millisecond sit one stamp apart; the tick at the first bundle's TTL
+    /// removes every chunk of it and none of the second, whose own TTL tick
+    /// then removes it. A non-scheduler tick is refused and deletes nothing.
+    ///
+    /// kills: a reap unit wider than one stamp (a partial or foreign bundle
+    /// deleted), a TTL comparison off by one, the scheduler guard dropped.
+    #[test]
+    fn acct_export_reaper_deletes_whole_bundles_only() {
+        let fx = fixture();
+        let w = world(&fx);
+        let a = id(0xC1);
+        let b = id(0xC2);
+        seed_export_subject(&w, a, 1, "TAG-A");
+        seed_export_subject(&w, b, 2, "TAG-B");
+        assert_eq!(export_as(&fx, a, T0), Ok(()));
+        assert_eq!(export_as(&fx, b, T0), Ok(()));
+        let ttl = crate::privacy::EXPORT_BUNDLE_TTL_MS;
+        let tick = |who: Identity, ms: i64| {
+            fx.run_as_at(who, at(ms), |ctx| {
+                crate::privacy::export_bundle_reaper(
+                    ctx,
+                    ExportBundleReaperSchedule {
+                        id: 1,
+                        scheduled_at: ScheduleAt::Time(at(ms)),
+                    },
+                )
+            })
+        };
+        let n = exportable_tables().len();
+        assert_eq!(
+            tick(a, T0 + ttl),
+            Err("export_reaper_scheduler_only".to_string())
+        );
+        assert_eq!(
+            w.export.rows().len(),
+            2 * n,
+            "a refused tick deletes nothing"
+        );
+        assert_eq!(tick(scheduler(), T0 + ttl - 1), Ok(()));
+        assert_eq!(
+            w.export.rows().len(),
+            2 * n,
+            "nothing is reaped before its TTL"
+        );
+        assert_eq!(tick(scheduler(), T0 + ttl), Ok(()));
+        assert!(chunks_of(&w, a).is_empty(), "the expired bundle goes whole");
+        assert_eq!(
+            chunks_of(&w, b).len(),
+            n,
+            "the unexpired bundle stays whole"
+        );
+        assert_eq!(tick(scheduler(), T0 + 1 + ttl), Ok(()));
+        assert!(w.export.rows().is_empty());
+    }
+
+    /// Admission control through the shipped reducer, at the exact edge. The
+    /// global live-row cap is tiered by caller: an account holder gets the whole
+    /// cap, a wallet-holding anonymous caller half, a join-only newcomer a
+    /// quarter. With the store `newcomer_cap - min_bundle` rows full a newcomer
+    /// is still served; one row fuller the newcomer is refused with nothing
+    /// written, while a caller holding a wallet is served.
+    ///
+    /// kills: the tier order inverted or collapsed; the cap compared with `<`
+    /// instead of `<=`; admission checked after the write.
+    #[test]
+    fn acct_export_admission_sheds_newcomers_first_at_the_exact_edge() {
+        let cap = crate::privacy::EXPORT_REAP_MAX_READ_PER_TICK as u64
+            * (crate::privacy::EXPORT_BUNDLE_TTL_MS as u64
+                / crate::privacy::EXPORT_REAP_INTERVAL.as_millis() as u64);
+        let newcomer_cap = cap / 4;
+        let min_bundle = exportable_tables().len() as u64;
+        for (extra, newcomer_served) in [(0u64, true), (1, false)] {
+            let fx = fixture();
+            let w = world(&fx);
+            let filler = newcomer_cap - min_bundle + extra;
+            for k in 0..filler {
+                w.export.seed(&export_row(10_000 + k, id(0xD9), 1));
+            }
+            let newcomer = id(0xD1);
+            seed_export_subject(&w, newcomer, 1, "TAG-N");
+            let got = export_as(&fx, newcomer, T0);
+            if newcomer_served {
+                assert_eq!(got, Ok(()), "{filler} live rows: a newcomer still fits");
+            } else {
+                assert_eq!(got, Err("export_reject_admission".to_string()));
+                assert!(
+                    chunks_of(&w, newcomer).is_empty(),
+                    "a refused request writes nothing"
+                );
+                let earner = id(0xD2);
+                seed_export_subject(&w, earner, 2, "TAG-E");
+                w.wallet.seed(&PlayerWallet {
+                    owner_identity: earner,
+                    balance: 1,
+                });
+                assert_eq!(
+                    export_as(&fx, earner, T0),
+                    Ok(()),
+                    "a wallet holder is admitted"
+                );
+            }
+        }
+    }
 }

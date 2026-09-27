@@ -122,3 +122,58 @@ fn rb41_has_items_tracks_real_inventory_rows() {
         fx.requested_indexes()
     );
 }
+
+/// EV-inventory-single-stack, as post-state: every item-granting path keeps AT
+/// MOST ONE `inventory` row per `(owner, item_id)`. `grant_item` is the single
+/// inserter every path funnels through (buy, trade confirm, dialogue GrantItem,
+/// quest reward items, and the dev-only grant_bait); it is driven directly here —
+/// first grant, merge, zero-qty, a second item, a second owner. The buy path is
+/// `economy_tests`
+/// `nh_buy_success_spends_wallet_and_grants_one_stack`; the trade path is the
+/// one-row-per-pair assertion in `trading_tests`
+/// `nh_trade_confirm_swaps_every_asset_and_conserves_every_total`. The dialogue
+/// GrantItem and quest reward-item paths carry no shipped content (no GrantItem
+/// effect, `reward.items` empty), so they are covered only through `grant_item`.
+///
+/// kills: a grant that inserts instead of merging (a second row), a merge keyed
+/// on item only / owner only (a stranger's stack grows), a zero-qty zombie row.
+#[test]
+fn nh_every_grant_path_keeps_one_stack_per_owner_and_item() {
+    let fx = fixture();
+    let me = Identity::from_byte_array([31u8; 32]);
+    let stranger = Identity::from_byte_array([32u8; 32]);
+    const ITEM: u32 = 900;
+    const OTHER: u32 = 901;
+    let stacks = fx
+        .table::<Inventory>("inventory", "owner_identity", |r| r.owner_identity)
+        .writable()
+        .auto_inc(|r| r.inv_id, |r, id| r.inv_id = id);
+    let _by_id = fx
+        .table_keyed::<Inventory, u64>("inventory", "inv_id", |r| r.inv_id)
+        .unique();
+    let table = || {
+        let mut v: Vec<(Identity, u32, u32)> = stacks
+            .rows()
+            .iter()
+            .map(|r| (r.owner_identity, r.item_id, r.count))
+            .collect();
+        v.sort_unstable();
+        v
+    };
+
+    let ctx = fx.ctx();
+    crate::inventory::grant_item(&ctx, me, ITEM, 2);
+    crate::inventory::grant_item(&ctx, me, ITEM, 3);
+    crate::inventory::grant_item(&ctx, me, ITEM, 0);
+    crate::inventory::grant_item(&ctx, me, OTHER, 1);
+    crate::inventory::grant_item(&ctx, stranger, ITEM, 4);
+    assert_eq!(
+        table(),
+        {
+            let mut want = vec![(me, ITEM, 5), (me, OTHER, 1), (stranger, ITEM, 4)];
+            want.sort_unstable();
+            want
+        },
+        "grant_item: merged per (owner, item), zero-qty writes nothing"
+    );
+}

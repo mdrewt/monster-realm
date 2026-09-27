@@ -4256,3 +4256,49 @@ describe('rowConvert 20r-d: pendingEvolutionNoticeRowToStore — RC-NOTICE', () 
     ).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// HANDLED_ENUM_VARIANTS == the GENERATED binding enums (debloat Phase 2:
+// EV-sdk-enum-exhaustiveness). Replaces the eval that regex-parsed both
+// rowConvert.ts and module_bindings/types.ts: the registry is imported as a VALUE
+// and each entry is compared, IN ORDER, against the runtime variant list of the
+// generated `__t.enum` of the same name (`algebraicType.value.variants`). A
+// server-added, removed or reordered variant reaches this test on the next
+// `just gen` (bindings-drift keeps the bindings equal to the server), and a stale
+// or missing registry entry fails here. Order matters: TrustTier's declaration
+// order IS the ranking the trust gate compares through.
+// ---------------------------------------------------------------------------
+import * as GeneratedTypes from '../module_bindings/types';
+
+describe('rowConvert: HANDLED_ENUM_VARIANTS mirrors the generated binding enums', () => {
+  const generatedVariants = (enumName: string): string[] | undefined => {
+    const e = (GeneratedTypes as Record<string, unknown>)[enumName] as
+      | { algebraicType?: { tag?: string; value?: { variants?: { name: string }[] } } }
+      | undefined;
+    if (e?.algebraicType?.tag !== 'Sum') return undefined;
+    return e.algebraicType.value?.variants?.map((v) => v.name);
+  };
+
+  for (const [enumName, registered] of Object.entries(HANDLED_ENUM_VARIANTS)) {
+    it(`${enumName}: registry == generated variants, in declaration order`, () => {
+      const generated = generatedVariants(enumName);
+      expect(
+        generated,
+        `module_bindings/types.ts must export a generated sum type '${enumName}'`,
+      ).toBeDefined();
+      expect(
+        [...registered],
+        `HANDLED_ENUM_VARIANTS.${enumName} is out of step with the generated binding — ` +
+          'update the registry AND the handling code for the new/removed variant',
+      ).toEqual(generated);
+    });
+  }
+
+  it('the comparison bites: a stale extra variant or a missing one is unequal', () => {
+    const generated = generatedVariants('TradeStatus');
+    expect(generated).toEqual(['Pending', 'ConfirmedByCounterparty']);
+    expect([...HANDLED_ENUM_VARIANTS.TradeStatus, 'Stale']).not.toEqual(generated);
+    expect(HANDLED_ENUM_VARIANTS.TradeStatus.slice(1)).not.toEqual(generated);
+    expect(generatedVariants('NoSuchEnum')).toBeUndefined();
+  });
+});

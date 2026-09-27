@@ -32,10 +32,9 @@ Project-specific rules. Inherits the workspace `AGENTS.md` and `standards/`.
   `**Status:**` · `**Date:**` · `**Slice:**` · `**Supersedes:**` · `**Amends:**` ·
   `**Subsystems:**` (1–3 values from the controlled vocabulary) · `**Decision:**` (one
   sentence, ≤ 240 chars). Add `**Superseded-by:**` if Status = Superseded; add
-  `**Amended-by:**` when a later ADR amends this one. Run `just adr-digest` before
-  committing any ADR change — this regenerates `docs/adr/DIGEST.md` and is drift-gated
-  in CI. **For "is there a decision about X?": read `docs/adr/DIGEST.md` first** (compact
-  ~15 KB agent entry point); open the full ADR only on a hit. Subsystem vocabulary:
+  `**Amended-by:**` when a later ADR amends this one. **For "is there a decision about
+  X?": grep the `**Decision:**` lines in `docs/adr/*.md`**; open the full ADR only on a
+  hit. Subsystem vocabulary:
   `battle` · `evolution-fusion` · `movement-netcode` · `content` · `schema-persistence` ·
   `client-ui` · `ci-gates` · `tooling-docs` · `security-authz` · `economy-quests`.
 - **Code knowledge graphs (two — route by question type; harness `code-intel` skill is the SSOT):** `codebase-memory-mcp` (cbm query slug: `home-mdrewt-projects-ai-apps-claude-harness-projects-monster-realm`) **and** CodeGraph (`.codegraph/` in this repo — pass `projectPath` when the session root is the harness). **Impact analysis** before changing a shared `game-core` signature/type: enumerate callers via the **UNION of both graphs** + a grep for dynamically-invoked symbols — never a single graph. **Keep the graphs current:** cbm CLI queries serve a snapshot — re-index at each milestone close (`index_repository`; `detect_changes` to probe; a stale index silently returns wrong snippet source); `codegraph status`/`sync` when no MCP daemon runs. Query + index tools are pre-allowlisted in `.claude/settings.json`; `delete_project` intentionally not.

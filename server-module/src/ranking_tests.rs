@@ -1,29 +1,15 @@
-//! `ranking` domain-submodule tests — m17a (ADR-0119) + m17.5d (ADR-0125).
+//! `ranking` domain-submodule tests — m17a (ADR-0119) + m17.5d (ADR-0125) + the
+//! M21/M22 profile re-key and tombstone seams.
 //!
 //! Declared from `server-module/src/ranking.rs` as:
 //!   `#[path = "ranking_tests.rs"] mod ranking_tests;`
 //! so `super::` resolves to `ranking.rs`.
 //!
-//! After m17.5d (ADR-0125), ranking.rs has two private helpers that are
-//! pure/ctx-free enough to test directly:
-//!   - `refresh_profile_name(profile, live_name)` — pure struct transform,
-//!     no ctx, no DB I/O.
-//!   - `live_player_name(ctx, identity)` — ctx helper; its exact inline shape
-//!     is pinned by T2 source-scan rather than an executed test (a ReducerContext
-//!     was not constructible in unit tests before rb-41's native_host_tests).
-//!
-//! Rating arithmetic still delegates entirely to game_core (tested there).
-//!
-//! Tests in this file:
-//!   - RL-4 pin: game_core::INITIAL_RATING value from server-module boundary.
-//!   - T1 executed (d1_*/d2_*): pure-core refresh_profile_name behaviour —
-//!     RED as compile-fail until ranking.rs exposes the fn (m17.5a convention).
-//!   - T2 source-scan: needle checks over ranking.rs (include_str!) verifying
-//!     wiring shape, helper count, write-count, and absence of split-bindings —
-//!     mostly RED until impl; two regression pins start GREEN.
-//!
-//! RL-7 module invariants (no reducer, get_or_init_profile present, etc.)
-//! remain in pvp_tests.rs — m17a_rl7_server_ranking_module_invariants().
+//! Pure seams (refresh_profile_name, tombstoned_profile, profile_with_carried_stats,
+//! the deletion-name transforms) are tested directly; ctx-bound code
+//! (set_profile_name, apply_pvp_rating, rekey_profile, anonymize_display_names,
+//! profile_exists) runs SHIPPED under the in-memory native host. Rating arithmetic
+//! delegates entirely to game_core (tested there).
 
 use crate::schema::Profile;
 use spacetimedb::Identity;
@@ -55,200 +41,9 @@ fn rl4_initial_rating_ssot_pin() {
     );
 }
 
-// ===========================================================================
-// m17.5d — EARS 17.5d-1/17.5d-2: profile.name passive mirror (ADR-0125)
-//
-// T1: Executed pure-core tests for refresh_profile_name.
-//     These call `super::refresh_profile_name` which does NOT yet exist →
-//     the whole crate's test build fails with a compile error. That is the
-//     accepted red state for pure-core slices (m17.5a precedent).
-//
-// T2: Source-scan tests over ranking.rs (read via include_str!). Needles
-//     whitespace-free (squash_ws) and assembled with concat!() to prevent
-//     self-matching. Two regression pins start GREEN.
-// ===========================================================================
-
 // ---------------------------------------------------------------------------
-// Scan machinery (local copies — do NOT import from pvp_tests.rs or
-// taming_tests.rs; per-module convention, ADR-0125 anti-pattern #5).
-// ---------------------------------------------------------------------------
-
-/// Strip Rust string literals from `src`, replacing their content (and
-/// delimiters) with spaces.
-///
-/// Handles:
-///   - Normal double-quoted literals `"..."` with `\"` escape sequences.
-///   - Raw strings `r"..."` and `r#"..."#` (up to 6 `#` hashes, covering all
-///     plausible real-world uses; ranking.rs currently contains none — noted as
-///     a limitation if deeper nesting is ever added).
-///   - Char literals are NOT handled (ranking.rs contains none; noted).
-///
-/// Must run BEFORE `strip_rust_comments`: string content is blanked first so
-/// a `//` or `/*` inside a string literal is already spaces before the comment
-/// pass walks the buffer. Our byte-walk comment stripper does not track string
-/// context, so without this ordering it would truncate on `//` in a string.
-///
-/// Red-team string-literal evasion (test-fan F1): without this pass, a broken
-/// impl can embed a needle inside a `let _ = "...needle...";` string literal
-/// and fool all T2 scan assertions.
-fn strip_rust_strings(src: &str) -> String {
-    let bytes = src.as_bytes();
-    let len = bytes.len();
-    let mut out = Vec::with_capacity(len);
-    let mut i = 0;
-
-    while i < len {
-        // Raw string: r"..." or r#"..."# (up to 6 hashes).
-        if bytes[i] == b'r' {
-            // Count opening hashes.
-            let mut hashes: usize = 0;
-            let mut j = i + 1;
-            while j < len && bytes[j] == b'#' && hashes < 6 {
-                hashes += 1;
-                j += 1;
-            }
-            if j < len && bytes[j] == b'"' {
-                // This IS a raw string literal.
-                // Blank the `r`, hashes, and opening `"`.
-                out.push(b' '); // r
-                out.resize(out.len() + hashes, b' '); // opening # hashes
-                out.push(b' '); // opening "
-                j += 1;
-                // Build the closing delimiter: `"` followed by `hashes` `#`s.
-                // Scan until we find it.
-                loop {
-                    if j >= len {
-                        break;
-                    }
-                    if bytes[j] == b'"' {
-                        // Check for the required number of closing hashes.
-                        let mut k = j + 1;
-                        let mut closing_hashes: usize = 0;
-                        while k < len && bytes[k] == b'#' && closing_hashes < hashes {
-                            closing_hashes += 1;
-                            k += 1;
-                        }
-                        if closing_hashes == hashes {
-                            // Found the end: blank the `"` and hashes.
-                            out.push(b' '); // closing "
-                            out.resize(out.len() + hashes, b' '); // closing # hashes
-                            j = k;
-                            break;
-                        }
-                    }
-                    out.push(b' ');
-                    j += 1;
-                }
-                i = j;
-                continue;
-            }
-            // Not a raw string — fall through to emit `r` normally.
-        }
-
-        // Normal double-quoted string literal.
-        if bytes[i] == b'"' {
-            out.push(b' '); // opening "
-            i += 1;
-            loop {
-                if i >= len {
-                    break;
-                }
-                if bytes[i] == b'\\' && i + 1 < len {
-                    // Escape sequence: blank both bytes.
-                    out.push(b' ');
-                    out.push(b' ');
-                    i += 2;
-                } else if bytes[i] == b'"' {
-                    out.push(b' '); // closing "
-                    i += 1;
-                    break;
-                } else {
-                    out.push(b' ');
-                    i += 1;
-                }
-            }
-            continue;
-        }
-
-        out.push(bytes[i]);
-        i += 1;
-    }
-
-    // SAFETY: we only copy original UTF-8 bytes or ASCII spaces (0x20); the
-    // result is valid UTF-8.
-    String::from_utf8(out).expect("string-stripped source must be valid UTF-8")
-}
-
-/// Strip Rust block comments (`/* ... */`) and line comments (`// ...`) from
-/// `src`. Returns a new String with those regions replaced by spaces.
-///
-/// Run AFTER `strip_rust_strings` so that `/*` or `//` inside a string literal
-/// does not confuse this pass (string content is already blanked).
-///
-/// Corner-cases: nested block comments unsupported; char literals not handled
-/// (ranking.rs contains none).
-fn strip_rust_comments(src: &str) -> String {
-    let bytes = src.as_bytes();
-    let len = bytes.len();
-    let mut out = vec![b' '; len];
-    let mut i = 0;
-    while i < len {
-        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-            i += 2;
-            while i + 1 < len {
-                if bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                    i += 2;
-                    break;
-                }
-                i += 1;
-            }
-        } else if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
-            while i < len && bytes[i] != b'\n' {
-                i += 1;
-            }
-        } else {
-            out[i] = bytes[i];
-            i += 1;
-        }
-    }
-    String::from_utf8(out).expect("stripped source must be valid UTF-8")
-}
-
-/// Remove ALL whitespace characters from `src` (space, tab, newline, CR, etc).
-///
-/// The third stage of the scan pipeline; makes needle matching rustfmt-proof.
-/// (red-team F1 mitigation, ADR-0125.)
-fn squash_ws(src: &str) -> String {
-    src.chars().filter(|c| !c.is_whitespace()).collect()
-}
-
-/// Full three-stage scan pipeline: strip strings → strip comments → squash_ws.
-///
-/// ALL T2 source-scan tests must use this helper, never a partial pipeline.
-/// The string-stripping stage closes the string-literal evasion gate-hole
-/// (red-team test-fan F1): without it, a broken impl can embed a needle inside
-/// `let _ = "...needle...";` and fool all needle assertions.
-///
-/// Pipeline order:
-///   1. `strip_rust_strings` — blanks `"..."`, `r"..."`, `r#"..."#` content.
-///   2. `strip_rust_comments` — blanks `// ...` and `/* ... */` regions.
-///      (Run after string stripping so `//` inside a string literal is already
-///      blanked before the comment pass walks it.)
-///   3. `squash_ws` — removes all whitespace for rustfmt-proof needle matching.
-fn stripped_for_scan(src: &str) -> String {
-    squash_ws(&strip_rust_comments(&strip_rust_strings(src)))
-}
-
-// Source for T2 scans (m17a/ADR-0119 introduced ranking.rs; ADR-0125 extended it).
-// The T2 tests read the current file; they are red when impl needles are absent
-// and green once the implementer wires the helpers correctly.
-const RANKING_RS: &str = include_str!("ranking.rs");
-
-// ---------------------------------------------------------------------------
-// T1 — Executed pure-core tests (start RED as compile-fail)
+// T1 — Executed pure-core tests of refresh_profile_name.
 //
-// `super::refresh_profile_name` is declared here but does not yet exist in
-// ranking.rs → compile error is the expected red state.
 // Profile has no PartialEq derive (spacetimedb::table does not add it), so
 // assertions compare individual fields rather than whole-struct equality.
 // Profile DOES get Clone from the spacetimedb::table macro (the production
@@ -457,1043 +252,6 @@ fn d2_rename_then_rated_surfaces_new_name_loser_side() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// T2 — Source-scan tests (start RED by needle-absence, except regression pins)
-// ---------------------------------------------------------------------------
-
-/// EARS 17.5d-1: The `Some` arm of `get_or_init_profile` must compose the
-/// refresh call: `Some(existing) => refresh_profile_name(existing, live_player_name(ctx, identity))`.
-///
-/// Needle is whitespace-free (squash_ws) and assembled via concat!() split
-/// mid-token so ranking_tests.rs cannot self-match when ranking.rs is scanned.
-///
-/// Kills:
-///   - refresh call deleted from Some arm (arm returns bare `existing`)
-///   - result of refresh discarded (refresh called but return value dropped)
-///   - literal `None` passed as second arg instead of the helper call
-///
-/// Starts RED: needle absent in current ranking.rs (Some arm returns bare `existing`).
-#[test]
-fn d1_scan_some_arm_composes_refresh() {
-    let squashed = stripped_for_scan(RANKING_RS);
-
-    // Needle: Some(existing)=>refresh_profile_name(existing,live_player_name(ctx,identity))
-    // Split at "refresh_pro" to prevent self-match when this file is accidentally scanned.
-    let needle = concat!(
-        "Some(existing)=>",
-        "refresh_pro",
-        "file_name(existing,live_player_name(ctx,identity))"
-    );
-
-    assert!(
-        squashed.contains(needle),
-        "17.5d-1 FAIL (d1_scan_some_arm_composes_refresh): ranking.rs Some arm must \
-         compose refresh_profile_name(existing, live_player_name(ctx, identity)). \
-         Needle (whitespace-free): {:?}. \
-         Current Some arm returns bare `existing` — the passive-mirror wiring is missing \
-         (ADR-0125 D1).",
-        needle
-    );
-}
-
-/// EARS 17.5d-1: `live_player_name` must be a private fn with the exact inline-chained
-/// body `ctx.db.player().identity().find(identity).map(|p| p.name)`.
-///
-/// The whole-fn needle pins: (a) the function signature shape, and (b) the
-/// `.map(|p| p.name)` chained form — forbidding the dangerous `.unwrap()` form
-/// (red-team F3) and split-binding inside the helper (red-team F6).
-///
-/// Kills:
-///   - `live_player_name` uses `.unwrap()` (panics on disconnect race)
-///   - helper body uses a split-binding (`let p = ctx.db.player()...`)
-///   - function is missing entirely
-///
-/// Starts RED: fn absent in current ranking.rs.
-#[test]
-fn d1_scan_live_player_name_is_inline_chained_map() {
-    let squashed = stripped_for_scan(RANKING_RS);
-
-    // Whole-fn needle (whitespace-free).
-    // Split "fnlive_player" across two fragments to avoid self-match.
-    // Split "ctx.db.player()" as "ctx.db." + "player()" — same protection
-    // (the never-deleted repo scan excludes ranking.rs, but defensive practice).
-    let needle = concat!(
-        "fnlive_player",
-        "_name(ctx:&ReducerContext,identity:Identity)->Option<String>{",
-        "ctx.db.",
-        "player().identity().find(identity).map(|p|p.name)}"
-    );
-
-    assert!(
-        squashed.contains(needle),
-        "17.5d-1 FAIL (d1_scan_live_player_name_is_inline_chained_map): ranking.rs must \
-         contain a private fn live_player_name with the exact inline-chained body \
-         ctx.db.player().identity().find(identity).map(|p| p.name). \
-         Needle (whitespace-free): {:?}. \
-         An .unwrap() form panics on disconnect race; a split-binding is forbidden by \
-         ADR-0125 D3 / ADR-0119 RL-2 style convention.",
-        needle
-    );
-}
-
-/// EARS 17.5d-1: `live_player_name(ctx, identity)` must be called exactly TWICE —
-/// once in the `Some` arm and once in the `None` arm of `get_or_init_profile`.
-///
-/// The call-site needle matches only call shapes, not the function definition.
-/// Assumption: the fn definition's squashed param list is
-/// `(ctx:&ReducerContext,identity:Identity)` — the needle requires `(ctx,identity)`
-/// (bare identifiers, no types), so the definition cannot match. Count == 2 pins
-/// exactly the two call sites in get_or_init_profile (Some arm + None arm).
-///
-/// Kills:
-///   - None arm drifts back to an inline lookup, diverging from the helper (F5)
-///   - helper call removed from one arm
-///
-/// Starts RED: fn absent → count is 0.
-#[test]
-fn d1_scan_helper_used_by_both_arms() {
-    let squashed = stripped_for_scan(RANKING_RS);
-
-    // Call-site needle. Split at "live_player" to avoid self-match.
-    let call_needle = concat!("live_player", "_name(ctx,identity)");
-
-    let count = squashed.matches(call_needle).count();
-    assert_eq!(
-        count, 2,
-        "17.5d-1 FAIL (d1_scan_helper_used_by_both_arms): \
-         live_player_name(ctx, identity) must be called exactly 2 times in ranking.rs \
-         (Some arm + None arm of get_or_init_profile). Found {} call(s). \
-         Needle (whitespace-free): {:?}. \
-         If only 1 call, the None arm has drifted back to an inline lookup (ADR-0125 D3 F5).",
-        count, call_needle
-    );
-}
-
-/// EARS 17.5d-1: The `Some` arm of `get_or_init_profile` must NOT add an extra DB write.
-///
-/// Sub-assertions (all whitespace-free):
-///   (a) PER-FUNCTION profile().identity().update( counts (RE-SCOPED for M21a):
-///       apply_pvp_rating == 2, get_or_init_profile == 0, rekey_profile == 2, and a
-///       whole-file backstop == 4. M21a's rekey_profile added two profile writers, so
-///       the historical whole-file ==2 pin would false-fail; bumping it 2->4 would
-///       delete the tooth (a writer could be moved into get_or_init's Some arm and the
-///       count would stay 4). The per-fn pins keep the eager-write tooth for
-///       get_or_init while accounting for rekey_profile's legitimate two writes.
-///   (b) `=ctx.db.profile()` absent — split-binding evasion of the never-deleted scan.
-///       rekey_profile reads the guest via `match ctx.db.profile()`, so this stays GREEN
-///       (the `match` keyword breaks the `=ctx.db.profile()` needle).
-///   (c) `=ctx.db.player()` absent — forces all player-table reads in ranking.rs through
-///       the `live_player_name` helper (ADR-0125 D3).
-///
-/// Kills:
-///   - eager DB write added in get_or_init_profile's Some arm (its per-fn count becomes 1)
-///   - either rekey_profile write dropped (copy-forward OR the mandatory zero — count 1)
-///   - a 5th profile writer added anywhere (whole-file backstop fires)
-///   - split-binding `= ctx.db.profile()` / `= ctx.db.player()` added anywhere
-#[test]
-fn d1_scan_no_eager_write_in_get_or_init() {
-    let squashed = stripped_for_scan(RANKING_RS);
-
-    // (a) PER-FUNCTION profile-update-count pins (RE-SCOPED for M21a / AUTH-25).
-    //
-    // M21a's ranking::rekey_profile adds two MORE profile().identity().update(
-    // calls (copy-forward + tombstone), so the historical whole-file ==2 pin now
-    // sees 4. Bumping the whole-file pin 2->4 would DELETE the tooth (any of the
-    // four writers could then be moved into get_or_init_profile's Some arm and the
-    // count would still be 4). Instead, pin each writer's body exactly, plus a
-    // whole-file backstop == 4 ("no fifth writer"). extract_squashed_fn_body is
-    // defined below in this file (pt-c1 section) and works on squashed source.
-    let update_needle = concat!("profile().identity()", ".update(");
-
-    // apply_pvp_rating writes the winner + loser rows: exactly 2.
-    let apply_body = extract_squashed_fn_body(&squashed, concat!("fnapply_pvp", "_rating("))
-        .expect("d1_scan (update-count): fn apply_pvp_rating not found in ranking.rs");
-    let apply_updates = apply_body.matches(update_needle).count();
-    assert_eq!(
-        apply_updates, 2,
-        "17.5d-1 FAIL (d1_scan_no_eager_write_in_get_or_init / apply_pvp_rating pin): \
-         apply_pvp_rating must contain exactly 2 profile().identity().update( calls \
-         (winner + loser). Found {}. If 1, one rating spread was deleted; if 3+, an \
-         eager write crept in.",
-        apply_updates
-    );
-
-    // get_or_init_profile is a READ/seed seam: it must add NO eager update (the
-    // refresh is in-memory only; persistence rides apply_pvp_rating's spreads).
-    let get_body = extract_squashed_fn_body(&squashed, concat!("fnget_or_init", "_profile("))
-        .expect("d1_scan (update-count): fn get_or_init_profile not found in ranking.rs");
-    let get_updates = get_body.matches(update_needle).count();
-    assert_eq!(
-        get_updates, 0,
-        "17.5d-1 FAIL (d1_scan_no_eager_write_in_get_or_init / get_or_init_profile pin): \
-         get_or_init_profile must contain ZERO profile().identity().update( calls — the \
-         Some-arm refresh is in-memory only (ADR-0125 D1). Found {}.",
-        get_updates
-    );
-
-    // rekey_profile (M21a, AUTH-25) writes exactly 2: the destination copy-forward
-    // and the guest-row tombstone-in-place. Never a delete (a separate scan).
-    let rekey_body = extract_squashed_fn_body(&squashed, concat!("fnrekey", "_profile("))
-        .expect("d1_scan (update-count): fn rekey_profile not found in ranking.rs");
-    let rekey_updates = rekey_body.matches(update_needle).count();
-    assert_eq!(
-        rekey_updates, 2,
-        "AUTH-25 FAIL (d1_scan_no_eager_write_in_get_or_init / rekey_profile pin): \
-         rekey_profile must contain exactly 2 profile().identity().update( calls (copy \
-         stats forward onto the destination, THEN zero+tombstone the guest row in place). \
-         Found {}. If 1, either the copy-forward or the mandatory zero step was dropped.",
-        rekey_updates
-    );
-
-    // anonymize_display_names (m22-s3b, PRV1-6c) writes exactly 1: the profile
-    // row's name is overwritten with game_core::TOMBSTONE_DISPLAY_NAME, in place.
-    // Pinned per-fn for the same reason the three pins above are: the whole-file
-    // backstop below widens 4 -> 5 to admit it, and a bare bumped number would
-    // let ANY of the five writers move into get_or_init_profile's Some arm while
-    // the total stayed correct.
-    let anon_body = extract_squashed_fn_body(&squashed, concat!("fnanonymize_display", "_names("))
-        .expect(
-            "d1_scan (update-count): fn anonymize_display_names not found in ranking.rs. \
-             m22-s3b delegates the `player`/`profile` ANONYMIZE step to this module (the one \
-             that already owns the display-name write path), so without it PRV1-6c never \
-             runs and the deleted player's name stays on the public leaderboard.",
-        );
-    let anon_updates = anon_body.matches(update_needle).count();
-    assert_eq!(
-        anon_updates, 1,
-        "PRV1-6c FAIL (d1_scan_no_eager_write_in_get_or_init / anonymize_display_names pin): \
-         anonymize_display_names must contain exactly 1 profile().identity().update( call — \
-         the in-place name tombstone. Found {}. ZERO means the profile row keeps the deleted \
-         player's display name on a PUBLIC, world-readable leaderboard forever; 2+ is a \
-         second, unreviewed profile write in the one flow that cannot be undone.",
-        anon_updates
-    );
-
-    // Whole-file backstop: exactly 5 (apply_pvp_rating 2 + rekey_profile 2 +
-    // anonymize_display_names 1). Catches a SIXTH writer added anywhere (e.g. an
-    // eager write reachable through a helper the per-fn body scans would not
-    // textually contain). RE-DERIVED 4 -> 5 by m22-s3b (ADR-0228 D7(g)) and paid
-    // for by the per-fn pin immediately above: the four pins together account for
-    // every one of the five, so the total is a closed sum rather than a ceiling.
-    let total_updates = squashed.matches(update_needle).count();
-    assert_eq!(
-        total_updates, 5,
-        "17.5d-1/AUTH-25/PRV1-6c FAIL (d1_scan_no_eager_write_in_get_or_init / whole-file \
-         backstop): ranking.rs must contain exactly 5 profile().identity().update( calls \
-         total (apply_pvp_rating's 2 + rekey_profile's 2 + anonymize_display_names' 1). \
-         Found {}. A 6th is an unaccounted profile writer. Note the four per-fn pins above \
-         account for all five, so this clause is a CLOSED SUM: a writer that moved between \
-         those functions reds there, and one that appeared outside them reds here.",
-        total_updates
-    );
-
-    // (b) No split-binding for profile table accessor.
-    // Needle split: "=ctx.db." + "profile()" — same defensive split as pvp_tests.rs RL-2.
-    let profile_binding_needle = concat!("=ctx.db.", "profile()");
-    assert!(
-        !squashed.contains(profile_binding_needle),
-        "17.5d-1 FAIL (d1_scan_no_eager_write_in_get_or_init / profile-binding): \
-         ranking.rs must NOT contain {:?} (whitespace-free). \
-         Assigning the profile table accessor to a binding is the documented evasion \
-         of the never-deleted safety convention (ADR-0119 D3 / RL-2 style). \
-         Use inline chained access throughout.",
-        profile_binding_needle
-    );
-
-    // (c) No split-binding for player table accessor in ranking.rs.
-    // Needle split: "=ctx.db." + "player()" — prevents self-match and catches the
-    // split-binding anti-pattern in new code (reviewer W-2, red-team F6).
-    let player_binding_needle = concat!("=ctx.db.", "player()");
-    assert!(
-        !squashed.contains(player_binding_needle),
-        "17.5d-1 FAIL (d1_scan_no_eager_write_in_get_or_init / player-binding): \
-         ranking.rs must NOT contain {:?} (whitespace-free). \
-         New code in ranking.rs must use the inline-chained helper live_player_name \
-         rather than a split-binding for the player table (ADR-0125 D3 / reviewer W-2).",
-        player_binding_needle
-    );
-}
-
-/// EARS 17.5d-2: `apply_pvp_rating` must load BOTH winner and loser through
-/// `get_or_init_profile` — this pins the symmetric path through the refresh seam.
-///
-/// Needles: `get_or_init_profile(ctx,winner_id)` AND `get_or_init_profile(ctx,loser_id)`.
-///
-/// REGRESSION PIN — starts GREEN (these calls already exist in current ranking.rs).
-/// Documented as green-at-birth by design: the test ensures the implementer cannot
-/// accidentally remove either call while wiring the refresh.
-///
-/// Kills:
-///   - loser loaded via raw `ctx.db.profile().identity().find(loser_id)`,
-///     skipping the refresh seam (red-team F2)
-///   - either arm removed from apply_pvp_rating
-#[test]
-fn d1_scan_apply_rating_refreshes_both_roles() {
-    let squashed = stripped_for_scan(RANKING_RS);
-
-    // Winner needle — split at "get_or_init" to prevent self-match.
-    let winner_needle = concat!("get_or_init", "_profile(ctx,winner_id)");
-    assert!(
-        squashed.contains(winner_needle),
-        "17.5d-2 FAIL (d1_scan_apply_rating_refreshes_both_roles / winner): \
-         apply_pvp_rating must call get_or_init_profile(ctx, winner_id) so the winner's \
-         profile is loaded through the refresh seam (ADR-0125 D1). \
-         Needle (whitespace-free): {:?}.",
-        winner_needle
-    );
-
-    // Loser needle.
-    let loser_needle = concat!("get_or_init", "_profile(ctx,loser_id)");
-    assert!(
-        squashed.contains(loser_needle),
-        "17.5d-2 FAIL (d1_scan_apply_rating_refreshes_both_roles / loser): \
-         apply_pvp_rating must call get_or_init_profile(ctx, loser_id) so the loser's \
-         profile is loaded through the refresh seam (ADR-0125 D1, red-team F2). \
-         Needle (whitespace-free): {:?}.",
-        loser_needle
-    );
-}
-
-/// Module-hardening regression pins closing 3 cargo-mutants survivors in
-/// apply_pvp_rating (nightly mutate-server baseline, pre-existing; closed by
-/// this slice's scan coverage of ranking.rs).
-///
-/// EARS 17.5d-adjacent — GREEN at birth by design (all three needles present
-/// in current ranking.rs). Kills:
-///   - `delete ! in apply_pvp_rating` (ranking.rs:88): removing the `!` from
-///     `if !crate::guards::is_ranked_pvp(battle)` would rate everything that is
-///     NOT ranked PvP and skip everything that IS — needle 1 catches this.
-///   - `delete field rating from winner update spread` (ranking.rs:109): removing
-///     `rating: new_winner_rating` from the winner Profile spread would leave the
-///     winner's rating unchanged (stale via `..winner`) — needle 2 catches this.
-///   - `delete field rating from loser update spread` (ranking.rs:114): same
-///     for the loser — needle 3 catches this.
-#[test]
-fn d1_scan_rated_write_survivor_pins() {
-    let squashed = stripped_for_scan(RANKING_RS);
-
-    // Needle 1: `if !crate::guards::is_ranked_pvp(battle) { return; }`.
-    // Split at "is_ranked" + "_pvp" to prevent self-match.
-    // The `!` is load-bearing: its deletion is the mutant we kill.
-    let guard_needle = concat!("if!crate::guards::", "is_ranked", "_pvp(battle){return;}");
-    assert!(
-        squashed.contains(guard_needle),
-        "17.5d-adjacent FAIL (d1_scan_rated_write_survivor_pins / guard): \
-         apply_pvp_rating must contain {:?} (whitespace-free). \
-         The `!` is required: without it, the guard logic inverts and the function \
-         rates everything that is NOT ranked PvP (nightly mutant survivor, ranking.rs:88).",
-        guard_needle
-    );
-
-    // Needle 2: `rating: new_winner_rating` in the winner update spread.
-    // Split at "rating:new_" + "winner_rating" to prevent self-match.
-    let winner_rating_needle = concat!("rating:new_", "winner_rating");
-    assert!(
-        squashed.contains(winner_rating_needle),
-        "17.5d-adjacent FAIL (d1_scan_rated_write_survivor_pins / winner-rating): \
-         apply_pvp_rating's winner spread must contain {:?} (whitespace-free). \
-         Without this explicit field, `..winner` would propagate the stale pre-compute \
-         rating, silently leaving the winner's rating unchanged \
-         (nightly mutant survivor, ranking.rs:109).",
-        winner_rating_needle
-    );
-
-    // Needle 3: `rating: new_loser_rating` in the loser update spread.
-    // Split at "rating:new_" + "loser_rating" to prevent self-match.
-    let loser_rating_needle = concat!("rating:new_", "loser_rating");
-    assert!(
-        squashed.contains(loser_rating_needle),
-        "17.5d-adjacent FAIL (d1_scan_rated_write_survivor_pins / loser-rating): \
-         apply_pvp_rating's loser spread must contain {:?} (whitespace-free). \
-         Without this explicit field, `..loser` would propagate the stale pre-compute \
-         rating, silently leaving the loser's rating unchanged \
-         (nightly mutant survivor, ranking.rs:114).",
-        loser_rating_needle
-    );
-}
-
-/// Machinery self-teeth test: proves that `stripped_for_scan` (strip strings →
-/// strip comments → squash_ws) + needle correctly:
-///   1. Flags a BAD fixture (Some arm returning bare `existing`).
-///   2. Accepts a GOOD fixture (Some arm with the composed refresh call).
-///   3. Rejects an EVASION fixture (Some arm returning bare `existing` PLUS a
-///      string literal containing the exact needle text) — closes the
-///      string-literal evasion gate-hole (red-team test-fan F1).
-///
-/// Also verifies that the helper-count needle finds ZERO occurrences of
-/// `live_player_name(ctx,identity)` in the evasion fixture (the call-site text
-/// appears only inside the string literal and must be blanked by string stripping).
-///
-/// If this test fails, the scan machinery itself is broken and the T2 tests above
-/// cannot be trusted regardless of their assertion results.
-#[test]
-fn scan_machinery_teeth() {
-    // The primary needle (same as d1_scan_some_arm_composes_refresh).
-    // concat! split to prevent self-match when ranking_tests.rs is scanned.
-    let needle = concat!(
-        "Some(existing)=>",
-        "refresh_pro",
-        "file_name(existing,live_player_name(ctx,identity))"
-    );
-
-    // Helper-count needle (same as d1_scan_helper_used_by_both_arms).
-    let call_needle = concat!("live_player", "_name(ctx,identity)");
-
-    // -------------------------------------------------------------------------
-    // Fixture 1 — BAD: Some arm returns bare `existing`. Must NOT match needle.
-    // The None arm deliberately preserves the pre-impl historical shape (old
-    // inline player lookup) to exercise the machinery, not the current code.
-    // -------------------------------------------------------------------------
-    let bad_fixture = "
-        pub(crate) fn get_or_init_profile(ctx: &ReducerContext, identity: Identity) -> Profile {
-            match ctx.db.profile().identity().find(identity) {
-                Some(existing) => existing,
-                None => {
-                    let name = ctx.db.player().identity().find(identity)
-                        .map(|p| p.name)
-                        .unwrap_or_default();
-                    ctx.db.profile().insert(Profile {
-                        identity,
-                        name,
-                        rating: game_core::INITIAL_RATING,
-                        wins: 0,
-                        losses: 0,
-                    })
-                }
-            }
-        }
-    ";
-
-    let bad_squashed = stripped_for_scan(bad_fixture);
-    assert!(
-        !bad_squashed.contains(needle),
-        "scan_machinery_teeth FAIL (BAD fixture): bare `existing` incorrectly matched \
-         the composed-refresh needle {:?}. The scan machinery is broken — \
-         it cannot distinguish a missing refresh from a correct one.",
-        needle
-    );
-
-    // -------------------------------------------------------------------------
-    // Fixture 2 — GOOD: Some arm composes the refresh call. Must match needle.
-    // No string literals — pipeline result must contain the needle.
-    // -------------------------------------------------------------------------
-    let good_fixture = "
-        pub(crate) fn get_or_init_profile(ctx: &ReducerContext, identity: Identity) -> Profile {
-            match ctx.db.profile().identity().find(identity) {
-                Some(existing) => refresh_profile_name(existing, live_player_name(ctx, identity)),
-                None => {
-                    let name = live_player_name(ctx, identity).unwrap_or_default();
-                    ctx.db.profile().insert(Profile {
-                        identity,
-                        name,
-                        rating: game_core::INITIAL_RATING,
-                        wins: 0,
-                        losses: 0,
-                    })
-                }
-            }
-        }
-    ";
-
-    let good_squashed = stripped_for_scan(good_fixture);
-    assert!(
-        good_squashed.contains(needle),
-        "scan_machinery_teeth FAIL (GOOD fixture): composed refresh call did NOT match \
-         needle {:?}. The scan machinery is broken — stripped_for_scan+needle \
-         fails to detect a correct implementation.",
-        needle
-    );
-
-    // -------------------------------------------------------------------------
-    // Fixture 3 — EVASION (red-team test-fan F1): BAD Some arm + string literals
-    // containing the needle and call-site text. strip_rust_strings must blank them
-    // so the needle does NOT match and the call-site count stays 0 (no inflation).
-    // Literal contents built at runtime via concat! to preserve self-match protection.
-    // -------------------------------------------------------------------------
-    let evasion_literal_content = concat!(
-        "Some(existing)=>",
-        "refresh_pro",
-        "file_name(existing,live_player_name(ctx,identity))"
-    );
-    let evasion_call_content = concat!("live_player", "_name(ctx,identity)");
-
-    let evasion_fixture = format!(
-        "
-        pub(crate) fn get_or_init_profile(ctx: &ReducerContext, identity: Identity) -> Profile {{
-            // Evasion attempt: embed needle in a dead string literal.
-            let _ = \"{}\";
-            let _ = \"{}\";
-            match ctx.db.profile().identity().find(identity) {{
-                Some(existing) => existing,
-                None => {{
-                    let name = ctx.db.player().identity().find(identity)
-                        .map(|p| p.name)
-                        .unwrap_or_default();
-                    ctx.db.profile().insert(Profile {{
-                        identity,
-                        name,
-                        rating: game_core::INITIAL_RATING,
-                        wins: 0,
-                        losses: 0,
-                    }})
-                }}
-            }}
-        }}
-        ",
-        evasion_literal_content, evasion_call_content,
-    );
-
-    let evasion_squashed = stripped_for_scan(&evasion_fixture);
-
-    // Primary needle must NOT match after string-literal stripping.
-    assert!(
-        !evasion_squashed.contains(needle),
-        "scan_machinery_teeth FAIL (EVASION fixture): the string-literal evasion was \
-         NOT caught — needle {:?} matched after stripped_for_scan even though the \
-         needle text appeared only inside a string literal. \
-         The strip_rust_strings stage is not working (red-team test-fan F1).",
-        needle
-    );
-
-    // Count-inflation: helper call inside the string literal must NOT be counted.
-    let evasion_call_count = evasion_squashed.matches(call_needle).count();
-    assert_eq!(
-        evasion_call_count, 0,
-        "scan_machinery_teeth FAIL (EVASION fixture / count-inflation): \
-         found {} occurrence(s) of {:?} in the evasion fixture after stripping, \
-         expected 0. The call-site text appeared only inside string literals; \
-         string stripping must blank it so the count is not inflated \
-         (red-team test-fan F1, d1_scan_helper_used_by_both_arms).",
-        evasion_call_count, call_needle
-    );
-}
-
-// ===========================================================================
-// pt-c1 — EARS pt-c1-1/-2/-3/-4/-5/-6: set_profile_name reducer (ADR-0132)
-//
-// The server-side rename write path. `set_profile_name` is the FIRST (and only)
-// #[spacetimedb::reducer] in ranking.rs; it validates via guards::validate_name
-// and writes ONLY player.name — the ADR-0125 passive mirror surfaces the rename
-// on the leaderboard at the next rated game (Option a, no direct profile write).
-//
-// These are source-scan tests over RANKING_RS (ReducerContext is not
-// unit-constructible for this module — the established honest proof, ADR-0125).
-// They start RED (needle-absence) until the specialist implements the reducer,
-// and are BODY-BOUNDED so the legitimate profile access in apply_pvp_rating /
-// get_or_init_profile does NOT satisfy (or falsely trip) the reducer's scans.
-//
-// Coverage map:
-//   pt-c1-1 (sets player.name on valid input)   → ptc1_scan_body_validates_and_writes_player_name
-//   pt-c1-2 (rejects invalid name, no write)    → ptc1_scan_body_validates_and_writes_player_name
-//   pt-c1-3 (rejects "not joined", no write)    → ptc1_scan_body_rejects_when_not_joined
-//   pt-c1-4 (name surfaces via ADR-0125 mirror) → ptc1_scan_body_is_profile_untouching (indirect)
-//                                                  + pre-existing d2_rename_then_rated_* executed pins
-//   pt-c1-5 (profile-untouching)                → ptc1_scan_body_is_profile_untouching
-//                                                  + ptc1_scan_profile_insert_count_is_one
-//   pt-c1-6 (exactly one reducer, named)        → ptc1_scan_set_profile_name_fn_present
-//                                                  + m17a_rl7_server_ranking_module_invariants (pvp_tests.rs)
-// ===========================================================================
-
-/// Extract the brace-bounded body of a fn from ALREADY-squashed source (the
-/// output of `stripped_for_scan`). Whitespace is gone but braces survive, so a
-/// depth counter over `{`/`}` isolates the exact function body. Mirrors the
-/// intent of pvp_tests.rs::extract_pvp_fn_body but operates on squashed text.
-///
-/// `fn_needle` is the squashed signature prefix, e.g. `fnset_profile_name(`
-/// (a `pub fn` squashes to `pubfn...` which still contains `fnset_profile...`).
-/// Returns the body slice between the outermost `{ }` after the signature, or
-/// `None` if the fn or a balanced body is not found.
-fn extract_squashed_fn_body<'a>(squashed: &'a str, fn_needle: &str) -> Option<&'a str> {
-    let fn_start = squashed.find(fn_needle)?;
-    let after = &squashed[fn_start..];
-    let brace_rel = after.find('{')?;
-    let body_start = fn_start + brace_rel + 1;
-    let bytes = squashed.as_bytes();
-    let mut depth: usize = 1;
-    let mut i = body_start;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(&squashed[body_start..i]);
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    None
-}
-
-/// pt-c1-6: ranking.rs must declare the `set_profile_name` reducer fn.
-///
-/// Needle split at "set_profile" via concat! so ranking_tests.rs cannot
-/// self-match if it is ever scanned by the never-deleted repo scan.
-///
-/// Starts RED: the reducer does not yet exist in ranking.rs.
-///
-/// Kills:
-///   - the reducer is absent (rename write path never shipped — H2 gap)
-///   - the reducer is named something else (F4-adjacent at the source level)
-#[test]
-fn ptc1_scan_set_profile_name_fn_present() {
-    let squashed = stripped_for_scan(RANKING_RS);
-    let fn_needle = concat!("fnset_profile", "_name(");
-    assert!(
-        squashed.contains(fn_needle),
-        "pt-c1-6 FAIL (ptc1_scan_set_profile_name_fn_present): ranking.rs must contain \
-         `{}` (whitespace-free) — the single client-callable rename reducer (ADR-0132 D1). \
-         RED pre-impl: the reducer does not yet exist.",
-        fn_needle
-    );
-}
-
-/// pt-c1-1 / pt-c1-2: the `set_profile_name` body must COMPOSE the validated
-/// write of the display name — it contains `validate_name(` (reject-not-clamp
-/// canonicalization) AND `player().identity().update(` (the player.name write).
-///
-/// Body-bounded via `extract_squashed_fn_body` so apply_pvp_rating's own
-/// `player`/`profile` accesses cannot satisfy these needles for the reducer.
-///
-/// Starts RED: fn absent → extract returns None → the unwrap panics with the
-/// documented RED message.
-///
-/// Kills:
-///   - reducer writes player.name WITHOUT validating (validate_name dropped →
-///     pt-c1-2 charset/length/bidi guard bypassed)
-///   - reducer validates but never writes the row (player().identity().update
-///     missing → pt-c1-1 no-op rename)
-#[test]
-fn ptc1_scan_body_validates_and_writes_player_name() {
-    let squashed = stripped_for_scan(RANKING_RS);
-    let fn_needle = concat!("fnset_profile", "_name(");
-    let body = extract_squashed_fn_body(&squashed, fn_needle).unwrap_or_else(|| {
-        panic!(
-            "pt-c1-1/-2 (ptc1_scan_body_validates_and_writes_player_name): \
-             `set_profile_name` fn not found in ranking.rs — RED pre-impl; the reducer \
-             must exist for the body-composition scan to be meaningful (ADR-0132 D1)."
-        )
-    });
-
-    // (a) validates the name (reject-not-clamp; canonical trimmed/NFC form).
-    let validate_needle = concat!("validate", "_name(");
-    assert!(
-        body.contains(validate_needle),
-        "pt-c1-2 FAIL (ptc1_scan_body_validates_and_writes_player_name / validate): \
-         the `set_profile_name` body must call `{}` — the name must be validated with the \
-         same SSOT rules as join_game (reject-not-clamp: empty / > MAX_NAME_LEN / \
-         non-alphanumeric-non-space incl. bidi/zero-width). Body (whitespace-free): {:?}",
-        validate_needle,
-        body
-    );
-
-    // (b) writes player.name back via the player table update.
-    let write_needle = concat!("player().identity()", ".update(");
-    assert!(
-        body.contains(write_needle),
-        "pt-c1-1 FAIL (ptc1_scan_body_validates_and_writes_player_name / write): \
-         the `set_profile_name` body must call `{}` — the reducer sets player.name to the \
-         canonical validated name and writes the row back (ADR-0132 D1). Without this the \
-         rename is a no-op. Body (whitespace-free): {:?}",
-        write_needle,
-        body
-    );
-}
-
-/// pt-c1-5: the `set_profile_name` body is PROFILE-UNTOUCHING — it reads/writes
-/// no `profile` table row (no leaderboard-row create, no rating/W/L mutation).
-/// The rename surfaces via the ADR-0125 passive mirror on the next rated game,
-/// NOT a direct profile write here.
-///
-/// Body-bounded (extract_squashed_fn_body): apply_pvp_rating and
-/// get_or_init_profile legitimately touch profile, so this MUST scan only the
-/// reducer body — a whole-file scan would be permanently red and is unsound.
-///
-/// This is an ALLOWLIST property (the reducer touches nothing profile), not a
-/// `rating:`/`wins:` blocklist which a mutable-binding/helper-indirection write
-/// evades (red-team F1/F2). The get_or_init_profile / profile().insert bans
-/// close the rating-1000 leaderboard-injection hole (red-team F3).
-///
-/// Starts RED: fn absent → extract returns None → unwrap panics (RED message).
-///
-/// Kills:
-///   - reducer adds an eager profile().identity().update( (F1/F2 — would also
-///     break the whole-file ==2 update pin, but this is the direct body tooth)
-///   - reducer calls get_or_init_profile( / profile().insert( (F3 injection)
-///   - reducer binds `= ctx.db.profile()` (split-binding evasion)
-///   - reducer calls refresh_profile_name( (would imply a profile round-trip)
-#[test]
-fn ptc1_scan_body_is_profile_untouching() {
-    let squashed = stripped_for_scan(RANKING_RS);
-    let fn_needle = concat!("fnset_profile", "_name(");
-    let body = extract_squashed_fn_body(&squashed, fn_needle).unwrap_or_else(|| {
-        panic!(
-            "pt-c1-5 (ptc1_scan_body_is_profile_untouching): `set_profile_name` fn not \
-             found in ranking.rs — RED pre-impl; the reducer must exist for the \
-             profile-untouching body scan to be meaningful (ADR-0132 D3)."
-        )
-    });
-
-    for forbidden in &[
-        concat!("profile().", "identity()"),
-        concat!("profile().", "insert"),
-        concat!("get_or_init", "_profile("),
-        concat!("refresh_profile", "_name("),
-    ] {
-        assert!(
-            !body.contains(forbidden),
-            "pt-c1-5 FAIL (ptc1_scan_body_is_profile_untouching): the `set_profile_name` body \
-             contains `{}` (whitespace-free) — the name-setter must touch NO profile table \
-             (ADR-0132 D3). It writes only player.name; the ADR-0125 mirror surfaces the \
-             rename on the leaderboard at the next rated game. Any profile read/write here \
-             either adds a third profile update (breaks the ==2 pin) or injects a rating-1000 \
-             leaderboard row for an unrated player (red-team F1/F2/F3). Body: {:?}",
-            forbidden,
-            body
-        );
-    }
-
-    // Split-binding of the profile accessor is also banned (would risk a later
-    // .delete()/.update() on the bound handle; mirrors C1b).
-    let profile_binding = concat!("=ctx.db.", "profile()");
-    assert!(
-        !body.contains(profile_binding),
-        "pt-c1-5 FAIL (ptc1_scan_body_is_profile_untouching / split-binding): the \
-         `set_profile_name` body contains `{}` (whitespace-free) — binding the profile \
-         accessor is the documented evasion of the profile-untouching property (ADR-0132 D3).",
-        profile_binding
-    );
-}
-
-/// pt-c1-3: the `set_profile_name` body must REJECT a not-joined caller with a
-/// literal `Err(` and must NOT use `.unwrap(` on the player row lookup.
-///
-/// Three body-bounded needles (control-flow-agnostic — accepts BOTH the
-/// `match … None => return Err` form the plan uses AND a `let Some(..) = … else
-/// { return Err }` form; does NOT pin control-flow shape, only the authz
-/// properties):
-///
-///   (a) `player().identity().find(` present — the body resolves the caller's row.
-///   (b) `Err(` present — an explicit reject exists in the body. The `?` on
-///       `validate_name(…)?` does NOT emit a literal `Err(` in source, so the
-///       only literal `Err(` in a correct body is the not-joined `return Err(…)`.
-///   (c) `.unwrap(` absent — bans `…find(me).unwrap()` (panics on None) and
-///       `…find(me).unwrap_or_default()` (inserts a default-identity player row
-///       and silently "renames" a not-joined caller — the authz hole). Mirrors
-///       the anti-unwrap pin on `live_player_name` (~ranking_tests.rs:499).
-///
-/// The hole closed: `ctx.db.player().identity().find(me).unwrap_or_default()`
-/// passes the pt-c1-1/-2/-5 needles yet silently inserts a zero-valued player
-/// row when the caller has no `player` row (not joined) instead of rejecting.
-///
-/// Starts RED: fn absent → extract returns None → documented panic.
-///
-/// Kills:
-///   - `find(me).unwrap()` — panics on None (not joined → 500, no authz message)
-///   - `find(me).unwrap_or_default()` — silently renames a not-joined caller by
-///     creating a default-identity player row (authz hole, pt-c1-3 violation)
-///   - body has no `Err(` literal — the not-joined reject branch was removed
-#[test]
-fn ptc1_scan_body_rejects_when_not_joined() {
-    let squashed = stripped_for_scan(RANKING_RS);
-    let fn_needle = concat!("fnset_profile", "_name(");
-    let body = extract_squashed_fn_body(&squashed, fn_needle).unwrap_or_else(|| {
-        panic!(
-            "pt-c1-3 (ptc1_scan_body_rejects_when_not_joined): `set_profile_name` fn not \
-             found in ranking.rs — RED pre-impl; the reducer must exist for the not-joined \
-             reject scan to be meaningful (ADR-0132 D1)."
-        )
-    });
-
-    // (a) The body resolves the caller's player row — a lookup must be present.
-    let find_needle = concat!("player().identity()", ".find(");
-    assert!(
-        body.contains(find_needle),
-        "pt-c1-3 FAIL (ptc1_scan_body_rejects_when_not_joined / find): \
-         the `set_profile_name` body must contain `{}` (whitespace-free) — the reducer \
-         must attempt to resolve the caller's player row before writing. \
-         Body (whitespace-free): {:?}",
-        find_needle,
-        body
-    );
-
-    // (b) An explicit `Err(` literal is present — the not-joined reject branch.
-    // `validate_name(…)?` desugars to Err propagation but emits NO literal `Err(`
-    // in source; the only source-level `Err(` is the not-joined return.
-    let err_needle = "Err(";
-    assert!(
-        body.contains(err_needle),
-        "pt-c1-3 FAIL (ptc1_scan_body_rejects_when_not_joined / Err): \
-         the `set_profile_name` body must contain `{}` (whitespace-free) — the explicit \
-         not-joined rejection (`return Err(e)` or equivalent). validate_name(…)? does NOT \
-         produce a source-level `Err(` literal, so its presence proves the not-joined \
-         branch exists. Body (whitespace-free): {:?}",
-        err_needle,
-        body
-    );
-
-    // (c) No `.unwrap(` anywhere in the body — bans panic-on-None and
-    // unwrap_or_default silently-creates-row (the authz hole).
-    // `.unwrap` (no paren) so the ban catches `.unwrap()`, `.unwrap_or_default()`,
-    // `.unwrap_or(`, `.unwrap_err()` — the paren form would miss `unwrap_or_default`.
-    let unwrap_needle = ".unwrap";
-    assert!(
-        !body.contains(unwrap_needle),
-        "pt-c1-3 FAIL (ptc1_scan_body_rejects_when_not_joined / unwrap): \
-         the `set_profile_name` body contains `{}` (whitespace-free) — `.unwrap()` \
-         panics when the caller is not joined (no player row) and \
-         `.unwrap_or_default()` silently writes a zero-identity player row instead of \
-         rejecting, violating pt-c1-3 (not-joined must reject). \
-         The not-joined case must use an explicit None-arm that returns `Err(…)`. \
-         Body (whitespace-free): {:?}",
-        unwrap_needle,
-        body
-    );
-}
-
-/// Machinery self-teeth for `ptc1_scan_body_rejects_when_not_joined`:
-/// proves the three not-joined authz needles BITE.
-///
-///   BAD  — `find(me).unwrap_or_default()` body with no `Err(` literal:
-///          needle (b) fires (no `Err(`); needle (c) fires (`.unwrap(`).
-///   GOOD — `find(me)` + `return Err(…)` + no unwrap:
-///          all three needles pass.
-///
-/// If this test fails, the pt-c1-3 pin above cannot be trusted.
-#[test]
-fn ptc1_scan_rejects_not_joined_teeth() {
-    let fn_needle = concat!("fnset_profile", "_name(");
-    let find_needle = concat!("player().identity()", ".find(");
-    let err_needle = "Err(";
-    // `.unwrap` (no paren) so the ban catches `.unwrap()`, `.unwrap_or_default()`,
-    // `.unwrap_or(`, `.unwrap_err()` — the paren form would miss `unwrap_or_default`.
-    let unwrap_needle = ".unwrap";
-
-    // -------------------------------------------------------------------------
-    // BAD: uses find(me).unwrap_or_default() — no Err( literal in body.
-    // Kills: an impl that silently "renames" a not-joined caller via the
-    // default-identity row instead of rejecting (pt-c1-3 authz hole).
-    // -------------------------------------------------------------------------
-    let bad_fixture = "
-        #[spacetimedb::reducer]
-        pub fn set_profile_name(ctx: &ReducerContext, name: String) -> Result<(), String> {
-            let me = ctx.sender();
-            let mut player = ctx.db.player().identity().find(me).unwrap_or_default();
-            let validated = validate_name(&name)?;
-            player.name = validated;
-            ctx.db.player().identity().update(player);
-            Ok(())
-        }
-    ";
-    let bad_squashed = stripped_for_scan(bad_fixture);
-    let bad_body = extract_squashed_fn_body(&bad_squashed, fn_needle)
-        .expect("ptc1_scan_rejects_not_joined_teeth (BAD): fixture must contain set_profile_name");
-
-    // Needle (b): no Err( in a body using unwrap_or_default.
-    assert!(
-        !bad_body.contains(err_needle),
-        "ptc1_scan_rejects_not_joined_teeth FAIL (BAD / Err-absent): the BAD fixture body \
-         unexpectedly contains `Err(` — fix the fixture so the authz-hole shape has no \
-         literal Err( (only the ?-propagation from validate_name), else needle (b) cannot \
-         demonstrate its bite."
-    );
-    // Needle (c): .unwrap( present in a body using unwrap_or_default.
-    assert!(
-        bad_body.contains(unwrap_needle),
-        "ptc1_scan_rejects_not_joined_teeth FAIL (BAD / unwrap-present): the BAD fixture body \
-         does NOT contain `.unwrap(` — the fixture is malformed; `unwrap_or_default()` must \
-         appear as `.unwrap(` substring for needle (c) to demonstrate its bite."
-    );
-
-    // -------------------------------------------------------------------------
-    // GOOD: find(me) + match-arm or else returning Err, no unwrap.
-    // Must pass all three needles.
-    // -------------------------------------------------------------------------
-    let good_fixture = "
-        #[spacetimedb::reducer]
-        pub fn set_profile_name(ctx: &ReducerContext, name: String) -> Result<(), String> {
-            let me = ctx.sender();
-            let mut player = match ctx.db.player().identity().find(me) {
-                Some(p) => p,
-                None => {
-                    let e = \"not joined\".to_string();
-                    log_reject(\"set_profile_name\", me, &e);
-                    return Err(e);
-                }
-            };
-            let validated = validate_name(&name).inspect_err(|e| log_reject(\"set_profile_name\", me, e))?;
-            player.name = validated;
-            ctx.db.player().identity().update(player);
-            Ok(())
-        }
-    ";
-    let good_squashed = stripped_for_scan(good_fixture);
-    let good_body = extract_squashed_fn_body(&good_squashed, fn_needle)
-        .expect("ptc1_scan_rejects_not_joined_teeth (GOOD): fixture must contain set_profile_name");
-
-    assert!(
-        good_body.contains(find_needle),
-        "ptc1_scan_rejects_not_joined_teeth FAIL (GOOD / find): GOOD fixture body is missing \
-         `{}` — machinery or fixture is broken.",
-        find_needle
-    );
-    assert!(
-        good_body.contains(err_needle),
-        "ptc1_scan_rejects_not_joined_teeth FAIL (GOOD / Err): GOOD fixture body is missing \
-         `Err(` after string-strip — string-stripping blanked the return Err(e) literal, \
-         but `e` is a variable (not a string literal) so it must survive. \
-         Check the strip pipeline: only string CONTENTS are blanked, not identifiers.",
-    );
-    assert!(
-        !good_body.contains(unwrap_needle),
-        "ptc1_scan_rejects_not_joined_teeth FAIL (GOOD / no-unwrap): GOOD fixture body \
-         unexpectedly contains `.unwrap(` — fix the fixture.",
-    );
-}
-
-/// pt-c1-5 backstop (F3): whole-file `profile().insert(` count == 1.
-///
-/// There is exactly ONE legitimate profile insert in ranking.rs — the None arm
-/// of get_or_init_profile (seeds a new rated profile). A second insert anywhere
-/// (e.g. inside set_profile_name — the leaderboard-injection hole) drives the
-/// count to 2 and fires. Complements the body-bounded scan above with a
-/// whole-file backstop that catches an insert added via a helper the body scan
-/// might not textually contain.
-///
-/// REGRESSION PIN: starts GREEN (current ranking.rs has exactly 1 insert, in
-/// get_or_init_profile's None arm). Documented green-at-birth by design; it goes
-/// RED if the impl adds a second insert.
-///
-/// Kills:
-///   - set_profile_name (or any new helper) calls profile().insert( → count 2
-#[test]
-fn ptc1_scan_profile_insert_count_is_one() {
-    let squashed = stripped_for_scan(RANKING_RS);
-    let insert_needle = concat!("profile().", "insert(");
-    let count = squashed.matches(insert_needle).count();
-    assert_eq!(
-        count, 1,
-        "pt-c1-5 FAIL (ptc1_scan_profile_insert_count_is_one): ranking.rs must contain \
-         exactly 1 `{}` (whitespace-free) — the single get_or_init_profile None-arm seed. \
-         Found {}. If 2+, a new profile insert was added (e.g. set_profile_name injecting a \
-         rating-1000 leaderboard row for an unrated player — red-team F3). If 0, the \
-         get_or_init_profile seed was removed.",
-        insert_needle, count
-    );
-}
-
-/// Machinery self-teeth for the pt-c1 profile-untouching body scan: proves the
-/// `extract_squashed_fn_body` + forbidden-needle scan actually BITES.
-///
-///   BAD     — a set_profile_name that writes profile
-///             (`ctx.db.profile().identity().update(p)`): the forbidden needle
-///             `profile().identity()` MUST fire.
-///   GOOD    — a clean set_profile_name that writes only player.name: NO
-///             forbidden needle fires; the required needles DO.
-///   EVASION — a clean body PLUS a dead string literal containing the forbidden
-///             `ctx.db.profile().identity().update(...)` text: strip_rust_strings
-///             must blank it so the scan does NOT fire (red-team test-fan F1).
-///
-/// If this test fails, the pt-c1 body scans above cannot be trusted.
-#[test]
-fn ptc1_scan_machinery_teeth() {
-    let fn_needle = concat!("fnset_profile", "_name(");
-    let forbidden = concat!("profile().", "identity()");
-    let validate_needle = concat!("validate", "_name(");
-    let write_needle = concat!("player().identity()", ".update(");
-
-    // BAD: writes profile in the reducer body → forbidden needle must fire.
-    let bad_fixture = "
-        #[spacetimedb::reducer]
-        pub fn set_profile_name(ctx: &ReducerContext, name: String) -> Result<(), String> {
-            let me = ctx.sender();
-            let validated = validate_name(&name)?;
-            let mut p = ctx.db.profile().identity().find(me).unwrap();
-            p.rating = 9999;
-            ctx.db.profile().identity().update(p);
-            Ok(())
-        }
-    ";
-    let bad_stripped = stripped_for_scan(bad_fixture);
-    let bad_body = extract_squashed_fn_body(&bad_stripped, fn_needle)
-        .expect("ptc1_scan_machinery_teeth (BAD): fixture must contain set_profile_name body");
-    assert!(
-        bad_body.contains(forbidden),
-        "ptc1_scan_machinery_teeth FAIL (BAD): a set_profile_name body that writes \
-         profile did NOT trip the forbidden needle {:?} — the profile-untouching scan is \
-         broken and would not catch a profile write (red-team F1/F2).",
-        forbidden
-    );
-
-    // GOOD: writes only player.name → no forbidden needle, required needles present.
-    let good_fixture = "
-        #[spacetimedb::reducer]
-        pub fn set_profile_name(ctx: &ReducerContext, name: String) -> Result<(), String> {
-            let me = ctx.sender();
-            let mut player = match ctx.db.player().identity().find(me) {
-                Some(p) => p,
-                None => return Err(\"not joined\".to_string()),
-            };
-            let validated = validate_name(&name)?;
-            player.name = validated;
-            ctx.db.player().identity().update(player);
-            Ok(())
-        }
-    ";
-    let good_stripped = stripped_for_scan(good_fixture);
-    let good_body = extract_squashed_fn_body(&good_stripped, fn_needle)
-        .expect("ptc1_scan_machinery_teeth (GOOD): fixture must contain set_profile_name body");
-    assert!(
-        !good_body.contains(forbidden),
-        "ptc1_scan_machinery_teeth FAIL (GOOD): a clean player-only set_profile_name body \
-         incorrectly tripped the forbidden needle {:?} — false positive; the scan cannot \
-         distinguish a player.name write from a profile write.",
-        forbidden
-    );
-    assert!(
-        good_body.contains(validate_needle) && good_body.contains(write_needle),
-        "ptc1_scan_machinery_teeth FAIL (GOOD): a clean set_profile_name body is missing the \
-         required needles {:?} / {:?} — the required-needle scan would false-negative on a \
-         correct impl.",
-        validate_needle,
-        write_needle
-    );
-
-    // EVASION: clean body + dead string literal containing the forbidden text.
-    // Built via concat! so this file cannot self-match; strip_rust_strings must
-    // blank the literal so the forbidden needle does NOT fire.
-    let evasion_literal = concat!("ctx.db.", "profile().", "identity()", ".update(p)");
-    let evasion_fixture = format!(
-        "
-        #[spacetimedb::reducer]
-        pub fn set_profile_name(ctx: &ReducerContext, name: String) -> Result<(), String> {{
-            let _ = \"{}\";
-            let mut player = match ctx.db.player().identity().find(ctx.sender()) {{
-                Some(p) => p,
-                None => return Err(\"not joined\".to_string()),
-            }};
-            player.name = validate_name(&name)?;
-            ctx.db.player().identity().update(player);
-            Ok(())
-        }}
-        ",
-        evasion_literal,
-    );
-    let evasion_stripped = stripped_for_scan(&evasion_fixture);
-    let evasion_body = extract_squashed_fn_body(&evasion_stripped, fn_needle)
-        .expect("ptc1_scan_machinery_teeth (EVASION): fixture must contain set_profile_name body");
-    assert!(
-        !evasion_body.contains(forbidden),
-        "ptc1_scan_machinery_teeth FAIL (EVASION): the string-literal evasion was NOT caught — \
-         forbidden needle {:?} matched after stripped_for_scan even though the profile-write \
-         text appeared only inside a dead string literal. strip_rust_strings is not working \
-         (red-team test-fan F1).",
-        forbidden
-    );
-}
-
 // ===========================================================================
 // M21a AUTH-25 (ADR-0179 D6): guest->account profile re-key. Stats are copied
 // FORWARD onto the destination row, then the guest's own row is ZEROED and its
@@ -1596,17 +354,6 @@ fn auth25_tombstone_name_is_bounded_and_untypable() {
 // B1/B2 are EXECUTED pins over the live `game_core::TOMBSTONE_DISPLAY_NAME`
 // constant (mirroring the AUTH-25 `auth25_tombstone_name_is_bounded_and_
 // untypable` pin above, for the DISTINCT M22 deletion sentinel).
-//
-// B3a/B3b/B3c are source-scan pins over `PROFILE_TOMBSTONE_NAME`'s
-// declaration, identifier-occurrence count, and value-occurrence count in
-// ranking.rs, reusing this file's existing `stripped_for_scan` / `squash_ws`
-// / `RANKING_RS` machinery (per-module convention, ADR-0125 anti-pattern
-// #5 — no cross-file import of scan helpers).
-//
-// B5 is the proof-of-teeth battery for the three small scan-logic fns B3a/
-// B3b/B3c share with it (`rb7_decl_occurrence`, `rb7_identifier_occurrence_
-// count`, `rb7_value_occurrence_count`), mirroring the shape of
-// `ptc1_scan_machinery_teeth` above.
 // ===========================================================================
 
 /// RB7-B1 (M22 §3): the game-core deletion tombstone `TOMBSTONE_DISPLAY_NAME`
@@ -1695,593 +442,6 @@ fn rb7_deletion_tombstone_is_distinct_from_guest_claim() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// RB7 scan-logic helpers — shared verbatim between the B3a/B3b/B3c pins
-// below and the B5 proof-of-teeth battery, so the battery proves the exact
-// logic the pins run, not a re-description of it.
-// ---------------------------------------------------------------------------
-
-/// RB7 scan helper for B3a: count of the squashed `const<IDENT>` declaration
-/// needle for `PROFILE_TOMBSTONE_NAME` in `stripped` (the output of
-/// `stripped_for_scan`), and the character immediately preceding its
-/// (single) occurrence when the count is exactly 1.
-///
-/// Every visibility form squashes to a preceding `b` (`pubconst...`, from
-/// `pub const`) or `)` (`pub(crate)const...`, `pub(super)const...`,
-/// `pub(self)const...`, `pub(in crate::ranking)const...`), while a
-/// legitimate `#[allow(dead_code)]` attribute squashes to a preceding `]`
-/// and an ordinary item boundary squashes to `}` or `;` — but ALSO to a
-/// module-open `{`, an attribute-close `]`, or (at the very start of a
-/// scanned fragment) nothing at all. Callers must not therefore write this
-/// as a positive allowlist of `}`/`;` — that would FALSE-RED a compliant
-/// attribute-annotated const (measured red-team finding #7). Instead callers
-/// check the NEGATIVE: the preceding char is neither `b` nor `)`.
-fn rb7_decl_occurrence(stripped: &str) -> (usize, Option<char>) {
-    rb7_item_occurrence(stripped, concat!("const", "PROFILE_TOMBSTONE_NAME"))
-}
-
-/// RB7 scan helper, generic over the item needle: occurrence count of `needle`
-/// in `stripped`, plus the character immediately preceding its single
-/// occurrence when the count is exactly 1. Shared by the const-declaration pin
-/// (`rb7_decl_occurrence`) and the writer-fn pin
-/// (`rb7_guest_claim_tombstone_writer_is_module_private`) so both run the same
-/// preceding-char logic rather than two copies that can drift apart.
-fn rb7_item_occurrence(stripped: &str, needle: &str) -> (usize, Option<char>) {
-    let count = stripped.matches(needle).count();
-    let preceding = if count == 1 {
-        stripped
-            .find(needle)
-            .and_then(|idx| stripped[..idx].chars().next_back())
-    } else {
-        None
-    };
-    (count, preceding)
-}
-
-/// RB7 scan helper for B3b: count of the bare identifier
-/// `PROFILE_TOMBSTONE_NAME` in `stripped` (the output of
-/// `stripped_for_scan`). The declaration itself is one occurrence; every
-/// legitimate use is another. A correct ranking.rs has exactly 2 (the
-/// declaration and the single use in `tombstoned_profile`).
-fn rb7_identifier_occurrence_count(stripped: &str) -> usize {
-    let needle = concat!("PROFILE_TOMBSTONE", "_NAME");
-    stripped.matches(needle).count()
-}
-
-/// RB7 scan helper for B3c: count of the guest-claim VALUE (never spelled
-/// whole — assembled via `concat!`) in `raw` (the UNSTRIPPED source).
-/// Deliberately raw: `stripped_for_scan` blanks string CONTENT, so a
-/// stripped scan for a string VALUE is structurally vacuous.
-fn rb7_value_occurrence_count(raw: &str) -> usize {
-    let value = concat!("(claimed ", "guest)");
-    raw.matches(value).count()
-}
-
-/// RB7-B3a (M22 §3 SSOT hardening): the `PROFILE_TOMBSTONE_NAME` const
-/// declaration in ranking.rs must be MODULE-PRIVATE (a bare `const`, no
-/// visibility modifier) — this slice moves it from `pub(crate)` so S3
-/// cannot reach for it as the M22 deletion tombstone by mistake.
-///
-/// Fails LOUD and distinctly on 0 occurrences (the declaration was removed
-/// or renamed — the scan itself found nothing to check) and on >1
-/// occurrences (an ambiguous scan target), and only then checks the
-/// preceding-char property on the single occurrence.
-///
-/// kills: `pub const`, `pub(crate) const`, `pub(super) const`,
-/// `pub(self) const`, `pub(in crate::ranking) const` — every visibility
-/// form that keeps the constant reachable from outside `ranking.rs`.
-#[test]
-fn rb7_guest_claim_tombstone_declaration_is_module_private() {
-    let squashed = stripped_for_scan(RANKING_RS);
-    let (count, preceding) = rb7_decl_occurrence(&squashed);
-    match count {
-        0 => panic!(
-            "RB7-B3a FAIL (zero occurrences): the squashed const-declaration needle \
-             for PROFILE_TOMBSTONE_NAME was not found in ranking.rs at all — the \
-             declaration was removed or renamed."
-        ),
-        1 => {
-            let Some(preceding) = preceding else {
-                panic!("RB7-B3a FAIL: count == 1 but no preceding char was captured");
-            };
-            assert!(
-                preceding != 'b' && preceding != ')',
-                "RB7-B3a FAIL: the character immediately preceding the const \
-                 declaration is {preceding:?} — every visibility form (`pub const` \
-                 squashes to a preceding 'b'; `pub(crate) const` / `pub(super) const` \
-                 / `pub(self) const` / `pub(in crate::ranking) const` all squash to a \
-                 preceding ')') leaves PROFILE_TOMBSTONE_NAME reachable outside \
-                 ranking.rs. It must be a bare, module-private `const`."
-            );
-        }
-        n => panic!(
-            "RB7-B3a FAIL ({n} occurrences): expected exactly one const declaration \
-             for PROFILE_TOMBSTONE_NAME in ranking.rs, found {n}."
-        ),
-    }
-}
-
-/// RB7-B3b (M22 §3 SSOT hardening): the bare identifier
-/// `PROFILE_TOMBSTONE_NAME` must occur EXACTLY TWICE in ranking.rs — the
-/// declaration and its single legitimate use in `tombstoned_profile`.
-/// This is the clause B3a is blind to: B3a only pins the
-/// DECLARATION's own visibility keyword; it cannot see a re-export or an
-/// accessor fn that hands the value back out under a different name.
-///
-/// kills: `pub(crate) use self::PROFILE_TOMBSTONE_NAME;` added elsewhere in
-/// ranking.rs (re-exports the module-private const — count becomes 3); a
-/// `pub(crate) fn guest_claim_tombstone() -> &'static str {
-/// PROFILE_TOMBSTONE_NAME }` accessor (hands the value back out through a
-/// public fn — count becomes 3). Either shape defeats the module-privacy
-/// RB7-B3a enforces while leaving B3a itself green.
-#[test]
-fn rb7_guest_claim_tombstone_identifier_is_not_re_exported() {
-    let squashed = stripped_for_scan(RANKING_RS);
-    let count = rb7_identifier_occurrence_count(&squashed);
-    assert_eq!(
-        count, 2,
-        "RB7-B3b FAIL: PROFILE_TOMBSTONE_NAME must occur exactly 2 times in ranking.rs \
-         (its sole declaration + the single use in tombstoned_profile), \
-         found {count}. A 3rd occurrence means either a `pub(crate) use \
-         self::PROFILE_TOMBSTONE_NAME;` re-export was added elsewhere in the file, or \
-         a `pub(crate) fn guest_claim_tombstone() -> &'static str {{ \
-         PROFILE_TOMBSTONE_NAME }}` accessor was added — either shape hands the \
-         module-private value back out and defeats RB7-B3a."
-    );
-}
-
-/// RB7-B3c (M22 §3 SSOT hardening): the guest-claim sentinel VALUE (never
-/// spelled whole in this test file — assembled via `concat!`) must occur
-/// EXACTLY ONCE in the RAW, UNSTRIPPED ranking.rs source. Deliberately raw:
-/// `stripped_for_scan` blanks string CONTENT, so a stripped scan for a
-/// string VALUE would be structurally vacuous (it would always read as 0,
-/// declaration included).
-///
-/// A comment mentioning the value verbatim will also RED this test, and
-/// that is intended: the value must appear exactly once, in its
-/// declaration, nowhere else — not even in a comment.
-///
-/// kills: a SECOND `pub(crate) const GUEST_TOMBSTONE_NAME: &str = "(claimed
-/// guest)";` under a different identifier (B3b's identifier scan cannot see
-/// this — it is a different identifier); a `#[macro_export] macro_rules!`
-/// yielding the same literal (also invisible to B3a/B3b, which scan for the
-/// identifier and the declaration keyword, not the value).
-#[test]
-fn rb7_guest_claim_tombstone_value_is_not_duplicated() {
-    let count = rb7_value_occurrence_count(RANKING_RS);
-    assert_eq!(
-        count, 1,
-        "RB7-B3c FAIL: the guest-claim value must occur exactly once in ranking.rs \
-         (its sole declaration), found {count}. A 2nd occurrence means a \
-         duplicate const under a different identifier, or a macro_rules! (or a \
-         comment) carrying the same literal — none of which RB7-B3a/B3b's \
-         identifier/declaration scans can see."
-    );
-}
-
-/// RB7-B3d (M22 §3 SSOT hardening): `tombstoned_profile` — the only OTHER
-/// symbol in this module that WRITES `PROFILE_TOMBSTONE_NAME` — must also be
-/// module-private.
-///
-/// B3a/B3b/B3c between them stop the guest-claim VALUE escaping `ranking.rs`
-/// as data. This clause stops it escaping as BEHAVIOUR. A `pub(crate) fn
-/// tombstoned_profile` is reachable from `accounts.rs` by exactly the
-/// `crate::ranking::…` path that file already uses elsewhere, and calling it
-/// is a doubly-wrong deletion step: the row renders as an unclaimed guest AND
-/// its ladder history is wiped by a stats-zeroing that ADR-0179 D6 scopes to
-/// the guest-claim flow alone. B3b cannot see it — an `accounts.rs` CALL SITE
-/// leaves this file's identifier count at 2.
-///
-/// kills: re-widening `tombstoned_profile` to `pub`, `pub(crate)`,
-/// `pub(super)`, `pub(self)` or `pub(in …)`.
-#[test]
-fn rb7_guest_claim_tombstone_writer_is_module_private() {
-    let squashed = stripped_for_scan(RANKING_RS);
-    let needle = concat!("fn", "tombstoned_profile(");
-    let (count, preceding) = rb7_item_occurrence(&squashed, needle);
-    assert_eq!(
-        count, 1,
-        "RB7-B3d FAIL: expected exactly one `fn tombstoned_profile(` declaration in \
-         ranking.rs, found {count} — the writer-privacy scan has no unambiguous target."
-    );
-    let Some(preceding) = preceding else {
-        panic!("RB7-B3d FAIL: count == 1 but no preceding char was captured");
-    };
-    assert!(
-        preceding != 'b' && preceding != ')',
-        "RB7-B3d FAIL: the character immediately preceding `fn tombstoned_profile(` is \
-         {preceding:?} — every visibility form squashes to a preceding 'b' (`pub fn`) or \
-         ')' (`pub(crate) fn` and friends). Crate-visible, this fn hands the M21 \
-         guest-claim tombstone AND an AUTH-25 stats-wipe to any caller, including M22's \
-         deletion cascade. It must be a bare, module-private `fn`."
-    );
-}
-
-/// RB7-B5 — proof-of-teeth battery for `rb7_decl_occurrence` /
-/// `rb7_identifier_occurrence_count` / `rb7_value_occurrence_count`, the
-/// exact three fns RB7-B3a/B3b/B3c run against `RANKING_RS`. Mirrors the
-/// shape of `ptc1_scan_machinery_teeth` above: run the SAME logic against
-/// small synthetic fixtures instead of the real file, and prove it produces
-/// the expected verdict on each.
-///
-/// If this test fails, the RB7-B3a/B3b/B3c pins above cannot be trusted.
-#[test]
-fn rb7_scan_machinery_teeth() {
-    let mut pass = 0u32;
-    let mut bite = 0u32;
-    let mut loud = 0u32;
-
-    // -------------------------------------------------------------------------
-    // MUST PASS 1/2 — bare private const with one legitimate use.
-    // -------------------------------------------------------------------------
-    let pass_bare = "
-        mod fixture {
-            const PROFILE_TOMBSTONE_NAME: &str = \"(claimed guest)\";
-            fn use_it() -> String {
-                PROFILE_TOMBSTONE_NAME.to_string()
-            }
-        }
-    ";
-    {
-        let squashed = stripped_for_scan(pass_bare);
-        let (count, preceding) = rb7_decl_occurrence(&squashed);
-        assert_eq!(
-            count, 1,
-            "RB7-B5 FAIL (PASS/bare): decl count must be 1, was {count}"
-        );
-        let preceding = preceding.unwrap_or_else(|| {
-            panic!("RB7-B5 FAIL (PASS/bare): count == 1 must carry a preceding char")
-        });
-        assert!(
-            preceding != 'b' && preceding != ')',
-            "RB7-B5 FAIL (PASS/bare): bare private const wrongly flagged (preceding \
-             char {preceding:?})"
-        );
-        assert_eq!(
-            rb7_identifier_occurrence_count(&squashed),
-            2,
-            "RB7-B5 FAIL (PASS/bare): identifier count must be 2 (decl + one use)"
-        );
-        assert_eq!(
-            rb7_value_occurrence_count(pass_bare),
-            1,
-            "RB7-B5 FAIL (PASS/bare): value count must be 1 (the sole declaration)"
-        );
-        pass += 1;
-    }
-
-    // -------------------------------------------------------------------------
-    // MUST PASS 2/2 — regression pin for finding #7: an `#[allow(dead_code)]`
-    // attribute-annotated private const must NOT be flagged by B3a.
-    // -------------------------------------------------------------------------
-    let pass_attr = "
-        mod fixture {
-            #[allow(dead_code)]
-            const PROFILE_TOMBSTONE_NAME: &str = \"(claimed guest)\";
-            fn use_it() -> String {
-                PROFILE_TOMBSTONE_NAME.to_string()
-            }
-        }
-    ";
-    {
-        let squashed = stripped_for_scan(pass_attr);
-        let (count, preceding) = rb7_decl_occurrence(&squashed);
-        assert_eq!(
-            count, 1,
-            "RB7-B5 FAIL (PASS/attr): decl count must be 1, was {count}"
-        );
-        let preceding = preceding.unwrap_or_else(|| {
-            panic!("RB7-B5 FAIL (PASS/attr): count == 1 must carry a preceding char")
-        });
-        assert!(
-            preceding != 'b' && preceding != ')',
-            "RB7-B5 FAIL (PASS/attr, finding #7 regression): an #[allow(dead_code)] \
-             attribute-annotated private const was wrongly flagged (preceding char \
-             {preceding:?}) — the scan must not use a positive item-boundary allowlist."
-        );
-        pass += 1;
-    }
-
-    // -------------------------------------------------------------------------
-    // MUST BITE B3a (4 visibility-leak shapes).
-    // -------------------------------------------------------------------------
-    let bite_a_fixtures: [(&str, &str); 5] = [
-        (
-            "pub const",
-            "mod fixture {
-                pub const PROFILE_TOMBSTONE_NAME: &str = \"(claimed guest)\";
-                fn use_it() -> String { PROFILE_TOMBSTONE_NAME.to_string() }
-            }",
-        ),
-        (
-            "pub(crate) const",
-            "mod fixture {
-                pub(crate) const PROFILE_TOMBSTONE_NAME: &str = \"(claimed guest)\";
-                fn use_it() -> String { PROFILE_TOMBSTONE_NAME.to_string() }
-            }",
-        ),
-        (
-            "pub(super) const",
-            "mod fixture {
-                pub(super) const PROFILE_TOMBSTONE_NAME: &str = \"(claimed guest)\";
-                fn use_it() -> String { PROFILE_TOMBSTONE_NAME.to_string() }
-            }",
-        ),
-        (
-            "pub(self) const",
-            "mod fixture {
-                pub(self) const PROFILE_TOMBSTONE_NAME: &str = \"(claimed guest)\";
-                fn use_it() -> String { PROFILE_TOMBSTONE_NAME.to_string() }
-            }",
-        ),
-        (
-            "pub(in crate::ranking) const",
-            "mod fixture {
-                pub(in crate::ranking) const PROFILE_TOMBSTONE_NAME: &str = \"(claimed guest)\";
-                fn use_it() -> String { PROFILE_TOMBSTONE_NAME.to_string() }
-            }",
-        ),
-    ];
-    for (label, fixture) in bite_a_fixtures {
-        let squashed = stripped_for_scan(fixture);
-        let (count, preceding) = rb7_decl_occurrence(&squashed);
-        assert_eq!(
-            count, 1,
-            "RB7-B5 FAIL (BITE-A/{label}): decl count must be 1, was {count}"
-        );
-        let preceding = preceding.unwrap_or_else(|| {
-            panic!("RB7-B5 FAIL (BITE-A/{label}): count == 1 must carry a preceding char")
-        });
-        assert!(
-            preceding == 'b' || preceding == ')',
-            "RB7-B5 FAIL (BITE-A/{label}): visibility leak did NOT trip B3a (preceding \
-             char {preceding:?}) — the declaration-privacy scan is broken."
-        );
-        bite += 1;
-    }
-
-    // -------------------------------------------------------------------------
-    // MUST BITE B3b (2 re-export shapes: `use self::…` and an accessor fn).
-    // -------------------------------------------------------------------------
-    let bite_b_fixtures: [(&str, &str); 2] = [
-        (
-            "use self:: re-export",
-            "mod fixture {
-                const PROFILE_TOMBSTONE_NAME: &str = \"(claimed guest)\";
-                pub(crate) use self::PROFILE_TOMBSTONE_NAME;
-                fn use_it() -> String { PROFILE_TOMBSTONE_NAME.to_string() }
-            }",
-        ),
-        (
-            "accessor fn",
-            "mod fixture {
-                const PROFILE_TOMBSTONE_NAME: &str = \"(claimed guest)\";
-                fn use_it() -> String { PROFILE_TOMBSTONE_NAME.to_string() }
-                pub(crate) fn guest_claim_tombstone() -> &'static str {
-                    PROFILE_TOMBSTONE_NAME
-                }
-            }",
-        ),
-    ];
-    for (label, fixture) in bite_b_fixtures {
-        let squashed = stripped_for_scan(fixture);
-        let count = rb7_identifier_occurrence_count(&squashed);
-        assert_ne!(
-            count, 2,
-            "RB7-B5 FAIL (BITE-B/{label}): re-export/accessor shape did NOT trip B3b \
-             (identifier count stayed at 2) — the not-re-exported scan is broken."
-        );
-        bite += 1;
-    }
-
-    // -------------------------------------------------------------------------
-    // MUST BITE B3c (2 value-duplication shapes: alias const, macro_rules!).
-    // -------------------------------------------------------------------------
-    let bite_c_fixtures: [(&str, &str); 2] = [
-        (
-            "alias const",
-            "mod fixture {
-                const PROFILE_TOMBSTONE_NAME: &str = \"(claimed guest)\";
-                const GUEST_TOMBSTONE_NAME: &str = \"(claimed guest)\";
-                fn use_it() -> String { PROFILE_TOMBSTONE_NAME.to_string() }
-            }",
-        ),
-        (
-            "macro_rules!",
-            "mod fixture {
-                const PROFILE_TOMBSTONE_NAME: &str = \"(claimed guest)\";
-                fn use_it() -> String { PROFILE_TOMBSTONE_NAME.to_string() }
-                macro_rules! guest_tombstone_literal {
-                    () => { \"(claimed guest)\" };
-                }
-            }",
-        ),
-    ];
-    for (label, fixture) in bite_c_fixtures {
-        let count = rb7_value_occurrence_count(fixture);
-        assert_ne!(
-            count, 1,
-            "RB7-B5 FAIL (BITE-C/{label}): value-duplication shape did NOT trip B3c \
-             (value count stayed at 1) — the not-duplicated scan is broken."
-        );
-        bite += 1;
-    }
-
-    // -------------------------------------------------------------------------
-    // MUST PASS / MUST BITE B3d — the writer fn's own visibility.
-    // -------------------------------------------------------------------------
-    let writer_private = "
-        mod fixture {
-            fn tombstoned_profile(guest: Profile) -> Profile { guest }
-        }
-    ";
-    {
-        let squashed = stripped_for_scan(writer_private);
-        let needle = concat!("fn", "tombstoned_profile(");
-        let (count, preceding) = rb7_item_occurrence(&squashed, needle);
-        assert_eq!(
-            count, 1,
-            "RB7-B5 FAIL (PASS/writer-private): writer decl count must be 1, was {count}"
-        );
-        let preceding = preceding.unwrap_or_else(|| {
-            panic!("RB7-B5 FAIL (PASS/writer-private): count == 1 must carry a preceding char")
-        });
-        assert!(
-            preceding != 'b' && preceding != ')',
-            "RB7-B5 FAIL (PASS/writer-private): a bare private fn was wrongly flagged \
-             (preceding char {preceding:?})"
-        );
-        pass += 1;
-    }
-
-    let writer_bite_fixtures: [(&str, &str); 2] = [
-        (
-            "pub fn",
-            "mod fixture {
-                pub fn tombstoned_profile(guest: Profile) -> Profile { guest }
-            }",
-        ),
-        (
-            "pub(crate) fn",
-            "mod fixture {
-                pub(crate) fn tombstoned_profile(guest: Profile) -> Profile { guest }
-            }",
-        ),
-    ];
-    for (label, fixture) in writer_bite_fixtures {
-        let squashed = stripped_for_scan(fixture);
-        let needle = concat!("fn", "tombstoned_profile(");
-        let (count, preceding) = rb7_item_occurrence(&squashed, needle);
-        assert_eq!(
-            count, 1,
-            "RB7-B5 FAIL (BITE-D/{label}): writer decl count must be 1, was {count}"
-        );
-        let preceding = preceding.unwrap_or_else(|| {
-            panic!("RB7-B5 FAIL (BITE-D/{label}): count == 1 must carry a preceding char")
-        });
-        assert!(
-            preceding == 'b' || preceding == ')',
-            "RB7-B5 FAIL (BITE-D/{label}): a crate-visible writer fn did NOT trip B3d \
-             (preceding char {preceding:?}) — the writer-privacy scan is broken."
-        );
-        bite += 1;
-    }
-
-    // -------------------------------------------------------------------------
-    // MUST FAIL LOUD (0 occurrences, never a silent pass): the identifier
-    // appearing ONLY inside a comment, and ONLY inside a string literal.
-    // -------------------------------------------------------------------------
-    let loud_comment_only = "
-        mod fixture {
-            // PROFILE_TOMBSTONE_NAME lives elsewhere now.
-            fn use_it() -> String {
-                String::new()
-            }
-        }
-    ";
-    {
-        let squashed = stripped_for_scan(loud_comment_only);
-        let (decl_count, _) = rb7_decl_occurrence(&squashed);
-        let ident_count = rb7_identifier_occurrence_count(&squashed);
-        assert_eq!(
-            decl_count, 0,
-            "RB7-B5 FAIL (LOUD/comment-only): a comment-only mention must not be read \
-             as a declaration (decl count must be 0, was {decl_count})"
-        );
-        assert_eq!(
-            ident_count, 0,
-            "RB7-B5 FAIL (LOUD/comment-only): a comment-only mention must not be \
-             counted as an identifier occurrence (count must be 0, was {ident_count})"
-        );
-        loud += 1;
-    }
-
-    let loud_string_only = "
-        mod fixture {
-            fn use_it() -> &'static str {
-                \"PROFILE_TOMBSTONE_NAME\"
-            }
-        }
-    ";
-    {
-        let squashed = stripped_for_scan(loud_string_only);
-        let (decl_count, _) = rb7_decl_occurrence(&squashed);
-        let ident_count = rb7_identifier_occurrence_count(&squashed);
-        assert_eq!(
-            decl_count, 0,
-            "RB7-B5 FAIL (LOUD/string-only): a string-literal-only mention must not be \
-             read as a declaration (decl count must be 0, was {decl_count})"
-        );
-        assert_eq!(
-            ident_count, 0,
-            "RB7-B5 FAIL (LOUD/string-only): a string-literal-only mention must not be \
-             counted as an identifier occurrence (count must be 0, was {ident_count})"
-        );
-        loud += 1;
-    }
-
-    // -------------------------------------------------------------------------
-    // Red-team finding #8: an ordinary char literal (e.g. a quote-char
-    // constant) desyncs `strip_rust_strings` — it has no char-literal lexer,
-    // so a `"` inside `'...'` is misread as opening a real string literal.
-    // For THIS fixture the true declaration is bare-private (would PASS if
-    // read correctly), but the desync collapses BOTH B3a's declaration
-    // needle and B3b's identifier count to 0 — it fails CLOSED, never open,
-    // so the next maintainer reads "the scan desynced", not "the symbol was
-    // removed". The char literal is built at runtime from a 0x22 byte
-    // constant, never as a literal double-quote inside single quotes in
-    // THIS file's own source (house rule: `evals/zone-warp-server-runtime
-    // .eval.mjs`'s W-pre check REDs CI on that shape in production source,
-    // and several evals concatenate every Rust source under server-module,
-    // test files included, through naive strippers. For the same reason this
-    // comment does not spell a slash-star glob: that two-character sequence
-    // opens a block comment for those strippers and blanks everything after
-    // it -- a full-CI-only false RED, measured on this very slice).
-    // -------------------------------------------------------------------------
-    let quote = char::from(0x22u8);
-    let finding8_fixture = format!(
-        "mod fixture {{ const Q: char = '{}'; \
-         const PROFILE_TOMBSTONE_NAME: &str = \"(claimed guest)\"; \
-         fn use_it() -> String {{ PROFILE_TOMBSTONE_NAME.to_string() }} }}",
-        quote
-    );
-    {
-        let squashed = stripped_for_scan(&finding8_fixture);
-        let (decl_count, _) = rb7_decl_occurrence(&squashed);
-        let ident_count = rb7_identifier_occurrence_count(&squashed);
-        assert_eq!(
-            decl_count, 0,
-            "RB7-B5 FAIL (finding #8, char-literal desync): expected the desync to \
-             collapse the declaration scan to 0 occurrences (fail CLOSED), found \
-             {decl_count} — if this is 1, the scan machinery no longer desyncs on a \
-             char literal the way the measured red-team finding described; re-verify \
-             the finding is still live before trusting B3a/B3b on real ranking.rs."
-        );
-        assert_eq!(
-            ident_count, 0,
-            "RB7-B5 FAIL (finding #8, char-literal desync): expected the desync to \
-             collapse the identifier-occurrence scan to 0 (fail CLOSED), found \
-             {ident_count}."
-        );
-        loud += 1;
-    }
-
-    let total = pass + bite + loud;
-    assert_eq!(
-        (pass, bite, loud),
-        (3, 11, 3),
-        "RB7-B5 FAIL: the fixture battery has changed size — it must run 3 MUST-PASS, \
-         11 MUST-BITE and 3 MUST-FAIL-LOUD fixtures. A shrunken battery is how a teeth \
-         suite decays into decoration."
-    );
-    // The marker the rb-7 acceptance gate greps for, written through `Write`
-    // rather than a print macro: `spacetime generate` rejects any print macro
-    // anywhere in the module source, `#[cfg(test)]` included.
-    let line = format!("RB7-TEETH-OK {total} fixtures (pass={pass} bite={bite} loud={loud})\n");
-    std::io::Write::write_all(&mut std::io::stdout(), line.as_bytes())
-        .expect("RB7-B5: writing the teeth marker to stdout must succeed");
-}
-
 // ===========================================================================
 // m22-s3b (ADR-0228) — THE DISPLAY-NAME ANONYMIZE STEP, AND THE §4.7 GATE ON
 // THE ONE REDUCER THAT COULD UNDO IT.
@@ -2307,11 +467,7 @@ fn rb7_scan_machinery_teeth() {
 // which is meaningless for a deletion. Both are module-private precisely so S3
 // could not reach for them by mistake (rb-7, ADR-0211); this section asserts the
 // two values stay distinct rather than trusting the visibility alone.
-//
-// SCAN HYGIENE: needles are assembled with `concat!` per this file's
-// convention; no bare double-quote appears inside any comment here, and this
-// section spells no block-comment delimiter and never writes the guest-claim
-// sentinel VALUE.
+
 // ===========================================================================
 
 /// **PRV1-6c (pure)** — `player_with_deleted_name` and `profile_with_deleted_name`
@@ -2453,276 +609,6 @@ fn m22s3b_deleted_name_rows() {
     );
 }
 
-/// **PRV1-6c (scan)** — `anonymize_display_names` writes both name rows through
-/// their pure seams, deletes nothing, and never reaches the guest-claim path.
-///
-/// THE DELETE BAN IS AN INVARIANT, NOT TIDINESS: ADR-0119 forbids deleting a
-/// `profile` row outright, and spec §3 requires the `player` row to survive as
-/// the anchor `character` and every live multi-user row point at. This body is
-/// the one new place in the module that could break either.
-///
-/// THE GUEST-CLAIM BAN IS THE rb-34 HAZARD, ONE MODULE OVER: `rekey_profile` and
-/// `tombstoned_profile` write this module's guest-claim sentinel AND zero the
-/// ladder columns. Reached from the deletion cascade they render a deleted
-/// account as a claimed guest and destroy stats spec §3 says survive. The
-/// visibility rules already make the wrong helper unreachable from accounts.rs;
-/// this clause makes it unreachable from the RIGHT module too.
-///
-/// THE MATCH-READ RULE IS LOAD-BEARING AND EASY TO GET WRONG: this file's
-/// `d1_scan_no_eager_write_in_get_or_init` clauses (b) and (c) ban the substrings
-/// `=ctx.db.profile()` and `=ctx.db.player()` file-wide, because assigning a
-/// table accessor to a binding is the documented evasion of the never-deleted
-/// structural scan. A `let Some(p) = ctx.db.player().identity().find(owner)` in
-/// this body contains that substring and reds those clauses from the other
-/// direction. Read through `match`, exactly as `get_or_init_profile` and
-/// `rekey_profile` already do — this body-scoped restatement is here so the
-/// failure names the reason rather than pointing at a whole-file ban.
-///
-/// Kills: a helper that deletes either row; one that routes through
-///        `rekey_profile`/`tombstoned_profile`; one that inlines the name write
-///        instead of using the pure seams (which puts the field-survival rules
-///        out of reach of the executed test above); a split-binding read.
-#[test]
-fn m22s3b_anonymize_display_names_shape() {
-    let squashed = stripped_for_scan(RANKING_RS);
-    let body = extract_squashed_fn_body(&squashed, concat!("fnanonymize_display", "_names("))
-        .unwrap_or_else(|| {
-            panic!(
-                "PRV1-6c FAIL (extraction): ranking.rs declares no \
-                 `fn anonymize_display_names(`. The cascade delegates the `player` and \
-                 `profile` ANONYMIZE to this module because it already owns the display-name \
-                 write path (ADR-0228 D1); without it PRV1-6c never runs. Fail LOUD rather \
-                 than pass vacuously."
-            )
-        });
-
-    for (needle, what) in [
-        (
-            concat!("player_with_deleted", "_name("),
-            "the player-row name seam",
-        ),
-        (
-            concat!("profile_with_deleted", "_name("),
-            "the profile-row name seam",
-        ),
-    ] {
-        let n = m22s3b_count(body, needle);
-        assert_eq!(
-            n, 1,
-            "PRV1-6c FAIL (pure seam): anonymize_display_names must compose the row through \
-             `{needle}` ({what}) EXACTLY once; found {n}. This crate has no \
-             reducer-executing harness, so an inline `p.name = ..;` here puts every \
-             field-survival rule — the surviving primary key, the surviving `entity_id` join \
-             key, the surviving ladder columns — permanently out of reach of \
-             `m22s3b_deleted_name_rows`, which is the only test that can execute them. The \
-             `zeroed_wallet` / `profile_with_carried_stats` precedent is the same rule."
-        );
-    }
-
-    // --- THE TWO WRITES, COUNTED (added in r2) ------------------------------
-    //
-    // `d1_scan_no_eager_write_in_get_or_init` pins the PROFILE write of this
-    // function at exactly 1 (that is what its 4 -> 5 whole-file re-derivation
-    // paid for). NOTHING pinned the PLAYER write — and a red-team measured the
-    // gap: a body that composes `player_with_deleted_name(..)` and then drops the
-    // result on the floor satisfies the seam clause above, deletes nothing, and
-    // leaves `player.name` untouched. That is the field every other client
-    // actually renders for this identity, AND the field the ADR-0125 passive
-    // mirror copies onto the PUBLIC profile row at the next rated game — so the
-    // profile tombstone this function did write is overwritten with the live name
-    // the moment anything rates. PRV1-6c ends up worse than not done.
-    for (needle, table, why) in [
-        (
-            concat!("player().identity().upd", "ate("),
-            "player",
-            "the presence row's `name` is the display name every other client sees for this \
-             identity, and the ADR-0125 passive mirror copies it onto the PUBLIC `profile` \
-             row on the next rated game — so leaving it live silently un-does the profile \
-             tombstone this same function wrote",
-        ),
-        (
-            concat!("profile().identity().upd", "ate("),
-            "profile",
-            "the `profile` row IS the public leaderboard; this is the write that removes the \
-             deleted player's name from every other client's view",
-        ),
-    ] {
-        let n = m22s3b_count(body, needle);
-        assert_eq!(
-            n, 1,
-            "PRV1-6c FAIL ({table} write): anonymize_display_names must write the `{table}` \
-             row EXACTLY once, as `{needle}`; found {n}. ZERO means {why}. MORE THAN ONE is a \
-             second, unreviewed write in the one flow that cannot be undone. Composing the \
-             row through its pure seam (pinned above) and never writing the result is the \
-             measured cheat this clause closes — the compiler is silent about it, because a \
-             pure function's return value is not `#[must_use]`."
-        );
-    }
-
-    assert_eq!(
-        m22s3b_count(body, concat!(".del", "ete(")),
-        0,
-        "PRV1-6c FAIL (never delete): anonymize_display_names contains a row delete. \
-         ADR-0119 carries an explicit NEVER-DELETE invariant for `profile`, restated in the \
-         table's own doc comment, and spec §3 requires the `player` row to survive as the \
-         anchor `character` and every still-live multi-user row point at. Anonymize is a \
-         field update and must stay one — that is what makes the invariant hold by \
-         construction rather than by exception."
-    );
-
-    for banned in [concat!("rek", "ey"), concat!("tombstoned", "_profile")] {
-        assert_eq!(
-            m22s3b_count(body, banned),
-            0,
-            "PRV1-6c FAIL (wrong tombstone): anonymize_display_names names `{banned}`. That \
-             path writes the M21 GUEST-CLAIM sentinel and ALSO zeroes rating, wins and \
-             losses — so reached from the deletion cascade it renders a DELETED account as \
-             an unclaimed guest whose stats were carried forward, and destroys ladder \
-             columns spec §3 says survive. ADR-0228 D1 bans those substrings in every new \
-             identifier of this slice for exactly that reason."
-        );
-    }
-
-    for banned in [
-        concat!("=ctx.db.", "profile()"),
-        concat!("=ctx.db.", "player()"),
-    ] {
-        assert_eq!(
-            m22s3b_count(body, banned),
-            0,
-            "PRV1-6c FAIL (split binding): anonymize_display_names contains `{banned}`. This \
-             file bans that substring FILE-WIDE in \
-             `d1_scan_no_eager_write_in_get_or_init` clauses (b) and (c), because assigning a \
-             table accessor to a binding is the documented evasion of the never-deleted \
-             structural scan (ADR-0119 D3 / RL-2). A `let Some(p) = ctx.db.player()...` read \
-             produces it. Use the `match ctx.db.player().identity().find(owner)` form that \
-             `get_or_init_profile` and `rekey_profile` already use — this body-scoped \
-             restatement exists so the failure names the reason instead of pointing at a \
-             whole-file ban."
-        );
-    }
-}
-
-/// **PRV1-9 (scan)** — `set_profile_name` carries the §4.7 deletion gate, before
-/// it writes.
-///
-/// THE HOLE THIS CLOSES (ADR-0228 D7(h), RT-2). `set_profile_name` writes
-/// `player.name`, which is an ANONYMIZE-classified column that the cascade has
-/// just overwritten with the tombstone. Without the gate, a still-connected
-/// terminal session calls this reducer one moment after the cascade completes
-/// and puts its own display name back — on a `player` row the cascade
-/// deliberately left alive, and from there onto the PUBLIC `profile` row via the
-/// ADR-0125 passive mirror at the next rated game. PRV1-6c is hollowed by a
-/// single reducer call, and nothing anywhere logs it.
-///
-/// The `?` IS PART OF THE PIN, for the reason `trading_tests.rs` and
-/// `pvp_tests.rs` both already record: `let _ = crate::guards::require_not_deleting(..);`
-/// compiles, calls the gate, throws the answer away, renames anyway, and stays
-/// clippy-clean under `-D warnings` because `let_underscore_must_use` is off by
-/// default.
-///
-/// DEPTH 0 IS THE REACHABILITY CLAUSE: every other assertion here is
-/// POSITION-based and therefore blind to a gate nested in a never-taken block,
-/// which leaves the exact text in the file and gates nothing.
-///
-/// Kills: no gate at all; a gate whose result is discarded; a gate nested in a
-///        conditional; a gate placed after the `player` write, which renames
-///        first and reports afterwards.
-#[test]
-fn m22s3b_set_profile_name_gated() {
-    let squashed = stripped_for_scan(RANKING_RS);
-    let body = extract_squashed_fn_body(&squashed, concat!("fnset_profile", "_name("))
-        .expect("PRV1-9: fn set_profile_name not found in ranking.rs");
-
-    let gate = concat!("crate::guards::require_not_", "deleting(ctx,");
-    let n_gate = m22s3b_count(body, gate);
-    assert_eq!(
-        n_gate, 1,
-        "PRV1-9 FAIL: set_profile_name must call `{gate}..)?;` EXACTLY once; found {n_gate}. \
-         ZERO is the RT-2 hole ADR-0228 D7(h) closes: this reducer writes `player.name`, an \
-         ANONYMIZE-classified column the cascade has just tombstoned, so a still-connected \
-         terminal session can put its own display name back one call after the erasure \
-         completes — and the ADR-0125 passive mirror then carries it onto the PUBLIC \
-         `profile` row at the next rated game. PRV1-6c is hollowed by one reducer call. The \
-         `ctx` subject is part of the needle: the gate answers about the CALLER, and it can \
-         only do that from the reducer context. MORE THAN ONE is a duplicated guard."
-    );
-
-    let at_gate = body
-        .find(gate)
-        .expect("PRV1-9: the gate counted 1 but could not be located");
-
-    // The `?` must be in the gate's OWN statement — a discarded result compiles,
-    // calls the gate, ignores the answer, and renames anyway.
-    let stmt_end = body[at_gate..]
-        .find(';')
-        .map(|r| at_gate + r)
-        .unwrap_or(body.len());
-    let stmt = &body[at_gate..stmt_end];
-    assert!(
-        stmt.contains('?'),
-        "PRV1-9 FAIL (discarded result): the deletion-gate statement in set_profile_name \
-         carries no `?` propagation operator. `let _ = crate::guards::require_not_deleting(..);` \
-         compiles, CALLS the gate, throws the answer away, and renames anyway — and it stays \
-         clippy-clean under -D warnings because `let_underscore_must_use` is off by default. \
-         Both `trading_tests.rs` and `pvp_tests.rs` record this exact cheat against their own \
-         §4.7 gates. Statement read: {stmt:?}"
-    );
-
-    // Reachability: the gate must be an unconditional top-level statement.
-    let opens = body[..at_gate].matches('{').count() as i64;
-    let closes = body[..at_gate].matches('}').count() as i64;
-    assert_eq!(
-        opens - closes,
-        0,
-        "PRV1-9 FAIL (reachability): the deletion gate in set_profile_name sits at brace \
-         depth {} of the reducer body, not 0. Every other assertion here is POSITION-based \
-         and blind to this: wrapping the statement in an always-false block, or in any other \
-         conditional, leaves the exact text in the file, keeps the count at 1, keeps it \
-         before the write — and never runs it.",
-        opens - closes
-    );
-
-    let write = concat!("player().identity().upd", "ate(");
-    let n_write = m22s3b_count(body, write);
-    assert_eq!(
-        n_write, 1,
-        "PRV1-9 FAIL (anchor): set_profile_name must write the player row EXACTLY once; \
-         found {n_write}. The ordering clause below anchors on it, so a second write would \
-         steer a first-hit index — and with ZERO the ordering clause is vacuously true and \
-         proves nothing."
-    );
-    let at_write = body
-        .find(write)
-        .expect("PRV1-9: the player write counted 1 but could not be located");
-    assert!(
-        at_gate < at_write,
-        "PRV1-9 FAIL (decision before effect): the deletion gate (offset {at_gate}) must \
-         precede the `player` name write (offset {at_write}). A gate that runs after the \
-         rename has already un-tombstoned the row and merely reports it — and the rename is \
-         the whole effect this reducer has."
-    );
-}
-
-/// Non-overlapping occurrences of `needle` in `hay`.
-///
-/// A local, slice-prefixed counter rather than a reuse of any sibling module's:
-/// every `*_tests.rs` file in this crate is a `#[cfg(test)]` child of its own
-/// production file and none can reach another's bare `fn` items (the precedent
-/// `content_cache_tests.rs` records for its own stripper copies).
-fn m22s3b_count(hay: &str, needle: &str) -> usize {
-    if needle.is_empty() {
-        return 0;
-    }
-    let mut n = 0usize;
-    let mut start = 0usize;
-    while let Some(rel) = hay[start..].find(needle) {
-        n += 1;
-        start += rel + needle.len();
-    }
-    n
-}
-
 // ===========================================================================
 // rb-41 — R-rb-25-X9 (ADR-0222 known-limit 2, closed by the ADR-0224 native
 // host migration): the REKEY exists-predicate for `profile`, exercised against
@@ -2831,443 +717,332 @@ fn rb41_profile_exists_tracks_real_profile_rows() {
     );
 }
 
-// === rb-81 (R-rb-47-ROSTER-PVP) — ADR-0251 ================================
-// `ranking.rs`'s REDUCER ROSTER IS CLOSED. EARS E1: WHEN a reducer file other than
-// trading.rs gains a new bare reducer attribute THE SYSTEM SHALL fail a
-// closed-roster test NAMING THE FILE. Clause order per ADR-0251 D3.
-// ==========================================================================
+// ===========================================================================
+// Native-host behavioural suite (debloat Phase 2: EV-ranking-security#rating-integrity,
+// ST-ranking_tests). The bindings half — set_profile_name is the ONLY client reducer
+// that can reach `player`/`profile` names, and no client reducer takes a rating — is
+// client-surface-privacy clause (D).
+// ===========================================================================
 
-/// Bytes that CONTINUE a Rust identifier (the raw-opener and module censuses).
-fn rb81_is_ident_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
+use crate::native_host_tests::{fixture as rk_fixture, Fixture as RkFixture, Handle as RkHandle};
+use crate::schema::{Account as RkAccount, Battle as RkBattle, Player as RkPlayer};
+use game_core::BattleOutcome as RkOutcome;
+
+fn rk_a() -> Identity {
+    Identity::from_byte_array([0x3A; 32])
+}
+fn rk_b() -> Identity {
+    Identity::from_byte_array([0x3B; 32])
 }
 
-/// Attribute openers on RAW text: a hash whose next NON-WHITESPACE byte is the
-/// opening bracket, so a hash spaced away from its bracket still counts.
-fn rb81_attr_openers(src: &str) -> usize {
-    let bytes = src.as_bytes();
-    let mut n = 0usize;
-    for (i, b) in bytes.iter().enumerate() {
-        if *b == b'#' {
-            let mut j = i + 1;
-            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
-                j += 1;
-            }
-            if j < bytes.len() && bytes[j] == b'[' {
-                n += 1;
-            }
-        }
-    }
-    n
+struct RkWorld<'a> {
+    players: RkHandle<'a, RkPlayer>,
+    profiles: RkHandle<'a, Profile>,
+    accounts: RkHandle<'a, RkAccount>,
 }
 
-/// Raw-string OPENERS (`r`/`br`, any hashes, then the quote) not preceded by an
-/// identifier byte. Never spelled literally: this file's strippers run strings
-/// FIRST, so a comment holding one plants what it bans.
-///
-/// `strip_rust_strings` (:94) DOES lex raw strings, so this is a precondition
-/// rather than a ban on something invisible: it lexes them WITHOUT the
-/// identifier-prefix test, so it cannot tell an opener from the tail of a word.
-/// HONEST LIMIT, disclosed: the prefix test makes this clause blind to the other
-/// polarity — a word ENDING in `r` followed immediately by a quote, inside a
-/// comment, is read by the stripper as an opener. P4 and P5 both fire on that
-/// input, so it is a stated limit of THIS clause, not a hole in the test.
-fn rb81_raw_string_openers(src: &str) -> usize {
-    let quote = 0x22u8;
-    let bytes = src.as_bytes();
-    let mut n = 0usize;
-    for (i, b) in bytes.iter().enumerate() {
-        let start = match *b {
-            b'r' => i + 1,
-            b'b' if bytes.get(i + 1) == Some(&b'r') => i + 2,
-            _ => continue,
-        };
-        if i > 0 && rb81_is_ident_byte(bytes[i - 1]) {
-            continue;
-        }
-        let mut j = start;
-        while bytes.get(j) == Some(&b'#') {
-            j += 1;
-        }
-        if bytes.get(j) == Some(&quote) {
-            n += 1;
-        }
-    }
-    n
-}
-
-/// 1-based start line of every comment REGION (a contiguous run of full-line
-/// comments, or one trailing comment) carrying an ODD double-quote count.
-fn rb81_odd_quote_comment_regions(src: &str) -> Vec<usize> {
-    let quote = char::from(0x22u8);
-    let slashes = ["/", "/"].concat();
-    let mut odd: Vec<usize> = Vec::new();
-    let mut run: Option<(usize, usize)> = None;
-    for (idx, line) in src.lines().enumerate() {
-        let lineno = idx + 1;
-        if line.trim_start().starts_with(slashes.as_str()) {
-            let (start, q) = run.unwrap_or((lineno, 0));
-            run = Some((start, q + line.matches(quote).count()));
-            continue;
-        }
-        if let Some((start, q)) = run.take() {
-            if q % 2 == 1 {
-                odd.push(start);
-            }
-        }
-        if let Some(at) = line.find(slashes.as_str()) {
-            if line[at..].matches(quote).count() % 2 == 1 {
-                odd.push(lineno);
-            }
-        }
-    }
-    if let Some((start, q)) = run {
-        if q % 2 == 1 {
-            odd.push(start);
-        }
-    }
-    odd
-}
-
-/// Every conditional-compilation attribute of `view` in FILE ORDER, read by
-/// paren-depth so a nested predicate cannot truncate it.
-fn rb81_cfg_predicates(view: &str) -> Vec<String> {
-    let open = ["#", "[cfg("].concat();
-    let bytes = view.as_bytes();
-    let mut out: Vec<String> = Vec::new();
-    let mut from = 0usize;
-    while let Some(rel) = view[from..].find(open.as_str()) {
-        let at = from + rel;
-        let mut depth = 1usize;
-        let mut k = at + open.len();
-        while k < bytes.len() && depth > 0 {
-            if bytes[k] == b'(' {
-                depth += 1;
-            } else if bytes[k] == b')' {
-                depth -= 1;
-            }
-            k += 1;
-        }
-        if depth == 0 && k < bytes.len() && bytes[k] == b']' {
-            k += 1;
-        }
-        out.push(view[at..k].to_string());
-        from = at + open.len();
-    }
-    out
-}
-
-/// Occurrences of `needle` in `hay` bounded by non-identifier bytes on BOTH
-/// sides — so `module` never counts as the module keyword.
-fn rb81_ident_boundary_count(hay: &str, needle: &str) -> usize {
-    let bytes = hay.as_bytes();
-    let mut n = 0usize;
-    let mut from = 0usize;
-    while let Some(rel) = hay[from..].find(needle) {
-        let at = from + rel;
-        let after = at + needle.len();
-        let left = at == 0 || !rb81_is_ident_byte(bytes[at - 1]);
-        let right = after >= bytes.len() || !rb81_is_ident_byte(bytes[after]);
-        if left && right {
-            n += 1;
-        }
-        from = after;
-    }
-    n
-}
-
-/// Every function name carrying a BARE reducer attribute, in file order. A PARSE,
-/// not a needle list: an unresolvable attribute PANICS rather than being skipped.
-fn rb81_reducer_names(squashed: &str) -> Vec<String> {
-    let attr = ["#[spacetimedb", "::reducer]"].concat();
-    let public_fn = ["pub", "fn"].concat();
-    let lparen = char::from(0x28u8);
-    let mut out: Vec<String> = Vec::new();
-    let mut from = 0usize;
-    while let Some(rel) = squashed[from..].find(attr.as_str()) {
-        let at = from + rel + attr.len();
-        let rest = &squashed[at..];
-        let tail = rest.strip_prefix(public_fn.as_str()).unwrap_or_else(|| {
-            let preview: String = rest.chars().take(60).collect();
-            panic!(
-                "[rb81/roster-parse] E1 FAIL: a bare reducer attribute in `ranking.rs` is not \
-                 followed by a PUBLIC function declaration. An attribute this walk cannot \
-                 parse is a reducer that never reaches the roster — a silent absence — so it \
-                 fails LOUD instead. Text after the attribute: {preview:?}"
-            )
+fn rk_world(fx: &RkFixture) -> RkWorld<'_> {
+    let w = RkWorld {
+        players: fx
+            .table::<RkPlayer>("player", "identity", |r| r.identity)
+            .writable()
+            .unique(),
+        profiles: fx
+            .table::<Profile>("profile", "identity", |r| r.identity)
+            .writable()
+            .unique(),
+        accounts: fx.table::<RkAccount>("account", "identity", |r| r.identity),
+    };
+    for (who, name) in [(rk_a(), "Alice"), (rk_b(), "Bob")] {
+        w.players.seed(&RkPlayer {
+            identity: who,
+            entity_id: u64::from(who.to_byte_array()[0]),
+            name: name.to_string(),
+            online: true,
+            last_input_seq: 0,
         });
-        let name: String = tail
-            .chars()
-            .take_while(|c| c.is_alphanumeric() || *c == '_')
-            .collect();
-        assert!(
-            !name.is_empty() && tail[name.len()..].starts_with(lparen),
-            "[rb81/roster-parse] E1 FAIL: a bare reducer attribute in `ranking.rs` is followed \
-             by a declaration this walk cannot name (empty identifier, or no argument list); \
-             an unnamed reducer cannot be classified, so it must never be skipped."
-        );
-        out.push(name);
-        from = at;
     }
-    out
+    w
 }
 
-/// **E1 (roster closure)** — `ranking.rs` publishes EXACTLY 1 reducer. T0
-/// (measured): a plain bare twin here was KILLED ONLY by the pre-existing
-/// cross-file COUNT pin `m17a_rl7_server_ranking_module_invariants`
-/// (pvp_tests.rs:1260-1271) — a count, never a set. GREEN AT HEAD: ZERO production
-/// edits, an ADR-0224 hardening pin whose teeth are T0 plus the live register.
-///
-/// Designated register rows (`memory/projects/gates/rb-81.mutants.py`): M6 the
-/// braced-rename import and M9 the neighbouring entry-point macro twin — the only
-/// two rows that count does NOT also kill — plus M20 (reworded comment + real
-/// twin) and M23 (the strings-first polarity attack). Rationale: ADR-0251 D1-D4.
-#[test]
-fn rb81_ranking_reducer_roster_is_closed() {
-    // --- 1 [rb81/substrate] -------------------------------------------------
-    let quote = char::from(0x22u8);
-    let open_block = ["/", "*"].concat();
-    let close_block = ["*", "/"].concat();
-    let n_open = RANKING_RS.matches(open_block.as_str()).count();
-    let n_close = RANKING_RS.matches(close_block.as_str()).count();
-    assert_eq!(
-        (n_open, n_close),
-        (0, 0),
-        "[rb81/substrate] P1 FAIL: `ranking.rs` carries {n_open} block-comment opener(s) and \
-         {n_close} closer(s); both must be ZERO. `strip_rust_comments` (:190) reads an \
-         UNPAIRED marker inside a string literal as a real comment and blanks code to the next \
-         closer — which is how a twin reducer vanishes from every clause below."
-    );
-
-    let tick = char::from(0x27u8);
-    let backslash = char::from(0x5Cu8);
-    let char_quote: String = [tick, quote, tick].iter().collect();
-    let char_quote_escaped: String = [tick, backslash, quote, tick].iter().collect();
-    let n_char_quote = RANKING_RS.matches(char_quote.as_str()).count()
-        + RANKING_RS.matches(char_quote_escaped.as_str()).count();
-    assert_eq!(
-        n_char_quote, 0,
-        "[rb81/substrate] P2 FAIL: `ranking.rs` spells the double-quote CHAR literal \
-         {n_char_quote} time(s) — BOTH the plain three-byte form and the backslash-escaped \
-         four-byte one are counted — and must spell it ZERO. EITHER spelling opens a PHANTOM \
-         STRING in this file's string stripper, which has no char-literal branch: the quote \
-         byte between the ticks is read as a string OPENER and inverts string/code polarity \
-         for the rest of the file (the escaped form was MEASURED CI-clean at 919/919 before \
-         this clause counted it). The byte-string spellings are covered transitively — they \
-         contain these same byte sequences. Spell the quote as a numeric byte instead."
-    );
-
-    let n_raw_open = rb81_raw_string_openers(RANKING_RS);
-    assert_eq!(
-        n_raw_open, 0,
-        "[rb81/substrate] P3 FAIL: `ranking.rs` opens {n_raw_open} raw string(s) and must open \
-         ZERO. `strip_rust_strings` (:94) lexes raw strings but cannot tell an opener from the \
-         tail of a word, and it runs BEFORE the comment pass, so a raw literal here is a \
-         polarity hazard rather than a handled case."
-    );
-
-    let odd_regions = rb81_odd_quote_comment_regions(RANKING_RS);
-    assert!(
-        odd_regions.is_empty(),
-        "[rb81/substrate] P4 FAIL: the comment region(s) starting at line(s) {odd_regions:?} \
-         of `ranking.rs` carry an ODD number of double quotes. THIS IS THE STRINGS-FIRST FILE: \
-         an odd region opens a phantom string literal that blanks REAL CODE up to the next \
-         quote, so a twin reducer below it vanishes from every clause here while the module \
-         still publishes it — the desynchronisation P5 cannot see, because both orders are \
-         then equally wrong — or a `//` sequence inside a string literal on that line, the \
-         same hazard read from the other side."
-    );
-
-    let stripped = strip_rust_comments(&strip_rust_strings(RANKING_RS));
-    let order_a = squash_ws(&stripped);
-    let order_b = squash_ws(&strip_rust_strings(&strip_rust_comments(RANKING_RS)));
-    let (ba, bb) = (order_a.as_bytes(), order_b.as_bytes());
-    let diverge = ba.iter().zip(bb).position(|(x, y)| x != y);
-    let (len_a, len_b) = (ba.len(), bb.len());
-    assert!(
-        order_a == order_b,
-        "[rb81/substrate] P5 FAIL: the two stripper orders disagree on `ranking.rs` (lengths \
-         {len_a}/{len_b}, first divergence at byte {diverge:?}). They can only differ when a \
-         comment marker lives inside a string or a quote lives unbalanced inside a comment — \
-         i.e. when the scanned view is no longer the file."
-    );
-    assert!(
-        order_a == stripped_for_scan(RANKING_RS),
-        "[rb81/substrate] P5b (pipeline drift) FAIL: the view this test composes from \
-         `strip_rust_strings` + `strip_rust_comments` + `squash_ws` is no longer what \
-         `stripped_for_scan` (:238) returns. That equality is an IDENTITY BY CONSTRUCTION \
-         today, so this is a DRIFT ALARM for the file's shared pipeline, NOT a second \
-         measurement: if it fires, every other source scan in this file reads different text \
-         than the roster below. Re-derive the two together, never one alone."
-    );
-    let file = order_a;
-
-    // --- 2 [rb81/tail] ------------------------------------------------------
-    let comments_only = squash_ws(&strip_rust_comments(RANKING_RS));
-    let q = quote.to_string();
-    let qs = q.as_str();
-    let path_attr = ["#", "[path=", qs, "ranking_tests.rs", qs, "]"].concat();
-    let cfg_test = ["#", "[cfg(test)]"].concat();
-    let mod_decl = ["mod", "ranking", "_tests;"].concat();
-    let tail = format!("{cfg_test}{path_attr}{mod_decl}");
-    let from = comments_only.chars().count().saturating_sub(160);
-    let seen: String = comments_only.chars().skip(from).collect();
-    assert!(
-        comments_only.ends_with(tail.as_str()),
-        "[rb81/tail] FAIL: the comment-stripped, strings-INTACT view of `ranking.rs` must END \
-         with `{tail}`; it ends with `{seen}`. Non-vacuity AND relocation guard: an \
-         always-true conditional plus a retargeted module path compiles THIS test module out \
-         of a different file, leaving every clause below reading source nobody ships. Anything \
-         appended after the tail lands here too."
-    );
-
-    // --- 3 [rb81/cfg-roster] ------------------------------------------------
-    let cfgs = rb81_cfg_predicates(comments_only.as_str());
-    let want_cfgs = [cfg_test.clone()];
-    assert_eq!(
-        cfgs, want_cfgs,
-        "[rb81/cfg-roster] FAIL: `ranking.rs` carries the conditional-compilation predicates \
-         {cfgs:?} and must carry exactly {want_cfgs:?}. The ONE predicate here gates the test \
-         module; a second predicate anywhere in this file is a build-visibility fork the \
-         roster below cannot see."
-    );
-
-    // --- 4 [rb81/roster] ----------------------------------------------------
-    // The WALK runs before the count on purpose: an attribute it cannot parse is
-    // a LOUD [rb81/roster-parse] panic, and a count mismatch must not pre-empt it.
-    let got: std::collections::BTreeSet<String> =
-        rb81_reducer_names(file.as_str()).into_iter().collect();
-    let attr_bare = ["#[spacetimedb", "::reducer]"].concat();
-    let n_bare = file.matches(attr_bare.as_str()).count();
-    assert_eq!(
-        n_bare, 1,
-        "[rb81/roster] FAIL (count): `ranking.rs` carries {n_bare} bare reducer attribute(s) \
-         and must carry exactly 1; the names this walk resolved are {got:?}. Reported BEFORE \
-         the SET because it is not implied by it: a twin the walk resolves to an existing name \
-         leaves the SET equal while the file publishes one more entry point."
-    );
-    let want = std::collections::BTreeSet::from([["set_profile_", "name"].concat()]);
-    let missing: Vec<&String> = want.difference(&got).collect();
-    let extra: Vec<&String> = got.difference(&want).collect();
-    assert!(
-        missing.is_empty() && extra.is_empty(),
-        "[rb81/roster] FAIL (set): the reducers `ranking.rs` publishes are {got:?}; the roster \
-         this slice reasoned about is {want:?}. Missing: {missing:?}. UNEXPECTED: {extra:?}. \
-         AN UNEXPECTED NAME IS THE DANGEROUS DIRECTION — a second reducer writing `profile` \
-         directly breaks the module-write-only invariant (ADR-0119 D6), and a copy of the \
-         rename reducer minus its validation or its deletion gate un-tombstones a display name \
-         on a PUBLIC leaderboard; this SET is what the pre-existing cross-file COUNT could \
-         never give — while a MISSING name means a reducer was renamed or removed and every \
-         pin scoped to it is now vacuous. Classify a new reducer DELIBERATELY and add it here \
-         AND to the censuses that must fence it; never delete a name to make a build green."
-    );
-
-    // --- 5 [rb81/attr-any] --------------------------------------------------
-    let attr_any = ["#[spacetimedb", "::reducer"].concat();
-    let n_any = file.matches(attr_any.as_str()).count();
-    assert_eq!(
-        n_any, n_bare,
-        "[rb81/attr-any] FAIL: `ranking.rs` carries {n_any} reducer attribute(s) but only \
-         {n_bare} are the BARE form. A PARAMETERISED attribute is a wire-name twin: it \
-         publishes a reducer under the name clients call while the Rust item every pin here \
-         reads is a different, possibly ungated, one."
-    );
-
-    // --- 6 [rb81/attr-path] -------------------------------------------------
-    let path_token = ["::red", "ucer"].concat();
-    let n_path_token = file.matches(path_token.as_str()).count();
-    assert_eq!(
-        n_path_token, n_bare,
-        "[rb81/attr-path] FAIL: `ranking.rs` spells the path-qualified reducer token \
-         {n_path_token} time(s) while carrying {n_bare} bare attribute(s); the two must AGREE. \
-         Every bare attribute contains this token, so the count can only ever be GREATER — so \
-         this asserts the macro is reached NOWHERE ELSE: not imported by name, not through an \
-         aliased crate path, not through a leading-colons path."
-    );
-
-    // --- 7 [rb81/attr-partition] --------------------------------------------
-    let kinds: [(&str, String, usize); 3] = [
-        ("reducer", attr_any.clone(), 1),
-        ("cfg", ["#", "[cfg("].concat(), 1),
-        ("path", ["#", "[path"].concat(), 1),
-    ];
-    let mut census = String::new();
-    let mut want_total = 0usize;
-    let mut found: Vec<usize> = Vec::new();
-    for (label, needle, want_n) in kinds.iter() {
-        let n = file.matches(needle.as_str()).count();
-        found.push(n);
-        want_total += *want_n;
-        census.push_str(&format!("{label}={n}/{want_n} "));
+impl RkWorld<'_> {
+    fn name(&self, who: Identity) -> Option<String> {
+        self.players
+            .rows()
+            .into_iter()
+            .find(|p| p.identity == who)
+            .map(|p| p.name)
     }
-    for (i, (label, _, want_n)) in kinds.iter().enumerate() {
-        let n = found[i];
+    fn profile(&self, who: Identity) -> Option<(String, i32, u32, u32)> {
+        self.profiles
+            .rows()
+            .into_iter()
+            .find(|p| p.identity == who)
+            .map(|p| (p.name, p.rating, p.wins, p.losses))
+    }
+    fn seed_profile(&self, who: Identity, name: &str, rating: i32, wins: u32, losses: u32) {
+        self.profiles.seed(&Profile {
+            identity: who,
+            name: name.to_string(),
+            rating,
+            wins,
+            losses,
+        });
+    }
+    fn snapshot(&self) -> Vec<Vec<u8>> {
+        use spacetimedb::sats::bsatn::to_vec;
+        vec![
+            to_vec(&self.players.rows()).unwrap(),
+            to_vec(&self.profiles.rows()).unwrap(),
+        ]
+    }
+}
+
+/// EV-ranking-security#rating-integrity: `set_profile_name` refuses an unjoined or a
+/// deletion-gated caller and an invalid name without writing; on success it writes ONLY
+/// the caller's `player.name` (validated/normalised) — the caller's profile row (rating,
+/// W/L, leaderboard name) and every other row stay byte-identical.
+/// kills: set_profile_name -> Ok(()), validation skipped, deletion gate removed, a
+/// profile write added, the wrong player row updated.
+#[test]
+fn nh_set_profile_name_writes_only_the_callers_player_name() {
+    let fx = rk_fixture();
+    let w = rk_world(&fx);
+    w.seed_profile(rk_a(), "Alice", 1234, 5, 6);
+    w.seed_profile(rk_b(), "Bob", 999, 1, 2);
+    let before = w.snapshot();
+    let ghost = Identity::from_byte_array([0x3F; 32]);
+    assert_eq!(
+        fx.run_as(ghost, |ctx| super::set_profile_name(
+            ctx,
+            "Ghost".to_string()
+        )),
+        Err("not joined".to_string())
+    );
+    let long = "x".repeat(crate::MAX_NAME_LEN + 1);
+    for bad in ["", "   ", "(claimed guest)", long.as_str()] {
+        let got = fx.run_as(rk_a(), |ctx| super::set_profile_name(ctx, bad.to_string()));
         assert_eq!(
-            n, *want_n,
-            "[rb81/attr-partition] FAIL ({label}): found/expected per kind: {census}. THE \
-             PARTITION IS THE ONLY CLAUSE THAT SEES AN ENTRY POINT SPELLED SOME OTHER WAY \
-             (ADR-0251 D3/D4 enumerates the spellings — imported by name, aliased crate path, \
-             braced rename, a neighbouring entry-point macro, a conditional attribute \
-             expanding to it). Each needs an attribute opener, so none can be added without \
-             moving a number here. THIS IS A SECURITY CENSUS: add the attribute deliberately, \
-             then bump this kind's pin and the total in the SAME edit; never relax a number \
-             alone."
+            got,
+            crate::guards::validate_name(bad).map(|_| ()),
+            "invalid name {bad:?}"
+        );
+        assert!(got.is_err(), "{bad:?} must be refused");
+    }
+    assert_eq!(w.snapshot(), before, "refusals write nothing");
+    assert_eq!(
+        fx.run_as(rk_a(), |ctx| super::set_profile_name(
+            ctx,
+            "  Alicia ".to_string()
+        )),
+        Ok(())
+    );
+    assert_eq!(
+        w.name(rk_a()),
+        Some("Alicia".to_string()),
+        "the validated (trimmed) name lands"
+    );
+    assert_eq!(
+        w.name(rk_b()),
+        Some("Bob".to_string()),
+        "no other player is renamed"
+    );
+    assert_eq!(
+        w.profile(rk_a()),
+        Some(("Alice".to_string(), 1234, 5, 6)),
+        "the profile row (rating, W/L, leaderboard name) is untouched"
+    );
+    assert_eq!(w.profile(rk_b()), Some(("Bob".to_string(), 999, 1, 2)));
+
+    // Deletion-gated caller (m22-s3b): refused before any write.
+    drop(fx);
+    let fx = rk_fixture();
+    let w = rk_world(&fx);
+    w.accounts.seed(&crate::accounts::requested_deletion(
+        crate::accounts::new_account_row(rk_a(), String::new(), 0),
+        1,
+    ));
+    let before = w.snapshot();
+    assert!(fx
+        .run_as(rk_a(), |ctx| super::set_profile_name(
+            ctx,
+            "Evil".to_string()
+        ))
+        .is_err());
+    assert_eq!(
+        w.snapshot(),
+        before,
+        "a deletion-gated caller cannot un-tombstone a name"
+    );
+}
+
+/// ST-pvp_tests#settle-rating (rt_m17_01 as behaviour): `apply_pvp_rating` maps the
+/// winner from the outcome — SideAWins rates `player_identity` up, SideBWins rates
+/// `opponent_identity` up — updating existing rows IN PLACE from their current ratings
+/// (one compute for both) and refreshing the leaderboard name from the live player row;
+/// Fled / Ongoing and a practice self-battle never touch the ladder.
+/// kills: winner/loser swapped, wins/losses swapped, INITIAL used instead of the stored
+/// rating, is_ranked_pvp guard removed, Fled rated.
+#[test]
+fn nh_apply_pvp_rating_maps_winner_from_outcome_and_updates_in_place() {
+    let battle = |player: Identity, opponent: Identity, outcome: RkOutcome| {
+        let mut b = RkBattle {
+            battle_id: 1,
+            player_identity: player,
+            opponent_identity: opponent,
+            state: game_core::BattleState {
+                side_a: game_core::BattleSide {
+                    active: 0,
+                    team: vec![],
+                },
+                side_b: game_core::BattleSide {
+                    active: 0,
+                    team: vec![],
+                },
+                outcome: RkOutcome::Ongoing,
+                turn_number: 3,
+                weather: None,
+            },
+            party_monster_ids: vec![],
+            opponent_monster_ids: vec![],
+            created_at_ms: 0,
+        };
+        b.state.outcome = outcome;
+        b
+    };
+    for (outcome, winner, loser) in [
+        (RkOutcome::SideAWins, rk_a(), rk_b()),
+        (RkOutcome::SideBWins, rk_b(), rk_a()),
+    ] {
+        let fx = rk_fixture();
+        let w = rk_world(&fx);
+        let start = |who: Identity| if who == rk_a() { 1200 } else { 800 };
+        w.seed_profile(rk_a(), "stale-a", start(rk_a()), 3, 4);
+        w.seed_profile(rk_b(), "stale-b", start(rk_b()), 1, 1);
+        let record = |who: Identity| if who == rk_a() { (3u32, 4u32) } else { (1, 1) };
+        super::apply_pvp_rating(&fx.ctx(), &battle(rk_a(), rk_b(), outcome));
+        let (rw, rl) = game_core::compute_rating_update(start(winner), start(loser));
+        let live = |who: Identity| (if who == rk_a() { "Alice" } else { "Bob" }).to_string();
+        let (ww, wl) = record(winner);
+        let (lw, ll) = record(loser);
+        assert_eq!(
+            w.profile(winner),
+            Some((live(winner), rw, ww + 1, wl)),
+            "{outcome:?}: winner"
+        );
+        assert_eq!(
+            w.profile(loser),
+            Some((live(loser), rl, lw, ll + 1)),
+            "{outcome:?}: loser"
+        );
+        assert_eq!(
+            w.profiles.rows().len(),
+            2,
+            "updated in place, nothing inserted or deleted"
         );
     }
-    let attr_open = ["#", "["].concat();
-    let n_all = file.matches(attr_open.as_str()).count();
+    for (label, b) in [
+        ("Fled", battle(rk_a(), rk_b(), RkOutcome::Fled)),
+        ("Ongoing", battle(rk_a(), rk_b(), RkOutcome::Ongoing)),
+        (
+            "practice self-battle",
+            battle(rk_a(), rk_a(), RkOutcome::SideAWins),
+        ),
+        (
+            "wild battle",
+            battle(rk_a(), crate::WILD_IDENTITY, RkOutcome::SideAWins),
+        ),
+    ] {
+        let fx = rk_fixture();
+        let w = rk_world(&fx);
+        super::apply_pvp_rating(&fx.ctx(), &b);
+        assert!(
+            w.profiles.rows().is_empty(),
+            "{label}: never rated (no profile created)"
+        );
+    }
+    // First rated game for fresh identities: both rows inserted from INITIAL_RATING.
+    let fx = rk_fixture();
+    let w = rk_world(&fx);
+    super::apply_pvp_rating(&fx.ctx(), &battle(rk_a(), rk_b(), RkOutcome::SideAWins));
+    let (rw, rl) =
+        game_core::compute_rating_update(game_core::INITIAL_RATING, game_core::INITIAL_RATING);
+    assert_eq!(w.profile(rk_a()), Some(("Alice".to_string(), rw, 1, 0)));
+    assert_eq!(w.profile(rk_b()), Some(("Bob".to_string(), rl, 0, 1)));
+}
+
+/// EV-ranking-security#rating-integrity (rekey) + AUTH-23/25: `rekey_profile` carries the
+/// guest's rating/W/L onto the destination (creating it with the destination's live name
+/// when absent, keeping an existing destination's name) and TOMBSTONES the guest row in
+/// place — the un-typable claimed-guest name, zeroed stats — never deleting it; a guest
+/// with no profile is a no-op.
+/// kills: rekey_profile -> (), tombstone skipped, stats not carried, guest deleted.
+#[test]
+fn nh_rekey_profile_carries_stats_and_tombstones_the_guest() {
+    let fx = rk_fixture();
+    let w = rk_world(&fx);
+    w.seed_profile(rk_a(), "Guest", 1300, 5, 2);
+    let ctx = fx.ctx();
+    super::rekey_profile(&ctx, rk_a(), rk_b());
     assert_eq!(
-        n_all, want_total,
-        "[rb81/attr-partition] FAIL (total): `ranking.rs` carries {n_all} attribute opener(s) \
-         on the stripped view while the pinned kinds account for {want_total} ({census}). The \
-         difference is an UNKNOWN kind and that bucket must be ZERO — which is what stops a \
-         net-zero swap balancing. Add it deliberately and bump both numbers in one edit."
+        w.profile(rk_b()),
+        Some(("Bob".to_string(), 1300, 5, 2)),
+        "stats carried, live name"
+    );
+    assert_eq!(
+        w.profile(rk_a()),
+        Some((super::PROFILE_TOMBSTONE_NAME.to_string(), 0, 0, 0)),
+        "the guest row is tombstoned in place, not deleted"
+    );
+    assert!(
+        crate::guards::validate_name(super::PROFILE_TOMBSTONE_NAME).is_err(),
+        "un-typable"
     );
 
-    // --- 8 [rb81/mod-census] ------------------------------------------------
-    let mod_kw = ["m", "od"].concat();
-    let n_mod = rb81_ident_boundary_count(stripped.as_str(), mod_kw.as_str());
+    drop(fx);
+    let fx = rk_fixture();
+    let w = rk_world(&fx);
+    w.seed_profile(rk_a(), "Guest", 1300, 5, 2);
+    w.seed_profile(rk_b(), "Kept", 700, 9, 9);
+    super::rekey_profile(&fx.ctx(), rk_a(), rk_b());
     assert_eq!(
-        n_mod, 1,
-        "[rb81/mod-census] FAIL: `ranking.rs` declares {n_mod} module(s) and must declare \
-         exactly ONE — the test module in its tail. A second declaration moves a twin reducer \
-         into a file NO clause here reads (with or without a relocation attribute), and a \
-         shadowing module re-exporting the reducer macro under another name beats the path \
-         clause."
+        w.profile(rk_b()),
+        Some(("Bob".to_string(), 1300, 5, 2)),
+        "existing dest overwritten with carried stats"
     );
+    assert_eq!(w.profiles.rows().len(), 2);
 
-    // --- 9 [rb81/include-ban] + [rb81/macro-ban] ----------------------------
-    let inc = ["inc", "lude"].concat();
-    let n_inc = stripped.matches(inc.as_str()).count();
-    assert_eq!(
-        n_inc, 0,
-        "[rb81/include-ban] FAIL: the substring `include` appears {n_inc} time(s) on the \
-         stripped view of `ranking.rs` (any spelling — macro or identifier) and must appear \
-         ZERO. Source inlining splices another file's tokens into THIS module at compile time, \
-         so the spliced reducer ships while no view of this file's text can see it."
+    drop(fx);
+    let fx = rk_fixture();
+    let w = rk_world(&fx);
+    super::rekey_profile(&fx.ctx(), rk_a(), rk_b());
+    assert!(
+        w.profiles.rows().is_empty(),
+        "no guest profile: nothing created"
     );
-    let mac = ["macro", "_rules"].concat();
-    let n_mac = stripped.matches(mac.as_str()).count();
-    assert_eq!(
-        n_mac, 0,
-        "[rb81/macro-ban] FAIL: `ranking.rs` defines {n_mac} declarative macro(s) and must \
-         define ZERO. A macro assembling the attribute from fragments publishes an entry point \
-         every literal needle here counts as zero. One defined in ANOTHER module and invoked \
-         here is outside this file's window: R-rb-81-CROSSFILEMACRO."
-    );
+}
 
-    // --- 10 [rb81/attr-raw] -------------------------------------------------
-    let n_raw_attrs = rb81_attr_openers(RANKING_RS);
+/// PRV1-6 display-name anonymize as behaviour: `anonymize_display_names` renames the
+/// owner's `player` AND `profile` rows to the deletion tombstone (keeping every other
+/// field), leaves other players alone, and is a no-op for absent rows.
+/// kills: either loop removed, the wrong owner renamed, stats clobbered.
+#[test]
+fn nh_anonymize_display_names_tombstones_only_the_owner() {
+    let fx = rk_fixture();
+    let w = rk_world(&fx);
+    w.seed_profile(rk_a(), "Alice", 1111, 2, 3);
+    w.seed_profile(rk_b(), "Bob", 999, 1, 1);
+    super::anonymize_display_names(&fx.ctx(), rk_a());
+    let t = game_core::TOMBSTONE_DISPLAY_NAME.to_string();
+    assert_eq!(w.name(rk_a()), Some(t.clone()));
     assert_eq!(
-        n_raw_attrs, 4,
-        "[rb81/attr-raw] FAIL: the RAW text of `ranking.rs` carries {n_raw_attrs} attribute \
-         opener(s) and must carry 4 — the 3 the partition accounts for plus the ONE inside a \
-         comment (ranking.rs:222, the note recording that the re-key helper is NOT an entry \
-         point); rewording that comment while adding a real twin holds this number still while \
-         the partition moves. An opener is a hash whose next NON-WHITESPACE byte is the \
-         bracket, so a hash spaced away from its bracket still counts and this census does not \
-         lean on the formatter gate. The only clause reading NO stripper output, so it still \
-         bites if the strippers are ever fooled; adding an attribute moves the raw and the \
-         stripped numbers TOGETHER."
+        w.profile(rk_a()),
+        Some((t, 1111, 2, 3)),
+        "only the name changes"
     );
+    assert_eq!(w.name(rk_b()), Some("Bob".to_string()));
+    assert_eq!(w.profile(rk_b()), Some(("Bob".to_string(), 999, 1, 1)));
+    let before = w.snapshot();
+    super::anonymize_display_names(&fx.ctx(), Identity::from_byte_array([0x3F; 32]));
+    assert_eq!(w.snapshot(), before, "absent rows: no-op");
 }

@@ -2,7 +2,6 @@ name: CI
 on:
   push: { branches: [master] }
   pull_request:
-# Cancel superseded runs on the same ref (PR push / branch update) to save CI minutes.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -11,21 +10,17 @@ permissions:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 jobs:
+  # The steps mirror the justfile `ci:` recipe, one recipe per step.
   ci:
     runs-on: ubuntu-latest
     steps:
-      # fetch-depth: 0 so gitleaks-action can diff the PR commit range on
-      # pull_request events (a shallow clone => "stderr is not empty").
+      # fetch-depth 0 so gitleaks can diff the PR commit range.
       - uses: actions/checkout@v6 # v6
         with: { fetch-depth: 0 }
       - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
         env:
-          # gitleaks-action v2 requires a token to scan pull_request events
-          # (breaking change). The auto-provided GITHUB_TOKEN suffices.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      # Best-effort: needs the repo's Dependency graph enabled (a settings/GHAS
-      # feature, not toggleable from code). The BLOCKING SCA gate is `cargo audit`
-      # below; this surfaces dependency findings when the graph is available.
+      # Best-effort (needs the repo's dependency graph); cargo audit below is the blocking SCA gate.
       - name: Dependency review (SCA on PRs)
         if: github.event_name == 'pull_request'
         continue-on-error: true
@@ -34,8 +29,6 @@ jobs:
         with: { components: clippy, rustfmt, targets: wasm32-unknown-unknown }
       - uses: Swatinem/rust-cache@v2 # v2
         with: { prefix-key: v1-ci }
-      # wasm-pack builds the client-wasm pkg the prediction/movement-parity evals
-      # consume (`just eval`) — the runner has no wasm-pack otherwise.
       - uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
         with: { version: 'v0.15.0' }
       - uses: actions/setup-node@v7 # v7
@@ -44,21 +37,13 @@ jobs:
           cache: npm
           cache-dependency-path: client/package-lock.json
       - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
-      # Prebuilt binary installs (M-infra-a) — faster than cargo install from source.
       - uses: taiki-e/install-action@v2 # v2
         with: { tool: cargo-nextest }
       - run: just setup
-      # Pinned SpacetimeDB CLI (2.8.1) so `just eval` → bindings-drift runs the
-      # REAL `spacetime generate` + diff in the fast ci job (without the CLI it
-      # SKIPS, so committed-binding drift was catchable only in the slow e2e job
-      # — a correctness hole; see ADR-0050). Mirrors the e2e job's install/pin.
+      # Pinned spacetime CLI so the bindings-drift eval runs a real `spacetime generate`.
+      # `--yes`: the installer aborts on a non-tty runner without it.
       - name: Install SpacetimeDB CLI
-        # `--yes`: the installer prompts to confirm and aborts on a non-tty CI
-        # runner ("IO error: not a terminal") without it.
         run: |
-          # Download-then-execute (not `curl | sh`): satisfies semgrep
-          # gha-curl-pipe-shell and leaves an artifact that can be inspected
-          # or checksummed if the installer is ever pinned.
           curl -sSf -o /tmp/spacetime-install.sh https://install.spacetimedb.com
           sh /tmp/spacetime-install.sh --yes
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
@@ -71,41 +56,18 @@ jobs:
       - run: just typecheck
       - run: just test
       - run: just eval
-      # M5a: the client now imports the client-wasm pkg, so build it before the TS
-      # typecheck resolves the import (gitignored; rebuilt from source).
+      - run: just security
       - run: just wasm
-      # Client prediction layer (M3): headless TS typecheck + vitest/fast-check.
       - run: just client-typecheck
       - run: just client-test
-      # Tier-2 observability validation (lp-05, ADR-0201): the digest-pinned
-      # image validators over ops/observability/**. Strict: a missing docker
-      # FAILS here rather than skipping (EARS-2).
+      - run: just client-verify-build
       - run: just observability-validate
       - uses: taiki-e/install-action@v2 # v2
         with: { tool: cargo-audit }
       - name: SCA (cargo audit)
         run: cargo audit --file Cargo.lock
-      - name: SAST (Semgrep)
-        # `.claude/` is local dev automation (Claude Code hooks/skills/agents),
-        # not shipped product code — exclude it from the product SAST gate so
-        # tooling commits cannot red product CI. --exclude is subtractive only
-        # (unlike a bare .semgrepignore, which replaces Semgrep's defaults).
-        # github-actions-mutable-action-tag excluded: M8.5d (docs/m8.5d-plan.md)
-        # removed the project's own SHA-pinning requirement 2026-08-21 — version
-        # tags (@v2, @stable, ...) are now accepted policy — but this generic
-        # `auto`-config rule enforces the same thing independently and was left
-        # blocking master CI since. --exclude-rule is a targeted rule opt-out,
-        # not a blanket weakening of the SAST gate.
-        run: pipx run semgrep scan --config auto --error --exclude '.claude' --exclude-rule 'yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag'
-      - name: SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
 
-  # M5b (ADR-0009): the two-window e2e is now a merge gate run against a REAL
-  # version-pinned standalone SpacetimeDB in CI — not local-only. ADR-0039 records
-  # why a pinned CLI service realizes ADR-0009's "containerized spacetime" (CLI /
-  # server / committed-bindings version-match reliability; migrating to a service
-  # image is a named follow-up). Falsifiability: evals/e2e-desync-teeth.eval.mjs
-  # (ADR-0010) bites on a known desync fixture and asserts this job stays wired.
+  # Two-window Playwright e2e against a real, version-pinned SpacetimeDB (ADR-0009, ADR-0039).
   e2e:
     runs-on: ubuntu-latest
     steps:
@@ -122,21 +84,8 @@ jobs:
           cache: npm
           cache-dependency-path: client/package-lock.json
       - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
-      # Gate-of-gates anchor (ADR-0050 amendment A3): runs the ci-wiring guard from a
-      # job OUTSIDE the ci job's `just eval` step, so deleting/neutering that step
-      # cannot hide the check (non-self-sealing point, spec 13.5a-1). Must stay a bare
-      # exact `- run:` line — evals/ci-gate-wiring.eval.mjs matches this step form.
-      - run: node evals/ci-gate-wiring.eval.mjs
-      # Pinned SpacetimeDB CLI (2.8.1) so publish + `spacetime generate` protocol,
-      # the committed TS bindings, and the module all agree (ADR-0009).
       - name: Install SpacetimeDB CLI
-        # `--yes`: the installer prompts to confirm and aborts on a non-tty CI
-        # runner ("IO error: not a terminal") without it. The install also
-        # generates the local identity keypair used to publish.
         run: |
-          # Download-then-execute (not `curl | sh`): satisfies semgrep
-          # gha-curl-pipe-shell and leaves an artifact that can be inspected
-          # or checksummed if the installer is ever pinned.
           curl -sSf -o /tmp/spacetime-install.sh https://install.spacetimedb.com
           sh /tmp/spacetime-install.sh --yes
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
@@ -145,18 +94,11 @@ jobs:
           spacetime version install 2.8.1
           spacetime version use 2.8.1
           spacetime --version
-      # 13.5h (ADR-0086): pre-build the module wasm WITH dev_reducers, then
-      # global-setup publishes this artifact via `--bin-path` at its publish
-      # point — spacetime 2.6 `publish` has NO cargo-feature passthrough
-      # (ADR-0054), so pre-build-then---bin-path is the only way to publish a
-      # feature-gated module. Committed TS bindings are deliberately NOT
-      # regenerated from this build (dev reducers stay out of the default
-      # client bindings). Package name is `monster-realm-module` —
-      # `-p server-module` fails; the artifact is monster_realm_module.wasm.
+      # The e2e suite needs the dev_reducers build; `publish` has no feature passthrough, so
+      # global-setup publishes this prebuilt artifact via --bin-path (ADR-0086). The committed
+      # bindings are NOT regenerated from it.
       - name: Build dev_reducers module wasm
         run: cargo build -p monster-realm-module --release --target wasm32-unknown-unknown --features dev_reducers
-      # Ephemeral standalone instance on 127.0.0.1:3000 (the client default
-      # VITE_STDB_URI); in-memory, torn down with the runner.
       - name: Start SpacetimeDB
         run: nohup spacetime start --in-memory --listen-addr 127.0.0.1:3000 > /tmp/stdb.log 2>&1 &
       - name: Wait for SpacetimeDB
@@ -170,9 +112,6 @@ jobs:
         run: cd client && npm ci
       - name: Install Playwright chromium
         run: cd client && npx playwright install --with-deps chromium
-      # `just e2e` builds the client-wasm pkg, then Playwright runs the two-window
-      # golden flows; global-setup republishes the module --delete-data (known
-      # preconditions: zero players). `publish -s` takes a raw URL — no server alias.
       - name: Two-window e2e (golden flows vs real spacetime)
         env:
           STDB_SERVER: http://127.0.0.1:3000
@@ -180,4 +119,3 @@ jobs:
           VITE_STDB_DB: monster-realm
           MR_DEV_MODULE_WASM: ${{ github.workspace }}/target/wasm32-unknown-unknown/release/monster_realm_module.wasm
         run: just e2e
-        # build/publish/integration require a running SpacetimeDB instance (see README)

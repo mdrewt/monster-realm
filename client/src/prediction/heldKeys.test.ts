@@ -15,14 +15,54 @@
 // signal (a missing implementation, loudly), and the migrated teeth go green unchanged the
 // moment heldKeys.ts exports it.
 //
-// This suite is pure / node-only. No wasm. No real timers.
+// This suite is pure / node-only. No real timers. The ONE wasm touch is U-H8, which
+// reads the server cadence (game-core STEP_MS) from the built client-wasm binary's
+// `step_ms()` export instead of a literal — see wasmStepMs below.
 // All tests follow the block-body arrow rule for fast-check (see project standards):
 // `fc.property(arb, (x) => { expect(…).toEqual(…); })` — never expression-body.
 
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import type { WasmDirection } from '../convert/convert';
 import { HeldDirections, HOLD_COMMIT_MS, reissueDir } from './heldKeys';
+
+const WASM_BIN = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '../../../client-wasm/pkg/client_wasm_bg.wasm',
+);
+
+/**
+ * game-core's STEP_MS, read from the BUILT client-wasm binary's `step_ms()` export
+ * (the value main.ts feeds the whole client). The wasm-bindgen JS glue is not
+ * importable under node vitest (ADR-0142), so the raw module is instantiated with
+ * every import stubbed to throw — `step_ms` is a constant and calls none of them.
+ * Works for both the bundler and nodejs pkg targets (same `_bg.wasm` exports).
+ * A missing pkg FAILS (run `just wasm`), never skips.
+ */
+function wasmStepMs(): number {
+  let bytes: Buffer;
+  try {
+    bytes = readFileSync(WASM_BIN);
+  } catch (err) {
+    throw new Error(`U-H8 needs the built wasm pkg at ${WASM_BIN} — run \`just wasm\` (${err})`);
+  }
+  const mod = new WebAssembly.Module(bytes);
+  const imports: Record<string, Record<string, WebAssembly.ImportValue>> = {};
+  for (const imp of WebAssembly.Module.imports(mod)) {
+    if (imp.kind !== 'function') throw new Error(`unexpected wasm import kind ${imp.kind}`);
+    imports[imp.module] ??= {};
+    imports[imp.module][imp.name] = () => {
+      throw new Error(`wasm import ${imp.module}.${imp.name} called while reading step_ms`);
+    };
+  }
+  const { exports } = new WebAssembly.Instance(mod, imports);
+  const stepMs = exports.step_ms;
+  if (typeof stepMs !== 'function') throw new Error('client-wasm exports no step_ms()');
+  return (stepMs() as number) >>> 0;
+}
 
 // ================================================================================
 // 1. reissueDir — pure dedup decision for the frame-loop CONTINUATION re-issue
@@ -364,10 +404,10 @@ describe('[mvi] HeldDirections.committedActive: the hold-commit threshold', () =
     expect(held.committedActive(750)).toBe('East'); // 150ms into the FRESH window
   });
 
-  it('U-H8 BUDGET PIN: 140 <= HOLD_COMMIT_MS and HOLD_COMMIT_MS + 1000/30 + 1 < STEP_MS(200)', () => {
+  it('U-H8 BUDGET PIN: 140 <= HOLD_COMMIT_MS and HOLD_COMMIT_MS + 1000/30 + 1 < STEP_MS (wasm)', () => {
     // The threshold is squeezed from BOTH sides and neither bound is arbitrary:
     //
-    // CEILING (< 200): after the first step drains, the continuation must reach the
+    // CEILING (< STEP_MS, 200 today): after the first step drains, the continuation must reach the
     // server before the NEXT movement_tick 200ms later, or a deliberate walk stutters a
     // whole slot on start. The worst-case budget is the threshold plus one frame at the
     // slowest supported refresh rate (1000/30 ≈ 33.3ms) plus a millisecond of jitter =
@@ -379,8 +419,13 @@ describe('[mvi] HeldDirections.committedActive: the hold-commit threshold', () =
     // the threshold may never drop below that without re-opening the defect.
     //
     // Kills: any future "tuning" of HOLD_COMMIT_MS that silently breaks one of the two
-    // constraints while every behavioural tooth still happens to pass on its own grid.
-    expect(HOLD_COMMIT_MS + 1000 / 30 + 1).toBeLessThan(200);
+    // constraints while every behavioural tooth still happens to pass on its own grid —
+    // AND a game-core STEP_MS retune that leaves HOLD_COMMIT_MS behind: STEP_MS is read
+    // from the built wasm's step_ms() export, never a literal (debloat Phase 2,
+    // EV-hold-commit-step-budget).
+    const stepMs = wasmStepMs();
+    expect(stepMs, 'step_ms() must be a live cadence').toBeGreaterThan(0);
+    expect(HOLD_COMMIT_MS + 1000 / 30 + 1).toBeLessThan(stepMs);
     expect(HOLD_COMMIT_MS).toBeGreaterThanOrEqual(140);
   });
 });

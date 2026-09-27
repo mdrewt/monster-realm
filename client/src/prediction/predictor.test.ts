@@ -10,13 +10,6 @@
 // tiny map: a west wall at x <= 0, everything else walkable. Screen coords:
 // North = y-1, South = y+1, East = x+1, West = x-1.
 
-// nh3 (ADR-0152): the node builtins below serve ONE tooth — the predictor.ts SIGNATURE
-// source-scan at the foot of this file (the required-param mutant is invisible to any
-// runtime test, and main.ts is coverage-excluded). Same readFileSync idiom as
-// main.wiring.test.ts / net/connection.test.ts. No `new RegExp` anywhere (Semgrep-banned).
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import type { WasmCharacterState, WasmDirection, WasmMoveInput } from '../convert/convert';
@@ -1975,119 +1968,6 @@ describe('Predictor nh3 (ADR-0152): epoch/generation guard on dropRejected', () 
     expect(b.dropRejected(sent2.seq, sent2.epoch)).toBe(false);
     expect(b.pendingCount).toBe(pendingBefore);
     expect(b.queueDepth).toBe(depthBefore);
-  });
-});
-
-// ================================================================================
-// nh3 SIGNATURE SOURCE-SCAN (plan §3 step 4) — the declared-sibling tooth.
-//
-// WHY A SOURCE SCAN AT ALL (red-team F4 / reviewer B1): the "make the epoch param
-// optional or defaulted" mutation (`epoch?: PredictorEpoch` or
-// `epoch: PredictorEpoch = this.#epoch`) is INVISIBLE to every runtime test in this
-// file — all of them pass an epoch — and invisible to the main.wiring tooth too,
-// because main.ts would not need to change. It is also invisible to `tsc`, since a
-// call that already supplies the argument still typechecks. The only thing that can
-// kill it is reading the declaration. Same reason the BRAND is pinned here: with
-// `export type PredictorEpoch = number` the compiler would happily accept
-// `dropRejected(seq, seq)` at the call site — the brand IS the tooth for that
-// mutation, so its shape must be asserted, not assumed.
-//
-// indexOf / includes only — `new RegExp` is Semgrep-banned repo-wide (A7).
-// ================================================================================
-
-const PREDICTOR_TS_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), 'predictor.ts');
-
-function readPredictorTs(): string {
-  try {
-    return readFileSync(PREDICTOR_TS_PATH, 'utf8');
-  } catch (err) {
-    // Fail loud — a missing file must never make a scan vacuously pass.
-    throw new Error(
-      'predictor.ts unreadable at expected path: ' + PREDICTOR_TS_PATH + ' — ' + String(err),
-    );
-  }
-}
-
-describe('nh3 signature scan: dropRejected takes a REQUIRED branded epoch', () => {
-  it('W-NH3-SIG BITES: predictor.ts declares `dropRejected(seq: number, epoch: PredictorEpoch): boolean`', () => {
-    // RED pre-impl: the declaration is still the 1-arg `dropRejected(seq: number): boolean`.
-    // WRONG IMPL KILLED: a plain-`number` second param (`epoch: number`) — that compiles
-    // `dropRejected(seq, seq)` at main.ts and re-opens the eviction seam silently.
-    const src = readPredictorTs();
-    // Anti-vacuity: prove we are reading the real module before judging its shape.
-    expect(
-      src.indexOf('export class Predictor'),
-      'the scanned file must be the real predictor module (export class Predictor)',
-    ).toBeGreaterThanOrEqual(0);
-    expect(
-      src.indexOf('dropRejected(seq: number, epoch: PredictorEpoch): boolean'),
-      'predictor.ts must declare the CONTIGUOUS signature ' +
-        '`dropRejected(seq: number, epoch: PredictorEpoch): boolean` — a required, branded ' +
-        'second parameter is what forces every present and future call site (main.ts and ' +
-        'this suite) to supply the caller-captured epoch',
-    ).toBeGreaterThanOrEqual(0);
-  });
-
-  it('W-NH3-SIG-REQUIRED BITES: the epoch param is neither optional (`epoch?:`) nor defaulted', () => {
-    // WRONG IMPL KILLED (the mutation no runtime test and no wiring tooth can see):
-    //   dropRejected(seq: number, epoch?: PredictorEpoch)                      → callers may omit
-    //   dropRejected(seq: number, epoch: PredictorEpoch = this.#epoch)         → omitted == live
-    // Either one lets a future call site (or a revert of main.ts:471 to 1-arg) drop the
-    // epoch and silently restore the Case-M1 cross-generation eviction, with this whole
-    // suite still green because every test here passes an epoch explicitly.
-    //
-    // NEEDLE PRECISION (a false-red this tester found while authoring, corrected FROM the
-    // plan's intent, not weakened): the plan spells the second ban as `epoch: PredictorEpoch
-    // =`, but a perfectly legal implementation may declare the FIELD as
-    // `readonly #epoch: PredictorEpoch = ++Predictor.#nextEpoch as PredictorEpoch;` — which
-    // contains that exact substring. The ban is therefore anchored to PARAMETER position
-    // with a leading `, ` (a field declaration is never comma-prefixed). Same bite, no false
-    // red: both banned forms remain unwriteable in the parameter list, and the positive
-    // contiguous-signature needle in W-NH3-SIG independently rejects either mutation at the
-    // declaration site.
-    const src = readPredictorTs();
-    expect(
-      src.indexOf('epoch?:'),
-      'predictor.ts must NOT declare an OPTIONAL epoch parameter (`epoch?:`) — an omitted ' +
-        'epoch is exactly the pre-nh3 call shape the guard exists to make impossible (A1)',
-    ).toBe(-1);
-    expect(
-      src.indexOf(', epoch: PredictorEpoch ='),
-      'predictor.ts must NOT give the epoch PARAMETER a default (`, epoch: PredictorEpoch = ' +
-        '...`) — a default that resolves to the live epoch makes an omitted argument ' +
-        'silently self-approve, which is a no-op guard (A1)',
-    ).toBe(-1);
-  });
-
-  it('W-NH3-BRAND BITES: PredictorEpoch is an exported BRANDED number, not a bare alias', () => {
-    // WRONG IMPL KILLED: `export type PredictorEpoch = number`. The signature scan above
-    // still passes, every runtime test still passes — but `dropRejected(seq, seq)` in
-    // main.ts becomes legal, and that call is a permanent self-approving guard. The brand
-    // is the ONLY mechanism that turns that mistake into a compile error (plan §2 R-b,
-    // promoted to REQUIRED by reviewer M1). Tests are exempt from the cost: they are not
-    // typechecked (`client/tsconfig.json` excludes `**/*.test.ts`), which is why no test
-    // in this file imports or casts the branded type.
-    const src = readPredictorTs();
-    expect(
-      src.indexOf('export type PredictorEpoch = number &'),
-      'predictor.ts must export a BRANDED epoch type (`export type PredictorEpoch = number & ' +
-        '{ readonly __brand: unique symbol }`) — a bare `= number` alias makes ' +
-        '`dropRejected(seq, seq)` typecheck at main.ts and self-approve every rejection',
-    ).toBeGreaterThanOrEqual(0);
-  });
-
-  it('W-NH3-NO-GETTER BITES: the live epoch has NO public getter (A8)', () => {
-    // WRONG IMPL KILLED: `get epoch(): PredictorEpoch { return this.#epoch; }`. With a
-    // public getter, main.ts could write `predictor.dropRejected(seq, predictor.epoch)` —
-    // a call that ALWAYS matches, i.e. the guard deleted at the call site while every
-    // tooth in this file stays green (plan A8 / R-a). The epoch must be readable only
-    // from an issued intent, which is precisely how every test above obtains it.
-    const src = readPredictorTs();
-    expect(
-      src.indexOf('get epoch('),
-      'predictor.ts must NOT expose a public epoch getter — it would make the vacuous ' +
-        'self-approving call `dropRejected(seq, predictor.epoch)` writable from main.ts (A8)',
-    ).toBe(-1);
   });
 });
 

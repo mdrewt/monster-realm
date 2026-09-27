@@ -78,10 +78,20 @@ for (const r of rows) {
 
 // 4. Pairs closure: every pairs[] entry names a resolvable target. Entries are
 // "path" or "path (free-text annotation)"; the first token must resolve to a
-// tracked file, a ledgered path, the justfile, or a tracked directory prefix.
+// tracked file, a ledgered path, the justfile, a tracked directory prefix, or
+// a file that existed at the pre-debloat tag and has since been deleted by a
+// program batch (a RESOLVED pair — the paired deletion happened).
 const trackedSet = new Set(tracked);
+const preDebloat = new Set(
+  execSync('git ls-tree -r pre-debloat --name-only', { cwd: REPO }).toString().trim().split('\n'),
+);
 const byId = new Set(rows.map((r) => r.id).filter(Boolean));
 const isTrackedDir = (d) => tracked.some((f) => f.startsWith(d.endsWith('/') ? d : `${d}/`));
+const isPreDebloatDir = (d) => {
+  if (!d) return false;
+  const p = d.endsWith('/') ? d : `${d}/`;
+  return [...preDebloat].some((f) => f.startsWith(p));
+};
 const globPrefix = (g) => g.split(/[*{]/)[0].replace(/\/[^/]*$/, '');
 for (const r of rows)
   for (const p of r.pairs ?? []) {
@@ -99,7 +109,9 @@ for (const r of rows)
       isTrackedDir(base) ||
       byId.has(base) ||
       fs.existsSync(`${REPO}/${base}`) ||
-      (/[*{]/.test(base) && isTrackedDir(globPrefix(base)))
+      preDebloat.has(base) ||
+      isPreDebloatDir(base) ||
+      (/[*{]/.test(base) && (isTrackedDir(globPrefix(base)) || isPreDebloatDir(globPrefix(base))))
     )
       continue;
     problems.push(`${r.id}: pair target not found: ${p}`);

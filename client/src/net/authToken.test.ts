@@ -110,7 +110,7 @@ describe('AUTH_REJECT_SUPPRESS_THRESHOLD', () => {
     //
     // WHY 2, not 1: the SDK throws the SAME "Failed to verify token: " message for a
     // transient 500/502/503 gateway error as for a genuine 401 (see the SDK-DRIFT
-    // gate in connection.test.ts) — suppressing on a single rejection would swap the
+    // test below) — suppressing on a single rejection would swap the
     // player's identity on a mere gateway blip, not just a real credential rejection.
     // WHY 2, not large: the suppression window is meant to resolve inside the
     // existing ADR-0085 backoff ladder's first couple of rungs (1s + 2s ≈ 3s); a
@@ -348,6 +348,48 @@ describe('isStoredCredentialRejected', () => {
     );
     expect(() => gate.onConnectFailed(throwingGetterErr)).not.toThrow();
     expect(() => gate.onConnectFailed(throwingProxyErr)).not.toThrow();
+  });
+});
+
+describe('SDK-DRIFT (nh4): the spacetimedb SDK still throws the exact token-rejection message string', () => {
+  it('BITES: dist/index.mjs contains the literal substring "Failed to verify token: ${response.statusText}"', () => {
+    // Moved here from connection.test.ts (ledger CT-src-net-connection#sdk-drift): it is the
+    // contract isStoredCredentialRejected above depends on, read from the installed SDK itself.
+    //
+    // WRONG IMPL KILLED: an SDK bump that changes this message's wording (e.g. adding
+    // punctuation, changing "verify" to "validate", or dropping the statusText
+    // interpolation) would silently disarm isStoredCredentialRejected in
+    // authToken.ts, restoring the infinite-reconnect-loop failure mode with EVERY
+    // OTHER classifier test still green (they feed hand-written messages). This is
+    // the only test that reads the SDK's own source.
+    const sdkPath = path.join(
+      path.dirname(fileURLToPath(import.meta.url)),
+      '..',
+      '..',
+      'node_modules',
+      'spacetimedb',
+      'dist',
+      'index.mjs',
+    );
+    let sdkSrc: string;
+    try {
+      sdkSrc = readFileSync(sdkPath, 'utf8');
+    } catch (err) {
+      // Fail loud — never let a missing/relocated SDK file pass this gate vacuously.
+      throw new Error(
+        'spacetimedb SDK dist/index.mjs could not be read at expected path: ' +
+          sdkPath +
+          ' — ' +
+          String(err),
+      );
+    }
+    const needle = 'Failed to verify token: ${response.statusText}';
+    expect(
+      sdkSrc.includes(needle),
+      'spacetimedb dist/index.mjs must contain the literal substring ' +
+        `"${needle}" — if this fails, the SDK has drifted and ` +
+        'isStoredCredentialRejected() in authToken.ts is silently disarmed',
+    ).toBe(true);
   });
 });
 
@@ -669,11 +711,9 @@ describe('createAuthTokenGate: reads/writes sessionStorage only, never localStor
 //
 // STILL A PURE NODE UNIT TEST — every storage host is injected, exactly as the
 // 27 pre-existing tests above do. No DOM, no jsdom, no real sessionStorage.
-// The ONE exception is W-M21B2-KIND-READ-SINGLE-SITE (G14 ii) at the end, which
-// reads authToken.ts as text; it is a source scan by necessity ("how many call
-// sites" has no runtime representation) and says so. (Amended M21b-2: the
-// exception used to name W-M21B-WRITE-HAZARD-DOCUMENTED, which is deleted — see
-// the banner above that tooth for the full justification.)
+// (The one former exception, the W-M21B2-KIND-READ-SINGLE-SITE source scan, was deleted
+// in the de-bloat — ledger CT-src-net-authToken#source-scan; the agreement test in the
+// wasEverAuthenticated block guards its meaning.)
 //
 // RED REASON: `AuthKind`, `AUTH_KIND_KEY_PREFIX`, `authKindStorageKey`,
 // `readAuthKind` and `writeAuthKind` do not exist in `authToken.ts` yet. The
@@ -1085,16 +1125,9 @@ describe('writeAuthKind (AUTH-31): writes under the kind key and degrades silent
 //      edited in place — editing either is the path the tooth explicitly
 //      forbade, and a reviewer can confirm by diffing: the lists are GONE, not
 //      changed);
-//   3. the guard itself is re-pinned, in two places:
-//        * G13b — `connection.test.ts`'s `W-NH4-SAVE-WIRED`, re-pinned to
-//          `if (credential.kind === 'anon') auth.onConnected(token);`, so the
-//          anonymous token slot still cannot receive an account JWT — now keyed
-//          on the credential's PROVENANCE rather than on a storage re-read.
-//        * G14 — split across two files: `connection.test.ts` pins
-//          `readAuthKind` at ZERO occurrences and `wasEverAuthenticated(` at
-//          exactly one, with neither reaching `.withToken(`'s argument; and
-//          W-M21B2-KIND-READ-SINGLE-SITE immediately below pins the reader to
-//          exactly one call site, inside `wasEverAuthenticated`'s body.
+//   3. the guard itself is now asserted at runtime by net/connection.runtime.test.ts
+//      (ACCOUNT: an account build's JWT never enters the anonymous token slot — keyed
+//      on the credential's PROVENANCE rather than on a storage re-read).
 //
 // ⚠ ONE CONSEQUENCE, RECORDED SO IT IS NOT REDISCOVERED AS A BUG: the deleted
 // scan carried an anti-vacuity positive control asserting `readAuthKind(`
@@ -1281,179 +1314,3 @@ describe('wasEverAuthenticated (AUTH-44): true iff the marker slot holds exactly
     expect(storage.size).toBe(0);
   });
 });
-
-// ---------------------------------------------------------------------------
-// ★★ W-M21B2-KIND-READ-SINGLE-SITE — G14(ii).
-//
-// G14 is split across two files because each can only read its own module:
-//   (i)  connection.test.ts — `readAuthKind` occurs ZERO times in connection.ts,
-//        `wasEverAuthenticated(` exactly once, and neither the predicate nor the
-//        marker reaches `.withToken(`'s argument (AUTH-43's actual content).
-//   (ii) THIS TOOTH — inside authToken.ts, `readAuthKind(` is CALLED at exactly
-//        one site, and that site is inside `wasEverAuthenticated`'s body.
-//
-// WHY (ii) MATTERS ON ITS OWN: (i) can only see the identifiers connection.ts
-// spells. If a SECOND consumer of the raw marker grows inside authToken.ts — a
-// convenience `isAccountTab()`, a "repair the marker" helper — the provenance
-// rule decays from "one predicate, one meaning" back to "storage is consulted
-// wherever it is convenient", and connection.ts's scan sees nothing at all.
-//
-// WHY A SOURCE SCAN AND NOT BEHAVIOUR: "how many call sites" has no runtime
-// representation. The behavioural half is the agreement test directly above.
-//
-// NO `new RegExp(...)` — indexOf / split only.
-// ---------------------------------------------------------------------------
-
-const AUTH_TOKEN_TS_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), 'authToken.ts');
-
-function readSourceOrThrow(filePath: string): string {
-  try {
-    return readFileSync(filePath, 'utf8');
-  } catch (err) {
-    // Fail loud — a missing file must never make a scan vacuously pass.
-    throw new Error(`could not read ${filePath} — ${String(err)}`);
-  }
-}
-
-/** Count NON-OVERLAPPING occurrences via split (no `new RegExp`). Same form as
- *  connection.test.ts / main.wiring.test.ts use. */
-function m21bCount(src: string, needle: string): number {
-  return src.split(needle).length - 1;
-}
-
-/** Drop block comments, then line comments — copied verbatim in behaviour from
- *  connection.test.ts's helper family so the two source scans cannot drift apart. Used ONLY
- *  by the caller scan: the documentation test deliberately reads comments, not code. */
-function m21bStripComments(src: string): string {
-  let withoutBlocks = '';
-  let i = 0;
-  for (;;) {
-    const start = src.indexOf('/*', i);
-    if (start === -1) {
-      withoutBlocks += src.slice(i);
-      break;
-    }
-    withoutBlocks += src.slice(i, start);
-    const end = src.indexOf('*/', start + 2);
-    if (end === -1) break;
-    i = end + 2;
-  }
-  return withoutBlocks
-    .split('\n')
-    .map((line) => {
-      const j = line.indexOf('//');
-      return j === -1 ? line : line.slice(0, j);
-    })
-    .join('\n');
-}
-
-/** Every index at which `needle` occurs, left to right, non-overlapping. Used to tell the
- *  DECLARATION of `readAuthKind` apart from its one CALL site without a regex. */
-function m21bIndicesOf(src: string, needle: string): number[] {
-  const found: number[] = [];
-  let from = 0;
-  for (;;) {
-    const at = src.indexOf(needle, from);
-    if (at === -1) return found;
-    found.push(at);
-    from = at + needle.length;
-  }
-}
-
-describe('W-M21B2-KIND-READ-SINGLE-SITE (G14 ii): readAuthKind is called ONCE, inside wasEverAuthenticated', () => {
-  it('★★ BITES: `readAuthKind(` appears exactly twice in authToken.ts — its declaration, and ONE call inside wasEverAuthenticated', () => {
-    // WRONG IMPL KILLED (a): a second consumer of the RAW marker inside authToken.ts — a
-    //   convenience `isAccountTab()`, an `assertMarkerConsistent()`, a "repair" helper.
-    //   connection.test.ts's half of G14 cannot see any of them (it only reads
-    //   connection.ts), and each one re-establishes storage as a decision input, which is
-    //   the precise shape ADR-0182 D14 replaced with in-memory provenance.
-    // WRONG IMPL KILLED (b): `wasEverAuthenticated` implemented as its OWN storage read
-    //   rather than delegating — the call-site count drops to one (the declaration alone)
-    //   and this reds. That mutant is also caught behaviourally by the agreement test
-    //   above, and deliberately so: this pins the STRUCTURE, that pins the MEANING.
-    // WRONG IMPL KILLED (c): the call parked in some other function with
-    //   `wasEverAuthenticated` merely forwarding a cached value — the region check reds.
-    const raw = readSourceOrThrow(AUTH_TOKEN_TS_PATH);
-
-    // The naive stripper truncates each line at the first `//`, so a scheme literal on a
-    // live line would hide whatever follows it. authToken.ts has never carried one; pin
-    // that, so this scan's soundness is asserted rather than assumed (the same calibration
-    // connection.test.ts:1247-1260 makes for connection.ts).
-    expect(
-      m21bCount(raw, ':' + '//'),
-      'authToken.ts must contain no scheme literal — the line-comment stripper truncates ' +
-        'at the first two-slash token, so a URL on a live line would hide a second ' +
-        'readAuthKind call from this scan',
-    ).toBe(0);
-
-    const src = m21bStripComments(raw);
-
-    const declNeedle = 'export function readAuthKind(';
-    expect(
-      m21bCount(src, declNeedle),
-      'readAuthKind must be declared exactly once — two declarations make "the call site" ' +
-        'ambiguous and this scan would judge whichever came first',
-    ).toBe(1);
-    expect(
-      m21bCount(src, 'export function wasEverAuthenticated('),
-      'wasEverAuthenticated must be declared exactly once',
-    ).toBe(1);
-
-    const occurrences = m21bIndicesOf(src, 'readAuthKind(');
-    const declIdx = src.indexOf(declNeedle) + 'export function '.length;
-    const callSites = occurrences.filter((i) => i !== declIdx);
-    expect(
-      callSites.length,
-      'readAuthKind must be CALLED at exactly one site inside authToken.ts (the declaration ' +
-        'itself is excluded). Found ' +
-        String(occurrences.length) +
-        ' total occurrences of the token',
-    ).toBe(1);
-
-    // The call must sit inside wasEverAuthenticated's body region: from its declaration to
-    // the next top-level `export` (or end of file). Bounding on the NEXT export rather than
-    // on a brace count keeps this immune to the formatter and to nested closures.
-    const gateIdx = src.indexOf('export function wasEverAuthenticated(');
-    expect(gateIdx, 'authToken.ts must export wasEverAuthenticated').toBeGreaterThanOrEqual(0);
-    const nextExport = src.indexOf('\nexport ', gateIdx + 1);
-    const regionEnd = nextExport === -1 ? src.length : nextExport;
-    expect(
-      regionEnd - gateIdx,
-      'wasEverAuthenticated collapsed to a degenerate region — refusing to scan',
-    ).toBeGreaterThan(40);
-    const callIdx = callSites[0] as number;
-    expect(
-      callIdx > gateIdx && callIdx < regionEnd,
-      `the single readAuthKind call site (index ${callIdx}) must sit INSIDE ` +
-        `wasEverAuthenticated's body (${gateIdx}..${regionEnd}). A reader consulted from ` +
-        'anywhere else re-opens the storage-as-decision-input path ADR-0182 D14 closed',
-    ).toBe(true);
-  });
-
-  it('★ BITES (anti-vacuity): the scanned file really is the shipped module', () => {
-    // A scan whose stripper (or path) broke would satisfy every count above. Three
-    // independent positive controls on CONTENT, so a stub or an empty read is a hard red.
-    const src = m21bStripComments(readSourceOrThrow(AUTH_TOKEN_TS_PATH));
-    for (const anchor of [
-      'export function createAuthTokenGate(',
-      'export function writeAuthKind(',
-      'export const AUTH_KIND_KEY_PREFIX',
-    ]) {
-      expect(m21bCount(src, anchor), `positive control: authToken.ts must contain ${anchor}`).toBe(
-        1,
-      );
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// POINTER, for the reader who came looking for the retired tooth: the write-side
-// hazard is now guarded by G13b (`W-NH4-SAVE-WIRED`, re-pinned to
-// `if (credential.kind === 'anon') auth.onConnected(token);`) and G14(i)
-// (`readAuthKind` at ZERO occurrences in connection.ts, `wasEverAuthenticated(`
-// at exactly one, neither reaching `.withToken(`'s argument) — both in
-// `client/src/net/connection.test.ts`. Together with W-M21B2-KIND-READ-SINGLE-SITE
-// above they cover strictly more than the deleted pair did: the deleted tests
-// could only assert that the writer had NO caller, which is a claim that had to
-// expire the moment the guard landed.
-// ---------------------------------------------------------------------------

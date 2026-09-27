@@ -42,7 +42,7 @@ import { describe, expect, it } from 'vitest';
 // The comment stripper is IMPORTED, never copied (ADR-0215 single-owner rule — the repo
 // already carries three variants; a fourth is a regression). Precedent for a `.ts` test
 // importing a `.mjs` eval: render/motionPreference.test.ts:48.
-import { stripComments } from '../../../evals/dom-shell-coverage-exclusion.eval.mjs';
+import { stripComments } from '../../test-util/stripComments';
 
 const CLIENT_SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 

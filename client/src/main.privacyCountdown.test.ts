@@ -32,9 +32,9 @@
  * killed by RB51T-DUE-REACHES-DOM / RB51T-DARK-REACHES-DOM below. The FOURTH is NOT
  * runtime-observable and is stated here rather than faked: `unknown` and `active` both render
  * `null`, so `status: privacyAccount?.status ?? 'Active'` produces a byte-identical DOM in
- * every reachable case. It is closed one tier down, by main.wiring.test.ts's
- * W-RB51-NO-FABRICATED-INPUT, which bans `??` inside the `deriveDeletionCountdown(` argument
- * list. Do not add a runtime arm for it — any such arm would be permanently vacuous.
+ * every reachable case, so no runtime arm can observe it (the main.wiring.test.ts text pin
+ * that used to ban `??` there was deleted in the de-bloat, ledger CT-src-main.wiring#shape-pins).
+ * Do not add a runtime arm for it — any such arm would be permanently vacuous.
  *
  * WHY A RUNTIME IMPORT — `main.wiring.test.ts:20-22` prescribes source-scan, "NOT import",
  * for main.ts. This file is the SANCTIONED, SCOPED exception, modelled on

@@ -1,4642 +1,11 @@
-//! `pvp` server-module gating tests — M16a PvP spine (ADR-0109).
+//! `pvp` server-module tests — M16a PvP spine (ADR-0109), the challenge TTL reaper
+//! (ADR-0126), settlement/rating (ADR-0119) and the ranked account gate (ADR-0189).
 //!
-//! Source-guard pattern: read production source via `include_str!`, strip comments,
-//! search for assembled needles. The needle string is never written verbatim in this
-//! file — it is built with `concat!()` — so the test cannot pass by matching itself.
-//!
-//! EARS criteria covered:
-//!   EA-PVP-01  `battle_action` table in schema.rs has NO `public` keyword —
-//!              must-never-leak (ADR-0015, ADR-0109).
-//!   EA-PVP-02  `pvp_deadline_reaper` has the scheduler-only identity guard in pvp.rs.
-//!   EA-PVP-03  `battle_challenge`, `battle_action`, and `pvp_deadline_schedule` all
-//!              appear in evals/baselines/table-schemas.json.
-//!   EA-PVP-04  `ChallengeStatus` and `PvpAction` appear in
-//!              evals/baselines/spacetime-types.json.
-//!   EA-PVP-05  `on_disconnect` in lib.rs calls both `pvp::forfeit_on_disconnect` and
-//!              `pvp::cancel_challenges_on_disconnect`.
-//!   EA-PVP-06  `PVP_TURN_DEADLINE_MS` constant is exactly 60_000 (one minute).
-//!   EA-PVP-07  `resolve_pvp_turn_if_ready` is called from `submit_pvp_action`
-//!              (both-submitted inline resolution).
-//!   EA-PVP-08  `pvp` module is declared in `lib.rs`.
-//!   EA-PVP-09  `battle_challenge` table in schema.rs is `public` (clients must
-//!              be able to subscribe to incoming challenges).
-//!   EA-PVP-10  `BattleChallenge` and `BattleAction` are declared in schema.rs.
-//!
-//! m17.5e (ADR-0126) — battle_challenge TTL reaper criteria (tests at the
-//! bottom of this file; RED until the reaper is implemented):
-//!   EA-CHR-01  `challenge_pvp` arms the TTL reaper AFTER the challenge insert,
-//!              with the exact args `(ctx, challenge.challenge_id,
-//!              challenge.created_at_ms)` (F1 arg-identity pin).
-//!   EA-CHR-02  `disarm_challenge_reaper` is called at ALL FOUR
-//!              challenge-deletion sites (accept / decline / cancel /
-//!              cancel_challenges_on_disconnect).
-//!   EA-CHR-03  `battle_challenge_reaper` has the scheduler-only identity guard
-//!              (brace-bounded body scan).
-//!   EA-CHR-04  `battle_challenge_reaper` re-checks staleness via the
-//!              negation-guard shape and deletes via `challenge_id().delete(`
-//!              (body-scoped).
-//!   EA-CHR-05  `battle_challenge_reaper_schedule` is baselined in
-//!              table-schemas.json and its table attribute is PRIVATE.
-//!   EA-CHR-06  `schedule_challenge_reaper` computes the deadline from the
-//!              ms-floored `created_at_ms` (ADR-0117 D4) and inserts the
-//!              schedule row (survivor-pin).
-//!
-//! Red-team finding (fixed in this PR):
-//!   RT-M16-08  `resolve_pvp_turn_if_ready` must call `write_back_battle_results`
-//!              BEFORE updating the battle row to its terminal state, so the GC
-//!              sweep inside `write_back_battle_results` does not delete the
-//!              current battle row before clients see the terminal outcome frame.
-
-// ---------------------------------------------------------------------------
-// Source constants
-// ---------------------------------------------------------------------------
-
-const PVP_RS: &str = include_str!("pvp.rs");
-const SCHEMA_RS: &str = include_str!("schema.rs");
-const LIB_RS: &str = include_str!("lib.rs");
-const TABLE_SCHEMAS_JSON: &str = include_str!("../../evals/baselines/table-schemas.json");
-const SPACETIME_TYPES_JSON: &str = include_str!("../../evals/baselines/spacetime-types.json");
-
-// ---------------------------------------------------------------------------
-// Comment-stripping helper (mirrors m14_5d_1a_tests.rs)
-// ---------------------------------------------------------------------------
-
-fn strip_rust_comments(src: &str) -> String {
-    let bytes = src.as_bytes();
-    let len = bytes.len();
-    let mut out = vec![b' '; len];
-    let mut i = 0;
-    while i < len {
-        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-            i += 2;
-            while i + 1 < len {
-                if bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                    i += 2;
-                    break;
-                }
-                i += 1;
-            }
-        } else if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
-            while i < len && bytes[i] != b'\n' {
-                i += 1;
-            }
-        } else {
-            out[i] = bytes[i];
-            i += 1;
-        }
-    }
-    String::from_utf8(out).expect("stripped source must be valid UTF-8")
-}
-
-// ---------------------------------------------------------------------------
-// EA-PVP-01: battle_action table must NOT be public (ADR-0015)
-//
-// Proof-of-teeth: kills any impl that accidentally marks battle_action as
-// `public` — e.g. `#[spacetimedb::table(accessor = battle_action, public)]`.
-// `battle_action` is a private table so clients can never query submitted picks,
-// preserving secret-pick semantics.
-//
-// The source scan strips comments first so a commented-out `// public` doesn't
-// trigger a false negative.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn ea_pvp_01_battle_action_is_not_public() {
-    let stripped = strip_rust_comments(SCHEMA_RS);
-    // Find the battle_action table declaration and assert no `public` on the same
-    // attribute line.
-    let needle_table = concat!("accessor = ", "battle_action");
-    let public_str = "public";
-    let pos = stripped.find(needle_table).expect(
-        "EA-PVP-01: `accessor = battle_action` declaration not found in schema.rs — \
-         the BattleAction table must be declared there",
-    );
-    // Look at the line containing this declaration.
-    let line_start = stripped[..pos].rfind('\n').map(|p| p + 1).unwrap_or(0);
-    let line_end = stripped[pos..]
-        .find('\n')
-        .map(|p| pos + p)
-        .unwrap_or(stripped.len());
-    let decl_line = &stripped[line_start..line_end];
-    assert!(
-        !decl_line.contains(public_str),
-        "EA-PVP-01 FAIL: `battle_action` table declaration contains `public` keyword — \
-         this table MUST be private (must-never-leak, ADR-0015, ADR-0109 D4). \
-         Found on line: {:?}",
-        decl_line
-    );
-}
-
-// ---------------------------------------------------------------------------
-// EA-PVP-02: pvp_deadline_reaper has the scheduler-only identity guard
-//
-// Proof-of-teeth: kills an impl that forgets the scheduler-only guard,
-// allowing any client to call pvp_deadline_reaper and trigger forfeits.
-// The guard pattern: `ctx.sender() != ctx.database_identity()` (SpacetimeDB 2.x
-// spelling, ADR-0197 — `ctx.identity()` is the deprecated 1.x alias).
-//
-// m17.5e T0 (plan B1/F3 — STRENGTHENING edit by the tester): the scan is
-// re-bounded from the former unbounded suffix slice (`&stripped[fn_pos..]`)
-// to the brace-bounded `extract_pvp_fn_body`.  m17.5e introduces a SECOND
-// reducer (battle_challenge_reaper) carrying the same guard token; with the
-// old suffix scan, a guard in ANY later fn could satisfy this check even if
-// pvp_deadline_reaper itself lost its guard.  Narrower scan region only —
-// test name, criterion, and assertion message unchanged.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn ea_pvp_02_deadline_reaper_has_scheduler_guard() {
-    // T0 LOW fix (m17.5e red-team): string-strip AFTER comment-strip for
-    // consistency with the EA-CHR pipeline (a guard token inside a dead-code
-    // string literal cannot satisfy the search).  The brace-bounded body
-    // extraction operates on the comment+string-stripped text; the guard token
-    // `ctx.sender() != ctx.database_identity()` is not inside any string in
-    // pvp.rs so this does not change the match — only closes the pipeline gap.
-    let stripped = strip_rust_strings(&strip_rust_comments(PVP_RS));
-    // The guard must appear in pvp_deadline_reaper (exact body slice, T0).
-    let guard_pattern = concat!("ctx.sender()", " != ", "ctx.database_identity()");
-    let fn_body = extract_pvp_fn_body(&stripped, "pvp_deadline_reaper")
-        .expect("EA-PVP-02: `pvp_deadline_reaper` function not found in pvp.rs");
-    assert!(
-        fn_body.contains(guard_pattern),
-        "EA-PVP-02 FAIL: `pvp_deadline_reaper` in pvp.rs is missing the \
-         scheduler-only identity guard (`ctx.sender() != ctx.database_identity()`). \
-         Without this guard, any client can call the reaper and trigger \
-         arbitrary forfeits. This guard is required (ADR-0109, matches the \
-         `movement_tick` pattern in movement.rs)."
-    );
-}
-
-// ---------------------------------------------------------------------------
-// EA-PVP-03: all three new tables appear in table-schemas.json
-//
-// Proof-of-teeth: kills an impl that adds the tables but forgets to update
-// the eval baseline — the eval gate would then fire on the next CI run.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn ea_pvp_03_new_tables_in_table_schemas_json() {
-    for table_name in &[
-        concat!("battle", "_challenge"),
-        concat!("battle", "_action"),
-        concat!("pvp_deadline", "_schedule"),
-    ] {
-        assert!(
-            TABLE_SCHEMAS_JSON.contains(table_name),
-            "EA-PVP-03 FAIL: `{}` not found in evals/baselines/table-schemas.json. \
-             The schema-snapshot eval will red-flag this — update the baseline.",
-            table_name
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
-// EA-PVP-04: ChallengeStatus and PvpAction in spacetime-types.json
-//
-// Proof-of-teeth: kills an impl that adds the types to the Rust source but
-// omits them from the SpacetimeType baseline — the types eval would then fire.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn ea_pvp_04_new_types_in_spacetime_types_json() {
-    for type_name in &["ChallengeStatus", "PvpAction"] {
-        assert!(
-            SPACETIME_TYPES_JSON.contains(type_name),
-            "EA-PVP-04 FAIL: `{}` not found in evals/baselines/spacetime-types.json. \
-             Update the baseline after adding the SpacetimeType derive.",
-            type_name
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
-// EA-PVP-05: on_disconnect calls both PvP helpers
-//
-// Proof-of-teeth: kills an impl that registers pvp.rs but forgets to wire
-// forfeit_on_disconnect or cancel_challenges_on_disconnect into on_disconnect,
-// leaving liveness broken on client drop.
-// ---------------------------------------------------------------------------
-
-// TIGHTENED BY m22-s3b (ADR-0228 D7(d)). This criterion used to scan the WHOLE
-// of lib.rs for the two helper names — which was adequate while `on_disconnect`
-// was the only thing in lib.rs that could name them. The spec §4.4 step-1
-// extraction moves the four force-resolve calls into
-// `resolve_all_live_interactions`, and a whole-file scan cannot tell a call
-// inside that resolver from one left stranded in a comment-free dead helper, or
-// from one moved somewhere the disconnect hook never reaches. Scoping the scan
-// to the resolver's own brace-bounded body RESTORES the gate strength the
-// extraction would otherwise silently dilute, and the companion test
-// `m22s3b_on_disconnect_reaches_the_resolver` pins the other half of the hop.
-#[test]
-fn ea_pvp_05_on_disconnect_calls_pvp_helpers() {
-    // STRING LITERALS BLANKED TOO (r2). Two reasons, both measured:
-    //   * the brace walk that slices the resolver's body counts `{` and `}`
-    //     bytes with no string-literal lexer, so ONE brace inside a log format
-    //     string — and lib.rs's hand-built JSON lines are full of them — would
-    //     truncate the extracted body at an arbitrary point. A needle that fell
-    //     past that point reads as ABSENT and the pin false-REDs; a decoy that
-    //     fell inside reads as present;
-    //   * with strings intact, a log line naming a helper satisfies a needle
-    //     that no call site does.
-    // Comment stripping alone was never enough for either.
-    let stripped = strip_rust_strings(&strip_rust_comments(LIB_RS));
-    let resolver = concat!("resolve_all_live", "_interactions");
-
-    let decl = ["fn ", resolver, "("].concat();
-    let n_decl = stripped.matches(decl.as_str()).count();
-    assert_eq!(
-        n_decl, 1,
-        "EA-PVP-05 FAIL (declaration): lib.rs must declare `{decl}` EXACTLY once; found \
-         {n_decl}. ZERO means the spec §4.4 step-1 extraction is missing, so there is no \
-         shared force-resolve bundle for the deletion cascade to call and the disconnect \
-         hook is the only caller of these helpers again. MORE THAN ONE steers the first-hit \
-         body extractor below at a declaration nobody reviewed."
-    );
-
-    let body = extract_pvp_fn_body(&stripped, resolver).unwrap_or_else(|| {
-        panic!(
-            "EA-PVP-05 FAIL (extraction): the brace-bounded body of `{resolver}` could not be \
-             sliced out of lib.rs, so this scan has no scope and would pass vacuously. Fail \
-             LOUD."
-        )
-    });
-
-    // The trailing `(` is part of each needle (r2): without it the pin is
-    // satisfied by any MENTION of the helper — in a log line, in a doc string
-    // the stripper happened to leave, or in a `use` import — rather than by a
-    // CALL. A bare-name pin cannot tell the two apart.
-    for needle in &[
-        concat!("pvp::", "forfeit_on_disconnect("),
-        concat!("pvp::", "cancel_challenges_on_disconnect("),
-    ] {
-        assert!(
-            body.contains(needle),
-            "EA-PVP-05 FAIL: `{}` not found in the body of `resolve_all_live_interactions` in \
-             lib.rs. PvP forfeit-on-disconnect and challenge cancellation must be wired into \
-             the SHARED force-resolve bundle (ADR-0109 D8/D9 + spec §4.4 step 1): that bundle \
-             is called by BOTH the disconnect lifecycle reducer and the M22 deletion cascade, \
-             so a helper dropped from it stops running on disconnect AND stops running before \
-             the cascade erases the rows it was supposed to resolve against — one edit, two \
-             regressions, one of them irreversible.",
-            needle
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
-// ptc5b-T4: on_disconnect calls battle::resolve_wild_battle_on_disconnect
-//
-// EARS ptc5b-1 (wiring): The `on_disconnect` lifecycle reducer in lib.rs must
-// call `battle::resolve_wild_battle_on_disconnect(ctx, me)` so that a player's
-// Ongoing WILD battle is GC'd on disconnect (soft-lock prevention).
-//
-// Co-located with ea_pvp_05 because both scan the same `on_disconnect` body in
-// lib.rs for disconnect-lifecycle helper wiring.
-//
-// RED state: `battle::resolve_wild_battle_on_disconnect` does not yet exist in
-// battle.rs, so lib.rs cannot contain the call — the needle is absent today.
-//
-// PROOF-OF-TEETH: kills any impl that adds resolve_wild_battle_on_disconnect to
-// battle.rs but forgets to wire it into on_disconnect, leaving the GC dead code.
-// Also kills an impl that calls it from the wrong module (e.g. pvp::resolve_wild…).
-// ---------------------------------------------------------------------------
-
-// EARS ptc5b-1
-// PROOF-OF-TEETH: kills an impl that adds the fn but omits the resolver call.
-//
-// TIGHTENED BY m22-s3b (ADR-0228 D7(d)), for the same reason as EA-PVP-05 above:
-// after the spec §4.4 step-1 extraction the call lives inside
-// `resolve_all_live_interactions`, and a whole-file `lib.rs` scan can no longer
-// distinguish a wired call from a stranded one. This is the highest-value of the
-// four calls to keep pinned — the spec calls the wild-battle resolve the single
-// correction its adversarial pass produced, because NO scheduled reaper covers
-// the wild `battle`/`battle_wild` row class, so a dropped call soft-locks the
-// abandoned battle forever with nothing anywhere to clean it up.
-#[test]
-fn ptc5b_4_wiring_scan_on_disconnect_calls_resolve_wild_battle() {
-    // STRING LITERALS BLANKED TOO (r2) — same two reasons as EA-PVP-05 above:
-    // the body slice is a brace walk with no string-literal lexer, so a `{` in
-    // one of lib.rs's hand-built JSON log lines truncates it at an arbitrary
-    // point; and with strings intact a log line naming the helper satisfies a
-    // needle that no call site does.
-    let stripped = strip_rust_strings(&strip_rust_comments(LIB_RS));
-    let resolver = concat!("resolve_all_live", "_interactions");
-
-    let decl = ["fn ", resolver, "("].concat();
-    let n_decl = stripped.matches(decl.as_str()).count();
-    assert_eq!(
-        n_decl, 1,
-        "ptc5b-T4 FAIL (declaration): lib.rs must declare `{decl}` EXACTLY once; found \
-         {n_decl}. The body extractor below anchors on the first hit, so a decoy second \
-         declaration would re-point this pin at a body nobody reviewed."
-    );
-
-    let body = extract_pvp_fn_body(&stripped, resolver).unwrap_or_else(|| {
-        panic!(
-            "ptc5b-T4 FAIL (extraction): the brace-bounded body of `{resolver}` could not be \
-             sliced out of lib.rs, so this scan has no scope and would pass vacuously."
-        )
-    });
-
-    // Assembled from parts per this file's concat! convention. The trailing `(`
-    // is part of the needle (r2): without it the pin is satisfied by any MENTION
-    // of the helper rather than by a CALL — and this file's own EA-CHR pins
-    // record the same lesson about `.delete(0)`-style decoration.
-    let needle = concat!("battle::", "resolve_wild_battle_on_disconnect(");
-    assert!(
-        body.contains(needle),
-        "ptc5b-T4 FAIL: `{}` not found in the body of `resolve_all_live_interactions` in \
-         lib.rs. The shared force-resolve bundle must call \
-         `battle::resolve_wild_battle_on_disconnect(ctx, identity)` so a player's Ongoing \
-         WILD battle is cleaned up — on disconnect (ptc5b-1) AND before the M22 deletion \
-         cascade erases the monsters that battle references (spec §4.4 step 1). This is the \
-         call a hazard list rebuilt from the TABLE CENSUS rather than from the on_disconnect \
-         dispatch silently drops, and battle.rs's own doc comment records why that is fatal: \
-         no scheduled reaper covers the wild battle row class, so the abandoned battle \
-         soft-locks the returning player forever.",
-        needle
-    );
-}
-
-// ---------------------------------------------------------------------------
-// EA-PVP-06: PVP_TURN_DEADLINE_MS = 60_000
-//
-// Proof-of-teeth: kills an impl that changes the constant without updating the
-// spec — 60 s is the agreed turn deadline (ADR-0109 D3).
-// ---------------------------------------------------------------------------
-
-#[test]
-fn ea_pvp_06_turn_deadline_constant_is_sixty_seconds() {
-    use super::PVP_TURN_DEADLINE_MS;
-    assert_eq!(
-        PVP_TURN_DEADLINE_MS, 60_000,
-        "EA-PVP-06 FAIL: PVP_TURN_DEADLINE_MS must be 60_000 (60 seconds in milliseconds). \
-         Found {}. Update the ADR if you change the deadline.",
-        PVP_TURN_DEADLINE_MS
-    );
-}
-
-// ---------------------------------------------------------------------------
-// EA-PVP-07: resolve_pvp_turn_if_ready called from submit_pvp_action
-//
-// Proof-of-teeth: kills an impl that decouples the both-submitted check from
-// the action submission, breaking the "inline resolution in same transaction"
-// guarantee (ADR-0109 D7).
-// ---------------------------------------------------------------------------
-
-#[test]
-fn ea_pvp_07_submit_pvp_action_calls_resolve_if_ready() {
-    let stripped = strip_rust_comments(PVP_RS);
-    let submit_fn = concat!("fn ", "submit_pvp_action");
-    let resolve_call = concat!("resolve_pvp_turn", "_if_ready");
-    let fn_pos = stripped
-        .find(submit_fn)
-        .expect("EA-PVP-07: `submit_pvp_action` function not found in pvp.rs");
-    let fn_body = &stripped[fn_pos..];
-    assert!(
-        fn_body.contains(resolve_call),
-        "EA-PVP-07 FAIL: `submit_pvp_action` in pvp.rs does not call \
-         `resolve_pvp_turn_if_ready`. Both-submitted resolution must happen \
-         inline in the same SpacetimeDB transaction as the second pick (ADR-0109 D7)."
-    );
-}
-
-// ---------------------------------------------------------------------------
-// EA-PVP-08: `mod pvp` declared in lib.rs
-//
-// Proof-of-teeth: kills an impl that creates pvp.rs but forgets to declare
-// the module — the module's reducers would be invisible to SpacetimeDB.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn ea_pvp_08_pvp_module_declared_in_lib_rs() {
-    let stripped = strip_rust_comments(LIB_RS);
-    let needle = concat!("mod ", "pvp;");
-    assert!(
-        stripped.contains(needle),
-        "EA-PVP-08 FAIL: `mod pvp;` not found in lib.rs. The pvp module must \
-         be declared for SpacetimeDB to register its tables and reducers."
-    );
-}
-
-// ---------------------------------------------------------------------------
-// EA-PVP-09: battle_challenge table is PUBLIC (clients subscribe to challenges)
-//
-// Proof-of-teeth: kills an impl that accidentally omits `public` from
-// battle_challenge — clients would then be unable to see incoming challenges.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn ea_pvp_09_battle_challenge_is_public() {
-    let stripped = strip_rust_comments(SCHEMA_RS);
-    let needle_table = concat!("accessor = ", "battle_challenge");
-    let pos = stripped.find(needle_table).expect(
-        "EA-PVP-09: `accessor = battle_challenge` not found in schema.rs — \
-         BattleChallenge must be declared there",
-    );
-    let line_start = stripped[..pos].rfind('\n').map(|p| p + 1).unwrap_or(0);
-    let line_end = stripped[pos..]
-        .find('\n')
-        .map(|p| pos + p)
-        .unwrap_or(stripped.len());
-    let decl_line = &stripped[line_start..line_end];
-    assert!(
-        decl_line.contains("public"),
-        "EA-PVP-09 FAIL: `battle_challenge` table declaration does NOT contain \
-         `public`. Clients need to subscribe to see incoming challenges. \
-         Found line: {:?}",
-        decl_line
-    );
-}
-
-// ---------------------------------------------------------------------------
-// EA-PVP-10: BattleChallenge and BattleAction struct declarations exist
-//
-// Proof-of-teeth: kills an impl that uses different names, or puts the structs
-// in the wrong file, making them unreachable from other modules.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn ea_pvp_10_schema_structs_declared() {
-    for struct_name in &["BattleChallenge", "BattleAction"] {
-        let full_needle = format!("pub struct {struct_name}");
-        assert!(
-            SCHEMA_RS.contains(&full_needle),
-            "EA-PVP-10 FAIL: `{}` struct declaration not found in schema.rs. \
-             All table structs must be declared in schema.rs (ADR-0056).",
-            struct_name
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Compile-time smoke: PvpDeadlineSchedule is constructable
-//
-// This test exists to verify that all the fields are correctly named and typed.
-// A wrong field name would fail compilation before this test runs.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn pvp_deadline_schedule_fields_are_correct() {
-    use super::PvpDeadlineSchedule;
-    use spacetimedb::ScheduleAt;
-    use std::time::Duration;
-
-    let sched = PvpDeadlineSchedule {
-        scheduled_id: 0,
-        scheduled_at: ScheduleAt::Interval(Duration::from_millis(60_000).into()),
-        battle_id: 42,
-        turn_number: 3,
-    };
-    assert_eq!(sched.battle_id, 42);
-    assert_eq!(sched.turn_number, 3);
-}
-
-// ---------------------------------------------------------------------------
-// RT-M16-01: challenge_pvp MUST check that the TARGET is not in an ongoing
-// battle before inserting a BattleChallenge row.
-//
-// Finding: `challenge_pvp` guards the CALLER with `is_in_ongoing_battle`
-// but never calls `is_in_ongoing_battle(ctx, target)`. A player who is busy
-// in an active PvP or PvE battle can still receive challenge rows that pile up
-// in the public `battle_challenge` table. When the target finishes their
-// current battle and calls `accept_challenge`, the battle creates fine — but
-// during the acceptance window the target is simultaneously "in a battle" and
-// "has a pending incoming challenge", violating the mutual-exclusion invariant
-// documented in the guard order comment (guard 4 in accept_challenge re-checks
-// `is_in_ongoing_battle`, so acceptance is correctly blocked, but the
-// INSERTION of the challenge row is not, causing UX clutter and a potential
-// accept race on simultaneous battle-end + accept).
-//
-// Proof-of-teeth: kills any impl that checks the target ONLY inside
-// accept_challenge's guard 4 and not at insertion time in challenge_pvp.
-// After the fix, challenge_pvp must call is_in_ongoing_battle for the target.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn rt_m16_01_challenge_pvp_guards_target_not_in_battle() {
-    let stripped = strip_rust_comments(PVP_RS);
-
-    // Locate the challenge_pvp function body.
-    let fn_marker = concat!("fn ", "challenge_pvp");
-    let fn_pos = stripped
-        .find(fn_marker)
-        .expect("RT-M16-01: `challenge_pvp` not found in pvp.rs");
-
-    // Find the closing of challenge_pvp: it ends before `accept_challenge` begins.
-    let accept_marker = concat!("fn ", "accept_challenge");
-    let accept_pos = stripped[fn_pos..]
-        .find(accept_marker)
-        .map(|p| fn_pos + p)
-        .unwrap_or(stripped.len());
-
-    let challenge_pvp_body = &stripped[fn_pos..accept_pos];
-
-    // The fix requires calling is_in_ongoing_battle with the target variable.
-    // We look for the pattern `is_in_ongoing_battle` followed nearby by `target`
-    // anywhere in the challenge_pvp body.
-    let guard_call = concat!("is_in_ongoing", "_battle");
-    assert!(
-        challenge_pvp_body.contains(guard_call),
-        "RT-M16-01 FAIL: `challenge_pvp` in pvp.rs does not call \
-         `is_in_ongoing_battle` at all within its body. \
-         A challenger can send a challenge to a player who is already in an \
-         ongoing battle, bypassing the pre-insertion guard. \
-         Fix: add `is_in_ongoing_battle(ctx, target)` check before inserting \
-         the BattleChallenge row (after guard 3, before guard 8)."
-    );
-
-    // Tighter check: the guard call must appear with `target` as the argument,
-    // not just `me`. We look for the literal two-argument pattern.
-    let target_guard = concat!("is_in_ongoing_battle(ctx, ", "target)");
-    assert!(
-        challenge_pvp_body.contains(target_guard),
-        "RT-M16-01 FAIL: `challenge_pvp` calls `is_in_ongoing_battle` but only \
-         for the caller (`me`), NOT for the `target`. A player in an ongoing \
-         battle can be challenged, cluttering their challenge inbox and creating \
-         an accept race. \
-         Fix: add `is_in_ongoing_battle(ctx, target)` check in challenge_pvp \
-         after the existing `is_in_ongoing_battle(ctx, me)` guard."
-    );
-}
-
-// ---------------------------------------------------------------------------
-// RT-M16-02: write_back_battle_results MUST NOT treat a real PvP opponent as
-// a practice target when awarding XP to the challenger.
-//
-// Finding: `write_back_battle_results` in battle.rs computes:
-//   `let is_practice = battle.opponent_identity != WILD_IDENTITY;`
-// This flag was introduced in M12.5e2 for SELF-vs-SELF sandbox battles
-// (ADR-0078). In PvP battles, `opponent_identity` is a real player (not
-// WILD_IDENTITY), so `is_practice` evaluates to TRUE for every PvP win.
-// Consequently the challenger only earns `floor(base_xp / 10)` even though
-// they beat a real opponent. PvP victory XP must be full-rate, not 1/10.
-//
-// The fix is to distinguish a true practice/sandbox battle
-// (opponent_identity == ctx.sender() at start_battle time, where the opponent
-// IS the challenger's own self) from a real PvP battle. One correct expression:
-//   `let is_practice = battle.player_identity == battle.opponent_identity;`
-//
-// Proof-of-teeth: kills any impl that uses `!= WILD_IDENTITY` as the
-// is_practice predicate and thus penalises PvP winners at 1/10 XP.
-// After the fix the source scan must no longer contain the broken expression.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn rt_m16_02_pvp_win_is_not_classified_as_practice() {
-    let battle_rs = include_str!("battle.rs");
-    let stripped = strip_rust_comments(battle_rs);
-
-    // The broken expression: using != WILD_IDENTITY as the practice flag.
-    // This is the literal text we expect to disappear after the fix.
-    let broken_expr = concat!(
-        "is_practice = battle.opponent_identity != ",
-        "WILD_IDENTITY"
-    );
-    assert!(
-        !stripped.contains(broken_expr),
-        "RT-M16-02 FAIL: `write_back_battle_results` in battle.rs uses \
-         `opponent_identity != WILD_IDENTITY` as the `is_practice` flag. \
-         This incorrectly marks every PvP battle (where opponent_identity is a \
-         real player, not WILD_IDENTITY) as a practice battle, penalising the \
-         challenger with only 1/10 XP on a PvP win. \
-         Fix: replace with `player_identity == opponent_identity` (self-battle \
-         is the only legitimate practice scenario) so real PvP victories grant \
-         full XP."
-    );
-}
-
-// ---------------------------------------------------------------------------
-// RT-M16-03: write_back_battle_results MUST GC stale terminal battle rows
-// for the OPPONENT (side B) in PvP battles, not only for player_identity.
-//
-// Finding: The `old_terminal_ids` cleanup in `write_back_battle_results`
-// queries `battle().player_identity().filter(player)` — it only sweeps old
-// terminal battles where the CHALLENGER is player_identity (side A). In a PvP
-// battle where side B wins (`SideBWins`), old terminal battles where the
-// OPPONENT was in side B are never GC'd via `opponent_identity` index.
-// Over time this causes an unbounded accumulation of terminal battle rows for
-// the opponent identity, bloating the public `battle` table.
-//
-// Proof-of-teeth: kills any impl that has ONLY a player_identity GC pass
-// inside write_back_battle_results without also GC-ing via opponent_identity.
-// After the fix, write_back_battle_results must contain an opponent_identity
-// GC sweep for PvP terminal outcomes.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn rt_m16_03_write_back_battle_results_gcs_opponent_terminal_battles() {
-    let battle_rs = include_str!("battle.rs");
-    let stripped = strip_rust_comments(battle_rs);
-
-    // Find write_back_battle_results body (it ends before write_back_party_hp
-    // which is declared just above it, so we search from its fn declaration).
-    let fn_marker = concat!("fn write_back_battle", "_results");
-    let fn_pos = stripped
-        .find(fn_marker)
-        .expect("RT-M16-03: `write_back_battle_results` not found in battle.rs");
-
-    // We look for opponent_identity filtering in the GC pass — the fix must
-    // add a sweep like: `battle().opponent_identity().filter(opponent)` inside
-    // write_back_battle_results for PvP terminal rows.
-    let opponent_gc_needle = concat!("opponent_identity()", ".filter");
-    let fn_body = &stripped[fn_pos..];
-    assert!(
-        fn_body.contains(opponent_gc_needle),
-        "RT-M16-03 FAIL: `write_back_battle_results` in battle.rs does not GC \
-         old terminal battle rows by `opponent_identity`. \
-         In PvP battles where side B wins, old terminal battles where the \
-         losing player was `opponent_identity` (side B) are never deleted, \
-         causing unbounded `battle` table growth for the opponent identity. \
-         Fix: add a second GC sweep inside write_back_battle_results that \
-         deletes old terminal battle rows indexed by `opponent_identity` for \
-         PvP outcomes (outcome is SideBWins, i.e. the opponent won)."
-    );
-}
-
-// ---------------------------------------------------------------------------
-// RT-M16-05: apply_pvp_forfeit must delegate to settle_pvp_battle (M17 rewrite).
-//
-// Pre-M17 finding (now resolved by the settle_pvp_battle funnel):
-//   `apply_pvp_forfeit` used to call `write_back_party_hp_pvp_side_b(…)?`
-//   before `ctx.db.battle().battle_id().update(battle)`, risking a stuck-Ongoing
-//   battle if the HP write-back returned Err.
-//
-// Post-M17 invariant (ADR-0119 D3):
-//   apply_pvp_forfeit must NOT contain the direct `write_back_party_hp_pvp_side_b`
-//   call or the `battle().battle_id().update` call — both now live inside
-//   settle_pvp_battle. apply_pvp_forfeit must delegate via `settle_pvp_battle(`.
-//   The ordering contract (write_back → update → rating → side_b) is pinned by
-//   m17a_rl10_settle_pvp_battle_ordering.
-//
-// NOTE (B-1): The pre-M17 version used an unbounded slice from `fn_pos` that,
-// after the M17 pvp.rs reorder (forfeit now above resolve), swept into
-// settle_pvp_battle's body and matched the wrong positions. Rewritten to use
-// extract_pvp_fn_body for an exact body slice.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn rt_m16_05_apply_pvp_forfeit_updates_battle_before_propagating_writeback_err() {
-    let stripped = strip_rust_comments(PVP_RS);
-
-    // Use extract_pvp_fn_body for an exact, bounded body slice (B-1 fix).
-    let forfeit_body = extract_pvp_fn_body(&stripped, "apply_pvp_forfeit")
-        .expect("RT-M16-05: `apply_pvp_forfeit` must exist in pvp.rs");
-
-    // Post-M17: apply_pvp_forfeit must delegate to settle_pvp_battle.
-    let settle_needle = concat!("settle_pvp", "_battle(");
-    assert!(
-        forfeit_body.contains(settle_needle),
-        "RT-M16-05 FAIL: `apply_pvp_forfeit` body must contain `{}` — delegation to \
-         the single funnel is required post-M17 (ADR-0119 D3). Without it the \
-         RT-M16-05 stuck-Ongoing risk is not resolved.",
-        settle_needle
-    );
-
-    // Post-M17: direct write_back_party_hp_pvp_side_b must NOT appear in forfeit body
-    // (it now lives inside settle_pvp_battle — a direct call here would double-run it).
-    let side_b_needle = concat!("write_back_party_hp_pvp", "_side_b");
-    assert!(
-        !forfeit_body.contains(side_b_needle),
-        "RT-M16-05 FAIL: `apply_pvp_forfeit` body still contains a direct `{}` call — \
-         this was moved into settle_pvp_battle (ADR-0119 D3). A direct call here \
-         reintroduces the stuck-Ongoing risk and causes double write-back.",
-        side_b_needle
-    );
-
-    // Post-M17: direct battle().battle_id().update must NOT appear in forfeit body
-    // (also moved into settle_pvp_battle).
-    let update_needle = concat!("battle().battle_id()", ".update");
-    assert!(
-        !forfeit_body.contains(update_needle),
-        "RT-M16-05 FAIL: `apply_pvp_forfeit` body still contains a direct `{}` call — \
-         the battle row update was moved into settle_pvp_battle (ADR-0119 D3). \
-         A direct call here bypasses the funnel ordering guarantee.",
-        update_needle
-    );
-}
-
-// ---------------------------------------------------------------------------
-// ChallengeStatus enum coverage
-//
-// All four variants must be equality-comparable (PartialEq derived).
-// Proof-of-teeth: kills an impl that adds/renames variants without updating
-// the complete match in pvp.rs (exhaustive match would then fail to compile).
-// ---------------------------------------------------------------------------
-
-#[test]
-fn challenge_status_variants_are_distinct() {
-    use crate::schema::ChallengeStatus;
-    let variants = [
-        ChallengeStatus::Pending,
-        ChallengeStatus::Accepted,
-        ChallengeStatus::Declined,
-        ChallengeStatus::Cancelled,
-    ];
-    for (i, a) in variants.iter().enumerate() {
-        for (j, b) in variants.iter().enumerate() {
-            if i == j {
-                assert_eq!(a, b, "variant {i} must equal itself");
-            } else {
-                assert_ne!(a, b, "variants {i} and {j} must be distinct");
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// RT-M16-08: resolve_pvp_turn_if_ready must delegate to settle_pvp_battle (M17 rewrite).
-//
-// Pre-M17 finding (now resolved by the settle_pvp_battle funnel):
-//   `resolve_pvp_turn_if_ready` called `ctx.db.battle().battle_id().update(battle)`
-//   BEFORE `write_back_battle_results`, causing the GC sweep inside write_back to
-//   include the current (now-terminal) battle row and delete it — clients saw the
-//   battle disappear rather than a terminal outcome frame.
-//
-// Post-M17 invariant (ADR-0119 D3):
-//   resolve_pvp_turn_if_ready must NOT contain direct calls to
-//   `write_back_battle_results(` or `battle().battle_id().update` — both now
-//   live inside settle_pvp_battle. resolve_pvp_turn_if_ready must delegate via
-//   `settle_pvp_battle(`. The correct ordering (write_back → update → rating →
-//   side_b) is pinned by m17a_rl10_settle_pvp_battle_ordering.
-//
-// NOTE (B-2): The pre-M17 version used a bounded slice resolved by finding
-// `fn apply_pvp_forfeit` after fn_pos — after the M17 pvp.rs reorder (forfeit
-// is now ABOVE resolve in the file), the forward search found no `apply_pvp_forfeit`
-// after resolve's start, so next_fn_pos fell back to stripped.len() and the slice
-// swept to EOF (into settle_pvp_battle's body), producing wrong offset comparisons.
-// Rewritten to use extract_pvp_fn_body for an exact body slice.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn rt_m16_08_resolve_pvp_turn_if_ready_calls_writeback_before_battle_update() {
-    let stripped = strip_rust_comments(PVP_RS);
-
-    // Use extract_pvp_fn_body for an exact, bounded body slice (B-2 fix).
-    let resolve_body = extract_pvp_fn_body(&stripped, "resolve_pvp_turn_if_ready")
-        .expect("RT-M16-08: `resolve_pvp_turn_if_ready` must exist in pvp.rs");
-
-    // Post-M17: resolve_pvp_turn_if_ready must NOT contain a direct write_back_battle_results
-    // call (now inside settle_pvp_battle — a direct call here bypasses the funnel ordering).
-    let wb_needle = concat!("write_back_battle", "_results(");
-    assert!(
-        !resolve_body.contains(wb_needle),
-        "RT-M16-08 FAIL: `resolve_pvp_turn_if_ready` body still contains a direct `{}` call — \
-         this was moved into settle_pvp_battle (ADR-0119 D3). A direct call here reintroduces \
-         the RT-M16-08 GC-sweep ordering violation (battle row committed terminal before \
-         write_back GC sweep runs, deleting the current row).",
-        wb_needle
-    );
-
-    // Post-M17: resolve_pvp_turn_if_ready must NOT contain a direct battle row update
-    // (also moved into settle_pvp_battle).
-    let update_needle = concat!("battle().battle_id()", ".update");
-    assert!(
-        !resolve_body.contains(update_needle),
-        "RT-M16-08 FAIL: `resolve_pvp_turn_if_ready` body still contains a direct `{}` call — \
-         the battle row update was moved into settle_pvp_battle (ADR-0119 D3). \
-         A direct call here bypasses the funnel and reintroduces the ordering violation.",
-        update_needle
-    );
-}
-
-// ===========================================================================
-// m17a (ADR-0119): Ranked ladder spine tests
-//
-// Source constants used below (in addition to PVP_RS / SCHEMA_RS / LIB_RS
-// already declared at the top of this file):
-//
-//   BATTLE_RS   — server-module/src/battle.rs  (for single-caller count)
-//   TAMING_RS   — server-module/src/taming.rs  (never-deleted scan)
-//   TRADING_RS  — server-module/src/trading.rs (never-deleted scan)
-//   ECONOMY_RS  — server-module/src/economy.rs (never-deleted scan)
-//   MONSTER_MGMT_RS — server-module/src/monster_mgmt.rs (never-deleted scan)
-//   EVOLUTION_RS    — server-module/src/evolution.rs    (never-deleted scan)
-//   RAISING_RS      — server-module/src/raising.rs      (never-deleted scan)
-//   NPC_RS          — server-module/src/npc.rs          (never-deleted scan)
-//   MOVEMENT_RS     — server-module/src/movement.rs     (never-deleted scan)
-//   CONTENT_RS      — server-module/src/content.rs      (never-deleted scan)
-//   SERVER_RANKING_RS — server-module/src/ranking.rs    (runtime-read via std::fs)
-//
-// Note: SERVER_RANKING_RS is read at runtime (not include_str!) because the
-// file does not yet exist; the test asserts the read succeeds so that a missing
-// file causes a clear red failure with the message "m17a: server-module/src/ranking.rs
-// must exist (RL-7)".
-// ===========================================================================
-
-const BATTLE_RS: &str = include_str!("battle.rs");
-const TAMING_RS: &str = include_str!("taming.rs");
-const TRADING_RS: &str = include_str!("trading.rs");
-const ECONOMY_RS: &str = include_str!("economy.rs");
-const MONSTER_MGMT_RS: &str = include_str!("monster_mgmt.rs");
-const EVOLUTION_RS: &str = include_str!("evolution.rs");
-const RAISING_RS: &str = include_str!("raising.rs");
-const NPC_RS: &str = include_str!("npc.rs");
-const MOVEMENT_RS: &str = include_str!("movement.rs");
-const CONTENT_RS: &str = include_str!("content.rs");
-// F2/M-2: additional domain files for single-callsite scope widening.
-const CONTENT_CACHE_RS: &str = include_str!("content_cache.rs");
-const MARSHAL_RS: &str = include_str!("marshal.rs");
-const GUARDS_RS: &str = include_str!("guards.rs");
-const INVENTORY_RS: &str = include_str!("inventory.rs");
-
-// ---------------------------------------------------------------------------
-// Helper: extract a function body from a source string (mirrors battle_tests.rs).
-// Finds `pub fn <name>(` or `fn <name>(`, counts braces to locate the body.
-// ---------------------------------------------------------------------------
-fn extract_pvp_fn_body<'a>(src: &'a str, name: &str) -> Option<&'a str> {
-    let pub_needle = format!("pub fn {}(", name);
-    let priv_needle = format!("fn {}(", name);
-    let fn_start = src
-        .find(pub_needle.as_str())
-        .or_else(|| src.find(priv_needle.as_str()))?;
-    let after_fn = &src[fn_start..];
-    let brace_offset = after_fn.find('{')?;
-    let body_start = fn_start + brace_offset + 1;
-    let mut depth: usize = 1;
-    let mut rel: usize = 0;
-    let chars: Vec<char> = src[body_start..].chars().collect();
-    let mut char_pos = 0;
-    while char_pos < chars.len() && depth > 0 {
-        match chars[char_pos] {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    break;
-                }
-            }
-            _ => {}
-        }
-        rel += chars[char_pos].len_utf8();
-        char_pos += 1;
-    }
-    if depth == 0 {
-        Some(&src[body_start..body_start + rel])
-    } else {
-        None
-    }
-}
-
-// ---------------------------------------------------------------------------
-// (a) RL-10: settle-funnel exists in pvp.rs
-//
-// Proof-of-teeth: kills any impl that names the function differently or places
-// it outside pvp.rs.
-// RED now: settle_pvp_battle does not yet exist.
-// ---------------------------------------------------------------------------
-
-/// RL-10 (a): pvp.rs must contain a private `settle_pvp_battle` function.
-///
-/// This is the single funnel that commits terminal PvP outcomes and calls
-/// `apply_pvp_rating` exactly once per decisive battle (ADR-0119 D3).
-///
-/// Kills: any impl that inlines the commit in each call site rather than
-/// unifying into one function, or that names it differently.
-/// RED now: function does not yet exist in pvp.rs.
-#[test]
-fn m17a_rl10_settle_pvp_battle_exists() {
-    let stripped = strip_rust_comments(PVP_RS);
-    let needle = concat!("fn settle_pvp", "_battle(");
-    assert!(
-        stripped.contains(needle),
-        "m17a-RL-10 FAIL: pvp.rs must contain `{}` — the single funnel for terminal \
-         PvP outcome commits (ADR-0119 D3). Without it, apply_pvp_rating could be \
-         called from multiple sites, violating exactly-once. RED: function absent.",
-        needle
-    );
-}
-
-// ---------------------------------------------------------------------------
-// (b) RL-10: apply_pvp_rating called exactly once across non-ranking-rs sources
-//
-// The bare identifier concat!("apply_pvp", "_rating") is counted across:
-//   PVP_RS + BATTLE_RS + LIB_RS
-// Must be exactly 1 occurrence (the call in settle_pvp_battle, path-qualified
-// as `ranking::apply_pvp_rating(`).
-//
-// Contract: the implementer must path-qualify the call as `ranking::apply_pvp_rating(`
-// so that a `use` import would NOT add a second bare-identifier occurrence.
-// The path-qualified form itself IS the one occurrence counted.
-//
-// RED now: 0 occurrences (function not yet written).
-// ---------------------------------------------------------------------------
-
-/// RL-10 (b): exactly one occurrence of `apply_pvp_rating` across pvp.rs + battle.rs + lib.rs.
-///
-/// We count the path-qualified call `ranking::apply_pvp_rating(` in PVP_RS,
-/// and also count the bare identifier `apply_pvp_rating` in BATTLE_RS and LIB_RS
-/// (neither should reference it). Total must be exactly 1.
-///
-/// Kills: an impl with two call sites (double-count), or one that routes through
-/// an alias binding in battle.rs or lib.rs.
-/// RED now: 0 occurrences.
-#[test]
-fn m17a_rl10_apply_pvp_rating_single_callsite() {
-    // F2/M-2 hardening: count the bare needle across ALL non-test domain files,
-    // not just pvp.rs + battle.rs + lib.rs. An implementer could introduce a
-    // second call site in any module (economy, trading, raising, guards, etc.).
-    // Expected total across ALL non-pvp files: 0.
-    // Expected count in pvp.rs with path-qualifier: exactly 1.
-
-    // Needle: the path-qualified call form (one and only acceptable form in pvp.rs).
-    let call_needle = concat!("ranking::apply_pvp", "_rating(");
-    // Bare identifier needle (must not appear in any non-pvp domain file).
-    let bare_needle = concat!("apply_pvp", "_rating");
-
-    // Count path-qualified calls in pvp.rs — expect exactly 1.
-    let stripped_pvp = strip_rust_comments(PVP_RS);
-    let pvp_call_count = stripped_pvp.matches(call_needle).count();
-    assert_eq!(
-        pvp_call_count, 1,
-        "m17a-RL-10 FAIL: expected exactly 1 path-qualified call `{}` in pvp.rs, \
-         found {}. There must be exactly one call site (settle_pvp_battle) to \
-         guarantee exactly-once rating application (ADR-0119 D3).",
-        call_needle, pvp_call_count
-    );
-
-    // Count bare identifier across ALL other non-test domain files — expect 0 each.
-    // F2: widened from battle.rs+lib.rs to the full domain set.
-    let non_pvp_domain: &[(&str, &str)] = &[
-        ("battle.rs", BATTLE_RS),
-        ("lib.rs", LIB_RS),
-        ("schema.rs", SCHEMA_RS),
-        ("taming.rs", TAMING_RS),
-        ("trading.rs", TRADING_RS),
-        ("economy.rs", ECONOMY_RS),
-        ("monster_mgmt.rs", MONSTER_MGMT_RS),
-        ("evolution.rs", EVOLUTION_RS),
-        ("raising.rs", RAISING_RS),
-        ("npc.rs", NPC_RS),
-        ("movement.rs", MOVEMENT_RS),
-        ("content.rs", CONTENT_RS),
-        ("content_cache.rs", CONTENT_CACHE_RS),
-        ("marshal.rs", MARSHAL_RS),
-        ("guards.rs", GUARDS_RS),
-        ("inventory.rs", INVENTORY_RS),
-    ];
-    for (filename, src) in non_pvp_domain {
-        let stripped = strip_rust_comments(src);
-        let count = stripped.matches(bare_needle).count();
-        assert_eq!(
-            count, 0,
-            "m17a-RL-10 FAIL: found {} occurrence(s) of `{}` in {} — \
-             only pvp.rs may reference apply_pvp_rating; all other domain files \
-             must never call it (rating application funnels through settle_pvp_battle \
-             in pvp.rs, ADR-0119 D3). F2: full domain sweep.",
-            count, bare_needle, filename
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
-// (c) RL-10: both settle sites delegate; direct write_back removed from forfeit
-//
-// apply_pvp_forfeit body must contain settle_pvp_battle call.
-// resolve_pvp_turn_if_ready body must contain settle_pvp_battle call.
-// apply_pvp_forfeit body must NOT contain a direct write_back_battle_results call
-//   (that call is now inside settle_pvp_battle — moving it out would duplicate).
-//
-// RED now: settle_pvp_battle does not exist yet.
-// ---------------------------------------------------------------------------
-
-/// RL-10 (c1): apply_pvp_forfeit must delegate to settle_pvp_battle.
-///
-/// Kills: an impl that keeps the direct write_back + update + apply_pvp_rating
-/// inline in apply_pvp_forfeit rather than delegating to the funnel.
-/// RED now: settle_pvp_battle absent.
-#[test]
-fn m17a_rl10_forfeit_delegates_to_settle_funnel() {
-    let stripped = strip_rust_comments(PVP_RS);
-    let settle_needle = concat!("settle_pvp", "_battle(");
-
-    let forfeit_body = extract_pvp_fn_body(&stripped, "apply_pvp_forfeit")
-        .expect("m17a-RL-10 (c1): `apply_pvp_forfeit` must exist in pvp.rs");
-
-    assert!(
-        forfeit_body.contains(settle_needle),
-        "m17a-RL-10 (c1) FAIL: `apply_pvp_forfeit` body must call `{}` to delegate \
-         terminal commit to the single funnel. Without this, forfeit path bypasses \
-         the once-only apply_pvp_rating guarantee (ADR-0119 D3). RED: absent.",
-        settle_needle
-    );
-}
-
-/// RL-10 (c2): resolve_pvp_turn_if_ready must delegate to settle_pvp_battle.
-///
-/// Kills: an impl that keeps the both-submit terminal commit inline rather than
-/// delegating to the funnel, creating a second call site for apply_pvp_rating.
-/// RED now: settle_pvp_battle absent.
-#[test]
-fn m17a_rl10_resolve_pvp_turn_delegates_to_settle_funnel() {
-    let stripped = strip_rust_comments(PVP_RS);
-    let settle_needle = concat!("settle_pvp", "_battle(");
-
-    let resolve_body = extract_pvp_fn_body(&stripped, "resolve_pvp_turn_if_ready")
-        .expect("m17a-RL-10 (c2): `resolve_pvp_turn_if_ready` must exist in pvp.rs");
-
-    assert!(
-        resolve_body.contains(settle_needle),
-        "m17a-RL-10 (c2) FAIL: `resolve_pvp_turn_if_ready` body must call `{}` in its \
-         terminal branch. Without this, the both-submit path bypasses the once-only \
-         apply_pvp_rating guarantee (ADR-0119 D3). RED: absent.",
-        settle_needle
-    );
-}
-
-/// RL-10 (c3): apply_pvp_forfeit body must NOT directly call write_back_battle_results.
-///
-/// After unification into settle_pvp_battle, the direct call in apply_pvp_forfeit
-/// is removed (it now happens inside the funnel). A direct call here would cause
-/// write_back_battle_results to run twice per forfeit.
-///
-/// Kills: an impl that delegates to settle_pvp_battle AND keeps the old direct
-/// write_back_battle_results call — double write-back.
-/// RED now: apply_pvp_forfeit currently calls write_back_battle_results directly
-/// (before the funnel is introduced).
-#[test]
-fn m17a_rl10_forfeit_no_direct_write_back_results() {
-    let stripped = strip_rust_comments(PVP_RS);
-    let direct_wb_needle = concat!("write_back_battle", "_results(");
-
-    let forfeit_body = extract_pvp_fn_body(&stripped, "apply_pvp_forfeit")
-        .expect("m17a-RL-10 (c3): `apply_pvp_forfeit` must exist in pvp.rs");
-
-    assert!(
-        !forfeit_body.contains(direct_wb_needle),
-        "m17a-RL-10 (c3) FAIL: `apply_pvp_forfeit` body still contains a direct call \
-         to `write_back_battle_results`. After unification into settle_pvp_battle, \
-         this call must be removed — it now happens inside the funnel. \
-         A direct call here causes double write-back on the forfeit path (ADR-0119 D3). \
-         RED now: the direct call exists before the funnel is introduced."
-    );
-}
-
-// ---------------------------------------------------------------------------
-// (d) RL-10: ordering preserved inside settle_pvp_battle
-//
-// ADR-0119 D3 specifies the invariant commit order:
-//   1. write_back_battle_results  (while battle row still Ongoing — RT-M16-08)
-//   2. battle().battle_id().update  (commit terminal outcome — before side-B HP — RT-M16-05)
-//   3. ranking::apply_pvp_rating  (rating applied to just-committed outcome)
-//   4. write_back_party_hp_pvp_side_b  (side-B HP write-back)
-//
-// Tested via text-offset ordering in the settle fn body.
-// RED now: settle_pvp_battle does not exist.
-// ---------------------------------------------------------------------------
-
-/// RL-10 (d): commit order inside settle_pvp_battle is write_back → update → rating →
-/// side_b_hp → battle_action sweep (step 5).
-///
-/// Five steps must be in strictly ascending text-offset order:
-///   1. write_back_battle_results  (while battle row still Ongoing — RT-M16-08)
-///   2. battle().battle_id().update  (commit terminal outcome)
-///   3. ranking::apply_pvp_rating  (rating on just-committed outcome)
-///   4. write_back_party_hp_pvp_side_b  (side-B HP write-back)
-///   5. battle_action sweep: battle_action().battle_id().iter() + .delete()
-///      (GC of submitted actions — must come AFTER side-B HP, ADR-0119 D3 step 5)
-///
-/// m-4 hardening: step 5 sweep pin added (battle_action GC after side_b_hp).
-///
-/// Kills: an impl with the wrong ordering (e.g. rating before update, side-B HP
-/// before rating, or battle_action GC before side-B HP write-back).
-/// RED now: settle_pvp_battle does not exist.
-#[test]
-fn m17a_rl10_settle_pvp_battle_ordering() {
-    let stripped = strip_rust_comments(PVP_RS);
-
-    let settle_body = extract_pvp_fn_body(&stripped, "settle_pvp_battle")
-        .expect("m17a-RL-10 (d): `settle_pvp_battle` must exist in pvp.rs (RED: absent)");
-
-    let wb_needle = concat!("write_back_battle", "_results(");
-    let update_needle = concat!("battle().battle_id()", ".update");
-    let rating_needle = concat!("ranking::apply_pvp", "_rating(");
-    let side_b_needle = concat!("write_back_party_hp_pvp", "_side_b(");
-    // Step 5: battle_action GC sweep — iter() over actions by battle_id then delete.
-    let sweep_iter_needle = concat!("battle_action()", ".battle_id()");
-    let sweep_delete_needle = concat!("battle_action()", ".delete");
-
-    let wb_pos = settle_body.find(wb_needle).unwrap_or_else(|| {
-        panic!(
-            "m17a-RL-10 (d): `{}` not found in settle_pvp_battle body — \
-             step 1 (write_back_battle_results) must be present (ADR-0119 D3 step 1)",
-            wb_needle
-        )
-    });
-    let update_pos = settle_body.find(update_needle).unwrap_or_else(|| {
-        panic!(
-            "m17a-RL-10 (d): `{}` not found in settle_pvp_battle body — \
-             step 2 (battle row update to terminal state) must be present (ADR-0119 D3 step 2)",
-            update_needle
-        )
-    });
-    let rating_pos = settle_body.find(rating_needle).unwrap_or_else(|| {
-        panic!(
-            "m17a-RL-10 (d): `{}` not found in settle_pvp_battle body — \
-             step 3 (apply_pvp_rating) must be present (ADR-0119 D3 step 3)",
-            rating_needle
-        )
-    });
-    let side_b_pos = settle_body.find(side_b_needle).unwrap_or_else(|| {
-        panic!(
-            "m17a-RL-10 (d): `{}` not found in settle_pvp_battle body — \
-             step 4 (write_back_party_hp_pvp_side_b) must be present (ADR-0119 D3 step 4)",
-            side_b_needle
-        )
-    });
-    // Step 5: battle_action sweep (m-4 hardening).
-    let sweep_iter_pos = settle_body.find(sweep_iter_needle).unwrap_or_else(|| {
-        panic!(
-            "m17a-RL-10 (d): `{}` not found in settle_pvp_battle body — \
-             step 5 (battle_action GC sweep iter) must be present (ADR-0119 D3 step 5)",
-            sweep_iter_needle
-        )
-    });
-    let sweep_delete_pos = settle_body.find(sweep_delete_needle).unwrap_or_else(|| {
-        panic!(
-            "m17a-RL-10 (d): `{}` not found in settle_pvp_battle body — \
-             step 5 (battle_action GC sweep delete) must be present (ADR-0119 D3 step 5)",
-            sweep_delete_needle
-        )
-    });
-
-    assert!(
-        wb_pos < update_pos,
-        "m17a-RL-10 (d) ORDER FAIL: write_back_battle_results (pos {}) must come \
-         BEFORE battle().battle_id().update (pos {}) — RT-M16-08 ordering \
-         (GC sweep must not see the current row as terminal).",
-        wb_pos,
-        update_pos
-    );
-    assert!(
-        update_pos < rating_pos,
-        "m17a-RL-10 (d) ORDER FAIL: battle().battle_id().update (pos {}) must \
-         come BEFORE ranking::apply_pvp_rating (pos {}) — rating is applied \
-         to the just-committed outcome (ADR-0119 D3 step 3).",
-        update_pos,
-        rating_pos
-    );
-    assert!(
-        rating_pos < side_b_pos,
-        "m17a-RL-10 (d) ORDER FAIL: ranking::apply_pvp_rating (pos {}) must \
-         come BEFORE write_back_party_hp_pvp_side_b (pos {}) — \
-         side-B HP is the last step; rating is applied first (ADR-0119 D3 steps 3→4).",
-        rating_pos,
-        side_b_pos
-    );
-    // m-4: step-5 sweep must come AFTER side-B HP write-back.
-    assert!(
-        side_b_pos < sweep_iter_pos,
-        "m17a-RL-10 (d) ORDER FAIL (m-4): write_back_party_hp_pvp_side_b (pos {}) must come \
-         BEFORE the battle_action GC sweep iter (pos {}) — the sweep is the final cleanup \
-         step after all writes are committed (ADR-0119 D3 step 5).",
-        side_b_pos,
-        sweep_iter_pos
-    );
-    assert!(
-        sweep_iter_pos <= sweep_delete_pos,
-        "m17a-RL-10 (d) ORDER FAIL (m-4): battle_action sweep iter (pos {}) must not come \
-         AFTER the delete call (pos {}) — iter precedes delete in the sweep loop.",
-        sweep_iter_pos,
-        sweep_delete_pos
-    );
-}
-
-// ---------------------------------------------------------------------------
-// (e) RL-7: server-module/src/ranking.rs module teeth (runtime file read)
-//
-// The file is read at runtime so a missing file produces a clear red failure.
-// Once the file exists, four invariants are checked:
-//   (i)  EXACTLY ONE #[spacetimedb::reducer] attribute (the set_profile_name
-//        name-setter, ADR-0132) AND no `reducer as` alias binding, AND the
-//        single reducer `set_profile_name` is profile-untouching.
-//   (ii) Contains get_or_init_profile and compute_rating_update; exactly 1
-//        compute_rating_update call.
-//   (iii) Contains INITIAL_RATING and does NOT contain the literal `1000` outside
-//         comments (SSOT pin — the constant is the SSOT, not the literal).
-//   (iv) Contains is_ranked_pvp( gate.
-//
-// RED now: file does not exist → read_to_string fails.
-// ---------------------------------------------------------------------------
-
-/// RL-7 (e): server-module/src/ranking.rs must exist and satisfy module invariants.
-///
-/// Teeth:
-///   (i)   EXACTLY ONE #[spacetimedb::reducer] — ranking.rs declares one
-///         client-callable reducer, the profile-untouching `set_profile_name`
-///         name-setter (ADR-0132 refines ADR-0119 D6's "zero reducers" to
-///         "exactly one profile-untouching name-setter"; the security property
-///         "no client-callable reducer writes profile rating/W/L" is preserved
-///         because the one reducer touches no profile table at all).
-///   (i-a) The single reducer is named `set_profile_name`.
-///   (i-b) No `reducer as ` alias binding (documented evasion).
-///   (i-c) The `set_profile_name` body is profile-untouching: it contains none
-///         of `profile().identity()`, `profile().insert`, `get_or_init_profile(`,
-///         `refresh_profile_name(`, `= ctx.db.profile()` (allowlist name-only
-///         write; ADR-0132 D3, red-team F1/F2/F3).
-///   (ii) get_or_init_profile and compute_rating_update present; exactly 1 call.
-///   (iii) INITIAL_RATING const present; literal `1000` absent (SSOT — the constant
-///         is the single source of truth, not the integer literal).
-///   (iv) is_ranked_pvp( gate present (battle classification used before rating write).
-///
-/// RED now: file does not exist.
-#[test]
-fn m17a_rl7_server_ranking_module_invariants() {
-    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/ranking.rs"))
-        .expect(
-            "m17a: server-module/src/ranking.rs must exist (RL-7). \
-         Create the file with pub(crate) fn apply_pvp_rating and get_or_init_profile. \
-         This test is RED because the file is absent.",
-        );
-
-    let stripped = strip_rust_comments(&src);
-
-    // (i) EXACTLY ONE reducer attribute (the set_profile_name name-setter).
-    // ADR-0132 refines ADR-0119 D6's original "zero reducers" tooth: the
-    // name-setter lives IN ranking.rs (eval A2 couples all profile access here;
-    // the declared touch-set is ranking.rs) rather than in a separate reducer
-    // file. The module-write-only security property is preserved — the one
-    // allowed reducer is profile-untouching (checked by (i-c) below).
-    let reducer_attr = concat!("#[spacetimedb::", "reducer");
-    let reducer_attr_count = stripped.matches(reducer_attr).count();
-    assert_eq!(
-        reducer_attr_count, 1,
-        "m17a-RL-7 (i) FAIL: server-module/src/ranking.rs must contain EXACTLY 1 `{}` — \
-         the single client-callable reducer is the profile-untouching `set_profile_name` \
-         name-setter (ADR-0132 refines ADR-0119 D6). Found {} occurrence(s). \
-         0 = the reducer is missing (RED pre-impl); >1 = an extra reducer was added, \
-         which would need its own review (the module-write-only property forbids any \
-         reducer that writes profile rating/W/L).",
-        reducer_attr, reducer_attr_count
-    );
-
-    // (i-a) The single reducer is named `set_profile_name`.
-    // Split "set_profile" across concat! fragments to avoid self-match when
-    // pvp_tests.rs is accidentally scanned by the never-deleted repo scan.
-    let name_setter_fn = concat!("fn set_profile", "_name(");
-    assert!(
-        stripped.contains(name_setter_fn),
-        "m17a-RL-7 (i-a) FAIL: server-module/src/ranking.rs must contain `{}` — \
-         the single reducer must be the name-setter `set_profile_name` (ADR-0132 D1). \
-         RED pre-impl: the reducer does not yet exist.",
-        name_setter_fn
-    );
-
-    // (i-c) The `set_profile_name` body is PROFILE-UNTOUCHING (allowlist name-only
-    // write; ADR-0132 D3, red-team F1/F2/F3). Extract the exact brace-bounded body
-    // and assert it contains NONE of the profile needles. Needles are split via
-    // concat! to prevent self-match. This is the core safety property: the one
-    // allowed reducer must not read or write the profile table at all — no eager
-    // profile update (F1/F2), no leaderboard-row injection via get_or_init_profile
-    // /profile().insert (F3), no split-binding profile accessor.
-    let name_setter_body =
-        extract_pvp_fn_body(&stripped, "set_profile_name").unwrap_or_else(|| {
-            panic!(
-                "m17a-RL-7 (i-c): `set_profile_name` function not found in ranking.rs — \
-             the reducer must exist for the profile-untouching body check to be \
-             meaningful (ADR-0132 D1). RED pre-impl: the reducer does not yet exist."
-            )
-        });
-    for profile_needle in &[
-        concat!("profile().", "identity()"),
-        concat!("profile().", "insert"),
-        concat!("get_or_init", "_profile("),
-        concat!("refresh_profile", "_name("),
-        concat!("= ctx.db.", "profile()"),
-    ] {
-        assert!(
-            !name_setter_body.contains(profile_needle),
-            "m17a-RL-7 (i-c) FAIL: the body of `set_profile_name` in ranking.rs contains \
-             `{}` — the name-setter must be PROFILE-UNTOUCHING (ADR-0132 D3). It writes \
-             only `player.name` and relies on the ADR-0125 passive mirror to surface the \
-             rename on the leaderboard at the next rated game. Any profile read/write here \
-             either adds a third profile update (breaks the ==2 pin) or injects a \
-             rating-1000 leaderboard row for an unrated player (red-team F1/F2/F3).",
-            profile_needle
-        );
-    }
-
-    // (i-b) No `reducer as` alias binding (documented evasion — ADR-0119 D6).
-    let reducer_alias = concat!("reducer", " as ");
-    assert!(
-        !stripped.contains(reducer_alias),
-        "m17a-RL-7 (i-b) FAIL: server-module/src/ranking.rs must NOT contain `{}`. \
-         Binding `reducer` to an alias is the documented evasion of the no-reducer scan \
-         (ADR-0119 D6). This binding is also forbidden in ranking.rs.",
-        reducer_alias
-    );
-
-    // (ii) get_or_init_profile present.
-    let init_profile = concat!("get_or_init", "_profile");
-    assert!(
-        stripped.contains(init_profile),
-        "m17a-RL-7 (ii) FAIL: server-module/src/ranking.rs must contain `{}` — \
-         the total function that finds-or-inserts a profile row (ADR-0119 D1).",
-        init_profile
-    );
-
-    // (ii) compute_rating_update present and called exactly once.
-    let rating_update = concat!("compute_rating", "_update(");
-    let call_count = stripped.matches(rating_update).count();
-    assert_eq!(
-        call_count, 1,
-        "m17a-RL-7 (ii) FAIL: server-module/src/ranking.rs must contain exactly 1 call \
-         to `{}` — one compute_rating_update call before either row write ensures \
-         zero-sum-breaking partial writes are unrepresentable (ADR-0119 D6). \
-         Found {} call(s).",
-        rating_update, call_count
-    );
-
-    // (iii) INITIAL_RATING const present (SSOT).
-    let init_rating_const = concat!("INITIAL", "_RATING");
-    assert!(
-        stripped.contains(init_rating_const),
-        "m17a-RL-7 (iii) FAIL: server-module/src/ranking.rs must reference `{}` \
-         from game-core rather than the literal 1000 (SSOT pin — ADR-0119 D1).",
-        init_rating_const
-    );
-
-    // (iii) Literal `1000` must NOT appear outside comments.
-    // The stripped source has all comments blanked; any remaining `1000` is a
-    // hard-coded literal that bypasses the INITIAL_RATING SSOT.
-    assert!(
-        !stripped.contains("1000"),
-        "m17a-RL-7 (iii) FAIL: server-module/src/ranking.rs contains the literal `1000` \
-         outside comments. The initial rating must reference `game_core::INITIAL_RATING` \
-         (SSOT), not the bare literal — a future tuning change would silently diverge."
-    );
-
-    // (iv-F10) is_ranked_pvp( gate present INSIDE apply_pvp_rating body.
-    // Hardening F10: check against the body slice, not the whole file, so a
-    // reference to is_ranked_pvp in a comment or a different function does not
-    // satisfy this assertion.
-    let ranked_gate = concat!("is_ranked", "_pvp(");
-    let apply_body = extract_pvp_fn_body(&stripped, "apply_pvp_rating").unwrap_or_else(|| {
-        panic!(
-            "m17a-RL-7 (iv): `apply_pvp_rating` function not found in ranking.rs — \
-             the function must exist for gate-placement checks to be meaningful (ADR-0119 D6)."
-        )
-    });
-    assert!(
-        apply_body.contains(ranked_gate),
-        "m17a-RL-7 (iv) FAIL: the body of `apply_pvp_rating` in ranking.rs must contain \
-         `{}` — apply_pvp_rating must early-return unless the battle is a ranked PvP battle \
-         (ADR-0119 D6: no-op unless is_ranked_pvp && outcome decisive). \
-         F10: checked against the function body, not the whole file.",
-        ranked_gate
-    );
-
-    // (v-B1/F4) RL-5: apply_pvp_rating body must increment wins and losses counters
-    // using saturating_add (panic-proof, consistent with saturating rating arithmetic).
-    // Kills: an impl that updates rating but forgets to track win/loss counts
-    // (leaderboard would show ratings but no W/L record — spec RL-5 violation).
-    // Needle updated (F4): `.wins + 1` → `.wins.saturating_add(1)` to match the
-    // implementer's panic-proof counter increment (consistent with rating handling).
-    let wins_needle = concat!(".wins.saturating_", "add(1)");
-    assert!(
-        apply_body.contains(wins_needle),
-        "m17a-RL-5 (v) FAIL: `apply_pvp_rating` body must contain `{}` — \
-         the profile wins counter must be incremented with saturating_add on a win \
-         (ADR-0119 D1, RL-5; panic-proof, consistent with rating arithmetic). \
-         Without this, the leaderboard shows only ratings, not W/L counts.",
-        wins_needle
-    );
-    let losses_needle = concat!(".losses.saturating_", "add(1)");
-    assert!(
-        apply_body.contains(losses_needle),
-        "m17a-RL-5 (v) FAIL: `apply_pvp_rating` body must contain `{}` — \
-         the profile losses counter must be incremented with saturating_add on a loss \
-         (ADR-0119 D1, RL-5; panic-proof, consistent with rating arithmetic). \
-         Without this, the leaderboard shows only ratings, not W/L counts.",
-        losses_needle
-    );
-
-    // (vi-F3) RL-2: apply_pvp_rating body must NOT delete profile rows.
-    // Kills: an impl that deletes the loser's profile row on a loss (would violate
-    // the persistent-leaderboard invariant — ADR-0119 D1).
-    let delete_needle = concat!("profile().identity()", ".delete");
-    assert!(
-        !apply_body.contains(delete_needle),
-        "m17a-RL-2 (vi) FAIL: `apply_pvp_rating` body contains `{}` — \
-         profile rows must NEVER be deleted (persistent leaderboard, ADR-0119 D1). \
-         Remove the delete call from apply_pvp_rating.",
-        delete_needle
-    );
-    // Also check for the split-binding evasion inside the function body.
-    let binding_needle = concat!("= ctx.db.", "profile()");
-    assert!(
-        !apply_body.contains(binding_needle),
-        "m17a-RL-2 (vi) FAIL: `apply_pvp_rating` body contains `{}` — \
-         assigning the profile accessor to a binding risks a .delete() call. \
-         Use inline chained access: `ctx.db.profile().identity().find(id)` (ADR-0119 D1).",
-        binding_needle
-    );
-
-    // (vii-F5) Dormancy gate: ranking.rs must declare its test module.
-    // This ensures the dormant ranking_tests.rs file is wired in and executed
-    // when the server-module tests run. Without this declaration the tests in
-    // ranking_tests.rs are silently dropped.
-    let mod_decl = concat!("mod ranking", "_tests");
-    assert!(
-        stripped.contains(mod_decl),
-        "m17a-RL-7 (vii) FAIL: server-module/src/ranking.rs must contain `{}` — \
-         the test module declaration that wires ranking_tests.rs into the test suite. \
-         Add: `#[cfg(test)] #[path = \"ranking_tests.rs\"] mod ranking_tests;` \
-         at the bottom of ranking.rs (ADR-0119 D6, dormancy gate).",
-        mod_decl
-    );
-
-    // (viii-F9) Compute-before-write: compute_rating_update must appear BEFORE
-    // any profile row write (insert or update) in apply_pvp_rating.
-    // This guarantees zero-sum-breaking partial writes are unrepresentable:
-    // if compute_rating_update panics, no profile row has been written yet.
-    let compute_pos = apply_body
-        .find(concat!("compute_rating", "_update("))
-        .unwrap_or_else(|| {
-            panic!(
-                "m17a-RL-7 (viii): `compute_rating_update(` not found in apply_pvp_rating body — \
-                 required for compute-before-write ordering check (ADR-0119 D6)."
-            )
-        });
-
-    // First profile row write: either .update( or .insert(
-    let update_needle = concat!("profile().identity().", "update(");
-    let insert_needle = concat!("profile().", "insert(");
-    let first_write_pos = match (
-        apply_body.find(update_needle),
-        apply_body.find(insert_needle),
-    ) {
-        (Some(u), Some(i)) => u.min(i),
-        (Some(u), None) => u,
-        (None, Some(i)) => i,
-        (None, None) => panic!(
-            "m17a-RL-7 (viii): no profile write (`{}` or `{}`) found in apply_pvp_rating body — \
-             the function must write at least one profile row (ADR-0119 D6).",
-            update_needle, insert_needle
-        ),
-    };
-
-    assert!(
-        compute_pos < first_write_pos,
-        "m17a-RL-7 (viii) ORDER FAIL: `compute_rating_update(` (pos {}) must appear BEFORE \
-         the first profile row write (pos {}) in `apply_pvp_rating`. \
-         Compute the new ratings first, then write both rows atomically — \
-         if the compute panics, no partial write occurs (ADR-0119 D6 F9).",
-        compute_pos,
-        first_write_pos
-    );
-}
-
-// ---------------------------------------------------------------------------
-// (f) RL-2 / AUTH-23: profile rows are NEVER deleted (never-deleted scan)
-//
-// The scan set is DERIVED, not hardcoded: every `*.rs` under
-// `CARGO_MANIFEST_DIR/src`, RECURSIVELY, minus `*_tests.rs`. A hand-maintained
-// list silently under-covers the moment a new module lands (the old 13-entry
-// list here never grew to cover `ranking.rs` or `accounts.rs`), and a
-// non-recursive walk is bypassed outright by `src/<subdir>/<module>.rs`.
-// `src/` is flat today, so the recursion is green on arrival and closes the
-// subdirectory hole prospectively. `CARGO_MANIFEST_DIR` is compile-time-baked
-// and absolute, so the test's CWD is irrelevant; under `cargo mutants` the
-// copied tree's own `src/` is read, which is the correct behaviour.
-//
-// Every needle is matched against WHITESPACE-SQUASHED text, and that is the
-// load-bearing half of this scan. The live tree is rustfmt-WRAPPED —
-// `ranking.rs` writes `ctx.db` / `.profile()` / `.identity()` / `.update(` on
-// four separate lines — so a delete written in this repo's own formatting
-// style walks straight past a whitespace-contiguous needle.
-//
-//   Needle 1: chained delete — `profile().identity().delete`. Banned in EVERY
-//             derived file; no exemption anywhere.
-//   Needle 2: split-binding evasion — `=ctx.db.profile()` binds the table
-//             handle to a local that can then call `.delete()`. Banned in
-//             every derived file INCLUDING `ranking.rs`: a blanket exemption
-//             would leave RL-2/AUTH-23 unenforced in the one file most likely
-//             to change.
-//   Needle 3: the GENERATED HANDLE TYPE — `profile__TableHandle` /
-//             `profile__ViewHandle`. Passing the handle across a fn boundary
-//             (`fn purge(h: &crate::schema::profile__TableHandle, id: Identity)
-//             { h.identity().delete(id); }`) reaches the table with NO
-//             `ctx.db.profile()` anywhere in the deleting fn, so needles 1 and
-//             2 are both blind to it. `economy_tests.rs:1733` documents this
-//             exact shape as a proven bypass for `player_wallet`; the profile
-//             table had no equivalent guard until now. No non-test source names
-//             either type today, so this is green on arrival.
-//   Needle 2': `=match ctx.db.profile()` is allowed ONLY in `ranking.rs` (the
-//             module that legitimately owns profile access — consistent with
-//             the `ranking.rs` carve-out in evals/ranking-security.eval.mjs
-//             C1b) and ONLY in the exact read form
-//             `= match ctx.db.profile().identity().find(` used by
-//             `rekey_profile`. Any other `match`-shaped binding of the handle,
-//             in any file, is a failure.
-//
-// NOT vacuous: the `profile` table has existed since M17a (schema.rs) and is
-// read and written by `ranking.rs` today. The anchor-set guard below reds if
-// the derivation stops seeing the modules that matter.
-//
-// String literals are deliberately NOT stripped here. For a BAN-only clause a
-// string decoy can only produce a false RED (loud, diagnosable), whereas a
-// string-stripper that mishandles a raw string or a quote-bearing char literal
-// blanks real code and produces a false GREEN (silent). Comments ARE stripped
-// so a commented-out delete does not false-RED.
-// ---------------------------------------------------------------------------
-
-/// Recursively collect one `(relative path, file text)` pair — the path being
-/// relative to `src/` — for every non-test Rust source under `dir`.
-///
-/// Fails LOUD on every I/O error (`read_dir`, entry, stat, read): a file this
-/// helper silently skips is a file the never-deleted scan does not cover, so a
-/// skip would be indistinguishable from a pass.
-/// Last path segment of a `/`-separated relative path from `collect_scan_sources`.
-/// The scan set carries subdirectory prefixes (`accounts/economy.rs`), so both
-/// the anchor-set guard and the `ranking.rs` carve-out must compare basenames —
-/// an exact compare reds the moment a module legitimately moves into a subdir.
-fn basename(rel_path: &str) -> &str {
-    rel_path.rsplit('/').next().unwrap_or(rel_path)
-}
-
-fn collect_scan_sources(dir: &std::path::Path, rel_prefix: &str) -> Vec<(String, String)> {
-    let read = std::fs::read_dir(dir).unwrap_or_else(|e| {
-        panic!(
-            "m17a-RL-2 IO FAIL: read_dir(`{}`) failed: {} — the never-deleted scan derives \
-             its file set from the live tree, so an unreadable directory must fail LOUD \
-             rather than silently scan nothing.",
-            dir.display(),
-            e
-        )
-    });
-    let mut entries: Vec<(String, std::path::PathBuf)> = Vec::new();
-    for entry in read {
-        let entry = entry.unwrap_or_else(|e| {
-            panic!(
-                "m17a-RL-2 IO FAIL: a directory entry under `{}` could not be read: {} — \
-                 the scan must fail LOUD, never skip an entry.",
-                dir.display(),
-                e
-            )
-        });
-        entries.push((
-            entry.file_name().to_string_lossy().into_owned(),
-            entry.path(),
-        ));
-    }
-    entries.sort();
-
-    let mut out: Vec<(String, String)> = Vec::new();
-    for (name, path) in entries {
-        let rel = if rel_prefix.is_empty() {
-            name.clone()
-        } else {
-            format!("{}/{}", rel_prefix, name)
-        };
-        let meta = std::fs::metadata(&path).unwrap_or_else(|e| {
-            panic!(
-                "m17a-RL-2 IO FAIL: cannot stat `{}`: {} — the scan must fail LOUD, never \
-                 skip a path it cannot classify.",
-                path.display(),
-                e
-            )
-        });
-        if meta.is_dir() {
-            out.extend(collect_scan_sources(&path, &rel));
-        } else if name.ends_with(".rs") && !name.ends_with("_tests.rs") {
-            let src = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-                panic!(
-                    "m17a-RL-2 IO FAIL: cannot read `{}`: {} — the scan must fail LOUD, \
-                     never `continue` past an unreadable source file.",
-                    path.display(),
-                    e
-                )
-            });
-            out.push((rel, src));
-        }
-    }
-    out
-}
-
-/// RL-2 / AUTH-23 (f): no code path in any server-module source deletes a
-/// `profile` row.
-///
-/// Invariant: profile rows are NEVER deleted. The ranked-ladder record is
-/// permanent (ADR-0119 D1), and the guest→account re-key tombstones the
-/// guest's own row in place rather than removing it (AUTH-23, ADR-0179 —
-/// `ranking::rekey_profile`).
-///
-/// Teeth:
-///   - DERIVED scan set (recursive `read_dir` of `CARGO_MANIFEST_DIR/src`,
-///     `*.rs` minus `*_tests.rs`). Kills a delete added in a module nobody
-///     remembered to add to a hardcoded list, and a delete hidden in a new
-///     `src/<subdir>/` module (the proven non-recursive bypass).
-///   - WHITESPACE-SQUASHED needles. Kills the rustfmt-wrapped delete
-///     `ctx.db` / `.profile()` / `.identity()` / `.delete(id);` spread over
-///     four lines, which the previous contiguous needle walked past.
-///   - Split-binding ban applies to `ranking.rs` too; only the exact
-///     `= match ctx.db.profile().identity().find(` read form is exempt there.
-///     Kills `let p = ctx.db.profile();` followed by `p.identity().delete(id)`
-///     in ANY file, including the owning module. Because the needle is a
-///     PREFIX match it also kills the one-hop-later variant
-///     `let c = ctx.db.profile().identity();` followed by `c.delete(id)`.
-///   - Generated-handle-type ban (`profile__TableHandle` /
-///     `profile__ViewHandle`). Kills a delete reached through a handle taken as
-///     a fn parameter, where neither the chained needle nor the split-binding
-///     needle appears in the deleting fn at all.
-///   - Anchor-set non-vacuity guard: the derived set must contain
-///     `accounts.rs`, `economy.rs`, `pvp.rs`, `ranking.rs` and `schema.rs`, so
-///     a broken derivation reds instead of vacuously scanning nothing. The
-///     panic message carries the derived count and the full derived list.
-///   - Every I/O step panics on error — a skipped file is an unscanned file.
-#[test]
-fn m17a_rl2_profile_never_deleted_scan() {
-    let src_dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
-    let all_sources = collect_scan_sources(src_dir, "");
-    let derived: Vec<&str> = all_sources.iter().map(|(n, _)| n.as_str()).collect();
-
-    // Non-vacuity: the derivation must still be seeing the modules that matter.
-    // Deliberately NOT a `>= N` count floor (zero headroom today: exactly 20
-    // non-test files) and NOT a per-file non-empty check (an empty `.rs` file
-    // is still found by name). The anchor set is the whole non-vacuity story.
-    for anchor in &[
-        "accounts.rs",
-        "economy.rs",
-        "pvp.rs",
-        "ranking.rs",
-        "schema.rs",
-    ] {
-        // Compare BASENAMES: `derived` carries subdirectory-prefixed relative
-        // paths (the recursion exists precisely so `src/<subdir>/<mod>.rs` is
-        // covered), so an exact match would red the moment an anchor module
-        // legitimately moves into a subdirectory — reporting "the derivation is
-        // broken" when the derivation is the thing that still works.
-        assert!(
-            derived.iter().any(|d| basename(d) == *anchor),
-            "m17a-RL-2 NON-VACUITY FAIL: the derived scan set does not contain `{}`. \
-             The set is derived from a recursive read_dir of CARGO_MANIFEST_DIR/src \
-             (`*.rs` minus `*_tests.rs`); if an anchor module is missing, the derivation \
-             itself is broken and every ban below is vacuous. \
-             Derived {} file(s): [{}]",
-            anchor,
-            derived.len(),
-            derived.join(", ")
-        );
-    }
-
-    // Needle 1: chained delete form (whitespace-squashed).
-    let delete_needle = concat!("profile().identity()", ".delete");
-    // Needle 2: bare split-binding of the table handle (whitespace-squashed).
-    let binding_needle = concat!("=ctx.db.", "profile()");
-    // Needle 2': `match`-shaped binding of the table handle, and the ONE form
-    // `ranking.rs` is allowed to use.
-    let match_binding_needle = concat!("=matchctx.db.", "profile()");
-    let owned_read_form = concat!("=matchctx.db.", "profile().identity().find(");
-    // Needle 3: the generated handle TYPES. A handle taken as a fn parameter
-    // reaches the table without `ctx.db.profile()` appearing in the deleting fn
-    // at all, so needles 1 and 2 are both blind to it (economy_tests.rs:1733
-    // documents the identical proven shape for `player_wallet`). Split with
-    // concat! so this file's own text can never self-match a future scanner.
-    let table_handle_needle = concat!("profile", "__TableHandle");
-    let view_handle_needle = concat!("profile", "__ViewHandle");
-    // Needle 4: UFCS. `UniqueColumn::delete(&ctx.db.profile().identity(), id)`
-    // puts the VERB BEFORE the accessor, so needle 1 never matches, and the
-    // accessor is preceded by `(&` rather than `=`, so needle 2 never matches
-    // either. A red-team pass landed exactly this in `ranking.rs::rekey_profile`
-    // and observed it compile, pass clippy `-D warnings` and `fmt --check`, and
-    // leave BOTH this scan and `ranking-security.eval.mjs` C1a green while it
-    // deleted a permanent ladder record (AUTH-23 / ADR-0119 D1). The eval's G5
-    // family already models the UFCS backward span for `accounts.rs`; this is
-    // the `profile` mirror.
-    let ufcs_delete_needle = concat!("::delete(&ctx.db.", "profile()");
-    let ufcs_delete_ref_needle = concat!("::delete(ctx.db.", "profile()");
-
-    for (filename, src) in &all_sources {
-        // Comments blanked, then ALL whitespace removed: a needle written in
-        // this repo's rustfmt-wrapped style still matches.
-        let squashed = squash_ws(&strip_rust_comments(src));
-
-        assert!(
-            !squashed.contains(delete_needle),
-            "m17a-RL-2 FAIL in {}: found `{}` (matched against whitespace-squashed source, \
-             so the rustfmt-wrapped `ctx.db` / `.profile()` / `.identity()` / `.delete(` \
-             form is caught too) — profile rows must NEVER be deleted: the ranked record is \
-             permanent (ADR-0119 D1) and the guest re-key tombstones in place (AUTH-23). \
-             Remove the delete call.",
-            filename,
-            delete_needle
-        );
-
-        assert!(
-            !squashed.contains(binding_needle),
-            "m17a-RL-2 FAIL in {}: found `{}` (whitespace-squashed) — this binds the profile \
-             TABLE HANDLE to a local, which can then call `.delete()` out of sight of the \
-             chained-delete needle. Banned in every file, `ranking.rs` included. \
-             Use the inline chain `ctx.db.profile().identity().find(id)` instead \
-             (ADR-0119 D1, AUTH-23).",
-            filename,
-            binding_needle
-        );
-
-        for handle_needle in [table_handle_needle, view_handle_needle] {
-            assert!(
-                !squashed.contains(handle_needle),
-                "m17a-RL-2 FAIL in {}: found `{}` (whitespace-squashed) — naming the GENERATED \
-                 handle type lets a fn reach the profile table through a PARAMETER, so the \
-                 deleting body contains no `ctx.db.profile()` at all and both the \
-                 chained-delete needle and the split-binding needle are blind to it: \
-                 `fn purge(h: &..., id: Identity) {{ h.identity().delete(id); }}`. \
-                 economy_tests.rs:1733 documents the identical proven bypass for \
-                 `player_wallet`. Delegate through `ranking.rs` instead of passing table \
-                 handles across module boundaries (ADR-0119 D1, AUTH-23).",
-                filename,
-                handle_needle
-            );
-        }
-
-        for ufcs_needle in [ufcs_delete_needle, ufcs_delete_ref_needle] {
-            assert!(
-                !squashed.contains(ufcs_needle),
-                "m17a-RL-2 FAIL in {}: found `{}` — a UFCS delete reaches the profile \
-                 table with the VERB BEFORE the accessor, so the chained-delete and \
-                 split-binding needles are both blind to it. `profile` rows must NEVER \
-                 be deleted (permanent ladder record, ADR-0119 D1; the guest→account \
-                 re-key tombstones IN PLACE, AUTH-23/ADR-0179 D6). Use \
-                 `ranking::rekey_profile`'s copy-forward + zero + tombstone instead.",
-                filename,
-                ufcs_needle
-            );
-        }
-
-        for (at, _) in squashed.match_indices(match_binding_needle) {
-            let is_owner_module = basename(filename) == "ranking.rs";
-            let is_owned_read_form = squashed[at..].starts_with(owned_read_form);
-            assert!(
-                is_owner_module && is_owned_read_form,
-                "m17a-RL-2 FAIL in {}: found `{}` (whitespace-squashed) outside the one \
-                 permitted shape. `ranking.rs` is the module that owns profile access, and \
-                 even there the ONLY allowed binding form is the read \
-                 `{}...)` used by `rekey_profile`. Every other `match`-shaped binding of the \
-                 profile table handle — in ranking.rs or anywhere else — can reach \
-                 `.delete()` (ADR-0119 D1, AUTH-23). A blanket ranking.rs exemption would \
-                 leave RL-2 unenforced in the file most likely to change.",
-                filename,
-                match_binding_needle,
-                owned_read_form
-            );
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// (g) RL-1/RL-2: profile table exists, is public, has PK identity, and is
-//     NOT referenced in the on_disconnect body.
-//
-// Table existence + public + field shape: RED now (table absent from schema.rs).
-// on_disconnect body must contain ZERO occurrences of profile(): GREEN today
-//   (on_disconnect body is fixed and does not touch profile).
-// ---------------------------------------------------------------------------
-
-/// RL-1/RL-2 (g1): schema.rs must declare `profile` table as public with correct fields.
-///
-/// F4+F8/M-3 hardening — two-step pattern:
-///   Step 1: find the line containing `accessor = profile` and verify it also contains
-///           `public`. This is a robustness improvement over a single
-///           `accessor = profile, public` needle: it catches orderings like
-///           `public, accessor = profile` and avoids a brittle
-///           attribute-argument-order dependency.
-///   Step 2: verify field needles `identity: Identity`, `name: String`, `rating: i32`,
-///           `wins: u32`, `losses: u32` are present in the schema.
-///   Step 3: verify `#[primary_key]` appears before the `identity` field text in the
-///           schema (PK ordering — the first annotated field must be the primary key).
-///
-/// Kills: an impl that makes profile private (leaderboard clients cannot subscribe),
-/// or uses wrong field types (e.g. rating: u32 would break negative-rating semantics),
-/// or omits required fields, or reorders PK annotation incorrectly.
-/// RED now: profile table absent from schema.rs.
-#[test]
-fn m17a_rl1_profile_table_exists_public_correct_fields() {
-    let stripped = strip_rust_comments(SCHEMA_RS);
-
-    // Step 1 (F4): find the line containing `accessor = profile` and assert it
-    // also contains `public`. This tolerates attribute argument reordering.
-    let name_needle = concat!("accessor = ", "profile");
-    let profile_line = stripped
-        .lines()
-        .find(|line| line.contains(name_needle))
-        .unwrap_or_else(|| {
-            panic!(
-                "m17a-RL-1 FAIL: schema.rs has no line containing `{}` — \
-                 the profile table declaration is absent (ADR-0119 D1). RED.",
-                name_needle
-            )
-        });
-    assert!(
-        profile_line.contains("public"),
-        "m17a-RL-1 FAIL: the profile table attribute line `{}` does not contain `public` — \
-         the table must be world-readable for leaderboard subscriptions (ADR-0119 D1). \
-         Add `public` to the #[spacetimedb::table(...)] attribute.",
-        profile_line.trim()
-    );
-
-    // Step 2 (F8): required struct fields.
-
-    // Field: identity: Identity (the PK field — SpacetimeDB identity type)
-    let identity_field = concat!("identity", ": Identity");
-    assert!(
-        stripped.contains(identity_field),
-        "m17a-RL-1 FAIL: Profile struct must have `{}` — the owner identity \
-         (primary key for the profile table, ADR-0119 D1).",
-        identity_field
-    );
-
-    // Field: name: String (display name — RL-1)
-    let name_field = concat!("name", ": String");
-    assert!(
-        stripped.contains(name_field),
-        "m17a-RL-1 FAIL: Profile struct must have `{}` — the player display name \
-         (ADR-0119 D1, RL-1).",
-        name_field
-    );
-
-    // Field: rating: i32
-    let rating_field = concat!("rating", ": i32");
-    assert!(
-        stripped.contains(rating_field),
-        "m17a-RL-1 FAIL: Profile must have `{}` — i32 allows negative ratings \
-         (no floor at 0 per ADR-0119 D2; u32 would break the spec).",
-        rating_field
-    );
-
-    // Field: wins: u32
-    let wins_field = concat!("wins", ": u32");
-    assert!(
-        stripped.contains(wins_field),
-        "m17a-RL-1 FAIL: Profile must have `{}` (win counter, ADR-0119 D1).",
-        wins_field
-    );
-
-    // Field: losses: u32
-    let losses_field = concat!("losses", ": u32");
-    assert!(
-        stripped.contains(losses_field),
-        "m17a-RL-1 FAIL: Profile must have `{}` (loss counter, ADR-0119 D1).",
-        losses_field
-    );
-
-    // Step 3 (F8): `#[primary_key]` must appear BEFORE `identity: Identity` in the schema.
-    // Kills: a struct where identity is declared without a primary_key annotation, or
-    // where the annotation appears on a different field.
-    let pk_needle = concat!("#[primary", "_key]");
-    let pk_pos = stripped.find(pk_needle).unwrap_or_else(|| {
-        panic!(
-            "m17a-RL-1 FAIL: schema.rs has no `{}` annotation — the profile table \
-             must declare a primary key on the identity field (ADR-0119 D1).",
-            pk_needle
-        )
-    });
-    let identity_pos = stripped.find(identity_field).expect("confirmed above");
-    assert!(
-        pk_pos < identity_pos,
-        "m17a-RL-1 FAIL: `{}` (pos {}) must appear BEFORE `{}` (pos {}) in schema.rs — \
-         the primary_key annotation must precede the identity field declaration. \
-         An impl where #[primary_key] is on a different field, or after identity, \
-         violates the ADR-0119 D1 schema contract.",
-        pk_needle,
-        pk_pos,
-        identity_field,
-        identity_pos
-    );
-}
-
-/// RL-2 (g2): on_disconnect body must NOT reference the profile table accessor.
-///
-/// If on_disconnect calls `ctx.db.profile()`, it might delete or mutate profile
-/// rows during disconnect — violating the never-deleted invariant.
-///
-/// GREEN today: the current on_disconnect body is fixed and does not touch profile.
-/// This is a PINNED PRECONDITION — if on_disconnect is refactored to touch profile,
-/// RL-2 is violated and this test catches it.
-///
-/// Kills: any future refactor that adds a profile cleanup to on_disconnect.
-#[test]
-fn m17a_rl2_on_disconnect_does_not_touch_profile() {
-    let stripped = strip_rust_comments(LIB_RS);
-
-    let disconnect_body = extract_pvp_fn_body(&stripped, "on_disconnect")
-        .expect("m17a-RL-2 (g2): `on_disconnect` must exist in lib.rs");
-
-    // m-2 hardening: require the db-accessor form `ctx.db.profile(` rather than
-    // the bare `profile(` — the bare form would also match function names containing
-    // "profile" (e.g. `get_or_init_profile(`) and produce a false positive.
-    // Only a `ctx.db.profile(` call in on_disconnect would actually touch the table.
-    let profile_accessor = concat!("ctx.db.", "profile(");
-
-    assert!(
-        !disconnect_body.contains(profile_accessor),
-        "m17a-RL-2 (g2) FAIL: `on_disconnect` body contains `{}` — this accesses the \
-         profile table on disconnect, which risks deleting or mutating profile rows \
-         (ADR-0119 D1: persistent leaderboard record, never deleted). \
-         Remove any ctx.db.profile() access from on_disconnect. (m-2 needle hardening)",
-        profile_accessor
-    );
-}
-
-// ---------------------------------------------------------------------------
-// (h) RL-6: forfeit_on_disconnect routing is structurally clean — no upstream
-//     filter that would silently change the friendly-battle classification.
-//
-// Two sub-checks (PINNED PRECONDITIONS — GREEN today):
-//
-//   (h1) forfeit_on_disconnect body must NOT contain a player != opponent
-//        short-circuit filter (ADR-0119 D4 reviewer M-2 finding):
-//          - No `player_identity != b.opponent_identity` in the collection
-//          - No `b.player_identity == b.opponent_identity` filter
-//        These patterns would filter out practice self-battles BEFORE the
-//        outcome != Ongoing re-check, silently changing the routing assumption.
-//
-//   (h2) forfeit_on_disconnect body must contain at least 2 occurrences of the
-//        `outcome != BattleOutcome::Ongoing` re-check guard (one per battle loop —
-//        the exactly-once defense that keeps practice battles from rating).
-//
-// Both GREEN today. Label clearly as pinned preconditions.
-// ---------------------------------------------------------------------------
-
-/// RL-6 (h): forfeit_on_disconnect routing pins — no self-battle upstream filter,
-/// two Ongoing re-check guards present.
-///
-/// PINNED PRECONDITION (GREEN today): pins the routing invariant that practice
-/// self-battles are not filtered out upstream before the Ongoing re-check.
-/// The rating gate (is_ranked_pvp) operates inside apply_pvp_rating, not here.
-///
-/// Kills (h1): any refactor adding `player_identity != b.opponent_identity` as a
-///   collection filter — would silently exclude practice battles before the Ongoing
-///   re-check, changing RL-6 semantics.
-/// Kills (h2): removal of either Ongoing re-check loop guard — the cross-transaction
-///   exactly-once defense would be weakened.
-#[test]
-fn m17a_rl6_forfeit_on_disconnect_routing_invariant() {
-    let stripped = strip_rust_comments(PVP_RS);
-
-    let forfeit_body = extract_pvp_fn_body(&stripped, "forfeit_on_disconnect")
-        .expect("m17a-RL-6 (h): `forfeit_on_disconnect` must exist in pvp.rs");
-
-    // (h1a) No `player_identity != b.opponent_identity` collection filter.
-    let bad_filter_neq = concat!("player_identity != b.", "opponent_identity");
-    assert!(
-        !forfeit_body.contains(bad_filter_neq),
-        "m17a-RL-6 (h1a) PINNED PRECONDITION BROKEN: `forfeit_on_disconnect` body \
-         contains `{}` — this filters out practice self-battles before the Ongoing \
-         re-check, silently changing RL-6 routing. Remove the upstream filter; the \
-         classification must happen inside apply_pvp_rating via is_ranked_pvp (ADR-0119 D4).",
-        bad_filter_neq
-    );
-
-    // (h1b) No `b.player_identity == b.opponent_identity` filter.
-    let bad_filter_eq = concat!("b.player_identity == b.", "opponent_identity");
-    assert!(
-        !forfeit_body.contains(bad_filter_eq),
-        "m17a-RL-6 (h1b) PINNED PRECONDITION BROKEN: `forfeit_on_disconnect` body \
-         contains `{}` — this pattern short-circuits practice self-battles upstream. \
-         Remove it; classification is done by is_ranked_pvp inside apply_pvp_rating.",
-        bad_filter_eq
-    );
-
-    // (h2) At least 2 `outcome != BattleOutcome::Ongoing` re-check guards.
-    let ongoing_recheck = concat!("outcome != BattleOutcome::", "Ongoing");
-    let recheck_count = forfeit_body.matches(ongoing_recheck).count();
-    assert!(
-        recheck_count >= 2,
-        "m17a-RL-6 (h2) PINNED PRECONDITION BROKEN: `forfeit_on_disconnect` body contains \
-         {} occurrence(s) of `{}` but must have >= 2 (one per battle-iteration loop). \
-         These re-checks are the cross-transaction exactly-once defense — without them, \
-         a battle resolved in a concurrent transaction could be double-forfeited.",
-        recheck_count,
-        ongoing_recheck
-    );
-}
-
-// ---------------------------------------------------------------------------
-// RT-M17-01: apply_pvp_rating winner/loser identity mapping is correct for both
-// SideAWins and SideBWins.
-//
-// Finding: the existing tests for apply_pvp_rating only assert TEXT patterns
-// (`.wins + 1` and `.losses + 1` present in the function body). They do NOT verify
-// WHICH identity variable receives wins vs losses. A swap of the two arms:
-//   SideBWins => (battle.player_identity, battle.opponent_identity)  // WRONG
-// would make the challenger "win" every time the opponent wins, silently
-// mis-attributing ratings and W/L counts. The text-scan tests would still pass.
-//
-// This test pins the EXACT identity-to-side mapping in the apply_pvp_rating body:
-//   SideAWins => winner = player_identity, loser = opponent_identity
-//   SideBWins => winner = opponent_identity, loser = player_identity
-//
-// Two complementary needle checks:
-//   (i)  SideAWins arm assigns player_identity to the winner variable (tuple position 0).
-//   (ii) SideBWins arm assigns opponent_identity to the winner variable (tuple position 0).
-//
-// Kills: any impl that swaps the tuple fields in either arm, giving the challenger's
-// profile a win when the opponent wins (or the reverse).
-// ---------------------------------------------------------------------------
-
-/// RT-M17-01: apply_pvp_rating winner/loser identity mapping — SideAWins arm.
-///
-/// The SideAWins arm must assign `battle.player_identity` (the challenger, side A)
-/// as the winner and `battle.opponent_identity` as the loser.
-/// Needle: `SideAWins => (battle.player_identity, battle.opponent_identity)`
-///
-/// Kills: an impl where both arms use player_identity as winner (would never credit the
-/// opponent's profile when they win), or where the tuple fields are reversed in this arm.
-#[test]
-fn rt_m17_01_apply_pvp_rating_side_a_wins_maps_player_to_winner() {
-    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/ranking.rs"))
-        .expect("RT-M17-01: server-module/src/ranking.rs must exist");
-    let stripped = strip_rust_comments(&src);
-
-    let apply_body = extract_pvp_fn_body(&stripped, "apply_pvp_rating")
-        .expect("RT-M17-01: `apply_pvp_rating` must exist in ranking.rs");
-
-    // Needle: the SideAWins arm must list player_identity FIRST (winner) and
-    // opponent_identity SECOND (loser) in the tuple. Built with concat! so this file
-    // does not self-match when apply_pvp_rating is later inlined or moved.
-    let side_a_needle = concat!(
-        "SideAWins => (battle.player_identity, battle.",
-        "opponent_identity)"
-    );
-    assert!(
-        apply_body.contains(side_a_needle),
-        "RT-M17-01 FAIL: `apply_pvp_rating` body does not contain the expected SideAWins arm \
-         `{}`. The SideAWins arm must map player_identity to winner and opponent_identity to \
-         loser: challenger (side A) won, so challenger's profile gains wins+1 and opponent's \
-         gains losses+1. A swapped arm credits the wrong profile. (ADR-0119 D6, RL-5)",
-        side_a_needle
-    );
-}
-
-/// RT-M17-01: apply_pvp_rating winner/loser identity mapping — SideBWins arm.
-///
-/// The SideBWins arm must assign `battle.opponent_identity` (the opponent, side B)
-/// as the winner and `battle.player_identity` as the loser.
-/// Needle: `SideBWins => (battle.opponent_identity, battle.player_identity)`
-///
-/// Kills: an impl that keeps both arms using player_identity as winner (the common
-/// copy-paste mistake), or one where the SideBWins arm reverses the tuple.
-#[test]
-fn rt_m17_01_apply_pvp_rating_side_b_wins_maps_opponent_to_winner() {
-    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/ranking.rs"))
-        .expect("RT-M17-01: server-module/src/ranking.rs must exist");
-    let stripped = strip_rust_comments(&src);
-
-    let apply_body = extract_pvp_fn_body(&stripped, "apply_pvp_rating")
-        .expect("RT-M17-01: `apply_pvp_rating` must exist in ranking.rs");
-
-    // Needle: the SideBWins arm must list opponent_identity FIRST (winner) and
-    // player_identity SECOND (loser).
-    let side_b_needle = concat!(
-        "SideBWins => (battle.opponent_identity, battle.",
-        "player_identity)"
-    );
-    assert!(
-        apply_body.contains(side_b_needle),
-        "RT-M17-01 FAIL: `apply_pvp_rating` body does not contain the expected SideBWins arm \
-         `{}`. The SideBWins arm must map opponent_identity to winner and player_identity to \
-         loser: the opponent (side B) won, so their profile gains wins+1 and the challenger \
-         gains losses+1. A swapped arm would give the challenger a win credit when they lost. \
-         (ADR-0119 D6, RL-5)",
-        side_b_needle
-    );
-}
-
-// ===========================================================================
-// m17.5e (ADR-0126): battle_challenge TTL reaper — EA-CHR-01..06
-//
-// A Pending battle_challenge row locks BOTH parties out of new challenges
-// (challenge_pvp guards 5b/6); an AFK or disconnected challenger would leave
-// that lock in place forever.  The TTL reaper (clone of the m16.5f
-// trade_offer_reaper, ADR-0117) bounds that window.
-//
-// Machinery: `strip_rust_strings` (ADR-0116-hardened shape cloned from
-// trading_tests.rs, incl. the backslash-escape branch that also consumes a
-// backslash-newline line continuation) + `squash_ws` (m17.5d mandatory,
-// ADR-0125) + the existing brace-bounded `extract_pvp_fn_body`.
-//
-// Scan pipeline for EVERY test below (plan T2): strip comments → strip
-// strings → extract the fn body (brace-bounded, NEVER a suffix scan) →
-// squash_ws for composite needles.  All needles are concat!-split so this
-// file can never satisfy a scan by matching itself.
-//
-// RED now (m17.5e tester phase): `schedule_challenge_reaper`,
-// `disarm_challenge_reaper`, `battle_challenge_reaper`, and
-// `battle_challenge_reaper_schedule` do not exist in pvp.rs — every EA-CHR
-// test below panics with a named FAIL message.
-// ===========================================================================
-
-/// String-literal stripping helper (Finding C, ADR-0116-hardened shape cloned
-/// from `strip_rust_strings_trading` in trading_tests.rs).  Replaces the
-/// CONTENT of every `"…"` string literal (keeping the quotes) so a needle like
-/// `schedule_challenge_reaper(` cannot be hidden inside a dead-code string
-/// literal such as `let _dead = "schedule_challenge_reaper(";`.
-///
-/// The escape branch consumes the backslash AND the byte after it — including
-/// a backslash-newline line continuation (the m16.5e string-strip trap) — so a
-/// continuation string cannot desynchronise the byte-walker.
-///
-/// IMPORTANT: call AFTER `strip_rust_comments` so string literals inside
-/// comments (already blanked) do not trip the walker.  Raw strings (`r#"…"#`)
-/// are NOT handled — acceptable: production pvp.rs contains none.
-fn strip_rust_strings(src: &str) -> String {
-    let bytes = src.as_bytes();
-    let len = bytes.len();
-    let mut out = Vec::with_capacity(len);
-    let mut i = 0;
-    while i < len {
-        if bytes[i] == b'"' {
-            // Emit the opening quote, then swallow until the closing (unescaped) quote.
-            out.push(b'"');
-            i += 1;
-            while i < len {
-                if bytes[i] == b'\\' {
-                    // Escape sequence: consume both the backslash and the next
-                    // byte (incl. a backslash-newline line continuation).
-                    i += 2;
-                } else if bytes[i] == b'"' {
-                    out.push(b'"');
-                    i += 1;
-                    break;
-                } else {
-                    // Swallow the character (shrinks the string).
-                    i += 1;
-                }
-            }
-        } else {
-            out.push(bytes[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8(out).expect("string-stripped source must be valid UTF-8")
-}
-
-/// Remove ALL whitespace characters (m17.5d mandatory third pipeline stage,
-/// ADR-0125 red-team F1): makes composite-needle matching rustfmt-proof — a
-/// call split across lines by rustfmt still matches a squashed needle.
-fn squash_ws(src: &str) -> String {
-    src.chars().filter(|c| !c.is_whitespace()).collect()
-}
-
-/// m17.5e scan input: pvp.rs with comments stripped THEN strings stripped
-/// (plan T2 pipeline order).  Body extraction happens on this text (braces and
-/// `fn ` tokens still have their whitespace); `squash_ws` is applied to the
-/// EXTRACTED body for composite needles.
-fn stripped_pvp_for_scan() -> String {
-    strip_rust_strings(&strip_rust_comments(PVP_RS))
-}
-
-// ---------------------------------------------------------------------------
-// EA-CHR-01: challenge_pvp arms the TTL reaper AFTER the challenge insert,
-//            with the EXACT argument shape (plan F1 arg-identity pin)
-//
-// EARS 17.5e-1: challenge_pvp SHALL call
-//   schedule_challenge_reaper(ctx, challenge.challenge_id, challenge.created_at_ms)
-// AFTER capturing the inserted battle_challenge row — the auto_inc
-// challenge_id only exists once the insert returns (EA-REAPER-01 precedent).
-//
-// TEETH: kills an impl that (a) omits the arm entirely, (b) arms BEFORE the
-//        insert (unknown challenge_id), or (c) arms with the wrong args —
-//        a literal `0` id arms a reaper that reaps nothing, and a
-//        `now_ms(ctx)` time silently shifts the deadline off the row's own
-//        created_at_ms (staleness must never be computable from anything a
-//        client could supply — plan D6 structural invariant).
-// ---------------------------------------------------------------------------
-
-#[test]
-fn ea_chr_01_challenge_pvp_arms_reaper_after_insert_with_exact_args() {
-    let stripped = stripped_pvp_for_scan();
-    let body = extract_pvp_fn_body(&stripped, "challenge_pvp")
-        .expect("EA-CHR-01: `challenge_pvp` function not found in pvp.rs");
-    let squashed = squash_ws(body);
-
-    let insert_needle = concat!("battle_challenge", "().insert(");
-    let insert_pos = squashed.find(insert_needle).unwrap_or_else(|| {
-        panic!(
-            "EA-CHR-01 FAIL: `battle_challenge().insert(` not found in `challenge_pvp` body. \
-             The reaper cannot be armed because no challenge row is inserted."
-        )
-    });
-
-    // Arg-identity pin (plan F1): nothing may sit between the third argument
-    // and the close paren.  Both closing forms are accepted — `)` (single-line
-    // call) and `,)` (rustfmt adds a trailing comma when it splits a call
-    // across lines; squash_ws collapses that split to the `,)` form).
-    let arm_needle = concat!(
-        "schedule_challenge_",
-        "reaper(ctx,challenge.challenge_id,challenge.created_at_ms)"
-    );
-    let arm_needle_trailing_comma = concat!(
-        "schedule_challenge_",
-        "reaper(ctx,challenge.challenge_id,challenge.created_at_ms,)"
-    );
-    let arm_pos = squashed
-        .find(arm_needle)
-        .or_else(|| squashed.find(arm_needle_trailing_comma))
-        .unwrap_or_else(|| {
-            panic!(
-                "EA-CHR-01 FAIL: the arm call `schedule_challenge_reaper(ctx, \
-                 challenge.challenge_id, challenge.created_at_ms)` (squash_ws'd \
-                 arg-identity pin) was not found in `challenge_pvp` body. Without the \
-                 arm, a Pending challenge from an AFK/disconnected challenger locks \
-                 BOTH parties out of new challenges (guards 5b/6) forever. A wrong-id \
-                 arm (literal 0) or a wrong-time arm (now_ms(ctx)) also fails this pin \
-                 (plan F1). RED: reaper arm absent (m17.5e)."
-            )
-        });
-
-    assert!(
-        arm_pos > insert_pos,
-        "EA-CHR-01 FAIL: the reaper arm (squashed offset {arm_pos}) appears BEFORE \
-         `battle_challenge().insert(` (squashed offset {insert_pos}) in `challenge_pvp`. \
-         The auto_inc challenge_id only exists after the insert returns; arming first \
-         references an unknown id."
-    );
-}
-
-// ---------------------------------------------------------------------------
-// EA-CHR-02: disarm_challenge_reaper called at ALL FOUR challenge-deletion
-//            sites (plan D4; mirrors EA-REAPER-02) AND the helper body is
-//            non-trivial (survivor-pin against no-op body mutant)
-//
-// The four sites are EXACTLY the deletion set (plan F8 whole-tree grep):
-//   1. accept_challenge   — post-battle-creation delete
-//   2. decline_challenge  — target rejects
-//   3. cancel_challenge   — challenger withdraws
-//   4. cancel_challenges_on_disconnect — bulk delete loop
-//
-// BODY PINS (m17.5d survivor-pin technique — mutation-testing found a missed
-// mutant: `replace disarm_challenge_reaper with ()`): a no-op body passes all
-// call-site checks above but leaves orphaned schedule rows that then fire as
-// no-ops.  Two shape-based needles pin the collect-before-delete pattern
-// (mirrors disarm_trade_reaper, ADR-0117):
-//   (a) `.challenge_id().filter(` — the btree filter that gathers scheduled_ids
-//   (b) `.scheduled_id().delete(` — the per-pk delete that removes each row
-// Variable-name-agnostic: matches any local binding.
-//
-// TEETH: kills (i) an impl that adds the disarm to only SOME of the four sites;
-//        (ii) a no-op / empty-body disarm that passes the call-site check but
-//        never actually deletes the schedule row; (iii) a body that deletes by
-//        challenge_id directly (if the API changes, this would silent-fail on
-//        0 rows and not enforce the per-pk contract).
-// ---------------------------------------------------------------------------
-
-#[test]
-fn ea_chr_02_disarm_called_at_all_challenge_deletion_sites() {
-    let stripped = stripped_pvp_for_scan();
-
-    // Per-site arg-identity pins (LOW gate-hole, red-team finding):
-    // `disarm_challenge_reaper(ctx, 0)` passes a presence-only check but arms
-    // the disarm for a non-existent id, leaving the real schedule row orphaned.
-    // Three reducers pass `challenge_id` (the row's own id); the disconnect
-    // bulk loop passes `id` (the loop variable over collected pending_ids).
-    // Both `)` and rustfmt trailing-comma `,)` closing forms are accepted.
-    //
-    // Structure: (fn_name, squashed_call_needle, squashed_call_needle_trailing)
-    let sites: &[(&str, &str, &str)] = &[
-        (
-            "accept_challenge",
-            concat!("disarm_challenge_", "reaper(ctx,challenge_id)"),
-            concat!("disarm_challenge_", "reaper(ctx,challenge_id,)"),
-        ),
-        (
-            "decline_challenge",
-            concat!("disarm_challenge_", "reaper(ctx,challenge_id)"),
-            concat!("disarm_challenge_", "reaper(ctx,challenge_id,)"),
-        ),
-        (
-            "cancel_challenge",
-            concat!("disarm_challenge_", "reaper(ctx,challenge_id)"),
-            concat!("disarm_challenge_", "reaper(ctx,challenge_id,)"),
-        ),
-        (
-            "cancel_challenges_on_disconnect",
-            concat!("disarm_challenge_", "reaper(ctx,id)"),
-            concat!("disarm_challenge_", "reaper(ctx,id,)"),
-        ),
-    ];
-
-    for (fn_name, call_needle, call_needle_trailing) in sites {
-        let body = extract_pvp_fn_body(&stripped, fn_name)
-            .unwrap_or_else(|| panic!("EA-CHR-02: `{fn_name}` function not found in pvp.rs"));
-        let squashed = squash_ws(body);
-        let found = squashed.contains(call_needle) || squashed.contains(call_needle_trailing);
-        assert!(
-            found,
-            "EA-CHR-02 FAIL: `{fn_name}` is missing the arg-identity disarm call \
-             `{call_needle}` (squash_ws'd). A literal-0 call `disarm_challenge_reaper(ctx, 0)` \
-             passes a presence-only check but disarms the wrong (non-existent) schedule row — \
-             the real schedule row survives and fires as an orphaned no-op later. \
-             Plan D4: EVERY deletion site must disarm with the ACTUAL challenge id \
-             (EA-REAPER-02 parity). RED: disarm with correct arg absent (m17.5e)."
-        );
-    }
-
-    // Body survivor-pins: extract disarm_challenge_reaper itself and verify
-    // the collect-before-delete shape is present (kills no-op body mutant).
-    let disarm_body =
-        extract_pvp_fn_body(&stripped, "disarm_challenge_reaper").unwrap_or_else(|| {
-            panic!(
-                "EA-CHR-02 FAIL: `disarm_challenge_reaper` function not found in pvp.rs — \
-                 the helper does not exist yet. RED: m17.5e disarm helper absent."
-            )
-        });
-    let disarm_squashed = squash_ws(disarm_body);
-
-    // (a) btree filter collect: gathers scheduled_ids by challenge_id index.
-    let filter_needle = concat!(".challenge_id()", ".filter(");
-    assert!(
-        disarm_squashed.contains(filter_needle),
-        "EA-CHR-02 FAIL: `disarm_challenge_reaper` body is missing `.challenge_id().filter(` \
-         (squash_ws'd) — the helper must gather schedule rows via the btree index before \
-         deleting them (collect-before-delete pattern, mirrors disarm_trade_reaper ADR-0117). \
-         A no-op or empty body fails this pin (survivor-pin against body-replacement mutant)."
-    );
-
-    // (b) per-pk delete: removes each row by scheduled_id primary key.
-    let delete_needle = concat!(".scheduled_id()", ".delete(");
-    assert!(
-        disarm_squashed.contains(delete_needle),
-        "EA-CHR-02 FAIL: `disarm_challenge_reaper` body is missing `.scheduled_id().delete(` \
-         (squash_ws'd) — the helper must delete each schedule row via its primary key. \
-         A no-op body or one that only filters without deleting fails this pin."
-    );
-}
-
-// ---------------------------------------------------------------------------
-// EA-CHR-03: battle_challenge_reaper has the scheduler-only identity guard
-//            (plan F3 — brace-bounded body scan, never a suffix scan)
-//
-// TEETH: kills an impl that forgets `ctx.sender() != ctx.database_identity()` — any
-//        client could then call the reaper directly and delete other players'
-//        pending challenges at will.  Body-scoped so the guard in
-//        pvp_deadline_reaper (same token, same file) cannot satisfy it.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn ea_chr_03_challenge_reaper_has_scheduler_guard() {
-    let stripped = stripped_pvp_for_scan();
-    let body = extract_pvp_fn_body(&stripped, "battle_challenge_reaper").unwrap_or_else(|| {
-        panic!(
-            "EA-CHR-03 FAIL: `battle_challenge_reaper` reducer not found in pvp.rs — \
-             the TTL reaper does not exist yet. RED: m17.5e reaper absent."
-        )
-    });
-    let squashed = squash_ws(body);
-    let guard_needle = concat!("ctx.sender()", "!=", "ctx.database_identity()");
-    assert!(
-        squashed.contains(guard_needle),
-        "EA-CHR-03 FAIL: `battle_challenge_reaper` body is missing the scheduler-only \
-         identity guard `ctx.sender() != ctx.database_identity()` (squash_ws'd, brace-bounded \
-         scan). \
-         Without it any client can invoke the reaper and delete other players' pending \
-         challenges (ADR-0109 pvp_deadline_reaper / ADR-0117 trade_offer_reaper pattern)."
-    );
-}
-
-// ---------------------------------------------------------------------------
-// EA-CHR-04: battle_challenge_reaper re-checks staleness via the NEGATION
-//            GUARD SHAPE and deletes the row (plan F4 — shape-pinned, bounded)
-//
-// Required shape (squash_ws'd, trade_offer_reaper clone):
-//   `if !is_challenge_stale(`                       — negation guard
-//   `<row>.created_at_ms, now_ms(ctx))`             — CORRECT arg order
-//   `){ return Ok(()) }`                            — block opens with early-return
-//   `challenge_id().delete(`                        — the reap itself
-// and the guard must precede the delete (decision-before-irreversible).
-//
-// TEETH: kills (a) an impl with no stale re-check (early fire — plan D7 —
-//        reaps a FRESH challenge), (b) the ignored-result evasion
-//        `let _ = is_challenge_stale(...)` (no `if !…` shape), (c) an impl
-//        that deletes before checking, (d) TRANSPOSED args
-//        `is_challenge_stale(now_ms(ctx), row.created_at_ms)` which computes a
-//        negative elapsed and causes the reaper to permanently no-op (HIGH
-//        gate-hole, red-team finding), and (e) an empty guard block
-//        `if !is_challenge_stale(...) { }` followed by an unconditional delete
-//        — the `){ return Ok(()) }` immediate-open shape kills that (MEDIUM
-//        gate-hole, red-team finding).
-// Body-scoped so the three lifecycle delete sites (accept/decline/cancel)
-// cannot satisfy the delete pin.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn ea_chr_04_challenge_reaper_stale_recheck_guards_the_delete() {
-    let stripped = stripped_pvp_for_scan();
-    let body = extract_pvp_fn_body(&stripped, "battle_challenge_reaper").unwrap_or_else(|| {
-        panic!(
-            "EA-CHR-04 FAIL: `battle_challenge_reaper` reducer not found in pvp.rs — \
-             the TTL reaper does not exist yet. RED: m17.5e reaper absent."
-        )
-    });
-    let squashed = squash_ws(body);
-
-    let neg_needle = concat!("if!", "is_challenge_stale(");
-    let neg_pos = squashed.find(neg_needle).unwrap_or_else(|| {
-        panic!(
-            "EA-CHR-04 FAIL: the negation guard `if !is_challenge_stale(` was not found \
-             in `battle_challenge_reaper` body (squash_ws'd shape pin, plan F4). An \
-             ignored-result call (`let _ = is_challenge_stale(...)`) does NOT satisfy \
-             this — the staleness result must gate the delete."
-        )
-    });
-
-    // Arg-order pin (HIGH gate-hole, red-team finding): the squashed arg-tail
-    // after `if !is_challenge_stale(` must be `<row>.created_at_ms,now_ms(ctx))`.
-    // A transposed call `is_challenge_stale(now_ms(ctx), row.created_at_ms)`
-    // computes a *negative* elapsed and the negation always evaluates to false,
-    // so the delete is never reached → the reaper permanently no-ops.
-    // Both `)` and rustfmt-trailing-comma `,)` closing forms are accepted.
-    let arg_tail_needle = concat!(".created_at_ms,", "now_ms(ctx))");
-    let arg_tail_needle_trailing = concat!(".created_at_ms,", "now_ms(ctx),)");
-    let arg_tail_pos = squashed[neg_pos..]
-        .find(arg_tail_needle)
-        .or_else(|| squashed[neg_pos..].find(arg_tail_needle_trailing))
-        .map(|p| neg_pos + p)
-        .unwrap_or_else(|| {
-            panic!(
-                "EA-CHR-04 FAIL: arg-order pin `.created_at_ms,now_ms(ctx))` not found after \
-                 `if !is_challenge_stale(` in `battle_challenge_reaper` (squash_ws'd). A \
-                 transposed call `is_challenge_stale(now_ms(ctx), row.created_at_ms)` computes \
-                 a negative elapsed and the reaper permanently no-ops (HIGH gate-hole)."
-            )
-        });
-
-    // Immediate-open shape (MEDIUM gate-hole, red-team finding): the block
-    // following the condition must OPEN with `return Ok(())` — squashed form
-    // `){returnOk(())`.  An empty guard block `{ }` followed by an
-    // unconditional delete satisfies the `if !…` + `return Ok(())` pins but
-    // fires the reaper on every invocation regardless of staleness.
-    let block_open_needle = concat!(")", "{return", "Ok(())");
-    assert!(
-        squashed[arg_tail_pos..].contains(block_open_needle),
-        "EA-CHR-04 FAIL: the guard block does not immediately open with `return Ok(())` — \
-         squashed shape `)<open-brace>returnOk(())` not found after the arg-tail. An empty guard \
-         block `if !is_challenge_stale(...) <open-brace><close-brace>` followed by an unconditional \
-         delete would fire the reaper on every invocation regardless of staleness (MEDIUM gate-hole)."
-    );
-
-    let return_ok_needle = concat!("return", "Ok(())");
-    assert!(
-        squashed[neg_pos..].contains(return_ok_needle),
-        "EA-CHR-04 FAIL: no `return Ok(())` after the `if !is_challenge_stale(` guard in \
-         `battle_challenge_reaper` — an early fire (clock skew) must no-op, never reap a \
-         fresh challenge (plan D7; trade_offer_reaper parity)."
-    );
-
-    // Delete arg-identity pin (MEDIUM gate-hole, red-team finding):
-    // `.delete(args.challenge_id)` — kills `.delete(0)` (decorative reaper that
-    // ships green with only the open-paren needle).  Both `)` and rustfmt
-    // trailing-comma `,)` closing forms are accepted.
-    let delete_needle = concat!("challenge_id()", ".delete(args.challenge_id)");
-    let delete_needle_trailing = concat!("challenge_id()", ".delete(args.challenge_id,)");
-    let delete_pos = squashed
-        .find(delete_needle)
-        .or_else(|| squashed.find(delete_needle_trailing))
-        .unwrap_or_else(|| {
-            panic!(
-                "EA-CHR-04 FAIL: `challenge_id().delete(args.challenge_id)` not found in \
-                 `battle_challenge_reaper` body (squash_ws'd arg-identity pin). A decorative \
-                 `.delete(0)` passes the open-paren needle but reaps the wrong (or no) row — \
-                 the reaper must delete by the scheduled challenge's own id."
-            )
-        });
-
-    assert!(
-        neg_pos < delete_pos,
-        "EA-CHR-04 FAIL: the stale-recheck guard (squashed offset {neg_pos}) must come \
-         BEFORE `challenge_id().delete(args.challenge_id)` (squashed offset {delete_pos}) — \
-         decision-before-irreversible."
-    );
-}
-
-// ---------------------------------------------------------------------------
-// EA-CHR-05: battle_challenge_reaper_schedule is baselined AND private
-//
-// (a) The table must appear in evals/baselines/table-schemas.json (append-only
-//     regen, ADR-0116) — otherwise the schema-snapshot eval fires next run.
-// (b) The real table attribute in pvp.rs must NOT contain `public` — clients
-//     must never see or manipulate reaper schedule rows (plan D6;
-//     trade_offer_reaper_schedule precedent).
-//
-// F7 RULE (load-bearing for this file): NO fixture string here may contain an
-// unbroken table-macro attribute prefix — the schema-snapshot eval
-// concatenates ALL .rs files under server-module/src/ INCLUDING this test file, and its
-// parser would treat a fixture as a real table.  This test therefore scans
-// only the REAL attribute (needle-based); macro-shaped fixtures live solely in
-// evals/pvp-challenge-reaper.eval.mjs (never scanned by the snapshot eval).
-//
-// TEETH: kills an impl that forgets the baseline entry (a) or marks the
-//        schedule table `public` (b) — a public schedule table would leak
-//        reap deadlines and invite client-side schedule manipulation.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn ea_chr_05_reaper_schedule_table_baselined_and_private() {
-    // (a) Baseline presence.
-    let table_name = concat!("battle_challenge_", "reaper_schedule");
-    assert!(
-        TABLE_SCHEMAS_JSON.contains(table_name),
-        "EA-CHR-05 FAIL: `{}` not found in evals/baselines/table-schemas.json. \
-         Append the new schedule-table entry to the baseline (append-only, ADR-0116). \
-         RED: table + baseline entry absent (m17.5e).",
-        table_name
-    );
-
-    // (b) The real attribute in pvp.rs has no `public`.
-    let stripped = stripped_pvp_for_scan();
-    let name_needle = concat!("accessor = ", "battle_challenge_reaper_schedule");
-    let pos = stripped.find(name_needle).unwrap_or_else(|| {
-        panic!(
-            "EA-CHR-05 FAIL: `accessor = battle_challenge_reaper_schedule` not found in pvp.rs — \
-             the schedule table must be declared there, colocated with its reducer \
-             (trade_offer_reaper_schedule precedent, ADR-0056 exception). \
-             RED: table absent (m17.5e)."
-        )
-    });
-    let attr_start = stripped[..pos]
-        .rfind("#[")
-        .expect("EA-CHR-05: malformed table attribute — no `#[` before the accessor argument");
-    let attr_end = stripped[pos..].find(']').map(|p| pos + p).expect(
-        "EA-CHR-05: malformed table attribute — no closing `]` after the accessor argument",
-    );
-    let attr = &stripped[attr_start..=attr_end];
-    assert!(
-        !attr.contains("public"),
-        "EA-CHR-05 FAIL: the battle_challenge_reaper_schedule table attribute contains \
-         `public` — the schedule table MUST be private (plan D6). Clients must never \
-         see or manipulate reaper schedule rows. Found attribute: {:?}",
-        attr
-    );
-}
-
-// ---------------------------------------------------------------------------
-// EA-CHR-06: schedule_challenge_reaper deadline is ms-floored (plan F2/N5)
-//
-// The deadline MUST be computed from the ms-floored created_at_ms
-// (ADR-0117 D4): created_at_ms×1000 + CHALLENGE_TTL_MS×1000, saturating.
-// The ADJACENT `schedule_deadline` helper in pvp.rs computes from raw
-// now-micros and is the WRONG template (plan §7 copy-risk callout) — the
-// correct clone source is trading.rs `schedule_trade_reaper`.
-//
-// TEETH: kills (a) a units bug — a missing ×1000 fires the reaper ~2 minutes
-//        early, the `!is_challenge_stale` branch no-ops, the runtime consumes
-//        the one-shot row, and the Pending challenge LEAKS FOREVER (plan D7);
-//        (b) a whole-body-replacement mutant that keeps the signature but
-//        drops the schedule insert (survivor-pin, N5).
-// ---------------------------------------------------------------------------
-
-#[test]
-fn ea_chr_06_schedule_challenge_reaper_deadline_ms_floored() {
-    let stripped = stripped_pvp_for_scan();
-    let body = extract_pvp_fn_body(&stripped, "schedule_challenge_reaper").unwrap_or_else(|| {
-        panic!(
-            "EA-CHR-06 FAIL: `schedule_challenge_reaper` helper not found in pvp.rs — \
-             the arm helper does not exist yet. RED: m17.5e helper absent."
-        )
-    });
-    let squashed = squash_ws(body);
-
-    // (a) ms-floored deadline expression (squash_ws'd; rustfmt-proof).
-    let deadline_needle = concat!(
-        "created_at_ms.saturating_mul(1_000)",
-        ".saturating_add(CHALLENGE_TTL_MS.saturating_mul(1_000))"
-    );
-    assert!(
-        squashed.contains(deadline_needle),
-        "EA-CHR-06 FAIL: the ms-floored deadline expression \
-         created_at_ms×1000 + CHALLENGE_TTL_MS×1000 (both saturating, ADR-0117 D4) was \
-         not found in `schedule_challenge_reaper` body. A missing ×1000 fires the reaper \
-         early → the stale re-check no-ops → the one-shot schedule row is consumed → the \
-         Pending challenge leaks forever (plan D7). Do NOT clone the adjacent \
-         `schedule_deadline` (now-based); clone trading.rs `schedule_trade_reaper`."
-    );
-
-    // (b) Survivor-pin: the schedule-row insert must be present.
-    let insert_needle = concat!("battle_challenge_reaper_schedule", "().insert(");
-    assert!(
-        squashed.contains(insert_needle),
-        "EA-CHR-06 FAIL: `battle_challenge_reaper_schedule().insert(` not found in \
-         `schedule_challenge_reaper` body — the arm helper must insert the one-shot \
-         schedule row (survivor-pin, plan N5: kills body-replacement mutants)."
-    );
-}
-
-// ===========================================================================
-// 11r-a — PvP server-guard parity (ADR-0166 D1/D2).  RED until implemented.
-//
-// EARS criteria covered:
-//   E1  `start_pvp_battle` SHALL seat the first team slot with HP > 0 as the
-//       battle lead on BOTH sides, and SHALL reject the battle when a side has
-//       no conscious monster at all.
-//   E2  WHEN a player submits `PvpAction::Attack` WHILE their OWN active monster
-//       is fainted, `submit_pvp_action` SHALL return `Err` and no damage SHALL
-//       be dealt.
-//
-// Both are source-text scans: these reducers need a live `ReducerContext` and
-// this crate has no reducer-executing harness (`battle_tests.rs:2151-2153`).
-// House pattern = push the provable part into a pure fn and unit-test it (for
-// E1 that is `game_core`'s own `with_lead_*` tests; for E2 it is
-// `guards_tests.rs` / `resolve.rs`), then scan ONLY for the residue a scan
-// uniquely sees: call-site adoption, argument identity, and guard ordering.
-//
-// Every scan below runs on `stripped_pvp_for_scan()` (comments AND string
-// literals removed) so no needle can be satisfied by a dead string literal, and
-// on `squash_ws`'d bodies so a rustfmt line split never causes a false RED.
-// The two message assertions in E2 need live strings and therefore use the
-// comments-only view — flagged inline where that happens.
-// ===========================================================================
-
-/// **E1** (ADR-0166 D1) — `start_pvp_battle` must build BOTH sides through
-/// `BattleSide::with_lead`, passing the team vectors UNMODIFIED, establish
-/// `active` in no other way, and audit both rejections.
-///
-/// This mirrors `battle_tests.rs:1747` (`start_battle_constructs_both_sides_via_with_lead`)
-/// — the PvE original, whose docstring records TWO verified evasions that the
-/// layering below exists to close (a compound-assignment `side_a.active -=
-/// side_a.active`, and a post-construction `side_a.team.swap(0, 1)`).
-///
-/// **Why this matters more in PvP than in PvE.** A red-team PoC built against
-/// this repo's own `game-core` seated a 0 HP lead on the ranked path, landed real
-/// hits (`calc_damage` never reads the attacker's HP), swept a 3-monster party
-/// and WON the ranked battle. The row self-repairs only when the corpse is
-/// actually hit (`resolve.rs:105-129` Faint → auto-switch), so an out-speeding
-/// sac-lead is never hit and never repaired. D1 is confirmed exploitable.
-///
-/// Layers L1 through L4. Layers L2b/L2e/L2f were added after a red-team
-/// EMPIRICALLY built and ran four implementations that passed the first draft of
-/// this test while leaving D1 fully live; each is annotated with the evasion it
-/// closes.
-///
-/// 1. **L1 — exact count (== 2).** `contains("with_lead")` passes on a
-///    half-applied fix that converts side A and leaves side B as
-///    `BattleSide { active: 0, team: team_b }`. A presence-only needle cannot see
-///    that; the count can. NOTE (deliberate): the two calls must stay INLINE in
-///    this body — factoring them into a shared `build_side()` helper would zero
-///    this count on an otherwise-correct fix. That is the intended constraint,
-///    recorded in ADR-0166's anti-pattern list.
-///
-/// 2. **L2 — forbidden spellings, field whitelists, and vector identity.**
-///    - *L2a:* `BattleSide {` and `set_active(` are forbidden outright.
-///    - *L2b (EV-1, FILE-scoped):* bare `.active` may occur exactly ONCE across
-///      all of `pvp.rs` — the Swap-arm read at `pvp.rs:1036` — and no function
-///      may have a `-> BattleSide` return type. **This layer was body-scoped in
-///      the first draft and a red-team defeated it empirically:**
-///      `fn reseat(mut s: BattleSide) -> BattleSide { s.active = 0; s }` applied
-///      to both sides *after* correct `with_lead` bindings passes every
-///      body-scoped layer and restores the confirmed-exploitable defect. The
-///      field is `pub` (ADR-0156 residual P2) and a compound assignment
-///      (`side_a.active -= side_a.active`) is a separately-verified evasion, so
-///      the durable rule is: do not name the field.
-///    - *L2b2 (NEW-1, FILE-scoped):* `.team` may appear across all of `pvp.rs`
-///      only as `.team.iter()`, `.team.iter_mut()`, `.team.len()`, `.team[` or
-///      `.team;` (residual-zero, 13 of 13 on the current source), and no function
-///      may take a `&mut BattleSide`. This closes the twin of L2b's hole, which a
-///      red-team also proved: `fn normalize_side(s: &mut BattleSide) { ..
-///      s.team.swap(0, 1); .. }` returns `()` (so no `-> BattleSide`), never names
-///      `.active`, and lives outside the body (so L2c is blind). `with_lead` on
-///      `[corpse, conscious]` sets `active = 1`; swapping `team[0]`/`team[1]`
-///      leaves `active` pointing AT THE CORPSE — D1 fully restored — and the
-///      permutation is length-preserving, so `check_team_coupling` cannot see the
-///      broken `team[i]` ↔ `party_monster_ids[i]` pairing either.
-///    - *L2c:* the body-scoped version of the same whitelist, kept because it is
-///      tighter where it applies: inside this body `.team` may appear ONLY as
-///      `.team.iter()` / `.team.iter_mut()` (verified EXACT against
-///      `pvp.rs:283-291`, two of each — do not widen).
-///    - *L2d:* `is_fainted` must occur ZERO times in this body. This is a
-///      SPELLING check on the removed pre-checks and nothing more — see its
-///      failure message; the first draft overclaimed it as a filter-mutant guard,
-///      which it is not.
-///    - *L2e (EV-6):* `team_a` and `team_b` are each named EXACTLY TWICE. This is
-///      the spelling-independent successor to L2d and the assertion that actually
-///      kills both `team_a.retain(|m| m.current_hp > 0)` and the strictly worse
-///      `team_a.sort_by_key(|m| m.current_hp == 0)` — the latter is
-///      length-preserving, so `check_team_coupling` cannot see it either, and it
-///      silently rebinds every `team[i]` to the wrong `party_monster_ids[i]`.
-///    - *L2f (EV-5):* both `build_pvp_team` bindings are pinned verbatim. Without
-///      it the swap L3 guards against simply moves ONE LINE UP: bind the
-///      challenger's roster to `team_b`, the opponent's to `team_a`, and every
-///      `with_lead` binding below reads perfectly.
-///
-/// 3. **L3 — the BINDING pin (the most important layer).** The squashed body must
-///    contain `let side_a = BattleSide::with_lead(team_a)` AND
-///    `let side_b = BattleSide::with_lead(team_b)`. A red-team PoC proved that
-///    pinning only `with_lead(team_a)` / `(team_b)` as BARE PRESENCE lets a
-///    SWAPPED-ARGUMENT implementation through — `side_a` built from `team_b` and
-///    vice versa — because both needles are still present. In PvP that is
-///    catastrophic: `party_monster_ids` / `opponent_monster_ids`
-///    (`pvp.rs:294-295`) stay un-swapped, so each player plays the OTHER player's
-///    monsters, and `write_back_*` writes one player's post-battle HP onto the
-///    other player's rows. `check_team_coupling` (`guards.rs:124`) compares
-///    LENGTHS ONLY, so the corruption is invisible to every other check in the
-///    tree whenever both parties are the same size.
-///
-/// 4. **L4 — the audit, and WHO it names (EV-8).** Exactly one `log_reject(` in
-///    each rejection closure's window, plus `,challenger,` in side A's and
-///    `,opponent,` in side B's, plus zero `ctx.sender()` in the body. The
-///    per-window counts replace a whole-body `== 2` deliberately (M1): that form
-///    is what `battle_tests.rs:1864-1870` calls "too loose AND a false-positive
-///    landmine", and it is satisfied by putting both audits in one closure.
-///    The identity pins matter because a call-site count says nothing about the
-///    argument: `log_reject("start_pvp_battle", ctx.sender(), &e)` in both closures
-///    passes a count check and IS the ADR-0166 D1 defect — `start_pvp_battle` is
-///    reached only from `accept_challenge`, where `ctx.sender()` is the ACCEPTOR.
-///    The error STRINGS are deliberately NOT pinned: they have no consumer
-///    outside `pvp.rs`, so pinning them would turn any future rewording RED.
-///
-/// **RED state at HEAD** (L1 fires first): ZERO `BattleSide::with_lead(` calls,
-/// two `BattleSide {` literals with `active: 0` (`pvp.rs:259-267`), two
-/// `is_fainted` pre-checks (`pvp.rs:252-257`), `team_a`/`team_b` named 3× each,
-/// and ZERO `log_reject(` calls. GREEN at HEAD and required to stay green:
-/// L2a `set_active`, L2b (bare `.active` == 1 file-wide, `-> BattleSide` == 0),
-/// L2c, L2f, and the `ctx.sender()` == 0 fence.
-///
-/// **HONEST LIMITS.**
-/// (a) A same-named permutation of the kind `battle_tests.rs:1727-1735` records
-/// (`let mut team_a = team_a; team_a.sort_by_key(..)`) passes L3's needle — but
-/// unlike in the PvE original it is now caught here, by L2e's exact `team_a`
-/// count of 2 (the shadow-rebind is a third mention).
-/// (b) L2b's `-> BattleSide` needle sees only that literal spelling;
-/// `-> Option<BattleSide>` would slip past it. The assertions doing the real work
-/// against that whole mutant class are the two FILE-scoped whitelists — L2b's
-/// `.active` count and L2b2's `.team` residual — plus L2b2's `&mut BattleSide`
-/// == 0: a helper cannot reseat or permute a side without naming one of those.
-/// (c) Nothing here pins the `ability_ids_* ↔ team_*` alignment beyond L2f's
-/// binding text; ADR-0166 D1 records that coupling as newly load-bearing and
-/// unpinned by anything else in the tree.
-#[test]
-fn e1_start_pvp_battle_constructs_both_sides_via_with_lead() {
-    let stripped = stripped_pvp_for_scan();
-    let body = extract_pvp_fn_body(&stripped, "start_pvp_battle").unwrap_or_else(|| {
-        panic!(
-            "E1 FAIL: `start_pvp_battle` not found in pvp.rs — the PvP battle \
-             constructor must exist there (called only from `accept_challenge`)."
-        )
-    });
-    let squashed = squash_ws(body);
-    // EV-1: the `.active` whitelist and the "no helper returns a BattleSide" rule
-    // must be FILE-scoped, not body-scoped — a helper defined OUTSIDE this body is
-    // exactly how the body-scoped version was defeated. See L2b.
-    let squashed_file = squash_ws(&stripped);
-
-    // --- L1: exact call count -----------------------------------------------
-    let with_lead = ["BattleSide::", "with_lead("].concat();
-    let call_count = squashed.matches(with_lead.as_str()).count();
-    assert_eq!(
-        call_count, 2,
-        "TEETH (E1/D1 L1): `start_pvp_battle` must call `BattleSide::with_lead(` \
-         EXACTLY twice — once for the challenger (side A), once for the opponent \
-         (side B); found {call_count}. A count of 1 is the half-applied fix: one \
-         side is repaired while the other still seats a 0 HP lead in RANKED play. \
-         Keep both calls INLINE in this body — a shared `build_side()` helper would \
-         zero this count on an otherwise-correct fix (ADR-0166 anti-pattern). \
-         RED at HEAD: 0 calls, two `BattleSide {{ active: 0, .. }}` literals."
-    );
-
-    // --- L2a: forbidden construction spellings ------------------------------
-    let struct_literal = ["BattleSide", "{"].concat();
-    let n_literal = squashed.matches(struct_literal.as_str()).count();
-    assert_eq!(
-        n_literal, 0,
-        "TEETH (E1/D1 L2): `start_pvp_battle` must contain no `BattleSide {{` struct \
-         literal — that literal hardcodes the lead with no regard for the monster's \
-         HP, and IS the defect. Found {n_literal} occurrence(s) (HEAD has 2). \
-         `active` is computed by `with_lead` (first slot with current_hp > 0) and by \
-         nothing else."
-    );
-    let set_active = ["set", "_active("].concat();
-    let n_set_active = squashed.matches(set_active.as_str()).count();
-    assert_eq!(
-        n_set_active, 0,
-        "ANTI-EVASION (E1/D1 L2, green at HEAD): `start_pvp_battle` must contain no \
-         `set_active(` — `set_active` is the mid-battle swap mutator (ADR-0053), not \
-         a lead selector: `set_active(0)` silently SUCCEEDS whenever slot 0 happens \
-         to be conscious and rejects otherwise, which is not the D1 rule. Found \
-         {n_set_active}."
-    );
-
-    // --- L2b: `.active` is FILE-scoped-whitelisted, and no helper returns a
-    //          BattleSide (EV-1) ---------------------------------------------
-    let active_any_needle = [".", "active"].concat();
-    let active_accessor_needle = [".", "active_monster"].concat();
-    let active_any = squashed_file.matches(active_any_needle.as_str()).count();
-    let active_accessor = squashed_file
-        .matches(active_accessor_needle.as_str())
-        .count();
-    let bare_active = active_any.saturating_sub(active_accessor);
-    assert_eq!(
-        bare_active, 1,
-        "ANTI-EVASION (E1/D1 L2b, green at HEAD): pvp.rs must contain EXACTLY ONE \
-         bare `BattleSide.active` reference file-wide; found {bare_active} (of \
-         {active_any} total `.active`, {active_accessor} of which are the \
-         `.active_monster` accessor). \
-         The ONE legitimate occurrence is the Swap-arm comparison \
-         `if my_team.active == team_index` at pvp.rs:1036 — a read, not a write. \
-         FILE-scoped rather than body-scoped ON PURPOSE: a red-team PoC defeated the \
-         body-scoped form with a helper defined outside the body — \
-         `fn reseat(mut s: BattleSide) -> BattleSide {{ s.active = 0; s }}` applied to \
-         both sides AFTER correct `with_lead` bindings. That passes every body-scoped \
-         layer and restores the confirmed-exploitable D1 defect in full. \
-         The field is still `pub` (ADR-0156 residual P2), and a compound assignment \
-         (`side_a.active -= side_a.active`) is a VERIFIED prior evasion of an \
-         operator-enumerating blacklist, so the only durable rule is: do not name the \
-         field. To READ the lead, call `active_monster()`. If a future change needs \
-         another legitimate `.active` read, raise this number DELIBERATELY."
-    );
-    let returns_side = ["->", "BattleSide"].concat();
-    let n_returns_side = squashed_file.matches(returns_side.as_str()).count();
-    assert_eq!(
-        n_returns_side, 0,
-        "ANTI-EVASION (E1/D1 L2b, green at HEAD): no function in pvp.rs may RETURN a \
-         `BattleSide`; found {n_returns_side} `-> BattleSide` return type(s). \
-         Belt-and-braces with the `.active` whitelist above against the `reseat` \
-         helper class of evasion: a side that is built by `with_lead` and then passed \
-         through any post-processing function is a side whose `active` this test can \
-         no longer vouch for. `with_lead` must be the last thing that touches the \
-         lead. \
-         LIMIT, stated honestly: this needle sees only the literal `-> BattleSide` \
-         spelling; `-> Option<BattleSide>` or `-> (BattleSide, BattleSide)` would slip \
-         past it. The `.active` whitelist above is the assertion that actually kills \
-         the mutant — this one just makes the shape harder to reach for."
-    );
-
-    // --- L2c: `.team` may only appear as an order-preserving accessor --------
-    let team_any_needle = [".", "team"].concat();
-    let team_iter_needle = [".", "team.iter()"].concat();
-    let team_iter_mut_needle = [".", "team.iter_mut()"].concat();
-    let team_any = squashed.matches(team_any_needle.as_str()).count();
-    let team_iter = squashed.matches(team_iter_needle.as_str()).count();
-    let team_iter_mut = squashed.matches(team_iter_mut_needle.as_str()).count();
-    let team_other = team_any.saturating_sub(team_iter + team_iter_mut);
-    assert_eq!(
-        team_other, 0,
-        "ANTI-EVASION (E1/D1 L2c, green at HEAD): `start_pvp_battle` touches \
-         `BattleSide.team` in \
-         {team_other} way(s) that are not `.team.iter()` ({team_iter}) or \
-         `.team.iter_mut()` ({team_iter_mut}), out of {team_any} total `.team`. \
-         After `with_lead` returns, the team must not be reordered or resized: \
-         `side_a.team[i]` is positionally coupled to `party_monster_ids[i]` (and \
-         `side_b.team[i]` to `opponent_monster_ids[i]`) for HP write-back, and \
-         `check_team_coupling` (guards.rs:124) compares LENGTHS ONLY — so a \
-         `team.swap(0, 1)` here writes one player's post-battle HP onto another \
-         monster's row and nothing else in the tree can see it. `iter()` / \
-         `iter_mut()` hand out element references and cannot reorder a Vec; every \
-         method that can is excluded by not being on this whitelist. Widening it is \
-         a deliberate decision, not a formality (the exact counts verified against \
-         pvp.rs:283-291)."
-    );
-
-    // --- L2b2: `.team` is FILE-scoped-whitelisted too (NEW-1) ---------------
-    // The `-> BattleSide` needle above has a twin hole, and a red-team proved it:
-    // `fn normalize_side(s: &mut BattleSide) { if s.team.len() > 1 {
-    // s.team.swap(0, 1); } }`, called on both sides AFTER two textbook-correct
-    // `with_lead` bindings, returns `()` (so no `-> BattleSide`), never names
-    // `.active` (so the count above is unmoved), and lives outside this body (so
-    // L2c is blind). `with_lead` on [corpse, conscious] sets active = 1; swapping
-    // team[0]/team[1] leaves `active` pointing AT THE CORPSE — D1 fully restored —
-    // and the permutation is LENGTH-PRESERVING, so `check_team_coupling`
-    // (guards.rs:124) cannot see the broken team[i] ↔ party_monster_ids[i] pairing
-    // either.
-    //
-    // Residual-zero form (the `assert_lead_fields_untouched` doctrine) rather than
-    // pinned per-form counts: adding another legitimate `.team.iter()` elsewhere in
-    // pvp.rs must not turn this test red, but adding ANY non-whitelisted form must.
-    // The five whitelisted spellings are exhaustive against the current source
-    // (6 × `.iter()`, 4 × `.iter_mut()`, 1 × `.len()`, 1 × `[`, 1 × `;` = 13 of 13),
-    // and none of them can reorder or resize a Vec: `iter`/`iter_mut` hand out
-    // element references, `len` is a read, `[` is an indexed read, and `;` closes
-    // the shared immutable borrow at pvp.rs:539
-    // (`let team_b = &battle.state.side_b.team;`).
-    let team_any_file = squashed_file.matches(team_any_needle.as_str()).count();
-    let team_iter_file = squashed_file.matches(team_iter_needle.as_str()).count();
-    let team_mut_file = squashed_file.matches(team_iter_mut_needle.as_str()).count();
-    let team_len_needle = [".", "team.len()"].concat();
-    let team_index_needle = [".", "team["].concat();
-    let team_borrow_needle = [".", "team;"].concat();
-    let team_len_file = squashed_file.matches(team_len_needle.as_str()).count();
-    let team_index_file = squashed_file.matches(team_index_needle.as_str()).count();
-    let team_borrow_file = squashed_file.matches(team_borrow_needle.as_str()).count();
-    let team_other_file = team_any_file.saturating_sub(
-        team_iter_file + team_mut_file + team_len_file + team_index_file + team_borrow_file,
-    );
-    assert_eq!(
-        team_other_file, 0,
-        "TEETH (E1/D1 L2b2, NEW-1): pvp.rs touches `BattleSide.team` in \
-         {team_other_file} way(s) that are not on the order-preserving whitelist, \
-         out of {team_any_file} total `.team` — `.team.iter()` ({team_iter_file}), \
-         `.team.iter_mut()` ({team_mut_file}), `.team.len()` ({team_len_file}), \
-         `.team[` ({team_index_file}), `.team;` ({team_borrow_file}). \
-         FILE-scoped, because a red-team defeated the body-scoped L2c with a helper \
-         defined outside the body: `fn normalize_side(s: &mut BattleSide)` calling \
-         `s.team.swap(0, 1)`, applied to both sides after correct `with_lead` \
-         bindings. `with_lead` on [corpse, conscious] sets active = 1; swapping \
-         team[0]/team[1] leaves `active` pointing AT THE CORPSE, fully restoring the \
-         confirmed-exploitable D1 defect — and the permutation is LENGTH-PRESERVING, \
-         so `check_team_coupling` (guards.rs:124) cannot see the broken \
-         `team[i]` ↔ `party_monster_ids[i]` pairing either. \
-         Every method that could reorder or resize — `swap`, `sort*`, `rotate_*`, \
-         `reverse`, `retain`, `remove`, `insert`, `push`, `pop`, `drain`, \
-         `truncate`, `dedup*`, `clear`, `split_off`, `append`, `resize`, whole-field \
-         assignment — is excluded by NOT BEING ON THE LIST, without anyone having had \
-         to think of it. Widening the whitelist is a deliberate decision."
-    );
-    let mut_side_needle = ["&mut", "BattleSide"].concat();
-    let n_mut_side = squashed_file.matches(mut_side_needle.as_str()).count();
-    assert_eq!(
-        n_mut_side, 0,
-        "ANTI-EVASION (E1/D1 L2b2, green at HEAD): no function in pvp.rs may take a \
-         `&mut BattleSide`; found {n_mut_side}. Belt-and-braces with the `.team` \
-         whitelist above and the `-> BattleSide` needle: a side that is handed to \
-         ANY mutator after construction is a side whose `active` and team order this \
-         test can no longer vouch for. `with_lead` must be the last thing that \
-         touches either."
-    );
-
-    // --- L2d: the conscious-party pre-checks are GONE, not kept alongside ----
-    let is_fainted = ["is_", "fainted"].concat();
-    let n_fainted = squashed.matches(is_fainted.as_str()).count();
-    assert_eq!(
-        n_fainted, 0,
-        "TEETH (E1/D1 L2d): `start_pvp_battle` must contain ZERO `is_fainted` \
-         occurrences; found {n_fainted} (HEAD has 2, the `any(|m| !m.is_fainted())` \
-         pre-checks at pvp.rs:252-257). `with_lead`'s `None` IS that precondition \
-         (game-core/src/combat/types.rs:102-105), so keeping both leaves dead code \
-         that makes the adoption scan ambiguous (ADR-0166 D1). \
-         SCOPE OF THIS ASSERTION, stated precisely (an earlier draft OVERCLAIMED \
-         here): this is a SPELLING check on the removed pre-checks and nothing more. \
-         It does NOT kill a team-filtering mutant — `team_a.retain(|m| m.current_hp \
-         > 0)` never says `is_fainted` and walks straight past it, and \
-         `team_a.sort_by_key(|m| m.current_hp == 0)` is worse still: \
-         length-preserving, so `check_team_coupling` cannot see it either. L2e below \
-         is the assertion that kills BOTH, spelling-independently. \
-         DELIBERATELY BODY-SCOPED: `pvp.rs:1031` and E2's new Attack guard use \
-         `is_fainted` legitimately, so a file-wide count would be RED by \
-         construction and prove nothing."
-    );
-
-    // --- L2e: the team vectors are NAMED EXACTLY TWICE each (EV-6) ----------
-    // Spelling-independent successor to L2d: on a correct implementation each team
-    // is mentioned once when bound and once when passed to `with_lead`, and NOWHERE
-    // else. Any interposed statement — filter, sort, swap, truncate, shadow-rebind
-    // — must name the vector a third time.
-    let team_a_needle = ["team", "_a"].concat();
-    let team_b_needle = ["team", "_b"].concat();
-    let n_team_a = squashed.matches(team_a_needle.as_str()).count();
-    let n_team_b = squashed.matches(team_b_needle.as_str()).count();
-    assert_eq!(
-        n_team_a, 2,
-        "TEETH (E1/D1 L2e): `team_a` must be named EXACTLY TWICE in \
-         `start_pvp_battle` — once in the `build_pvp_team` binding, once as the \
-         `with_lead` argument; found {n_team_a} (HEAD has 3: the binding, the \
-         `is_fainted` pre-check, and the struct literal). \
-         This is the spelling-INDEPENDENT reorder/filter guard, and it is the one \
-         that bites where L2d cannot. Both of these pass every other layer: \
-         `team_a.retain(|m| m.current_hp > 0)` (resizes the vector, so \
-         `side_a.team[i]` no longer pairs with `party_monster_ids[i]`, and \
-         `check_team_coupling` catches it only because lengths then differ) and — \
-         far worse — `team_a.sort_by_key(|m| m.current_hp == 0)`, which is \
-         LENGTH-PRESERVING and therefore invisible to `check_team_coupling` too: it \
-         silently rebinds every `team[i]` to the wrong `party_monster_ids[i]`, so \
-         post-battle HP is written onto the wrong monster rows. Each of those \
-         statements names `team_a` a third time. So does a shadow-rebind \
-         (`let team_a = ...`)."
-    );
-    assert_eq!(
-        n_team_b, 2,
-        "TEETH (E1/D1 L2e): `team_b` must be named EXACTLY TWICE in \
-         `start_pvp_battle`; found {n_team_b} (HEAD has 3). Side B is positionally \
-         coupled to `opponent_monster_ids[i]` exactly the way side A is to \
-         `party_monster_ids[i]` — see the `team_a` message."
-    );
-
-    // --- L2f: the SOURCE of each team vector is pinned (EV-5) ---------------
-    // Without this, the swap can be moved one line UP: binding the CHALLENGER's
-    // roster to `team_b` and the opponent's to `team_a` leaves every `with_lead`
-    // binding below looking perfect while producing the identical catastrophic
-    // mis-seating that L3 exists to prevent.
-    let build_a = concat!(
-        "let(team_a,ability_ids_a)=build_pvp_",
-        "team(ctx,&challenger_party,challenger,"
-    );
-    let build_b = concat!(
-        "let(team_b,ability_ids_b)=build_pvp_",
-        "team(ctx,&opponent_party,opponent,"
-    );
-    assert!(
-        squashed.contains(build_a),
-        "ANTI-EVASION (E1/D1 L2f, green at HEAD): `start_pvp_battle` must bind the \
-         challenger's roster as `let (team_a, ability_ids_a) = build_pvp_team(ctx, \
-         &challenger_party, challenger, ..)` (whitespace-squashed: `{build_a}..`). \
-         A red-team PoC defeated L3 by moving the swap ONE LINE UP — binding the \
-         challenger's roster to `team_b` and the opponent's to `team_a`, then writing \
-         textbook-correct `let side_a = BattleSide::with_lead(team_a)` bindings below. \
-         Every other layer passes; each player then plays the OTHER player's \
-         monsters, and `party_monster_ids` / `opponent_monster_ids` (pvp.rs:294-295) \
-         stay un-swapped so `write_back_*` corrupts both players' rows. \
-         This needle also pins the positional coupling that D1 makes load-bearing for \
-         the first time: `ability_ids_a[i]` must stay aligned to `team_a[i]` \
-         (ADR-0166 D1, `abilities.side_a[active]`)."
-    );
-    assert!(
-        squashed.contains(build_b),
-        "ANTI-EVASION (E1/D1 L2f, green at HEAD): `start_pvp_battle` must bind the \
-         opponent's roster as `let (team_b, ability_ids_b) = build_pvp_team(ctx, \
-         &opponent_party, opponent, ..)` (whitespace-squashed: `{build_b}..`). \
-         See the side-A message for the one-line-up swap this pins against."
-    );
-
-    // --- L3: the BINDING pin (kills the swapped-argument evasion) -----------
-    let bind_a = ["letside_a=BattleSide::", "with_lead(team_a)"].concat();
-    let bind_b = ["letside_b=BattleSide::", "with_lead(team_b)"].concat();
-    let pos_a = squashed.find(bind_a.as_str()).unwrap_or_else(|| {
-        panic!(
-            "TEETH (E1/D1 L3) FAIL: `start_pvp_battle` must bind side A as \
-             `let side_a = BattleSide::with_lead(team_a)` (whitespace-squashed: \
-             `letside_a=BattleSide::with_lead(team_a)`), matching battle.rs:222. \
-             The BINDING, not just the call, is pinned: a red-team PoC showed that a \
-             presence-only `contains(\"with_lead(team_a)\")` admits a SWAPPED-ARGUMENT \
-             implementation (`side_a` from `team_b`, `side_b` from `team_a`) — both \
-             needles are still present, so nothing sees it. In PvP that is \
-             catastrophic: `party_monster_ids`/`opponent_monster_ids` (pvp.rs:294-295) \
-             stay un-swapped, so each player plays the OTHER player's monsters and \
-             write_back_* writes one player's post-battle HP onto the other's rows. \
-             `check_team_coupling` (guards.rs:124) compares lengths only, so it is \
-             invisible whenever both parties are the same size. \
-             Also rejected by this needle: any reorder/filter between building \
-             `team_a` and the call. RED at HEAD: no `with_lead` call exists."
-        )
-    });
-    let pos_b = squashed.find(bind_b.as_str()).unwrap_or_else(|| {
-        panic!(
-            "TEETH (E1/D1 L3) FAIL: `start_pvp_battle` must bind side B as \
-             `let side_b = BattleSide::with_lead(team_b)` (whitespace-squashed: \
-             `letside_b=BattleSide::with_lead(team_b)`), matching battle.rs:227. \
-             Side B is positionally coupled to `opponent_monster_ids[i]` exactly the \
-             way side A is to `party_monster_ids[i]`. See the side-A message for the \
-             swapped-argument PoC this pin exists to kill."
-        )
-    });
-
-    // --- L4: both rejections are audited, AGAINST THE RIGHT IDENTITY --------
-    // NOTE (M1, deliberate omission): there is NO whole-body `log_reject( == 2`
-    // assertion here. battle_tests.rs:1864-1870 rejects that exact form as "too
-    // loose AND a false-positive landmine" — it is implied by the two per-window
-    // `== 1` checks below, and because `win_b` runs to the end of the body, any
-    // audit legitimately added later (e.g. ADR-0166 residual R1) would false-RED it.
-    let log_reject = ["log_", "reject("].concat();
-    // Each window runs from its own `with_lead` binding to the NEXT one (or to the
-    // end of the body for whichever comes second), so building side B first is not
-    // a false RED and neither window can borrow the other's audit.
-    let end_a = if pos_b > pos_a { pos_b } else { squashed.len() };
-    let end_b = if pos_a > pos_b { pos_a } else { squashed.len() };
-    let win_a = &squashed[pos_a..end_a];
-    let win_b = &squashed[pos_b..end_b];
-    let n_a = win_a.matches(log_reject.as_str()).count();
-    let n_b = win_b.matches(log_reject.as_str()).count();
-    assert_eq!(
-        n_a, 1,
-        "TEETH (E1/D1 L4): the side-A `with_lead` rejection closure must contain \
-         exactly one `log_reject(`; found {n_a}. The pre-checks being replaced reject \
-         SILENTLY, unlike every other rejection in pvp.rs and unlike \
-         battle.rs:224/229, so an `ok_or_else` that returns the right `Err` but drops \
-         the audit is invisible to the rest of `just ci`. Per-window rather than \
-         whole-body: a body-wide count of 2 is satisfied by putting BOTH audits in \
-         one closure and leaving the other rejection silent. RED at HEAD: 0 audits."
-    );
-    assert_eq!(
-        n_b, 1,
-        "TEETH (E1/D1 L4): the side-B `with_lead` rejection closure must contain \
-         exactly one `log_reject(`; found {n_b}. See the side-A message."
-    );
-    // EV-8: the AUDITED IDENTITY, per window. Counting call sites says nothing
-    // about who they name.
-    let challenger_arg = [",", "challenger,"].concat();
-    let opponent_arg = [",", "opponent,"].concat();
-    assert!(
-        win_a.contains(challenger_arg.as_str()),
-        "TEETH (E1/D1 L4 / ADR-0166 D1, plan R6): the side-A rejection must be \
-         audited against `challenger` — the squashed window must contain \
-         `,challenger,` as the `log_reject` identity argument. \
-         `log_reject(\"start_pvp_battle\", ctx.sender(), &e)` in both closures passes a \
-         call-site COUNT unchanged, and it is precisely the defect ADR-0166 D1 calls \
-         out: `start_pvp_battle` is reached only from `accept_challenge`, where \
-         `ctx.sender()` is the ACCEPTOR — so a side-A rejection would be filed against \
-         the opponent's identity, pointing any abuse investigation at the wrong \
-         player. The sibling helper in this same file already gets it right \
-         (`build_pvp_team` takes an `owner` param, pvp.rs:195-216)."
-    );
-    assert!(
-        win_b.contains(opponent_arg.as_str()),
-        "TEETH (E1/D1 L4 / ADR-0166 D1, plan R6): the side-B rejection must be \
-         audited against `opponent` — the squashed window must contain `,opponent,` \
-         as the `log_reject` identity argument. See the side-A message. (The `Battle` \
-         row literal below spells this field as `opponent_identity:opponent,`, which \
-         does NOT match this needle, so the assertion cannot be satisfied by \
-         accident.)"
-    );
-    let sender_needle = ["ctx.", "sender"].concat();
-    let n_sender = squashed.matches(sender_needle.as_str()).count();
-    assert_eq!(
-        n_sender, 0,
-        "ANTI-EVASION (E1/D1 L4, green at HEAD): `start_pvp_battle` must not mention \
-         `ctx.sender()` at all; found {n_sender}. It is not a reducer — it is an \
-         internal helper reached only from `accept_challenge`, so `ctx.sender()` is the \
-         ACCEPTOR and is never the right identity for anything in this body. Naming \
-         it here is the shape of the audit defect the two assertions above reject."
-    );
-}
-
-/// **E2** (ADR-0166 D2) — `submit_pvp_action`'s **Attack** arm must reject an
-/// attack from a fainted active monster, before it records anything.
-///
-/// **How "no damage is dealt" is discharged** (this test asserts structure; the
-/// behavioural consequence follows by inference, stated here so the inference is
-/// on the record): the guard `return Err`s BEFORE the Guard-7 `BattleAction`
-/// insert, and a SpacetimeDB reducer `Err` rolls back the ENTIRE transaction.
-/// There is therefore no path from this `Err` return to `resolve_full_turn` —
-/// damage cannot be computed, let alone persisted. That is why the ordering
-/// assertions below (guard < insert < resolve) are load-bearing rather than
-/// cosmetic: they are the only thing that makes the inference valid.
-///
-/// **HONEST FRAMING (ADR-0166 §Context, plan R9): after E1's fix this guard is
-/// DEFENCE-IN-DEPTH for LEGACY ROWS, not a live standalone exploit.**
-/// `resolve_full_turn` auto-switches on KO (`game-core/src/combat/resolve.rs:447-452`),
-/// and the submit-time TOCTOU hypothesis was investigated and DISPROVED:
-/// `resolve.rs:328-342` (`second_had_faint`) suppresses the slower side's
-/// persisted Attack after a same-turn KO, swaps resolve before attacks
-/// (`resolve.rs:271-286`), and every `battle.rs` mutator rejects ranked PvP via
-/// `is_ranked_pvp`. What remains reachable is a `battle` row already persisted
-/// with a 0 HP active — exactly the framing ADR-0156 D2 used for the PvE half.
-///
-/// Assertions:
-///
-/// 1. **The guard, on the already-bound `my_team`.** The squashed body must
-///    contain `if my_team.active_monster().is_fainted() {`. Two parts carry the
-///    teeth. The trailing `{` rejects a dead `let _ = ..` binding and a
-///    string-literal fake (precedent `raising_tests.rs:892-897`). The `my_team.`
-///    prefix is what makes BOTH-ROLE coverage *structural* rather than merely
-///    asserted: `my_team` is bound from `my_side` by the exhaustive match at
-///    `pvp.rs:1012-1015`, so a side-hardcoded implementation cannot satisfy this
-///    needle at all. This is why ADR-0166 D2 rejected the
-///    `reject_if_active_fainted(&BattleState, SideId)` helper form — a red-team
-///    PoC showed `reject_if_active_fainted(&battle.state, SideId::SideA)` compiles,
-///    passes every proposed test, and leaves **side B's corpse dealing full damage
-///    in ranked**. The inline form makes that bug unrepresentable.
-///
-///    **1b (EV-2), the assertion that makes 1 mean anything.** `my_team` must be
-///    bound EXACTLY ONCE in this reducer. A red-team defeated the receiver pin by
-///    shadowing the name — `let real_team = my_team; let my_team =
-///    &battle.state.side_a;` before the `match`, `let my_team = real_team;` after
-///    the guard inside the arm — producing a guard that checks side A for BOTH
-///    players. That is precisely the "unrepresentable" bug, it passes assertion 1
-///    verbatim, and it contains no `SideId::Side` token so assertion 2 misses it
-///    too.
-///
-/// 2. **Sited INSIDE the Attack arm, and `SideId::Side` never appears there.**
-///    The guard's index must fall strictly between `PvpAction::Attack` and
-///    `PvpAction::Swap`. A guard hoisted ABOVE the `match action` would apply to
-///    Swap as well (see [`pvp_swap_arm_has_no_fainted_active_guard`]) and would
-///    still satisfy assertions 1 and 1b and the whole ordering chain — this is the
-///    only assertion that catches that placement. The
-///    `SideId::Side` count of 0 inside the arm closes the re-derivation
-///    (`match my_side { SideId::SideA => .. }`) that assertion 1's `my_team.`
-///    prefix is designed to prevent.
-///
-/// 3. **ORDERING** — not behaviourally observable, therefore pinned:
-///    `guard < known_skill_ids < battle_action().insert( < resolve_pvp_turn_if_ready`.
-///    Before the moveset check so a corpse does not produce the misleading
-///    "skill N not in active monster's moveset"; before the irreversible insert
-///    so the rollback argument above holds.
-///
-/// 4. **A real reject.** The window between the guard and the moveset check must
-///    contain both `log_reject(` and `return Err` — killing a guard that logs
-///    without returning, or returns without auditing.
-///
-///    **4b (EV-9), because 4 alone is presence-only.** Nothing between the
-///    guard's opening brace and its `return Err(` may open another `if`. A
-///    red-team nested a never-true condition inside the guard body
-///    (`if battle.state.turn_number == u16::MAX { .. return Err(e); }`), which
-///    satisfies assertion 4 exactly and makes the entire guard a no-op.
-///
-/// 5. **The PvP-specific message: `swap to another monster` must appear inside
-///    the Attack arm, and NEITHER `or flee` NOR `forfeit` may appear anywhere in
-///    this function.** The rule is "name only actions the player can actually
-///    take", and it has now caught two violations. `battle.rs:556`'s "…or flee"
-///    is the first: `PvpAction` is `Attack | Swap`, so there is no flee in PvP.
-///    "…or forfeit" was the second, found by a security audit AFTER the first
-///    draft of this fix shipped it: **there is no player-callable forfeit reducer
-///    either.** The only forfeits in the tree are `forfeit_on_disconnect` (a
-///    `pub(crate)` lifecycle helper) and the 60 s `pvp_deadline_reaper`, and
-///    `client/src` renders no forfeit affordance. Both spellings name an
-///    unrenderable action, and the consequence is identical: a player on a
-///    corpse-active row who keeps retrying Attack instead of swapping is reaped
-///    at 60 s (`pvp.rs:54` → `apply_pvp_forfeit` → `settle_pvp_battle` →
-///    `ranking.rs:92`) into a **ranked rating loss**. Swap is the only real exit,
-///    so it is the only one the message may offer. These three are the only
-///    assertions that need live string literals, so they run on the comments-only
-///    view (`strip_rust_comments`), bounded by `fn` MARKERS rather than by brace
-///    counting (M5): brace-counting string-bearing source works on this function
-///    today only because its literals' `{{`/`}}` happen to balance, which no
-///    future edit is obliged to preserve.
-///
-/// The Swap-arm anti-decision fence lives in its own test,
-/// [`pvp_swap_arm_has_no_fainted_active_guard`], so that it actually runs — folded
-/// in here it would sit behind assertion 1, which panics at HEAD.
-///
-/// **RED state at HEAD:** the Attack arm (`pvp.rs:1017-1023`) contains only the
-/// moveset check — the guard needle is absent, and the word `forfeit` does not
-/// occur anywhere in `submit_pvp_action`. Assertions 1b, 2 and 5's `or flee` half
-/// are GREEN at HEAD and labelled ANTI-EVASION.
-///
-/// **HONEST LIMIT — the guard's spelling is pinned (FR-3).** Assertion 1 requires
-/// the literal `if my_team.active_monster().is_fainted() {`. A semantically
-/// identical rewrite — `let active = my_team.active_monster(); if
-/// active.is_fainted() {` — is CORRECT but would false-RED, because binding the
-/// active to a local drops the `my_team.` receiver that makes both-role coverage
-/// structural. That is a deliberate trade (E3 carries the same class of limit):
-/// the receiver is the only thing distinguishing a both-role guard from a
-/// side-hardcoded one in a scan. The required text is stated verbatim in the
-/// failure message; ADR-0166 D2 fixes it as the sanctioned shape.
-#[test]
-fn e2_submit_pvp_action_rejects_attack_from_a_fainted_active() {
-    let stripped = stripped_pvp_for_scan();
-    let body = extract_pvp_fn_body(&stripped, "submit_pvp_action").unwrap_or_else(|| {
-        panic!("E2 FAIL: `submit_pvp_action` not found in pvp.rs — the PvP turn reducer.")
-    });
-    let squashed = squash_ws(body);
-
-    // --- Arm region markers --------------------------------------------------
-    let attack_marker = ["PvpAction::", "Attack"].concat();
-    let swap_marker = ["PvpAction::", "Swap"].concat();
-    let attack_pos = squashed.find(attack_marker.as_str()).unwrap_or_else(|| {
-        panic!("E2 FAIL: `PvpAction::Attack` arm not found in `submit_pvp_action`.")
-    });
-    let swap_pos = squashed.find(swap_marker.as_str()).unwrap_or_else(|| {
-        panic!("E2 FAIL: `PvpAction::Swap` arm not found in `submit_pvp_action`.")
-    });
-    assert!(
-        attack_pos < swap_pos,
-        "E2 FAIL: the `PvpAction::Attack` arm must precede the `PvpAction::Swap` arm \
-         in `submit_pvp_action` — this test scopes the Attack-arm assertions to the \
-         region between them."
-    );
-
-    // --- (1) the guard, on the already-bound `my_team` -----------------------
-    let guard = ["ifmy_team.", "active_monster().is_fainted(){"].concat();
-    let guard_pos = squashed.find(guard.as_str()).unwrap_or_else(|| {
-        panic!(
-            "TEETH (E2/D2) FAIL: `submit_pvp_action` must contain the fainted-active \
-             reject `if my_team.active_monster().is_fainted() {{` (whitespace-squashed: \
-             `ifmy_team.active_monster().is_fainted(){{`) as the FIRST statement of the \
-             `PvpAction::Attack` arm. \
-             The `my_team.` receiver is load-bearing: `my_team` is bound from `my_side` \
-             by the exhaustive match at pvp.rs:1012-1015, so a side-hardcoded \
-             implementation cannot satisfy this needle. A red-team PoC showed the \
-             rejected helper form `reject_if_active_fainted(&battle.state, \
-             SideId::SideA)` compiles, passes every other assertion, and leaves side \
-             B's corpse dealing FULL damage in ranked (`calc_damage` never reads the \
-             attacker's HP). \
-             The trailing `{{` is also load-bearing: it rejects a dead \
-             `let _ = my_team.active_monster().is_fainted();` binding. \
-             RED at HEAD: the Attack arm has only the moveset check."
-        )
-    });
-
-    // --- (1b) EV-2: `my_team` is bound EXACTLY ONCE -------------------------
-    // Without this, the `my_team.` receiver in (1) is decorative: a red-team PoC
-    // shadowed it (`let real_team = my_team; let my_team = &battle.state.side_a;`
-    // before the match, `let my_team = real_team;` after the guard inside the arm)
-    // and produced a guard that checks SIDE A for BOTH players — exactly the
-    // side-B-corpse-attacks-at-full-damage bug ADR-0166 D2 claims is
-    // "unrepresentable". No `SideId::Side` token appears anywhere in it, so
-    // assertion (2) below does not see it either.
-    let bind_my_team = ["letmy_", "team="].concat();
-    let n_bind_my_team = squashed.matches(bind_my_team.as_str()).count();
-    assert_eq!(
-        n_bind_my_team, 1,
-        "ANTI-EVASION (E2/D2, green at HEAD): `my_team` must be bound EXACTLY ONCE \
-         in `submit_pvp_action`; found {n_bind_my_team}. The single binding is the \
-         exhaustive `match my_side` at pvp.rs:1012-1015, and it is the ONLY reason \
-         the guard's `my_team.` receiver proves both-role coverage. A second `let \
-         my_team = ..` re-points the name — a shadow to `&battle.state.side_a` \
-         before the match, restored after the guard inside the Attack arm, makes the \
-         guard check side A for BOTH players while every other assertion in this test \
-         still passes. That leaves a side-B corpse dealing FULL damage in ranked: the \
-         precise defect this test exists to prevent."
-    );
-
-    // --- (2) sited inside the Attack arm; no SideId re-derivation there ------
-    assert!(
-        guard_pos > attack_pos && guard_pos < swap_pos,
-        "TEETH (E2/D2): the fainted-active guard must sit INSIDE the \
-         `PvpAction::Attack` arm (squashed offsets: guard {guard_pos}, arm \
-         {attack_pos}..{swap_pos}). Hoisting it above `match action` would satisfy \
-         the needle AND the ordering chain while also applying it to the `Swap` arm \
-         — soft-locking a player whose active has fainted, which the 60 s PvP \
-         deadline reaper then launders into a RANKED RATING LOSS (ADR-0166 D2 \
-         anti-decision). This is the only assertion that catches that placement."
-    );
-    let side_id = ["SideId::", "Side"].concat();
-    let attack_arm = &squashed[attack_pos..swap_pos];
-    let n_side_id = attack_arm.matches(side_id.as_str()).count();
-    assert_eq!(
-        n_side_id, 0,
-        "ANTI-EVASION (E2/D2, green at HEAD): the `PvpAction::Attack` arm must \
-         contain no `SideId::Side*` reference; found {n_side_id}. `my_side` has \
-         ALREADY been resolved into \
-         `my_team` by the exhaustive match at pvp.rs:1012-1015 — re-deriving the side \
-         inside the arm is an SSOT regression and is exactly the shape that admits a \
-         hardcoded `SideId::SideA`, leaving side B unguarded in ranked play."
-    );
-
-    // --- (3) ordering: guard < moveset < insert < resolve --------------------
-    let moveset = ["known_", "skill_ids"].concat();
-    let insert = ["battle_action", "().insert("].concat();
-    let resolve = ["resolve_pvp_", "turn_if_ready("].concat();
-    let moveset_pos = squashed
-        .find(moveset.as_str())
-        .expect("E2: `known_skill_ids` (the moveset check) not found in submit_pvp_action");
-    let insert_pos = squashed
-        .find(insert.as_str())
-        .expect("E2: `battle_action().insert(` (Guard 7) not found in submit_pvp_action");
-    let resolve_pos = squashed
-        .find(resolve.as_str())
-        .expect("E2: `resolve_pvp_turn_if_ready(` (Guard 8) not found in submit_pvp_action");
-    assert!(
-        guard_pos < moveset_pos,
-        "TEETH (E2/D2 ordering): the fainted-active guard (squashed offset \
-         {guard_pos}) must precede the moveset check ({moveset_pos}). Sited after it, \
-         a corpse produces the misleading `skill N not in active monster's moveset` \
-         instead of the actionable `swap or forfeit` message — and on a legacy \
-         corpse-active row that misdirection is what walks the player into the 60 s \
-         reaper."
-    );
-    assert!(
-        moveset_pos < insert_pos,
-        "TEETH (E2/D2 ordering): the moveset check ({moveset_pos}) must precede the \
-         irreversible `battle_action().insert(` ({insert_pos})."
-    );
-    assert!(
-        insert_pos < resolve_pos,
-        "TEETH (E2/D2 ordering): `battle_action().insert(` ({insert_pos}) must precede \
-         `resolve_pvp_turn_if_ready(` ({resolve_pos}) — the turn can only resolve once \
-         this side's action is recorded."
-    );
-
-    // --- (4) it is a REAL reject: audited, and it returns ---------------------
-    let reject_window = &squashed[guard_pos..moveset_pos];
-    let log_reject = ["log_", "reject("].concat();
-    assert!(
-        reject_window.contains(log_reject.as_str()),
-        "TEETH (E2/D2): the fainted-active guard's block must call `log_reject(` — \
-         every other rejection in `submit_pvp_action` audits, and an unaudited \
-         rejection on the ranked path is invisible to operations."
-    );
-    let return_err = ["return", "Err("].concat();
-    assert!(
-        reject_window.contains(return_err.as_str()),
-        "TEETH (E2/D2): the fainted-active guard's block must `return Err(..)`. A \
-         guard that logs and falls through changes nothing: execution reaches the \
-         Guard-7 `BattleAction` insert and the corpse's attack is persisted. The \
-         `Err` return is ALSO what discharges `no damage dealt` — a reducer `Err` \
-         rolls back the whole SpacetimeDB transaction, so there is no path from here \
-         to `resolve_full_turn`."
-    );
-
-    // --- (4b) EV-9: the rejection is UNCONDITIONAL inside the guard ----------
-    // Assertion (4) only requires `log_reject(` and `return Err` to appear
-    // SOMEWHERE between the guard and the moveset check. A red-team PoC nested a
-    // second, never-true condition inside the guard body
-    // (`if battle.state.turn_number == u16::MAX { .. return Err(e); }`), which
-    // satisfies (4) exactly while making the whole guard a no-op. Requiring that
-    // nothing between the guard's `{` and its `return Err(` opens another `if`
-    // closes it. (The needle is a bare keyword; it is assembled only for
-    // uniformity with the rest of this file.)
-    let if_needle = ["i", "f"].concat();
-    let match_needle = ["mat", "ch"].concat();
-    let tail = &squashed[guard_pos + guard.len()..];
-    let ret_rel = tail.find(return_err.as_str()).unwrap_or_else(|| {
-        panic!(
-            "TEETH (E2/D2 EV-9) FAIL: no `return Err(` follows the fainted-active \
-             guard in `submit_pvp_action` — the guard does not reject at all."
-        )
-    });
-    let guard_prelude = &tail[..ret_rel];
-    let n_nested_if = guard_prelude.matches(if_needle.as_str()).count()
-        + guard_prelude.matches(match_needle.as_str()).count();
-    assert_eq!(
-        n_nested_if, 0,
-        "TEETH (E2/D2 EV-9): the fainted-active guard must reject UNCONDITIONALLY; \
-         found {n_nested_if} nested `if`/`match` between the guard's opening brace \
-         and its `return Err(`. Any further condition there makes the rejection \
-         conditional, and a condition that is never true (`turn_number == u16::MAX`) \
-         turns the whole guard into a no-op while still satisfying the \
-         `log_reject` + `return Err` presence checks above. On a correct \
-         implementation the only statements here are the message binding, the \
-         `log_reject` call, and the return. \
-         LIMIT (NEW-2, recorded not closed): `while`, `for _ in 0..usize::from(cond)` \
-         and `cond.then(..)` spellings are NOT counted here. `for` in particular \
-         cannot be added as a needle — it is a substring of `format!`, which a \
-         legitimate message binding may use. Those spellings are covered instead by \
-         `clippy -D warnings`, which rejects both the `match`-as-equality and the \
-         `for`-as-conditional forms outright; clippy is the sanctioned backstop for \
-         that residue, and `just lint` runs it on every CI pass."
-    );
-
-    // --- (5) the PvP-specific message (needs LIVE strings) -------------------
-    // These two assertions are the only ones that inspect string literals, so
-    // they use the comments-only view rather than `stripped_pvp_for_scan()`
-    // (which blanks every literal). Whitespace is squashed on this view too, so
-    // "…or flee" collapses to `orflee` and the needle is assembled to match.
-    //
-    // M5: this view is bounded by `fn` MARKERS, not by brace counting. Running
-    // `extract_pvp_fn_body` over string-bearing source works today only because
-    // every `{`/`}` inside this function's literals happens to balance — a
-    // property no future edit is obliged to preserve, and one the plan explicitly
-    // names as an anti-pattern. The marker idiom is trading_tests.rs:1939-1947.
-    let comments_only = strip_rust_comments(PVP_RS);
-    let submit_fn = concat!("fn ", "submit_pvp_action(");
-    let next_fn = concat!("fn ", "battle_challenge_reaper(");
-    let ws_start = comments_only
-        .find(submit_fn)
-        .expect("E2: `fn submit_pvp_action(` not found in pvp.rs");
-    let ws_end = comments_only[ws_start..]
-        .find(next_fn)
-        .map(|p| ws_start + p)
-        .unwrap_or(comments_only.len());
-    let squashed_ws = squash_ws(&comments_only[ws_start..ws_end]);
-    let attack_pos_ws = squashed_ws
-        .find(attack_marker.as_str())
-        .expect("E2: `PvpAction::Attack` arm not found in the string-bearing view");
-    let swap_pos_ws = squashed_ws
-        .find(swap_marker.as_str())
-        .expect("E2: `PvpAction::Swap` arm not found in the string-bearing view");
-    let swap_advice = ["swaptoanother", "monster"].concat();
-    assert!(
-        squashed_ws[attack_pos_ws..swap_pos_ws].contains(swap_advice.as_str()),
-        "TEETH (E2/D2 message): the fainted-active rejection inside the \
-         `PvpAction::Attack` arm must tell the player to `swap to another monster` \
-         — the ONLY exit that actually exists. A corpse-active row is escapable \
-         solely by `PvpAction::Swap`; any other advice leaves the player retrying \
-         Attack until the 60 s deadline reaper (pvp.rs:54) forfeits FOR them, which \
-         `settle_pvp_battle` → `ranking.rs:92` turns into a RANKED RATING LOSS."
-    );
-    // Two absences, pinned together: NEITHER named action exists.
-    let or_flee = ["or", "flee"].concat();
-    assert!(
-        !squashed_ws.contains(or_flee.as_str()),
-        "TEETH (E2/D2 message): `submit_pvp_action` must NOT contain `or flee` \
-         anywhere. `battle.rs:556` reads `…swap to another monster or flee`, and a \
-         verbatim copy-paste of that PvE string into PvP names an action that does \
-         not exist in `PvpAction` (Attack | Swap). See the previous assertion for \
-         the ranked-rating-loss consequence."
-    );
-    let forfeit = ["for", "feit"].concat();
-    assert!(
-        !squashed_ws.contains(forfeit.as_str()),
-        "TEETH (E2/D2 message): `submit_pvp_action` must NOT contain `forfeit` \
-         either. The first draft of this fix said `…swap to another monster or \
-         forfeit`, and a security audit found that this is the SAME defect ADR-0166 \
-         D2 rejected `or flee` for: THERE IS NO PLAYER-CALLABLE FORFEIT REDUCER. \
-         The only forfeits in the tree are `forfeit_on_disconnect` (a `pub(crate)` \
-         lifecycle helper) and the 60 s `pvp_deadline_reaper` — and `client/src` \
-         renders no forfeit affordance at all. Telling a corpse-active player to \
-         forfeit therefore names an UNRENDERABLE action and walks them into the \
-         reaper, i.e. into the ranked rating loss this guard exists to prevent. \
-         Both absences are pinned so a future edit cannot reintroduce either."
-    );
-
-    // NOTE: the "Swap arm is deliberately unguarded" fence lives in its own test
-    // (`pvp_swap_arm_has_no_fainted_active_guard`) so that it actually RUNS —
-    // folded in here it would be unreachable at HEAD, because assertion (1)
-    // panics first and the fence would never be observed either green or red.
-}
-
-/// **ADR-0166 D2 anti-decision fence** — `PvpAction::Swap` must NEVER acquire the
-/// fainted-active guard, and must keep its own *target* legality check.
-///
-/// This is the single most important entry in ADR-0166, and it is a pure
-/// ANTI-REGRESSION fence: **green at HEAD (0 guards), green after the fix (1, in
-/// the Attack arm only), and red only if someone adds the symmetric guard.**
-/// It is a separate `#[test]` on purpose — inside E2 it would sit behind an
-/// assertion that panics at HEAD, so it could never be observed passing.
-///
-/// A player whose active monster has fainted MUST still be able to swap out. In
-/// PvE, guarding Swap would merely soft-lock them; in PvP the 60 s deadline
-/// reaper (`pvp.rs:54` → `apply_pvp_forfeit` → `settle_pvp_battle` →
-/// `ranking.rs:92`) launders that soft-lock into a **ranked rating loss**. The
-/// next consistency-minded security pass will want to add the symmetric guard
-/// "for parity"; this test is what stops it.
-///
-/// The second assertion is a survivor-pin: the Swap arm must KEEP its own
-/// `my_team.team[idx].is_fainted()` check (`pvp.rs:1031`), which rejects swapping
-/// TO a fainted bench monster. Deleting it while "simplifying the fainted checks"
-/// would let a player swap into a corpse and stall the battle.
-#[test]
-fn pvp_swap_arm_has_no_fainted_active_guard() {
-    let stripped = stripped_pvp_for_scan();
-    let body = extract_pvp_fn_body(&stripped, "submit_pvp_action")
-        .unwrap_or_else(|| panic!("E2 fence FAIL: `submit_pvp_action` not found in pvp.rs."));
-    let squashed = squash_ws(body);
-
-    let guard = ["ifmy_team.", "active_monster().is_fainted(){"].concat();
-    let n_guard = squashed.matches(guard.as_str()).count();
-    assert!(
-        n_guard <= 1,
-        "ANTI-REGRESSION (ADR-0166 D2 anti-decision): the fainted-active guard \
-         occurs {n_guard} times in `submit_pvp_action`; it may occur AT MOST ONCE \
-         (in the `PvpAction::Attack` arm). A second occurrence means it was also \
-         applied to the `Swap` arm. `Swap` gets NO such guard ON PURPOSE: a player \
-         whose active has fainted MUST still be able to swap out, else they are \
-         soft-locked — and in PvP the 60 s deadline reaper (pvp.rs:54 → \
-         apply_pvp_forfeit → settle_pvp_battle → ranking.rs:92) launders that \
-         soft-lock into a RANKED RATING LOSS. Reject-not-clamp does NOT extend to \
-         removing the only legal exit."
-    );
-
-    let swap_marker = ["PvpAction::", "Swap"].concat();
-    let swap_pos = squashed
-        .find(swap_marker.as_str())
-        .expect("E2 fence: `PvpAction::Swap` arm not found in `submit_pvp_action`");
-    let target_check = ["ifmy_team.team[idx].is_", "fainted(){"].concat();
-    assert!(
-        squashed[swap_pos..].contains(target_check.as_str()),
-        "ANTI-REGRESSION (ADR-0166 D2): the `PvpAction::Swap` arm must KEEP its own \
-         target check `if my_team.team[idx].is_fainted() {{` (pvp.rs:1031) — the one \
-         that rejects swapping TO a fainted bench monster. It is a different rule \
-         from the Attack-arm guard and must survive any consolidation of the \
-         `is_fainted` checks in this reducer."
-    );
-}
-
-// ===========================================================================
-// 12r-d (E3) — `json_escape` at the four hand-built JSON log sites in pvp.rs
-//
-// EARS criterion covered:
-//
-//   E3  Every hand-built JSON log line in `pvp.rs` that interpolates an error
-//       reason SHALL interpolate a `crate::guards::json_escape`d binding rather
-//       than the raw `Err` text.
-//
-// THE FOUR SITES (verified at b4c55b5), in TWO regions:
-//   settle_pvp_battle       pvp.rs:501  pvp_settle_writeback_fail   "err"
-//                           pvp.rs:518  pvp_settle_side_b_hp_fail   "err"
-//   forfeit_on_disconnect   pvp.rs:612  forfeit_on_disconnect_err   "reason"
-//                           pvp.rs:625  forfeit_on_disconnect_err   "reason"
-//
-// NOTE THE DUPLICATE EVENT NAME: `forfeit_on_disconnect_err` labels TWO sites
-// (the side-A loop and the side-B loop). The scan is COUNT-based rather than
-// first-match based precisely so BOTH occurrences are asserted — a fix applied
-// to the side-A loop only would otherwise pass.
-//
-// RED STATE: ASSERTION-RED at HEAD — all four format strings interpolate raw
-// `{e}` and neither region makes a single `json_escape(` call.
-//
-// PIPELINE WARNING (why this section does NOT use `stripped_pvp_for_scan`):
-// that helper strips string-literal CONTENT, which is exactly the text these
-// needles are made of — it would make every assertion below vacuous. This
-// section comment-strips ONLY, then squashes whitespace. Comment stripping is
-// still mandatory in both directions: the fix's own explanatory comment will
-// name `json_escape`, and the existing comments around these sites discuss the
-// `Err` values (ADR-0077 log-and-continue).
-//
-// Needles are assembled from parts and the two structural characters are spelled
-// as NUMBERS, never as CHARACTER literals (guards_tests G-5a).
-// ===========================================================================
-
-/// The ASCII double quote, spelled as a NUMBER — this section adds no bare
-/// delimiter CHARACTER literal (guards_tests G-5a).
-const D12R_DQUOTE: u8 = 0x22;
-
-/// The two-character sequence a Rust source spells to put a double quote INSIDE
-/// a string literal: backslash then quote.
-fn d12r_escaped_quote() -> String {
-    let mut out = String::new();
-    out.push(char::from(0x5Cu8));
-    out.push(char::from(D12R_DQUOTE));
-    out
-}
-
-/// True when the quote byte at `idx` DELIMITS a string literal rather than being
-/// an escaped `\"` inside one: a delimiter is preceded by an EVEN number of
-/// consecutive backslashes.
-///
-/// Inlined here (and in `content_tests.rs` / `battle_tests.rs` / `npc_tests.rs`)
-/// because every `*_tests.rs` file is a `#[cfg(test)]` submodule of its own
-/// production file and none can reach another's bare `fn` items; there is no
-/// shared test-utility crate. Same precedent `content_cache_tests.rs:361-368`
-/// records for its own copies of the strippers.
-fn d12r_quote_delimits(bytes: &[u8], idx: usize) -> bool {
-    let mut n = 0usize;
-    let mut i = idx;
-    while i > 0 && bytes[i - 1] == b'\\' {
-        n += 1;
-        i -= 1;
-    }
-    n.is_multiple_of(2)
-}
-
-/// The interior (delimiters excluded) of the double-quoted string literal that
-/// CONTAINS byte offset `at`.
-fn d12r_format_string_at(src: &str, at: usize) -> Option<&str> {
-    let bytes = src.as_bytes();
-    let mut i = at;
-    let open = loop {
-        if bytes[i] == D12R_DQUOTE && d12r_quote_delimits(bytes, i) {
-            break i;
-        }
-        if i == 0 {
-            return None;
-        }
-        i -= 1;
-    };
-    let mut j = at;
-    while j < bytes.len() {
-        if bytes[j] == D12R_DQUOTE && d12r_quote_delimits(bytes, j) {
-            return Some(&src[open + 1..j]);
-        }
-        j += 1;
-    }
-    None
-}
-
-/// Byte range of the `log::<level>!( .. )` invocation that CONTAINS `at`.
-///
-/// Walks parens from the macro's `(`, JUMPING OVER string literals so a paren
-/// inside a message cannot unbalance the walk. `end` is just past the `)`.
-fn d12r_log_call_range(src: &str, at: usize) -> Option<(usize, usize)> {
-    let marker = ["log", "::"].concat();
-    let start = src[..at].rfind(marker.as_str())?;
-    let bytes = src.as_bytes();
-    let open = start + src[start..].find('(')?;
-    let mut depth = 0usize;
-    let mut i = open;
-    while i < bytes.len() {
-        if bytes[i] == D12R_DQUOTE && d12r_quote_delimits(bytes, i) {
-            i += 1;
-            while i < bytes.len() {
-                if bytes[i] == D12R_DQUOTE && d12r_quote_delimits(bytes, i) {
-                    break;
-                }
-                i += 1;
-            }
-        } else if bytes[i] == b'(' {
-            depth += 1;
-        } else if bytes[i] == b')' {
-            depth -= 1;
-            if depth == 0 {
-                return Some((start, i + 1));
-            }
-        }
-        i += 1;
-    }
-    None
-}
-
-/// Build the CONTIGUOUS squashed source sequence
-/// `<evt>","<id_key>":{<id_expr>},"<reason_key>":"<slot>"` — the exact tail of one
-/// hand-built JSON log line as it is spelled in `pvp.rs`.
-///
-/// Pinning the id field between the event name and the reason slot is what makes
-/// this a needle about ONE format string rather than about tokens that merely
-/// co-occur: nothing can be inserted, reordered or re-slotted without breaking it.
-fn d12r_pvp_log_tail(
-    evt: &str,
-    id_key: &str,
-    id_expr: &str,
-    reason_key: &str,
-    slot: &str,
-) -> String {
-    let bq = d12r_escaped_quote();
-    [
-        evt,
-        bq.as_str(),
-        ",",
-        bq.as_str(),
-        id_key,
-        bq.as_str(),
-        ":{",
-        id_expr,
-        "},",
-        bq.as_str(),
-        reason_key,
-        bq.as_str(),
-        ":",
-        bq.as_str(),
-        slot,
-        bq.as_str(),
-    ]
-    .concat()
-}
-
-/// **12r-d E3** — all four hand-built JSON reason logs in `pvp.rs` interpolate an
-/// escaped binding, and none still carries the raw `{e}`.
-///
-/// ASSERTION-RED at HEAD on every layer.
-///
-/// H2 — THE SITES ARE LOCATED, NOT COUNTED. An earlier draft counted the good
-/// and bad needles as substrings of the whole squashed region. The red team broke
-/// it: a dead string constant holding the exact good-needle text, plus a renamed
-/// raw error binding, satisfies "good needle present" and "bad needle absent"
-/// with the live log lines untouched. This version does what its
-/// `content_tests.rs` / `battle_tests.rs` siblings do — locate each event name
-/// with `match_indices`, assert its occurrence count EXACTLY (a decoy string is
-/// an extra occurrence and fails there), then evaluate every needle against THAT
-/// site's own format string and its own brace-matched `log::` macro call.
-///
-/// LAYER BY LAYER, and what each kills:
-///   * **Each event name occurs EXACTLY the expected number of times** (1, 1, 2).
-///     Kills the dead-string decoy, a duplicated log site, and a renamed event —
-///     and the count of TWO is what covers the duplicated
-///     `forfeit_on_disconnect_err`: a fix applied to only the side-A disconnect
-///     loop leaves it at 1 and fails.
-///   * **The RAW `{e}` is absent from each whole MACRO CALL** — not merely from
-///     the format string, so a positional `, e` argument is caught too. Kills the
-///     belt-and-braces shell that adds an escaped line and keeps the raw one.
-///   * **The GOOD contiguous tail is present in THAT site's format string.**
-///     Pinning `<evt>","battle_id":{battle_id},"<key>":"{escaped}"` as one
-///     sequence puts the escaped capture in the right slot of the right line;
-///     escaping into some other line cannot satisfy it.
-///   * **No `{e}` interpolation survives anywhere in either region.** The
-///     per-site layers inspect only the sanctioned calls; this closes the
-///     whole-region leak class (npc_tests T4-h) — a second statement elsewhere
-///     that interpolates the un-escaped `Err`. HEAD has exactly 2 per region, so
-///     the target is 0 and the arithmetic is exact.
-///   * **`json_escape(` is called at least once per site in its own region.**
-///     Per-region counts, not one whole-file count: two escapes in
-///     `settle_pvp_battle` must not satisfy `forfeit_on_disconnect`, which has
-///     none.
-///   * **`escaped` is bound only by `json_escape(&e)`.** Kills the shadow-rebind
-///     `let escaped = json_escape(&e); let escaped = e.clone();`, which satisfies
-///     every name-based check while the value at the point of use is raw — the
-///     compiler stays silent because the binding IS read, just not the escaped
-///     one (npc_tests.rs:1142-1154 records the same cheat) — and, via the
-///     ARGUMENT in the needle (H3), the placeholder cheat
-///     `json_escape(&"placeholder")`.
-///
-/// WHY THESE REASONS ARE UNTRUSTED. `write_back_battle_results`,
-/// `write_back_party_hp_pvp_side_b` and `apply_pvp_forfeit` all build their `Err`
-/// with `format!`, embedding monster ids and validator text; ADR-0077 makes every
-/// one of these paths LOG-AND-CONTINUE, so the log line is the ONLY record that
-/// a PvP settlement partially failed. A malformed line is dropped by the ingest,
-/// which means the one signal that a ranked match settled wrong is also the one
-/// that disappears.
-#[test]
-fn pvp_reason_log_sites_interpolate_an_escaped_binding() {
-    const ESCAPED_BINDING: &str = "escaped";
-
-    let stripped = strip_rust_comments(PVP_RS);
-    let good_slot = ["{", ESCAPED_BINDING, "}"].concat();
-    let raw_slot = ["{", "e}"].concat();
-
-    // (region fn, expected json_escape calls, rows of (evt, reason_key, count))
-    let settle = ["settle_pvp", "_battle"].concat();
-    let forfeit = ["forfeit_on", "_disconnect"].concat();
-    let regions = [
-        (
-            settle,
-            2usize,
-            vec![
-                (["pvp_settle_writeback", "_fail"].concat(), "err", 1usize),
-                (["pvp_settle_side_b_hp", "_fail"].concat(), "err", 1usize),
-            ],
-        ),
-        (
-            forfeit,
-            2usize,
-            vec![(["forfeit_on_disconnect", "_err"].concat(), "reason", 2usize)],
-        ),
-    ];
-
-    for (region, min_escape_calls, rows) in regions {
-        let body = extract_pvp_fn_body(&stripped, region.as_str())
-            .unwrap_or_else(|| panic!("12r-d E3: `{region}` not found in pvp.rs"));
-        let sq = squash_ws(body);
-
-        for (evt, reason_key, expected) in &rows {
-            let good = d12r_pvp_log_tail(evt, "battle_id", "battle_id", reason_key, &good_slot);
-
-            // --- Layer 1: locate the sites; EXACT occurrence count -----------
-            let hits: Vec<usize> = body.match_indices(evt.as_str()).map(|(i, _)| i).collect();
-            assert_eq!(
-                hits.len(),
-                *expected,
-                "TEETH (12r-d E3, H2 decoy kill) pvp.rs / {region}: the event name \
-                 {evt:?} occurs {} time(s); it must occur EXACTLY {expected}. An EXTRA \
-                 occurrence is the red team's construction — a dead string constant \
-                 holding the sanctioned line's text satisfies any whole-region substring \
-                 check while the LIVE log still interpolates the raw `Err`. FEWER means \
-                 a log line was renamed or deleted rather than escaped, which would make \
-                 every assertion below vacuous. For `forfeit_on_disconnect_err` the \
-                 count is TWO: the side-A and side-B disconnect loops carry the SAME \
-                 event name, and a fix applied to only one of them must not pass.",
-                hits.len()
-            );
-
-            for at in hits {
-                let fmt = d12r_format_string_at(body, at).unwrap_or_else(|| {
-                    panic!(
-                        "12r-d E3 (pvp.rs / {region}): the event name {evt:?} at byte \
-                         {at} is not inside a string literal — this scan locates a log \
-                         site by its format string, so the line must have been \
-                         restructured. Re-derive DELIBERATELY."
-                    )
-                });
-                let (cs, ce) = d12r_log_call_range(body, at).unwrap_or_else(|| {
-                    panic!(
-                        "12r-d E3 (pvp.rs / {region}): could not find the enclosing \
-                         `log::<level>!( .. )` invocation for {evt:?} — the scan needs \
-                         it to prove the raw `Err` is gone from the WHOLE call, not just \
-                         from the format string"
-                    )
-                });
-                let call_sq = squash_ws(&body[cs..ce]);
-
-                // --- Layer 2: raw value gone from the whole macro call -------
-                assert!(
-                    !call_sq.contains(raw_slot.as_str()),
-                    "TEETH (12r-d E3, ADR-0170 D5) pvp.rs / {region} / {evt}: this log \
-                     call still carries the RAW `Err` ({raw_slot:?}). These reasons are \
-                     `format!`-built strings carrying monster ids and validator text \
-                     across an ADR-0077 log-and-continue boundary, so the line is the \
-                     ONLY record that a ranked settlement partially failed. A double \
-                     quote in the reason makes it unparseable and the ingest drops it. \
-                     The check spans the whole macro CALL, so a positional `, e` \
-                     argument is caught too. Squashed call was: {call_sq:?}"
-                );
-
-                // --- Layer 3: the escaped capture is in THIS format string ---
-                assert!(
-                    fmt.contains(good.as_str()),
-                    "TEETH (12r-d E3, ADR-0170 D5) pvp.rs / {region} / {evt}: this \
-                     site's format string must carry the contiguous sequence {good:?} — \
-                     the escaped binding interpolated into the reason slot of THIS line. \
-                     Not found (RED at HEAD). The needle is CONTIGUOUS and evaluated \
-                     against this site's OWN format string, so escaping into an \
-                     unrelated line cannot satisfy it. Write \
-                     `let {ESCAPED_BINDING} = crate::guards::json_escape(&e);` \
-                     immediately before each log and interpolate \
-                     `{{{ESCAPED_BINDING}}}` — the npc.rs:184-190 shape. Format string \
-                     was: {fmt:?}"
-                );
-            }
-        }
-
-        let n_raw = sq.matches(raw_slot.as_str()).count();
-        assert_eq!(
-            n_raw, 0,
-            "TEETH (12r-d E3, whole-region raw-leak sweep) pvp.rs / {region}: {n_raw} raw \
-             `{{e}}` interpolation(s) survive and there must be ZERO. The per-site needles \
-             above only inspect the sanctioned lines; this closes the leak class where a \
-             SECOND statement elsewhere in the region interpolates the un-escaped `Err` \
-             (a debug line, a duplicated log) while the sanctioned line is perfect. HEAD \
-             has exactly 2 per region, so the target is 0 and the arithmetic is exact."
-        );
-
-        let escape_call = ["json", "_escape("].concat();
-        let n_escape = sq.matches(escape_call.as_str()).count();
-        assert!(
-            n_escape >= min_escape_calls,
-            "TEETH (12r-d E3) pvp.rs / {region}: the region must make at least \
-             {min_escape_calls} `json_escape(` call(s) — one per interpolated reason — \
-             but it makes {n_escape}. The count is PER REGION on purpose: a whole-file \
-             count would let two escapes in `settle_pvp_battle` satisfy \
-             `forfeit_on_disconnect`, which has none."
-        );
-
-        // H3: the reason at every one of these sites is the `Err` binding `e`.
-        // Both the reference and the `as_str()` spelling are accepted (equally
-        // correct, equally specific); a placeholder literal matches neither. The
-        // closing paren is part of each spelling so `&e)` cannot match `&entity_id)`.
-        let escape_args = ["&e)", "e.as_str())"];
-        let any_binding = ["let", ESCAPED_BINDING, "="].concat();
-        let n_all = sq.matches(any_binding.as_str()).count();
-        let mut n_esc = 0usize;
-        for arg in escape_args {
-            let qualified = [
-                "let",
-                ESCAPED_BINDING,
-                "=crate::guards::json",
-                "_escape(",
-                arg,
-            ]
-            .concat();
-            let bare = ["let", ESCAPED_BINDING, "=json", "_escape(", arg].concat();
-            n_esc += sq.matches(qualified.as_str()).count() + sq.matches(bare.as_str()).count();
-        }
-
-        assert!(
-            n_esc >= 1,
-            "TEETH (12r-d E3) pvp.rs / {region}: the escaped reason must be bound to the \
-             EXACT identifier `{ESCAPED_BINDING}` via \
-             `let {ESCAPED_BINDING} = crate::guards::json_escape(&e);` (the bare \
-             `json_escape(&e)` and the `e.as_str()` spellings are accepted) — found none. \
-             The exact NAME ties the value that was escaped to the identifier the format \
-             string interpolates; a differently-named, unread escape binding is the \
-             red-team's proven cheat (npc_tests.rs:1117-1223). The exact ARGUMENT (H3) \
-             kills `let {ESCAPED_BINDING} = json_escape(&\"placeholder\");`, which \
-             satisfies every other layer while logging a constant instead of the \
-             settlement error."
-        );
-        assert_eq!(
-            n_all, n_esc,
-            "TEETH (12r-d E3, shadow-rebind + placeholder cheat kill) pvp.rs / {region}: \
-             `{ESCAPED_BINDING}` is `let`-bound {n_all} time(s) but only {n_esc} of those \
-             bindings come from `json_escape` applied to the `Err` itself. KILLS (a) \
-             `let {ESCAPED_BINDING} = crate::guards::json_escape(&e); \
-             let {ESCAPED_BINDING} = e.clone();` — the first statement satisfies the \
-             provenance check, the second rebinds the same name to the RAW value before \
-             the log reads it, and the format string still interpolates the identifier; \
-             the compiler is silent because the binding IS read, just not the escaped \
-             one. And (b) ONE of the region's two sites escaping a placeholder instead \
-             of its own `Err`, which this equality catches even when the other is right."
-        );
-    }
-}
-
-// ===========================================================================
-// EA-RA: ranked-requires-account gate (14r-g, ADR-0189, issue #307)
-// ===========================================================================
-//
-// EARS-1  WHEN a player who holds no `account` row calls `challenge_pvp` or
-//         `accept_challenge` while ranked enforcement is active, the reducer
-//         SHALL reject before any irreversible effect, with a reason that
-//         distinguishes the caller leg from the opponent leg.
-// EARS-2  WHEN both parties hold accounts, the handshake SHALL be admitted
-//         with its behaviour unchanged.
-//
-// Register (14r-g plan; ADR-0189 Confirmation section):
-//   EA-RA-01  8-row truth table on `ranked_account_gate` — full-`Result`
-//             equality, so a swapped-reason mutant cannot survive.
-//   EA-RA-02  `challenge_pvp` carries the EXACT planned Guard 3a statement,
-//             exactly once, at brace depth 0, BEFORE `battle_challenge().insert(`
-//             and AFTER the target-presence guard (oracle bound, D8); plus the
-//             shared per-body pins: single `let me = ctx.sender();`, no `#[cfg`,
-//             no brace char literal, and the tagged log-provenance count.
-//   EA-RA-03  `accept_challenge` ditto (challenger leg), BEFORE `start_pvp_battle(`
-//             and with NO oracle bound (the challenger is joined by construction).
-//   EA-RA-04  file-wide counts: SSOT predicate usage + ranked-battle ctor cover
-//             (paren AND bare-token forms), the desync-proof ban recount and the
-//             quote-parity stripper canary.
-//   EA-RA-04b the gate's symbols are unique and unshadowed (first-match
-//             extractors are hijackable by a decoy or a nested/closure shadow).
-//   EA-RA-05  the two reject reasons are VALUE-pinned (client contract, D5).
-//   EA-RA-06  (a) inert-until-activation canary, (b) `issuers_configured`
-//             matrix, (c) `ranked_enforcement_active` body pin.
-//
-// TWO KINDS OF RED ON THE PRE-IMPLEMENTATION TREE — both are intended:
-//   * STRUCTURAL — EA-RA-02, EA-RA-03, EA-RA-04, EA-RA-04b and EA-RA-06c are
-//     pure source scans over `PVP_RS`. They compile standalone against today's
-//     pvp.rs and go red with a NAMED assertion message (needle absent / count
-//     wrong).
-//   * COMPILE-DEPENDENT — EA-RA-01, EA-RA-05, EA-RA-06a and EA-RA-06b (grouped
-//     at the very END of this file behind their own banner) name
-//     `super::ranked_account_gate`, `super::ranked_enforcement_active`,
-//     `super::issuers_configured`, `super::ERR_RANKED_REQUIRES_ACCOUNT` and
-//     `super::ERR_RANKED_OPPONENT_NEEDS_ACCOUNT`. `pvp_tests` is a `#[path]`
-//     child module of pvp.rs, so those PRIVATE items resolve through `super::`
-//     once they exist — and until then `cargo test` fails to BUILD (E0425 /
-//     E0433 "cannot find function/value in module `super`"). That build failure
-//     IS the red for the behavioural half, and it necessarily masks the
-//     structural asserts' own messages until the items land. Do NOT "fix" the
-//     build by declaring stubs here: pvp.rs owns those items, and a stub would
-//     make EA-RA-01 assert against the test file instead of the production one.
-//
-// Scan pipeline for every structural test below (identical to EA-CHR):
-//   strip_rust_comments -> strip_rust_strings -> squash_ws.
-// The EXPECTED statement text is pushed through the SAME pipeline (`ra_squash`)
-// so the pin can be written and reviewed in rustfmt-canonical Rust rather than
-// as a hand-squashed blob, and so any stripper quirk applies to both sides.
-// Every needle is `concat!()`-split, so this file can never satisfy a scan by
-// matching its own text.
-// ===========================================================================
-
-/// A bare double quote as DATA. Never written as a char literal between
-/// apostrophes: this repo's text-level source scanners have no char-literal
-/// lexer, and a bare quote there inverts string/code polarity for the rest of
-/// the file (guards.rs:27-30 / guards_tests G-5a precedent).
-const RA_DQ_BYTE: u8 = 0x22;
-
-/// Count the DELIMITER double quotes in `src` — a quote preceded by an ODD run
-/// of backslashes is escaped payload (`\"` inside a JSON log format string),
-/// not a delimiter, and must not be counted.
-///
-/// Escape-awareness is load-bearing, not tidiness: pvp.rs's `log::info!` lines
-/// are full of `\"` pairs, and a single literal carrying an odd number of them
-/// would flip a naive count's parity and false-RED the canary in EA-RA-04 on a
-/// perfectly well-formed file.
-fn ra_delimiter_quote_count(src: &str) -> usize {
-    let bytes = src.as_bytes();
-    let mut n = 0usize;
-    let mut i = 0usize;
-    while i < bytes.len() {
-        if bytes[i] == RA_DQ_BYTE {
-            // Walk BACK over the run of backslashes immediately before this
-            // quote. An odd run escapes it (`\"`); an even run means the last
-            // backslash was itself escaped (`\\"`) and the quote is a delimiter.
-            let mut backslashes = 0usize;
-            let mut j = i;
-            while j > 0 && bytes[j - 1] == b'\\' {
-                backslashes += 1;
-                j -= 1;
-            }
-            if backslashes.is_multiple_of(2) {
-                n += 1;
-            }
-        }
-        i += 1;
-    }
-    n
-}
-
-/// The EA-RA normal form: comments out, string-literal payloads out (quotes
-/// kept), then ALL whitespace removed. Applied to production source it equals
-/// `squash_ws(&stripped_pvp_for_scan())`; applied to an expected snippet it
-/// produces the needle that snippet must become in the real file.
-fn ra_squash(src: &str) -> String {
-    squash_ws(&strip_rust_strings(&strip_rust_comments(src)))
-}
-
-/// Comments out, STRINGS DELIBERATELY LEFT INTACT, whitespace squashed.
-///
-/// Two uses, both of which need string payloads to survive:
-/// (a) BAN clauses (`has_jwt`, `ctx.db.account(`) — over-inclusive is the
-///     correct posture for a ban, and it makes the ban immune to a
-///     string-stripper desync that would otherwise blank real code and turn the
-///     ban silently green (the 13r-c / ADR-0181 false-GREEN class);
-/// (b) the log-TAG cross-pin, whose whole point is to read the literal.
-fn ra_squash_comments_only(src: &str) -> String {
-    squash_ws(&strip_rust_comments(src))
-}
-
-/// The planned Guard 3a source text (ADR-0189), rustfmt-canonical.
-///
-/// `third_arg` is the opponent-leg predicate call (`target` in `challenge_pvp`,
-/// `challenge.challenger` in `accept_challenge`); `log_tag` is the reducer name
-/// handed to `log_reject`; `trailing_comma` selects the rustfmt-split closing
-/// form.
-///
-/// This text IS the contract: argument identity and order, the
-/// `ranked_enforcement_active()` first argument (not a `true` or `false`
-/// literal), the fully-qualified `crate::accounts::` path (no local module
-/// shim), the `if let Err(reason)` consumption of the `Result` (no `let _ =`
-/// discard), and the `return Err(e)` reject.
-fn ra_guard_src(third_arg: &str, log_tag: &str, trailing_comma: bool) -> String {
-    let comma = if trailing_comma { "," } else { "" };
-    format!(
-        concat!(
-            "    if let Err(reason) = ranked_account",
-            "_gate(\n",
-            "        ranked_enforcement",
-            "_active(),\n",
-            "        crate::accounts::is_account",
-            "_holder(ctx, me),\n",
-            "        {}{}\n",
-            "    ) {{\n",
-            "        let e = reason.to_string();\n",
-            "        log_reject(\"{}\", me, &e);\n",
-            "        return Err(e);\n",
-            "    }}\n"
-        ),
-        third_arg, comma, log_tag
-    )
-}
-
-/// The Guard 3a needle in the STRING-STRIPPED normal form. The log tag's own
-/// text is BLANKED here (the pipeline keeps the quotes and drops the payload),
-/// so this needle does NOT constrain the tag — `ra_guard_needle_tagged` below
-/// is what pins it.
-fn ra_guard_needle(third_arg: &str, log_tag: &str, trailing_comma: bool) -> String {
-    ra_squash(&ra_guard_src(third_arg, log_tag, trailing_comma))
-}
-
-/// The Guard 3a needle with the log tag's literal INTACT (comments-only
-/// pipeline). Counted file-wide, this is what kills the wrong-log-tag mutant:
-/// `challenge_pvp`'s guard filing its reject under the `accept_challenge` tag
-/// (or vice versa) makes BOTH tagged counts 0 while every string-stripped pin
-/// stays green. The reject log is the only record an operator has of which
-/// reducer refused a ranked handshake.
-fn ra_guard_needle_tagged(third_arg: &str, log_tag: &str, trailing_comma: bool) -> String {
-    ra_squash_comments_only(&ra_guard_src(third_arg, log_tag, trailing_comma))
-}
-
-/// Shared body of EA-RA-02 / EA-RA-03. Every failure path panics LOUDLY with a
-/// named message — a pin that silently skips when its anchor moves is worth
-/// nothing.
-///
-/// `oracle_anchor` is `Some(..)` only for `challenge_pvp` (ADR-0189 D8): the
-/// gate must sit AFTER the target-joined-and-online guard, so account existence
-/// is never disclosed for an arbitrary 32-byte identity.
-fn ra_assert_guard_pinned(
-    ea: &str,
-    fn_name: &str,
-    third_arg: &str,
-    log_tag: &str,
-    effect_anchor: &str,
-    oracle_anchor: Option<&str>,
-) {
-    let stripped = stripped_pvp_for_scan();
-    let body = extract_pvp_fn_body(&stripped, fn_name).unwrap_or_else(|| {
-        panic!(
-            "{ea} FAIL (ADR-0189): could not extract the brace-bounded body of `{fn_name}` \
-             from pvp.rs. The ranked-requires-account statement pin cannot fire, so it must \
-             fail LOUD rather than pass vacuously — if the reducer was renamed or removed, \
-             re-derive this pin DELIBERATELY from ADR-0189, never by relaxing it."
-        )
-    });
-    let squashed = squash_ws(body);
-
-    // (a) `me` PROVENANCE (red-team F2; the 12r-d E3 shadow-rebind precedent at
-    // pvp_tests.rs:3852). The pin below reads `is_account_holder(ctx, me)`, so a
-    // second `let me = target;` re-points the caller leg at the opponent while
-    // every needle in this test stays byte-identical.
-    let let_me = concat!("letme", "=");
-    let let_me_sender = concat!("letme=", "ctx.sender();");
-    let n_let_me = squashed.matches(let_me).count();
-    assert_eq!(
-        n_let_me, 1,
-        "{ea} FAIL (ADR-0189): `{fn_name}` binds `me` {n_let_me} time(s); it must bind it \
-         EXACTLY ONCE. A second binding (`let me = target;`) re-points the caller leg of \
-         the account gate at the opponent — the exact-statement pin below is byte-identical \
-         either way, so this count is the only thing that can see it."
-    );
-    assert!(
-        squashed.contains(let_me_sender),
-        "{ea} FAIL (ADR-0189): `{fn_name}` must bind `let me = ctx.sender();`. The caller leg \
-         of the account gate is only meaningful if `me` is the reducer's actual sender."
-    );
-
-    // (b) No conditional compilation inside the reducer body (red-team F3).
-    // Per-BODY on purpose: pvp.rs legitimately carries `#[cfg(test)] mod
-    // pvp_tests;` at file scope, so a file-wide ban would false-RED on arrival.
-    let cfg_attr = concat!("#[", "cfg");
-    assert!(
-        !squashed.contains(cfg_attr),
-        "{ea} FAIL (ADR-0189): `{fn_name}`'s body carries a `{cfg_attr}` attribute. A \
-         `#[cfg(..)]` on (or around) the account gate keeps the exact statement text in the \
-         file and in every source scan while compiling it OUT of the shipped wasm — the \
-         gate would be present in review and absent in production."
-    );
-
-    // (c) The local stripper is DOUBLE-QUOTE-only: it has no char-literal lexer,
-    // so a brace CHAR literal in the body survives into the squashed text and
-    // desyncs the depth fence below by one — which is exactly enough to make a
-    // nested (never-executed) gate report depth 0. Ban them rather than pretend
-    // the fence is sound in their presence (red-team F5).
-    let brace_open_char = concat!("'", "{", "'");
-    let brace_close_char = concat!("'", "}", "'");
-    assert!(
-        !squashed.contains(brace_open_char) && !squashed.contains(brace_close_char),
-        "{ea} FAIL (ADR-0189): `{fn_name}`'s body contains a brace CHAR literal. \
-         `strip_rust_strings` handles double-quoted literals only, so that brace survives \
-         into the squashed text and shifts the brace-depth fence below by one, blinding it \
-         to a nested gate. Move the char literal out of this reducer (or teach the local \
-         stripper about char literals) rather than deleting this assertion."
-    );
-
-    // (d) EXACT statement pin, count == 1. Two closing forms are accepted: `)`
-    // (single-line call) and `,)` (rustfmt splits a >100-column call one
-    // argument per line and adds a trailing comma, which squashes to `,)`) —
-    // the EA-CHR-01 tolerance precedent. Exactly ONE of them may match, once.
-    let needle_plain = ra_guard_needle(third_arg, log_tag, false);
-    let needle_trailing = ra_guard_needle(third_arg, log_tag, true);
-    let n_plain = squashed.matches(needle_plain.as_str()).count();
-    let n_trailing = squashed.matches(needle_trailing.as_str()).count();
-    let dump: String = squashed.chars().take(600).collect();
-    assert_eq!(
-        n_plain + n_trailing,
-        1,
-        "{ea} FAIL (ADR-0189 D1/D2/D5): `{fn_name}` must contain the ranked-account Guard 3a \
-         statement EXACTLY ONCE. Found {n_plain} single-line-form and {n_trailing} \
-         trailing-comma-form match(es) of the squashed pin. This is an exact-equality pin \
-         because it is the contract: it simultaneously kills (i) a missing gate, (ii) \
-         `let _ = ranked_account_gate(..)` and `if ranked_account_gate(..).is_ok()`-style \
-         discards that never return `Err`, (iii) a hard-coded `true`/`false` first argument \
-         in place of `ranked_enforcement_active()`, (iv) a `true` literal substituted for \
-         either `is_account_holder` leg, (v) swapped caller/opponent arguments, (vi) a \
-         `use crate::accounts;` shim redirecting the predicate — the path must be spelled \
-         `crate::accounts::is_account_holder` — and (vii) a guard that logs the reason but \
-         forgets to `return Err(e)`, admitting the guest anyway. A count of 2 is the \
-         duplicated-guard shape, which the ==1 half rejects. Expected (squashed, \
-         trailing-comma form): {needle_trailing:?}. Body began: {dump:?}"
-    );
-
-    let pin_pos = squashed
-        .find(needle_plain.as_str())
-        .or_else(|| squashed.find(needle_trailing.as_str()))
-        .unwrap_or_else(|| panic!("{ea}: statement pin counted 1 but could not be located"));
-
-    // (e) Brace-depth-0 fence: the guard must be a TOP-LEVEL statement of the
-    // reducer body, not nested inside some other block.
-    let opens = squashed[..pin_pos].matches('{').count();
-    let closes = squashed[..pin_pos].matches('}').count();
-    assert_eq!(
-        opens,
-        closes,
-        "{ea} FAIL (ADR-0189): the Guard 3a statement in `{fn_name}` sits at brace depth \
-         {} (from the reducer body's own top level), not 0. KILLS the unreachable-if \
-         mutant — wrapping the gate in `if false {{ .. }}`, in an `if cfg!(test)`, or in \
-         any other conditional block leaves the exact statement text in the file while \
-         never executing it. The gate must be an unconditional top-level statement of \
-         the reducer.",
-        opens as i64 - closes as i64
-    );
-
-    // (f) Ordering: the decision must precede the irreversible effect.
-    let effect_pos = squashed.find(effect_anchor).unwrap_or_else(|| {
-        panic!(
-            "{ea} FAIL (ADR-0189): the irreversible-effect anchor `{effect_anchor}` was not \
-             found in `{fn_name}` — the ordering pin cannot fire. Fail LOUD: without the \
-             anchor a moved gate would be invisible to this test."
-        )
-    });
-    assert!(
-        pin_pos < effect_pos,
-        "{ea} FAIL (ADR-0189, decision-before-irreversible): the Guard 3a statement in \
-         `{fn_name}` is at squashed offset {pin_pos}, AFTER `{effect_anchor}` at offset \
-         {effect_pos}. A gate that runs after the effect has already been committed does \
-         not gate anything — the challenge row (or the ranked `battle` row) already exists \
-         when the reject is returned."
-    );
-
-    // (g) Oracle bound (ADR-0189 D8, reviewer M1) — `challenge_pvp` only.
-    if let Some(anchor) = oracle_anchor {
-        let anchor_pos = squashed.find(anchor).unwrap_or_else(|| {
-            panic!(
-                "{ea} FAIL (ADR-0189 D8): the target-presence anchor `{anchor}` was not \
-                 found in `{fn_name}`, so the oracle-placement bound cannot fire. Fail \
-                 LOUD: the whole point of the bound is that the account probe never runs \
-                 before the caller has established the target is a joined, online player."
-            )
-        });
-        assert!(
-            pin_pos > anchor_pos,
-            "{ea} FAIL (ADR-0189 D8, account-existence oracle): the Guard 3a statement in \
-             `{fn_name}` is at squashed offset {pin_pos}, BEFORE the target-presence guard \
-             `{anchor}` at offset {anchor_pos}. Hoisting the account probe above that guard \
-             turns `challenge_pvp` into an enumeration oracle over ARBITRARY 32-byte \
-             identities: the caller learns `this identity holds an account` for players \
-             they cannot otherwise observe — the exact hole ADR-0179 G1/D3 exists to \
-             prevent. The residual disclosure is bounded to online, joined players ON \
-             PURPOSE; do not relax this by moving the gate earlier."
-        );
-    }
-
-    // (h) Log-tag provenance (reviewer m1). Counted file-wide on the
-    // comments-only pipeline, where the tag literal SURVIVES: a guard that files
-    // its reject under the other reducer's tag keeps every string-stripped pin
-    // above green and drives both tagged counts to 0.
-    let tagged_file = ra_squash_comments_only(PVP_RS);
-    let tagged_plain = ra_guard_needle_tagged(third_arg, log_tag, false);
-    let tagged_trailing = ra_guard_needle_tagged(third_arg, log_tag, true);
-    let n_tagged = tagged_file.matches(tagged_plain.as_str()).count()
-        + tagged_file.matches(tagged_trailing.as_str()).count();
-    assert_eq!(
-        n_tagged, 1,
-        "{ea} FAIL (ADR-0189): pvp.rs must contain EXACTLY ONE Guard 3a statement whose \
-         `log_reject` tag is `{log_tag}` and whose opponent leg is `{third_arg}` (found \
-         {n_tagged}). This pin is evaluated with string literals INTACT, so it is the only \
-         one that can see the tag: a guard that rejects correctly but files the reject \
-         under the OTHER reducer's name points the operator's only record of a refused \
-         ranked handshake at the wrong reducer."
-    );
-}
-
-// ---------------------------------------------------------------------------
-// EA-RA-02: challenge_pvp carries the exact Guard 3a statement, depth 0,
-//           before the challenge insert.
-//
-// Placement (ADR-0189 D8): AFTER guard 3 (target joined + online) so account
-// existence is only ever disclosed for a target the caller can already observe
-// online — never for arbitrary 32-byte identities (ADR-0179 G1 enumeration
-// oracle). That bound is ENFORCED here by the `oracle_anchor` argument
-// (`match &target_player {`), not merely documented (reviewer M1).
-//
-// TEETH: mutation-register rows 1 (delete the challenge gate), 3 (move it after
-//        the insert), 4 (`gate(false, ..)`), 5 (me-leg -> `true` literal); plus
-//        the red-team additions carried by the shared helper — `me` rebind (F2),
-//        `#[cfg]`-gated guard (F3), brace-char-literal fence desync (F5),
-//        log-tag swap (reviewer m1) and gate-above-guard-3 (M1).
-// RED now: the statement does not exist in pvp.rs -> count 0 != 1.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn ea_ra_02_challenge_pvp_ranked_account_guard_pinned() {
-    ra_assert_guard_pinned(
-        "EA-RA-02",
-        "challenge_pvp",
-        concat!("crate::accounts::is_account", "_holder(ctx, target)"),
-        "challenge_pvp",
-        concat!("battle_challenge()", ".insert("),
-        Some(concat!("match&", "target_player{")),
-    );
-}
-
-// ---------------------------------------------------------------------------
-// EA-RA-03: accept_challenge carries the exact Guard 3a statement (challenger
-//           leg), depth 0, before `start_pvp_battle(`.
-//
-// The accept-time re-check is load-bearing, not redundant (ADR-0189 D3): it
-// covers `Pending` rows created BEFORE activation and any future revocation
-// path. `start_pvp_battle` is the ranked-battle constructor and the invariant is
-// anchored there — no ranked battle exists unless both parties held accounts at
-// construction time.
-//
-// No oracle anchor (ADR-0189 D8): `accept_challenge`'s challenger is a joined
-// player BY CONSTRUCTION (the row could not exist otherwise), so there is no
-// arbitrary-identity probe to bound — hence `None`, not a weaker anchor.
-//
-// TEETH: mutation-register rows 2 (delete the accept gate) and 3 (ordering),
-//        plus every red-team addition carried by the shared helper.
-// RED now: the statement does not exist in pvp.rs -> count 0 != 1.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn ea_ra_03_accept_challenge_ranked_account_guard_pinned() {
-    ra_assert_guard_pinned(
-        "EA-RA-03",
-        "accept_challenge",
-        concat!(
-            "crate::accounts::is_account",
-            "_holder(ctx, challenge.challenger)"
-        ),
-        "accept_challenge",
-        concat!("start_pvp", "_battle("),
-        None,
-    );
-}
-
-// ---------------------------------------------------------------------------
-// EA-RA-04: file-wide counts on the squashed, stripped pvp.rs.
-//
-//   has_jwt                              == 0  (D2: NEVER the predicate)
-//   ctx.db.account(                      == 0  (D2: no inline re-derivation)
-//   crate::accounts::is_account_holder(  == 4  (2 legs x 2 reducers, qualified)
-//   start_pvp_battle(                    == 2  (definition + its ONE caller)
-//   .battle().insert(                    == 1  (the single ranked-battle ctor)
-//
-// The last two are the CTOR-COVER pin (ADR-0189 D1): gating the two handshake
-// reducers is the complete cover for ranked-battle creation only while
-// `start_pvp_battle` has exactly one caller and exactly one battle insert
-// exists in this file. A future `quick_match` reducer that calls
-// `start_pvp_battle` would create ungated ranked battles — and reds here.
-//
-// TEETH: mutation-register rows 5 (a `true` literal replaces a leg -> the
-//        holder count drops to 3) and 11 (a second ranked constructor).
-// RED now: `crate::accounts::is_account_holder(` occurs 0 times in pvp.rs.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn ea_ra_04_ranked_gate_ssot_and_constructor_cover_counts() {
-    let squashed = ra_squash(PVP_RS);
-
-    let jwt_needle = concat!("has", "_jwt");
-    assert_eq!(
-        squashed.matches(jwt_needle).count(),
-        0,
-        "EA-RA-04 FAIL (ADR-0189 D2): pvp.rs references `{jwt_needle}`. It is true for EVERY \
-         connection (the SpacetimeDB host mints its own identity JWT for a tokenless \
-         connect), so a gate keyed off it is VACUOUS — every guest passes. The SSOT \
-         predicate is `crate::accounts::is_account_holder`, which asks whether an `account` \
-         row exists."
-    );
-
-    let account_table_needle = concat!("ctx.db.", "account(");
-    assert_eq!(
-        squashed.matches(account_table_needle).count(),
-        0,
-        "EA-RA-04 FAIL (ADR-0189 D2): pvp.rs touches the `account` table directly \
-         (`{account_table_needle}`). Re-deriving account-holding here forks the SSOT — the \
-         predicate lives in accounts.rs and every call site must go through it, so a future \
-         change to what 'holds an account' means (status, expiry) cannot silently miss the \
-         ranked gate."
-    );
-
-    let holder_needle = concat!("crate::accounts::is_account", "_holder(");
-    assert_eq!(
-        squashed.matches(holder_needle).count(),
-        4,
-        "EA-RA-04 FAIL (ADR-0189 D1/D2): expected EXACTLY 4 fully-qualified \
-         `{holder_needle}` calls in pvp.rs — the caller and opponent legs of BOTH handshake \
-         reducers. A count of 3 is a leg replaced by a literal or a leg deleted; a count of \
-         2 is a whole reducer left ungated; 0 is the un-implemented tree. The path is \
-         fully qualified on purpose: a `use crate::accounts;`-style local shim could \
-         otherwise redirect the predicate without touching any call site."
-    );
-
-    let ctor_needle = concat!("start_pvp", "_battle(");
-    assert_eq!(
-        squashed.matches(ctor_needle).count(),
-        2,
-        "EA-RA-04 FAIL (ADR-0189 D1, ctor-cover): expected EXACTLY 2 occurrences of \
-         `{ctor_needle}` in pvp.rs — the definition plus its ONE caller (`accept_challenge`). \
-         A third occurrence means a SECOND path constructs a ranked human-vs-human battle, \
-         and gating the two handshake reducers is then no longer the complete cover this \
-         slice claims. Gate the new path (and update ADR-0189 D1) rather than raising this \
-         number."
-    );
-
-    // Bare-token count (red-team F4): the paren-form count above is blind to
-    // `let ctor = start_pvp_battle;` followed by `ctor(ctx, ..)` — a function
-    // POINTER alias that constructs ranked battles from an ungated reducer while
-    // `start_pvp_battle(` stays at 2. The bare token catches the alias binding.
-    let ctor_bare = concat!("start_pvp", "_battle");
-    assert_eq!(
-        squashed.matches(ctor_bare).count(),
-        2,
-        "EA-RA-04 FAIL (ADR-0189 D1, ctor-cover): expected EXACTLY 2 bare `{ctor_bare}` \
-         tokens in pvp.rs. The paren-form count above cannot see a function-pointer alias \
-         (`let ctor = start_pvp_battle;` then `ctor(ctx, ..)`), which builds ranked battles \
-         from a reducer that never ran the account gate while leaving every paren count \
-         untouched. Both counts must be exactly 2."
-    );
-
-    let insert_needle = concat!(".battle()", ".insert(");
-    assert_eq!(
-        squashed.matches(insert_needle).count(),
-        1,
-        "EA-RA-04 FAIL (ADR-0189 D1, ctor-cover): expected EXACTLY 1 `{insert_needle}` in \
-         pvp.rs — the single ranked-battle row construction inside `start_pvp_battle`. A \
-         second insert bypasses the funnel the account gate protects."
-    );
-
-    // BAN RECOUNT on the comments-only pipeline (red-team F6). Everything above
-    // is measured on STRING-STRIPPED text; if `strip_rust_strings` ever desyncs
-    // (an unbalanced quote inverts its polarity and blanks real code), the two
-    // ban clauses go silently GREEN — a desync is invisible to exactly the
-    // clauses it blinds. Re-counting them with strings INTACT is over-inclusive,
-    // which is the correct posture for a ban and immune to that failure mode.
-    let comments_only = ra_squash_comments_only(PVP_RS);
-    assert_eq!(
-        comments_only.matches(jwt_needle).count(),
-        0,
-        "EA-RA-04 FAIL (ADR-0189 D2, desync-proof recount): `{jwt_needle}` appears in pvp.rs \
-         when string literals are left INTACT. Either the gate reaches for the vacuous \
-         `has_jwt()` predicate, or it hides the token in a literal. Both are rejected."
-    );
-    assert_eq!(
-        comments_only.matches(account_table_needle).count(),
-        0,
-        "EA-RA-04 FAIL (ADR-0189 D2, desync-proof recount): `{account_table_needle}` appears \
-         in pvp.rs when string literals are left INTACT — the SSOT fork this ban exists to \
-         prevent, or a literal hiding it from the string-stripped scan."
-    );
-
-    // Quote-parity canary (red-team F6). Every well-formed literal contributes
-    // exactly TWO delimiter quotes, so the comment-stripped source must carry an
-    // EVEN number of them. An odd count means the text handed to
-    // `strip_rust_strings` no longer has balanced delimiters, and from the
-    // orphan quote onward that walker treats real code as string data and blanks
-    // it — every ban clause above then reports PASS because it went BLIND.
-    //
-    // The two shapes this actually catches (NOT a missing escape handler —
-    // `strip_rust_strings` is escape-aware at :2065-2068, and this count is too):
-    //   1. a genuinely unterminated literal, or a raw string (`r#"…"#`) that
-    //      neither this stripper nor this counter understands;
-    //   2. a `//` INSIDE a literal — `strip_rust_comments` runs FIRST and is
-    //      string-unaware, so it truncates that line and eats the closing quote.
-    //      This is the 13r-c / ADR-0181 false-GREEN shape (an issuer URL is the
-    //      canonical trigger), and it is why no URL literal may be written
-    //      un-split in pvp.rs.
-    let quote_count = ra_delimiter_quote_count(&strip_rust_comments(PVP_RS));
-    assert_eq!(
-        quote_count % 2,
-        0,
-        "EA-RA-04 FAIL (stripper desync canary): the comment-stripped pvp.rs carries \
-         {quote_count} DELIMITER double quotes (escaped `\\\"` excluded) — an ODD number, so \
-         the delimiters are unbalanced. `strip_rust_strings` is a whole-text quote-toggle \
-         walk with no line boundary: from the orphan quote onward it treats real code as \
-         string data and blanks it, and every ban clause in this file then reports PASS \
-         because it went BLIND. Look for (a) an unterminated or raw (`r#\"…\"#`) literal, or \
-         (b) a `//` INSIDE a literal — `strip_rust_comments` runs first and is \
-         string-unaware, so it truncates the line and eats the closing quote (the ADR-0181 \
-         false-GREEN shape; split any URL with `concat!`). Fix that before trusting any \
-         other EA-RA result."
-    );
-}
-
-// ---------------------------------------------------------------------------
-// EA-RA-04 (b): the gate's symbols are UNIQUE and UNSHADOWED (red-team F2/F8).
-//
-// Both this file's `extract_pvp_fn_body` and the eval's `extractReducerBody`
-// are FIRST-MATCH extractors. A decoy `pub fn challenge_pvp(` in a nested
-// module would be extracted instead of the real reducer, and every body-scoped
-// pin above would be evaluated against the decoy while the real reducer runs
-// ungated. Likewise a nested `fn ranked_account_gate` inside a reducer, or a
-// closure binding `let ranked_enforcement_active = || false;`, shadows the real
-// item at the call site without touching a single needle.
-//
-// The `name=` bans are the discriminator for the closure shape: every LEGITIMATE
-// use of these two names is a call, so the next character is always `(`, never
-// `=`. (`if let Err(reason) = ranked_account_gate(` puts the `=` BEFORE the
-// name, so it does not trip the ban.)
-//
-// RED now: all four uniqueness counts are 0 (the items do not exist yet).
-// ---------------------------------------------------------------------------
-
-#[test]
-fn ea_ra_04b_ranked_gate_symbols_unique_and_unshadowed() {
-    let squashed = ra_squash(PVP_RS);
-
-    let uniques: &[(&str, &str)] = &[
-        (
-            concat!("fnranked_account", "_gate("),
-            "the pure decision seam",
-        ),
-        (
-            concat!("fnranked_enforcement", "_active("),
-            "the activation predicate",
-        ),
-        (
-            concat!("pubfnchallenge", "_pvp("),
-            "the challenge handshake reducer",
-        ),
-        (
-            concat!("pubfnaccept", "_challenge("),
-            "the accept handshake reducer",
-        ),
-    ];
-    for (needle, what) in uniques {
-        let n = squashed.matches(needle).count();
-        assert_eq!(
-            n, 1,
-            "EA-RA-04b FAIL (ADR-0189): pvp.rs must declare `{needle}` (squashed) EXACTLY \
-             ONCE — it is {what}. Found {n}. A count of 0 means the item is missing; a \
-             count of 2+ means a SHADOW: the first-match body extractors used by every \
-             structural pin in this file (and by criterion D in \
-             evals/ranking-security.eval.mjs) would then verify the decoy while the real \
-             one runs unchecked."
-        );
-    }
-
-    let shadow_bans: &[&str] = &[
-        concat!("ranked_account", "_gate="),
-        concat!("ranked_enforcement", "_active="),
-    ];
-    for needle in shadow_bans {
-        let n = squashed.matches(needle).count();
-        assert_eq!(
-            n, 0,
-            "EA-RA-04b FAIL (ADR-0189): pvp.rs binds `{needle}` (squashed) {n} time(s); it \
-             must never appear. Every legitimate use of these names is a CALL, so the next \
-             character is `(` — a `=` means the name was rebound, e.g. \
-             `let ranked_enforcement_active = || false;`, which shadows the real predicate \
-             at the call site and wires enforcement permanently OFF while every needle in \
-             this file still matches."
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
-// EA-RA-06 (c): `ranked_enforcement_active` body pin (structural half).
-//
-// Required squashed body, exactly once:
-//   fnranked_enforcement_active()->bool{issuers_configured(crate::accounts::ALLOWED_ISSUERS)}
-//
-// TEETH: mutation-register row 8 — `{ let _ = issuers_configured(..); false }`
-//        keeps the call (so any "is it referenced?" check stays green) while
-//        hard-wiring enforcement OFF forever. The exact body pin kills it. It
-//        also kills a body that reads a DIFFERENT allowlist than accounts.rs's,
-//        which would decouple activation from the real issuer configuration.
-// RED now: the function does not exist -> count 0 != 1.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn ea_ra_06c_ranked_enforcement_active_body_pinned() {
-    let squashed = ra_squash(PVP_RS);
-    let body_needle = concat!(
-        "fnranked_enforcement",
-        "_active()->bool{issuers_configured(crate::accounts::ALLOWED_ISSUERS)}"
-    );
-    assert_eq!(
-        squashed.matches(body_needle).count(),
-        1,
-        "EA-RA-06c FAIL (ADR-0189 D6): pvp.rs must define `ranked_enforcement_active` with \
-         EXACTLY the body `issuers_configured(crate::accounts::ALLOWED_ISSUERS)` (squashed \
-         pin, found {} time(s)). The value-exact pin kills the discard mutant \
-         `{{ let _ = issuers_configured(crate::accounts::ALLOWED_ISSUERS); false }}`, which \
-         keeps every reference alive while wiring enforcement permanently OFF, and it ties \
-         activation to accounts.rs's REAL allowlist so the gate flips on the day OQ1 lands \
-         a provider — not on a separate, forgettable switch.",
-        squashed.matches(body_needle).count()
-    );
-}
-
-// ===========================================================================
-// EA-RA COMPILE-DEPENDENT GROUP — EA-RA-01 / 05 / 06a / 06b
-//
-// Everything below this banner names items that live in pvp.rs and do not
-// exist yet: `ranked_account_gate`, `ranked_enforcement_active`,
-// `issuers_configured`, `ERR_RANKED_REQUIRES_ACCOUNT`,
-// `ERR_RANKED_OPPONENT_NEEDS_ACCOUNT`. Until the implementer lands them,
-// `cargo test -p server-module` fails to BUILD — that build failure is this
-// half's RED, and it is deliberately localised to one contiguous block at the
-// end of the file so the structural asserts above stay reviewable.
-//
-// `pvp_tests` is `#[cfg(test)] #[path = "pvp_tests.rs"] mod pvp_tests;` inside
-// pvp.rs, so `super::` reaches pvp.rs's PRIVATE items — no `pub(crate)` is
-// needed and none should be added to widen this test's reach.
-// ===========================================================================
+//! The pure ranked-gate predicates are tested directly (EA-RA-01/06a/06b); every
+//! reducer, reaper and settlement path runs SHIPPED under the in-memory native
+//! host (`native_host_tests`) in the suite at the bottom of this file.
+//! battle_action and the schedule tables being private is the generated-bindings
+//! surface (evals/client-surface-privacy.eval.mjs).
 
 // ---------------------------------------------------------------------------
 // EA-RA-01: the full 8-row truth table of `ranked_account_gate`.
@@ -4653,9 +22,7 @@ fn ea_ra_06c_ranked_enforcement_active_body_pinned() {
 //        reason arms).
 //        NOT row 10 (reword a const): this test binds BOTH sides of every
 //        comparison to the same consts, so it is deliberately value-AGNOSTIC —
-//        a reworded reason still satisfies it. EA-RA-05 is the SOLE killer of
-//        row 10, which is exactly why EA-RA-05 pins the literal values.
-// RED now: compile error — `ranked_account_gate` does not exist.
+//        a reworded reason still satisfies it.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -4750,45 +117,6 @@ fn ea_ra_01_ranked_account_gate_truth_table() {
 }
 
 // ---------------------------------------------------------------------------
-// EA-RA-05: the two reject reasons are a CLIENT CONTRACT (ADR-0189 D5).
-//
-// Two distinct `&'static str`s, not one merged reason: the parked EARS-3
-// affordance keys a sign-in CTA off the caller-side string, and the truth table
-// above distinguishes its rows only by these values. Rewording either one is a
-// deliberate cross-slice edit (EA-RA-05 + criterion D + the client slice).
-//
-// TEETH: mutation-register row 10 (reword a const).
-// RED now: compile error — the consts do not exist.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn ea_ra_05_ranked_reject_reason_values_pinned() {
-    assert_eq!(
-        super::ERR_RANKED_REQUIRES_ACCOUNT,
-        concat!("ranked play requires ", "an account"),
-        "EA-RA-05 FAIL (ADR-0189 D5): the CALLER-leg ranked reject reason changed. This \
-         value is a client contract — the parked EARS-3 affordance matches it to decide \
-         whether to show the caller a sign-in prompt. Reword it only together with \
-         criterion D in evals/ranking-security.eval.mjs and the client slice."
-    );
-    assert_eq!(
-        super::ERR_RANKED_OPPONENT_NEEDS_ACCOUNT,
-        concat!("opponent must have an account ", "for ranked play"),
-        "EA-RA-05 FAIL (ADR-0189 D5): the OPPONENT-leg ranked reject reason changed. It \
-         must stay distinct from the caller-leg reason: a merged string would show the \
-         caller a sign-in prompt when the OPPONENT is the guest."
-    );
-    assert_ne!(
-        super::ERR_RANKED_REQUIRES_ACCOUNT,
-        super::ERR_RANKED_OPPONENT_NEEDS_ACCOUNT,
-        "EA-RA-05 FAIL (ADR-0189 D5): the two ranked reject reasons are IDENTICAL. The \
-         distinction is load-bearing twice over — it is what lets EA-RA-01 detect an \
-         argument swap, and what lets the client tell 'you need an account' from 'they \
-         need an account'."
-    );
-}
-
-// ---------------------------------------------------------------------------
 // EA-RA-06 (a): the inert-until-activation CANARY.
 //
 // `ALLOWED_ISSUERS` is the fail-closed RFC-2606 `.invalid` placeholder under
@@ -4802,7 +130,6 @@ fn ea_ra_05_ranked_reject_reason_values_pinned() {
 //        `!issuers.is_empty()` activates enforcement on TODAY's placeholder
 //        allowlist, which would disable PvP everywhere and red three CI
 //        merge-gate e2e specs. This canary catches it in-crate first.
-// RED now: compile error — `ranked_enforcement_active` does not exist.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -4849,7 +176,6 @@ fn ea_ra_06a_ranked_enforcement_inert_until_activation_canary() {
 // TEETH: a substring sniff (`contains(".invalid")`) fails the last row; an
 //        ALL-semantics predicate fails the mixed row; `!issuers.is_empty()`
 //        fails the first row (and row 9 of the mutation register).
-// RED now: compile error — `issuers_configured` does not exist.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -4896,965 +222,1584 @@ fn ea_ra_06b_issuers_configured_matrix() {
 }
 
 // ===========================================================================
-// m22-s5 (PRV1-9, spec para 4.7, ADR-0225) — `challenge_pvp` and
-// `accept_challenge` carry the deletion gate, reachably, before the
-// irreversible effect.
+// Native-host behavioural suite (debloat Phase 2: EV-pvp-handshake-guards,
+// EV-pvp-challenge-reaper, EV-pvp-deadline-disconnect, ST-pvp_tests#reducer-guards,
+// ST-pvp_tests#settle-rating, EV-ranking-security#rating-integrity).
 //
-// EARS criterion: WHILE the caller's account is inside the para-4.7 deletion
-// gate, WHEN the caller invokes `challenge_pvp` or `accept_challenge`, the
-// reducer SHALL reject the call BEFORE the challenge row is inserted /
-// BEFORE the ranked battle is created.
-//
-// WHY HERE, GIVEN THE CENSUS IN `guards_tests.rs`: that census is body-keyed
-// and count-based. It cannot see REACHABILITY (a gate nested in a never-taken
-// block is still in the body) and it cannot see EACH reducer's own guard
-// order. This block pins both, in this file's own idiom — the
-// `stripped_pvp_for_scan()` / `extract_pvp_fn_body` / `squash_ws` pipeline the
-// EA-CHR and EA-RA pins already use — so it runs in the same `cargo test` as
-// the reducers it protects.
-//
-// PLACEMENT, and why it is NOT arbitrary. Both gates sit AFTER the caller-state
-// guard that establishes who the caller is (guard 1 in `challenge_pvp`, guard 2
-// in `accept_challenge`) and BEFORE every irreversible effect. Ahead of those
-// guards the gate would run for callers the reducer has not yet identified;
-// behind the effect it gates nothing at all.
-//
-// PIPELINE NOTE: string-literal PAYLOADS are blanked by this pipeline, so both
-// call sites read identically here and the reducer-name TAG is NOT constrained
-// by this file. The tag is pinned from `guards_tests.rs`, on the
-// comments-only / strings-INTACT view — the same split
-// `ra_guard_needle` / `ra_guard_needle_tagged` uses for the ADR-0189 gate.
-//
-// RED AT HEAD: neither reducer carries a gate, so both count assertions fire
-// with their named FAIL messages.
+// Every reducer runs through `Fixture::run_as(_at)` with a real sender, against the
+// tables it reads through their real indexes. HOST LIMIT: no transaction rollback,
+// so every refusal is asserted as refusal BEFORE any write (the whole PvP store
+// byte-identical). battle_action / schedule-table privacy is the bindings surface
+// (client-surface-privacy A/B, PvpAction + BattleAction in HIDDEN_TYPES).
 // ===========================================================================
 
-/// A blank string literal as it survives [`strip_rust_strings`] — the opening
-/// and closing quotes are emitted and the payload is swallowed. Built from a
-/// numeric byte so this file adds no bare double-quote CHARACTER to a crate
-/// whose text-level strippers have no char-literal lexer.
-fn m22s5_blank_string_literal() -> String {
-    let q = char::from(0x22u8).to_string();
-    [q.as_str(), q.as_str()].concat()
+use crate::native_host_tests::{fixture as pv_fixture, Fixture as PvFixture, Handle as PvHandle};
+use crate::schema::{
+    Account as PvAccount, Battle as PvBattle, BattleAction as PvAction,
+    BattleChallenge as PvChallenge, ChallengeStatus as PvStatus, Monster as PvMonster,
+    MonsterPub as PvMonsterPub, Player as PvPlayer, Profile as PvProfile,
+};
+use game_core::{BattleOutcome as PvOutcome, PvpAction as PvPick};
+use spacetimedb::{Identity as PvId, ScheduleAt as PvAt, Timestamp as PvTs};
+
+const PV_T0: i64 = 1_750_000_000_000;
+const PV_WILD: PvId = crate::WILD_IDENTITY;
+
+fn pv_a() -> PvId {
+    PvId::from_byte_array([0xA1; 32])
+}
+fn pv_b() -> PvId {
+    PvId::from_byte_array([0xB2; 32])
+}
+fn pv_c() -> PvId {
+    PvId::from_byte_array([0xC3; 32])
+}
+fn pv_d() -> PvId {
+    PvId::from_byte_array([0xD4; 32])
+}
+fn pv_module() -> PvId {
+    PvId::from_byte_array([0xDD; 32])
+}
+fn pv_at(ms: i64) -> PvTs {
+    PvTs::from_micros_since_unix_epoch(ms * 1000)
 }
 
-/// The two accepted spellings of the gate statement in the string-blanked,
-/// whitespace-squashed normal form: the single-line call, and the form rustfmt
-/// produces when it splits the call and adds a trailing comma (the EA-CHR-01
-/// tolerance precedent).
-fn m22s5_gate_statement_forms() -> (String, String) {
-    let blank = m22s5_blank_string_literal();
-    let call = concat!("crate::guards::require_not_", "deleting(");
-    (
-        [call, "ctx,", blank.as_str(), ")?;"].concat(),
-        [call, "ctx,", blank.as_str(), ",)?;"].concat(),
-    )
+fn pv_monster(monster_id: u64, owner: PvId, party_slot: u8) -> PvMonster {
+    PvMonster {
+        monster_id,
+        owner_identity: owner,
+        species_id: 1,
+        nickname: format!("m{monster_id}"),
+        level: 7,
+        xp: 0,
+        iv_hp: 1,
+        iv_attack: 2,
+        iv_defense: 3,
+        iv_speed: 4,
+        iv_sp_attack: 5,
+        iv_sp_defense: 6,
+        nature_kind: game_core::NatureKind::Hardy,
+        ev_hp: 1,
+        ev_attack: 2,
+        ev_defense: 3,
+        ev_speed: 4,
+        ev_sp_attack: 5,
+        ev_sp_defense: 6,
+        stat_hp: 40,
+        stat_attack: 20,
+        stat_defense: 20,
+        stat_speed: 20,
+        stat_sp_attack: 20,
+        stat_sp_defense: 20,
+        current_hp: 33,
+        party_slot,
+        last_care_at_ms: 0,
+        essence_fire: 0,
+        essence_water: 0,
+        essence_plant: 0,
+        essence_electric: 0,
+        essence_earth: 0,
+        essence_wind: 0,
+        essence_light: 0,
+        essence_dark: 0,
+        trust_favorable_count: 0,
+        trust_unfavorable_count: 0,
+        trust_favorable_battle_day_epoch: 0,
+        quality_time_ticks_total: 0,
+        quality_time_accum_ms: 0,
+        quality_time_window_ms: 0,
+        quality_time_window_start_ms: 0,
+        last_essence_train_at_ms: 0,
+    }
 }
 
-/// Shared body of the two pins below. Every failure path panics LOUDLY with a
-/// named message — a pin that silently skips when its anchor moves is worth
-/// nothing (the `ra_assert_guard_pinned` posture, applied to PRV1-9).
-///
-/// `caller_anchor` is the guard that establishes WHO the caller is; the gate
-/// must sit after it. `effect_anchor` is the reducer's irreversible effect; the
-/// gate must sit before it. Both are asserted to occur EXACTLY ONCE, so neither
-/// offset is ambiguous.
-fn m22s5_assert_deletion_gate_pinned(fn_name: &str, caller_anchor: &str, effect_anchor: &str) {
-    let stripped = stripped_pvp_for_scan();
-    let body = extract_pvp_fn_body(&stripped, fn_name).unwrap_or_else(|| {
-        panic!(
-            "m22-s5 PRV1-9 FAIL (extraction): could not extract the brace-bounded body of \
-             `{fn_name}` from pvp.rs, so the deletion-gate pin cannot fire. Fail LOUD \
-             rather than pass vacuously — if the reducer was renamed or removed, re-derive \
-             this pin DELIBERATELY from the spec, never by relaxing it."
+fn pv_mon(hp: u16) -> game_core::BattleMonster {
+    game_core::BattleMonster {
+        species_id: 1,
+        affinity: game_core::Affinity::Fire,
+        level: 7,
+        current_hp: hp,
+        max_hp: 30,
+        stats: game_core::StatBlock {
+            hp: 30,
+            attack: 20,
+            defense: 20,
+            speed: 20,
+            sp_attack: 20,
+            sp_defense: 20,
+        },
+        known_skill_ids: vec![1],
+        status: None,
+    }
+}
+
+/// A battle with the given teams (HP per slot). `party`/`opp` monster ids are
+/// deliberately unseeded, so the HP write-backs skip them (no rows to rewrite).
+fn pv_battle(
+    battle_id: u64,
+    player: PvId,
+    opponent: PvId,
+    outcome: PvOutcome,
+    a_hp: &[u16],
+    b_hp: &[u16],
+) -> PvBattle {
+    PvBattle {
+        battle_id,
+        player_identity: player,
+        opponent_identity: opponent,
+        state: game_core::BattleState {
+            side_a: game_core::BattleSide {
+                active: 0,
+                team: a_hp.iter().map(|&h| pv_mon(h)).collect(),
+            },
+            side_b: game_core::BattleSide {
+                active: 0,
+                team: b_hp.iter().map(|&h| pv_mon(h)).collect(),
+            },
+            outcome,
+            turn_number: 1,
+            weather: None,
+        },
+        party_monster_ids: (0..a_hp.len() as u64).map(|i| 7000 + i).collect(),
+        opponent_monster_ids: (0..b_hp.len() as u64).map(|i| 8000 + i).collect(),
+        created_at_ms: PV_T0,
+    }
+}
+
+fn pv_challenge(id: u64, challenger: PvId, target: PvId, status: PvStatus) -> PvChallenge {
+    PvChallenge {
+        challenge_id: id,
+        challenger,
+        target,
+        challenger_party_ids: vec![11],
+        status,
+        created_at_ms: PV_T0,
+    }
+}
+
+/// Every table the PvP / ranking surface reads or writes, under each index it uses.
+struct PvWorld<'a> {
+    players: PvHandle<'a, PvPlayer>,
+    accounts: PvHandle<'a, PvAccount>,
+    battles: PvHandle<'a, PvBattle, u64>,
+    challenges: PvHandle<'a, PvChallenge, u64>,
+    reapers: PvHandle<'a, super::BattleChallengeReaperSchedule, u64>,
+    deadlines: PvHandle<'a, super::PvpDeadlineSchedule, u64>,
+    actions: PvHandle<'a, PvAction, u64>,
+    monsters: PvHandle<'a, PvMonster, u64>,
+    pubs: PvHandle<'a, PvMonsterPub, u64>,
+    profiles: PvHandle<'a, PvProfile>,
+}
+
+/// `content = true` seeds species 1 (one learnable skill 1) for the accept path. The
+/// settle tests leave it unseeded: a SideAWins write-back then stops at the missing
+/// loser species (log-and-continue) before any XP/currency, so they exercise the
+/// rating funnel without pinning the deferred side-B reward asymmetry (ADR-0109 D10).
+fn pv_world(fx: &PvFixture, content: bool) -> PvWorld<'_> {
+    use crate::schema::{SkillRow, SpeciesRow};
+    let battles = fx
+        .table_keyed::<PvBattle, u64>("battle", "battle_id", |r| r.battle_id)
+        .writable()
+        .unique()
+        .auto_inc(|r| r.battle_id, |r, id| r.battle_id = id);
+    let _ = fx.table::<PvBattle>("battle", "player_identity", |r| r.player_identity);
+    let _ = fx.table::<PvBattle>("battle", "opponent_identity", |r| r.opponent_identity);
+    let challenges = fx
+        .table_keyed::<PvChallenge, u64>("battle_challenge", "challenge_id", |r| r.challenge_id)
+        .writable()
+        .unique()
+        .auto_inc(|r| r.challenge_id, |r, id| r.challenge_id = id);
+    let _ = fx.table::<PvChallenge>("battle_challenge", "challenger", |r| r.challenger);
+    let _ = fx.table::<PvChallenge>("battle_challenge", "target", |r| r.target);
+    let reapers = fx
+        .table_keyed::<super::BattleChallengeReaperSchedule, u64>(
+            "battle_challenge_reaper_schedule",
+            "scheduled_id",
+            |r| r.scheduled_id,
         )
-    });
-    let squashed = squash_ws(body);
-
-    // The local stripper is DOUBLE-QUOTE-only: it has no char-literal lexer, so
-    // a brace CHAR literal in the body survives into the squashed text and
-    // desyncs the depth fence below by one — exactly enough to make a nested,
-    // never-executed gate report depth 0. Ban them rather than pretend the
-    // fence is sound in their presence (the ADR-0189 red-team F5 finding).
-    let brace_open_char = concat!("'", "{", "'");
-    let brace_close_char = concat!("'", "}", "'");
-    assert!(
-        !squashed.contains(brace_open_char) && !squashed.contains(brace_close_char),
-        "m22-s5 PRV1-9 FAIL (substrate): `{fn_name}`'s body contains a brace CHAR literal. \
-         The local string stripper handles double-quoted literals only, so that brace \
-         survives into the squashed text and shifts the brace-depth fence below by one, \
-         blinding it to a nested gate. Move the char literal out of this reducer (or teach \
-         the local stripper about char literals) rather than deleting this assertion."
+        .writable()
+        .unique()
+        .auto_inc(|r| r.scheduled_id, |r, id| r.scheduled_id = id);
+    let _ = fx.table_keyed::<super::BattleChallengeReaperSchedule, u64>(
+        "battle_challenge_reaper_schedule",
+        "challenge_id",
+        |r| r.challenge_id,
     );
-
-    let (plain, trailing) = m22s5_gate_statement_forms();
-    let n = squashed.matches(plain.as_str()).count() + squashed.matches(trailing.as_str()).count();
-    assert_eq!(
-        n, 1,
-        "m22-s5 PRV1-9 FAIL: `{fn_name}` must carry the deletion-gate call EXACTLY ONCE, \
-         with the `?` propagation operator. Found {n}. \
-         RED AT HEAD: the reducer carries no gate, so an account inside the para-4.7 grace \
-         window can still open a fresh PvP commitment — a challenge that locks BOTH \
-         parties out of new challenges (guards 5b/6) or a RANKED battle whose rating the \
-         deletion cascade will have to unwind. \
-         The trailing propagation is part of the pin: a discarded result compiles, calls \
-         the gate, throws the answer away and proceeds, and stays clippy-clean under \
-         -D warnings because `let_underscore_must_use` is off by default. Comments are \
-         stripped before this count, so a commented-out statement reads as absent too. \
-         A count of 2 is the duplicated-guard shape, which the exact-equality half \
-         rejects. Expected (squashed, trailing-comma form): {trailing:?}"
-    );
-
-    let gate_pos = squashed
-        .find(plain.as_str())
-        .or_else(|| squashed.find(trailing.as_str()))
-        .unwrap_or_else(|| {
-            panic!("m22-s5 ({fn_name}): the gate statement counted 1 but could not be located")
+    let deadlines = fx
+        .table_keyed::<super::PvpDeadlineSchedule, u64>(
+            "pvp_deadline_schedule",
+            "scheduled_id",
+            |r| r.scheduled_id,
+        )
+        .writable()
+        .scannable()
+        .unique()
+        .auto_inc(|r| r.scheduled_id, |r, id| r.scheduled_id = id);
+    let actions = fx
+        .table_keyed::<PvAction, u64>("battle_action", "action_id", |r| r.action_id)
+        .writable()
+        .scannable()
+        .unique()
+        .auto_inc(|r| r.action_id, |r, id| r.action_id = id);
+    let _ = fx.table_keyed::<PvAction, u64>("battle_action", "battle_id", |r| r.battle_id);
+    let monsters = fx
+        .table_keyed::<PvMonster, u64>("monster", "monster_id", |r| r.monster_id)
+        .writable()
+        .unique();
+    let pubs = fx
+        .table_keyed::<PvMonsterPub, u64>("monster_pub", "monster_id", |r| r.monster_id)
+        .writable()
+        .unique();
+    let profiles = fx
+        .table::<PvProfile>("profile", "identity", |r| r.identity)
+        .writable()
+        .unique();
+    let _ = fx
+        .table_keyed::<crate::schema::BattleWild, u64>("battle_wild", "battle_id", |r| r.battle_id)
+        .writable()
+        .unique();
+    let _ = fx
+        .table_keyed::<crate::playtest::PlaytestEvent, u64>("playtest_event", "event_id", |r| {
+            r.event_id
+        })
+        .writable()
+        .unique()
+        .auto_inc(|r| r.event_id, |r, id| r.event_id = id);
+    let _ = fx
+        .table_keyed::<crate::schema::TypeRelationRow, u64>("type_relation_row", "id", |r| r.id)
+        .scannable();
+    let _ = fx.table::<crate::schema::TradeOffer>("trade_offer", "initiator", |r| r.initiator);
+    let _ =
+        fx.table::<crate::schema::TradeOffer>("trade_offer", "counterparty", |r| r.counterparty);
+    let species = fx.table_keyed::<SpeciesRow, u32>("species_row", "id", |r| r.id);
+    let skills = fx
+        .table_keyed::<SkillRow, u32>("skill_row", "id", |r| r.id)
+        .scannable();
+    if content {
+        species.seed(&SpeciesRow {
+            id: 1,
+            name: "Pv".to_string(),
+            base_hp: 40,
+            base_attack: 20,
+            base_defense: 20,
+            base_speed: 20,
+            base_sp_attack: 20,
+            base_sp_defense: 20,
+            affinity: game_core::Affinity::Fire,
+            learnable_skill_ids: vec![1],
+            ability: None,
+            tier: 0,
         });
-
-    let opens = squashed[..gate_pos].matches('{').count();
-    let closes = squashed[..gate_pos].matches('}').count();
-    assert_eq!(
-        opens,
-        closes,
-        "m22-s5 PRV1-9 FAIL (reachability): the deletion gate in `{fn_name}` sits at brace \
-         depth {} of the reducer body's own top level, not 0. KILLS the unreachable-if \
-         mutant — wrapping the gate in an always-false block, in a conditional-compilation \
-         test, or in any other block leaves the exact statement text in the file, keeps \
-         the count at 1, keeps it between both anchors, and never executes it. Every \
-         other assertion here is position-based and blind to this. The gate must be an \
-         unconditional top-level statement of the reducer.",
-        opens as i64 - closes as i64
-    );
-
-    let n_caller = squashed.matches(caller_anchor).count();
-    assert_eq!(
-        n_caller, 1,
-        "m22-s5 PRV1-9 FAIL (anchor ambiguity): the caller-state anchor occurs {n_caller} \
-         time(s) in `{fn_name}`; the ordering pin below needs EXACTLY ONE so the offset is \
-         unambiguous. With zero the reducer's guard preamble was restructured and this pin \
-         must be re-derived from the spec; with two it would silently anchor on the first."
-    );
-    let caller_pos = squashed
-        .find(caller_anchor)
-        .expect("m22-s5: caller-state anchor counted 1 but could not be located");
-    assert!(
-        caller_pos < gate_pos,
-        "m22-s5 PRV1-9 FAIL (ordering): the deletion gate in `{fn_name}` is at squashed \
-         offset {gate_pos}, BEFORE the caller-state guard at {caller_pos}. The gate is a \
-         CALLER-state check and belongs after the reducer has established who the caller \
-         is: hoisted above that guard it answers for identities the reducer has not yet \
-         identified, and the guard order stops reading as `who are you, then may you`."
-    );
-
-    let n_effect = squashed.matches(effect_anchor).count();
-    assert_eq!(
-        n_effect, 1,
-        "m22-s5 PRV1-9 FAIL (anti-vacuity): the irreversible-effect anchor occurs \
-         {n_effect} time(s) in `{fn_name}`; it must occur EXACTLY ONCE. With zero the \
-         ordering pin below is trivially true and proves nothing — fail LOUD rather than \
-         accept a vacuous pass. With two the offset is ambiguous and a gate could sit \
-         between them while still reading as `before the effect`."
-    );
-    let effect_pos = squashed
-        .find(effect_anchor)
-        .expect("m22-s5: irreversible-effect anchor counted 1 but could not be located");
-    assert!(
-        gate_pos < effect_pos,
-        "m22-s5 PRV1-9 FAIL (decision before irreversible effect): the deletion gate in \
-         `{fn_name}` is at squashed offset {gate_pos}, AFTER the irreversible effect at \
-         {effect_pos}. A gate that runs once the effect has committed does not gate \
-         anything — the challenge row (or the ranked battle row) already exists when the \
-         reject is returned, and the deletion cascade inherits a commitment it must unwind."
-    );
-}
-
-/// **PRV1-9** — `challenge_pvp` carries the deletion gate.
-///
-/// Anchors: the guard-1 not-joined test (caller state) and the challenge-row
-/// insert (guard 8, the only irreversible effect — the reaper arm at guard 9
-/// depends on its auto-inc id).
-///
-/// TEETH: kills a deleted gate (count), a gate wrapped in a never-taken block
-/// (depth), a gate hoisted above the joined guard (caller ordering), and a
-/// gate moved below the insert (effect ordering) — the last of which is the
-/// live hazard here: a Pending challenge from a deleting account locks BOTH
-/// parties out of new challenges until the TTL reaper fires.
-#[test]
-fn m22s5_challenge_pvp_carries_the_deletion_gate() {
-    m22s5_assert_deletion_gate_pinned(
-        concat!("challenge_", "pvp"),
-        concat!("ctx.db.player().identity().find(me).", "is_none()"),
-        concat!("battle_challenge", "().insert("),
-    );
-}
-
-/// **PRV1-9** — `accept_challenge` carries the deletion gate.
-///
-/// Anchors: the guard-2 target check (caller state — only the challenge target
-/// may accept) and the PvP battle creation (guard 6, the irreversible effect
-/// that is reached ONLY from here).
-///
-/// TEETH: the same four as `challenge_pvp`, over the higher-stakes reducer —
-/// accepting creates a RANKED battle whose rating a later deletion cascade
-/// would have to unwind, and this is the sole call path into the battle
-/// creator.
-#[test]
-fn m22s5_accept_challenge_carries_the_deletion_gate() {
-    m22s5_assert_deletion_gate_pinned(
-        concat!("accept_", "challenge"),
-        concat!("challenge.target", "!=me"),
-        concat!("start_pvp_", "battle("),
-    );
-}
-
-// ===========================================================================
-// m22-s3b (ADR-0228) — THE OTHER HALF OF THE RESOLVER HOP, AND THE TWO
-// DELEGATED PvP SWEEPS.
-//
-// EARS criteria:
-//   PRV1-6a  the disconnect hook and the deletion cascade BOTH reach the four
-//            force-resolve helpers through one shared bundle.
-//   PRV1-6b  `battle_challenge` and `battle_action` (both ERASE) are deleted
-//            for the deleting identity, on BOTH of the challenge table's
-//            identity columns.
-//   PRV1-6d  `battle_challenge_reaper_schedule` and `pvp_deadline_schedule`
-//            (both JOIN-ONLY) are swept at their parent's step.
-//
-// WHY THE FIRST TEST IS TWINNED HERE (ADR-0228 D7(e), RT-9). The on_disconnect
-// link is also pinned in `trading_tests.rs`, because the TR-18 criterion ported
-// out of `evals/trade-reducer-security.eval.mjs` needs a home in the module it
-// protects. Duplicating the link into THIS file is deliberate: a pvp-side
-// regression should red in the pvp file, not only in trading's, and the two
-// copies are cheap.
-//
-// SCAN HYGIENE: every needle is assembled with `concat!`, and this section
-// contains no bare double-quote inside a comment and no block-comment delimiter.
-// ===========================================================================
-
-/// **PRV1-6a (link 1, pvp twin)** — `on_disconnect` calls the extracted resolver
-/// exactly once.
-///
-/// `ea_pvp_05` and `ptc5b_4` above now scan the RESOLVER's body; without this
-/// test both of them would be green against a resolver that is perfectly written
-/// and never called — dead code that reads as a complete fix, with every PvP
-/// forfeit and challenge cancel silently switched off on disconnect.
-///
-/// Kills: an extraction that leaves the resolver uncalled; a second call added
-///        to the same hook (which force-resolves twice, the second pass acting
-///        on rows the first already settled).
-#[test]
-fn m22s3b_on_disconnect_reaches_the_resolver() {
-    // STRING LITERALS BLANKED TOO (r2). `on_disconnect` is a lifecycle reducer
-    // in a file whose other bodies emit hand-built JSON, and the body slice is a
-    // brace walk with no string-literal lexer: one `{` inside a format string
-    // truncates the extracted body at an arbitrary point, which turns this
-    // count-of-one into a count of zero on a perfectly correct file. Blanking
-    // the payloads first removes the whole class.
-    let stripped = strip_rust_strings(&strip_rust_comments(LIB_RS));
-    let resolver = concat!("resolve_all_live", "_interactions");
-    let body = extract_pvp_fn_body(&stripped, concat!("on", "_disconnect")).unwrap_or_else(|| {
-        panic!(
-            "m22-s3b PRV1-6a FAIL (extraction): the brace-bounded body of lib.rs's \
-             `on_disconnect` could not be sliced out, so this link has no scope and would \
-             pass vacuously. Fail LOUD."
-        )
-    });
-    let call = [resolver, "("].concat();
-    let n = body.matches(call.as_str()).count();
-    assert_eq!(
-        n, 1,
-        "m22-s3b PRV1-6a FAIL (link 1): `on_disconnect` must call `{call}` EXACTLY once; \
-         found {n}. `ea_pvp_05` and `ptc5b_4` were TIGHTENED to scan the resolver's own body, \
-         so without this clause both are green against a resolver that is written correctly \
-         and never invoked — dead code that reads as a complete extraction while PvP \
-         forfeit, wild-battle GC, challenge cancel and trade cancel all silently stop \
-         happening on disconnect. MORE THAN ONE force-resolves twice: the second pass runs \
-         against rows the first already settled or deleted."
-    );
-}
-
-/// **PRV1-6b / PRV1-6d** — `erase_pvp_rows` sweeps `battle_challenge` on BOTH
-/// identity columns, sweeps `battle_action`, and disarms each challenge's TTL
-/// schedule row.
-///
-/// BOTH CHALLENGE COLUMNS, and the `target` one is the load-bearing half. The G6
-/// re-key manifest flags `battle_challenge.target` in its own basis prose —
-/// `an incoming challenge survives until the TTL reaper; M22 cascade MUST sweep
-/// this column` — and spec §3 repeats it. Sweeping only `challenger` leaves
-/// every challenge SENT TO the deleted player standing in a PUBLIC table, naming
-/// them, and keeps the challenger locked out of issuing another (one active
-/// outgoing challenge per player).
-///
-/// `battle_action` IS SWEPT UNINDEXED, on purpose: the table is indexed by
-/// `battle_id`, not by player, and ADR-0228 explicitly declines to add an index
-/// in this slice — the linear scan is correct and the volume concern is the
-/// §8.3 residual. What must not happen is the sweep being skipped because it is
-/// awkward: a surviving `battle_action` row is a per-turn secret pick keyed to a
-/// deleted player, in a MUST-NEVER-LEAK table.
-///
-/// THE CHALLENGE SCHEDULE GOES WITH THE CHALLENGE (ADR-0228 D2 deviation (a)):
-/// `battle_challenge_reaper_schedule` is JOIN-ONLY via `battle_challenge`, and
-/// every other challenge-deletion site in this module already disarms it
-/// (EA-CHR-02 pins those four). An orphaned one-shot fires later against a
-/// challenge_id that no longer exists.
-///
-/// Kills: a challenger-only sweep (the measured G6-flagged orphan); a
-///        target-only sweep; a helper that forgets `battle_action`; a helper
-///        that deletes challenges without disarming their schedules; a sweep
-///        keyed on anything other than the `owner` parameter; a helper that
-///        collects ids and never deletes.
-#[test]
-fn m22s3b_erase_pvp_rows_shape() {
-    let stripped = stripped_pvp_for_scan();
-    let name = concat!("erase_pvp", "_rows");
-    let body = extract_pvp_fn_body(&stripped, name).unwrap_or_else(|| {
-        panic!(
-            "m22-s3b PRV1-6b FAIL (extraction): pvp.rs declares no `fn {name}(`. The cascade \
-             delegates the `battle_challenge` and `battle_action` ERASE to this module \
-             because G5 MODULE_WRITE_ISOLATION closes accounts.rs at its four owned tables, \
-             so without this helper neither table is ever swept. Fail LOUD rather than pass \
-             vacuously."
-        )
-    });
-    let squashed = squash_ws(body);
-    assert!(
-        !squashed.is_empty(),
-        "m22-s3b PRV1-6b FAIL (non-vacuity): the `{name}` body is empty, so every clause \
-         below would be asserting properties of nothing."
-    );
-
-    for (needle, side, why) in [
-        (
-            concat!("challen", "ger().filter(owner)"),
-            "challenger",
-            "the challenges the deleted player SENT",
-        ),
-        (
-            concat!("tar", "get().filter(owner)"),
-            "target",
-            "the challenges SENT TO the deleted player. This is the column the G6 re-key \
-             manifest flags in its own basis prose (`an incoming challenge survives until \
-             the TTL reaper; M22 cascade MUST sweep this column`) and spec §3 repeats: \
-             omitted, every incoming challenge stands in a PUBLIC table naming a deleted \
-             identity, and the challenger stays locked out of issuing another",
-        ),
-    ] {
-        assert!(
-            squashed.contains(needle),
-            "m22-s3b PRV1-6b FAIL ({side} sweep): `{name}` must filter the {side} btree index \
-             with the `owner` PARAMETER (`{needle}`) — {why}. `battle_challenge` carries TWO \
-             indexed identity columns and the manifest classifies the TABLE erase, not one \
-             column of it. Body was: {squashed:?}"
-        );
-    }
-
-    assert!(
-        squashed.contains(concat!(".battle_", "action()")),
-        "m22-s3b PRV1-6b FAIL (battle_action): `{name}` must sweep `battle_action` too — it \
-         is a separate ERASE-policy table and its rows are per-turn SECRET picks \
-         (must-never-leak, ADR-0015/ADR-0109 D2) keyed to the deleting player. The table is \
-         indexed by `battle_id`, not by player, so this sweep is an unindexed scan by \
-         design: ADR-0228 declines to add an index in this slice and books the cost against \
-         the §8.3 volume residual. Awkward is not a reason to skip it. Body was: {squashed:?}"
-    );
-    // The battle_action scan has no index to scope it, so the ONLY thing that
-    // keeps it owner-scoped is its predicate — and a red-team measured that the
-    // accessor clause above is satisfied by a body that reaches the table and
-    // filters on something else entirely, or on nothing at all. Added in r2.
-    let action_owner = concat!("==", "owner");
-    assert!(
-        squashed.contains(action_owner),
-        "m22-s3b PRV1-6b FAIL (battle_action scope): `{name}` reaches `battle_action` but the \
-         body contains no `{action_owner}` comparison, so the unindexed scan is not scoped to \
-         the deleting identity by anything. This table has NO index on `player_identity` — \
-         that is why the sweep is a full iteration in the first place — so the predicate is \
-         the whole of its scoping. Without it the helper either deletes nothing (a filter on \
-         some other value) or deletes EVERY player's pending secret picks in the database, \
-         and both read identically to the accessor clause above. Body was: {squashed:?}"
-    );
-
-    let disarm = concat!("disarm_challenge_", "reaper(");
-    assert!(
-        squashed.contains(disarm),
-        "m22-s3b PRV1-6b/6d FAIL (orphan schedule): `{name}` must call `{disarm}` for each \
-         erased challenge. `battle_challenge_reaper_schedule` is JOIN-ONLY via \
-         `battle_challenge` (the manifest pins that parent by value), so the cascade sweeps \
-         it at its parent's step — the same orphan-prevention idiom every other \
-         challenge-deletion site in this module already follows (EA-CHR-02 pins those four). \
-         Body was: {squashed:?}"
-    );
-
-    // --- PER-TABLE DELETE COUNTS (r2, replacing a `>= 2` floor) -------------
-    //
-    // The floor was measured insufficient: TWO deletes of the SAME table satisfy
-    // it, so a body that removed the challenge row and (say) its schedule row —
-    // and never touched `battle_action` at all — passed while the deleted
-    // player's per-turn secret picks survived in a must-never-leak table.
-    // Counting per TABLE is what makes the two independently accounted for.
-    //
-    // BOTH DELETE SPELLINGS ARE ACCEPTED, deliberately: this module deletes by
-    // primary key in some places (`challenge_id().delete(id)`) and by ROW VALUE
-    // in others (`settle_pvp_battle`'s `battle_action().delete(action)`), and the
-    // two are equally correct here. Pinning one would false-RED a body written in
-    // the module's own other idiom, which is a spelling argument rather than a
-    // safety one — so the clause sums the two forms per table and pins the SUM.
-    for (pk_form, row_form, table, why) in [
-        (
-            concat!("battle_challenge().challenge_id().del", "ete("),
-            concat!("battle_challenge().del", "ete("),
-            "battle_challenge",
-            "the pending challenges on both of its identity columns; only pending rows can \
-             exist at cascade time (terminal ones are deleted immediately, per the table doc) \
-             so there is no history here to keep",
-        ),
-        (
-            concat!("battle_action().action_id().del", "ete("),
-            concat!("battle_action().del", "ete("),
-            "battle_action",
-            "the per-turn SECRET picks. The table is PRIVATE and must-never-leak (ADR-0015 / \
-             ADR-0109 D2): a leaked pending pick is a competitively decisive exploit, and a \
-             row surviving its owner's deletion is one keyed to an identity nobody can \
-             account for",
-        ),
-    ] {
-        // The PK form CONTAINS neither the row form nor vice versa — the column
-        // accessor sits between the table accessor and the verb — so the two
-        // counts never double-count the same site.
-        let n = squashed.matches(pk_form).count() + squashed.matches(row_form).count();
-        assert_eq!(
-            n, 1,
-            "m22-s3b PRV1-6b FAIL ({table} delete): `{name}` must delete `{table}` rows \
-             EXACTLY once — either by primary key (`{pk_form}..)`) or by row value \
-             (`{row_form}..)`), both of which this module already uses elsewhere; found {n} \
-             across the two spellings. ZERO leaves {why}. MORE THAN ONE is a second, \
-             unreviewed removal path in a helper whose whole remit is these two tables. This \
-             clause replaces a `>= 2` TOTAL-delete floor that two deletes of the SAME table \
-             satisfied. Body was: {squashed:?}"
-        );
-    }
-}
-
-/// **PRV1-6d** — `disarm_pvp_deadlines` sweeps every `pvp_deadline_schedule` row
-/// for one battle, keyed on `battle_id`.
-///
-/// WHY IT LIVES IN pvp.rs (ADR-0228 D1 / M4): `pvp.rs` is the SOLE writer of
-/// `pvp_deadline_schedule` — the table is colocated with its own reducer under
-/// the ADR-0056 exception — so `battle::anonymize_battles` delegates the sweep
-/// here rather than reaching across the module boundary. The delegation doctrine
-/// is not broken for that one table.
-///
-/// THE SWEEP IS UNINDEXED AND THAT IS DELIBERATE: `pvp_deadline_schedule.battle_id`
-/// carries no btree index and ADR-0228 declines to add one in this slice, so the
-/// helper filters a full iteration. What it must NOT do is `.find(..)`: more than
-/// one deadline row can exist for a battle across turns, and a single-row lookup
-/// leaves every other one armed against a battle whose participant is gone.
-///
-/// Kills: a `.find(` in place of the filter (leaves later-turn deadline rows
-///        armed); a sweep keyed on something other than the `battle_id`
-///        parameter; an UNFILTERED sweep, which disarms every live PvP deadline
-///        in the database and hangs every ongoing battle in the game; a helper
-///        that collects and never deletes.
-#[test]
-fn m22s3b_disarm_pvp_deadlines_shape() {
-    let stripped = stripped_pvp_for_scan();
-    let name = concat!("disarm_pvp_", "deadlines");
-    let body = extract_pvp_fn_body(&stripped, name).unwrap_or_else(|| {
-        panic!(
-            "m22-s3b PRV1-6d FAIL (extraction): pvp.rs declares no `fn {name}(`. \
-             `pvp_deadline_schedule` is JOIN-ONLY via `battle`, and pvp.rs is its SOLE \
-             writer, so `battle::anonymize_battles` must delegate the sweep here (ADR-0228 \
-             D1). Without it the deadline rows of a deleted player's battles stay armed. \
-             Fail LOUD rather than pass vacuously."
-        )
-    });
-    let squashed = squash_ws(body);
-
-    assert!(
-        squashed.contains(concat!(".pvp_deadline_", "schedule()")),
-        "m22-s3b PRV1-6d FAIL (accessor): `{name}` must reach the deadline schedule table. \
-         Body was: {squashed:?}"
-    );
-    // TIGHTENED IN r2. The bare token `battle_id` is present in ANY body that
-    // merely takes the parameter — including one that ignores it and iterates
-    // the whole table — because the parameter NAME is itself that token. What
-    // must be pinned is the COMPARISON: `pvp_deadline_schedule.battle_id`
-    // carries no btree index, so the predicate is the only thing scoping the
-    // sweep, and a body without one disarms every live deadline in the database.
-    let keyed = concat!("==", "battle_id");
-    assert!(
-        squashed.contains(keyed),
-        "m22-s3b PRV1-6d FAIL (key): `{name}` must compare each row against the `battle_id` \
-         PARAMETER (`{keyed}`). The bare token `battle_id` is NOT enough — it is the \
-         parameter's own name, so a body that takes the argument and then iterates the whole \
-         table unfiltered contains it while scoping nothing. The column carries no btree \
-         index (ADR-0228 declines to add one in this slice), so this comparison IS the \
-         scoping: without it the helper disarms every live PvP deadline in the database on \
-         the first cascade, and every ongoing PvP battle in the game hangs with no deadline \
-         to settle it. Body was: {squashed:?}"
-    );
-    assert!(
-        !squashed.contains(concat!(".fi", "nd(")),
-        "m22-s3b PRV1-6d FAIL (single-row lookup): `{name}` uses `.find(`. More than one \
-         deadline row can exist for a battle (one is scheduled per TURN, and a stale one is \
-         a no-op rather than an error), so a single-row lookup disarms the first and leaves \
-         every other one armed against a battle whose participant has been erased. The \
-         column carries no btree index — ADR-0228 declines to add one in this slice — so the \
-         sanctioned shape is a filtered full iteration. Body was: {squashed:?}"
-    );
-    assert!(
-        squashed.contains(concat!(".del", "ete(")),
-        "m22-s3b PRV1-6d FAIL (no delete): `{name}` never deletes a schedule row — a helper \
-         that collects the matching ids and stops there satisfies every clause above. Body \
-         was: {squashed:?}"
-    );
-    // rb-129 artifact red-team B8: the collected ids cut down before the delete
-    // loop (a take, first, next or last) disarm ONE deadline, leave the rest armed.
-    let lbrace = char::from(0x7Bu8).to_string();
-    let loop_head = [concat!("forid", "inids"), lbrace.as_str()].concat();
-    let cuts = [
-        concat!(".ta", "ke("),
-        concat!(".fir", "st("),
-        concat!(".ne", "xt("),
-        concat!(".la", "st("),
-    ];
-    let n_head = squashed.matches(loop_head.as_str()).count();
-    let found: Vec<&str> = cuts.into_iter().filter(|c| squashed.contains(*c)).collect();
-    assert!(
-        n_head == 1 && found.is_empty(),
-        "rb-129 FAIL (truncated sweep): `{name}` must loop over the WHOLE collected id list \
-         (`{loop_head}` once, found {n_head}) and never cut it down (found {found:?}): a \
-         sweep of a subset leaves the other deadline rows armed against a battle whose \
-         participant is erased. Body was: {squashed:?}"
-    );
-}
-
-// === rb-81 (R-rb-47-ROSTER-PVP) — ADR-0251 ================================
-// `pvp.rs`'s REDUCER ROSTER IS CLOSED. EARS E1: WHEN a reducer file other than
-// trading.rs gains a new bare reducer attribute THE SYSTEM SHALL fail a
-// closed-roster test NAMING THE FILE. Clause order per ADR-0251 D3.
-// ==========================================================================
-
-/// Bytes that CONTINUE a Rust identifier (the raw-opener and module censuses).
-fn rb81_is_ident_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
-}
-
-/// Attribute openers on RAW text: a hash whose next NON-WHITESPACE byte is the
-/// opening bracket, so a hash spaced away from its bracket still counts.
-fn rb81_attr_openers(src: &str) -> usize {
-    let bytes = src.as_bytes();
-    let mut n = 0usize;
-    for (i, b) in bytes.iter().enumerate() {
-        if *b == b'#' {
-            let mut j = i + 1;
-            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
-                j += 1;
-            }
-            if j < bytes.len() && bytes[j] == b'[' {
-                n += 1;
-            }
-        }
-    }
-    n
-}
-
-/// Raw-string OPENERS (`r`/`br`, any hashes, then the quote) not preceded by an
-/// identifier byte. Never spelled literally, so a future self-scan of this test file never trips on it.
-fn rb81_raw_string_openers(src: &str) -> usize {
-    let quote = 0x22u8;
-    let bytes = src.as_bytes();
-    let mut n = 0usize;
-    for (i, b) in bytes.iter().enumerate() {
-        let start = match *b {
-            b'r' => i + 1,
-            b'b' if bytes.get(i + 1) == Some(&b'r') => i + 2,
-            _ => continue,
-        };
-        if i > 0 && rb81_is_ident_byte(bytes[i - 1]) {
-            continue;
-        }
-        let mut j = start;
-        while bytes.get(j) == Some(&b'#') {
-            j += 1;
-        }
-        if bytes.get(j) == Some(&quote) {
-            n += 1;
-        }
-    }
-    n
-}
-
-/// 1-based start line of every comment REGION (a contiguous run of full-line
-/// comments, or one trailing comment) carrying an ODD double-quote count.
-fn rb81_odd_quote_comment_regions(src: &str) -> Vec<usize> {
-    let quote = char::from(0x22u8);
-    let slashes = ["/", "/"].concat();
-    let mut odd: Vec<usize> = Vec::new();
-    let mut run: Option<(usize, usize)> = None;
-    for (idx, line) in src.lines().enumerate() {
-        let lineno = idx + 1;
-        if line.trim_start().starts_with(slashes.as_str()) {
-            let (start, q) = run.unwrap_or((lineno, 0));
-            run = Some((start, q + line.matches(quote).count()));
-            continue;
-        }
-        if let Some((start, q)) = run.take() {
-            if q % 2 == 1 {
-                odd.push(start);
-            }
-        }
-        if let Some(at) = line.find(slashes.as_str()) {
-            if line[at..].matches(quote).count() % 2 == 1 {
-                odd.push(lineno);
-            }
-        }
-    }
-    if let Some((start, q)) = run {
-        if q % 2 == 1 {
-            odd.push(start);
-        }
-    }
-    odd
-}
-
-/// Every conditional-compilation attribute of `view` in FILE ORDER, read by
-/// paren-depth so a nested predicate cannot truncate it.
-fn rb81_cfg_predicates(view: &str) -> Vec<String> {
-    let open = ["#", "[cfg("].concat();
-    let bytes = view.as_bytes();
-    let mut out: Vec<String> = Vec::new();
-    let mut from = 0usize;
-    while let Some(rel) = view[from..].find(open.as_str()) {
-        let at = from + rel;
-        let mut depth = 1usize;
-        let mut k = at + open.len();
-        while k < bytes.len() && depth > 0 {
-            if bytes[k] == b'(' {
-                depth += 1;
-            } else if bytes[k] == b')' {
-                depth -= 1;
-            }
-            k += 1;
-        }
-        if depth == 0 && k < bytes.len() && bytes[k] == b']' {
-            k += 1;
-        }
-        out.push(view[at..k].to_string());
-        from = at + open.len();
-    }
-    out
-}
-
-/// Occurrences of `needle` in `hay` bounded by non-identifier bytes on BOTH
-/// sides — so `module` never counts as the module keyword.
-fn rb81_ident_boundary_count(hay: &str, needle: &str) -> usize {
-    let bytes = hay.as_bytes();
-    let mut n = 0usize;
-    let mut from = 0usize;
-    while let Some(rel) = hay[from..].find(needle) {
-        let at = from + rel;
-        let after = at + needle.len();
-        let left = at == 0 || !rb81_is_ident_byte(bytes[at - 1]);
-        let right = after >= bytes.len() || !rb81_is_ident_byte(bytes[after]);
-        if left && right {
-            n += 1;
-        }
-        from = after;
-    }
-    n
-}
-
-/// Every function name carrying a BARE reducer attribute, in file order. A PARSE,
-/// not a needle list: an unresolvable attribute PANICS rather than being skipped.
-fn rb81_reducer_names(squashed: &str) -> Vec<String> {
-    let attr = ["#[spacetimedb", "::reducer]"].concat();
-    let public_fn = ["pub", "fn"].concat();
-    let lparen = char::from(0x28u8);
-    let mut out: Vec<String> = Vec::new();
-    let mut from = 0usize;
-    while let Some(rel) = squashed[from..].find(attr.as_str()) {
-        let at = from + rel + attr.len();
-        let rest = &squashed[at..];
-        let tail = rest.strip_prefix(public_fn.as_str()).unwrap_or_else(|| {
-            let preview: String = rest.chars().take(60).collect();
-            panic!(
-                "[rb81/roster-parse] E1 FAIL: a bare reducer attribute in `pvp.rs` is not \
-                 followed by a PUBLIC function declaration. An attribute this walk cannot \
-                 parse is a reducer that never reaches the roster — a silent absence — so it \
-                 fails LOUD instead. Text after the attribute: {preview:?}"
-            )
+        skills.seed(&SkillRow {
+            id: 1,
+            name: "Pv".to_string(),
+            affinity: game_core::Affinity::Fire,
+            power: 40,
+            accuracy: 100,
+            pp: 10,
         });
-        let name: String = tail
-            .chars()
-            .take_while(|c| c.is_alphanumeric() || *c == '_')
+    }
+    let w = PvWorld {
+        players: fx.table::<PvPlayer>("player", "identity", |r| r.identity),
+        accounts: fx.table::<PvAccount>("account", "identity", |r| r.identity),
+        battles,
+        challenges,
+        reapers,
+        deadlines,
+        actions,
+        monsters,
+        pubs,
+        profiles,
+    };
+    w.join(pv_a(), true);
+    w.join(pv_b(), true);
+    w
+}
+
+impl PvWorld<'_> {
+    fn join(&self, who: PvId, online: bool) {
+        self.players.seed(&PvPlayer {
+            identity: who,
+            entity_id: u64::from(who.to_byte_array()[0]),
+            name: format!("p{:02x}", who.to_byte_array()[0]),
+            online,
+            last_input_seq: 0,
+        });
+    }
+    fn monster(&self, id: u64, owner: PvId, party_slot: u8) {
+        let m = pv_monster(id, owner, party_slot);
+        self.pubs.seed(&crate::marshal::pub_from_monster(&m, 0));
+        self.monsters.seed(&m);
+    }
+    /// A mid-grace (deletion-gated) account for `who`.
+    fn deleting(&self, who: PvId) {
+        self.accounts.seed(&crate::accounts::requested_deletion(
+            crate::accounts::new_account_row(who, String::new(), 0),
+            1,
+        ));
+    }
+    fn reaper(&self, scheduled_id: u64, challenge_id: u64) {
+        self.reapers.seed(&super::BattleChallengeReaperSchedule {
+            scheduled_id,
+            scheduled_at: PvAt::Time(pv_at(PV_T0 + game_core::CHALLENGE_TTL_MS)),
+            challenge_id,
+        });
+    }
+    fn action(&self, action_id: u64, battle_id: u64, who: PvId, turn_number: u16) {
+        self.actions.seed(&PvAction {
+            action_id,
+            battle_id,
+            player_identity: who,
+            action: PvPick::Attack { skill_id: 1 },
+            turn_number,
+            submitted_at_ms: PV_T0,
+        });
+    }
+    fn battle(&self, id: u64) -> Option<PvBattle> {
+        self.battles.rows().into_iter().find(|b| b.battle_id == id)
+    }
+    fn challenge_ids(&self) -> Vec<u64> {
+        let mut v: Vec<u64> = self
+            .challenges
+            .rows()
+            .iter()
+            .map(|c| c.challenge_id)
             .collect();
-        assert!(
-            !name.is_empty() && tail[name.len()..].starts_with(lparen),
-            "[rb81/roster-parse] E1 FAIL: a bare reducer attribute in `pvp.rs` is followed by \
-             a declaration this walk cannot name (empty identifier, or no argument list); an \
-             unnamed reducer cannot be classified, so it must never be skipped."
-        );
-        out.push(name);
-        from = at;
+        v.sort_unstable();
+        v
     }
-    out
+    fn reaper_challenge_ids(&self) -> Vec<u64> {
+        let mut v: Vec<u64> = self.reapers.rows().iter().map(|r| r.challenge_id).collect();
+        v.sort_unstable();
+        v
+    }
+    fn action_ids(&self) -> Vec<u64> {
+        let mut v: Vec<u64> = self.actions.rows().iter().map(|a| a.action_id).collect();
+        v.sort_unstable();
+        v
+    }
+    fn profile(&self, who: PvId) -> Option<(i32, u32, u32)> {
+        self.profiles
+            .rows()
+            .into_iter()
+            .find(|p| p.identity == who)
+            .map(|p| (p.rating, p.wins, p.losses))
+    }
+    /// The whole PvP store as bytes: a refusal must leave it identical.
+    fn snapshot(&self) -> Vec<Vec<u8>> {
+        use spacetimedb::sats::bsatn::to_vec;
+        vec![
+            to_vec(&self.battles.rows()).unwrap(),
+            to_vec(&self.challenges.rows()).unwrap(),
+            to_vec(&self.reapers.rows()).unwrap(),
+            to_vec(&self.deadlines.rows()).unwrap(),
+            to_vec(&self.actions.rows()).unwrap(),
+            to_vec(&self.monsters.rows()).unwrap(),
+            to_vec(&self.pubs.rows()).unwrap(),
+            to_vec(&self.profiles.rows()).unwrap(),
+        ]
+    }
 }
 
-/// **E1 (roster closure)** — `pvp.rs` publishes EXACTLY 7 reducers. T0 (measured,
-/// pristine tree): a plain bare twin appended above the test-module tail SURVIVED
-/// 915/915 — this file had NO cover. GREEN AT HEAD and after: ZERO production
-/// edits, an ADR-0224 hardening pin whose teeth are T0 plus the live mutant
-/// register on the REAL file, never a red-then-green flip of the equality itself.
-///
-/// Designated register rows (`memory/projects/gates/rb-81.mutants.py`): M1a the
-/// plain twin · M2a the conditional-compilation-hidden twin · M22 the
-/// comments-first polarity attack carrying a net-zero kind swap. Rationale:
-/// ADR-0251 D1-D4.
+type PvSetup = fn(&PvWorld<'_>);
+/// (label, caller, target-or-challenge-id, party, extra setup, refusal needle)
+type PvCase<T> = (&'static str, PvId, T, Vec<u64>, PvSetup, &'static str);
+
+/// EV-pvp-handshake-guards + ST-pvp_tests#reducer-guards (challenge_pvp): every guard
+/// refuses before any write — unjoined or deletion-gated caller, self-challenge,
+/// missing/offline target, party size, caller or target busy in EITHER battle role,
+/// caller holding an unresolved incoming challenge, duplicate outgoing/incoming
+/// challenges, duplicate / missing / foreign / boxed party monsters. A finished battle
+/// blocks nobody.
+/// kills: each guard's `if` deleted or negated; is_in_ongoing_battle -> false.
 #[test]
-fn rb81_pvp_reducer_roster_is_closed() {
-    // --- 1 [rb81/substrate] -------------------------------------------------
-    let quote = char::from(0x22u8);
-    let open_block = ["/", "*"].concat();
-    let close_block = ["*", "/"].concat();
-    let n_open = PVP_RS.matches(open_block.as_str()).count();
-    let n_close = PVP_RS.matches(close_block.as_str()).count();
-    assert_eq!(
-        (n_open, n_close),
-        (0, 0),
-        "[rb81/substrate] P1 FAIL: `pvp.rs` carries {n_open} block-comment opener(s) and \
-         {n_close} closer(s); both must be ZERO. `strip_rust_comments` (:64) reads an UNPAIRED \
-         marker inside a string literal as a real comment and blanks code to the next closer — \
-         which is how a twin reducer vanishes from every clause below."
-    );
-
-    let tick = char::from(0x27u8);
-    let backslash = char::from(0x5Cu8);
-    let char_quote: String = [tick, quote, tick].iter().collect();
-    let char_quote_escaped: String = [tick, backslash, quote, tick].iter().collect();
-    let n_char_quote = PVP_RS.matches(char_quote.as_str()).count()
-        + PVP_RS.matches(char_quote_escaped.as_str()).count();
-    assert_eq!(
-        n_char_quote, 0,
-        "[rb81/substrate] P2 FAIL: `pvp.rs` spells the double-quote CHAR literal \
-         {n_char_quote} time(s) — BOTH the plain three-byte form and the backslash-escaped \
-         four-byte one are counted — and must spell it ZERO. EITHER spelling opens a PHANTOM \
-         STRING in this file's string stripper, which has no char-literal branch: the quote \
-         byte between the ticks is read as a string OPENER and inverts string/code polarity \
-         for the rest of the file (the escaped form was MEASURED CI-clean at 919/919 before \
-         this clause counted it). The byte-string spellings are covered transitively — they \
-         contain these same byte sequences. Spell the quote as a numeric byte instead."
-    );
-
-    let n_raw_open = rb81_raw_string_openers(PVP_RS);
-    assert_eq!(
-        n_raw_open, 0,
-        "[rb81/substrate] P3 FAIL: `pvp.rs` opens {n_raw_open} raw string(s) and must open \
-         ZERO. `strip_rust_strings` (:2143) has no raw-string lexer, so a raw literal holding \
-         a bare quote leaves the walker half a literal out of phase for the rest of the file."
-    );
-
-    let odd_regions = rb81_odd_quote_comment_regions(PVP_RS);
-    assert!(
-        odd_regions.is_empty(),
-        "[rb81/substrate] P4 FAIL: the comment region(s) starting at line(s) {odd_regions:?} \
-         of `pvp.rs` carry an ODD number of double quotes. An odd region opens a phantom \
-         string literal that swallows real code under a strings-first pass — the \
-         desynchronisation P5 cannot see, because both orders are then equally wrong — or a \
-         `//` sequence inside a string literal on that line, the same hazard read from the \
-         other side."
-    );
-
-    let stripped = strip_rust_strings(&strip_rust_comments(PVP_RS));
-    let order_a = squash_ws(&stripped);
-    let order_b = squash_ws(&strip_rust_comments(&strip_rust_strings(PVP_RS)));
-    let (ba, bb) = (order_a.as_bytes(), order_b.as_bytes());
-    let diverge = ba.iter().zip(bb).position(|(x, y)| x != y);
-    let (len_a, len_b) = (ba.len(), bb.len());
-    assert!(
-        order_a == order_b,
-        "[rb81/substrate] P5 FAIL: the two stripper orders disagree on `pvp.rs` (lengths \
-         {len_a}/{len_b}, first divergence at byte {diverge:?}). They can only differ when a \
-         comment marker lives inside a string or a quote lives unbalanced inside a comment — \
-         i.e. when the scanned view is no longer the file."
-    );
-    let file = order_a;
-
-    // --- 2 [rb81/tail] ------------------------------------------------------
-    let comments_only = squash_ws(&strip_rust_comments(PVP_RS));
-    let q = quote.to_string();
-    let qs = q.as_str();
-    let path_attr = ["#", "[path=", qs, "pvp_tests.rs", qs, "]"].concat();
-    let cfg_test = ["#", "[cfg(test)]"].concat();
-    let mod_decl = ["mod", "pvp", "_tests;"].concat();
-    let tail = format!("{cfg_test}{path_attr}{mod_decl}");
-    let from = comments_only.chars().count().saturating_sub(160);
-    let seen: String = comments_only.chars().skip(from).collect();
-    assert!(
-        comments_only.ends_with(tail.as_str()),
-        "[rb81/tail] FAIL: the comment-stripped, strings-INTACT view of `pvp.rs` must END with \
-         `{tail}`; it ends with `{seen}`. Non-vacuity AND relocation guard: an always-true \
-         conditional plus a retargeted module path compiles THIS test module out of a \
-         different file, leaving every clause below reading source nobody ships. Anything \
-         appended after the tail lands here too."
-    );
-
-    // --- 3 [rb81/cfg-roster] ------------------------------------------------
-    let cfgs = rb81_cfg_predicates(comments_only.as_str());
-    let want_cfgs = [cfg_test.clone()];
-    assert_eq!(
-        cfgs, want_cfgs,
-        "[rb81/cfg-roster] FAIL: `pvp.rs` carries the conditional-compilation predicates \
-         {cfgs:?} and must carry exactly {want_cfgs:?}. The ONE predicate here gates the test \
-         module; a second predicate anywhere in this file is a build-visibility fork the \
-         roster below cannot see."
-    );
-
-    // --- 4 [rb81/roster] ----------------------------------------------------
-    // The WALK runs before the count on purpose: an attribute it cannot parse is
-    // a LOUD [rb81/roster-parse] panic, and a count mismatch must not pre-empt it.
-    let got: std::collections::BTreeSet<String> =
-        rb81_reducer_names(file.as_str()).into_iter().collect();
-    let attr_bare = ["#[spacetimedb", "::reducer]"].concat();
-    let n_bare = file.matches(attr_bare.as_str()).count();
-    assert_eq!(
-        n_bare, 7,
-        "[rb81/roster] FAIL (count): `pvp.rs` carries {n_bare} bare reducer attribute(s) and \
-         must carry exactly 7; the names this walk resolved are {got:?}. Reported BEFORE the \
-         SET because it is not implied by it: a twin the walk resolves to an existing name \
-         leaves the SET equal while the file publishes one more entry point."
-    );
-    let want = std::collections::BTreeSet::from([
-        ["challenge_", "pvp"].concat(),
-        ["accept_", "challenge"].concat(),
-        ["decline_", "challenge"].concat(),
-        ["cancel_", "challenge"].concat(),
-        ["submit_pvp_", "action"].concat(),
-        ["battle_challenge_", "reaper"].concat(),
-        ["pvp_deadline_", "reaper"].concat(),
-    ]);
-    let missing: Vec<&String> = want.difference(&got).collect();
-    let extra: Vec<&String> = got.difference(&want).collect();
-    assert!(
-        missing.is_empty() && extra.is_empty(),
-        "[rb81/roster] FAIL (set): the reducers `pvp.rs` publishes are {got:?}; the roster \
-         this slice reasoned about is {want:?}. Missing: {missing:?}. UNEXPECTED: {extra:?}. \
-         AN UNEXPECTED NAME IS THE DANGEROUS DIRECTION — a twin of any challenge reducer minus \
-         its deletion gate or its ranked-account gate passes every other pin in this file and \
-         every eval name list, all of which scope to the names they mention — while a MISSING \
-         name means a reducer was renamed or removed and every pin scoped to it is now \
-         vacuous. Classify a new reducer DELIBERATELY and add it here AND to the censuses that \
-         must fence it; never delete a name to make a build green."
-    );
-
-    // --- 5 [rb81/attr-any] --------------------------------------------------
-    let attr_any = ["#[spacetimedb", "::reducer"].concat();
-    let n_any = file.matches(attr_any.as_str()).count();
-    assert_eq!(
-        n_any, n_bare,
-        "[rb81/attr-any] FAIL: `pvp.rs` carries {n_any} reducer attribute(s) but only {n_bare} \
-         are the BARE form. A PARAMETERISED attribute is a wire-name twin: it publishes a \
-         reducer under the name clients call while the Rust item every pin here reads is a \
-         different, possibly ungated, one."
-    );
-
-    // --- 6 [rb81/attr-path] -------------------------------------------------
-    let path_token = ["::red", "ucer"].concat();
-    let n_path_token = file.matches(path_token.as_str()).count();
-    assert_eq!(
-        n_path_token, n_bare,
-        "[rb81/attr-path] FAIL: `pvp.rs` spells the path-qualified reducer token \
-         {n_path_token} time(s) while carrying {n_bare} bare attribute(s); the two must AGREE. \
-         Every bare attribute contains this token, so the count can only ever be GREATER — so \
-         this asserts the macro is reached NOWHERE ELSE: not imported by name, not through an \
-         aliased crate path, not through a leading-colons path."
-    );
-
-    // --- 7 [rb81/attr-partition] --------------------------------------------
-    let kinds: [(&str, String, usize); 7] = [
-        ("reducer", attr_any.clone(), 7),
-        ("table", ["#[spacetimedb", "::table"].concat(), 2),
-        ("primary_key", ["#", "[primary_key"].concat(), 2),
-        ("auto_inc", ["#", "[auto_inc"].concat(), 2),
-        ("index", ["#", "[index("].concat(), 1),
-        ("cfg", ["#", "[cfg("].concat(), 1),
-        ("path", ["#", "[path"].concat(), 1),
+fn nh_challenge_pvp_refuses_every_guard_before_writing() {
+    let max = usize::from(crate::MAX_PARTY_SIZE);
+    let cases: Vec<PvCase<PvId>> = vec![
+        (
+            "unjoined caller",
+            pv_c(),
+            pv_b(),
+            vec![11],
+            |_| {},
+            "not joined",
+        ),
+        (
+            "deletion-gated caller",
+            pv_a(),
+            pv_b(),
+            vec![11],
+            |w| w.deleting(pv_a()),
+            "",
+        ),
+        (
+            "self challenge",
+            pv_a(),
+            pv_a(),
+            vec![11],
+            |_| {},
+            "cannot challenge yourself",
+        ),
+        (
+            "missing target",
+            pv_a(),
+            pv_c(),
+            vec![11],
+            |_| {},
+            "target player not found",
+        ),
+        (
+            "offline target",
+            pv_a(),
+            pv_d(),
+            vec![11],
+            |w| w.join(pv_d(), false),
+            "target player is offline",
+        ),
+        (
+            "empty party",
+            pv_a(),
+            pv_b(),
+            vec![],
+            |_| {},
+            "at least one monster",
+        ),
+        (
+            "oversized party",
+            pv_a(),
+            pv_b(),
+            (1..=max as u64 + 1).collect(),
+            |_| {},
+            "exceeds MAX_PARTY_SIZE",
+        ),
+        (
+            "caller busy as side A",
+            pv_a(),
+            pv_b(),
+            vec![11],
+            |w| {
+                w.battles.seed(&pv_battle(
+                    900,
+                    pv_a(),
+                    PV_WILD,
+                    PvOutcome::Ongoing,
+                    &[30],
+                    &[30],
+                ))
+            },
+            "already in an ongoing battle",
+        ),
+        (
+            "caller busy as side B",
+            pv_a(),
+            pv_b(),
+            vec![11],
+            |w| {
+                w.battles.seed(&pv_battle(
+                    900,
+                    pv_d(),
+                    pv_a(),
+                    PvOutcome::Ongoing,
+                    &[30],
+                    &[30],
+                ))
+            },
+            "already in an ongoing battle",
+        ),
+        (
+            "target busy",
+            pv_a(),
+            pv_b(),
+            vec![11],
+            |w| {
+                w.battles.seed(&pv_battle(
+                    900,
+                    pv_d(),
+                    pv_b(),
+                    PvOutcome::Ongoing,
+                    &[30],
+                    &[30],
+                ))
+            },
+            "target is already in an ongoing battle",
+        ),
+        (
+            "caller has an unresolved incoming challenge",
+            pv_a(),
+            pv_b(),
+            vec![11],
+            |w| {
+                w.challenges
+                    .seed(&pv_challenge(100, pv_d(), pv_a(), PvStatus::Pending))
+            },
+            "pending incoming challenge — accept or decline",
+        ),
+        (
+            "caller already has an outgoing challenge",
+            pv_a(),
+            pv_b(),
+            vec![11],
+            |w| {
+                w.challenges
+                    .seed(&pv_challenge(100, pv_a(), pv_d(), PvStatus::Pending))
+            },
+            "already have an active outgoing challenge",
+        ),
+        (
+            "target already has an incoming challenge",
+            pv_a(),
+            pv_b(),
+            vec![11],
+            |w| {
+                w.challenges
+                    .seed(&pv_challenge(100, pv_d(), pv_b(), PvStatus::Pending))
+            },
+            "target already has a pending incoming challenge",
+        ),
+        (
+            "duplicate monster id",
+            pv_a(),
+            pv_b(),
+            vec![11, 11],
+            |_| {},
+            "duplicate monster_id 11",
+        ),
+        (
+            "missing monster",
+            pv_a(),
+            pv_b(),
+            vec![99],
+            |_| {},
+            "monster 99 not found",
+        ),
+        (
+            "foreign monster",
+            pv_a(),
+            pv_b(),
+            vec![21],
+            |_| {},
+            "monster 21 not owned by caller",
+        ),
+        (
+            "boxed monster",
+            pv_a(),
+            pv_b(),
+            vec![13],
+            |_| {},
+            "monster 13 monster is boxed",
+        ),
     ];
-    let mut census = String::new();
-    let mut want_total = 0usize;
-    let mut found: Vec<usize> = Vec::new();
-    for (label, needle, want_n) in kinds.iter() {
-        let n = file.matches(needle.as_str()).count();
-        found.push(n);
-        want_total += *want_n;
-        census.push_str(&format!("{label}={n}/{want_n} "));
+    for (label, caller, target, party, setup, needle) in cases {
+        let fx = pv_fixture();
+        let w = pv_world(&fx, true);
+        w.monster(11, pv_a(), 0);
+        w.monster(13, pv_a(), game_core::PARTY_SLOT_NONE);
+        w.monster(21, pv_b(), 0);
+        setup(&w);
+        let before = w.snapshot();
+        let got = fx.run_as_at(caller, pv_at(PV_T0), |ctx| {
+            super::challenge_pvp(ctx, target, party.clone())
+        });
+        match &got {
+            Err(e) => assert!(
+                e.contains(needle),
+                "{label}: wrong refusal {e:?} (want {needle:?})"
+            ),
+            Ok(()) => panic!("{label}: must be refused"),
+        }
+        assert_eq!(w.snapshot(), before, "{label}: refused before any write");
     }
-    for (i, (label, _, want_n)) in kinds.iter().enumerate() {
-        let n = found[i];
+    // Control: a FINISHED battle on either side blocks nobody.
+    let fx = pv_fixture();
+    let w = pv_world(&fx, true);
+    w.monster(11, pv_a(), 0);
+    w.battles.seed(&pv_battle(
+        900,
+        pv_a(),
+        pv_b(),
+        PvOutcome::SideAWins,
+        &[30],
+        &[30],
+    ));
+    assert_eq!(
+        fx.run_as_at(pv_a(), pv_at(PV_T0), |ctx| super::challenge_pvp(
+            ctx,
+            pv_b(),
+            vec![11]
+        )),
+        Ok(())
+    );
+}
+
+/// EV-pvp-challenge-reaper (arming) + ADR-0189 wiring: a valid challenge inserts exactly
+/// one Pending row stamped with the (ms-floored) transaction clock and arms exactly one
+/// reaper at created_at_ms + CHALLENGE_TTL_MS, computed from the FLOORED ms. With no
+/// accounts on either side the outcome follows the ranked gate predicate exactly (inert
+/// today: `ranked_enforcement_active()` is false while the issuer is the placeholder).
+/// kills: schedule_challenge_reaper -> (), raw-micros deadline, insert fields swapped.
+#[test]
+fn nh_challenge_pvp_inserts_pending_and_arms_the_ttl_reaper() {
+    let fx = pv_fixture();
+    let w = pv_world(&fx, true);
+    w.monster(11, pv_a(), 0);
+    // 999 µs past a whole ms: the flooring is visible in the reaper deadline.
+    let at = PvTs::from_micros_since_unix_epoch(PV_T0 * 1000 + 999);
+    let got = fx.run_as_at(pv_a(), at, |ctx| {
+        super::challenge_pvp(ctx, pv_b(), vec![11])
+    });
+    let gate = super::ranked_account_gate(super::ranked_enforcement_active(), false, false)
+        .map_err(str::to_string);
+    assert_eq!(
+        got, gate,
+        "a guest pair's outcome is exactly the ranked gate's verdict"
+    );
+    if gate.is_err() {
+        assert!(
+            w.challenges.rows().is_empty(),
+            "a gated challenge writes nothing"
+        );
+        return;
+    }
+    let rows = w.challenges.rows();
+    assert_eq!(rows.len(), 1);
+    let c = &rows[0];
+    assert_eq!(
+        (
+            c.challenger,
+            c.target,
+            c.challenger_party_ids.clone(),
+            c.status,
+            c.created_at_ms
+        ),
+        (pv_a(), pv_b(), vec![11], PvStatus::Pending, PV_T0)
+    );
+    let reapers = w.reapers.rows();
+    assert_eq!(reapers.len(), 1, "exactly one reaper armed");
+    assert_eq!(reapers[0].challenge_id, c.challenge_id);
+    assert_eq!(
+        reapers[0].scheduled_at,
+        PvAt::Time(pv_at(PV_T0 + game_core::CHALLENGE_TTL_MS)),
+        "deadline from the FLOORED created_at_ms, not raw micros"
+    );
+}
+
+/// EV-pvp-handshake-guards (accept): only the target may accept, only a Pending
+/// challenge, never a deletion-gated acceptor, never while either party is in an
+/// ongoing battle, never with a bad party — all refused before any write. Success
+/// creates the battle (challenger = side A with the committed party, acceptor = side B),
+/// schedules the turn-0 deadline at now + PVP_TURN_DEADLINE_MS, and consumes the
+/// challenge and ONLY its reaper.
+/// kills: role check swapped/removed, status check removed, schedule_deadline -> (),
+/// challenge not deleted, disarm_challenge_reaper -> ().
+#[test]
+fn nh_accept_challenge_is_target_only_and_opens_the_battle() {
+    fn world(fx: &PvFixture) -> PvWorld<'_> {
+        let w = pv_world(fx, true);
+        w.join(pv_d(), true);
+        w.monster(11, pv_a(), 0);
+        w.monster(21, pv_b(), 0);
+        w.challenges
+            .seed(&pv_challenge(100, pv_a(), pv_b(), PvStatus::Pending));
+        w.challenges
+            .seed(&pv_challenge(101, pv_d(), pv_c(), PvStatus::Pending));
+        w.challenges
+            .seed(&pv_challenge(102, pv_a(), pv_b(), PvStatus::Accepted));
+        w.reaper(500, 100);
+        w.reaper(501, 101);
+        w
+    }
+    let cases: Vec<PvCase<u64>> = vec![
+        (
+            "missing challenge",
+            pv_b(),
+            999,
+            vec![21],
+            |_| {},
+            "challenge not found",
+        ),
+        (
+            "stranger",
+            pv_c(),
+            100,
+            vec![21],
+            |_| {},
+            "not the challenge target",
+        ),
+        (
+            "the challenger itself",
+            pv_a(),
+            100,
+            vec![11],
+            |_| {},
+            "not the challenge target",
+        ),
+        (
+            "deletion-gated acceptor",
+            pv_b(),
+            100,
+            vec![21],
+            |w| w.deleting(pv_b()),
+            "",
+        ),
+        (
+            "not pending",
+            pv_b(),
+            102,
+            vec![21],
+            |_| {},
+            "challenge is not pending",
+        ),
+        (
+            "acceptor busy",
+            pv_b(),
+            100,
+            vec![21],
+            |w| {
+                w.battles.seed(&pv_battle(
+                    900,
+                    pv_b(),
+                    PV_WILD,
+                    PvOutcome::Ongoing,
+                    &[30],
+                    &[30],
+                ))
+            },
+            "already in an ongoing battle",
+        ),
+        (
+            "challenger busy",
+            pv_b(),
+            100,
+            vec![21],
+            |w| {
+                w.battles.seed(&pv_battle(
+                    900,
+                    pv_d(),
+                    pv_a(),
+                    PvOutcome::Ongoing,
+                    &[30],
+                    &[30],
+                ))
+            },
+            "challenger is already in an ongoing battle",
+        ),
+        (
+            "empty party",
+            pv_b(),
+            100,
+            vec![],
+            |_| {},
+            "at least one monster",
+        ),
+        (
+            "duplicate monster id",
+            pv_b(),
+            100,
+            vec![21, 21],
+            |_| {},
+            "duplicate monster_id 21",
+        ),
+    ];
+    for (label, caller, id, party, extra, needle) in cases {
+        let fx = pv_fixture();
+        let w = world(&fx);
+        extra(&w);
+        let before = w.snapshot();
+        let got = fx.run_as_at(caller, pv_at(PV_T0), |ctx| {
+            super::accept_challenge(ctx, id, party.clone())
+        });
+        match &got {
+            Err(e) => assert!(
+                e.contains(needle),
+                "{label}: wrong refusal {e:?} (want {needle:?})"
+            ),
+            Ok(()) => panic!("{label}: must be refused"),
+        }
+        assert_eq!(w.snapshot(), before, "{label}: refused before any write");
+    }
+
+    let fx = pv_fixture();
+    let w = world(&fx);
+    let t1 = PV_T0 + 5_000;
+    let got = fx.run_as_at(pv_b(), pv_at(t1), |ctx| {
+        super::accept_challenge(ctx, 100, vec![21])
+    });
+    let gate = super::ranked_account_gate(super::ranked_enforcement_active(), false, false)
+        .map_err(str::to_string);
+    assert_eq!(
+        got, gate,
+        "a guest pair's accept follows the ranked gate predicate"
+    );
+    if gate.is_err() {
+        return;
+    }
+    let battles = w.battles.rows();
+    assert_eq!(battles.len(), 1, "exactly one battle opened");
+    let b = &battles[0];
+    assert_eq!(
+        (
+            b.player_identity,
+            b.opponent_identity,
+            b.party_monster_ids.clone(),
+            b.opponent_monster_ids.clone()
+        ),
+        (pv_a(), pv_b(), vec![11], vec![21]),
+        "challenger is side A with the COMMITTED party; the acceptor is side B"
+    );
+    assert_eq!(
+        (b.state.outcome, b.state.turn_number),
+        (PvOutcome::Ongoing, 0)
+    );
+    assert_eq!(b.created_at_ms, t1);
+    let deadlines = w.deadlines.rows();
+    assert_eq!(deadlines.len(), 1, "exactly one turn deadline scheduled");
+    assert_eq!(
+        (
+            deadlines[0].battle_id,
+            deadlines[0].turn_number,
+            deadlines[0].scheduled_at
+        ),
+        (
+            b.battle_id,
+            0,
+            PvAt::Time(pv_at(t1 + super::PVP_TURN_DEADLINE_MS))
+        )
+    );
+    assert_eq!(
+        w.challenge_ids(),
+        vec![101, 102],
+        "only the accepted challenge is consumed"
+    );
+    assert_eq!(
+        w.reaper_challenge_ids(),
+        vec![101],
+        "and only its reaper disarmed"
+    );
+}
+
+/// EV-pvp-handshake-guards (decline / cancel): decline is target-only, cancel is
+/// challenger-only, both Pending-only; refusals write nothing; success deletes exactly
+/// that challenge and exactly its reaper.
+/// kills: role checks swapped, status check removed, delete/disarm skipped or unkeyed.
+#[test]
+fn nh_decline_is_target_only_and_cancel_is_challenger_only() {
+    type Call = fn(&spacetimedb::ReducerContext, u64) -> Result<(), String>;
+    type Refused = Vec<(PvId, &'static str)>;
+    let rows: Vec<(&str, Call, PvId, Refused)> = vec![
+        (
+            "decline",
+            super::decline_challenge,
+            pv_b(),
+            vec![
+                (pv_a(), "not the challenge target"),
+                (pv_c(), "not the challenge target"),
+            ],
+        ),
+        (
+            "cancel",
+            super::cancel_challenge,
+            pv_a(),
+            vec![
+                (pv_b(), "not the challenge initiator"),
+                (pv_c(), "not the challenge initiator"),
+            ],
+        ),
+    ];
+    for (label, call, allowed, refused) in rows {
+        let fx = pv_fixture();
+        let w = pv_world(&fx, false);
+        w.challenges
+            .seed(&pv_challenge(100, pv_a(), pv_b(), PvStatus::Pending));
+        w.challenges
+            .seed(&pv_challenge(101, pv_a(), pv_b(), PvStatus::Declined));
+        w.challenges
+            .seed(&pv_challenge(102, pv_d(), pv_c(), PvStatus::Pending));
+        for (sid, cid) in [(500, 100), (501, 101), (502, 102)] {
+            w.reaper(sid, cid);
+        }
+        let before = w.snapshot();
+        for (who, needle) in refused {
+            let got = fx.run_as(who, |ctx| call(ctx, 100));
+            assert_eq!(got, Err(needle.to_string()), "{label} by the wrong party");
+            assert_eq!(w.snapshot(), before, "{label}: refused before any write");
+        }
         assert_eq!(
-            n, *want_n,
-            "[rb81/attr-partition] FAIL ({label}): found/expected per kind: {census}. THE \
-             PARTITION IS THE ONLY CLAUSE THAT SEES AN ENTRY POINT SPELLED SOME OTHER WAY \
-             (ADR-0251 D3/D4 enumerates the spellings — imported by name, aliased crate path, \
-             braced rename, a neighbouring entry-point macro, a conditional attribute \
-             expanding to it). Each needs an attribute opener, so none can be added without \
-             moving a number here. THIS IS A SECURITY CENSUS: add the attribute deliberately, \
-             then bump this kind's pin and the total in the SAME edit; never relax a number \
-             alone."
+            fx.run_as(allowed, |ctx| call(ctx, 101)),
+            Err("challenge is not pending".to_string())
+        );
+        assert_eq!(
+            fx.run_as(allowed, |ctx| call(ctx, 999)),
+            Err("challenge not found".to_string())
+        );
+        assert_eq!(w.snapshot(), before);
+        assert_eq!(
+            fx.run_as(allowed, |ctx| call(ctx, 100)),
+            Ok(()),
+            "{label} by the right party"
+        );
+        assert_eq!(
+            w.challenge_ids(),
+            vec![101, 102],
+            "{label}: exactly that challenge gone"
+        );
+        assert_eq!(
+            w.reaper_challenge_ids(),
+            vec![101, 102],
+            "{label}: exactly its reaper gone"
         );
     }
-    let attr_open = ["#", "["].concat();
-    let n_all = file.matches(attr_open.as_str()).count();
+}
+
+/// EV-pvp-challenge-reaper: client senders are refused (the reaper is scheduler-only:
+/// player identities vs the module identity); an early fire at created + TTL - 1 never
+/// reaps; at exactly created + TTL the challenge is deleted; an already-gone challenge is
+/// a no-op.
+/// kills: scheduler guard removed/negated, staleness re-check removed, `>=` -> `>`.
+#[test]
+fn nh_battle_challenge_reaper_is_scheduler_only_and_ttl_exact() {
+    let fx = pv_fixture();
+    let w = pv_world(&fx, false);
+    fx.set_database_identity(pv_module());
+    w.challenges
+        .seed(&pv_challenge(100, pv_a(), pv_b(), PvStatus::Pending));
+    w.challenges
+        .seed(&pv_challenge(101, pv_d(), pv_c(), PvStatus::Pending));
+    let args = |challenge_id| super::BattleChallengeReaperSchedule {
+        scheduled_id: 1,
+        scheduled_at: PvAt::Time(pv_at(PV_T0 + game_core::CHALLENGE_TTL_MS)),
+        challenge_id,
+    };
+    let stale = pv_at(PV_T0 + game_core::CHALLENGE_TTL_MS);
+    for player in [pv_a(), pv_b(), pv_c()] {
+        assert_eq!(
+            fx.run_as_at(player, stale, |ctx| super::battle_challenge_reaper(
+                ctx,
+                args(100)
+            )),
+            Err("battle_challenge_reaper is scheduler-only".to_string())
+        );
+        assert_eq!(
+            w.challenge_ids(),
+            vec![100, 101],
+            "a client call deletes nothing"
+        );
+    }
+    let early = pv_at(PV_T0 + game_core::CHALLENGE_TTL_MS - 1);
     assert_eq!(
-        n_all, want_total,
-        "[rb81/attr-partition] FAIL (total): `pvp.rs` carries {n_all} attribute opener(s) on \
-         the stripped view while the pinned kinds account for {want_total} ({census}). The \
-         difference is an UNKNOWN kind and that bucket must be ZERO — which is what stops a \
-         net-zero swap balancing. Add it deliberately and bump both numbers in one edit."
+        fx.run_as_at(pv_module(), early, |ctx| super::battle_challenge_reaper(
+            ctx,
+            args(100)
+        )),
+        Ok(())
+    );
+    assert_eq!(
+        w.challenge_ids(),
+        vec![100, 101],
+        "an early fire never reaps a fresh challenge"
+    );
+    assert_eq!(
+        fx.run_as_at(pv_module(), stale, |ctx| super::battle_challenge_reaper(
+            ctx,
+            args(100)
+        )),
+        Ok(())
+    );
+    assert_eq!(
+        w.challenge_ids(),
+        vec![101],
+        "reaped at exactly created + TTL, only that one"
+    );
+    assert_eq!(
+        fx.run_as_at(pv_module(), stale, |ctx| super::battle_challenge_reaper(
+            ctx,
+            args(100)
+        )),
+        Ok(()),
+        "already gone: no-op"
+    );
+}
+
+/// EV-pvp-deadline-disconnect (deadline reaper): client senders refused; a missing or
+/// finished battle and a STALE schedule (battle already on a later turn) are no-ops; a
+/// both-submitted turn is left alone; otherwise the non-submitter forfeits — side B when
+/// only A submitted, and the challenger (side A) when neither did (tie-break). The
+/// forfeit commits through the settle funnel: rating applied, stale actions swept.
+/// kills: scheduler guard removed, stale-turn check removed, forfeit side inverted.
+#[test]
+fn nh_pvp_deadline_reaper_forfeits_only_the_current_non_submitter() {
+    let args = |battle_id, turn_number| super::PvpDeadlineSchedule {
+        scheduled_id: 1,
+        scheduled_at: PvAt::Time(pv_at(PV_T0)),
+        battle_id,
+        turn_number,
+    };
+    // (label, A submitted, B submitted, expected outcome)
+    let rows = [
+        (
+            "only A submitted: B forfeits",
+            true,
+            false,
+            PvOutcome::SideAWins,
+        ),
+        (
+            "neither submitted: challenger-first tie-break",
+            false,
+            false,
+            PvOutcome::SideBWins,
+        ),
+        (
+            "only B submitted: A forfeits",
+            false,
+            true,
+            PvOutcome::SideBWins,
+        ),
+        (
+            "both submitted: resolution owns the turn",
+            true,
+            true,
+            PvOutcome::Ongoing,
+        ),
+    ];
+    for (label, a_in, b_in, want) in rows {
+        let fx = pv_fixture();
+        let w = pv_world(&fx, false);
+        fx.set_database_identity(pv_module());
+        w.battles.seed(&pv_battle(
+            900,
+            pv_a(),
+            pv_b(),
+            PvOutcome::Ongoing,
+            &[30],
+            &[30],
+        ));
+        if a_in {
+            w.action(1, 900, pv_a(), 1);
+        }
+        if b_in {
+            w.action(2, 900, pv_b(), 1);
+        }
+        w.action(3, 950, pv_c(), 1); // another battle's pick: never swept
+        let before = w.snapshot();
+        for player in [pv_a(), pv_b()] {
+            assert_eq!(
+                fx.run_as(player, |ctx| super::pvp_deadline_reaper(ctx, args(900, 1))),
+                Err("pvp_deadline_reaper is scheduler-only".to_string()),
+                "{label}"
+            );
+        }
+        assert_eq!(
+            fx.run_as(pv_module(), |ctx| super::pvp_deadline_reaper(
+                ctx,
+                args(900, 0)
+            )),
+            Ok(())
+        );
+        assert_eq!(
+            fx.run_as(pv_module(), |ctx| super::pvp_deadline_reaper(
+                ctx,
+                args(999, 1)
+            )),
+            Ok(())
+        );
+        assert_eq!(
+            w.snapshot(),
+            before,
+            "{label}: client call, stale turn and missing battle write nothing"
+        );
+        assert_eq!(
+            fx.run_as(pv_module(), |ctx| super::pvp_deadline_reaper(
+                ctx,
+                args(900, 1)
+            )),
+            Ok(())
+        );
+        let b = w
+            .battle(900)
+            .expect("the battle row is kept (terminal, not deleted)");
+        assert_eq!(b.state.outcome, want, "{label}");
+        if want == PvOutcome::Ongoing {
+            assert_eq!(w.snapshot(), before, "{label}: nothing written");
+            continue;
+        }
+        assert_eq!(
+            w.action_ids(),
+            vec![3],
+            "{label}: this battle's picks swept, no other"
+        );
+        let (win, lose) = if want == PvOutcome::SideAWins {
+            (pv_a(), pv_b())
+        } else {
+            (pv_b(), pv_a())
+        };
+        let (rw, rl) =
+            game_core::compute_rating_update(game_core::INITIAL_RATING, game_core::INITIAL_RATING);
+        assert_eq!(
+            w.profile(win),
+            Some((rw, 1, 0)),
+            "{label}: winner rated once"
+        );
+        assert_eq!(
+            w.profile(lose),
+            Some((rl, 0, 1)),
+            "{label}: loser rated once"
+        );
+        // A terminal battle ignores a late fire.
+        let after = w.snapshot();
+        assert_eq!(
+            fx.run_as(pv_module(), |ctx| super::pvp_deadline_reaper(
+                ctx,
+                args(900, 1)
+            )),
+            Ok(())
+        );
+        assert_eq!(
+            w.snapshot(),
+            after,
+            "{label}: a finished battle is never settled twice"
+        );
+    }
+}
+
+/// EV-pvp-deadline-disconnect + ST-pvp_tests#settle-rating: `forfeit_on_disconnect`
+/// ends every Ongoing PvP battle of the leaver in EITHER role with the leaver losing
+/// (side A leaver -> SideBWins, side B leaver -> SideAWins), rates each result exactly
+/// once with the winner/loser mapped from the outcome (the rt_m17_01 invariant), keeps
+/// every profile row, leaves wild battles alone, and never rates a practice self-battle.
+/// kills: side_b loop removed, forfeited side swapped, apply_pvp_rating winner/loser
+/// swapped or called twice, is_ranked_pvp guard removed.
+#[test]
+fn nh_forfeit_on_disconnect_settles_both_roles_and_rates_once() {
+    let fx = pv_fixture();
+    let w = pv_world(&fx, false);
+    w.join(pv_d(), true);
+    w.battles.seed(&pv_battle(
+        900,
+        pv_a(),
+        pv_b(),
+        PvOutcome::Ongoing,
+        &[30],
+        &[30],
+    ));
+    w.battles.seed(&pv_battle(
+        901,
+        pv_d(),
+        pv_a(),
+        PvOutcome::Ongoing,
+        &[30],
+        &[30],
+    ));
+    w.battles.seed(&pv_battle(
+        902,
+        pv_a(),
+        PV_WILD,
+        PvOutcome::Ongoing,
+        &[30],
+        &[30],
+    ));
+    w.action(1, 900, pv_b(), 1);
+    let ctx = fx.ctx();
+    super::forfeit_on_disconnect(&ctx, pv_a());
+    assert_eq!(
+        w.battle(900).map(|b| b.state.outcome),
+        Some(PvOutcome::SideBWins),
+        "A left as side A"
+    );
+    assert_eq!(
+        w.battle(901).map(|b| b.state.outcome),
+        Some(PvOutcome::SideAWins),
+        "A left as side B"
+    );
+    assert_eq!(
+        w.battle(902).map(|b| b.state.outcome),
+        Some(PvOutcome::Ongoing),
+        "wild battles are not PvP"
+    );
+    assert!(
+        w.action_ids().is_empty(),
+        "the settled battle's stale picks are swept"
+    );
+    let i = game_core::INITIAL_RATING;
+    let (rb, ra1) = game_core::compute_rating_update(i, i); // side-A loop first: 900
+    let (rd, ra2) = game_core::compute_rating_update(i, ra1); // then side-B loop: 901
+    assert_eq!(w.profile(pv_b()), Some((rb, 1, 0)));
+    assert_eq!(w.profile(pv_d()), Some((rd, 1, 0)));
+    assert_eq!(
+        w.profile(pv_a()),
+        Some((ra2, 0, 2)),
+        "the leaver lost both, rated once each"
+    );
+    let names: Vec<(PvId, String)> = w
+        .profiles
+        .rows()
+        .into_iter()
+        .map(|p| (p.identity, p.name))
+        .collect();
+    assert!(
+        names.contains(&(pv_a(), "pa1".to_string())),
+        "profile name seeded from the live player row: {names:?}"
+    );
+    let after = w.snapshot();
+    super::forfeit_on_disconnect(&ctx, pv_a());
+    assert_eq!(
+        w.snapshot(),
+        after,
+        "a second disconnect settles and rates nothing again"
+    );
+    assert_eq!(w.profiles.rows().len(), 3, "profiles are never deleted");
+
+    // Practice self-battle: settled, never rated.
+    drop(fx);
+    let fx = pv_fixture();
+    let w = pv_world(&fx, false);
+    w.battles.seed(&pv_battle(
+        900,
+        pv_a(),
+        pv_a(),
+        PvOutcome::Ongoing,
+        &[30],
+        &[30],
+    ));
+    super::forfeit_on_disconnect(&fx.ctx(), pv_a());
+    assert_ne!(
+        w.battle(900).map(|b| b.state.outcome),
+        Some(PvOutcome::Ongoing)
+    );
+    assert!(
+        w.profiles.rows().is_empty(),
+        "a practice self-battle never touches the ladder"
+    );
+}
+
+/// EV-pvp-deadline-disconnect (challenges): `cancel_challenges_on_disconnect` deletes
+/// the leaver's OUTGOING pending challenges and their reapers and keeps incoming ones
+/// (the challenger may reconnect). ST-pvp_tests#reducer-guards (erase): `erase_pvp_rows`
+/// deletes every challenge naming the owner in EITHER role plus their reapers, and every
+/// pick the owner submitted, and nothing else.
+/// kills: either writer -> (), direction swapped, disarm skipped, action filter dropped.
+#[test]
+fn nh_disconnect_and_erase_remove_exactly_the_owners_pvp_rows() {
+    let seed = |w: &PvWorld<'_>| {
+        w.challenges
+            .seed(&pv_challenge(100, pv_a(), pv_b(), PvStatus::Pending));
+        w.challenges
+            .seed(&pv_challenge(101, pv_d(), pv_a(), PvStatus::Pending));
+        w.challenges
+            .seed(&pv_challenge(102, pv_c(), pv_d(), PvStatus::Pending));
+        for (sid, cid) in [(500, 100), (501, 101), (502, 102)] {
+            w.reaper(sid, cid);
+        }
+        w.action(1, 900, pv_a(), 1);
+        w.action(2, 900, pv_b(), 1);
+    };
+    let fx = pv_fixture();
+    let w = pv_world(&fx, false);
+    seed(&w);
+    super::cancel_challenges_on_disconnect(&fx.ctx(), pv_a());
+    assert_eq!(
+        w.challenge_ids(),
+        vec![101, 102],
+        "outgoing gone, incoming kept"
+    );
+    assert_eq!(w.reaper_challenge_ids(), vec![101, 102]);
+    assert_eq!(w.action_ids(), vec![1, 2], "disconnect never touches picks");
+
+    drop(fx);
+    let fx = pv_fixture();
+    let w = pv_world(&fx, false);
+    seed(&w);
+    super::erase_pvp_rows(&fx.ctx(), pv_a());
+    assert_eq!(
+        w.challenge_ids(),
+        vec![102],
+        "both roles erased, bystander kept"
+    );
+    assert_eq!(w.reaper_challenge_ids(), vec![102]);
+    assert_eq!(w.action_ids(), vec![2], "only the owner's picks erased");
+
+    // disarm_pvp_deadlines (the cascade's per-battle deadline sweep): exactly the
+    // named battle's deadline rows go.
+    for (sid, battle_id) in [(700, 900), (701, 900), (702, 901)] {
+        w.deadlines.seed(&super::PvpDeadlineSchedule {
+            scheduled_id: sid,
+            scheduled_at: PvAt::Time(pv_at(PV_T0)),
+            battle_id,
+            turn_number: 1,
+        });
+    }
+    super::disarm_pvp_deadlines(&fx.ctx(), 900);
+    assert_eq!(
+        w.deadlines
+            .rows()
+            .iter()
+            .map(|d| d.scheduled_id)
+            .collect::<Vec<_>>(),
+        vec![702],
+        "only battle 900's deadlines are disarmed"
+    );
+}
+
+/// ST-pvp_tests#reducer-guards (submit_pvp_action): a stranger, a wild battle, a finished
+/// battle, an unknown skill, an out-of-range / fainted / already-active swap and a second
+/// pick for the same turn are refused before any write; an Attack from a fainted active
+/// is refused while a Swap out of it is admitted (the only exit, ADR-0166 D2). One valid
+/// pick inserts exactly one action for the current turn and resolves nothing.
+/// kills: participant check removed, WILD check removed, double-submit guard removed,
+/// fainted-active guard moved onto Swap.
+#[test]
+fn nh_submit_pvp_action_guards_and_records_one_pick() {
+    let seed = |w: &PvWorld<'_>| {
+        w.battles.seed(&pv_battle(
+            900,
+            pv_a(),
+            pv_b(),
+            PvOutcome::Ongoing,
+            &[30, 0, 30],
+            &[30, 30],
+        ));
+        w.battles.seed(&pv_battle(
+            901,
+            pv_a(),
+            PV_WILD,
+            PvOutcome::Ongoing,
+            &[30],
+            &[30],
+        ));
+        w.battles.seed(&pv_battle(
+            902,
+            pv_c(),
+            pv_d(),
+            PvOutcome::SideAWins,
+            &[30],
+            &[30],
+        ));
+        let mut corpse = pv_battle(903, pv_c(), pv_d(), PvOutcome::Ongoing, &[0, 30], &[30]);
+        corpse.state.turn_number = 4;
+        w.battles.seed(&corpse);
+        w.action(50, 904, pv_d(), 1);
+        // The caller's own pick from an EARLIER turn never counts as this turn's.
+        w.action(51, 900, pv_a(), 0);
+    };
+    let atk = |skill_id| PvPick::Attack { skill_id };
+    let swap = |team_index| PvPick::Swap { team_index };
+    let cases: Vec<(&str, PvId, u64, PvPick, &str)> = vec![
+        ("missing battle", pv_a(), 999, atk(1), "battle not found"),
+        ("stranger", pv_c(), 900, atk(1), ""),
+        ("wild battle", pv_a(), 901, atk(1), "not a PvP battle"),
+        (
+            "finished battle",
+            pv_c(),
+            902,
+            atk(1),
+            "battle is not ongoing",
+        ),
+        (
+            "unknown skill",
+            pv_a(),
+            900,
+            atk(2),
+            "skill 2 not in active monster's moveset",
+        ),
+        (
+            "swap out of range",
+            pv_a(),
+            900,
+            swap(3),
+            "team_index 3 out of bounds",
+        ),
+        (
+            "swap to a fainted slot",
+            pv_a(),
+            900,
+            swap(1),
+            "monster at index 1 is fainted",
+        ),
+        (
+            "swap to the active slot",
+            pv_a(),
+            900,
+            swap(0),
+            "already the active monster",
+        ),
+        (
+            "attack from a fainted active",
+            pv_c(),
+            903,
+            atk(1),
+            "your active monster has fainted",
+        ),
+    ];
+    for (label, who, battle_id, pick, needle) in cases {
+        let fx = pv_fixture();
+        let w = pv_world(&fx, false);
+        seed(&w);
+        let before = w.snapshot();
+        let got = fx.run_as(who, |ctx| super::submit_pvp_action(ctx, battle_id, pick));
+        match &got {
+            Err(e) => assert!(
+                e.contains(needle),
+                "{label}: wrong refusal {e:?} (want {needle:?})"
+            ),
+            Ok(()) => panic!("{label}: must be refused"),
+        }
+        assert_eq!(w.snapshot(), before, "{label}: refused before any write");
+    }
+    let fx = pv_fixture();
+    let w = pv_world(&fx, false);
+    seed(&w);
+    let battle_bytes =
+        |w: &PvWorld<'_>| spacetimedb::sats::bsatn::to_vec(&w.battle(900).unwrap()).unwrap();
+    let before_battle = battle_bytes(&w);
+    assert_eq!(
+        fx.run_as_at(pv_a(), pv_at(PV_T0 + 7), |ctx| super::submit_pvp_action(
+            ctx,
+            900,
+            atk(1)
+        )),
+        Ok(())
+    );
+    let mine: Vec<PvAction> = w
+        .actions
+        .rows()
+        .into_iter()
+        .filter(|a| a.battle_id == 900 && a.turn_number == 1)
+        .collect();
+    assert_eq!(mine.len(), 1, "exactly one pick recorded");
+    assert_eq!(
+        (
+            mine[0].player_identity,
+            mine[0].action,
+            mine[0].turn_number,
+            mine[0].submitted_at_ms
+        ),
+        (pv_a(), atk(1), 1, PV_T0 + 7)
+    );
+    assert_eq!(
+        battle_bytes(&w),
+        before_battle,
+        "one side's pick resolves nothing"
+    );
+    let before = w.snapshot();
+    assert_eq!(
+        fx.run_as(pv_a(), |ctx| super::submit_pvp_action(ctx, 900, swap(2))),
+        Err("already submitted an action for this turn".to_string())
+    );
+    assert_eq!(
+        w.snapshot(),
+        before,
+        "a second pick for the same turn writes nothing"
+    );
+    // The corpse-active side may still swap out.
+    assert_eq!(
+        fx.run_as(pv_c(), |ctx| super::submit_pvp_action(ctx, 903, swap(1))),
+        Ok(())
+    );
+}
+
+/// ST-pvp_tests#reducer-guards (turn resolution): the SECOND pick of a turn resolves
+/// it in the same call — both picks of THAT turn are consumed (an older-turn pick is
+/// not), the resolved state is written back with its status store (a sleeping bench
+/// monster ticks down), the turn advances and the next deadline is armed at
+/// now + PVP_TURN_DEADLINE_MS. A turn that decides the battle settles it instead:
+/// terminal outcome, both ratings applied once, no further deadline.
+/// kills: the `< 2` readiness check, the current-turn filter, either side's pick
+/// lookup, the Ongoing status copy, and the settle-vs-reschedule branch.
+#[test]
+fn nh_second_pick_resolves_the_turn_and_a_decisive_turn_settles() {
+    let fx = pv_fixture();
+    let w = pv_world(&fx, true);
+    let mut b = pv_battle(
+        900,
+        pv_a(),
+        pv_b(),
+        PvOutcome::Ongoing,
+        &[30, 30, 30],
+        &[30, 30, 30],
+    );
+    b.state.side_a.team[2].status = Some(game_core::StatusEffect::Sleep { turns_remaining: 3 });
+    w.battles.seed(&b);
+    w.action(60, 900, pv_a(), 0); // a stale pick from turn 0
+    let t = PV_T0 + 9_000;
+    let swap = PvPick::Swap { team_index: 1 };
+    // Side B picks a DIFFERENT swap, so crossed pick lookups are visible.
+    let swap_b = PvPick::Swap { team_index: 2 };
+    assert_eq!(
+        fx.run_as_at(pv_a(), pv_at(t), |ctx| super::submit_pvp_action(
+            ctx, 900, swap
+        )),
+        Ok(())
+    );
+    assert_eq!(
+        w.battle(900).map(|b| b.state.turn_number),
+        Some(1),
+        "one pick resolves nothing"
+    );
+    assert_eq!(
+        fx.run_as_at(pv_b(), pv_at(t), |ctx| super::submit_pvp_action(
+            ctx, 900, swap_b
+        )),
+        Ok(())
+    );
+    let b = w.battle(900).expect("battle kept");
+    assert_eq!(b.state.outcome, PvOutcome::Ongoing);
+    assert_eq!(b.state.turn_number, 2, "the turn advanced");
+    assert_eq!(
+        (b.state.side_a.active, b.state.side_b.active),
+        (1, 2),
+        "each side's OWN swap applied"
+    );
+    assert_eq!(
+        b.state.side_a.team[2].status,
+        Some(game_core::StatusEffect::Sleep { turns_remaining: 2 }),
+        "the resolved status store is written back (bench sleep ticks 3 -> 2)"
+    );
+    assert_eq!(
+        w.action_ids(),
+        vec![60],
+        "this turn's two picks consumed, the stale one kept"
+    );
+    let d = w.deadlines.rows();
+    assert_eq!(d.len(), 1, "exactly one next-turn deadline");
+    assert_eq!(
+        (d[0].battle_id, d[0].turn_number, d[0].scheduled_at),
+        (900, 2, PvAt::Time(pv_at(t + super::PVP_TURN_DEADLINE_MS)))
+    );
+    assert!(
+        w.profiles.rows().is_empty(),
+        "an undecided turn rates nobody"
     );
 
-    // --- 8 [rb81/mod-census] ------------------------------------------------
-    let mod_kw = ["m", "od"].concat();
-    let n_mod = rb81_ident_boundary_count(stripped.as_str(), mod_kw.as_str());
+    // A decisive turn: side A's only monster is at 1 HP, so side B's hit ends it.
+    drop(fx);
+    let fx = pv_fixture();
+    let w = pv_world(&fx, true);
+    w.battles.seed(&pv_battle(
+        901,
+        pv_a(),
+        pv_b(),
+        PvOutcome::Ongoing,
+        &[1],
+        &[30],
+    ));
+    let atk = PvPick::Attack { skill_id: 1 };
+    for who in [pv_a(), pv_b()] {
+        assert_eq!(
+            fx.run_as_at(who, pv_at(t), |ctx| super::submit_pvp_action(ctx, 901, atk)),
+            Ok(())
+        );
+    }
+    let b = w.battle(901).expect("battle kept (terminal)");
     assert_eq!(
-        n_mod, 1,
-        "[rb81/mod-census] FAIL: `pvp.rs` declares {n_mod} module(s) and must declare exactly \
-         ONE — the test module in its tail. A second declaration moves a twin reducer into a \
-         file NO clause here reads (with or without a relocation attribute), and a shadowing \
-         module re-exporting the reducer macro under another name beats the path clause."
+        b.state.outcome,
+        PvOutcome::SideBWins,
+        "side A was knocked out"
     );
-
-    // --- 9 [rb81/include-ban] + [rb81/macro-ban] ----------------------------
-    let inc = ["inc", "lude"].concat();
-    let n_inc = stripped.matches(inc.as_str()).count();
-    assert_eq!(
-        n_inc, 0,
-        "[rb81/include-ban] FAIL: the substring `include` appears {n_inc} time(s) on the \
-         stripped view of `pvp.rs` (any spelling — macro or identifier) and must appear ZERO. \
-         Source inlining splices another file's tokens into THIS module at compile time, so \
-         the spliced reducer ships while no view of this file's text can see it."
+    let (rw, rl) =
+        game_core::compute_rating_update(game_core::INITIAL_RATING, game_core::INITIAL_RATING);
+    assert_eq!(w.profile(pv_b()), Some((rw, 1, 0)));
+    assert_eq!(w.profile(pv_a()), Some((rl, 0, 1)));
+    assert!(
+        w.deadlines.rows().is_empty(),
+        "a settled battle arms no further deadline"
     );
-    let mac = ["macro", "_rules"].concat();
-    let n_mac = stripped.matches(mac.as_str()).count();
-    assert_eq!(
-        n_mac, 0,
-        "[rb81/macro-ban] FAIL: `pvp.rs` defines {n_mac} declarative macro(s) and must define \
-         ZERO. A macro assembling the attribute from fragments publishes an entry point every \
-         literal needle here counts as zero. One defined in ANOTHER module and invoked here is \
-         outside this file's window: R-rb-81-CROSSFILEMACRO."
-    );
-
-    // --- 10 [rb81/attr-raw] -------------------------------------------------
-    let n_raw_attrs = rb81_attr_openers(PVP_RS);
-    assert_eq!(
-        n_raw_attrs, 17,
-        "[rb81/attr-raw] FAIL: the RAW text of `pvp.rs` carries {n_raw_attrs} attribute \
-         opener(s) and must carry 17 — the 16 the partition accounts for plus the ONE inside a \
-         comment (pvp.rs:1386, the note explaining the relocation attribute); editing that \
-         comment moves only this number. An opener is a hash whose next NON-WHITESPACE byte is \
-         the bracket, so a hash spaced away from its bracket still counts and this census does \
-         not lean on the formatter gate. The only clause reading NO stripper output, so it \
-         still bites if the strippers are ever fooled; adding an attribute moves the raw and \
-         the stripped numbers TOGETHER."
-    );
+    assert!(w.action_ids().is_empty(), "both picks consumed");
 }

@@ -564,37 +564,6 @@ fn evaluate_heal_rejects_future_last_heal() {
 // structural scans in this file still use them.
 // =========================================================================
 
-/// Include raising.rs source for structural inspection.
-const RAISING_SOURCE: &str = include_str!("raising.rs");
-
-/// Minimal strip_rust_comments (not available from super here — reproduce locally).
-fn strip_raising_comments(src: &str) -> String {
-    let bytes = src.as_bytes();
-    let len = bytes.len();
-    let mut out = vec![b' '; len];
-    let mut i = 0;
-    while i < len {
-        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-            i += 2;
-            while i + 1 < len {
-                if bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                    i += 2;
-                    break;
-                }
-                i += 1;
-            }
-        } else if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
-            while i < len && bytes[i] != b'\n' {
-                i += 1;
-            }
-        } else {
-            out[i] = bytes[i];
-            i += 1;
-        }
-    }
-    String::from_utf8(out).expect("stripped source must be valid UTF-8")
-}
-
 /// CARE_COOLDOWN_MS must equal exactly 6 hours in milliseconds (21_600_000).
 ///
 /// Kills all 6 mutations at line 37 (positions 44, 49, 54):
@@ -635,130 +604,6 @@ fn care_cooldown_ms_is_six_hours_in_milliseconds() {
 // Test 3 is GREEN (pins the semantics of the pre-existing helper).
 // Test 4 is GREEN (pins the pure math magnitude of the laundering vector).
 // ===========================================================================
-
-/// Brace-walk helper: given `stripped` source and a `fn_needle` that locates
-/// a reducer, return the slice of `stripped` that is the reducer body
-/// (content between the outermost `{` and its matching `}`).
-///
-/// This is the DRY core shared by `care_battle_guard_wired` and
-/// `train_battle_guard_wired`. Mirrors the walk in `care_reducer_calls_compute_evolves_to`
-/// (line ~749) exactly — same strip-then-find-then-walk pattern.
-fn reducer_body<'a>(stripped: &'a str, fn_needle: &str) -> &'a str {
-    let fn_pos = stripped
-        .find(fn_needle)
-        .unwrap_or_else(|| panic!("reducer '{}' not found in raising.rs source", fn_needle));
-    let after = &stripped[fn_pos..];
-    let brace = after.find('{').expect("reducer must have an opening brace");
-    let body_start = fn_pos + brace + 1;
-
-    let mut depth: usize = 1;
-    let chars: Vec<char> = stripped[body_start..].chars().collect();
-    let mut char_i = 0;
-    let mut byte_off = 0;
-    while char_i < chars.len() && depth > 0 {
-        match chars[char_i] {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    break;
-                }
-            }
-            _ => {}
-        }
-        byte_off += chars[char_i].len_utf8();
-        char_i += 1;
-    }
-    &stripped[body_start..body_start + byte_off]
-}
-
-/// ptc5a Test 1 — care reducer source-scan: the `care` body must contain
-/// `if is_in_ongoing_battle(ctx, ctx.sender())` in its conditional form.
-///
-/// TEETH(ptc5a-1): the care reducer body must contain
-/// `if is_in_ongoing_battle(ctx, ctx.sender())` after `require_owner`.
-///
-/// Kills:
-///   - deleting the guard entirely (needle absent → RED).
-///   - a dead-code evasion `let _ = is_in_ongoing_battle(ctx, ctx.sender());`
-///     (no `if` prefix → whitespace-collapsed needle `ifis_in_ongoing_battle(ctx,ctx.sender())`
-///     is absent → RED).
-///
-/// MUST START RED until the implementer adds the guard.
-#[test]
-fn care_battle_guard_wired() {
-    let stripped = strip_raising_comments(RAISING_SOURCE);
-    let fn_needle = ["pub fn care", "(ctx:"].concat();
-    let body = reducer_body(&stripped, &fn_needle);
-
-    // Whitespace-collapse the body so rustfmt line splits never cause false RED.
-    let collapsed: String = body.split_whitespace().collect();
-
-    // Needle assembled from parts to prevent self-match in the included source text.
-    // The trailing `{` (the opening brace of the if-block) is load-bearing: it
-    // rejects a string-literal fake like `log::info!("if is_in_ongoing_battle(ctx,
-    // ctx.sender())")` (which collapses to `..."ifis_in_ongoing_battle(ctx,ctx.sender())"`
-    // — no `){`) while matching any real guard body shape. The eval
-    // (battle-reducer-security C1) additionally strips string literals and is the
-    // authoritative gate; this Rust layer is the fast first check (red-team ptc5a F2).
-    let needle = ["ifis_in_ongoing", "_battle(ctx,ctx.sender()){"].concat();
-
-    assert!(
-        collapsed.contains(needle.as_str()),
-        "TEETH(ptc5a-1): the `care` reducer body must contain \
-         `if is_in_ongoing_battle(ctx, ctx.sender()) {{` (whitespace-collapsed: \
-         `ifis_in_ongoing_battle(ctx,ctx.sender()){{`) immediately after `require_owner`. \
-         This guard blocks mid-battle bond-raising that would feed the HP-laundering \
-         vector (ADR-0136). \
-         Kills: deleting the guard (needle absent) AND a dead-code `let _ = ...` \
-         evasion (no `if` prefix → needle absent). \
-         RED until implementer adds: \
-         `if is_in_ongoing_battle(ctx, ctx.sender()) {{ \
-             return Err(\"cannot care during an ongoing battle\".to_string()); \
-         }}`"
-    );
-}
-
-/// ptc5a Test 2 — train reducer source-scan: the `train` body must contain
-/// `if is_in_ongoing_battle(ctx, ctx.sender())` in its conditional form.
-///
-/// TEETH(ptc5a-1): same needle as Test 1 but scoped to the `train` reducer body.
-///
-/// Kills:
-///   - deleting the guard from `train` (needle absent → RED).
-///   - a dead-code `let _ = is_in_ongoing_battle(ctx, ctx.sender());` evasion
-///     (no `if` prefix → whitespace-collapsed needle absent → RED).
-///
-/// MUST START RED until the implementer adds the guard.
-#[test]
-fn train_battle_guard_wired() {
-    let stripped = strip_raising_comments(RAISING_SOURCE);
-    let fn_needle = ["pub fn train", "(ctx:"].concat();
-    let body = reducer_body(&stripped, &fn_needle);
-
-    // Whitespace-collapse so rustfmt line splits never produce false RED.
-    let collapsed: String = body.split_whitespace().collect();
-
-    // Same needle as care: both reducers use ctx.sender() as the identity token.
-    // The trailing `{` rejects a string-literal fake (see care_battle_guard_wired);
-    // the eval (battle-reducer-security C1) is the authoritative string-stripped gate.
-    let needle = ["ifis_in_ongoing", "_battle(ctx,ctx.sender()){"].concat();
-
-    assert!(
-        collapsed.contains(needle.as_str()),
-        "TEETH(ptc5a-1): the `train` reducer body must contain \
-         `if is_in_ongoing_battle(ctx, ctx.sender())` (whitespace-collapsed: \
-         `ifis_in_ongoing_battle(ctx,ctx.sender())`) immediately after `require_owner`. \
-         This guard blocks mid-battle EV training that enables HP laundering via the \
-         level-up heal formula (ADR-0136). \
-         Kills: deleting the guard (needle absent) AND a dead-code `let _ = ...` \
-         evasion (no `if` prefix → needle absent). \
-         RED until implementer adds: \
-         `if is_in_ongoing_battle(ctx, ctx.sender()) {{ \
-             return Err(\"cannot train during an ongoing battle\".to_string()); \
-         }}`"
-    );
-}
 
 /// Minimal Battle row builder for ptc5a tests 3+4.
 /// Only `state.outcome` and `opponent_identity` are read by
@@ -936,296 +781,6 @@ fn differential_level_up_heal_documents_laundering_vector() {
         healed_laundered,
         healed_baseline,
         healed_laundered.saturating_sub(healed_baseline),
-    );
-}
-
-// ===========================================================================
-// 11r-g (ADR-0170 D3) — `heal_party` reads the CACHED heal-location registry
-//
-// EARS criteria covered by this section:
-//
-//   H-2  `heal_party` SHALL read the heal-location registry through
-//        `content_cache::cached_heal_locations` (the eighth LazyLock) instead of
-//        re-parsing the embedded RON on every call, with the currency-cost
-//        semantics UNCHANGED: find by `location_id`, read `cost_currency`,
-//        default to 0.
-//   H-3  The swap SHALL NOT reorder the ownership / escrow / spend sequence that
-//        `economy-sinks-sources.eval.mjs` pins (ADR-0170 D3 says so in as many
-//        words: "the owner-first/spend ordering ... is not reordered").
-//
-// RED STATE. H-2 is ASSERTION-RED at HEAD: `heal_party` (raising.rs:324) calls
-// the uncached loader. H-3 is a GREEN-AT-HEAD fence, and a SEPARATE `#[test]`
-// for the reason the house records elsewhere (`movement_tests.rs:917-921`):
-// behind a failing assertion it could never be observed passing, so it would
-// prove nothing about the swap it exists to constrain.
-//
-// Both scans reuse this file's existing helpers verbatim — `RAISING_SOURCE`
-// (line ~656), `strip_raising_comments` (line ~659) and `reducer_body`
-// (line ~840) — and whitespace-collapse the extracted body the same way
-// `care_battle_guard_wired` does, so a rustfmt line split can never cause a
-// false RED. Needles are assembled from fragments (house rule) so no eval that
-// concatenates every source file under this crate can be satisfied by this
-// test's own text.
-// ===========================================================================
-
-/// Blank the CONTENT and delimiters of every `"…"` string literal, preserving
-/// byte length by substituting spaces.
-///
-/// A LOCAL, ADDITIVE companion to this file's shared `strip_raising_comments`
-/// (which stays comment-only): used ONLY by
-/// [`heal_party_reads_the_cached_heal_location_registry`], so the pre-existing
-/// ptc5a `care` / `train` needles keep the exact view they were written against.
-/// Apply AFTER comment stripping, never before.
-///
-/// Handles `"…"` with `\` escapes only; [`assert_no_heal_scan_landmines`] fails
-/// loudly on the two constructs that would misalign it.
-fn blank_heal_scan_strings(src: &str) -> String {
-    let bytes = src.as_bytes();
-    let len = bytes.len();
-    let mut out = vec![b' '; len];
-    let mut i = 0;
-    while i < len {
-        if bytes[i] == 0x22 {
-            i += 1;
-            while i < len {
-                if bytes[i] == b'\\' {
-                    i += 2;
-                } else if bytes[i] == 0x22 {
-                    i += 1;
-                    break;
-                } else {
-                    i += 1;
-                }
-            }
-        } else {
-            out[i] = bytes[i];
-            i += 1;
-        }
-    }
-    String::from_utf8(out).expect("string-blanked source must be valid UTF-8")
-}
-
-/// Loud preconditions for [`blank_heal_scan_strings`]'s two blind spots: raw
-/// strings and a double quote spelled as a char literal. A silently misaligned
-/// blanker would blank the wrong byte range and turn the gate below vacuous, so
-/// each fails with an explicit message instead (the discipline
-/// `guards_tests.rs`'s `assert_stripper_preconditions` established).
-fn assert_no_heal_scan_landmines(raw: &str) {
-    let raw_opener = ["r", "#"].concat();
-    assert!(
-        !raw.contains(raw_opener.as_str()),
-        "SCAN PRECONDITION (11r-g H-2): `raising.rs` contains a raw-string / \
-         raw-identifier opener, which this file's minimal string blanker does not \
-         handle — it would blank the wrong byte range and hollow out the gate below. \
-         Extend the blanker before adding such a literal."
-    );
-    let sq = char::from(0x27u8).to_string();
-    let dq = char::from(0x22u8).to_string();
-    let char_literal_quote = [sq.as_str(), dq.as_str(), sq.as_str()].concat();
-    assert!(
-        !raw.contains(char_literal_quote.as_str()),
-        "SCAN PRECONDITION (11r-g H-2): `raising.rs` spells a double quote as a CHAR \
-         literal. This blanker has no char-literal lexer, so that quote reads as a \
-         string OPENER and inverts string/code polarity for the rest of the file. \
-         Spell it with a Unicode escape inside the char literal."
-    );
-}
-
-/// **H-2** (ADR-0170 D3) — `heal_party` reads the CACHED heal-location registry.
-///
-/// ASSERTION-RED at HEAD: raising.rs:324 calls the uncached loader, re-parsing
-/// the embedded heal-location RON on every single `heal_party` call.
-///
-/// WHAT EACH NEEDLE KILLS.
-///   * Positive, module-QUALIFIED `content_cache::cached_heal_locations(` —
-///     kills the false green where a file-local helper named
-///     `load_cached_heal_locations()` satisfies a bare substring while still
-///     re-parsing internally (the same qualification reasoning
-///     `content_cache_tests.rs`'s M14.5e gate records). The trailing open paren
-///     pins a CALL rather than a mention.
-///   * Negative `load_heal_locations(` — kills the belt-and-braces shell that
-///     adds the cached call and leaves the uncached one, so the re-parse
-///     survives. The open paren is deliberate: it targets the CALL and
-///     deliberately ignores the accessor's name appearing inside the `map_err`
-///     message text, which this file's comment-only stripper leaves visible.
-///     (Renaming that message is good hygiene but is not gated here — a false
-///     RED on a message would be a fence with no defect behind it.)
-///   * `cost_currency` — kills a swap that reaches the cache but then reads the
-///     wrong field or drops the currency lookup entirely. ADR-0083 puts the heal
-///     price on `HealLocationDef`, not on the DB row, so this field IS the price.
-///   * `unwrap_or(0)` at least twice — pins BOTH defaults that make `heal_party`
-///     total: the missing-cooldown-row default (raising.rs:320) and the
-///     unknown-location cost default (:329). Dropping the cost default turns an
-///     unlisted `location_id` into an error or a panic on a path that today is
-///     simply free, and ADR-0170 D3 requires the semantics to be unchanged.
-///
-/// COMMENTS **AND** STRING LITERALS ARE BLANKED before any needle is evaluated.
-/// This file's shared `strip_raising_comments` is comment-only, which is fine for
-/// the pre-existing tests but NOT for a gate whose teeth are a POSITIVE needle: a
-/// dead `let _decoy = "content_cache::cached_heal_locations()";` in the body would
-/// satisfy the positive needle while `heal_party` still calls the uncached loader,
-/// and the negative needle would never fire because the decoy does not spell it.
-/// That is the red-team hole `movement_tests.rs:45-52` records for this crate.
-/// [`blank_heal_scan_strings`] is a local, additive step — the shared helper and
-/// the ptc5a tests are untouched.
-///
-/// HONEST LIMIT: a source scan, not an execution — this crate has no
-/// reducer-executing harness (ADR-0156 P7). That the cached accessor returns the
-/// same data as the loader is proven separately and behaviourally by
-/// `content_cache_tests.rs::cached_heal_locations_matches_load`.
-#[test]
-fn heal_party_reads_the_cached_heal_location_registry() {
-    assert_no_heal_scan_landmines(RAISING_SOURCE);
-    let stripped = blank_heal_scan_strings(&strip_raising_comments(RAISING_SOURCE));
-    let fn_needle = ["pub fn heal", "_party(ctx:"].concat();
-    let body = reducer_body(&stripped, &fn_needle);
-    let collapsed: String = body.split_whitespace().collect();
-
-    let cached = ["content_cache::cached_heal", "_locations("].concat();
-    assert!(
-        collapsed.contains(cached.as_str()),
-        "TEETH (11r-g H-2, ADR-0170 D3): `heal_party` must read the heal-location \
-         registry through `content_cache::cached_heal_locations(..)` — the eighth \
-         LazyLock this slice adds. RED at HEAD: raising.rs:324 calls the uncached \
-         loader and re-parses the embedded RON on EVERY heal. The needle is \
-         module-QUALIFIED and keeps its opening paren so a file-local \
-         `load_cached_heal_locations()` shim cannot satisfy it, and comments AND \
-         string literals are blanked before matching so a dead \
-         `let _decoy = <the needle text>;` cannot satisfy it either — only an \
-         executable call can."
-    );
-
-    let banned = ["load_heal", "_locations("].concat();
-    let n_banned = collapsed.matches(banned.as_str()).count();
-    assert_eq!(
-        n_banned, 0,
-        "TEETH (11r-g H-2, ADR-0170 D3): `heal_party`'s body makes {n_banned} direct \
-         call(s) to the uncached heal-location loader and must make ZERO. HEAD has 1. \
-         Adding the cached accessor while leaving this call in place is the \
-         belt-and-braces shell that passes the positive needle above with the \
-         per-call RON re-parse fully intact. String literals are blanked before \
-         matching, so the accessor name inside the existing `map_err` message cannot \
-         trip this — only an executable call can. (Renaming that message when the \
-         call moves is still good hygiene; it is deliberately not gated.)"
-    );
-
-    let cost_field = ["cost", "_currency"].concat();
-    assert!(
-        collapsed.contains(cost_field.as_str()),
-        "TEETH (11r-g H-2, ADR-0170 D3): `heal_party` must still read `cost_currency` \
-         from the heal-location definition. ADR-0083 §A puts the heal price on \
-         `HealLocationDef` (content), NOT on the DB row, so this field IS the price — \
-         a swap that reaches the cache but drops the field makes every paid heal free."
-    );
-
-    let default_zero = ["unwrap_or(", "0)"].concat();
-    let n_default = collapsed.matches(default_zero.as_str()).count();
-    assert!(
-        n_default >= 2,
-        "TEETH (11r-g H-2, ADR-0170 D3): `heal_party` must keep BOTH of its \
-         zero-defaults; the body has {n_default} `unwrap_or(0)` and needs at least 2. \
-         The two are raising.rs:320 (no `heal_cooldown` row yet ⇒ last heal at 0) and \
-         :329 (the `location_id` is absent from the registry ⇒ the heal is FREE). \
-         ADR-0170 D3 requires the semantics to be unchanged by the cache swap: \
-         dropping the cost default turns an unlisted location from a free heal into \
-         an error or a panic, on a path a content edit can reach."
-    );
-}
-
-/// **H-3** (ADR-0170 D3, ADR-0083 / ADR-0106 consequence fence) — the cache swap
-/// must not reorder `heal_party`'s ownership / escrow / spend sequence.
-///
-/// GREEN AT HEAD and green after the slice; RED if the currency block is
-/// restructured while the cost lookup above it is being rewritten.
-///
-/// WHY THIS FENCE EXISTS HERE. H-2 rewrites the statement DIRECTLY ABOVE this
-/// sequence (`let currency_cost = ...`). Editing the head of a block is the
-/// classic way to accidentally re-flow the rest of it, and every property below
-/// is invisible to H-2's needles:
-///
-///   1. **`if currency_cost > 0 {` still gates the whole spend.** A content edit
-///      that sets a heal price is only safe because a zero price skips the block
-///      entirely. Without the gate, `spend_currency(ctx, me, 0)` runs on every
-///      free heal — a write, a wallet row touch, and a broadcast to every
-///      subscriber, on the most-called reducer in the raising domain.
-///   2. **`require_owner` precedes the escrow check, which precedes the spend.**
-///      This is the ordering `economy-sinks-sources.eval.mjs` pins. Spending
-///      before the escrow check lets a player pay for a heal with currency that
-///      is already locked in an active trade offer (TR-10, ADR-0106) — the
-///      double-spend the escrow guard exists to close. Spending before
-///      `require_owner` is the reject-never-burns violation ADR-0083 names: the
-///      currency is gone before the call is known to be legitimate.
-///   3. **Each of the three appears EXACTLY ONCE.** With two `spend_currency`
-///      calls the index comparison below is satisfiable while a second, unguarded
-///      spend runs later — the same reasoning `movement_tests.rs`'s E1 layer-3
-///      precondition records for a duplicated drain site.
-///
-/// HONEST LIMIT: it pins textual ORDER within one reducer body, which is a sound
-/// proxy here because these three are straight-line statements in a single block.
-/// It says nothing about the ordering eval itself — that gate stays the SSOT; this
-/// is the fast local canary that runs in the same `cargo test` as the swap.
-#[test]
-fn heal_party_keeps_owner_and_escrow_checks_before_the_spend() {
-    let stripped = strip_raising_comments(RAISING_SOURCE);
-    let fn_needle = ["pub fn heal", "_party(ctx:"].concat();
-    let body = reducer_body(&stripped, &fn_needle);
-    let collapsed: String = body.split_whitespace().collect();
-
-    let gate = ["ifcurrency_cost", ">0{"].concat();
-    assert!(
-        collapsed.contains(gate.as_str()),
-        "TEETH (11r-g H-3, ADR-0083): `heal_party` must keep `if currency_cost > 0 {{` \
-         as the gate on the whole currency block. Without it a FREE heal still runs \
-         `spend_currency(ctx, me, 0)` — a wallet write and a subscriber broadcast on \
-         the most-called reducer in this domain — and the zero-price content path \
-         stops being a no-op."
-    );
-
-    let owner = ["require", "_owner(ctx,"].concat();
-    let escrow = ["escrowed_currency", "_amount("].concat();
-    let spend = ["spend", "_currency(ctx,"].concat();
-
-    for (label, needle) in [
-        ("the ownership guard", owner.as_str()),
-        ("the trade-escrow check", escrow.as_str()),
-        ("the currency spend", spend.as_str()),
-    ] {
-        let n = collapsed.matches(needle).count();
-        assert_eq!(
-            n, 1,
-            "FENCE PRECONDITION (11r-g H-3): {label} must appear EXACTLY ONCE in \
-             `heal_party`'s body; found {n}. With zero the step was deleted; with two \
-             the index comparison below is satisfiable while a SECOND, unguarded copy \
-             runs later in the same block (the duplicated-site hazard \
-             `movement_tests.rs`'s E1 layer-3 precondition records)."
-        );
-    }
-
-    let owner_at = collapsed
-        .find(owner.as_str())
-        .expect("11r-g H-3: the ownership guard was not found in heal_party's body");
-    let escrow_at = collapsed
-        .find(escrow.as_str())
-        .expect("11r-g H-3: the trade-escrow check was not found in heal_party's body");
-    let spend_at = collapsed
-        .find(spend.as_str())
-        .expect("11r-g H-3: the currency spend was not found in heal_party's body");
-
-    assert!(
-        owner_at < escrow_at,
-        "TEETH (11r-g H-3, ADR-0083 reject-never-burns): the ownership guard is at \
-         collapsed byte {owner_at} but the trade-escrow check is at {escrow_at} — the \
-         guard must come FIRST. Green at HEAD; if this fires, the currency block was \
-         re-flowed while the cost lookup above it was being swapped to the cache."
-    );
-    assert!(
-        escrow_at < spend_at,
-        "TEETH (11r-g H-3, ADR-0106 TR-10): the trade-escrow check is at collapsed \
-         byte {escrow_at} but the spend is at {spend_at} — the escrow check must come \
-         FIRST. Spending before it lets a player pay for a heal with currency already \
-         locked in an active trade offer, which is the double-spend \
-         `escrowed_currency_amount` exists to close and which \
-         `economy-sinks-sources.eval.mjs` pins from outside this crate. Green at HEAD."
     );
 }
 
@@ -1468,9 +1023,9 @@ fn credits_gap_within_idle_window() {
 /// EG2-8 / EG2-9 (the no-idle-accrual invariant at the unit level): a gap LONGER
 /// than `QT_IDLE_GAP_MS` credits NOTHING — the player was away.
 ///
-/// This is the unit-level proof-of-teeth for the whole no-idle-accrual gate:
-/// `evals/no-idle-accrual.eval.mjs` proves nothing SCHEDULED can call the growth
-/// writers, and this proves that even a genuine player call cannot launder
+/// This is the unit-level half of the no-idle-accrual invariant: the `nh`
+/// time-skip test at the end of this file proves the SCHEDULED tick grows
+/// nothing, and this proves that even a genuine player call cannot launder
 /// away-from-keyboard time into Quality Time.
 ///
 /// kills: an impl with no idle bound at all (10 idle minutes would credit 10
@@ -2393,809 +1948,6 @@ fn shared_cooldown_boundary_allowed() {
 }
 
 // ===========================================================================
-// EG2 SOURCE SCANS on `raising.rs` (production, NOT this file).
-//
-// HONEST LIMIT, stated once for the whole block: these are source scans, not
-// executions — this crate has no reducer-executing harness (ADR-0156 P7). They
-// pin the guard set, the decision-before-consume order and the tail discipline
-// that no pure seam can observe. `evals/evolution-reducer-security.eval.mjs`
-// (EG5-2) remains the authoritative gate; these are the fast local canaries that
-// run in the same `cargo test` as the implementation.
-//
-// Every scan below runs on a view with COMMENTS AND STRING LITERALS BLANKED
-// (`blank_heal_scan_strings ∘ strip_raising_comments`, this file's existing
-// helpers) and then whitespace-collapsed, so (a) a rustfmt line split can never
-// cause a false RED and (b) a dead `let _decoy = "<needle>";` cannot satisfy a
-// positive needle — only executable code can. Needles are assembled from
-// fragments (house rule) so an eval that concatenates every source file in this
-// crate is never satisfied by this test file's own text.
-// ===========================================================================
-
-/// Comment-stripped, string-blanked, whitespace-collapsed body of a `raising.rs`
-/// function. Panics loudly (RED) if the function does not exist yet.
-fn eg2_scan_body(fn_needle: &str) -> String {
-    assert_no_heal_scan_landmines(RAISING_SOURCE);
-    let stripped = blank_heal_scan_strings(&strip_raising_comments(RAISING_SOURCE));
-    let body = reducer_body(&stripped, fn_needle);
-    let collapsed: String = body.split_whitespace().collect();
-    assert!(
-        !collapsed.is_empty(),
-        "VACUITY GUARD: the extracted body for {fn_needle:?} is EMPTY — the \
-         scanner has rotted and every verdict in this block would be meaningless"
-    );
-    collapsed
-}
-
-/// Assert a needle is present in a collapsed body, with the reason attached.
-fn assert_body_has(collapsed: &str, label: &str, needle: &str, why: &str) {
-    assert!(
-        collapsed.contains(needle),
-        "TEETH (EG2, ADR-0175): {label} must contain `{needle}` (whitespace- \
-         collapsed; comments and string literals are blanked first, so only \
-         executable code can satisfy this). {why}"
-    );
-}
-
-/// Assert a needle appears EXACTLY once — the duplicated-site hazard this file's
-/// H-3 fence already records (`movement_tests.rs` E1 layer-3).
-fn assert_body_has_exactly_one(collapsed: &str, label: &str, needle: &str, why: &str) {
-    let n = collapsed.matches(needle).count();
-    assert_eq!(
-        n, 1,
-        "TEETH (EG2, ADR-0175): {label} must contain `{needle}` EXACTLY once; \
-         found {n}. Zero means the step is missing; two means a second, \
-         unguarded copy runs elsewhere in the same body. {why}"
-    );
-}
-
-/// The `raising.rs` fn-declaration needles, assembled from fragments and
-/// deliberately WITHOUT the `(ctx:` suffix the older ptc5a needles carry: two of
-/// these signatures are past rustfmt's width limit and are broken across lines,
-/// where `(ctx:` would never match.
-fn care_decl() -> String {
-    ["fn care", "("].concat()
-}
-fn train_decl() -> String {
-    ["fn train", "("].concat()
-}
-fn essence_train_decl() -> String {
-    ["fn essence", "_train("].concat()
-}
-fn consume_decl() -> String {
-    ["fn consume_crystalized", "_essence("].concat()
-}
-fn accrue_decl() -> String {
-    ["fn accrue_quality", "_time("].concat()
-}
-
-/// EG2-3: `essence_train` carries the full `care`-shaped guard set, delegates its
-/// decision and magnitude, and ends with both tails.
-///
-/// kills: a new reducer that forgets ANY guard — each omission is a distinct live
-///        vulnerability: no ownership check ⇒ train a stranger's monster; no
-///        battle guard ⇒ mid-battle mutation (the ADR-0136 class); no trade-escrow
-///        guard ⇒ mutate a monster already locked in an offer (TR-6); no
-///        `evaluate_essence_train` ⇒ an ungated cooldown; a hardcoded grant
-///        amount instead of `ESSENCE_TRAIN_AMOUNT` ⇒ silent pacing drift.
-/// The `if ...{` shape on the battle guard additionally kills a dead-code
-/// `let _ = is_in_ongoing_battle(..);` evasion, exactly as ptc5a Test 1 does.
-#[test]
-fn essence_train_body_has_full_guard_set() {
-    // RETUNE: the only pin of ESSENCE_TRAIN_AMOUNT's value (ADR-0175 D9).
-    assert_eq!(
-        ESSENCE_TRAIN_AMOUNT, 5,
-        "fixture precondition: one essence_train grants a flat 5 (EG2-3)"
-    );
-
-    let body = eg2_scan_body(&essence_train_decl());
-    let label = "the `essence_train` reducer body";
-
-    assert_body_has(
-        &body,
-        label,
-        &["require", "_owner(ctx,"].concat(),
-        "EG2-3 mirrors `care`: no ownership check means any caller can train any \
-         monster in the database.",
-    );
-    assert_body_has(
-        &body,
-        label,
-        &["ifis_in_ongoing", "_battle(ctx,ctx.sender()){"].concat(),
-        "EG2-3 mirrors `care`'s both-role battle guard (ADR-0136).",
-    );
-    assert_body_has(
-        &body,
-        label,
-        &["reject_if_monster", "_in_trade("].concat(),
-        "TR-6 (ADR-0106): a monster locked in an active trade offer must not be \
-         mutated out from under the counterparty.",
-    );
-
-    let decide = ["evaluate_essence", "_train("].concat();
-    let grant = ["grant", "_essence("].concat();
-    assert_body_has_exactly_one(
-        &body,
-        label,
-        &decide,
-        "the cooldown decision must come from the pure seam this file tests, not \
-         from a second open-coded copy that can drift; and one decision, one \
-         place — a second call could be reached with different arguments after \
-         the first has already been checked.",
-    );
-    assert_body_has_exactly_one(
-        &body,
-        label,
-        &grant,
-        "EG1-1's clamp-never-reject rule lives in ONE helper; an inline \
-         `m.essence_fire += amount` bypasses both the saturation and the cap. \
-         Exactly one grant per call — a second would double the payout.",
-    );
-
-    // DECISION BEFORE MUTATION — the essence_train counterpart of `care`'s
-    // `care_reject_still_never_burns` and `consume`'s decision-before-consume
-    // index assertion. Without it, this reducer is the only one of the four with
-    // no ordering pin at all.
-    let decide_at = body
-        .find(decide.as_str())
-        .expect("EG2-3: the cooldown decision seam call must exist in the body");
-    let grant_at = body
-        .find(grant.as_str())
-        .expect("EG2-3: grant_essence must exist in the body");
-    assert!(
-        decide_at < grant_at,
-        "TEETH (EG2-3, ADR-0059 §3 reject-never-burns): the cooldown decision is \
-         at collapsed byte {decide_at} but the essence grant is at {grant_at} — \
-         the DECISION MUST COME FIRST. A grant-then-reject shape mutates the \
-         monster's essence pool and only afterwards consults the cooldown; the \
-         transaction rollback happens to cover it today, but the ordering is the \
-         house discipline every sibling reducer in this file follows, and one \
-         refactor that turns the reject into a logged early-`Ok` makes the \
-         un-cooled-down grant permanent."
-    );
-    assert_body_has(
-        &body,
-        label,
-        &["ESSENCE_TRAIN", "_AMOUNT"].concat(),
-        "the granted magnitude must reference the named constant, so retuning it \
-         is one edit and not a hunt for literals.",
-    );
-    assert_body_has(
-        &body,
-        label,
-        &["accrue_quality", "_time("].concat(),
-        "EG2-8 lists essence_train as a Quality-Time call site.",
-    );
-    assert_body_has(
-        &body,
-        label,
-        &["check_and", "_evolve("].concat(),
-        "EG2-12: essence_train mutates a gate value (essence), so it must give \
-         auto-evolution its chance to fire.",
-    );
-}
-
-/// EG2-4 / EG2-10: `consume_crystalized_essence` carries the ITEM-escrow guard,
-/// reads the content registry, and decides BEFORE it consumes.
-///
-/// The ordering assertion is the load-bearing one: it is the textual proof of
-/// EG2-10's "the item is NOT consumed on either reject". `consume_one` is the
-/// irreversible step; every reject must be upstream of it.
-///
-/// kills: a reducer that consumes first and validates after (a wrong-item call
-///        would burn the player's item and only then reject — the reject-burns
-///        bug ADR-0058/0059 exist to prevent, and the exact shape EG2-10 pins);
-///        a missing `escrowed_item_qty` check (spend an item already promised in
-///        a trade offer — the double-spend-shaped gap EG2-4 calls non-optional);
-///        an impl that reads item defs from the DB `item_row` instead of the
-///        content registry, where the essence fields do not exist at all
-///        (ADR-0175 consequence note).
-#[test]
-fn consume_body_has_item_escrow_and_decision_before_consume() {
-    let body = eg2_scan_body(&consume_decl());
-    let label = "the `consume_crystalized_essence` reducer body";
-
-    assert_body_has(
-        &body,
-        label,
-        &["require", "_owner(ctx,"].concat(),
-        "EG2-10 requires the unowned-monster reject.",
-    );
-    assert_body_has(
-        &body,
-        label,
-        &["ifis_in_ongoing", "_battle(ctx,ctx.sender()){"].concat(),
-        "EG2-4 specifies the both-role battle guard.",
-    );
-    assert_body_has(
-        &body,
-        label,
-        &["reject_if_monster", "_in_trade("].concat(),
-        "EG2-4 specifies the monster trade-escrow guard.",
-    );
-    assert_body_has(
-        &body,
-        label,
-        &["escrowed_item", "_qty("].concat(),
-        "EG2-4: the ITEM-escrow guard is non-optional — it closes the \
-         double-spend-shaped gap where an item pledged in an open trade offer is \
-         consumed anyway (the same block `train` carries).",
-    );
-    assert_body_has(
-        &body,
-        label,
-        &["cached_", "items("].concat(),
-        "ItemRow carries no essence columns; the essence fields exist only on the \
-         compile-time content registry (ADR-0175 D5).",
-    );
-
-    let decide = ["evaluate_consume", "_crystalized("].concat();
-    let consume = ["consume", "_one("].concat();
-    assert_body_has_exactly_one(&body, label, &decide, "one decision, one place.");
-    assert_body_has_exactly_one(
-        &body,
-        label,
-        &consume,
-        "a second consume would burn a second item per call.",
-    );
-
-    let decide_at = body
-        .find(decide.as_str())
-        .expect("EG2-10: the decision seam call must exist in the body");
-    let consume_at = body
-        .find(consume.as_str())
-        .expect("EG2-10: consume_one must exist in the body");
-    assert!(
-        decide_at < consume_at,
-        "TEETH (EG2-4/EG2-10, decision-before-consume): the decision seam is at \
-         collapsed byte {decide_at} but `consume_one` is at {consume_at} — the \
-         DECISION MUST COME FIRST. Consuming before deciding burns the player's \
-         item on a wrong-item or on-cooldown call, which is precisely the \
-         behaviour EG2-10 forbids."
-    );
-}
-
-/// EG2-8 / EG2-12 + ADR-0175 D3: `consume_crystalized_essence` is the SIXTH
-/// accrue/auto-evolve call site, and `check_and_evolve` is LAST.
-///
-/// The spec's "exactly five" completeness argument omits EG2-4, which mutates
-/// essence — the one gate value a crystal feed changes. Without the tail, a
-/// full-bar feed would not evolve until some unrelated later action, contradicting
-/// EG2-1's "evolves automatically the instant it becomes eligible" and EG3-8's
-/// one-shot-unlock intent. Recorded as a spec correction in ADR-0175 D3.
-///
-/// kills: an implementation that follows the spec's literal five-site list and
-///        leaves the crystal path un-evolved.
-#[test]
-fn consume_body_tails() {
-    let body = eg2_scan_body(&consume_decl());
-    let label = "the `consume_crystalized_essence` reducer body";
-    let accrue = ["accrue_quality", "_time("].concat();
-    let evolve = ["check_and", "_evolve("].concat();
-
-    assert_body_has_exactly_one(
-        &body,
-        label,
-        &accrue,
-        "ADR-0175 D3 makes this the sixth Quality-Time call site.",
-    );
-    assert_body_has_exactly_one(
-        &body,
-        label,
-        &evolve,
-        "ADR-0175 D3: a full-bar crystal feed must be able to evolve immediately.",
-    );
-
-    let accrue_at = body.find(accrue.as_str()).expect("accrue call must exist");
-    let evolve_at = body.find(evolve.as_str()).expect("evolve call must exist");
-    assert!(
-        accrue_at < evolve_at,
-        "TEETH (EG2-12): `check_and_evolve` must be the LAST step — it is at \
-         collapsed byte {evolve_at} but `accrue_quality_time` is at {accrue_at}. \
-         Quality Time is itself one of the five evolution gates, so evolving \
-         before crediting it evaluates a stale gate set and misses an evolution \
-         that this very call made eligible."
-    );
-}
-
-/// EG2-5: `care` writes the Trust-favorable counter and carries both tails.
-///
-/// kills: the D2 half-implementation that remaps AtMaxBond but never adds the
-///        Trust write (the whole point of the remap — Trust would still never
-///        grow); a raw `+= 1` on a u32 counter (overflow-panics inside a reducer
-///        in a debug build); a `care` that mutates a gate value and then skips
-///        `check_and_evolve`, leaving the monster un-evolved until an unrelated
-///        later action.
-#[test]
-fn care_body_has_trust_increment_and_tails() {
-    let body = eg2_scan_body(&care_decl());
-    let label = "the `care` reducer body";
-
-    assert_body_has(
-        &body,
-        label,
-        &["trust_favorable", "_count"].concat(),
-        "EG2-5 makes `care` the Trust-favorable writer, REPLACING the frozen \
-         bond write's role.",
-    );
-    assert_body_has(
-        &body,
-        label,
-        &[".saturating", "_add(1"].concat(),
-        "the counter is a u32 lifetime total — a raw `+= 1` panics on overflow \
-         inside the reducer transaction.",
-    );
-    assert_body_has_exactly_one(
-        &body,
-        label,
-        &["accrue_quality", "_time("].concat(),
-        "EG2-8 lists `care` as a Quality-Time call site; two calls would \
-         double-credit.",
-    );
-    assert_body_has_exactly_one(
-        &body,
-        label,
-        &["check_and", "_evolve("].concat(),
-        "EG2-12 lists `care` as an auto-evolution call site.",
-    );
-}
-
-/// EG2-6: `train` gains ONLY the two tails — its EV logic is untouched.
-///
-/// kills: a tail-adding edit that also disturbs the EV path (the fence asserts
-///        the `evaluate_train` decision and the single `consume_one` spend are
-///        both still exactly where EG2-6's "MECHANICALLY UNCHANGED" requires);
-///        a `train` that credits Quality Time but never checks evolution.
-#[test]
-fn train_body_has_tails() {
-    let body = eg2_scan_body(&train_decl());
-    let label = "the `train` reducer body";
-
-    assert_body_has_exactly_one(
-        &body,
-        label,
-        &["accrue_quality", "_time("].concat(),
-        "EG2-8 lists `train` as a Quality-Time call site.",
-    );
-    assert_body_has_exactly_one(
-        &body,
-        label,
-        &["check_and", "_evolve("].concat(),
-        "EG2-12 lists `train` as an auto-evolution call site.",
-    );
-    assert_body_has_exactly_one(
-        &body,
-        label,
-        &["evaluate", "_train("].concat(),
-        "EG2-6: the EV path stays MECHANICALLY UNCHANGED — one decision seam.",
-    );
-    assert_body_has_exactly_one(
-        &body,
-        label,
-        &["consume", "_one("].concat(),
-        "EG2-6: exactly one food is spent per train, as today.",
-    );
-}
-
-/// EG2-12 (fresh-find tail discipline): in EVERY raising call site, the caller's
-/// own dual-write comes first, THEN `accrue_quality_time`, THEN
-/// `check_and_evolve` last.
-///
-/// Why the order is load-bearing: both tails re-FIND the monster row rather than
-/// taking the caller's stale local copy. If a tail ran before the caller's own
-/// `update`, it would read pre-mutation state and then the caller's write would
-/// clobber whatever the tail wrote — silently discarding the Quality-Time credit,
-/// or worse, un-doing an evolution that had just been applied.
-///
-/// kills: a tail hoisted above the dual-write (lost credit / clobbered
-///        evolution); `check_and_evolve` called before `accrue_quality_time`
-///        (evaluates a stale Quality-Time gate and misses the evolution this very
-///        call unlocked).
-#[test]
-fn tails_ordering() {
-    let update = ["monster_pub().monster_id()", ".update("].concat();
-    let accrue = ["accrue_quality", "_time("].concat();
-    let evolve = ["check_and", "_evolve("].concat();
-
-    for decl in [
-        care_decl(),
-        train_decl(),
-        essence_train_decl(),
-        consume_decl(),
-    ] {
-        let body = eg2_scan_body(&decl);
-
-        let last_update = body.rfind(update.as_str()).unwrap_or_else(|| {
-            panic!(
-                "TEETH (EG2-12): no `monster_pub` dual-write found in {decl:?}'s \
-                 body — every one of these reducers mutates the monster and must \
-                 dual-write its public projection before the tails run"
-            )
-        });
-        let accrue_at = body.find(accrue.as_str()).unwrap_or_else(|| {
-            panic!("TEETH (EG2-8): `accrue_quality_time` missing from {decl:?}'s body")
-        });
-        let evolve_at = body.find(evolve.as_str()).unwrap_or_else(|| {
-            panic!("TEETH (EG2-12): `check_and_evolve` missing from {decl:?}'s body")
-        });
-
-        assert!(
-            last_update < accrue_at,
-            "TEETH (EG2-12, fresh-find): in {decl:?}'s body the LAST monster_pub \
-             dual-write is at collapsed byte {last_update} but \
-             `accrue_quality_time` is at {accrue_at} — the tails must come AFTER \
-             the caller's own write, or the caller's update clobbers the tail's."
-        );
-        assert!(
-            accrue_at < evolve_at,
-            "TEETH (EG2-12): in {decl:?}'s body `check_and_evolve` (byte \
-             {evolve_at}) must be the LAST step, after `accrue_quality_time` \
-             (byte {accrue_at}) — Quality Time is one of the five evolution \
-             gates, so evolving first evaluates a stale gate set."
-        );
-    }
-}
-
-/// EG2-8 / ADR-0175 D1+D3: the `accrue_quality_time` shell delegates to the pure
-/// seam, re-projects the public row only on a TIER CHANGE, and NEVER fabricates
-/// a tier.
-///
-/// kills: (a) an inline re-implementation of the accrual rule in the ctx shell,
-///        where none of this file's ten unit tests can see it — the delegation
-///        needle is what keeps those tests load-bearing; (b) an unconditional
-///        `monster_pub` write on the movement hot path (public-row churn for
-///        every party monster on every tile step); (c) a missing `monster_pub`
-///        row papered over with `unwrap_or(0)` — a fabricated tier of 0 would
-///        publish a WRONG public projection (ADR-0174 D7/A3's fail-loud rule,
-///        which every other write site in this file already follows).
-#[test]
-fn accrue_quality_time_body_never_fabricates_tier() {
-    let body = eg2_scan_body(&accrue_decl());
-    let label = "the `accrue_quality_time` body";
-
-    assert_body_has(
-        &body,
-        label,
-        &["apply_quality_time", "_credit("].concat(),
-        "the ms-level rule must live in the PURE seam (the one this file's ten \
-         accrual tests exercise); an inline copy in the shell is untested by \
-         construction.",
-    );
-    assert_body_has(
-        &body,
-        label,
-        &["pub_from", "_monster("].concat(),
-        "the public projection is derived, never hand-assembled.",
-    );
-
-    let ne = ["quality_time_tier", "!="].concat();
-    let eq = ["quality_time_tier", "=="].concat();
-    assert!(
-        body.contains(ne.as_str()) || body.contains(eq.as_str()),
-        "TEETH (ADR-0175 D1/D3): `accrue_quality_time` must COMPARE the freshly \
-         projected `quality_time_tier` against the existing public row and write \
-         `monster_pub` only when it actually changed. Neither \
-         `quality_time_tier!=` nor `quality_time_tier==` appears in the collapsed \
-         body, so no comparison is being made — the write is either unconditional \
-         (public-row churn on the movement hot path for every party monster on \
-         every step) or absent (the tier never becomes visible to the client)."
-    );
-
-    let fabricate = ["unwrap", "_or(0"].concat();
-    let n = body.matches(fabricate.as_str()).count();
-    assert_eq!(
-        n, 0,
-        "TEETH (ADR-0174 D7/A3): `accrue_quality_time`'s body contains {n} \
-         `unwrap_or(0…)` default(s) and must contain ZERO. A missing `monster_pub` \
-         row is a fail-loud (log and return, write nothing) condition — defaulting \
-         a tier to 0 publishes a projection the private row does not support, and \
-         is exactly the fabrication ADR-0174 forbids at every other write site in \
-         this file."
-    );
-}
-
-/// Byte range `[inner_start, close)` of the brace-matched `{ .. }` block that
-/// OPENS at or after `from` in a COLLAPSED body (no comments, no string literals,
-/// no whitespace — so every `{` is a real block opener).
-///
-/// Mirrors `battle_tests.rs::block_after`. Scoping an assertion to the guard's OWN
-/// block, rather than to "somewhere after the needle", is the difference between
-/// proving the early return belongs to this `if` and proving only that a `return
-/// false` exists somewhere in the function (there are two others, at
-/// `raising.rs:566` and `:570`).
-fn e3_block_after(src: &str, from: usize) -> Option<(usize, usize)> {
-    let bytes = src.as_bytes();
-    let open = from + src[from..].find('{')?;
-    let mut depth: usize = 0;
-    let mut i = open;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some((open + 1, i));
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    None
-}
-
-// ===========================================================================
-// m22-s3b (ADR-0228) — THE DELEGATED heal_cooldown ERASE.
-//
-// EARS criterion PRV1-6b: the cascade deletes every ERASE-policy row owned by
-// the deleting identity. `heal_cooldown` is one of them and this module owns it
-// (the `rekey_heal_cooldown` delegation precedent), because G5
-// MODULE_WRITE_ISOLATION closes accounts.rs at its four owned tables.
-//
-// The table is PRIVATE and must-never-leak (ADR-0015/ADR-0069): the row is a
-// single timestamp anchor that reveals when the player last healed. Its primary
-// key IS `owner_identity`, so the sanctioned sweep is a point delete of exactly
-// one row — no filter, and above all no iteration.
-//
-// HONEST LIMIT, as for every scan in this file: source text, not execution —
-// this crate has no reducer-executing harness (ADR-0156 P7).
-//
-// SCAN HYGIENE: the needles are assembled from fragments per this file's house
-// rule, so this test file never carries a contiguous accessor chain that an eval
-// concatenating every source under server-module/src could count as a real one.
-// No bare double-quote appears inside any comment here and no block-comment
-// delimiter is spelled.
-// ===========================================================================
-
-/// The `raising.rs` declaration needle for the delegated cascade eraser,
-/// assembled from fragments like its `care` / `train` siblings above.
-fn m22s3b_erase_heal_decl() -> String {
-    ["fn erase_heal", "_cooldown("].concat()
-}
-
-/// **PRV1-6b (scan)** — `erase_heal_cooldown` is exactly one owner-keyed point
-/// delete of the caller's cooldown anchor.
-///
-/// `heal_cooldown`'s PRIMARY KEY is `owner_identity` (schema.rs), so there is at
-/// most one row per player and the sanctioned shape is a point delete. An
-/// iteration here would be a full-table scan that says the same thing more
-/// slowly and — if its filter is ever wrong or absent — deletes every player's
-/// heal cooldown, handing the whole server a free heal.
-///
-/// Kills: the helper missing entirely (the cooldown anchor, a must-never-leak
-///        timestamp, survives the deletion); a sweep that iterates instead of
-///        point-deleting; a sweep keyed on anything other than the `owner`
-///        parameter; a helper that reads the row and never deletes it.
-#[test]
-fn m22s3b_erase_heal_cooldown_shape() {
-    let body = eg2_scan_body(&m22s3b_erase_heal_decl());
-    let label = "the `erase_heal_cooldown` helper body";
-
-    assert_body_has_exactly_one(
-        &body,
-        label,
-        &["heal_cooldown()", ".owner_identity().del", "ete(owner)"].concat(),
-        "PRV1-6b: `heal_cooldown` is an ERASE-policy table whose PRIMARY KEY is \
-         `owner_identity`, so the sanctioned sweep is ONE point delete keyed on the `owner` \
-         PARAMETER. Zero means the deleting player's heal-cooldown anchor — a private, \
-         must-never-leak timestamp that reveals when they last healed (ADR-0015 / ADR-0069) \
-         — survives the deletion with nothing anywhere else that will remove it. Two would \
-         be a second, unreviewed delete.",
-    );
-
-    let iter = [".it", "er()"].concat();
-    let n_iter = body.matches(iter.as_str()).count();
-    assert_eq!(
-        n_iter, 0,
-        "TEETH (m22-s3b PRV1-6b): `erase_heal_cooldown` contains {n_iter} `{iter}` call(s) \
-         and must contain ZERO. The table's primary key IS the owner identity, so there is at \
-         most ONE row per player and a point delete is exact. An iteration is a full-table \
-         scan that says the same thing more slowly — and if its filter is ever wrong, absent, \
-         or refactored away, it deletes every player's heal cooldown in the database and \
-         hands the whole server a free heal. That failure reads identically to the correct \
-         body under any presence-only check."
-    );
-
-    // --- ONE TABLE, AND ONLY ONE (added in r2) ------------------------------
-    //
-    // The exactly-one clause above pins what this helper MUST do; nothing pinned
-    // what it must NOT do. `raising.rs` imports a dozen table accessors —
-    // `monster`, `monster_pub`, `inventory`, `item_row`, `character`, `player`
-    // among them — so an appended foreign write here would be one line, would
-    // compile, and would be invisible: this file's other scans are all scoped to
-    // the four raising reducers, and the cascade's own reaper-body pin sees only
-    // the CALL to this helper, never its contents. Counting the table reaches
-    // makes the helper's whole surface exactly one table.
-    let db_reach = ["ctx", ".db."].concat();
-    let n_reach = body.matches(db_reach.as_str()).count();
-    assert_eq!(
-        n_reach, 1,
-        "TEETH (m22-s3b PRV1-6b, foreign-write ban): `erase_heal_cooldown` reaches the \
-         database {n_reach} time(s) through `{db_reach}`; EXACTLY ONE is sanctioned — the \
-         `heal_cooldown` point delete pinned above. MORE THAN ONE is a second table touched \
-         by a helper whose entire remit is one row: `raising.rs` has `monster`, \
-         `monster_pub`, `inventory`, `item_row`, `character` and `player` accessors in scope, \
-         so an appended write reaches any of them in one line, inside the deletion cascade, \
-         where nothing else looks — this file's other scans are scoped to the four raising \
-         reducers and the cascade's reaper-body pin sees only the CALL to this helper. \
-         ZERO means the body reaches the database through an ALIASED handle \
-         (`let d = &ctx.db;`), which the exactly-one delete clause above would still match \
-         while this census cannot vouch for what else that handle touches — failing closed \
-         here is the correct direction."
-    );
-}
-
-/// **12r-e E3 (the structural bridge)** — `accrue_quality_time` must RETURN on a
-/// `false` from the pure seam, BEFORE it reaches the `monster` row write.
-///
-/// WHY THIS TEST EXISTS AND WHAT IT IS NOT. E3's observable claim is "no DB row
-/// write when the daily cap is exhausted". The behavioural half of that lives in
-/// [`daily_cap_stops_credit`], which proves the pure seam returns `false` — but
-/// the seam takes a `&mut Monster`, not a `ReducerContext`, so it cannot see a
-/// row write at all. And the ctx shell CANNOT be executed here: this crate has no
-/// reducer-executing harness (recorded at `raising_tests.rs:1261-1264`,
-/// `evolution_tests.rs:20`, `battle_tests.rs:1353`, `content_tests.rs:144`). This
-/// scan is therefore the ONLY available bridge from "the seam says false" to "no
-/// row is written", and it is a STRUCTURAL proof, not a behavioural one. Labelled
-/// as such deliberately: it reads source text and asserts an ordering in that
-/// text. It does not execute one line of `accrue_quality_time`.
-///
-/// Three layers:
-///   1. the guard exists in its NEGATED `if !` form — a bare
-///      `apply_quality_time_credit(&mut m, ..)` whose result is discarded would
-///      satisfy a presence-only needle while writing the row unconditionally;
-///   2. the guard's OWN brace-matched block contains `return false` — not "a
-///      `return false` appears later in the body", which is trivially true (the
-///      two missing-row guards at `raising.rs:566` and `:570` each contain one);
-///   3. that block CLOSES before the `monster` row write begins (byte-offset
-///      ordering on the collapsed body), which is what makes it an early return
-///      rather than a branch the write can still be reached from.
-///
-/// GREEN AT HEAD, and green after the fix — this is a FENCE, not a RED gate. The
-/// shell already has the shape; what changes in 12r-e is the pure seam's return
-/// value in the capped branch, which turns this existing early return into a live
-/// path instead of a dead one. Recorded honestly rather than dressed up as a
-/// failing test: the RED half of E3 is [`daily_cap_stops_credit`] and
-/// [`capped_and_active_still_reanchors_at_the_idle_bound`].
-///
-/// kills: a future refactor that hoists the row write above the guard, or that
-/// converts the early return into `if !credit { .. } else { .. }` with the write
-/// duplicated in both arms — either would restore the wasted per-tile-step write
-/// this slice removes, and neither is visible to any behavioural test in the
-/// crate.
-///
-/// HONEST LIMITS. (a) Structural, per the above — no execution, no row observed.
-/// (b) It pins ONE spelling of the guard (`if !<seam>(`); an equivalent
-/// `match`/`let ... else` rewrite would false-RED and must be accompanied by a
-/// deliberate update to this test, from the spec. (c) It says nothing about the
-/// `monster_pub` write, which is separately gated by
-/// [`accrue_quality_time_body_never_fabricates_tier`].
-#[test]
-fn accrue_quality_time_returns_before_the_row_write_when_the_seam_declines() {
-    let body = eg2_scan_body(&accrue_decl());
-
-    // --- Layer 1: the negated guard on the seam's return value --------------
-    let guard = ["if!apply_quality", "_time_credit("].concat();
-    let guard_at = body.find(guard.as_str()).unwrap_or_else(|| {
-        panic!(
-            "TEETH (12r-e E3): `accrue_quality_time`'s body does not contain \
-             `{guard}..)` (whitespace-collapsed; comments and string literals are \
-             blanked first). The shell MUST branch on the pure seam's return value \
-             and return early when it is `false` — that boolean is the entire \
-             mechanism by which the 12r-e fix avoids a row write. Calling the seam \
-             and discarding its result writes the row unconditionally, which is the \
-             wasted write per party monster per ~5 s that E3 removes. Body scanned \
-             was:\n{body}"
-        )
-    });
-
-    // --- Layer 2: the guard's OWN block returns false -----------------------
-    let (blk_start, blk_end) = e3_block_after(&body, guard_at).unwrap_or_else(|| {
-        panic!(
-            "TEETH (12r-e E3): the `{guard}..)` guard in `accrue_quality_time` has \
-             no brace-matched block after it. Write it as \
-             `if !apply_quality_time_credit(&mut m, now_ms(ctx)) {{ return false; }}`."
-        )
-    });
-    let block = &body[blk_start..blk_end];
-    let early_return = ["return", "false"].concat();
-    assert!(
-        block.contains(early_return.as_str()),
-        "TEETH (12r-e E3): the seam-declined guard's own block (collapsed bytes \
-         {blk_start}..{blk_end} of `accrue_quality_time`) contains no \
-         `return false`. Scoping this to the GUARD'S BLOCK is load-bearing: the \
-         body already holds two other `return false`s (the missing-`monster` and \
-         missing-`monster_pub` guards at raising.rs:566 and :570), so a check for \
-         `return false` anywhere in the function would pass even if this guard's \
-         block were empty and execution fell straight through to the row write. \
-         Block scanned was:\n{block}"
-    );
-
-    // --- Layer 3: the guard closes BEFORE the monster row write -------------
-    let row_write = ["monster().monster_id()", ".update("].concat();
-    let n_write = body.matches(row_write.as_str()).count();
-    assert_eq!(
-        n_write, 1,
-        "SCAN PRECONDITION (12r-e E3): `accrue_quality_time` must perform the \
-         private `{row_write}..)` row write EXACTLY once; found {n_write}. Zero \
-         means the write this test orders the guard against is gone (the ordering \
-         claim would be vacuous); two means a second write exists that the guard \
-         may not dominate. (`monster_pub().monster_id().update(` does NOT match \
-         this needle — the accessor before `.monster_id()` differs.)"
-    );
-    let write_at = body
-        .find(row_write.as_str())
-        .expect("asserted present above");
-    assert!(
-        blk_end < write_at,
-        "TEETH (12r-e E3): the seam-declined guard's block ends at collapsed byte \
-         {blk_end}, but the `monster` row write is at {write_at} — the write is NOT \
-         strictly after the early return, so the declined path can still reach it. \
-         `apply_quality_time_credit` returning `false` MUST mean the caller performs \
-         no DB write at all; on `movement.rs:181`, the hottest reducer in the game, \
-         a write that survives the guard is one wasted row update per party monster \
-         per ~5 s for the rest of the UTC day, changing only an invisible clock \
-         anchor. HONEST LIMIT: this is a textual ordering in the source, not an \
-         executed control-flow proof — no `ReducerContext` harness exists in this \
-         crate."
-    );
-}
-
-/// EG2-5 (reject-never-burns, ADR-0059 §3 carried into the D2 remap): `care`'s
-/// decision seam runs BEFORE every mutation in the body, and its `Result` is
-/// never swallowed.
-///
-/// kills: (a) `let _ = evaluate_care(..)` — the shape the D2 remap invites, since
-///        "AtMaxBond is no longer an error" reads a step away from "the seam's
-///        error no longer matters"; it would make `care` unrejectable, cooldown
-///        and all; (b) a body that bumps `trust_favorable_count` or stamps
-///        `last_care_at_ms` above the decision, which puts the growth write on
-///        the same side of the seam as the reject and breaks the house ordering
-///        the reducer-security gate reads.
-#[test]
-fn care_reject_still_never_burns() {
-    let body = eg2_scan_body(&care_decl());
-    let label = "the `care` reducer body";
-    let decide = ["evaluate", "_care("].concat();
-
-    assert_body_has_exactly_one(
-        &body,
-        label,
-        &decide,
-        "one decision, one place — a second call could be reached with different \
-         arguments after the first has already been checked.",
-    );
-    let swallowed = ["let_=evaluate", "_care("].concat();
-    assert!(
-        !body.contains(swallowed.as_str()),
-        "TEETH (EG2-5, reject-never-burns): `care` must PROPAGATE the decision \
-         seam's Result (`evaluate_care(..)?`), never discard it with \
-         `let _ = ..`. Discarding it makes every reject — cooldown included — \
-         silently succeed."
-    );
-
-    let decide_at = body
-        .find(decide.as_str())
-        .expect("the decision seam call must exist in `care`'s body");
-
-    for (what, needle) in [
-        ("the cooldown stamp", ["last_care_at", "_ms="].concat()),
-        ("the Trust credit", ["trust_favorable", "_count"].concat()),
-        ("the first row write", [".update", "("].concat()),
-    ] {
-        let at = body.find(needle.as_str()).unwrap_or_else(|| {
-            panic!("FENCE PRECONDITION: {what} (`{needle}`) not found in `care`'s body")
-        });
-        assert!(
-            decide_at < at,
-            "TEETH (EG2-5, ADR-0059 §3 reject-never-burns): {what} is at collapsed \
-             byte {at} but the `evaluate_care` decision is at {decide_at} — the \
-             DECISION MUST COME FIRST. Hoisting a growth write above the seam puts \
-             it on the reject side of the gate."
-        );
-    }
-}
-
-// ===========================================================================
 // rb-41 — R-rb-25-X9 (ADR-0222 known-limit 2, closed by the ADR-0224 native
 // host migration): the REKEY exists-predicate for `heal_cooldown`, exercised
 // against REAL rows instead of against its own source text.
@@ -3354,431 +2106,6 @@ fn rb41_has_heal_cooldown_tracks_real_cooldown_rows() {
 // through — not that a wallet moved.
 // ===========================================================================
 
-/// The fully-qualified gate call, up to and including its open paren.
-fn rb80_gate_opener() -> String {
-    ["crate::guards::require_not_", "deleting("].concat()
-}
-
-/// The bare wrapper name — what an alias, a re-export, a function-pointer
-/// binding or a differently-argued sibling all still mention.
-fn rb80_gate_bare_name() -> String {
-    ["require_not_", "deleting"].concat()
-}
-
-/// The gate STATEMENT in both spellings rustfmt can produce, on the view
-/// `blank_heal_scan_strings` leaves behind.
-///
-/// That blanker discards the string DELIMITERS as well as the payload, so the
-/// reducer tag reads as nothing at all on this view — which is why the tag is
-/// pinned separately, on the strings-INTACT view, by clause T. Two needles
-/// rather than one: the trailing-comma form is what rustfmt writes when the
-/// argument list wraps, and a pin that knows only the plain form is defeated by
-/// an honest re-wrap, which would silently drop the gate count to zero and make
-/// every clause below it meaningless.
-fn rb80_gate_needles() -> (String, String) {
-    let call = rb80_gate_opener();
-    (
-        [call.as_str(), "ctx,)?;"].concat(),
-        [call.as_str(), "ctx,,)?;"].concat(),
-    )
-}
-
-/// `raising.rs` with comments stripped, string literals blanked and ALL
-/// whitespace removed — the three stages `eg2_scan_body` applies to one body,
-/// applied to the whole file.
-fn rb80_squashed_file() -> String {
-    assert_no_heal_scan_landmines(RAISING_SOURCE);
-    let stripped = blank_heal_scan_strings(&strip_raising_comments(RAISING_SOURCE));
-    stripped.split_whitespace().collect()
-}
-
-/// The comments-stripped, strings-INTACT, whitespace-squashed body of a
-/// `raising.rs` reducer: `eg2_scan_body`'s view MINUS the string blanking, and
-/// the only view on which the reducer TAG inside the gate call is visible.
-///
-/// Sound here for the same reason the H-3 fence at :1168 is sound on it: the
-/// braces inside `heal_party`'s one hand-built JSON log line are BALANCED, so
-/// `reducer_body`'s depth walk still closes on the body's own brace.
-fn rb80_intact_body(fn_needle: &str) -> String {
-    let stripped = strip_raising_comments(RAISING_SOURCE);
-    let body = reducer_body(&stripped, fn_needle);
-    body.split_whitespace().collect()
-}
-
-/// The two brace CHAR literals this file's blanker KEEPS and `reducer_body`'s
-/// depth walk would mis-count.
-///
-/// `assert_no_heal_scan_landmines` (:1013) already owns the raw-string and
-/// double-quote-char hazards; these are the third and fourth, and they are
-/// asserted on the RAW file for the same reason: on a blanked view the check is
-/// tautologically true and proves nothing.
-fn rb80_assert_no_brace_char_landmines(raw: &str) {
-    let sq = char::from(0x27u8).to_string();
-    for code in [0x7Bu8, 0x7Du8] {
-        let brace = char::from(code).to_string();
-        let landmine = [sq.as_str(), brace.as_str(), sq.as_str()].concat();
-        assert!(
-            !raw.contains(landmine.as_str()),
-            "rb-80 [rb80/scan-substrate] SCAN PRECONDITION: `raising.rs` contains the character \
-             literal {landmine} , which this file's blanker keeps. Its brace desynchronises \
-             `reducer_body`'s depth walk and clause C's depth count by exactly one — enough to \
-             slice the wrong body, and enough to make a gate nested inside a never-taken branch \
-             report as a top-level statement. Spell the character with a Unicode escape \
-             (`guards.rs::json_escape` is the in-tree precedent) or teach the walker about char \
-             literals; never delete this check."
-        );
-    }
-    // rb-80 (verifier V1): a PLAIN raw string, not only the `r#` opener, also
-    // defeats this file's blanker (no raw-string lexer: the backslash before the
-    // real closer is read as an escape, the closer is swallowed, and every byte up
-    // to the next quote is blanked). MEASURED: it hid a below-gate early exit from
-    // the return census while every other clause stayed green. Reject any `r`
-    // directly followed by a double quote whose preceding byte is not an
-    // identifier byte (a byte-string `br` opener counts too).
-    let rdq = char::from(0x22u8).to_string();
-    let raw_str_opener = ["r", rdq.as_str()].concat();
-    let raw_bytes = raw.as_bytes();
-    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == 0x5Fu8;
-    for (at, _) in raw.match_indices(raw_str_opener.as_str()) {
-        let opener = match at {
-            0 => true,
-            1 => raw_bytes[0] == 0x62u8,
-            _ => {
-                !is_ident(raw_bytes[at - 1])
-                    || (raw_bytes[at - 1] == 0x62u8 && !is_ident(raw_bytes[at - 2]))
-            }
-        };
-        assert!(
-            !opener,
-            "rb-80 [rb80/scan-substrate] SCAN PRECONDITION: `raising.rs` spells a raw-string opener at \
-             byte {at}. This file's blanker has no raw-string lexer: a backslash before the real \
-             closer is read as an escape, the closer is swallowed, and every byte up to the next \
-             quote is blanked — MEASURED (verifier V1) to hide a below-gate early exit from the \
-             return census while every other clause stayed green. Spell the literal as an \
-             ordinary string, or teach the blanker raw strings; never delete this check."
-        );
-    }
-}
-
-/// The FROZEN statement prefix above `heal_party`'s deletion gate: comments
-/// stripped, string literals AND their delimiters blanked, all whitespace
-/// removed.
-///
-/// HAND-DERIVED, NEVER READ FROM THE FILE (ADR-0250 D1, ADR-0227 D3/D4,
-/// PRV1-9). The derivation, in the order the reducer must spell it:
-///   1. the caller binding — the gate is a CALLER-state check, so the identity
-///      it judges is read first;
-///   2. Step 1's joined let-else with its rejection — the gate belongs with the
-///      caller-state preamble, below "who are you" and above the character row,
-///      the heal-location content read and every write;
-///   3. nothing else. That is the whole claim of this test.
-///
-/// Compared by EQUALITY, never `starts_with`/`contains`: an equality is the only
-/// shape that refuses a statement nobody thought to enumerate. The split points
-/// differ from every other needle helper in this file (`pub fn heal|_party(ctx:`,
-/// `content_cache::cached_heal|_locations(`, `spend|_currency(ctx,`) so a single
-/// wrong edit cannot move the pin and the text it is compared against together.
-fn rb80_heal_party_prefix() -> String {
-    let open = char::from(0x7Bu8).to_string();
-    let close = char::from(0x7Du8).to_string();
-    [
-        concat!("letme=ctx.sen", "der();"),
-        concat!(
-            "letSome(p)=ctx.db.pla",
-            "yer().ide",
-            "ntity().fin",
-            "d(me)else"
-        ),
-        open.as_str(),
-        concat!("returnErr(.to_st", "ring());"),
-        close.as_str(),
-        ";",
-    ]
-    .concat()
-}
-
-/// Assert that `fn_name`'s body in `raising.rs` carries the deletion gate
-/// exactly once, as a reachable top-level `?`-propagating statement that nothing
-/// above it can skip, with the FROZEN prefix above it and the ordering anchors
-/// around it.
-///
-/// A per-file copy of the `economy_tests.rs` / `battle_tests.rs` helpers of the
-/// same shape, and deliberately so: every `*_tests.rs` is a `cfg(test)`
-/// submodule of its own production file and none can reach another's bare `fn`
-/// items, so sharing would need a new `pub(crate) mod` (the precedent
-/// `content_cache_tests.rs:361-368` records for its own stripper copies). The
-/// copies differ in SUBSTRATE: this one runs on a view where the string
-/// delimiters are gone.
-///
-/// Not a `#[test]`: it is driven once per gated reducer so each failure names
-/// its own reducer. EVERY clause is required and NONE may be relaxed to make a
-/// build green — a pin that cannot be satisfied is a plan defect, to be
-/// re-derived from ADR-0250 and the spec.
-///
-/// CLAUSE ORDER IS DELIBERATE. Clause A (the gate exists) reports FIRST because
-/// it is the security claim and first-failure-wins; the prefix freeze and the
-/// ordering clauses are meaningless while the gate is absent.
-fn rb80_assert_gate_pinned(
-    fn_name: &str,
-    expected_prefix: &str,
-    ties: &[(&str, usize)],
-    above: &[(&str, &str)],
-    below: &[(&str, &str)],
-) {
-    // --- Clause 0b/0c: the substrate landmines, on the RAW file --------------
-    assert_no_heal_scan_landmines(RAISING_SOURCE);
-    rb80_assert_no_brace_char_landmines(RAISING_SOURCE);
-
-    // --- Clause 0a: exactly ONE declaration to scan, paren-free --------------
-    let squashed_file = rb80_squashed_file();
-    let paren_free = ["fn", fn_name].concat();
-    let n_decl = squashed_file.matches(paren_free.as_str()).count();
-    assert_eq!(
-        n_decl, 1,
-        "rb-80 [rb80/twin] SCAN PRECONDITION: the squashed, paren-free declaration bytes of \
-         `{fn_name}` occur {n_decl} time(s) in `raising.rs` and must occur EXACTLY once. MORE \
-         THAN ONE means a second declaration whose NAME EXTENDS this one's exists in the file; \
-         `reducer_body` takes the FIRST hit, so a twin placed above would hand every clause \
-         below a gate-less body that passes and says nothing about the reducer clients call. \
-         ZERO means the reducer was renamed or removed and every pin scoped to it is vacuous — \
-         re-derive them from ADR-0250, never by relaxing this count."
-    );
-
-    // --- Clause A: the gate statement is present EXACTLY once ----------------
-    let decl = ["fn ", fn_name, "("].concat();
-    let body = eg2_scan_body(decl.as_str());
-    let (plain, trailing) = rb80_gate_needles();
-    let n_gate = body.matches(plain.as_str()).count() + body.matches(trailing.as_str()).count();
-    let head: String = body.chars().take(320).collect();
-    assert_eq!(
-        n_gate, 1,
-        "rb-80 [rb80/gate-count] E1 FAIL: `{fn_name}` contains {n_gate} deletion-gate \
-         statement(s) and must contain EXACTLY ONE. ZERO IS THE RED STATE AT HEAD — the gate has \
-         not been wired into this reducer yet, so a mid-grace or terminal account still moves \
-         currency and items into and out of tables the deletion cascade is about to erase. The \
-         needle is the FULLY QUALIFIED call ending in `?;`, in either the inline or the \
-         trailing-comma form, so an unqualified call reached through an import — behaviourally \
-         identical, and therefore invisible to the executed matrix beside this test — reads as \
-         ZERO here. So does a discarded verdict (`let _ = ..`, `.ok();`), which compiles, lints \
-         clean under -D warnings and gates nothing. TWO means a duplicate, under which every \
-         ordering clause anchors on a first hit a second call can sit behind. Body (first 320 \
-         chars):\n{head}"
-    );
-
-    let gate_at = body
-        .find(plain.as_str())
-        .or_else(|| body.find(trailing.as_str()))
-        .expect("rb-80: the gate statement counted 1 but could not be located");
-
-    // --- Clause C: the gate sits at the body's TOP level ---------------------
-    let open = char::from(0x7Bu8);
-    let close = char::from(0x7Du8);
-    let opens = body[..gate_at].matches(open).count();
-    let closes = body[..gate_at].matches(close).count();
-    assert_eq!(
-        opens, closes,
-        "rb-80 [rb80/depth] E1 FAIL (unconditional): the deletion gate in `{fn_name}` sits at \
-         brace depth {opens} minus {closes} — INSIDE a nested block — and must sit at the body's \
-         top level. A gate wrapped in a never-satisfied condition, a loop or a match arm no real \
-         call enters leaves every text needle here satisfied while the reducer decides nothing. \
-         This is the shape a whole-body `contains` check cannot see."
-    );
-
-    // --- Clause D: the gate is its own statement, not an attributed one ------
-    let semi = char::from(0x3Bu8);
-    let prev = body[..gate_at].chars().next_back();
-    assert!(
-        prev.is_none_or(|c| c == semi || c == close),
-        "rb-80 [rb80/boundary] E1 FAIL: in `{fn_name}` the deletion gate is preceded by \
-         {prev:?}, which is not a statement boundary (a semicolon, a closing brace, or the start \
-         of the body). THE CASE THIS EXISTS FOR: a conditional-compilation attribute on the gate \
-         statement leaves a closing square bracket here — under it every test in this crate \
-         executes the gate while the published wasm is compiled WITHOUT it (present in review, \
-         absent in production). The same clause kills a discarded binding (an equals sign), a \
-         combinator that swallows the verdict (a dot) and a macro that swallows the whole call \
-         (an open paren). Re-derive the placement from ADR-0250 D1; never widen this clause."
-    );
-
-    // --- Clause E: no conditional compilation anywhere in the body -----------
-    let attr_open = ["#", "["].concat();
-    let cfg_macro = ["cfg", "!("].concat();
-    for needle in [attr_open.as_str(), cfg_macro.as_str()] {
-        let n = body.matches(needle).count();
-        assert_eq!(
-            n, 0,
-            "rb-80 [rb80/cfg] E1 FAIL: `{fn_name}` contains {n} occurrence(s) of {needle} and \
-             must contain ZERO — a conditional-compilation attribute or macro on ANY statement \
-             here is the deployment-dependent gate clause D describes, reached from further \
-             away. Raising guards must compile into every build. Green at HEAD; keep it that \
-             way. NOTE this clause is BODY-scoped and cannot see a FILE-scope switch; the cfg \
-             census in `rb80_raising_reducer_roster_and_open_writers_are_pinned` is what closes \
-             that."
-        );
-    }
-
-    // --- Clause F: exactly ONE mention of the wrapper, by bare name ----------
-    let bare = rb80_gate_bare_name();
-    let n_bare = body.matches(bare.as_str()).count();
-    assert_eq!(
-        n_bare, 1,
-        "rb-80 [rb80/bare-name] E1 FAIL (caller-only): `{fn_name}` mentions the deletion-gate \
-         wrapper {n_bare} time(s) by BARE NAME and must mention it EXACTLY once. WHAT TWO \
-         ACTUALLY IS: clause A already pins the fully-qualified `?;` STATEMENT at exactly one, so \
-         a SECOND bare mention is a second decision path spelled some other way — an alias, a \
-         re-export or a function-pointer binding of the wrapper; a local wrapper AROUND the \
-         wrapper (a closure or a nested fn in this body, which clause A's statement needle walks \
-         straight past); or a duplicated call whose verdict is swallowed instead of propagated \
-         (`let _ = ..`, `.ok();`, a call inside a closure). NOT the identity-parameterised \
-         sibling: ADR-0227 D2 makes THIS wrapper caller-only by SIGNATURE, and rb-76 pins the two \
-         bare names prefix-free precisely so neither census inflates the other — so the sibling's \
-         name does not contain this one and this clause is blind to it BY CONSTRUCTION. Its \
-         containment is owned crate-wide by `guards_tests.rs`'s \
-         `rb76_subject_gate_and_begin_encounter_are_contained_crate_wide` clause (a), which pins \
-         that name at ZERO in every scanned module but `guards.rs` and `battle.rs`. The executed \
-         matrix cannot see any of this: the native host's dummy sender is the only identity that \
-         ever calls. ZERO means clause A matched a qualified call without the name, which is a \
-         scan defect."
-    );
-
-    // --- Clause P: the WHOLE prefix above the gate is frozen ----------------
-    let got = &body[..gate_at];
-    assert_eq!(
-        got, expected_prefix,
-        "rb-80 [rb80/prefix] E1 FAIL: the squashed text ABOVE `{fn_name}`'s deletion gate is not \
-         the frozen guard prefix.\n      Got:      {got:?}\n      Expected: {expected_prefix:?}\n \
-         WHAT THIS KILLS: every statement that can run before a caller reaches the gate — the \
-         seven CI-clean survivors rb-79 measured, enumerated once in ADR-0249 D2, each of which \
-         keeps the gate statement, its `?`, its depth, its tag and rb-46's textual return census \
-         byte-identically green. RE-DERIVATION CONTRACT: this literal comes from ADR-0250 D1 and \
-         ADR-0227 D3/D4 plus PRV1-9. If an honest refactor reds it, re-derive it from those \
-         decisions in a new ADR. NEVER paste the current body in to make it green, and never \
-         relax the equality to `starts_with` or `contains` — both readmit every survivor \
-         ADR-0249 D2 names."
-    );
-
-    // --- Clause P's runtime ties, on the FROZEN literal ---------------------
-    for &(needle, want) in ties {
-        let n = expected_prefix.matches(needle).count();
-        assert_eq!(
-            n, want,
-            "rb-80 [rb80/tie] E1 FAIL: the frozen prefix for `{fn_name}` contains `{needle}` \
-             {n} time(s) and the derivation requires {want}. THIS CLAUSE GUARDS ONE FAILURE \
-             MODE: a literal regenerated from a body somebody already changed, which would turn \
-             the strongest pin in this slice into a photograph of the defect. The ties are \
-             spelled from a THIRD set of split points on purpose. Re-derive from ADR-0250 D1, \
-             never from the file."
-        );
-    }
-
-    // --- Clause R: every early exit in the WHOLE body is a rejection ---------
-    let return_kw = ["ret", "urn"].concat();
-    let return_err = ["ret", "urnErr("].concat();
-    let n_return = body.matches(return_kw.as_str()).count();
-    let n_return_err = body.matches(return_err.as_str()).count();
-    assert_eq!(
-        n_return, n_return_err,
-        "rb-80 [rb80/early-exit] E1 FAIL: `{fn_name}` contains {n_return} early exit(s) but only \
-         {n_return_err} of them return an `Err`. Every early exit in a gated reducer must be a \
-         REJECTION; one that returns anything else routes the caller AROUND the rest of the \
-         body, and clause P only constrains the region ABOVE the gate — this is the BELOW-gate \
-         half (the BELOW-gate region is otherwise UNPINNED — an else-wrapped delegation with no `return`, a \
-         delegation reaching a write helper through a fn-pointer binding, a raw table-accessor write \
-         and an identity rebinding all pass every clause here: R-rb-80-BELOWGATE, \
-         R-rb-80-FNPTRDELEGATE, R-rb-80-RAWWRITE, each measured). HONEST LIMIT: a `macro_rules!` expanding to a \
-         conditional return contains no textual `return` and evades this clause — that is \
-         rb-78's crate-wide grammar (ADR-0248), which refuses every bang macro between the item \
-         boundary and the gate. Never widen the needle to make this green."
-    );
-
-    // --- Clause G: every ordering anchor occurs EXACTLY once -----------------
-    // --- Clause H: above < gate < below, in the listed order -----------------
-    let mut cursor = 0usize;
-    for &(needle, role) in above {
-        let n = body.matches(needle).count();
-        assert_eq!(
-            n, 1,
-            "rb-80 [rb80/anchor] E1 FAIL (anti-vacuity): the anchor `{needle}` — {role} — occurs \
-             {n} time(s) in `{fn_name}` and must occur EXACTLY once. ZERO makes every ordering \
-             clause unfireable, so the pin would pass over a reducer whose landmark moved or was \
-             renamed; TWO makes the comparison depend on which copy is found first. RE-DERIVE \
-             THE PIN AGAINST THE CURRENT BODY AND ADR-0250 D1; never delete an anchor to make \
-             this green."
-        );
-        let at = body
-            .find(needle)
-            .unwrap_or_else(|| panic!("rb-80: anchor `{needle}` counted 1 but was not located"));
-        assert!(
-            cursor <= at && at < gate_at,
-            "rb-80 [rb80/order] E1 FAIL (placement): in `{fn_name}` the anchor `{needle}` — \
-             {role} — is at offset {at}, which is not between the previous anchor ({cursor}) and \
-             the deletion gate ({gate_at}). ADR-0227 D3/D4 orders the gate immediately AFTER \
-             caller standing is established, so a caller with no standing is told THAT, not \
-             something about their account lifecycle."
-        );
-        cursor = at;
-    }
-    cursor = gate_at;
-    for &(needle, role) in below {
-        let n = body.matches(needle).count();
-        assert_eq!(
-            n, 1,
-            "rb-80 [rb80/anchor] E1 FAIL (anti-vacuity): the anchor `{needle}` — {role} — occurs \
-             {n} time(s) in `{fn_name}` and must occur EXACTLY once. With zero the landmark this \
-             pin orders the gate against is gone and the ordering claim is vacuous; with two the \
-             comparison depends on which copy is found first (the duplicated-site hazard this \
-             file's H-3 fence already records)."
-        );
-        let at = body
-            .find(needle)
-            .unwrap_or_else(|| panic!("rb-80: anchor `{needle}` counted 1 but was not located"));
-        assert!(
-            cursor < at,
-            "rb-80 [rb80/order] E1 FAIL (decision before irreversible effect): in `{fn_name}` \
-             the anchor `{needle}` — {role} — is at offset {at}, at or BEFORE the previous \
-             landmark ({cursor}); the deletion gate is at {gate_at}. A gate that runs once the \
-             wallet has been debited or the stack consumed gates nothing: the transaction still \
-             rolls back on the reject, but the reducer has reordered its own guards so a later \
-             refactor — or a partial-failure path — commits value movement for an account that \
-             may not open new commitments. The executed matrix cannot see this: the native host \
-             aborts the process on any write syscall, so it never reaches the effect at all."
-        );
-        cursor = at;
-    }
-
-    // --- Clause T: the tag is this reducer's own fn name ---------------------
-    let dq = char::from(0x22u8).to_string();
-    let tagged = [
-        rb80_gate_opener().as_str(),
-        "ctx,",
-        dq.as_str(),
-        fn_name,
-        dq.as_str(),
-        ")?;",
-    ]
-    .concat();
-    let tagged_wrapped = [
-        rb80_gate_opener().as_str(),
-        "ctx,",
-        dq.as_str(),
-        fn_name,
-        dq.as_str(),
-        ",)?;",
-    ]
-    .concat();
-    let intact = rb80_intact_body(decl.as_str());
-    let n_tag =
-        intact.matches(tagged.as_str()).count() + intact.matches(tagged_wrapped.as_str()).count();
-    assert_eq!(
-        n_tag, 1,
-        "rb-80 [rb80/tag] E1 FAIL: on the strings-INTACT view `{fn_name}` carries {n_tag} gate \
-         call(s) tagged with its OWN function name and must carry exactly one. The tag is the \
-         only thing that names the refusing reducer in `log_reject`'s structured warn, so a \
-         copy-pasted sibling's tag makes every mid-grace refusal here indistinguishable from the \
-         other reducer's in the logs — and no other clause in this slice can see it, because the \
-         view every other clause runs on has the string payload blanked."
-    );
-}
-
 /// Seed the one `player` row `heal_party`'s Step 1 joined check needs.
 ///
 /// The handle is registered against the SAME fixture the caller's account handle
@@ -3811,60 +2138,6 @@ fn rb80_seed_deleting_stranger(
         crate::accounts::new_account_row(stranger, String::new(), 0),
         1,
     ));
-}
-
-/// **E1 (source)** — `heal_party` carries the para-4.7 deletion gate, in the
-/// house spelling, at depth zero, with NOTHING above it but the caller binding
-/// and the joined check, and above every write.
-///
-/// RED AT HEAD on clause `[rb80/gate-count]`: `heal_party` carries no deletion
-/// gate at all, so the count is ZERO.
-///
-/// kills: M1 (the dropped `heal_party` gate) · M5 (`let _ = ..` discard —
-/// clause A's needle ends in `?;`) · M7 (the gate moved below `spend_currency`)
-/// · M8 (a `cfg(test)` attribute on the gate statement — clauses D and E) · M9 (an
-/// unqualified, import-shadowed call) · M10 (a duplicate gate) · M13 (a
-/// sender-keyed early `Ok` above the gate — clause P) · M15 (a
-/// rejection-SHAPED `return Err(e);` above the gate, which a return census
-/// accepts at 1 == 1 — clause P) · M16 (`let me = crate::WILD_IDENTITY;` —
-/// clause P, no `return` token anywhere) · M6 (the tag swapped for a sibling's
-/// — clause T).
-#[test]
-fn rb80_heal_party_carries_the_deletion_gate() {
-    let name = ["heal_", "party"].concat();
-    let expected = rb80_heal_party_prefix();
-    let open = char::from(0x7Bu8).to_string();
-    let close = char::from(0x7Du8).to_string();
-    let ties: [(&str, usize); 9] = [
-        (concat!("letm", "e="), 1),
-        (concat!("ctx.sen", "der()"), 1),
-        (concat!("player().ident", "ity().find(me)"), 1),
-        (concat!("returnE", "rr("), 1),
-        (concat!(".to_str", "ing());"), 1),
-        (concat!("cra", "te::"), 0),
-        (concat!("?", ";"), 0),
-        (open.as_str(), 1),
-        (close.as_str(), 1),
-    ];
-    let above: [(&str, &str); 1] = [(
-        concat!("player().ident", "ity().find(me)"),
-        "Step 1's caller-joined lookup — standing is established exactly there, so the preamble \
-         reads joined, then not-deleting (ADR-0227 D3)",
-    )];
-    let below: [(&str, &str); 2] = [
-        (
-            concat!("character().entity_id()", ".find(p.entity_id)"),
-            "Step 2's character lookup, the first read that must run AFTER the gate",
-        ),
-        (
-            concat!("spend_", "currency("),
-            "the shop's own currency debit (raising.rs:364) — the irreversible ERASE-table \
-             effect the whole ordering exists to sit above, and this site's anti-transposition \
-             landmark: `talk`'s frozen prefix is byte-identical to this one, so without a \
-             landmark the two literals could be swapped without a single clause noticing",
-        ),
-    ];
-    rb80_assert_gate_pinned(name.as_str(), expected.as_str(), &ties, &above, &below);
 }
 
 /// **E1 (behaviour)** — `heal_party` refuses a deletion-gated caller, ADMITS
@@ -4014,598 +2287,954 @@ fn rb80_heal_party_is_refused_only_while_the_caller_is_deletion_gated() {
     );
 }
 
-/// Every `fn` name that carries a BARE reducer attribute in `squashed`, in file
-/// order: after each attribute occurrence, skip to the next `fn` token and take
-/// the identifier up to its opening paren.
-///
-/// A parse, not a needle list: the SET it returns is compared against the
-/// hand-written roster, so a reducer ADDED to this file without a gate decision
-/// reds the census instead of slipping in behind a per-name pin that was never
-/// written for it.
-fn rb80_reducer_names(squashed: &str) -> Vec<String> {
-    let attr = ["#[spacetimedb", "::reducer]"].concat();
-    let fn_kw = ["f", "n"].concat();
-    let lparen = char::from(0x28u8);
-    let mut out: Vec<String> = Vec::new();
-    for (at, _) in squashed.match_indices(attr.as_str()) {
-        let rest = &squashed[at + attr.len()..];
-        let Some(kw) = rest.find(fn_kw.as_str()) else {
-            continue;
-        };
-        let after = &rest[kw + fn_kw.len()..];
-        let Some(paren) = after.find(lparen) else {
-            continue;
-        };
-        out.push(after[..paren].to_string());
-    }
-    out
-}
-
-/// **E1 (the second arm, mechanically)** — `raising.rs` carries EXACTLY FIVE
-/// deletion gates, its reducer roster is closed, it compiles unconditionally,
-/// and its ERASE-table write verbs are the ones this slice reasoned about.
-///
-/// FIVE GATES, ONE PER REDUCER. `heal_party`'s (ADR-0250 D1, below its joined
-/// check) and, since rb-128 (ADR-0273 D5), the four raising writers `care`,
-/// `train`, `essence_train` and `consume_crystalized_essence`, each gated as
-/// its FIRST statement. They write ERASE-policy tables (`inventory` via
-/// `consume_one`, `monster` / `monster_pub`) and §4.7's trigger predicate
-/// selects them exactly as it selects `heal_party`. ADR-0250 D7 deferred them
-/// BY SCOPE because their precedented placement — below the `u64`-keyed
-/// `monster` lookup — was unreachable by the native-host five-state matrix;
-/// ADR-0273 D2 moves the gate above that lookup, which closes the gap
-/// (R-rb-80-RAISINGWRITERS). Their per-reducer pins and executed matrices live
-/// in `guards_tests.rs` (ADR-0273 D9); this FILE-WIDE count is the census that
-/// sees what a per-body pin cannot.
-///
-/// RED AT HEAD (tests in, rb-128 fix absent) on clause `[rb80/file-count]`: the
-/// file mentions the wrapper ONCE (`heal_party`'s call) and must mention it
-/// five times.
-///
-/// kills: a gate hoisted into a file-local helper or reached through a
-/// `..._for(ctx, other)` sibling (SIX) · a gate on a non-reducer (SIX) · a lost
-/// gate on any of the five reducers (FOUR) · M17 (a wire-name twin — a
-/// PARAMETERISED reducer attribute
-/// republishing this reducer's wire name over an ungated fn while the gated Rust
-/// item is demoted: the bare and any-form attribute counts disagree and the name
-/// SET changes) · M14 (a file-scope `cfg(debug_assertions)` constant whose
-/// consumer early-returns below the gate — clause E is body-scoped and cannot see
-/// the constant; this census can) · M18 (a below-gate sender-keyed delegation to
-/// a twin that duplicates the writes — the write-verb census counts 2
-/// `spend_currency(` or 4 `consume_one(`) · a `grant_item` call appearing in this
-/// module at all, which would be a new ERASE-table writer nobody decided about.
-#[test]
-fn rb80_raising_reducer_roster_and_open_writers_are_pinned() {
-    let squashed = rb80_squashed_file();
-
-    // --- (a) the file-wide bare-name count ----------------------------------
-    let bare = rb80_gate_bare_name();
-    let n_bare = squashed.matches(bare.as_str()).count();
-    assert_eq!(
-        n_bare, 5,
-        "rb-80 [rb80/file-count] E1 FAIL: `raising.rs` mentions the deletion-gate wrapper \
-         {n_bare} time(s) by BARE NAME and must mention it EXACTLY five times — one call in each \
-         of its five reducers: `heal_party` (ADR-0250 D1) and, since rb-128 (ADR-0273 D5), \
-         `care`, `train`, `essence_train` and `consume_crystalized_essence`. ONE IS THE RED \
-         STATE BEFORE THE rb-128 FIX (only `heal_party` is gated). SIX or more means a gate was \
-         hoisted into a file-local helper where no per-body pin can see it, placed on a \
-         non-reducer, or duplicated inside one body. FOUR or fewer means a reducer lost its \
-         gate while its siblings kept theirs. The needle is the BARE name, so it also catches \
-         an alias, a re-export and a function-pointer binding."
-    );
-
-    // --- (b0) the file's WHOLE attribute budget -----------------------------
-    let attr_open = ["#", "["].concat();
-    let n_attrs = squashed.matches(attr_open.as_str()).count();
-    assert_eq!(
-        n_attrs, 8,
-        "rb-80 [rb80/attr-budget] E1 FAIL: `raising.rs` carries {n_attrs} attribute opener(s) and \
-         must carry exactly EIGHT. WHY A TOTAL AND NOT JUST THE ROSTER: the roster clauses below \
-         key on the LITERAL `spacetimedb`-qualified attribute text, and four measured spellings \
-         publish a client-callable reducer while counting ZERO there — the attribute imported by \
-         name, the crate aliased on its `use` line, the attribute renamed inside a braced import, \
-         and a NEIGHBOURING macro that is not `reducer` at all. Every one of them needs an \
-         attribute opener, so a sixth raising entry point cannot be added without moving this \
-         number. THE BUDGET IS FULLY ACCOUNTED, which is what stops it being balanced by a \
-         deletion: two `cfg(test)` attributes (clause (c) pins that count exactly), five bare \
-         reducer attributes (clause (b)), and the ONE `path` attribute that wires this test module \
-         to its file — delete that and this census stops being compiled at all. GREEN AT HEAD and \
-         after the fix: an anti-bypass clause, not part of this slice's RED."
-    );
-
-    // --- (b) the reducer roster is closed -----------------------------------
-    let attr_bare = ["#[spacetimedb", "::reducer]"].concat();
-    let attr_any = ["#[spacetimedb", "::reducer"].concat();
-    let n_bare_attr = squashed.matches(attr_bare.as_str()).count();
-    let n_any_attr = squashed.matches(attr_any.as_str()).count();
-
-    // --- (b0b) the reducer macro is reached through the crate path, nowhere else
-    let path_token = ["::red", "ucer"].concat();
-    let n_path_token = squashed.matches(path_token.as_str()).count();
-    assert_eq!(
-        n_path_token, n_bare_attr,
-        "rb-80 [rb80/attr-path] E1 FAIL: `raising.rs` spells the path-qualified reducer token \
-         {n_path_token} time(s) while carrying {n_bare_attr} bare reducer attribute(s); the two \
-         must AGREE. Every bare attribute contains this token, so the count can only ever be \
-         GREATER — which means what this clause really asserts is that the file mentions the \
-         reducer macro NOWHERE ELSE: not on a `use` line that imports it by name (then \
-         `#[reducer]` publishes an entry point the roster clause below cannot see), and not \
-         through an aliased crate path (`#[<alias>::reducer]`, same result). The braced-rename \
-         and wrong-macro spellings leave this count alone and are caught by the attribute budget \
-         above instead; the two clauses are a pair and neither is redundant. GREEN AT HEAD and \
-         after the fix."
-    );
-    assert_eq!(
-        n_any_attr, n_bare_attr,
-        "rb-80 [rb80/roster] E1 FAIL: `raising.rs` carries {n_any_attr} reducer attribute(s) but \
-         only {n_bare_attr} of them are the BARE form. A parameterised attribute is a WIRE-NAME \
-         twin: it publishes a reducer under a name clients call while the Rust item every pin in \
-         this slice reads is a different, possibly gated, function (rb-79 register row M13). \
-         Re-derive the roster deliberately if a wire name is ever genuinely needed."
-    );
-    assert_eq!(
-        n_bare_attr, 5,
-        "rb-80 [rb80/roster] E1 FAIL: `raising.rs` carries {n_bare_attr} bare reducer \
-         attribute(s) and must carry 5. Reported BEFORE the name set because it is the clearer \
-         signal and because it is not implied by it: the parse below SKIPS an attribute it cannot \
-         resolve to a declaration, so a sixth reducer written in a shape the parser walks past \
-         would leave the set equal to the roster while the file published one more."
-    );
-    let mut got = rb80_reducer_names(squashed.as_str());
-    got.sort();
-    let mut want_names = vec![
-        ["ca", "re"].concat(),
-        ["tra", "in"].concat(),
-        ["heal_", "party"].concat(),
-        ["essence_", "train"].concat(),
-        ["consume_crystalized_", "essence"].concat(),
-    ];
-    want_names.sort();
-    assert_eq!(
-        got, want_names,
-        "rb-80 [rb80/roster] E1 FAIL: the reducers `raising.rs` publishes are {got:?} and the \
-         roster this slice reasoned about is {want_names:?}. A reducer ADDED here is an \
-         ERASE-table writer nobody made a gate decision about, and a reducer REMOVED makes the \
-         pin that names it vacuous. Both are re-derived from §4.7's trigger predicate and \
-         ADR-0250, never by editing this list to match the file."
-    );
-
-    // --- (c) the file compiles unconditionally ------------------------------
-    let cfg_attr = ["#", "[cfg"].concat();
-    let cfg_macro = ["cfg", "!("].concat();
-    let debug_flag = ["debug_", "assertions"].concat();
-    let arch_flag = ["target_", "arch"].concat();
-    for (needle, want, why) in [
-        (
-            cfg_attr.as_str(),
-            2usize,
-            "the two `cfg(test)` attributes (:273 the test-only cooldown constant, :781 the \
-             child test module) and NOTHING else. A third is a conditional-compilation switch on \
-             production code, which is how a gate becomes present in review and absent in the \
-             published wasm",
-        ),
-        (
-            cfg_macro.as_str(),
-            0usize,
-            "the expression form of the same defect, which clause C would report only as a \
-             nested block",
-        ),
-        (
-            debug_flag.as_str(),
-            0usize,
-            "the measured file-scope constant pair (rb-46 clause I's second survivor): tests \
-             build with debug assertions on, the shipped wasm is `--release`, so a constant \
-             consulted above or below the gate is true here and false in production",
-        ),
-        (
-            arch_flag.as_str(),
-            0usize,
-            "the cross-target twin of the same shape — a body selected for wasm32 that the \
-             native test binary never compiles (the class ADR-0247 closes for `lib.rs`)",
-        ),
-    ] {
-        let n = squashed.matches(needle).count();
-        assert_eq!(
-            n, want,
-            "rb-80 [rb80/cfg-census] E1 FAIL: `raising.rs` contains `{needle}` {n} time(s) and \
-             must contain {want} — {why}. Green at HEAD; keep it that way."
-        );
-    }
-
-    // --- (d) the ERASE-table write verbs ------------------------------------
-    for (needle, want, why) in [
-        (
-            concat!("spend_", "currency("),
-            1usize,
-            "ONE wallet debit in this module, inside `heal_party`'s currency block. A second is \
-             the below-gate delegation shape: a twin that repeats the debit for every caller the \
-             gate would have refused",
-        ),
-        (
-            concat!("consume_", "one("),
-            3usize,
-            "exactly three inventory burns — `train`, `heal_party` and \
-             `consume_crystalized_essence` (each below its reducer's deletion gate since rb-128, \
-             ADR-0273 D5). A fourth is an unreviewed ERASE-table write, reachable from a body no \
-             per-reducer pin covers",
-        ),
-        (
-            concat!("grant_", "item("),
-            0usize,
-            "this module grants no items at all, so a `grant_item` call here is a NEW \
-             ERASE-policy writer that never passed through §4.7's trigger predicate",
-        ),
-    ] {
-        let n = squashed.matches(needle).count();
-        assert_eq!(
-            n, want,
-            "rb-80 [rb80/write-census] E1 FAIL: `raising.rs` calls `{needle}` {n} time(s) and \
-             must call it {want} — {why}. This census is what kills the in-file ungated twin: \
-             every clause of the source pin above is scoped to ONE body, so a duplicated write \
-             in a second function is invisible to all of them."
-        );
-    }
-}
-
 // ===========================================================================
-// rb-122 — R-20r-b-B1: the `// RETUNE:` note inside the essence soft-cap clamp
-// test claims to be the ONLY pin of `ESSENCE_SOFT_CAP`'s value. That has been
-// false since 20r-b promoted the constant (and its 999/1000 boundary) into
-// game-core: `game-core/src/currency.rs::essence_soft_cap_is_999` and
-// `game-core/src/content.rs::r14_essence_amount_999_accepted` /
-// `r14_essence_amount_1000_rejected` are now the SSOT pins, each carrying its
-// own `RETUNE:` marker. This block pins:
-//   (a) the note contains no exclusivity word ("only"/"sole"/"single"/
-//       "lone"/"exclusive") anywhere, as a whole word,
-//   (b) the note names `20r-b` and the three live game-core fixtures by file
-//       + name,
-//   (c) the local value pin (`ESSENCE_SOFT_CAP, 999,`) survives the reword,
-//   (d) each named fixture is declared exactly once in its file and its own
-//       doc block carries a `RETUNE:` marker (a dangling pointer reds this).
+// Native-host behavioural suite (debloat Phase 2: EV-raising-reducer-security#guards,
+// EV-evolution-reducer-security (essence_train / consume arms), EV-no-idle-accrual,
+// ST-raising_tests).
 //
-// HONEST LIMITS. This is a TEXT scan of a comment, run three ways over
-// `include_str!`-captured sources — it proves the note's WORDING and that the
-// names it points at RESOLVE to live, still-`RETUNE:`-marked fixtures. It
-// cannot prove the note's claim is semantically correct (that those really
-// are game-core's essence-cap pins, versus some unrelated same-named
-// function); that is human review at PR time. ADR-0224: an ordinary Rust
-// test, no new `*.eval.mjs`.
+// The SHIPPED reducers run through `Fixture::run_as(_at)` with a real sender and
+// clock. HOST LIMIT: no transaction rollback, so every rejection is asserted as
+// refusal BEFORE any write (the store byte-identical).
+//
+// Not asserted, on purpose:
+// * heal_party's `require_owner(ctx, "heal_party", me)` — vacuous by construction
+//   (BUG-heal-party-tautological-require-owner); what the reducer really guards is
+//   the sender-scoped lookup + spend, which is what these tests pin.
+// * heal_party's currency-cost branch — live code, but unreachable with shipped
+//   content (the only heal location costs 0 currency in the RON cache); residual.
 // ===========================================================================
+mod nh {
+    use crate::marshal::pub_from_monster;
+    use crate::movement::{movement_tick, MovementTickSchedule};
+    use crate::native_host_tests::{fixture, Fixture, Handle, DEFAULT_DATABASE_IDENTITY};
+    use crate::raising::{
+        accrue_quality_time, care, consume_crystalized_essence, essence_train, evaluate_train,
+        heal_party, train, CARE_COOLDOWN_MS, ESSENCE_SOFT_CAP, ESSENCE_TRAIN_COOLDOWN_MS,
+        QT_IDLE_GAP_MS, QT_TICK_MS,
+    };
+    use crate::schema::{
+        Battle, Character, HealCooldown, HealLocationRow, Inventory, ItemRow, Monster, MonsterPub,
+        Player, SpeciesRow, TradeOffer,
+    };
+    use crate::PARTY_SLOT_NONE;
+    use game_core::{
+        ActionState, Affinity, BattleOutcome, Direction, StatKind, TradeItem, TradeStatus,
+    };
+    use spacetimedb::sats::bsatn::to_vec;
+    use spacetimedb::{Identity, ReducerContext, ScheduleAt, Timestamp};
 
-/// The bare identifier of the clamp test this slice retargets, split so this
-/// file's own source never spells it contiguously (this file scans itself via
-/// `RB122_RAISING_TESTS_SRC` below, and a contiguous copy here would be
-/// counted as a second declaration).
-fn rb122h_target_fn_name() -> String {
-    ["clamps_at_soft_cap_999_with", "out_reject"].concat()
-}
+    const T0: i64 = 1_750_000_000_000;
+    /// Content item ids (game-core/content/items): 1 bait, 2 Attack food,
+    /// 4 crystalized Water essence (+100).
+    const BAIT: u32 = 1;
+    const FOOD: u32 = 2;
+    const NOT_FOOD: u32 = 3;
+    const WATER_ESSENCE: u32 = 4;
 
-/// The column-0 `\nfn <name>(` anchor for the target test, built from the
-/// fragment above for the same self-match reason.
-fn rb122h_target_fn_anchor() -> String {
-    ["\nfn ", rb122h_target_fn_name().as_str(), "("].concat()
-}
-
-/// The body window of a column-0 `fn` item: from a UNIQUE anchor to the first
-/// column-0 closing brace after it. `None` unless the anchor occurs EXACTLY
-/// once — a duplicate declaration makes "the" window ambiguous and every
-/// clause below meaningless.
-fn rb122h_fn_window(src: &str, anchor: &str) -> Option<String> {
-    if src.matches(anchor).count() != 1 {
-        return None;
+    fn a() -> Identity {
+        Identity::from_byte_array([0xA1; 32])
     }
-    let first = src.find(anchor)?;
-    let rest = &src[first..];
-    let end = rest.find("\n}\n")?;
-    Some(rest[..end + 3].to_string())
-}
+    fn b() -> Identity {
+        Identity::from_byte_array([0xB2; 32])
+    }
+    fn c() -> Identity {
+        Identity::from_byte_array([0xC3; 32])
+    }
+    fn at(ms: i64) -> Timestamp {
+        Timestamp::from_micros_since_unix_epoch(ms * 1000)
+    }
 
-/// The bare word this slice's marker comment starts with, split so it is
-/// never written contiguously in this file (self-match hygiene).
-fn rb122h_retune_word() -> String {
-    ["RETU", "NE:"].concat()
-}
-
-/// The full `// RETUNE:` line-start marker, assembled from the fragment
-/// above.
-fn rb122h_retune_line_marker() -> String {
-    ["// ", rb122h_retune_word().as_str()].concat()
-}
-
-/// How many lines in `window`, once trimmed, start with the marker.
-fn rb122h_count_retune_lines(window: &str) -> usize {
-    let marker = rb122h_retune_line_marker();
-    window
-        .split('\n')
-        .filter(|line| line.trim_start().starts_with(marker.as_str()))
-        .count()
-}
-
-/// The NOTE: the marker line plus every contiguous `//` line after it,
-/// stripped of comment slashes and whitespace-normalized. Callers must have
-/// already confirmed `rb122h_count_retune_lines(window) == 1`.
-fn rb122h_retune_note_text(window: &str) -> String {
-    let marker = rb122h_retune_line_marker();
-    let lines: Vec<&str> = window.split('\n').collect();
-    let start = lines
-        .iter()
-        .position(|line| line.trim_start().starts_with(marker.as_str()))
-        .expect("rb-122: caller must confirm exactly one RETUNE line first");
-    let mut block: Vec<String> = Vec::new();
-    for line in &lines[start..] {
-        let trimmed = line.trim();
-        if trimmed.starts_with("//") {
-            block.push(trimmed.trim_start_matches('/').trim_start().to_string());
-        } else {
-            break;
+    fn monster(monster_id: u64, owner: Identity, party_slot: u8) -> Monster {
+        Monster {
+            monster_id,
+            owner_identity: owner,
+            species_id: 1,
+            nickname: format!("m{monster_id}"),
+            level: 7,
+            xp: 120,
+            iv_hp: 10,
+            iv_attack: 11,
+            iv_defense: 12,
+            iv_speed: 13,
+            iv_sp_attack: 14,
+            iv_sp_defense: 15,
+            nature_kind: game_core::NatureKind::Hardy,
+            ev_hp: 4,
+            ev_attack: 5,
+            ev_defense: 6,
+            ev_speed: 7,
+            ev_sp_attack: 8,
+            ev_sp_defense: 9,
+            stat_hp: 40,
+            stat_attack: 20,
+            stat_defense: 20,
+            stat_speed: 20,
+            stat_sp_attack: 20,
+            stat_sp_defense: 20,
+            current_hp: 5,
+            party_slot,
+            last_care_at_ms: 0,
+            essence_fire: 10,
+            essence_water: 3,
+            essence_plant: 0,
+            essence_electric: 1,
+            essence_earth: 0,
+            essence_wind: 0,
+            essence_light: 2,
+            essence_dark: 0,
+            trust_favorable_count: 9,
+            trust_unfavorable_count: 1,
+            trust_favorable_battle_day_epoch: 3,
+            quality_time_ticks_total: 44,
+            quality_time_accum_ms: 0,
+            quality_time_window_ms: 0,
+            quality_time_window_start_ms: 0,
+            last_essence_train_at_ms: 0,
         }
     }
-    block
-        .join(" ")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-}
 
-/// Case-insensitive: does `text` contain any of the exclusivity words (only,
-/// sole, single, lone, exclusive) as a WHOLE word, anywhere at all — no noun
-/// pairing, no proximity window; a single bare occurrence disqualifies the
-/// note. A hand-rolled ASCII word tokenizer, not the `regex` crate (server-
-/// module does not depend on it, see Cargo.toml): word chars include `_` so
-/// "lonely"/"singleton" never false-match a bare exclusivity word.
-fn rb122h_has_exclusivity_claim(text: &str) -> bool {
-    let lower = text.to_lowercase();
-    let bytes = lower.as_bytes();
-    let is_word_byte = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    fn item(id: u32, train_stat: Option<StatKind>) -> ItemRow {
+        ItemRow {
+            id,
+            name: format!("i{id}"),
+            description: String::new(),
+            recruit_bonus: 0,
+            train_stat,
+            train_amount: 10,
+            sell_price: 0,
+            cure_status: None,
+        }
+    }
 
-    let exclusivity_words = ["only", "sole", "single", "lone", "exclusive"];
+    fn species1() -> SpeciesRow {
+        SpeciesRow {
+            id: 1,
+            name: "s1".to_string(),
+            base_hp: 30,
+            base_attack: 31,
+            base_defense: 32,
+            base_speed: 33,
+            base_sp_attack: 34,
+            base_sp_defense: 35,
+            affinity: Affinity::Fire,
+            learnable_skill_ids: vec![1],
+            ability: None,
+            tier: 0,
+        }
+    }
 
-    let mut i = 0usize;
-    while i < bytes.len() {
-        if is_word_byte(bytes[i]) {
-            let start = i;
-            while i < bytes.len() && is_word_byte(bytes[i]) {
-                i += 1;
+    fn battle(player: Identity, opponent: Identity) -> Battle {
+        let lead = game_core::BattleMonster {
+            species_id: 1,
+            affinity: Affinity::Fire,
+            level: 7,
+            current_hp: 30,
+            max_hp: 30,
+            stats: game_core::StatBlock {
+                hp: 30,
+                attack: 20,
+                defense: 20,
+                speed: 20,
+                sp_attack: 20,
+                sp_defense: 20,
+            },
+            known_skill_ids: vec![1],
+            status: None,
+        };
+        Battle {
+            battle_id: 1,
+            player_identity: player,
+            opponent_identity: opponent,
+            state: game_core::BattleState {
+                side_a: game_core::BattleSide {
+                    active: 0,
+                    team: vec![lead.clone()],
+                },
+                side_b: game_core::BattleSide {
+                    active: 0,
+                    team: vec![lead],
+                },
+                outcome: BattleOutcome::Ongoing,
+                turn_number: 1,
+                weather: None,
+            },
+            party_monster_ids: vec![],
+            opponent_monster_ids: vec![],
+            created_at_ms: 0,
+        }
+    }
+
+    fn offer(initiator: Identity, counterparty: Identity) -> TradeOffer {
+        TradeOffer {
+            trade_id: 1,
+            initiator,
+            counterparty,
+            initiator_monster_ids: vec![],
+            initiator_items: vec![],
+            initiator_currency: 0,
+            counterparty_monster_ids: vec![],
+            counterparty_items: vec![],
+            counterparty_currency: 0,
+            initiator_cards: vec![],
+            counterparty_cards: vec![],
+            status: TradeStatus::Pending,
+            created_at_ms: T0,
+        }
+    }
+
+    struct World<'a> {
+        monsters: Handle<'a, Monster, u64>,
+        pubs: Handle<'a, MonsterPub, u64>,
+        stacks: Handle<'a, Inventory>,
+        items: Handle<'a, ItemRow, u32>,
+        battles: Handle<'a, Battle>,
+        offers: Handle<'a, TradeOffer>,
+        players: Handle<'a, Player>,
+        chars: Handle<'a, Character, u64>,
+        locs: Handle<'a, HealLocationRow, u32>,
+        cooldowns: Handle<'a, HealCooldown>,
+    }
+
+    /// Every table the growth reducers + heal_party touch. `writable = false`
+    /// walls the monster rows: a write reached there aborts the test process.
+    fn world(fx: &Fixture, writable: bool) -> World<'_> {
+        let monsters = fx.table_keyed::<Monster, u64>("monster", "monster_id", |r| r.monster_id);
+        let pubs = fx.table_keyed::<MonsterPub, u64>("monster_pub", "monster_id", |r| r.monster_id);
+        let (monsters, pubs) = if writable {
+            (monsters.writable().unique(), pubs.writable().unique())
+        } else {
+            (monsters, pubs)
+        };
+        let _ = fx.table::<Monster>("monster", "owner_identity", |r| r.owner_identity);
+        let _ = fx
+            .table_keyed::<Inventory, u64>("inventory", "inv_id", |r| r.inv_id)
+            .writable()
+            .unique();
+        let _ = fx.table::<Battle>("battle", "opponent_identity", |r| r.opponent_identity);
+        let _ = fx.table::<TradeOffer>("trade_offer", "counterparty", |r| r.counterparty);
+        let species = fx.table_keyed::<SpeciesRow, u32>("species_row", "id", |r| r.id);
+        species.seed(&species1());
+        World {
+            monsters,
+            pubs,
+            stacks: fx.table::<Inventory>("inventory", "owner_identity", |r| r.owner_identity),
+            items: fx.table_keyed::<ItemRow, u32>("item_row", "id", |r| r.id),
+            battles: fx.table::<Battle>("battle", "player_identity", |r| r.player_identity),
+            offers: fx.table::<TradeOffer>("trade_offer", "initiator", |r| r.initiator),
+            players: fx.table::<Player>("player", "identity", |r| r.identity),
+            chars: fx
+                .table_keyed::<Character, u64>("character", "entity_id", |r| r.entity_id)
+                .writable()
+                .unique(),
+            locs: fx.table_keyed::<HealLocationRow, u32>("heal_location_row", "location_id", |r| {
+                r.location_id
+            }),
+            cooldowns: fx
+                .table::<HealCooldown>("heal_cooldown", "owner_identity", |r| r.owner_identity)
+                .writable()
+                .unique(),
+        }
+    }
+
+    impl World<'_> {
+        fn seed_monster(&self, m: &Monster) {
+            self.pubs.seed(&pub_from_monster(m, 1));
+            self.monsters.seed(m);
+        }
+        fn monster(&self, id: u64) -> Monster {
+            self.monsters
+                .rows()
+                .into_iter()
+                .find(|m| m.monster_id == id)
+                .expect("monster row")
+        }
+        fn assert_pub_consistent(&self, id: u64) {
+            let p = self
+                .pubs
+                .rows()
+                .into_iter()
+                .find(|m| m.monster_id == id)
+                .expect("monster_pub row");
+            assert_eq!(
+                to_vec(&p).unwrap(),
+                to_vec(&pub_from_monster(&self.monster(id), p.tier)).unwrap(),
+                "monster_pub must equal pub_from_monster(monster) for {id}"
+            );
+        }
+        /// Seeded stack ids start at 1000 so a host auto-inc never collides.
+        fn stack(&self, owner: Identity, item_id: u32, count: u32) {
+            self.stacks.seed(&Inventory {
+                inv_id: 1000 + u64::from(owner.to_byte_array()[0]) * 100 + u64::from(item_id),
+                owner_identity: owner,
+                item_id,
+                count,
+            });
+        }
+        fn count(&self, owner: Identity, item_id: u32) -> u32 {
+            self.stacks
+                .rows()
+                .iter()
+                .filter(|r| r.owner_identity == owner && r.item_id == item_id)
+                .map(|r| r.count)
+                .sum()
+        }
+        fn join(&self, who: Identity, entity_id: u64, zone_id: u32) {
+            self.players.seed(&Player {
+                identity: who,
+                entity_id,
+                name: String::new(),
+                online: true,
+                last_input_seq: 0,
+            });
+            self.chars.seed(&Character {
+                entity_id,
+                zone_id,
+                tile_x: 1,
+                tile_y: 1,
+                facing: Direction::South,
+                action: ActionState::Idle,
+                move_started_at_ms: 0,
+                sprite_id: 0,
+                move_queue: vec![],
+            });
+        }
+        fn snapshot(&self) -> Vec<Vec<u8>> {
+            vec![
+                to_vec(&self.monsters.rows()).unwrap(),
+                to_vec(&self.pubs.rows()).unwrap(),
+                to_vec(&self.stacks.rows()).unwrap(),
+                to_vec(&self.cooldowns.rows()).unwrap(),
+            ]
+        }
+    }
+
+    type Call = fn(&ReducerContext) -> Result<(), String>;
+
+    fn call_care(ctx: &ReducerContext) -> Result<(), String> {
+        care(ctx, 11)
+    }
+    fn call_train(ctx: &ReducerContext) -> Result<(), String> {
+        train(ctx, 11, FOOD)
+    }
+    fn call_essence(ctx: &ReducerContext) -> Result<(), String> {
+        essence_train(ctx, 11, Affinity::Water)
+    }
+    fn call_consume(ctx: &ReducerContext) -> Result<(), String> {
+        consume_crystalized_essence(ctx, 11, WATER_ESSENCE)
+    }
+
+    /// A world where every growth reducer would SUCCEED for A on monster 11.
+    fn growth_world(fx: &Fixture) -> World<'_> {
+        let w = world(fx, true);
+        w.seed_monster(&monster(11, a(), 0));
+        w.items.seed(&item(FOOD, Some(StatKind::Attack)));
+        w.items.seed(&item(NOT_FOOD, None));
+        w.stack(a(), FOOD, 3);
+        w.stack(a(), WATER_ESSENCE, 2);
+        w
+    }
+
+    /// Ownership, both-role battle and monster-escrow refusals for all four
+    /// growth reducers — each refused with the store byte-identical — plus the
+    /// same world's success control (so a guard that refused EVERYTHING fails).
+    #[test]
+    fn nh_growth_reducers_refuse_before_any_write() {
+        let reducers: [(&str, Call, &str); 4] = [
+            ("care", call_care, "cannot care during an ongoing battle"),
+            ("train", call_train, "cannot train during an ongoing battle"),
+            (
+                "essence_train",
+                call_essence,
+                "cannot essence-train during an ongoing battle",
+            ),
+            (
+                "consume_crystalized_essence",
+                call_consume,
+                "cannot consume essence during an ongoing battle",
+            ),
+        ];
+        type Setup = fn(&World<'_>);
+        for (name, call, battle_msg) in reducers {
+            let cases: [(&str, Identity, Setup, &str); 5] = [
+                ("non-owner", b(), |_| {}, "not owner"),
+                (
+                    "unknown monster",
+                    a(),
+                    |w| {
+                        w.monsters.remove(11);
+                        w.pubs.remove(11);
+                    },
+                    "monster not found",
+                ),
+                (
+                    "in battle as player",
+                    a(),
+                    |w| w.battles.seed(&battle(a(), crate::WILD_IDENTITY)),
+                    "",
+                ),
+                (
+                    "in battle as PvP side B",
+                    a(),
+                    |w| w.battles.seed(&battle(b(), a())),
+                    "",
+                ),
+                (
+                    "monster escrowed",
+                    a(),
+                    |w| {
+                        let mut o = offer(b(), a());
+                        o.counterparty_monster_ids = vec![11];
+                        w.offers.seed(&o);
+                    },
+                    "monster is in an active trade",
+                ),
+            ];
+            for (label, caller, setup, want) in cases {
+                let fx = fixture();
+                let w = growth_world(&fx);
+                setup(&w);
+                let want = if want.is_empty() { battle_msg } else { want };
+                let before = w.snapshot();
+                let got = fx.run_as_at(caller, at(T0), call);
+                assert_eq!(got, Err(want.to_string()), "{name} / {label}");
+                assert_eq!(w.snapshot(), before, "{name} / {label}: nothing written");
             }
-            let word = &lower[start..i];
-            if exclusivity_words.contains(&word) {
-                return true;
-            }
-        } else {
-            i += 1;
+            let fx = fixture();
+            let w = growth_world(&fx);
+            w.battles.seed(&{
+                let mut done = battle(b(), a());
+                done.state.outcome = BattleOutcome::SideAWins;
+                done
+            });
+            assert_eq!(
+                fx.run_as_at(a(), at(T0), call),
+                Ok(()),
+                "{name}: control (completed battle only) must succeed"
+            );
+            w.assert_pub_consistent(11);
         }
     }
-    false
-}
 
-/// The SSOT essence-cap value pin's bare name, split for the same self-match
-/// reason as the target fn name above (this file's note-mention check would
-/// otherwise be satisfied by its own needle).
-fn rb122h_essence_soft_cap_is_999_name() -> String {
-    ["essence_soft_cap_is_", "999"].concat()
-}
-
-/// The R14 999-boundary (accepted) fixture's bare name, split likewise.
-fn rb122h_r14_999_accepted_name() -> String {
-    ["r14_essence_amount_999_", "accepted"].concat()
-}
-
-/// The R14 1000-boundary (rejected) fixture's bare name, split likewise.
-fn rb122h_r14_1000_rejected_name() -> String {
-    ["r14_essence_amount_1000_", "rejected"].concat()
-}
-
-/// Every string the reworded note must contain: the retune epoch and, by
-/// file + bare name, the three live game-core pins.
-fn rb122h_required_pointer_needles() -> Vec<String> {
-    vec![
-        "game-core/src/currency.rs".to_string(),
-        rb122h_essence_soft_cap_is_999_name(),
-        "game-core/src/content.rs".to_string(),
-        rb122h_r14_999_accepted_name(),
-        rb122h_r14_1000_rejected_name(),
-    ]
-}
-
-/// The local value pin's exact text, split so this file never spells it
-/// contiguously outside the original test's own assertion.
-fn rb122h_local_pin_text() -> String {
-    ["ESSENCE_SOFT_CAP, 9", "99,"].concat()
-}
-
-/// How many times a 4-space-indented `fn <name>(` declaration occurs in
-/// `src`. Indent-scoped (not a bare `fn <name>(`) so a same-named mention in
-/// prose — content.rs carries two, naming these very fixtures — is not
-/// mistaken for a second declaration.
-fn rb122h_count_declaration(src: &str, name: &str) -> usize {
-    let needle = ["    fn ", name, "("].concat();
-    src.matches(needle.as_str()).count()
-}
-
-/// The contiguous `///` doc block directly above a UNIQUE 4-space-indented
-/// `fn <name>(`, skipping any `#[...]` attribute lines in between (so a
-/// `#[test]` sitting between the doc comment and the fn line does not end the
-/// walk early). `None` if the declaration is missing or duplicated.
-fn rb122h_doc_block_above(src: &str, name: &str) -> Option<String> {
-    let anchor = ["\n    fn ", name, "("].concat();
-    if src.matches(anchor.as_str()).count() != 1 {
-        return None;
-    }
-    let first = src.find(anchor.as_str())?;
-    let head = &src[..first];
-    let mut doc: Vec<String> = Vec::new();
-    for line in head.split('\n').rev() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("///") {
-            doc.push(trimmed.to_string());
-        } else if trimmed.starts_with("#[") {
-            continue;
-        } else {
-            break;
-        }
-    }
-    doc.reverse();
-    Some(doc.join(" "))
-}
-
-/// This file's own source (INCLUDING this block), for the window/note scan.
-const RB122_RAISING_TESTS_SRC: &str = include_str!("raising_tests.rs");
-/// `game-core`'s currency SSOT — `ESSENCE_SOFT_CAP` and its value pin.
-const RB122_CURRENCY_SRC: &str = include_str!("../../game-core/src/currency.rs");
-/// `game-core`'s content validator — the R14 999/1000 boundary fixtures.
-const RB122_CONTENT_SRC: &str = include_str!("../../game-core/src/content.rs");
-
-/// R-20r-b-B1: the note no longer claims to be the sole pin of the cap.
-///
-/// RED on 23da96e: the note reads "the only pin of ESSENCE_SOFT_CAP's value"
-/// — `only` appears as a whole word, which this clause now bans outright,
-/// with no noun pairing and no proximity window to dodge.
-///
-/// kills: a rewording that drops "only" but keeps "sole pin", "single
-/// reference", "the lone source", or any other exclusivity word anywhere in
-/// the note, however far from a noun or split across a `.` — the survivors
-/// that beat the old paired/windowed check ("the only, e.g. authoritative,
-/// pin" resetting the window at the abbreviation period; an exclusivity
-/// word more than 40 chars from "pin") both still contain the bare word and
-/// are caught here; a reword that moves the claim to a second `// RETUNE:`
-/// line instead of replacing the first (caught by the count assertion
-/// below, before the exclusivity text is even inspected).
-#[test]
-fn rb122_note_has_no_exclusivity_claim() {
-    let anchor = rb122h_target_fn_anchor();
-    let window = rb122h_fn_window(RB122_RAISING_TESTS_SRC, anchor.as_str()).unwrap_or_else(|| {
-        panic!(
-            "rb-122 TEETH: the soft-cap clamp test's anchor was not found EXACTLY once in \
-             raising_tests.rs — it must exist, unambiguously, before its RETUNE note can be \
-             inspected."
-        )
-    });
-
-    let marker = rb122h_retune_line_marker();
-    let n_retune = rb122h_count_retune_lines(window.as_str());
-    assert_eq!(
-        n_retune, 1,
-        "rb-122 TEETH: found {n_retune} `{marker}` line(s) inside the clamp test's body and must \
-         find exactly one — zero means the pointer comment was deleted outright, two means a \
-         second note was appended instead of the first being replaced."
-    );
-
-    let note = rb122h_retune_note_text(window.as_str());
-    assert!(
-        !rb122h_has_exclusivity_claim(note.as_str()),
-        "rb-122 TEETH (R-20r-b-B1): the RETUNE note still contains an ONLY/SOLE/SINGLE/LONE/ \
-         EXCLUSIVE word — banned outright, anywhere in the note, with no noun pairing and no \
-         proximity window to dodge, since 20r-b promoted the constant (and its R14 boundary) \
-         into game-core, which now carries its own live pins. Got: {note:?}"
-    );
-}
-
-/// R-20r-b-B1: the note names the live game-core SSOT pins, by file and bare
-/// fixture name, and the 20r-b epoch that moved them.
-///
-/// RED on 23da96e: the note names neither file nor any of the three
-/// fixtures, and never mentions `20r-b`.
-///
-/// kills: a reword that drops the exclusivity language (satisfying the sibling
-/// test) but points nowhere — "the value now lives in game-core" with no
-/// file or fixture named leaves a reader with no way to find the real pins.
-#[test]
-fn rb122_note_names_the_live_game_core_pins() {
-    let anchor = rb122h_target_fn_anchor();
-    let window = rb122h_fn_window(RB122_RAISING_TESTS_SRC, anchor.as_str())
-        .expect("rb-122 TEETH: covered by rb122_note_has_no_exclusivity_claim's anchor assertion");
-    let note = rb122h_retune_note_text(window.as_str());
-
-    assert!(
-        note.contains("20r-b"),
-        "rb-122 TEETH: the RETUNE note never mentions `20r-b`, the slice that promoted \
-         ESSENCE_SOFT_CAP (and its R14 boundary) into game-core. Got: {note:?}"
-    );
-    for needle in rb122h_required_pointer_needles() {
-        assert!(
-            note.contains(needle.as_str()),
-            "rb-122 TEETH: the RETUNE note never mentions `{needle}`, one of the live game-core \
-             pins a reader must be pointed at. Got: {note:?}"
-        );
-    }
-}
-
-/// The reword must be comment-only (ADR-0224 / X2 byte-pin): the local value
-/// pin the test's own assertion depends on must survive untouched.
-///
-/// Expected GREEN already on 23da96e — this is an anti-regression fixture for
-/// the fix, not the RED half of this slice's proof-of-teeth.
-///
-/// kills: a "fix" that deletes or rewords the `assert_eq!(ESSENCE_SOFT_CAP,
-/// 999, ..)` precondition while rewriting the comment above it — the exact
-/// shape X2's byte-pin exists to catch from the other direction.
-#[test]
-fn rb122_local_value_pin_survives_the_reword() {
-    let anchor = rb122h_target_fn_anchor();
-    let window = rb122h_fn_window(RB122_RAISING_TESTS_SRC, anchor.as_str())
-        .expect("rb-122 TEETH: covered by rb122_note_has_no_exclusivity_claim's anchor assertion");
-    let pin = rb122h_local_pin_text();
-    assert!(
-        window.contains(pin.as_str()),
-        "rb-122 TEETH: the clamp test's body no longer contains the local value pin `{pin}` — \
-         rewording the RETUNE comment must never touch the code around it."
-    );
-}
-
-/// R-20r-b-B1 (non-dangling pointer): each fixture the note (will) name is
-/// declared EXACTLY once in its file and its own doc block still carries a
-/// `RETUNE:` marker — proving the note's targets are real, current fixtures
-/// and not stale names a later rename or dedup left behind.
-///
-/// Expected GREEN already on 23da96e (these game-core fixtures exist from
-/// 20r-b) — this is the "the pointer resolves" half, kept green throughout so
-/// a rename in game-core (not just a bad reword here) reds this slice too.
-///
-/// kills: a rename of any of the three fixtures with no corresponding note
-/// update (declaration count drops to 0); a duplicate declaration ADR-0224
-/// content review would need to disambiguate (count goes to 2); a fixture
-/// whose own `RETUNE:` marker was dropped, silencing the retune-order chain
-/// this note promises a reader.
-#[test]
-fn rb122_target_fixtures_exist_and_carry_retune_notes() {
-    let word = rb122h_retune_word();
-    let targets: [(&str, String, &str); 3] = [
-        (
-            RB122_CURRENCY_SRC,
-            rb122h_essence_soft_cap_is_999_name(),
-            "game-core/src/currency.rs",
-        ),
-        (
-            RB122_CONTENT_SRC,
-            rb122h_r14_999_accepted_name(),
-            "game-core/src/content.rs",
-        ),
-        (
-            RB122_CONTENT_SRC,
-            rb122h_r14_1000_rejected_name(),
-            "game-core/src/content.rs",
-        ),
-    ];
-    for (src, name, path) in targets {
-        let n = rb122h_count_declaration(src, name.as_str());
+    /// care: the server-clock cooldown refuses one ms early (nothing written)
+    /// and admits exactly at CARE_COOLDOWN_MS; success stamps the clock, adds one
+    /// saturating Trust credit and dual-writes.
+    #[test]
+    fn nh_care_cooldown_boundary_and_success() {
+        let fx = fixture();
+        let w = world(&fx, true);
+        let mut m = monster(11, a(), 0);
+        m.last_care_at_ms = T0;
+        w.seed_monster(&m);
+        let before = w.snapshot();
         assert_eq!(
-            n, 1,
-            "rb-122 TEETH: `{name}` is declared {n} time(s) in {path} and must be declared \
-             exactly once — zero means the note points at a fixture that no longer exists, two \
-             means the declaration is ambiguous."
+            fx.run_as_at(a(), at(T0 + CARE_COOLDOWN_MS - 1), |ctx| care(ctx, 11)),
+            Err("care cooldown not yet elapsed".to_string())
         );
-        let doc = rb122h_doc_block_above(src, name.as_str()).unwrap_or_else(|| {
-            panic!(
-                "rb-122 TEETH: could not read `{name}`'s doc block in {path} even though its \
-                 declaration count was exactly one — the fn was found but no contiguous `///` \
-                 block sits directly above it (skipping attributes)."
-            )
+        assert_eq!(w.snapshot(), before);
+
+        let now = T0 + CARE_COOLDOWN_MS;
+        assert_eq!(fx.run_as_at(a(), at(now), |ctx| care(ctx, 11)), Ok(()));
+        let after = w.monster(11);
+        assert_eq!(
+            (after.last_care_at_ms, after.trust_favorable_count),
+            (now, 10)
+        );
+        assert_eq!(after.current_hp, 5, "care is not a heal");
+        w.assert_pub_consistent(11);
+
+        drop(fx);
+        let fx = fixture();
+        let w = world(&fx, true);
+        let mut m = monster(11, a(), 0);
+        m.trust_favorable_count = u32::MAX;
+        w.seed_monster(&m);
+        assert_eq!(fx.run_as_at(a(), at(T0), |ctx| care(ctx, 11)), Ok(()));
+        assert_eq!(w.monster(11).trust_favorable_count, u32::MAX, "saturating");
+    }
+
+    /// train: exactly one food leaves the CALLER's stack (a stranger's identical
+    /// stack is untouched), EVs + stats take the focus_train result, current_hp
+    /// is unchanged, and monster_pub follows.
+    #[test]
+    fn nh_train_spends_exactly_one_own_food() {
+        let fx = fixture();
+        let w = growth_world(&fx);
+        w.stack(b(), FOOD, 5);
+        let m = w.monster(11);
+        let s = species1();
+        let expected = evaluate_train(
+            &game_core::StatBlock {
+                hp: s.base_hp,
+                attack: s.base_attack,
+                defense: s.base_defense,
+                speed: s.base_speed,
+                sp_attack: s.base_sp_attack,
+                sp_defense: s.base_sp_defense,
+            },
+            &game_core::IVs::new(10, 11, 12, 13, 14, 15).unwrap(),
+            &game_core::EVs::new(4, 5, 6, 7, 8, 9).unwrap(),
+            &game_core::Nature::new(m.nature_kind),
+            game_core::Level::new(7).unwrap(),
+            Some(StatKind::Attack),
+            10,
+        )
+        .unwrap();
+
+        assert_eq!(
+            fx.run_as_at(a(), at(T0), |ctx| train(ctx, 11, FOOD)),
+            Ok(())
+        );
+        assert_eq!((w.count(a(), FOOD), w.count(b(), FOOD)), (2, 5));
+        let after = w.monster(11);
+        assert_eq!(after.ev_attack, expected.evs.get(StatKind::Attack));
+        assert!(after.ev_attack > 5, "the food granted EVs");
+        assert_eq!(after.stat_attack, expected.derived_stats.attack);
+        assert_eq!(after.stat_hp, expected.derived_stats.hp);
+        assert_eq!(after.current_hp, 5, "training is not a heal");
+        w.assert_pub_consistent(11);
+    }
+
+    /// train refusals keep the food: a non-food item, a food stack fully
+    /// reserved by an active offer, and a caller who owns none (only a stranger
+    /// does) — each refused before any write.
+    #[test]
+    fn nh_train_refusals_never_burn_food() {
+        type Setup = fn(&World<'_>);
+        let cases: [(&str, u32, Setup, &str); 3] = [
+            (
+                "not a food",
+                NOT_FOOD,
+                |w| w.stack(a(), NOT_FOOD, 2),
+                "item is not a training food",
+            ),
+            (
+                "food escrowed",
+                FOOD,
+                |w| {
+                    let mut o = offer(a(), b());
+                    o.initiator_items = vec![TradeItem {
+                        item_id: FOOD,
+                        qty: 3,
+                    }];
+                    w.offers.seed(&o);
+                },
+                "item is in an active trade",
+            ),
+            (
+                "only a stranger owns the food",
+                FOOD,
+                |w| {
+                    w.stacks.remove(a());
+                    w.stack(b(), FOOD, 5);
+                },
+                "item is in an active trade",
+            ),
+        ];
+        for (label, food, setup, want) in cases {
+            let fx = fixture();
+            let w = growth_world(&fx);
+            setup(&w);
+            let before = w.snapshot();
+            let got = fx.run_as_at(a(), at(T0), |ctx| train(ctx, 11, food));
+            assert_eq!(got, Err(want.to_string()), "{label}");
+            assert_eq!(
+                w.snapshot(),
+                before,
+                "{label}: nothing written, nothing burned"
+            );
+        }
+    }
+
+    /// essence_train: one ms early refuses; exactly at the 5 h cooldown +5 lands
+    /// on the chosen pool ONLY; a pool near the soft cap clamps, never rejects.
+    #[test]
+    fn nh_essence_train_cooldown_pool_and_clamp() {
+        let fx = fixture();
+        let w = world(&fx, true);
+        let mut m = monster(11, a(), 0);
+        m.last_essence_train_at_ms = T0;
+        w.seed_monster(&m);
+        let before = w.snapshot();
+        let early = T0 + ESSENCE_TRAIN_COOLDOWN_MS - 1;
+        assert_eq!(
+            fx.run_as_at(a(), at(early), |ctx| essence_train(
+                ctx,
+                11,
+                Affinity::Water
+            )),
+            Err("essence training cooldown not yet elapsed".to_string())
+        );
+        assert_eq!(w.snapshot(), before);
+        let now = T0 + ESSENCE_TRAIN_COOLDOWN_MS;
+        assert_eq!(
+            fx.run_as_at(a(), at(now), |ctx| essence_train(ctx, 11, Affinity::Water)),
+            Ok(())
+        );
+        let after = w.monster(11);
+        assert_eq!(
+            after.essence_water,
+            3 + crate::raising::ESSENCE_TRAIN_AMOUNT
+        );
+        assert_eq!(
+            (
+                after.essence_fire,
+                after.essence_electric,
+                after.essence_light
+            ),
+            (10, 1, 2),
+            "only the chosen pool moves"
+        );
+        assert_eq!(after.last_essence_train_at_ms, now);
+        w.assert_pub_consistent(11);
+
+        drop(fx);
+        let fx = fixture();
+        let w = world(&fx, true);
+        let mut m = monster(11, a(), 0);
+        m.essence_water = ESSENCE_SOFT_CAP - 2;
+        w.seed_monster(&m);
+        assert_eq!(
+            fx.run_as_at(a(), at(T0), |ctx| essence_train(ctx, 11, Affinity::Water)),
+            Ok(())
+        );
+        assert_eq!(w.monster(11).essence_water, ESSENCE_SOFT_CAP);
+    }
+
+    /// consume_crystalized_essence: success burns exactly one item and grants the
+    /// ITEM's affinity/amount; it shares essence_train's clock (a train one ms
+    /// before the cooldown is refused); a non-essence item is refused unburnt.
+    #[test]
+    fn nh_consume_crystalized_essence_grants_item_and_shares_the_clock() {
+        let fx = fixture();
+        let w = growth_world(&fx);
+        assert_eq!(
+            fx.run_as_at(a(), at(T0), |ctx| consume_crystalized_essence(
+                ctx,
+                11,
+                WATER_ESSENCE
+            )),
+            Ok(())
+        );
+        assert_eq!(w.count(a(), WATER_ESSENCE), 1);
+        let after = w.monster(11);
+        assert_eq!(
+            (after.essence_water, after.last_essence_train_at_ms),
+            (103, T0)
+        );
+        w.assert_pub_consistent(11);
+        let before = w.snapshot();
+        let early = T0 + ESSENCE_TRAIN_COOLDOWN_MS - 1;
+        assert_eq!(
+            fx.run_as_at(a(), at(early), |ctx| essence_train(ctx, 11, Affinity::Fire)),
+            Err("essence training cooldown not yet elapsed".to_string()),
+            "one shared clock"
+        );
+        assert_eq!(w.snapshot(), before);
+
+        drop(fx);
+        let fx = fixture();
+        let w = growth_world(&fx);
+        w.stack(a(), BAIT, 2);
+        let before = w.snapshot();
+        assert_eq!(
+            fx.run_as_at(a(), at(T0), |ctx| consume_crystalized_essence(
+                ctx, 11, BAIT
+            )),
+            Err("item is not crystalized essence".to_string())
+        );
+        assert_eq!(w.snapshot(), before, "a wrong item is never burnt");
+    }
+
+    /// Heal location 1 (zone 0) re-seeded with an ITEM cost so the spend is
+    /// observable; the RON cache still prices it at 0 currency.
+    fn heal_world(fx: &Fixture) -> World<'_> {
+        let w = world(fx, true);
+        w.locs.seed(&HealLocationRow {
+            location_id: 1,
+            zone_id: 0,
+            tile_x: 8,
+            tile_y: 3,
+            cost_item_id: Some(NOT_FOOD),
+            cost_qty: 1,
+            cooldown_ms: 30_000,
+            cost_currency: 0,
         });
-        assert!(
-            doc.contains(word.as_str()),
-            "rb-122 TEETH: `{name}`'s doc block in {path} does not mention `{word}` — this \
-             fixture's own retune order is the thing the reworded note is supposed to point a \
-             reader at. Got: {doc:?}"
+        w.join(a(), 1, 0);
+        w.join(b(), 2, 0);
+        w.seed_monster(&monster(11, a(), 0));
+        w.seed_monster(&monster(12, a(), PARTY_SLOT_NONE));
+        w.seed_monster(&monster(21, b(), 0));
+        w.stack(a(), NOT_FOOD, 2);
+        w.stack(b(), NOT_FOOD, 2);
+        w
+    }
+
+    /// Success heals ONLY the caller's party (boxed and stranger monsters keep
+    /// their HP), spends the cost from the caller's own stack, dual-writes, and
+    /// upserts the caller's cooldown row.
+    #[test]
+    fn nh_heal_party_heals_only_the_callers_party() {
+        let fx = fixture();
+        let w = heal_world(&fx);
+        assert_eq!(fx.run_as_at(a(), at(T0), |ctx| heal_party(ctx, 1)), Ok(()));
+        assert_eq!(
+            w.monster(11).current_hp,
+            40,
+            "party monster healed to stat_hp"
         );
+        assert_eq!(w.monster(12).current_hp, 5, "boxed monster untouched");
+        assert_eq!(w.monster(21).current_hp, 5, "stranger's party untouched");
+        w.assert_pub_consistent(11);
+        assert_eq!((w.count(a(), NOT_FOOD), w.count(b(), NOT_FOOD)), (1, 2));
+        let cd: Vec<(Identity, i64)> = w
+            .cooldowns
+            .rows()
+            .iter()
+            .map(|r| (r.owner_identity, r.last_heal_at_ms))
+            .collect();
+        assert_eq!(cd, vec![(a(), T0)]);
+
+        assert_eq!(
+            fx.run_as_at(a(), at(T0 + 30_000), |ctx| heal_party(ctx, 1)),
+            Ok(()),
+            "exactly at cooldown_ms the heal is admitted"
+        );
+        assert_eq!(w.cooldowns.rows().len(), 1, "upsert, not a second row");
+        assert_eq!(w.cooldowns.rows()[0].last_heal_at_ms, T0 + 30_000);
+    }
+
+    /// heal_party refusals, each before any write: unjoined caller, wrong zone,
+    /// in battle (PvP side B), one ms inside the location cooldown, and a caller
+    /// without the cost item (a stranger's stack is never spent).
+    #[test]
+    fn nh_heal_party_refusals_write_nothing() {
+        type Setup = fn(&World<'_>);
+        let cases: [(&str, Identity, i64, Setup, &str); 5] = [
+            ("unjoined", c(), T0, |_| {}, "not joined"),
+            (
+                "wrong zone",
+                a(),
+                T0,
+                |w| {
+                    w.chars.remove(1);
+                    w.join_char_only(1, 5);
+                },
+                "not in heal location zone",
+            ),
+            (
+                "in battle as PvP side B",
+                a(),
+                T0,
+                |w| w.battles.seed(&battle(b(), a())),
+                "cannot heal during an ongoing battle",
+            ),
+            (
+                "inside cooldown",
+                a(),
+                T0 + 29_999,
+                |w| {
+                    w.cooldowns.seed(&HealCooldown {
+                        owner_identity: a(),
+                        last_heal_at_ms: T0,
+                    })
+                },
+                "heal cooldown not yet elapsed",
+            ),
+            (
+                "no cost item",
+                a(),
+                T0,
+                |w| {
+                    w.stacks.remove(a());
+                },
+                "item not in inventory",
+            ),
+        ];
+        for (label, caller, now, setup, want) in cases {
+            let fx = fixture();
+            let w = heal_world(&fx);
+            setup(&w);
+            let before = w.snapshot();
+            let got = fx.run_as_at(caller, at(now), |ctx| heal_party(ctx, 1));
+            assert_eq!(got, Err(want.to_string()), "{label}");
+            assert_eq!(w.snapshot(), before, "{label}: nothing written");
+        }
+    }
+
+    impl World<'_> {
+        fn join_char_only(&self, entity_id: u64, zone_id: u32) {
+            self.chars.seed(&Character {
+                entity_id,
+                zone_id,
+                tile_x: 1,
+                tile_y: 1,
+                facing: Direction::South,
+                action: ActionState::Idle,
+                move_started_at_ms: 0,
+                sprite_id: 0,
+                move_queue: vec![],
+            });
+        }
+    }
+
+    /// EV-no-idle-accrual (M9: growth comes from ACTIVE play only), on the
+    /// shipped ctx shell: an intent 60 s after the last one mints a Quality-Time
+    /// tick; an intent after an idle gap longer than QT_IDLE_GAP_MS credits
+    /// NOTHING (re-anchor only) and leaves monster_pub alone.
+    #[test]
+    fn nh_quality_time_accrues_only_under_active_play() {
+        let fx = fixture();
+        let w = world(&fx, true);
+        let mut m = monster(11, a(), 0);
+        m.quality_time_window_start_ms = T0;
+        w.seed_monster(&m);
+
+        let t1 = T0 + QT_TICK_MS;
+        assert!(
+            accrue_quality_time(&fx.ctx_at(at(t1)), 11),
+            "active gap ticks"
+        );
+        assert_eq!(w.monster(11).quality_time_ticks_total, 45);
+        w.assert_pub_consistent(11);
+
+        let pubs_before = to_vec(&w.pubs.rows()).unwrap();
+        let t2 = t1 + QT_IDLE_GAP_MS + 1;
+        assert!(
+            !accrue_quality_time(&fx.ctx_at(at(t2)), 11),
+            "idle gap never ticks"
+        );
+        let after = w.monster(11);
+        assert_eq!(after.quality_time_ticks_total, 45, "no idle credit");
+        assert_eq!(
+            after.quality_time_window_ms, 60_000,
+            "window unchanged by idle time"
+        );
+        assert_eq!(after.quality_time_window_start_ms, t2, "re-anchored");
+        assert_eq!(to_vec(&w.pubs.rows()).unwrap(), pubs_before);
+    }
+
+    /// EV-no-idle-accrual time-skip: with the monster rows WRITE-WALLED (any
+    /// growth write aborts the process), the scheduled movement_tick runs as the
+    /// module identity every hour for 48 simulated hours over a party whose
+    /// owner sends no intent — it does its own work (normalises the character
+    /// to Idle) and every monster / monster_pub row stays byte-identical. A
+    /// non-scheduler caller is refused. Queue-draining moves reach the grass /
+    /// encounter path, which the movement suite owns.
+    #[test]
+    fn nh_movement_tick_time_skip_never_grows_monsters() {
+        let fx = fixture();
+        let w = world(&fx, false);
+        let _ = fx.table_keyed::<Character, u32>("character", "zone_id", |r| r.zone_id);
+        w.join(a(), 1, 0);
+        w.chars.remove(1);
+        w.chars.seed(&Character {
+            entity_id: 1,
+            zone_id: 0,
+            tile_x: 1,
+            tile_y: 1,
+            facing: Direction::South,
+            action: ActionState::Walking,
+            move_started_at_ms: 0,
+            sprite_id: 0,
+            move_queue: vec![],
+        });
+        let mut m = monster(11, a(), 0);
+        m.quality_time_window_start_ms = T0;
+        w.seed_monster(&m);
+        w.seed_monster(&monster(12, a(), 1));
+        let growth_before = (
+            to_vec(&w.monsters.rows()).unwrap(),
+            to_vec(&w.pubs.rows()).unwrap(),
+        );
+        let sched = || MovementTickSchedule {
+            id: 1,
+            zone_id: 0,
+            scheduled_at: ScheduleAt::Time(at(T0)),
+        };
+        assert_eq!(
+            fx.run_as_at(a(), at(T0), |ctx| movement_tick(ctx, sched())),
+            Err("movement_tick is scheduler-only".to_string())
+        );
+        let module = Identity::from_byte_array(DEFAULT_DATABASE_IDENTITY);
+        for hour in 1..=48 {
+            let now = T0 + hour * 3_600_000;
+            assert_eq!(
+                fx.run_as_at(module, at(now), |ctx| movement_tick(ctx, sched())),
+                Ok(()),
+                "hour {hour}"
+            );
+        }
+        assert_eq!(
+            w.chars.rows()[0].action,
+            ActionState::Idle,
+            "the tick ran its body (normalised the idle character)"
+        );
+        assert_eq!(
+            (
+                to_vec(&w.monsters.rows()).unwrap(),
+                to_vec(&w.pubs.rows()).unwrap()
+            ),
+            growth_before,
+            "48 h of scheduler ticks with no intent must not move any growth field"
+        );
+    }
+
+    /// A Quality-Time credit that CROSSES a public tier band (49 -> 50 ticks)
+    /// re-projects monster_pub; the unchanged-tier skip must never swallow a
+    /// real tier change (the public row would advertise a stale tier).
+    #[test]
+    fn nh_quality_time_tier_crossing_reprojects_monster_pub() {
+        let fx = fixture();
+        let w = world(&fx, true);
+        let mut m = monster(11, a(), 0);
+        m.quality_time_ticks_total = 49;
+        m.quality_time_window_start_ms = T0;
+        w.seed_monster(&m);
+        let tier_before = game_core::quality_time_tier_of(49);
+        assert!(accrue_quality_time(&fx.ctx_at(at(T0 + QT_TICK_MS)), 11));
+        assert_eq!(w.monster(11).quality_time_ticks_total, 50);
+        let p = w
+            .pubs
+            .rows()
+            .into_iter()
+            .find(|p| p.monster_id == 11)
+            .unwrap();
+        assert_ne!(
+            p.quality_time_tier, tier_before,
+            "fixture must cross a band"
+        );
+        assert_eq!(p.quality_time_tier, game_core::quality_time_tier_of(50));
+        w.assert_pub_consistent(11);
+    }
+
+    /// Claim re-key moves the caller's heal cooldown anchor verbatim (so a
+    /// claim cannot reset the heal cooldown); erase removes it, owner-scoped.
+    #[test]
+    fn nh_heal_cooldown_rekey_and_erase() {
+        let fx = fixture();
+        let w = world(&fx, true);
+        w.cooldowns.seed(&HealCooldown {
+            owner_identity: a(),
+            last_heal_at_ms: T0,
+        });
+        w.cooldowns.seed(&HealCooldown {
+            owner_identity: b(),
+            last_heal_at_ms: T0 + 1,
+        });
+        let rows = |w: &World<'_>| {
+            let mut r: Vec<(Identity, i64)> = w
+                .cooldowns
+                .rows()
+                .iter()
+                .map(|r| (r.owner_identity, r.last_heal_at_ms))
+                .collect();
+            r.sort_by_key(|x| x.1);
+            r
+        };
+        let ctx = fx.ctx();
+        crate::raising::rekey_heal_cooldown(&ctx, a(), c());
+        assert_eq!(rows(&w), vec![(c(), T0), (b(), T0 + 1)]);
+        crate::raising::erase_heal_cooldown(&ctx, c());
+        assert_eq!(rows(&w), vec![(b(), T0 + 1)]);
     }
 }

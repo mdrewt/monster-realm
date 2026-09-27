@@ -26,7 +26,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 // The comment stripper is IMPORTED, never copied (ADR-0215 single-owner rule). Precedent for a
 // `.ts` test importing a `.mjs` eval: client/src/ui/i18n-no-html-sink.test.ts:45 (one `..`
 // shallower — this file sits one directory deeper, under `ui/i18n/`).
-import { stripComments } from '../../../../evals/dom-shell-coverage-exclusion.eval.mjs';
+import { stripComments } from '../../../test-util/stripComments';
 import { CATALOG_EN } from './catalog.en';
 import { CATALOGS, currentLocale, DEFAULT_LOCALE, setLocale, t, tf } from './resolver';
 

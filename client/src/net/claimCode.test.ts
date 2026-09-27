@@ -52,11 +52,8 @@
 //
 // NO `new RegExp(...)` anywhere (Semgrep `detect-non-literal-regexp`, banned repo-wide).
 
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import * as fc from 'fast-check';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CLAIM_CODE_KEY_PREFIX, claimCode, claimCodeStorageKey } from './claimCode';
 
 // ---------------------------------------------------------------------------
@@ -647,211 +644,87 @@ describe('claimCode (AUTH-58): sessionStorage only, and every path degrades sile
   });
 });
 
-// ===========================================================================
-// G30 (half) — SOURCE SCAN of claimCode.ts.
-//
-// WHY A SOURCE SCAN AT ALL, when everything above is behavioural: the behaviour
-// tests prove the module BEHAVES correctly for the hosts they inject. They cannot
-// prove it never reaches PAST the host — a module that reads `globalThis
-// .sessionStorage` as a FALLBACK when `host` is undefined passes every "host is
-// undefined" assertion above under vitest (node has no sessionStorage global) and
-// then quietly uses the real per-origin store in a browser. Only a source scan sees
-// that. This is the same split-of-duties connection.test.ts:43-49 documents.
-//
-// NAMED RESIDUAL (same honesty as the plan's G26 note): a substring scan cannot see
-// bracket/string-splitting evasion — `globalThis['session' + 'Storage']` and
-// `(0, eval)('localStorage')` both pass every count below. What the scan guarantees
-// is precisely: the shipped source does not NAME the banned surfaces. The behavioural
-// half above is what makes the evasion pointless (the injected host is the only thing
-// the tests ever populate), and review is the honest place to catch a deliberate one.
-//
-// NO `new RegExp(...)` — indexOf / split only.
-// ===========================================================================
+// ---------------------------------------------------------------------------
+// G30 (runtime) — replaces the former source scan (ledger CT-src-net-claimCode#g30-source-scan).
+// Every ambient storage surface is replaced by a recording trap while every export runs, both
+// through a working injected host and with NO host (the degraded path, where an ambient
+// fallback would hide). Any read or write of a trap is a leak of the claim code (a bearer
+// credential) beyond this tab's injected sessionStorage.
+// ---------------------------------------------------------------------------
 
-const CLAIM_CODE_TS_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), 'claimCode.ts');
+const AMBIENT_SURFACES = [
+  'localStorage',
+  'sessionStorage',
+  'indexedDB',
+  'document',
+  'window',
+  'crypto',
+];
 
-function readSourceOrThrow(filePath: string): string {
-  try {
-    return readFileSync(filePath, 'utf8');
-  } catch (err) {
-    // Fail loud — a missing file must never make a scan vacuously pass.
-    throw new Error(`could not read ${filePath} — ${String(err)}`);
-  }
-}
-
-/** Count NON-OVERLAPPING occurrences via split (no `new RegExp`). The verbatim
- *  main.wiring.test.ts:2557-2560 / connection.test.ts:195-197 form. */
-function countOccurrences(src: string, needle: string): number {
-  return src.split(needle).length - 1;
-}
-
-/** Drop `/* ... *\/` block comments, then `//` line comments — copied in behaviour from
- *  connection.test.ts:95-122 so the two source scans cannot drift apart. */
-function stripComments(src: string): string {
-  let withoutBlocks = '';
-  let i = 0;
-  for (;;) {
-    const start = src.indexOf('/*', i);
-    if (start === -1) {
-      withoutBlocks += src.slice(i);
-      break;
-    }
-    withoutBlocks += src.slice(i, start);
-    const end = src.indexOf('*/', start + 2);
-    if (end === -1) break;
-    i = end + 2;
-  }
-  return withoutBlocks
-    .split('\n')
-    .map((line) => {
-      const j = line.indexOf('//');
-      return j === -1 ? line : line.slice(0, j);
-    })
-    .join('\n');
-}
-
-/** Every line whose trimmed form begins with `import` or `export ... from`, i.e. every
- *  module-graph edge. Comment-stripped input only. */
-function moduleEdgeLines(stripped: string): string[] {
-  return stripped
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(
-      (line) =>
-        line.startsWith('import') || line.startsWith('export {') || line.startsWith('export *'),
+function trapAmbientStorage(): string[] {
+  const hits: string[] = [];
+  for (const name of AMBIENT_SURFACES) {
+    const trap = new Proxy(
+      {},
+      {
+        get: (_t, k) => {
+          hits.push(`${name}.${String(k)}`);
+          return () => null; // callable, so a fallback runs to completion and is recorded
+        },
+        set: (_t, k) => {
+          hits.push(`${name}.${String(k)}=`);
+          return true;
+        },
+        has: (_t, k) => {
+          hits.push(`${String(k)} in ${name}`);
+          return false;
+        },
+      },
     );
-}
-
-/**
- * Every occurrence of `sessionStorage` in the stripped source sits on a line that also
- * names `host` — i.e. it is a property access on the INJECTED parameter, never an
- * ambient reach.
- *
- * WHAT THIS SEES: `globalThis.sessionStorage`, `window.sessionStorage`, and a bare
- * `sessionStorage.getItem(...)` (the implicit-global form the `globalThis` count alone
- * cannot catch).
- * WHAT IT DOES NOT SEE: an alias assigned on an earlier line (`const s = globalThis;`
- * then `s.sessionStorage`) — but the `globalThis`/`window` counts below are zero, so
- * that alias has nowhere to come from.
- */
-function sessionStorageReachesOnlyThroughHost(stripped: string): {
-  ok: boolean;
-  offending: string;
-} {
-  for (const line of stripped.split('\n')) {
-    if (line.indexOf('sessionStorage') === -1) continue;
-    if (line.indexOf('host') === -1) return { ok: false, offending: line.trim() };
+    vi.stubGlobal(name, trap);
   }
-  return { ok: true, offending: '' };
+  return hits;
 }
 
-describe('G30 (claimCode.ts source scan): the storage host is a PARAMETER, never an ambient reach', () => {
-  it('★ CALIBRATION: the stripper is not vacuous, and claimCode.ts carries no "://" literal (the stripLineComments blind spot)', () => {
-    // THE CALIBRATION THIS FILE OWES (plan ADDENDUM §C, last bullet). Two independent
-    // failure modes of the scan itself, closed here so no count below can pass vacuously:
-    //
-    // (1) A stripper that returns '' (or the whole file unchanged) makes every `=== 0`
-    //     count below meaningless. The fixture proves it removes commented-out code and
-    //     keeps live code.
-    // (2) `stripComments` truncates each line at the first `//`, so a line containing a
-    //     scheme literal loses everything after it — a real `localStorage.setItem(...)`
-    //     parked after a URL on one line would be INVISIBLE to every ban below. Pinning
-    //     zero occurrences of the two-slash-after-colon token in claimCode.ts closes that
-    //     hole by construction. connection.test.ts:1247-1260 pins the identical property
-    //     for connection.ts; build any URL from parts if one is ever needed here.
-    const fixture = [
-      'const live = 1;',
-      '// localStorage.setItem("x", "y")',
-      '/* indexedDB.open() */ const also = 2;',
-    ].join('\n');
-    const strippedFixture = stripComments(fixture);
-    expect(countOccurrences(strippedFixture, 'localStorage')).toBe(0);
-    expect(countOccurrences(strippedFixture, 'indexedDB')).toBe(0);
-    expect(
-      countOccurrences(strippedFixture, 'const live = 1;'),
-      'the stripper must keep live code',
-    ).toBe(1);
-    expect(
-      countOccurrences(strippedFixture, 'const also = 2;'),
-      'a trailing block comment must not swallow the line',
-    ).toBe(1);
-
-    const raw = readSourceOrThrow(CLAIM_CODE_TS_PATH);
-    expect(
-      countOccurrences(raw, ':' + '//'),
-      'claimCode.ts must contain no scheme literal — the line-comment stripper truncates ' +
-        'at the first two-slash token, so a URL on a live line would hide whatever follows ' +
-        'it from every ban in this block. Build any URL from parts (accounts.rs:40-48 makes ' +
-        'the same move for the same class of scanner)',
-    ).toBe(0);
+describe('G30 (runtime): claimCode reaches storage ONLY through the injected host', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
-  it('★★ BITES: zero localStorage / indexedDB / document.cookie / globalThis / window in the comment-stripped source', () => {
-    // WRONG IMPL KILLED (a): `localStorage.setItem(key, code)` — AUTH-58 violated, and the
-    //   claim code becomes readable by every tab on the origin.
-    // WRONG IMPL KILLED (b): `globalThis.sessionStorage.getItem(key)` as a fallback when
-    //   `host` is undefined. Every behavioural test above still passes (node has no
-    //   sessionStorage global) while the browser silently uses the ambient store — the
-    //   injected-host discipline becomes decorative.
-    // WRONG IMPL KILLED (c): an `indexedDB` / `document.cookie` "durable" variant, which
-    //   would survive the tab and re-open the cross-tab identity hazard ADR-0150 D3 closes.
-    const stripped = stripComments(readSourceOrThrow(CLAIM_CODE_TS_PATH));
+  it('★★ BITES: every export, with a working host and with no host, touches zero ambient storage', () => {
+    const hits = trapAmbientStorage();
+    const storage = new FakeSessionStorage();
+    const host = ascendingCryptoHost(storage);
+    const code = claimCode.mint(host, URI, DB);
+    expect(code).toBe(ASCENDING_HEX);
+    expect(claimCode.read(host, URI, DB)).toBe(ASCENDING_HEX);
+    expect(claimCode.hasUnconsumed(host, URI, DB)).toBe(true);
+    claimCode.markFirstRunNudgeSeen(host, URI, DB);
+    expect(claimCode.hasSeenFirstRunNudge(host, URI, DB)).toBe(true);
+    claimCode.clear(host, URI, DB);
+    expect(claimCode.read(host, URI, DB)).toBeUndefined();
+    expect(storage.calls.length, 'the injected host must actually be exercised').toBeGreaterThan(0);
 
-    // Anti-vacuity FIRST: a stub file (or a stripper that ate everything) would satisfy
-    // every zero below.
-    expect(
-      countOccurrences(stripped, 'sessionStorage'),
-      'the scanned source must actually reference sessionStorage — a zero here means this ' +
-        'scan is judging an empty or wrong file and every ban below is vacuous',
-    ).toBeGreaterThanOrEqual(1);
-    expect(
-      countOccurrences(stripped, 'export'),
-      'the scanned source must export something',
-    ).toBeGreaterThanOrEqual(3);
-
-    for (const banned of ['localStorage', 'indexedDB', 'document.cookie', 'globalThis', 'window']) {
-      expect(
-        countOccurrences(stripped, banned),
-        `claimCode.ts must never name "${banned}" — the storage host is an injected ` +
-          'PARAMETER (ADR-0182 D16 / G30). Reaching an ambient global makes every ' +
-          'injected-host test in this file decorative',
-      ).toBe(0);
+    // Partial hosts reach deeper than an absent one: storage without crypto, crypto without storage.
+    const partial = [
+      hostWith(new FakeSessionStorage()),
+      hostWith(undefined, new RecordingCrypto(() => 1)),
+    ];
+    for (const h of [undefined, {}, hostWith(null, null), ...partial]) {
+      expect(claimCode.mint(h, URI, DB)).toBeUndefined();
+      expect(claimCode.read(h, URI, DB)).toBeUndefined();
+      expect(claimCode.hasUnconsumed(h, URI, DB)).toBe(false);
+      expect(claimCode.hasSeenFirstRunNudge(h, URI, DB)).toBe(false);
+      claimCode.markFirstRunNudgeSeen(h, URI, DB);
+      claimCode.clear(h, URI, DB);
     }
+    expect(hits, 'ambient storage reached — the claim code would outlive the tab').toEqual([]);
   });
 
-  it('★★ BITES: every `sessionStorage` occurrence is host-scoped (kills a bare implicit-global `sessionStorage.getItem`)', () => {
-    const stripped = stripComments(readSourceOrThrow(CLAIM_CODE_TS_PATH));
-    const verdict = sessionStorageReachesOnlyThroughHost(stripped);
-    expect(
-      verdict.ok,
-      'every line naming sessionStorage must also name the injected `host` parameter. ' +
-        `Offending line: ${JSON.stringify(verdict.offending)}. A bare \`sessionStorage.getItem(k)\` ` +
-        'resolves to the ambient global in a browser and to nothing under vitest — the exact ' +
-        'shape that passes every test here and fails in production',
-    ).toBe(true);
-  });
-
-  it('★★ BITES: claimCode.ts imports NOTHING at runtime (type-only imports allowed) and never uses `import *`', () => {
-    // WHY (plan ADDENDUM §C, F19): this module is the storage primitive the join veto
-    // depends on. A runtime import gives it a transitive dependency graph — and the first
-    // thing anyone would reach for is `authToken.ts`'s private `storageMethod`, which is
-    // not exported, so the temptation is to export it and grow a shared mutable seam
-    // between two modules with DIFFERENT fail directions (authToken fails to 'anon';
-    // claimCode fails to "no code"). A TYPE import of `TokenStorageHost` is free at
-    // runtime and is what this file's own import block uses.
-    //
-    // `import *` is banned for the same reason G14 bans it in connection.ts: a namespace
-    // import makes an identifier-level scan (the one that caught the aliasing evasion
-    // recorded at authToken.test.ts:1368-1377) unable to see which members are used.
-    const stripped = stripComments(readSourceOrThrow(CLAIM_CODE_TS_PATH));
-    expect(countOccurrences(stripped, 'import *'), 'no namespace imports').toBe(0);
-    expect(countOccurrences(stripped, 'require('), 'no CommonJS require').toBe(0);
-
-    for (const line of moduleEdgeLines(stripped)) {
-      expect(
-        line.startsWith('import type') || line.startsWith('export type'),
-        `claimCode.ts may carry TYPE-ONLY module edges. Offending line: ${JSON.stringify(line)}`,
-      ).toBe(true);
-    }
+  it('★ CALIBRATION: the trap records a bare ambient reach (the test is not vacuous)', () => {
+    const hits = trapAmbientStorage();
+    // What a regressed fallback would do: reach the ambient global by bare identifier.
+    (globalThis as unknown as { localStorage: Storage }).localStorage.getItem('x');
+    expect(hits).toEqual(['localStorage.getItem']);
   });
 });

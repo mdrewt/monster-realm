@@ -4,219 +4,11 @@
 //!   `#[cfg(test)] #[path = "playtest_tests.rs"] mod playtest_tests;`
 //! so `super::` resolves to `playtest.rs`.
 //!
-//! Because `playtest.rs` does not yet exist, `include_str!("playtest.rs")`
-//! would be a compile error that would prevent ALL tests in this crate from
-//! running and expressing their RED state.  To avoid that problem the
-//! source-scan tests read playtest.rs at RUNTIME via `std::fs::read_to_string`
-//! inside each test body; if the file is absent the test fails with a clear
-//! message.  Only the pure-seam tests use `super::` (compile-fail RED until
-//! the impl adds the functions).
-//!
-//! ## RED state (before implementation)
-//!
-//! - Pure-seam tests (`hp_permille_*`, `playtest_kind_*`, `plan_reap_*`,
-//!   `plan_reaper_arm_*`, `build_playtest_event_*`) — **compile-fail RED**
-//!   because `super::hp_permille` / `super::PlaytestKind` / `super::plan_reap`
-//!   / `super::plan_reaper_arm` / `super::ArmPlan` / `super::build_playtest_event`
-//!   / `super::PlaytestEvent` do not exist in the (absent) `playtest.rs`.
-//!
-//! - Source-scan tests — **runtime-RED** (file absent → `read_to_string` returns
-//!   Err → test fails with "playtest.rs not found").
-//!
-//! ## Scan pipeline
-//!
-//! Every source-scan test MUST run the three-stage pipeline:
-//!   1. `strip_rust_strings`  — blanks `"..."`, `r"..."`, `r#"..."#` content.
-//!   2. `strip_rust_comments` — blanks `// ...` and `/* ... */` regions.
-//!   3. `squash_ws`           — removes all whitespace (rustfmt-proof).
-//!
-//! Per ADR-0125 / M17.5d mandatory discipline: string-strip BEFORE comment-strip
-//! so that `//` inside a string literal is already blanked before the comment
-//! pass walks the buffer.  `squash_ws` makes composite needles rustfmt-proof.
-//! Needles are assembled with `concat!()` so this file cannot self-match.
+//! Pure seams (`hp_permille`, `PlaytestKind`, `plan_reap`, `plan_reaper_arm`,
+//! `build_playtest_event`) plus a native-host test of the shipped
+//! `playtest_reaper`'s scheduler-only guard.
 
 use spacetimedb::Identity;
-
-// ===========================================================================
-// ── Scan helpers (local copy — per-module convention, ADR-0125 anti-pattern #5)
-// ===========================================================================
-
-/// Strip Rust string literals from `src`, replacing their content (and
-/// delimiters) with spaces.  Handles normal `"..."` with `\"` escapes and
-/// raw strings `r"..."` / `r#"..."#` (up to 6 `#` hashes).
-///
-/// Must be the FIRST stage of the scan pipeline.
-fn strip_rust_strings(src: &str) -> String {
-    let bytes = src.as_bytes();
-    let len = bytes.len();
-    let mut out = Vec::with_capacity(len);
-    let mut i = 0;
-
-    while i < len {
-        // Raw string: r"..." or r#"..."# (up to 6 hashes).
-        if bytes[i] == b'r' {
-            let mut hashes: usize = 0;
-            let mut j = i + 1;
-            while j < len && bytes[j] == b'#' && hashes < 6 {
-                hashes += 1;
-                j += 1;
-            }
-            if j < len && bytes[j] == b'"' {
-                // IS a raw string literal.
-                out.push(b' '); // r
-                out.resize(out.len() + hashes, b' '); // opening # hashes
-                out.push(b' '); // opening "
-                j += 1;
-                loop {
-                    if j >= len {
-                        break;
-                    }
-                    if bytes[j] == b'"' {
-                        let mut k = j + 1;
-                        let mut closing_hashes: usize = 0;
-                        while k < len && bytes[k] == b'#' && closing_hashes < hashes {
-                            closing_hashes += 1;
-                            k += 1;
-                        }
-                        if closing_hashes == hashes {
-                            out.push(b' '); // closing "
-                            out.resize(out.len() + hashes, b' '); // closing # hashes
-                            j = k;
-                            break;
-                        }
-                    }
-                    out.push(b' ');
-                    j += 1;
-                }
-                i = j;
-                continue;
-            }
-            // Not a raw string — fall through.
-        }
-
-        // Normal double-quoted string literal.
-        if bytes[i] == b'"' {
-            out.push(b' '); // opening "
-            i += 1;
-            loop {
-                if i >= len {
-                    break;
-                }
-                if bytes[i] == b'\\' && i + 1 < len {
-                    out.push(b' ');
-                    out.push(b' ');
-                    i += 2;
-                } else if bytes[i] == b'"' {
-                    out.push(b' '); // closing "
-                    i += 1;
-                    break;
-                } else {
-                    out.push(b' ');
-                    i += 1;
-                }
-            }
-            continue;
-        }
-
-        out.push(bytes[i]);
-        i += 1;
-    }
-
-    String::from_utf8(out).expect("string-stripped source must be valid UTF-8")
-}
-
-/// Strip Rust block comments (`/* ... */`) and line comments (`// ...`).
-/// Replaces comment content with spaces (preserves byte-count for line numbers).
-///
-/// Run AFTER `strip_rust_strings` so a block-comment or line-comment opener
-/// inside a string literal is already blanked before this pass.
-fn strip_rust_comments(src: &str) -> String {
-    let bytes = src.as_bytes();
-    let len = bytes.len();
-    let mut out = vec![b' '; len];
-    let mut i = 0;
-    while i < len {
-        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-            i += 2;
-            while i + 1 < len {
-                if bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                    i += 2;
-                    break;
-                }
-                i += 1;
-            }
-        } else if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
-            while i < len && bytes[i] != b'\n' {
-                i += 1;
-            }
-        } else {
-            out[i] = bytes[i];
-            i += 1;
-        }
-    }
-    String::from_utf8(out).expect("stripped source must be valid UTF-8")
-}
-
-/// Remove ALL whitespace characters (rustfmt-proof composite-needle matching,
-/// per ADR-0125 mandatory third pipeline stage).
-fn squash_ws(src: &str) -> String {
-    src.chars().filter(|c| !c.is_whitespace()).collect()
-}
-
-/// Full three-stage scan pipeline: strip strings → strip comments → squash_ws.
-/// ALL source-scan tests MUST use this helper, never a partial pipeline.
-fn stripped_for_scan(src: &str) -> String {
-    squash_ws(&strip_rust_comments(&strip_rust_strings(src)))
-}
-
-/// Extract the body of a named `fn` from `src` (comment+string-stripped but
-/// NOT squashed — brace-depth walking requires whitespace to remain).
-///
-/// Finds `pub fn <name>(` or `fn <name>(`, walks to the first `{`, then counts
-/// braces to find the matching `}`.  Returns the slice BETWEEN the outer braces
-/// (exclusive), or `None` if not found.
-fn extract_fn_body<'a>(src: &'a str, name: &str) -> Option<&'a str> {
-    let pub_needle = format!("pub fn {}(", name);
-    let priv_needle = format!("fn {}(", name);
-    let fn_start = src
-        .find(pub_needle.as_str())
-        .or_else(|| src.find(priv_needle.as_str()))?;
-    let after_fn = &src[fn_start..];
-    let brace_offset = after_fn.find('{')?;
-    let body_start = fn_start + brace_offset + 1;
-    let mut depth: usize = 1;
-    let mut rel: usize = 0;
-    let chars: Vec<char> = src[body_start..].chars().collect();
-    let mut char_pos = 0;
-    while char_pos < chars.len() && depth > 0 {
-        match chars[char_pos] {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    break;
-                }
-            }
-            _ => {}
-        }
-        rel += chars[char_pos].len_utf8();
-        char_pos += 1;
-    }
-    if depth == 0 {
-        Some(&src[body_start..body_start + rel])
-    } else {
-        None
-    }
-}
-
-/// Runtime read of playtest.rs for source-scan tests.
-/// Returns Err (with a descriptive message) if the file is absent, so tests
-/// fail RED with a clear message rather than a cryptic panic.
-fn read_playtest_rs() -> Result<String, String> {
-    // The canonical path relative to server-module/src/ during `cargo test`.
-    std::fs::read_to_string("src/playtest.rs")
-        .map_err(|e| format!("playtest.rs not found — file must exist before source-scan tests can pass (pt-b2 not yet implemented): {e}"))
-}
 
 // ===========================================================================
 // ── hp_permille pure-seam tests (compile-fail RED until playtest.rs exists)
@@ -732,409 +524,72 @@ fn build_playtest_event_passthrough_fields() {
 }
 
 // ===========================================================================
-// ── Source-scan tests over playtest.rs (runtime-RED — file absent today)
+// Native-host behaviour (debloat Phase 2: ST-playtest_tests#reaper-scheduler-guard).
+// Replaces the scheduler-guard text pin: the SHIPPED reducer runs with a chosen
+// sender through `Fixture::run_as_at`, against the fixture's module identity.
 // ===========================================================================
 
-/// PT-B2-SCAN-01: `playtest_reaper` reducer body has the scheduler-only identity
-/// guard BEFORE any table delete.
+/// `playtest_reaper` is scheduler-only: every non-module caller (a player, the
+/// all-zero wild/dummy identity, and the identity that WAS the module before it
+/// changed) is refused before a single row is deleted; the module identity reaps
+/// exactly the expired rows (TTL boundary inclusive) and keeps the fresh one.
 ///
-/// The guard shape must be `ctx.sender() != ctx.database_identity()` in the
-/// reducer body (SpacetimeDB 2.x spelling, ADR-0197 — `ctx.identity()` is the
-/// deprecated 1.x alias).
-/// This is the same pattern as pvp_deadline_reaper (EA-PVP-02) and
-/// battle_challenge_reaper (EA-CHR-03) — a consistent project convention.
-///
-/// Kills:
-///   - impl that omits the guard (any client can call the reaper and delete
-///     arbitrary events)
-///   - impl that puts the guard AFTER a delete (partial deletion before abort)
-///   - a string-literal evasion where the guard text appears only in a comment
-///     or string (three-stage pipeline closes this)
+/// kills: the guard deleted / placed after the deletes / inverted / compared
+/// against a hard-coded identity instead of `ctx.database_identity()`.
 #[test]
-fn scan_playtest_reaper_has_scheduler_guard_before_delete() {
-    let src = match read_playtest_rs() {
-        Ok(s) => s,
-        Err(e) => panic!("{}", e),
+fn nh_playtest_reaper_is_scheduler_only_and_refuses_before_any_delete() {
+    use crate::native_host_tests::{fixture, DEFAULT_DATABASE_IDENTITY};
+    use spacetimedb::{ScheduleAt, Timestamp};
+
+    let fx = fixture();
+    let events = fx
+        .table_keyed::<super::PlaytestEvent, u64>("playtest_event", "event_id", |r| r.event_id)
+        .writable()
+        .scannable()
+        .unique();
+    let player = Identity::from_byte_array([0x11; 32]);
+    let now = super::PLAYTEST_EVENT_TTL_MS * 3;
+    let ev = |event_id: u64, created_at_ms: i64| super::PlaytestEvent {
+        event_id,
+        identity: player,
+        kind: 1,
+        created_at_ms,
+        battle_id: 0,
+        species_id: 1,
+        hp_permille: 500,
+        bait_item_id: 0,
+        success: false,
     };
-    // ADR-0125 discipline: string-strip BEFORE comment-strip (a `//` inside a string
-    // literal must be blanked before the comment pass walks the buffer).
-    let stripped = strip_rust_comments(&strip_rust_strings(&src));
-
-    let body = extract_fn_body(&stripped, "playtest_reaper")
-        .expect("PT-B2-SCAN-01: `playtest_reaper` function not found in playtest.rs");
-
-    let guard = concat!("ctx.sender()", " != ", "ctx.database_identity()");
-    let delete_needle = concat!("playtest_event()", ".event_id().delete");
-
-    assert!(
-        body.contains(guard),
-        "PT-B2-SCAN-01 FAIL: `playtest_reaper` body does not contain the \
-         scheduler-only identity guard `ctx.sender() != ctx.database_identity()`. \
-         Without this guard, any client can call the reaper and delete \
-         arbitrary playtest_event rows (ADR-0126 precedent / EA-PVP-02 / EA-CHR-03)."
-    );
-
-    // Guard must appear BEFORE any playtest_event delete in the function body.
-    let guard_pos = body.find(guard).unwrap();
-    let delete_pos = body.find(delete_needle);
-    if let Some(dp) = delete_pos {
-        assert!(
-            guard_pos < dp,
-            "PT-B2-SCAN-01 FAIL: the scheduler guard appears AFTER a delete call \
-             in `playtest_reaper` body (guard at byte {}, delete at byte {}). \
-             The guard must be the FIRST action so malicious callers are rejected \
-             before any rows are touched.",
-            guard_pos,
-            dp
-        );
-    }
-}
-
-/// PT-B2-SCAN-02 (RT-PTB2-02 / M-2): `ensure_playtest_reaper` (or the schedule
-/// insert inside `playtest_reaper` / `ensure_playtest_reaper`) uses
-/// `ScheduleAt::Interval` and NOT `ScheduleAt::Time`.
-///
-/// Using `ScheduleAt::Time` schedules a one-shot run; `Interval` is required
-/// for a recurring reaper. This mirrors the `movement_tick_schedule` pattern
-/// (lib.rs `ensure_zone_schedules`).
-///
-/// Kills: impl that uses the one-shot `ScheduleAt::Time(...)` form.
-#[test]
-fn scan_playtest_schedule_uses_interval_not_time() {
-    let src = match read_playtest_rs() {
-        Ok(s) => s,
-        Err(e) => panic!("{}", e),
+    events.seed(&ev(1, 0));
+    events.seed(&ev(2, now - super::PLAYTEST_EVENT_TTL_MS));
+    events.seed(&ev(3, now - 1));
+    let ids = || {
+        let mut v: Vec<u64> = events.rows().iter().map(|e| e.event_id).collect();
+        v.sort_unstable();
+        v
     };
-    // String-strip + comment-strip before scanning to prevent evasion via string
-    // literal or comment containing the needle.
-    // ADR-0125 discipline: string-strip BEFORE comment-strip (a `//` inside a string
-    // literal must be blanked before the comment pass walks the buffer).
-    let stripped = strip_rust_comments(&strip_rust_strings(&src));
-
-    let interval_needle = concat!("ScheduleAt::", "Interval(");
-    assert!(
-        stripped.contains(interval_needle),
-        "PT-B2-SCAN-02 FAIL: playtest.rs does not contain `ScheduleAt::Interval(`. \
-         The reaper schedule row must use Interval for recurring execution, not Time \
-         (RT-PTB2-02 / M-2). Using Time would result in a one-shot reap."
-    );
-
-    // Negative: ScheduleAt::Time must NOT appear (it is the one-shot form).
-    // Assembled with concat!() to avoid self-match in this test file.
-    let time_needle = concat!("ScheduleAt::", "Time(");
-    assert!(
-        !stripped.contains(time_needle),
-        "PT-B2-SCAN-02 FAIL: playtest.rs contains `ScheduleAt::Time(` — this is the \
-         one-shot form. Reaper schedules must use `ScheduleAt::Interval` for recurring \
-         execution (RT-PTB2-02 / M-2)."
-    );
-}
-
-/// PT-B2-SCAN-03: `PlaytestKind` does NOT carry `SpacetimeType` in its derive
-/// and `code()` has no `as u16` cast anywhere in the file.
-///
-/// SpacetimeType on the kind enum would leak the variant list to the client
-/// via the schema. The code() fn must use explicit match arms so future
-/// variants require explicit assignment (not just reordering).
-///
-/// Kills:
-///   - impl that adds `#[derive(SpacetimeType)]` to PlaytestKind (client leak)
-///   - impl that uses `self as u16` in code() (ordinal-dependent, fragile)
-#[test]
-fn scan_playtest_kind_no_spacetime_type_no_as_u16() {
-    let src = match read_playtest_rs() {
-        Ok(s) => s,
-        Err(e) => panic!("{}", e),
+    let sched = || super::PlaytestReaperSchedule {
+        id: 1,
+        scheduled_at: ScheduleAt::Time(Timestamp::from_micros_since_unix_epoch(0)),
     };
-    // ADR-0125 discipline: string-strip BEFORE comment-strip (a `//` inside a string
-    // literal must be blanked before the comment pass walks the buffer).
-    let stripped = strip_rust_comments(&strip_rust_strings(&src));
-    let squashed = squash_ws(&stripped);
+    let at = Timestamp::from_micros_since_unix_epoch(now * 1000);
+    let reap = |who: Identity| fx.run_as_at(who, at, |ctx| super::playtest_reaper(ctx, sched()));
 
-    // Negative: SpacetimeType must NOT appear adjacent to PlaytestKind.
-    // We scan the un-squashed stripped source for the derive line specifically.
-    // Needle: `derive(...SpacetimeType...)` near `PlaytestKind`.
-    // Approach: check that the squashed source does not contain the token
-    // `SpacetimeType` anywhere (playtest.rs has no other reason to use it).
-    let st_needle = "SpacetimeType";
-    assert!(
-        !squashed.contains(st_needle),
-        "PT-B2-SCAN-03 FAIL: playtest.rs contains `SpacetimeType` — this must NOT \
-         be derived on `PlaytestKind` (would expose variant list to clients via schema). \
-         The kind field is stored as u16; use the `code()` method for the mapping."
-    );
-
-    // Negative: `as u16` must not appear in the code() function body.
-    // Extract the code() body for a narrower check.
-    let code_body = extract_fn_body(&stripped, "code")
-        .expect("PT-B2-SCAN-03: `code` function not found in playtest.rs");
-    let as_u16_needle = "as u16";
-    assert!(
-        !squash_ws(code_body).contains(&squash_ws(as_u16_needle)),
-        "PT-B2-SCAN-03 FAIL: `code()` body contains `as u16` cast. \
-         The spec requires explicit match arms with literal values \
-         (e.g. `RecruitAttempt => 1`) so future variants require explicit \
-         assignment rather than relying on discriminant ordering."
-    );
-}
-
-/// PT-B2-SCAN-04: `ensure_playtest_reaper` calls `plan_reaper_arm` and
-/// `record_recruit_event` references `PlaytestKind::RecruitAttempt`.
-///
-/// These source-scan pins ensure the thin-shell functions wire through
-/// the pure seams rather than reimplementing the logic inline.
-///
-/// Kills:
-///   - ensure_playtest_reaper that bypasses the plan_reaper_arm seam (inline logic)
-///   - record_recruit_event that hardcodes 1u16 instead of using the enum
-#[test]
-fn scan_wiring_needles() {
-    let src = match read_playtest_rs() {
-        Ok(s) => s,
-        Err(e) => panic!("{}", e),
-    };
-    let squashed = stripped_for_scan(&src);
-
-    // ensure_playtest_reaper must call plan_reaper_arm.
-    // Split at "plan_reaper" to prevent self-match.
-    let arm_needle = concat!("plan_reaper", "_arm(");
-    assert!(
-        squashed.contains(arm_needle),
-        "PT-B2-SCAN-04 FAIL: playtest.rs does not contain `{}` (squashed). \
-         `ensure_playtest_reaper` must delegate to the pure `plan_reaper_arm` \
-         seam rather than inlining the singleton logic.",
-        arm_needle
-    );
-
-    // record_recruit_event must reference PlaytestKind::RecruitAttempt.
-    // Split at "PlaytestKind::" to prevent self-match.
-    let kind_needle = concat!("PlaytestKind::", "RecruitAttempt");
-    assert!(
-        squashed.contains(kind_needle),
-        "PT-B2-SCAN-04 FAIL: playtest.rs does not contain `{}` (squashed). \
-         `record_recruit_event` must pass `PlaytestKind::RecruitAttempt.code()` \
-         rather than hardcoding the literal 1, so the mapping is owned by the \
-         enum's explicit match arm.",
-        kind_needle
-    );
-}
-
-// ===========================================================================
-// ── Scan machinery self-teeth (GREEN — verifies the pipeline works)
-// ===========================================================================
-
-/// Machinery self-teeth: proves that `stripped_for_scan` correctly:
-///   1. Rejects a BAD fixture (needle in comment — must NOT match after stripping).
-///   2. Accepts a GOOD fixture (needle in real code — MUST match after stripping).
-///   3. Rejects an EVASION fixture (needle only in a string literal — must NOT match).
-///
-/// If this test fails, the scan helpers themselves are broken and none of the
-/// source-scan tests above can be trusted.
-#[test]
-fn scan_machinery_self_teeth() {
-    // Use the scheduler-guard needle (same as scan_playtest_reaper_has_scheduler_guard_before_delete).
-    let needle_squashed = squash_ws(concat!("ctx.sender()", " != ", "ctx.database_identity()"));
-
-    // BAD fixture: guard only in a comment.
-    let bad_fixture = r#"
-        #[spacetimedb::reducer]
-        pub fn playtest_reaper(ctx: &ReducerContext, _sched: PlaytestReaperSchedule) -> Result<(), String> {
-            // ctx.sender() != ctx.database_identity() — just a comment, not enforced!
-            for row in ctx.db.playtest_event().iter() {
-                ctx.db.playtest_event().event_id().delete(row.event_id);
-            }
-            Ok(())
-        }
-    "#;
-    let bad_squashed = stripped_for_scan(bad_fixture);
-    assert!(
-        !bad_squashed.contains(&needle_squashed),
-        "SELF-TEETH BAD: guard in comment should NOT match after stripped_for_scan. \
-         The comment-stripping stage is broken."
-    );
-
-    // GOOD fixture: guard in real code.
-    let good_fixture = r#"
-        #[spacetimedb::reducer]
-        pub fn playtest_reaper(ctx: &ReducerContext, _sched: PlaytestReaperSchedule) -> Result<(), String> {
-            if ctx.sender() != ctx.database_identity() {
-                return Err("scheduler only".to_string());
-            }
-            Ok(())
-        }
-    "#;
-    let good_squashed = stripped_for_scan(good_fixture);
-    assert!(
-        good_squashed.contains(&needle_squashed),
-        "SELF-TEETH GOOD: guard in real code MUST match after stripped_for_scan. \
-         The scan pipeline is broken."
-    );
-
-    // EVASION fixture: guard only in a string literal.
-    let evasion_fixture = format!(
-        r#"
-        pub fn playtest_reaper(ctx: &ReducerContext, _s: u64) {{
-            let _guard_evasion = "{}";
-        }}
-        "#,
-        concat!("ctx.sender()", " != ", "ctx.database_identity()")
-    );
-    let evasion_squashed = stripped_for_scan(&evasion_fixture);
-    assert!(
-        !evasion_squashed.contains(&needle_squashed),
-        "SELF-TEETH EVASION: guard in string literal must NOT match after stripped_for_scan. \
-         The string-stripping stage is broken (red-team F1)."
-    );
-}
-
-// ===========================================================================
-// m22-s3b (ADR-0228) — THE IDENTITY-SCOPED IMMEDIATE playtest_event ERASE.
-//
-// EARS criterion PRV1-6b: the cascade deletes every ERASE-policy row owned by
-// the deleting identity. `playtest_event` is one of them, and spec §3 is
-// unusually explicit about what this step is and is NOT:
-//
-//   * it is an identity-scoped IMMEDIATE erase at cascade time. A row younger
-//     than its own TTL must NOT survive account deletion merely because the
-//     independent TTL has not hit yet.
-//   * it is DISTINCT FROM, and must not duplicate, the already-shipped
-//     `playtest_event` TTL/cap reaper (ADR-0131). Spec §3 says in as many words:
-//     building a second retention reaper for this table would RACE the real one
-//     — do not.
-//
-// So this helper must NOT reuse the reaper's per-tick delete cap, its TTL
-// constant, its `plan_reap` selection seam, or any `.take(` bound: every one of
-// those turns a complete erase into a partial one that silently leaves the
-// deleted player's telemetry behind, and there is no second pass to finish it.
-//
-// The table carries no index on `identity` and ADR-0228 declines to add one in
-// this slice, so the sweep is a filtered full iteration — accepted under the
-// spec §8.3 escalated volume residual.
-//
-// SCAN HYGIENE: needles are assembled with `concat!` per this file's convention;
-// this section spells no block-comment delimiter and carries no bare
-// double-quote inside a comment.
-// ===========================================================================
-
-/// **PRV1-6b (scan)** — `erase_playtest_events` sweeps the deleting identity's
-/// rows immediately and completely, and borrows NOTHING from the TTL reaper.
-///
-/// FOUR NEGATIVE CLAUSES, EACH A DIFFERENT PARTIAL ERASE. The obvious way to
-/// write this helper is to copy the reaper that already sweeps the same table,
-/// and every part of that reaper is wrong here:
-///   * `PLAYTEST_REAP_MAX_DELETE_PER_TICK` bounds a per-tick batch. Borrowed
-///     here it caps the cascade at 8192 rows and silently leaves the rest — and
-///     the cascade runs ONCE, so there is no next tick to finish the job.
-///   * `.take(..)` is the same defect spelled without the constant.
-///   * `PLAYTEST_EVENT_TTL_MS` filters by AGE. Borrowed here it retains every
-///     row younger than the TTL — which is precisely the survival spec §3 calls
-///     out by name as forbidden.
-///   * `plan_reap(..)` is the reaper's own selection seam: it takes a TTL, a cap
-///     and a batch size, so routing through it re-imports all three defects at
-///     once and makes this the second retention reaper the spec forbids.
-///
-/// Kills: any of those four borrowings; a sweep that is not scoped to the
-///        `owner` parameter (unfiltered, it deletes every player's telemetry);
-///        a helper that collects rows and never deletes them.
-#[test]
-fn m22s3b_erase_playtest_events_shape() {
-    let src = read_playtest_rs().unwrap_or_else(|e| panic!("m22-s3b PRV1-6b FAIL: {e}"));
-    let stripped = strip_rust_comments(&strip_rust_strings(&src));
-    let name = concat!("erase_playtest", "_events");
-    let body = extract_fn_body(&stripped, name).unwrap_or_else(|| {
-        panic!(
-            "m22-s3b PRV1-6b FAIL (extraction): playtest.rs declares no `fn {name}(`. The \
-             cascade delegates the `playtest_event` ERASE to this module because G5 \
-             MODULE_WRITE_ISOLATION closes accounts.rs at its four owned tables. Without it \
-             the deleting player's telemetry survives until the independent ADR-0131 TTL \
-             reaper happens to reach it — which spec §3 forbids in as many words. Fail LOUD \
-             rather than pass vacuously."
-        )
-    });
-    let squashed = squash_ws(body);
-    assert!(
-        !squashed.is_empty(),
-        "m22-s3b PRV1-6b FAIL (non-vacuity): the `{name}` body is empty, so every clause \
-         below would be asserting properties of nothing."
-    );
-
-    // --- POSITIVE: an owner-scoped, unbounded sweep that deletes -------------
-    assert!(
-        squashed.contains(concat!("playtest", "_event()")),
-        "m22-s3b PRV1-6b FAIL (accessor): `{name}` must reach the `playtest_event` table. \
-         Body was: {squashed:?}"
-    );
-    // TIGHTENED IN r2. The bare token `owner` is present in ANY body that merely
-    // TAKES the parameter — including one that ignores it and iterates the whole
-    // table — because the parameter's own name is that token. `playtest_event`
-    // carries NO index on `identity` (ADR-0228 declines to add one in this
-    // slice), so the sweep is a full iteration and its PREDICATE is the entire
-    // scoping: without a comparison against `owner` the helper either deletes
-    // nothing or deletes everything.
-    let owner_test = concat!("==", "owner");
-    assert!(
-        squashed.contains(owner_test),
-        "m22-s3b PRV1-6b FAIL (owner-scoped): `{name}` contains no `{owner_test}` comparison, \
-         so its full-table iteration is not scoped to the deleting identity by anything. The \
-         bare parameter NAME is not enough — a body that takes `owner` and then sweeps \
-         unfiltered contains it while scoping nothing, and this table has no index to fall \
-         back on. UNFILTERED, this helper deletes every player's telemetry in the database on \
-         the first cascade — the catastrophic direction, and one no presence-only clause \
-         distinguishes from the correct body. Body was: {squashed:?}"
-    );
-    assert!(
-        squashed.contains(concat!(".it", "er()")),
-        "m22-s3b PRV1-6b FAIL (scan shape): `{name}` must iterate and filter. \
-         `playtest_event` carries NO btree index on `identity` and ADR-0228 declines to add \
-         one in this slice, so the sanctioned sweep is a filtered full iteration, accepted \
-         under the spec §8.3 escalated volume residual. If an index is ever added, re-derive \
-         this pin WITH that decision rather than around it. Body was: {squashed:?}"
-    );
-    assert!(
-        squashed.contains(concat!(".del", "ete(")),
-        "m22-s3b PRV1-6b FAIL (no delete): `{name}` never deletes a row — a helper that \
-         collects the matching event ids and stops there satisfies every clause above. Body \
-         was: {squashed:?}"
-    );
-
-    // --- NEGATIVE: nothing borrowed from the ADR-0131 TTL reaper -------------
-    for (banned, what, why) in [
-        (
-            concat!("PLAYTEST_REAP_MAX_DELETE", "_PER_TICK"),
-            "the reaper's per-tick delete cap",
-            "it bounds a RECURRING batch. Borrowed here it caps the cascade at one batch and \
-             silently leaves every row beyond it — and the cascade runs ONCE, so there is no \
-             next tick to finish the job. A partial erase that reports success is worse than \
-             no erase, because nothing anywhere records that rows were left behind",
-        ),
-        (
-            concat!(".ta", "ke("),
-            "an iterator bound",
-            "the same defect spelled without the constant — any bound at all turns a \
-             complete erase into a partial one",
-        ),
-        (
-            concat!("PLAYTEST_EVENT", "_TTL_MS"),
-            "the reaper's TTL constant",
-            "it filters by AGE. Spec §3 states the rule directly: a row younger than its own \
-             TTL must NOT survive account deletion merely because the independent TTL has \
-             not hit yet. Filtering by age here retains exactly those rows",
-        ),
-        (
-            concat!("plan", "_reap("),
-            "the reaper's selection seam",
-            "it takes a TTL, a cap and a batch size, so routing through it re-imports all \
-             three defects at once — and makes this helper the SECOND retention reaper for \
-             one table, which spec §3 forbids by name because the two would race",
-        ),
+    let old_module = Identity::from_byte_array(DEFAULT_DATABASE_IDENTITY);
+    let module = Identity::from_byte_array([0x7E; 32]);
+    fx.set_database_identity(module);
+    for (label, caller) in [
+        ("a player", player),
+        ("the all-zero identity", Identity::from_byte_array([0; 32])),
+        ("a stale module identity", old_module),
     ] {
-        let n = squashed.matches(banned).count();
         assert_eq!(
-            n, 0,
-            "m22-s3b PRV1-6b FAIL (TTL-reaper borrowing): `{name}` names `{banned}` ({what}) \
-             {n} time(s) and must name it ZERO times — {why}. The cascade erase is an \
-             IMMEDIATE, identity-scoped, UNBOUNDED sweep and is deliberately distinct from \
-             the ADR-0131 reaper that shares this table. Body was: {squashed:?}"
+            reap(caller),
+            Err("playtest_reaper is scheduler-only".to_string()),
+            "{label} must be refused"
         );
+        assert_eq!(ids(), vec![1, 2, 3], "{label}: refused before any delete");
     }
+    assert_eq!(reap(module), Ok(()), "the module identity is admitted");
+    assert_eq!(ids(), vec![3], "the module reaps exactly the expired rows");
 }

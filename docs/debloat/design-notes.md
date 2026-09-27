@@ -143,3 +143,21 @@ powershell.exe absolute path, ~15 s); NO spacetime running; `client/node_modules
 Then exclusively: spacetime up (PID file) → Monitor for readiness → `just e2e` with
 `PLAYWRIGHT_JSON_OUTPUT_NAME` → `unexpected=0` → kill by PID. Copy `mutants.out/missed.txt` to scratchpad
 after every mutation run (next run clobbers it).
+
+## User checkpoint rulings (2026-09-27, PR #521 review)
+
+All six policy calls **ratified**: (1) drop semgrep + SBOM from CI (keep gitleaks,
+cargo-audit, dependency-review); (2) coverage gating becomes report-only; (3) drop the
+changelog-freshness nightly (git-cliff on demand); (4) `i18n-export`/`i18n-import`
+recipes DELETE (TMS interchange out of scope per the original M24 spec — the i18n
+feature itself stays); (5) `a11y-e2e` nightly recipe DELETE (`just e2e` already runs
+both Playwright projects per PR); (6) `docs/research/SEED-DOMAINS.md` stays in-repo
+pending the user's own relocation.
+
+Intent rulings on bug rows:
+- **Practice XP**: PvP battles grant FULL XP. Reduced XP is for practicing against
+  one's own monsters (player == opponent). Code is correct; the xp.rs doc comment
+  and the practice-xp eval header carry the wrong predicate (doc fix only).
+- **Auto-evolution**: auto-evolve only when exactly one path's requirements are met.
+  Multiple simultaneously-eligible paths prompt the player to choose (rare by
+  content design). Current lowest-edge-wins behavior is a real Phase-3 bug fix.

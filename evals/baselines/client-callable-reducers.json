@@ -1,0 +1,142 @@
+{
+  "comment": "Every client-callable reducer in the GENERATED bindings (client/src/module_bindings/*_reducer.ts) with its exact argument names and types, in order. Owned by evals/client-surface-privacy.eval.mjs clause (D). This is the frozen client contract: intentional changes need conductor sign-off + bindings regeneration + a deliberate update of this file in the same commit.",
+  "reducers": {
+    "accept_challenge": [
+      "challenge_id: u64()",
+      "party_ids: array(u64())"
+    ],
+    "ack_evolution_notices": [
+      "count: u32()"
+    ],
+    "advance_dialogue": [
+      "choice_idx: u32()"
+    ],
+    "attempt_recruit": [
+      "battle_id: u64()",
+      "bait_item_id: option(u32())"
+    ],
+    "buy": [
+      "shop_id: u32()",
+      "item_id: u32()",
+      "qty: u32()"
+    ],
+    "cancel_account_deletion": [],
+    "cancel_challenge": [
+      "challenge_id: u64()"
+    ],
+    "cancel_trade": [
+      "trade_id: u64()"
+    ],
+    "care": [
+      "monster_id: u64()"
+    ],
+    "challenge_pvp": [
+      "target: identity()",
+      "party_ids: array(u64())"
+    ],
+    "clear_queue": [
+      "seq: u64()"
+    ],
+    "complete_guest_claim": [
+      "code: string()"
+    ],
+    "confirm_trade": [
+      "trade_id: u64()"
+    ],
+    "consume_crystalized_essence": [
+      "monster_id: u64()",
+      "item_id: u32()"
+    ],
+    "decline_challenge": [
+      "challenge_id: u64()"
+    ],
+    "delete_account": [],
+    "dismiss_dialogue": [],
+    "enqueue_move": [
+      "input: MoveInput",
+      "seq: u64()"
+    ],
+    "essence_train": [
+      "monster_id: u64()",
+      "affinity: Affinity"
+    ],
+    "evolve": [
+      "monster_id: u64()",
+      "to_species: u32()"
+    ],
+    "flee": [
+      "battle_id: u64()"
+    ],
+    "heal_party": [
+      "location_id: u32()"
+    ],
+    "join_game": [
+      "name: string()"
+    ],
+    "propose_trade": [
+      "counterparty: identity()",
+      "initiator_monster_ids: array(u64())",
+      "initiator_items: array(TradeItem)",
+      "initiator_currency: u64()",
+      "counterparty_monster_ids: array(u64())",
+      "counterparty_items: array(TradeItem)",
+      "counterparty_currency: u64()"
+    ],
+    "request_data_export": [],
+    "respond_trade": [
+      "trade_id: u64()",
+      "accepted: bool()"
+    ],
+    "sell": [
+      "item_id: u32()",
+      "qty: u32()"
+    ],
+    "set_move": [
+      "input: MoveInput",
+      "seq: u64()"
+    ],
+    "set_nickname": [
+      "monster_id: u64()",
+      "nickname: string()"
+    ],
+    "set_party_slot": [
+      "monster_id: u64()",
+      "slot: u8()"
+    ],
+    "set_profile_name": [
+      "name: string()"
+    ],
+    "start_battle": [
+      "opponent_identity: identity()",
+      "party_monster_ids: array(u64())",
+      "opponent_monster_ids: array(u64())"
+    ],
+    "start_guest_claim": [
+      "code: string()"
+    ],
+    "submit_attack": [
+      "battle_id: u64()",
+      "skill_id: u32()"
+    ],
+    "submit_pvp_action": [
+      "battle_id: u64()",
+      "action: PvpAction"
+    ],
+    "swap_active": [
+      "battle_id: u64()",
+      "team_index: u32()"
+    ],
+    "sync_content": [],
+    "talk": [
+      "npc_entity_id: u64()"
+    ],
+    "train": [
+      "monster_id: u64()",
+      "food_item_id: u32()"
+    ],
+    "use_battle_item": [
+      "battle_id: u64()",
+      "item_id: u32()"
+    ]
+  }
+}

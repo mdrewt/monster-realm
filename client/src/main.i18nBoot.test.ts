@@ -20,7 +20,7 @@
  * with `import { isRtl, negotiateLocale } from './ui/i18n/locale';` and
  * `import { CATALOGS, t as i18nT, setLocale, tf } from './ui/i18n/resolver';` (biome sorts
  * import specifiers by their LOCAL binding name — i18nT sorts before setLocale), plus six
- * `reportError(...)` literal-to-`i18nT`/`tf` migrations (BOOT-06).
+ * `reportError(...)` literal-to-`i18nT`/`tf` migrations.
  *
  * WHY A RUNTIME IMPORT FOR BOOT-01..04/07 — main.wiring.test.ts's own rule is "source-scan
  * (NOT import): main.ts has DOM/wasm side effects — importing it in vitest would crash on
@@ -55,23 +55,15 @@
  * import, no `negotiateLocale(`/`setLocale(` call, and never writes `documentElement.lang`/
  * `.dir` at all — BOOT-01..04/07 all fail on an empty `H.setLocaleCalls`/`attrWrites` (the
  * mocked `setLocale` is never invoked; the wrapped `setAttribute` never records a 'lang'/'dir'
- * write). BOOT-05/06 are static source-scans that fail because the needles they search for
- * (`negotiateLocale(`, `setLocale(`, the DOM-write statements, the six `i18nT(`/`tf(` chrome.
- * status.* call sites, the two new import lines) are simply absent from main.ts today, and the
- * six raw English literals BOOT-06 asserts are gone are still present verbatim.
+ * write). (The BOOT-05/06 source scans were deleted in the de-bloat; ledger
+ * CT-src-main.i18nBoot#source-pins.)
  *
  * WRONG IMPL KILLED: recorded per test, immediately above each `it`/assertion.
  *
  * NO `new RegExp(...)`, no regex literal, no `eval`, no `new Function` (ADR-0055 / Semgrep ban)
  * — every source-scan needle below is matched with `String.indexOf` loops only.
  */
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-// The comment stripper is IMPORTED, never copied (ADR-0215 single-owner rule; precedent:
-// client/src/ui/i18n-no-html-sink.test.ts). Path is relative to client/src/ (this file's dir).
-import { stripComments } from '../../evals/dom-shell-coverage-exclusion.eval.mjs';
 import type { Connection, ConnectionOptions } from './net/connection';
 import { CATALOG_EN } from './ui/i18n/catalog.en';
 import type { Catalog } from './ui/i18n/messageIds';
@@ -486,137 +478,6 @@ describe('main.ts boot-time locale negotiation wiring (m24-s6, I18N-22)', {
     ).toEqual(['he']);
   });
 
-  it('m24s6 BOOT-05 (source): negotiateLocale(/setLocale(/lang/dir writes exist exactly once each, in order, before async function main(, and main.ts never names help-hint', () => {
-    const raw = readMainTs();
-    const squashed = squashWhitespace(stripComments(raw));
-
-    expect(
-      countOccurrences(squashed, 'negotiateLocale('),
-      'WRONG IMPL KILLED: no negotiateLocale( call at all (HEAD state), or it appears more ' +
-        'than once (e.g. duplicated at module scope AND again inside main()).',
-    ).toBe(1);
-
-    const negotiateIdx = squashed.indexOf('negotiateLocale(');
-    const mainFnIdx = squashed.indexOf('async function main(');
-    expect(mainFnIdx, 'async function main( must exist in main.ts').toBeGreaterThanOrEqual(0);
-    expect(
-      negotiateIdx,
-      'WRONG IMPL KILLED: negotiateLocale( moved INSIDE async function main( (or under a ' +
-        'try/catch there) — runtime-indistinguishable from module scope on a happy path, but ' +
-        'loses the fail-fast-before-connect guarantee the F-3 module-scope pattern exists for.',
-    ).toBeLessThan(mainFnIdx);
-    expect(
-      squashed.slice(mainFnIdx).indexOf('negotiateLocale('),
-      'WRONG IMPL KILLED: a SECOND negotiateLocale( call duplicated inside main() (the total ' +
-        'count above already forbids this; this checks the exact half where it would land).',
-    ).toBe(-1);
-
-    expect(
-      countOccurrences(squashed, 'setLocale('),
-      'WRONG IMPL KILLED: setLocale( missing entirely (HEAD state), or called more than once.',
-    ).toBe(1);
-
-    const langNeedle = 'document.documentElement.lang = LOCALE;';
-    const dirNeedle = "document.documentElement.dir = isRtl(LOCALE) ? 'rtl' : 'ltr';";
-    expect(
-      countOccurrences(squashed, langNeedle),
-      'WRONG IMPL KILLED: the lang DOM write is missing, written more than once, or written ' +
-        'from a value other than the negotiated LOCALE (e.g. a hardcoded literal or ' +
-        'currentLocale() instead of the local LOCALE binding).',
-    ).toBe(1);
-    expect(
-      countOccurrences(squashed, dirNeedle),
-      'WRONG IMPL KILLED: the dir DOM write is missing, written more than once, or computed ' +
-        'from anything other than isRtl(LOCALE) with the exact rtl/ltr ternary shape.',
-    ).toBe(1);
-
-    const setLocaleIdx = squashed.indexOf('setLocale(');
-    const langIdx = squashed.indexOf(langNeedle);
-    const dirIdx = squashed.indexOf(dirNeedle);
-    expect(
-      setLocaleIdx,
-      'WRONG IMPL KILLED: the DOM writes ordered BEFORE setLocale( — an unregistered-locale ' +
-        'throw from setLocale would then have already left a stale/wrong lang+dir on the page.',
-    ).toBeLessThan(langIdx);
-    expect(
-      langIdx,
-      'WRONG IMPL KILLED: dir written before lang, or the two writes interleaved with other ' +
-        'code in a way that swaps their relative order.',
-    ).toBeLessThan(dirIdx);
-
-    expect(
-      raw.indexOf('help-hint'),
-      'WRONG IMPL KILLED: main.ts names the help-hint DOM id anywhere (even in a comment) — ' +
-        'ADR-0151 D2 / W-UX1-HINT-NO-JS-OWNER reserve #help-hint as a static index.html-only ' +
-        'string; S6 must not become a second owner of it. Checked on RAW source (comments ' +
-        'included), never the stripped text.',
-    ).toBe(-1);
-
-    expect(
-      countOccurrences(squashed, "import { isRtl, negotiateLocale } from './ui/i18n/locale';"),
-      'WRONG IMPL KILLED: the locale.ts import missing, duplicated, or its named specifiers ' +
-        'out of the biome-sorted alphabetical order (isRtl before negotiateLocale).',
-    ).toBe(1);
-    expect(
-      countOccurrences(
-        squashed,
-        "import { CATALOGS, t as i18nT, setLocale, tf } from './ui/i18n/resolver';",
-      ),
-      'WRONG IMPL KILLED: the resolver.ts import missing, duplicated, aliased differently ' +
-        '(e.g. `t as tChrome`, which would make the S7 DEAD-KEY census key on the wrong bare ' +
-        "token), or its specifiers out of biome's LOCAL-NAME sort order (i18nT sorts before " +
-        'setLocale because biome orders import specifiers by their LOCAL binding name, not ' +
-        'their original export name).',
-    ).toBe(1);
-  });
-
-  it('m24s6 BOOT-06 (source): the six chrome.status.* reportError sites resolve through i18nT(/tf(, and their raw English literals are gone', () => {
-    const raw = readMainTs();
-    const squashed = squashWhitespace(stripComments(raw));
-    const REPORT_ERROR_OPEN = 'reportError(';
-
-    for (const pin of CHROME_STATUS_PINS) {
-      const count = countOccurrences(squashed, pin.call);
-      expect(
-        count,
-        `WRONG IMPL KILLED (${pin.key}): the call ${pin.call} is missing entirely (HEAD state ` +
-          '— the raw English literal is still passed to reportError directly), or it appears ' +
-          'more than once.',
-      ).toBe(1);
-
-      const callIdx = squashed.indexOf(pin.call);
-      const precedingSlice = squashed.slice(callIdx - REPORT_ERROR_OPEN.length, callIdx);
-      expect(
-        precedingSlice,
-        `WRONG IMPL KILLED (${pin.key}): ${pin.call} exists somewhere in main.ts but is NOT ` +
-          `the direct argument of reportError( immediately before it (e.g. resolved into a ` +
-          'local variable several statements away from its call site, which this exact-' +
-          'adjacency check refuses to credit as "migrated").',
-      ).toBe(REPORT_ERROR_OPEN);
-
-      expect(
-        countOccurrences(squashed, pin.rawLiteral),
-        `WRONG IMPL KILLED (${pin.key}): the pre-migration raw English literal ${pin.rawLiteral} ` +
-          'is still present in main.ts — a partial migration that adds the i18nT/tf call ' +
-          'without removing the literal it replaces (e.g. left behind in a comment, or the ' +
-          'literal passed to reportError alongside the new call as a second, unused argument).',
-      ).toBe(0);
-    }
-
-    expect(
-      countOccurrences(squashed, "import { t } from './ui/a11yCopy';"),
-      'WRONG IMPL KILLED: the frozen ADR-0206/W-M23S5-LIVEREGION-PUMP a11yCopy import was ' +
-        'touched, duplicated, or removed while migrating the six chrome.status.* sites.',
-    ).toBe(1);
-    expect(
-      countOccurrences(squashed, "t('a11y.world.region')"),
-      'WRONG IMPL KILLED: the frozen M23S5-A11YSNAPSHOT live-region announcement call site ' +
-        "was renamed to i18nT('a11y.world.region') (or otherwise altered) while migrating the " +
-        'six unrelated chrome.status.* sites — this region is byte-pinned elsewhere and must ' +
-        'stay on the bare a11yCopy `t(`.',
-    ).toBe(1);
-  });
-
   it('m24s6 BOOT-07: multiple ?locale= query values cascade through ALL of them (getAll, not get)', async () => {
     await setupMain({
       languages: ['en-US'],
@@ -635,101 +496,3 @@ describe('main.ts boot-time locale negotiation wiring (m24-s6, I18N-22)', {
     ).toEqual(['he']);
   });
 });
-
-// --- source-pin support (BOOT-05/06) ------------------------------------------------------
-
-const MAIN_TS_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), 'main.ts');
-
-function readMainTs(): string {
-  try {
-    return readFileSync(MAIN_TS_PATH, 'utf8');
-  } catch (err) {
-    throw new Error(`main.ts could not be read at expected path: ${MAIN_TS_PATH} — ${String(err)}`);
-  }
-}
-
-const WHITESPACE_CHARS = new Set([' ', '\t', '\n', '\r']);
-
-/** Collapse every run of whitespace (including newlines from a biome-wrapped long statement)
- *  to a single space, so a source-pin needle survives reformatting without ever using a RegExp
- *  (ADR-0055 hand-rolled-scan convention). Operates on already comment-stripped text; never used
- *  to compute byte offsets into the raw file. */
-function squashWhitespace(src: string): string {
-  let out = '';
-  let inRun = false;
-  for (const ch of src) {
-    if (WHITESPACE_CHARS.has(ch)) {
-      if (!inRun) {
-        out += ' ';
-        inRun = true;
-      }
-    } else {
-      out += ch;
-      inRun = false;
-    }
-  }
-  return out;
-}
-
-/** Non-overlapping occurrence count of `needle` in `haystack` via String.indexOf — no RegExp. */
-function countOccurrences(haystack: string, needle: string): number {
-  let count = 0;
-  let from = 0;
-  for (;;) {
-    const at = haystack.indexOf(needle, from);
-    if (at === -1) break;
-    count++;
-    from = at + needle.length;
-  }
-  return count;
-}
-
-interface ChromeStatusPin {
-  /** The catalog key, for failure messages only. */
-  readonly key: string;
-  /** The exact post-migration call text expected in the comment-stripped + whitespace-squashed
-   *  source, as the sole argument of reportError(. */
-  readonly call: string;
-  /** The exact pre-migration raw literal (quotes/backticks included), transcribed byte-for-byte
-   *  from main.ts today, that must be ABSENT after migration. */
-  readonly rawLiteral: string;
-}
-
-// Transcribed directly from main.ts:582, :651, :961, :1040, :2442, :2524 (verified by reading,
-// 2026-09-20 — main.ts:961 is the bare `${where}: disconnected — try again` template, NOT
-// `${p.where}`; the 8 other `showFeedback('disconnected — try again')` sites elsewhere in
-// main.ts are OUT of this slice's scope and keep the bare phrase, which is why the raw needle
-// here is the FULL template including the `${where}: ` prefix, never the bare phrase alone).
-const CHROME_STATUS_PINS: readonly ChromeStatusPin[] = [
-  {
-    key: 'chrome.status.exportBlocked',
-    call: "i18nT('chrome.status.exportBlocked')",
-    rawLiteral: "'data export: download blocked by the browser'",
-  },
-  {
-    key: 'chrome.status.privacyOverlayBusy',
-    call: "i18nT('chrome.status.privacyOverlayBusy')",
-    rawLiteral: "'privacy: close the other overlay first'",
-  },
-  {
-    key: 'chrome.status.disconnected',
-    call: "tf('chrome.status.disconnected', { where })",
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: the pin IS main.ts's template source
-    rawLiteral: '`${where}: disconnected — try again`',
-  },
-  {
-    key: 'chrome.status.contentStale',
-    call: "i18nT('chrome.status.contentStale')",
-    rawLiteral: "'content out of date — reload'",
-  },
-  {
-    key: 'chrome.status.bugBundleBlocked',
-    call: "i18nT('chrome.status.bugBundleBlocked')",
-    rawLiteral: "'bug bundle: download blocked — copy from console'",
-  },
-  {
-    key: 'chrome.status.healUnavailable',
-    call: "i18nT('chrome.status.healUnavailable')",
-    rawLiteral: "'heal: no heal location available'",
-  },
-];

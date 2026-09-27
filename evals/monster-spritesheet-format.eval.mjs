@@ -16,24 +16,59 @@
 // Globbing (not an allowlist) is deliberate: the pre-existing emberkit sheets
 // are covered for free, and so is every future species with no eval edit.
 //
+// Debloat Phase 2 (EV-monster-spritesheet-format, KEEP-SHRUNK): the in-file
+// proof-of-teeth corpus (TEETH A-H, the synthesized-PNG builder, the roster
+// tooth) is gone; the glob-driven format/IHDR/blank/distinctness checks over the
+// shipped assets and the roster-driven presence check remain.
+//
 // IMPORTANT: no dynamic RegExp (detect-non-literal-regexp Semgrep rule).
 // Use only String.includes / indexOf / startsWith / literal regex.
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { deflateSync, inflateSync } from 'node:zlib';
+import { inflateSync } from 'node:zlib';
+import { topLevelEntries } from './append-only-ids.eval.mjs';
 
 const ASSET_DIR = 'client/public/assets';
 const DIRECTIONS = ['down', 'up', 'right', 'left'];
 const POSES = ['idle', 'walk0', 'walk1'];
 const SHEET_W = 96;
 const SHEET_H = 128;
-const NEW_SHEET_PNGS = [
-  'monster-cragling.png',
-  'monster-shadelet.png',
-  'monster-stoneward.png',
-  'monster-umbrafang.png',
-];
+
+// Roster coverage: every species in game-core/content/species must ship its
+// sheet set — monster-<slug>.{png,json} plus the monster-<slug>-normal.{png,json}
+// normal map — where <slug> is the lower-cased species name. Deviations are
+// explicit so a new species forces a reviewed decision instead of silently
+// shipping without art.
+const SLUG_OVERRIDES = { 1: 'emberkit' }; // Flameling kept the first shipped sheet name
+const NO_SHEET_YET = new Set([30, 31]); // item-evolution forms: no art authored yet
+const NO_NORMAL_MAP = new Set([7, 8, 9, 10]); // wave-1 sheets shipped without normal maps
+
+export function missingSpriteFiles(species, files) {
+  const missing = [];
+  for (const { id, name } of species) {
+    if (NO_SHEET_YET.has(id)) continue;
+    const slug = SLUG_OVERRIDES[id] ?? name.toLowerCase();
+    const want = [`monster-${slug}.png`, `monster-${slug}.json`];
+    if (!NO_NORMAL_MAP.has(id))
+      want.push(`monster-${slug}-normal.png`, `monster-${slug}-normal.json`);
+    for (const w of want) if (!files.has(w)) missing.push(`species ${id} (${name}): ${w}`);
+  }
+  return missing;
+}
+
+function rosterSpecies() {
+  const dir = 'game-core/content/species';
+  return readdirSync(dir)
+    .filter((f) => f.endsWith('.ron'))
+    .sort()
+    .flatMap((f) =>
+      topLevelEntries(readFileSync(path.join(dir, f), 'utf8')).map((e) => ({
+        id: Number(e.get('id')?.v),
+        name: String(e.get('name')?.v),
+      })),
+    );
+}
 
 /** The 12 required frame keys, in row-major (direction, pose) order. */
 export function requiredFrameKeys() {
@@ -51,8 +86,7 @@ export function requiredAnimationKeys() {
 
 /**
  * PURE format check over an already-parsed sheet object. Returns the list of
- * violations (empty === conforming). Exported so the teeth can call it directly
- * with synthetic objects instead of doctoring shipped asset files.
+ * violations (empty === conforming).
  */
 export function sheetFormatViolations(sheet, fileName) {
   const errs = [];
@@ -177,7 +211,7 @@ export function ihdrViolations(ihdr, label) {
 
 /**
  * Given `{ label: sha256hex }`, return the labels of every group that shares a
- * hash with another (empty === all distinct). Exported for the teeth.
+ * hash with another (empty === all distinct).
  */
 export function duplicateHashGroups(hashesByLabel) {
   const byHash = new Map();
@@ -225,138 +259,8 @@ export function isBlankPng(buf) {
   return !raw.some((b) => b !== 0);
 }
 
-function teeth() {
-  // TEETH A: a sheet missing `mon_left_walk1` must be rejected.
-  const GOOD_NAME = 'monster-emberkit.json';
-  const good = JSON.parse(readFileSync(path.join(ASSET_DIR, GOOD_NAME), 'utf8'));
-  if (sheetFormatViolations(good, GOOD_NAME).length !== 0) {
-    return 'TEETH A(pre): the known-good emberkit sheet must pass, else every check below is vacuous';
-  }
-  const clone = () => JSON.parse(JSON.stringify(good));
-  const missingFrame = clone();
-  delete missingFrame.frames.mon_left_walk1;
-  if (sheetFormatViolations(missingFrame, GOOD_NAME).length === 0) {
-    return 'TEETH A: a sheet missing mon_left_walk1 was accepted (an 11-frame sheet renders a frozen left-walk)';
-  }
-
-  // TEETH B: a wrong meta.size must be rejected (a 64x96 sheet with 32px frames
-  // silently crops the last row/column at render time).
-  const wrongSize = clone();
-  wrongSize.meta.size = { w: 64, h: 96 };
-  if (sheetFormatViolations(wrongSize, GOOD_NAME).length === 0) {
-    return 'TEETH B: a sheet declaring meta.size 64x96 was accepted';
-  }
-
-  // TEETH E: PERMUTED frame rects. Every cell is still distinct and on the grid,
-  // but each key now points at another key's cell — walking left plays the up
-  // animation. A "cells are unique" check accepts this; the canonical-cell pin
-  // must not.
-  const permuted = clone();
-  const swapA = permuted.frames.mon_down_idle.frame;
-  permuted.frames.mon_down_idle.frame = permuted.frames.mon_left_walk1.frame;
-  permuted.frames.mon_left_walk1.frame = swapA;
-  if (sheetFormatViolations(permuted, GOOD_NAME).length === 0) {
-    return 'TEETH E: a sheet with two frame rects swapped was accepted (canonical-cell pin is not biting)';
-  }
-
-  // TEETH F: animations pointing at frames that do not exist.
-  const danglingAnim = clone();
-  danglingAnim.animations.walk_down = ['does_not_exist'];
-  if (sheetFormatViolations(danglingAnim, GOOD_NAME).length === 0) {
-    return 'TEETH F: an animation referencing an undeclared frame was accepted';
-  }
-
-  // TEETH G: a sheet aimed at ANOTHER sheet's png — the cross-wiring that makes
-  // every species render as the wrong monster while all structure checks pass.
-  const crossWired = clone();
-  crossWired.meta.image = 'monster-cragling.png';
-  if (sheetFormatViolations(crossWired, GOOD_NAME).length === 0) {
-    return 'TEETH G: a sheet whose meta.image names a DIFFERENT sheet was accepted';
-  }
-  // ...and a traversal-shaped image name.
-  const traversal = clone();
-  traversal.meta.image = '..\\..\\evil.png';
-  if (sheetFormatViolations(traversal, GOOD_NAME).length === 0) {
-    return 'TEETH G: a backslash-separated meta.image path was accepted';
-  }
-
-  // TEETH C: the IHDR parser must reject a truncated buffer rather than reading
-  // garbage as a plausible 96x128 header.
-  const realPng = readFileSync(path.join(ASSET_DIR, 'monster-emberkit.png'));
-  if (parsePngIhdr(realPng) === null) {
-    return 'TEETH C(pre): the parser failed on a real PNG — the parser itself is broken';
-  }
-  if (parsePngIhdr(realPng.subarray(0, 20)) !== null) {
-    return 'TEETH C: parsePngIhdr accepted a truncated 20-byte buffer';
-  }
-  if (parsePngIhdr(Buffer.from('not a png at all, definitely not, nope!')) !== null) {
-    return 'TEETH C: parsePngIhdr accepted a non-PNG buffer';
-  }
-
-  // TEETH D: the distinctness helper must flag a duplicated pair — this is what
-  // catches four "new" sprites that are really one file copied four times.
-  const dupes = duplicateHashGroups({ a: 'ff', b: 'ff', c: '00' });
-  if (dupes.length !== 1 || dupes[0].length !== 2) {
-    return 'TEETH D: duplicateHashGroups failed to flag two labels sharing one hash';
-  }
-  if (duplicateHashGroups({ a: 'ff', b: '00' }).length !== 0) {
-    return 'TEETH D: duplicateHashGroups flagged two DISTINCT hashes (not vacuous-safe)';
-  }
-
-  // TEETH H: the blank-sprite detector. A real sheet must NOT read as blank, and
-  // a synthesized fully-transparent 96x128 RGBA8 PNG MUST. Building the blank
-  // here (rather than committing a fixture) keeps the tooth self-contained.
-  if (isBlankPng(realPng)) {
-    return 'TEETH H(pre): a real, drawn sheet was reported blank — the detector is broken';
-  }
-  const blankRaw = Buffer.alloc(SHEET_H * (1 + SHEET_W * 4)); // filter byte + RGBA row, all zero
-  const blankPng = buildPng(deflateSync(blankRaw));
-  if (!isBlankPng(blankPng)) {
-    return 'TEETH H: a fully transparent 96x128 sheet was NOT reported blank';
-  }
-  if (ihdrViolations(parsePngIhdr(blankPng), 'blank').length !== 0) {
-    return 'TEETH H(pre): the synthesized blank must be structurally VALID, else it proves nothing';
-  }
-  return null;
-}
-
-/** Assemble a minimal valid 96x128 RGBA8 PNG around an already-deflated IDAT. */
-function buildPng(idat) {
-  const chunk = (type, data) => {
-    const out = Buffer.alloc(12 + data.length);
-    out.writeUInt32BE(data.length, 0);
-    out.write(type, 4, 'latin1');
-    data.copy(out, 8);
-    out.writeUInt32BE(crc32(Buffer.concat([Buffer.from(type, 'latin1'), data])), 8 + data.length);
-    return out;
-  };
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(SHEET_W, 0);
-  ihdr.writeUInt32BE(SHEET_H, 4);
-  ihdr[8] = 8; // bit depth
-  ihdr[9] = 6; // colour type RGBA
-  return Buffer.concat([
-    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-    chunk('IHDR', ihdr),
-    chunk('IDAT', idat),
-    chunk('IEND', Buffer.alloc(0)),
-  ]);
-}
-
-function crc32(buf) {
-  let c = 0xffffffff;
-  for (const byte of buf) {
-    c ^= byte;
-    for (let k = 0; k < 8; k += 1) c = c & 1 ? (c >>> 1) ^ 0xedb88320 : c >>> 1;
-  }
-  return (c ^ 0xffffffff) >>> 0;
-}
-
 export default async function () {
   const name = 'monster-spritesheet-format (all monster-*.json share the 96x128 12-frame format)';
-
-  const teethFailure = teeth();
-  if (teethFailure) return { name, pass: false, detail: teethFailure };
 
   const sheets = readdirSync(ASSET_DIR)
     .filter((f) => f.startsWith('monster-') && f.endsWith('.json'))
@@ -396,13 +300,12 @@ export default async function () {
     hashes[image] = sha256File(pngPath);
   }
 
-  // …but wave-1's four sheets are additionally required to EXIST. Presence cannot
-  // come from the glob (an empty directory would glob to nothing and pass).
-  for (const png of NEW_SHEET_PNGS) {
-    if (!existsSync(path.join(ASSET_DIR, png))) {
-      failures.push(`missing required wave-1 spritesheet png ${png}`);
-    }
-  }
+  // Presence cannot come from the glob (an empty directory globs to nothing), so
+  // it is driven by the species roster.
+  const species = rosterSpecies();
+  if (species.length === 0) failures.push('species roster is empty');
+  for (const m of missingSpriteFiles(species, new Set(readdirSync(ASSET_DIR))))
+    failures.push(`missing sprite asset ${m}`);
   for (const group of duplicateHashGroups(hashes)) {
     failures.push(`identical sprite bytes (placeholder copy?): ${group.join(' == ')}`);
   }
@@ -412,6 +315,6 @@ export default async function () {
     pass: failures.length === 0,
     detail: failures.length
       ? failures.join('; ')
-      : `${sheets.length} spritesheets conform (12 frames, 8 anims, 96x128 RGBA8 IHDR); ${Object.keys(hashes).length} pngs pairwise distinct (TEETH A-H verified)`,
+      : `${sheets.length} spritesheets conform (12 frames, 8 anims, 96x128 RGBA8 IHDR); ${Object.keys(hashes).length} pngs pairwise distinct`,
   };
 }

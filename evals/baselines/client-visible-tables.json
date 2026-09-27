@@ -1,0 +1,30 @@
+{
+  "comment": "Every client-subscribable accessor in the GENERATED bindings (client/src/module_bindings/*_table.ts): public tables + public views. Owned by evals/client-surface-privacy.eval.mjs. Adding a public table or view is a privacy decision - update this list in the same commit, deliberately.",
+  "tables": [
+    "battle_challenge",
+    "character",
+    "config",
+    "evolution_path",
+    "heal_location_row",
+    "inventory",
+    "item_row",
+    "my_account",
+    "my_battle",
+    "my_conversation",
+    "my_export_bundle",
+    "my_monster_pub",
+    "my_pending_evolution_notices",
+    "my_wallet",
+    "npc",
+    "player",
+    "player_quest",
+    "profile",
+    "shop_item_row",
+    "shop_row",
+    "skill_row",
+    "species_row",
+    "trade_offer",
+    "type_relation_row",
+    "zone_def"
+  ]
+}
