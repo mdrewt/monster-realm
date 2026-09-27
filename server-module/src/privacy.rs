@@ -1554,7 +1554,10 @@ fn rows_character(ctx: &ReducerContext, owner: Identity) -> Result<Vec<String>, 
 /// a caller inside the flood-control cooldown window. Since rb-107 (ADR-0265)
 /// it also rejects, under ONE further static reason, any caller whose bundle
 /// would take `export_bundle` past the global live-row cap — half of it for a
-/// caller with no `account` row, so sybils cannot crowd out account holders.
+/// caller with no `account` row, and since rb-132 (ADR-0275) a quarter of it
+/// for a caller with no `player_wallet` row either, so join-only sybils are
+/// shed before anonymous players who have earned currency, and both before
+/// account holders.
 #[spacetimedb::reducer]
 pub fn request_data_export(ctx: &ReducerContext) -> Result<(), String> {
     let me = ctx.sender();
@@ -1578,16 +1581,24 @@ pub fn request_data_export(ctx: &ReducerContext) -> Result<(), String> {
         return Err(stringify!(export_reject_cooldown).to_string());
     }
     let purged = purge_export_bundles(ctx, me);
-    // rb-107 (ADR-0265): admission control, tier one. The cap depends on the
+    // rb-107 (ADR-0265): admission control, gate one. The cap depends on the
     // caller, the shed order does not: an anonymous caller is refused while an
     // account holder still has headroom, so no number of JWT-less identities can
     // take the whole store. The subject test is the crate SSOT (ADR-0189 D2 /
     // ADR-0179 D4', accounts.rs:477) — never has_jwt(), which is true for every
-    // connection. This first gate asks whether even the SMALLEST possible bundle
-    // fits, so a caller who cannot be served is refused BEFORE the manifest walk
-    // (which includes two unindexed own-row scans). An Err here rolls the purge
-    // above back with it (ADR-0106 D8).
-    let cap = export_live_row_cap(crate::accounts::is_account_holder(ctx, me));
+    // connection. Since rb-132 (ADR-0275) the binding asks a SECOND crate SSOT,
+    // the economy module's wallet-row test (economy.rs:324; a wallet row exists
+    // once currency was ever credited), so an identity never credited currency
+    // is shed before any other caller. Both answers are read EAGERLY, one
+    // unique-index point read each, and the tier seam stays pure. This first
+    // gate asks whether even the SMALLEST possible bundle fits, so a caller who
+    // cannot be served is refused BEFORE the manifest walk (which includes two
+    // unindexed own-row scans). An Err here rolls the purge above back with it
+    // (ADR-0106 D8).
+    let cap = export_live_row_cap(
+        crate::accounts::is_account_holder(ctx, me),
+        crate::economy::wallet_exists(ctx, me),
+    );
     if !export_admission_open(ctx.db.export_bundle().count(), EXPORT_MIN_BUNDLE_ROWS, cap) {
         return Err(stringify!(export_reject_admission).to_string());
     }
@@ -1623,7 +1634,7 @@ pub fn request_data_export(ctx: &ReducerContext) -> Result<(), String> {
     }
     let plan = plan_export_chunks(per_table);
     let total = plan.len() as u32;
-    // rb-107 (ADR-0265): admission control, tier two — the same cap, now against
+    // rb-107 (ADR-0265): admission control, gate two — the same cap, now against
     // this request's EXACT row count, so the live population can never EXCEED it.
     if !export_admission_open(ctx.db.export_bundle().count(), total, cap) {
         return Err(stringify!(export_reject_admission).to_string());
@@ -1747,12 +1758,16 @@ pub(crate) const EXPORT_REAP_MAX_STAMPS_PER_TICK: usize = 16;
 // no bundle is ever partly reaped and the floor holds whatever order the window
 // arrives in; [rb86/stamp-cap-throughput] asserts that inequality off the live
 // manifest. Draining a FULL store therefore takes about 158 ticks (6.6 days), so
-// a row's worst case is two retention windows, not one. Two thresholds, one
-// count: a caller with no account row gets half, so anonymous identities can
-// never take the account holders' half (ADR-0265 D1b; the lockout they CAN
-// sustain is R-rb-107-LOCKOUT). The bound is on ROWS, not bytes — a chunk carries
-// up to EXPORT_CHUNK_ROWS serialized rows (R-rb-107-BYTEBOUND). PRIVATE, like
-// EXPORT_REQUEST_COOLDOWN_MS above: DoS knobs, not legal figures.
+// a row's worst case is two retention windows, not one. THREE thresholds, one
+// count, shed in order of what the caller has invested: a caller with no account
+// row gets half, so anonymous identities can never take the account holders'
+// half (ADR-0265 D1b); since rb-132 (ADR-0275) a caller with no wallet row
+// either, a caller never credited currency, gets a quarter, so join-only sybils
+// can never take the credited anonymous players' quarter (the escalation a
+// scripted quest or trade still buys is R-rb-132-WALLETSYBIL). The bound is on
+// ROWS, not bytes: a chunk carries up to EXPORT_CHUNK_ROWS serialized rows
+// (R-rb-107-BYTEBOUND). PRIVATE, like EXPORT_REQUEST_COOLDOWN_MS above: DoS
+// knobs, not legal figures.
 // ===========================================================================
 
 const EXPORT_LIVE_ROW_CAP: u64 = (EXPORT_REAP_MAX_READ_PER_TICK as u64)
@@ -1760,19 +1775,28 @@ const EXPORT_LIVE_ROW_CAP: u64 = (EXPORT_REAP_MAX_READ_PER_TICK as u64)
 
 const EXPORT_ANON_LIVE_ROW_CAP: u64 = EXPORT_LIVE_ROW_CAP / 2;
 
+// rb-132 (ADR-0275): the NEWCOMER tier, for a caller with neither an account
+// row nor a wallet row. DERIVED from the anonymous ceiling, never transcribed,
+// so re-sizing the drain moves all three together and the order cannot invert.
+const EXPORT_NEWCOMER_LIVE_ROW_CAP: u64 = EXPORT_ANON_LIVE_ROW_CAP / 2;
+
 // One chunk per exportable table is the smallest bundle this reducer can write
 // (plan_export_chunks pushes an empty chunk for an empty table), and the const
 // totality assertion above makes EXPORTERS.len() exactly the manifest's
 // exportable count — so this is derived, never transcribed.
 const EXPORT_MIN_BUNDLE_ROWS: u32 = EXPORTERS.len() as u32;
 
-// Tier selection. PURE and exhaustive over its input, so both arms have a value
-// oracle in an ordinary test.
-fn export_live_row_cap(has_account: bool) -> u64 {
+// Tier selection. PURE and exhaustive over its two inputs, so all three arms
+// have a value oracle in an ordinary test. An account holder's ceiling ignores
+// the wallet bit: the account bit is tested first, and the wallet bit only
+// splits the callers without one (rb-132, ADR-0275).
+fn export_live_row_cap(has_account: bool, has_wallet: bool) -> u64 {
     if has_account {
         EXPORT_LIVE_ROW_CAP
-    } else {
+    } else if has_wallet {
         EXPORT_ANON_LIVE_ROW_CAP
+    } else {
+        EXPORT_NEWCOMER_LIVE_ROW_CAP
     }
 }
 
