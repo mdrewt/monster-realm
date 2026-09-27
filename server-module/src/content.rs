@@ -21,9 +21,6 @@ use game_core::{
     validate_encounters, validate_evolution_paths, validate_npc_content, validate_npc_interactions,
     validate_shops, validate_zone_maps, ActionState, Direction, EVs, IVs, Level, Nature, StatBlock,
 };
-// Species and EvolutionPath are only used by the test-only recheck seam.
-#[cfg(test)]
-use game_core::{EvolutionPath, Species};
 use spacetimedb::{ReducerContext, Table};
 
 pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
@@ -304,36 +301,6 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
         }
     }
 
-    Ok(())
-}
-
-/// Pure validation seam: verify species + evolution paths
-/// are minimally valid before any DB write. Called from sync_content_inner
-/// (which does the real full validation) and unit-testable without a DB context.
-/// Checks: species non-empty; every path endpoint references a known species_id.
-/// Full graph-level validation (R1-R12) is done by
-/// `validate_evolution_paths` in sync_content_inner's validate phase.
-/// Test-only: this function has no production call site. The `#[cfg(test)]` gate
-/// ensures it does not cause a dead_code lint error in `just lint` (clippy -D warnings).
-#[cfg(test)]
-pub(crate) fn sync_content_inner_recheck(
-    species: &[Species],
-    paths: &[EvolutionPath],
-) -> Result<(), String> {
-    if species.is_empty() {
-        return Err(
-            "species registry must not be empty (would wipe all species on seed)".to_string(),
-        );
-    }
-    let species_ids: std::collections::HashSet<u32> = species.iter().map(|s| s.id).collect();
-    for p in paths {
-        if !species_ids.contains(&p.from_species) || !species_ids.contains(&p.to_species) {
-            return Err(format!(
-                "evolution path edge {} references an unknown species id ({} -> {})",
-                p.edge_id, p.from_species, p.to_species
-            ));
-        }
-    }
     Ok(())
 }
 
@@ -1116,77 +1083,6 @@ mod tests {
             "TEETH(12.5b-2): content.rs production code must have zero bare unit-returns              after the sync_content_inner signature change to Result<(), String>;              found {} occurrence(s). Replace each bare unit-return with an Err variant              and propagate with `?`.",
             count
         );
-    }
-
-    // =========================================================================
-    // test-seam-only functions must not leak into production builds as dead code.
-    //
-    // Invariant: any function in content.rs that is ONLY called from #[cfg(test)]
-    // code must itself carry a `#[cfg(test)]` attribute (or be called from production
-    // code). Without this attribute, `cargo clippy --all-targets -D warnings` fails
-    // with `dead_code` — a CI-blocking error (see `just lint`).
-    //
-    // =========================================================================
-
-    /// every function in content.rs that is declared
-    /// as a test-only seam (pattern: seam functions whose name ends in `_recheck`)
-    /// must have a `#[cfg(test)]` attribute on the line immediately before their
-    /// `pub(crate) fn` declaration, or be called from production code.
-    ///
-    /// KILLS: a test-seam function added without `#[cfg(test)]` — that breaks
-    ///        `just lint` (clippy -D warnings → dead_code error). The canonical
-    ///        correct form is:
-    ///           #[cfg(test)]
-    ///           pub(crate) fn sync_content_inner_recheck(...)
-    ///        OR the function has a production call site in content.rs.
-    ///
-    /// Note: built from assembled parts to avoid self-match (this file is the
-    /// CONTENT_RS_SOURCE). The actual string `#[cfg(test)]` does appear in this
-    /// file (legitimately, before the `mod tests` block); the structural check
-    /// below constrains it to the specific vicinity of `_recheck`.
-    #[test]
-    fn test_seam_recheck_functions_are_cfg_test_gated() {
-        let stripped = strip_rust_comments(CONTENT_RS_SOURCE);
-
-        // Assemble the seam function name from parts to avoid self-match.
-        let recheck_fn = ["sync_content_inner", "_recheck"].concat();
-        let fn_decl = ["pub(crate) fn ", recheck_fn.as_str()].concat();
-
-        // If the function has been removed, the constraint is vacuously satisfied.
-        // Use if-let (not bare return;) to avoid tripping the bare-return counter in
-        // the `sync_content_inner_no_bare_returns_on_error` test above.
-        if let Some(fn_pos) = stripped.find(fn_decl.as_str()) {
-            // Look backward from fn_pos for `#[cfg(test)]` in the preceding ~200 bytes.
-            let window_start = fn_pos.saturating_sub(200);
-            let preceding = &stripped[window_start..fn_pos];
-            let cfg_gate = ["#[cfg", "(test)]"].concat();
-
-            // Detect a genuine production *call* site (not the declaration itself).
-            // Scan the region before any test module for `recheck_fn(` that is NOT
-            // preceded by `fn ` (which would be the declaration, not a call).
-            let tests_mod_marker = ["mod ", "tests"].concat();
-            let tests_mod_pos = stripped
-                .find(tests_mod_marker.as_str())
-                .unwrap_or(stripped.len());
-            let production_region = &stripped[..tests_mod_pos];
-            let call_needle = [recheck_fn.as_str(), "("].concat();
-            let fn_decl_prefix = ["fn ", recheck_fn.as_str(), "("].concat();
-            let called_in_production = production_region.contains(call_needle.as_str())
-                && !production_region.contains(fn_decl_prefix.as_str());
-
-            assert!(
-                preceding.contains(cfg_gate.as_str()) || called_in_production,
-                "GATE(test-seam-no-dead-code): `{}` is a test-only seam function but \
-                 lacks `#[cfg(test)]` before its `pub(crate) fn` declaration AND has no \
-                 production call site. This causes a `dead_code` lint error in `just lint` \
-                 (clippy -D warnings). Fix: add `#[cfg(test)]` on the line immediately \
-                 before `pub(crate) fn {}(...)`, or add a production call site. \
-                 Preceding 80-byte context: {:?}",
-                recheck_fn,
-                recheck_fn,
-                &preceding[preceding.len().saturating_sub(80)..],
-            );
-        }
     }
 }
 
