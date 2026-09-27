@@ -831,4 +831,82 @@ mod nh {
             assert_eq!(w.ticks(12), 10, "{label}: the escrowed monster does not");
         }
     }
+
+    /// ADR-0020/0066 server-authoritative warp: a PLAYER whose drained step
+    /// lands on a shipped warp tile arrives Idle on the destination zone and
+    /// tile with its queue cleared; an NPC (a character with no `player` row,
+    /// ADR-0070 `unwrap_or(true)`) taking the same step stays on the warp tile
+    /// in its home zone. The warp only fires on an actual move (a bump never
+    /// warps). Uses the first shipped warp whose approach tile is walkable.
+    ///
+    /// kills: the warp branch deleted / `skip_warp` inverted / the moved-guard
+    /// inverted (warp on bump only) / the NPC default flipped.
+    #[test]
+    fn nh_movement_tick_warps_a_player_but_never_an_npc() {
+        let zone_maps = crate::content_cache::cached_zone_maps().expect("shipped zone maps");
+        let dirs = [
+            (Direction::North, Direction::South),
+            (Direction::South, Direction::North),
+            (Direction::East, Direction::West),
+            (Direction::West, Direction::East),
+        ];
+        let (zone, warp, start, dir) = zone_maps
+            .iter()
+            .flat_map(|def| def.warps.iter().map(move |w| (def.zone_id, w.clone())))
+            .find_map(|(zone, w)| {
+                let map = game_core::map_for(zone, zone_maps).ok()?;
+                dirs.iter().find_map(|&(dir, back)| {
+                    let start = w.from.step(back);
+                    (map.is_walkable(start) && map.warp_at(start).is_none()).then_some((
+                        zone,
+                        w.clone(),
+                        start,
+                        dir,
+                    ))
+                })
+            })
+            .expect("shipped content has a warp with a walkable, non-warp approach tile");
+        let module = Identity::from_byte_array(DEFAULT_DATABASE_IDENTITY);
+        let sched = || MovementTickSchedule {
+            id: 1,
+            zone_id: zone,
+            scheduled_at: ScheduleAt::Time(at(T0)),
+        };
+        let at_start = |entity_id: u64| Character {
+            zone_id: zone,
+            tile_x: start.x,
+            tile_y: start.y,
+            ..character(
+                entity_id,
+                vec![MoveInput::Step(dir), MoveInput::Jump],
+                ActionState::Idle,
+            )
+        };
+
+        let fx = fixture();
+        let w = world(&fx);
+        w.join(a(), 1, at_start(1));
+        w.chars.seed(&at_start(2)); // an NPC: no player row
+        assert_eq!(
+            fx.run_as_at(module, at(T0), |ctx| movement_tick(ctx, sched())),
+            Ok(())
+        );
+        let player = w.character(1);
+        assert_eq!(
+            (player.zone_id, player.tile_x, player.tile_y),
+            (warp.to_zone, warp.to_tile.x, warp.to_tile.y),
+            "the player arrives on the warp's destination"
+        );
+        assert!(
+            player.move_queue.is_empty(),
+            "queued moves are cleared across the zone boundary"
+        );
+        assert_eq!(player.action, ActionState::Idle, "and it arrives Idle");
+        let npc = w.character(2);
+        assert_eq!(
+            (npc.zone_id, npc.tile_x, npc.tile_y),
+            (zone, warp.from.x, warp.from.y),
+            "an NPC walks onto the warp tile but never leaves its home zone"
+        );
+    }
 }
