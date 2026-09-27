@@ -28772,7 +28772,11 @@ fn rb115_test_roster_is_closed() {
 // real rows, a zero-balance row included. What this block adds on that side is
 // the one-definition census in economy.rs, which is what kills a conditionally
 // compiled twin there (rb-41 only ever runs the arm the test target compiles),
-// with a body equality beside it.
+// with a body equality beside it. It also pins, read-only, the PREMISE the
+// tier rests on: movement.rs's join reducer, and movement.rs as a whole, never
+// reach the economy module, so an identity that has only joined holds no
+// wallet row. Two files are therefore read beside privacy.rs: economy.rs and
+// movement.rs.
 //
 // THE MEASURED SHADOW FAMILY, AND WHY ONE CLAUSE READS AN UNSQUASHED VIEW. The
 // plan red-team measured a CI-clean cheat: a glob import in the reducer prefix
@@ -28818,6 +28822,19 @@ fn rb115_test_roster_is_closed() {
 /// owning test retypes that shape as a positive control, and a census of the
 /// file's closing module declaration proves the live read re-synchronises.
 const RB132_ECONOMY_RS: &str = include_str!("economy.rs");
+
+/// movement.rs, for the PREMISE pin in
+/// `rb132_reducer_asks_the_wallet_ssot_exactly_once`: the join reducer writes
+/// no wallet row, so an identity that has only joined really does read as a
+/// newcomer.
+///
+/// Read-only and whole-file, on the RB132_ECONOMY_RS precedent. The file's
+/// only quote pairs in comments are balanced on their own lines and its
+/// escaped quotes sit inside ordinary string literals, which the string
+/// stripper steps over. A desync could only blank text, which reads LOW, the
+/// dangerous direction for a zero census; the owning clause's body-length
+/// floor is what catches one that blanks the join reducer.
+const RB132_MOVEMENT_RS: &str = include_str!("movement.rs");
 
 // --- needles: the production tokens, never spelled contiguously -------------
 
@@ -29171,7 +29188,7 @@ fn rb132_dependency_roster() -> [&'static str; 9] {
 /// placement is load-bearing: a span runs from a test's own fn line to the next
 /// test attribute or flush-left banner, so these literals would otherwise be
 /// counted inside whichever test preceded them.
-fn rb132_label_roster() -> [(&'static str, usize); 20] {
+fn rb132_label_roster() -> [(&'static str, usize); 21] {
     [
         ("[rb132/tier-value]", 0),
         ("[rb132/newcomer-value]", 0),
@@ -29180,6 +29197,7 @@ fn rb132_label_roster() -> [(&'static str, usize); 20] {
         ("[rb132/newcomer-vis]", 1),
         ("[rb132/no-inner-attr]", 1),
         ("[rb132/wallet-ssot]", 2),
+        ("[rb132/join-no-wallet]", 2),
         ("[rb132/wallet-ask]", 2),
         ("[rb132/economy-once]", 2),
         ("[rb132/tier-args]", 2),
@@ -29483,7 +29501,11 @@ fn rb132_newcomer_ceiling_is_declared_once_private_and_derived() {
 /// the one-definition census in economy.rs, with a body equality beside it,
 /// taken FIRST and GREEN before the fix so the pipeline is proven to read
 /// economy.rs past a doc comment holding quote pairs before any clause about
-/// privacy.rs is allowed to red.
+/// privacy.rs is allowed to red. Right after it, and GREEN before the fix as
+/// well, a PREMISE pin over movement.rs: the join reducer, and the file as a
+/// whole, never name the economy module or its credit fn, because the tier
+/// reads a missing wallet row as never credited and that holds only while
+/// joining writes none.
 ///
 /// THE ECONOMY IS REACHED ONCE. The tests red team MEASURED two CI-clean ways
 /// to defeat the tier without touching the ask: MINT a wallet for the caller
@@ -29495,7 +29517,9 @@ fn rb132_newcomer_ceiling_is_declared_once_private_and_derived() {
 /// can fuse a name into its neighbour.
 ///
 /// Kills: R17 a conditionally compiled twin of the SSOT, and R16 its body
-/// replaced by a constant; R12 the wallet ask replaced by a constant, R15 a
+/// replaced by a constant; a starter credit added to the join reducer, the
+/// verifier's MEASURED mutant, directly or through a module-level alias of the
+/// credit fn; R12 the wallet ask replaced by a constant, R15 a
 /// second ask anywhere in the module, and a fn-item binding or alias of the
 /// SSOT, which no paren-bearing needle sees; R14 the ask keyed on a
 /// constructed identity rather than the bound subject; a wallet minted or
@@ -29577,6 +29601,100 @@ fn rb132_reducer_asks_the_wallet_ssot_exactly_once() {
          companion of the one-definition census above, which is this clause's own contribution."
     );
 
+    // --- the PREMISE: joining writes no wallet ---------------------------------
+    //
+    // GREEN before the fix and after it: this pins what the newcomer tier ASSUMES,
+    // not what rb-132 changes, so it is not a RED-before clause. The tier reads
+    // the ABSENCE of a wallet row as never credited, which is only true while
+    // the join reducer writes none. MEASURED by the verifier: one starter-credit
+    // line in that reducer survived the whole suite, clippy and eleven evals,
+    // and reverted admission to rb-107's two tiers for every join-only identity.
+    let economy_ident = concat!("econ", "omy");
+    let grant_ident = concat!("grant", "_currency");
+    let join_head = concat!("fn join", "_game(");
+    let log_open = concat!("lo", "g::info!(");
+    let credit = concat!("crate::economy::grant", "_currency(ctx, me, 1);\n");
+    let join_open = format!(
+        "pub {join_head}ctx: &ReducerContext, name: String) -> Result<(), String> {{\n    \
+         let me = ctx.sender();\n    let n = name.len();\n"
+    );
+    let join_tail = format!("    {log_open}{dq}join{dq});\n    Ok(())\n}}\n");
+    let premise = |src: &str| -> ((usize, usize), (usize, usize)) {
+        let view = rb132_code_view(src);
+        let scoped = extract_squashed_fn_body(&view, join_head).unwrap_or("");
+        (
+            (
+                rb132_ident_count(scoped, economy_ident),
+                rb132_ident_count(scoped, grant_ident),
+            ),
+            (
+                rb132_ident_count(&view, economy_ident),
+                rb132_ident_count(&view, grant_ident),
+            ),
+        )
+    };
+    let honest_join = format!("{join_open}{join_tail}");
+    let credited_join = format!("{join_open}    {credit}{join_tail}");
+    let aliased_join = format!(
+        "use crate::economy::{grant_ident} as g;\n{join_open}    g(ctx, me, 1);\n{join_tail}"
+    );
+    let prose_join = format!(
+        "{join_open}    {slash} {credit}    let s = \
+         {dq}crate::economy::{grant_ident}{dq};\n{join_tail}"
+    );
+    let premises = (
+        premise(&honest_join),
+        premise(&credited_join),
+        premise(&aliased_join),
+        premise(&prose_join),
+    );
+    assert_eq!(
+        premises,
+        (
+            ((0, 0), (0, 0)),
+            ((1, 1), (1, 1)),
+            ((0, 0), (1, 1)),
+            ((0, 0), (0, 0))
+        ),
+        "[rb132/join-no-wallet]: the premise census reads {premises:?} over four join fixtures, \
+         each as ((economy and credit namings in the join body), (the same file-wide)): the \
+         honest body; a starter credit before the final log line; the credit reached through a \
+         file-level `use` alias; and the credit named only in a comment and a string. It must \
+         read (((0, 0), (0, 0)), ((1, 1), (1, 1)), ((0, 0), (1, 1)), ((0, 0), (0, 0))). The \
+         alias row is why the file-wide count stands beside the body count."
+    );
+    let movement = rb132_code_view(RB132_MOVEMENT_RS);
+    let n_join = rb22p_count(&movement, join_head);
+    let join_body = extract_squashed_fn_body(&movement, join_head).unwrap_or("");
+    let join_counts = (
+        rb132_ident_count(join_body, economy_ident),
+        rb132_ident_count(join_body, grant_ident),
+    );
+    assert!(
+        n_join == 1 && join_body.len() > 200 && join_counts == (0, 0),
+        "[rb132/join-no-wallet]: movement.rs must define the join reducer EXACTLY once (found \
+         {n_join}) with a real body ({} byte(s) read in the comment- and string-blanked view, \
+         floor 200), and that body must name neither the economy module nor its credit fn (it \
+         reads {join_counts:?}). A PREMISE PIN, green before and after the fix: the newcomer \
+         tier is keyed on the ABSENCE of a wallet row, which means never credited only while \
+         joining writes none. MEASURED (verifier): a one-line starter credit in the join \
+         reducer gives every join-only identity a wallet row, so the newcomer tier never \
+         applies and admission reverts to rb-107's two tiers with every gate green.",
+        join_body.len()
+    );
+    let file_counts = (
+        rb132_ident_count(&movement, economy_ident),
+        rb132_ident_count(&movement, grant_ident),
+    );
+    assert_eq!(
+        file_counts,
+        (0, 0),
+        "[rb132/join-no-wallet]: movement.rs, comments and strings blanked, names the economy \
+         module and its credit fn {file_counts:?} time(s) file-wide; ZERO of each is the only \
+         honest value. The body census above cannot see a module-level `use` alias that renames \
+         the credit fn and is then called under the new name, so this count owns that spelling."
+    );
+
     // --- the ask: one whole identifier, one call, inside the reducer -----------
     let ident = rb132_nd_wallet_ident();
     let ask = rb132_nd_wallet_ask();
@@ -29636,7 +29754,6 @@ fn rb132_reducer_asks_the_wallet_ssot_exactly_once() {
     );
 
     // --- the economy module is reached ONCE, the context fifteen times ---------
-    let economy_ident = concat!("econ", "omy");
     let reducer_fn = concat!("fn request_data", "_export(");
     let honest_call = rb132_tier_call_source();
     let rest = honest_call
