@@ -290,6 +290,26 @@ const RB130_NULLISH_T = "el.textContent = x ?? t('a');";
 const RB130_AWAIT_T = "el.title = await t('a');";
 const RB130_RETURN_T = "el.textContent = (() => { return t('a'); })();";
 const RB130_TF_OBJ = "el.textContent = tf('k', { n });";
+// Round 2 (artifact red-team): a gap char that is JS whitespace but outside an ASCII-4 skip
+// (VT / FF), a unicode-escaped identifier glued to the name (the escape's closing brace sits
+// just before `t`), and mutant killers for a narrowed fix (tab, CRLF, another Latin-1 letter,
+// U+3000, a deep indent). Control: `[` and `, ` before the name stay exempt.
+const RB130_VT = String.fromCharCode(0x0b);
+const RB130_FF = String.fromCharCode(0x0c);
+const RB130_TAB = String.fromCharCode(0x09);
+const RB130_N_TILDE = String.fromCharCode(0xf1);
+const RB130_IDEO_SPACE = String.fromCharCode(0x3000);
+const RB130_DOT_VT_T = `el.textContent = obj.${RB130_VT}t('Raw');`;
+const RB130_DOT_FF_T = `el.textContent = obj.${RB130_FF} t('Raw');`;
+const RB130_UESC_GLUED = "el.textContent = \\u{61}t('Raw');";
+const RB130_UESC_MEMBER = "el.textContent = obj.\\u{61}t('Raw');";
+const RB130_UESC_NAME = 'u{61}t(';
+const RB130_DOT_TAB_T = `el.textContent = obj.${RB130_TAB}t('Raw');`;
+const RB130_DOT_CRLF_T = "el.textContent = obj.\r\n  t('Raw');";
+const RB130_N_TILDE_GLUED = `el.textContent = ${RB130_N_TILDE}t('Raw');`;
+const RB130_DOT_IDEO_T = `el.textContent = obj.${RB130_IDEO_SPACE} t('Raw');`;
+const RB130_DOT_DEEP_INDENT_T = "el.textContent = obj.\n      t('Raw');";
+const RB130_ARRAY_JOIN_T = "el.textContent = [t('a'), t('b')].join('');";
 // Plan R5 parity flip: two regex literals each holding ONE quote. stringMask reads the first `'`
 // as opening a literal that the `'` of 'Raw' closes, then 'Raw' is CODE and the closing `'`
 // re-opens a literal that the second regex's quote closes — `unterminated` stays FALSE while
@@ -622,7 +642,7 @@ describe('i18n-hardcoded-strings (M24 S2, ADR-0257)', () => {
     expect(scanSource(VACUITY_A).maskedSinkTokens).toBe(0);
   });
 
-  it('rb130: the t(/tf( exemption rejects a private #t(/#tf( member, a non-ASCII char glued before the name, and a . receiver across any whitespace gap (space, newline, NBSP); operator-preceded and identifier-then-space calls stay exempt (R-m24-s4-RT1)', () => {
+  it('rb130: the t(/tf( exemption rejects a private #t(/#tf( member, a non-ASCII char or a unicode-escaped identifier glued before the name, and a . receiver across any whitespace gap (space, tab, CRLF, VT, FF, NBSP, U+3000, deep indent); operator/bracket-preceded and identifier-then-space calls stay exempt (R-m24-s4-RT1)', () => {
     const check = (label: string, src: string, expected: Counts, segments: string[]): void => {
       const r = scanSource(src);
       expect(counts(r), label).toEqual(expected);
@@ -638,6 +658,31 @@ describe('i18n-hardcoded-strings (M24 S2, ADR-0257)', () => {
     expect(RB130_NON_ASCII_GLUED.indexOf(`${RB130_E_ACUTE}t(`)).toBeGreaterThan(-1);
     expect(RB130_NBSP.charCodeAt(0)).toBe(0xa0);
     expect(RB130_DOT_NBSP_T.indexOf(`.${RB130_NBSP} t(`)).toBeGreaterThan(-1);
+    expect(RB130_VT.charCodeAt(0)).toBe(0x0b);
+    expect(RB130_DOT_VT_T.indexOf(`.${RB130_VT}t(`)).toBeGreaterThan(-1);
+    expect(RB130_FF.charCodeAt(0)).toBe(0x0c);
+    expect(RB130_DOT_FF_T.indexOf(`.${RB130_FF} t(`)).toBeGreaterThan(-1);
+    expect(RB130_TAB.charCodeAt(0)).toBe(0x09);
+    expect(RB130_DOT_TAB_T.indexOf(`.${RB130_TAB}t(`)).toBeGreaterThan(-1);
+    expect(RB130_N_TILDE.charCodeAt(0)).toBe(0xf1);
+    expect(RB130_N_TILDE_GLUED.indexOf(`${RB130_N_TILDE}t(`)).toBeGreaterThan(-1);
+    expect(RB130_IDEO_SPACE.charCodeAt(0)).toBe(0x3000);
+    expect(RB130_DOT_IDEO_T.indexOf(`.${RB130_IDEO_SPACE} t(`)).toBeGreaterThan(-1);
+    // The escape fixtures hold a LITERAL backslash (0x5c) before `u{61}` -- if it collapsed to
+    // `a`, the fixture would become `at(` / `obj.at(`, which fail for an unrelated reason.
+    const uescGlued = RB130_UESC_GLUED.indexOf(RB130_UESC_NAME);
+    expect(uescGlued).toBeGreaterThan(0);
+    expect(RB130_UESC_GLUED.charCodeAt(uescGlued - 1)).toBe(0x5c);
+    expect(RB130_UESC_GLUED.charAt(uescGlued - 2)).toBe(' ');
+    const uescMember = RB130_UESC_MEMBER.indexOf(RB130_UESC_NAME);
+    expect(uescMember).toBeGreaterThan(0);
+    expect(RB130_UESC_MEMBER.charCodeAt(uescMember - 1)).toBe(0x5c);
+    expect(RB130_UESC_MEMBER.charAt(uescMember - 2)).toBe('.');
+    // CRLF gap is CR (0x0d) then LF (0x0a) right after the `.`; the deep indent is 6 spaces.
+    const crlfDot = RB130_DOT_CRLF_T.indexOf('obj.') + 'obj.'.length;
+    expect(RB130_DOT_CRLF_T.charCodeAt(crlfDot)).toBe(0x0d);
+    expect(RB130_DOT_CRLF_T.charCodeAt(crlfDot + 1)).toBe(0x0a);
+    expect(RB130_DOT_DEEP_INDENT_T.indexOf(`.\n${' '.repeat(6)}t(`)).toBeGreaterThan(-1);
 
     // MUST FAIL {1,1}. Each kills an implementation whose "before" check reads only the single
     // char at i-1 against ASCII identifier chars and `.`:
@@ -654,6 +699,30 @@ describe('i18n-hardcoded-strings (M24 S2, ADR-0257)', () => {
     check('obj.\\n  t() is NOT exempt', RB130_DOT_NEWLINE_T, { sinks: 1, failing: 1 }, ['Raw']);
     //   NBSP in the gap (kills: an ASCII-only skip that checks only `.` and stops at the NBSP).
     check('obj.<NBSP> t() is NOT exempt', RB130_DOT_NBSP_T, { sinks: 1, failing: 1 }, ['Raw']);
+    //   kills: a backward skip over only space/tab/CR/LF (VT is JS whitespace; stops on it).
+    check('obj.<VT>t() is NOT exempt', RB130_DOT_VT_T, { sinks: 1, failing: 1 }, ['Raw']);
+    //   kills: the same ASCII-4 skip -- it steps over the space, then stops on the FF.
+    check('obj.<FF> t() is NOT exempt', RB130_DOT_FF_T, { sinks: 1, failing: 1 }, ['Raw']);
+    //   kills: a before-check blind to an identifier escape (its brace, not `.`, is at i-1).
+    check('\\u{61} glued before t( is NOT exempt', RB130_UESC_GLUED, { sinks: 1, failing: 1 }, [
+      'Raw',
+    ]);
+    //   kills: a fix that only looks for `.` / `#` after the skip (the brace hides the `.`).
+    check('obj.\\u{61}t() is NOT exempt', RB130_UESC_MEMBER, { sinks: 1, failing: 1 }, ['Raw']);
+    //   kills: a skip over space and LF only (no tab).
+    check('obj.<TAB>t() is NOT exempt', RB130_DOT_TAB_T, { sinks: 1, failing: 1 }, ['Raw']);
+    //   kills: a skip over space and LF only (no CR) -- a CRLF checkout.
+    check('obj.<CRLF>  t() is NOT exempt', RB130_DOT_CRLF_T, { sinks: 1, failing: 1 }, ['Raw']);
+    //   kills: a non-ASCII reject keyed to U+00E9 (or a short accented-letter list) only.
+    check('U+00F1 glued before t( is NOT exempt', RB130_N_TILDE_GLUED, { sinks: 1, failing: 1 }, [
+      'Raw',
+    ]);
+    //   kills: an NBSP-only or Latin-1-only (c < 256) non-ASCII reject in the gap.
+    check('obj.<U+3000> t() is NOT exempt', RB130_DOT_IDEO_T, { sinks: 1, failing: 1 }, ['Raw']);
+    //   kills: a bounded look-back (<= 6 chars) that gives up and exempts before reaching `.`.
+    check('obj.\\n<6sp>t() is NOT exempt', RB130_DOT_DEEP_INDENT_T, { sinks: 1, failing: 1 }, [
+      'Raw',
+    ]);
     //   Existing boundary, re-pinned alongside (green at HEAD — proves the harness bites).
     check('obj.t() is NOT exempt', RHS_OBJ_T, { sinks: 1, failing: 1 }, ['Raw']);
 
@@ -672,6 +741,9 @@ describe('i18n-hardcoded-strings (M24 S2, ADR-0257)', () => {
     //   backward skip as a glued receiver).
     check('await t() stays exempt', RB130_AWAIT_T, { sinks: 1, failing: 0 }, []);
     check('return t() in an arrow stays exempt', RB130_RETURN_T, { sinks: 1, failing: 0 }, []);
+    //   `[` and `, ` before the name (kills: an over-tightened allow-set of preceding chars that
+    //   omits `[` or `,`, or a brace-reject widened to every closing/opening bracket).
+    check('[t(), t()].join() stays exempt', RB130_ARRAY_JOIN_T, { sinks: 1, failing: 0 }, []);
   });
 
   it('m24s2 I18N-17: the real scan reads every non-test client/src/**/*.ts, finds all 19 SCAN_TARGETS present and non-empty, observes >= SINK_FLOOR sinks, and trips no unterminated/truncated/masked tripwire', () => {
