@@ -57,7 +57,6 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { stripRustStrings } from './battle-reducer-security.eval.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -83,6 +82,42 @@ function stripRustComments(src) {
 }
 
 /**
+ * Blank Rust double-quoted string literals (contents become spaces; `\"` escapes
+ * handled). Raw strings (`r"…"`, `r#"…"#`) are NOT handled — see INHERITED LIMIT.
+ * Inlined verbatim from the deleted battle-reducer-security.eval.mjs.
+ * @param {string} src Comment-stripped Rust source.
+ * @returns {string} Source with string-literal contents blanked.
+ */
+function stripRustStrings(src) {
+  let out = '';
+  let i = 0;
+  while (i < src.length) {
+    if (src[i] === '"') {
+      out += ' ';
+      i++;
+      while (i < src.length) {
+        if (src[i] === '\\' && i + 1 < src.length) {
+          // Escaped character — skip both bytes.
+          out += '  ';
+          i += 2;
+        } else if (src[i] === '"') {
+          out += ' ';
+          i++;
+          break;
+        } else {
+          out += ' ';
+          i++;
+        }
+      }
+    } else {
+      out += src[i];
+      i++;
+    }
+  }
+  return out;
+}
+
+/**
  * The scan pipeline for this eval: blank comments, THEN blank string-literal
  * contents. Every check below consumes scrubbed output — never raw source.
  * `readServerModuleSources` applies these same two steps per file rather than
@@ -91,17 +126,15 @@ function stripRustComments(src) {
  *
  * Why the string pass (11r-c red-team): with comments-only stripping, a dead
  * `let _decoy = "…";` whose CONTENT spelled a needle satisfied W6 (and the Rust
- * gating tests) while the real guard was absent. `stripRustStrings` is imported
- * from `battle-reducer-security.eval.mjs` rather than re-implemented — that file
- * added it for exactly this class (its F1 guard-fakery hardening) and a seventh
- * private copy would be a seventh thing to keep correct. Cross-eval checker reuse
- * is established here (`ci-gate-wiring` ← `e2e-desync-teeth`, `wallet-privacy` ←
- * `conversation-privacy`); importing executes only function/const definitions.
+ * gating tests) while the real guard was absent. `stripRustStrings` (below) was
+ * originally imported from battle-reducer-security.eval.mjs; that eval was deleted
+ * in the debloat battle module (replaced by native-host tests), so the stripper is
+ * inlined here verbatim.
  *
  * Bonus: because string contents become spaces, a `{` or `}` inside a literal can
  * no longer corrupt `extractFnBody`'s brace counting.
  *
- * INHERITED LIMIT: the imported stripper does not handle raw strings
+ * INHERITED LIMIT: the stripper does not handle raw strings
  * (`r"…"`, `r#"…"#`). That is acceptable here because this eval is the COARSE
  * backstop — the airtight layer for `movement.rs` is `movement_tests.rs`, whose
  * local byte-sequential stripper does handle raw strings (and asserts loudly on
