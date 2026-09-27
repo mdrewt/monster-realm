@@ -267,6 +267,29 @@ const CALL_MY_REPLACE_CHILDREN = "myReplaceChildren('Raw')";
 const RHS_CALL_TRUNCATED = 'list.replaceChildren(a';
 const RHS_UNTERMINATED = "el.textContent = 'oops;";
 const RHS_TRUNCATED = "el.textContent = f('a'";
+// R-m24-s4-RT1 (rb-130): the t(/tf( exemption must also reject a private `#t(` / `#tf(` member,
+// a non-ASCII identifier char glued before the name, and a `.` receiver separated from the name
+// by ANY whitespace gap (space, newline, NBSP then space). Non-ASCII chars are code-point built
+// (String.fromCharCode) so this file stays ASCII. Controls: operator/bracket-preceded calls and
+// identifier-then-space (`await t(`, `return t(`) stay exempt.
+const RB130_E_ACUTE = String.fromCharCode(0xe9);
+const RB130_NBSP = String.fromCharCode(0xa0);
+const RB130_PRIVATE_T = "el.textContent = this.#t('raw English');";
+const RB130_PRIVATE_TF = "el.textContent = this.#tf('raw English', { n });";
+const RB130_OPTIONAL_PRIVATE_T = "el.textContent = obj?.#t('Raw');";
+const RB130_NON_ASCII_GLUED = `el.textContent = ${RB130_E_ACUTE}t('Raw');`;
+const RB130_DOT_SPACE_T = "el.textContent = obj. t('Raw');";
+const RB130_DOT_NEWLINE_T = "el.textContent = obj.\n  t('Raw');";
+const RB130_DOT_NBSP_T = `el.textContent = obj.${RB130_NBSP} t('Raw');`;
+const RB130_TPL_T = "el.textContent = `${t('a')}`;";
+const RB130_WRAP_T = "el.textContent = wrap(t('a'));";
+const RB130_TERNARY_T = "el.textContent = c ? t('a') : t('b');";
+const RB130_RC_COMMA_T = "list.replaceChildren(x,t('a'));";
+const RB130_NOT_T = "el.textContent = !t('a');";
+const RB130_NULLISH_T = "el.textContent = x ?? t('a');";
+const RB130_AWAIT_T = "el.title = await t('a');";
+const RB130_RETURN_T = "el.textContent = (() => { return t('a'); })();";
+const RB130_TF_OBJ = "el.textContent = tf('k', { n });";
 // Plan R5 parity flip: two regex literals each holding ONE quote. stringMask reads the first `'`
 // as opening a literal that the `'` of 'Raw' closes, then 'Raw' is CODE and the closing `'`
 // re-opens a literal that the second regex's quote closes — `unterminated` stays FALSE while
@@ -597,6 +620,58 @@ describe('i18n-hardcoded-strings (M24 S2, ADR-0257)', () => {
     // And a healthy source reports zero masked tokens.
     expect(scanSource(BAD_3_RENAME).maskedSinkTokens).toBe(0);
     expect(scanSource(VACUITY_A).maskedSinkTokens).toBe(0);
+  });
+
+  it('rb130: the t(/tf( exemption rejects a private #t(/#tf( member, a non-ASCII char glued before the name, and a . receiver across any whitespace gap (space, newline, NBSP); operator-preceded and identifier-then-space calls stay exempt (R-m24-s4-RT1)', () => {
+    const check = (label: string, src: string, expected: Counts, segments: string[]): void => {
+      const r = scanSource(src);
+      expect(counts(r), label).toEqual(expected);
+      expect(failingSegmentsOf(r), `${label} segments`).toEqual(segments);
+      expect(r.unterminated, `${label} unterminated`).toBe(false);
+      expect(r.maskedSinkTokens, `${label} maskedSinkTokens`).toBe(0);
+      for (const s of r.sinks) expect(s.truncated, `${label} truncated`).toBe(false);
+    };
+
+    // Fixture sanity (non-vacuity): the code-point-built fixtures hold exactly the intended char
+    // at the intended place, so a normalised/rewritten fixture cannot silently turn into a control.
+    expect(RB130_E_ACUTE.charCodeAt(0)).toBe(0xe9);
+    expect(RB130_NON_ASCII_GLUED.indexOf(`${RB130_E_ACUTE}t(`)).toBeGreaterThan(-1);
+    expect(RB130_NBSP.charCodeAt(0)).toBe(0xa0);
+    expect(RB130_DOT_NBSP_T.indexOf(`.${RB130_NBSP} t(`)).toBeGreaterThan(-1);
+
+    // MUST FAIL {1,1}. Each kills an implementation whose "before" check reads only the single
+    // char at i-1 against ASCII identifier chars and `.`:
+    //   private `#` before the name (kills: `#` not treated as a receiver).
+    check('this.#t() is NOT exempt', RB130_PRIVATE_T, { sinks: 1, failing: 1 }, ['raw English']);
+    check('this.#tf() is NOT exempt', RB130_PRIVATE_TF, { sinks: 1, failing: 1 }, ['raw English']);
+    check('obj?.#t() is NOT exempt', RB130_OPTIONAL_PRIVATE_T, { sinks: 1, failing: 1 }, ['Raw']);
+    //   non-ASCII identifier char glued to the name (kills: ASCII-only identifier class).
+    check('U+00E9 glued before t( is NOT exempt', RB130_NON_ASCII_GLUED, { sinks: 1, failing: 1 }, [
+      'Raw',
+    ]);
+    //   `.` receiver across a whitespace gap (kills: no backward whitespace skip).
+    check('obj. t() is NOT exempt', RB130_DOT_SPACE_T, { sinks: 1, failing: 1 }, ['Raw']);
+    check('obj.\\n  t() is NOT exempt', RB130_DOT_NEWLINE_T, { sinks: 1, failing: 1 }, ['Raw']);
+    //   NBSP in the gap (kills: an ASCII-only skip that checks only `.` and stops at the NBSP).
+    check('obj.<NBSP> t() is NOT exempt', RB130_DOT_NBSP_T, { sinks: 1, failing: 1 }, ['Raw']);
+    //   Existing boundary, re-pinned alongside (green at HEAD — proves the harness bites).
+    check('obj.t() is NOT exempt', RHS_OBJ_T, { sinks: 1, failing: 1 }, ['Raw']);
+
+    // MUST PASS {1,0} — the exemption still holds. Each kills an over-tightened fix:
+    //   bracket / operator / comma immediately before the name (kills: rejecting any
+    //   non-identifier char other than a small allow-set).
+    check('`${t()}` stays exempt', RB130_TPL_T, { sinks: 1, failing: 0 }, []);
+    check('wrap(t()) stays exempt', RB130_WRAP_T, { sinks: 1, failing: 0 }, []);
+    check('replaceChildren(x,t()) stays exempt', RB130_RC_COMMA_T, { sinks: 1, failing: 0 }, []);
+    check('!t() stays exempt', RB130_NOT_T, { sinks: 1, failing: 0 }, []);
+    //   operator then a whitespace gap (kills: rejecting any whitespace before the name).
+    check('c ? t() : t() stays exempt', RB130_TERNARY_T, { sinks: 1, failing: 0 }, []);
+    check('x ?? t() stays exempt', RB130_NULLISH_T, { sinks: 1, failing: 0 }, []);
+    check('tf() with an object arg stays exempt', RB130_TF_OBJ, { sinks: 1, failing: 0 }, []);
+    //   identifier then a whitespace gap (kills: treating an identifier char found after the
+    //   backward skip as a glued receiver).
+    check('await t() stays exempt', RB130_AWAIT_T, { sinks: 1, failing: 0 }, []);
+    check('return t() in an arrow stays exempt', RB130_RETURN_T, { sinks: 1, failing: 0 }, []);
   });
 
   it('m24s2 I18N-17: the real scan reads every non-test client/src/**/*.ts, finds all 19 SCAN_TARGETS present and non-empty, observes >= SINK_FLOOR sinks, and trips no unterminated/truncated/masked tripwire', () => {
