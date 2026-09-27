@@ -19,7 +19,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { stripComments } from '../../../evals/dom-shell-coverage-exclusion.eval.mjs';
+import { stripComments } from '../../test-util/stripComments';
 import { scanSource } from './i18n/hardcodedStrings';
 import { t as i18nT } from './i18n/resolver';
 import { closeOverlayA11y } from './overlayA11y';

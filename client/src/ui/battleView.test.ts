@@ -32,7 +32,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { stripComments } from '../../../evals/dom-shell-coverage-exclusion.eval.mjs';
+import { stripComments } from '../../test-util/stripComments';
 import type { BattleViewModel } from './battleModel';
 import { BattleView, type BattleViewCallbacks } from './battleView';
 import { scanSource } from './i18n/hardcodedStrings';

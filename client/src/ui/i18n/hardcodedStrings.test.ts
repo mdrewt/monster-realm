@@ -45,7 +45,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 // The comment stripper is IMPORTED, never copied (ADR-0215 single-owner rule). Precedent for a
 // `.ts` test under `ui/i18n/` importing a `.mjs` eval: ./catalog.test.ts:32.
-import { stripComments } from '../../../../evals/dom-shell-coverage-exclusion.eval.mjs';
+import { stripComments } from '../../../test-util/stripComments';
 import {
   isCleanSegment,
   NON_TRANSLATABLE_CHARS,

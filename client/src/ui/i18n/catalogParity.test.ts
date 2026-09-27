@@ -31,7 +31,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 // The comment stripper is IMPORTED, never copied (ADR-0215 single-owner rule). Same path as
 // catalogShape.test.ts:35.
-import { stripComments } from '../../../../evals/dom-shell-coverage-exclusion.eval.mjs';
+import { stripComments } from '../../../test-util/stripComments';
 import { a11yCopy } from '../a11yCopy';
 import { CATALOG_EN } from './catalog.en';
 // NO import of './catalog.fr' — see the header. `CATALOGS`, `t`, `tf`, `setLocale`,
