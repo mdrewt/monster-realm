@@ -294,8 +294,11 @@ export type Catalog = {
 
 /** Type-level assert: no parameterized key may live in the `a11y.*` namespace — accessible
  *  names are plain strings by construction (M23 bans `{`/`}` in a11y values), so an `a11y.*`
- *  entry in `MessageParams` is a modelling error caught here at `tsc` time. Exported because
- *  `noUnusedLocals` would otherwise flag the alias (TS6196). */
-export type AssertNoA11yParamKey = [Extract<ParamMessageId, `a11y.${string}`>] extends [never]
-  ? true
-  : never;
+ *  entry in `MessageParams` is a modelling error caught here at `tsc` time (TS2344 on the
+ *  `ExpectTrue` constraint). A bare conditional alias that resolves to `never` raises nothing,
+ *  so the constraint is what makes this bite. Exported because `noUnusedLocals` would
+ *  otherwise flag the alias (TS6196). */
+type ExpectTrue<T extends true> = T;
+export type AssertNoA11yParamKey = ExpectTrue<
+  [Extract<ParamMessageId, `a11y.${string}`>] extends [never] ? true : false
+>;

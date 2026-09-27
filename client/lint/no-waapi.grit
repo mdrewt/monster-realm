@@ -1,0 +1,16 @@
+language js
+
+// WAAPI ban (ADR-0213): Element.animate() ignores prefers-reduced-motion and an
+// inline animation beats every stylesheet rule, so it silently defeats the
+// reduced-motion media queries in styles.css. Animate via a CSS class instead.
+// Catches `x.animate`, `x?.animate`, `x['animate']`, `x["animate"]` (call or bare
+// reference). Not closable against destructuring or computed keys; it is a
+// tripwire for honest regressions, not a proof of absence.
+or {
+  `$o.animate`,
+  `$o?.animate`,
+  `$o['animate']`,
+  `$o["animate"]`
+} as $m where {
+  register_diagnostic(span=$m, message="Element.animate (WAAPI) is banned in client code: it ignores prefers-reduced-motion (ADR-0213). Animate with a CSS class in styles.css.", severity="error")
+}

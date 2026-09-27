@@ -15,6 +15,7 @@
   },
   "formatter": { "enabled": true, "indentStyle": "space", "indentWidth": 2, "lineWidth": 100 },
   "linter": { "enabled": true, "rules": { "recommended": true } },
+  "plugins": ["./client/lint/no-waapi.grit"],
   "javascript": { "formatter": { "quoteStyle": "single", "semicolons": "always" } },
   "overrides": [
     {
