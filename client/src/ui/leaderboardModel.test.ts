@@ -1,11 +1,5 @@
 // ui/leaderboardModel.test.ts — RED gating tests for m17b §RL-13 + §RL-15.
 //
-// Slice: m17b · Source-of-truth spec: M17-ranked-ladder.spec.md §RL-13 / §RL-15
-//
-// RED REASON: leaderboardModel.ts does not exist yet.
-// Every test below will fail with:
-//   "Failed to resolve import './leaderboardModel'" (module-not-found)
-//
 // WRONG-IMPL-KILLED list (one per criterion):
 //   - "rating desc sort omitted"          → sort-order tests catch it
 //   - "tie-break on displayName not name" → case-sensitivity + empty-name tests catch it
@@ -18,9 +12,6 @@
 //   - "comparator overflow for i32 extremes" → extremes test catches it
 //   - "wins/losses dropped"               → passthrough tests catch it
 //   - "module_bindings imported"          → RL-15 source-scan catches it
-//
-// Do NOT edit tests to match a buggy impl — correct from the spec only.
-// Corrections must be traced to the spec and must not weaken the bite.
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -333,16 +324,15 @@ describe('RL13-passthrough: wins and losses carried unchanged', () => {
 
 // ---------------------------------------------------------------------------
 // RL-15 structural tooth: leaderboardModel.ts must NOT import from module_bindings
-// or call any reducer/connection — pure subscription model (ADR-0014).
+// or call any reducer/connection — pure subscription model.
 // ---------------------------------------------------------------------------
 
 describe('RL15-structural: leaderboardModel.ts source contains no server write paths', () => {
   it('RL15-model-scan BITES: source does not reference module_bindings, reducers, or conn — kills any write-path impl', () => {
-    // This is the client-side RL-15 mirror; the server-side teeth live in m17c's
-    // ranking-security eval. A leaderboardModel.ts that imports from module_bindings
+    // A leaderboardModel.ts that imports from module_bindings
     // or calls reducers violates ADR-0014 (pure subscription view) and RL-15.
     // Uses .includes() — no dynamic RegExp (eslint ReDoS ban).
-    // fileURLToPath: robust against percent-encoding in import.meta.url (m17b req #5).
+    // fileURLToPath: robust against percent-encoding in import.meta.url.
     const modelPath = path.join(
       path.dirname(fileURLToPath(import.meta.url)),
       'leaderboardModel.ts',
@@ -364,9 +354,9 @@ describe('RL15-structural: leaderboardModel.ts source contains no server write p
       'reducers.',
       'conn.conn',
       'DbConnection',
-      // set_profile_name is the only profile-write reducer the spec acknowledges
-      // (ADR-0119 D6). Transitive-import indirection is out of scope for this scan
-      // (review-caught), but a direct reference here is a clear RL-15 violation.
+      // set_profile_name is the only profile-write reducer the spec acknowledges.
+      // Transitive-import indirection is out of scope for this scan,
+      // but a direct reference here is a clear RL-15 violation.
       'set_profile_name',
     ];
     for (const needle of forbidden) {

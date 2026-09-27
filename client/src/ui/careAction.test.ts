@@ -1,11 +1,6 @@
 // ui/careAction.test.ts — RED gating tests for the ADR-0159 D1 no-lie ordering property.
 //
-// SOURCE OF TRUTH: EARS criterion "WHEN the player presses the care-button/action,
-// THE UI SHALL show a visible confirmation (toast, animation, or stat-delta
-// feedback)." + docs/adr/0159-feel-polish-care-feedback-npc-wander.md D1, amended by
-// a red-team finding on the first draft of this slice's wiring tests.
-//
-// WHY THIS FILE EXISTS (red-team correction): the ADR's central claim is "the await
+// WHY THIS FILE EXISTS: the ADR's central claim is "the await
 // genuinely reflects the server outcome, so the confirmation can never lie." A pure
 // `.includes()` string-presence scan over main.ts CANNOT test this — main.ts is
 // coverage-excluded and `onCare` is a non-exported closure, so ordering/behaviour is
@@ -30,13 +25,10 @@
 //     }
 //
 // FIX: extract the entire onCare decision into an exported, directly-testable
-// function — `performCare` — in a NEW module `client/src/ui/careAction.ts` (NOT
-// implemented by the tester; ownership split). `main.ts`'s `onCare` wiring becomes a
-// thin adapter that hands performCare a `callCare`/`showFeedback` dependency pair
-// (see main.wiring.test.ts's W-CARE-PERFORMCARE / W-CARE-IMPORT / W-CARE-SHOWFEEDBACK-
-// WIRING tests for the wiring-level structural pins). This file tests the REAL
-// behaviour: node environment, no DOM, no SDK, no wasm — pure async control flow
-// over injected fakes.
+// function — `performCare` — in a NEW module `client/src/ui/careAction.ts`.
+// `main.ts`'s `onCare` wiring becomes a thin adapter that hands performCare a
+// `callCare`/`showFeedback` dependency pair. This file tests the REAL behaviour: node
+// environment, no DOM, no SDK, no wasm — pure async control flow over injected fakes.
 //
 // RED-TEAM ROUND 2 (against the shipped careAction.ts, AFTER the first code-review
 // round below had already landed): BUG 1 — a SYNCHRONOUS throw from `callCare()`
@@ -45,14 +37,10 @@
 // synchronously (rather than returning a rejected promise), the throw escapes
 // performCare entirely as a REJECTED performCare() promise, before any showFeedback
 // call. Reachable, not hypothetical: the real SDK's callReducerWithParams
-// BSATN-serializes reducer args SYNCHRONOUSLY before returning a promise
-// (client/node_modules/spacetimedb/src/sdk/db_connection_impl.ts:1196-1202), so a
-// serialization failure throws sync. raisingView.ts's click handler only
-// console.error's a rejecting onCare — net effect: click -> button disables ->
-// silently re-enables -> NOTHING shown. THIS IS RED against the current
-// careAction.ts — see the "★★ ... BUG 1" describe block below, which is the new
-// load-bearing tooth in this file (every OTHER test here remains a green regression
-// guard, per the STATUS UPDATE further down).
+// BSATN-serializes reducer args SYNCHRONOUSLY before returning a promise,
+// so a serialization failure throws sync. raisingView.ts's click handler only console.error's a
+// rejecting onCare — net effect: click -> button disables -> silently re-enables -> NOTHING
+// shown.
 //
 // CODE-REVIEW UPDATE (round 1 — 2 findings against the shipped implementation):
 //
@@ -64,17 +52,11 @@
 //     releases #pending immediately -> the care promise later settles -> showFeedback
 //     fires anyway into the now-hidden node -> the player reopens Raising later and
 //     sees a stale "Cared!"/error with no click behind it. The REAL fix (the
-//     visibility guard) lives in main.ts's wiring, so the load-bearing tooth is
-//     main.wiring.test.ts's W-CARE-SHOWFEEDBACK-VISIBLE-GUARD scan. This file adds a
-//     complementary pin below: performCare itself has no visibility concept and must
+//     visibility guard) lives in main.ts's wiring,
+//     performCare itself has no visibility concept and must
 //     stay agnostic to it — it always ATTEMPTS exactly one showFeedback call per arm,
 //     full stop; suppressing the render when hidden is entirely the injected
 //     function's job, never performCare's.
-//
-//   MINOR — performCare's second parameter was dead (`_monsterId: bigint`, never
-//     read; `deps.callCare` already closes over the real id). Per this repo's
-//     "public surface larger than the spec requires" red flag, it is removed. Every
-//     call site below now calls `performCare(deps)` with ONE argument.
 //
 //   NOT ADDED (documented decision): raisingView.hide() releasing #pending while a
 //     care call is in flight means close-then-reopen-then-click can issue a SECOND
@@ -88,38 +70,6 @@
 //     Adding a test here would only re-prove "the pending lock resets on hide()",
 //     which is a cross-cutting DOM-shell precedent orthogonal to ADR-0159, not a
 //     property of performCare or this feature. No test added for it.
-//
-// EXACT CONTRACT UNDER TEST (the ONE-argument shape below is what the tests require;
-// see the STATUS UPDATE just below for the current gap against the shipped module):
-//
-//   export interface CareActionDeps {
-//     readonly callCare: () => Promise<unknown> | undefined; // undefined => frozen/disconnected
-//     readonly showFeedback: (message: string) => void;
-//   }
-//   export async function performCare(deps: CareActionDeps): Promise<void>
-//
-// STATUS UPDATE (post-implementation code review, round 1): careAction.ts has since
-// been shipped. Re-verified against the current source: its core ordering/resolve/
-// reject/frozen logic (for a callCare that RETURNS a promise, resolved or rejected)
-// is CORRECT (no PoC-A-shaped pre-await call, reject routes through
-// reduceErrorMessage, frozen never reports 'Cared!') — round 1's MAJOR finding was
-// entirely in main.ts's WIRING (the unguarded showFeedback forward), not in this
-// module. So ORDER / resolve / reject×2 / frozen / the two visibility-agnostic pins
-// are all GREEN regression guards against the current implementation. Round 1's
-// MINOR finding: `performCare(deps, _monsterId: bigint)` carried a dead second
-// parameter. Every call site below now passes ONE argument (`performCare(deps)`);
-// this does not itself flip any test red (JS ignores an extra/missing argument at
-// runtime, and `client/tsconfig.json` excludes `**/*.test.ts` from `tsc --noEmit`,
-// so neither `vitest run` nor `npm run typecheck` catches the arity mismatch) — it
-// pins the one-argument contract the implementer must match by deleting the
-// parameter from careAction.ts, per this repo's "public surface larger than the spec
-// requires" red flag.
-//
-// ROUND 2 (see the RED-TEAM ROUND 2 note above): callCare() is only ever exercised
-// above via a RETURNED promise (resolved/rejected/undefined) — never via a
-// SYNCHRONOUS throw. `careAction.ts:46` calls `deps.callCare()` OUTSIDE the try
-// block, so that code path was untested and is broken. The new "★★ ... BUG 1"
-// describe block below is the genuinely RED test in this file today.
 //
 // WRONG-IMPL-KILLED list (one per criterion):
 //   ORDER (kills PoC A)        -> showFeedback called before the in-flight promise settles
@@ -139,10 +89,6 @@
 //                                  based on some assumed visibility state it has no
 //                                  access to (the guard belongs to the caller's
 //                                  showFeedback wrapper, never to performCare)
-//
-// Do NOT edit these tests to match a buggy implementation — corrections must trace to
-// ADR-0159 D1 (as amended by the red-team finding and code-review findings above)
-// only, never to the code under test.
 
 import { describe, expect, it, vi } from 'vitest';
 // careAction.ts is now shipped (see the STATUS UPDATE above) — this import resolves
@@ -316,25 +262,20 @@ describe('performCare(): frozen/disconnected arm — callCare() returns undefine
 });
 
 // ---------------------------------------------------------------------------
-// ★★ code-review BUG 1 (MAJOR) — a SYNCHRONOUS throw from callCare() must still
+// ★★ BUG 1 (MAJOR) — a SYNCHRONOUS throw from callCare() must still
 // produce exactly one showFeedback call, and performCare must NOT reject.
 //
 // The shipped careAction.ts calls `const inFlight = deps.callCare();` OUTSIDE the
-// try block (careAction.ts:46). If callCare() throws synchronously rather than
+// try block. If callCare() throws synchronously rather than
 // returning a rejected promise, the throw escapes performCare entirely as a
 // REJECTED performCare() promise, before any showFeedback call. This is reachable,
 // not hypothetical: the real SDK's callReducerWithParams BSATN-serializes the
-// reducer args SYNCHRONOUSLY before returning a promise
-// (client/node_modules/spacetimedb/src/sdk/db_connection_impl.ts:1196-1202), so a
-// serialization failure throws sync. raisingView.ts's click handler only
+// reducer args SYNCHRONOUSLY before returning a promise,
+// so a serialization failure throws sync. raisingView.ts's click handler only
 // console.error's a rejecting onCare (never calls showFeedback) — net effect:
 // click -> button disables -> silently re-enables -> NOTHING shown. That is the
 // exact "care button has no visible effect" bug this whole slice exists to fix.
 //
-// RED-TEAM PoC (passes against the shipped code today — this is the bug):
-//   const callCare = () => { throw new Error('serialization failure'); };
-//   await performCare({ callCare, showFeedback }).catch(() => {});
-//   expect(showFeedback).not.toHaveBeenCalled();   // passes today — the bug
 // ---------------------------------------------------------------------------
 
 describe('★★ performCare(): a SYNCHRONOUSLY-throwing callCare() must still report a message (code-review BUG 1, MAJOR)', () => {
@@ -372,10 +313,10 @@ describe('★★ performCare(): a SYNCHRONOUSLY-throwing callCare() must still r
 
 // ---------------------------------------------------------------------------
 // ★ code-review MAJOR finding — performCare stays agnostic to view visibility.
-// The hidden-overlay guard (main.ts: `if (raisingView?.visible) ...`, pinned by
-// main.wiring.test.ts's W-CARE-SHOWFEEDBACK-VISIBLE-GUARD) is entirely the caller's
-// job. This complementary test proves performCare's OWN contract does not change
-// when the injected showFeedback happens to be a no-op-when-hidden wrapper:
+// The hidden-overlay guard (main.ts: `if (raisingView?.visible) ...`)
+// is entirely the caller's job. This complementary test proves performCare's OWN
+// contract does not change when the injected showFeedback happens to be a
+// no-op-when-hidden wrapper:
 // performCare must still ATTEMPT exactly one call per arm, unconditionally — it has
 // no visibility state of its own to consult, and must never try to "help" by
 // skipping/deduping the call itself.
@@ -385,8 +326,8 @@ describe("★ performCare(): stays agnostic to view visibility — the hidden-ov
   it('★ BITES: resolve arm — even when showFeedback simulates a hidden-overlay no-op wrapper, performCare still ATTEMPTS exactly one call with "Cared!" — kills a performCare that tries to skip/dedup the call itself', async () => {
     // Simulates main.ts's real fix shape: `showFeedback: (msg) => { if (visible)
     // render(msg); }`. The WRAPPER may silently no-op when hidden (that is main.ts's
-    // job — see main.wiring.test.ts's W-CARE-SHOWFEEDBACK-VISIBLE-GUARD) — but
-    // performCare itself must still call the dependency exactly once, unconditionally.
+    // job) — but performCare itself must still call the dependency exactly once,
+    // unconditionally.
     // Reproduces the exact reachable failure from code review: click Care -> reducer
     // in flight -> the overlay gets force-hidden (KeyB/KeyE) -> the promise settles.
     let visible = true;

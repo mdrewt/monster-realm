@@ -1,16 +1,5 @@
 // ui/i18n/locale.test.ts — m24-s1 RED gating tests for BCP-47 locale negotiation and the RTL
 // primary-subtag table (I18N-11).
-//
-// SOURCE OF TRUTH:
-//   specs/monster-realm-v2/M24-internationalization.spec.md §2.7, §6 S1 (I18N-11).
-//   docs/adr/0256-i18n-module-total-catalog-resolver-cell-negative-compile.md D6.
-//   memory/projects/monster-realm-m24-s1-plan.md §2 locale.ts, §9 M7/M8.
-//
-// RED REASON: `client/src/ui/i18n/locale.ts` DOES NOT EXIST YET. The static import below fails
-// to resolve at collection, redding every test in this file until the specialist ships it.
-//
-// Do NOT edit these tests to match a buggy implementation — correct them from the spec/ADR/plan
-// only.
 
 import { describe, expect, it } from 'vitest';
 import { isRtl, negotiateLocale } from './locale';

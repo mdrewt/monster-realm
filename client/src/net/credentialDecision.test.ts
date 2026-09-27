@@ -1,4 +1,4 @@
-// net/credentialDecision.test.ts — G16 (M21b-2, ADR-0182 D13/D17).
+// net/credentialDecision.test.ts — G16.
 //
 // EARS COVERED: AUTH-45 (below-threshold transient ⇒ retry on the SAME backoff ladder,
 // no DbConnection built), AUTH-46 (previously-authenticated tab at/over the threshold ⇒
@@ -11,41 +11,9 @@
 // GATE: G16 — "real behaviour, not source-scan". This module is the one piece of the
 // M21b-2 credential path that is PURE (zero I/O, zero storage, zero imports), which is
 // exactly why the ADR put the branch table here instead of inline in connection.ts:
-// connection.ts is coverage-excluded (client/vite.config.ts:98) and provable only by
+// connection.ts is coverage-excluded and provable only by
 // source-scan, and a source scan structurally cannot catch `>` written where `>=` was
 // meant. This file is the only place that off-by-one is observable.
-//
-// RED REASON AT HEAD (8814416): `client/src/net/credentialDecision.ts` DOES NOT EXIST.
-// The import below fails to resolve and every test in this file reds on a MISSING
-// IMPLEMENTATION, not on a typo here. Verified by reading client/src/net/ this session:
-// the directory holds authToken/batch/buildInfo/connection/connectionConfig/devLog/
-// rowConvert/store/warpDetect/zoneSyncGuard and nothing else.
-//
-// THE CONTRACT THE IMPLEMENTER BUILDS (ADR-0182 D13 + the plan ADDENDUM §B, which pins
-// the table verbatim and supersedes any conflicting plan-body text):
-//
-//   export type RenewalOutcome =
-//     | { readonly kind: 'ok'; readonly token: string }
-//     | { readonly kind: 'no-session' }
-//     | { readonly kind: 'exchange-failed'; readonly reason: string }  // reason ALREADY
-//     | { readonly kind: 'transient-error' };                          // classifier-mapped
-//
-//   export type ConnectCredential =
-//     | { readonly kind: 'anon'; readonly token: string | undefined }
-//     | { readonly kind: 'account'; readonly token: string }
-//     | { readonly kind: 'retry' }
-//     | { readonly kind: 'sign-in-failed'; readonly reason: string }
-//     | { readonly kind: 'session-expired' }
-//     | { readonly kind: 'auth-service-unreachable' };
-//
-//   export const AUTH_SERVICE_TRANSIENT_THRESHOLD = 2;
-//
-//   export function decideConnectCredential(
-//     outcome: RenewalOutcome,
-//     everAuthenticated: boolean,
-//     consecutiveTransientErrors: number,   // ALREADY incremented by resolveCredential
-//     anonToken: string | undefined,
-//   ): ConnectCredential;
 //
 // `RenewalOutcome` is DECLARED HERE (not in oidc.ts) on purpose: the pure decision module
 // owns its own input alphabet, which keeps credentialDecision.ts importless and makes this
@@ -138,8 +106,8 @@ describe('AUTH_SERVICE_TRANSIENT_THRESHOLD (ADR-0182 D17)', () => {
     // forever; each extra rung is another ADR-0085 backoff rung of silence.
     //
     // DELIBERATELY NOT SHARED with authToken.ts's AUTH_REJECT_SUPPRESS_THRESHOLD, which
-    // also happens to be 2 today (authToken.ts:35). Same value, different meaning — a
-    // shared constant would couple two independent tuning decisions (ADR-0182 D17).
+    // also happens to be 2 today. Same value, different meaning — a
+    // shared constant would couple two independent tuning decisions.
     expect(AUTH_SERVICE_TRANSIENT_THRESHOLD).toBe(2);
   });
 });
@@ -481,7 +449,7 @@ describe('decideConnectCredential G16: totality property (fast-check)', () => {
   });
 
   it('★ BITES: never throws, for any argument combination including a negative or non-integer counter', () => {
-    // resolveCredential() calls this INSIDE attemptBuild's try (ADR-0182 D13), so a throw
+    // resolveCredential() calls this INSIDE attemptBuild's try, so a throw
     // here is caught — but it would then be indistinguishable from a Better Auth outage and
     // would climb the backoff ladder forever. Totality is cheaper than that failure mode.
     fc.assert(

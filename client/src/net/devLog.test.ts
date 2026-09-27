@@ -1,11 +1,4 @@
-// net/devLog.test.ts — RED gates for the `dev-observability` slice (ADR-0157).
-//
-// SOURCE OF TRUTH: specs/monster-realm-v2/M-postgate-dev-observability.spec.md EARS 1–4,
-// as designed in the authoritative plan §A1–A8 and §D.
-//
-// RED REASON: `client/src/net/devLog.ts` DOES NOT EXIST. Every test in this file fails at
-// module-resolution time ("Failed to resolve import ./devLog") until the implementer creates
-// it exporting exactly the API pinned below. That is a missing implementation, not a typo.
+// net/devLog.test.ts.
 //
 // API UNDER TEST (plan §A1, verbatim):
 //   type DevLogLevel = 'off' | 'send' | 'send-move'
@@ -27,12 +20,10 @@
 //           T-PROXY-CALLS, T-PROXY-THIS, T-PROXY-OWN-PROPS, T-PROXY-SINK-THROWS,
 //           T-PROXY-STABLE
 //   EARS-2: T-CFG-DEFAULT-OFF, T-CFG-REJECT, T-CFG-DEV-THROWS, T-CFG-PROD-DEGRADE,
-//           T-LOG-OFF-UNDEFINED, T-PROXY-IDENTITY   (+ E1 in evals/dev-observability-gating.eval.mjs)
+//           T-LOG-OFF-UNDEFINED, T-PROXY-IDENTITY
 //   EARS-3: T-CFG-NO-INBOUND, T-FILTER   (+ T-LOG-FILTER-WIRED, see NOTE below)
-//   EARS-4: E1 / T-NO-RING live in the eval (source-level firewall)
 //
-// POST-LANDING ADDITIONS (review round 2 — the implementation is green on everything above;
-// these gates encode defects the earlier suite could not see):
+// POST-LANDING ADDITIONS:
 //   * `T-PROXY-OWN-PROPS` (red-team Finding 1, reproduced against the real SDK): the SDK
 //     builds `reducers` as a plain `{}` (db_connection_impl.ts:376 — #makeDbView at :360
 //     uses Object.create(null), #makeReducers does not), so every Object.prototype member
@@ -42,7 +33,7 @@
 //     survives a re-tune of the source constant and silently splits the repo's one
 //     truncation rule in two).
 //
-// NOTE — ONE GATE ADDED BEYOND PLAN §D (tester judgement, recorded for the verifier):
+// NOTE — ONE GATE ADDED BEYOND PLAN §D:
 //   `T-LOG-FILTER-WIRED`. §D's T-FILTER only exercises `shouldLogReducer` directly, and
 //   T-LOG-EMITS only exercises a non-noisy reducer. An implementation whose `makeSendLogger`
 //   never CALLS `shouldLogReducer` passes every gate §D names — while `'send'` floods the
@@ -51,13 +42,10 @@
 //   gated here.
 
 // ---------------------------------------------------------------------------
-// 11r-h ADDITIONS (ADR-0172, plan §R5.2/§R5.6) — RED WHEN WRITTEN.
+// 11r-h ADDITIONS (plan §R5.2/§R5.6).
 //
 // The movement-rejection diagnostics slice adds an INBOUND-fate formatter and a
-// pure, generic rate-limit transition to devLog.ts. Neither exists yet, so this
-// whole FILE fails to link ("does not provide an export named 'formatFateLine'")
-// until the implementer lands them — a missing implementation, not a typo. The
-// pre-existing gates above go red with it and turn green together.
+// pure, generic rate-limit transition to devLog.ts.
 //
 // API UNDER TEST (plan §R5.6 + the accepted simplify deltas — `type`, not
 // `interface`; no `emit.emitted`; no exported ReducerFate):
@@ -69,7 +57,7 @@
 //   type RateLimitPolicy = { minGapMs: number; cap: number }
 //   rateLimitTick(state, nowMs, policy): { state: RateLimitState; emit: { pending: number } | undefined }
 //
-// GATE MAP (11r-h):
+// GATE MAP:
 //   E5.4/D2: T-FATE-NOT-FILTERED, T-FATE-SHAPE
 //   E5.5:    T-FATE-CAP, T-FATE-TOTAL
 //   E5.6:    T-FATE-OFF-UNDEFINED
@@ -87,7 +75,7 @@ import { describe, expect, it } from 'vitest';
 // the repo keeps ONE truncation rule. Importing the source constant is what makes the
 // mirror enforceable instead of a comment. (errorRing.ts has zero imports and no DOM
 // access, so this stays a node-only unit test. This import lives in the TEST file only —
-// devLog.ts itself must keep ZERO runtime imports, gated by the E1 eval.)
+// devLog.ts itself must keep ZERO runtime imports.)
 import { ERROR_MSG_MAX_LEN } from '../ui/errorRing';
 import {
   type DevLogLevel,
@@ -875,7 +863,7 @@ describe('devLog Proxy (EARS-1): wrapReducerLogging logs and forwards', () => {
 });
 
 // ===========================================================================
-// 11r-h — the reducer FATE line (ADR-0172 D2; EARS E5.4/E5.5/E5.6)
+// The reducer FATE line (EARS E5.4/E5.5/E5.6)
 //
 // A "fate" is the settled outcome of an outbound call. This slice needs exactly one:
 // `enqueueMove` REJECTED. The line is INBOUND-facing (`<-`), mirroring formatSendLine's
@@ -1092,7 +1080,7 @@ describe('devLog fate sink (E5.4/E5.6/ADR-0172 D2): makeFateLogger', () => {
 });
 
 // ===========================================================================
-// 11r-h — the pure breadcrumb rate limit (ADR-0172 D1; EARS E5.3)
+// The pure breadcrumb rate limit (EARS E5.3)
 //
 // Generic arithmetic, no ring/bundle vocabulary and no clock: main.ts owns the ONE
 // mutable binding and reads performance.now(); every decision is made here, where it
@@ -1181,7 +1169,7 @@ describe('devLog rate limit (E5.3/ADR-0172 D1): rateLimitTick', () => {
   it('T-THROTTLE-CAP: emitted === cap - 1 emits; emitted === cap suppresses forever (even on a backwards clock)', () => {
     // WRONG IMPL KILLED (1): dropping the `emitted < cap` term. A long session of rejections
     // then owns the whole 64-slot ring; the cap is what guarantees >= 48 slots stay available
-    // for genuine crash records (ADR-0172 D1).
+    // for genuine crash records.
     // WRONG IMPL KILLED (2): an off-by-one cap (`emitted > cap`, or `>=` on cap - 1) — the
     // last legitimate breadcrumb is lost, or one extra lands.
     const atCapMinusOne: RateLimitState = { lastMs: 0, emitted: POLICY.cap - 1, pending: 0 };

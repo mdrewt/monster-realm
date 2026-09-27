@@ -286,9 +286,7 @@ function stubInertRaf(): void {
 }
 
 // --- the suite ---------------------------------------------------------------------------
-// `describe(name, { sequential: true }, fn)` — NOT `describe.sequential(...)`: the literal
-// `describe(` token is required by motionPreference.test.ts's S7T-SCAN tripwire, and happy-dom's
-// document/window/navigator are per-FILE, so sibling tests in this file must not run concurrently.
+// `describe(name, { sequential: true }, fn)`.
 describe('main.ts boot-time locale negotiation wiring (m24-s6, I18N-22)', {
   sequential: true,
 }, () => {

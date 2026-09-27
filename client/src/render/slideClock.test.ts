@@ -1,8 +1,8 @@
-// render/slideClock.ts behaviour suite (M4b, ADR-0013) — vitest.
+// render/slideClock.ts behaviour suite — vitest.
 // SOURCE OF TRUTH: M4-frontend.spec.md §3 "Rendering" — own character slides on a
 // SELF-OWNED local clock keyed to target-tile changes; it SHALL NOT read
 // move_started_at; "a no-divergence reconcile SHALL NOT restart the slide (no
-// stutter)"; snap on the predictor's large-gap signal. Proof-of-teeth (ADR-0010):
+// stutter)"; snap on the predictor's large-gap signal. Proof-of-teeth:
 // "a renderer that reads move_started_at reintroduces stutter and fails the
 // decoupling test".
 import { describe, expect, it } from 'vitest';

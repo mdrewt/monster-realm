@@ -221,10 +221,10 @@ const asyncNoop = async (): Promise<void> => {};
  *   * `claimView`, which has both and is body-appended by its own `ensureElement` — `show()` is
  *     used, which is the door `main.ts` calls.
  *
- * WHICH DOOR, AND WHERE THAT IS NOT THE PRODUCTION ONE (disclosed by rb-18 rather than left to be
- * discovered). Two entries drive a door the shipped caller does not, and neither is a false pass —
- * both views derive `visible` LIVE from the DOM rather than from a latch field, so the alternative
- * door is a behaviourally equivalent input to the `wasVisible` guard these teeth exercise:
+ * WHICH DOOR, AND WHERE THAT IS NOT THE PRODUCTION ONE. Two entries drive a door the shipped
+ * caller does not, and neither is a false pass — both views derive `visible` LIVE from the DOM
+ * rather than from a latch field, so the alternative door is a behaviourally equivalent input to
+ * the `wasVisible` guard these teeth exercise:
  *   * `claimView`: `main.ts`'s `openClaim()` (`:454-462`) runs `applyClaim` -> `renderClaim()`
  *     BEFORE `show()`, and `applyClaim` moves the phase off `'hidden'`, so `render()` has already
  *     flipped `wasVisible` by the time `show()` runs. `show()`'s guard (`claimView.ts:118`) is
@@ -236,8 +236,6 @@ const asyncNoop = async (): Promise<void> => {};
  *     `render(null)`, whereas `main.ts:366-367` closes both with `hide()`. The mixed-door sequence
  *     (render-open -> hide-close -> render-reopen) is covered by each view's own
  *     `S3-<view>-REOPEN-AFTER-HIDE`.
- * Changing either opener would re-point five PRE-EXISTING per-id tests as well, which is a
- * decision of its own rather than a line rb-18 should quietly move.
  */
 const OPENERS: Readonly<Record<OverlayId, () => Opened>> = {
   battleView: () => {
@@ -406,7 +404,7 @@ const OPENERS: Readonly<Record<OverlayId, () => Opened>> = {
     view.show();
     return { root: capturedRoot('helpView'), close: () => view.hide(), reopen: () => view.show() };
   },
-  // rb-52: the privacy overlay's shell is JS-created (ADR-0231 A2-D2), like claimView's.
+  // The privacy overlay's shell is JS-created (ADR-0231 A2-D2), like claimView's.
   privacyView: () => {
     const view = new PrivacyView({
       onDeleteRequested: noop,
@@ -507,7 +505,7 @@ afterEach(async () => {
   document.body.replaceChildren();
 });
 
-// RB37-SEQUENTIAL-RATIONALE (slice rb-37, residual R-rb18-CONCURRENT). This suite is pinned
+// RB37-SEQUENTIAL-RATIONALE (residual R-rb18-CONCURRENT). This suite is pinned
 // SERIAL, and the annotation below is load-bearing rather than stylistic. DO NOT "clean it up".
 //
 // WHAT WAS MEASURED. At origin/master@318eb70, before this annotation existed,
@@ -556,7 +554,7 @@ describe.sequential('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wir
       17,
     );
 
-    // rb-18: SHAPE totality, not just KEY totality. `Opened.reopen` is what makes the repeat and
+    // SHAPE totality, not just KEY totality. `Opened.reopen` is what makes the repeat and
     // reopen-after-close teeth possible, and since this file is not typechecked in CI (see the
     // header correction) a `reopen`-less opener is a RUNTIME question. Asserted here, over every
     // id, so a seventeenth overlay cannot ship an opener that satisfies the key set while handing
@@ -912,7 +910,7 @@ describe.sequential('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wir
         ).toBe(1);
 
         // REMOVAL is the anti-vacuity partner of the open-side value oracle: role and aria-modal
-        // are free from the static markup, but only closeOverlayA11y (overlayA11y.ts:142-144) can
+        // are free from the static markup, but only closeOverlayA11y can
         // take them away.
         expect(root.getAttribute('aria-label'), `${id}: aria-label must be stripped`).toBeNull();
         expect(root.getAttribute('aria-modal'), `${id}: aria-modal must be stripped`).toBeNull();

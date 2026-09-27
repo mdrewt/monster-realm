@@ -1,19 +1,7 @@
-// ui/i18n/catalogShape.test.ts — the §5.4 catalog-shape gate: SHAPE-01..06 (m24-s6, I18N-24 /
+// ui/i18n/catalogShape.test.ts — the §5.4 catalog-shape gate: SHAPE-01..06 (I18N-24 /
 // I18N-25 / I18N-33, ADR-0262 pending; grammar per ADR-0256 D5).
 //
-// SOURCE OF TRUTH: specs/monster-realm-v2/M24-internationalization.spec.md §5.4
-// [I18N-SHAPE-01..06], §6 I18N-24/I18N-25/I18N-33; docs/adr/0256 D5 (SHAPE-03 grammar
-// correction); docs/adr/0262 (pending, m24-s6) records the vehicle for this file.
-//
-// WHY THIS IS A CO-LOCATED TEST, NOT AN EVAL (ADR-0224/ADR-0257): the spec's own vocabulary
-// implies a standalone `evals/i18n-catalog-shape.eval.mjs`; ADR-0224 (2026-09-01) retired new
-// `evals/*.eval.mjs` files, so the equivalent invariant ships as this ordinary vitest suite,
-// discovered by vitest's `src/**/*.test.ts` include and run by `just ci`'s client stage — same
-// shape as ui/i18n-no-html-sink.test.ts (S0) and ui/i18n/catalog.test.ts (S1).
-//
-// RED STATE AT HEAD: every LIVE assertion below is GREEN-ON-ARRIVAL — this gate exists to keep
-// the real tree honest going forward (S7's catalog.fr.ts in particular), not to red anything
-// m24-s6 ships. Each BAD/GOOD/vacuity FIXTURE is asserted EXACTLY ONCE as the proof-of-teeth: no
+// Each BAD/GOOD/vacuity FIXTURE is asserted EXACTLY ONCE as the proof-of-teeth: no
 // gate-auditing-the-gate, no fixture reused across two assertions to inflate apparent coverage.
 //
 // ZERO RegExp anywhere in this file (ADR-0055 — a regex literal also blinds the single-owner
@@ -484,12 +472,12 @@ describe('catalogShape (M24 S6, ADR-0262 §5.4)', () => {
   });
 
   // -------------------------------------------------------------------------
-  // SHAPE-03 — key grammar (ADR-0256 D5).
+  // SHAPE-03 — key grammar.
   // -------------------------------------------------------------------------
 
   it('m24s6 SHAPE-03: ADR-0256 D5 — every catalog key matches the corrected grammar', () => {
     // Belt for tsc's suspenders (MessageId is a compile-time literal union already); the
-    // fixtures below are the real teeth (red-team correction).
+    // fixtures below are the real teeth.
     discoverAndVerifyCatalogs();
     for (const locale of Object.keys(CATALOGS)) {
       const catalog: Readonly<Record<string, unknown>> = CATALOGS[locale];
@@ -826,7 +814,7 @@ function isKeySegmentTailChar(ch: string): boolean {
   return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
 }
 
-/** ADR-0256 D5: dot-separated segments, >=2, each `[a-z][a-zA-Z0-9]*` — corrects the spec's own
+/** dot-separated segments, >=2, each `[a-z][a-zA-Z0-9]*` — corrects the spec's own
  *  `[a-z0-9]+` (which rejects `chrome.helpHint` / `a11y.overlay.boxView.title`). */
 function isValidKeyGrammar(key: string): boolean {
   const segments = key.split('.');
@@ -1069,7 +1057,7 @@ interface TSignatureCheck {
  *  compare, so a trailing `, ...rest: never[]` cannot ride along), return annotation starting
  *  with `: string` right after the parameter list, zero `export function t<`, zero
  *  `export const t`, zero `export { t` / `export {t` re-export forms. Deliberately does NOT use
- *  `t.length` (a rest/default param would not move it either way — red-team correction). */
+ *  `t.length` (a rest/default param would not move it either way). */
 function checkTSignature(src: string): TSignatureCheck {
   const decls = findTDeclarations(src);
   const genericCount = countWordBoundaryOccurrences(src, 'export function t<');

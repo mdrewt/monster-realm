@@ -1,15 +1,15 @@
-// observability/frameWindow.test.ts — m20c (ADR-0180 body amendment), OBS-25 + T-25c/T-25d/T-P3.
+// observability/frameWindow.test.ts — OBS-25 + T-25c/T-25d/T-P3.
 //
 // SOURCE OF TRUTH: EARS OBS-25 (fps SLO, p50 ≥ 55, sourced from `mr_client_fps_bucket`) + AM14
 // (anomalous windows are DISCARDED) + the plan's per-frame cost budget (§4: "3 number updates,
 // 1 compare; no alloc, no export, no attr hashing").
 //
 // WHAT THIS MODULE IS: a 1-second frame accumulator with an INJECTED clock. main.ts already
-// computes `const now = performance.now()` once per rAF frame (main.ts:2415) and hands it in;
+// computes `const now = performance.now()` once per rAF frame and hands it in;
 // this module never reads a clock, which is what makes it unit-testable in the NODE vitest
 // environment and what makes the tests below deterministic without fake timers.
 //
-// THE API THIS FILE FIXES (the implementer must match it exactly):
+// THE API THIS FILE FIXES:
 //   createFrameWindow(nowMs): FrameWindowState        — a MUTABLE accumulator, seeded at nowMs
 //   frameTick(state, nowMs): FrameTickResult          — { state, sample: FrameSample | undefined }
 //   FrameSample = { fps, maxFrameMs }
@@ -25,8 +25,6 @@
 //                                 rAF; the "1 frame in 45 seconds" window it produces on return
 //                                 is a tab-suspend artifact, and folding it into the SLO would
 //                                 make the fps p50 a function of how often players alt-tab.
-//
-// RED REASON: `client/src/observability/frameWindow.ts` does not exist yet.
 
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
@@ -123,7 +121,7 @@ describe('frameWindow (T-25c): one sample per elapsed second, fps = frames × 10
   });
 
   it('T-25c-measured: a window that closes LATE divides by the measured elapsed, not by 1000', () => {
-    // RED-TEAM X6. Every other fixture in this file lands on an exact 1000ms boundary, where
+    // Every other fixture in this file lands on an exact 1000ms boundary, where
     // `frames × 1000 / elapsed` and `frames` are numerically identical — so the whole
     // nominal-vs-measured distinction was carried by the property test alone. This fixture
     // separates them by 5 fps, right on the OBS-25 threshold.

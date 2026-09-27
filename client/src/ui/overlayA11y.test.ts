@@ -175,8 +175,8 @@ describe('openOverlayA11y/closeOverlayA11y — ARIA attribute writes and focus-t
     // WRONG IMPL KILLED: a literal (e.g. always role="dialog" aria-label="Overlay") would pass
     // for one id and fail the other fifteen once parameterised over the full manifest.
     //
-    // PARTIAL TOOTH NOTICE (red-team round 2, MEASURED, honestly recorded — title/assertions
-    // unchanged): the `role` assertion below is currently a PARTIAL tooth. Every OVERLAY_A11Y
+    // PARTIAL TOOTH NOTICE:
+    // the `role` assertion below is currently a PARTIAL tooth. Every OVERLAY_A11Y
     // entry today has role: 'dialog', so this loop cannot distinguish
     // `root.setAttribute('role', meta.role)` from the hardcoded `root.setAttribute('role',
     // 'dialog')` — both produce byte-identical output for all seventeen ids. See the
@@ -354,7 +354,7 @@ describe('closeOverlayA11y — return-focus map, detached-target fallback, and n
 });
 
 // ---------------------------------------------------------------------------
-// TRIPWIRE — OVERLAY_A11Y role variance (RED-TEAM ROUND 2, UNTAGGED)
+// TRIPWIRE — OVERLAY_A11Y role variance
 // ---------------------------------------------------------------------------
 
 describe('OVERLAY_A11Y — role tripwire (deliberate trap door, not a regression guard)', () => {
@@ -363,9 +363,8 @@ describe('OVERLAY_A11Y — role tripwire (deliberate trap door, not a regression
     // all seventeen OVERLAY_A11Y entries use role: 'dialog'. Because the manifest has zero variance
     // on this field today, S1-ARIA-ALL-17's 17-way parameterised role assertion cannot distinguish
     // `root.setAttribute('role', meta.role)` from a hardcoded `root.setAttribute('role',
-    // 'dialog')` (red-team round 2, MEASURED — both keep S1-ARIA-ALL-17 green). There is no public
-    // API to inject a synthetic role into OVERLAY_A11Y from a test, so this cannot be turned into
-    // a real per-id assertion today.
+    // 'dialog')`. There is no public API to inject a synthetic role into OVERLAY_A11Y from a test,
+    // so this cannot be turned into a real per-id assertion today.
     //
     // The day some overlay legitimately earns role: 'alertdialog' (per the A11yMeta doc comment,
     // "an id earns it only when its sole purpose is a blocking urgent message"), THIS test will
@@ -383,22 +382,8 @@ describe('OVERLAY_A11Y — role tripwire (deliberate trap door, not a regression
 });
 
 // ---------------------------------------------------------------------------
-// Live-region custody — adoption at open time (LRC-ADOPT, X1; rb-11, residual R-m23-s2-X5)
+// Live-region custody — adoption at open time (LRC-ADOPT, X1, residual R-m23-s2-X5)
 // ---------------------------------------------------------------------------
-//
-// SOURCE OF TRUTH FOR THIS BLOCK AND THE TWO BELOW: memory/projects/monster-realm-rb-11-plan.md
-// (reviewer-lens amendments — the seam is `adoptLiveRegion(root): () => void`, a release CLOSURE
-// mirroring `focusTrap.ts:136`'s `installTrap(root): () => void`, NOT an adopt/release pair);
-// memory/projects/gates/rb-11.gates.md X1/X2/X3.
-//
-// RED REASON: `ui/overlayA11y.ts` does not yet call `adoptLiveRegion`/hold a `releaseLive` handle,
-// and `ui/liveRegion.ts` does not yet export `adoptLiveRegion` at all. Every test below fails
-// against the CURRENT tree — either the live region never moves at all (the `parentElement`/
-// `lastElementChild` assertions fail outright), or, once a first cut of `adoptLiveRegion` lands,
-// by whatever that cut gets wrong; see the "KILLS" note on each assertion for the specific wrong
-// implementation (W1..W11, per the plan/ledger) it is aimed at.
-//
-// Do NOT edit these tests to match a buggy implementation — correct them from the plan only.
 
 describe('openOverlayA11y — live-region custody: adoption into the open root (LRC-ADOPT, X1)', () => {
   it('LRC-ADOPT BITES: opening each of the 17 overlays makes the SAME live-region node a direct LAST child of root, before the call returns — never a clone, never a second region', () => {
@@ -604,20 +589,10 @@ describe('openOverlayA11y/closeOverlayA11y — live-region custody: no-op edges 
 });
 
 // ---------------------------------------------------------------------------
-// rb-89 — R-17r-e-VIEWHDR: four view files' "NO CLOSE-BEFORE-OPEN" comment
+// R-17r-e-VIEWHDR: four view files' "NO CLOSE-BEFORE-OPEN" comment
 // paragraphs must agree with overlayA11y.ts's now-RETRACTED contract (a),
 // not narrate the pre-retraction claim in the present tense.
 // ---------------------------------------------------------------------------
-//
-// SOURCE OF TRUTH: memory/projects/monster-realm-rb-89-plan.md §B;
-//   overlayA11y.ts:51-54 (contract (a), A12 — RETRACTED);
-//   battleView.ts:29-33, boxView.ts:29-33, raisingView.ts:30-34, evolutionView.ts:40-44.
-//
-// RED REASON: the four view files still carry the byte-identical, PRE-RETRACTION paragraph
-// ("contract (a) says the four ... share ONE root ... must therefore close-before-open. That is
-// a misstatement..."). The implementer rewrites those 5 lines (5 in / 5 out) to agree with (a) as
-// it reads TODAY. Do NOT edit these tests to match the current stale paragraphs — correct them
-// from the plan only.
 
 function readUiSource(fileName: string): string {
   const filePath = path.join(path.dirname(fileURLToPath(import.meta.url)), fileName);

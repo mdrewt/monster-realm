@@ -7,7 +7,7 @@ import {
   test,
 } from '@playwright/test';
 
-// 13r-e — monster_pub need-to-know privacy, end to end (ADR-0194)
+// monster_pub need-to-know privacy, end to end
 //
 // WHAT THIS PROVES THAT NOTHING ELSE CAN. Every other gate in this slice is a
 // SOURCE SCAN or a unit test: they prove the table lost `public`, that the view's
@@ -24,7 +24,7 @@ import {
 // tabs in one browser (or one context) would share ONE identity — and this whole
 // spec is about what identity A can see of identity B.
 //
-// POSITIVE-ANCHORED, NEVER NEGATIVE-ONLY (ADR-0087:88). "A cannot see B's
+// POSITIVE-ANCHORED, NEVER NEGATIVE-ONLY. "A cannot see B's
 // monsters" is trivially true of a client that loaded NOTHING — which is exactly
 // the blank-world failure mode a wrong subscription produces (a subscription
 // naming a nonexistent view errors the whole batch and `onApplied` never fires).
@@ -36,15 +36,14 @@ import {
 //
 // TWO SESSIONS, DELIBERATELY. The PvP flow and the trade flow cannot share one
 // pair of browsers: `confirm_trade` clears `party_slot` on every transferred
-// monster (server-module/src/trading.rs:650,661), so after a trade the receiver's
-// new monster sits in the BOX and the giver's party is empty — neither side can
-// then be challenged. And the battle/trade interlock (ADR-0112) forbids trading
-// while a battle is ongoing. Rather than sequence a KO (non-deterministic) or
-// re-seat party slots through the box UI (a lot of unrelated machinery), each
-// flow gets its own pair of fresh browsers, i.e. fresh identities with fresh
-// starters in party slot 0. Session 1's players disconnect in its afterAll, which
-// settles its battle by forfeit and deletes both player rows, before session 2
-// launches.
+// monster, so after a trade the receiver's new monster sits in the BOX and the
+// giver's party is empty — neither side can then be challenged. And the battle/trade
+// interlock forbids trading while a battle is ongoing. Rather than sequence a KO
+// (non-deterministic) or re-seat party slots through the box UI (a lot of unrelated
+// machinery), each flow gets its own pair of fresh browsers, i.e. fresh identities
+// with fresh starters in party slot 0. Session 1's players disconnect in its
+// afterAll, which settles its battle by forfeit and deletes both player rows, before
+// session 2 launches.
 //
 // FILE-ORDERING AUDIT (the pvp-side-b.spec.ts idiom — recorded so a future
 // reviewer never re-derives it): playwright.config.ts documents single-worker,
@@ -67,7 +66,7 @@ import {
 // over-read. EARS 3 has two halves: (i) revelation CEASES when an engagement
 // ends, and (ii) the client converges on the new row set live. Half (i) is
 // VACUOUSLY satisfied in this slice and is untestable by construction:
-// `engaged_monster_pub` is DEFERRED (ADR-0194 D3), so the engaged delivery set is
+// `engaged_monster_pub` is DEFERRED, so the engaged delivery set is
 // EMPTY — nothing is ever revealed by engagement, therefore nothing has to cease.
 // The battle test above is the evidence FOR that emptiness (a fully rendered
 // overlay with zero foreign rows), not a test of a cessation path that does not
@@ -81,9 +80,9 @@ import {
 // here (the pvp-side-b.spec.ts convention). Literal regexes and string methods only.
 
 // ---------------------------------------------------------------------------
-// GameSnap: the DEV introspection bundle from main.ts's snapshot() (main.ts:1848).
-// `monsterCount` (main.ts:1871) is the WHOLE store map's size; `ownMonsters`
-// (main.ts:1872) is the caller-filtered projection. The gap between those two
+// GameSnap: the DEV introspection bundle from main.ts's snapshot().
+// `monsterCount` is the WHOLE store map's size; `ownMonsters`
+// is the caller-filtered projection. The gap between those two
 // numbers IS the leak this slice closes.
 // ---------------------------------------------------------------------------
 interface GameSnap {
@@ -165,10 +164,6 @@ async function monsterView(p: Page): Promise<MonsterView> {
  * negative-only privacy check trivially) and holds NOTHING BUT the caller's own
  * rows (`monsterCount === ownMonsters.length`).
  *
- * RED ON MASTER: `monsterCount` counts every player's rows, because
- * `'SELECT * FROM monster_pub'` is an unfiltered subscription to a PUBLIC table.
- * With two clients joined, A's monsterCount is 2 while A's ownMonsters.length is
- * 1 — this assertion is the RED proof of the whole slice.
  */
 function expectOnlyOwnMonsters(view: MonsterView, label: string): void {
   expect(
@@ -225,7 +220,7 @@ function expectNoForeignIds(mine: MonsterView, theirs: MonsterView, label: strin
 
 /**
  * Renames `page`'s own player through the REAL production UI (Escape -> KeyN ->
- * rename-input -> rename-submit). Copied from pvp-side-b.spec.ts:205 (PTC1B-9).
+ * rename-input -> rename-submit). Copied from pvp-side-b.spec.ts:205.
  * The distinct label is what lets the battle test assert WHOSE card the opponent
  * card is, and it leaves NO overlay open on exit (the rename overlay does not
  * auto-close, and both the incoming-challenge auto-show and KeyP need
@@ -257,7 +252,7 @@ async function renamePlayer(page: Page, name: string): Promise<void> {
 }
 
 // ===========================================================================
-// SESSION 1 — join + the PvP battle overlay (EARS 13r-e-1, 13r-e-2a).
+// SESSION 1 — join + the PvP battle overlay (EARS 13r-e-1).
 // ===========================================================================
 test.describe
   .serial('13r-e — monster_pub privacy: rosters + the battle overlay (ADR-0194)', () => {
@@ -300,9 +295,6 @@ test.describe
     // -------------------------------------------------------------------------
     // EARS 13r-e-1 — the whole slice, in one assertion pair, symmetric.
     //
-    // RED ON MASTER: both clients subscribe `'SELECT * FROM monster_pub'`
-    // unfiltered against a PUBLIC table, so each one's store holds BOTH starters:
-    // monsterCount=2, ownMonsters.length=1.
     // -------------------------------------------------------------------------
     test('EARS 13r-e-1: each client receives its OWN monster rows and NONE of the other player`s', async () => {
       test.setTimeout(60_000);
@@ -343,9 +335,9 @@ test.describe
     // from `battle.state`. This test is the evidence for that claim. If the
     // overlay were secretly reading monster_pub rows, the opponent card would
     // degrade the moment those rows stopped arriving — a `Unknown (#<id>)`
-    // species name (client/src/ui/battleModel.ts:190) or missing HP numbers —
-    // WHILE `monsterCount === ownMonsters.length` holds. Asserting both at the
-    // same instant is what makes the deferral honest rather than hopeful.
+    // species name or missing HP numbers — WHILE `monsterCount ===
+    // ownMonsters.length` holds. Asserting both at the same instant is what
+    // makes the deferral honest rather than hopeful.
     // -------------------------------------------------------------------------
     test('EARS 13r-e-2: the PvP battle overlay renders FULLY while each client holds zero other-player monster rows', async () => {
       test.setTimeout(120_000);
@@ -403,8 +395,7 @@ test.describe
       });
 
       // --- the overlay renders FULLY, on BOTH sides ---------------------------
-      // The opponent card header is `${opponentName}: ${speciesName}`
-      // (battleView.ts:170,209).
+      // The opponent card header is `${opponentName}: ${speciesName}`.
       //
       // WHAT THESE CLAUSES DO AND DO NOT PROVE (stated precisely, because the
       // obvious over-claim is tempting): they prove the overlay RENDERED — a real
@@ -413,8 +404,7 @@ test.describe
       // battleModel resolves the name from `speciesMap` (the PUBLIC species_row
       // table) keyed by the speciesId carried in `battle.state`, so it never had a
       // monster_pub dependency to lose. `Unknown (#<id>)` is battleModel's
-      // species-lookup fallback (client/src/ui/battleModel.ts:190), not a
-      // monster_pub sentinel.
+      // species-lookup fallback, not a monster_pub sentinel.
       //
       // The load-bearing pairing is what follows the loop: a FULLY rendered
       // overlay AT THE SAME INSTANT as `monsterCount === ownMonsters.length`. That
@@ -472,7 +462,7 @@ test.describe
 
 // ===========================================================================
 // SESSION 2 — the trade window + a live ownership transfer
-// (EARS 13r-e-2b, 13r-e-3). Fresh browsers: see the two-sessions rationale in
+// (EARS 13r-e-2b). Fresh browsers: see the two-sessions rationale in
 // the file header (confirm_trade clears party_slot, and the ADR-0112 interlock
 // forbids trading during a battle).
 // ===========================================================================
@@ -612,11 +602,11 @@ test.describe
       // privacy regime, at the same instant as the monsterCount assertion below.
       // It is NOT a proof of non-dependence: tradeModel resolves the name from
       // `speciesMap` (the PUBLIC species_row table) keyed by the speciesId carried
-      // in the offer's MonsterCard (client/src/ui/tradeModel.ts:119), so it never
-      // had a monster_pub dependency to lose either. `Unknown (#N)` is that
-      // lookup's fallback, not a monster_pub sentinel. The pairing — full render
-      // WITH an empty foreign-row set — is the evidence for ADR-0194 D3's
-      // deferral; the static half is owned by the store-accessor deletion test.
+      // in the offer's MonsterCard, so it never had a monster_pub dependency to
+      // lose either. `Unknown (#N)` is that lookup's fallback, not a monster_pub
+      // sentinel. The pairing — full render WITH an empty foreign-row set — is the
+      // evidence for ADR-0194 D3's deferral; the static half is owned by the
+      // store-accessor deletion test.
       for (const [page, label] of [
         [pageA, 'client A'],
         [pageB, 'client B'],

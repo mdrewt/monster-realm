@@ -8,7 +8,7 @@ import {
   test,
 } from '@playwright/test';
 
-// m17c — ranked PvP forfeit e2e (RL-18, ADR-0119)
+// Ranked PvP forfeit e2e (RL-18)
 //
 // TWO-CONTEXT DESIGN
 // ==================
@@ -28,7 +28,7 @@ import {
 //
 // SERVER-TRUTH SQL ASSERTIONS (AM-7)
 // ===================================
-// __game() has no profile field (m17b's job; client/src off-limits; no __mrPvp hook).
+// __game() has no profile field.
 // Rating assertions read `spacetime sql` via execSync, reusing global-setup.ts env
 // pattern. Identity normalization: both __game().identity and the SQL output identity
 // column are normalized to lowercase + '0x' prefix stripped before comparison.
@@ -45,7 +45,7 @@ import {
 // ==================
 // winner rating = 1000 + Δ, wins = 1, losses = 0
 // loser  rating = 1000 − Δ, wins = 0, losses = 1
-// sum of both ratings === 2000 (invariant, ADR-0119 D2)
+// sum of both ratings === 2000 (invariant)
 // Δ ∈ [1, 31] (never hardcode K/2 = 16; RL-3 bounds only)
 //
 // EARS CRITERIA COVERED
@@ -55,12 +55,6 @@ import {
 //   RL-5  — rating applied exactly once (observable via wins===1 on winner)
 //   RL-2  — profile rows persist past disconnect (rows exist after B closes)
 //   RL-11 — rating sum conservation (winner_rating + loser_rating === 2000)
-//
-// RED UNTIL m17a IS MERGED
-// ========================
-// If m17a has not merged, the ranked battle setup (challenge_pvp / accept_challenge
-// reducers) will be missing or the profile table will not exist → the challenge
-// button poll times out or the sql query returns empty → test fails RED.
 
 // ---------------------------------------------------------------------------
 // GameSnap interface: matches the snapshot() fn in client/src/main.ts line ~932.
@@ -257,10 +251,6 @@ test.describe
     //   - A wrong-winner path (B gets wins=1 instead of A)
     //   - A non-zero-sum path (winner gain ≠ loser loss → sum ≠ 2000)
     //
-    // RED UNTIL m17a MERGED:
-    //   If challenge_pvp / accept_challenge reducers do not exist, the challenge
-    //   button never appears → 15s poll times out → test fails RED.
-    //   If profile table does not exist, sql returns empty → hard-fail.
     // -------------------------------------------------------------------------
     test('ranked forfeit flow: challenge → accept → B-disconnect → A wins; zero-sum profile assertion (RL-18)', async () => {
       test.setTimeout(120_000);
@@ -326,8 +316,8 @@ test.describe
       await pageB.click('[data-testid="pvp-accept-btn"]');
 
       // Step 6: assert battle live on A's page (AM-2).
-      // __game().ongoingBattle is non-null for the player_identity (side A). As of ADR-0167
-      // (11r-b), store.ongoingBattle()/latestPlayerBattle() are EITHER-role — B (the
+      // __game().ongoingBattle is non-null for the player_identity (side A). As of ADR-0167,
+      // store.ongoingBattle()/latestPlayerBattle() are EITHER-role — B (the
       // accepter, opponent_identity) now gets a real battle view too, proven end-to-end by
       // client/e2e/pvp-side-b.spec.ts. This spec still doesn't assert B's ongoingBattle here
       // only because it closes browserB immediately after accept (forfeit-via-disconnect is
@@ -488,7 +478,7 @@ test.describe
           `Raw sql output: ${sqlOutput}`,
       ).toBe(loserLoss);
 
-      // Rating sum invariant: winner_rating + loser_rating === 2000 (ADR-0119 D2).
+      // Rating sum invariant: winner_rating + loser_rating === 2000.
       // WHAT THIS KILLS: a partial-write path where only one row is updated,
       // or a rounding error that breaks the zero-sum contract.
       const ratingSum = winnerRow.rating + loserRow.rating;

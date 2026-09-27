@@ -8,21 +8,16 @@ import {
   test,
 } from '@playwright/test';
 
-// 14r-b — trading reducer NEGATIVE-PATH suite (ADR-0184).
+// Trading reducer NEGATIVE-PATH suite.
 //
-// AUTHORED TEST-FIRST. Precisely: the GUARDS under test already shipped (m15c / m16.5f,
-// ADR-0106 / ADR-0117) — "test-first" refers to THIS slice's teeth, not to the guards'
-// history. Every assertion below was derived by reading trading.rs and game-core
-// rules.rs, before running anything, and the orchestrator proves the teeth by inverting
-// one guard at a time in trading.rs (proof-of-teeth register B1-B11) and checking that
-// the named test goes RED. No assertion in this file may ever be relaxed to match a
+// No assertion in this file may ever be relaxed to match a
 // buggy implementation — a wrong assertion is re-derived FROM the reducer source, never
 // from the observed behaviour.
 //
 // WHY THE FILE NAME IS `trade-zz-negative.spec.ts` (LOAD-BEARING)
 // ==============================================================
 // Playwright runs spec files in alphabetical order under `workers: 1` against ONE shared
-// published database (playwright.config.ts:22-31), so file name IS run order.
+// published database, so file name IS run order.
 //   - `trade-propose.spec.ts` reads `allTradeOffers()[0]` GLOBALLY (:288/:307/:321) — an
 //     offer left behind by another file lands in its `[0]` slot and corrupts it. `zz`
 //     sorts after `propose`, so this file runs AFTER trade-propose and can never feed it
@@ -97,14 +92,10 @@ import {
 //   P3 currency exact boundary     — the quest_001 50-gold faucet costs 4-6 min and has
 //      a flake history; the `>` vs `>=` mutants at :330/:355/:287/:304 therefore survive
 //      this suite by construction.
-// A parked-test marker here would arm the spec-gap-revival.eval.mjs FILE-LEVEL tripwires:
-// they scan client/e2e/*.spec.ts for the marker token co-located with a blocker token, so
-// even a marker in a COMMENT counts. This file therefore contains no such marker at all,
-// and parks live in the ADR instead.
 //
 // SEMGREP / PROJECT BANS OBSERVED IN THIS FILE: no dynamic `new RegExp`, no URL schemes
 // anywhere including in comments (Semgrep matches comment text — say "the local server"),
-// no focused-test marker, no parked-test marker.
+// no focused-test marker.
 
 // ---------------------------------------------------------------------------
 // Shapes crossing the page.evaluate boundary.
@@ -157,7 +148,7 @@ interface TradeItemArg {
 }
 
 /** A reducer call, described as data so it can be passed THROUGH page.evaluate.
- *  Deviation from the plan memo (which sketched `errorOf(page, exprBody)`): a data
+ *  a data
  *  descriptor rather than a source string, because evaluating a string inside the page
  *  would be dynamic code execution (a Semgrep magnet) and would lose type-checking on
  *  the hook's argument shapes — the exact thing that must stay pinned to main.ts. */
@@ -239,10 +230,10 @@ const ERR_NOT_CONFIRMED_BY_COUNTERPARTY = 'trade offer is not in ConfirmedByCoun
 
 /** An item id no joined identity can own: `join_game` grants a starter monster and NO
  *  items, there is no item faucet reachable from a browser identity, and propose_trade
- *  never checks that an item id exists in content — it only counts inventory rows
- *  (trading.rs:312-330). So the inventory count is provably 0 and qty 1 > 0. */
+ *  never checks that an item id exists in content — it only counts inventory rows.
+ *  So the inventory count is provably 0 and qty 1 > 0. */
 const PHANTOM_ITEM_ID = 424242;
-/** MUST be > 0: qty == 0 is rejected UPSTREAM by validate_proposal (rules.rs:92-98) with
+/** MUST be > 0: qty == 0 is rejected UPSTREAM by validate_proposal with
  *  the IDENTICAL message, which would move the rejection off the guard under test. */
 const PHANTOM_ITEM_QTY = 1;
 /** 1 unit of currency against a provably empty wallet: a fresh identity has no
@@ -486,7 +477,7 @@ async function gameReady(p: Page): Promise<void> {
  *   1. MUTUAL-VISIBILITY CONVERGENCE. `presenceCount` is `store.playerCount`, so waiting
  *      for exactly 3 on ALL THREE pages proves each page has actually received the other
  *      two players' rows. Without it, A could propose to an identity B has not yet
- *      observed, and the counterparty-joined guard (trading.rs:246-250) could fire on a
+ *      observed, and the counterparty-joined guard could fire on a
  *      race instead of on the guard under test.
  *   2. FAIL LOUD ON A LINGERING FOREIGN IDENTITY. `>= 3` would silently tolerate a leaked
  *      browser from an earlier spec file; `=== 3` turns that shared-world contamination
@@ -501,7 +492,7 @@ async function waitForPresence3(p: Page): Promise<void> {
 
 /** PROJECT the three fields this file needs — never return `__game()` wholesale.
  *  The real snapshot carries `step`/`jump`/`setRawMapZoneForTest` FUNCTIONS and the raw
- *  wasm map object (main.ts:1840-1891), none of which survive the structured-clone
+ *  wasm map object, none of which survive the structured-clone
  *  boundary; returning it whole makes page.evaluate throw on serialisation.
  *  (trade-full.spec.ts:105-118 projects for the same reason.) */
 async function snap(
@@ -518,7 +509,7 @@ async function snap(
 }
 
 /** The identity's own starter monster id — the >= 1 asset that satisfies the EmptyOffer
- *  rule (rules.rs:52-61) in every proposal in this file. Positive controls NEVER confirm a
+ *  rule in every proposal in this file. Positive controls NEVER confirm a
  *  trade, so this monster stays with A for the whole run. */
 async function starterMonsterId(p: Page, label: string): Promise<string> {
   const g = await snap(p);
@@ -539,7 +530,7 @@ async function starterMonsterId(p: Page, label: string): Promise<string> {
  *  Three traps closed inside the evaluate:
  *   1. HOOK MISSING → throw with a named diagnosis, rather than a TypeError on undefined.
  *   2. HOOK RETURNED undefined → throw. The hook's signature is `Promise<void> | undefined`
- *      (main.ts:1919-1938) and it returns undefined when the connection is not live;
+ *      and it returns undefined when the connection is not live;
  *      `await undefined` RESOLVES, which would counterfeit a successful reducer call and
  *      turn every positive control in this file green for free.
  *   3. THE AWAIT HAPPENS INSIDE THE EVALUATE. An un-awaited hook promise that later
@@ -912,7 +903,7 @@ test.describe('14r-b — trading reducer negative paths, three identities, serve
   // reads the wrong party's wallet and gets the SAME balance (0), the same guard fires,
   // the same message is emitted. Killing it needs an ASYMMETRIC world — one party holding
   // gold the other lacks — i.e. the quest_001 faucet, which is park P3 (4-6 min per run
-  // plus a flake history; ADR-0184 D4). The same shape applies to the
+  // plus a flake history). The same shape applies to the
   // `escrowed_currency_amount(...)` party operand at trading.rs:296-303.
   // -------------------------------------------------------------------------
   test('3b: propose listing currency the counterparty does not have is rejected — guard trading.rs:304', async () => {
@@ -1031,9 +1022,7 @@ test.describe('14r-b — trading reducer negative paths, three identities, serve
   //
   // WHAT THIS KILLS: `&&` → `||` at trading.rs:747 — for B, `initiator != me` is true, so
   // the disjunction is true and B is rejected from cancelling their own trade. The Ok
-  // control fails immediately. This is also the behavioural authority behind the tightened
-  // CANCEL_PARTY_CHECK regex in evals/trade-reducer-security.eval.mjs, whose `||` fixture
-  // is the static half of the same proof.
+  // control fails immediately.
   // -------------------------------------------------------------------------
   test('5b: the counterparty may cancel and the offer row is gone — guard trading.rs:747', async () => {
     test.setTimeout(120_000);

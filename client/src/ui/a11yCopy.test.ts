@@ -1,15 +1,8 @@
-// ui/a11yCopy.test.ts — m23-s0 RED gating tests for the flat a11y copy catalog + t(key).
+// ui/a11yCopy.test.ts — the flat a11y copy catalog + t(key).
 //
 // SOURCE OF TRUTH:
 //   specs/monster-realm-v2/M23-accessibility.spec.md §2.8, §5.1 [A11Y-04], §6 A11Y-4.
 //   docs/adr/0205-overlay-a11y-metadata-ssot-and-copy-catalog.md D4, D5 (BINDING).
-//
-// RED REASON: `client/src/ui/a11yCopy.ts` DOES NOT EXIST YET. This is a BRAND-NEW spec file, so
-// (unlike the appended block in `overlayRegistry.test.ts`) a plain static import here is safe —
-// its resolution failure reds only THIS file, never the pre-existing 1078-line
-// `overlayRegistry.test.ts` suite. `OVERLAY_A11Y` is likewise not yet exported from
-// `overlayRegistry.ts`; importing it here can at worst red every test in this new file, which is
-// exactly the desired starting state.
 //
 // Do NOT edit these tests to match a buggy implementation — correct them from the spec/ADR only.
 
@@ -32,9 +25,9 @@ describe('a11yCopy — the flat copy catalog and the M24 key seam (m23-s0, ADR-0
     // BOTH the correctly-spelled catalog entry AND some (unreferenced) stowaway present would
     // sail through set-equality while the real overlay ships with an unresolvable label. This
     // ONE test carries BOTH the set-equality half AND the per-id resolution half so a typo like
-    // this cannot hide between two "passing" gates (ADR-0205 D5).
+    // this cannot hide between two "passing" gates.
     //
-    // SCOPING (ADR-0205 D5) — READ THIS BEFORE "fixing" this test to be stricter: this test
+    // SCOPING — READ THIS BEFORE "fixing" this test to be stricter: this test
     // deliberately does NOT assert that `a11yCopy` contains ONLY `a11y.overlay.*` keys, and does
     // NOT assert any catalog SIZE ceiling. S1 lands `a11y.world.region` (and more `a11y.world.*`
     // / `a11y.announce.*` keys) the moment it starts; a global "catalog has exactly N keys" or
@@ -99,7 +92,7 @@ describe('a11yCopy — the flat copy catalog and the M24 key seam (m23-s0, ADR-0
 
   it('A11YCOPY-VALUES-ICU-FREE BITES: every catalog value, regardless of namespace, is non-empty after trim and brace-free', () => {
     // This EXTENDS A11Y-3's key-side ICU ban to the VALUE side by §2.8's general prohibition
-    // ("no ICU syntax") — it is not itself a numbered EARS criterion (ADR-0205 D5), but it is
+    // ("no ICU syntax") — it is not itself a numbered EARS criterion, but it is
     // core DoD for this slice's copy catalog and is asserted over EVERY key regardless of
     // namespace (unlike the namespace-scoped test above, a brace-in-the-VALUE ban has no future
     // S1 conflict to guard against — no legitimate copy value should ever need `{`/`}`).
@@ -160,7 +153,7 @@ describe('a11yCopy — the flat copy catalog and the M24 key seam (m23-s0, ADR-0
   it('A11YCOPY-T-THROWS-ON-MISS BITES: t(key) THROWS for an absent key, and the thrown message NAMES the missing key', () => {
     // WRONG IMPL KILLED (1): `t = (key) => a11yCopy[key] ?? key` — returning the key itself
     // makes an UNWIRED catalog look wired; a screen-reader user would hear the literal dotted
-    // key ("a11y overlay box view title") read aloud instead of a real label (ADR-0205 D4).
+    // key ("a11y overlay box view title") read aloud instead of a real label.
     // WRONG IMPL KILLED (2): `t = (key) => a11yCopy[key] ?? ''` — returning '' ships an
     // UNLABELLED dialog, which ADR-0205 D4 calls out as a WORSE WCAG failure than shipping no
     // dialog role at all.
@@ -237,8 +230,7 @@ describe('a11yCopy — the flat copy catalog and the M24 key seam (m23-s0, ADR-0
     // `Readonly<Record<string, string>>` is ERASED at runtime — red-team confirmed
     // `Object.isFrozen(a11yCopy)` was `false` before this landed, so a single careless
     // `a11yCopy[k] = v` (or a hostile cast) silently rewrote the shared module singleton and
-    // `t()` then handed the corrupted value to every later caller in the process. S0 ships no
-    // consumers, so this is latent today and load-bearing the moment S1 lands them.
+    // `t()` then handed the corrupted value to every later caller in the process.
     expect(
       Object.isFrozen(a11yCopy),
       'a11yCopy must be Object.freeze()d — the Readonly<> annotation is compile-time only',

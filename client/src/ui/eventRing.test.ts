@@ -1,10 +1,5 @@
 // ui/eventRing.test.ts — RED gating tests for pt-b1 EARS U-1, U-3 + HP/SEQ invariants.
 //
-// Slice: pt-b1 · Source-of-truth: M-playtest-b F9 bug-bundle event ring.
-//
-// RED REASON: eventRing.ts does not exist yet. Every test below fails with
-//   "Failed to resolve import './eventRing'" (module-not-found).
-//
 // WRONG-IMPL-KILLED list (one per bite):
 //   - "unbounded ring / evicts newest"       → T-CAP-1 catches it (keeps NEWEST, FIFO)
 //   - "tSeq resets/reuses after eviction"     → T-SEQ catches it (monotonic, never reused)
@@ -12,8 +7,6 @@
 //   - "payload leaks a name/PII field"        → T-NOPII-1 catches it (14 variants, no name keys)
 //   - "disconnect carries an identity"        → T-NOPII-1 catches it (disconnect has no identity)
 //   - "hpPermille wrong scale / no clamp / div0 throws" → T-HP-1 catches it
-//
-// Do NOT edit tests to match a buggy impl — correct from the spec only.
 
 import { describe, expect, it } from 'vitest';
 import {
@@ -245,7 +238,7 @@ describe('eventRing T-HP-1: makePreRecruitHp permille scaling / clamp / div0', (
 });
 
 // ---------------------------------------------------------------------------
-// T-ISPVP (reviewer H-1): isPvpBattle requires an owned opponent party AND a distinct
+// T-ISPVP: isPvpBattle requires an owned opponent party AND a distinct
 // identity. A wild battle (all-zero WILD_IDENTITY, empty opponent party) must be FALSE.
 // ---------------------------------------------------------------------------
 

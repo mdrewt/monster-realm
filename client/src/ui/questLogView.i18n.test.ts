@@ -31,7 +31,7 @@ import { QuestLogView } from './questLogView';
 // MECHANISM oracle: records every tf() call AND calls through to the real resolver.
 vi.mock('./i18n/resolver', { spy: true });
 
-/** Byte-copy of client/index.html:22-24 — the shell QuestLogView binds to (unchanged by m24-s5). */
+/** Byte-copy of client/index.html:22-24 — the shell QuestLogView binds to. */
 function mountQuestLogOverlay(): HTMLElement {
   document.body.innerHTML = `
     <div id="quest-log-overlay" role="dialog" aria-modal="true" style="display:none">
@@ -168,7 +168,7 @@ describe('m24s5 (ADR-0261): questLogView.ts routes its row through tf()', () => 
       vi.mocked(i18nTf).mockRestore();
     }
 
-    // Post-restore call-through control (an existing S3 ★ key, unaffected by this slice).
+    // Post-restore call-through control.
     expect(i18nTf('chrome.status.disconnected', { where: 'shop' })).toBe(
       'shop: disconnected — try again',
     );

@@ -1,21 +1,10 @@
 // ui/i18n/plural.test.ts — m24-s1 RED gating tests for CLDR-total plural selection and
 // locale-aware number formatting (I18N-10).
 //
-// SOURCE OF TRUTH:
-//   specs/monster-realm-v2/M24-internationalization.spec.md §2.3, §6 S1 (I18N-10).
-//   docs/adr/0256-i18n-module-total-catalog-resolver-cell-negative-compile.md D6.
-//   memory/projects/monster-realm-m24-s1-plan.md §2 plural.ts, §9 M5/M6/M10.
-//
-// RED REASON: `client/src/ui/i18n/plural.ts` DOES NOT EXIST YET. The static import below fails
-// to resolve at collection, redding every test in this file until the specialist ships it.
-//
 // FIXTURE DISCIPLINE (plan §9 M6): every locale's plural-forms fixture uses SIX PAIRWISE-DISTINCT
 // strings across zero/one/two/few/many/other, so a mutant that ignores the locale, picks the
 // wrong CLDR category, or always returns `other` cannot coincidentally return the RIGHT string
 // for the WRONG reason.
-//
-// Do NOT edit these tests to match a buggy implementation — correct them from the spec/ADR/plan
-// only.
 
 import { describe, expect, it } from 'vitest';
 import { cldr, fmtNumber, oneOther, selectPlural } from './plural';
@@ -88,7 +77,7 @@ describe('plural — CLDR-total plural selection and locale-aware number formatt
   it('m24s1 PLURAL-REJECT: selectPlural and fmtNumber THROW for a locale Intl has no data for, rather than silently resolving to en-US', () => {
     // WRONG IMPL KILLED: `new Intl.PluralRules('xx')` silently resolves to en-US plural rules
     // for an unsupported/typo'd tag — a naive selectPlural/fmtNumber would ship ENGLISH rules
-    // under a bogus locale string instead of failing loudly (ADR-0256 D6 / plan §9 M10).
+    // under a bogus locale string instead of failing loudly.
     expect(
       Intl.PluralRules.supportedLocalesOf(['xx']).length,
       "test premise: 'xx' must genuinely have zero Intl.PluralRules support, or this test proves nothing",

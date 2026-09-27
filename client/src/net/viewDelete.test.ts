@@ -9,28 +9,10 @@
 // therefore wipe the just-updated conversation on every `advance_dialogue`,
 // closing the dialogue overlay mid-conversation.
 //
-// CONTRACT UNDER TEST (implementer adds to client/src/net/rowConvert.ts):
-//
-//   export function shouldRemoveOnViewDelete(
-//     stored: StorePlayerConversation | undefined,
-//     deleted: StorePlayerConversation,
-//   ): boolean
-//
 //   Returns true (remove the stored row) ONLY when `stored` is defined and matches
 //   `deleted` on BOTH npcEntityId AND currentNodeId (a genuine delete: dismiss, or
 //   an end-of-dialogue advance). Returns false when stored is undefined or differs
 //   on either field (the delete-of-the-old-version half of an update pair).
-//
-// RED REASON (intended): `shouldRemoveOnViewDelete` is not exported from
-// ./rowConvert yet — vitest fails to collect THIS FILE ONLY (the import below is
-// the only new binding; rowConvert.test.ts keeps running green). This file is a
-// SIBLING of rowConvert.test.ts precisely so the missing-export RED cannot take
-// the existing converter suite offline.
-//
-// Rationale log (tester, 2026-07-05): expected values below are derived verbatim
-// from plan §T0 finding 4 ("remove ONLY if the deleted row matches the
-// currently-stored row (compare npcEntityId + currentNodeId); order-independent
-// within a batch") — not from any implementation.
 import { describe, expect, it } from 'vitest';
 import { shouldRemoveOnViewDelete } from './rowConvert';
 import type { StorePlayerConversation } from './store';

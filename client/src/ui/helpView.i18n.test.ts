@@ -152,7 +152,7 @@ describe('m24s5 (ADR-0261): helpView.ts routes chrome.help.title through t() in 
         '!wasVisible-gated write)',
     ).toHaveBeenCalledWith('chrome.help.title');
 
-    // Fixture control/goal copy deliberately avoids "Controls"/"Goals" (tester-A brief).
+    // Fixture control/goal copy deliberately avoids "Controls"/"Goals".
     view.render({
       controls: [{ key: 'Z', action: 'Zoom the camera' }],
       goals: ['Finish the tutorial trail'],

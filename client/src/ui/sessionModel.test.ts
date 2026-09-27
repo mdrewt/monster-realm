@@ -1,4 +1,4 @@
-// ui/sessionModel.test.ts — AUTH-46/47/49/56/59 (M21b-2, ADR-0182 D17).
+// ui/sessionModel.test.ts — AUTH-46/47/49/56/59.
 //
 // EARS COVERED
 //   AUTH-46 — the auth-service-unreachable state offers the SAME continue-anonymously
@@ -15,56 +15,14 @@
 //             is never silently discarded.
 //
 // AUTH-48's NEGATIVE HALF LIVES HERE: `sign-in-failed` routes through the CLAIM model, not
-// this one (ADR-0182 D17). The positive half — the claim model accepts it and renders
+// this one. The positive half — the claim model accepts it and renders
 // distinct copy — is in claimModel.test.ts; the mechanical negative (this model's event
 // vocabulary cannot even express it) is asserted below, because a vocabulary check is the
 // only form of "never" a pure model can carry.
 //
-// RED REASON AT HEAD (8814416): `client/src/ui/sessionModel.ts` DOES NOT EXIST. The import
-// below fails to resolve, so every test reds on a MISSING IMPLEMENTATION.
-//
 // PURE MODEL — no DOM, no SDK, no clock, no storage. Follows the file-local convention of
 // healModel.test.ts / renameModel.ts: the decision core is exported and unit-tested; the
 // DOM shell (`sessionView.ts`) is coverage-excluded and only binds this core to elements.
-//
-// THE CONTRACT THE IMPLEMENTER BUILDS:
-//
-//   export type SessionState = 'hidden' | 'expired' | 'unreachable';
-//   export interface SessionModelState {
-//     readonly state: SessionState;
-//     readonly confirmPending: boolean;      // AUTH-56's second step is armed
-//     readonly feedback: string | undefined; // AUTH-59's visible line
-//   }
-//   export const SESSION_INITIAL: SessionModelState;   // hidden / false / undefined
-//   export const SESSION_DISCONNECTED_FEEDBACK: string;
-//
-//   export type SessionEventKind =
-//     | 'session-expired' | 'auth-service-unreachable' | 'connected'
-//     | 'continue-anonymously-requested' | 'continue-anonymously-confirmed'
-//     | 'confirm-cancelled' | 'retry-requested';
-//   export const SESSION_EVENT_KINDS: readonly SessionEventKind[];
-//   export type SessionEvent =
-//     | { readonly kind: 'session-expired' }
-//     | { readonly kind: 'auth-service-unreachable' }
-//     | { readonly kind: 'connected' }
-//     | { readonly kind: 'continue-anonymously-requested' }
-//     | { readonly kind: 'continue-anonymously-confirmed'; readonly hasLiveConnection: boolean }
-//     | { readonly kind: 'confirm-cancelled' }
-//     | { readonly kind: 'retry-requested'; readonly hasLiveConnection: boolean };
-//
-//   export type SessionEffect = 'none' | 'continue-anonymously' | 'retry-connect';
-//   export interface SessionStep { readonly next: SessionModelState; readonly effect: SessionEffect }
-//   export function sessionStep(state: SessionModelState, event: SessionEvent): SessionStep;
-//
-//   export interface SessionViewModel {
-//     readonly visible: boolean;
-//     readonly title: string;
-//     readonly body: string;
-//     readonly primaryActionLabel: string;
-//     readonly confirmPrompt: string | undefined;  // present ONLY while confirmPending
-//     readonly feedback: string | undefined;
-//   }
-//   export function buildSessionViewModel(state: SessionModelState): SessionViewModel;
 //
 // ★ WHAT `hasLiveConnection` MEANS HERE, stated because it reads backwards at first
 //   glance: it is "main.ts holds a `Connection` to act on" (`conn !== undefined`), NOT "a
@@ -180,7 +138,7 @@ describe('sessionModel: the three states (AUTH-46 / AUTH-47 / D17)', () => {
   });
 
   it('★★ BITES (AUTH-48 negative half): the vocabulary cannot express `sign-in-failed`', () => {
-    // ADR-0182 D17: "a first-time claim-flow redirect whose code exchange fails is not
+    // "a first-time claim-flow redirect whose code exchange fails is not
     // 'session expired' — there was no prior session to expire. Routes through claimModel,
     // NOT sessionView." The positive half is claimModel.test.ts's business; this is the
     // only mechanical form of "never here" a pure model can carry.
@@ -374,7 +332,7 @@ describe('sessionModel AUTH-56: the confirmation is a DISTINCT second step namin
   });
 
   it('★★ BITES: expired and unreachable render DIFFERENT copy (AUTH-46 same affordance, distinct copy)', () => {
-    // ADR-0182 D17: "same terminal shape as session-expired, same continue-anonymously
+    // "same terminal shape as session-expired, same continue-anonymously
     // affordance, DISTINCT COPY". Identical copy would tell a player whose account is fine
     // (the auth service is merely down) that their session expired — and they would
     // reasonably go and re-authenticate against a service that is not answering.

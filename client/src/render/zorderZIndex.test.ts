@@ -1,9 +1,7 @@
-// render/zorderZIndex.test.ts — RED tests for M13.5e e-4: O(1) z-order assignment.
-//
-// SOURCE OF TRUTH: M13.5 §5 e-4 (EARS criterion)
+// render/zorderZIndex.test.ts — O(1) z-order assignment.
 //
 // EARS criterion:
-//   The O(n²) setChildIndex loop in world.ts lines 133-137 SHALL be replaced with
+//   The O(n²) setChildIndex loop SHALL be replaced with
 //   zIndex assignment + sortableChildren. Each sprite SHALL have its zIndex set to
 //   its y-position value so the Pixi layer composites in correct depth order.
 //
@@ -20,11 +18,6 @@
 //   implementer assigns zIndex = sortedByZ rank (index), the sort-then-assign produces
 //   the same ordering as the sortedByZ comparator. Both approaches are valid; the test
 //   gates whichever the implementer chooses.
-//
-// RED REASON for zIndexForEntity / zIndexOrder:
-//   Neither `zIndexForEntity` nor `zIndexOrder` exists yet. These functions are the
-//   extracted, testable formula from the O(1) implementation the implementer must write.
-//   Tests will fail with "does not provide an export named ..." until created.
 //
 // WRONG IMPL KILLED:
 //   - An impl that assigns zIndex = rank (index in sortedByZ) instead of y: killed by

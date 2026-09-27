@@ -1,9 +1,9 @@
-// net/authToken.test.ts — RED tests for nh4-1..nh4-4: stored-credential auth-token gate.
+// net/authToken.test.ts — stored-credential auth-token gate.
 //
-// SOURCE OF TRUTH: nh4 EARS criteria — persistence (nh4-1), key scoping (nh4-2/nh4-3),
+// SOURCE OF TRUTH: nh4 EARS criteria — persistence, key scoping,
 // the "Failed to verify token: " rejection classifier, the consecutive-rejection
-// suppression state machine (nh4-3/nh4-4), and the playtest-wipe-does-NOT-invalidate-
-// the-token corrected semantics (nh4-4).
+// suppression state machine, and the playtest-wipe-does-NOT-invalidate-
+// the-token corrected semantics.
 //
 // This is a PURE unit test over an INJECTED fake `TokenStorageHost` — it never touches
 // a real `sessionStorage` / DOM. The gate's storage side effects (SecurityError when a
@@ -12,10 +12,6 @@
 // failure that must degrade SILENTLY so a storage quirk can never break the connection —
 // a fake host lets every one of those edges be forced deterministically, which a real
 // DOM/jsdom environment cannot do on demand.
-//
-// RED REASON: `authToken.ts` does not exist yet. Every import below fails with
-// "does not provide an export named ..." until the implementer creates
-// `client/src/net/authToken.ts` exporting the contract below.
 //
 // NOTE: no `new RegExp(...)` anywhere (Semgrep-banned repo-wide) — the classifier's
 // prefix check is asserted here via literal string construction only.
@@ -121,7 +117,7 @@ describe('AUTH_REJECT_SUPPRESS_THRESHOLD', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Persistence (nh4-1)
+// Persistence
 // ---------------------------------------------------------------------------
 
 describe('createAuthTokenGate: persistence', () => {
@@ -167,7 +163,7 @@ describe('createAuthTokenGate: persistence', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Supply + key scoping (nh4-2 / nh4-3)
+// Supply + key scoping
 // ---------------------------------------------------------------------------
 
 describe('createAuthTokenGate: key scoping by uri + db', () => {
@@ -353,8 +349,8 @@ describe('isStoredCredentialRejected', () => {
 
 describe('SDK-DRIFT (nh4): the spacetimedb SDK still throws the exact token-rejection message string', () => {
   it('BITES: dist/index.mjs contains the literal substring "Failed to verify token: ${response.statusText}"', () => {
-    // Moved here from connection.test.ts (ledger CT-src-net-connection#sdk-drift): it is the
-    // contract isStoredCredentialRejected above depends on, read from the installed SDK itself.
+    // it is the contract isStoredCredentialRejected above depends on, read from the installed
+    // SDK itself.
     //
     // WRONG IMPL KILLED: an SDK bump that changes this message's wording (e.g. adding
     // punctuation, changing "verify" to "validate", or dropping the statusText
@@ -394,7 +390,7 @@ describe('SDK-DRIFT (nh4): the spacetimedb SDK still throws the exact token-reje
 });
 
 // ---------------------------------------------------------------------------
-// Suppression state machine (nh4-3 / nh4-4) — the heart of the slice
+// Suppression state machine — the heart of the slice
 // ---------------------------------------------------------------------------
 
 describe('createAuthTokenGate: consecutive-rejection suppression', () => {
@@ -672,36 +668,7 @@ describe('createAuthTokenGate: reads/writes sessionStorage only, never localStor
 });
 
 // ===========================================================================
-// M21b — the auth-KIND marker (ADR-0179, spec EARS AUTH-31).
-// APPENDED BLOCK. Nothing above this line is modified, byte for byte.
-//
-// SOURCE OF TRUTH: memory/projects/monster-realm-M21b-plan.md (the ADDENDUM
-// section supersedes the body), plus the coordinator's scope ruling below.
-//
-// ★★ SCOPE RULING (what this slice is, and what it deliberately is NOT) ★★
-// The plan's read-side guard — `decideConnectCredential`,
-// `SESSION_EXPIRED_MESSAGE`, `ConnectionOptions.onSessionExpired` and the
-// session-expired branch in `connection.ts`'s `build()` — is CUT from this
-// slice and ships with M21b-2. It is not buildable here: the guard's early exit
-// needs `build()` to be able to decline to return a connection, i.e.
-// `DbConnection | undefined`, which cascades into `let current = build()`, the
-// `get conn()` accessor, and every `conn.conn.reducers.*` call site in main.ts.
-// That is a public-surface change belonging with the cold-start contract it
-// depends on (parked item 6). The type system was reporting a real dependency.
-//
-// WHAT SHIPS HERE: the marker itself — `AuthKind`, `AUTH_KIND_KEY_PREFIX`,
-// `authKindStorageKey`, `readAuthKind`, `writeAuthKind` — additive only, plus
-// ONE guard at connection.ts's `auth.onConnected(token)` call site so the
-// anonymous token slot can never receive an account JWT.
-//
-// WHY THE APPEND-ONLY DISCIPLINE IS ITSELF THE TEST: AUTH-31 is a NO-CHANGE
-// criterion — "the anonymous path behaves exactly as it does today". The
-// mechanical proof of that is that `authToken.ts` gains only NEW exports (zero
-// edits to any existing body) and this file gains only a NEW block (zero edits
-// above this banner). A reviewer diffs both. If a line above this banner moved,
-// AUTH-31's proof is void regardless of what the assertions below say. With the
-// read side cut, `.withToken(auth.tokenForNextAttempt())` in connection.ts is
-// byte-identical too, so the no-change claim is literal rather than argued.
+// M21b — the auth-KIND marker (spec EARS AUTH-31).
 //
 // EARS COVERED HERE
 //   AUTH-31  — the marker is a NEW, structurally DISJOINT sessionStorage seam:
@@ -711,14 +678,6 @@ describe('createAuthTokenGate: reads/writes sessionStorage only, never localStor
 //
 // STILL A PURE NODE UNIT TEST — every storage host is injected, exactly as the
 // 27 pre-existing tests above do. No DOM, no jsdom, no real sessionStorage.
-// (The one former exception, the W-M21B2-KIND-READ-SINGLE-SITE source scan, was deleted
-// in the de-bloat — ledger CT-src-net-authToken#source-scan; the agreement test in the
-// wasEverAuthenticated block guards its meaning.)
-//
-// RED REASON: `AuthKind`, `AUTH_KIND_KEY_PREFIX`, `authKindStorageKey`,
-// `readAuthKind` and `writeAuthKind` do not exist in `authToken.ts` yet. The
-// import below fails to resolve its named exports, so this whole block reds on
-// a MISSING IMPLEMENTATION, not on a typo here.
 //
 // NO `new RegExp(...)` anywhere (Semgrep `detect-non-literal-regexp`, banned
 // repo-wide) — string comparison / indexOf / startsWith only.
@@ -736,9 +695,7 @@ import {
   type AuthKind,
   authKindStorageKey,
   readAuthKind,
-  // M21b-2 (ADR-0182 D14): the attempt-gating predicate. RED at authoring time — it does
-  // not exist in authToken.ts yet, so this named import fails to resolve and the whole
-  // file reds on a MISSING IMPLEMENTATION. Every test above it is a green regression guard.
+  // The attempt-gating predicate.
   wasEverAuthenticated,
   writeAuthKind,
 } from './authToken';
@@ -806,8 +763,8 @@ describe('authKindStorageKey', () => {
 });
 
 // ---------------------------------------------------------------------------
-// W-M21B-KIND-DISJOINT — the two key SPACES cannot collide. Pinned DIRECTLY
-// (red-team L2), not merely inferred from each derivation's injectivity.
+// W-M21B-KIND-DISJOINT — the two key SPACES cannot collide. Pinned DIRECTLY,
+// not merely inferred from each derivation's injectivity.
 // ---------------------------------------------------------------------------
 
 /** Adversarial (uri, db) targets. Includes the `|`-splitting pair, the empty pair, and two
@@ -826,8 +783,8 @@ const M21B_ADVERSARIAL_TARGETS: readonly (readonly [string, string])[] = [
 
 describe('W-M21B-KIND-DISJOINT: the kind key space and the token key space are disjoint', () => {
   it('★ (a) AUTH_KIND_KEY_PREFIX is `mr.authKind.v1` — and NEITHER prefix is a prefix of the other', () => {
-    // ADDENDUM S12. The spec's illustrative `mr.authToken.v1.kind` is a SUPERSTRING of the
-    // shipped `KEY_PREFIX = 'mr.authToken.v1'` (authToken.ts:49), so under it disjointness
+    // The spec's illustrative `mr.authToken.v1.kind` is a SUPERSTRING of the
+    // shipped `KEY_PREFIX = 'mr.authToken.v1'`, so under it disjointness
     // would hold only by a subtle argument about the 16th character plus encodeURIComponent
     // stripping `|`. `mr.authKind.v1` makes disjointness STRUCTURAL — which is what demotes
     // this whole gate from sole proof to a cheap regression pin. That is a mechanism choice
@@ -1030,8 +987,7 @@ describe('readAuthKind (AUTH-31): fails to "anon" on every absent / blocked / co
 });
 
 // ---------------------------------------------------------------------------
-// writeAuthKind — the marker's writer (ADDENDUM S11's named YAGNI exception:
-// M21b-2's OIDC return leg is the producer). Mirrors onConnected's degradation.
+// writeAuthKind — the marker's writer. Mirrors onConnected's degradation.
 // ---------------------------------------------------------------------------
 
 describe('writeAuthKind (AUTH-31): writes under the kind key and degrades silently', () => {
@@ -1068,7 +1024,7 @@ describe('writeAuthKind (AUTH-31): writes under the kind key and degrades silent
   });
 
   it('★ degrades silently on every hostile host — never throws, never writes elsewhere', () => {
-    // Exactly onConnected's contract (authToken.ts:162-169): a quota/private-mode failure
+    // Exactly onConnected's contract: a quota/private-mode failure
     // costs the marker, never the live connection. A throw here would escape into build()
     // — the same permanent-freeze mode the module header documents.
     const throwingPropertyHost: TokenStorageHost = {};
@@ -1096,51 +1052,15 @@ describe('writeAuthKind (AUTH-31): writes under the kind key and degrades silent
       expect(() => writeAuthKind(host, M21B_URI, M21B_DB, 'account'), label).not.toThrow();
       expect(() => writeAuthKind(host, M21B_URI, M21B_DB, 'anon'), label).not.toThrow();
     }
-    // ADR-0150 D3: sessionStorage only, NEVER localStorage — a marker on an origin-shared
+    // sessionStorage only, NEVER localStorage — a marker on an origin-shared
     // store would leak one tab's auth intent into every other tab of the origin.
     expect(localOnly.calls.some((c) => c.op === 'setItem')).toBe(false);
     expect(localOnly.size).toBe(0);
   });
 });
 
-// ===========================================================================
-// ★★ W-M21B-WRITE-HAZARD-DOCUMENTED IS DELETED HERE — BY ITS OWN INSTRUCTION.
-//
-// The two tests that stood here (documentation-integrity + the repo-wide
-// "writeAuthKind has no production caller" scan) guarded a hazard that existed
-// only WHILE the read-side credential guard was parked. M21b-2 lands that guard,
-// so the prohibition they enforced is now false: `connection.ts` calls
-// `writeAuthKind` on the account branch of `build()` (ADR-0182 D13/D14), which
-// is precisely the producer the writer's own doc block named as its intended
-// caller.
-//
-// THIS DELETION IS NOT A SOFTENING, AND THE DISTINCTION IS THE WHOLE POINT. The
-// tooth's own failure message was the authoritative instruction for this moment
-// (it read, verbatim): "If M21b-2 has genuinely landed the guard, do not soften
-// this comment: delete the prohibition, delete this tooth, and re-pin the guard
-// itself." All three were done, in that order:
-//   1. the prohibition block in `authToken.ts`'s `writeAuthKind` doc comment is
-//      deleted and replaced with a comment naming the guard that now exists;
-//   2. both tests are deleted (neither clause list nor revocation list was
-//      edited in place — editing either is the path the tooth explicitly
-//      forbade, and a reviewer can confirm by diffing: the lists are GONE, not
-//      changed);
-//   3. the guard itself is now asserted at runtime by net/connection.runtime.test.ts
-//      (ACCOUNT: an account build's JWT never enters the anonymous token slot — keyed
-//      on the credential's PROVENANCE rather than on a storage re-read).
-//
-// ⚠ ONE CONSEQUENCE, RECORDED SO IT IS NOT REDISCOVERED AS A BUG: the deleted
-// scan carried an anti-vacuity positive control asserting `readAuthKind(`
-// occurred at least once in the scanned tree (which EXCLUDED authToken.ts). Under
-// ADR-0182 D14 the reader moves entirely INSIDE `wasEverAuthenticated` in
-// authToken.ts, so that control would now count zero and red for a reason that
-// has nothing to do with the hazard. It dies with the tooth it belonged to; the
-// tooth below is its replacement and scans authToken.ts itself, where the reader
-// actually lives.
-// ===========================================================================
-
 // ---------------------------------------------------------------------------
-// M21b-2 — `wasEverAuthenticated` (ADR-0182 D13/D14): the ATTEMPT-GATING half of
+// `wasEverAuthenticated`: the ATTEMPT-GATING half of
 // the marker, kept strictly separate from the security discriminator.
 //
 // WHAT IT IS FOR (AUTH-44): a tab that has never held an account credential, is
@@ -1154,12 +1074,11 @@ describe('writeAuthKind (AUTH-31): writes under the kind key and degrades silent
 // the writer's own doc comment prescribed this fix and G14 enforces it.
 //
 // WHY THE FAIL DIRECTION IS STILL `false`: identical to `readAuthKind`'s
-// fail-to-'anon' argument (authToken.ts:233-248). A blocked/absent/corrupt marker
+// fail-to-'anon' argument. A blocked/absent/corrupt marker
 // means "we have no evidence this tab ever authenticated", so the gate stays SHUT
 // and the tab connects anonymously — exactly today's behaviour. Failing OPEN would
 // make every private-mode tab call Better Auth on every reconnect forever.
 //
-// RED REASON: `wasEverAuthenticated` does not exist in authToken.ts yet.
 // ---------------------------------------------------------------------------
 
 describe('wasEverAuthenticated (AUTH-44): true iff the marker slot holds exactly "account"', () => {
@@ -1241,7 +1160,7 @@ describe('wasEverAuthenticated (AUTH-44): true iff the marker slot holds exactly
   });
 
   it('★ BITES: returns a real boolean, not a truthy string (kills `return readAuthKind(...) === "account" ? "account" : ""`)', () => {
-    // `if (!attemptGateOpen)` in connection.ts's `resolveCredential` (ADR-0182 D13) branches
+    // `if (!attemptGateOpen)` in connection.ts's `resolveCredential` branches
     // on truthiness, so a non-boolean return would work by accident today and break the
     // moment someone writes `=== true`.
     const storage = new FakeSessionStorage();

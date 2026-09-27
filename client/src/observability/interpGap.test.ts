@@ -1,4 +1,4 @@
-// observability/interpGap.test.ts — m20c (ADR-0180 body amendment), AM2.
+// observability/interpGap.test.ts — AM2.
 //
 // SOURCE OF TRUTH: AM2 — "`maxRemoteGapMs` logic gets a named home … imports
 // `adaptiveInterpDelayMs` from render/interpolation.ts:133 (NEVER copies it), reduces to max;
@@ -18,8 +18,6 @@
 //
 // THE CALL-SITE HALF of AM2 (own entity excluded, sampled once per closed frame window) is
 // pinned in main.wiring.test.ts's m20c block — it cannot be seen from here.
-//
-// RED REASON: `client/src/observability/interpGap.ts` does not exist yet.
 
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
@@ -29,8 +27,8 @@ import { maxRemoteGapMs } from './interpGap';
 /** The live server cadence (game-core `step_ms()`); main.ts passes the wasm-derived STEP_MS. */
 const STEP_MS = 200;
 
-/** The shape `maxRemoteGapMs` consumes — structurally satisfied by `StoredCharacter`
- *  (net/store.ts:363-365), so main.ts can pass store rows straight through with no adapter. */
+/** The shape `maxRemoteGapMs` consumes — structurally satisfied by `StoredCharacter`,
+ *  so main.ts can pass store rows straight through with no adapter. */
 function remote(jitterEwma: number): { readonly jitterEwma: number } {
   return { jitterEwma };
 }

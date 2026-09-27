@@ -1,4 +1,4 @@
-// ui/claimModel.test.ts — AUTH-48/52/54/55/56/59 (M21b-2, ADR-0182 D16).
+// ui/claimModel.test.ts — AUTH-48/52/54/55/56/59.
 //
 // EARS COVERED
 //   AUTH-54 — the FOUR-WAY reject taxonomy, keyed on the EXACT strings
@@ -23,69 +23,10 @@
 // sessionModel.test.ts, where it is mechanical: that model's event vocabulary cannot
 // express `sign-in-failed` at all. This file carries the positive half.
 //
-// RED REASON AT HEAD (8814416): `client/src/ui/claimModel.ts` DOES NOT EXIST. The import
-// below fails to resolve, so every test reds on a MISSING IMPLEMENTATION.
-//
 // PURE MODEL — no DOM, no SDK, no storage, NO CLOCK (that last one is AUTH-55, and it is
 // enforced twice: once on the event vocabulary, once by scanning the module's own source).
 // The storage half lives in `net/claimCode.ts` (claimCode.test.ts); this model receives the
 // nudge flag as a BOOLEAN INPUT rather than reading it, so it stays pure.
-//
-// THE CONTRACT THE IMPLEMENTER BUILDS:
-//
-//   export const CLAIM_REJECT_OUTCOMES = [
-//     'delete-code-and-permit-join',      // ERR_INVALID_CODE, 'code expired'
-//     'retain-destination-terminal',      // 'already has game data', 'account already
-//                                         //  claimed', 'cannot claim your own session'
-//     'retain-transient-no-autoretry',    // 'close your other tab, then retry',
-//                                         //  'already in an ongoing battle'
-//     'retain-not-claim-specific',        // 'sign in required', 'no account',
-//                                         //  'account pending deletion', and ANYTHING
-//                                         //  unrecognised (fail-safe: never destructive)
-//   ] as const;
-//   export type ClaimRejectOutcome = (typeof CLAIM_REJECT_OUTCOMES)[number];
-//   export function classifyClaimReject(message: string): ClaimRejectOutcome;
-//   export function claimRejectDeletesCode(outcome: ClaimRejectOutcome): boolean;
-//   export function claimRejectPermitsJoin(outcome: ClaimRejectOutcome): boolean;
-//
-//   export type InvalidCodeSense = 'claim-already-succeeded' | 'code-unusable';
-//   export function senseInvalidCode(claimedFrom: string | undefined): InvalidCodeSense;
-//
-//   export type ClaimPhase =
-//     | 'hidden' | 'prompt' | 'code-pending' | 'awaiting-account' | 'rejected'
-//     | 'sign-in-failed' | 'claimed';
-//   // M21b-2 UI-completion review: `claim-ui-opened` now enters the VISIBLE 'prompt' phase
-//   // (was 'hidden' — the bug that made the whole claim/sign-in overlay unreachable).
-//   export interface ClaimModelState {
-//     readonly phase: ClaimPhase;
-//     readonly outcome: ClaimRejectOutcome | undefined;
-//     readonly signInReason: string | undefined;
-//     readonly codeRetained: boolean;
-//     readonly joinPermitted: boolean;
-//     readonly confirmPending: boolean;
-//     readonly nudgeShown: boolean;          // once per TAB — the model's own latch
-//     readonly showFirstRunNudge: boolean;   // render it on THIS frame
-//     readonly feedback: string | undefined;
-//   }
-//   export const CLAIM_INITIAL: ClaimModelState;
-//   export const CLAIM_DISCONNECTED_FEEDBACK: string;
-//
-//   export type ClaimEventKind =
-//     | 'claim-ui-opened' | 'claim-pending' | 'claim-awaiting-account' | 'claim-rejected'
-//     | 'claim-succeeded' | 'sign-in-failed' | 'decline-requested' | 'decline-confirmed'
-//     | 'decline-cancelled' | 'join-requested' | 'retry-join-requested';
-//   export const CLAIM_EVENT_KINDS: readonly ClaimEventKind[];
-//   export type ClaimEvent = <one variant per kind — see EVENTS below for the payloads>;
-//   export type ClaimEffect = 'none' | 'join' | 'delete-code-and-permit-join';
-//   export interface ClaimStep { readonly next: ClaimModelState; readonly effect: ClaimEffect }
-//   export function claimStep(state: ClaimModelState, event: ClaimEvent): ClaimStep;
-//
-//   export interface ClaimViewModel {
-//     readonly visible: boolean; readonly title: string; readonly body: string;
-//     readonly confirmPrompt: string | undefined; readonly nudge: string | undefined;
-//     readonly feedback: string | undefined;
-//   }
-//   export function buildClaimViewModel(state: ClaimModelState): ClaimViewModel;
 //
 // NO `new RegExp(...)` anywhere (Semgrep `detect-non-literal-regexp`, banned repo-wide).
 
@@ -345,7 +286,7 @@ describe('senseInvalidCode (ADR-0182 D16): the ONE client-side disambiguation of
     // so the client cannot tell "never existed" from "already consumed" — and MUST NOT try.
     // The single legitimate disambiguation is local and non-oracular: if OUR OWN account row
     // now carries `claimed_from`, the code was consumed BY US (the pre-drop promise did
-    // settle server-side, ADR-0085 D3) and the claim SUCCEEDED. Anything else is a dead code.
+    // settle server-side) and the claim SUCCEEDED. Anything else is a dead code.
     expect(senseInvalidCode(GUEST_IDENTITY)).toBe('claim-already-succeeded');
     expect(senseInvalidCode(undefined)).toBe('code-unusable');
     expect(senseInvalidCode(''), 'an empty identity is not a claim').toBe('code-unusable');
@@ -644,7 +585,7 @@ describe('claimModel AUTH-56: declining requires a DISTINCT second step naming t
 
 describe('claimModel AUTH-48: a failed first-time sign-in routes into the claim UI with distinct copy', () => {
   it('★★ BITES: the vocabulary accepts `sign-in-failed` and the model reaches its own phase', () => {
-    // ADR-0182 D17: "a first-time claim-flow redirect whose code exchange fails is not
+    // "a first-time claim-flow redirect whose code exchange fails is not
     // 'session expired' — there was no prior session to expire." The mirror assertion (the
     // session model cannot express this event at all) lives in sessionModel.test.ts.
     expect(CLAIM_EVENT_KINDS).toContain('sign-in-failed');
@@ -702,7 +643,7 @@ describe('claimModel AUTH-48: a failed first-time sign-in routes into the claim 
 });
 
 // ===========================================================================
-// First-run multi-device nudge — once per tab (ADR-0182 D16).
+// First-run multi-device nudge — once per tab.
 // ===========================================================================
 
 describe('claimModel first-run nudge: shown once per tab on the first claim-UI open', () => {
@@ -742,15 +683,6 @@ describe('claimModel first-run nudge: shown once per tab on the first claim-UI o
   });
 
   it('★★ BITES: opening the UI is a VISIBLE transition (hidden → prompt) yet never clobbers an in-progress claim', () => {
-    // ★ REVISED FROM THE SPEC (M21b-2 UI-completion review). The assertion that stood here —
-    // `after.phase === before.phase`, framed "the nudge is decoration, NOT a transition" —
-    // encoded the exact bug the two reviews found: `claim-ui-opened` left the model in its
-    // prior phase (and, from the initial state, in 'hidden'), so buildClaimViewModel(...).visible
-    // was false and the overlay the menu 'account' leaf / KeyC opened rendered NOTHING. The
-    // review MANDATES that opening the claim UI becomes visible, so that old expectation is now
-    // wrong. It is revised, not deleted: the anti-clobber coverage below is carried forward
-    // verbatim, and the corrected positive (hidden → prompt) is added.
-    //
     // (1) the corrected positive: from the initial hidden state, opening IS a transition — into
     //     the new visible 'prompt' phase. WRONG IMPL KILLED: the model stays 'hidden' (the bug).
     const opened = claimStep(CLAIM_INITIAL, {
@@ -786,7 +718,7 @@ describe('claimModel first-run nudge: shown once per tab on the first claim-UI o
 // `claim-ui-opened` returned phase 'hidden', so buildClaimViewModel(...).visible was false
 // and the overlay opened onto nothing. The fix is a new 'prompt' phase, entered by
 // claim-ui-opened, whose view model is VISIBLE and reuses the pending (claim-invitation)
-// copy. These teeth are RED until claimModel.ts gains the phase.
+// copy.
 // ===========================================================================
 
 describe('claimModel M21b-2 review: claim-ui-opened enters a visible prompt phase', () => {
@@ -821,7 +753,7 @@ describe('claimModel M21b-2 review: claim-ui-opened enters a visible prompt phas
   });
 
   it('★★ BITES: the first-run nudge still shows exactly once — on the FIRST prompt open, latched by nudgeShown', () => {
-    // The nudge-once contract (ADR-0182 D16) must survive the phase change: an unseen flag shows
+    // The nudge-once contract must survive the phase change: an unseen flag shows
     // the nudge on the first open and latches; a re-open in the same tab is quiet; and a tab whose
     // stored flag is already set never shows it — all while the phase is now the visible 'prompt'.
     // WRONG IMPL KILLED: the phase change resets or re-fires the nudge latch, so the multi-device
@@ -962,9 +894,9 @@ function stripComments(src: string): string {
 
 describe('AUTH-55 source scan: claimModel.ts names no clock and schedules nothing', () => {
   it('★ CALIBRATION: the stripper is not vacuous, and claimModel.ts carries no scheme literal', () => {
-    // Plan ADDENDUM §C, last bullet. The scheme pin closes `stripComments`'s quote
-    // blindness: it truncates each line at the first two-slash token, so a live line
-    // carrying a URL would hide whatever follows it from the bans below.
+    // The scheme pin closes `stripComments`'s quote blindness: it truncates each
+    // line at the first two-slash token, so a live line carrying a URL would hide
+    // whatever follows it from the bans below.
     const fixture = [
       'const live = 1;',
       '// setTimeout(f, 60000)',

@@ -8,7 +8,7 @@ import {
   test,
 } from '@playwright/test';
 
-// 11r-e (ux2b) — owner-scoped wallet readout e2e (ADR-0169; parent ADR-0154 D7).
+// owner-scoped wallet readout e2e.
 //
 // WHAT THIS PROVES (EARS 11r-e-6 / 11r-e-7 / 11r-e-8 / 11r-e-9)
 // =============================================================
@@ -29,43 +29,15 @@ import {
 // playtest finding). This is the end-to-end proof of the fix, from the server-authoritative
 // `#[view] my_wallet` over the PRIVATE `player_wallet` table all the way to the DOM.
 //
-// WHAT THIS DOES **NOT** PROVE — read before citing this file (ADR-0169 D8)
+// WHAT THIS DOES **NOT** PROVE — read before citing this file
 // ========================================================================
 // 11r-e-8 gates the CLIENT-SIDE OWNER FILTER AND RENDER PATH. It does NOT gate
-// server-side view scoping. `store.upsertWallet` (client/src/net/store.ts:985-987) stores
+// server-side view scoping. `store.upsertWallet` stores
 // whatever arrives UNCONDITIONALLY, and `ownWallet(identity)` (:992-995) filters on READ.
 // So if the view were ever widened, B's client would RECEIVE AND STORE A's row and STILL
 // render `unknown` — observably identical to correct behaviour, while another player's
 // balance sits in B's browser memory (the ADR-0015 must-never-leak condition).
-// Server-side scoping is owned by `evals/wallet-privacy.eval.mjs` [B/2c] and
-// `server-module/src/economy_tests.rs::my_wallet_view_is_owner_scoped`.
 // NOBODY MAY LATER CITE THIS SPEC AS THE PRIVACY GATE.
-//
-// RED REASON — AND ITS DELIBERATE ASYMMETRY (shop-npc.spec.ts:20-27 style)
-// =======================================================================
-// Verified by direct read this session: `my_wallet` appears NOWHERE in
-// client/src/net/connection.ts (the `.subscribe([...])` array at :544-600 ends the shop
-// block with the now-false comment "player_wallet is PRIVATE ... and produces no client
-// subscription — excluded", :576-577); `playerWalletRowToStore` does not exist in
-// client/src/net/rowConvert.ts; and `store.ownWallet(` occurs ZERO times in
-// client/src/main.ts, so none of the three `buildShopViewModel*(` call sites (:1378,
-// :1436, :1443) passes a wallet. `shopModel.balanceViewModel` therefore returns
-// `{kind:'unknown'}` for EVERY player and `shopView.render` writes text '' + hidden +
-// data-balance-state="unknown" (shopView.ts:97-100).
-//
-//   - The 11r-e-6 test (A) FAILS today: `Gold: 50` is never rendered.
-//   - The 11r-e-7 test (A) FAILS today, for the same reason.
-//   - The 11r-e-8 test (B) PASSES TODAY, **VACUOUSLY** — everyone gets `unknown`.
-//     That asymmetry is exactly why 11r-e-9 (catalogue populated) is asserted inside the
-//     SAME test as its mandatory positive control, why the SAME readBalance() helper is
-//     used for A and B in ONE run against ONE module (so the machinery is shown to
-//     DISTINGUISH the two states rather than being uniformly dead), and why B's check
-//     also asserts, via `spacetime sql`, that A's wallet row provably exists server-side
-//     at the moment B looks.
-//   - Under `test.describe.serial` a failing test SKIPS the rest of the group, so in the
-//     RED state expect: setup + the two quest preconditions PASS (the 50 gold is granted
-//     server-side today — only the client display is missing), the 11r-e-6 test FAILS,
-//     and the 11r-e-8 / 11r-e-7 tests report as SKIPPED, not passed.
 //
 // ---------------------------------------------------------------------------------------
 // WORLD FACTS — every one re-derived from source this session, with its citation
@@ -93,7 +65,7 @@ import {
 // A FRESH IDENTITY HAS NO WALLET ROW AT ALL: `join_game` grants a starter monster, no gold
 //   and no items, and `economy.rs`'s `if amount == 0 { return; }` zero-guard prevents a
 //   phantom row. So B's `unknown` is a REAL server state, not a client artifact — and
-//   `Gold: 0` (the "broke, not dark" arm, ADR-0154 D6) is unreachable in this run and stays
+//   `Gold: 0` (the "broke, not dark" arm) is unreachable in this run and stays
 //   unit-tested only (shopModel.test.ts [ux2-M2]).
 //
 // 50 GOLD BUYS NOTHING, so the balance is stable for the entire run:
@@ -109,7 +81,7 @@ import {
 //     with it needs a bounded retry loop (the dialogue.spec.ts machinery, CI-proven for
 //     months). Its `interaction` field is absent ⇒ plain Dialogue.
 //   - `tideglass_shopkeeper`: zone 1, home (8,1), **wander_radius 0** ⇒ npc_decide's pinned
-//     stationary special case; NO retry loop is needed in zone 1 (shop-npc.spec.ts:38-42).
+//     stationary special case; NO retry loop is needed in zone 1.
 //     `interaction: Shop(1)`, tree `shopkeeper_greeting` ("Hello, customer!").
 //
 // MAP (game-core/content/zone_maps/000-core.ron) — zones 0 and 1 ship the IDENTICAL 10x7
@@ -125,12 +97,12 @@ import {
 //        (8,1) — the inclusive TALK_RANGE boundary).
 //
 // CROSS-ZONE NOISE IN THE IN-RANGE POLL: `__game().characters` carries NO zoneId and the
-//   `character` subscription is globally unfiltered (connection.ts:545-550), so a player
+//   `character` subscription is globally unfiltered, so a player
 //   standing in zone 1 can still hold zone-0 character rows. Checked: from the zone-1
 //   tile (6,1), NO tile in elder_oak's zone-0 wander disc (Manhattan <= 2 of (5,5)) is
 //   within Manhattan 2 — the nearest, (5,3), is 3 away. From the zone-0 pocket (5,4) the
 //   zone-1 shopkeeper at (8,1) is 6 away. So the poll predicate below cannot be fooled at
-//   either stop, and `interactAtNearest` re-filters by zone anyway (main.ts:1033-1053).
+//   either stop, and `interactAtNearest` re-filters by zone anyway.
 //
 // THE RENDER PATH: client/src/ui/shopView.ts:97-100 is the SOLE writer of the balance node —
 //   `textContent = known ? vm.balance.label : ''`, `hidden = !known`,
@@ -138,7 +110,7 @@ import {
 //   BEFORE the `no-shop` early return, and no CSS anywhere touches #shop-balance. The node
 //   is CREATED by the ShopView constructor (:58-69), not by index.html, and starts with NO
 //   data-balance-state attribute — so `data-balance-state="unknown"` POSITIVELY PROVES
-//   render() ran. The label format is `Gold: ${amount}` (shopModel.ts:78).
+//   render() ran. The label format is `Gold: ${amount}`.
 //
 // SHOP-OPEN PATH (precedent shop-npc.spec.ts:412-435): walk to (6,1) → KeyT →
 //   #dialogue-node-text = "Hello, customer!" → click [data-shop-id] → #shop-overlay visible,
@@ -149,15 +121,15 @@ import {
 // WHY A MUTATION-RECORD RECORDER, AND NOT JUST A RETRYING toHaveText (ADR-0169 D7 / R4)
 // ---------------------------------------------------------------------------------------
 // `movement_tick` is scheduled PER ZONE unconditionally, one row per zone_def, at
-// `STEP_MS = 200` (server-module/src/lib.rs:110-139) — it does not depend on a player being
+// `STEP_MS = 200` — it does not depend on a player being
 // present in that zone. elder_oak keeps wandering in zone 0 forever, every wander writes a
 // `character` row, the subscription is globally unfiltered, and the M13d shop batch listener
-// (main.ts:1427-1453) re-renders an OPEN overlay on every batch. So an open overlay is
+// re-renders an OPEN overlay on every batch. So an open overlay is
 // re-rendered roughly every 200 ms WITH NO PLAYER INPUT, and a retrying
 // `toHaveText('Gold: 50')` cannot distinguish a correct implementation from one that
 // patched only the batch-listener call site (:1436) and blanks on open.
 //
-// Worse: `store.flushBatch` (store.ts:589-602) invokes batch listeners SYNCHRONOUSLY in
+// Worse: `store.flushBatch` invokes batch listeners SYNCHRONOUSLY in
 // registration order, and the deferred-open listener (:1345) is registered BEFORE the shop
 // listener (:1427). In a `:1436`-only patch the open therefore goes
 //   render(no wallet) → blank  →  show()  →  render(wallet) → `Gold: 50`
@@ -168,7 +140,7 @@ import {
 // so the transient blank that precedes `show()` is recoverable verbatim. That is the one
 // assertion no source scan and no polled matcher can fake.
 //
-// The first-paint channel is the TEXT one ONLY (ADR-0169 D7, tightened during the 11r-e
+// The first-paint channel is the TEXT one ONLY (tightened during the 11r-e
 // review — deliberate, and strictly stronger, not a weakening). shopView.ts:97-100 derives
 // text, `hidden` and `dataset.balanceState` from ONE boolean in three adjacent statements,
 // so per render the text and the state are equivalent; but recovering a written ATTRIBUTE
@@ -181,7 +153,7 @@ import {
 //   patched sites | settled toHaveText | FIRST PAINT | "ever unknown" latch | verdict
 //   --------------|--------------------|-------------|----------------------|---------
 //   all 3         | pass               | pass        | pass                 | correct
-//   :1378 only    | FAIL (11r-e-7)     | pass        | FAIL                 | caught
+//   :1378 only    | FAIL | pass        | FAIL                 | caught
 //   :1436 only    | **pass**           | **FAIL**    | **FAIL**             | caught here only
 //   :1443 only    | FAIL               | FAIL        | FAIL                 | caught
 //
@@ -344,7 +316,7 @@ async function walk(p: Page, dirs: readonly string[]): Promise<void> {
   }
 }
 
-/** Server TALK_RANGE (npc.rs:19) — Manhattan. Mirrored here for the poll predicate. */
+/** Server TALK_RANGE — Manhattan. Mirrored here for the poll predicate. */
 const TALK_RANGE = 2;
 /** KeyT retries. Each attempt first POLLS (bounded, no fixed sleep) until some
  *  non-player character is within TALK_RANGE of the own authoritative tile, then presses
@@ -495,7 +467,7 @@ interface FirstPaint {
 
 /** Reconstruct the balance TEXT as it stood at the instant #shop-overlay became visible.
  *
- *  TEXT ONLY, deliberately (ADR-0169 D7, tightened during the 11r-e review). shopView.ts:97-100
+ *  TEXT ONLY, deliberately. shopView.ts:97-100
  *  derives `textContent`, `hidden` and `dataset.balanceState` from ONE boolean in three
  *  adjacent statements, so within any SINGLE render `textContent === 'Gold: 50'` ⟺
  *  `balanceState === 'known'` — the state channel carried no information the text channel
@@ -621,7 +593,7 @@ function sqlQuery(query: string, label: string): string {
 }
 
 /** lowercase + strip a leading '0x'. `spacetime sql` renders Identity as '0x' + 64
- *  lowercase hex (ADR-0121 D1, resolved empirically); `__game().identity` is the SDK's
+ *  lowercase hex (resolved empirically); `__game().identity` is the SDK's
  *  `Identity.toHexString()`. Normalising both ends makes the comparison prefix-agnostic.
  *  (ranked-forfeit.spec.ts / rename.spec.ts:77-84 precedent.) */
 function normalizeIdentity(id: string): string {
@@ -674,7 +646,7 @@ function walletBalanceFor(identityHex: string, label: string): string | undefine
 /** Open the quest log, poll for `wanted`-ness of `questId`, close it again.
  *  ANTI-VACUITY: a quest log that never OPENED must not read as "the quest is gone", so
  *  the visibility of #quest-log-overlay is asserted before the list is read. KeyQ is
- *  guarded on "no other overlay visible" (main.ts:944-957), so callers must dismiss the
+ *  guarded on "no other overlay visible", so callers must dismiss the
  *  dialogue overlay first. */
 async function questLogShows(
   p: Page,
@@ -780,7 +752,7 @@ const B_TO_WARP: readonly string[] = [
   'West', // (5,5) — WARP → zone 1 (5,5)
 ];
 /** Zone 1: the warp landing (5,5) → the shopkeeper boundary tile (6,1). Do NOT "simplify"
- *  this to N,N,N,N — (4,3)/(5,3) are WALLS (shop-npc.spec.ts:88-97). */
+ *  this to N,N,N,N — (4,3)/(5,3) are WALLS. */
 const ZONE1_TO_SHOPKEEPER: readonly string[] = ['North', 'East', 'North', 'North', 'North'];
 const SHOP_TILE: Tile = { x: 6, y: 1 };
 
@@ -1016,10 +988,10 @@ test.describe
     // 11r-e-6 + 11r-e-9 (A): the player sees their OWN real balance — at FIRST PAINT
     // and settled — in a demonstrably populated catalogue.
     //
-    // KILLS: the slice being inert (today: #shop-balance exists, hidden, `unknown`
-    // forever); a subscription wired but the store never fed; a store fed but no call site
-    // passing it; and — uniquely, via the first-paint reconstruction — the `:1436`-only
-    // 2-of-3 patch that a retrying matcher cannot see (see the header truth table).
+    // KILLS: the slice being inert; a subscription wired but the store never fed; a store
+    // fed but no call site passing it; and — uniquely, via the first-paint reconstruction
+    // — the `:1436`-only 2-of-3 patch that a retrying matcher cannot see (see the header
+    // truth table).
     // The overlay is LEFT OPEN for the 11r-e-7 test.
     // -------------------------------------------------------------------------
     test('11r-e-6/9: A opens the shop and #shop-balance reads exactly "Gold: 50" (first paint AND settled)', async () => {
@@ -1081,7 +1053,7 @@ test.describe
       expect(reading.state).toBe('known');
       expect(reading.text).toBe(EXPECTED_BALANCE_TEXT);
 
-      // --- 11r-e-6, FIRST PAINT (ADR-0169 D7) ------------------------------------------
+      // --- 11r-e-6, FIRST PAINT ------------------------------------------
       const fp = await readFirstPaint(a);
       expect(fp.installed, 'the recorder must be installed (anti-vacuity)').toBe(true);
       expect(
@@ -1112,16 +1084,15 @@ test.describe
     // 11r-e-8 + 11r-e-9 (B): a second identity never sees A's gold.
     //
     // KILLS: any RENDER path that puts a balance on screen for a player who has none —
-    // a store keyed as a Map over identities that surfaces the first row it holds
-    // (ADR-0154 D5), an `ownWallet` call replaced by a raw slot read, a fabricated
+    // a store keyed as a Map over identities that surfaces the first row it holds,
+    // an `ownWallet` call replaced by a raw slot read, a fabricated
     // `?? 0n` default anywhere between the view and the DOM.
     //
     // DOES NOT KILL a dropped owner FILTER inside store.ownWallet, and must never be
     // described as if it did (the header says the same, and ADR-0169 D8 is the SSOT):
     // with the server view correctly scoped, B's slot is EMPTY, so `ownWallet` returns
     // undefined with or without its `slot.ownerIdentity === identity` test. That mutant
-    // is killed by store.test.ts S1/S4, and server-side scoping by
-    // evals/wallet-privacy.eval.mjs [B/2c] + economy_tests.rs::my_wallet_view_is_owner_scoped.
+    // is killed by store.test.ts S1/S4.
     // PASSES VACUOUSLY TODAY: hence 11r-e-9 in the same test, the shared readBalance()
     // helper, and the server-truth query below.
     // -------------------------------------------------------------------------
@@ -1158,7 +1129,6 @@ test.describe
       const forSaleTextB = (await b.locator('#shop-for-sale').textContent()) ?? '';
       expect(forSaleTextB.includes('gold')).toBe(true);
 
-      // --- 11r-e-8 ---------------------------------------------------------------------
       const readingB = await readBalance(b);
       expect(
         readingB.state,
@@ -1193,7 +1163,7 @@ test.describe
 
       // Server truth AT THE MOMENT B LOOKS: A's row exists, B's does not. This turns the
       // vacuity argument ("B's `unknown` is not just an empty table") into an assertion.
-      // Identity rendering: '0x' + 64 lowercase hex (ADR-0121 D1); both sides normalized.
+      // Identity rendering: '0x' + 64 lowercase hex; both sides normalized.
       // If the CLI ever abbreviates identities this check is the ADR-0169 D8 SHOULD and may
       // be dropped — the 11r-e-8 gate itself does not depend on it.
       expect(
@@ -1218,7 +1188,7 @@ test.describe
     // moved": character rows are written by the row callback directly and main.ts:1429-1452
     // swallows listener throws, so a dead listener still shows movement beside a stale DOM.
     // Batches are guaranteed: movement_tick is scheduled per zone unconditionally at
-    // STEP_MS = 200 (lib.rs:110-139) and elder_oak wanders forever on the globally
+    // STEP_MS = 200 and elder_oak wanders forever on the globally
     // unfiltered `character` subscription — plus B's whole walk just happened.
     // -------------------------------------------------------------------------
     test('11r-e-7: after further batches re-render the OPEN overlay, A still reads "Gold: 50"', async () => {

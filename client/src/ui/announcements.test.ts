@@ -41,7 +41,7 @@ import { announcementsFor } from './announcements';
 import { OVERLAY_IDS } from './overlayRegistry';
 
 // ---------------------------------------------------------------------------
-// Identical/equal-state silence (A11Y-8)
+// Identical/equal-state silence
 // ---------------------------------------------------------------------------
 
 describe('announcementsFor — identical and structurally-equal states emit nothing (A11Y-8)', () => {
@@ -86,7 +86,7 @@ describe('announcementsFor — message and overlay transition rules (S1-ANN, spe
   it('S1-ANN-OVERLAY-OPENED-DERIVED BITES: topOverlay transitioning to each of the 17 ids emits the id-DERIVED catalog title, never a literal', () => {
     // WRONG IMPL KILLED: a hardcoded copy string (e.g. always 'Battle', or a switch statement
     // with a typo'd branch) would only coincidentally match ONE of the seventeen ids. Compared
-    // against the DERIVED value (`a11yCopy['a11y.overlay.' + id + '.title']`, ADR-0205 D5)
+    // against the DERIVED value (`a11yCopy['a11y.overlay.' + id + '.title']`)
     // rather than a literal, and NOT via `t(OVERLAY_A11Y[id].labelKey)` — computing it the same
     // way the implementation itself would could hide a labelKey/catalog mismatch that a
     // differently-derived expectation would still catch.
@@ -137,7 +137,7 @@ describe('announcementsFor — module purity, mechanically proven by the NODE en
 });
 
 // ---------------------------------------------------------------------------
-// Return-value identity: a FRESH array every call, never a shared/mutated one (RED-TEAM ROUND 2)
+// Return-value identity: a FRESH array every call, never a shared/mutated one
 // ---------------------------------------------------------------------------
 
 describe('announcementsFor — returns a fresh array every call, never a shared mutated one', () => {

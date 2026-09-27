@@ -1,21 +1,12 @@
 // ui/i18n-no-html-sink.test.ts — m24-s0 RHS-independent HTML-parsing-sink census.
 //
-// SOURCE OF TRUTH: M24-internationalization.spec.md §6 S0 (I18N-1..5), ADR-0255 D1-D6,
-// memory/projects/gates/m24-s0.gates.md X1-X5.
-//
-// WHY THIS IS A CO-LOCATED TEST, NOT AN EVAL (ADR-0224/ADR-0255): the spec's own S0
-// `touches:` names a NEW `evals/i18n-no-html-sink.eval.mjs`. ADR-0224 (2026-09-01, after
-// the spec's ceremony) retires new `evals/*.eval.mjs` files; the equivalent invariant
-// ships as this ordinary vitest suite, discovered by vitest's `src/**/*.test.ts` include
-// and run by `just ci`'s client stage.
-//
-// SCOPE (ADR-0255 D2): every `client/src/**/*.ts` file whose name does NOT end in
+// SCOPE: every `client/src/**/*.ts` file whose name does NOT end in
 // `.test.ts` (`endsWith`, never substring `.includes`) — including `module_bindings/`.
 // The whole non-test client tree, not just the five S0 view files: the site population
 // is zero after S0, so the stronger invariant costs nothing and a sixth file cannot
 // silently reintroduce a sink.
 //
-// MATCHER VOCABULARY (ADR-0255 D3) — `String.indexOf` loops ONLY, no `RegExp` (ReDoS ban;
+// MATCHER VOCABULARY — `String.indexOf` loops ONLY, no `RegExp` (ReDoS ban;
 // a regex literal also blinds the single-owner `stripComments` this file imports).
 //   Assignment family: `.innerHTML` / `.outerHTML`, optional whitespace (incl. newlines),
 //     then `=` NOT followed by `=` (a plain assignment), or `+=`. `==`/`===` are getter
@@ -24,24 +15,17 @@
 //     `document.writeln(` is deliberately NOT matched (spec vocabulary is exactly these
 //     five tokens; `document.writeln(` is a declared review-lens item, not a gate).
 //
-// ANTI-VACUITY (ADR-0255 D4) is on files READ, never on sites matched: the site count
+// ANTI-VACUITY is on files READ, never on sites matched: the site count
 // legitimately reaches zero, so I18N-4 pins a NAMED roster of files that must each be
 // present and non-empty after comment-stripping, and fails loudly naming any absent one.
 // There is no numeric file-count floor (ADR-0224 amendment: no ratchets).
-//
-// RED REASON AT HEAD: I18N-1 finds the 13 live `.innerHTML =` sites (ADR-0255 measured
-// population: shopView.ts x6, tradeView.ts x5, questLogView.ts x1, healView.ts x1) — see
-// the assertion message for the exact file:line list. I18N-2/I18N-3/I18N-4 are already
-// green at HEAD (the matcher and the roster are new but the population/files they assert
-// on already satisfy them); they exist as proof-of-teeth for the SAME matcher I18N-1 uses.
 
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 // The comment stripper is IMPORTED, never copied (ADR-0215 single-owner rule — the repo
-// already carries three variants; a fourth is a regression). Precedent for a `.ts` test
-// importing a `.mjs` eval: render/motionPreference.test.ts:48.
+// already carries three variants; a fourth is a regression).
 import { stripComments } from '../../test-util/stripComments';
 
 const CLIENT_SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -181,7 +165,7 @@ describe('i18n-no-html-sink (M24 S0, ADR-0255)', () => {
   });
 
   it('m24s0 I18N-4: the walk read every named roster file and each is non-empty after stripping', () => {
-    // ADR-0255 D4: the five S0 view files, main.ts, and one canary file per other
+    // The five S0 view files, main.ts, and one canary file per other
     // top-level client/src subdirectory. No numeric file-count floor.
     const roster = [
       'main.ts',

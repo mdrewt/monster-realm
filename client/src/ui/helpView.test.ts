@@ -89,13 +89,13 @@ import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
 // implementation, so the VALUE oracle (real attribute writes, real focus moves) still works.
 vi.mock('./overlayA11y', { spy: true });
 
-/** m23-s3: one REAL macrotask boundary — a microtask flush is NOT enough for setTimeout(...,0),
+/** One REAL macrotask boundary — a microtask flush is NOT enough for setTimeout(...,0),
  *  and fake timers are banned for this defer (plan anti-pattern #10). */
 async function flushMacrotask(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-// m23-s3: NEW file-level isolation hooks. They run BEFORE the describe-level `mountHelpOverlay`
+// NEW file-level isolation hooks. They run BEFORE the describe-level `mountHelpOverlay`
 // hooks below, so every test still gets the DOM it always got.
 beforeEach(async () => {
   for (const id of OVERLAY_IDS) closeOverlayA11y(id, null);
@@ -117,7 +117,7 @@ interface HelpViewModel {
 }
 
 // ---------------------------------------------------------------------------
-// DOM mount helper — installs the index.html shell for helpView (ADR-0135).
+// DOM mount helper — installs the index.html shell for helpView.
 // Each test gets a fresh DOM via beforeEach to prevent cross-test contamination.
 // Mirrors renameView.test.ts's mountRenameOverlay() precedent.
 // ---------------------------------------------------------------------------
@@ -130,11 +130,11 @@ function mountHelpOverlay(): {
   const existing = document.getElementById('help-overlay');
   if (existing) existing.remove();
 
-  // m23-s3 FIXTURE FIDELITY (index.html:88-94): `role`/`aria-modal` have shipped as STATIC
+  // m23-s3 FIXTURE FIDELITY: `role`/`aria-modal` have shipped as STATIC
   // LITERALS on this shell since m23-s2, and #help-title carries the tabindex="-1" anchor. They
   // are copied here NOT to be asserted on their own — that is vacuous, a view calling nothing
   // passes — but so that "all three attributes ABSENT after close" is a real tooth: only
-  // closeOverlayA11y can remove them (ui/overlayA11y.ts:142-144). The tabindex buys ZERO test
+  // closeOverlayA11y can remove them. The tabindex buys ZERO test
   // power (plan A7: happy-dom focuses a bare <div> with no tabindex at all).
   document.body.innerHTML = `
     <div id="help-overlay" role="dialog" aria-modal="true" style="display:none">
@@ -220,7 +220,7 @@ describe('HelpView visibility: show / hide / toggle / visible (PTC2B-1/2)', () =
   });
 
   it('BITES: toggle() from hidden shows; toggle() again hides — kills toggle=always-show impl (PTC2B-2)', () => {
-    // PTC2B-2: pressing `?` while help is open closes it. The view's toggle() must flip both ways.
+    // Pressing `?` while help is open closes it. The view's toggle() must flip both ways.
     // WRONG IMPL KILLED: a toggle() that only ever shows (never hides) — the overlay would be
     // un-closeable via the `?` key.
     const view = new HelpView();
@@ -288,7 +288,7 @@ describe('HelpView render(): paints controls + goals as textContent <li>s (PTC2B
 });
 
 // ---------------------------------------------------------------------------
-// ★★ XSS firewall (PTC2B-10 / ADR-0135): a <script>-looking VM string must render
+// ★★ XSS firewall: a <script>-looking VM string must render
 //    as LITERAL textContent — never parsed into a DOM node. Bites an innerHTML impl.
 // ---------------------------------------------------------------------------
 
@@ -347,7 +347,7 @@ describe('★★ HelpView render(): XSS firewall — textContent only, never inn
 });
 
 // ---------------------------------------------------------------------------
-// ★ Rebuild-authoritative (PTC2B-10): render() twice with different VMs — no stale
+// ★ Rebuild-authoritative: render() twice with different VMs — no stale
 //   <li> from the first render survives; the count matches the SECOND VM exactly.
 // ---------------------------------------------------------------------------
 
@@ -385,7 +385,7 @@ describe('★ HelpView render(): rebuild-authoritative — a second render repla
 });
 
 // ---------------------------------------------------------------------------
-// m23-s3 — overlay a11y wiring on the show()/hide() edge (ADDITIVE; see the file header)
+// Overlay a11y wiring on the show()/hide() edge (ADDITIVE; see the file header)
 // ---------------------------------------------------------------------------
 
 const S3_ID: OverlayId = 'helpView';
@@ -483,7 +483,7 @@ describe('HelpView — overlay a11y wiring on the show/hide edge (m23-s3)', () =
   });
 
   it('S3-helpView-REPEAT-NO-REOPEN BITES: show() on an ALREADY-visible overlay neither re-opens nor yanks focus back', async () => {
-    // A re-open clears and re-schedules the deferred-focus timer (ui/overlayA11y.ts:100-113).
+    // A re-open clears and re-schedules the deferred-focus timer.
     // INVISIBLE to every attribute assertion, so it is proven twice: by a call COUNT and by the
     // sentinel still holding focus.
     const { overlay } = mountHelpOverlay();
@@ -527,10 +527,10 @@ describe('HelpView — overlay a11y wiring on the show/hide edge (m23-s3)', () =
     // hide()'s close in `if (wasVisible)` ships with every other gate green. A guarded hide() reads
     // `visible === false` and SKIPS the close whenever a record ever desynchronised from the DOM
     // (S1's named A13 leak, ui/overlayA11y.ts:55-59) — making a live capture listener, a pending
-    // timer and a stale return target PERMANENT. This view is in BATTLE_FORCE_HIDE
-    // (ui/overlayRegistry.ts:274-283), so main.ts's force-hide path drives its close: exactly the
+    // timer and a stale return target PERMANENT. This view is in BATTLE_FORCE_HIDE,
+    // so main.ts's force-hide path drives its close: exactly the
     // desync D2 cites. Unguarded, hide() HEALS it, and a close with no record is a documented pure
-    // no-op (ui/overlayA11y.ts:136-137), so nothing is risked.
+    // no-op, so nothing is risked.
     mountHelpOverlay();
     const view = new HelpView();
     expect(view.visible, 'precondition: never opened').toBe(false);

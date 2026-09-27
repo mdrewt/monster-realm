@@ -134,7 +134,7 @@ beforeEach(() => {
 describe('RB125-KEY — evolutionNoticeKey is a pure key over entry identity', () => {
   it('RB125-KEY-1 BITES: equal for field-equal separate objects, distinct for ANY one differing field, incl. exact bigint (2^53 vs 2^53+1) and a same-ms chain pair (1->5 vs 5->9)', () => {
     // WRONG IMPL KILLED (a): keying on `label` or any derived text — species names arrive on a
-    //   separate subscription (ADR-0272 §1), so a key derived from copy would change under the
+    //   separate subscription, so a key derived from copy would change under the
     //   entry and defeat the whole "announce once per identity" contract.
     // WRONG IMPL KILLED (b) ★: `Number(monsterId)` anywhere in the key. Monster ids are server
     //   `#[auto_inc]` u64 — 2^53 and 2^53+1 collapse to the same IEEE-754 double, so a coerced
@@ -316,7 +316,7 @@ describe('RB125-ANN — the announce sink fires exactly once per distinct key', 
 
 describe('RB125-AD — the in-flight ack lock is aria-disabled, never the disabled property', () => {
   it('RB125-AD-1 BITES: a click sets aria-disabled="true" (the `disabled` PROPERTY stays false) while the ack is in flight; a second click sends nothing; settling removes the attribute entirely', async () => {
-    // WRONG IMPL KILLED (a) ★ THE DEFECT (ADR-0272 §2): the CURRENT lock writes
+    // WRONG IMPL KILLED (a) ★ THE DEFECT: the CURRENT lock writes
     //   `okBtn.disabled = true`. The HTML focus-fixup rule blurs a focused control the instant
     //   `disabled` becomes true, so a keyboard player acking entry 1 of a three-step chain lands
     //   on <body> and must re-Tab for entries 2 and 3.
@@ -406,7 +406,7 @@ describe('RB125-AD — the in-flight ack lock is aria-disabled, never the disabl
   });
 
   it('RB125-AD-3 (green at fork): the OK button keeps focus across a rendered chain step while its own ack is in flight', () => {
-    // A regression pin for the WHOLE reason aria-disabled replaces disabled (ADR-0272 §2): a
+    // A regression pin for the WHOLE reason aria-disabled replaces disabled: a
     // focused control that becomes `disabled` is blurred by the browser; aria-disabled carries
     // no such fixup, so focus must survive the very re-render the lock is held across.
     const d = deferred();
@@ -577,9 +577,9 @@ describe('RB125-SOURCE — evolutionNotice.ts carries the aria-disabled lock and
     // `okBtn.disabled = false` left on some OTHER branch (an error path, a future door) is
     // invisible to them. Each needle is a REPO RULE:
     //   .disabled = / ['disabled'] / setAttribute('disabled'/toggleAttribute('disabled' — the
-    //     lock must be aria-disabled, never the disabled PROPERTY OR ATTRIBUTE (ADR-0272 §2);
+    //     lock must be aria-disabled, never the disabled PROPERTY OR ATTRIBUTE;
     //   LiveRegion / liveRegion / a11y-live / LIVE_REGION_ID — ui/liveRegion.ts stays the SOLE
-    //     announcement owner ([A11Y-05b]); this file must reach it only through the injected
+    //     announcement owner; this file must reach it only through the injected
     //     `sinks.announce` callback, never by name;
     //   'aria-disabled', 'false' — the release path must REMOVE the attribute, never set the
     //     literal string "false" (a value ARIA readers still treat as present-and-disabled).
@@ -619,7 +619,6 @@ describe('RB125-SOURCE — evolutionNotice.ts carries the aria-disabled lock and
     const a11yLiveId = ['a11y', '-live'].join('');
     const liveRegionIdConstName = ['LIVE_REGION', '_ID'].join('');
     const ariaLiveAttr = ['aria', '-live'].join('');
-    // Given verbatim per the rb-125 handoff: `"'aria-" + "disabled', 'false'"`.
     const ariaDisabledFalseLiteral = "'aria-" + "disabled', 'false'";
 
     for (const banned of [

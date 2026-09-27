@@ -1,9 +1,5 @@
 // prediction/reconnectPolicy.test.ts — M13.5b ADR-0085 reconnect state machine.
 //
-// RED REASON: `./reconnectPolicy` does not exist yet — the import itself fails
-// with a module-not-found error, keeping every test in this file red until the
-// implementer creates the module.
-//
 // API CONTRACT (pinned — write tests against EXACTLY these exports):
 //   RECONNECT_BASE_DELAY_MS = 1000
 //   RECONNECT_MAX_DELAY_MS  = 30_000
@@ -96,7 +92,7 @@ describe('reconnectPolicy: reconnectDelayMs delay table', () => {
   });
 
   it('attempt=-1 → treated as 0 → 1000 (negative attempt → base delay)', () => {
-    // ADR-0085: negative attempt is defensively clamped to 0 (total function; the
+    // Negative attempt is defensively clamped to 0 (total function; the
     // state machine never produces one). Kills: an impl that throws or returns a
     // negative delay for a negative attempt argument.
     expect(reconnectDelayMs(-1)).toBe(1000);

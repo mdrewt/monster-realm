@@ -1,11 +1,5 @@
 // ui/renameModel.test.ts — RED gating tests for pt-c1b §PTC1B-7 / §PTC1B-1 / D2 / D6.
 //
-// Slice: pt-c1b · Source-of-truth spec: docs/specs/pt-c1b-plan.md + docs/adr/0133-rename-ui.md
-//
-// RED REASON: renameModel.ts does not exist yet.
-// Every test below will fail with:
-//   "Failed to resolve import './renameModel'" (module-not-found)
-//
 // WRONG-IMPL-KILLED list (one per criterion):
 //   - "no trim before non-empty check" → whitespace-only draft → canSubmit:false ★ catches it
 //   - "trim not reflected in trimmedDraft"  → trimmedDraft:'' for '   ' catches it
@@ -17,12 +11,9 @@
 // DESIGN GUARD (NOT A BUG):
 //   This file deliberately contains NO test asserting that a 25-char name or an
 //   emoji/non-alphanumeric name is rejected. The server's validate_name is the
-//   validation SSOT (ADR-0133 D2). A model that re-implements those rules is the
+//   validation SSOT. A model that re-implements those rules is the
 //   anti-pattern — it creates a second SSOT that diverges when the server constant
 //   changes. The absence of those tests is intentional and load-bearing.
-//
-// Do NOT edit tests to match a buggy impl — correct from the spec only.
-// Corrections must be traced to the spec and must not weaken the bite.
 
 import { describe, expect, it } from 'vitest';
 import { buildRenameViewModel } from './renameModel';

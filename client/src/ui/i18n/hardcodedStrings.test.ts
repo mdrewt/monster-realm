@@ -2,20 +2,7 @@
 // lint: §2.2's default-fail character inversion, fixture-proven through the SAME `scanSource` the
 // real whole-tree scan uses, plus the exactly-pinned migration ceiling.
 //
-// SOURCE OF TRUTH:
-//   specs/monster-realm-v2/M24-internationalization.spec.md §2.2 (the rule, F2 RESOLVED), §5.2
-//     ([I18N-HC-01..05], BAD (1)-(4), GOOD (1)-(3), vacuity attacks (a)(b)(c)), §6 S2 (I18N-12..18).
-//   docs/adr/0257-i18n-hardcoded-string-lint-colocated-vitest-exact-ratchet.md D1-D7.
-//   memory/projects/gates/m24-s2.gates.md X1-X7 (the `-t` handles below are the ledger's CHECKs).
-//   memory/projects/monster-realm-m24-s2-plan.md (R1-R9 override the earlier text).
-//
-// WHY THIS IS A CO-LOCATED TEST, NOT AN EVAL (ADR-0224 / ADR-0257 D1): spec §5.2 names a NEW
-// `evals/i18n-hardcoded-strings.eval.mjs`. ADR-0224 (2026-09-01, after the spec's ceremony)
-// retires new `evals/*.eval.mjs` files; the identical enforcement semantics ship as this ordinary
-// vitest suite, discovered by vitest's `src/**/*.test.ts` include and run by `just ci`'s client
-// stage. The baseline is plain data (`__fixtures__/i18n-hardcoded.json`), not an eval file.
-//
-// SCOPE (ADR-0257 D2, plan R1): every `client/src/**/*.ts` whose name does NOT end in `.test.ts`
+// SCOPE (plan R1): every `client/src/**/*.ts` whose name does NOT end in `.test.ts`
 // (`endsWith`, never substring) — the S0 precedent's walk. The 19 spec-named files
 // (`SCAN_TARGETS`) are asserted present-and-non-empty; `SINK_FLOOR = 169` is `>=` over the
 // whole-tree total. Two post-spec files (`ui/privacyView.ts`, `ui/evolutionNotice.ts`) are inside
@@ -29,22 +16,13 @@
 //
 // MATCHER DISCIPLINE: `String.indexOf` loops only — no regex literal, no `RegExp` constructor —
 // in this file too (a regex literal blinds the single-owner `stripComments` this file imports).
-//
-// RED REASON AT HEAD (m24-s2 T2): `hardcodedStrings.ts` is a SKELETON — `isCleanSegment` and
-// `scanSource` both `throw new Error('m24-s2: not implemented')`. Every Phase-0 test therefore
-// fails on that message; I18N-17/18/18x call `scanSource` per real file inside the memoised
-// `scan()` and fail on the same throw. The ceiling placeholder is 0 until T4 measures it.
-//
-// Do NOT edit these tests to match a buggy implementation — correct them from the spec/ADR/plan
-// only.
 
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: fixture is scanned source text, not a template
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-// The comment stripper is IMPORTED, never copied (ADR-0215 single-owner rule). Precedent for a
-// `.ts` test under `ui/i18n/` importing a `.mjs` eval: ./catalog.test.ts:32.
+// The comment stripper is IMPORTED, never copied (ADR-0215 single-owner rule).
 import { stripComments } from '../../../test-util/stripComments';
 import {
   isCleanSegment,
@@ -98,7 +76,7 @@ function countOccurrences(hay: string, needle: string): number {
   }
 }
 
-/** ADR-0257 D5: the baseline JSON is EXACTLY `{HARDCODED_CEILING: non-negative integer}` — one
+/** The baseline JSON is EXACTLY `{HARDCODED_CEILING: non-negative integer}` — one
  *  key, no extras, no string, no float, no negative. Throws a named reason otherwise. */
 function readCeiling(text: string): number {
   const parsed: unknown = JSON.parse(text);
@@ -267,7 +245,7 @@ const CALL_MY_REPLACE_CHILDREN = "myReplaceChildren('Raw')";
 const RHS_CALL_TRUNCATED = 'list.replaceChildren(a';
 const RHS_UNTERMINATED = "el.textContent = 'oops;";
 const RHS_TRUNCATED = "el.textContent = f('a'";
-// R-m24-s4-RT1 (rb-130): the t(/tf( exemption must also reject a private `#t(` / `#tf(` member,
+// The t(/tf( exemption must also reject a private `#t(` / `#tf(` member,
 // a non-ASCII identifier char glued before the name, and a `.` receiver separated from the name
 // by ANY whitespace gap (space, newline, NBSP then space). Non-ASCII chars are code-point built
 // (String.fromCharCode) so this file stays ASCII. Controls: operator/bracket-preceded calls and
@@ -549,7 +527,7 @@ describe('i18n-hardcoded-strings (M24 S2, ADR-0257)', () => {
       { sinks: 1, failing: 1 },
       ['Raw'],
     );
-    // Template interpolation contents recurse (ADR-0257 D3).
+    // Template interpolation contents recurse.
     check("`${c ? 'A' : 'B'}`", RHS_TPL_TERNARY, { sinks: 1, failing: 1 }, ['A', 'B']);
     check("`${x ?? ''}`", RHS_TPL_NULLISH_EMPTY, { sinks: 1, failing: 0 });
     check("`${t('a')} · ${t('b')}`", RHS_TPL_TWO_T, { sinks: 1, failing: 0 });
@@ -621,7 +599,7 @@ describe('i18n-hardcoded-strings (M24 S2, ADR-0257)', () => {
       { sinks: 0, failing: 0 },
     );
 
-    // Tripwires (ADR-0257 D6).
+    // Tripwires.
     expect(scanSource(RHS_UNTERMINATED).unterminated, 'unterminated literal').toBe(true);
     const trunc = scanSource(RHS_TRUNCATED);
     expect(trunc.sinks.length, 'truncated: the sink is still reported').toBe(1);
@@ -723,7 +701,7 @@ describe('i18n-hardcoded-strings (M24 S2, ADR-0257)', () => {
     check('obj.\\n<6sp>t() is NOT exempt', RB130_DOT_DEEP_INDENT_T, { sinks: 1, failing: 1 }, [
       'Raw',
     ]);
-    //   Existing boundary, re-pinned alongside (green at HEAD — proves the harness bites).
+    //   Existing boundary, re-pinned alongside.
     check('obj.t() is NOT exempt', RHS_OBJ_T, { sinks: 1, failing: 1 }, ['Raw']);
 
     // MUST PASS {1,0} — the exemption still holds. Each kills an over-tightened fix:

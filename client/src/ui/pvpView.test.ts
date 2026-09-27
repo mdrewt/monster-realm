@@ -99,7 +99,7 @@ import { PvpView, type PvpViewCallbacks } from './pvpView';
 // implementation, so the VALUE oracle (real attribute writes, real focus moves) still works in the
 // same test. Measured working in this repo's vitest 4 (plan §7 "Verified mechanics").
 vi.mock('./overlayA11y', { spy: true });
-// m24s3 (ADR-0259) MECHANISM oracle, same shape: records every t()/tf() call AND calls
+// m24s3 MECHANISM oracle, same shape: records every t()/tf() call AND calls
 // through to the real resolver, so PV-01's DOM byte-identity assertions still work.
 vi.mock('./i18n/resolver', { spy: true });
 
@@ -181,7 +181,7 @@ afterEach(async () => {
 });
 
 // ---------------------------------------------------------------------------
-// m23-s3 — overlay a11y wiring on the show()/hide() edge
+// Overlay a11y wiring on the show()/hide() edge
 // ---------------------------------------------------------------------------
 
 describe('PvpView — overlay a11y wiring on the show/hide edge (m23-s3)', () => {
@@ -221,13 +221,13 @@ describe('PvpView — overlay a11y wiring on the show/hide edge (m23-s3)', () =>
     view.show();
 
     // NEGATIVE polarity. WRONG IMPL KILLED: a synchronous focus reintroduces the exact bug the
-    // defer exists to avoid (ui/overlayA11y.ts:9-15) — the letter that OPENED the overlay (KeyP
+    // defer exists to avoid — the letter that OPENED the overlay (KeyP
     // here) lands in the thing it just opened.
     expect(document.activeElement, 'the initial focus must NOT have landed synchronously').not.toBe(
       target,
     );
 
-    // The defer must come from the S1 helper, not from a view-local setTimeout (A11Y-15).
+    // The defer must come from the S1 helper, not from a view-local setTimeout.
     expect(
       vi.mocked(openOverlayA11y),
       'the deferred focus must be scheduled by openOverlayA11y, not by the view',
@@ -257,7 +257,7 @@ describe('PvpView — overlay a11y wiring on the show/hide edge (m23-s3)', () =>
     view.hide();
 
     // VACUITY ATTACK V1, closed here: index.html ships role/aria-modal as STATIC LITERALS, so the
-    // only way they can be ABSENT is if closeOverlayA11y really ran (ui/overlayA11y.ts:142-144).
+    // only way they can be ABSENT is if closeOverlayA11y really ran.
     // This is the anti-vacuity partner of S3-pvpView-OPEN-ARIA and it kills the "rely on the static
     // literals, call nothing" cheat outright.
     expect(
@@ -360,7 +360,7 @@ describe('PvpView — overlay a11y wiring on the show/hide edge (m23-s3)', () =>
     //      (`if (this.#visible) this.hide()`, ui/pvpView.ts:89), so an internal guard is pure
     //      double-counting: it adds nothing on the normal path and removes the only self-heal.
     //
-    // A close with no record is a documented pure no-op (ui/overlayA11y.ts:136-137), so the
+    // A close with no record is a documented pure no-op, so the
     // unconditional call risks nothing.
     mountPvpOverlay();
     const view = new PvpView(makeCallbacks());
@@ -391,10 +391,7 @@ describe('PvpView — overlay a11y wiring on the show/hide edge (m23-s3)', () =>
 // ---------------------------------------------------------------------------
 // Pre-existing refresh() behaviour — this file is the FIRST spec for pvpView, so the behaviour the
 // S3 tests lean on (the caller-owned show/hide decision, the authoritative row rebuild, the
-// callbacks) is pinned here rather than assumed. m23-s3 left `refresh()` byte-unchanged (its plan
-// T7); 20r-a then added the in-flight lifecycle lock (the `★ PvpView 20r-a` block at the end of
-// this file), which `refresh()` re-applies after the rebuild. Every test below still passes; the
-// Accept-then-Decline case awaits that lock between its clicks (20r-a PV-5, plan D2).
+// callbacks) is pinned here rather than assumed.
 // ---------------------------------------------------------------------------
 
 describe('PvpView refresh(): existing behaviour (pinned, must stay byte-unchanged by m23-s3)', () => {
@@ -515,11 +512,8 @@ describe('PvpView refresh(): existing behaviour (pinned, must stay byte-unchange
 });
 
 // ---------------------------------------------------------------------------
-// 20r-a — ONE view-wide in-flight lock over the four challenge-lifecycle actions (Accept /
-// Decline / Cancel / Challenge-a-player). APPENDED BLOCK; the edits above are the header
-// clauses and the PV-5 `await` in the Accept-then-Decline case.
-//
-// SOURCE OF TRUTH: docs/specs/20r-a-plan.md §0 D2/D3/D8/D11, §1 pvpView.ts, §3 PV-1..PV-6.
+// ONE view-wide in-flight lock over the four challenge-lifecycle actions (Accept /
+// Decline / Cancel / Challenge-a-player).
 //
 // WHY VIEW-WIDE (plan D2), not per button and not keyed by challengeId: all four actions
 // mutate ONE challenge state. Accept-then-Decline (or Decline-then-Cancel of an outgoing while
@@ -531,9 +525,6 @@ describe('PvpView refresh(): existing behaviour (pinned, must stay byte-unchange
 // WHAT THE LOCK COVERS AND WHAT IT MUST NOT (plan §4 #8): the <button>s under `#incomingEl`,
 // `#outgoingEl` and `#playerListEl` — never a `#root`-wide query. PV-1 parks a sentinel
 // <button> as a DIRECT child of the root (the S3 idiom above) and asserts it stays enabled.
-//
-// RED REASON: no `#pending` exists — Accept's click disables nothing, so PV-1's first census
-// reds and every other row reds on its "disabled after the click" anchor.
 //
 // happy-dom facts, the microtask budget and the hostile-re-enable rationale: see
 // battleView.test.ts's 20r-a header — the same three facts hold here.
@@ -955,27 +946,16 @@ describe('★ PvpView 20r-a: ONE view-wide in-flight lock over the challenge-lif
 });
 
 // =============================================================================
-// m24s3 (ADR-0259) — i18n migration batch A: pvpView.ts routes its migrated sinks
+// i18n migration batch A: pvpView.ts routes its migrated sinks
 // through t()/tf() (ADR-0256/0257 resolver) instead of raw English literals.
 //
-// PREDICTED RED REASON AT HEAD: pvpView.ts calls neither `t()` nor `tf()` anywhere
-// today — every literal below is still a bare string, and the file imports
-// nothing from `./i18n/resolver`. PV-01/PV-02 therefore fail on their very first
-// `toHaveBeenCalledWith` / sentinel-presence assertion (the spied `i18nT`/`i18nTf`
-// are never called at all); PV-03 fails because `scanSource(stripComments(...))`
-// reports >=17 FAILING sinks (raw English segments), not the required
-// `failing: []`.
-//
-// Do NOT edit these tests to match a buggy implementation — correct them from the
-// plan/ADR-0259 only.
 // =============================================================================
 
-// m24s3 hardening H1 (tests red-team, surviving cheat C10c): the pvpView keys this
-// sentinel matrix can legitimately produce — see battleView.test.ts's
-// m24s3IsExpectedSentinelSpan header for why a bracket span whose content is not
-// EXACTLY one of these must be LEFT IN PLACE (never elided) rather than blindly
-// stripped — a forged `.append('«Accept»')`-style span must not launder raw English
-// past the roster-word scan below.
+// the pvpView keys this sentinel matrix can legitimately produce — see
+// battleView.test.ts's m24s3IsExpectedSentinelSpan header for why a bracket span
+// whose content is not EXACTLY one of these must be LEFT IN PLACE (never elided)
+// rather than blindly stripped — a forged `.append('«Accept»')`-style span must not
+// launder raw English past the roster-word scan below.
 const M24S3_PV_PLAIN_KEYS = new Set([
   'pvp.title.idle',
   'pvp.title.challenge',
@@ -1009,7 +989,7 @@ function m24s3PvIsExpectedSentinelSpan(content: string): boolean {
 }
 
 /** Elides only the bracket spans that are EXACTLY an expected sentinel (manual
- *  indexOf loop — no RegExp, ADR-0055) and reports every OTHER `«...»` span verbatim
+ *  indexOf loop — no RegExp) and reports every OTHER `«...»` span verbatim
  *  in `unexpectedSpans`, un-elided, so it stays in `stripped` for the roster-word scan
  *  too (belt-and-braces). See battleView.test.ts's m24s3SplitSentinels header. */
 function m24s3PvSplitSentinels(text: string): { stripped: string; unexpectedSpans: string[] } {
@@ -1072,7 +1052,7 @@ const M24S3_PV_ROSTER = [
 
 function m24s3PvAssertNoRosterWord(texts: readonly string[], label: string): void {
   const { stripped, unexpectedSpans } = m24s3PvSplitSentinels(texts.join('\n'));
-  // m24s3 hardening H1: a FORGED bracket span (raw English wrapped in `«...»` by
+  // a FORGED bracket span (raw English wrapped in `«...»` by
   // something other than the resolver) is never elided — it must not exist at all
   // under a correct implementation.
   expect(
@@ -1160,7 +1140,7 @@ describe('m24s3 (ADR-0259): pvpView.ts routes its migrated sinks through t()/tf(
 
   it('m24s3 PV-02: under «key» sentinels, every rendered surface shows resolver output and never an English roster word outside a sentinel', () => {
     const root = mountPvpOverlay();
-    // m24s3 hardening H3: the view is CONSTRUCTED here, BEFORE the sentinel
+    // the view is CONSTRUCTED here, BEFORE the sentinel
     // mockImplementation is installed below — same ordering as battleView.test.ts's
     // BV-02 (see its m24s3 H3 comment). pvpView.ts has no constructor-time t()/tf()
     // call today, but this ordering is what would surface one if a future edit ever
@@ -1256,20 +1236,10 @@ describe('m24s3 (ADR-0259): pvpView.ts scan — zero failing sinks', () => {
 });
 
 // ---------------------------------------------------------------------------
-// rb-121 (ADR-0271, residual R-20r-a-FOCUS) — a settle-released lifecycle lock
+// rb-121 (residual R-20r-a-FOCUS) — a settle-released lifecycle lock
 // re-anchors focus that the no-batch path stranded on <body>, by re-calling
 // openOverlayA11y('pvpView', root) when the release finds
 // `this.#visible && document.activeElement === document.body`.
-//
-// SOURCE OF TRUTH: docs/adr/0271-rb121-settle-release-reanchors-stranded-focus.md;
-// memory/projects/gates/rb-121.gates.md X3/X5.
-//
-// RED REASON: pvpView.ts's `#dispatch` `.finally()` block re-enables the three
-// lifecycle containers' buttons but never calls openOverlayA11y — every
-// rb121-PVP-{REJECT,RESOLVE,THROW,DETACH} tooth below fails its final
-// `toBe(anchor)` assertion on master. rb121-PVP-STALE's negative half and every
-// KEEP-*/HIDDEN control pass on master already; STALE's positive half is what reds
-// the whole tooth on master.
 //
 // HIDDEN MECHANISM NOTE: pvpView's `refresh(vm, forceVisible)` ALWAYS calls
 // `show()` when `forceVisible` is true, so a lock cannot be taken while `#visible`

@@ -1,4 +1,4 @@
-// render/textureCache.test.ts — #28c: placeholder-texture teardown (vitest, node-only).
+// render/textureCache.test.ts — placeholder-texture teardown (vitest, node-only).
 //
 // SOURCE OF TRUTH: issue #28(c) — `generateTexture` results cached in
 // `PlaceholderAssets` were never destroyed -> GPU-texture leak on teardown /
@@ -6,7 +6,7 @@
 // helper; `PlaceholderAssets.destroy()` / `WorldRenderer.destroy()` are thin
 // callers (not constructible in node — see zorderZIndex.test.ts header).
 //
-// Proof-of-teeth (ADR-0010): each assertion names the wrong impl it kills.
+// Proof-of-teeth: each assertion names the wrong impl it kills.
 
 import { describe, expect, it } from 'vitest';
 import { type DestroyableTexture, destroyAllTextures } from './textureCache';

@@ -81,7 +81,7 @@ const H = vi.hoisted(() => {
 });
 
 // The wasm pkg — identical shape to main.a11yFocus.test.ts's mock. `deletion_grace_ms_default`
-// crosses as a BigInt (`-> i64`, ADR-0212), so the stub is `1n`, not `1`; it is deliberately a
+// crosses as a BigInt (`-> i64`), so the stub is `1n`, not `1`; it is deliberately a
 // SYNTHETIC window and never the shipped value.
 vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
   const SIDE = 3;
@@ -365,9 +365,7 @@ function claimOverlayVisible(): boolean {
 
 /**
  * The front door: the ONE button inside the Account & Sign-in overlay that opens the privacy
- * surface (ADR-0231 A2-D5 — deliberately not a menu leaf and not a hotkey, because both need
- * `helpModel.ts`'s CONTROLS SSOT, which is set-equality-gated against `docs/PLAYTEST.md`,
- * outside this slice's touches).
+ * surface (ADR-0231 A2-D5).
  *
  * DISCOVERED BY ROLE, NOT BY A HARD-CODED ID, and the count is asserted: "exactly one privacy
  * door in the account overlay" is the contract-level statement, and it also catches a second,
@@ -652,7 +650,6 @@ describe('main.ts privacy surface wiring (rb-52, PRV1-3/PRV1-4)', () => {
     // WRONG IMPL KILLED: the `call-request-data-export` effect left unwired. `privacyStep`
     // already emits it, and an unreachable effect variant is dead code that silently makes the
     // Export button a no-op — the exact "button that silently does nothing" this repo bans.
-    // (rb-53 owns the TRANSPORT and the download; this is only the call site.)
     H.account = ACCOUNT_ACTIVE;
     runFrame(0);
     openPrivacySurface();
@@ -836,7 +833,7 @@ describe('main.ts privacy surface wiring (rb-52, PRV1-3/PRV1-4)', () => {
   });
 
   it('RB52T-STATUS-TICKS-WITH-THE-WALL-CLOCK: the OPEN surface repaints its deadline as the wall clock advances', () => {
-    // WRONG IMPL KILLED ★ (the shipped first draft, MEASURED CI-green): rendering the surface
+    // WRONG IMPL KILLED ★: rendering the surface
     //   from `privacyModelState.countdown`. The model is pumped only when the phase or a
     //   permission flips (ADR-0231 A2-D9), and neither moves for the whole grace window — so the
     //   status line would freeze at the value the `active -> grace` edge left behind, showing a
@@ -876,7 +873,7 @@ describe('main.ts privacy surface wiring (rb-52, PRV1-3/PRV1-4)', () => {
   });
 
   it('RB52T-FRAME-DOES-NOT-CLEAR-INFLIGHT: an unchanged frame must not re-pump account-changed, so the in-flight lock survives', () => {
-    // WRONG IMPL KILLED ★ (MEASURED surviving before this tooth): dropping the
+    // WRONG IMPL KILLED ★: dropping the
     //   `lastPrivacyCountdown = privacyCountdown` memo write, so the change-detector fires on
     //   EVERY frame. `privacyStep`'s `account-changed` arm writes `inFlight: 'none'`
     //   unconditionally, and `begin`'s only double-submit guard is `inFlight !== 'none'` — so at

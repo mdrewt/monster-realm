@@ -11,11 +11,7 @@
 //     A14 fileURLToPath(import.meta.url), never __dirname ("type":"module")
 //     A15 no RECONNECT_HIDE, no OR-TIERS-TOTAL, no createOverlayVisibility/OverlayProbes
 //
-// RED REASON: client/src/ui/overlayRegistry.ts DOES NOT EXIST. Every test in this file fails
-// at module-link time ("Failed to resolve import './overlayRegistry'") until the implementer
-// ships it. That is the ONLY reason this file is red — nothing below guesses at an API shape.
-//
-// AMENDED by M21b-2 (ADR-0182 D17, gate G19): `claimView` JOINS the manifest as the 16th
+// AMENDED by M21b-2 (gate G19): `claimView` JOINS the manifest as the 16th
 // member, tiered GUARD_ONLY. `sessionView` DELIBERATELY DOES NOT — it stays registry-external
 // and is exempted by name in the directory scan below, exactly as `errorOverlayView` is.
 // THE REASON, verified against overlayRegistry.ts:140-154 and recorded here because "add the
@@ -27,38 +23,6 @@
 // that has EXPIRED could not tell the player so while a battle was on screen, which is
 // precisely backwards. sessionView is therefore driven directly by `conn?.sessionState()`,
 // checked FIRST and unconditionally in main.ts (pinned there by W-M21B2-SESSION-GATE-FIRST).
-//
-// PINNED CONTRACT (the specialist matches this EXACTLY):
-//   export type OverlayId =                    // 16 members, declaration order is free
-//     | 'battleView' | 'boxView' | 'raisingView' | 'evolutionView' | 'dialogueView'
-//     | 'questLogView' | 'healView' | 'shopView' | 'tradeView' | 'pvpView'
-//     | 'leaderboardView' | 'renameView' | 'tradeProposeView' | 'helpView' | 'menuView'
-//     | 'claimView';
-//   export type OverlayTier = 'EXCLUSIVE_TOP' | 'HIDE_SWITCH' | 'GUARD_ONLY';
-//   export const OVERLAY_TIERS: Readonly<Record<OverlayId, OverlayTier>>;
-//   export const OVERLAY_IDS: readonly OverlayId[];        // = Object.keys(OVERLAY_TIERS) (A15)
-//   export const BATTLE_FORCE_HIDE: readonly OverlayId[];  // 8, ORDERED (A2 / OR-FORCEHIDE-EXACT)
-//   export const NEVER_FORCE_HIDE: readonly OverlayId[];   // ['dialogueView'] (A2)
-//   export type CanOpenVerdict =
-//     | { readonly kind: 'allow'; readonly forceHide: readonly OverlayId[] }
-//     | { readonly kind: 'deny';  readonly blockedBy: OverlayId };   // NO forceHide field
-//   export function canOpen(target: OverlayId, currentlyVisible: readonly OverlayId[]):
-//     CanOpenVerdict;                                      // TOTAL, pure, zero DOM
-//   export function hideAllExceptPlan(keep: OverlayId, currentlyVisible: readonly OverlayId[]):
-//     readonly OverlayId[];                                // pure PLAN, performs nothing
-//
-// Added in uxd3-b (ADR-0163): OverlayProbes + anyVisible(probes, exempt?) — the read half of
-// the imperative shell, shipped WITH its five consumers (see BLOCK 6 below).
-//
-// Added in uxd3-c (ADR-0164, adjudication B4 + plan §A): `visibleIds(probes)` (the reversal of
-// A7's own deletion — it now has two real consumers, `overlayVerdict()` and refreshBattle's
-// `hideAllExceptPlan` call) and `OverlayHandles`, a BARE optional-thunk table —
-// `Readonly<Record<OverlayId, (() => void) | undefined>>` — NOT the `{ hide?: () => void }`
-// wrapper an earlier draft of this slice sketched. See BLOCK 7 below.
-// Still NOT shipped (A7 + A15, no consumer — DO-NOT-SHIP list, plan §A): per-id `open` thunks,
-// `hideAllExcept`, `isVisible(id)`, `anyVisibleExcept`, `canOpenNow`, `RECONNECT_HIDE`.
-//
-// Do NOT edit these tests to match a buggy implementation — correct them from the spec/plan only.
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -104,7 +68,7 @@ const EXPECTED_HIDE_SWITCH = ['boxView', 'raisingView', 'evolutionView'] as cons
  *  the draft — and, because the code is single-use and the server's reject strings are
  *  deliberately indistinguishable (AUTH-35), the player would have no way to tell a lost
  *  draft from a consumed code. GUARD_ONLY also buys movement suppression for free, since
- *  `anyOverlayVisible()` iterates the manifest (ADR-0182 D17). */
+ *  `anyOverlayVisible()` iterates the manifest. */
 const EXPECTED_GUARD_ONLY = [
   'dialogueView',
   'questLogView',
@@ -215,11 +179,10 @@ describe('overlayRegistry — manifest completeness (AC-6)', () => {
         .map((f) => f.slice(0, -'.ts'.length)),
     );
 
-    // ANTI-VACUITY, ASSERTED FIRST (the repo's documented vacuity trap, main.wiring.test.ts
-    // :2528-2532): a mis-resolved directory yields an EMPTY set, and both set-equality
+    // ANTI-VACUITY, ASSERTED FIRST (the repo's documented vacuity trap):
+    // a mis-resolved directory yields an EMPTY set, and both set-equality
     // directions below would then pass vacuously. The +2 is errorOverlayView and sessionView,
-    // both real *View.ts files and both deliberately NOT registry members (spec `:128`;
-    // ADR-0182 D17).
+    // both real *View.ts files and both deliberately NOT registry members.
     expect(
       scanned.size,
       `expected exactly ${OVERLAY_IDS.length + 2} *View.ts files in ${uiDir} ` +
@@ -241,7 +204,7 @@ describe('overlayRegistry — manifest completeness (AC-6)', () => {
 
     // errorOverlayView is non-blocking, F8-dismissed and self-re-shows: explicitly excluded.
     scanned.delete('errorOverlayView');
-    // sessionView is registry-EXTERNAL by design (ADR-0182 D17): a second EXCLUSIVE_TOP member
+    // sessionView is registry-EXTERNAL by design: a second EXCLUSIVE_TOP member
     // would make decide() deny it over a live battle, so the session terminal is driven
     // directly by conn?.sessionState() ahead of every overlay path in main.ts. Exempted by
     // name, exactly as errorOverlayView is.
@@ -348,8 +311,7 @@ describe('overlayRegistry — canOpen decision table', () => {
     // turns the three dialogue cells into allow{forceHide:['dialogueView']} — i.e. "force-hide
     // a live conversation and strand the server player_conversation row", the precise thing the
     // retired source scan refused to accept a .hide() for. questLogView/healView give the other
-    // 6. This is the historical KeyB/I/E RED (each handler omitting the three !X?.visible
-    // guards), ported one-for-one.
+    // 6.
     let checked = 0;
     for (const target of HIDE_SWITCH_TRIO) {
       for (const modal of PTC5C_MODALS) {
@@ -458,7 +420,7 @@ describe('overlayRegistry — canOpen decision table', () => {
   it('OR-CANOPEN-BATTLE-TARGET-MATCHES-FORCEHIDE BITES: the battle TARGET row allows exactly its force-hide subset and denies everything else (A1)', () => {
     // WRONG IMPL KILLED: plan §2's original table, which gave "blocker = GUARD_ONLY => deny"
     // for EVERY target tier and therefore made canOpen('battleView', ['helpView']) a deny —
-    // contradicting refreshBattle (main.ts:1176-1190), which force-hides help/leaderboard/
+    // contradicting refreshBattle, which force-hides help/leaderboard/
     // rename/tradePropose and shows the battle anyway. Latent in uxd3-a (battle is not a menu
     // leaf); it detonates in uxd3-b when the battle open routes through canOpen and the battle
     // silently stops auto-showing over an open help overlay.
@@ -516,10 +478,8 @@ describe('overlayRegistry — canOpen decision table', () => {
 describe('overlayRegistry — force-hide sets', () => {
   it('OR-FORCEHIDE-EXACT BITES: BATTLE_FORCE_HIDE is EXACTLY the 9 ordered ids — not a superset, not a spot-check (A2)', () => {
     // WRONG IMPL KILLED: adding `dialogueView` (or `shopView`, or `tradeView`) to the battle
-    // force-hide set. §6 AC-4 claimed the source-scan tooth caught that; it does not — that
-    // scan is bidirectional against main.ts, so a COORDINATED edit that adds the id to BOTH
-    // sides stays green. Only an exact, ordered, hard-coded literal here bites. Force-hiding
-    // dialogueView would strand the server player_conversation row (ptc5c / ADR-0139).
+    // force-hide set. Only an exact, ordered, hard-coded literal here bites. Force-hiding
+    // dialogueView would strand the server player_conversation row.
     // A membership check (`.includes('menuView')`) is deliberately NOT used: it cannot see a
     // 9th member. AC-19's battle half ('menuView' must be in the set) is subsumed here.
     expect(
@@ -538,7 +498,7 @@ describe('overlayRegistry — force-hide sets', () => {
   it('OR-NEVER-FORCE-HIDE BITES: dialogueView is NEVER force-hidden by any canOpen verdict, for any target and any blocker set (A2)', () => {
     // WRONG IMPL KILLED: any future retiering or force-hide-table edit that makes some target
     // able to force-hide a live conversation. `dialogueView`'s visibility is STORE-DERIVED
-    // (main.ts:1164-1181) and its close must route through `dismissDialogue` — a bare hide
+    // and its close must route through `dismissDialogue` — a bare hide
     // leaves the server player_conversation row set, so the player is stuck in a conversation
     // the client no longer shows. This invariant is stronger than narrowing `forceHide` to a
     // 3-member HideSwitchId union (that narrowing is UNSOUND, because A1 requires battle
@@ -572,8 +532,7 @@ describe('overlayRegistry — force-hide sets', () => {
         }
       }
     }
-    // ANTI-VACUITY: 17 targets x (17 singletons + 136 pairs) = 2601 verdicts. (rb-52 moved this
-    // from 16 x (16 + 120) = 2176; the pair count is now C(17,2) = 136.)
+    // ANTI-VACUITY: 17 targets x (17 singletons + 136 pairs) = 2601 verdicts.
     expect(verdicts, 'ANTI-VACUITY: the exhaustive sweep must have produced 2601 verdicts').toBe(
       2601,
     );
@@ -733,20 +692,7 @@ describe('overlayRegistry — canOpen over arbitrary visible sets (A3)', () => {
 });
 
 // ===========================================================================
-// BLOCK 6 — uxd3-b (ADR-0163): `anyVisible(probes, exempt?)`, the READ substrate (AC-7).
-//
-// AMENDS THIS FILE'S HEADER: the "NOT part of uxd3-a … OverlayProbes" note above was a
-// SCOPE statement for uxd3-a, not a permanent ban. uxd3-b adjudication §A2 ships exactly
-// two new exports — `type OverlayProbes` and `anyVisible` — and NOTHING else (no
-// `OverlayHandle` object, no `visibleIds()`, no `isVisible(id)`, no `open`/`hide`/
-// `hideAllExcept`: those have zero consumers in this slice, which is the same YAGNI rule
-// A7/A15 used to delete `createOverlayVisibility` and `RECONNECT_HIDE` one slice ago).
-//
-// RED REASON (both tests below): `anyVisible` is not exported from
-// `client/src/ui/overlayRegistry.ts` yet. Under vitest's SSR transform the missing named
-// export resolves to `undefined`, so each test dies with "anyVisible is not a function" —
-// the RED is CONFINED to these two tests and every uxd3-a tooth above stays green.
-// `tsc --noEmit` also reds on both `anyVisible` and `OverlayProbes` until §B1 lands.
+// BLOCK 6 — uxd3-b: `anyVisible(probes, exempt?)`, the READ substrate (AC-7).
 //
 // WHY AN EXHAUSTIVE LOOP AND NOT fast-check (adjudication §B2): over 15 ids the property is
 // finitely ENUMERABLE, so a loop is strictly stronger than sampling 2^15 subsets — no
@@ -820,7 +766,7 @@ describe('overlayRegistry — anyVisible over a probe table (uxd3-b, AC-7)', () 
   });
 
   it('OR-ANYVISIBLE-EXEMPT BITES: `exempt` skips EXACTLY that one id and nothing else', () => {
-    // Sole production consumer: the pvp auto-show aggregate (main.ts:1609), which must ask
+    // Sole production consumer: the pvp auto-show aggregate, which must ask
     // "is anything OTHER THAN the pvp overlay up?" — a manually-opened pvpView must not veto
     // its own refresh, while a live battle/dialogue must.
     //
@@ -887,15 +833,8 @@ describe('overlayRegistry — anyVisible over a probe table (uxd3-b, AC-7)', () 
 });
 
 // ===========================================================================
-// BLOCK 7 — uxd3-c (ADR-0164, pending): visibleIds(probes) + OverlayHandles, the WRITE
+// BLOCK 7 — uxd3-c (pending): visibleIds(probes) + OverlayHandles, the WRITE
 // substrate (adjudication B4 / plan §A / §C1).
-//
-// RED REASON (all three tests below): `visibleIds` is not exported from
-// `client/src/ui/overlayRegistry.ts` yet — under vitest's SSR transform the missing named
-// export resolves to `undefined`, so `OR-VISIBLEIDS-*` die with "visibleIds is not a function".
-// `OR-HANDLES-DIALOGUE-HAS-NO-HIDE` builds an `OverlayHandles`-typed object literal, so it dies
-// at `tsc`/vitest's on-the-fly type-check with "Cannot find name 'OverlayHandles'" until the type
-// is exported (§B4's shape: `Readonly<Record<OverlayId, (() => void) | undefined>>`).
 //
 // WHY EXHAUSTIVE LOOPS AND NOT fast-check (same rationale as BLOCK 6, adjudication §B2): over 15
 // ids the domain is finitely enumerable, so a loop is strictly stronger than sampling.
@@ -1142,7 +1081,7 @@ function writeA11yProbe(dir: string, name: string, body: string): string {
 
 /** Spawns `tsc --noEmit` on ONE probe file with explicit compiler flags (no tsconfig lookup,
  *  so the probe's temp-dir location and this repo's `client/tsconfig.json` never interact).
- *  Measured at ~0.6s per invocation (ADR-0205 D6). */
+ *  Measured at ~0.6s per invocation. */
 function compileA11yProbe(file: string): A11yProbeResult {
   const result = spawnSync(
     A11Y_TSC_BIN,
@@ -1340,7 +1279,7 @@ describe('overlayRegistry — OVERLAY_A11Y, the a11y metadata SSOT (m23-s0, ADR-
     // clone); `labelKey: 'a11y.count.{n}'` (an ICU placeholder smuggled into a key, §2.8's brace
     // ban); a `labelKey` missing the `a11y.` prefix or with an empty segment (`a11y..title`).
     //
-    // ADR-0205 D5: the spec's OWN regex (`/^a11y\.[a-z0-9.]+$/`, §5.1 `[A11Y-02]`) is wrong in
+    // The spec's OWN regex (`/^a11y\.[a-z0-9.]+$/`) is wrong in
     // BOTH directions — it REJECTS the canonical capital-V key §2.8 itself gives
     // (`a11y.overlay.boxView.title`) and ACCEPTS garbage like `a11y..` / `a11y.....`. The regex
     // below is the ADR-0205-resolved one: case-permitting, and every dot-segment non-empty.
@@ -1351,7 +1290,7 @@ describe('overlayRegistry — OVERLAY_A11Y, the a11y metadata SSOT (m23-s0, ADR-
 
     const SHAPE_RE = /^a11y\.[a-zA-Z0-9]+(\.[a-zA-Z0-9]+)*$/;
 
-    // Self-test of the regex itself (ADR-0205 D5), asserted before it is trusted on real data.
+    // Self-test of the regex itself, asserted before it is trusted on real data.
     expect(
       SHAPE_RE.test('a11y..'),
       "the shape regex must REJECT 'a11y..' (a doubled dot / empty segment) — the spec's own " +
@@ -1418,7 +1357,7 @@ describe('overlayRegistry — OVERLAY_A11Y, the a11y metadata SSOT (m23-s0, ADR-
 
   it('OR-A11Y-DISMISSIBLE-VS-TIER BITES: the constraint is READ FROM OVERLAY_TIERS, not from a second hand-kept id list', async () => {
     // WRONG IMPL KILLED: a check built from a HARDCODED list of "the 13 ids that must be
-    // dismissible" — red-team measured (ADR-0205 D7) that such a list satisfies every naive
+    // dismissible" — red-team measured that such a list satisfies every naive
     // bite-proof while silently ignoring a RETIERING. The loop below reads `OVERLAY_TIERS[id]`
     // — the real SSOT — on every iteration, so retiering `shopView` from GUARD_ONLY to
     // HIDE_SWITCH (while its `dismissible` stays whatever it was) changes which branch that id
@@ -1434,7 +1373,7 @@ describe('overlayRegistry — OVERLAY_A11Y, the a11y metadata SSOT (m23-s0, ADR-
     let constrained = 0;
     let unconstrained = 0;
     for (const id of OVERLAY_IDS) {
-      // Read the constraint from the REAL tier SSOT, never a second hand-kept list (ADR-0205 D7).
+      // Read the constraint from the REAL tier SSOT, never a second hand-kept list.
       const tier = OVERLAY_TIERS[id];
       const meta = (overlayA11y ?? {})[id];
       expect(meta, `OVERLAY_A11Y.${id} must exist`).toBeDefined();
@@ -1476,7 +1415,7 @@ describe('overlayRegistry — OVERLAY_A11Y, the a11y metadata SSOT (m23-s0, ADR-
 });
 
 // ===========================================================================
-// BLOCK 9 — m23-s0 (ADR-0205 D7): OVERLAY_A11Y stays inside the module's purity rule.
+// BLOCK 9 — m23-s0: OVERLAY_A11Y stays inside the module's purity rule.
 //
 // NOT one of the four ledger-gated tests (their exact names are pinned above) — this is core
 // DoD for the slice, kept in its OWN describe so the gated describe block above contains
@@ -1519,7 +1458,7 @@ describe('overlayRegistry — OVERLAY_A11Y stays inside the module purity rule (
     // Red-team MEASURED that blanking all sixteen to '' left `tsc --noEmit` green and this whole
     // suite 30/30 green: `role`, `labelKey` and `dismissible` each had a semantic gate and the
     // fourth A11yMeta field had none. S0 has no DOM, so whether the selector RESOLVES is S2/S4's
-    // gate (ADR-0205 D1) — but its SHAPE is checkable here, and an unshaped selector cannot
+    // gate — but its SHAPE is checkable here, and an unshaped selector cannot
     // resolve to anything at all.
     const SELECTOR_SHAPE_RE = /^(#[A-Za-z][\w-]*|\[data-testid="[A-Za-z][\w-]*"\])$/;
     expect(

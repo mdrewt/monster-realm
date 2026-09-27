@@ -1,9 +1,7 @@
 // render/motionPreference.test.ts — m23-s7 acceptance suite (vitest, node-only).
 //
 // SOURCE OF TRUTH: M23-accessibility.spec.md §2.5 (EARS A11Y-27 "the renderer honours
-// the OS reduced-motion preference"). The A11Y-28 source-text census that used to live at
-// the foot of this file was removed with evals/reduced-motion-purity.eval.mjs (de-bloat
-// ledger CT-src-render-motionPreference#S7T-SCAN); the behaviour tests below stay.
+// the OS reduced-motion preference").
 //
 // The module is driven through INJECTED fakes only: a plain-object `MatchMediaHost`
 // and a recording `MotionQuery`. No happy-dom, no real `window`. That injected seam is

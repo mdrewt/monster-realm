@@ -1,31 +1,17 @@
 // ui/i18n/resolver.test.ts — m24-s1 RED gating tests for the module-level locale cell and the
 // t()/tf() resolvers.
 //
-// SOURCE OF TRUTH:
-//   specs/monster-realm-v2/M24-internationalization.spec.md §2.3, §2.8.
-//   docs/adr/0256-i18n-module-total-catalog-resolver-cell-negative-compile.md D1, D3.
-//   memory/projects/monster-realm-m24-s1-plan.md §2 resolver.ts.
-//
-// RED REASON: `client/src/ui/i18n/{resolver,catalog.en}.ts` DO NOT EXIST YET. The static imports
-// below fail to resolve at collection, redding every test in this file until the specialist
-// ships them.
-//
 // NOT CONCURRENT (load-bearing): `resolver.ts` holds ONE module-level locale cell shared by
 // every test in this process — running this file's tests concurrently (`describe.concurrent` /
 // `it.concurrent`) would let one test's `setLocale` call race another's `currentLocale()` read.
 // This file relies on vitest's DEFAULT per-file (not per-test) isolation and an `afterEach` that
 // resets the cell back to 'en' after every test.
-//
-// Do NOT edit these tests to match a buggy implementation — correct them from the spec/ADR/plan
-// only.
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
-// The comment stripper is IMPORTED, never copied (ADR-0215 single-owner rule). Precedent for a
-// `.ts` test importing a `.mjs` eval: client/src/ui/i18n-no-html-sink.test.ts:45 (one `..`
-// shallower — this file sits one directory deeper, under `ui/i18n/`).
+// The comment stripper is IMPORTED, never copied (ADR-0215 single-owner rule).
 import { stripComments } from '../../../test-util/stripComments';
 import { CATALOG_EN } from './catalog.en';
 import { CATALOGS, currentLocale, DEFAULT_LOCALE, setLocale, t, tf } from './resolver';
@@ -38,7 +24,7 @@ afterEach(() => {
 
 describe('resolver — the module-level locale cell and the t()/tf() resolvers (m24-s1, ADR-0256)', () => {
   it('m24s1 RESOLVER-T: t(key) returns the exact CATALOG_EN value for every m24-s1 plain (string-valued) chrome.* key, and the literal English helpHint value is pinned', () => {
-    // SCOPED to `chrome.*` (m24s3 hardening H2): S3+ grows CATALOG_EN past the m24-s1 seed with
+    // SCOPED to `chrome.*`: S3+ grows CATALOG_EN past the m24-s1 seed with
     // its own `battle.*`/`pvp.*` plain keys — CAT-01 in catalog.test.ts owns the full-roster
     // byte-identity pin for THOSE. This test's job is narrower and stays narrow: it pins that
     // t() returns CATALOG_EN's value verbatim for the ORIGINAL 9-key chrome.* seed, so it must
@@ -61,7 +47,7 @@ describe('resolver — the module-level locale cell and the t()/tf() resolvers (
 
     expect(t('chrome.helpHint' as never)).toBe('Press ? for help · click or M for menu');
 
-    // FULL VALUE SNAPSHOT (mutation red-team): a punctuation-only change to any one plain
+    // FULL VALUE SNAPSHOT: a punctuation-only change to any one plain
     // value — e.g. dropping the em dash in `contentStale` — passes every check above (it only
     // asserts t(key) === CATALOG_EN[key], never the LITERAL English text) but fails here. Kills
     // that survivor by pinning the exact 9-entry plain-value table from the plan. Scoped to
@@ -117,9 +103,9 @@ describe('resolver — the module-level locale cell and the t()/tf() resolvers (
 
     expect(() => setLocale('en')).not.toThrow();
 
-    // m24-s7 (ADR-0263 D2): the registry widens to ['en', 'fr'] — RED at HEAD until the
-    // specialist registers CATALOG_FR in resolver.ts's CATALOGS. Sorted so key ORDER (an
-    // incidental fact of object-literal construction) can never fail this pin.
+    // The registry widens to ['en', 'fr'].
+    // Sorted so key ORDER (an incidental fact of object-literal construction) can never
+    // fail this pin.
     expect(Object.keys(CATALOGS as Record<string, unknown>).sort()).toEqual(['en', 'fr']);
     expect(Object.isFrozen(CATALOGS), 'CATALOGS must be Object.freeze()d').toBe(true);
   });
@@ -165,7 +151,7 @@ describe('resolver — the module-level locale cell and the t()/tf() resolvers (
   });
 
   it("m24s1 SHAPE-05: t has arity 1, tf has arity 2, and resolver.ts's source declares exactly one `export function t(` and one GENERIC `export function tf<` — no overload, no variadic, no monomorphic tf regression", () => {
-    // NOTE (test-review round): the plan mandates the GENERIC signature
+    // the plan mandates the GENERIC signature
     // `export function tf<K extends ParamMessageId>(key: K, params: MessageParams[K]): string`,
     // so the literal substring `'export function tf('` can never appear — the `<` intervenes
     // between `tf` and `(`. The scan below counts `'export function tf<'` instead: this both

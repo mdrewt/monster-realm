@@ -14,7 +14,7 @@
 //   interface ResizeWindow {
 //     readonly innerWidth: number;
 //     readonly innerHeight: number;
-//     readonly devicePixelRatio: number;              // NEW (uxd1)
+//     readonly devicePixelRatio: number;              // NEW
 //     addEventListener(type: 'resize', cb: () => void): void;
 //   }
 //   export function installResizeHandler(renderer: Resizable, win: ResizeWindow): void
@@ -27,11 +27,7 @@
 //      listener FIRES — including devicePixelRatio, which changes when the user drags the
 //      window between a retina and a non-retina monitor.
 //
-// RED REASON (uxd1): `resizeWiring.ts` today calls `renderer.resize(win.innerWidth,
-// win.innerHeight)` with TWO arguments and its `ResizeWindow` has no `devicePixelRatio`
-// member at all. So every `dpr` field recorded below is `undefined` — RED by wrong-value.
-//
-// ⚠ FALSE-GREEN GUARD (uxd1 review finding R3 — the highest false-green risk in this slice).
+// ⚠ FALSE-GREEN GUARD.
 // A 2-parameter fake STRUCTURALLY SATISFIES a 3-parameter interface, so a fake that records
 // only {w, h} would compile, silently drop dpr, and report GREEN on an impl that never
 // threads it. And `client/tsconfig.json:15` excludes `**/*.test.ts` while vitest transpiles

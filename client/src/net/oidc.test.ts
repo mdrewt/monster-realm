@@ -1,5 +1,4 @@
 // net/oidc.test.ts — AUTH-39/40/41/42 + G27's precondition + G30 (half).
-// (M21b-2, ADR-0182 D11/D12/D13.)
 //
 // EARS COVERED
 //   AUTH-39 — a sign-in redirect mints `state` (32 random bytes, hex) and a PKCE
@@ -28,42 +27,6 @@
 //   G30 (half) — oidc.ts reaches no ambient storage/globals; its only module edge is a
 //             TYPE import from './credentialDecision'.
 //
-// RED REASON AT HEAD (8814416): `client/src/net/oidc.ts` DOES NOT EXIST (nor does
-// `credentialDecision.ts`, whose type it re-exports through). The imports below fail to
-// resolve, so every test reds on a MISSING IMPLEMENTATION, not on a typo here.
-//
-// THE CONTRACT THE IMPLEMENTER BUILDS:
-//
-//   import type { RenewalOutcome } from './credentialDecision';  // TYPE-ONLY (G30)
-//
-//   export interface OidcHost {           // every field `unknown` — parse-don't-validate,
-//     readonly sessionStorage?: unknown;  // exactly the `TokenStorageHost` idiom
-//     readonly location?: unknown;        // { search?: string; hash?: string; pathname?: string }
-//     readonly history?: unknown;         // { replaceState(data, unused, url): void }
-//     readonly crypto?: unknown;          // { getRandomValues(v), subtle: { digest(alg, data) } }
-//     readonly fetch?: unknown;           // (url, init?) => Promise<{ok, status, json()}>
-//   }
-//   export interface OidcConfig {
-//     readonly issuer: string; readonly clientId: string; readonly redirectUri: string;
-//     readonly uri: string; readonly db: string;   // the two storage-key axes
-//   }
-//   export const OIDC_FLOW_KEY_PREFIX = 'mr.oidcFlow.v1';
-//   export function oidcFlowStorageKey(uri: string, db: string): string;
-//   export const SIGN_IN_REASONS: readonly SignInReason[];   // the STATIC vocabulary
-//   export type SignInReason =
-//     | 'sign-in-rejected' | 'sign-in-expired' | 'sign-in-declined'
-//     | 'auth-service-unreachable' | 'sign-in-failed';
-//   export function classifySignInReason(raw: unknown): SignInReason;
-//   export type BeginSignInResult =
-//     | { readonly kind: 'ready'; readonly authorizationUrl: string }
-//     | { readonly kind: 'transient-error' };
-//   export interface OidcClient {
-//     consumeReturnLeg(): boolean;              // SYNC, called once at boot
-//     beginSignIn(): Promise<BeginSignInResult>;
-//     renewOrExchange(): Promise<RenewalOutcome>;   // ZERO arguments — see below
-//   }
-//   export function createOidcClient(host: OidcHost | undefined, config: OidcConfig): OidcClient;
-//
 // ★ HOW AUTH-41's "DELETE THE VERIFIER" AND D13's "EXCHANGE WITH THE VERIFIER" ARE BOTH
 //   SATISFIED — read this before calling any assertion below wrong. Deleting the
 //   code_verifier at boot would make PKCE structurally impossible, so "single-use" is
@@ -79,7 +42,7 @@
 //   sign-in (the next attempt sees no verifier and reports `no-session`). That is the
 //   direction AUTH-41 chose — a replayable authorization code is the worse failure.
 //
-// ★ WHY `renewOrExchange()` TAKES NO ARGUMENT (ADR-0182 D13, finalization review H1): a
+// ★ WHY `renewOrExchange()` TAKES NO ARGUMENT: a
 //   `renewOrExchange(isReturnLeg)` design either throws or misclassifies an ordinary
 //   reconnect (wifi blip, laptop sleep) as a failed sign-in, because `connect()` is a
 //   singleton per page and the caller's flag outlives the one page load it described. The
@@ -521,8 +484,8 @@ describe('oidc.beginSignIn (AUTH-39): state is 32 random bytes hex; PKCE is S256
 
   it('★★ BITES: code_challenge === base64url(SHA-256(code_verifier)) with method S256 — kills a "plain" challenge and a raw-hex digest', () => {
     // WRONG IMPL KILLED (a): `code_challenge = code_verifier` with
-    //   `code_challenge_method=plain`. Better Auth's oauth-provider docs (fetched live,
-    //   ADR-0182 D11) state PKCE is ALWAYS required for public clients; `plain` defeats it
+    //   `code_challenge_method=plain`. Better Auth's oauth-provider docs (fetched live)
+    //   state PKCE is ALWAYS required for public clients; `plain` defeats it
     //   entirely — an attacker who observes the authorization request can complete the
     //   exchange.
     // WRONG IMPL KILLED (b): hex-encoding the digest instead of base64url (64 chars, and
@@ -554,7 +517,7 @@ describe('oidc.beginSignIn (AUTH-39): state is 32 random bytes hex; PKCE is S256
   });
 
   it('★ BITES: the authorization URL is the DISCOVERED endpoint and carries the full parameter set', () => {
-    // ADR-0182 D11: "Endpoint discovery, not hardcoded paths." A hardcoded
+    // "Endpoint discovery, not hardcoded paths." A hardcoded
     // `<issuer>/oauth2/authorize` works against today's Better Auth and breaks silently
     // whenever the deployment moves — with no error the client can report.
     const rig = makeRig();
@@ -995,7 +958,7 @@ describe('oidc.renewOrExchange (AUTH-42): the new refresh_token is persisted, ov
   });
 
   it('★ BITES: the exchange POST carries the PKCE verifier and NO client secret (public client)', () => {
-    // ADR-0182 D11: the OAuth client is registered with
+    // The OAuth client is registered with
     // `token_endpoint_auth_method: 'none'`. A `client_secret` in a browser is not a secret
     // — shipping one would be a real credential in the bundle AND would make the exchange
     // fail against a public client registration.
@@ -1014,7 +977,7 @@ describe('oidc.renewOrExchange (AUTH-42): the new refresh_token is persisted, ov
 
   it('★ BITES: a 2xx response with NO id_token is a transient error, not a fabricated success', () => {
     // The token handed to `.withToken()` must be the ID token: `Identity = f(iss, sub)` and
-    // `audience_allowed` (accounts.rs:91-93) checks `aud` against the client_id, which is
+    // `audience_allowed` checks `aud` against the client_id, which is
     // the ID token's audience — an access token would be rejected by the module and drop
     // the player onto the anonymous identity with no error. WRONG IMPL KILLED:
     // `token: body.access_token ?? body.id_token` and `token: String(body.id_token)`
@@ -1096,8 +1059,8 @@ describe('oidc discovery (ADR-0182 D11): fetched once per client, then cached', 
 
 describe('oidc.renewOrExchange: branches on STORAGE alone, with no flag argument', () => {
   it('★★ BITES: renewOrExchange declares ZERO parameters (kills renewOrExchange(isReturnLeg))', () => {
-    // The H1 finding, made mechanical. `connect()` is a singleton per page
-    // (connection.ts:166-170), so a caller-supplied "this is the return leg" flag survives
+    // The H1 finding, made mechanical. `connect()` is a singleton per page,
+    // so a caller-supplied "this is the return leg" flag survives
     // the ONE page load it described and misclassifies every later reconnect. Function
     // arity is the one property of a signature that is observable at runtime.
     const rig = makeRig();
@@ -1596,7 +1559,7 @@ describe('G30 (runtime): oidc reaches every ambient surface ONLY through the inj
 });
 
 // ===========================================================================
-// AUTH-57 sentinel oracle (debloat Phase 2, EV-client-no-pii-logs condition).
+// AUTH-57 sentinel oracle.
 //
 // Real sentinel credentials are pushed through every credential path of the three
 // credential modules — oidc (exchange, refresh, definitive rejection, network failure),

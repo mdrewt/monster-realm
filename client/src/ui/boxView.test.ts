@@ -80,19 +80,9 @@ import type { MonsterCardViewModel } from './boxModel';
 import { BoxView, type BoxViewCallbacks } from './boxView';
 
 // ---------------------------------------------------------------------------
-// m23-s4 — overlay a11y wiring for BoxView (constructed-shell, #app-mounted) PLUS
-// the cross-view four-distinct-roots pin (plan §8 A4/A9's X9). ADDITIVE ONLY:
-// nothing below this block (the entire pre-existing ux4/EG4-8 suite) was weakened
-// or deleted. Declared FIRST in the file, before any pre-existing describe.
-//
-// SOURCE OF TRUTH: specs/monster-realm-v2/M23-accessibility.spec.md §2.2/§2.3, §6
-// (A11Y-13/14/15/16/17); memory/projects/monster-realm-m23-s4-plan.md §0 F1, §1
-// D1/D2/D6/D7; memory/projects/gates/m23-s4.gates.md X1/X2/X3/X6/X7/X8/X9.
-//
-// RED REASON: boxView.ts's show()/hide()/toggle() do not call
-// openOverlayA11y/closeOverlayA11y today, and its <h2> title carries neither
-// data-testid="box-title" nor tabindex="-1" — every S4-boxView-* test and
-// S4-CROSS-VIEW-DISTINCT-ROOTS fail now; every pre-existing test still passes.
+// Overlay a11y wiring for BoxView (constructed-shell, #app-mounted) PLUS
+// the cross-view four-distinct-roots pin (plan §8 A4/A9's X9).
+// Declared FIRST in the file, before any pre-existing describe.
 //
 // COMPOSITION NOTE (plan §8 A7): DEFER-FOCUS and CLOSE-RESTORE are folded into
 // S4-boxView-ANCHOR-FOCUS and S4-boxView-CLOSE-RESTORE-UNGUARDED respectively — see
@@ -113,7 +103,7 @@ import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
 
 vi.mock('./overlayA11y', { spy: true });
-// m24s4 (ADR-0260) MECHANISM oracle, same shape as m24s3: records every t()/tf() call AND
+// m24s4 MECHANISM oracle, same shape as m24s3: records every t()/tf() call AND
 // calls through to the real resolver, so BX-01's DOM byte-identity assertions still work.
 vi.mock('./i18n/resolver', { spy: true });
 
@@ -391,7 +381,7 @@ function makePartyCard(): MonsterCardViewModel {
  * A freshly recruited monster sitting in the BOX. This is the client-side face of the
  * reported defect: `attempt_recruit` inserts with `PARTY_SLOT_NONE` (taming.rs:163 — a
  * DECIDED semantic, ADR-0047 §3 "box (PARTY_SLOT_NONE), full HP … avoids clobbering an
- * occupied party slot"), and `lead_party` (battle.rs:283-294) builds side A only from
+ * occupied party slot"), and `lead_party` builds side A only from
  * `party_slot != PARTY_SLOT_NONE` — so a box recruit can never appear on the battle bench.
  */
 function makeBoxRecruitCard(): MonsterCardViewModel {
@@ -422,7 +412,7 @@ function findByTag(parent: HTMLElement, tag: string, text: string): HTMLElement 
 }
 
 /**
- * ANCHOR HARDENING (reviewer nit 8a). These resolve the grid as the label's
+ * ANCHOR HARDENING. These resolve the grid as the label's
  * `nextElementSibling`, so a hint inserted between the `Party` h3 and `#partyEl` would make
  * this helper silently return THE HINT — and X2's `expect(partyGrid.textContent)
  * .not.toContain('Emberfang')` would then pass vacuously against the hint's own text. The
@@ -484,7 +474,7 @@ function e2eBoxRootOf(parent: HTMLElement): HTMLElement {
 /**
  * BoxView's `#root`, resolved STRUCTURALLY (`parent.firstElementChild`) rather than by the
  * title's TEXT (`e2eBoxRootOf`). Six m23-s4 call sites resolve the root BEFORE the first
- * `show()`; once `box.title` moves into `show()` (m24s4, ADR-0260 D3/D4), the `<h2>` carries no
+ * `show()`; once `box.title` moves into `show()`, the `<h2>` carries no
  * text yet at those sites and `e2eBoxRootOf`'s `findByTag` precondition throws. Every POST-show
  * site keeps `e2eBoxRootOf` — the text anchor is the stronger oracle once the title has
  * actually resolved.
@@ -528,7 +518,7 @@ describe('BoxView ux4 X2: box vs party render + slot-sentinel emission (EXPECTED
     //   owned by boxModel.test.ts. Overclaiming that here would be a false teeth claim.)
     // THIS IS ALSO THE CLIENT-SIDE REPRO: "Emberfang" is present in the UI (in the Box)
     //   yet cannot appear on the battle bench, because side A is built only from
-    //   `party_slot != PARTY_SLOT_NONE` (battle.rs:283-294). Nothing on the battle screen
+    //   `party_slot != PARTY_SLOT_NONE`. Nothing on the battle screen
     //   explains that today — which is what ux4-2's two hints exist to fix.
     // SCOPE (do not overclaim): this pins boxView's EMISSION of the sentinels only.
     //   `nextFreePartySlot`, which main.ts:1741-1749 uses to resolve -1, is covered by
@@ -631,17 +621,6 @@ describe('BoxView ux4 X3: box-party hint is present, visible, and quotes the rea
 
     const text = hint!.textContent ?? '';
 
-    // -----------------------------------------------------------------------
-    // SUBSUMPTION FIX (red-team F4/F5). The first draft asserted only
-    // `toContain('Party')` + `toContain('Box')` + `toContain('To Party')`. Both of the
-    // first two are STRICTLY SUBSUMED by the third ('To Party' contains 'Party';
-    // 'To Box' contains 'Box'), so the copy `'To Party To Box'` was measured PASSING
-    // X3, and the RT-3 imperative `'Click the "To Party" button under each Box monster
-    // now.'` was measured passing X3 + X4 + X5 + X6 together. The two subsumed
-    // assertions are REPLACED — not merely supplemented — by the strictly stronger
-    // clauses below, which imply both of them ("…your Party can battle…" contains
-    // 'Party'; "…arrive in your Box…" contains 'Box'), so nothing is lost.
-    // -----------------------------------------------------------------------
     expect(
       text,
       'ux4 (X3): the hint must state WHAT the party is FOR — the semantic content, not just the ' +
@@ -670,17 +649,13 @@ describe('BoxView ux4 X3: box-party hint is present, visible, and quotes the rea
         '!inParty arm — the inParty arm renders "To Box"). Copy that names a differently-worded ' +
         'control sends the player hunting for a button that does not exist (ux1, ADR-0151)',
     ).toContain('To Party');
-    // TESTER NOTE (judgement call, logged): asserted as a literal REGEX rather than
-    // `toContain('each box monster has a "To Party" button')` so that either straight (")
-    // or typographic (“ ”) quotes satisfy it. The codebase does use typographic punctuation
-    // in UI copy (e.g. `#renderPvpStatus` sets 'Waiting for opponent’s action…'), so a
-    // straight-quote-only `toContain` would red a substantively-correct implementation over a
-    // glyph. The bite is unchanged: the full clause must be present, in order, naming the
-    // label — the RT-3 imperative and the "To Party To Box" salad both still die here.
-    // CORRECTED (review item 5): an earlier version of this note claimed the separate
-    // `toContain('To Party')` pin above "still requires the straight-quoted label text to
-    // appear somewhere". That was FALSE AS WRITTEN — every string satisfying the regex below
-    // already contains a literal `To Party`, so the `toContain` adds nothing on top of it.
+    // asserted as a literal REGEX rather than `toContain('each box monster has a "To Party"
+    // button')` so that either straight (") or typographic (“ ”) quotes satisfy it. The
+    // codebase does use typographic punctuation in UI copy (e.g. `#renderPvpStatus` sets
+    // 'Waiting for opponent’s action…'), so a straight-quote-only `toContain` would red a
+    // substantively-correct implementation over a glyph. The bite is unchanged: the full
+    // clause must be present, in order, naming the label — the RT-3 imperative and the "To
+    // Party To Box" salad both still die here.
     // The `toContain` is kept anyway (not deleted): it is the assertion that survives if this
     // clause regex is ever relaxed, and it fails with a far clearer message.
     expect(
@@ -688,12 +663,12 @@ describe('BoxView ux4 X3: box-party hint is present, visible, and quotes the rea
       'ux4 (X3): the affordance must be DESCRIBED (state-neutral), quoting the label — see X6 for ' +
         'why an imperative would be a lie in the empty-box state',
     ).toMatch(/each box monster has a ["“]To Party["”] button/);
-    // STRENGTHENING (review item 3, red-team F6): pins COPY B's load-bearing HEDGE. The copy
-    // `'…that always moves it into the party.'` survived every other clause here, yet the plan
-    // names "an OPEN party slot" as the hedge against deferral D3: `#renderCard`'s "To Party"
-    // emits the -1 sentinel, main.ts resolves it via `nextFreePartySlot(...) ?? PARTY_SLOT_NONE`,
-    // and with a FULL party that resolves to 255 — the move silently no-ops. An unhedged
-    // "always moves it into the party" is therefore a promise the client cannot keep.
+    // pins COPY B's load-bearing HEDGE. The copy `'…that always moves it into the party.'`
+    // survived every other clause here, yet the plan names "an OPEN party slot" as the hedge
+    // against deferral D3: `#renderCard`'s "To Party" emits the -1 sentinel, main.ts resolves it
+    // via `nextFreePartySlot(...) ?? PARTY_SLOT_NONE`, and with a FULL party that resolves to 255
+    // — the move silently no-ops. An unhedged "always moves it into the party" is therefore a
+    // promise the client cannot keep.
     expect(
       text,
       'ux4 (X3) D3 HEDGE: the copy must qualify the destination as an "open party slot". With a ' +
@@ -760,7 +735,7 @@ describe('BoxView ux4 X4: e2e compatibility — sibling of header, no HP-shaped 
     ).toBe(true);
 
     // -----------------------------------------------------------------------
-    // MANDATED INSERTION POINT (reviewer #4). The clauses above accept the hint ANYWHERE
+    // MANDATED INSERTION POINT. The clauses above accept the hint ANYWHERE
     // under #root; the red-team's control implementation drifted to #root's FIRST child —
     // above the "Party & Box" title — with the entire suite green. The plan requires the
     // hint BETWEEN the constructor's `header` block (the `Party & Box` h2 + `Heal Party`
@@ -922,7 +897,7 @@ describe('BoxView ux4 X6: the hint stays truthful in the fresh-player state (emp
     ).toContain('To Box');
 
     // -----------------------------------------------------------------------
-    // THE COPY HALF (red-team F5). Until now X6 asserted only about the DOM, so its own
+    // THE COPY HALF. Until now X6 asserted only about the DOM, so its own
     // docstring's claim — "the copy must be state-neutral" — was backed by NOTHING: the
     // RT-3 imperative `'Click the "To Party" button under each Box monster now.'` was
     // measured passing X3 + X4 + X5 + X6. The assertion below is the missing half, made
@@ -933,14 +908,13 @@ describe('BoxView ux4 X6: the hint stays truthful in the fresh-player state (emp
     // To Party button" — while COPY B's descriptive form ("each box monster has a
     // \"To Party\" button that moves it…") has no such verb before the label and passes.
     //
-    // STRENGTHENED (review item 3, red-team F6): the verb list was `click|press|tap|hit|use`,
-    // which let the measured imperative `'Select "To Party" now.'` straight through — the same
-    // lie in a different mood. Widened with select|choose|move|find|open. COPY B still passes:
+    // the verb list was `click|press|tap|hit|use`, which let the measured imperative `'Select
+    // "To Party" now.'` straight through — the same lie in a different mood. Widened with
+    // select|choose|move|find|open. COPY B still passes:
     // the only listed verb it contains at all is "open", and that occurs in "an open party
     // slot" — AFTER the label, so no listed verb precedes `"To Party` within the 40-char window
     // (the nearest preceding words are "each box monster has a"). "moves" is not matched by
-    // `\bmove\b` and is downstream of the label regardless. This is a strict superset of the
-    // old alternation: nothing that used to die now survives.
+    // `\bmove\b` and is downstream of the label regardless.
     // -----------------------------------------------------------------------
     const text = hint!.textContent ?? '';
     expect(
@@ -960,11 +934,7 @@ describe('BoxView ux4 X6: the hint stays truthful in the fresh-player state (emp
 });
 
 // ===========================================================================
-// EG4-8 — the evolution-choice badge (X7–X10)
-//
-// SOURCE OF TRUTH: memory/projects/monster-realm-EG4-contract.md §D + §G, and spec
-// §2 EG4-8 ("the party roster view SHALL show a badge/indicator on any monster with 2+
-// currently-eligible evolution paths").
+// The evolution-choice badge (X7–X10)
 //
 // CONTRACT UNDER TEST — SYMBOLIC ANCHORS ONLY (same discipline as X2–X6 above):
 //   • `#renderCard` renders ONE `<... data-testid="evo-choice-badge">` INSIDE the card it
@@ -1015,7 +985,7 @@ describe('BoxView EG4-8 X7: the badge renders in the PARTY grid iff evolutionCho
   it('BITES: pending=true renders exactly one badge in the party card; pending=false renders none anywhere', () => {
     // KILLS (1): a shell that never renders the badge at all — EG4-8's entire deliverable
     //   is the "active notification" on the roster, and `boxView.ts` is coverage-excluded
-    //   (vite.config.ts:103) and has no TS mutation harness, so this case is its only
+    //   and has no TS mutation harness, so this case is its only
     //   automated defense.
     // KILLS (2): a badge rendered UNCONDITIONALLY (ignoring the flag). The false half is
     //   the control: a constant badge would tell every player that every monster has an
@@ -1187,7 +1157,7 @@ describe('BoxView EG4-8 X9: e2e compatibility — inside the card, no header wra
     //   chain and `healViaBox` / `restoreHpBeforeEncounter` then read HP text out of the
     //   wrong node. As in X4, the CONTAINMENT clauses are the load-bearing ones: under the
     //   wrapping mutant an identity-only check still passes.
-    // KILLS (2): HP-shaped badge copy. `healViaBox` (recruit.spec.ts:326-340) uses
+    // KILLS (2): HP-shaped badge copy. `healViaBox` uses
     //   `!root.textContent.includes('HP 0/')` as its HEALED signal and
     //   `restoreHpBeforeEncounter` (:386-405, :424-445) `matchAll`s /HP (\d+)\/(\d+)/g over
     //   the same root requiring EVERY pair >= 80%. A badge reading e.g. "Evolution HP 0/2"
@@ -1336,22 +1306,11 @@ describe("BoxView EG4-8 X10: the badge does not displace the card's existing con
 });
 
 // =============================================================================
-// m24s4 (ADR-0260) — i18n migration batch B: boxView.ts routes its migrated
+// i18n migration batch B: boxView.ts routes its migrated
 // sinks through t()/tf() (ADR-0256/0257/0259/0260 resolver) instead of raw
 // English literals, and its hoisted `prompt('New nickname:', ...)` argument
 // through `t('box.rename.prompt')`.
 //
-// PREDICTED RED REASON AT HEAD: boxView.ts calls neither `t()` nor `tf()`
-// anywhere today, and `#promptNickname` calls the native `prompt()` with the
-// raw literal `'New nickname:'` — every literal below is still bare, and the
-// file imports nothing from `./i18n/resolver`. BX-01/BX-02 therefore fail on
-// their very first assertion (the spied `i18nT`/`i18nTf` are never called at
-// all, and the roster-word scan finds unbracketed English); BX-03 fails
-// because `scanSource(stripComments(...))` reports >=15 FAILING sinks (raw
-// English segments), not the required `failing: []`.
-//
-// Do NOT edit these tests to match a buggy implementation — correct them from
-// the plan/ADR-0260 only.
 // =============================================================================
 
 const M24S4_BX_PLAIN_KEYS = new Set([
@@ -1392,7 +1351,7 @@ function m24s4BxIsExpectedSentinelSpan(content: string): boolean {
 }
 
 /** Elides only the bracket spans that are EXACTLY an expected sentinel (manual
- *  indexOf loop — no RegExp, ADR-0055) and reports every OTHER `«...»` span
+ *  indexOf loop — no RegExp) and reports every OTHER `«...»` span
  *  verbatim in `unexpectedSpans`, un-elided, so it stays in `stripped` for the
  *  roster-word scan too — see battleView.test.ts's m24s3SplitSentinels header. */
 function m24s4BxSplitSentinels(text: string): { stripped: string; unexpectedSpans: string[] } {

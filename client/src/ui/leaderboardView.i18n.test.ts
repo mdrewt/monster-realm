@@ -43,8 +43,7 @@ function mount(): { overlay: HTMLElement; list: HTMLUListElement } {
   };
 }
 
-// leaderboardView.test.ts's VM builders, reused verbatim (fixture names avoid uppercase W/L —
-// tester-A brief).
+// leaderboardView.test.ts's VM builders, reused verbatim (fixture names avoid uppercase W/L).
 function makeRow(
   identityHex: string,
   displayName: string,

@@ -8,7 +8,7 @@ import {
   test,
 } from '@playwright/test';
 
-// recruit.spec.ts — gameplay-driven recruit flow (M13.5h, EARS 13.5h-1).
+// recruit.spec.ts — gameplay-driven recruit flow (EARS 13.5h-1).
 //
 // DESIGN RATIONALE
 // ================
@@ -20,7 +20,7 @@ import {
 // so feature-gated server reducers like start_wild_battle and grant_bait
 // are not callable from page.evaluate().
 //
-// The specialist's infra slice (13.5h-1) publishes the module with the
+// The specialist's infra slice publishes the module with the
 // feature-gated reducers enabled (--bin-path in CI) so server-side feature
 // reducers are available for future slices that expose a test hook on
 // window.__game().  That publish does NOT make those reducers callable from
@@ -50,7 +50,7 @@ import {
 // OWN_HP_ATTACK_MIN_PCT       — stop attacking if own HP% falls at/below this
 
 // ---------------------------------------------------------------------------
-// Snapshot shape — mirrors the REAL window.__game() snapshot (main.ts:571–627).
+// Snapshot shape — mirrors the REAL window.__game() snapshot.
 // Fields accessed by the test; additional fields exist on the live object.
 // ---------------------------------------------------------------------------
 
@@ -60,7 +60,7 @@ interface Tile {
 }
 
 interface OwnMonster {
-  monsterId: string; // bigint serialised as string (main.ts:594)
+  monsterId: string; // bigint serialised as string
   speciesId: number;
   nickname: string;
   level: number;
@@ -96,7 +96,7 @@ interface GameSnap {
 const MAX_WALK_STEPS = 80;
 /** Max outer encounter-loop iterations in R2 (whole encounter cycles incl. flee/KO).
  *
- * Statistical justification (raised from 14 to 30 — remote CI red, run 29149789277):
+ * Statistical justification:
  *
  * Zone 0 encounter table (encounters/000-core.ron):
  *   Flameling (Fire,  weight 10): 10/22 ≈ 45.5% — safe to weaken + recruit
@@ -110,9 +110,6 @@ const MAX_WALK_STEPS = 80;
  *
  * Pessimistic (p=0.40): P(fail all 30) = 0.6^30 ≈ 1.2e-7.
  * Very pessimistic (p=0.30): P(fail all 30) = 0.7^30 ≈ 2.2e-5.
- *
- * The original MAX_ENCOUNTERS=14 gave P(fail) ≈ 0.6^14 ≈ 8e-4 (0.08%), which
- * triggers measurably across many CI pushes.  MAX_ENCOUNTERS=30 is negligible.
  *
  * Determinism note: SpacetimeDB ctx.random() is server-side only; injecting a
  * seed from the test process is not possible within client/e2e/** (ADR-0086
@@ -132,8 +129,8 @@ const MAX_HEALS = 2;
 /** Max pre-encounter HP-restoration heals (flee-damage recovery, separate from
  *  KO-recovery heals tracked by MAX_HEALS).
  *
- *  ROOT CAUSE (CI red, run 29154350070): write_back_party_hp fires on EVERY
- *  flee (ADR-0047), persisting depleted HP to the DB.  The NEXT begin_encounter
+ *  ROOT CAUSE: write_back_party_hp fires on EVERY
+ *  flee, persisting depleted HP to the DB.  The NEXT begin_encounter
  *  builds side_a from the current DB HP, so subsequent battles enter at e.g.
  *  HP=4/20 (20%) — immediately triggering OWN_HP_FLEE_THRESHOLD_PCT — creating
  *  an infinite flee loop with only 1 recruit click ever attempted.
@@ -281,7 +278,7 @@ async function healViaBox(p: Page): Promise<void> {
   // after a KO, __game().ongoingBattle goes null IMMEDIATELY (Ongoing-filter in the
   // store), but the battle overlay KEEPS showing the terminal outcome frame — the
   // terminal row is NOT promptly GC'd (write-back sweeps lazily on later battles,
-  // M12.5e), and KeyB is guarded by battleView.visible (main.ts:250, ADR-0014).
+  // M12.5e), and KeyB is guarded by battleView.visible.
   // The DESIGNED dismissal is the Escape terminal-dismiss latch (main.ts:351-359,
   // ADR-0071 priority battle > box; terminal outcome ⇒ permanent dismiss via
   // dismissedBattleId). So: Escape first (dismisses the frame; safe no-op when no
@@ -311,7 +308,7 @@ async function healViaBox(p: Page): Promise<void> {
     );
   }
 
-  // Healed-signal: the box lists each monster as "HP cur/max (pct%)" (boxView.ts:152)
+  // Healed-signal: the box lists each monster as "HP cur/max (pct%)"
   // and is subscription-driven — healed = no row in the BOX overlay shows "HP 0/".
   // Scoped to the box root (located via its unique 'Party & Box' title) so the
   // HIDDEN battle overlay's stale card text (also "HP x/y") can never satisfy it.
@@ -354,7 +351,7 @@ async function healViaBox(p: Page): Promise<void> {
 // cooldown; we retry for up to 48 s (8 clicks × up to 6 s each) so a queued
 // cooldown window is covered without a bare sleep.
 //
-// Detection: box HP format is "HP cur/max (pct%)" (boxView.ts:152).  We scan
+// Detection: box HP format is "HP cur/max (pct%)".  We scan
 // ALL HP pairs in the box text (matchAll) — every visible monster row must
 // satisfy the threshold — unlike healViaBox (which only checks "HP 0/").
 // ---------------------------------------------------------------------------
@@ -485,7 +482,7 @@ test.describe
     //   THE recruit-action button SHALL be visible while the battle is Ongoing.
     //   THE bait-selector SHALL be present AND contain ZERO options with
     //   data-recruit-bonus (no bait in a fresh inventory — classify-by-data
-    //   negative half, ADR-0047).
+    //   negative half).
     //   The test flees after assertions to leave a clean state for R2.
     // -------------------------------------------------------------------------
     test('R1: recruit-action visible + bait-selector has no bait options in fresh inventory', async () => {
@@ -528,7 +525,7 @@ test.describe
       const baitSel = page.locator('[data-testid="bait-selector"]');
       await expect(baitSel).toBeVisible({ timeout: 5_000 });
 
-      // NEGATIVE classify-by-data assertion (ADR-0047): a fresh inventory has no
+      // NEGATIVE classify-by-data assertion: a fresh inventory has no
       // items with recruit_bonus > 0, so bait-selector must have ZERO options with
       // data-recruit-bonus.  An impl that hard-codes bait options instead of
       // filtering by data attribute would fail here.
@@ -555,7 +552,7 @@ test.describe
     //   THE new monster SHALL have partySlot === 255 (PARTY_SLOT_NONE = box).
     //   Records the winning battleId for R3.
     //
-    //   Encounter loop: MAX_ENCOUNTERS = 30 (raised from 14 — see constant comment).
+    //   Encounter loop: MAX_ENCOUNTERS = 30.
     //   Per encounter, recruit_chance ≈ 80‰ + 500‰×(missingHpFraction).
     //   At ~40% wild HP remaining: chance ≈ 380‰ per click.
     //   P(≥1 success in 12 clicks at 380‰) ≈ 1 - (0.62)^12 ≈ 0.998.
@@ -600,7 +597,7 @@ test.describe
         // within the 31 s guard window, leaving the party at depleted HP entering
         // battles and triggering the ownPct ≤ OWN_HP_FLEE_THRESHOLD_PCT flee check
         // on the first attack-loop iteration — producing recruitClicks≈1 across
-        // MAX_ENCOUNTERS=30 (CI red on master run after PR #144 merge).
+        // MAX_ENCOUNTERS=30.
         if (fleeHealCount < MAX_FLEE_HEALS) {
           if (await restoreHpBeforeEncounter(page)) {
             fleeHealCount++;
@@ -926,7 +923,7 @@ test.describe
 
       // The Victory! outcome frame must be visible.
       // Source: battleView.ts:240 `text = 'Victory!'` (SideAWins case).
-      // The outcome element is `#outcomeEl` with display:block (battleView.ts:236).
+      // The outcome element is `#outcomeEl` with display:block.
       // Locate by exact textContent — no testid on this element.
       const victoryEl = page.getByText('Victory!', { exact: true });
       await expect(victoryEl).toBeVisible({ timeout: 10_000 });

@@ -136,7 +136,7 @@ const H = vi.hoisted(() => ({
 }));
 
 // The wasm pkg — every name main.ts imports, plus the other exports of the real module (the same
-// object the sanctioned precedents mock). `-> i64` crosses as a BigInt (rb-8 / ADR-0212), so the
+// object the sanctioned precedents mock). `-> i64` crosses as a BigInt, so the
 // grace accessor returns a bigint; 0n keeps the privacy block inert, which this slice wants.
 vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
   const SIDE = 3;
@@ -375,10 +375,7 @@ function uncaughtMessages(bundle: BugBundleInput): readonly string[] {
 }
 
 // --- the suite ---------------------------------------------------------------------------
-// `describe(name, { sequential: true }, fn)` — NOT `describe.sequential(...)`. Same isolation,
-// but the literal `describe(` is REQUIRED: render/motionPreference.test.ts's S7T-SCAN scans every
-// comment-stripped `.test.ts` under client/src for that exact token as a tripwire against
-// production code disguised with a spec suffix, and the dotted form does not contain it.
+// `describe(name, { sequential: true }, fn)`.
 // Sequential because happy-dom's document and this file's module-scope rAF slot are per-FILE.
 describe('main.ts frame-loop error wiring (17r-f, B1)', { sequential: true }, () => {
   let recorded: Recorded[] = [];
@@ -483,7 +480,7 @@ describe('main.ts frame-loop error wiring (17r-f, B1)', { sequential: true }, ()
   // -------------------------------------------------------------------------------------
 
   it('★ B1a BITES: a throwing frame paints the error overlay, lands in the F9 bundle, and the loop keeps running', async () => {
-    // WRONG IMPL KILLED (1) ★ THE DEFECT (master today): the catch is `console.error(...)` and
+    // WRONG IMPL KILLED (1) ★ THE DEFECT: the catch is `console.error(...)` and
     //   nothing else. A playtester whose game froze presses F9 and sends back a bundle with an
     //   EMPTY error list — the one artifact that exists to explain the freeze is silent about
     //   it. Both the overlay clause and the bundle clause red on `[]`.
@@ -584,7 +581,7 @@ describe('main.ts frame-loop error wiring (17r-f, B1)', { sequential: true }, ()
     await setupMain();
     expectCleanBaseline();
 
-    // ★ A FRESH INSTANCE PER FRAME, deliberately (verifier finding 5). Re-throwing the SAME
+    // ★ A FRESH INSTANCE PER FRAME, deliberately. Re-throwing the SAME
     // object let a dedupe keyed on OBJECT IDENTITY (`err !== last`) survive all four runtime
     // arms — and in production every throwing frame constructs a new Error, so identity dedupe
     // is no dedupe at all. Distinct objects, identical messages, is the real shape.
@@ -622,10 +619,7 @@ describe('main.ts frame-loop error wiring (17r-f, B1)', { sequential: true }, ()
   // -------------------------------------------------------------------------------------
 
   it('★★ B1e BITES: the SAME error recurring AFTER a healthy frame records AGAIN (consecutive, not ever-seen)', async () => {
-    // ★ RED-TEAM S3. The first draft never reset the memo, which made it an EVER-SEEN latch
-    // rather than the consecutive collapse its own ADR described — and NOTHING in the repo could
-    // tell the two apart (adding the reset was measured surviving all 209 tests, and so was
-    // removing it). Two measured operator harms, both from real sequences:
+    // Two measured operator harms, both from real sequences:
     //   - a fault at t=0, ten minutes of healthy frames, then the identical fault throwing on 60
     //     consecutive frames with the game visibly frozen: the F9 bundle carried ONE record with
     //     a 600-SECOND-STALE tMs, while the event ring kept filling with fresh breadcrumbs. An

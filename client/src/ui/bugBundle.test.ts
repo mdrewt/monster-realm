@@ -1,18 +1,11 @@
 // ui/bugBundle.test.ts — RED gating tests for pt-b1 EARS E-10 (bundle shape) + U-3/H-2/H-3
 // (no-PII projection) + bigint-total serialize + safe filename.
 //
-// Slice: pt-b1 · Source-of-truth: M-playtest-b F9 bug-bundle assembler.
-//
-// RED REASON: bugBundle.ts does not exist yet. Every test fails with
-//   "Failed to resolve import './bugBundle'" (module-not-found).
-//
 // WRONG-IMPL-KILLED list:
 //   - "bundle shape wrong / extra keys / missing schema" → T-BUNDLE-1 catches it
 //   - "serialize throws on a bigint (TypeError)"          → T-BUNDLE-2 catches it (replacer)
 //   - "bundle leaks a name field / smuggled PII"          → T-BUNDLE-3 catches it (canary)
 //   - "filename has unsafe path chars / whitespace / .."  → T-FILENAME catches it
-//
-// Do NOT edit tests to match a buggy impl — correct from the spec only.
 
 import { describe, expect, it } from 'vitest';
 import {

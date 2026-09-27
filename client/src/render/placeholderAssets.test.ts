@@ -1,21 +1,11 @@
-// render/placeholderAssets.test.ts — rb-57: the action cue must not be colour-alone
+// render/placeholderAssets.test.ts — the action cue must not be colour-alone
 // (vitest, node-only; DRAW-INSTRUCTION assertions, not rasterized pixels).
 //
-// SOURCE OF TRUTH: residual R-m23-s8-postmerge-tint / ADR-0233 §8.2.
-//
-// THE DEFECT: `PlaceholderAssets#build()` draws exactly two fills today — a body
-// roundRect tinted by `ACTION_TINT[action]`, and a facing-notch circle in a fixed
-// ink. At a FIXED facing, swapping Idle/Walking/Jumping changes ONLY the body
-// fill's colour: the draw GEOMETRY is byte-identical across all three actions.
-// A colour-blind player (or a greyscale screenshot) cannot tell Idle from
-// Jumping. T1 below is the RED that encodes this.
-//
-// THE FIX (not implemented here — that is the specialist's job): a THIRD fill,
-// a per-action monochrome glyph in the same ink as the notch, drawn in a 6x6
-// field centred on the tile, AFTER the notch, sharing one `.fill()` call per
-// action. T2-T8 pin its exact geometry, its ink, its independence from facing,
-// its non-overlap with the notch, its non-directionality, and (T4/T7) that the
-// pre-existing body/notch/cache behaviour is undisturbed.
+// THE FIX: a THIRD fill, a per-action monochrome glyph in the same ink as the
+// notch, drawn in a 6x6 field centred on the tile, AFTER the notch, sharing one
+// `.fill()` call per action. T2-T8 pin its exact geometry, its ink, its
+// independence from facing, its non-overlap with the notch, its non-directionality,
+// and (T4/T7) that the pre-existing body/notch/cache behaviour is undisturbed.
 //
 // CAPTURE STRATEGY: `PlaceholderAssets#build()` calls `renderer.generateTexture()`
 // with a live `Graphics` as `target`, then immediately calls `g.destroy()` — which
@@ -30,7 +20,7 @@
 // immediately (`typeof x === 'number'`); nothing pixi-owned is retained past the
 // callback (no `structuredClone` — it throws on a `Matrix`).
 //
-// Proof-of-teeth (ADR-0010): each assertion below names the wrong impl it kills.
+// Proof-of-teeth: each assertion below names the wrong impl it kills.
 
 import type { Renderer } from 'pixi.js';
 import { describe, expect, it } from 'vitest';
@@ -87,9 +77,9 @@ interface RawFillInstruction {
 /**
  * The ONE shared capture helper every tooth goes through (T1-T3, T5-T6, T8 at
  * their default `requireGlyph: true`; T4 opts OUT with `requireGlyph: false`
- * since it pins only the pre-existing body+notch and must stay GREEN today —
- * before the third, glyph fill exists at all). T7 does not need draw-op
- * extraction and uses its own minimal fake (build-count only).
+ * since it pins only the pre-existing body+notch).
+ * T7 does not need draw-op extraction and uses its own minimal fake
+ * (build-count only).
  *
  * Builds a single texture for (action,facing) on a FRESH PlaceholderAssets +
  * fake renderer, and returns the ordered, colour-INCLUSIVE draw instructions
@@ -257,8 +247,7 @@ describe('PlaceholderAssets action cue (rb-57 / R-m23-s8-postmerge-tint / ADR-02
 
   it('T4 (green today): body fill and facing notch geometry/colour are unaffected by the glyph fix', () => {
     for (const facing of FACINGS) {
-      // requireGlyph:false — this tooth pins ONLY the pre-existing body+notch
-      // and must stay green both before and after the fix lands.
+      // requireGlyph:false — this tooth pins ONLY the pre-existing body+notch.
       const [body, notch] = captureBuild('Idle', facing, { requireGlyph: false });
       // Kills: a fix that perturbs the body roundRect args or its tint.
       expect(body!.ops).toEqual([{ action: 'roundRect', data: [5, 5, 22, 22, 4] }]);
@@ -361,7 +350,7 @@ describe('PlaceholderAssets action cue (rb-57 / R-m23-s8-postmerge-tint / ADR-02
     // Kills: deleting the `?? []` on `ACTION_GLYPH[action]` in `#build` — an
     // unmirrored action then runs `for (const bar of undefined)`, which
     // throws `TypeError: undefined is not iterable` INSIDE the render frame
-    // loop, violating the house fail-soft rule (rowConvert.ts:82-85) that a
+    // loop, violating the house fail-soft rule that a
     // hand-written enum mirror lagging the real `ActionState` must never crash
     // the renderer.
     expect(() => {

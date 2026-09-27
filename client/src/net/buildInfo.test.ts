@@ -1,6 +1,4 @@
-// net/buildInfo.test.ts — RED tests for pt-a1-2/-3: build info stamp.
-//
-// SOURCE OF TRUTH: pt-a1 EARS criteria pt-a1-2 and pt-a1-3
+// net/buildInfo.test.ts — build info stamp.
 //
 // EARS criterion pt-a1-2 (buildInfoFrom):
 //   buildInfoFrom(sha, builtAt, isDev) maps isDev→mode (true→'dev',
@@ -15,11 +13,6 @@
 // NOTE: `BUILD_INFO` (module-level const) is intentionally NOT tested here —
 // it reads build-time injected globals (import.meta.env.*) which are unavailable
 // in the vitest environment. Only buildInfoFrom + formatBuildStamp are tested.
-//
-// RED REASON: `buildInfo.ts` does not exist yet. Every import will fail with
-// "does not provide an export named ..." until the implementer creates
-// `client/src/net/buildInfo.ts` exporting `BuildInfo`, `buildInfoFrom`,
-// `formatBuildStamp`, and `BUILD_INFO`.
 //
 // WRONG IMPL KILLED (each test states which wrong impl it kills):
 //   [B1] A mode/sha swap or a hardcoded mode value.

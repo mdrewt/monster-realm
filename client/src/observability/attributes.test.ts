@@ -1,4 +1,4 @@
-// observability/attributes.test.ts — m20c (ADR-0180 body amendment), OBS-34/35 + T-34a/T-34b.
+// observability/attributes.test.ts — OBS-34/35 + T-34a/T-34b.
 //
 // SOURCE OF TRUTH: EARS OBS-34/35 + the Alloy datapoint policy (config.alloy:155-158), mirrored
 // client-side by names.ts. `buildAttributes` is the ONE place a datapoint attribute set is
@@ -15,8 +15,6 @@
 // OBS-34/35 are about the wire, not the store. And a shipped-then-dropped value collapses the
 // point into the unlabelled series — silently corrupting every per-zone panel while the client
 // believes it reported.
-//
-// RED REASON: `client/src/observability/attributes.ts` does not exist yet.
 
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';

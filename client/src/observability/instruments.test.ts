@@ -1,4 +1,4 @@
-// observability/instruments.test.ts — m20c (ADR-0180 body amendment), OBS-25 + AM4/AM16/AM17.
+// observability/instruments.test.ts — OBS-25 + AM4/AM16/AM17.
 //
 // SOURCE OF TRUTH: EARS OBS-25 (fps SLO p50 ≥ 55, read from `mr_client_fps_bucket`) + AM16 (the
 // adjudicated bucket sets) + AM17 (instrument names must REFERENCE names.ts, not re-spell it) +
@@ -12,8 +12,6 @@
 // WHY THE TABLE IS DATA: the spec table is imported by BOTH the shell (which creates the real
 // instruments from it) and this contract test. A shell that hand-rolls `meter.createHistogram(…)`
 // call by call cannot be checked for cardinality or naming at all.
-//
-// RED REASON: `client/src/observability/instruments.ts` does not exist yet.
 
 import { describe, expect, it } from 'vitest';
 import { INSTRUMENTS, type InstrumentSpec } from './instruments';
@@ -79,7 +77,7 @@ describe('instruments.ts (AM17): the table IS names.ts — no second list of str
     // WRONG IMPL KILLED (2): a name defined in names.ts but never instrumented (a signal the ADR
     //   claims to ship and does not), or an instrument with no constant behind it. The equality
     //   is bidirectional, so both directions red.
-    // NOT KILLED HERE, AND DELIBERATELY SO (red-team X5): a table that re-spells all eight names
+    // NOT KILLED HERE, AND DELIBERATELY SO: a table that re-spells all eight names
     //   as string LITERALS produces an identical set and passes this test. Value equality is
     //   structurally blind to it. The companion TEXT check — instruments.ts must import
     //   `from './names'` and contain no `name: '…'` literal — lives in sourceScan.test.ts
@@ -120,8 +118,7 @@ describe('instruments.ts (AM17): the table IS names.ts — no second list of str
 
 describe('instruments.ts (T-25a): the fps histogram is the OBS-25 SLO source', () => {
   it('T-25a: the fps instrument is a histogram named mr_client_fps with NO unit', () => {
-    // WRONG IMPL KILLED (1): a rename — recording.rules.yml:69 reads `mr_client_fps_bucket` and
-    //   is out of this slice's touch-set.
+    // WRONG IMPL KILLED (1): a rename — recording.rules.yml:69 reads `mr_client_fps_bucket`.
     // WRONG IMPL KILLED (2, the subtle one): setting `unit: 'fps'` / `unit: '1'`. Alloy's
     //   prometheus exporter appends the unit as a NAME SUFFIX, so the stored series becomes
     //   `mr_client_fps_fps_bucket` and the SLO records `vector(0)` forever while the client is

@@ -7,7 +7,7 @@ import {
   test,
 } from '@playwright/test';
 
-// M5a golden flows — the two-window regression net (ADR-0009/0012/0013). Two real
+// M5a golden flows — the two-window regression net. Two real
 // browser contexts (=> two identities) against one authoritative world. Asserts on
 // the window.__game() STATE snapshot, NEVER pixels; reads STEP_MS + the zone map
 // from the hook (never hard-coded). One shared 2-player world (describe.serial) so
@@ -155,8 +155,8 @@ test.describe
       // The own character animates via the slide clock, so during the 200ms slide the
       // loop latches a fractional own render position; a renderer fed raw integer tiles
       // never latches it → this assertion fails (the integrated-path bite). This relies
-      // on window.__game() exposing a STICKY `sawFractionalOwnMotion` the implementer
-      // adds to main.ts — it is set to true the first time the own render x or y is
+      // on window.__game() exposing a STICKY `sawFractionalOwnMotion`
+      // — it is set to true the first time the own render x or y is
       // non-integer, and never reset to false within the session.
       await a.waitForFunction(
         () =>

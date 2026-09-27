@@ -7,7 +7,7 @@ import {
   test,
 } from '@playwright/test';
 
-// pt-c2 — trade-PROPOSE overlay e2e (EARS criterion PTC2-16, ADR-0134 D8)
+// trade-PROPOSE overlay e2e (EARS criterion PTC2-16)
 //
 // TWO-CONTEXT DESIGN
 // ==================
@@ -19,7 +19,7 @@ import {
 //
 // WHY NOT __mrTrade FOR THE PROPOSE LEG (D8 / red-team L-3)
 // =========================================================
-// ADR-0134 D8: "the INITIATOR opens KeyO, selects the counterparty in the <select>,
+// "the INITIATOR opens KeyO, selects the counterparty in the <select>,
 // checks its starter monster, and CLICKS submit — pure DOM, NOT __mrTrade (red-team L-3)."
 // Using __mrTrade.proposeTrade() for the initiator would leave the overlay untested —
 // the e2e would pass even if KeyO / tradeProposeView were never implemented.
@@ -42,12 +42,6 @@ import {
 //   PTC2-16  UI-driven propose: KeyO→select→check monster→submit → __mrTrade respond+confirm
 //            → specific monsterId leaves initiator + arrives at counterparty (identity, not
 //            just conservation) + allTradeOffers().length===0.
-//
-// RED REASON (PTC2-16)
-// ====================
-// KeyO handler does not exist in main.ts → pressing KeyO does nothing →
-// `[data-testid="tradepropose-target"]` never becomes visible → test times out RED.
-// The propose leg is pure DOM (not __mrTrade), so no hook workaround is possible.
 
 interface GameSnap {
   identity: string;
@@ -148,7 +142,7 @@ test.describe
     });
 
     // -------------------------------------------------------------------------
-    // PTC2-16: UI-driven propose → respond+confirm → specific monsterId transfers
+    // UI-driven propose → respond+confirm → specific monsterId transfers
     //
     // WHAT THIS TEST KILLS:
     //   - A KeyO handler that does nothing → target-select never visible → timeout
@@ -159,10 +153,6 @@ test.describe
     //     even if conservation count holds (red-team H-5)
     //   - A propose UI that sends the wrong counterparty identity → server rejects
     //
-    // RED REASON:
-    //   KeyO handler does not exist in main.ts → pressing KeyO has no effect →
-    //   waitForSelector('[data-testid="tradepropose-target"]', {state:'visible'}) times out.
-    //   The test is STRUCTURALLY unable to pass without the KeyO overlay implementation.
     // -------------------------------------------------------------------------
     test('PTC2-16: KeyO→select→check monster→submit → respond+confirm → specific monsterId transfers (identity) + offer row deleted', async () => {
       test.setTimeout(90_000);
@@ -214,8 +204,6 @@ test.describe
       // -----------------------------------------------------------------------
       // Step 2: Initiator presses Escape to dismiss any stale overlay, then
       //   presses KeyO to open the trade-PROPOSE overlay.
-      //   RED GATE: if KeyO handler is missing, the overlay never opens and
-      //   waitForSelector times out here.
       // -----------------------------------------------------------------------
       await pageA.keyboard.press('Escape');
       await pageA.waitForTimeout(200);
@@ -243,7 +231,7 @@ test.describe
       //   we will assert on after the trade completes (identity assertion, not
       //   just conservation counts — red-team H-5).
       //
-      //   The checkbox must carry its monsterId in data-monster-id (ADR-0134 D1).
+      //   The checkbox must carry its monsterId in data-monster-id.
       //   BigInt does NOT cross page.evaluate() — carry as string.
       // -----------------------------------------------------------------------
       const offeredMonsterIdStr = await pageA.evaluate(() => {

@@ -1,58 +1,22 @@
 // ui/interactModel.test.ts — uxd2 RED gating tests for the context-sensitive interact core.
 //
-// SOURCE OF TRUTH: docs/specs/uxd2-plan.md (reconciled ACs 1-7, 12) +
-//                  docs/adr/0161-npc-interaction-context-interact.md §D3 / §D6.
-//
-// RED REASON: client/src/ui/interactModel.ts DOES NOT EXIST. Every test in this file
-// fails at module link time ("Failed to resolve import './interactModel'") until the
-// implementer ships it. That is the ONLY reason this file is red — no test here guesses
-// at an API shape: the contract below is the one the plan hands the specialist verbatim.
-//
-// PINNED CONTRACT (the specialist matches this EXACTLY):
-//   export const CLIENT_INTERACT_RANGE = 2;
-//   export interface InteractTile { readonly zoneId: number; readonly tileX: number;
-//                                   readonly tileY: number }
-//   export type Interactable =
-//     | { kind:'dialogue'; npcEntityId: bigint; anchorWorldX: number; anchorWorldY: number }
-//     | { kind:'shop'; npcEntityId: bigint; shopId: number;
-//         anchorWorldX: number; anchorWorldY: number }
-//     | { kind:'heal'; locationId: number; anchorWorldX: number; anchorWorldY: number }
-//   export function nearestInteractable(
-//     own: InteractTile,
-//     npcs: readonly StoreNpcRow[],
-//     characterTiles: ReadonlyMap<bigint, InteractTile>,
-//     healLocations: readonly StoreHealLocationRow[],
-//   ): Interactable | undefined
-//   export interface InteractPromptViewModel { readonly visible: true;
-//     readonly actionWord: 'Talk'|'Shop'|'Heal'; readonly keyGlyph: 'T';
-//     readonly anchorWorldX: number; readonly anchorWorldY: number }
-//   export function interactPrompt(
-//     target: Interactable | undefined, anyOverlayVisible: boolean,
-//   ): InteractPromptViewModel | null
-//
-// SEMANTICS (ADR-0161 D3):
+// SEMANTICS:
 //   * SAME ZONE ONLY. NPC zone comes from the CHARACTER-row join (its live wander
 //     position), never from the npc registry row's `zoneId`. An NPC with no character
 //     row is SKIPPED (half-orphan, never a throw). Heal rows are filtered by an
 //     EXPLICIT `loc.zoneId === own.zoneId` (they have no character row to inherit from).
 //   * RANGE: Manhattan distance <= CLIENT_INTERACT_RANGE (2), INCLUSIVE — mirrors the
-//     server TALK_RANGE (server-module/src/npc.rs:20).
+//     server TALK_RANGE.
 //   * ORDERING: (distance asc, kindRank asc, id asc WITHIN kind). kindRank is by SOURCE
 //     TABLE — an npc row is 0, a heal_location row is 1 — NOT by the descriptor's `kind`
 //     string. The class rank fires BEFORE any id comparison, so a `bigint` entityId and a
 //     `number` locationId are never compared against each other.
 //   * ANCHOR (SOURCE px, top-center of the TARGET's tile):
-//       anchorWorldX = (tileX + 0.5) * TILE_PX     TILE_PX = 32 (render/config.ts:15)
+//       anchorWorldX = (tileX + 0.5) * TILE_PX     TILE_PX = 32
 //       anchorWorldY =  tileY        * TILE_PX
 //     For an NPC target the tile is its CHARACTER tile; for a heal target it is the heal
 //     row's own tile_x/tile_y.
 //   * actionWord: dialogue -> 'Talk', shop -> 'Shop', heal -> 'Heal'. keyGlyph always 'T'.
-//
-// PORT NOTE: the 8 cases of the now-retired `dialogueModel.talk.test.ts`
-// (nearestTalkableNpcId) are ported into Block A below, adapted so a dialogue-only
-// fixture now returns a `{kind:'dialogue'}` descriptor instead of a bare bigint.
-//
-// Do NOT edit these tests to match a buggy implementation — correct from the plan only.
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -85,7 +49,7 @@ function npcRow(entityId: bigint, interaction: NpcInteraction = DIALOGUE): Store
     // Registry (home) zone is DELIBERATELY pinned to 0 — the SAME zone as `OWN`. Selection
     // must read the live zone from the CHARACTER-row join, never from this field, so this
     // value is set to the one that makes a registry-reading impl WRONGLY ACCEPT the
-    // other-zone NPC in tooth A5 (ported verbatim from dialogueModel.talk.test.ts:14).
+    // other-zone NPC in tooth A5.
     zoneId: 0,
     homeX: 0,
     homeY: 0,
@@ -132,8 +96,6 @@ const NO_HEALS: readonly StoreHealLocationRow[] = [];
 
 // ===========================================================================
 // BLOCK A — range / zone / character-join.
-// The 8 ported cases from the retired dialogueModel.talk.test.ts (M13.5c),
-// adapted to the descriptor return shape.
 // ===========================================================================
 
 describe('nearestInteractable — Block A: range, zone and the character-row join (ported)', () => {
@@ -311,7 +273,7 @@ describe('nearestInteractable — Block C: cross-kind ordering determinism', () 
     //  (2) a `Number(npc.entityId)` coercion to make the mixed compare type-check —
     //      9007199254740993 (2^53 + 1) is NOT representable as a double, so it silently
     //      collapses to 9007199254740992 and the comparison is already lossy.
-    // `tsc --strict` accepts the buggy comparator silently (red-team PoC), so only a
+    // `tsc --strict` accepts the buggy comparator silently, so only a
     // behavioural tooth can catch it.
     const bigEid = 9007199254740993n; // 2^53 + 1
     const chars = new Map([[bigEid, tile(0, 6, 4)]]); // Manhattan 1
@@ -338,7 +300,7 @@ describe('nearestInteractable — Block C: cross-kind ordering determinism', () 
   });
 
   it('★ C4 BITES: the class rank is by SOURCE TABLE — a Heal-variant NPC still outranks a heal TILE at equal distance', () => {
-    // ADR-0161 D3: kindRank is npc-row = 0, heal_location-row = 1. It is NOT the descriptor's
+    // kindRank is npc-row = 0, heal_location-row = 1. It is NOT the descriptor's
     // `kind` string. A Heal-variant NPC therefore (a) ranks as an NPC and (b) still produces a
     // {kind:'heal'} descriptor carrying ITS OWN locationId at ITS OWN character tile.
     // WRONG IMPL KILLED: an impl that ranks by the descriptor's kind string — the heal TILE
@@ -405,7 +367,7 @@ describe('nearestInteractable — Block D: descriptor payloads + anchor geometry
   });
 
   it('★ D4 BITES: anchorWorldX is tile-CENTRE ((tileX + 0.5) * 32) and anchorWorldY is tile-TOP (tileY * 32)', () => {
-    // The asymmetry is the point (ADR-0161 D6): X is centred so the prompt sits over the
+    // The asymmetry is the point: X is centred so the prompt sits over the
     // sprite's middle, Y is the tile TOP so the label floats ABOVE the head.
     // WRONG IMPL KILLED (1): `anchorWorldY = (tileY + 0.5) * TILE_PX` — a symmetric copy-paste;
     //   the prompt would render across the sprite's chest. 3*32=96 vs 3.5*32=112 separates them.
@@ -703,7 +665,7 @@ describe('interactPrompt — Block F: prompt view model', () => {
   });
 
   it('F5 BITES: the anchor is passed through UNTRANSFORMED (no second camera transform here)', () => {
-    // ADR-0161 D6: the VM stays in SOURCE px; the ONLY world→screen transform is
+    // The VM stays in SOURCE px; the ONLY world→screen transform is
     // WorldRenderer.screenFor(), which reuses the exact offset the stage applied this frame.
     // WRONG IMPL KILLED: a prompt VM that pre-multiplies by stageScale or adds a camera
     // offset — the DOM label would swim against the canvas during a slide (double transform).

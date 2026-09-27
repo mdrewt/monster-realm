@@ -1,4 +1,4 @@
-// MicrotaskBatcher — coalesce a transaction's row burst into one flush (ADR-0013).
+// MicrotaskBatcher — coalesce a transaction's row burst into one flush.
 import { describe, expect, it, vi } from 'vitest';
 import { MicrotaskBatcher } from './batch';
 

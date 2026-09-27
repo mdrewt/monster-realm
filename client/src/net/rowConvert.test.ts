@@ -1,6 +1,4 @@
-// rowConvert — SDK generated row -> normalized store row (M4a + M6c extension).
-// M6c adds monsterPubRowToStore and speciesRowToStore.
-// M9c adds inventoryRowToStore and itemRowToStore.
+// rowConvert — SDK generated row -> normalized store row.
 // uxd2: fast-check is used by the AC-16 totality property at the foot of this file.
 import * as fc from 'fast-check';
 import { describe, expect, it, vi } from 'vitest';
@@ -77,8 +75,7 @@ describe('rowConvert: player row -> store', () => {
 // ---------------------------------------------------------------------------
 // EG4 fixture helper: a full SdkMonsterPubRow.
 //
-// VERIFIED against client/src/module_bindings/types.ts:335-366 (`MonsterPub`) this
-// session: the eight essence columns are FLAT `essenceFire … essenceDark` u32s, and
+// the eight essence columns are FLAT `essenceFire … essenceDark` u32s, and
 // `trustTier` is a `TrustTier` enum — which the SDK deserializes as
 // `{ tag: 'Neutral', value: {} }`, NOT a bare `{ tag }` (red-team probe, contract
 // §"Verified probe facts"). The fixtures below therefore always carry `value: {}`;
@@ -86,9 +83,7 @@ describe('rowConvert: player row -> store', () => {
 //
 // `bond` / `evolvesTo` are DELIBERATELY ABSENT: EG4 removes both from the client type
 // (contract §B), and the Sdk* interfaces in rowConvert.ts are documented as "just the
-// fields convert reads" — the converter reads neither any more. (Migration B removes
-// them from the server row in EG5-6; until then the live SDK row still carries them
-// and the converter simply ignores them.)
+// fields convert reads" — the converter reads neither any more.
 // ---------------------------------------------------------------------------
 function sdkMonsterPub(overrides: Partial<SdkMonsterPubRow> = {}): SdkMonsterPubRow {
   return {
@@ -194,10 +189,7 @@ describe('rowConvert M6c: monsterPubRowToStore — SDK row -> StoreMonsterPub', 
   });
 
   // -------------------------------------------------------------------------
-  // EG4-1 / EG4-6 / EG4-7 — the essence-graph half of MonsterPub.
-  // RED REASON: monsterPubRowToStore (rowConvert.ts:165-184) maps `bond` and
-  // `evolvesTo` and knows nothing about tier / the eight essence columns /
-  // trustTier / qualityTimeTier / nutritionPct. Missing implementation.
+  // The essence-graph half of MonsterPub.
   // -------------------------------------------------------------------------
 
   it('★ BITES (EG4-1): the EIGHT essence columns map to the affinity-keyed record, each to ITS OWN key', () => {
@@ -379,7 +371,6 @@ describe('rowConvert M6c: speciesRowToStore — SDK row -> StoreSpeciesRow', () 
 
 // =============================================================================
 // M7c extension: battleRowToStore + skillRowToStore
-// SOURCE OF TRUTH: specs/monster-realm-v2/M7-battle-view.spec.md
 // =============================================================================
 
 // ---------------------------------------------------------------------------
@@ -638,7 +629,6 @@ describe('rowConvert M7c: skillRowToStore — SDK row -> StoreSkillRow', () => {
 
 // =============================================================================
 // M9c extension: inventoryRowToStore + itemRowToStore
-// SOURCE OF TRUTH: specs/monster-realm-v2/M9-raising.spec.md
 // =============================================================================
 
 describe('rowConvert M9c: inventoryRowToStore — SDK row -> StoreInventory', () => {
@@ -816,23 +806,6 @@ describe('rowConvert M9c: itemRowToStore — SDK row -> StoreItemRow', () => {
 
 // =============================================================================
 // EG4 extension: evolutionPathRowToStore REPLACES fusionRowToStore.
-// SOURCE OF TRUTH: memory/projects/monster-realm-EG4-contract.md §B + §G
-//                  (EARS EG4-1 / EG4-5 / EG4-7).
-//
-// The M10c `evolvesTo` and `fusionRowToStore` suites that lived here are DELETED,
-// not adapted: EG4 removes `evolvesTo` from the client type (contract §B "REMOVED:
-// bond, evolvesTo") and EG4-5 deletes `SdkFusionRow` / `fusionRowToStore` outright.
-// These are removals from the client type, NOT backfills.
-//
-// RED REASON: `evolutionPathRowToStore` and `SdkEvolutionPathRow` do not exist in
-// client/src/net/rowConvert.ts (verified this session — the file's last converter
-// block is the M10c fusion one at :387-404). The VALUE import at the head of this
-// file therefore reds either at module-eval time ("does not provide an export named
-// evolutionPathRowToStore") or at the first call ("is not a function"), depending on
-// how the runner resolves the missing specifier. Either way it is a MISSING
-// IMPLEMENTATION, not a typo here — and adding the export is the first thing the
-// implementer does, after which the individual teeth below start reporting for
-// themselves.
 //
 // SHAPE VERIFIED against client/src/module_bindings/types.ts:199-222:
 //   EvolutionPathRow { pathId u64, edgeId u32, fromSpecies u32, toSpecies u32,
@@ -1106,11 +1079,6 @@ describe('★ rowConvert EG4: the three Option thresholds normalize absent -> nu
 });
 
 // ---------------------------------------------------------------------------
-// RED-TEAM ADDITION (gap against contract §G, EG4-5 row): that row names
-// `rowConvert.test.ts` as one of the three files that must prove "a partial deletion
-// leaving dead wiring" reds — but the authored suite only DELETED the fusion describe
-// block and swapped the import specifier. Deleting a test is not a gate: nothing here
-// asserted that `fusionRowToStore` / `SdkFusionRow` actually left rowConvert.ts.
 //
 // They could survive as live exports. `SdkFusionRow` is type-only (erased), but
 // `fusionRowToStore` is a runtime export, and connection.test.ts's whole-file scan only
@@ -1145,10 +1113,6 @@ describe('★ rowConvert EG4-5: the fusion converter surface is DELETED from the
 // =============================================================================
 // M12d converters: playerConversationRowToStore, playerQuestRowToStore,
 //                  healLocationRowToStore, npcRowToStore
-// SOURCE OF TRUTH: docs/m12d-plan.md + docs/adr/0071-m12d-client-dialogue-quest-heal-ui.md
-//
-// RED REASON: None of these 4 converter functions exist yet in rowConvert.ts.
-// All tests below will fail (... is not a function) until the implementer adds them.
 //
 // Key invariants:
 //   - ownerIdentity SDK objects must be resolved via .toHexString() to a plain string
@@ -1263,7 +1227,7 @@ describe('M12d converters', () => {
       costItemId: undefined,
       costQty: 0,
       cooldownMs: 30000,
-      // 12r-d: `costCurrency` becomes a REQUIRED bigint on SdkHealLocationRow /
+      // `costCurrency` becomes a REQUIRED bigint on SdkHealLocationRow /
       // StoreHealLocationRow. Carried here so this pre-existing fixture still describes a
       // well-formed row after the type change (its assertions are untouched).
       costCurrency: 0n,
@@ -1283,7 +1247,7 @@ describe('M12d converters', () => {
       costItemId: 2,
       costQty: 1,
       cooldownMs: 60000,
-      costCurrency: 0n, // 12r-d: required field, carried so the fixture stays well-formed.
+      costCurrency: 0n, // Required field, carried so the fixture stays well-formed.
     };
     const store = healLocationRowToStore(sdkRow);
     expect(typeof store.costItemId).toBe('number');
@@ -1301,7 +1265,7 @@ describe('M12d converters', () => {
       costItemId: undefined,
       costQty: 0,
       cooldownMs: 45000,
-      costCurrency: 0n, // 12r-d: required field, carried so the fixture stays well-formed.
+      costCurrency: 0n, // Required field, carried so the fixture stays well-formed.
     };
     const store = healLocationRowToStore(sdkRow);
     expect(typeof store.locationId).toBe('number');
@@ -1363,9 +1327,6 @@ describe('M12d converters', () => {
 
 // =============================================================================
 // uxd2 (ADR-0161 D1/AC-16) — npcRowToStore: the NpcInteraction boundary converter.
-// APPENDED BLOCK — nothing above this line is modified.
-//
-// SOURCE OF TRUTH: docs/specs/uxd2-plan.md I5 + AC-16 + docs/adr/0161-*.md §D1.
 //
 // CONTRACT:
 //   SdkNpcRow += readonly interaction: { readonly tag: string; readonly value?: number }
@@ -1387,9 +1348,6 @@ describe('M12d converters', () => {
 // WHY `??`/typeof AND NOT `||` (AC-16, rowConvert.ts:277 precedent): value 0 is a
 // representable u32 payload. `value || fallback` silently rewrites shop 0 / location 0.
 //
-// RED TODAY: npcRowToStore ignores `row.interaction` entirely, so `store.interaction`
-// reads `undefined` and every assertion below fails. No throw is involved — these are
-// plain value mismatches, i.e. red for exactly the right reason.
 // =============================================================================
 
 /** Build a well-formed SdkNpcRow with a caller-chosen interaction payload. */
@@ -1590,7 +1548,7 @@ describe('M12d gating: healLocationRowToStore cooldownMs must be bigint (i64 inv
       costQty: 0,
       // Simulate the SDK delivering a bigint for the i64 column:
       cooldownMs: 30000n as unknown as number,
-      costCurrency: 0n, // 12r-d: required field, carried so the fixture stays well-formed.
+      costCurrency: 0n, // Required field, carried so the fixture stays well-formed.
     };
     const store = healLocationRowToStore(sdkRow);
     // After the fix: SdkHealLocationRow.cooldownMs is bigint and the converter
@@ -1602,12 +1560,6 @@ describe('M12d gating: healLocationRowToStore cooldownMs must be bigint (i64 inv
 // =============================================================================
 // M13d converters: shopRowToStore, shopItemRowToStore
 //                  itemRowToStore gains sellPrice field
-// SOURCE OF TRUTH: specs/monster-realm-v2/M13d (shop client UI slice)
-//
-// RED REASON: shopRowToStore and shopItemRowToStore don't exist yet.
-//   SdkShopRowRow and SdkShopItemRowRow interfaces don't exist yet.
-//   SdkItemRowRow is missing sellPrice field.
-//   All tests below will fail until the implementer adds them.
 //
 // Key invariants:
 //   - shopId and itemId are number (u32, safe as number)
@@ -1809,16 +1761,7 @@ describe('rowConvert M13d: shopItemRowToStore — SdkShopItemRowRow -> StoreShop
 });
 
 // =============================================================================
-// m14.5d-1b — cureStatus field in itemRowToStore
-// SOURCE OF TRUTH: specs/monster-realm-v2/M14.5-eighth-review-residuals.spec.md §14.5d-1
-//
-// RED REASON: SdkItemRowRow does not yet have a `cureStatus` field, and
-// itemRowToStore does not yet map it. StoreItemRow does not yet have a
-// `cureStatus` field. All tests below will fail (TypeScript compile error or
-// wrong-value assertion) until the implementer adds:
-//   - `cureStatus?: { readonly tag: string } | undefined` to SdkItemRowRow
-//   - `cureStatus: string | null` to StoreItemRow (store.ts)
-//   - mapping logic in itemRowToStore: Some({tag}) → tag string, None/undefined → null
+// cureStatus field in itemRowToStore
 //
 // Classify-by-data rule: the client infers cure intent from cureStatus !== null
 // (the data itself), never from a hardcoded item id.
@@ -1933,19 +1876,9 @@ describe('rowConvert m14.5d-1b: itemRowToStore — cureStatus field [m14.5d-1b]'
 });
 
 // =============================================================================
-// m14.5d — weather threading: state.weather -> StoreBattle.weather
-// SOURCE OF TRUTH: specs/monster-realm-v2/M14.5-eighth-review-residuals.spec.md §14.5d-2
+// Weather threading: state.weather -> StoreBattle.weather
 //
-// RED REASON: SdkBattleRow.state does not yet have a `weather` field, and
-// battleRowToStore does not yet map it. StoreBattle does not yet have a `weather`
-// field either. All four tests below will fail (missing field / undefined access)
-// until the implementer adds:
-//   - `weather?: { readonly tag: string; readonly value: number } | null` to SdkBattleRow.state
-//   - `weather: StoreWeather | null` to StoreBattle (store.ts)
-//   - mapping logic in battleRowToStore: present → { tag, turnsRemaining: value },
-//     absent/undefined/null → null
-//
-// KEY ANTI-PATTERN (reviewer B-1 + red-team 6):
+// KEY ANTI-PATTERN:
 //   `?.value || null` would map value:0 → null (zero-falsy trap).
 //   The correct mapping is `weather != null ? { tag: weather.tag, turnsRemaining: weather.value } : null`
 //   so that turnsRemaining:0 is preserved exactly as 0.
@@ -1975,8 +1908,8 @@ describe('rowConvert m14.5d: battleRowToStore — weather field threading', () =
   it('BITES: state.weather {tag:"Rain", value:3} → StoreBattle.weather {tag:"Rain", turnsRemaining:3}', () => {
     // Kills: an impl that omits weather from battleRowToStore, or that passes
     // the raw SDK shape through (leaving .value instead of .turnsRemaining).
-    // Reviewer B-1: explicit value→turnsRemaining rename is required, parallel to
-    // status.value→turnsRemaining at rowConvert.ts line 211.
+    // explicit value→turnsRemaining rename is required, parallel to
+    // status.value→turnsRemaining.
     const row = makeSdkBattleRowWithWeather({ tag: 'Rain', value: 3 });
     const store = battleRowToStore(row as unknown as ReturnType<typeof makeSdkBattleRow>);
     const weather = (store as Record<string, unknown>).weather as {
@@ -1989,7 +1922,7 @@ describe('rowConvert m14.5d: battleRowToStore — weather field threading', () =
   });
 
   it('BITES: state.weather {tag:"Rain", value:0} → turnsRemaining === 0 (zero-falsy trap)', () => {
-    // Red-team 6 / reviewer B-1: `?.value || null` would coerce 0 → null.
+    // `?.value || null` would coerce 0 → null.
     // The correct impl uses explicit null-check: `weather != null ? {...value} : null`.
     // Kills: any impl that uses `|| null` or `&& { turnsRemaining: value }` patterns
     // where falsy value (0) gets swallowed.
@@ -2027,18 +1960,13 @@ describe('rowConvert m14.5d: battleRowToStore — weather field threading', () =
 });
 
 // =============================================================================
-// m15b: tradeOfferRowToStore — SDK Identity.toHexString() gate (RT-TO-01)
+// tradeOfferRowToStore — SDK Identity.toHexString() gate (RT-TO-01)
 //
 // The trade_offer table is PUBLIC (both parties see all rows — ADR-0106 D3).
 // buildTradeViewModel filters by string equality: o.initiator === identity.
 // If toHexString() is NOT called on initiator/counterparty in tradeOfferRowToStore,
 // the store holds raw Identity objects, and the string equality check always fails —
 // the viewer permanently sees "no-trade" even when a live offer involves them.
-//
-// This is the exact class of bug that already bit playerRowToStore (tested above at line 43)
-// and inventoryRowToStore (tested at line S2). These tests exist because toHexString()
-// was confirmed necessary. tradeOfferRowToStore is the only m15b converter without
-// equivalent teeth. These tests close that gap.
 //
 // TEETH CONTRACT (what is killed):
 //   - An impl that stores raw SDK Identity objects → string equality filter always fails
@@ -2151,16 +2079,7 @@ describe('rowConvert m15b: tradeOfferRowToStore — identity toHexString() gate 
 });
 
 // =============================================================================
-// m17b — profileRowToStore: SdkProfileRow -> StoreProfile (RL-13 boundary ingest)
-// SOURCE OF TRUTH: specs/monster-realm-v2/M17-ranked-ladder.spec.md §RL-13 / §RL-15
-//
-// RED REASON: SdkProfileRow type and profileRowToStore do not exist yet in
-// rowConvert.ts. All tests will fail with import errors until the implementer adds:
-//   export type SdkProfileRow = {
-//     identity: { toHexString(): string };
-//     name: string; rating: number; wins: number; losses: number;
-//   }
-//   export function profileRowToStore(row: SdkProfileRow): StoreProfile
+// profileRowToStore: SdkProfileRow -> StoreProfile (RL-13 boundary ingest)
 //
 // Contract:
 //   - identity resolved via .toHexString() to a plain string (never stored as object)
@@ -2293,33 +2212,12 @@ describe('rowConvert m17b: profileRowToStore — edge cases (RC-PR-03 / RC-PR-04
 });
 
 // =============================================================================
-// m17.5f — narrowTag + HANDLED_ENUM_VARIANTS (EARS 17.5f-3, T4)
-// SOURCE OF TRUTH: docs/specs/m17.5f-plan.md §C T4
-//
-// RED REASON: narrowTag and HANDLED_ENUM_VARIANTS do not exist yet in
-// rowConvert.ts. All imports below fail at runtime until the implementer adds:
-//
-//   export function narrowTag<T extends string>(
-//     raw: string,
-//     known: readonly T[],
-//     enumName: string,
-//   ): T
-//
-//   export const HANDLED_ENUM_VARIANTS = {
-//     TradeStatus:     ['Pending', 'ConfirmedByCounterparty'] as const,
-//     ChallengeStatus: ['Pending', 'Accepted', 'Declined', 'Cancelled'] as const,
-//     BattleOutcome:   ['Ongoing', 'SideAWins', 'SideBWins', 'Fled'] as const,
-//     Affinity:        ['Fire','Water','Plant','Electric','Earth','Wind','Light','Dark'] as const,
-//     StatusKind:      ['Poison','Burn','Paralysis','Sleep','Freeze'] as const,
-//     WeatherEffect:   ['Rain','Sun','Sandstorm','Hail'] as const,
-//     ActionState:     ['Idle','Walking','Jumping'] as const,
-//     Direction:       ['North','South','East','West'] as const,
-//   } as const;
+// narrowTag + HANDLED_ENUM_VARIANTS (EARS 17.5f-3, T4)
 //
 // SCOPE: narrowTag is applied at ONE site only — rowConvert.ts:525 (the
 //   `as 'Pending' | 'ConfirmedByCounterparty'` cast on row.status.tag).
 //   Other .tag reads feed bare-string store fields where narrowing is a type
-//   no-op (reviewer W-1/W-5 YAGNI; plan §C T4 §narrowTag applies at ONE site).
+//   no-op.
 //
 // PvpAction is EXCLUDED from the registry because rowConvert never READS it
 //   (PvpAction is a write-direction enum: the client writes it in submitPvpAction
@@ -2441,7 +2339,7 @@ describe('rowConvert m17.5f: narrowTag — unknown tag returns raw string AND lo
 describe('rowConvert m17.5f: narrowTag — never throws for any input (T4-3)', () => {
   it('BITES: narrowTag does not throw for an unknown tag (flushBatch has no per-listener isolation)', () => {
     // A throw inside a subscription callback kills the entire flushBatch burst
-    // (ADR-0085 A6; rowConvert.ts:1-5 design rationale). narrowTag must NEVER throw.
+    // (ADR-0085 A6). narrowTag must NEVER throw.
     // Kills: an impl that throws when the tag is not in the known array.
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
@@ -2528,8 +2426,7 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS.TradeStatus — registry matc
     //     ConfirmedByCounterparty: __t.unit(),
     //   });
     //
-    // Kills: an impl that lists stale/extra variants (the eval would flag them,
-    // but the unit test catches it immediately in the vitest run).
+    // Kills: an impl that lists stale/extra variants.
     expect(HANDLED_ENUM_VARIANTS.TradeStatus).toEqual(['Pending', 'ConfirmedByCounterparty']);
   });
 });
@@ -2589,17 +2486,16 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS — registry key set (T4-6)',
       'WeatherEffect',
       'ActionState',
       'Direction',
-      // uxd2: NpcInteraction registered — ADR-0161. npcRowToStore reads
-      // `row.interaction.tag` at the SDK→store boundary, so a server-added 4th
-      // variant MUST ratchet the sdk-enum-exhaustiveness eval RED (plan I5).
+      // NpcInteraction registered — ADR-0161. npcRowToStore reads
+      // `row.interaction.tag` at the SDK→store boundary.
       'NpcInteraction',
-      // EG4: TrustTier registered. TWO new boundary reads in this slice —
+      // TrustTier registered. TWO new boundary reads in this slice —
       // `monsterPubRowToStore` reads `row.trustTier.tag` (MonsterPub gained the
       // column in EG1) and `evolutionPathRowToStore` reads
       // `row.minTrustTier?.tag`. A server-side reorder or a 6th variant is
-      // invisible to tsc and, unregistered, invisible to the eval too — and the
-      // ORDER is semantically load-bearing here in a way no other registry entry
-      // is (it is the ranking the trust gate compares through).
+      // invisible to tsc — and the ORDER is semantically load-bearing here in a
+      // way no other registry entry is (it is the ranking the trust gate
+      // compares through).
       'TrustTier',
     ] as const;
     for (const key of requiredKeys) {
@@ -2631,14 +2527,6 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS — registry key set (T4-6)',
     //     making the registry a superset rather than the exact required set.
     // The presence test above confirms the 9 required keys exist; this test pins
     // that no additional keys were added.
-    //
-    // uxd2 RECALIBRATION (8 -> 9): NpcInteraction registered — ADR-0161.
-    // EG4 RECALIBRATION (9 -> 10): TrustTier registered. Same reasoning as uxd2's: the
-    // slice MANDATES the entry (two new `.tag` boundary reads — MonsterPub.trustTier
-    // and EvolutionPathRow.minTrustTier), so leaving the pin at 9 would make it
-    // impossible for any correct implementation to satisfy both this gate and the
-    // key-presence gate above. RED TODAY (the live registry has 9 keys) — correct
-    // TDD red, recalibrated FROM the contract, not to fit the code.
     expect(
       Object.keys(HANDLED_ENUM_VARIANTS).length,
       'HANDLED_ENUM_VARIANTS must have EXACTLY 10 keys: TradeStatus, ChallengeStatus, ' +
@@ -2661,11 +2549,11 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS — registry key set (T4-6)',
     // cosmetic.
     //
     // WRONG IMPL KILLED (1): an ALPHABETISED entry ['Devoted','Friendly','Hostile',
-    //   'Neutral','Wary'] — it satisfies the sdk-enum-exhaustiveness eval (C2/C3 are
-    //   SET-based), the key-presence gate and the exact-count gate above. This array
+    //   'Neutral','Wary'] — it satisfies
+    //   the key-presence gate and the exact-count gate above. This array
     //   pin is the only thing standing between the registry and a silent ordering drift.
     // WRONG IMPL KILLED (2): a dropped variant (e.g. only the three tiers some fixture
-    //   happened to use) — the eval reds only on regen; this reds at unit speed.
+    //   happened to use).
     expect(HANDLED_ENUM_VARIANTS.TrustTier).toEqual([
       'Hostile',
       'Wary',
@@ -2716,13 +2604,12 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS — registry key set (T4-6)',
   });
 
   it('BITES: NpcInteraction registry matches types.ts variants in DECLARATION order', () => {
-    // uxd2: NpcInteraction registered — ADR-0161.
+    // NpcInteraction registered — ADR-0161.
     //
-    // ORDERING CONVENTION (read from rowConvert.ts:55 and verified against the generated
-    // client/src/module_bindings/types.ts this session): the registry's variant lists are
-    // DECLARATION-ORDERED — they "mirror module_bindings/types.ts EXACTLY", and the SDK
-    // generator emits each `__t.enum` variant map in Rust declaration order. They are NOT
-    // alphabetical, and every existing entry proves it:
+    // ORDERING CONVENTION:
+    // the registry's variant lists are DECLARATION-ORDERED — they "mirror
+    // module_bindings/types.ts EXACTLY", and the SDK generator emits each `__t.enum` variant map
+    // in Rust declaration order. They are NOT alphabetical, and every existing entry proves it:
     //     Direction    = North, South, East, West        (alphabetical: East, North, …)
     //     ActionState  = Idle, Walking, Jumping          (alphabetical: Idle, Jumping, …)
     //     BattleOutcome= Ongoing, SideAWins, SideBWins, Fled  (alphabetical: Fled first)
@@ -2736,53 +2623,27 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS — registry key set (T4-6)',
     // matter for tag matching, so the payload type is not pinned here.
     //
     // WRONG IMPL KILLED (1): an alphabetised entry ['Dialogue', 'Heal', 'Shop'] — it would
-    //   still satisfy the sdk-enum-exhaustiveness eval (C2/C3 are set-based) and would
     //   still satisfy the key-presence and exact-count gates above, so THIS array pin is
     //   the only thing standing between the registry and a silent drift away from the
     //   file's stated "mirrors types.ts EXACTLY" contract.
-    // WRONG IMPL KILLED (2): an entry that omits a variant (e.g. ['Dialogue']) — the eval's
-    //   C2 would red on regen, but this pins it at unit speed with the enum named.
+    // WRONG IMPL KILLED (2): an entry that omits a variant (e.g. ['Dialogue'])
+    //   this pins it at unit speed with the enum named.
     expect(HANDLED_ENUM_VARIANTS.NpcInteraction).toEqual(['Dialogue', 'Shop', 'Heal']);
   });
 });
 
 // =============================================================================
-// 11r-e (ux2b) — playerWalletRowToStore: the `my_wallet` view row converter
-// SOURCE OF TRUTH: docs/adr/0169-wallet-view-runtime-path.md D3, amending
-//   docs/adr/0154-owner-scoped-wallet-view.md D1/D6.
+// playerWalletRowToStore: the `my_wallet` view row converter
 //
 // EARS 11r-e-2 — WHERE an SDK `my_wallet` row is supplied, playerWalletRowToStore
 //   SHALL return `{ownerIdentity: <hex string>, balance: <the same bigint>}`, SHALL
 //   preserve `0n` and `18446744073709551615n` byte-identically, and SHALL NOT throw
 //   for any well-typed input.
 //
-// RED REASON (verified by reading client/src/net/rowConvert.ts this session):
-//   `playerWalletRowToStore` does NOT exist anywhere in rowConvert.ts. The M12d
-//   own-row converter block stops at `playerConversationRowToStore` (rowConvert.ts:416)
-//   and `shouldRemoveOnViewDelete` (:444); neither the function nor the
-//   `SdkPlayerWalletRow` type is exported. The `import { playerWalletRowToStore, type
-//   SdkPlayerWalletRow }` below therefore fails at module-eval time and EVERY test in
-//   this section reds. That is a MISSING IMPLEMENTATION, not a typo in this file.
-//   (`StoreWallet` DOES already exist — store.ts:185 — because ux2/ADR-0154 shipped the
-//   pure client half; only the runtime path is missing. So the `StoreWallet` import
-//   below is green today and cannot be the cause of the red.)
-//
-// REQUIRED CONTRACT (ADR-0169 D3 — the exact shape the implementer must ship, and the
-// exact shape these tests call):
-//
-//   export interface SdkPlayerWalletRow {
-//     readonly ownerIdentity: { toHexString(): string };
-//     readonly balance: bigint;
-//   }
-//
-//   export function playerWalletRowToStore(row: SdkPlayerWalletRow): StoreWallet {
-//     return { ownerIdentity: row.ownerIdentity.toHexString(), balance: row.balance };
-//   }
-//
 // WHY THIS FILE CARRIES REAL BEHAVIORAL TESTS (and connection.test.ts does not):
 //   rowConvert.ts is PURE and importable — no DOM, no wasm, no generated-binding side
 //   effects — so it is the one surface of this slice where an actual call can be made.
-//   connection.ts is coverage-excluded (vite.config.ts:99-100) and can only be source
+//   connection.ts is coverage-excluded and can only be source
 //   scanned. Neither substitutes for the other.
 //
 // WHAT THESE TESTS KILL (ADR-0169 D3 names all four wrong implementations):
@@ -2790,13 +2651,13 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS — registry key set (T4-6)',
 //       (StoreWallet.balance is `bigint`). `50` is exactly representable as a JS number,
 //       so NO e2e in this slice can ever see this bug: RC-PW-02b/02c are the only gate.
 //   (b) `row.balance ?? 0n` (or `|| 0n`, or `BigInt(row.balance ?? 0)`) — fabricates
-//       "broke" out of "dark". shopModel.balanceViewModel (shopModel.ts:75-79) decides
+//       "broke" out of "dark". shopModel.balanceViewModel decides
 //       `unknown` vs `known` on `typeof amount !== 'bigint'`, so a coerced 0n renders
 //       `Gold: 0` where the player actually has NO wallet row at all — the exact
 //       ADR-0154 D6 collapse. RC-PW-03b/03c are the only gate (a well-typed row can
 //       never trip `??`, so the malformed-input probe is required to see it).
 //   (c) `String(row.ownerIdentity)` → `"[object Object]"`. store.ownWallet(identity)
-//       (store.ts:992-995) filters `slot.ownerIdentity === identity`, so this makes the
+//       filters `slot.ownerIdentity === identity`, so this makes the
 //       owner filter miss FOREVER and the readout is `unknown` in perpetuity — a bug
 //       that looks exactly like "the feature was never wired". RC-PW-01a/01b.
 //   (d) a THROWING converter — it runs inside a subscription row callback
@@ -2833,7 +2694,7 @@ const U64_MAX = 18446744073709551615n;
 describe('rowConvert 11r-e: playerWalletRowToStore — ownerIdentity via toHexString() (RC-PW-01)', () => {
   it('RC-PW-01a BITES: ownerIdentity is the plain hex string from toHexString() — kills String(row.ownerIdentity) => "[object Object]"', () => {
     // WRONG IMPL KILLED (ADR-0169 D3 c): `String(row.ownerIdentity)` or storing the raw
-    // SDK Identity object. store.ownWallet(identity) (store.ts:992-995) compares
+    // SDK Identity object. store.ownWallet(identity) compares
     // `slot.ownerIdentity === identity` against a hex string; an object (or the string
     // "[object Object]") NEVER matches, so buildShopViewModel* always receives undefined
     // and #shop-balance renders `unknown` forever — indistinguishable from an unwired
@@ -2882,7 +2743,7 @@ describe('rowConvert 11r-e: playerWalletRowToStore — ownerIdentity via toHexSt
     // WRONG IMPL KILLED: `row.ownerIdentity.toHexString() || 'unknown'`. store.ownWallet('')
     // must return the row only for the '' identity; substituting a sentinel owner would
     // make the slot match the WRONG player (or no player) at the shop call sites, and
-    // main.ts:1345's dialogue listener genuinely can pass '' (ADR-0169 D5).
+    // main.ts:1345's dialogue listener genuinely can pass ''.
     const stored = playerWalletRowToStore(makeSdkWalletRow('', 999n));
     expect(stored.ownerIdentity).toBe('');
     expect(typeof stored.ownerIdentity).toBe('string');
@@ -2937,7 +2798,7 @@ describe('rowConvert 11r-e: playerWalletRowToStore — balance is a pass-through
 
 describe('rowConvert 11r-e: playerWalletRowToStore — "broke" is never fabricated from "dark" (RC-PW-03)', () => {
   it('RC-PW-03a BITES: a genuine 0n balance is preserved as 0n (not dropped, not undefined)', () => {
-    // ADR-0154 D6: "broke" (balance 0n, renders `Gold: 0`) and "dark" (no wallet row at
+    // "broke" (balance 0n, renders `Gold: 0`) and "dark" (no wallet row at
     // all, renders nothing) are DIFFERENT states and must stay distinguishable end to end.
     // WRONG IMPL KILLED: an impl that treats 0n as falsy-and-absent (`balance: row.balance
     // ? row.balance : undefined`), which would turn a broke player's readout into a blank.
@@ -2952,7 +2813,7 @@ describe('rowConvert 11r-e: playerWalletRowToStore — "broke" is never fabricat
     // has a bigint, so `?? 0n` is unobservable on well-typed input — the mutant has to be
     // probed with the malformed row the SDK could hand us after a schema drift.
     //
-    // WHY IT MATTERS DOWNSTREAM: shopModel.balanceViewModel (shopModel.ts:75-79) branches
+    // WHY IT MATTERS DOWNSTREAM: shopModel.balanceViewModel branches
     // on `typeof amount !== 'bigint'`. Passing `undefined` through yields {kind:'unknown'}
     // -> the node stays hidden, which is correct and honest. Coercing to 0n yields
     // {kind:'known', label:'Gold: 0'} -> the client CONFIDENTLY tells the player they have
@@ -3067,19 +2928,11 @@ describe('rowConvert 11r-e: playerWalletRowToStore — totality (RC-PW-05)', () 
 });
 
 // =============================================================================
-// 12r-d [E1] — healLocationRowToStore carries the heal cost CURRENCY as a bigint.
-// APPENDED BLOCK — nothing above this line is weakened. Four pre-existing heal
-// fixtures gained a `costCurrency: 0n` key so they still describe a WELL-FORMED row
-// once the field becomes required; not one of their assertions changed.
+// healLocationRowToStore carries the heal cost CURRENCY as a bigint.
 //
 // EARS E1: WHEN a `heal_location_row` arrives from the SDK, the client SHALL carry its
 // `costCurrency` (u64) into the store as a `bigint`, byte-identical, with NO numeric
 // coercion and NO defaulting.
-//
-// CONTRACT (the implementer builds exactly this):
-//   interface SdkHealLocationRow { …; readonly costCurrency: bigint }   // REQUIRED
-//   type StoreHealLocationRow   = { …; readonly costCurrency: bigint }  // REQUIRED
-//   healLocationRowToStore: `costCurrency: row.costCurrency`  — a bare pass-through.
 //
 // WHY BIGINT AND WHY NO DEFAULT — the doctrine is already written down one function up,
 // at rowConvert.ts:543-568 (playerWalletRowToStore):
@@ -3091,12 +2944,9 @@ describe('rowConvert 11r-e: playerWalletRowToStore — totality (RC-PW-05)', () 
 //   * NO throw of its own: this runs inside an SDK row callback, dispatched in a bare
 //     unguarded loop — a throw starves every sibling table's ingest for that transaction.
 //
-// RED AT HEAD: rowConvert.ts:602-612 maps seven fields and never mentions costCurrency,
-// so `store.costCurrency` is `undefined` and the key is ABSENT from the result object.
-// Every case below fails on that (`undefined` !== the expected bigint; `Object.hasOwn`
-// false; the key-set assertion missing an entry). Note client/tsconfig.json EXCLUDES
-// `**/*.test.ts`, so `npm run typecheck` does NOT see this file — the gating signal is
-// the runtime failure under vitest, exactly as the 11r-e wallet block above.
+// Note client/tsconfig.json EXCLUDES `**/*.test.ts`, so `npm run typecheck` does NOT see
+// this file — the gating signal is the runtime failure under vitest, exactly as the 11r-e
+// wallet block above.
 // =============================================================================
 
 import type { StoreHealLocationRow } from './store';
@@ -3124,7 +2974,7 @@ const HEAL_2P53_PLUS_1 = 9007199254740993n;
 
 describe('rowConvert 12r-d [E1]: healLocationRowToStore — costCurrency is a pass-through bigint', () => {
   it('RC-HL-CC-01 BITES: costCurrency 0n arrives as 0n with typeof "bigint" — kills the dropped field', () => {
-    // WRONG IMPL KILLED (the HEAD one): a converter that maps the other seven fields and
+    // WRONG IMPL KILLED: a converter that maps the other seven fields and
     // never mentions costCurrency — every consumer downstream reads `undefined`, and the
     // heal overlay renders a cost it cannot describe.
     // ALSO KILLED: `costCurrency: Number(row.costCurrency)` — 0n and 0 are DIFFERENT under
@@ -3265,8 +3115,7 @@ describe('rowConvert 12r-d [E1]: healLocationRowToStore — costCurrency is a pa
 });
 
 // =============================================================================
-// M21b-2 (ADR-0182 D15) — accountRowToStore: the `my_account` view row converter.
-// APPENDED BLOCK — nothing above this line is weakened.
+// accountRowToStore: the `my_account` view row converter.
 //
 // EARS COVERED
 //   AUTH-50 (ingest half) — the client subscribes `SELECT * FROM my_account` on every
@@ -3281,32 +3130,8 @@ describe('rowConvert 12r-d [E1]: healLocationRowToStore — costCurrency is a pa
 // last_login_at_ms, status, deletion_requested_at_ms, claimed_from, claimed_at_ms,
 // terminal_at_ms }`, and the generated binding at `client/src/module_bindings/types.ts:13-25`
 // mirrors it in camelCase with `__t.i64()` timestamps and `__t.option(...)` on the last
-// FOUR. ADR-0182 D15 listed eight; M22 S4 (PR#407) added `terminal_at_ms` as the ninth —
+// FOUR. ADR-0182 D15 listed eight; M22 S4 added `terminal_at_ms` as the ninth —
 // the PRV1-4 permanent-deletion marker. NINE fields, no more, no fewer.
-//
-// CONTRACT (modelled byte-for-byte on `playerWalletRowToStore`, rowConvert.ts:537-574 —
-// explicit field mapping, NO spread, NO coercion, NO defaulting, NO throw):
-//
-//   export interface SdkAccountRow {
-//     readonly identity: { toHexString(): string };
-//     readonly authIssuer: string;
-//     readonly createdAtMs: bigint;
-//     readonly lastLoginAtMs: bigint;
-//     readonly status: { tag: string };
-//     readonly deletionRequestedAtMs: bigint | undefined;
-//     readonly claimedFrom: { toHexString(): string } | undefined;
-//     readonly claimedAtMs: bigint | undefined;
-//     readonly terminalAtMs: bigint | undefined;   // M22 S4 — Option<i64>, the PRV1-4 marker
-//   }
-//   export function accountRowToStore(row: SdkAccountRow): StoreAccount;
-//
-// RED REASON (verified by reading client/src/net/rowConvert.ts this session): neither
-// `accountRowToStore` nor `SdkAccountRow` exists — the file's own-row converter family runs
-// `playerWalletRowToStore` (:569), `healLocationRowToStore` (:606), `profileRowToStore`
-// (:769) and nothing else. The import below fails at module-eval time and EVERY test in
-// this section reds. That is a MISSING IMPLEMENTATION, not a typo here. `StoreAccount` does
-// NOT exist either (store.test.ts's appended block is its gate), so the type import reds
-// with it.
 //
 // NOTE, as the 12r-d block above already records: client/tsconfig.json EXCLUDES
 // `**/*.test.ts`, so `npm run typecheck` does not see this file — the gating signal is the
@@ -3350,10 +3175,10 @@ describe('rowConvert M21b-2: accountRowToStore — identities via toHexString() 
   });
 
   it('★★ RC-AC-01b BITES: claimedFrom is hex-converted when PRESENT and stays undefined when ABSENT', () => {
-    // `claimed_from` is `Option<Identity>` (schema.rs:698). Both arms are load-bearing and
+    // `claimed_from` is `Option<Identity>`. Both arms are load-bearing and
     // they fail in opposite directions:
     //   * present-but-not-converted → claimModel's ERR_INVALID_CODE disambiguation
-    //     (ADR-0182 D16) compares an OBJECT and can never recognise a completed claim, so a
+    //     compares an OBJECT and can never recognise a completed claim, so a
     //     player whose claim SUCCEEDED is told the code was invalid;
     //   * absent-but-fabricated (`?? ''`, `?? row.identity`) → the same disambiguation reads
     //     a claim that never happened as proof one did.
@@ -3408,7 +3233,7 @@ describe('rowConvert M21b-2: accountRowToStore — identities via toHexString() 
 
 describe('rowConvert M21b-2: accountRowToStore — timestamps are pass-through bigints (RC-AC-02)', () => {
   it('★★ RC-AC-02a BITES: createdAtMs / lastLoginAtMs stay typeof "bigint" and byte-identical', () => {
-    // The columns are `i64` (schema.rs:692-693) and the generated binding decodes them as
+    // The columns are `i64` and the generated binding decodes them as
     // bigint (`types.ts:16-17`). WRONG IMPL KILLED: `Number(row.createdAtMs)` — lossy above
     // 2^53, and `BigInt(Number(x))` restores the TYPE while keeping the WRONG VALUE.
     const stored = accountRowToStore(makeSdkAccountRow());
@@ -3427,7 +3252,7 @@ describe('rowConvert M21b-2: accountRowToStore — timestamps are pass-through b
   });
 
   it('★★ RC-AC-02c BITES (CRITICAL): the two OPTIONAL timestamps pass through as undefined — kills `?? 0n`', () => {
-    // `deletion_requested_at_ms` and `claimed_at_ms` are `Option<i64>` (schema.rs:695,699).
+    // `deletion_requested_at_ms` and `claimed_at_ms` are `Option<i64>`.
     // WRONG IMPL KILLED: `row.deletionRequestedAtMs ?? 0n`. A fabricated `0n` turns "this
     // account has NOT requested deletion" into "deletion was requested at the epoch" — and
     // AUTH-54's `'account pending deletion'` copy hangs off exactly that distinction. This
@@ -3456,7 +3281,7 @@ describe('rowConvert M21b-2: accountRowToStore — status carries the enum TAG (
   it('★★ RC-AC-03a BITES: status is the bare tag string, both variants', () => {
     // `AccountStatus` is a unit enum (`schema.rs:669-672`, `types.ts:28-31`); the SDK
     // delivers `{ tag: 'Active' | 'PendingDeletion' }`. Carried bare, exactly as
-    // characterRowToStore does for `facing`/`action` (rowConvert.ts:123-124).
+    // characterRowToStore does for `facing`/`action`.
     //
     // WRONG IMPL KILLED (a): storing the whole `{tag}` OBJECT — every downstream `===
     // 'PendingDeletion'` comparison is then permanently false, so a pending-deletion account
@@ -3472,7 +3297,7 @@ describe('rowConvert M21b-2: accountRowToStore — status carries the enum TAG (
   it('★ RC-AC-03b BITES: an UNKNOWN tag passes through RAW (fail-soft, never normalised away)', () => {
     // A future server-side variant must not be silently rewritten to 'Active' — that would
     // fail OPEN, presenting an account in an unknown state as healthy. Passing it through
-    // raw is the same fail-soft choice `narrowTag` makes (rowConvert.ts:79-83): log or
+    // raw is the same fail-soft choice `narrowTag` makes: log or
     // carry, never default.
     const stored = accountRowToStore(makeSdkAccountRow({ status: { tag: 'Suspended' } }));
     expect(stored.status).toBe('Suspended');
@@ -3483,7 +3308,7 @@ describe('rowConvert M21b-2: accountRowToStore — status carries the enum TAG (
 describe('rowConvert M21b-2: accountRowToStore — exact key set, explicit mapping (RC-AC-04)', () => {
   it('★★ RC-AC-04a BITES: the output has EXACTLY the nine account keys — kills the spread impl', () => {
     // WRONG IMPL KILLED: `{ ...row, identity: row.identity.toHexString() }`. `my_account` is
-    // a PRIVATE table's owner-scoped view (schema.rs:674-711) and the account record is the
+    // a PRIVATE table's owner-scoped view and the account record is the
     // one row in this client that is deliberately PII-free by construction; smuggling any
     // future SDK-only field into the store puts it one `JSON.stringify` away from the F9 bug
     // bundle. The exact key set is what proves the mapping is EXPLICIT — the same tooth
@@ -3567,7 +3392,7 @@ describe('rowConvert M21b-2: accountRowToStore — totality (RC-AC-05)', () => {
   });
 
   it('★★ RC-AC-05b BITES: an ABSENT authIssuer passes through as undefined — kills `?? ""`', () => {
-    // `auth_issuer` is audit provenance (schema.rs:688-691) and is the field the G22 e2e
+    // `auth_issuer` is audit provenance and is the field the G22 e2e
     // asserts on to prove an account was provisioned by the RIGHT issuer. Coercing an absent
     // value to `''` fabricates "provisioned by the empty issuer", which reads as a valid
     // (and equal-to-nothing) provenance rather than as "the client has no idea".
@@ -3600,7 +3425,7 @@ describe('rowConvert M21b-2: accountRowToStore — totality (RC-AC-05)', () => {
 });
 
 // =============================================================================
-// M22 S8 (ADR-0231) — `terminal_at_ms`, the PRV1-4 data path. Gate X7.
+// M22 S8 — `terminal_at_ms`, the PRV1-4 data path. Gate X7.
 //
 // EARS COVERED
 //   PRV1-4 (client data-path half) — once `terminal_at_ms` is Some the account is
@@ -3613,10 +3438,6 @@ describe('rowConvert M21b-2: accountRowToStore — totality (RC-AC-05)', () => {
 // The broke-vs-dark rule that governs it is stated at rowConvert.ts:543-568 and
 // ADR-0154 D1: absent means DARK, never `0n`.
 //
-// RED REASON AT AUTHORING TIME: `SdkAccountRow` has no `terminalAtMs` member and
-// `accountRowToStore` does not map one (rowConvert.ts:579-617, read this session), so
-// every assertion below reads `undefined` where a value is required — a MISSING
-// IMPLEMENTATION, not a typo here.
 // =============================================================================
 
 describe('rowConvert M22 S8: accountRowToStore carries terminal_at_ms (PRV1-4)', () => {
@@ -3703,9 +3524,7 @@ describe('rowConvert M22 S8: accountRowToStore carries terminal_at_ms (PRV1-4)',
 });
 
 // =============================================================================
-// rb-53 (PRV1-11/12/13, residual R-m22-s8-X11; ADR-0231 Amendment A3) —
 // exportChunkRowToStore: the `my_export_bundle` view row converter.
-// APPENDED BLOCK — nothing above this line is weakened.
 //
 // ★ SOURCE OF TRUTH — gate E1, verbatim:
 //   "[PRV1-11/12/13 live transport + download] WHEN request_data_export completes THE CLIENT
@@ -3719,19 +3538,6 @@ describe('rowConvert M22 S8: accountRowToStore carries terminal_at_ms (PRV1-4)',
 // — EIGHT fields, no more, no fewer. u64/i64 decode as `bigint`, u32 as `number`, and an
 // Identity's only contract is `toHexString()`.
 //
-// CONTRACT (modelled byte-for-byte on `playerWalletRowToStore`, rowConvert.ts:537-574 — the
-// doctrine paragraph there governs this converter verbatim):
-//   export interface SdkExportChunkRow {
-//     readonly chunkId: bigint;
-//     readonly ownerIdentity: { toHexString(): string };
-//     readonly requestId: bigint;
-//     readonly tableName: string;
-//     readonly chunkIndex: number;
-//     readonly totalChunks: number;
-//     readonly payloadJson: string;
-//     readonly createdAtMs: bigint;
-//   }
-//   export function exportChunkRowToStore(row: SdkExportChunkRow): StoreExportChunk;
 // EXPLICIT field mapping (never a spread), NO Number() coercion, NO `?? 0`/`?? 0n` defaulting,
 // NO validation that can throw, and `payloadJson` carried VERBATIM — never parsed, never
 // re-encoded (ADR-0231 decision 5: the server hand-rolls its JSON with every 64-bit integer as
@@ -3744,10 +3550,6 @@ describe('rowConvert M22 S8: accountRowToStore carries terminal_at_ms (PRV1-4)',
 // LINK error that takes this whole 3700-line file's COLLECTION down, so every unrelated tooth
 // in it would red for the wrong reason. Through the namespace, a missing implementation reds
 // exactly the cases below, with "exportChunkRowToStore is not a function".
-//
-// RED REASON AT AUTHORING TIME (verified by reading client/src/net/rowConvert.ts this session):
-// neither `exportChunkRowToStore` nor `SdkExportChunkRow` exists — the own-row converter family
-// ends at `accountRowToStore` (:610). Every case below is a MISSING IMPLEMENTATION.
 //
 // NOTE, as the blocks above already record: client/tsconfig.json EXCLUDES `**/*.test.ts`, so
 // `npm run typecheck` does not see this file — the gating signal is the runtime failure.
@@ -4076,27 +3878,10 @@ describe('rowConvert rb-53: exportChunkRowToStore — totality (RC-EX-05)', () =
 });
 
 // =============================================================================
-// 20r-d (ADR-0254 D6) — pendingEvolutionNoticeRowToStore:
+// pendingEvolutionNoticeRowToStore:
 // the `my_pending_evolution_notices` VIEW row -> the store's notice shape.
 //
 // ★ SOURCE OF TRUTH: spec §20r-d gate B1 + ADR-0254 D1/D6.
-//
-// RED REASON AT AUTHORING TIME: `pendingEvolutionNoticeRowToStore` does not
-// exist in rowConvert.ts. Reached through the NAMESPACE object on purpose (the
-// rb-53 idiom above): a named import of a missing export is a link-time
-// SyntaxError that would red every OTHER test in this file too, which makes the
-// RED signal unreadable. Through the namespace, exactly the 20r-d tests red, and
-// they red with "is not a function".
-//
-// CONTRACT UNDER TEST:
-//   export interface SdkEvolutionRevealRow {
-//     readonly monsterId: bigint; readonly fromSpecies: number;
-//     readonly toSpecies: number; readonly evolvedAtMs: bigint }
-//   export interface SdkPendingEvolutionNoticeRow {
-//     readonly ownerIdentity: { toHexString(): string };
-//     readonly entries: readonly SdkEvolutionRevealRow[] }
-//   export function pendingEvolutionNoticeRowToStore(
-//     row: SdkPendingEvolutionNoticeRow): StorePendingEvolutionNotice;
 //
 //   EXPLICIT field mapping (never a spread), NO numeric coercion (u64/i64 stay
 //   `bigint`, u32 stays `number`), NO defaulting, NO clamping, and TOTAL — this
@@ -4190,7 +3975,7 @@ describe('rowConvert 20r-d: pendingEvolutionNoticeRowToStore — RC-NOTICE', () 
 
   it('20r-d RC-NOTICE-3 BITES: an EMPTY entries list maps to [], never to undefined', () => {
     // WHY IT IS REACHABLE: the server NEVER deletes the row on ack (an empty Vec
-    //   persists, ADR-0254 D4), so "row present, entries empty" is the NORMAL
+    //   persists), so "row present, entries empty" is the NORMAL
     //   post-ack state — the very next view delivery after every dismissal.
     // WRONG IMPL KILLED: `entries: row.entries.length ? … : undefined`, which
     //   makes `ownEvolutionNotices(identity)[0]` throw in main.ts's batch listener.
@@ -4227,7 +4012,7 @@ describe('rowConvert 20r-d: pendingEvolutionNoticeRowToStore — RC-NOTICE', () 
     //   MicrotaskBatcher), where a throw is caught by one try/catch that wraps ALL
     //   FOUR reconciles — so one malformed notice row would also cost the monster,
     //   battle and export reconciles their burst.
-    // THE FALLBACK IS THE `exportChunkRowToStore` PRECEDENT (rowConvert.ts:667-679):
+    // THE FALLBACK IS THE `exportChunkRowToStore` PRECEDENT:
     //   an unresolvable owner degrades to '' — which `ownEvolutionNotices(identity)`
     //   refuses for any real identity, so the row is inert rather than mis-attributed.
     const hostile: readonly Record<string, unknown>[] = [
@@ -4258,15 +4043,14 @@ describe('rowConvert 20r-d: pendingEvolutionNoticeRowToStore — RC-NOTICE', () 
 });
 
 // ---------------------------------------------------------------------------
-// HANDLED_ENUM_VARIANTS == the GENERATED binding enums (debloat Phase 2:
-// EV-sdk-enum-exhaustiveness). Replaces the eval that regex-parsed both
-// rowConvert.ts and module_bindings/types.ts: the registry is imported as a VALUE
-// and each entry is compared, IN ORDER, against the runtime variant list of the
-// generated `__t.enum` of the same name (`algebraicType.value.variants`). A
-// server-added, removed or reordered variant reaches this test on the next
-// `just gen` (bindings-drift keeps the bindings equal to the server), and a stale
-// or missing registry entry fails here. Order matters: TrustTier's declaration
-// order IS the ranking the trust gate compares through.
+// HANDLED_ENUM_VARIANTS == the GENERATED binding enums.
+// the registry is imported as a VALUE and each entry is compared, IN ORDER,
+// against the runtime variant list of the generated `__t.enum` of the same name
+// (`algebraicType.value.variants`). A server-added, removed or reordered variant
+// reaches this test on the next `just gen` (bindings-drift keeps the bindings
+// equal to the server), and a stale or missing registry entry fails here. Order
+// matters: TrustTier's declaration order IS the ranking the trust gate compares
+// through.
 // ---------------------------------------------------------------------------
 import * as GeneratedTypes from '../module_bindings/types';
 

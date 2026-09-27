@@ -103,7 +103,7 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
   const grid = (v: boolean): boolean[] => Array.from({ length: SIDE * SIDE }, () => v);
   return {
     apply_move: () => ({}),
-    // rb-8 / ADR-0212: `-> i64` crosses as a BigInt, so the stub is `1n`, not `1`.
+    // `-> i64` crosses as a BigInt, so the stub is `1n`, not `1`.
     deletion_grace_ms_default: () => 1n,
     move_queue_cap: () => 4,
     party_size: () => 3,
@@ -240,7 +240,7 @@ function recordListeners(target: EventTarget, sink: Recorded[]): () => void {
 /** DELTA 1 (see file header). Parses the shipped `client/index.html` and moves its
  *  `<body>` element children — excluding the module `<script>`, which this harness
  *  replaces with a controlled `import('./main')` — into the LIVE document via
- *  `document.adoptNode`, never `innerHTML` (ADR-0135). */
+ *  `document.adoptNode`, never `innerHTML`. */
 function buildAppShellFromRealIndexHtml(): void {
   const htmlPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'index.html');
   let html: string;
@@ -303,9 +303,8 @@ function runFrame(atMs: number): void {
  *
  *  THE ROLE CHECK ALONE IS NOT ENOUGH — measured, not theoretical. m23-s2 ships
  *  `role="dialog" aria-modal="true"` as STATIC LITERALS in `client/index.html` for the
- *  eleven static shells (verified at `client/index.html:89-92` for `#help-overlay`,
- *  `:104-107` for `#menu-overlay`, and identically for the other nine).
- *  `openOverlayA11y`/`closeOverlayA11y` (`ui/overlayA11y.ts:106`/`:143`) toggle those
+ *  eleven static shells.
+ *  `openOverlayA11y`/`closeOverlayA11y` toggle those
  *  attributes only for the FIVE `#app`-mounted CONSTRUCTED views (box/raising/evolution/
  *  battle/claim), which ship no markup ARIA of their own. For a static shell,
  *  `closest('[role="dialog"]')` is therefore non-null WHETHER THE OVERLAY IS OPEN OR
@@ -384,13 +383,13 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     H.buildBugBundle.mockClear();
     vi.unstubAllGlobals();
     rafCallback = null;
-    // replaceChildren, never innerHTML (ADR-0135) — the one deliberate deviation from the
+    // replaceChildren, never innerHTML — the one deliberate deviation from the
     // battle-reseed precedent's `document.body.innerHTML = ''` cleanup line.
     document.body.replaceChildren();
   });
 
   // ---------------------------------------------------------------------------------------
-  // A11Y-19 / A11Y-20: the world-focus gate on the twelve canOpen-derived hotkey branches.
+  // The world-focus gate on the twelve canOpen-derived hotkey branches.
   // ---------------------------------------------------------------------------------------
 
   /** The box/raising/evolution HIDE_SWITCH trio, round-robined. This tier is DELIBERATE, not
@@ -462,7 +461,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     expect(overlayIsOpen(id), `${id} must be open after its own hotkey`).toBe(true);
     const anchor = overlayFocusAnchor(id);
     expect(anchor, `${id}'s initialFocusSelector anchor must resolve`).not.toBeNull();
-    // Let the REAL setTimeout(0) deferred-focus macrotask (ui/overlayA11y.ts:111) fire, so
+    // Let the REAL setTimeout(0) deferred-focus macrotask fire, so
     // focus is genuinely INSIDE the overlay — the A11Y-19 precondition, not merely open.
     await vi.waitFor(
       () => {
@@ -482,10 +481,6 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     id,
     openKey,
   }) => {
-    // GREEN AT FORK BY DESIGN — a regression pin, not a red test. Opening from <body>
-    // focus is the UNCONDITIONAL, pre-milestone behaviour: it is already true today with
-    // no gate in place at all, and stays true once worldHasFocus() lands correctly. It
-    // only goes RED against a WRONG implementation.
     // WRONG IMPL KILLED: `worldHasFocus` written as `a === worldCanvasEl` only (dropping
     // BOTH the `null` and `document.body` disjuncts) — every hotkey would be dead from a
     // fresh page load, before the player has ever Tabbed anywhere. ALSO KILLED: an
@@ -497,19 +492,16 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
   });
 
   it('S5T-GATE-ALLOWED-CANVAS: a hotkey still opens its overlay when the world CANVAS has focus', () => {
-    // GREEN AT FORK BY DESIGN, for a reason worth stating precisely (not just "it's a
-    // regression pin"): today NOTHING gates any hotkey on focus at all, so opening from
-    // canvas focus is unconditionally true before this slice lands — this test is green for
-    // the TRIVIAL reason, not because worldCanvasEl already works. It becomes this suite's
-    // ONLY REAL BEHAVIOURAL KILLER of the red-team's #1 attack (`worldCanvasEl` never
-    // assigned, or shadowed by a second `let worldCanvasEl` inside main()) ONLY once the
-    // twelve conjuncts exist for that attack to have something to defeat: with
-    // worldCanvasEl permanently null, worldHasFocus() degrades to "body-or-nothing" and
-    // every hotkey would silently die the FIRST time a keyboard/AT user Tabs to the
-    // canvas — the exact user A11Y-20/M23 exists to serve, on the path this same slice
-    // adds. That is why the canvas-has-focus precondition is asserted BEFORE dispatching,
-    // never inferred from the outcome — so this test can never pass by the canvas silently
-    // being unfocusable instead of by the gate genuinely recognising it.
+    // It becomes this suite's ONLY REAL BEHAVIOURAL KILLER of the red-team's #1 attack
+    // (`worldCanvasEl` never assigned, or shadowed by a second `let worldCanvasEl` inside
+    // main()) ONLY once the twelve conjuncts exist for that attack to have something to
+    // defeat: with worldCanvasEl permanently null, worldHasFocus() degrades to
+    // "body-or-nothing" and every hotkey would silently die the FIRST time a keyboard/AT
+    // user Tabs to the canvas — the exact user A11Y-20/M23 exists to serve, on the path
+    // this same slice adds. That is why the canvas-has-focus precondition is asserted
+    // BEFORE dispatching, never inferred from the outcome — so this test can never pass by
+    // the canvas silently being unfocusable instead of by the gate genuinely recognising
+    // it.
     const mount = document.getElementById('app');
     expect(mount, '#app must exist').not.toBeNull();
     const canvas = mount!.querySelector('canvas') as HTMLElement | null;
@@ -529,7 +521,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
   // A11Y-19, as amended by ADR-0206 Amendment A1: the SELF-OPEN DISJUNCT. The gate applies to
   // the twelve overlay-OPEN transitions only; a same-key press on an already-open overlay is a
   // toggle-CLOSE and must never be gated. This is the unit-tier encoding of the three e2e
-  // regressions PR #368 shipped — e2e/movement-input.spec.ts:493 (14r-e C GREEN GUARD, KeyB
+  // regressions — e2e/movement-input.spec.ts:493 (14r-e C GREEN GUARD, KeyB
   // closes the box under a held key), e2e/trade.spec.ts:97 (M15c, KeyU toggle-close) and the
   // e2e/pvp.spec.ts:145 cascade (the previous serial test's KeyB cleanup close was blocked, so
   // the box was still open and the next `p` was denied by the REGISTRY verdict, not by this
@@ -588,12 +580,6 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     id,
     openKey,
   }) => {
-    // RED AT AUTHORING TIME, for the right reason: the pre-amendment guard
-    // `<verdict>.kind === 'allow' && worldHasFocus()` is FALSE on the second press, because
-    // S3/S4's `openOverlayA11y` deferred focus (ui/overlayA11y.ts:111-113) has moved focus
-    // INSIDE the overlay by then — so the branch body never runs, the overlay stays open, and
-    // the `toBe(false)` below fails. That is exactly what the three named e2e specs observed.
-    //
     // WRONG IMPL KILLED (1) ★ THE DEFECT: the un-amended conjunct at any of the six sites.
     //   Same-key close is dead for every user and every overlay — spec §2.3's compatibility
     //   claim ("a sighted player who never Tabs has activeElement === <body>") is false once
@@ -620,7 +606,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     ).toBe(true);
     expect(openOverlayIds(), `${id} must be the ONLY overlay open at this point`).toEqual([id]);
 
-    // Let the REAL setTimeout(0) deferred-focus macrotask (ui/overlayA11y.ts:111) fire, so
+    // Let the REAL setTimeout(0) deferred-focus macrotask fire, so
     // focus is genuinely INSIDE the overlay — the A11Y-19 post-open state, and the precise
     // state in which the pre-amendment gate refuses the close. Without this wait the test
     // would pass against the UNFIXED implementation (activeElement would still be <body>, so
@@ -657,10 +643,6 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     // The failure surfaces one test later, against a completely unrelated feature, which is why
     // it must be pinned as a CASCADE and not just as "the close works".
     //
-    // RED AT AUTHORING TIME: the second KeyB is blocked, so the first assertion below fails.
-    // The assertion ORDER is deliberate — the close is asserted BEFORE the focus precondition,
-    // so today's RED names the blocked close rather than a focus-timing symptom of it.
-    //
     // WRONG IMPL KILLED (1): the un-amended conjunct (as above), now shown to break a LATER,
     //   unrelated overlay rather than just the one whose key was pressed.
     // WRONG IMPL KILLED (2) ★ the one no other test in this file sees: an amendment that closes
@@ -672,8 +654,8 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     //   never "it happened to work".
     // WHY THE <body> ASSERTION IS AN ASSERTION AND NOT A COMMENT: it is a real, verified
     //   property of the production close path, not an assumption — `boxView.hide()` calls
-    //   `closeOverlayA11y('boxView', null)` (ui/boxView.ts:138-142), whose restore order
-    //   (ui/overlayA11y.ts:146-149) prefers `record.returnFocus` whenever it is still
+    //   `closeOverlayA11y('boxView', null)`, whose restore order
+    //   prefers `record.returnFocus` whenever it is still
     //   connected. That was captured at open time as `document.activeElement` === <body> (the
     //   overlay was opened by hotkey from the world), an HTMLElement that is always connected,
     //   so `fallbackFocus` is unreachable here and focus lands back on <body>. The same fact is
@@ -717,8 +699,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
   });
 
   it('S5T-GATE-PRECEDENCE-DENY-WINS: a DENIED verdict still refuses the open even when the world has focus', () => {
-    // GREEN AT FORK BY DESIGN — a mutation pin, not a red gate, and worth stating exactly why
-    // it exists: it is the ONLY behavioural killer in this suite of the dropped-parens reshape
+    // it is the ONLY behavioural killer in this suite of the dropped-parens reshape
     //     <verdict>.kind === 'allow' && <selfView>?.visible || worldHasFocus()
     // which `&&`-binds tighter than `||` and therefore parses as
     //     ((<verdict> === 'allow') && <selfView>?.visible) || worldHasFocus()
@@ -767,24 +748,20 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
   });
 
   // ---------------------------------------------------------------------------------------
-  // A11Y-35: the document.body disjunct — a force-hidden focused control blurs to <body>,
+  // The document.body disjunct — a force-hidden focused control blurs to <body>,
   // and hotkeys must not die forever afterward.
   // ---------------------------------------------------------------------------------------
 
   it('S5T-BODY-BLUR: an overlay hidden out from under a focused control blurs to <body>, and a DIFFERENT hotkey still opens afterward', async () => {
-    // GREEN AT FORK BY DESIGN — a regression pin, not a red test. Today NOTHING gates any
-    // hotkey on focus at all, so the closing `?` press below opens helpView unconditionally
-    // whether or not the document.body disjunct is ever implemented correctly; it only goes
-    // RED against a WRONG implementation once the twelve conjuncts exist.
     // WRONG IMPL KILLED: dropping the `=== document.body` disjunct from worldHasFocus() —
     // every hotkey stays dead from this point forward for the rest of the session, exactly
     // the "dead hotkeys forever after a dialogue ends" bug spec §2.3 names. The real trigger
-    // is the M12d `store.onBatchApplied` dialogue listener (`client/src/main.ts:1837-1887`
-    // today), which calls `dialogueView?.render(dialogueVm)` on EVERY batch — `dialogueVm` is
+    // is the M12d `store.onBatchApplied` dialogue listener,
+    // which calls `dialogueView?.render(dialogueVm)` on EVERY batch — `dialogueVm` is
     // null once the conversation row is gone, and `render`'s `!vm` branch display:nones the
     // overlay, blurring a focused choice <button> the same way this test does on renameView.
     pressKey({ code: 'KeyN' }); // renameView — GUARD_ONLY, no identity requirement
-    // Flush the REAL setTimeout(0) deferred-focus macrotask (ui/overlayA11y.ts:111) before
+    // Flush the REAL setTimeout(0) deferred-focus macrotask before
     // touching focus ourselves. renameView is a STATIC shell: opening it schedules a focus
     // move to `#rename-input` the instant KeyN's handler returns. Letting that settle first
     // — rather than racing a synchronous `.focus()` call against a pending macrotask — is
@@ -818,7 +795,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
   });
 
   // ---------------------------------------------------------------------------------------
-  // A11Y-22: the frame-loop announcer.
+  // The frame-loop announcer.
   // ---------------------------------------------------------------------------------------
 
   it('S5T-ANNOUNCE-WORLD: closing the last overlay announces the world-region name, resolved through the a11yCopy catalog', () => {
@@ -866,7 +843,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
   });
 
   // ---------------------------------------------------------------------------------------
-  // A11Y-23: Space is not stolen from the (now-native-button) #help-hint, and still jumps
+  // Space is not stolen from the (now-native-button) #help-hint, and still jumps
   // from the world.
   // ---------------------------------------------------------------------------------------
 
@@ -885,9 +862,6 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
   });
 
   it('S5T-SPACE-WORLD: Space still jumps (preventDefault) when the world has focus', () => {
-    // GREEN AT FORK BY DESIGN — a regression pin. `jump(); e.preventDefault();` already
-    // fires unconditionally on Space today; this only goes RED if a future targetOwnsKey
-    // exemption becomes over-broad enough to swallow it.
     // WRONG IMPL KILLED: an over-broad targetOwnsKey exemption (e.g. exempting Space
     // unconditionally, or keying off document.activeElement rather than e.target) that kills
     // jump() entirely — the movement feature this branch exists for.
@@ -907,7 +881,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     // closes for a keyboard user once focus has left <body> (closeOverlayA11y's own restore
     // already sends it to <body> here since the overlay was opened FROM <body> — see (2)).
     // WRONG IMPL KILLED (2): "pass the canvas as closeOverlayA11y's fallbackFocus and call it
-    // done" (ADR-0206 D4, plan anti-pattern 13) — `fallbackFocus` is UNREACHABLE on this
+    // done" (plan anti-pattern 13) — `fallbackFocus` is UNREACHABLE on this
     // exact path: `record.returnFocus` (captured as document.body at open time) is always
     // connected, so closeOverlayA11y's restore-order picks it FIRST and fallbackFocus is
     // never consulted. Only a frame-loop-owned focus return (S5's own edge) can move focus
@@ -923,13 +897,6 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
   });
 
   it('S5T-FOCUS-RETURN-STALE: the close-edge focus return fires even when focus is STRANDED inside the just-hidden overlay (the Chromium async-blur window)', async () => {
-    // RED AT AUTHORING TIME. The frame's close edge guards the return with `worldHasFocus()`
-    // alone; with focus stranded on `#help-title` — a node inside a `display:none` subtree —
-    // that predicate is false (the anchor is neither null, nor <body>, nor the canvas), so
-    // `worldCanvasEl?.focus()` never runs and the final assertion below fails with
-    // activeElement still on the hidden anchor. GREEN once the close edge reads
-    // `if (worldHasFocus() || focusInsideHiddenSubtree())`.
-    //
     // WHY THIS IS A REAL BUG AND NOT A HARNESS ARTEFACT — the engine divergence, stated once:
     // in real Chromium the automatic blur-to-<body> fixup after an ancestor becomes
     // `display:none` is ASYNC (measured with a live-browser focus probe: the stale
@@ -974,7 +941,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     expect(overlayIsOpen('helpView'), 'helpView must be open after `?`').toBe(true);
     runFrame(0); // registers 'helpView' as lastA11ySnapshot.topOverlay — arms the close edge
 
-    // Let the REAL setTimeout(0) deferred focus (ui/overlayA11y.ts:111) land INSIDE the overlay.
+    // Let the REAL setTimeout(0) deferred focus land INSIDE the overlay.
     // This is the A11Y-19 post-open state, and it is what makes the close below produce the
     // stale window rather than a close from <body>.
     const anchor = overlayFocusAnchor('helpView');
@@ -1044,7 +1011,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     // the mutant in WRONG IMPL KILLED (c) die here rather than for a second reason. Phase 2 is
     // the POSITIVE (the heal fires when focus is stranded inside a hidden subtree).
     //
-    // WRONG IMPL KILLED (a) ★ THE DEFECT (Phase 2, RED today): no heal at the consumer. The
+    // WRONG IMPL KILLED (a) ★ THE DEFECT (Phase 2): no heal at the consumer. The
     //   frame-edge repair (S5T-FOCUS-RETURN-STALE) restores focus at the NEXT rAF; a press that
     //   arrives inside that <=1-frame window is still evaluated against the stale anchor, so
     //   `worldHasFocus()` is false, the twelve gates' conjunct short-circuits, and the keypress
@@ -1053,8 +1020,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     // WRONG IMPL KILLED (b): the heal placed BELOW the twelve open-handler branches (or below
     //   any branch that returns). Every one of those branches ends in `return;`, so the heal
     //   would be dead code for the very press it exists to repair — Phase 2 reds exactly as it
-    //   does for (a), which is why the heal must sit above every returning branch. (The
-    //   source-side statement of the same requirement is in pump-repin.md §6.)
+    //   does for (a), which is why the heal must sit above every returning branch.
     // WRONG IMPL KILLED (c): an UNCONDITIONAL `worldCanvasEl?.focus();` with no
     //   `focusInsideHiddenSubtree()` guard. It would yank focus to the canvas on EVERY keypress,
     //   including one pressed while the player is on the always-on corner affordance — which is
@@ -1070,10 +1036,6 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     //   region", which is the thing an AT actually announces.
 
     // ---- PHASE 1 — NEGATIVE: a VISIBLE control holds focus, so nothing is healed ----------
-    // GREEN AT FORK BY DESIGN (a mutation pin, not a red gate — this file's convention). The
-    // press is refused today by `worldHasFocus()` alone and, post-A1, by
-    // `(boxView?.visible || worldHasFocus())` with both operands false. It only goes RED
-    // against the unconditional-heal mutant.
     expect(document.activeElement, 'precondition: body is focused at boot').toBe(document.body);
     const helpHint = document.getElementById('help-hint') as HTMLElement | null;
     expect(helpHint, '#help-hint must exist (client/index.html)').not.toBeNull();
@@ -1174,13 +1136,6 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
   });
 
   it('S5T-FOCUS-NO-STEAL: closing an overlay opened by CLICK does not steal focus from the badge', () => {
-    // GREEN AT FORK BY DESIGN — a regression pin, and worth stating exactly why: today
-    // NOTHING in the frame loop touches focus at all (no snapshot pump exists yet), so focus
-    // simply never moves off the badge in the first place — this passes trivially, not
-    // because a guard already exists. It becomes a real kill once S5T-FOCUS-RETURN's
-    // mechanism (an UNGUARDED `worldCanvasEl?.focus()` on the frame's close edge) exists for
-    // it to catch — see the M23S5-A11YSNAPSHOT region's own `worldHasFocus()` guard census
-    // (W-M23S5-TWELVE-CONJUNCTS clause 3, main.wiring.test.ts) for the source-scan half.
     // WRONG IMPL KILLED: an UNGUARDED `worldCanvasEl?.focus()` on the frame's close edge —
     // it would yank focus away from #help-hint the instant the menu closes, even though the
     // player never left the world via a hotkey at all (they clicked the badge). ADR-0206 D4's
@@ -1191,12 +1146,12 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     expect(document.activeElement, 'anti-vacuity: the badge really is focusable').toBe(helpHint);
     helpHint!.click(); // the delegated [data-menu-launcher] front door — opens menuView
     expect(overlayIsOpen('menuView'), 'menuView must have opened from the click').toBe(true);
-    // fix cycle 2 STRENGTHENING (tester finding, notes.md §(a)): without this frame the
-    // snapshot never registers 'menuView', lastA11ySnapshot.topOverlay is still null at the
-    // final frame, the outer edge predicate is FALSE, and the guarded branch was never entered
-    // at all — this test killed no mutant of the close-edge guard. Arming the edge makes it
-    // the tooth that proves the stale-focus discriminator does not treat the VISIBLE
-    // position:fixed badge as hidden (killing an `offsetParent === null` spelling outright).
+    // without this frame the snapshot never registers 'menuView', lastA11ySnapshot.topOverlay
+    // is still null at the final frame, the outer edge predicate is FALSE, and the guarded
+    // branch was never entered at all — this test killed no mutant of the close-edge guard.
+    // Arming the edge makes it the tooth that proves the stale-focus discriminator does not
+    // treat the VISIBLE position:fixed badge as hidden (killing an `offsetParent === null`
+    // spelling outright).
     runFrame(0); // registers 'menuView' as lastA11ySnapshot.topOverlay — ARMS the close edge
     pressKey({ code: 'Escape' }); // the menu-nav intercept routes Escape to a close at the top level
     expect(overlayIsOpen('menuView'), 'menuView must have closed via Escape').toBe(false);
@@ -1205,7 +1160,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
   });
 
   // ---------------------------------------------------------------------------------------
-  // rb-125 (ADR-0272) — the post-evolve reveal banner's announce + focus-return sinks, driven
+  // The post-evolve reveal banner's announce + focus-return sinks, driven
   // through the REAL AuthoritativeStore instance main.ts constructed: `opts.store` (captured
   // from the mocked `./net/connection`'s `ConnectionOptions.store` field, `connection.ts:82`)
   // IS the exact module-scope `store` main.ts reads inside its own `store.onBatchApplied(`
@@ -1217,9 +1172,6 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
   //
   // SOURCE OF TRUTH: docs/adr/0272-evolution-notice-announcement-and-focus.md.
   //
-  // RED REASON: `store.onBatchApplied` currently renders the OLD `string | null` shape and the
-  // banner has no `sinks` argument at all — no `liveRegion.announce(` call and no
-  // `worldCanvasEl?.focus()` call can ever fire from this path today.
   // ---------------------------------------------------------------------------------------
 
   /** One `StorePendingEvolutionNotice` row for `H.identity`, `entries` given verbatim (the
@@ -1246,7 +1198,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
   }
 
   it('RB125-RT-ANNOUNCE BITES: the exact reveal sentence paints in #a11y-live only after its 500ms coalescing window, timed by performance.now() — never Date.now()', () => {
-    // WRONG IMPL KILLED (a) ★ THE MISSING SINK (RED AT AUTHORING TIME): the banner never calls
+    // WRONG IMPL KILLED (a) ★ THE MISSING SINK: the banner never calls
     //   `liveRegion.announce(` at all, so `#a11y-live` never receives the sentence no matter how
     //   long this test waits.
     // WRONG IMPL KILLED (b) ★ A Date.now() CLOCK: this test stubs ONLY `performance.now()`
@@ -1286,7 +1238,7 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
   });
 
   it('RB125-RT-FOCUS BITES: hiding the reveal after its OK button held focus returns focus to the world canvas', () => {
-    // WRONG IMPL KILLED (a) ★ THE MISSING SINK (RED AT AUTHORING TIME): `render(null)` never
+    // WRONG IMPL KILLED (a) ★ THE MISSING SINK: `render(null)` never
     //   calls `returnFocus()`, so a keyboard player who acked the reveal from its OK button is
     //   stranded on a now-hidden, unreachable control — happy-dom does not auto-blur a focused
     //   node inside a `display:none` subtree (see this file's own S5T-FOCUS-RETURN-STALE
@@ -1320,11 +1272,10 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
   });
 
   it('RB125-RT-NO-STEAL (green at fork): the reveal never steals focus from a control outside it, on show OR hide', () => {
-    // GREEN AT FORK BY DESIGN — a mutation pin: both the current banner and a correct ADR-0272
-    // implementation never move focus on SHOW, and a correct implementation's `returnFocus`
-    // guard is false here (focus was never inside the banner) on HIDE. It goes RED only against
-    // an UNCONDITIONAL `returnFocus()` call on every hide, or a show that steals focus onto its
-    // own OK button.
+    // both the current banner and a correct ADR-0272 implementation never move focus on SHOW,
+    // and a correct implementation's `returnFocus` guard is false here (focus was never inside
+    // the banner) on HIDE. It goes RED only against an UNCONDITIONAL `returnFocus()` call on
+    // every hide, or a show that steals focus onto its own OK button.
     const helpHint = document.getElementById('help-hint') as HTMLElement | null;
     expect(helpHint, '#help-hint must exist (client/index.html)').not.toBeNull();
     helpHint!.focus();
@@ -1363,9 +1314,7 @@ describe('S5T-DISJOINT tripwire: the two announcement paths stay disjoint', () =
     // S1's copy gap inside announcements.ts (making Rule 2 emit the world-region text too)
     // while main.ts's disjoint branch from THIS slice still exists, the resulting DOUBLE
     // utterance of "World map" is caught by this slice's own test suite rather than silently
-    // shipping. GREEN AT FORK BY DESIGN and stays green through this slice's own
-    // implementation (announcements.ts already ships the documented gap) — it exists for
-    // what comes after, not for this slice's own RED state.
+    // shipping.
     const prev: A11ySnapshot = { topOverlay: 'boxView', message: '' };
     const next: A11ySnapshot = { topOverlay: null, message: '' };
     expect(announcementsFor(prev, next)).toEqual([]);

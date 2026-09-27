@@ -2,31 +2,17 @@
 //
 // INVARIANT: switchZone(newZoneId) must be ALL-OR-NOTHING with respect to
 // module-level state. If ANY step after "validate" fails, rawMap MUST remain
-// equal to the pre-switch value. The current implementation violates this:
-//   1. zone_map(newZoneId)      — OK
-//   2. TileMap.fromRaw(newRaw)  — validation passes (the guard)
-//   3. set_active_zone(newZoneId) — WASM mutation (committed)
-//   4. rawMap = newRawMap         — JS mutation (committed)
-//   5. renderer.setMap(rawMap)   — can throw (Pixi error, OOM, etc.)
-//   6. resetPredictionState()    — skipped
-//
-// If step 5 throws, the catch block logs "keeping current zone" but rawMap is
-// already pointing at newZoneId (step 4 committed). The predictor still holds
-// its stale state from the old zone (step 6 skipped). The WASM zone is already
-// set to newZoneId (step 3 committed). Three pieces of state now disagree.
+// equal to the pre-switch value.
 //
 // This test models the switchZone logic using an injectable renderer interface
 // (the same shape WorldRenderer.setMap uses) so it can run without Pixi.js.
-// It demonstrates the invariant failure and will go GREEN only after the fix
-// restructures switchZone so that renderer.setMap is called before rawMap is
-// mutated (or is wrapped so a throw rolls back rawMap).
 //
 // SOURCE OF TRUTH: M12.5c red-team finding RT-SZ-01 (partial-mutation split-brain).
 // EARS: After switchZone completes (including when its renderer call throws),
 // rawMap.zone_id MUST equal the zone_id it held on entry.
 
 import { describe, expect, it } from 'vitest';
-// 11r-h (ADR-0172 D6): RT-SZ-02 below drives the REAL Predictor against a deterministic,
+// RT-SZ-02 below drives the REAL Predictor against a deterministic,
 // node-only `applyMove` stand-in (the same injection pattern as
 // client/src/prediction/predictor.test.ts:49-63). The wasm movement rule itself is proven in
 // Rust at M1 — this file never imports wasm. The convert imports are TYPE-ONLY, so nothing
@@ -232,7 +218,7 @@ describe('RT-SZ-01: switchZone partial-mutation split-brain when renderer.setMap
 });
 
 // ---------------------------------------------------------------------------
-// RT-SZ-02: prediction on the zone-switch batch (UPDATED by commit 8c18860)
+// RT-SZ-02: prediction on the zone-switch batch
 // ---------------------------------------------------------------------------
 // BEHAVIOUR UNDER TEST (after 8c18860): the batch listener does NOT return early
 // after switchZone. It FALLS THROUGH and runs the prediction reconcile on the SAME
@@ -241,17 +227,6 @@ describe('RT-SZ-01: switchZone partial-mutation split-brain when renderer.setMap
 // reconcile — `before === undefined` ⇒ it returns false. Consequences:
 //   - ownPredictedTile is non-null on the SAME batch that triggered the switch;
 //   - no held-key re-issue fires on that batch (the seeding reconcile returns false).
-//
-// PRIOR BEHAVIOUR (before 8c18860): an unconditional early `return` after switchZone()
-// skipped prediction on the zone-switch batch, leaving ownPredictedTile null until the
-// next server batch — a CI Chromium flake when the SpacetimeDB tick cadence was slow
-// enough that no second batch arrived before snap().
-//
-// 11r-h (ADR-0172 D6) — WHAT CHANGED HERE, STATED PLAINLY: this block previously ended
-// with "No assertion required: this is a documentation test" over a single
-// `expect(true).toBe(true)`. That prose was false — the contract WAS assertable, and the
-// suite below now asserts it against the real `Predictor`. Both `it`s construct their OWN
-// instance (no shared mutated state across cases).
 //
 // The two cases here are DELIBERATELY stronger than predictor.test.ts:117 (which covers
 // the EMPTY-queue seeding reconcile): case A's authQueue is NON-EMPTY, so the reconcile's
@@ -318,7 +293,7 @@ describe('RT-SZ-02: prediction reconcile runs on same batch as zone switch', () 
     // undefined (exactly the post-resetPredictionState() state a zone switch leaves),
     // THE SYSTEM SHALL return false, even when the reconcile's own drain advances the
     // predicted tile. `false` here is what keeps the held-key re-issue path out of the
-    // zone-switch batch (main.ts:768 gates on `diverged`).
+    // zone-switch batch.
     //
     // FIXTURE NOTE (deterministic by construction, and ON THE BOUNDARY): the baseline is
     // stamped at NOW - STEP_MS, so #stepForward's due-test `move_started_at + stepMs <= now`
@@ -350,7 +325,7 @@ describe('RT-SZ-02: prediction reconcile runs on same batch as zone switch', () 
         'ownPredictedTile has to be non-null on the very batch that switched the zone',
     ).toBeDefined();
 
-    // WRONG IMPL KILLED (M1d): deleting `this.#stepForward(now);` (predictor.ts:288) from
+    // WRONG IMPL KILLED (M1d): deleting `this.#stepForward(now);` from
     // reconcile — the return value stays false and the assertion above still passes, but the
     // predicted tile would stay at (5,5). THIS is the assertion that stops "false because
     // nothing happened" from being a vacuous pass: the drain provably ran during the same

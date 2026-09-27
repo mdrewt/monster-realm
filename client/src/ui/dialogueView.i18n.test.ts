@@ -58,7 +58,7 @@ function mount(): HTMLElement {
   return document.getElementById('dialogue-overlay') as HTMLElement;
 }
 
-/** Choice fixtures deliberately avoid the roster word "Shop" (tester-A brief). */
+/** Choice fixtures deliberately avoid the roster word "Shop". */
 function dialogueVm(overrides: Partial<DialogueViewModel> = {}): DialogueViewModel {
   return {
     npcName: 'Elder Rowan',

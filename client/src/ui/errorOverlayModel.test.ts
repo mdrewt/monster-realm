@@ -1,15 +1,8 @@
 // ui/errorOverlayModel.test.ts — RED gating tests for pt-b1 EARS S-3 (error overlay VM).
 //
-// Slice: pt-b1 · Source-of-truth: M-playtest-b error overlay view-model.
-//
-// RED REASON: errorOverlayModel.ts does not exist yet. Every test fails with
-//   "Failed to resolve import './errorOverlayModel'" (module-not-found).
-//
 // WRONG-IMPL-KILLED list:
 //   - "empty -> not isEmpty / wrong counts"      → T-VM-1 catches it
 //   - "no displayCap / oldest-first / wrong hiddenCount" → T-VM-2 catches it
-//
-// Do NOT edit tests to match a buggy impl — correct from the spec only.
 
 import { describe, expect, it } from 'vitest';
 import { buildErrorOverlayModel } from './errorOverlayModel';

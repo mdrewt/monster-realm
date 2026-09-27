@@ -63,7 +63,7 @@ function makeHandlers(): ClaimViewHandlers {
   };
 }
 
-/** vm strings deliberately avoid the roster word "Privacy" (tester-A brief). */
+/** vm strings deliberately avoid the roster word "Privacy". */
 function makeVm(overrides: Partial<ClaimViewModel> = {}): ClaimViewModel {
   return {
     visible: true,

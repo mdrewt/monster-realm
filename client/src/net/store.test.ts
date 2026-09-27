@@ -1,9 +1,7 @@
-// AuthoritativeStore behaviour suite (M4a, ADR-0013/0014) — vitest + fast-check.
-// M6c extension tests appended below (§ "Monster + Species store extension").
-// SOURCE OF TRUTH: specs/monster-realm-v2/M4-frontend.spec.md §3 "Store".
+// AuthoritativeStore behaviour suite — vitest + fast-check.
 // The store is the READ-ONLY mirror of subscription truth: keyed Maps (idempotent
 // on reconnect), each character recording receivedAt + up to INTERP_MAX_DEPTH=4
-// snapshots for interpolation (ADR-0090; prior 2-snapshot cap superseded), and a
+// snapshots for interpolation (prior 2-snapshot cap superseded), and a
 // per-transaction batch-applied signal so the loop reconciles once on a coherent
 // snapshot. Pure + synchronous: the live SDK + the microtask coalescing live in
 // the (untested-here, M5 e2e) connection adapter.
@@ -11,11 +9,11 @@
 import * as fc from 'fast-check';
 import { describe, expect, it, vi } from 'vitest';
 import { BURST_EPSILON_MS } from '../shared/interpConfig';
-// 11r-b (ADR-0167): T-OWNP-DOWNSTREAM composes ownPerspective with the REAL view model —
+// T-OWNP-DOWNSTREAM composes ownPerspective with the REAL view model —
 // the behavioral tooth that proves the projection actually feeds the render path, not just
 // its own field-swap.
 import { buildBattleViewModel } from '../ui/battleModel';
-// uxd2 (ADR-0161 D1): the boundary converter, used by the npc-interaction integration
+// The boundary converter, used by the npc-interaction integration
 // tooth at the foot of this file (adapter path: upsertNpc(npcRowToStore(row))).
 // 12r-d [E2]: healLocationRowToStore joins it for the heal-cost currency adapter tooth
 // (adapter path: upsertHealLocation(healLocationRowToStore(row))) — same shape, same file.
@@ -23,12 +21,9 @@ import { healLocationRowToStore, npcRowToStore } from './rowConvert';
 import {
   AuthoritativeStore,
   type EssenceByAffinity,
-  // 11r-b (ADR-0167): ownPerspective does NOT exist on master yet — every T-OWNP-* test
-  // below is RED at authoring time on a missing export (see the describe block's own
-  // RED-reason comment).
   ownPerspective,
   // 12r-d [E2]: the REAL heal-location row type, imported under an alias because this file
-  // also declares a LOCAL `StoreHealLocationRow` (line ~2132) that the M12d block's
+  // also declares a LOCAL `StoreHealLocationRow` that the M12d block's
   // type-erasure casts let drift. The 12r-d block at the foot of this file builds its
   // fixtures against THIS one, so the compiler is actually looking at the shipped shape.
   type StoreHealLocationRow as RealStoreHealLocationRow,
@@ -38,7 +33,7 @@ import {
   type StoreCharacter,
   // EG4 (contract §B): the essence-graph path row, keyed in the store by `pathId` (A1).
   type StoreEvolutionPath,
-  // 20r-d (ADR-0254 D6): the post-evolve reveal SLOT. Neither type exists on master
+  // The post-evolve reveal SLOT. Neither type exists on master
   // yet, but `import type` is ERASED by the transform — so the S-NOTICE block at the
   // foot of this file reds on the missing STORE METHODS, never on this line.
   type StoreEvolutionReveal,
@@ -53,7 +48,7 @@ import {
   type StoreSkillRow,
   type StoreSpeciesRow,
   type StoreTradeOffer,
-  // ux2 (ADR-0154): owner-scoped wallet slot — see the ux2 block at the end of this file.
+  // ux2: owner-scoped wallet slot — see the ux2 block at the end of this file.
   type StoreWallet,
 } from './store';
 
@@ -111,7 +106,7 @@ describe('AuthoritativeStore: receivedAt + snapshot ring buffer history (interp 
 });
 
 // =============================================================================
-// ADR-0090: burst detection + jitter EWMA (AuthoritativeStore(stepMs > 0))
+// Burst detection + jitter EWMA (AuthoritativeStore(stepMs > 0))
 // These tests require new AuthoritativeStore(STEP_MS) so burst detection fires.
 // With stepMs=0 (the default for all other tests) both behaviours are disabled.
 // =============================================================================
@@ -308,7 +303,7 @@ describe('AuthoritativeStore: properties (fast-check)', () => {
           });
           const stored = s.character(7n)!;
           expect(stored.latest.tileX).toBe(xs[xs.length - 1]);
-          // M12.5d-2: large tile delta (>1) triggers snap — prev is dropped.
+          // Large tile delta (>1) triggers snap — prev is dropped.
           // Only assert prev when the last transition was a normal 1-tile step.
           const prevX = xs[xs.length - 2];
           if (Math.abs(xs[xs.length - 1] - prevX) <= 1) {
@@ -324,10 +319,9 @@ describe('AuthoritativeStore: properties (fast-check)', () => {
 
 // =============================================================================
 // M6c extension: Monster + Species store (StoreMonsterPub / StoreSpeciesRow)
-// SOURCE OF TRUTH: specs/monster-realm-v2/M6-box-party.spec.md
 // =============================================================================
 
-/** EG4: the 8-affinity essence record carried on every StoreMonsterPub (contract §B).
+/** The 8-affinity essence record carried on every StoreMonsterPub (contract §B).
  *  DISTINCT per-affinity defaults are deliberate — a Wind/Light column swap in the
  *  converter is invisible against an all-zero record. */
 function essenceRecord(overrides: Partial<EssenceByAffinity> = {}): EssenceByAffinity {
@@ -387,7 +381,7 @@ function speciesRow(id: number): StoreSpeciesRow {
   };
 }
 
-// 13r-e (ADR-0194 D3): `store.monster(id)` and `store.monsters()` are DELETED —
+// `store.monster(id)` and `store.monsters()` are DELETED —
 // they had zero production callers, and deleting them is what mechanically
 // enforces the engaged-view deferral ("no client code reads another player's
 // monster row" becomes unrepresentable rather than merely true today). The three
@@ -601,7 +595,7 @@ describe('AuthoritativeStore M6c: monsterCount property (fast-check)', () => {
 });
 
 // =============================================================================
-// 13r-e (ADR-0194 D4): reconcileMonstersFromView — the view-cache reconcile.
+// reconcileMonstersFromView — the view-cache reconcile.
 //
 // SOURCE OF TRUTH: docs/adr/0194-monster-pub-need-to-know-privacy.md D4.
 //
@@ -620,9 +614,6 @@ describe('AuthoritativeStore M6c: monsterCount property (fast-check)', () => {
 // absent id removed — with change notification batched the same way the existing
 // upsert/remove paths batch it.
 //
-// RED REASON (at authoring time): `AuthoritativeStore` has no
-// `reconcileMonstersFromView` method, so every test below fails with
-// "s.reconcileMonstersFromView is not a function".
 // =============================================================================
 
 describe('AuthoritativeStore 13r-e: the whole-map monster accessors are DELETED (ADR-0194 D3)', () => {
@@ -639,8 +630,6 @@ describe('AuthoritativeStore 13r-e: the whole-map monster accessors are DELETED 
     // This is the ONLY test that enforces the deletion; every other monster test
     // in this file now reads through ownMonsters/monsterCount, so removing the
     // accessors is otherwise invisible to the suite.
-    //
-    // RED AT AUTHORING TIME: both methods still exist (store.ts:776-782).
     const s = new AuthoritativeStore();
     const probe = s as unknown as Record<string, unknown>;
     expect(
@@ -780,7 +769,7 @@ describe('AuthoritativeStore 13r-e: reconcileMonstersFromView post-condition', (
   });
 
   it('BITES: an UNCHANGED row set marks NOTHING dirty, while a changed field marks exactly one batch (render-storm guard)', () => {
-    // WHAT THIS PINS (verifier advisory A, ADR-0194 D4). The connection adapter
+    // WHAT THIS PINS. The connection adapter
     // calls reconcileMonstersFromView in EVERY batcher flush — i.e. on every
     // table's burst, including the ~5/s movement ticks — so the reconcile must be
     // a NO-OP for an unchanged row set. Without change detection, every movement
@@ -795,20 +784,12 @@ describe('AuthoritativeStore 13r-e: reconcileMonstersFromView post-condition', (
     // THE FIXTURE IS PRODUCTION-SHAPED ON PURPOSE. The rows are rebuilt by calling
     // the factory again, so they are structurally equal but NON-IDENTICAL objects,
     // *including a freshly-built nested `essence` record* — which is exactly what
-    // the boundary converter emits: monsterPubRowToStore (rowConvert.ts:214-223)
+    // the boundary converter emits: monsterPubRowToStore
     // constructs a new `essence: { Fire: …, … }` literal on EVERY call, so the
     // store never sees the same nested object twice in production. That shape is
     // what makes this test meaningful: it kills a `prev === m` reference-equality
     // cheat, and it is the only shape the guard will ever actually face.
     //
-    // ⚠ RED AT AUTHORING TIME — AND IT IS THE IMPLEMENTATION, NOT THE FIXTURE.
-    // store.ts's `shallowRowEq` is a generic own-key `===` compare, and `essence`
-    // is a nested OBJECT, so `prev.essence !== m.essence` for two converter
-    // outputs that carry identical numbers. The guard therefore reports "changed"
-    // on every flush and suppresses nothing: the render storm it exists to prevent
-    // is still live. Two sanctioned fixes, both in store.ts:
-    //   (a) compare `essence` field-wise (it is a fixed 8-key affinity record), or
-    //   (b) make shallowRowEq recurse ONE level into plain-object values.
     // The forbidden "fix" is editing THIS test to share one `essence` reference
     // between the two arrays: that fixture shape never occurs in production, so it
     // would make the assertion pass while the storm continues.
@@ -860,7 +841,6 @@ describe('AuthoritativeStore 13r-e: reconcileMonstersFromView post-condition', (
 
 // =============================================================================
 // M7c extension: Battle + Skill store (StoreBattle / StoreSkillRow)
-// SOURCE OF TRUTH: specs/monster-realm-v2/M7-battle-view.spec.md
 // =============================================================================
 
 /** Factory: minimal valid StoreBattleMonster. */
@@ -888,7 +868,7 @@ function battleSide(overrides: Partial<StoreBattleSide> = {}): StoreBattleSide {
 }
 
 /** Factory: minimal valid StoreBattle.
- *  11r-b (ADR-0167): `opponentIdentity` is now a 4th parameter (default 'npc' — every
+ *  `opponentIdentity` is now a 4th parameter (default 'npc' — every
  *  pre-existing positional call site is unaffected). Needed so the role-agnostic (T-RA)
  *  and ownPerspective (T-OWNP) fixtures below can put a real player identity ('bob') on
  *  the opponent side without hand-building the whole row inline. */
@@ -1095,15 +1075,7 @@ describe('AuthoritativeStore M7c: skillCount property (fast-check)', () => {
 });
 
 // =============================================================================
-// M8.6c — speciesMap() / skillMap() defensive copy (live-map leak guard)
-// SOURCE OF TRUTH: specs/monster-realm-v2/M8.6-residual-hardening.spec.md
-//
-// RED reason (before impl): speciesMap() returns `this.#species` directly and
-// skillMap() returns `this.#skills` directly. A caller who mutates the returned
-// map corrupts the store's internal state — subsequent reads return the mutated
-// (wrong) data. After fix: both methods return `new Map(this.#species)` / `new
-// Map(this.#skills)` (a snapshot copy), so mutations to the returned map cannot
-// reach the private fields.
+// speciesMap() / skillMap() defensive copy (live-map leak guard)
 //
 // BITES: `return this.#species` / `return this.#skills` (live map leak).
 // =============================================================================
@@ -1168,10 +1140,7 @@ describe('AuthoritativeStore M8.6c: speciesMap() returns a COPY (no live-map lea
 });
 
 // =============================================================================
-// M8.7e — latestPlayerBattle selector (AuthoritativeStore)
-// SOURCE OF TRUTH: specs/monster-realm-v2/M8.7-third-review-residuals.spec.md §3
-//   "WHEN a player's battle resolves … THE SYSTEM SHALL render the terminal
-//   outcome frame at least once"
+// latestPlayerBattle selector (AuthoritativeStore)
 //
 // latestPlayerBattle(identity) returns the StoreBattle row with the HIGHEST
 // battleId (bigint comparison) among rows in which `identity` appears in EITHER
@@ -1182,9 +1151,6 @@ describe('AuthoritativeStore M8.6c: speciesMap() returns a COPY (no live-map lea
 // matches, and ALSO when identity === '' (explicit pre-join guard; 11r-b AC-3).
 // ongoingBattle() matches the SAME either-role rule, Ongoing-only.
 //
-// RED (11r-b): both accessors currently match `playerIdentity === identity`
-// ONLY — see the "role-agnostic accessors" describe block below (T-RA-1..4)
-// and the retitled T1c for the failing coverage.
 // =============================================================================
 
 describe('AuthoritativeStore M8.7e: latestPlayerBattle', () => {
@@ -1213,7 +1179,7 @@ describe('AuthoritativeStore M8.7e: latestPlayerBattle', () => {
   });
 
   it("T1c: BITES returns the player's OWN row, not a higher-id battle of a player it is not in (alice id 5n, bob id 9n); a stranger gets undefined from BOTH accessors", () => {
-    // RETITLED (11r-b/ADR-0167): this used to assert "filters strictly by playerIdentity",
+    // RETITLED: this used to assert "filters strictly by playerIdentity",
     // which is now FALSE — the real invariant is that latestPlayerBattle returns the
     // caller's own battle, never a stranger's higher-id row, regardless of which role the
     // caller would occupy in that stranger's battle. Both fixture rows carry an EXPLICIT
@@ -1228,9 +1194,8 @@ describe('AuthoritativeStore M8.7e: latestPlayerBattle', () => {
     expect(result!.battleId).toBe(5n);
     expect(result!.playerIdentity).toBe('alice');
 
-    // Folded in from the cut T-RA-5 (plan §11 R-3, subsumed here): a stranger ('carol'),
-    // who appears in NEITHER role of EITHER stored battle, gets undefined from BOTH
-    // accessors — never "any battle that happens to exist".
+    // a stranger ('carol'), who appears in NEITHER role of EITHER stored battle, gets
+    // undefined from BOTH accessors — never "any battle that happens to exist".
     // Kills: an impl that returns any/the-first battle regardless of role membership.
     expect(s.latestPlayerBattle('carol')).toBeUndefined();
     expect(s.ongoingBattle('carol')).toBeUndefined();
@@ -1270,20 +1235,17 @@ describe('AuthoritativeStore M8.7e: latestPlayerBattle', () => {
 });
 
 // =============================================================================
-// 11r-b — role-agnostic ongoingBattle() / latestPlayerBattle() (ADR-0167)
-// SOURCE OF TRUTH: memory/projects/monster-realm-11r-b-plan.md §4 AC-1/AC-2/AC-3
+// role-agnostic ongoingBattle() / latestPlayerBattle()
 //
 // `store.ongoingBattle()` / `store.latestPlayerBattle()` filtered `playerIdentity ===
-// identity` ONLY. A PvP ACCEPTER is stored in `opponentIdentity`
-// (server-module/src/pvp.rs:289-297), so the accepter got NO battle overlay at all —
-// invisible until the 60s deadline reaper forfeited them (the defect this slice closes).
+// identity` ONLY. A PvP ACCEPTER is stored in `opponentIdentity`,
+// so the accepter got NO battle overlay at all — invisible until the 60s deadline reaper
+// forfeited them (the defect this slice closes).
 //
 // Both accessors now match `playerIdentity === identity || opponentIdentity === identity`,
 // with an explicit `identity === ''` early-return guard in both (AC-3 — role-agnostic
 // matching turns "no match" into "possible false match" without it).
 //
-// RED reason: both accessors on master still filter `playerIdentity === identity` only —
-// every test below fails against the CURRENT (unfixed) source.
 // =============================================================================
 
 describe('AuthoritativeStore 11r-b: ongoingBattle()/latestPlayerBattle() match EITHER role', () => {
@@ -1402,7 +1364,6 @@ describe('AuthoritativeStore M8.6c: skillMap() returns a COPY (no live-map leak)
 
 // =============================================================================
 // M9c extension: Inventory + ItemDef store (StoreInventory / StoreItemRow)
-// SOURCE OF TRUTH: specs/monster-realm-v2/M9-raising.spec.md
 // =============================================================================
 
 /** Factory: minimal valid StoreInventory. */
@@ -1743,19 +1704,7 @@ describe('AuthoritativeStore M9c: inventoryCount property (fast-check)', () => {
 
 // =============================================================================
 // EG4-5 / A1 extension: StoreEvolutionPath REPLACES StoreFusionRow.
-// SOURCE OF TRUTH: memory/projects/monster-realm-EG4-contract.md §A1 + §B + §G.
 //
-// The whole M10c fusion suite that used to live here is DELETED, not adapted:
-// EG4-5 removes `StoreFusionRow`, `#fusions`, `upsertFusion`, `removeFusion`,
-// `fusions()`, `fusionCount` and the `reset()` fusion clear outright.
-//
-// RED REASON (verified against client/src/net/store.ts this session): the store
-// exports no `StoreEvolutionPath`, has no `#evolutionPaths` map, and no
-// `upsertEvolutionPath` / `removeEvolutionPath` / `evolutionPaths()` /
-// `evolutionPathCount` member. Every test below fails on a MISSING IMPLEMENTATION
-// (`s.upsertEvolutionPath is not a function`), not on a fixture typo. Conversely
-// the EG4-5 deletion suite is red the other way round: `upsertFusion` et al are
-// still very much defined (store.ts:546-553, :844-850).
 // =============================================================================
 
 /** Factory: minimal valid StoreEvolutionPath (contract §B).
@@ -1831,10 +1780,10 @@ describe('AuthoritativeStore EG4: evolution-path upsert + evolutionPathCount', (
 
   it('BITES (A1): the store is keyed by pathId — TWO rows sharing one edgeId coexist', () => {
     // Kills: `Map<number /* edgeId */, StoreEvolutionPath>`. This is the structural
-    // half of the A1 blocker: `sync_content` (server-module/src/content.rs:268-292)
-    // clear-and-reinserts the whole table in ONE transaction, re-minting `path_id`
-    // while KEEPING `edge_id`, so during the burst two live rows legitimately carry
-    // the same edgeId. An edgeId-keyed map collapses them to one.
+    // half of the A1 blocker: `sync_content` clear-and-reinserts the whole table in
+    // ONE transaction, re-minting `path_id` while KEEPING `edge_id`, so during the
+    // burst two live rows legitimately carry the same edgeId. An edgeId-keyed map
+    // collapses them to one.
     const s = new AuthoritativeStore();
     s.upsertEvolutionPath(evoPath(5n, 7));
     s.upsertEvolutionPath(evoPath(9n, 7));
@@ -1895,10 +1844,10 @@ describe('AuthoritativeStore EG4: removeEvolutionPath', () => {
 });
 
 // ---------------------------------------------------------------------------
-// ★ A1 — THE BLOCKER. `sync_content` (server-module/src/content.rs:268-292) does
-// N deletes + N inserts of `evolution_path` in ONE transaction with the SAME
-// edge_ids and FRESHLY MINTED path_ids, and the SDK gives NO ordering guarantee
-// between the two halves. Keying by pathId is what makes callback order irrelevant.
+// ★ A1 — THE BLOCKER. `sync_content` does N deletes + N inserts of `evolution_path`
+// in ONE transaction with the SAME edge_ids and FRESHLY MINTED path_ids, and the
+// SDK gives NO ordering guarantee between the two halves. Keying by pathId is what
+// makes callback order irrelevant.
 // ---------------------------------------------------------------------------
 
 describe('★ AuthoritativeStore EG4 (A1): a content republish burst never empties the path map', () => {
@@ -1914,7 +1863,7 @@ describe('★ AuthoritativeStore EG4 (A1): a content republish burst never empti
 
     s.upsertEvolutionPath(evoPath(9n, 7, { toSpecies: 43 })); // republished: NEW pathId, SAME edgeId
 
-    // RED-TEAM ADDITION — the MID-BURST assertion, which is what actually makes THIS
+    // the MID-BURST assertion, which is what actually makes THIS
     // ordering discriminate. Without it, an edgeId-keyed store whose removeEvolutionPath
     // SCANS for the matching pathId passes both order tests: the insert has already
     // overwritten key 7, so the scan finds nothing, and the end state (one row, pathId 9n)
@@ -2131,11 +2080,6 @@ describe('AuthoritativeStore EG4: evolutionPathCount property (fast-check)', () 
 
 // =============================================================================
 // M11c extension: store.resetCharacters() (C3)
-// SOURCE OF TRUTH: M11c EARS C3 — Store resetCharacters() method.
-//
-// RED REASON: `AuthoritativeStore` has no `resetCharacters()` method yet.
-// All tests below will fail (TypeError: s.resetCharacters is not a function)
-// until the implementer adds the method.
 //
 // Contract:
 //   - resetCharacters() clears ONLY the #chars map.
@@ -2176,7 +2120,7 @@ describe('AuthoritativeStore M11c C3: resetCharacters() clears only the characte
 
   it('BITES: resetCharacters() does NOT clear monsters', () => {
     // Kills: an impl that wipes all maps instead of just #chars.
-    // 13r-e: reads the same fact through ownMonsters (store.monster(id) is gone).
+    // reads the same fact through ownMonsters (store.monster(id) is gone).
     const s = new AuthoritativeStore();
     s.upsertMonster(monsterPub(7n, 'bob'));
     s.upsertCharacter(char(1n, 0, 0), 100);
@@ -2247,14 +2191,10 @@ describe('AuthoritativeStore M11c C3: resetCharacters() clears only the characte
 });
 
 // =============================================================================
-// M12.5d-2: upsertCharacter snap-on-teleport
-// SOURCE OF TRUTH: M12.5d spec §2 "Snap-on-zone-change and snap-on-large-tile-delta"
+// upsertCharacter snap-on-teleport
 //
-// RED REASON (before impl): upsertCharacter always sets prev=existing?.latest with no
-// zone-change or tile-delta check. A zone change would carry prev from the old zone
-// (smearing across zone boundary) and a large tile jump (teleport) would carry prev
-// from the old position (smearing across a warp). After fix: zone change or abs(Δtile)>1
-// on either axis causes prev to be dropped (undefined), so the renderer snaps instead.
+// zone change or abs(Δtile)>1 on either axis causes prev to be dropped (undefined), so
+// the renderer snaps instead.
 // =============================================================================
 
 describe('AuthoritativeStore: upsertCharacter snap-on-teleport (M12.5d-2)', () => {
@@ -2366,16 +2306,6 @@ describe('AuthoritativeStore M12b: playerCount vs characterCount (NPC isolation)
 
 // =============================================================================
 // M12d extension: conversation / quest / heal / npc maps
-// SOURCE OF TRUTH: docs/m12d-plan.md + docs/adr/0071-m12d-client-dialogue-quest-heal-ui.md
-//
-// RED REASON: AuthoritativeStore has none of the 4 new maps yet:
-//   #conversations, #quests, #healLocations, #npcs
-//
-// The types StorePlayerConversation, StorePlayerQuest, StoreHealLocationRow,
-// StoreNpcRow are also not yet exported from store.ts.
-//
-// All tests below will fail (TypeError: s.upsertConversation is not a function,
-// etc.) until the implementer adds the new maps and methods.
 //
 // Contract summary:
 //   upsertConversation/removeConversation — keyed by ownerIdentity (one per player)
@@ -2391,7 +2321,7 @@ describe('AuthoritativeStore M12b: playerCount vs characterCount (NPC isolation)
 // =============================================================================
 
 // ---------------------------------------------------------------------------
-// Local type definitions (not yet exported from store.ts — tests red for impl)
+// Local type definitions
 // ---------------------------------------------------------------------------
 interface StorePlayerConversation {
   ownerIdentity: string;
@@ -2414,8 +2344,8 @@ interface StoreHealLocationRow {
   costItemId?: number;
   costQty: number;
   cooldownMs: number;
-  // 12r-d [E2]: the heal cost's CURRENCY channel — a REQUIRED u64 carried as bigint
-  // (store.ts:242-250). Kept in sync with the real type by hand; the M12d block below
+  // the heal cost's CURRENCY channel — a REQUIRED u64 carried as bigint.
+  // Kept in sync with the real type by hand; the M12d block below
   // reaches the store through `as unknown as Record<…>` casts, so the compiler cannot
   // enforce that sync — which is exactly why the 12r-d block at the foot of this file
   // builds its fixtures against the IMPORTED `RealStoreHealLocationRow` instead.
@@ -2459,7 +2389,7 @@ function healLocationRow(locationId: number, zoneId = 0): StoreHealLocationRow {
     costItemId: undefined,
     costQty: 0,
     cooldownMs: 30000,
-    // 12r-d [E2]: a free pad — 0n, never `0`. Every M12d case above keeps its original
+    // a free pad — 0n, never `0`. Every M12d case above keeps its original
     // assertions; this key only keeps the fixture well-formed under the new required field.
     costCurrency: 0n,
   };
@@ -2825,7 +2755,7 @@ describe('M12d: conversation / quest / heal / npc maps', () => {
   // --- remove* dirty-marking tests (RT Finding 4 / Finding 3 follow-up) ---
 
   it('BITES: removeConversation marks batch dirty so flushBatch fires (overlay hides)', () => {
-    // Server auto-dismisses conversation (RT-ADV-01) by deleting the row.
+    // Server auto-dismisses conversation by deleting the row.
     // removeConversation must mark dirty so the render loop hides the dialogue overlay.
     // Kills: an impl that deletes the row but forgets #dirty=true (overlay stays open).
     const s = new AuthoritativeStore();
@@ -2895,23 +2825,12 @@ describe('M12d: conversation / quest / heal / npc maps', () => {
 });
 
 // =============================================================================
-// M10.5d: AuthoritativeStore flushBatch per-listener isolation (closes M8.8e residual)
-// SOURCE OF TRUTH: M10.5d EARS criterion 10.5d-3
-//
-// RED REASON (before impl): flushBatch currently iterates listeners with a bare
-// `for (const cb of [...this.#batchListeners]) cb()`. A throwing listener exits
-// the loop immediately — all subsequent listeners (siblings) are never called.
-// This is the M8.8e residual: "store.flushBatch has NO per-listener isolation
-// (a throwing batch listener starves siblings) → pending store.ts follow-up".
+// AuthoritativeStore flushBatch per-listener isolation (closes M8.8e residual).
 //
 // After fix: each listener call is wrapped in its own try/catch (log + continue),
 // so a throwing listener is caught and logged, and the loop continues to call
 // all remaining siblings.
 //
-// BITES: the three tests below will FAIL against the current implementation:
-//   Test 1 — sibling is NOT called (starvation proof)
-//   Test 2 — console.error is NOT called (no log proof)
-//   Test 3 — flushBatch DOES throw (propagation proof)
 // =============================================================================
 
 describe('AuthoritativeStore: flushBatch per-listener isolation (M10.5d — closes M8.8e residual)', () => {
@@ -2999,9 +2918,8 @@ function shopItemRow(
 }
 
 // RT-SHOP-01: reset() clears shop maps and sets dirty=false (no phantom re-render).
-// Finding: store.reset() comments claim shops "survive reconnect" but the implementation
-// DOES clear them. The comment is misleading, but the code is correct — shops ARE cleared
-// and must be re-subscribed after reconnect. This test gates that clear + no dirty race.
+// shops ARE cleared and must be re-subscribed after reconnect. This test gates that clear +
+// no dirty race.
 describe('AuthoritativeStore M13d RT-SHOP-01: reset() clears shop maps; dirty is false after reset', () => {
   it('RT-SHOP-01 BITES: reset() clears #shops and #shopItems (allShops/allShopItems return empty)', () => {
     // Kills: an impl that omits #shops.clear() or #shopItems.clear() from reset(),
@@ -3240,7 +3158,7 @@ describe('AuthoritativeStore ADR-0090 RT-BURST-CHAIN-01: burst detection synthet
 });
 
 // =============================================================================
-// 11r-f (ADR-0171) D1 — the jitter EWMA idle-gap gate
+// the jitter EWMA idle-gap gate
 //
 // SOURCE OF TRUTH: docs/adr/0171-resume-from-idle-interpolation.md D1 (amends
 // ADR-0090's ungated inline EWMA in `upsertCharacter`) + spec
@@ -3254,14 +3172,10 @@ describe('AuthoritativeStore ADR-0090 RT-BURST-CHAIN-01: burst detection synthet
 // `receivedAt: now` baseline write and the ring append stay UNCONDITIONAL, and the
 // EWMA is carried across the gap UNCHANGED (never reset).
 //
-// RED REASON (before impl): `upsertCharacter` updates the EWMA on every non-snap
-// arrival, so a 5 s idle feeds deviation 4800 and drives jitterEwma to ~600 (raw
-// delay 200 + 1200 → clamped to the 500 ms max for ~2 s). Every "stays exactly"
-// assertion below lands on a large number instead. Case (xiv), (H-F), the burst
-// legs of (xii) and the 2-tile leg of (xv) are deliberately GREEN — they are the
-// anti-regression / anti-alternative pins that keep the gate one-sided, keep the
-// interval measured from the wall clock, and keep the fix out of the net layer's
-// data model.
+// Case (xiv), (H-F), the burst legs of (xii) and the 2-tile leg of (xv) are
+// deliberately GREEN — they are the anti-regression / anti-alternative pins that
+// keep the gate one-sided, keep the interval measured from the wall clock, and keep
+// the fix out of the net layer's data model.
 // =============================================================================
 
 // Namespace import ON PURPOSE (see case (xvi)): JITTER_IDLE_GAP_STEPS does not
@@ -3381,9 +3295,6 @@ describe('11r-f EWMA idle-gap gate (ADR-0171)', () => {
     // latest.receivedAt === receivedAt throughout and the two formulas agree on every
     // step — the mutant survives it. That test is left BYTE-UNTOUCHED; this one runs
     // at stepMs=20 so the synthetic branch actually fires and the two sources diverge.
-    // Deliberately GREEN today and after the fix: the shipped code is already correct
-    // here, and no 11r-f edit to this block (the gate lands in the same `if`) may
-    // disturb it.
     const s = new AuthoritativeStore(20); // < 2 x BURST_EPSILON_MS → synthetic reachable
     s.upsertCharacter(char(1n, 0, 0), 900); // A: receivedAt = latest.receivedAt = 900
 
@@ -3446,10 +3357,7 @@ describe('11r-f EWMA idle-gap gate (ADR-0171)', () => {
   });
 
   it('(xvi) PIN: JITTER_IDLE_GAP_STEPS is exported from store.ts and equals 3 (ADR-0171 D5)', () => {
-    // Literal pin so an implementer cannot silently relax K. Accessed off the module
-    // NAMESPACE rather than as a named import because the export does not exist yet:
-    // a missing named binding is an ESM link error that would abort collection of
-    // this entire FILE; property access reds as `undefined !== 3`.
+    // Literal pin so an implementer cannot silently relax K.
     // The twin pin (REANCHOR_SPAN_STEPS === 2) lives in render/interpolation.test.ts;
     // ADR-0171 D5 keeps the two constants deliberately independent — do not unify.
     expect((storeMod as unknown as Record<string, unknown>).JITTER_IDLE_GAP_STEPS).toBe(3);
@@ -3496,7 +3404,7 @@ describe('11r-f EWMA idle-gap gate (ADR-0171)', () => {
 });
 
 // =============================================================================
-// m15b: trade_offer store methods — upsert/remove/allTradeOffers/ownTradeOffer (RT-TO-02)
+// trade_offer store methods — upsert/remove/allTradeOffers/ownTradeOffer (RT-TO-02)
 //
 // The trade_offer table is PUBLIC (both parties subscribe — ADR-0106 D3).
 // upsertTradeOffer/removeTradeOffer are the only m15b store mutations.
@@ -3641,13 +3549,7 @@ describe('AuthoritativeStore m15b: trade_offer upsert/remove/read (RT-TO-02)', (
 });
 
 // =============================================================================
-// m17b — StoreProfile + upsertProfile / profile / allProfiles (RL-13 store layer)
-// SOURCE OF TRUTH: specs/monster-realm-v2/M17-ranked-ladder.spec.md §RL-13 / §RL-15
-//
-// RED REASON: StoreProfile type and the four new store methods do not exist yet.
-// All tests will fail with TypeScript import errors / missing-property errors
-// until the implementer adds StoreProfile + upsertProfile/profile/allProfiles to
-// store.ts, and wires #profiles.clear() into reset().
+// StoreProfile + upsertProfile / profile / allProfiles (RL-13 store layer)
 //
 // Contract:
 //   StoreProfile = { identity: string; name: string; rating: number; wins: number; losses: number }
@@ -3838,7 +3740,7 @@ describe('AuthoritativeStore m17b: no removeProfile method (RL-2 structural guar
 });
 
 // =============================================================================
-// ptc5f — ADR-0142 (D3): burst-spread reachability bound (pins ADR-0090)
+// ADR-0142 (D3): burst-spread reachability bound (pins ADR-0090)
 //
 // upsertCharacter's burst-synthetic branch (see store.ts's `#stepMs>0 && existing
 // !== undefined && !shouldSnap && now - existing.latest.receivedAt < BURST_EPSILON_MS`
@@ -3910,11 +3812,9 @@ describe('AuthoritativeStore ADR-0090/ptc5f: burst-spread reachability bound (De
 });
 
 // =============================================================================
-// ux2 (ADR-0154) — owner-scoped wallet SLOT: upsertWallet / ownWallet / reset
+// owner-scoped wallet SLOT: upsertWallet / ownWallet / reset
 //
-// SOURCE OF TRUTH: ux2 build plan v3 §T4 ("store slot") + "Client unit tests".
-// Tests are INTENTIONALLY RED until store.ts grows the slot. Do NOT edit them to
-// match a buggy implementation — correct from the plan only.
+// Do NOT edit them to match a buggy implementation — correct from the plan only.
 //
 // CONTRACT UNDER TEST
 //   export type StoreWallet = { readonly ownerIdentity: string; readonly balance: bigint };
@@ -4009,17 +3909,8 @@ describe('AuthoritativeStore ux2 S2: upsertWallet marks dirty; listeners fire on
 });
 
 // =============================================================================
-// 20r-d (ADR-0254 D6) — the post-evolve reveal SLOT:
+// The post-evolve reveal SLOT:
 // reconcileEvolutionNoticesFromView / ownEvolutionNotices / reset.
-//
-// ★ SOURCE OF TRUTH: spec `M-postgate-twentieth-review-residuals.spec.md` §20r-d
-// gate B1 + `docs/adr/0254-post-evolve-notification-queue-and-banner.md` D6.
-//
-// RED REASON AT AUTHORING TIME: `reconcileEvolutionNoticesFromView` and
-// `ownEvolutionNotices` do NOT exist on `AuthoritativeStore`. Every test below
-// fails on a MISSING IMPLEMENTATION (a TypeError on an undefined method), not on
-// a typo here. The two `import type`s at the head of this file are erased by the
-// transform and cannot red on their own.
 //
 // CONTRACT UNDER TEST (do not invent variants):
 //   export type StoreEvolutionReveal = {
@@ -4041,12 +3932,12 @@ describe('AuthoritativeStore ux2 S2: upsertWallet marks dirty; listeners fire on
 // returning exactly ONE row — the caller's — so a keyed map would make another
 // player's evolution history representable in the client cache for free.
 //
-// WHY AUTHORITATIVE (ADR-0254 D6, and the reason this is NOT the `my_wallet`
+// WHY AUTHORITATIVE (and the reason this is NOT the `my_wallet`
 // insert-only idiom): the account-deletion cascade DELETES this row. An
 // insert-only slot would leave an erased notice on screen forever.
 // =============================================================================
 
-/** 20r-d fixtures. Prefixed `rd*` so they cannot collide with (or shadow) any of
+/** Prefixed `rd*` so they cannot collide with (or shadow) any of
  *  this 4000-line file's existing `make*` helpers. */
 function rdReveal(
   monsterId: bigint,
@@ -4099,8 +3990,8 @@ describe('AuthoritativeStore 20r-d S-NOTICE-SET: reconcileEvolutionNoticesFromVi
 
   it('20r-d S-NOTICE-SET BITES: an EMPTY array CLEARS the slot (the cascade withdraws the reveal)', () => {
     // Kills ★ THE INSERT-ONLY IDIOM: `if (rows.length === 0) return;`, copied from
-    // the `my_wallet` upsert. The account-deletion cascade ERASES this row
-    // (ADR-0254 D5), and the 7-day-grace reaper fires while the tab is open — an
+    // the `my_wallet` upsert. The account-deletion cascade ERASES this row,
+    // and the 7-day-grace reaper fires while the tab is open — an
     // insert-only slot leaves a notice about erased data on screen for the life of
     // the page, with an OK button whose ack now rejects forever.
     const s = new AuthoritativeStore();
@@ -4132,7 +4023,7 @@ describe('AuthoritativeStore 20r-d S-NOTICE-OWNER: ownEvolutionNotices filters o
     // AUTH-51 hazard `ownAccount` already guards against.
     // Kills: a case-INSENSITIVE compare (`toLowerCase()`), which would make two
     // distinct identity hexes alias. EXACT `===`, the `ownWallet` /
-    // `ownExportChunks` rule (store.ts:1180, :1234).
+    // `ownExportChunks` rule.
     const s = new AuthoritativeStore();
     s.reconcileEvolutionNoticesFromView([rdNotice('bob-hex', [rdReveal(7n, 1, 2, 500n)])]);
 
@@ -4207,7 +4098,7 @@ describe('AuthoritativeStore 20r-d S-NOTICE-DIRTY: the batch is dirtied only on 
     // descend into an ARRAY of objects — store.ts:1317-1328, :1368-1379) reports
     // every one of them as changed, so the store dirties and every batch listener
     // in the client wakes ~5x/second for a row that did not move. The sibling
-    // battle reconcile hit exactly this and was moved to `deepRowEq` (ADR-0198 D5).
+    // battle reconcile hit exactly this and was moved to `deepRowEq`.
     const s = new AuthoritativeStore();
     s.reconcileEvolutionNoticesFromView([
       rdNotice('alice-hex', [rdReveal(7n, 1, 2, 500n), rdReveal(8n, 2, 3, 500n)]),
@@ -4331,10 +4222,7 @@ describe('AuthoritativeStore ux2 S4: buy-then-sell round trip — the slot REPLA
 });
 
 // ===========================================================================
-// uxd2 (ADR-0161 D1) — StoreNpcRow carries the NpcInteraction discriminated union.
-// APPENDED BLOCK — nothing above this line is modified.
-//
-// SOURCE OF TRUTH: docs/specs/uxd2-plan.md I5 / AC-16 + docs/adr/0161-*.md §D1.
+// StoreNpcRow carries the NpcInteraction discriminated union.
 //
 // THE INVARIANT: the interaction reaches EVERY npc read path — `npc(entityId)`,
 // `npcByNpcId(npcId)` and `allNpcs()`. main.ts feeds `allNpcs()` to the resolver and
@@ -4342,13 +4230,11 @@ describe('AuthoritativeStore ux2 S4: buy-then-sell round trip — the slot REPLA
 // silently disables either the prompt or the Shop button (never both — which is
 // exactly the kind of half-failure that survives a single spot check).
 //
-// RED STATE (declared honestly): the three pure round-trips below are REGRESSION
+// the three pure round-trips below are REGRESSION
 // GUARDS and pass on master, because `upsertNpc` stores the row object by reference
 // and therefore carries any field the caller put on it. They bite a future rewrite
 // that reconstructs the row field-by-field inside the store (the shape every other
 // converter in this repo uses) — that rewrite would drop `interaction` silently.
-// The FOURTH case is the RED one: it drives the row through the REAL boundary
-// converter (`npcRowToStore`) first, which today discards `interaction`.
 // ===========================================================================
 
 interface Uxd2SdkNpcRow {
@@ -4433,9 +4319,8 @@ describe('uxd2: AuthoritativeStore round-trips StoreNpcRow.interaction on every 
 
   it('★ BITES (RED today): a row driven through npcRowToStore reaches the store with its interaction intact', () => {
     // THE INTEGRATION TOOTH. This is the path the live adapter actually uses
-    // (connection.ts: `store.upsertNpc(npcRowToStore(row))`). On master the converter
-    // discards `interaction`, so `npc(2n).interaction` is `undefined` here and this case
-    // fails — the unit-level converter cases in rowConvert.test.ts pin the mapping table,
+    // (connection.ts: `store.upsertNpc(npcRowToStore(row))`).
+    // the unit-level converter cases in rowConvert.test.ts pin the mapping table,
     // and THIS one pins that the two halves are actually joined.
     // WRONG IMPL KILLED: a converter hardened in isolation while connection.ts keeps
     // building its own row literal (the field would never reach the store).
@@ -4471,16 +4356,14 @@ describe('uxd2: AuthoritativeStore round-trips StoreNpcRow.interaction on every 
 });
 
 // =============================================================================
-// 11r-b — ownPerspective(battle, identity) — pure view-perspective projection
-// SOURCE OF TRUTH: memory/projects/monster-realm-11r-b-plan.md §4 AC-4/AC-5/AC-6/AC-7/AC-8
-//   + §11 R-3 (T-OWNP-1 merged into the swap tooth; T-OWNP-OUTCOME kept as-is)
+// ownPerspective(battle, identity) — pure view-perspective projection
 //
 // `ownPerspective` is a NEW exported pure free function (not a store method — keeps the
 // store's accessors honestly "raw server truth" and keeps the projection directly
-// unit-testable, ADR-0167 D2) that re-expresses a battle so the caller's OWN side is
+// unit-testable) that re-expresses a battle so the caller's OWN side is
 // always sideA:
 //   - identity === playerIdentity (checked FIRST — this ordering is what covers a
-//     practice battle, where playerIdentity === opponentIdentity, ADR-0109) → returned
+//     practice battle, where playerIdentity === opponentIdentity) → returned
 //     BY REFERENCE (`.toBe`, not `.toEqual` — the cheapest possible proof of "no swap").
 //   - identity === opponentIdentity AND !== playerIdentity → sideA/sideB,
 //     playerIdentity/opponentIdentity, partyMonsterIds/opponentMonsterIds swapped;
@@ -4493,8 +4376,6 @@ describe('uxd2: AuthoritativeStore round-trips StoreNpcRow.interaction on every 
 // a store-owned object by reference and the slow path shallow-swaps nested side objects —
 // the raw/projected split relies on callers treating both as read-only.
 //
-// RED reason: `ownPerspective` is not exported from ./store yet — every test below fails
-// on the missing export (see the import-site comment at the top of this file).
 // =============================================================================
 
 /** A monster factory for ownPerspective's fixtures — same shape as battleMonster() above,
@@ -4688,31 +4569,12 @@ describe('AuthoritativeStore 11r-b: ownPerspective ∘ buildBattleViewModel — 
 });
 
 // ===========================================================================
-// 12r-d [E2] — StoreHealLocationRow carries costCurrency as a bigint, end to end.
-// APPENDED BLOCK — nothing above this line is weakened. The M12d local interface
-// (~line 2132) and its `healLocationRow` factory gained the new required key so they
-// still describe a well-formed row; not one of their assertions changed.
+// StoreHealLocationRow carries costCurrency as a bigint, end to end.
 //
 // EARS E2: WHEN a heal-location row is written into the store and read back, the store
 // SHALL return its `costCurrency` as the SAME bigint value it was given — no coercion,
 // no truncation, no cross-row bleed.
 //
-// RED STATE, DECLARED HONESTLY (this is the interesting part of this block):
-//   * ST-HL-CC-01 is a CONTRACT PIN that is GREEN AT HEAD BY DESIGN at runtime.
-//     `upsertHealLocation` is a bare `#healLocations.set(row.locationId, row)` — it stores
-//     the caller's object BY REFERENCE, so it carries any field the caller put on it. Its
-//     RED arm at HEAD is TYPE-LEVEL ONLY: the fixture is annotated with the IMPORTED
-//     `RealStoreHealLocationRow`, which has no `costCurrency` today, so the literal is an
-//     excess property and `got.costCurrency` is a TS2339. That arm does NOT surface in
-//     `npm run typecheck` either — client/tsconfig.json line 15 EXCLUDES `**/*.test.ts`
-//     (verified in this worktree) — so it is an editor/review signal, not a CI gate.
-//     Its real job is to BITE a future `upsertHealLocation` that normalises the row by
-//     rebuilding it field-by-field (the shape every converter in this repo uses) and
-//     silently drops the new column. Same posture, same wording, as the uxd2 npc
-//     "REGRESSION GUARD (green on master)" cases above.
-//   * ST-HL-CC-02 / ST-HL-CC-03 are the RED ones: they drive the row through the REAL
-//     boundary converter first (`healLocationRowToStore`), which at HEAD maps seven fields
-//     and drops costCurrency — so the store hands back `undefined`.
 // ===========================================================================
 
 /** 2^53 + 1 — the smallest integer a JS `number` cannot hold. Any Number() hop in the
@@ -4748,7 +4610,7 @@ describe('AuthoritativeStore 12r-d [E2]: heal-location costCurrency survives the
   it('★ ST-HL-CC-02 BITES (RED at HEAD): the ADAPTER path SDK row → healLocationRowToStore → store preserves 2^53+1 exactly', () => {
     // THE integration tooth. connection.ts:380-383 is literally
     // `store.upsertHealLocation(healLocationRowToStore(row))`, so this composition IS the
-    // production ingest path for heal content. WRONG IMPL KILLED (the HEAD one): a converter
+    // production ingest path for heal content. WRONG IMPL KILLED: a converter
     // that never mentions costCurrency — the store then hands `undefined` to healModel and
     // every cost readout downstream is a guess. ALSO KILLED: a `Number()` hop anywhere in
     // that path, which returns 9007199254740992 (asserted explicitly so the failure names
@@ -4805,8 +4667,8 @@ describe('AuthoritativeStore 12r-d [E2]: heal-location costCurrency survives the
 });
 
 // =============================================================================
-// M21b-2 (ADR-0182 D15) — the owner-scoped ACCOUNT SLOT: upsertAccount /
-// ownAccount / reset. APPENDED BLOCK — nothing above this line is modified.
+// The owner-scoped ACCOUNT SLOT: upsertAccount /
+// ownAccount / reset.
 //
 // EARS COVERED
 //   AUTH-51 — WHILE deciding whether to display any "signed in" or claim-eligible
@@ -4818,38 +4680,16 @@ describe('AuthoritativeStore 12r-d [E2]: heal-location costCurrency survives the
 //             `readAuthKind` nor `credential.kind` — is a whole-file negative in
 //             main.wiring.test.ts.)
 //
-// CONTRACT UNDER TEST (mirrors `#ownWallet` / `upsertWallet` / `ownWallet`, store.ts:404,
-// 713, 1039-1053, byte-for-byte in shape — the same reasoning applies verbatim):
-//   export type StoreAccount = {
-//     readonly identity: string;                     // hex, from Identity.toHexString()
-//     readonly authIssuer: string;
-//     readonly createdAtMs: bigint;                  // i64
-//     readonly lastLoginAtMs: bigint;                // i64
-//     readonly status: string;                       // the AccountStatus tag, carried bare
-//     readonly deletionRequestedAtMs: bigint | undefined;   // Option<i64>
-//     readonly claimedFrom: string | undefined;             // Option<Identity>, hex
-//     readonly claimedAtMs: bigint | undefined;             // Option<i64>
-//     readonly terminalAtMs: bigint | undefined;            // Option<i64>, M22 S4 (PR#407):
-//                                                           // the PRV1-4 permanent-deletion
-//                                                           // marker. NINE keys, not eight.
-//   };
-//   upsertAccount(row: StoreAccount): void   — sets a SINGLE slot, marks #dirty
-//   ownAccount(identity: string): StoreAccount | undefined
-//                                            — the slot ONLY when slot.identity === identity
-//   reset()                                  — also clears the slot
 //   NO removeAccount, deliberately: `delete_account` only flips `status` to
-//   `PendingDeletion` (schema.rs:669-700), account rows are never truly deleted, and the
+//   `PendingDeletion`, account rows are never truly deleted, and the
 //   `my_account` VIEW delivers an update as unordered onInsert(new) + onDelete(old) — so a
 //   delete path could only ever wipe the LIVE row (ADR-0182 D15's explicit "deliberately NO
 //   onDelete").
 //
-// WHY A SLOT, NOT A MAP: `my_account` returns exactly ONE row — the caller's
-// (schema.rs:708-711). A Map would make another player's account row representable in the
+// WHY A SLOT, NOT A MAP: `my_account` returns exactly ONE row — the caller's.
+// A Map would make another player's account row representable in the
 // client cache for free; a single slot makes that structurally impossible.
 //
-// RED REASON AT HEAD (8814416): `StoreAccount`, `upsertAccount` and `ownAccount` do not
-// exist in store.ts. The late import below fails to resolve its named export and this whole
-// block reds on a MISSING IMPLEMENTATION.
 // =============================================================================
 
 // A late, second import block. Precedent: rowConvert.test.ts:2816 and :3102 do exactly
@@ -4933,7 +4773,7 @@ describe('AuthoritativeStore M21b-2 A1: ownAccount returns the own row and filte
   });
 
   it('★★ A1 BITES (M22 PRV1-4): terminalAtMs round-trips through the slot — 0n survives, absent stays dark', () => {
-    // The ninth key (M22 S4, PR#407) is the PRIMARY route to privacyModel's terminal
+    // The ninth key is the PRIMARY route to privacyModel's terminal
     // phase, and the slot is the only thing between the converter and that read.
     //
     // WRONG IMPLS KILLED:
@@ -4967,7 +4807,7 @@ describe('AuthoritativeStore M21b-2 A1: ownAccount returns the own row and filte
 describe('AuthoritativeStore M21b-2 A2: upsertAccount marks dirty and REPLACES the slot', () => {
   it('★ A2 BITES: upsertAccount marks dirty — flushBatch fires onBatchApplied exactly once', () => {
     // Kills: an impl that sets the slot but forgets `this.#dirty = true`. `status` and
-    // `claimed_from` MUTATE post-provisioning (ADR-0182 D15), so the claim UI would keep
+    // `claimed_from` MUTATE post-provisioning, so the claim UI would keep
     // rendering the pre-claim state until some unrelated row happened to dirty the store.
     const s = new AuthoritativeStore();
     const cb = vi.fn();
@@ -4982,7 +4822,7 @@ describe('AuthoritativeStore M21b-2 A2: upsertAccount marks dirty and REPLACES t
 
   it('★★ A2 BITES: a SECOND upsert for the same identity replaces the row (kills insert-wins)', () => {
     // THE UPDATE PATH IS THE POINT. Unlike `my_wallet`, `my_account` is wired with BOTH
-    // onInsert AND onUpdate (ADR-0182 D15) precisely because `status`/`claimed_from` change
+    // onInsert AND onUpdate precisely because `status`/`claimed_from` change
     // after provisioning. An insert-wins slot would leave `claimedFrom: undefined` forever
     // — and claimModel's ERR_INVALID_CODE disambiguation reads exactly that field, so a
     // completed claim would be reported to the player as an invalid code.
@@ -5054,7 +4894,7 @@ describe('AuthoritativeStore M21b-2 A3: reset() clears the account slot; no remo
   });
 
   it('★ A3 BITES: AuthoritativeStore exposes NO removeAccount method', () => {
-    // ADR-0182 D15: account rows are NEVER truly deleted (`delete_account` flips `status`
+    // Account rows are NEVER truly deleted (`delete_account` flips `status`
     // to `PendingDeletion`), and through a VIEW an UPDATE arrives as unordered
     // onInsert(new) + onDelete(old) — so any delete path could only ever wipe the LIVE row.
     // Kills: an impl that adds removeAccount "for symmetry" with the keyed tables.
@@ -5064,11 +4904,8 @@ describe('AuthoritativeStore M21b-2 A3: reset() clears the account slot; no remo
 });
 
 // =============================================================================
-// 15r-sec-a (ADR-0198): reconcileBattlesFromView + battleCount — the battle half
+// reconcileBattlesFromView + battleCount — the battle half
 // of the view-cache reconcile.
-//
-// SOURCE OF TRUTH: docs/adr/0198-participant-scoped-battle-view.md;
-// specs/monster-realm-v2/M-postgate-fifteenth-review-residuals.spec.md:75-79.
 //
 // WHY THIS METHOD EXISTS AT ALL. `my_battle` is a VIEW, and a view binding carries
 // NO primary key, so the SDK never fires onUpdate: every row change arrives as
@@ -5084,26 +4921,22 @@ describe('AuthoritativeStore M21b-2 A3: reset() clears the account slot; no remo
 // upserted, every absent id removed — and the batch is marked dirty ONLY if
 // something actually changed.
 //
-// WHY `shallowRowEq` (store.ts:1198) CANNOT BE REUSED FOR THE CHANGE DETECTION.
-// It is a generic own-key `===` compare. `StoreBattle` (store.ts:164-177) nests
+// WHY `shallowRowEq` CANNOT BE REUSED FOR THE CHANGE DETECTION.
+// It is a generic own-key `===` compare. `StoreBattle` nests
 // `sideA`/`sideB` OBJECTS, each holding an ARRAY of monster objects, and the
-// boundary converter `battleRowToStore` (rowConvert.ts:321-348) builds all of them
+// boundary converter `battleRowToStore` builds all of them
 // fresh on every call — so `prev.sideA !== next.sideA` for two conversions of the
 // SAME server row, every time. Reusing it makes the reconcile mark the batch dirty
 // on EVERY flush (i.e. on every ~5/s movement tick), which is a render storm. The
 // sanctioned answer is a deep comparator that recurses plain objects AND arrays
 // and compares primitives with `===` (bigint-safe: `JSON.stringify` THROWS on a
-// BigInt, and StoreBattle carries four of them). 13r-e's helpers are left alone.
+// BigInt, and StoreBattle carries four of them).
 //
 // AND WHY A TURN-NUMBER COMPARATOR IS UNSOUND (the tempting shortcut): `flee`
-// (battle.rs:927) and `apply_pvp_forfeit` (pvp.rs:644-700) both mutate
-// `state.outcome` WITHOUT bumping turn_number, so "same id, same turn ⇒ unchanged"
-// silently drops the transition that ends the battle.
+// and `apply_pvp_forfeit` both mutate `state.outcome` WITHOUT bumping turn_number,
+// so "same id, same turn ⇒ unchanged" silently drops the transition that ends the
+// battle.
 //
-// RED REASON (at authoring time): `AuthoritativeStore` has neither
-// `reconcileBattlesFromView` nor a `battleCount` getter, so every test below fails
-// with "s.reconcileBattlesFromView is not a function" / `battleCount` undefined.
-// store.test.ts:938 records the absence of the getter in as many words.
 // =============================================================================
 
 describe('AuthoritativeStore 15r-sec-a: reconcileBattlesFromView post-condition', () => {
@@ -5184,7 +5017,7 @@ describe('AuthoritativeStore 15r-sec-a: reconcileBattlesFromView post-condition'
     // battle), THE SYSTEM SHALL deliver that row exactly once."
     //
     // The server-side half is the view's trailing dedup filter (pinned in
-    // evals/monster-privacy.eval.mjs [VB/body] and the evolution_tests.rs mirror).
+    // the evolution_tests.rs mirror).
     // THIS is the client-side backstop: a view returns a Vec, not a set, so if the
     // dedup filter is ever lost the SAME row arrives twice in one post-burst set.
     //
@@ -5192,8 +5025,8 @@ describe('AuthoritativeStore 15r-sec-a: reconcileBattlesFromView post-condition'
     // the practice battle as two battles, and ongoingBattle's highest-id tiebreak
     // would compare a row against itself).
     const s = new AuthoritativeStore();
-    // Practice = self-vs-self (server-module/src/battle.rs:1274-1278): the SAME
-    // identity in BOTH participant columns. Legal, and delivered exactly once.
+    // Practice = self-vs-self: the SAME identity in BOTH participant columns.
+    // Legal, and delivered exactly once.
     const practice = battle(11n, 'alice', 'Ongoing', 'alice');
 
     s.reconcileBattlesFromView([practice, { ...practice }]);
@@ -5219,7 +5052,7 @@ describe('AuthoritativeStore 15r-sec-a: reconcileBattlesFromView post-condition'
     // THE FIXTURE IS PRODUCTION-SHAPED ON PURPOSE, and that is the whole test: the
     // rows are rebuilt by calling the factory again, so they are structurally equal
     // but NON-IDENTICAL objects *including freshly-built nested sideA/sideB and team
-    // arrays* — exactly what battleRowToStore (rowConvert.ts:321-348) emits on every
+    // arrays* — exactly what battleRowToStore emits on every
     // call. The store never sees the same nested object twice in production.
     //
     // MUTANTS THIS KILLS: reusing store.ts's `shallowRowEq` (a generic own-key ===
@@ -5253,8 +5086,8 @@ describe('AuthoritativeStore 15r-sec-a: reconcileBattlesFromView post-condition'
     // dirty passes (4) trivially. This is the balancing assertion, and it is aimed at
     // the SHALLOWEST plausible comparators:
     //   * `prev.turnNumber === next.turnNumber` — UNSOUND for a real reason, not a
-    //     hypothetical one: `flee` (battle.rs:927) and `apply_pvp_forfeit`
-    //     (pvp.rs:644-700) mutate `state.outcome` WITHOUT bumping turn_number;
+    //     hypothetical one: `flee` and `apply_pvp_forfeit`
+    //     mutate `state.outcome` WITHOUT bumping turn_number;
     //   * a one-level compare that stops at `sideA` and never looks inside `team`.
     // Damage lands in `team[i].currentHp` on every single turn, so a comparator that
     // cannot see it freezes the HP bars for the whole battle while the turn counter
@@ -5300,7 +5133,7 @@ describe('AuthoritativeStore 15r-sec-a: reconcileBattlesFromView post-condition'
   });
 
   it('★ BITES (7): a value-changing reconcile REPLACES the stored object, never mutates it in place', () => {
-    // THE IN-PLACE-MUTATION CHEAT this kills (red-team PoC — it passes clauses 1-6):
+    // THE IN-PLACE-MUTATION CHEAT this kills:
     //     const prev = this.#battles.get(row.battleId);
     //     if (prev !== undefined) { Object.assign(prev, row); }   // same object!
     // Every count, membership and dirty-flag assertion above still holds, because the
@@ -5334,9 +5167,7 @@ describe('AuthoritativeStore 15r-sec-a: reconcileBattlesFromView post-condition'
 });
 
 // =============================================================================
-// rb-53 (PRV1-11/12/13, residual R-m22-s8-X11; ADR-0231 Amendment A3) — the
-// `my_export_bundle` chunk map: reconcileExportChunksFromView + ownExportChunks.
-// APPENDED BLOCK — nothing above this line is modified.
+// the `my_export_bundle` chunk map: reconcileExportChunksFromView + ownExportChunks.
 //
 // ★ SOURCE OF TRUTH — gate E1, verbatim:
 //   "[PRV1-11/12/13 live transport + download] WHEN request_data_export completes THE CLIENT
@@ -5344,7 +5175,7 @@ describe('AuthoritativeStore 15r-sec-a: reconcileBattlesFromView post-condition'
 //    assembleExportBundle, and offer the artifact as a downloadable file"
 //
 // WHY THIS SHAPE (A3-D1). `my_export_bundle` is a Vec-VIEW with no primary key, structurally
-// identical to `my_monster_pub` (ADR-0194 D4) and `my_battle` (ADR-0198 D4): the SDK never
+// identical to `my_monster_pub` and `my_battle`: the SDK never
 // fires onUpdate, every change arrives as an unordered onInsert(new) + onDelete(old) pair, and
 // the adapter rebuilds membership from the post-burst cache. So the store method is the same
 // whole-set reconcile — keyed by `chunkId`, pruning, and marking `#dirty` ONLY on a real
@@ -5352,12 +5183,8 @@ describe('AuthoritativeStore 15r-sec-a: reconcileBattlesFromView post-condition'
 // including the ~5/s movement ticks).
 //
 // CONTRACT UNDER TEST (do not invent variants):
-//   export type StoreExportChunk = {
-//     chunkId: bigint; ownerIdentity: string; requestId: bigint; tableName: string;
-//     chunkIndex: number; totalChunks: number; payloadJson: string; createdAtMs: bigint;
-//   };
 //   reconcileExportChunksFromView(rows: readonly StoreExportChunk[]): void
-//        — mirrors reconcileMonstersFromView (store.ts:601) EXACTLY: keep-set + a shallow
+//        — mirrors reconcileMonstersFromView EXACTLY: keep-set + a shallow
 //          own-key compare + prune; `#dirty` only when something actually changed.
 //   ownExportChunks(identity: string): readonly StoreExportChunk[]
 //        — the client-side owner filter (ADR-0015 V1). Exact `===`, no case folding, no
@@ -5368,16 +5195,10 @@ describe('AuthoritativeStore 15r-sec-a: reconcileBattlesFromView post-condition'
 // the delivered set describes one coherent request is `ui/exportAssembly.ts`'s decision, and it
 // is gated there; the store's whole job is membership + the owner filter.
 //
-// RED REASON AT AUTHORING TIME: `AuthoritativeStore` has neither method, and `store.ts` exports
-// no `StoreExportChunk`, so every case below fails with
-// "s.reconcileExportChunksFromView is not a function" (or, for the read-only cases,
-// "s.ownExportChunks is not a function") — a MISSING IMPLEMENTATION, not a typo here.
-//
-// NO regex literal, no `new RegExp`. Every numeric fixture is synthetic — the deletion-grace
-// SSOT eval reads `client/**` RAW and does not exempt test files.
+// NO regex literal, no `new RegExp`.
 // =============================================================================
 
-/** Reached through the EXISTING `storeMod` namespace binding (imported at :3265) rather than a
+/** Reached through the EXISTING `storeMod` namespace binding rather than a
  *  fourth `from './store'` import line: pinned biome folds same-specifier imports together once
  *  a file accumulates enough of them, and a type-only alias costs no import at all. Erased at
  *  runtime, so a not-yet-existing type cannot break this file's collection. */

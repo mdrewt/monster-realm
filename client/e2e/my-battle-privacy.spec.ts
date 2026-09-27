@@ -7,7 +7,7 @@ import {
   test,
 } from '@playwright/test';
 
-// 15r-sec-a — participant-scoped `battle` privacy, end to end (ADR-0198)
+// participant-scoped `battle` privacy, end to end
 //
 // WHAT THIS PROVES THAT NOTHING ELSE CAN. Every other gate in this slice is a
 // SOURCE SCAN or a unit test: they prove the table lost `public`, that the view's
@@ -24,7 +24,7 @@ import {
 // in one browser (or one context) would share ONE identity — and this whole spec is
 // about what identity B can see of identity A.
 //
-// POSITIVE-ANCHORED, NEVER NEGATIVE-ONLY (ADR-0087:88, and the spec says so in as
+// POSITIVE-ANCHORED, NEVER NEGATIVE-ONLY (and the spec says so in as
 // many words). "B cannot see A's battle" is trivially true of a client that loaded
 // NOTHING — which is exactly the blank-world failure mode a wrong subscription
 // produces: a subscription naming a nonexistent view errors the WHOLE batch and
@@ -47,10 +47,9 @@ import {
 // WHY A WILD BATTLE. A wild encounter is driven entirely by the production game
 // loop (walk onto grass), needs no second consenting player, and — because
 // `begin_encounter` writes `opponent_identity: WILD_IDENTITY`
-// (server-module/src/battle.rs:499) — it exercises the view's FIRST chain branch
-// (`player_identity`). The `opponent_identity` branch is covered live by
-// pvp-full.spec.ts / pvp-side-b.spec.ts, which pass only if side B keeps receiving
-// its battle through the same view.
+// — it exercises the view's FIRST chain branch (`player_identity`). The
+// `opponent_identity` branch is covered live by pvp-full.spec.ts / pvp-side-b.spec.ts,
+// which pass only if side B keeps receiving its battle through the same view.
 //
 // FILE-ORDERING AUDIT (the pvp-side-b.spec.ts idiom — recorded so a future reviewer
 // never re-derives it): playwright.config.ts documents single-worker,
@@ -69,7 +68,7 @@ import {
 //   15r-sec-a-4  a mid-battle state change is reflected and the row is NOT
 //                dropped (clause v)
 // NOT covered here, deliberately: 15r-sec-a-1 (the table is not `public`) is a
-// schema fact, pinned by evolution_tests.rs and monster-privacy.eval.mjs; and
+// schema fact, pinned by evolution_tests.rs; and
 // 15r-sec-a-3 (a practice battle is delivered exactly once) has no client path to
 // `start_battle`, so it is pinned three other ways — the Rust body mirror, the eval
 // [VB/body] pin, and store.test.ts clause (3).
@@ -109,11 +108,10 @@ interface GameSnap {
   step: (dir: string) => void;
 }
 
-// The by-id battle read from main.ts's __mrPvp hook (main.ts:2038-2060). It reads
+// The by-id battle read from main.ts's __mrPvp hook. It reads
 // store.battle(id) DIRECTLY — not the participant-filtered accessors — which is
 // exactly what this spec needs: a non-participant that still holds the row in its
-// store would be invisible to `ongoingBattle` and fully visible here. The hook
-// exists on master, so clause (iii) needs no new plumbing.
+// store would be invisible to `ongoingBattle` and fully visible here.
 interface MrPvp {
   battleById(battleId: string): {
     battleId: string;
@@ -214,7 +212,7 @@ async function walkSnap(p: Page): Promise<{ tile: Tile | null; inBattle: boolean
 
 // ---------------------------------------------------------------------------
 // stepOne: send one directional step and wait for the authoritative tile to change
-// OR for an ongoingBattle to appear — whichever comes first (recruit.spec.ts:215).
+// OR for an ongoingBattle to appear — whichever comes first.
 // Precondition: must NOT be called while ongoingBattle is non-null.
 // ---------------------------------------------------------------------------
 async function stepOne(p: Page, dir: string, fromTile: Tile): Promise<'moved' | 'battle'> {
@@ -466,8 +464,8 @@ test.describe
       // Every source scan and every unit test in this slice stays green through that
       // bug. This clause is the only one that sees it.
       //
-      // The wait is STRICT — `turnNumber === t0 + 1`, with no `|| terminal` escape
-      // (pvp-full.spec.ts:41-47). A battle that ends without resolving a turn must
+      // The wait is STRICT — `turnNumber === t0 + 1`, with no `|| terminal` escape.
+      // A battle that ends without resolving a turn must
       // not be able to satisfy it.
       // ---------------------------------------------------------------------
       const turn0 = await pageA.evaluate((id: string) => {
@@ -481,7 +479,7 @@ test.describe
 
       // Click the first available skill button. Source: battleView.ts:149 renders
       // each skill as `${skill.name} (${skill.power})`, so the parenthesis is the
-      // stable text marker (recruit.spec.ts:722). Bounded retry covers the overlay
+      // stable text marker. Bounded retry covers the overlay
       // still painting; it never waits on server state.
       const skillBtn = pageA.locator('button:has-text("(")').first();
       let clicked = false;

@@ -81,13 +81,13 @@ import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
 // implementation, so the VALUE oracle (real attribute writes, real focus moves) still works.
 vi.mock('./overlayA11y', { spy: true });
 
-/** m23-s3: one REAL macrotask boundary — a microtask flush is NOT enough for setTimeout(...,0),
+/** One REAL macrotask boundary — a microtask flush is NOT enough for setTimeout(...,0),
  *  and fake timers are banned for this defer (plan anti-pattern #10). */
 async function flushMacrotask(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-// m23-s3: NEW file-level isolation hooks. They run BEFORE the describe-level `mountLeaderboardOverlay`
+// NEW file-level isolation hooks. They run BEFORE the describe-level `mountLeaderboardOverlay`
 // hooks below, so every test still gets the DOM it always got.
 beforeEach(async () => {
   for (const id of OVERLAY_IDS) closeOverlayA11y(id, null);
@@ -102,8 +102,8 @@ afterEach(async () => {
 });
 
 // ---------------------------------------------------------------------------
-// DOM mount helper — mirrors the additions to client/index.html that the
-// implementer must deliver.  Called in beforeEach so each test gets a fresh DOM.
+// DOM mount helper — mirrors the additions to client/index.html.
+// Called in beforeEach so each test gets a fresh DOM.
 // ---------------------------------------------------------------------------
 
 function mountLeaderboardOverlay(): {
@@ -117,16 +117,16 @@ function mountLeaderboardOverlay(): {
   const overlay = document.createElement('div');
   overlay.id = 'leaderboard-overlay';
   overlay.style.display = 'none';
-  // m23-s3 FIXTURE FIDELITY (index.html:52): the shell has shipped these two as STATIC LITERALS
+  // m23-s3 FIXTURE FIDELITY: the shell has shipped these two as STATIC LITERALS
   // since m23-s2. They are copied here NOT to be asserted on their own — that is vacuous, a view
   // calling nothing passes — but so that "all three attributes ABSENT after close" is a real
-  // tooth: only closeOverlayA11y can remove them (ui/overlayA11y.ts:142-144).
+  // tooth: only closeOverlayA11y can remove them.
   overlay.setAttribute('role', 'dialog');
   overlay.setAttribute('aria-modal', 'true');
 
   const title = document.createElement('div');
   title.id = 'leaderboard-title';
-  // m23-s3 (index.html:53): the OVERLAY_A11Y initialFocusSelector anchor. Copied for fidelity
+  // m23-s3: the OVERLAY_A11Y initialFocusSelector anchor. Copied for fidelity
   // only — happy-dom focuses a bare <div> with no tabindex at all, so this buys ZERO test power
   // (plan A7) and a passing A11Y-14 here is NOT proof a real browser would honour the focus.
   title.setAttribute('tabindex', '-1');
@@ -427,10 +427,8 @@ describe('RL13-xss: XSS tooth — displayName injected as literal text, never in
 
 describe('RL15-structural: leaderboardView.ts source contains no server write paths', () => {
   it('RL15-view-scan BITES: source does not reference module_bindings, reducers, or conn — kills any write-path impl', () => {
-    // This is the client-side RL-15 mirror for the VIEW layer; the server-side
-    // teeth live in m17c's ranking-security eval.
     // Uses .includes() — no dynamic RegExp (eslint ReDoS ban).
-    // fileURLToPath: robust against percent-encoding in import.meta.url (m17b req #5).
+    // fileURLToPath: robust against percent-encoding in import.meta.url.
     const viewPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'leaderboardView.ts');
     let src: string;
     try {
@@ -449,9 +447,9 @@ describe('RL15-structural: leaderboardView.ts source contains no server write pa
       'reducers.',
       'conn.conn',
       'DbConnection',
-      // set_profile_name is the only profile-write reducer the spec acknowledges
-      // (ADR-0119 D6). Transitive-import indirection is out of scope for this scan
-      // (review-caught), but a direct reference is a clear RL-15 violation.
+      // set_profile_name is the only profile-write reducer the spec acknowledges.
+      // Transitive-import indirection is out of scope for this scan,
+      // but a direct reference is a clear RL-15 violation.
       'set_profile_name',
     ];
     for (const needle of forbidden) {
@@ -472,8 +470,6 @@ describe('RL13-conn-subscription: connection.ts must wire the profile subscripti
     // RL-13: the leaderboard overlay subscribes to `profile`. If connection.ts does
     // not include the subscription line, the store never receives profile rows and
     // the leaderboard is always empty even when profiles exist on the server.
-    // This test is RED now (connection.ts exists but the subscription is not yet wired)
-    // and becomes GREEN when the implementer adds the profile subscription line.
     // Fails loudly (throw) if the file can't be read — no vacuous-pass.
     // Uses .includes() — no dynamic RegExp (eslint ReDoS ban).
     const connPath = path.join(
@@ -498,7 +494,7 @@ describe('RL13-conn-subscription: connection.ts must wire the profile subscripti
 });
 
 // ---------------------------------------------------------------------------
-// m23-s3 — overlay a11y wiring on the show()/hide() edge (ADDITIVE; see the file header)
+// Overlay a11y wiring on the show()/hide() edge (ADDITIVE; see the file header)
 // ---------------------------------------------------------------------------
 
 const S3_ID: OverlayId = 'leaderboardView';
@@ -596,7 +592,7 @@ describe('LeaderboardView — overlay a11y wiring on the show/hide edge (m23-s3)
   });
 
   it('S3-leaderboardView-REPEAT-NO-REOPEN BITES: show() on an ALREADY-visible overlay neither re-opens nor yanks focus back', async () => {
-    // A re-open clears and re-schedules the deferred-focus timer (ui/overlayA11y.ts:100-113).
+    // A re-open clears and re-schedules the deferred-focus timer.
     // INVISIBLE to every attribute assertion, so it is proven twice: by a call COUNT and by the
     // sentinel still holding focus.
     const { overlay } = mountLeaderboardOverlay();
@@ -640,10 +636,10 @@ describe('LeaderboardView — overlay a11y wiring on the show/hide edge (m23-s3)
     // hide()'s close in `if (wasVisible)` ships with every other gate green. A guarded hide() reads
     // `visible === false` and SKIPS the close whenever a record ever desynchronised from the DOM
     // (S1's named A13 leak, ui/overlayA11y.ts:55-59) — making a live capture listener, a pending
-    // timer and a stale return target PERMANENT. This view is in BATTLE_FORCE_HIDE
-    // (ui/overlayRegistry.ts:274-283), so main.ts's force-hide path drives its close: exactly the
+    // timer and a stale return target PERMANENT. This view is in BATTLE_FORCE_HIDE,
+    // so main.ts's force-hide path drives its close: exactly the
     // desync D2 cites. Unguarded, hide() HEALS it, and a close with no record is a documented pure
-    // no-op (ui/overlayA11y.ts:136-137), so nothing is risked.
+    // no-op, so nothing is risked.
     mountLeaderboardOverlay();
     const view = new LeaderboardView();
     expect(view.visible, 'precondition: never opened').toBe(false);

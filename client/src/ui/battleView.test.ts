@@ -38,20 +38,9 @@ import { BattleView, type BattleViewCallbacks } from './battleView';
 import { scanSource } from './i18n/hardcodedStrings';
 
 // ---------------------------------------------------------------------------
-// m23-s4 — overlay a11y wiring for BattleView (constructed-shell, #app-mounted).
-// ADDITIVE ONLY: nothing below this block (the entire pre-existing e-1 / m14.5d /
-// m14.5d-1b / m16b / ux1-2 / ux4 suite) was weakened or deleted. Declared FIRST in
-// the file, before any pre-existing describe (renameView.test.ts precedent), so
-// these file-level sweep hooks run before any describe-level ones.
-//
-// SOURCE OF TRUTH: specs/monster-realm-v2/M23-accessibility.spec.md §2.2/§2.3, §6
-// (A11Y-13/14/15/16/17); memory/projects/monster-realm-m23-s4-plan.md §0 F1, §1
-// D1/D2/D4/D6/D7; memory/projects/gates/m23-s4.gates.md X1/X2/X3/X6/X7/X8.
-//
-// RED REASON: battleView.ts's show()/hide()/refresh() do not call
-// openOverlayA11y/closeOverlayA11y at all today, and its <h2> title carries neither
-// data-testid="battle-title" nor tabindex="-1" — every S4-battleView-* test below
-// fails now; every pre-existing test below (e-1 onward) still passes.
+// Overlay a11y wiring for BattleView (constructed-shell, #app-mounted).
+// Declared FIRST in the file, before any pre-existing describe (renameView.test.ts
+// precedent), so these file-level sweep hooks run before any describe-level ones.
 //
 // COMPOSITION NOTE (plan §8 A7): DEFER-FOCUS and CLOSE-RESTORE are NOT separate
 // teeth here — DEFER-FOCUS ≡ HELPER-CALLED ∘ S1-DEFER-* (overlayA11y.test.ts already
@@ -71,7 +60,7 @@ import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
 // to the real implementation, so the VALUE oracle (real attribute writes, real focus
 // moves) still works.
 vi.mock('./overlayA11y', { spy: true });
-// m24s3 (ADR-0259) MECHANISM oracle, same shape: records every t()/tf() call AND calls
+// m24s3 MECHANISM oracle, same shape: records every t()/tf() call AND calls
 // through to the real resolver, so BV-01's DOM byte-identity assertions still work.
 vi.mock('./i18n/resolver', { spy: true });
 
@@ -85,8 +74,8 @@ async function s4FlushMacrotask(): Promise<void> {
 // closeOverlayA11y(id, null) for every OverlayId and flushes one real macrotask —
 // legal because close-without-open is a documented no-op. This cancels any
 // deferred-focus timer / capture listener that a PRE-EXISTING `view.show()` /
-// `view.refresh(vm)` call above will schedule once the wiring lands (plan residual
-// A12). `vi.clearAllMocks()` runs LAST so the sweep's own calls never pollute a count.
+// `view.refresh(vm)` call above will schedule. `vi.clearAllMocks()` runs LAST so the
+// sweep's own calls never pollute a count.
 beforeEach(async () => {
   for (const id of OVERLAY_IDS) closeOverlayA11y(id, null);
   await s4FlushMacrotask();
@@ -121,9 +110,9 @@ function s4InsideSentinel(root: HTMLElement): HTMLButtonElement {
 /**
  * OPEN-LAST capture (plan §8 A3, mechanism #1 — the ONLY admissible one here): spy on
  * root.setAttribute and record root.style.display the instant `role` is written — the
- * FIRST attribute openOverlayA11y sets (overlayA11y.ts:106) — then delegate to the real
+ * FIRST attribute openOverlayA11y sets — then delegate to the real
  * bound setAttribute. A post-hoc read of `mock.calls[...][1].style.display` is PROVABLY
- * VACUOUS (red-team PoC, plan §8 A3): JS is synchronous, so by assertion time both the
+ * VACUOUS: JS is synchronous, so by assertion time both the
  * paint and the open call have already run, in EITHER order, and a post-hoc read passes
  * the correct implementation and an open-before-paint implementation identically. NEVER
  * `vi.importActual('./overlayA11y')` — a second module instance with its own
@@ -238,7 +227,7 @@ describe('BattleView — m23-s4 overlay a11y wiring on the show()/hide()/refresh
     expect(() => fresh.view.hide()).not.toThrow();
     expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledWith(S4_ID, null);
 
-    // show/hide/hide => exactly TWO close calls. Plan D2 / measured by S3's red-team:
+    // show/hide/hide => exactly TWO close calls.
     // guarding hide()'s close ships 62/62 green while permanently leaking a live capture
     // listener, a pending timer and a stale return target.
     vi.clearAllMocks();
@@ -348,7 +337,7 @@ function makeRecruitVM(overrides: Partial<BattleViewModel> = {}): BattleViewMode
       { itemId: 9, name: 'Sweet Bait', recruitBonus: 250, count: 1 },
     ],
     weather: null,
-    // m14.5d-1b: cureItems field — empty by default; cure-item tests supply a real value via makeCureItemVM.
+    // cureItems field — empty by default; cure-item tests supply a real value via makeCureItemVM.
     cureItems: [],
     ...overrides,
   };
@@ -372,10 +361,6 @@ function makeCallbacks(): BattleViewCallbacks {
 // ---------------------------------------------------------------------------
 describe('BattleView e-1: bait selection preserved across re-renders (same VM)', () => {
   it('BITES: user-selected bait value is still set after calling refresh() again with the same vm', () => {
-    // RED REASON: #renderActions() calls replaceChildren() every refresh, which
-    // destroys the <select> element and creates a new one at "No bait" value.
-    // After fix: the existing <select> is reused (or at least its value restored)
-    // when baitOptions haven't changed.
     const parent = document.createElement('div');
     document.body.appendChild(parent);
 
@@ -402,8 +387,7 @@ describe('BattleView e-1: bait selection preserved across re-renders (same VM)',
     );
     expect(selectAfterSecond).not.toBeNull();
 
-    // BITES: current impl replaces the element → value resets to '' (No bait).
-    // After fix: value must still be '7' (the user's prior selection is preserved).
+    // value must still be '7' (the user's prior selection is preserved).
     expect(selectAfterSecond!.value).toBe('7');
 
     // Cleanup
@@ -442,24 +426,12 @@ describe('BattleView e-1: bait selection preserved across re-renders (same VM)',
 // ---------------------------------------------------------------------------
 // e-1 test 2: data-testid duplicate mechanism bug
 //
-// The current code does BOTH:
-//   select.dataset.testid = 'bait-selector';     // sets attribute "testid" (NOT "data-testid")
-//   select.setAttribute('data-testid', 'bait-selector'); // sets attribute "data-testid"
-//
-// These set TWO DIFFERENT attributes. The dataset.testid line is a bug (a typo for
-// dataset['testid'] which maps to the attribute 'testid'). After fix: only
-// setAttribute('data-testid', ...) remains (or only dataset['testid'] is removed).
-//
 // BITES test: after fix there must be EXACTLY ONE attribute named 'data-testid'
 // (not zero, not two distinct 'data-testid' writes), and the spurious 'testid'
 // attribute (from dataset.testid) must NOT exist.
 // ---------------------------------------------------------------------------
 describe('BattleView e-1: bait-selector data-testid set exactly ONCE via one mechanism', () => {
   it('BITES: select has no spurious "testid" attribute (dataset.testid typo is removed)', () => {
-    // RED REASON: current code sets `select.dataset.testid = 'bait-selector'` which
-    // creates the attribute "testid" (lowercase, no "data-" prefix). The
-    // setAttribute line separately sets "data-testid". After fix: the dataset.testid
-    // line is removed, so only "data-testid" exists — no spurious "testid" attribute.
     // WRONG IMPL KILLED: any impl that writes to select.dataset.testid.
     const parent = document.createElement('div');
     document.body.appendChild(parent);
@@ -518,11 +490,7 @@ describe('BattleView e-1: bait-selector data-testid set exactly ONCE via one mec
 });
 
 // =============================================================================
-// m14.5d — weather banner DOM tests (14.5d-2)
-// SOURCE OF TRUTH: specs/monster-realm-v2/M14.5-eighth-review-residuals.spec.md §14.5d-2
-//
-// RED REASON: BattleView does not yet render a weather banner element.
-// `data-testid="weather-banner"` does not exist in the current DOM output.
+// Weather banner DOM tests
 //
 // Contract (plan Design Decision C):
 //   - `vm.weather` non-null → element [data-testid="weather-banner"] visible,
@@ -548,7 +516,6 @@ describe('BattleView m14.5d: weather banner DOM rendering', () => {
   it('BITES: vm.weather non-null → [data-testid="weather-banner"] present and text contains label and turnsRemaining', () => {
     // Kills: an impl that adds weatherBanner to the model but forgets to render
     // the DOM element, or that renders it without the turnsRemaining number.
-    // RED: data-testid="weather-banner" does not exist in current battleView.ts.
     const parent = document.createElement('div');
     document.body.appendChild(parent);
 
@@ -614,14 +581,9 @@ describe('BattleView m14.5d: weather banner DOM rendering', () => {
 });
 
 // =============================================================================
-// m14.5d — outcome text DOM parity (14.5d-3)
-// SOURCE OF TRUTH: specs/monster-realm-v2/M14.5-eighth-review-residuals.spec.md §14.5d-3
+// Outcome text DOM parity
 //
-// RED REASON: the existing `#renderOutcome` default arm currently renders a
-// generic fallback text for unknown outcomes (e.g. 'Battle ended: Draw').
-// After m14.5d: buildBattleViewModel returns null for unknown outcomes, so the
-// view never receives an unknown outcome VM. The never-check (review refinement 5)
-// replaces the default arm. These tests verify the DOM parity:
+// These tests verify the DOM parity:
 //   - Each of SideAWins/SideBWins/Fled renders a non-empty outcome text.
 //   - 'Ongoing' renders NO outcome banner (display:none or element absent).
 //
@@ -721,14 +683,7 @@ describe('BattleView m14.5d: outcome DOM parity — all BattleOutcomeTag variant
 });
 
 // =============================================================================
-// m14.5d-1b — cure-item selector DOM tests
-// SOURCE OF TRUTH: specs/monster-realm-v2/M14.5-eighth-review-residuals.spec.md §14.5d-1
-//
-// RED REASON:
-//   - BattleViewModel.cureItems does not yet exist.
-//   - BattleViewCallbacks.onUseItem does not yet exist.
-//   - BattleView does not yet render a [data-testid="cure-item-selector"] element.
-//   - BattleView does not yet render a [data-testid="use-item-action"] button.
+// cure-item selector DOM tests
 //
 // Contract (classify-by-data, mirroring bait-selector pattern):
 //   - `vm.cureItems` non-empty + outcome=Ongoing → cure-item selector rendered
@@ -797,7 +752,7 @@ describe('BattleView m14.5d-1b: cure-item selector rendered when cureItems non-e
   });
 
   it('BITES: cure-item option carries data-cure-status attribute (ADR-0047 classify-by-data contract surface)', () => {
-    // ADR-0047: classify-by-data requires the contract surface to be present on the DOM
+    // classify-by-data requires the contract surface to be present on the DOM
     // so that future tools/evals can verify the classification without parsing option text.
     // Kills: an impl that omits setAttribute('data-cure-status', ...) from the option.
     const parent = document.createElement('div');
@@ -927,7 +882,7 @@ describe('BattleView m14.5d-1b: cure-item selection preserved across re-renders 
     expect(selAfterSecond).not.toBeNull();
 
     // BITES: a replaceChildren() impl would reset the value to '5' (first option).
-    // After fix: value must still be '6' (the user's prior selection is preserved).
+    // value must still be '6' (the user's prior selection is preserved).
     expect(selAfterSecond!.value).toBe('6');
     // Kills: an impl that replaceChildren() without restoring the selection
     // (same class of bug as the bait-selector fix in e-1)
@@ -937,7 +892,7 @@ describe('BattleView m14.5d-1b: cure-item selection preserved across re-renders 
 });
 
 // =============================================================================
-// m16b — RT-PVP-DS-01: double-submit suppression invariant
+// RT-PVP-DS-01: double-submit suppression invariant
 //
 // INVARIANT: when pvpPendingSubmit=true, NEITHER skill-attack buttons NOR
 // swap buttons are present in the DOM. Both paths must be gated or the player
@@ -1129,14 +1084,14 @@ describe('BattleView m16b RT-PVP-DS-01: double-submit suppression — no buttons
 });
 
 // =============================================================================
-// ux1 (ADR-0151) — EARS ux1-2: persistent "Press Esc to continue" hint on
+// ux1 — EARS ux1-2: persistent "Press Esc to continue" hint on
 // battle-RESULT overlays.
 //
 // SOURCE OF TRUTH (EARS ux1-2): "Battle-result states specifically (victory /
 // flee / defeat) SHALL show a persistent 'Press Esc to continue' (or equivalent)
 // hint for as long as that overlay is showing."
 //
-// CONTRACT UNDER TEST (the implementer's side of the handoff):
+// CONTRACT UNDER TEST:
 //   - constructor creates a `<div data-testid="battle-continue-hint">`, appended
 //     to #root immediately AFTER #outcomeEl, textContent set ONCE in the
 //     constructor to `Press Esc to continue`, style.display = 'none' initially;
@@ -1146,34 +1101,6 @@ describe('BattleView m16b RT-PVP-DS-01: double-submit suppression — no buttons
 //   - the `refresh(null)` branch resets it to display:'none', alongside the
 //     existing #weatherEl / #pvpStatusEl resets.
 //
-// RED REASON AT AUTHORING TIME (pre-implementation): battleView.ts created no
-// element carrying data-testid="battle-continue-hint", so B1/B2/B3/B5/B6 all
-// failed on the first `expect(el).not.toBeNull()`. These are now GREEN on the
-// shipped tree and stay in place as PERMANENT gating cases.
-//
-// SECOND-PASS HARDENING (review battery: reviewer + red-team + /simplify) —
-// three edits, each a STRENGTHENING, none a retarget of an expected value:
-//   (1) B7 ADDED — a surviving mutant. Deleting the Ongoing-branch reset
-//       (`#continueHintEl.style.display = 'none'` at battleView.ts:401) passed
-//       the ENTIRE gate (53 files / 1393 tests). B4 is order-blind to it: B4
-//       builds a FRESH view, so the constructor's display:none already satisfies
-//       the assertion with the reset deleted. B6 cannot see it either — B6 drives
-//       refresh(null), while the production dismiss path (main.ts:964-971) is a
-//       BARE battleView.hide(). B7 replays that real sequence.
-//   (2) CONTAINMENT ADDED to the B1 row — a second surviving mutant. Changing
-//       `this.#root.appendChild(this.#continueHintEl)` to `parent.appendChild(…)`
-//       passed all 1393 tests, because every case queries `parent.querySelector`,
-//       which matches a direct child of `parent` as happily as a descendant of
-//       #root. In production `parent` is `#app` (main.ts:1747), the PixiJS canvas
-//       container, so the hint would render as an unpositioned in-flow div AFTER a
-//       viewport-tall canvas (below the fold — the exact defect this slice fixes
-//       for #help-overlay), would survive battleView.hide(), and would re-lengthen
-//       the document (the ADR-0146 scroll mechanism).
-//   (3) B4's `if (el !== null)` conditional REMOVED. Absence satisfying "hidden"
-//       was correct only while the element did not exist; now that it ships, the
-//       conditional would let B4 pass vacuously if someone DELETED the element —
-//       and B4 is the case this header calls out as what makes B1/B2/B3
-//       non-vacuous. It is now unconditional: present AND display:none.
 // =============================================================================
 
 const CONTINUE_HINT_SELECTOR = '[data-testid="battle-continue-hint"]';
@@ -1185,8 +1112,7 @@ describe('BattleView ux1-2: "Press Esc to continue" hint on battle-result overla
   // Table-driven so the rows cannot drift apart, but each row is still its OWN
   // `it` with its own failure label, so nothing is lost versus four hand-written
   // cases: a toggle placed inside a single `case 'SideAWins':` arm reds exactly
-  // the rows it misses (reviewer-confirmed — B1/B2/B3 are NOT redundant), and a
-  // future `if (!vm.isPvp)` guard reds only the PvP row.
+  // the rows it misses, and a future `if (!vm.isPvp)` guard reds only the PvP row.
   //
   // WRONG IMPLS KILLED (shared by every row):
   //   (a) an early `return` before the toggle in #renderOutcome (e.g. the toggle
@@ -1196,7 +1122,7 @@ describe('BattleView ux1-2: "Press Esc to continue" hint on battle-result overla
   //       presence check still passes;
   //   (c) a toggle wired to a SUBSET of the terminal outcomes — see per-row labels.
   //
-  // PvP ROW (B5) — stronger than a pure decision-pin, per /simplify: side A (the
+  // PvP ROW (B5) — stronger than a pure decision-pin: side A (the
   // CHALLENGER, who IS `player_identity`) does receive this overlay through the
   // production path, so an `if (!vm.isPvp)` guard would strip the exit affordance
   // from a production-reachable overlay. It also pins ADR-0151 D3's deliberate
@@ -1280,14 +1206,13 @@ describe('BattleView ux1-2: "Press Esc to continue" hint on battle-result overla
       ).toContain('Esc');
 
       if (row.pinsContainment) {
-        // CONTAINMENT (second-pass mutant kill): the hint must be a child of BattleView's own
+        // CONTAINMENT: the hint must be a child of BattleView's own
         // #root wrapper, NOT of the caller-supplied `parent`.
         //
-        // TESTER NOTE — this is a STRENGTHENED form of the reviewed suggestion. Anchoring on
-        // `parent.firstElementChild` would NOT bite: the mutant appends the hint to `parent`
-        // BEFORE the constructor appends #root, so firstElementChild would BE the hint and
-        // `hint.contains(hint)` is trivially true. Anchoring on the outcome banner's parent
-        // instead identifies the real #root regardless of insertion order, and the extra
+        // Anchoring on `parent.firstElementChild` would NOT bite: the mutant appends the hint
+        // to `parent` BEFORE the constructor appends #root, so firstElementChild would BE the
+        // hint and `hint.contains(hint)` is trivially true. Anchoring on the outcome banner's
+        // parent instead identifies the real #root regardless of insertion order, and the extra
         // `root !== parent` assertion also kills the degenerate variant where BOTH elements are
         // appended to `parent`.
         const outcomeEl = parent.querySelector('[data-testid="outcome-text"]');
@@ -1330,7 +1255,7 @@ describe('BattleView ux1-2: "Press Esc to continue" hint on battle-result overla
     //
     // WRONG IMPL KILLED (1): the always-visible hint — element created display:block in the
     // constructor and never toggled on the Ongoing path.
-    // WRONG IMPL KILLED (2, SECOND-PASS STRENGTHENING): outright DELETION of the element.
+    // WRONG IMPL KILLED (2): outright DELETION of the element.
     // This case previously wrapped its assertion in `if (el !== null)`, which was correct only
     // while the element did not yet exist (absence then satisfied "hidden"). Now that it ships,
     // that conditional would let the guard-of-guards pass vacuously against a deleted element.
@@ -1368,8 +1293,8 @@ describe('BattleView ux1-2: "Press Esc to continue" hint on battle-result overla
 
   it('BITES: B7 terminal result → hide() (Escape) → NEXT battle arrives Ongoing → hint is display:none (no stale-hint leak)', () => {
     // SURVIVING MUTANT THIS CASE KILLS: deleting the Ongoing-branch reset in #renderOutcome
-    // (`this.#continueHintEl.style.display = 'none';`, battleView.ts:401). With that line gone
-    // the ENTIRE gate stayed green (53 files / 1393 tests) while the shipped behaviour diverged:
+    // (`this.#continueHintEl.style.display = 'none';`). With that line gone
+    // the ENTIRE gate stayed green while the shipped behaviour diverged:
     //
     //     ===== MUTANT =====                      ===== SHIPPED =====
     //     after victory      : hint=block         after NEW Ongoing : hint=none
@@ -1383,7 +1308,7 @@ describe('BattleView ux1-2: "Press Esc to continue" hint on battle-result overla
     //   - B6 drives `refresh(null)`, which has its OWN reset. The production dismiss path does
     //     not go through it.
     //
-    // WHY THE SEQUENCE IS REAL, NOT CONTRIVED: main.ts:964-971 dismisses a terminal result with
+    // WHY THE SEQUENCE IS REAL, NOT CONTRIVED: dismisses a terminal result with
     // `dismissedBattleId = latest.battleId; battleView.hide(); lastBattleVM = null;` — a BARE
     // hide(); refresh(null) is never called, so no reset runs on that path. `dismissedBattleId`
     // suppresses only THAT battle id, so the NEXT battle re-enters normally via
@@ -1486,17 +1411,7 @@ describe('BattleView ux1-2: "Press Esc to continue" hint on battle-result overla
 });
 
 // =============================================================================
-// ux4 (ADR-0155) — swap discoverability. TWO describes are appended below; no
-// existing case, factory or assertion above this line is touched.
-//
-// ANCHORS BELOW THIS LINE ARE SYMBOLIC, NOT NUMERIC (reviewer W3 / simplify F1). The
-// original citations were correct against base 4368a07 and were silently invalidated
-// by this file's own insertions plus the implementer's edits to battleView.ts — the
-// trap bit TWICE in one slice, and stale citations read as present-tense claims. So:
-// cite the METHOD (`#renderActions`, `#renderSwapButtons`, `#renderRecruit`,
-// `#renderPvpStatus`) or the LITERAL (`Party & Box`, `Swap: `) instead. Citations into
-// OTHER, untouched files (main.ts, battleModel.ts, recruit.spec.ts, the Rust server,
-// and this file's own pre-ux4 region above) keep their line numbers.
+// ux4 — swap discoverability.
 //
 //   • ux4-1 (S1, S2) — the EXECUTABLE REPRO/REFUTATION of the playtest report
 //     ("no method of switching monsters seemed to exist"). These are EXPECTED
@@ -1519,10 +1434,10 @@ describe('BattleView ux1-2: "Press Esc to continue" hint on battle-result overla
 // display:none" — never that it is actually VISIBLE in a viewport. The real
 // visibility proof is the parked real-Chromium `toBeInViewport()` spec
 // (`client/e2e/swap-hint.spec.ts`, deferral D2), mirroring ux1's parked
-// `help-hint.spec.ts`. ux1 (ADR-0151) shipped a badge for an overlay that rendered
+// `help-hint.spec.ts`. ux1 shipped a badge for an overlay that rendered
 // below the fold precisely because a happy-dom suite cannot see that.
 //
-// CONTRACT UNDER TEST (the implementer's side of the handoff):
+// CONTRACT UNDER TEST:
 //   - the constructor creates ONE `<div data-testid="battle-swap-hint">`, appended
 //     to BattleView's own `#root` in a block between the `#actionsEl` block and the
 //     `#pvpStatusEl` block — a SIBLING of `#actionsEl`, never its child
@@ -1573,10 +1488,10 @@ describe('BattleView ux1-2: "Press Esc to continue" hint on battle-result overla
 // pointed at a screen with nothing to add. That clause is gone.
 //
 // WHY THESE CASES ARE THE ONLY DEFENSE: `src/ui/battleView.ts` is in
-// `client/vite.config.ts:102` `coverage.exclude` (exact-set-guarded by
-// `evals/dom-shell-coverage-exclusion.eval.mjs:40-41`) and there is no TS mutation
-// gate (cargo-mutants is Rust-only) ⇒ hint logic is neither coverage-measured nor
-// mutation-measured. Every positive case below therefore ships a rejecting control.
+// `client/vite.config.ts:102` `coverage.exclude`
+// and there is no TS mutation gate (cargo-mutants is Rust-only) ⇒ hint logic is neither
+// coverage-measured nor mutation-measured. Every positive case below therefore ships a
+// rejecting control.
 //
 // LOCAL FIXTURE FACTORIES (deliberate — do NOT reuse the factories above):
 //   `makeCallbacks()` (:78-86) omits `onPvpAttack`/`onPvpSwap`, so S2's
@@ -1664,7 +1579,7 @@ function makeUx4EmptySwapVM(overrides: Partial<BattleViewModel> = {}): BattleVie
 }
 
 // -----------------------------------------------------------------------------
-// FIXTURE-CONSTANT HYGIENE (red-team F2 continuation).
+// FIXTURE-CONSTANT HYGIENE.
 //
 // If every H fixture carries the SAME value for an incidental field, the toggle
 // predicate can silently read that field and no case notices. Measured survivors
@@ -1674,13 +1589,12 @@ function makeUx4EmptySwapVM(overrides: Partial<BattleViewModel> = {}): BattleVie
 // `skills.length`, and H1 runs the `canRecruit: true` wild-battle shape — the state
 // where this hint actually fires most often (a wild encounter with a single party
 // monster, where the Recruit control is rendered into the SAME #actionsEl by
-// `#renderRecruit`; COPY A deliberately does not mention Recruit — plan RT-8).
+// `#renderRecruit`; COPY A deliberately does not mention Recruit).
 //
-// *** THREE MORE FIELDS, ADDED AFTER MEASUREMENT (review item 2, red-team F5). ***
-// The paragraph above USED TO CLAIM this whole class was closed. It was not: `weather`,
-// `playerCard.status` and `cureItems` were CONSTANT (null / null / []) across all EIGHT
-// H fixtures, and all 47 tests were measured GREEN with each of these conjuncts bolted
-// onto the toggle:
+// *** THREE MORE FIELDS, ADDED AFTER MEASUREMENT. ***
+// `weather`, `playerCard.status` and `cureItems` were CONSTANT (null / null / []) across
+// all EIGHT H fixtures, and all 47 tests were measured GREEN with each of these conjuncts
+// bolted onto the toggle:
 //     && vm.weather === null            (suppresses the hint in ANY weather — M14d)
 //     && vm.playerCard.status === null  (suppresses it whenever poisoned/burned — M14a)
 //     && vm.cureItems.length === 0      (suppresses it whenever a cure item is held — M14e)
@@ -1832,10 +1746,9 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
   it('BITES: H1 ongoing + canSwap=false + empty bench → zero swap buttons AND a visible hint naming "Party & Box", with the timing clause BEFORE the key name', () => {
     // KILLS (1): no hint at all — the element lookup below is UNCONDITIONAL (no
     //   `if (el !== null)` wrapper), so deleting the element FAILS this case rather
-    //   than passing vacuously. That conditional-wrapper mistake is exactly what
-    //   ux1's own retro had to correct (see the B4 note above).
+    //   than passing vacuously.
     // KILLS (2): a blank hint — presence with empty text tells the player nothing.
-    // KILLS (3, red-team M-C) the DISHONEST WORD-ORDER copy: "…press B for Party &
+    // KILLS the DISHONEST WORD-ORDER copy: "…press B for Party &
     //   Box after this battle ends". That copy passes a presence-only regex while
     //   leading with an instruction that does not work yet (B is dead while the
     //   overlay is open, and the terminal overlay persists until Esc). Assertion (d)
@@ -1851,15 +1764,15 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
     // This is the state where the hint actually fires most often — a wild encounter with
     // a single party monster — and nothing else in the suite exercises it. It also breaks
     // the fixture constants that let `&& vm.turnNumber === 2` / `&& !vm.canRecruit` /
-    // `&& vm.skills.length === 1` predicates survive (red-team F2).
+    // `&& vm.skills.length === 1` predicates survive.
     //
-    // STRENGTHENING (review item 2, red-team F5): the next three fields are set NON-DEFAULT
-    // here for one reason only — to kill three MEASURED surviving predicate conjuncts. All
-    // 47 tests were green with each of `&& vm.weather === null`,
-    // `&& vm.playerCard.status === null` and `&& vm.cureItems.length === 0` added to the
-    // toggle, because those fields were null/null/[] on every H fixture. H1 is the natural
-    // home: it is the hint-VISIBLE case, so a conjunct that reads any of them flips this
-    // case's expected `display !== 'none'` to 'none' and reds HERE. No new case needed.
+    // the next three fields are set NON-DEFAULT here for one reason only — to kill three
+    // MEASURED surviving predicate conjuncts. All 47 tests were green with each of `&&
+    // vm.weather === null`, `&& vm.playerCard.status === null` and `&& vm.cureItems.length ===
+    // 0` added to the toggle, because those fields were null/null/[] on every H fixture. H1
+    // is the natural home: it is the hint-VISIBLE case, so a conjunct that reads any of them
+    // flips this case's expected `display !== 'none'` to 'none' and reds HERE. No new case
+    // needed.
     // The shapes are real ones buildBattleViewModel emits: `weather.label` is a
     // weatherBanner() output ('Rain'), `playerCard.status` is a statusBadge() output ('PSN'),
     // and the cure item satisfies the classify-by-data rule (cureStatus !== null, count > 0).
@@ -1879,7 +1792,7 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
     );
     view.show();
 
-    // (a0) FIXTURE-VARIATION GUARD (review item 2). The three non-default fields above are
+    // (a0) FIXTURE-VARIATION GUARD. The three non-default fields above are
     // only teeth while they REACH the render. If a future edit to makeUx4VM /
     // makeUx4EmptySwapVM ever hard-codes them back to null/null/[] after the override spread,
     // the three conjuncts below become survivors again — silently, because H1's display
@@ -1956,7 +1869,7 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
     // so the strict inequality still fails — and it strengthens (c)/(d) jointly by
     // no longer depending on one particular verb.
     //
-    // RECOMPUTED for the revised COPY A (review item 1). The reason clause now itself
+    // RECOMPUTED for the revised COPY A. The reason clause now itself
     // contains the words "in this battle", so it is worth stating explicitly why the two
     // probes still land where they must:
     //   • `timingIndex` = 52 — the timing alternation needs the literal "when this battle
@@ -1992,8 +1905,8 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
 
     // (e) the Esc step. Required, not decorative: a terminal battle row is not GC'd on
     // resolution (battle.rs:1013-1022 deletes only PRIOR terminals) and
-    // decideBattleOverlay keeps returning `show` for a non-dismissed terminal
-    // (battleModel.ts:379-386), so the overlay STAYS UP after victory/defeat/flee and
+    // decideBattleOverlay keeps returning `show` for a non-dismissed terminal,
+    // so the overlay STAYS UP after victory/defeat/flee and
     // B stays dead until Escape. "When this battle ends, press B" alone is factually
     // incomplete — the player presses B and nothing happens.
     expect(
@@ -2006,7 +1919,7 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
     ).toMatch(/\bEsc/i);
 
     // -----------------------------------------------------------------------
-    // (f) COPY TEETH (red-team F3/F6). The token/order assertions above are
+    // (f) COPY TEETH. The token/order assertions above are
     // necessary but NOT sufficient: two measured copies passed all of (a)-(e).
     //   • a NEEDLE SALAD — "after this battle Esc B Party & Box" — every token
     //     present, in the right order, and completely unreadable;
@@ -2017,20 +1930,16 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
     // assertions above remain as the DOCUMENTATION of why the order matters (they
     // explain the constraint that the literal pin merely enforces).
     // -----------------------------------------------------------------------
-    // CORRECTED PIN (review item 1) — NOT a weakening. Was
-    // `.toContain('No healthy party monster to swap in.')`. The unscoped claim is
-    // FALSIFIABLE MID-BATTLE by a player following this very copy: Esc on an ongoing
-    // battle is a bare `battleView.hide()`, which un-gates KeyB; `set_party_slot` has no
-    // in-battle guard (server-module/src/monster_mgmt.rs), so `To Party` is ACCEPTED; that
-    // row-write is the batch that re-shows the overlay; and because `sideA.team` is a
-    // battle-row SNAPSHOT, `canSwap` stays false and the banner re-asserts a claim the
-    // player has just disproved. Adding "in this battle" makes the sentence TRUE in that
-    // state. RATIONALE FOR THE NEW EXPECTED VALUE, tied to the spec: the spec's honesty
-    // spine (ADR-0151 — never state something the player can falsify) requires the claim
-    // be scoped to what the view can actually see, and the view only ever sees this
-    // battle's side A. The pin is STRICTLY STRONGER: the old literal is a substring of
-    // nothing in the new copy, so every impl the old pin rejected is still rejected, AND
-    // the unscoped-copy impl (which the old pin ACCEPTED) now reds too.
+    // The unscoped claim is FALSIFIABLE MID-BATTLE by a player following this very copy:
+    // Esc on an ongoing battle is a bare `battleView.hide()`, which un-gates KeyB;
+    // `set_party_slot` has no in-battle guard (server-module/src/monster_mgmt.rs), so `To
+    // Party` is ACCEPTED; that row-write is the batch that re-shows the overlay; and
+    // because `sideA.team` is a battle-row SNAPSHOT, `canSwap` stays false and the banner
+    // re-asserts a claim the player has just disproved. Adding "in this battle" makes the
+    // sentence TRUE in that state. RATIONALE FOR THE NEW EXPECTED VALUE, tied to the spec:
+    // the spec's honesty spine (ADR-0151 — never state something the player can falsify)
+    // requires the claim be scoped to what the view can actually see, and the view only
+    // ever sees this battle's side A.
     // -----------------------------------------------------------------------
     expect(
       text,
@@ -2071,7 +1980,7 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
     //     the player is stuck. A hint whose first words are "When this battle ends, press
     //     Esc, then B…" reads as an unprompted command: the player does not yet know WHY
     //     they are being told to leave the battle, which is the ux1 failure shape
-    //     (ADR-0151) in miniature — an affordance advertised ahead of its justification.
+    //     in miniature — an affordance advertised ahead of its justification.
     //     This hint exists to answer a question ("where did my swap option go?"); the
     //     answer must come before the directions.
     //
@@ -2114,7 +2023,7 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
         'client/e2e/recruit.spec.ts:650-655,:688-697',
     ).not.toMatch(/HP\s*\d+\s*\/\s*\d+/);
     // ---------------------------------------------------------------------
-    // NEW FENCE (review item 3, red-team F6) — NO OTHER KEY, NO HELP AFFORDANCE.
+    // NO OTHER KEY, NO HELP AFFORDANCE.
     // MEASURED SURVIVOR: COPY A + ' Or press ? for help.' (124 chars, under the old 140
     // cap) passed every single H assertion. That addition is the literal ux1 lie, ungated:
     // `?` is DEAD while the battle overlay is open — main.ts's help handler leads with
@@ -2276,9 +2185,9 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
     // KILLS (anti-pattern 7): a per-render `appendChild` — N duplicate hints after N
     //   batches, which a presence-only check cannot see.
     //
-    // ANCHORS ARE NAMED EXPLICITLY, because a wrong anchor makes this silently vacuous
-    // (cf. the tester note at battleView.test.ts:1007-1013): `#root` is resolved as the
-    // outcome banner's parentElement, and `#actionsEl` as the Flee button's parentElement.
+    // ANCHORS ARE NAMED EXPLICITLY, because a wrong anchor makes this silently vacuous:
+    // `#root` is resolved as the outcome banner's parentElement, and `#actionsEl` as the
+    // Flee button's parentElement.
     const parent = document.createElement('div');
     document.body.appendChild(parent);
 
@@ -2336,7 +2245,7 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
     ).not.toBe(parent);
 
     // -----------------------------------------------------------------------
-    // SIBLING ORDER (red-team F6). Parentage alone is not enough: a measured mutant
+    // SIBLING ORDER. Parentage alone is not enough: a measured mutant
     // kept the hint inside #root but made it #root's FIRST child, above both monster
     // cards. `client/e2e/recruit.spec.ts:650-655` + `:688-697` locate the opponent's
     // affinity with `text=/HP \d+\/\d+ · /` and then index POSITIONALLY
@@ -2480,7 +2389,7 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
     // DISCLOSED SCOPE LIMIT (deferral D6): in PvP only side A (the challenger, who IS
     //   `player_identity`) receives a battle overlay at all — `latestPlayerBattle`
     //   (main.ts:1138 / net/store.ts:718-726) skips rows where the identity is the
-    //   `opponent_identity` (pvp.rs:291). So this hint is side-A-only in PvP, and
+    //   `opponent_identity`. So this hint is side-A-only in PvP, and
     //   "B is dead while the battle overlay is open" is a side-A statement.
     const parent = document.createElement('div');
     document.body.appendChild(parent);
@@ -2513,7 +2422,7 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
   });
 
   it('BITES: H7 LIVE-VIEW TRANSITIONS — no hide(), no refresh(null): (a) ongoing→victory hides the hint, (b) ongoing→canSwap:true hides it', () => {
-    // *** THE CRITICAL GAP (red-team F1). *** Every other H-case builds a FRESH view and
+    // *** THE CRITICAL GAP. *** Every other H-case builds a FRESH view and
     // refreshes at most once with a non-null VM, so NONE of them observes a TRANSITION.
     // MEASURED SURVIVOR: a show-only toggle
     //     if (vm.outcome === 'Ongoing' && !vm.canSwap) this.#swapHintEl.style.display = 'block';
@@ -2600,17 +2509,9 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
   });
 
   it('BITES: H8 canSwap=false with a NON-EMPTY bench → hint VISIBLE and zero "Swap: " buttons (pins !vm.canSwap, not bench.length)', () => {
-    // *** PINS THE PREDICATE ITSELF (red-team F2). *** The plan REJECTED
+    // *** PINS THE PREDICATE ITSELF. *** The plan REJECTED
     // `vm.bench.length === 0` in favour of `!vm.canSwap`, but that rejected predicate
     // passed all twelve of the other cases — nothing separated them.
-    //
-    // CORRECTION TO THE PLAN'S STATED JUSTIFICATION (measured, and the ADR carries the
-    // same correction): the plan claims the differentiator is an inconsistent
-    // `canSwap:true, bench:[]` VM, under which "a bench-based predicate renders NEITHER
-    // buttons NOR hint". That was measured WRONG — under BOTH predicates that VM renders
-    // neither buttons nor hint (the buttons are gated by `#renderActions`' `if (vm.canSwap)`
-    // and the loop body iterates an empty `bench`; the hint is hidden because canSwap is
-    // true), so it cannot tell the two predicates apart.
     //
     // THE ONLY VM SHAPE THAT SEPARATES THEM is the complementary one used here:
     //     outcome:'Ongoing', canSwap:false, bench:[one member]
@@ -2621,7 +2522,7 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
     //                            precisely the silent dead-end this slice exists to remove)
     // Keying the hint off the SAME flag the buttons are gated on is what makes
     // "hint shown ⟺ no swap buttons rendered" STRUCTURAL rather than derived through the
-    // model's `canSwap = bench.length > 0` identity (battleModel.ts:316) — an identity the
+    // model's `canSwap = bench.length > 0` identity — an identity the
     // view has no way to enforce and must not assume.
     const parent = document.createElement('div');
     document.body.appendChild(parent);
@@ -2667,7 +2568,7 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
 });
 
 // =============================================================================
-// rb-10 (residual R-m23-s2-X4, M23 §2.5, ADR-0213) — RM3-HP-FILL.
+// rb-10 (residual R-m23-s2-X4) — RM3-HP-FILL.
 //
 // THE CRITERION: the battle HP bar's width animation must be reachable by a stylesheet, and
 // therefore neutralisable by the reduced-motion media query in `client/src/styles.css`. That
@@ -2679,24 +2580,10 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
 //       in `client/src/styles.css` cannot reach it — which is exactly what that file's own header
 //       said when it declared the guard DELIBERATELY ABSENT.
 //
-// NOTE ON WORDING (deliberate, do not "fix"): neither the media-feature name nor `matchMedia` is
-// spelled out anywhere in this file. `evals/reduced-motion-purity.eval.mjs` allows exactly one
-// owner for those tokens under `client/src`, and while its walker skips `*.test.ts`, the census
-// it delegates to (`render/motionPreference.test.ts`'s S7T-SCAN) is a second scanner with its own
-// scope. Naming the query as "the reduced-motion media query in client/src/styles.css" costs
-// nothing and cannot red an unrelated criterion.
-//
 // RED REASON AT AUTHORING TIME (measured against the unmodified tree): `#renderMonsterCard`
 // writes `hpFill.style.cssText = \`width:${pct}%;height:100%;background:${color};transition:width
 // 0.3s;\`` and never assigns a class. So `fill.className` is `''` (RM3-B fails on its first
 // assertion) and the style attribute contains `transition`. Both oracles are genuinely RED.
-//
-// OWNERSHIP SPLIT (ADR-0213 D3): this describe owns RUNTIME REACHABILITY — that the class and the
-// absence of inline animation are properties of the RENDERED element, not of the source text.
-// `evals/reduced-motion-hp-bar.eval.mjs` owns the source-text half (the stylesheet's shape, the
-// media prelude, source order, and the inline ratchet over battleView.ts), and its
-// `[A11Y-RM3/delegate]` clause pins this describe's tag and its two load-bearing needles
-// (`fill.className`, `fill.getAttribute('style')`) so that gutting this file reds there.
 //
 // WHY THE WALK IS STRUCTURAL AND NOT `querySelector('.hp-fill')`: querying BY the class and then
 // asserting the class is a tautology — it can only ever pass. The walk therefore names the
@@ -2715,9 +2602,8 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
 // DISCLOSED SCOPE LIMIT (residual R-rb-10-CASCADE): happy-dom does no cascade and no layout, so
 // these cases prove "no inline animation declaration is present on the element", never "the
 // element does not animate when the player has asked for reduced motion". The airtight oracle is
-// a real Chromium (`rb-10.cascade-probe.mjs` beside the ledger). happy-dom also does not implement
-// `Element.animate`, so the WAAPI class of defect is structurally invisible here — that is why
-// the eval bans those spellings by TEXT rather than leaving them to this file.
+// a real Chromium. happy-dom also does not implement `Element.animate`, so the WAAPI class of
+// defect is structurally invisible here.
 // =============================================================================
 
 /** Root child indices, from the BattleView constructor's append order. */
@@ -2888,8 +2774,7 @@ describe('BattleView rb-10 RM3-HP-FILL: the HP fill is stylesheet-reachable and 
     //      Unreachable by any stylesheet at any specificity, which is why the reduced-motion
     //      guard could not be written before this slice.
     //  (2) `classList.add('hp-fill')` layered onto a pre-existing class, or a second token added
-    //      later — exact equality refuses it; the eval's rule-set clause counts .hp-fill-matching
-    //      rules to exactly two, and a second token opens a third path to the same element.
+    //      later — exact equality refuses it.
     //  (3) the SECOND-RENDER-ONLY append, measured by red-team:
     //      `hpFill.style.cssText += HP_EASE` with the easing in a sibling module. The first
     //      render is byte-clean, so a single-render tooth passes it — and a transition can only
@@ -2926,11 +2811,9 @@ describe('BattleView rb-10 RM3-HP-FILL: the HP fill is stylesheet-reachable and 
 });
 
 // =============================================================================
-// m23-s8 — the HP-bar severity palette must not encode severity by HUE ALONE
+// The HP-bar severity palette must not encode severity by HUE ALONE
 // (M23 §2.6 colour independence; escalation §8.1 colour-blind-safe default
 // palette).
-//
-// SOURCE OF TRUTH: specs/monster-realm-v2/M23-accessibility.spec.md §2.6, §8.1.
 //
 // RED REASON. `battleView.ts:267` ships
 // `pct > 50 ? '#4a4' : pct > 20 ? '#aa4' : '#a44'`. Measured against the bar
@@ -3300,7 +3183,7 @@ describe('BattleView m23-s8: colour-independent HP severity palette (M23 §2.6, 
 });
 
 // =============================================================================
-// rb-56 — "skill affinity exposed only via btn.title, not a persistent visible
+// "skill affinity exposed only via btn.title, not a persistent visible
 // cue" (EARS criterion, verbatim).
 //
 // WHAT THESE ASSERTIONS KILL: any `#renderSkills` shape that writes the skill's
@@ -3486,8 +3369,8 @@ describe('BattleView rb56: skill affinity is a persistent visible label, not tit
 });
 
 // =============================================================================
-// rb-59 — "the opponent card and the player card are separated by HUE ALONE"
-// (EARS criterion). SOURCE OF TRUTH: memory/projects/gates/rb-59.gates.md X1/X2/X3.
+// "the opponent card and the player card are separated by HUE ALONE"
+// (EARS criterion).
 //
 // THE SHIPPED DEFECT (battleView.ts, the two card blocks in the constructor). It builds them as
 //   opponent: 'border:1px solid #844;…' + 'background:#2a1a1a;…'
@@ -3496,15 +3379,12 @@ describe('BattleView rb56: skill affinity is a persistent visible label, not tit
 // treatment. The ONLY channel that answers "whose monster is this?" is the #844/#484
 // HUE pair — red vs green, a classic worst-case pair for protanopia and deuteranopia and
 // only 1.64:1 apart in relative luminance, i.e. a weak greyscale signal: under Chromium's
-// `filter: grayscale(1)` they resolve to `#525252` and `#757575`. (An earlier draft of this
-// comment said "byte-identical in greyscale". That is true only under a naive (R+G+B)/3
-// desaturation and false under the luma weights every browser actually uses — MEASURED, and
-// corrected here rather than left standing beside four exact ratios.) Note the pair this
-// slice SHIPS is 1.073:1 in relative luminance, i.e. flatter still: the hue-free distinction
-// now rests entirely on border STYLE, which is why the style clauses below are the
-// load-bearing ones. `#844` on its own `#2a1a1a` card background also
-// measures 2.34:1, under the WCAG 1.4.11 3:1 non-text-contrast floor, so the cue is
-// faint even for a trichromat: dashing a border nobody can see would ship nothing.
+// `filter: grayscale(1)` they resolve to `#525252` and `#757575`.
+// Note the pair this slice SHIPS is 1.073:1 in relative luminance, i.e. flatter still: the
+// hue-free distinction now rests entirely on border STYLE, which is why the style clauses below
+// are the load-bearing ones. `#844` on its own `#2a1a1a` card background also measures 2.34:1,
+// under the WCAG 1.4.11 3:1 non-text-contrast floor, so the cue is faint even for a trichromat:
+// dashing a border nobody can see would ship nothing.
 //
 // THE REQUIRED SHAPE (encoded, never implemented here): a STYLE channel carried at an
 // EQUAL border width on both cards, each border colour a bare hex literal reaching 3:1
@@ -3543,7 +3423,7 @@ describe('BattleView rb56: skill affinity is a persistent visible label, not tit
 //   S3  AT-invisible / screen-invisible cues, all CI-clean: `aria-hidden="true"` on the
 //       header, `header.style.display='none'`, `nameSpan.style.fontSize='0'`, or a role
 //       token smuggled into a `<span class="sr-only">` child of the nameSpan — and
-//       `.sr-only` is a REAL shipped class (client/src/styles.css:57-67) that clips to 1px.
+//       `.sr-only` is a REAL shipped class that clips to 1px.
 //       Killed by sweeping `card.querySelectorAll('*')` for `title`/`aria-*`, by pinning
 //       the header's and nameSpan's own inline declarations, and by `children.length`.
 //   S5  `el.className = 'sr-only'` / `el.style.visibility = 'hidden'` on a whole card.
@@ -3762,16 +3642,14 @@ interface Rb59CardPair {
 /**
  * Resolve the two monster cards from a rendered BattleView, every step fail-loud.
  *
- * WHICH BYPASS THIS CLOSES — stated narrowly, because an earlier draft of this comment
- * overclaimed and was MEASURED false. `#root.children[2]` and `[3]` are positions, not
- * identities, so an index-only walk would silently retarget every assertion in this block
- * onto the wrong element. The content check closes exactly two things: a CONSTRUCTOR
- * REORDER (the cards no longer sitting at those indices) and a swap of the two
- * `#renderMonsterCard` CALL SITES in `refresh` (confirmed RED). It works
- * because `#renderMonsterCard` hard-codes the literal 'You' label for the player card in
- * every battle state — the opponent's label is `vm.pvpOpponentName` in PvP and so cannot be
- * pinned — which makes "player card contains 'You: ' AND opponent card does not" a total,
- * state-independent oracle for WHICH ELEMENT IS WHICH.
+ * WHICH BYPASS THIS CLOSES. `#root.children[2]` and `[3]` are positions, not identities, so
+ * an index-only walk would silently retarget every assertion in this block onto the wrong
+ * element. The content check closes exactly two things: a CONSTRUCTOR REORDER (the cards no
+ * longer sitting at those indices) and a swap of the two `#renderMonsterCard` CALL SITES in
+ * `refresh`. It works because `#renderMonsterCard` hard-codes the literal 'You' label for
+ * the player card in every battle state — the opponent's label is `vm.pvpOpponentName` in
+ * PvP and so cannot be pinned — which makes "player card contains 'You: ' AND opponent card
+ * does not" a total, state-independent oracle for WHICH ELEMENT IS WHICH.
  *
  * WHAT IT DOES NOT CLOSE, AND WHY THAT IS CORRECT. It does not detect an exchange of the two
  * BORDERS between the two constructor-owned card elements (opponent `solid` / player
@@ -4014,8 +3892,7 @@ describe('BattleView rb-59: card role is cued by border STYLE, not by hue alone 
   });
 
   it('rb59 X1 border style pair: the two cards differ by border STYLE at an EQUAL width, in PvE, PvP, statused and terminal-plus-weather states', () => {
-    // COVERS X1. RED PRE-FIX: both cards ship `border:1px solid`, so `.not.toBe` fails on
-    // the very first row with style 'solid' on both sides.
+    // COVERS X1.
     //
     // WRONG IMPLEMENTATIONS KILLED:
     //  (S2) every state-gated no-op — `if (vm.isPvp) …borderStyle='solid'`, the same gated
@@ -4083,8 +3960,7 @@ describe('BattleView rb-59: card role is cued by border STYLE, not by hue alone 
   });
 
   it('rb59 X1 persistence: the differing border-style pair survives PvE to PvP and back, a repeat refresh, and a null round-trip', async () => {
-    // COVERS X1 ("and across successive re-renders"). RED PRE-FIX: the first pair relation
-    // fails, both styles being 'solid'.
+    // COVERS X1 ("and across successive re-renders").
     //
     // WRONG IMPLEMENTATIONS KILLED — this case exists for the LATCH spellings the
     // five-state loop above cannot see. That loop reads each state immediately after its own
@@ -4202,9 +4078,8 @@ describe('BattleView rb-59: card role is cued by border STYLE, not by hue alone 
     // --- DEFERRED WRITES. Every assertion above is synchronous, so a flatten scheduled with
     // `queueMicrotask` or `setTimeout(..., 0)` lands AFTER the test function returns but BEFORE
     // first paint in a real browser: the cue provably never renders, and both spellings were
-    // MEASURED CI-clean against the previous draft (red-team N7/N8). Yielding the task queue
-    // once and re-reading closes both. It costs one tick and cannot flake — a correct
-    // constructor-set border has nothing pending to observe.
+    // MEASURED CI-clean. Yielding the task queue once and re-reading closes both. It costs one
+    // tick and cannot flake — a correct constructor-set border has nothing pending to observe.
     await new Promise((resolve) => setTimeout(resolve, 0));
     const settled = rb59Cards(parent);
     const settledOpponent = rb59Border(settled.opponent, 'after the task queue drains / opponent');
@@ -4286,10 +4161,8 @@ describe('BattleView rb-59: card role is cued by border STYLE, not by hue alone 
         // `style.background` is populated today — but the semantically identical
         // `background-color:#2a1a1a` leaves the shorthand EMPTY in happy-dom, and a future
         // retune spelling it that way would red this gate for a reason that has nothing to
-        // do with contrast. The pre-existing `s8ReadColour` (:3047, master code this slice
-        // must not edit) reads ONE property, so the fallback and its own non-emptiness
-        // refusal are restated here rather than by editing that helper. This still fails
-        // CLOSED: an absent background in BOTH spellings throws below, never defaults.
+        // do with contrast. This still fails CLOSED: an absent background in BOTH
+        // spellings throws below, never defaults.
         const backgroundRaw =
           card.style.background.trim().length > 0
             ? card.style.background.trim()
@@ -4340,7 +4213,7 @@ describe('BattleView rb-59: card role is cued by border STYLE, not by hue alone 
     //  (S3) `header.setAttribute('aria-hidden','true')`, `header.style.display='none'`,
     //       `nameSpan.style.fontSize='0'`, and a role token split into a
     //       `<span class="sr-only">` child of the nameSpan — `.sr-only` is a REAL shipped
-    //       class (client/src/styles.css:57-67) that clips its content to 1px, so the token
+    //       class that clips its content to 1px, so the token
     //       is in the DOM, is in textContent, and is invisible on screen. All four are
     //       CI-clean against a border-only tooth. Killed by the whole-subtree title/aria
     //       sweep, the header and nameSpan declaration pins, and children.length.
@@ -4542,19 +4415,14 @@ describe('BattleView rb-59: card role is cued by border STYLE, not by hue alone 
 });
 
 // =============================================================================
-// 20r-a — in-flight guards for the FIVE PvE battle controls (skill / Flee / Swap / Recruit /
-// Use Item). APPENDED BLOCK; nothing above this line is modified.
+// in-flight guards for the FIVE PvE battle controls (skill / Flee / Swap / Recruit /
+// Use Item).
 //
-// SOURCE OF TRUTH: docs/specs/20r-a-plan.md §0 D1/D3/D4/D8/D11, §1 battleView.ts, §3 BV-1..BV-11.
-//
-// THE DEFECT (measured against the unmodified tree): every PvE listener in battleView.ts is a bare
-// `() => this.#callbacks.onAttack(...)`. Nothing is disabled and nothing is keyed, so a second
-// click while the reducer promise is still in flight sends a SECOND submitAttack / flee /
-// swapActive / attemptRecruit / useBattleItem for the same turn. The PvP branches are VM-gated
-// (`pvpPendingSubmit`, RT-PVP-DS-01 above) and are deliberately NOT in scope — BV-9 pins that.
-//
-// RED REASON: no `#pending` exists, so the first `disabled === true` assertion after a click fails
-// in every BV row except the two DECLARED regression rows (BV-9 PvP-untouched, BV-10 sync order).
+// THE DEFECT: every PvE listener in battleView.ts is a bare `() => this.#callbacks.onAttack(...)`.
+// Nothing is disabled and nothing is keyed, so a second click while the reducer promise is still in
+// flight sends a SECOND submitAttack / flee / swapActive / attemptRecruit / useBattleItem for the
+// same turn. The PvP branches are VM-gated (`pvpPendingSubmit`, RT-PVP-DS-01 above) and are
+// deliberately NOT in scope — BV-9 pins that.
 //
 // HAPPY-DOM FACTS THIS BLOCK LEANS ON (read from node_modules, not assumed):
 //   * `HTMLButtonElement.dispatchEvent` returns false for a click on a DISABLED button, and
@@ -5078,7 +4946,7 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
   it('20r-a BV-8 BITES: hide() releases the lock — after a never-settling call, hide() then refresh(vm) renders enabled controls and the next click dispatches', async () => {
     // WRONG IMPL KILLED: a lock released ONLY by `.finally`. The SDK never settles an in-flight
     //   reducer promise after a link drop (shopView / renameView / raisingView precedent), and
-    //   main.ts's onReconnect hides the view (M-3 in main.wiring.test.ts) precisely so THIS
+    //   main.ts's onReconnect hides the view precisely so THIS
     //   release runs — without it the battle overlay comes back with every control dead.
     const d = raDeferred(); // deliberately never settled
     const callbacks = makeRaCallbacks({ onAttack: vi.fn().mockReturnValue(d.promise) });
@@ -5114,8 +4982,7 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
     //   owned by `pvpPendingSubmit` (ADR-0110: the lifetime is "until the server advances the
     //   turn", which only the VM can see — plan D9); a promise-lifetime lock on top of it would
     //   re-enable the controls the moment the SDK acks the submit, one batch before the VM hides
-    //   them, and would desync from the "Waiting for opponent…" banner. GREEN today and it must
-    //   stay green after the PvE lock lands.
+    //   them, and would desync from the "Waiting for opponent…" banner.
     const d = raDeferred();
     const callbacks = makeRaCallbacks({ onPvpAttack: vi.fn().mockReturnValue(d.promise) });
     const vm: BattleViewModel = { ...makePvpPendingVM(), pvpPendingSubmit: false };
@@ -5146,7 +5013,7 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
   it('20r-a BV-10 (regression, GREEN by design): the callback runs SYNCHRONOUSLY inside .click() — no microtask deferral of the dispatch', () => {
     // WRONG IMPL KILLED: `Promise.resolve().then(() => cb())` / `queueMicrotask(cb)` as the
     //   dispatch shape (plan D3). It reds every synchronous-after-click assertion in this file
-    //   (e-1, m14.5d-1b, ux4 S2) and, in production, lets a `refresh()` that lands between the
+    //   (e-1, ux4 S2) and, in production, lets a `refresh()` that lands between the
     //   click and the microtask observe a lock with no call behind it.
     const callbacks = makeRaCallbacks();
     const { parent } = raMount(callbacks);
@@ -5220,19 +5087,9 @@ describe('★ BattleView 20r-a: in-flight guard on the five PvE controls', () =>
 });
 
 // =============================================================================
-// m24s3 (ADR-0259) — i18n migration batch A: battleView.ts routes its migrated
+// i18n migration batch A: battleView.ts routes its migrated
 // sinks through t()/tf() (ADR-0256/0257 resolver) instead of raw English literals.
 //
-// PREDICTED RED REASON AT HEAD: battleView.ts calls neither `t()` nor `tf()`
-// anywhere today — every literal below is still a bare string, and the file
-// imports nothing from `./i18n/resolver`. BV-01/BV-02 therefore fail on their
-// very first `toHaveBeenCalledWith` / sentinel-presence assertion (the spied
-// `i18nT`/`i18nTf` are never called at all); BV-03 fails because
-// `scanSource(stripComments(...))` reports >=25 FAILING sinks (raw English
-// segments), not the required `failing: []`.
-//
-// Do NOT edit these tests to match a buggy implementation — correct them from
-// the plan/ADR-0259 only.
 // =============================================================================
 
 /** All seven BattleViewCallbacks fields as spies (m24s3 shares ux4's local
@@ -5337,8 +5194,8 @@ function m24s3PvpVM(overrides: Partial<BattleViewModel> = {}): BattleViewModel {
   } as BattleViewModel;
 }
 
-// m24s3 hardening H1 (tests red-team, surviving cheat C10c): the battleView keys this
-// sentinel matrix can legitimately produce — the ONLY spans a strip is allowed to elide.
+// the battleView keys this sentinel matrix can legitimately produce — the ONLY spans a
+// strip is allowed to elide.
 // A bracket span whose content is not EXACTLY one of these (bare key, or `key|<json
 // object>` with key a PARAM key) is a FORGED span (e.g. a raw `.append('«Submit»')`
 // literal that never went through t()/tf()) and must be LEFT IN PLACE, never elided —
@@ -5394,7 +5251,7 @@ function m24s3IsExpectedSentinelSpan(content: string): boolean {
 }
 
 /** Elides only the bracket spans that are EXACTLY an expected sentinel (manual
- *  indexOf loop — no RegExp, ADR-0055) and reports every OTHER `«...»` span verbatim
+ *  indexOf loop — no RegExp) and reports every OTHER `«...»` span verbatim
  *  in `unexpectedSpans`, un-elided, so it stays in `stripped` for the roster-word scan
  *  too (belt-and-braces): a genuinely-migrated site is bracketed with an EXACT
  *  sentinel and disappears; any unbracketed raw-English leak, OR a forged bracket span
@@ -5474,7 +5331,7 @@ const M24S3_BV_ROSTER = [
 
 function m24s3AssertNoRosterWord(texts: readonly string[], label: string): void {
   const { stripped, unexpectedSpans } = m24s3SplitSentinels(texts.join('\n'));
-  // m24s3 hardening H1: a FORGED bracket span (raw English wrapped in `«...»` by
+  // a FORGED bracket span (raw English wrapped in `«...»` by
   // something other than the resolver, e.g. a decoy `.append('«Submit»')`) is never
   // elided — it must not exist at all under a correct implementation.
   expect(
@@ -5641,7 +5498,7 @@ describe('m24s3 (ADR-0259): battleView.ts routes its migrated sinks through t()/
   it('m24s3 BV-02: under «key» sentinels, every rendered surface shows resolver output and never an English roster word outside a sentinel', () => {
     const parent = document.createElement('div');
     document.body.appendChild(parent);
-    // m24s3 hardening H3: the view is CONSTRUCTED here, BEFORE the sentinel
+    // the view is CONSTRUCTED here, BEFORE the sentinel
     // mockImplementation is installed below. That ordering is load-bearing — plan R1
     // moves `battle.title`/`battle.swap.hint`/`battle.continueHint` OUT of the
     // constructor and into `show()` specifically so no string is ever resolved before
@@ -5680,7 +5537,7 @@ describe('m24s3 (ADR-0259): battleView.ts routes its migrated sinks through t()/
       expect(joined).toContain(
         '«battle.swap.pveLabel|{"species":"Mosshorn","current":6,"max":10}»',
       );
-      // Verifier M10 (2026-09-20): a PvE skill label rebuilt as an inline template beside a DEAD
+      // a PvE skill label rebuilt as an inline template beside a DEAD
       // `void tf(...)` call survived 3288/3288 — the spy saw the call, the roster scan saw no
       // English word, the scanner saw a glyph-only template. Every parameterized PvE surface
       // therefore gets its own containment pin, not just the PvP twins.
@@ -5772,20 +5629,10 @@ describe('m24s3 (ADR-0259): battleView.ts scan — zero failing sinks', () => {
 });
 
 // ---------------------------------------------------------------------------
-// rb-121 (ADR-0271, residual R-20r-a-FOCUS) — a settle-released PvE action lock
+// rb-121 (residual R-20r-a-FOCUS) — a settle-released PvE action lock
 // re-anchors focus that the no-batch path stranded on <body>, by re-calling
 // openOverlayA11y('battleView', root) when the release finds
 // `this.#visible && document.activeElement === document.body`.
-//
-// SOURCE OF TRUTH: docs/adr/0271-rb121-settle-release-reanchors-stranded-focus.md;
-// memory/projects/gates/rb-121.gates.md X4/X5.
-//
-// RED REASON: battleView.ts's `#dispatch` `.finally()` block re-enables the
-// skills/actions controls but never calls openOverlayA11y — every
-// rb121-BATTLE-{REJECT,RESOLVE,THROW,DETACH} tooth below fails its final
-// `toBe(anchor)` assertion on master. rb121-BATTLE-STALE's negative half and every
-// KEEP-*/HIDDEN control pass on master already; STALE's positive half is what reds
-// the whole tooth on master.
 //
 // HIDDEN MECHANISM NOTE: battleView's `refresh(vm)` ALWAYS calls `show()` when
 // `!this.#visible`, so a lock cannot be taken while `#visible` is false via

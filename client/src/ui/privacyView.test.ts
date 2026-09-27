@@ -59,9 +59,7 @@ import { PrivacyView, type PrivacyViewHandlers } from './privacyView';
 
 // ---------------------------------------------------------------------------
 // Element ids — the CONTRACT, spelled once. These are runtime-CONSTRUCTED (A2-D2):
-// `client/index.html` declares none of them, and must not, because
-// `evals/overlay-live-region-custody.eval.mjs` pins the count of `aria-modal` shells in that
-// file at exactly eleven.
+// `client/index.html` declares none of them.
 // ---------------------------------------------------------------------------
 
 const OVERLAY_ID = 'privacy-overlay';
@@ -102,8 +100,7 @@ const ALL_PRIVACY_IDS: readonly string[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// Fixtures. Synthetic values only — `evals/deletion-grace-wasm-ssot.eval.mjs` G5 reads every
-// `client/**/*.ts` RAW and does not exempt test files.
+// Fixtures. Synthetic values only.
 // ---------------------------------------------------------------------------
 
 const RB52_GRACE_MS = 90_000n;
@@ -196,7 +193,7 @@ function vmOf(overrides: Partial<PrivacyViewModel> = {}): PrivacyViewModel {
     confirmPrompt: undefined,
     noticeKind: 'none',
     noticeLabel: undefined,
-    // rb-53: the three export fields. Defaults are the QUIET state (nothing to say, nothing to
+    // The three export fields. Defaults are the QUIET state (nothing to say, nothing to
     // download), so every pre-existing rb-52 case is unaffected and the rb-53 cases below opt in
     // through `overrides`.
     exportStatusLabel: undefined,
@@ -222,7 +219,7 @@ const HANDLER_NAMES: readonly HandlerName[] = [
   'onCancelDeletion',
   'onExportRequested',
   'onDismissed',
-  // rb-53: SEVEN now. Joining the roster (rather than being spied separately) is what makes
+  // SEVEN now. Joining the roster (rather than being spied separately) is what makes
   // every pre-existing `expectOnly` assertion ALSO say "and the download handler did not fire" —
   // which is the misrouting this surface can least afford: `onExportRequested` asks the SERVER
   // to build a new export, `onExportDownload` saves the one already in the client.
@@ -382,10 +379,8 @@ describe('PrivacyView (rb-52, PRV1-3/PRV1-4): the constructed DOM shell', () => 
     // WRONG IMPL KILLED (1): a shell that renames an id. `OVERLAY_A11Y.privacyView`'s
     // `initialFocusSelector` and `main.ts`'s Escape branch both resolve by id, so a rename is a
     // silently unfocusable, silently undismissable modal.
-    // WRONG IMPL KILLED (2): a STATIC `index.html` shell (A2-D2). A twelfth `aria-modal` root
-    // in that file reds `evals/overlay-live-region-custody.eval.mjs`, which pins the count at
-    // exactly eleven and is OUTSIDE this slice's touches — a slice-parking stop. The
-    // constructed route is proven here by the fact that the ids exist at all in a happy-dom
+    // WRONG IMPL KILLED (2): a STATIC `index.html` shell (A2-D2).
+    // The constructed route is proven here by the fact that the ids exist at all in a happy-dom
     // document that was emptied in `beforeEach` and never parsed any markup.
     for (const id of ALL_PRIVACY_IDS) {
       expect(document.getElementById(id), `#${id} must be constructed at runtime`).not.toBeNull();
@@ -408,9 +403,7 @@ describe('PrivacyView (rb-52, PRV1-3/PRV1-4): the constructed DOM shell', () => 
   it('RB52V-FOCUS-ANCHOR: the registry initialFocusSelector resolves to a native <button> inside the overlay root', () => {
     // WRONG IMPL KILLED (A2-D3): a `tabindex`-ed heading anchor. `openOverlayA11y` resolves
     // `initialFocusSelector` with `root.querySelector(...)`, so an anchor that does not resolve
-    // INSIDE the root leaves an opened modal with focus still outside it — and
-    // `evals/keyboard-operable-rows.eval.mjs` hard-fails any `tabindex` write from this file,
-    // in an eval outside this slice's touches.
+    // INSIDE the root leaves an opened modal with focus still outside it.
     const selector = OVERLAY_A11Y.privacyView.initialFocusSelector;
     expect(selector, 'the registry must point at the always-enabled close button').toBe(
       `#${CLOSE_BTN_ID}`,
@@ -421,7 +414,7 @@ describe('PrivacyView (rb-52, PRV1-3/PRV1-4): the constructed DOM shell', () => 
   });
 
   it('RB52V-ANCHOR-NEVER-DISABLED: the initial-focus anchor is enabled in EVERY phase, incl. grace and terminal', () => {
-    // WRONG IMPL KILLED (the shipped first draft): pointing `initialFocusSelector` at
+    // WRONG IMPL KILLED: pointing `initialFocusSelector` at
     // `#privacy-delete-btn`. `deletePermitted` is true ONLY in phase `active`, so in `grace`
     // (PRV1-3's own state) and `terminal` (PRV1-4's) the anchor carries `disabled` — and a
     // disabled control is unfocusable, so `openOverlayA11y`'s `.focus()` is a silent no-op,
@@ -769,7 +762,7 @@ describe('PrivacyView (rb-52, PRV1-3/PRV1-4): the constructed DOM shell', () => 
     // ★ WHY THE DISARM LIVES IN `hide()` AND NOT AT THE CALL SITE (ADR-0231 A2-D4):
     // `privacyView` is in `BATTLE_FORCE_HIDE`, and a battle auto-show reaches this shell
     // through `main.ts`'s handle table, whose entry is the byte-identical
-    // `privacyView?.hide()` pinned by W-UXD3C-HANDLE-TABLE — it cannot carry the disarm itself.
+    // `privacyView?.hide()` — it cannot carry the disarm itself.
     // So a force-hide with an armed delete confirmation would leave the model armed behind a
     // hidden overlay, and the player's NEXT click on a re-opened surface would be step two of a
     // confirmation they no longer remember giving.
@@ -841,7 +834,7 @@ describe('PrivacyView (rb-52, PRV1-3/PRV1-4): the constructed DOM shell', () => 
   });
 
   // -------------------------------------------------------------------------
-  // rb-53 (PRV1-11/12/13, ADR-0231 Amendment A3) — the DOWNLOAD control and the
+  // rb-53 (ADR-0231 Amendment A3) — the DOWNLOAD control and the
   // export status line. Appended INSIDE this describe so they share the same
   // beforeEach/afterEach lifecycle (one constructed shell, one cleanup path).
   //
@@ -903,8 +896,8 @@ describe('PrivacyView (rb-52, PRV1-3/PRV1-4): the constructed DOM shell', () => 
     //   node `display:none` and never un-hides it, so the control ships BLANK and INVISIBLE
     //   while a programmatic `.click()` still fires its handler. The walk + the label assertion
     //   are what see it; a click-only test certifies an invisible surface as reachable.
-    // WRONG IMPL KILLED (3): a `<div>` with a listener — `evals/keyboard-operable-rows.eval.mjs`
-    //   only accepts a native click receiver, and a div is unreachable by keyboard.
+    // WRONG IMPL KILLED (3): a `<div>` with a listener
+    //   a div is unreachable by keyboard.
     view.show();
     let checked = 0;
     for (const state of RB53_EXPORT_STATES) {

@@ -7,7 +7,7 @@ import {
   test,
 } from '@playwright/test';
 
-// 14r-e movement-input e2e (ADR-0187, closing ADR-0158 residuals 3 + 4).
+// movement-input e2e.
 //
 // WHAT MAKES THIS FILE DIFFERENT FROM EVERY OTHER SPEC IN client/e2e/:
 // it drives movement with SYNTHETIC KEYBOARD EVENTS (page.keyboard.down/up), so main.ts's
@@ -26,12 +26,9 @@ import {
 //                   W-NH2-NO-CANCEL precedent: mislabelling a green guard as RED is itself
 //                   a defect.)
 //   B  RED PROOF    dual-code overlap tap -> exactly 1 tile. THE slice defect (EARS-1).
-//                   RED against the current tree, which fires `step(dir)` on EVERY keydown
-//                   and therefore moves 2 tiles for one physical two-code tap.
 //   C  GREEN GUARD  a hold FREEZES under an overlay and RESUMES after it closes. Kills the
 //                   whole-gate `|| true` fold, which no source scan can see.
 //   D  RED TODAY    a sustained hold stays inside a send budget and is never rejected.
-//                   Red now because the snapshot counters do not exist yet; post-fix it is
 //                   the only tooth that kills the narrow `&& true ||` outstandingSteps
 //                   mutant, because ADR-0148 MEASURED the reject-storm world at unchanged
 //                   5.00 tiles/s — tile positions cannot separate the two worlds, only a
@@ -413,15 +410,7 @@ test.describe
     // B — THE RED PROOF (EARS-1)
     // -------------------------------------------------------------------------------
     test('B RED PROOF: a dual-code overlap tap (ArrowRight+KeyD / ArrowLeft+KeyA) moves EXACTLY one tile — EARS-1', async () => {
-      // ★ RED REASON, against the CURRENT tree: main.ts's keydown fires `step(dir)`
-      // UNCONDITIONALLY. KEY_DIR binds two codes per direction, so pressing the second code
-      // while the direction is already held fires a SECOND ungated first step: two intents,
-      // two server drains, 2 tiles from one physical tap. No hold-commit threshold can see
-      // it — both steps are keydown-immediate, not continuations — which is why ADR-0158
-      // named it (its residual 3) the SOLE remaining same-direction double-move path.
-      // After the ADR-0187 dedup (`if (!held.isHeld(dir)) step(dir);`) this is 1 tile.
-      //
-      // WRONG IMPL KILLED (a): the dedup absent — 2 tiles (today).
+      // WRONG IMPL KILLED (a): the dedup absent — 2 tiles.
       // WRONG IMPL KILLED (b): the dedup written as `held.active() === dir` — survives THIS
       //   scenario (only one dir is held here) but dies at U-DK2 / movementSim S11.
       // WRONG IMPL KILLED (c): the dedup over-applied so the FIRST press stops emitting —
@@ -594,12 +583,9 @@ test.describe
     });
 
     // -------------------------------------------------------------------------------
-    // D — RED TODAY (missing snapshot fields); post-fix the send-budget tooth
+    // D — the send-budget tooth
     // -------------------------------------------------------------------------------
     test('D: a sustained 1s hold stays inside the send budget and is NEVER rejected (kills the narrow `&& true ||` outstandingSteps mutant)', async () => {
-      // ★ RED REASON TODAY: `moveSendCount` / `moveRejectCount` are not on the DEV snapshot,
-      // so both read `undefined` and the two typeof assertions below fail immediately.
-      //
       // ★ WHY A COUNTER AND NOT TILES (the whole reason these fields exist): ADR-0148
       // MEASURED the broken-gate world at UNCHANGED 5.00 tiles/s. The server's movement_tick
       // paces ACCEPTANCE at one step per STEP_MS no matter how fast the client sends, so a

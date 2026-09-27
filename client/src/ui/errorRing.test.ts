@@ -1,18 +1,11 @@
 // ui/errorRing.test.ts — RED gating tests for pt-b1 EARS U-2 + normalizeError totality.
 //
-// Slice: pt-b1 · Source-of-truth: M-playtest-b F9 bug-bundle error ring.
-//
-// RED REASON: errorRing.ts does not exist yet. Every test fails with
-//   "Failed to resolve import './errorRing'" (module-not-found).
-//
 // WRONG-IMPL-KILLED list:
 //   - "unbounded error ring / evicts newest"  → T-ECAP-1 catches it
 //   - "normalizeError throws on odd input"     → T-NORM-1 catches it (totality)
 //   - "message not truncated"                  → T-NORM-1 catches it (maxLen)
 //   - "source dropped/overwritten"             → T-NORM-1 / T-ERING-PUSH catch it
 //   - "push does not normalize / no stamp"     → T-ERING-PUSH catches it
-//
-// Do NOT edit tests to match a buggy impl — correct from the spec only.
 
 import { describe, expect, it } from 'vitest';
 import {

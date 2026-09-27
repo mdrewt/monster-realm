@@ -1,4 +1,4 @@
-// render/viewport.test.ts — pure viewport-scale core unit tests (uxd1, ADR-0160).
+// render/viewport.test.ts — pure viewport-scale core unit tests.
 //
 // SOURCE OF TRUTH: specs/monster-realm-v2/M-postgate-ux-design.spec.md §uxd1
 // (lines 24-63) EARS acceptance criteria, as sliced by the uxd1 build plan §2.2
@@ -7,12 +7,6 @@
 // `viewport.ts` is a PURE functional core (ADR-0014 seam, like `camera.ts` /
 // `resizeWiring.ts`): CSS pixels + devicePixelRatio in, a scale record and pixel
 // transforms out. No DOM, no Pixi, no `window`, no clock. Every input is passed.
-//
-// RED REASON: `client/src/render/viewport.ts` does not exist yet, and
-// `config.ts` does not yet export TARGET/MIN/MAX_VISIBLE_TILES. Every import
-// below fails to resolve until the implementer creates them. Two composition
-// teeth (A7b centered-axis) additionally stay RED until `camera.ts` grows the
-// per-axis CENTER branch — but the primary RED is absence-of-module.
 //
 // Contract under test (plan §2.2):
 //   viewportScale(cssW, cssH, dpr)
@@ -24,8 +18,7 @@
 //
 // NOT tested here, deliberately (plan §3):
 //   - A8 (DOM overlay fixed positioning): uxd1 claims NO REGRESSION only; the
-//     touches-set contains zero DOM/CSS files. 10-11 overlays are in-flow divs
-//     on master today (pre-existing, owned by uxd3).
+//     touches-set contains zero DOM/CSS files. 10-11 overlays are in-flow divs.
 //   - A10 (`nearest` scaleMode): review + manual gate only. `expect(K).toBe('nearest')`
 //     on a constant this file would also have to import is a tautology, not a tooth.
 //   - A2/A12 (resize path threads a fire-time dpr): owned by `resizeWiring.test.ts`.
@@ -419,7 +412,7 @@ describe('A4: deviceScale is an integer >= 1; stageScale = deviceScale/dpr', () 
 //
 // RESTATED (ADR-0160 decision 4): A5 (center small maps) and A7 (player at the
 // viewport center) genuinely contradict, and A6's scroll-clamp already violates
-// A7's literal text on master today. A7 is therefore scoped to the UNCLAMPED
+// A7's literal text. A7 is therefore scoped to the UNCLAMPED
 // axis; A7b below covers the clamped and centered axes.
 //
 // world.ts §2.6 routes `stage.position` through this same `worldToScreen`, so
@@ -533,7 +526,7 @@ describe('A7b: clamped and centered axes frame the map exactly', () => {
       off,
       vs.stageScale,
     );
-    // Kills: the CURRENT `Math.max(0, …)` top-left pin (offset 0 -> the map
+    // Kills: the `Math.max(0, …)` top-left pin (offset 0 -> the map
     // center lands at 480,336 and the whole zone is stranded in the top-left
     // corner — the literal playtest complaint, spec:10/spec:29).
     // Kills: an implementation that "fixes" A7 by force-centering the PLAYER on

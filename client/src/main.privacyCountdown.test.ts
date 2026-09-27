@@ -127,7 +127,7 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
   const grid = (v: boolean): boolean[] => Array.from({ length: SIDE * SIDE }, () => v);
   return {
     apply_move: () => ({}),
-    // rb-8 / ADR-0212: `-> i64` crosses as a BigInt, so this returns a bigint, never a number.
+    // `-> i64` crosses as a BigInt, so this returns a bigint, never a number.
     deletion_grace_ms_default: () => H.graceMs,
     move_queue_cap: () => 4,
     party_size: () => 3,
@@ -302,9 +302,7 @@ const WALL_T0_MS = 1_700_000_000_000n;
  *  (2d 3h 4m 5s). Day-scale is required by the plan: on a minutes-scale fixture a formatter
  *  that renders only the two largest units still ticks every second and cannot be told apart.
  *
- *  SYNTHETIC, and it must stay synthetic: `evals/deletion-grace-wasm-ssot.eval.mjs` G5 reads
- *  every client `.ts` RAW — comments included — for a numeric duplicate of the SHIPPED grace
- *  window, which is exactly why the value is injected through the wasm mock in the first place. */
+ * */
 const GRACE_DAY_SCALE = 183_845_000n;
 const LABEL_AT_T0 = 'Account deletion in 2d 3h 4m 5s';
 const LABEL_AT_T0_PLUS_2S = 'Account deletion in 2d 3h 4m 3s';
@@ -331,7 +329,7 @@ function accountOf(overrides: Partial<StoreAccount> = {}): StoreAccount {
     authIssuer: 'test-issuer',
     createdAtMs: WALL_T0_MS,
     lastLoginAtMs: WALL_T0_MS,
-    // `status` is the BARE AccountStatus tag as the store carries it (store.ts:245) — never a
+    // `status` is the BARE AccountStatus tag as the store carries it — never a
     // `{ tag: ... }` wrapper.
     status: 'Active',
     deletionRequestedAtMs: undefined,
@@ -379,10 +377,7 @@ function expectHidden(where: string): void {
 }
 
 // --- the suite ---------------------------------------------------------------------------
-// `describe(name, { sequential: true }, fn)` — NOT `describe.sequential(...)`. Same isolation,
-// but the literal `describe(` is REQUIRED: motionPreference.test.ts's S7T-SCAN scans every
-// comment-stripped `.test.ts` under client/src for that exact token as a tripwire against
-// production code disguised with a spec suffix, and the dotted form does not contain it.
+// `describe(name, { sequential: true }, fn)`.
 // Sequential because happy-dom's document and this file's module-scope rAF slot are per-FILE.
 describe('main.ts deletion-countdown banner (rb-51, PRV1-1)', { sequential: true }, () => {
   let recorded: Recorded[] = [];
@@ -457,7 +452,7 @@ describe('main.ts deletion-countdown banner (rb-51, PRV1-1)', { sequential: true
   // -------------------------------------------------------------------------------------
 
   it('★ RB51T-SHELL BITES: #privacy-countdown is a DIRECT document.body child and starts hidden', async () => {
-    // WRONG IMPL KILLED (1) ★ THE DEFECT (master today): no element at all. PRV1-1 asks for a
+    // WRONG IMPL KILLED (1) ★ THE DEFECT: no element at all. PRV1-1 asks for a
     // RENDERED surface; a countdown computed and thrown away satisfies nothing.
     // WRONG IMPL KILLED (2): the element created but never appended (or appended to `#app`,
     // which does not exist in a boot without a mount — the banner would silently never render
@@ -588,7 +583,7 @@ describe('main.ts deletion-countdown banner (rb-51, PRV1-1)', { sequential: true
   });
 
   // -------------------------------------------------------------------------------------
-  // (a2) THE OTHER TWO SENTENCES REACH THE DOM. Added in the rb-51 review: every arm above
+  // (a2) THE OTHER TWO SENTENCES REACH THE DOM. every arm above
   //      exercises a COMPUTED `grace` label, and every arm below exercises the "off" cases —
   //      so `due` and DARK were rendered by nothing, and four wiring mutants lived in that gap.
   // -------------------------------------------------------------------------------------
@@ -689,7 +684,7 @@ describe('main.ts deletion-countdown banner (rb-51, PRV1-1)', { sequential: true
       row: accountOf({ status: 'Active', deletionRequestedAtMs: WALL_T0_MS }),
     },
     { name: 'a plain Active row', row: accountOf({ status: 'Active' }) },
-    // PRV1-4: `terminalAtMs` is an Option<i64>, so 0n is a REAL marker value. A truthiness
+    // `terminalAtMs` is an Option<i64>, so 0n is a REAL marker value. A truthiness
     // test on it would leave a live "cancellable" countdown on an account that is already gone.
     {
       name: 'the TERMINAL marker at 0n (already permanently deleted)',
@@ -701,7 +696,7 @@ describe('main.ts deletion-countdown banner (rb-51, PRV1-1)', { sequential: true
     },
     // No row for THIS identity — the store's owner filter answers undefined.
     { name: 'no account row for this identity', row: accountOf({ identity: OTHER_IDENTITY }) },
-    // A tag this client does not recognise is DARK (ADR-0154), never a synonym for Active —
+    // A tag this client does not recognise is DARK, never a synonym for Active —
     // and dark is not a grace window either, so nothing may be claimed about a deadline.
     {
       name: 'an unrecognised status tag',

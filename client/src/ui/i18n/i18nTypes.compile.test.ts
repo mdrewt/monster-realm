@@ -129,11 +129,11 @@ const FIXTURES: readonly Fixture[] = [
     ],
   },
   {
-    // I18N-6 half 3 (mutation red-team survivor fix): the READONLY layer of the totality
-    // guarantee. Writing through a Catalog-typed parameter must not compile — TS2540 (cannot
-    // assign to a read-only property). Kills a mutant that drops `readonly` from Catalog's
-    // mapped type (a mutant the omit/partial fixtures above do NOT catch, since neither writes
-    // through an already-typed Catalog value).
+    // I18N-6 half 3: the READONLY layer of the totality guarantee. Writing through a
+    // Catalog-typed parameter must not compile — TS2540 (cannot assign to a read-only
+    // property). Kills a mutant that drops `readonly` from Catalog's mapped type (a mutant the
+    // omit/partial fixtures above do NOT catch, since neither writes through an already-typed
+    // Catalog value).
     name: 'bad-readonly',
     lines: [
       importFrom('type { Catalog }', MESSAGE_IDS_SPEC),
@@ -146,7 +146,7 @@ const FIXTURES: readonly Fixture[] = [
   },
   {
     // I18N-7 half 1: a missing required param property on tf() — TS2345 (a fresh object-literal
-    // argument reports on the argument, per plan §9 M2/red-team H3).
+    // argument reports on the argument).
     name: 'bad-params-missing',
     lines: [
       importFrom('{ tf }', RESOLVER_SPEC),
@@ -217,7 +217,7 @@ const FIXTURES: readonly Fixture[] = [
     // SHAPE-05: t is pinned to `(key: A11yKey | PlainMessageId) => string`, i.e. today
     // `(key: PlainMessageId) => string` since A11yKey = never. Widening the parameter to `string`
     // must not compile — TS2322. This is the TRANSITIVE ORACLE for the "importing a11yCopy
-    // widens A11yKey to string" hazard (ADR-0256 D4) — never delete this fixture as redundant.
+    // widens A11yKey to string" hazard — never delete this fixture as redundant.
     name: 'bad-t-wide',
     lines: [
       importFrom('{ t }', RESOLVER_SPEC),
@@ -395,7 +395,7 @@ describe('i18nTypes.compile — the i18n module compile-total guarantees (m24-s1
     const partialCodes = result.codesByFile.get('bad-partial.ts') ?? [];
     expect(partialCodes, `full tsc output:\n${result.output}`).toEqual(['TS2322']);
 
-    // The READONLY layer (mutation red-team survivor fix): writing through a Catalog-typed
+    // The READONLY layer: writing through a Catalog-typed
     // parameter must not compile — TS2540, killing a `readonly` drop from Catalog's mapped type.
     const readonlyCodes = result.codesByFile.get('bad-readonly.ts') ?? [];
     expect(readonlyCodes, `full tsc output:\n${result.output}`).toEqual(['TS2540']);

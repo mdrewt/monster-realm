@@ -1,4 +1,4 @@
-// render/camera.test.ts — FollowCamera unit tests (M11c + uxd1).
+// render/camera.test.ts — FollowCamera unit tests.
 //
 // SOURCE OF TRUTH: M11c EARS C1 (follow-camera math) AND
 // specs/monster-realm-v2/M-postgate-ux-design.spec.md §uxd1 criteria A5 / A5b / A6 / A6b:
@@ -15,13 +15,7 @@
 // The FollowCamera is a PURE computation: tile coordinates + view dimensions in,
 // pixel-space offset out. No DOM, no Pixi, no side effects. All inputs injected.
 //
-// RED REASON (uxd1): `camera.ts` has a SINGLE branch today —
-// `Math.max(0, Math.min(raw, Math.max(0, mapPx - view)))` — which PINS a smaller-than-
-// viewport map to the top-left at offset 0 (the literal playtest complaint: "tiny zones
-// stranded top-left"). The new per-axis CENTER branch does not exist, so every centering
-// assertion below (C1b, A5b, N3, N5) is RED by wrong-value, not by absence.
-//
-// UNIT CONTRACT CHANGE (uxd1): `viewW`/`viewH` now mean the EFFECTIVE viewport in SOURCE
+// UNIT CONTRACT CHANGE: `viewW`/`viewH` now mean the EFFECTIVE viewport in SOURCE
 // pixels (`cssPx / stageScale`), NOT CSS pixels. They are therefore NON-INTEGER in
 // production by construction — see the fractional-viewport tooth at the bottom.
 
@@ -33,7 +27,7 @@ import { FollowCamera } from './camera';
 // Constants
 // The camera works in pixel space. tile_px = 32 (from config.ts TILE_PX).
 // `offsetFor` converts tile coordinates to pixels internally.
-// Signature (per spec naming; UNCHANGED at 6 args, only the UNIT of view* changed):
+// Signature:
 //   camera.offsetFor(
 //     playerTileX: number,
 //     playerTileY: number,
@@ -82,7 +76,7 @@ describe('FollowCamera.offsetFor: class exists and is callable', () => {
 describe('FollowCamera C1a: follow formula (playerPx - viewW/2)', () => {
   it('BITES: player at (5,3) in 10×7 map, 160×112 viewport → tile-center formula result (M12.5d-4)', () => {
     // Map: 10×7, viewport: 160×112, player at (5,3) (center of map).
-    // Tile-CENTER formula (M12.5d-4): rawX = (5+0.5)*32 - 80 = 176-80 = 96; clamped=96
+    // Tile-CENTER formula: rawX = (5+0.5)*32 - 80 = 176-80 = 96; clamped=96
     //                                  rawY = (3+0.5)*32 - 56 = 112-56 = 56; clamped=56
     // OLD tile-CORNER formula:          rawX = 5*32 - 80 = 80; rawY = 3*32 - 56 = 40
     // Kills: an impl still using tile-corner formula (returns {x:80, y:40} instead of {x:96, y:56}).
@@ -115,7 +109,7 @@ describe('FollowCamera C1a: follow formula (playerPx - viewW/2)', () => {
 
 // ---------------------------------------------------------------------------
 // C1b — map SMALLER than the effective viewport: offset SHALL CENTER, per axis
-// (uxd1 A5 — this block replaces the old "→ (0,0)" top-left pin.)
+// (uxd1 A5.)
 // ---------------------------------------------------------------------------
 
 describe('FollowCamera C1b: map smaller than viewport → per-axis CENTER', () => {
@@ -199,8 +193,7 @@ describe('FollowCamera A5b: per-axis independence (one axis scrolls, the other c
 
 // ---------------------------------------------------------------------------
 // A6 — fractional EFFECTIVE viewport (SOURCE px = cssPx / stageScale).
-// After uxd1 the viewport args are non-integer BY CONSTRUCTION; nothing on
-// master covered that.
+// After uxd1 the viewport args are non-integer BY CONSTRUCTION.
 // ---------------------------------------------------------------------------
 
 describe('FollowCamera A6: fractional effective viewport (cssPx / stageScale)', () => {
@@ -247,7 +240,7 @@ describe('FollowCamera A6: fractional effective viewport (cssPx / stageScale)', 
 
 // ---------------------------------------------------------------------------
 // C1c — map boundary clamping (player at edge → no outside-map pixels shown)
-// (uxd1: all five are SCROLL-branch cases — kept verbatim as the A6 guard.)
+// (uxd1: all five are SCROLL-branch cases.)
 // ---------------------------------------------------------------------------
 
 describe('FollowCamera C1c: clamping at map boundaries', () => {
@@ -290,7 +283,7 @@ describe('FollowCamera C1c: clamping at map boundaries', () => {
     // tile-center: rawX = (3+0.5)*32-128=-16 → 0; rawY = (7+0.5)*32-32=208; max=192 → 192
     // Kills: an impl that couples x/y clamping or uses wrong axis for each.
     //
-    // uxd1: this is ALREADY a per-axis + `+0` guard and stays verbatim. x hits the
+    // This is ALREADY a per-axis + `+0` guard and stays verbatim. x hits the
     // `mapPx === viewW` boundary (256 === 256) so the correct `>=` takes the SCROLL branch
     // and yields `+0`; a `>` impl centers and yields `-0`, which `toBe(0)` rejects via
     // Object.is. y (256 >= 64) scrolls and clamps 208 → 192 on the SAME call, so an impl
@@ -317,7 +310,7 @@ describe('FollowCamera C1d: pure computation (no side effects)', () => {
 
   it('BITES: interleaved calls with different args do not corrupt each other', () => {
     // Kills: an impl that accumulates state from prior calls.
-    // Values updated for tile-center formula (M12.5d-4):
+    // Values updated for tile-center formula:
     // player (5,3) with 160×112 viewport in 10×7 map → x=96, y=56
     // ((5+0.5)*32 - 80 = 96; (3+0.5)*32 - 56 = 56)
     const cam = new FollowCamera();
@@ -390,7 +383,7 @@ describe('FollowCamera properties: per-axis scroll range and centering symmetry'
     // "Centered" IS leftGap === rightGap. This is the spec statement (A5), not a copy of
     // the implementation's expression — it constrains the offset without naming it.
     // Kills:
-    //   - the CURRENT top-left pin (offset 0 → leftGap 0, rightGap view-mapPx > 0);
+    //   - the top-left pin (offset 0 → leftGap 0, rightGap view-mapPx > 0);
     //   - a sign-flipped center (+D/2 → leftGap -D/2 vs rightGap 1.5·D);
     //   - an off-by-half-tile center (gaps differ by 32);
     //   - any residual player-tracking on the centered axis (asymmetric gaps).
@@ -423,8 +416,7 @@ describe('FollowCamera properties: per-axis scroll range and centering symmetry'
 });
 
 // =============================================================================
-// M12.5d-4: FollowCamera centers on tile CENTER (+0.5 tile offset)
-// SOURCE OF TRUTH: M12.5d spec §4 "Camera: center on tile center not tile corner"
+// FollowCamera centers on tile CENTER (+0.5 tile offset)
 //
 // The concrete difference: player at tile 5, TILE_PX=32:
 //   OLD (corner): rawX = 5*32 - viewW/2 = 160 - 80 = 80
@@ -463,7 +455,7 @@ describe('FollowCamera M12.5d-4: centers on tile CENTER (+0.5 tile offset)', () 
     // Kills: any impl using the tile-corner formula (playerX * TILE_PX - viewW/2) — it is
     // off by exactly half a tile (16 px) on every unclamped draw.
     //
-    // GENERATOR CONSTRAINT (uxd1, load-bearing): mapW >= 20 ⟹ mapPxW >= 640 >= viewW, and
+    // GENERATOR CONSTRAINT (load-bearing): mapW >= 20 ⟹ mapPxW >= 640 >= viewW, and
     // mapH >= 15 ⟹ mapPxH >= 480 >= viewH, so EVERY draw is on the scroll branch on BOTH
     // axes. Without this, viewW > mapPxW draws would reach the CENTER branch, where this
     // clamp expression is simply the wrong law — it would false-RED a CORRECT impl, which
@@ -490,7 +482,7 @@ describe('FollowCamera M12.5d-4: centers on tile CENTER (+0.5 tile offset)', () 
           const playerX = Math.min(rawPX, mapW - 1);
           const playerY = Math.min(rawPY, mapH - 1);
           const off = cam.offsetFor(playerX, playerY, viewW, viewH, mapW, mapH);
-          // Tile-center formula (M12.5d-4), scroll branch only:
+          // Tile-center formula, scroll branch only:
           const expectedX = clamp((playerX + 0.5) * TILE_PX - viewW / 2, 0, mapW * TILE_PX - viewW);
           const expectedY = clamp((playerY + 0.5) * TILE_PX - viewH / 2, 0, mapH * TILE_PX - viewH);
           expect(off.x).toBeCloseTo(expectedX, 5);

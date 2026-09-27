@@ -1,5 +1,4 @@
 // ui/raisingModel.ts — pure view-model for the raising/inventory screen (M9c).
-// SOURCE OF TRUTH: specs/monster-realm-v2/M9-raising.spec.md
 // Tests the pure function buildRaisingViewModel — no DOM, no SDK, no side effects.
 // All inputs are plain objects; deterministic; node-only.
 import * as fc from 'fast-check';
@@ -85,7 +84,7 @@ function trainItemDef(id: number, trainStat: string): StoreItemRow {
 }
 
 // ---------------------------------------------------------------------------
-// Criterion 1 — Server-DERIVED stats, NO client recompute (ADR-0016)
+// Criterion 1 — Server-DERIVED stats, NO client recompute
 // ---------------------------------------------------------------------------
 
 describe('buildRaisingViewModel: server-derived stats (ADR-0016, criterion 1)', () => {
@@ -111,7 +110,7 @@ describe('buildRaisingViewModel: server-derived stats (ADR-0016, criterion 1)', 
     expect(mon.statSpeed).toBe(666);
     expect(mon.statSpAttack).toBe(555);
     expect(mon.statSpDefense).toBe(444);
-    // EG4-4: `bond` is retired; the status line now reads the server-derived trust tier,
+    // `bond` is retired; the status line now reads the server-derived trust tier,
     // copied VERBATIM (contract §E — "verbatim copy, no derivation").
     expect(mon.trustTier).toBe('Devoted');
     expect(mon.level).toBe(5);
@@ -162,7 +161,7 @@ describe('buildRaisingViewModel: server-derived stats (ADR-0016, criterion 1)', 
 
   it('BITES fast-check property (EG4-4): trustTier and level copied verbatim from StoreMonsterPub', () => {
     // EG4-4 replaces the retired `bond` property test. `trustTier` is a VERBATIM copy
-    // (contract §E) — the tier is derived SERVER-side (EG1-6) and the client must never
+    // (contract §E) — the tier is derived SERVER-side and the client must never
     // re-derive it.
     // Kills: any client-side re-derivation, any clamp, and any "default to the lowest
     // tier" fallback — the arbitrary sweeps all five tiers, so a constant answer

@@ -1,9 +1,4 @@
 // ui/tradeModel.test.ts — m15b RED-phase tests for buildTradeViewModel.
-// SOURCE OF TRUTH: specs/monster-realm-v2/M15-trading.spec.md (m15b scope)
-//
-// Tests are INTENTIONALLY RED until tradeModel.ts is implemented.
-// Do NOT edit to match a buggy implementation — correct from the spec only.
-// Corrections must be traced back to the spec and must not weaken the bite.
 //
 // Contract: buildTradeViewModel(offers, identity, speciesMap, itemDefs) -> TradeScreenViewModel
 //   - TradeScreenViewModel = TradeOfferViewModel | NoTradeViewModel
@@ -446,8 +441,7 @@ describe('buildTradeViewModel [m15b-TM-6]: total safety — never throws on any 
     // TypeScript compile error (StoreTradeOffer.status narrowed to
     // 'Pending' | 'ConfirmedByCounterparty' per 16.5c-2).
     // This test verifies the runtime invariant: both known statuses produce a
-    // non-throwing result. Previously tested 'SomeFutureStatus' — that is now
-    // a compile-time error and no longer valid here.
+    // non-throwing result.
     //
     // Kills: an impl that crashes on one of the two valid status values (e.g.
     // only handles 'Pending' and throws on 'ConfirmedByCounterparty').
@@ -703,7 +697,7 @@ describe('buildTradeViewModel [m15b-TM-10]: property — never throws on any val
               }),
               { maxLength: 3 },
             ),
-            // 16.5c-2: status narrowed to 'Pending' | 'ConfirmedByCounterparty' — 'UnknownFutureStatus'
+            // Status narrowed to 'Pending' | 'ConfirmedByCounterparty' — 'UnknownFutureStatus'
             // removed because it is now a TypeScript compile error at the call site.
             status: fc.constantFrom('Pending', 'ConfirmedByCounterparty'),
             createdAtMs: fc.bigInt({ min: 0n, max: 999999n }),
@@ -769,9 +763,7 @@ describe('buildTradeViewModel [m15b-TM-11]: property — initiator role detectio
 });
 
 // ---------------------------------------------------------------------------
-// [m16.5c-TM-12] Exhaustive switch — type-safe status (16.5c-2)
-//
-// SOURCE OF TRUTH: M16.5-ninth-review-residuals.spec.md §16.5c-2
+// [m16.5c-TM-12] Exhaustive switch — type-safe status
 //
 // CONTRACT:
 //   - StoreTradeOffer.status is narrowed to 'Pending' | 'ConfirmedByCounterparty'.
@@ -781,12 +773,6 @@ describe('buildTradeViewModel [m15b-TM-11]: property — initiator role detectio
 //   - All 4 cells of the action table (role × status) must produce the correct
 //     actions and statusLabel with NO fallthrough or default catch-all that would
 //     mask a missing case.
-//
-// RED REASON:
-//   The current deriveActionsAndLabel uses an if/else chain — not a switch — which
-//   TS cannot verify as exhaustive.  After fix: it becomes a switch on status with
-//   an explicit `default: satisfies never` guard so adding a third status value
-//   without a case arm is a compile-time error.
 //
 // [m16.5c-TM-12a] BITES: all 4 role×status cells produce correct actions and labels
 //   Tests the full 2×2 action table exhaustively in a single test.
