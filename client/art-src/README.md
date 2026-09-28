@@ -42,7 +42,7 @@ pixel-for-pixel under a deferred light pass.
   deliberately *contrast* the green terrain so he stays readable on grass (the readability rule).
 - **Neutrally lit albedo.** Gentle, symmetric form-shading only — **no baked directional shadows**
   — so every frame doubles as an albedo for a later HD-2D normal-map + lighting pass (additive,
-  render-only; ADR-0004 / `characterView.ts` `AssetProvider` seam). The only baked light is a
+  render-only; the `characterView.ts` `AssetProvider` seam). The only baked light is a
   faint, low-alpha contact shadow under the hero/props, kept subtle so a future light pass wins.
 
 ## Hero sheet layout (`hero.json`)
