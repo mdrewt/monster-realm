@@ -150,8 +150,10 @@ mutate-core:
     fi
 
 # Server-module survivor-count ratchet (ADR-0050 A2); the crate is `monster-realm-module`.
-# The de-bloat lanes recorded ~5 defended-equivalent survivors; Phase-3 triage rebaselines the cap.
-mutate-server cap="324":
+# Cap rebaselined by the Phase-3 mutants triage (RC-mutate-server): full run at 428314e = 1151
+# mutants, 31 missed (29 accepted, one MUT-server-* ledger row per file, + 2 stale-build flakes),
+# 1 timeout (evolution.rs check_and_evolve `+=` -> `*=`, counted as caught); cap = 31 + 3 headroom.
+mutate-server cap="34":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{cap}}" in
