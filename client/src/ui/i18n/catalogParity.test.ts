@@ -1236,5 +1236,50 @@ describe('catalogParity (M24 S7, ADR-0263 §5.3)', () => {
         setLocale('en');
       }
     });
+
+    it('21r-b FR-04: every one of the 15 new keys has a CATALOG_FR value strictly different from CATALOG_EN (kills an untranslated copy-through, red-team S3)', () => {
+      // The aggregate FR-01 tally (>=100/133 differ) can pass even while ONE specific key was
+      // copy-pasted from en into fr — this test names each of the 15 new keys individually so a
+      // single untranslated copy-through (e.g. 'trade.feedback.completed': 'Trade complete!'
+      // left unchanged in catalog.fr.ts) fails BY NAME, not just a lowered aggregate count.
+      const NEW_KEYS_21R_B: readonly string[] = [
+        'chrome.feedback.disconnected',
+        'chrome.rename.updated',
+        'chrome.session.expired.title',
+        'chrome.session.expired.body',
+        'chrome.session.unreachable.title',
+        'chrome.session.unreachable.body',
+        'chrome.session.continue',
+        'chrome.session.confirmPrompt',
+        'shop.feedback.purchased',
+        'shop.feedback.sold',
+        'trade.feedback.accepted',
+        'trade.feedback.rejected',
+        'trade.feedback.completed',
+        'trade.feedback.cancelled',
+        'tradePropose.feedback.sent',
+      ];
+      expect(NEW_KEYS_21R_B.length, 'ANTI-VACUITY: the 21r-b plan names exactly 15 new keys').toBe(
+        15,
+      );
+
+      const en = CATALOG_EN as Record<string, unknown>;
+      const fr = CATALOGS.fr as unknown as Record<string, unknown> | undefined;
+      expect(fr, 'CATALOGS.fr must be defined').not.toBe(undefined);
+      const safeFr = fr as Record<string, unknown>;
+
+      let checked = 0;
+      for (const key of NEW_KEYS_21R_B) {
+        expect(typeof en[key], `${key} must be a plain string in en`).toBe('string');
+        expect(typeof safeFr[key], `${key} must be a plain string in fr`).toBe('string');
+        expect(
+          safeFr[key],
+          `${key}: fr must differ from en — an untranslated copy-through (e.g. leaving ` +
+            `'${key}' as the English bytes in catalog.fr.ts) must fail HERE, by name`,
+        ).not.toBe(en[key]);
+        checked += 1;
+      }
+      expect(checked, 'ANTI-VACUITY: all 15 keys must have been checked').toBe(15);
+    });
   });
 });

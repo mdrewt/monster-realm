@@ -359,7 +359,7 @@ const EXPECTED_PLAIN: Record<string, string> = {
   // trade-propose confirmation and the six session-overlay strings (sessionModel.ts:124-134).
   // Every value is byte-transcribed from the pre-migration literal at the cited main.ts/
   // sessionModel.ts line (memory/projects/monster-realm-21r-b-plan.md's key table).
-  'chrome.feedback.disconnected': 'disconnected — try again', // main.ts (10 guarded sites) / careAction.ts / sessionModel.ts
+  'chrome.feedback.disconnected': 'disconnected — try again', // main.ts (8 guarded sites) / careAction.ts / sessionModel.ts
   'shop.feedback.purchased': 'Purchase complete!', // main.ts:2643
   'shop.feedback.sold': 'Sale complete!', // main.ts:2658
   'trade.feedback.accepted': 'Trade accepted!', // main.ts:2675
