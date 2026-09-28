@@ -955,6 +955,24 @@ fn data_lifecycle_via_join_parents_live_and_unchained() {
     }
 }
 
+/// The runtime twin of schema.rs's compile-time `manifest_is_wellformed`: the
+/// manifest is non-empty, and every entry names a table and carries non-empty
+/// basis prose. (That const fn is private to schema.rs and only const-evaluated,
+/// so its own mutants are unreachable from any test; this pins the invariant.)
+#[test]
+fn data_lifecycle_manifest_entries_name_a_table_and_a_basis() {
+    let manifest: &[DataLifecycleEntry] = DATA_LIFECYCLE_MANIFEST;
+    assert!(!manifest.is_empty(), "the manifest classifies tables");
+    for entry in manifest {
+        assert!(!entry.table.is_empty(), "an entry with no table name");
+        assert!(
+            !entry.basis.trim().is_empty(),
+            "`{}` carries no basis prose",
+            entry.table
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // T4 / X6 — EXPORT SCOPE, AS A POSITIVE BIJECTION.
 // ---------------------------------------------------------------------------
@@ -6542,6 +6560,255 @@ mod acct_nh {
             Err("export_reject_pending_deletion".to_string())
         );
         assert_eq!(encs(&chunks_of(&w, b)), b_before);
+    }
+
+    /// Every exportable table's chunk carries EXACTLY the caller's rows: one
+    /// seeded own row per single-owner table, and for the three dual-column
+    /// tables (trade_offer, battle_challenge, battle) the row the caller
+    /// initiated, the row naming the caller only in the second column, and the
+    /// caller's self-row — each exactly once — while a row between two
+    /// strangers never appears. Rows are counted by their row-opening key, so
+    /// an empty, blank or placeholder exporter and a doubled or dropped row all
+    /// fail. (The admission/stamp contract is the acct_export_* tests above;
+    /// this is the `rows_*` projection and owner-filter surface.)
+    ///
+    /// kills: any `rows_*` exporter replaced by an empty / blank / placeholder
+    /// row list; the trailing dedup filter in rows_trade_offer,
+    /// rows_battle_challenge or rows_battle inverted (drops the second-column
+    /// row and doubles the self-row).
+    #[test]
+    fn acct_export_chunks_carry_exactly_the_callers_rows_per_table() {
+        let fx = fixture();
+        let w = world(&fx);
+        let (a, b, c) = (id(0xC1), id(0xC2), id(0xC3));
+        for (who, k) in [(a, 1u64), (b, 2)] {
+            seed_rekey_rows(&w, who, k);
+            w.player.seed(&player_row(who, 1400 + k, "p"));
+            w.character.seed(&character_row(1400 + k));
+            w.account
+                .seed(&crate::accounts::new_account_row(who, format!("iss{k}"), 1));
+            w.conversation.seed(&PlayerConversation {
+                owner_identity: who,
+                npc_entity_id: 60 + k,
+                current_node_id: format!("n{k}"),
+            });
+            w.playtest.seed(&PlaytestEvent {
+                event_id: 700 + k,
+                identity: who,
+                kind: 1,
+                created_at_ms: 1,
+                battle_id: 0,
+                species_id: 1,
+                hp_permille: 1,
+                bait_item_id: 0,
+                success: false,
+            });
+        }
+        // Dual-column tables: a->b, b->a, a->a, b->c.
+        for (n, x, y) in [(1u64, a, b), (2, b, a), (3, a, a), (4, b, c)] {
+            w.trade.seed(&trade_row(7300 + n, x, y));
+            w.challenge
+                .seed(&challenge_row(7500 + n, x, y, ChallengeStatus::Pending));
+            let mut bt = battle_row(x, y);
+            bt.battle_id = 7700 + n;
+            w.battle.seed(&bt);
+        }
+        assert_eq!(export_as(&fx, a, T0), Ok(()));
+
+        let chunks = chunks_of(&w, a);
+        let payload = |table: &str| -> String {
+            let got: Vec<&ExportBundle> = chunks.iter().filter(|c| c.table_name == table).collect();
+            assert_eq!(got.len(), 1, "one `{table}` chunk");
+            got[0].payload_json.clone()
+        };
+        let q = |s: String| format!("\"{s}\"");
+        let me = q(a.to_string());
+        // (table, row-opening key, the values the caller's rows open with).
+        let cases: Vec<(&str, &str, Vec<String>)> = vec![
+            ("monster", "monster_id", vec![q("101".into())]),
+            ("monster_pub", "monster_id", vec![q("101".into())]),
+            ("inventory", "inv_id", vec![q("201".into())]),
+            ("player_quest", "pq_id", vec![q("301".into())]),
+            ("player_dialogue_state", "owner_identity", vec![me.clone()]),
+            ("player_conversation", "owner_identity", vec![me.clone()]),
+            ("heal_cooldown", "owner_identity", vec![me.clone()]),
+            ("player_wallet", "owner_identity", vec![me.clone()]),
+            ("playtest_event", "event_id", vec![q("701".into())]),
+            (
+                "trade_offer",
+                "trade_id",
+                vec![q("7301".into()), q("7302".into()), q("7303".into())],
+            ),
+            (
+                "battle_challenge",
+                "challenge_id",
+                vec![q("7501".into()), q("7502".into()), q("7503".into())],
+            ),
+            ("player", "identity", vec![me.clone()]),
+            ("profile", "identity", vec![me.clone()]),
+            ("account", "identity", vec![me.clone()]),
+            (
+                "battle",
+                "battle_id",
+                vec![q("7701".into()), q("7702".into()), q("7703".into())],
+            ),
+            ("character", "entity_id", vec![q("1401".into())]),
+        ];
+        for (table, key, want) in &cases {
+            let p = payload(table);
+            let opener = format!("{{\"{key}\":");
+            assert_eq!(
+                p.matches(&opener).count(),
+                want.len(),
+                "`{table}` carries exactly the caller's {} row(s): {p}",
+                want.len()
+            );
+            for v in want {
+                assert_eq!(
+                    p.matches(&format!("{opener}{v}")).count(),
+                    1,
+                    "`{table}` carries the caller's row {v} exactly once: {p}"
+                );
+            }
+        }
+        let mut covered: Vec<&str> = cases.iter().map(|(t, _, _)| *t).collect();
+        covered.push("battle_action");
+        covered.sort_unstable();
+        assert_eq!(
+            covered,
+            exportable_tables(),
+            "every exportable table is checked here (battle_action is covered by \
+             its own-row predicate tests)"
+        );
+    }
+
+    /// The shared disconnect/cascade dispatcher actually resolves: the
+    /// subject's live trade (as counterparty) is cancelled and its outgoing
+    /// pending challenge withdrawn, while a trade and a challenge between two
+    /// strangers are untouched. (The deletion cascade later erases these same
+    /// rows by owner, which is why the cascade test cannot see the dispatcher.)
+    ///
+    /// kills: resolve_all_live_interactions replaced by a no-op.
+    #[test]
+    fn acct_resolve_all_live_interactions_cancels_trades_and_challenges() {
+        let fx = fixture();
+        let w = world(&fx);
+        let (a, b, c) = (id(0xE1), id(0xE2), id(0xE3));
+        w.trade.seed(&trade_row(1, b, a));
+        w.trade.seed(&trade_row(2, b, c));
+        w.challenge
+            .seed(&challenge_row(3, a, b, ChallengeStatus::Pending));
+        w.challenge
+            .seed(&challenge_row(4, b, c, ChallengeStatus::Pending));
+        crate::resolve_all_live_interactions(&fx.ctx(), a);
+        let trades: Vec<u64> = w.trade.rows().iter().map(|t| t.trade_id).collect();
+        assert_eq!(trades, vec![2], "a's trade cancelled, the strangers' kept");
+        let challenges: Vec<u64> = w.challenge.rows().iter().map(|c| c.challenge_id).collect();
+        assert_eq!(
+            challenges,
+            vec![4],
+            "a's challenge withdrawn, the strangers' kept"
+        );
+    }
+
+    /// The three owner-scoped read views, run through the runtime's view entry
+    /// point: `my_monster_pub` returns exactly the caller's projections,
+    /// `my_battle` returns every battle the caller is in exactly once (the
+    /// self-battle included, a strangers' battle excluded), and
+    /// `my_pending_evolution_notices` returns the caller's notice or nothing.
+    ///
+    /// kills: each view replaced by an empty result; my_battle's trailing
+    /// dedup filter inverted.
+    #[test]
+    fn acct_owner_scoped_views_return_exactly_the_callers_rows() {
+        use crate::native_host_tests::{
+            VIEW_MY_BATTLE, VIEW_MY_MONSTER_PUB, VIEW_MY_PENDING_EVOLUTION_NOTICES,
+        };
+        let fx = fixture();
+        let w = world(&fx);
+        let _ = fx.table::<MonsterPub>("monster_pub", "owner_identity", |r| r.owner_identity);
+        let (a, b, c) = (id(0xD1), id(0xD2), id(0xD3));
+        seed_rekey_rows(&w, a, 1);
+        seed_rekey_rows(&w, b, 2);
+        let extra = crate::marshal::pub_from_monster(&monster_row(111, a), 0);
+        w.monster_pub.seed(&extra);
+        let mut battles = Vec::new();
+        for (n, x, y) in [(1u64, a, b), (2, b, a), (3, a, a), (4, b, c)] {
+            let mut bt = battle_row(x, y);
+            bt.battle_id = 7700 + n;
+            w.battle.seed(&bt);
+            battles.push(bt);
+        }
+
+        let pubs_of = |who: Identity| -> Vec<Vec<u8>> {
+            encs(
+                &w.monster_pub
+                    .rows()
+                    .into_iter()
+                    .filter(|p| p.owner_identity == who)
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let seen_pubs = |who: Identity| encs(&fx.call_view::<MonsterPub>(VIEW_MY_MONSTER_PUB, who));
+        assert_eq!(pubs_of(a).len(), 2);
+        assert_eq!(seen_pubs(a), pubs_of(a));
+        assert_eq!(seen_pubs(b), pubs_of(b));
+        assert!(seen_pubs(c).is_empty(), "a stranger sees no projections");
+
+        let seen_battles =
+            |who: Identity| encs(&fx.call_view::<crate::schema::Battle>(VIEW_MY_BATTLE, who));
+        assert_eq!(
+            seen_battles(a),
+            encs(&battles[..3]),
+            "a's battles: initiated, second-column and self — each exactly once"
+        );
+        assert_eq!(seen_battles(c), encs(&battles[3..]));
+
+        let notices = |who: Identity| {
+            encs(&fx.call_view::<PendingEvolutionNotice>(VIEW_MY_PENDING_EVOLUTION_NOTICES, who))
+        };
+        let own = |who: Identity| {
+            encs(
+                &w.notice
+                    .rows()
+                    .into_iter()
+                    .filter(|n| n.owner_identity == who)
+                    .collect::<Vec<_>>(),
+            )
+        };
+        assert_eq!(own(a).len(), 1);
+        assert_eq!(notices(a), own(a));
+        assert_eq!(notices(b), own(b));
+        assert!(notices(c).is_empty(), "no notice row, no result");
+    }
+
+    /// `my_export_bundle` returns exactly the caller's export chunks (the
+    /// client's only read path to its own bundle), never another subject's.
+    ///
+    /// kills: the view replaced by an empty result.
+    #[test]
+    fn acct_my_export_bundle_view_returns_only_the_callers_chunks() {
+        use crate::native_host_tests::VIEW_MY_EXPORT_BUNDLE;
+        let fx = fixture();
+        let w = world(&fx);
+        let (a, b, c) = (id(0xF1), id(0xF2), id(0xF3));
+        w.export.seed(&export_row(1, a, 10));
+        w.export.seed(&export_row(2, a, 10));
+        w.export.seed(&export_row(3, b, 11));
+        let chunks_of = |who: Identity| {
+            encs(
+                &w.export
+                    .rows()
+                    .into_iter()
+                    .filter(|r| r.owner_identity == who)
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let seen = |who: Identity| encs(&fx.call_view::<ExportBundle>(VIEW_MY_EXPORT_BUNDLE, who));
+        assert_eq!(chunks_of(a).len(), 2);
+        assert_eq!(seen(a), chunks_of(a));
+        assert_eq!(seen(b), chunks_of(b));
+        assert!(seen(c).is_empty(), "no bundle, no chunks");
     }
 
     /// with every millisecond of the probe window already carrying a live

@@ -468,6 +468,18 @@ fn m22s4_str(s: &str) -> String {
     out
 }
 
+/// The control-character escape boundary is EXACTLY below U+0020: U+001F is
+/// escaped as `\u001f`, while the space (U+0020) passes through verbatim.
+///
+/// kills: the control-character test widened from `<` to `<=` (every space in
+/// an exported string would become `\u0020`).
+#[test]
+fn json_escape_boundary_is_below_space() {
+    assert_eq!(m22s4_esc("\u{1f}"), "\\u001f");
+    assert_eq!(m22s4_esc("a b"), "a b");
+    assert_eq!(m22s4_str(" "), "\" \"");
+}
+
 /// `json_u64_into` over a fresh buffer.
 fn m22s4_u64_out(v: u64) -> String {
     let mut out = String::new();

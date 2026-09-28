@@ -1075,6 +1075,18 @@ unsafe extern "C" {
     /// `#[spacetimedb::view(accessor = my_conversation, public)]` in schema.rs.
     #[link_name = "__preinit__20_register_describer_my_conversation"]
     fn register_view_my_conversation();
+    /// `#[spacetimedb::view(accessor = my_monster_pub, public)]` in schema.rs.
+    #[link_name = "__preinit__20_register_describer_my_monster_pub"]
+    fn register_view_my_monster_pub();
+    /// `#[spacetimedb::view(accessor = my_battle, public)]` in schema.rs.
+    #[link_name = "__preinit__20_register_describer_my_battle"]
+    fn register_view_my_battle();
+    /// `#[spacetimedb::view(accessor = my_pending_evolution_notices, public)]` in schema.rs.
+    #[link_name = "__preinit__20_register_describer_my_pending_evolution_notices"]
+    fn register_view_my_pending_evolution_notices();
+    /// `#[spacetimedb::view(accessor = my_export_bundle, public)]` in privacy.rs.
+    #[link_name = "__preinit__20_register_describer_my_export_bundle"]
+    fn register_view_my_export_bundle();
     /// spacetimedb 2.8.1 `rt.rs:1267` (`#[unsafe(no_mangle)]`).
     fn __call_view__(
         id: usize,
@@ -1088,10 +1100,14 @@ unsafe extern "C" {
 }
 
 /// Registered in this order, so a view's `VIEWS` id is its index here.
-const VIEW_DESCRIBERS: [unsafe extern "C" fn(); 3] = [
+const VIEW_DESCRIBERS: [unsafe extern "C" fn(); 7] = [
     register_view_my_wallet,
     register_view_my_account,
     register_view_my_conversation,
+    register_view_my_monster_pub,
+    register_view_my_battle,
+    register_view_my_pending_evolution_notices,
+    register_view_my_export_bundle,
 ];
 
 /// `VIEWS` id of `my_wallet` (its index in [`VIEW_DESCRIBERS`]).
@@ -1102,6 +1118,18 @@ pub(crate) const VIEW_MY_ACCOUNT: usize = 1;
 
 /// `VIEWS` id of `my_conversation` (its index in [`VIEW_DESCRIBERS`]).
 pub(crate) const VIEW_MY_CONVERSATION: usize = 2;
+
+/// `VIEWS` id of `my_monster_pub` (its index in [`VIEW_DESCRIBERS`]).
+pub(crate) const VIEW_MY_MONSTER_PUB: usize = 3;
+
+/// `VIEWS` id of `my_battle` (its index in [`VIEW_DESCRIBERS`]).
+pub(crate) const VIEW_MY_BATTLE: usize = 4;
+
+/// `VIEWS` id of `my_pending_evolution_notices` (its index in [`VIEW_DESCRIBERS`]).
+pub(crate) const VIEW_MY_PENDING_EVOLUTION_NOTICES: usize = 5;
+
+/// `VIEWS` id of `my_export_bundle` (its index in [`VIEW_DESCRIBERS`]).
+pub(crate) const VIEW_MY_EXPORT_BUNDLE: usize = 6;
 
 const VIEW_SINK: u32 = 0x71E5;
 
