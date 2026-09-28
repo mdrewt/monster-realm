@@ -874,8 +874,15 @@ export function connect(opts: ConnectionOptions): Connection {
     wireTables(conn);
     // dev-observability: wrap AFTER wireTables so the inbound row callbacks
     // stay wired to the RAW connection. Identity when opts.onSend is undefined.
-    return wrapReducerLogging(conn, opts.onSend);
+    const wrapped = wrapReducerLogging(conn, opts.onSend);
+    rawConnectionOf.set(wrapped, conn);
+    return wrapped;
   }
+
+  // Wrapped (logging) connection -> the RAW connection it wraps. startSignIn sends the claim
+  // code, a bearer secret, and must bypass the dev reducer-arg logger exactly as the
+  // completeGuestClaim reissue does.
+  const rawConnectionOf = new WeakMap<DbConnection, DbConnection>();
 
   // The current live connection, undefined until an attempt builds one (and reset
   // to undefined by the parked session terminals). Declared immediately after build().
@@ -968,22 +975,44 @@ export function connect(opts: ConnectionOptions): Connection {
     void attemptBuild();
   }
 
-  /** AUTH-48: mint the claim code (so the return-leg reissue has one), then hand off to the OIDC
-   *  redirect. beginSignIn is TOTAL (never rejects, oidc.ts C1) — the .catch is a belt only. On a
-   *  'ready' result the tab leaves the page; any other kind degrades to the claim UI's failure copy
-   *  (the intended behaviour against the `.invalid` placeholder issuer until a real issuer is deployed). */
+  /** AUTH-48: mint the claim code, register it with `start_guest_claim` while still connected as
+   *  the GUEST (ADR-0179 D3: the code is written to storage BEFORE the reducer call, and only that
+   *  reducer inserts the row `complete_guest_claim` later resolves), and only once the registration
+   *  has SETTLED hand off to the OIDC redirect (the redirect leaves the page). A registration that
+   *  cannot happen — no live link, no CSPRNG, or a refused reducer — BLOCKS sign-in: the code is
+   *  cleared and the claim UI shows the transient-error copy, because signing in without a
+   *  registered code would silently strand the guest's progress. beginSignIn is TOTAL (never
+   *  rejects, oidc.ts C1) — its .catch is a belt only. On a 'ready' result the tab leaves the page;
+   *  any other kind degrades to the claim UI's failure copy (the intended behaviour against the
+   *  `.invalid` placeholder issuer until a real issuer is deployed) and KEEPS the registered code. */
   function startSignIn(): void {
-    claimCode.mint(globalThis, opts.uri, opts.db);
-    // Bound to a short local so biome keeps `oidc.beginSignIn(` on one line (G-teeth pin it
-    // contiguous — a broken chain squashes to `oidc .beginSignIn(` and reads as a missing call).
+    const live = current === undefined ? undefined : rawConnectionOf.get(current);
+    if (live === undefined || linkFrozen(state)) {
+      opts.onSignInFailed?.('transient-error');
+      return;
+    }
+    const code = claimCode.mint(globalThis, opts.uri, opts.db);
+    if (code === undefined) {
+      opts.onSignInFailed?.('transient-error');
+      return;
+    }
+    // On the RAW connection (never the logging wrapper): `code` is a bearer secret.
+    const registration = live.reducers.startGuestClaim({ code });
+    registration.then(beginOidcRedirect, () => {
+      claimCode.clear(globalThis, opts.uri, opts.db);
+      opts.onSignInFailed?.('transient-error');
+    });
+  }
+
+  function beginOidcRedirect(): void {
+    // Bound to a short local so biome keeps `oidc.beginSignIn(` on one line.
     const flow = oidc.beginSignIn();
     flow
       .then((result) => {
         if (result.kind === 'ready') {
           // `location?` guards a non-browser host; the navigation target is textually the URL
-          // beginSignIn produced (G-teeth pin `.assign(result.authorizationUrl` contiguous, hence
-          // the short-bound `nav` so biome does not break the call). A missing `assign` (never in a
-          // real browser) throws into the `.catch` belt below.
+          // beginSignIn produced. A missing `assign` (never in a real browser) throws into the
+          // `.catch` belt below.
           const nav = (globalThis as { location?: { assign(u: string): void } }).location;
           nav?.assign(result.authorizationUrl);
         } else {
