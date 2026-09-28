@@ -32,7 +32,7 @@ const CONTROLS: readonly { readonly key: string; readonly action: string }[] = [
   { key: 'T', action: 'Interact — talk to an NPC, shop at a shopkeeper, heal at a heal tile' },
   { key: 'B', action: 'Open the monster Box' },
   { key: 'I', action: 'Open Inventory / raise a monster' },
-  { key: 'E', action: 'Open Evolution / fuse monsters' },
+  { key: 'E', action: 'Open Evolution' },
   { key: 'Q', action: 'Open the Quest log' },
   { key: 'U', action: 'View an incoming trade' },
   { key: 'P', action: 'Challenge a nearby player to a PvP battle' },

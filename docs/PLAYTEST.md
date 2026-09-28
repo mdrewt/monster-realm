@@ -56,8 +56,7 @@ close it; pressing another hotkey over it does nothing, except that Box, Invento
 Evolution swap with each other. A battle that starts closes most open overlays, but
 never an NPC conversation. There is
 no separate shop or heal key: stand next to a shopkeeper, or on a heal tile, and press
-`T`. The in-game help and menu still say "Evolution / fuse monsters" and "Evolve &
-Fuse". Fusion no longer exists; the overlay is evolution only.
+`T`.
 
 ## 3. Your first fifteen minutes
 
@@ -101,8 +100,9 @@ grace, and you can cancel).
 3. Send the file with one sentence on what you did and what you expected, on the
    feedback channel (ask Drew for the current destination).
 
-Known rough edges: placeholder art, the help overlay does not open by itself on first
-join (press `?`), and the stale "fuse" wording noted above.
+Known rough edges: placeholder art, and the help overlay does not open by itself on
+first join (press `?`). The help list and menu labels are English-only even under the
+French locale.
 
 ## 6. Accessibility: the manual screen-reader protocol
 

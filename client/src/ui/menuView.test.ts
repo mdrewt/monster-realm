@@ -255,11 +255,7 @@ const CATEGORY_VM = vmOf([
 ]);
 
 const PARTY_VM = vmOf(
-  [
-    row(0, 'Monster Box', 'B', true),
-    row(1, 'Backpack & Raising', 'I'),
-    row(2, 'Evolve & Fuse', 'E'),
-  ],
+  [row(0, 'Monster Box', 'B', true), row(1, 'Backpack & Raising', 'I'), row(2, 'Evolve', 'E')],
   'Party',
   'Escape / ← — back',
   'leaves',
