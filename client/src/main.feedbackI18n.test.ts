@@ -53,19 +53,34 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ConnectionOptions } from './net/connection';
-import type { StoreItemRow, StoreShopItemRow, StoreShopRow, StoreWallet } from './net/store';
+import type {
+  StoreInventory,
+  StoreItemRow,
+  StoreShopItemRow,
+  StoreShopRow,
+  StoreWallet,
+} from './net/store';
 import { CATALOG_EN } from './ui/i18n/catalog.en';
 import { CATALOG_FR } from './ui/i18n/catalog.fr';
 
 const EN = CATALOG_EN as unknown as Record<string, string>;
 const FR = CATALOG_FR as unknown as Record<string, string>;
 
-const H = vi.hoisted(() => ({
-  identity: 'ab'.repeat(32),
-  connectOpts: null as unknown,
-  /** Mutated per test AFTER boot, read live by the mocked Connection's `linkFrozen()`. */
-  linkFrozen: false,
-}));
+const H = vi.hoisted(() => {
+  const buy = vi.fn(() => Promise.resolve());
+  const sell = vi.fn(() => Promise.resolve());
+  return {
+    identity: 'ab'.repeat(32),
+    connectOpts: null as unknown,
+    /** Mutated per test AFTER boot, read live by the mocked Connection's `linkFrozen()`. */
+    linkFrozen: false,
+    buy,
+    sell,
+    /** `conn.live()`'s return — the census roster can't tell which reducer a call site
+     *  targets, so the SUCCESS-line tests below spy on the real reducer names directly. */
+    live: { reducers: { buy, sell } } as unknown,
+  };
+});
 
 // Same wasm mock shape as main.partyFull.test.ts / main.i18nBoot.test.ts.
 vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
@@ -101,7 +116,7 @@ vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
 vi.mock('./net/connection', () => {
   const stub = {
     conn: undefined,
-    live: () => undefined,
+    live: () => H.live,
     identity: () => H.identity,
     linkFrozen: () => H.linkFrozen,
     continueAnonymously: () => undefined,
@@ -200,6 +215,7 @@ interface StoreHandle {
   upsertShopItem(row: StoreShopItemRow): void;
   upsertItemDef(row: StoreItemRow): void;
   upsertWallet(row: StoreWallet): void;
+  reconcileInventoryFromView(rows: readonly StoreInventory[]): void;
   flushBatch(): void;
 }
 
@@ -212,10 +228,11 @@ function storeHandle(): StoreHandle {
   return (opts as unknown as { store: StoreHandle }).store;
 }
 
-/** Seed one shop with one for-sale item + a wallet row, then flip `#shop-overlay`'s own
- *  `style.display` (the header note explains why this — not a real dialogue round-trip — is
- *  the sane-cost open) and flush ONE batch so the REAL M13d listener renders the REAL Buy
- *  button. */
+/** Seed one shop with one for-sale item, one sellable inventory item + a wallet row, then
+ *  flip `#shop-overlay`'s own `style.display` (the header note explains why this — not a real
+ *  dialogue round-trip — is the sane-cost open) and flush ONE batch so the REAL M13d listener
+ *  renders the REAL Buy/Sell buttons. The sellable item is seeded unconditionally (trivial
+ *  cost) so the Sell success test below reuses this same setup. */
 function openShopWithOneItem(): void {
   const store = storeHandle();
   store.upsertShop({ shopId: 1, name: 'Test Shop' });
@@ -230,6 +247,19 @@ function openShopWithOneItem(): void {
     cureStatus: null,
   });
   store.upsertShopItem({ shopItemId: 1n, shopId: 1, itemId: 1, buyPrice: 10n });
+  // A second item def, sellable (sellPrice > 0n) and carried in inventory — makes shopModel's
+  // `forSaleByPlayer` render a Sell button (buildShopViewModel: canSell = sellPrice > 0n).
+  store.upsertItemDef({
+    id: 2,
+    name: 'Herb',
+    description: '',
+    recruitBonus: 0,
+    trainStat: null,
+    trainAmount: 0,
+    sellPrice: 5n,
+    cureStatus: null,
+  });
+  store.reconcileInventoryFromView([{ invId: 1n, ownerIdentity: H.identity, itemId: 2, count: 3 }]);
   store.upsertWallet({ ownerIdentity: H.identity, balance: 100n });
   const overlay = document.getElementById('shop-overlay');
   expect(overlay, 'shop-overlay must exist in the real index.html shell').not.toBeNull();
@@ -243,8 +273,28 @@ function findBuyButton(): HTMLButtonElement {
   return btn as HTMLButtonElement;
 }
 
+function findSellButton(): HTMLButtonElement {
+  const btn = document.querySelector('#shop-inventory button');
+  expect(
+    btn,
+    'the shop overlay must render a Sell button for the seeded inventory item',
+  ).not.toBeNull();
+  return btn as HTMLButtonElement;
+}
+
 function shopFeedbackText(): string {
   return document.getElementById('shop-feedback')?.textContent ?? '';
+}
+
+/** Waits for a non-empty `#shop-feedback` — the success arms await a reducer promise (a real
+ *  microtask hop) before calling `showFeedback`, unlike the synchronous frozen-link arm. */
+async function waitForFeedback(): Promise<void> {
+  await vi.waitFor(
+    () => {
+      if (shopFeedbackText() === '') throw new Error('shop-feedback has not rendered yet');
+    },
+    { timeout: 2_000, interval: 5 },
+  );
 }
 
 async function bootMain(url: string): Promise<void> {
@@ -266,6 +316,8 @@ describe('main.ts shop feedback routes through the i18n catalog (slice 21r-b, ga
     recorded = [];
     H.connectOpts = null;
     H.linkFrozen = false;
+    H.buy.mockClear();
+    H.sell.mockClear();
     buildAppShellFromRealIndexHtml();
     vi.stubGlobal('requestAnimationFrame', (): number => 0);
     restoreWindowAdd = recordListeners(window, recorded);
@@ -305,5 +357,59 @@ describe('main.ts shop feedback routes through the i18n catalog (slice 21r-b, ga
 
     expect(shopFeedbackText()).toBe('disconnected — try again');
     expect(shopFeedbackText()).toBe(EN['chrome.feedback.disconnected']);
+  });
+
+  // ---------------------------------------------------------------------------
+  // SUCCESS lines — the §5.3 census roster proves EVERY literal key main.ts requests, but
+  // cannot tell WHICH call site (buy vs. sell vs. trade) claims which key — a implementer could
+  // satisfy the census with 'shop.feedback.purchased' wired to onSell and vice versa and every
+  // roster/parity test would stay green. These tests click the REAL Buy/Sell buttons and assert
+  // the rendered text against the SPECIFIC catalog key, catching exactly that swap.
+  // ---------------------------------------------------------------------------
+
+  it('★★ BITES: under fr, a successful Buy shows CATALOG_FR["shop.feedback.purchased"], not the hardcoded "Purchase complete!"', async () => {
+    await bootMain('/?locale=fr');
+    openShopWithOneItem();
+    H.linkFrozen = false;
+
+    findBuyButton().click();
+    await waitForFeedback();
+
+    expect(H.buy, 'the real buy reducer must have been called exactly once').toHaveBeenCalledOnce();
+    expect(shopFeedbackText()).toBe(FR['shop.feedback.purchased']);
+    expect(shopFeedbackText()).not.toBe('Purchase complete!');
+    expect(shopFeedbackText()).not.toBe(EN['shop.feedback.purchased']);
+  });
+
+  it('★ BITES: under en, a successful Buy shows the exact pre-migration "Purchase complete!" line', async () => {
+    await bootMain('/');
+    openShopWithOneItem();
+    H.linkFrozen = false;
+
+    findBuyButton().click();
+    await waitForFeedback();
+
+    expect(H.buy).toHaveBeenCalledOnce();
+    expect(shopFeedbackText()).toBe('Purchase complete!');
+    expect(shopFeedbackText()).toBe(EN['shop.feedback.purchased']);
+  });
+
+  it('★★ BITES: under fr, a successful Sell shows CATALOG_FR["shop.feedback.sold"], not "Sale complete!" (kills a purchased/sold key swap)', async () => {
+    await bootMain('/?locale=fr');
+    openShopWithOneItem();
+    H.linkFrozen = false;
+
+    findSellButton().click();
+    await waitForFeedback();
+
+    expect(
+      H.sell,
+      'the real sell reducer must have been called exactly once',
+    ).toHaveBeenCalledOnce();
+    expect(shopFeedbackText()).toBe(FR['shop.feedback.sold']);
+    expect(shopFeedbackText()).not.toBe('Sale complete!');
+    expect(shopFeedbackText(), 'a purchased/sold key swap must not pass by accident').not.toBe(
+      FR['shop.feedback.purchased'],
+    );
   });
 });
