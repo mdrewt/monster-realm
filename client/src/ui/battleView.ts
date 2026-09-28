@@ -35,11 +35,8 @@
 // through as params, never as catalog text. Every `t(`/`tf(` first argument is a string LITERAL —
 // a ternary picks between two calls, never between two keys — so S7's dynamic-key scan stays quiet.
 //
-// NO CLOSE-BEFORE-OPEN. `ui/overlayA11y.ts`'s cross-slice contract (a) once claimed the four
-// `#app`-mounted views "share ONE root" and prescribed close-before-open; it was RETRACTED
-// in place (A12, ui/overlayA11y.ts:52-54); (a) now agrees with this code: each view creates its
-// OWN root under the shared MOUNT — four roots, four `OverlayId`s, four records. Closing a sibling
-// here would close an overlay the player still has open. Pinned by `S4-CROSS-VIEW-DISTINCT-ROOTS`.
+// Each `#app`-mounted view creates its OWN root under the shared mount, so opening this view
+// never closes a sibling (no close-before-open; boxView.test.ts S4-CROSS-VIEW-DISTINCT-ROOTS).
 import type { BattleMonsterCardVM, BattleViewModel } from './battleModel';
 import { t, tf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';

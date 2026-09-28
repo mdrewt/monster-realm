@@ -97,11 +97,13 @@ import { fileURLToPath } from 'node:url';
 import { beforeEach } from 'vitest';
 import { stripComments } from '../../test-util/stripComments';
 import { t } from './a11yCopy';
-import { BattleView, type BattleViewCallbacks } from './battleView';
+import { BattleView } from './battleView';
+import { EvolutionView } from './evolutionView';
 import { scanSource } from './i18n/hardcodedStrings';
 import { t as i18nT, tf as i18nTf } from './i18n/resolver';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
+import { RaisingView } from './raisingView';
 
 vi.mock('./overlayA11y', { spy: true });
 // m24s4 MECHANISM oracle, same shape as m24s3: records every t()/tf() call AND
@@ -284,50 +286,62 @@ describe('BoxView — m23-s4 overlay a11y wiring on the show()/hide()/toggle() e
     expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(1);
   });
 
-  it('S4-CROSS-VIEW-DISTINCT-ROOTS BITES: opening BattleView on the SAME #app mount leaves BoxView\'s ARIA claim intact, both before AND after closing BattleView — S4 must NOT implement close-before-open (plan §0 F1: the overlayA11y.ts header\'s "share ONE root" claim is a misstatement of the code)', () => {
+  // The four `#app`-mounted views each own a root under the shared mount, so
+  // opening or closing one never touches another: no close-before-open.
+  const APP_VIEWS: readonly {
+    id: OverlayId;
+    make: (app: HTMLElement) => { show(): void; hide(): void };
+  }[] = [
+    { id: 'boxView', make: (app) => new BoxView(app, makeBoxCallbacks()) },
+    {
+      id: 'battleView',
+      make: (app) =>
+        new BattleView(app, {
+          onAttack: vi.fn(),
+          onFlee: vi.fn(),
+          onSwap: vi.fn(),
+          onRecruit: vi.fn(),
+          onUseItem: vi.fn(),
+          onPvpAttack: vi.fn(),
+          onPvpSwap: vi.fn(),
+        }),
+    },
+    {
+      id: 'raisingView',
+      make: (app) => new RaisingView(app, { onTrain: vi.fn(), onCare: vi.fn() }),
+    },
+    { id: 'evolutionView', make: (app) => new EvolutionView(app, { onEvolve: vi.fn() }) },
+  ];
+  const ORDERED_PAIRS = APP_VIEWS.flatMap((a) =>
+    APP_VIEWS.filter((b) => b !== a).map((b) => [a, b] as const),
+  );
+
+  it.each(
+    ORDERED_PAIRS.map(([a, b]) => [a.id, b.id, a, b] as const),
+  )('S4-CROSS-VIEW-DISTINCT-ROOTS BITES: %s stays open while %s opens and closes on the same #app mount', (_aId, _bId, a, b) => {
     const app = document.createElement('div');
     document.body.appendChild(app);
+    const viewA = a.make(app);
+    const rootA = app.lastElementChild as HTMLElement;
+    const viewB = b.make(app);
+    expect(app.lastElementChild, 'each view mounts its OWN root').not.toBe(rootA);
 
-    const boxCallbacks = makeBoxCallbacks();
-    const boxView = new BoxView(app, boxCallbacks);
-    boxView.show();
-    const boxRoot = e2eBoxRootOf(app);
-    expect(boxRoot.getAttribute('role'), 'precondition: boxView is open').toBe(
-      OVERLAY_A11Y.boxView.role,
-    );
-    expect(boxRoot.getAttribute('aria-modal')).toBe('true');
-    expect(boxRoot.getAttribute('aria-label')).toBe(t(OVERLAY_A11Y.boxView.labelKey));
-
-    const battleCallbacks: BattleViewCallbacks = {
-      onAttack: vi.fn(),
-      onFlee: vi.fn(),
-      onSwap: vi.fn(),
-      onRecruit: vi.fn(),
-      onUseItem: vi.fn(),
-      onPvpAttack: vi.fn(),
-      onPvpSwap: vi.fn(),
+    const expectAOpen = (when: string): void => {
+      expect(rootA.getAttribute('role'), `${a.id} role ${when}`).toBe(OVERLAY_A11Y[a.id].role);
+      expect(rootA.getAttribute('aria-modal'), `${a.id} aria-modal ${when}`).toBe('true');
+      expect(rootA.getAttribute('aria-label'), `${a.id} aria-label ${when}`).toBe(
+        t(OVERLAY_A11Y[a.id].labelKey),
+      );
     };
-    const battleView = new BattleView(app, battleCallbacks);
-    battleView.show();
 
-    expect(
-      boxRoot.getAttribute('role'),
-      'boxView must STILL carry role after battleView opens on the same #app mount — four ' +
-        'distinct roots, four distinct OverlayIds, four distinct OPEN_OVERLAYS records',
-    ).toBe(OVERLAY_A11Y.boxView.role);
-    expect(boxRoot.getAttribute('aria-modal')).toBe('true');
-    expect(boxRoot.getAttribute('aria-label')).toBe(t(OVERLAY_A11Y.boxView.labelKey));
+    viewA.show();
+    expectAOpen('after it opens');
+    viewB.show();
+    expectAOpen(`after ${b.id} opens`);
+    viewB.hide();
+    expectAOpen(`after ${b.id} closes`);
 
-    battleView.hide();
-
-    expect(
-      boxRoot.getAttribute('role'),
-      'closing battleView must leave boxView entirely intact — a close-before-open ' +
-        'implementation would close an overlay the player still has open',
-    ).toBe(OVERLAY_A11Y.boxView.role);
-    expect(boxRoot.getAttribute('aria-modal')).toBe('true');
-    expect(boxRoot.getAttribute('aria-label')).toBe(t(OVERLAY_A11Y.boxView.labelKey));
-
+    viewA.hide();
     document.body.removeChild(app);
   });
 });

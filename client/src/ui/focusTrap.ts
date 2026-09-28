@@ -55,11 +55,11 @@
 // while `ui/overlayA11y.ts` still focuses them programmatically on open — the ARIA APG dialog
 // pattern: the dialog's name is announced on open, but Tab never lands back on the heading.
 //
-// FOUR `#app`-MOUNTED VIEWS DO NOT SHARE ONE ROOT (A12 RETRACTED, ui/overlayA11y.ts:52-54). Each
+// FOUR `#app`-MOUNTED VIEWS DO NOT SHARE ONE ROOT (A12 RETRACTED, ui/overlayA11y.ts). Each
 // `document.createElement`s its OWN root under the shared mount, and `installTrap` listens on the
 // PASSED root, never the mount, so traps on two sibling roots cannot stack. Stacking needs the SAME
 // root installed twice, and `openOverlayA11y`'s same-id branch uninstalls the previous trap first.
-// S4 must NOT close-before-open (`S4-CROSS-VIEW-DISTINCT-ROOTS`, boxView.test.ts:287).
+// S4 must NOT close-before-open (`S4-CROSS-VIEW-DISTINCT-ROOTS`, boxView.test.ts).
 
 /** The tabbable set. `[tabindex="-1"]` is excluded on purpose — see the module header. */
 const FOCUSABLE_SELECTOR = [
