@@ -37,10 +37,16 @@ behaviour that the client handles itself.
    (`battle-schema-snapshot`, `spacetime-type-snapshot`) compare Rust source, not the
    encoded schema, so they will not see encoding changes; step 6 covers that.
 6. **Check the migration against real data.** Publish the *old* module to a scratch
-   database, then publish the new one over it without `--delete-data`:
+   database with the *old* CLI, then publish the new one over it without
+   `--delete-data`:
 
    ```sh
+   git worktree add ../mr-old <commit-before-the-upgrade>   # the old module source
+   spacetime version use <old-version>
+   (cd ../mr-old && spacetime publish -s local --module-path server-module -y mr-upgrade-check)
+   spacetime version use <new-version>
    spacetime publish -s local --module-path server-module -y mr-upgrade-check
+   git worktree remove ../mr-old
    ```
 
    If the host prints `... requires a manual migration` and "Aborting because

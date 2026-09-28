@@ -9,8 +9,8 @@ shows the controls list below, and `M` opens a menu of every action.
 
 ## 1. Launch it
 
-You need the toolchain from the README (Rust, the `spacetime` CLI 2.8.1, Node 24, wasm-pack)
-and a local SpacetimeDB:
+You need the toolchain from the README (Rust, the `spacetime` CLI 2.8.1, Node 24.13.1,
+wasm-pack, `just`, and GNU `timeout`) and a local SpacetimeDB:
 
 ```sh
 just setup                                    # first time: cargo fetch + client npm install

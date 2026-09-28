@@ -300,8 +300,11 @@ progress to an account like this. The browser mints a 256-bit claim code
 identity calls `complete_guest_claim`, which runs every caller-state guard before it
 looks up the code, then re-keys the guest's persistent game data onto the account
 (`rekey_all`: monsters, inventory, quests, wallet, profile and the rest),
-purges the guest's export bundles, and consumes the code. A claim expires after
-`CLAIM_TTL_MS` (15 min), cleaned up by a scheduled reaper.
+purges the guest's export bundles, and consumes the code. The destination must own no
+game data. That holds because the client does not call `join_game` on a signed-in
+connection while an unconsumed claim code is stored; it claims first
+(`client/src/net/connection.ts`). A claim expires after `CLAIM_TTL_MS` (15 min),
+cleaned up by a scheduled reaper.
 
 **Why.** The server never generates the secret, so its strength does not depend on
 the server's RNG. Checking caller state before resolving the code means the reducer
@@ -380,7 +383,11 @@ database without planning a `--delete-data` republish.
 4 bytes and the publish fails). Illegal combinations of states that a column-type
 change would rule out are enforced by a checked predicate instead (for example
 `accounts::account_state_is_legal`). Whether a table is scheduled is fixed at first
-publish, so scheduled tables ship together with their reducer.
+publish, so scheduled tables ship together with their reducer. A new table needs an
+entry in `schema::DATA_LIFECYCLE_MANIFEST` (a test fails otherwise). A new column on
+an exportable table breaks the compile of the exhaustive export fixtures in
+`server-module/src/privacy_tests.rs`, which forces an explicit export-or-omit
+decision in that table's serializer in `privacy.rs`.
 
 **Why.** SpacetimeDB's automatic migration accepts only appended columns with
 defaults. Anything else needs `--delete-data`, which wipes every player.

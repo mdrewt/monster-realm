@@ -90,6 +90,11 @@ Content is data, not code. Each registry is a directory under `game-core/content
    `encounter` table, and the NPCs' `character` rows whenever
    `config.content_version` differs from `CONTENT_VERSION` in
    `server-module/src/lib.rs`. It also reconciles one movement schedule row per zone.
+   A reseed also re-derives every existing monster: stats are recomputed from the new
+   species base stats with the monster's own IVs, EVs, Nature and level, `current_hp`
+   is clamped down to the new maximum (a reseed never heals), and the `monster_pub`
+   copy is rewritten with the species' current tier (`content.rs`
+   `recompute_monster_derived_fields`). A missing species row is logged and skipped.
    Parsed registries are cached in `LazyLock` statics (`server-module/src/content_cache.rs`).
 4. **Version.** The `content-version` eval hashes every file under `game-core/content/`
    (raw bytes, so comment edits count) and compares the hash and `CONTENT_VERSION`
@@ -97,8 +102,14 @@ Content is data, not code. Each registry is a directory under `game-core/content
    `CONTENT_VERSION` first, then regenerate the baseline with the command the eval
    prints on failure.
 5. **Client.** The client gets zone maps from the wasm `zone_map()` export and
-   everything else from the seeded public tables, so no content is duplicated in
-   TypeScript.
+   the rest from the seeded public tables. The one exception is dialogue text:
+   `client/src/ui/dialogueContent.ts` mirrors `game-core/content/dialogue_trees/`,
+   and a contract keeps the two identical. A server test renders the shipped trees
+   into `evals/baselines/dialogue-trees.txt` (regenerate with
+   `MR_BLESS_DIALOGUE_TREES=1 cargo nextest run -p monster-realm-module dialogue_trees_contract`),
+   and `dialogueContent.contract.test.ts` requires the client mirror to render
+   byte-equal to it. A dialogue edit therefore changes the RON, the TS mirror and the
+   contract file together.
 
 ## client-wasm: the prediction boundary
 
@@ -280,6 +291,12 @@ flushes once per burst, and the predictor reconciles against a consistent snapsh
 `net/rowConvert.ts` and `convert/convert.ts` convert SDK rows (tagged unions,
 `bigint` ids) into store and wasm shapes, explicitly and without abstraction.
 
+Views behave differently from tables on the client. None of the module's views
+declares a primary key, so the SDK never fires `onUpdate` for a view row: a change
+arrives as an unordered delete and insert. Before each flush, `connection.ts` rebuilds
+every view-backed collection (`my_monster_pub`, `my_battle`, `my_inventory`, ...) from
+the SDK's cache rather than applying those row events one by one.
+
 `net/store.ts` is a read-only mirror of the subscription. Only the connection adapter
 writes to it; the predictor and renderer only read (`server → store → render`). It
 keeps up to four timestamped snapshots per character for interpolation and a
@@ -288,8 +305,11 @@ per-character jitter estimate.
 Reconnect uses exponential backoff from 1 s to 30 s (`prediction/reconnectPolicy.ts`).
 The SpacetimeDB token for an anonymous identity is stored in `sessionStorage`
 (`net/authToken.ts`), so an identity survives a reload but not closing the tab, and a
-second tab is a separate identity. A stored token is withheld after two rejections
-since the last success, and never deleted. Sign-in is OIDC (authorization code with
+second tab is a separate identity. After two token rejections since the last
+successful connect, the client stops sending the stored token (it never deletes it) and
+connects anonymously. If that connect succeeds, `onConnected` stores the new token over
+the old one; a network failure never counts as a rejection, so an outage cannot cost
+the player their identity. Sign-in is OIDC (authorization code with
 PKCE, `net/oidc.ts`) against the issuer in `VITE_MR_OIDC_ISSUER`.
 
 ### Prediction and reconciliation
@@ -384,7 +404,9 @@ is trapped in modals (`focusTrap.ts`), announcements go through live regions
   when the token's issuer and audience match `ALLOWED_ISSUERS`/`ALLOWED_AUDIENCE`
   (`server-module/src/accounts.rs`). Those constants still hold the fail-closed
   `.invalid` placeholder, so no account can be created until a real issuer is
-  deployed (`ops/auth/README.md`) and the constants are changed.
+  deployed and the constants are changed. `ops/auth/README.md` has the deployment
+  steps and the client build variables (`VITE_MR_OIDC_ISSUER`,
+  `VITE_MR_OIDC_CLIENT_ID`, `VITE_MR_OIDC_REDIRECT_URI`).
 - **Claiming guest progress.** The client mints a 64-hex-character claim code
   (`net/claimCode.ts`), stores it per tab, and calls `start_guest_claim(code)` as the
   guest before redirecting to sign-in. The server stores it in the private
@@ -398,6 +420,12 @@ is trapped in modals (`focusTrap.ts`), announcements go through live regions
   guest's export bundles are purged, the code is consumed, and
   `claimed_from`/`claimed_at_ms` are stamped. Session and in-flight rows (player,
   conversation, sessions, battles, trades, challenges) are not moved.
+  "Owns no game data" works because `join_game` is a reducer the client calls, not
+  part of `on_connect`: on a signed-in connection with an unconsumed claim code
+  stored, `net/connection.ts` skips `join_game` and calls `complete_guest_claim`
+  first. It joins only once no unconsumed code remains, or the player declines the
+  claim. An account that already played before claiming fails the claim with "already
+  has game data".
 - **Deletion.** `delete_account` sets `PendingDeletion` and arms a reaper 7 days out;
   `cancel_account_deletion` reverses it and declines trade offers made to the account
   after it asked to be deleted. While deletion is pending, the account cannot start

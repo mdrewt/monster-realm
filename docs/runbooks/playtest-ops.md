@@ -65,7 +65,7 @@ Runs `node scripts/verify-release-reducers.mjs`, which reads the published modul
 `spacetime describe --json "$MR_PLAYTEST_DB"` and fails if `start_wild_battle` or
 `grant_bait` is present, or if the introspection failed or found no reducers at all.
 It checks what was published, not the source tree. Output on success:
-`verify-release-reducers: OK — 52 reducer(s) in published module "<db>"; no dev reducers …`.
+`verify-release-reducers: OK — <N> reducer(s) in published module "<db>"; no dev reducers …`.
 
 ## `just playtest-verify-build`
 

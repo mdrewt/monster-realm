@@ -49,14 +49,16 @@ are implemented but inactive until an identity provider is deployed (see
 | Tool | Version | Where it is pinned |
 |---|---|---|
 | Rust | 1.96.0, with `wasm32-unknown-unknown`, clippy and rustfmt | `rust-toolchain.toml` (rustup installs it automatically) |
-| SpacetimeDB CLI | 2.8.1 | root `Cargo.toml` (`spacetimedb = "2.8.1"`) and both workflows; select it with `spacetime version use 2.8.1` |
-| Node.js | 24.13.x (`>=24.13.1 <25`) | `client/package.json` `engines`; CI uses 24.13.1 |
+| SpacetimeDB CLI | 2.8.1 | root `Cargo.toml` (`spacetimedb = "2.8.1"`) and both workflows. Install the CLI the way CI does (`curl -sSf -o /tmp/spacetime-install.sh https://install.spacetimedb.com && sh /tmp/spacetime-install.sh --yes`), then `spacetime version install 2.8.1` and `spacetime version use 2.8.1` |
+| Node.js | 24.13.1 (`engines` allows `>=24.13.1 <25`) | `client/package.json` `engines`; both workflows use 24.13.1 |
 | wasm-pack | 0.15.0 | CI (`.github/workflows/ci.yml`, `jetli/wasm-pack-action` with `version: 'v0.15.0'`); locally, for example `cargo install wasm-pack --version 0.15.0` |
 | just | any recent | runs every recipe in `justfile` |
 | cargo-nextest | any recent | `just test` uses it |
-| Docker | any recent | `just observability-validate` (part of `just ci`) and the monitoring stack |
+| Docker | any recent | `just observability-validate`, which `just ci` runs (a missing Docker fails it), and the monitoring stack |
+| GNU `timeout` | coreutils | `just playtest-preflight` (every `playtest-*` recipe that publishes); macOS: `brew install coreutils` |
 
-`cargo-mutants` is needed only for the mutation recipes.
+`cargo-mutants` is needed only for the mutation recipes. Of these, playing locally
+needs Rust, the SpacetimeDB CLI, Node, wasm-pack, `just` and `timeout`.
 
 ## Quickstart: play it locally
 
@@ -80,6 +82,15 @@ metrics endpoint is unauthenticated.
 
 ## Development loop
 
+There are two separate local setups; do not mix them up:
+
+| | Dev loop | Playtest |
+|---|---|---|
+| Database | `monster-realm` | `monster-realm-playtest` (`MR_PLAYTEST_DB`) |
+| Module | whatever you publish (a `dev_reducers` build belongs here, never in a playtest) | default release build, verified to have no dev reducers |
+| Client | `npm run dev`, http://localhost:5290 | production build via `vite preview`, http://localhost:4173 |
+| Commands | below | `just playtest-up` / `playtest-down` / `playtest-wipe` |
+
 ```sh
 spacetime start --listen-addr 127.0.0.1:3000   # local server
 spacetime publish -s local --module-path server-module -y monster-realm
@@ -87,11 +98,15 @@ cd client && npm run dev                        # Vite dev server on http://loca
 ```
 
 The dev client connects to `ws://127.0.0.1:3000`, database `monster-realm`, unless
-`VITE_STDB_URI`/`VITE_STDB_DB` say otherwise. `just publish` does the same publish
-against the spacetime CLI's *default* server (`spacetime server set-default local`
-makes that your local one); `VITE_STDB_DB` changes the database name for both. A
-first publish runs `init`, which seeds content. After a later content change, call
-`spacetime call -s local monster-realm sync_content` as the publishing identity.
+`VITE_STDB_URI`/`VITE_STDB_DB` say otherwise. **`just publish` passes no `-s`**, so it
+publishes to the spacetime CLI's *default* server, whatever that is. Check it with
+`spacetime server list` (the default is starred; a stale default made `just publish`
+fail on a connection error while a local server was running) and set it with
+`spacetime server set-default local`, or use the explicit command above.
+`VITE_STDB_DB` changes the database name `just publish` targets. A first publish runs
+`init`, which seeds content and records the publishing identity as the module owner.
+After a later content change, call `spacetime call -s local monster-realm sync_content`
+as that same identity; other callers are refused.
 
 | Command | What it does |
 |---|---|
