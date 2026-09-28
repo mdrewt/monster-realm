@@ -1,4 +1,4 @@
-//! Release fail-loud proof-of-teeth fixture (M8.8a, ADR-0055). See Cargo.toml.
+//! Release fail-loud proof-of-teeth fixture. See Cargo.toml.
 //! `core::hint::black_box` defeats const-folding so the overflow is a RUNTIME
 //! event gated by overflow-checks, not a compile-time error.
 

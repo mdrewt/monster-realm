@@ -95,7 +95,7 @@
  * WRONG IMPL KILLED: recorded per test, immediately above each `it`.
  *
  * NO `new RegExp(...)`, no `eval`, no `new Function` (Semgrep bans them — none used here).
- * NO `innerHTML` for DOM CONSTRUCTION (ADR-0135) — nothing is built here at all; the single
+ * NO `innerHTML` for DOM CONSTRUCTION — nothing is built here at all; the single
  * `document.body.innerHTML = ''` in `afterEach` is the teardown form the sanctioned precedent
  * `main.reducedMotionWiring.test.ts:382` uses.
  */

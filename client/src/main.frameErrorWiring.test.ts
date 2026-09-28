@@ -104,7 +104,7 @@
  *                                                     one mutant this file exclusively owns.
  *
  * NO `new RegExp(...)`, no `eval`, no `new Function` (Semgrep bans them — none used here).
- * NO `innerHTML` for DOM CONSTRUCTION (ADR-0135): nothing is built here; the single
+ * NO `innerHTML` for DOM CONSTRUCTION: nothing is built here; the single
  * `document.body.innerHTML = ''` is the teardown form the sanctioned precedents use.
  */
 import { afterEach, describe, expect, it, type MockInstance, vi } from 'vitest';

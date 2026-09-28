@@ -50,7 +50,7 @@ describe('buildHelpViewModel(): content shape — non-empty controls + goals (PT
 });
 
 describe('buildHelpViewModel(): the SSOT covers the load-bearing keys (PTC2B-10)', () => {
-  // The keymap that the help overlay documents (amended by ADR-0161 D5): the
+  // The keymap that the help overlay documents: the
   // `?` help key itself, Escape (close), movement (WASD / arrows), Space (jump), the 10
   // overlay hotkeys B I E Q U P L N O T (G and H deleted in uxd2 — the shop is reached
   // through a shopkeeper and the heal through a heal tile, both via the interact key T),

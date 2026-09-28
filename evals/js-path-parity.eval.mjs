@@ -1,4 +1,4 @@
-// JS-path parity eval (ADR-0003 / ADR-0036): the M3 *marshaled* prediction path —
+// JS-path parity eval: the M3 *marshaled* prediction path —
 // `apply_move(state, input, now)` over serde_wasm_bindgen JS objects — must agree
 // with the flat `predict_move` path, which the prediction/movement-parity evals
 // already pin byte-identical to NATIVE `game-core`. So by transitivity the

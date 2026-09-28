@@ -1,7 +1,7 @@
 // rust-scan — the SINGLE source of truth for string-literal-aware Rust source
 // scanning across evals/.
 //
-// WHY THIS MODULE EXISTS (13r-c, ADR-0181). Several evals used to strip Rust
+// WHY THIS MODULE EXISTS. Several evals used to strip Rust
 // `//` line comments with a regex that has no notion of string literals. A real
 // issuer URL written as an ordinary literal —
 //     const ISSUER: &str = <a quote>https:<slash><slash>auth.example/<a quote>;

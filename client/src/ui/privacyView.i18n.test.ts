@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// ui/privacyView.i18n.test.ts — m24s5 (ADR-0261) RED gating tests: privacyView.ts routes its
+// ui/privacyView.i18n.test.ts — m24s5 RED gating tests: privacyView.ts routes its
 // title/close/confirm-row strings through t() from the i18n resolver instead of raw English
 // literals.
 //

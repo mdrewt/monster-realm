@@ -17,7 +17,7 @@
 //     A table-level "manual_migration": "ADR-nnnn ..." note (a delete-data
 //     migration) exempts that table from layer 2.
 //
-// Plus the zoning rule (ADR-0007): a non-scheduled table carrying zone_id or
+// Plus the zoning rule: a non-scheduled table carrying zone_id or
 // map_id (or tile_x/tile_y) must have that zone field as its pk or indexed, so
 // per-zone subscriptions stay a query change, never a migration.
 import { execFileSync } from 'node:child_process';

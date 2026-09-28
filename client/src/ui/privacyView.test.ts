@@ -35,7 +35,7 @@
 // NO regex literal and no `new RegExp(...)` anywhere (Semgrep bans the latter repo-wide and
 // matches comment text; the former blinds this repo's own comment strippers). String scanning
 // is indexOf/split only. NO numeric duplicate of the grace window: every value is synthetic.
-// NO `innerHTML` (ADR-0135) — DOM reads are `textContent` only.
+// NO `innerHTML` — DOM reads are `textContent` only.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { closeOverlayA11y } from './overlayA11y';
@@ -74,7 +74,7 @@ const CONFIRM_BTN_ID = 'privacy-confirm-btn';
 const CONFIRM_CANCEL_BTN_ID = 'privacy-confirm-cancel-btn';
 const CANCEL_BTN_ID = 'privacy-cancel-btn';
 const EXPORT_BTN_ID = 'privacy-export-btn';
-// rb-53 (ADR-0231 A3-D4): the download control and its status line. Both ids are PREFIX-FREE of
+// rb-53: the download control and its status line. Both ids are PREFIX-FREE of
 // every id above — `privacy-export-status` is not a prefix of `privacy-export-btn` and neither
 // is a prefix of the other — so a substring-based census cannot confuse the two export nodes.
 const DOWNLOAD_BTN_ID = 'privacy-download-btn';
@@ -575,7 +575,7 @@ describe('PrivacyView (rb-52, PRV1-3/PRV1-4): the constructed DOM shell', () => 
   it('RB52V-TERMINAL-ROW-NO-CLICK: opening on an already-erased account renders the exact PRIVACY_TERMINAL_NOTICE with ZERO interaction', () => {
     // ★ THE CRITERION, AT THE DOM TIER. "render the distinct terminal notice once
     // terminal_at_ms is Some" — on OPEN, with no click anywhere.
-    // WRONG IMPL KILLED (1) ★ THE MEASURED DEFECT (ADR-0231 A2-D6): a view model keyed on
+    // WRONG IMPL KILLED (1) ★ THE MEASURED DEFECT: a view model keyed on
     // `state.notice` alone. `account-changed` never writes `notice`, so the notice element
     // would be EMPTY here and the criterion fails while every click-driven test passes. The
     // fixture is built by RUNNING `privacyStep` with a real `deriveDeletionCountdown`, never by
@@ -757,7 +757,7 @@ describe('PrivacyView (rb-52, PRV1-3/PRV1-4): the constructed DOM shell', () => 
   // -------------------------------------------------------------------------
 
   it('RB52V-DISARM-ON-CLOSE: hide() calls onDismissed, and a re-open shows no confirmation prompt', () => {
-    // ★ WHY THE DISARM LIVES IN `hide()` AND NOT AT THE CALL SITE (ADR-0231 A2-D4):
+    // ★ WHY THE DISARM LIVES IN `hide()` AND NOT AT THE CALL SITE:
     // `privacyView` is in `BATTLE_FORCE_HIDE`, and a battle auto-show reaches this shell
     // through `main.ts`'s handle table, whose entry is the byte-identical
     // `privacyView?.hide()` — it cannot carry the disarm itself.
@@ -832,7 +832,7 @@ describe('PrivacyView (rb-52, PRV1-3/PRV1-4): the constructed DOM shell', () => 
   });
 
   // -------------------------------------------------------------------------
-  // rb-53 (ADR-0231 Amendment A3) — the DOWNLOAD control and the
+  // rb-53 — the DOWNLOAD control and the
   // export status line. Appended INSIDE this describe so they share the same
   // beforeEach/afterEach lifecycle (one constructed shell, one cleanup path).
   //

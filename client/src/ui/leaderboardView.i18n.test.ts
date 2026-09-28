@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// ui/leaderboardView.i18n.test.ts — m24-s5 (ADR-0261) RED gating tests: LB-01/02/03 (I18N-20).
+// ui/leaderboardView.i18n.test.ts — m24-s5 RED gating tests: LB-01/02/03 (I18N-20).
 //
 // SOURCE OF TRUTH: memory/projects/monster-realm-m24-s5-plan.md (Tests, Key roster
 // leaderboard.*, D3 — the <bdi> shape), plan-revisions.md S1 (the XSS-name pin is CUT — the

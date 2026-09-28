@@ -40,7 +40,7 @@ import { createServer } from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-// CHECKER-IMPORT REUSE (ADR-0232 D6): the `spacetime sql --format json` envelope
+// CHECKER-IMPORT REUSE: the `spacetime sql --format json` envelope
 // decoder already exists, is exported, main-guarded, and adversarially
 // teeth-tested by evals/playtest-report.eval.mjs (DRIVER-1/2 + malformed-envelope
 // cases) — S9 reuses it rather than reimplementing a second JSON-table parser.
@@ -88,7 +88,7 @@ const MARKER_FILE = path.join(os.tmpdir(), 'mr-acct-e2e.pid');
 const HEX = '0123456789abcdef';
 
 // ===========================================================================
-// M22-S9 — post-integration verification constants (ADR-0232). Every expected
+// M22-S9 — post-integration verification constants. Every expected
 // VALUE below is tied byte-for-byte to its source-of-record by the Rust test
 // m22s9_e2e_patch_needles_and_constants / m22s9_e2e_manifest_transcription_
 // matches_manifest in server-module/src/accounts_tests.rs — never re-derive or
@@ -101,7 +101,7 @@ const HEX = '0123456789abcdef';
 // the real constant at 7 days, which reads as a 120 s terminal-poll hang).
 export const GRACE_NEEDLE = 'pub const DELETION_GRACE_MS_DEFAULT: i64 = 604_800_000;';
 export const CHUNK_NEEDLE = 'pub const EXPORT_CHUNK_ROWS: u32 = 500;';
-// The e2e-compressed values (ADR-0232 D1). 15 s makes the real one-shot reaper
+// The e2e-compressed values. 15 s makes the real one-shot reaper
 // fire inside CI (spike-measured +15.002 s); 2 (not 1) is the chunk boundary
 // that distinguishes an honored chunks(K) from one-chunk-per-row.
 export const E2E_GRACE_MS = 15_000;
@@ -226,7 +226,7 @@ export function patchAllowedAudience(src, clientId) {
 }
 
 /**
- * M22-S9 shared patcher core (ADR-0232 D1): replace `needle` with `replacement`
+ * M22-S9 shared patcher core: replace `needle` with `replacement`
  * in `src`, throwing on ZERO occurrences (a silent no-op publishes a module
  * whose reaper fires in 7 days — the run reads as a 120 s terminal-poll hang)
  * AND on MORE THAN ONE (a decoy match could leave the real declaration
@@ -786,7 +786,7 @@ export function checkHostSideAcceptance(reqLog) {
 }
 
 // ===========================================================================
-// M22-S9 pure deciders (ADR-0232). The rig moves bytes; these decide, and every
+// M22-S9 pure deciders. The rig moves bytes; these decide, and every
 // decision is a pure function over the parsed rows.
 // ===========================================================================
 
@@ -1309,7 +1309,7 @@ export function checkCascadeTruth(input) {
  * columns are not DML-expressible — probed 400; declared on the vacuity
  * allowlist instead).
  *
- * `aMonsterId` (20r-d, ADR-0254): the subject's own starter monster id, as a
+ * `aMonsterId`: the subject's own starter monster id, as a
  * DECIMAL STRING — the driver emits it through the `S9-presence-ready` payload
  * because the SDK hands it over as a BigInt, and a Number round-trip would
  * silently lose precision on a large auto_inc id. It drives the two
@@ -1377,7 +1377,7 @@ export function buildSeedStatements(aHex, playtestRows, baseMs, aMonsterId) {
   stmts.push(
     'INSERT INTO heal_cooldown (owner_identity, last_heal_at_ms) VALUES (' + aHex + ', 1)',
   );
-  // 20r-d (ADR-0254): the ONE organic pre-cascade writer for
+  // 20r-d: the ONE organic pre-cascade writer for
   // `pending_evolution_notice`. `UPDATE <table> SET <col> = <literal> WHERE
   // <col> = <literal>` is measured-expressible on spacetime 2.8.1 (an INSERT
   // is not: the row's `entries` column is a Vec of a nested SpacetimeType).
@@ -2010,7 +2010,7 @@ async function runLivePhase() {
     if (patched === original) throw new Error('patch was a no-op — refusing to publish (N4)');
     writeFileSync(accountsPath, patched);
 
-    // M22-S9 (ADR-0232 D1): compress the grace window + export chunk boundary
+    // M22-S9: compress the grace window + export chunk boundary
     // in the COPY so the real one-shot reaper and a real multi-chunk split run
     // inside the e2e. Both patchers throw on a missing/ambiguous needle.
     const deletionPath = path.join(tmp, 'game-core', 'src', 'accounts', 'deletion.rs');
@@ -2107,7 +2107,7 @@ async function runLivePhase() {
       err = (err + d).slice(-2000);
     });
 
-    // ---- M22-S9 orchestration (ADR-0232) — runs CONCURRENTLY with the driver.
+    // ---- M22-S9 orchestration — runs CONCURRENTLY with the driver.
     // The driver blocks on go-files at each sync point; this side watches the
     // milestone stream, executes the owner-SQL seeding/snapshots, and releases
     // it. All failures are captured into s9.error and re-thrown after exit so
@@ -2475,7 +2475,7 @@ async function runLivePhase() {
     );
     if (!truth.ok) throw new Error(`server truth: ${truth.reason} :: raw ${rawSql.join(' | ')}`);
 
-    // ---- M22-S9 verdicts (ADR-0232) ----
+    // ---- M22-S9 verdicts ----
     const s9m = checkS9Milestones(events, exitCode);
     if (!s9m.ok) throw new Error(s9m.reason + ' (stderr tail: ' + err.slice(-400) + ')');
     if (s9.censusCancel !== 0) {

@@ -195,7 +195,7 @@ test('U4: truncation to ZERO reads nothing and resets the offset to 0', () => {
 
 test('U4 STATED GAP: `truncated` re-emits the surviving prefix; there is no dedup, by decision', () => {
   // Pinned so a duplicate span after a copytruncate is a KNOWN, recorded
-  // behaviour (ADR-0191) rather than a mystery in production. If someone adds
+  // behaviour rather than a mystery in production. If someone adds
   // dedup later, this test is the place the decision is revisited.
   const d = decideRead({ offset: 4096, identity: ID_A }, { size: 120, identity: ID_A });
   assert.equal(d.readFrom, 0, 'bytes 0..120 were already read once and WILL be read again');
@@ -285,7 +285,7 @@ test('A4 (AM9): DOUBLE ROTATION in one poll is `rotated` from 0 — the middle f
   // A -> B -> C between two polls. One identity comparison cannot count
   // rotations: the decider sees only that the identity changed, so it restarts
   // at 0 on file C and file B is never read at all. This is the CHOSEN
-  // behaviour and a STATED GAP (ADR-0191), pinned here so it stays a decision.
+  // behaviour and a STATED GAP, pinned here so it stays a decision.
   const d = decideRead({ offset: 4096, identity: ID_A }, { size: 100, identity: ID_C });
   assert.deepEqual(d, { readFrom: 0, readTo: 100, reason: 'rotated' });
   assert.equal(

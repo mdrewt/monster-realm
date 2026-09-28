@@ -49,7 +49,7 @@
  * comes from the terminal marker and the status tag alone — `ui/privacyModel.ts`).
  *
  * NO `new RegExp(...)`, no regex literal, no `eval`, no `new Function` anywhere. NO `innerHTML`
- * (ADR-0135). NO numeric duplicate of the grace window — every fixture value is synthetic.
+ *. NO numeric duplicate of the grace window — every fixture value is synthetic.
  */
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -68,7 +68,7 @@ const H = vi.hoisted(() => {
   return {
     identity: 'ab'.repeat(32),
     connectOpts: null as unknown,
-    /** Swapped to `undefined` by the non-delivery test (ADR-0231 A2-D8). */
+    /** Swapped to `undefined` by the non-delivery test. */
     live: liveHandle as unknown,
     liveHandle,
     linkFrozen: false,
@@ -367,7 +367,7 @@ function claimOverlayVisible(): boolean {
 
 /**
  * The front door: the ONE button inside the Account & Sign-in overlay that opens the privacy
- * surface (ADR-0231 A2-D5).
+ * surface.
  *
  * DISCOVERED BY ROLE, NOT BY A HARD-CODED ID, and the count is asserted: "exactly one privacy
  * door in the account overlay" is the contract-level statement, and it also catches a second,
@@ -697,7 +697,7 @@ describe('main.ts privacy surface wiring (rb-52, PRV1-3/PRV1-4)', () => {
   it('RB52T-TERMINAL-ROW-NO-CLICK: an already-erased account shows the exact PRIVACY_TERMINAL_NOTICE on open, with no privacy control ever clicked', () => {
     // ★ THE CRITERION'S SECOND HALF, END TO END: row -> deriveDeletionCountdown ->
     // account-changed -> buildPrivacyViewModel -> the DOM, with ZERO interaction.
-    // WRONG IMPL KILLED (1) ★ THE MEASURED DEFECT (ADR-0231 A2-D6): a view model keyed on
+    // WRONG IMPL KILLED (1) ★ THE MEASURED DEFECT: a view model keyed on
     // `state.notice` alone. `privacyStep`'s `account-changed` arm never writes `notice`, so the
     // notice element is EMPTY when the player opens the surface on an already-erased account —
     // the criterion fails while every click-driven test in this file passes.
@@ -837,7 +837,7 @@ describe('main.ts privacy surface wiring (rb-52, PRV1-3/PRV1-4)', () => {
   it('RB52T-STATUS-TICKS-WITH-THE-WALL-CLOCK: the OPEN surface repaints its deadline as the wall clock advances', () => {
     // WRONG IMPL KILLED ★: rendering the surface
     //   from `privacyModelState.countdown`. The model is pumped only when the phase or a
-    //   permission flips (ADR-0231 A2-D9), and neither moves for the whole grace window — so the
+    //   permission flips, and neither moves for the whole grace window — so the
     //   status line would freeze at the value the `active -> grace` edge left behind, showing a
     //   day-0 deadline on day six, WHILE the `#privacy-countdown` HUD banner beside it — derived
     //   fresh every frame — showed the true remainder. Two contradictory deletion deadlines from

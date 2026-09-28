@@ -3,7 +3,6 @@
 //
 // SOURCE OF TRUTH:
 //   specs/monster-realm-v2/M24-internationalization.spec.md §2.3, §6 S1 (I18N-6..9).
-//   docs/adr/0256-i18n-module-total-catalog-resolver-cell-negative-compile.md D3 (BINDING).
 //   memory/projects/monster-realm-m24-s1-plan.md §2, §3, §9 (fixture discipline amendments).
 //
 // RED REASON: `client/src/ui/i18n/{messageIds,resolver,plural,catalog.en}.ts` DO NOT EXIST YET.

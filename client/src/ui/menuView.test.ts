@@ -346,7 +346,7 @@ describe('MenuView — visibility', () => {
     //   a getter that can disagree with the painted DOM desynchronises every one of them.
     // WRONG IMPL KILLED (2): an impl that writes the whole `style` attribute (or toggles a
     //   class that sets `position`), which would drop the inset:0/z-index:100 the plan requires
-    //   — the overlay would paint below the viewport-tall canvas (ux1 / ADR-0151 D1).
+    //   — the overlay would paint below the viewport-tall canvas.
     const { view } = newView();
     const overlay = document.getElementById(OVERLAY_ID) as HTMLElement;
 

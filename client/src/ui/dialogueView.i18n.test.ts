@@ -1,8 +1,7 @@
 // @vitest-environment happy-dom
-// ui/dialogueView.i18n.test.ts — m24-s5 (ADR-0261) RED gating tests: DV-01/02/03.
+// ui/dialogueView.i18n.test.ts — m24-s5 RED gating tests: DV-01/02/03.
 //
 // SOURCE OF TRUTH: memory/projects/monster-realm-m24-s5-plan.md (Tests, Key roster dialogue.*),
-// docs/adr/0261-i18n-migration-batch-c.md.
 //
 // RED REASON AT HEAD: dialogueView.ts imports nothing from './i18n/resolver' today — the Shop
 // affordance button is painted with the bare literal 'Shop' (dialogueView.ts:72). DV-01 fails on

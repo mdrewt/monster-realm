@@ -35,7 +35,6 @@
 // SOURCE OF TRUTH: specs/monster-realm-v2/M23-accessibility.spec.md §2.2, §6 (A11Y-13/14/15/16);
 //   memory/projects/monster-realm-m23-s3-plan.md §0 F1/F2/F7/F8, §1 D1/D2/D7/D8, §2 T5, §4,
 //   §7 A1/A3/A5/A6/A7/A8/A13; memory/projects/gates/m23-s3.gates.md X1/X2/X3/X5/X6/X8;
-//   ADR-0205 D1-D4, A3.
 //
 // RED REASON (m23-s3), TWO DISTINCT ONES:
 //   (a) `client/src/ui/renameView.ts` DOES NOT CALL openOverlayA11y/closeOverlayA11y at all today

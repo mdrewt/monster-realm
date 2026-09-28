@@ -1,5 +1,5 @@
 // ui/privacyBanner.test.ts — the deletion countdown's player-facing LABEL, the pure half
-// (ADR-0231 Amendment A1).
+//.
 //
 // ★ SOURCE OF TRUTH — the PROMOTED RESIDUAL, quoted verbatim. Section `rb-51` of
 // `specs/monster-realm-v2/M-residual-backlog.spec.md` (source slice m22-s8, residual
@@ -41,7 +41,7 @@
 
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-// rb-52 (ADR-0231 A2-D7): the M22 section 9 pseudonymization sentence is pinned against a SECOND
+// rb-52: the M22 section 9 pseudonymization sentence is pinned against a SECOND
 // SOURCE, never a second hand-typed literal — one bad transcription copied into both the pin and
 // the implementation is exactly what a hand-typed pin cannot see.
 // VERIFIED BEFORE ADOPTING: `evals/account-e2e.eval.mjs` has
@@ -735,7 +735,7 @@ describe('rb-52 privacy view model: PRV1-4 the distinct terminal notice', () => 
   it('★ RB52C-TERMINAL-ROW BITES: an already-erased account renders PRIVACY_TERMINAL_NOTICE on OPEN, with no click and no `notice` write', () => {
     // ★ THE CRITERION'S OWN WORDS: "render the distinct terminal notice ONCE terminal_at_ms IS
     // Some" — i.e. on OPEN, with no interaction at all.
-    // WRONG IMPL KILLED (1) ★ THE MEASURED DEFECT (ADR-0231 A2-D6): a view model keyed on
+    // WRONG IMPL KILLED (1) ★ THE MEASURED DEFECT: a view model keyed on
     // `state.notice` ALONE. `privacyStep`'s `account-changed` arm writes `countdown`, `confirm`
     // and `inFlight` and NEVER `notice`, so such a VM renders NOTHING when the player opens the
     // surface on an already-erased account — E1 failing while every click-driven test passes.
@@ -870,7 +870,7 @@ describe('rb-52 privacy view model: PRV1-4 the distinct terminal notice', () => 
   });
 
   it('★ RB52C-DISCONNECTED-VISIBLE BITES: a click that could not be delivered produces its OWN notice, distinct from every other', () => {
-    // WRONG IMPL KILLED (ADR-0231 A2-D8) ★: a surface that says NOTHING when the link is
+    // WRONG IMPL KILLED ★: a surface that says NOTHING when the link is
     // absent. `sendGuarded` cannot observe `conn.live()` returning undefined
     // (`undefined?.catch()` is silent), so the player clicks Cancel during a live grace window
     // and nothing happens, ever, with no message. The model already routes this to

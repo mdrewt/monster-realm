@@ -403,7 +403,7 @@ const OPENERS: Readonly<Record<OverlayId, () => Opened>> = {
     view.show();
     return { root: capturedRoot('helpView'), close: () => view.hide(), reopen: () => view.show() };
   },
-  // The privacy overlay's shell is JS-created (ADR-0231 A2-D2), like claimView's.
+  // The privacy overlay's shell is JS-created, like claimView's.
   privacyView: () => {
     const view = new PrivacyView({
       onDeleteRequested: noop,

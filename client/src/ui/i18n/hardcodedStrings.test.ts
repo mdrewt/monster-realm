@@ -192,7 +192,7 @@ const SET_ATTR_TEMPLATE = "el.setAttribute('aria-label', `Lv${n}`)";
 // biome-wrapped call shape with a trailing comma.
 const SET_ATTR_MULTILINE = "el.setAttribute(\n  'aria-label',\n  'Raw value',\n);";
 
-// I18N-HC-01 RHS shapes (plan R7 / ADR-0257 D3).
+// I18N-HC-01 RHS shapes.
 const RHS_TERNARY_RAW = "el.textContent = c ? 'A' : 'B';";
 const RHS_TERNARY_T = "el.textContent = x ? t('a') : t('b');";
 const RHS_T_PLUS_SPACE = "el.textContent = t('k') + ' ' + n;";

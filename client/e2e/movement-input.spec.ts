@@ -492,7 +492,7 @@ test.describe
       // because the held key was wiped. It also pins ADR-0013's resume-after-overlay contract.
       await recenter(page, 2);
       await corridorEastWest(page, 1, 8);
-      // BoxView's static box-vs-party hint (ux4 / ADR-0155): a direct child of the overlay
+      // BoxView's static box-vs-party hint: a direct child of the overlay
       // root, created in the constructor and never re-rendered, so it is the stable visibility
       // probe. Asserted via a locator — never inferred from the game state.
       const overlay = page.locator('[data-testid="box-party-hint"]');

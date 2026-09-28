@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// ui/shopView.test.ts — ux2 (ADR-0154) RED tests for the shop gold readout.
+// ui/shopView.test.ts — ux2 RED tests for the shop gold readout.
 //
 // SOURCE OF TRUTH: ux2 build plan v3 §T6 ("shopView") + "Client unit tests".
 // Tests are INTENTIONALLY RED until shopView.ts creates and writes #shop-balance.
